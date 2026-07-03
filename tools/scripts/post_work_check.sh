@@ -60,6 +60,32 @@ done
 JOBS="$( { nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4; } )"
 [ "$JOBS" -lt 2 ] 2>/dev/null && JOBS=2
 
+# --- pre-flight: the retired 1.11 C++ value API must not resurface ------------------------------
+# The 1.11 value API removed the free helpers `val(vm,x)` / `none(vm)` / `makeList(vm,…)` and the
+# `List/Dict/Set(vm).add(…)/.set(…).build()` builder shims (use `Value(vm,x)` / `Value::None(vm)` /
+# `List(vm,{…})` / `.push()` / init-list ctors instead). A clean build below catches their return —
+# but this static check fails in under a second with the exact offending lines, so a stale
+# incremental build during development can't hide the regression until the full multi-minute run.
+# Scoped to C++ sources; comment lines, backtick doc mentions, and the legit `vm.none()` are excluded.
+RETIRED_API_RE='(\.build\(\))|((^|[^.A-Za-z0-9_])(val|makeList)\(\s*[A-Za-z_]*vm)|([^.]none\(\s*[A-Za-z_]*vm)'
+preflight_retired_api() {
+    local hits
+    hits=$(grep -rnE "$RETIRED_API_RE" src tools/tests examples \
+                --include=*.hpp --include=*.cpp 2>/dev/null \
+           | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)' | grep -vE 'vm\.none|`')
+    if [ -n "$hits" ]; then
+        echo "==================== PRE-FLIGHT: RETIRED API ===================="
+        echo "Retired 1.11 C++ value API resurfaced (val/none/makeList free helpers or .add()/.build() shims):"
+        echo "$hits" | head -30
+        echo "Fix: Value(vm,x) / Value::None(vm) / List(vm,{...}) / .push() / init-list ctors; no .build()."
+        return 1
+    fi
+    return 0
+}
+if ! preflight_retired_api; then
+    echo "DO NOT PUSH: retired API present — fix before building." ; exit 1
+fi
+
 declare -A DIR=( [debug]=build-debug [release]=build-release [asan]=build-asan [tsan]=build-tsan )
 FAILED=0
 GREEN_GATE=1   # cleared if debug or release fails

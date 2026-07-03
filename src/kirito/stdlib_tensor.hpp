@@ -1126,6 +1126,7 @@ void forEachLine(const tensor::Shape& shape, std::size_t axis, LineFn fn) {
     }
 }
 inline Handle argMinMax(KiritoVM& vm, Handle ah, int64_t axis, bool isMax) {
+    warnDetach(vm, isMax ? "argmax()" : "argmin()", asT(vm, ah));
     const FT& a = reqFloat(asT(vm, ah), "argmin/argmax");
     if (a.data.empty()) throw KiritoError("argmin/argmax of an empty tensor");
     if (axis < 0) {
@@ -1171,6 +1172,7 @@ inline Handle stdVar(KiritoVM& vm, Handle ah, int64_t axis, bool wantStd, int64_
     return make(vm, std::move(out));
 }
 inline Handle allAny(KiritoVM& vm, Handle ah, int64_t axis, bool isAll) {
+    warnDetach(vm, isAll ? "all()" : "any()", asT(vm, ah));
     const FT& a = reqFloat(asT(vm, ah), "all/any");
     if (axis < 0) {
         bool r = isAll;
@@ -1244,6 +1246,7 @@ inline Handle sortT(KiritoVM& vm, Handle ah, int64_t axis) {
     return make(vm, std::move(out));
 }
 inline Handle argsortT(KiritoVM& vm, Handle ah, int64_t axis) {
+    warnDetach(vm, "argsort()", asT(vm, ah));
     const FT& a = reqFloat(asT(vm, ah), "argsort");
     FT out(a.shape.empty() ? tensor::Shape{1} : a.shape);
     if (a.ndim() == 0) { out.data[0] = 0; return make(vm, std::move(out)); }
@@ -1256,6 +1259,7 @@ inline Handle argsortT(KiritoVM& vm, Handle ah, int64_t axis) {
     return make(vm, std::move(out));
 }
 inline Handle uniqueT(KiritoVM& vm, Handle ah) {
+    warnDetach(vm, "unique()", asT(vm, ah));
     const FT& a = reqFloat(asT(vm, ah), "unique");
     std::vector<double> v = a.data;
     std::sort(v.begin(), v.end(), [](double x, double y) { return x < y || (y != y && x == x); });  // NaN sorts last
@@ -1269,6 +1273,7 @@ inline Handle uniqueT(KiritoVM& vm, Handle ah) {
 }
 inline Handle nonzeroT(KiritoVM& vm, Handle ah) {
     TensorVal& A = asT(vm, ah);
+    warnDetach(vm, "nonzero()", A);
     const tensor::Shape& sh = A.shape();
     std::size_t nd = sh.size();
     std::vector<std::vector<double>> coords(nd);
@@ -1281,6 +1286,7 @@ inline Handle nonzeroT(KiritoVM& vm, Handle ah) {
     return vm.alloc(std::move(list));
 }
 inline Handle searchsortedT(KiritoVM& vm, Handle aH, Handle vH) {
+    warnDetach(vm, "searchsorted()", asT(vm, aH));
     const FT& a = reqFloat(asT(vm, aH), "searchsorted");
     if (a.ndim() != 1) throw KiritoError("searchsorted: the first tensor must be 1-D and sorted");
     const Object& vo = vm.arena().deref(vH);

@@ -35,7 +35,8 @@ inline int64_t argInt(KiritoVM& vm, Handle h, const char* who) {
 // every native method gives the same clean "expected at least N argument(s)" error.
 inline void requireArgs(std::span<const Handle> a, std::size_t n, const char* who) {
     if (a.size() < n)
-        throw KiritoError(std::string(who) + "() expected at least " + std::to_string(n) + " argument(s)");
+        throw KiritoError(std::string(who) + "() expected at least " + std::to_string(n) +
+                          " argument(s), got " + std::to_string(a.size()));
 }
 
 // Resolve a slice — start/stop/step given as Integer-or-None handles — to the concrete indices over
