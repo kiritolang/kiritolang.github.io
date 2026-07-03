@@ -39,6 +39,13 @@
 
 namespace kirito {
 
+// Forward decls of the shared operation helpers — defined in runtime.hpp. Value's operator
+// overloads delegate here so semantics are byte-identical to a Kirito `a + b` / `a < b` (including
+// numeric wraparound on Integer overflow, true-division `/`, exact IEEE-754 `==`, and per-type
+// dispatch via the object protocol). `BinOp`/`UnOp` themselves come from common.hpp.
+Handle applyBinaryOp(KiritoVM& vm, BinOp op, Handle lhs, Handle rhs);
+Handle applyUnaryOp(KiritoVM& vm, UnOp op, Handle operand);
+
 class Value;
 class Bool;
 class Integer;
@@ -181,9 +188,43 @@ public:
         return out;
     }
 
-    // Structural equality via the value protocol.
+    // Structural equality via the value protocol (exact — the same predicate Kirito's `==` uses).
     bool equals(const Value& other) const {
         return ref().equals(vm_->arena(), other.ref());
+    }
+
+    // Full operator surface — delegates to the shared BinOp/UnOp dispatch, so a Kirito `a + b` and a
+    // C++ `a + b` produce byte-identical values (same wraparound, same true-division, same throw-on-
+    // zero-divisor, same per-type dispatch). Definitions below (after applyBinaryOp is declared).
+    Value operator+(const Value& r) const;
+    Value operator-(const Value& r) const;
+    Value operator*(const Value& r) const;
+    Value operator/(const Value& r) const;
+    Value operator%(const Value& r) const;
+    Value operator-() const;                                     // unary negation
+    // Floor-div (`//`) and power (`**`) don't have C++ operators; expose them as named members.
+    Value floordiv(const Value& r) const;
+    Value pow(const Value& r) const;
+    // Comparison — `==`/`!=` are exact structural equality (never throws on type mismatch);
+    // `< <= > >=` follow the object protocol's ordering (throws for unordered pairs).
+    bool operator==(const Value& r) const;
+    bool operator!=(const Value& r) const;
+    bool operator<(const Value& r) const;
+    bool operator<=(const Value& r) const;
+    bool operator>(const Value& r) const;
+    bool operator>=(const Value& r) const;
+    // Truthiness — `if (v)` mirrors Kirito's `if v:`; `!v` mirrors `not v`.
+    explicit operator bool() const { return truthy(); }
+    bool operator!() const { return !truthy(); }
+    // Kirito's `in` / `not in`.
+    bool contains(const Value& v) const { return ref().contains(*vm_, v.h_); }
+
+    // Hash. Throws (`unhashable type '<T>'`) on an unhashable object — same policy as Set/Dict
+    // insertion. Value-protocol identity is preserved: two `equals`-equal values hash the same.
+    std::size_t hash() const {
+        const Object& o = ref();
+        if (!o.hashable()) throw KiritoError("unhashable type '" + o.typeName() + "'");
+        return o.hash();
     }
 
     // Compatibility helpers — delegate to the appropriate typed wrapper. Definitions after Dict.
@@ -372,14 +413,18 @@ public:
                std::string_view(s).substr(s.size() - p.size()) == p;
     }
 
-    // Concatenation. Returns a fresh String.
+    // Concatenation of two Strings — fast path bypassing the object protocol. `str + Value` and
+    // other mixed cases fall through to `Value::operator+`.
     String operator+(const String& rhs) const { return String(*vm_, utf8() + rhs.utf8()); }
+    using Value::operator+;                              // keep base overloads visible
 
     // Byte-exact equality with a raw literal — handy in tests (`s == "hi"`).
     bool operator==(std::string_view rhs) const { return utf8() == rhs; }
     bool operator==(const char* rhs) const { return utf8() == std::string_view(rhs); }
     bool operator!=(std::string_view rhs) const { return !(*this == rhs); }
     bool operator!=(const char* rhs) const { return !(*this == rhs); }
+    using Value::operator==;                             // keep base overloads visible
+    using Value::operator!=;
     // Implicit conversion to std::string_view for painless interop with std helpers.
     operator std::string_view() const { return utf8(); }
 };
@@ -823,6 +868,56 @@ inline std::vector<std::pair<Value, Value>> Value::pairs() const { return asDict
 inline bool Value::has(std::string_view k) const { return asDict("has").contains(k); }
 inline Value Value::get(std::string_view k) const { return asDict("get").at(Value(*vm_, k)); }
 inline Value Value::get(std::string_view k, Value dflt) const { return asDict("get").get(k, dflt); }
+
+// --- Operator definitions — delegate to applyBinaryOp/applyUnaryOp (defined in runtime.hpp) -------
+inline Value Value::operator+(const Value& r) const {
+    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Add, h_, r.h_));
+}
+inline Value Value::operator-(const Value& r) const {
+    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Sub, h_, r.h_));
+}
+inline Value Value::operator*(const Value& r) const {
+    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Mul, h_, r.h_));
+}
+inline Value Value::operator/(const Value& r) const {
+    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Div, h_, r.h_));
+}
+inline Value Value::operator%(const Value& r) const {
+    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Mod, h_, r.h_));
+}
+inline Value Value::operator-() const {
+    return Value(*vm_, applyUnaryOp(*vm_, UnOp::Neg, h_));
+}
+inline Value Value::floordiv(const Value& r) const {
+    return Value(*vm_, applyBinaryOp(*vm_, BinOp::FloorDiv, h_, r.h_));
+}
+inline Value Value::pow(const Value& r) const {
+    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Pow, h_, r.h_));
+}
+inline bool Value::operator==(const Value& r) const {
+    Handle h = applyBinaryOp(*vm_, BinOp::Eq, h_, r.h_);
+    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+}
+inline bool Value::operator!=(const Value& r) const {
+    Handle h = applyBinaryOp(*vm_, BinOp::Ne, h_, r.h_);
+    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+}
+inline bool Value::operator<(const Value& r) const {
+    Handle h = applyBinaryOp(*vm_, BinOp::Lt, h_, r.h_);
+    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+}
+inline bool Value::operator<=(const Value& r) const {
+    Handle h = applyBinaryOp(*vm_, BinOp::Le, h_, r.h_);
+    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+}
+inline bool Value::operator>(const Value& r) const {
+    Handle h = applyBinaryOp(*vm_, BinOp::Gt, h_, r.h_);
+    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+}
+inline bool Value::operator>=(const Value& r) const {
+    Handle h = applyBinaryOp(*vm_, BinOp::Ge, h_, r.h_);
+    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+}
 
 }  // namespace kirito
 
