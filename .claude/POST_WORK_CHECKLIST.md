@@ -22,10 +22,10 @@ The routine to run **after every change, before declaring it done**. The mechani
       gate. (binaryDir `build-debug`)
    2. **`release`** — g++ `-O2` with the looser warnings-as-errors set (no `-Wconversion`/`-Wshadow`);
       the build to benchmark and ship. (binaryDir `build-release`)
-   3. **Commit and push to `main`** — **once `debug` AND `release` are both green.** This is the
-      durability point: push *before* the long asan run so a crash, preemption, or container rollback
-      can never lose the work. (Branches are forbidden — see CLAUDE.md and the `block_new_branches`
-      hook.)
+   3. **Commit and push to `claude-branch`** — **once `debug` AND `release` are both green.** This
+      is the durability point: push *before* the long asan run so a crash, preemption, or container
+      rollback can never lose the work. (Every commit and push goes to `claude-branch` only; see
+      CLAUDE.md and the `enforce_claude_branch` hook.)
    4. **`asan`** — AddressSanitizer + UBSan (`-fno-sanitize-recover=all`) with the hardened warning
       set; the memory/UB-safety gate and a slow one. **Fix any error it surfaces, then re-run and
       push the fix.** (binaryDir `build-asan`)

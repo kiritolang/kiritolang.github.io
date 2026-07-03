@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "publisher": "kirito",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/AzethMeron/KiritoLang" },
+  "repository": { "type": "git", "url": "https://github.com/kiritolang/kiritolang.github.io" },
   "keywords": ["kirito", "ki", "scripting", "language"],
   "engines": { "vscode": "^1.60.0" },
   "categories": ["Programming Languages", "Snippets"],

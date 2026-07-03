@@ -246,22 +246,7 @@ value** are reported only when the `switch` is actually reached at **run time** 
 propagate to the enclosing loop/function as usual; a `switch` with no matching case and no `default` is
 a no-op.
 
-### `assert`
-
-`assert CONDITION[, message]` throws a catchable error when `CONDITION` is falsy, and does nothing
-when it is truthy — a compact way to state an invariant at the point it must hold. The optional
-`message` (any expression) becomes the error text; without one it reads `"assertion failed"`. The
-error is an ordinary exception, so a surrounding `try`/`catch` (see [Exceptions](#exceptions)) can
-intercept it.
-
-```kirito
-var withdraw = Function(balance, amount):
-    assert amount > 0, "amount must be positive"
-    assert amount <= balance, "insufficient funds"
-    return balance - amount
-```
-
-## Functions
+### Functions
 
 First-class values created with `Function`. Parameters take **keyword arguments**, **default
 values**, and **enforced type annotations**; the return type can be annotated too.
@@ -373,6 +358,20 @@ finally:
 
 Typed `catch` matches via the class chain (a subclass matches its base). A bare `catch:` catches
 everything.
+
+### `assert`
+
+`assert CONDITION[, message]` throws a catchable error when `CONDITION` is falsy, and does nothing
+when it is truthy — a compact way to state an invariant at the point it must hold. The optional
+`message` (any expression) becomes the error text; without one it reads `"assertion failed"`. The
+error is an ordinary exception, so a surrounding `try`/`catch` can intercept it.
+
+```kirito
+var withdraw = Function(balance, amount):
+    assert amount > 0, "amount must be positive"
+    assert amount <= balance, "insufficient funds"
+    return balance - amount
+```
 
 ## Context managers
 

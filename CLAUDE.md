@@ -5,7 +5,24 @@ It is the source of truth for what Kirito is, how we build it, and how we work.
 
 ## Git
 
-**ALWAYS commit and push to `main`. Creating ANY branch — temporary or otherwise — is absolutely forbidden.**
+**ONLY commit and push to `claude-branch`.** That branch is Claude's own scratch branch and the
+only place Claude's work lives while it is in flight; pushing to `main` (or any other branch) is
+forbidden. The cycle is: base `claude-branch` off the current `main`, do the work, open a pull
+request, wait for the human to merge; on the next task, restart `claude-branch` from `main` again.
+
+Restart it with:
+
+```sh
+git fetch origin main
+git checkout -B claude-branch origin/main
+```
+
+A PreToolUse hook (`.claude/hooks/enforce_claude_branch.py`, wired in `.claude/settings.json`)
+enforces this — it blocks any `git commit` off `claude-branch` and any `git push` that touches
+`main` or leaves `claude-branch`. If the hook fires, do not try to bypass it: switch to
+`claude-branch` (recreating it from `origin/main` if needed) and retry.
+
+Opening and updating a pull request from `claude-branch` is fine; no other GitHub write is.
 
 ## Versions
 
@@ -42,7 +59,7 @@ control structure (a flat instruction stream + an explicit operand stack instead
 
 ### Language shape (the target)
 
-From the design notes and `Archive/V2/main.ki`, Kirito should support:
+Kirito should support:
 
 - `var` declarations; `#` line comments. **Significant indentation**: blocks are
   introduced by `:` + newline + indent (no braces).
@@ -561,16 +578,6 @@ fast path** (Integer/Float arithmetic in `applyBinaryOp` skips the virtual dispa
 to the shared `numericBinary` with identical wraparound/true-division/exact-compare semantics) and
 **constant deduplication** (repeated scalar literals share one `consts` slot, floats keyed on exact
 bits). Measured ~10% on function-local arithmetic loops; no regression on call-heavy/module-level code.
-
-## The Archive is reference only
-
-`Archive/V1` and `Archive/V2` are **prior incomplete attempts. We start from scratch.**
-
-- **Do not build on them, do not compile them, do not import their files.**
-- **Do** mine them for ideas: `Archive/V1/notes.txt` (the language spec intent),
-  V1's reference-counted object model, V2's `Number`/`Matrix`/`Math`. Lift *concepts*,
-  re-implement cleanly.
-- The archives' MSVC `.vcxproj`/`.sln` files are dead on this Linux toolchain — ignore them.
 
 ## Architecture (as built)
 
