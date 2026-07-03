@@ -129,8 +129,8 @@ public:
             while (scan < path.size() && path[scan] == '.') ++scan;
             std::size_t dot = path.find_last_of('.');
             if (dot == std::string::npos || dot < scan)
-                return List(vm).add(Value(vm, path)).add(Value(vm, std::string())).build();
-            return List(vm).add(Value(vm, path.substr(0, dot))).add(Value(vm, path.substr(dot))).build();
+                return List(vm, {path, std::string()});
+            return List(vm, {path.substr(0, dot), path.substr(dot)});
         });
 
         // Filesystem queries. exists/isfile/isdir are tolerant (a missing/inaccessible path is simply

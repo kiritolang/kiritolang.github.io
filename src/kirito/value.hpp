@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "builtins.hpp"
@@ -75,26 +76,40 @@ struct Pin {
     Pin& operator=(const Pin&) = delete;
 };
 
-// A single value constructible from any C++ primitive or an existing Value/Handle. Powers the
-// `initializer_list<Anything>` overloads so `List(vm, {1, "hi", 3.14})` and
-// `Dict(vm, {{"k", 1}, {"n", "x"}})` mix types freely.
+// A deferred value constructible from any C++ primitive or an existing Value/Handle without a VM.
+// Powers `List(vm, {1, "hi", 3.14})` and `Dict(vm, {{"k", 1}, {"n", "x"}})` — the initializer list
+// can't see the container's VM, so each item's Handle is materialised lazily inside `toHandle(vm)`
+// when the container constructor visits it.
 struct Anything {
-    Handle h;
-    Anything(Handle x) : h(x) {}
-    Anything(const Value& v);                                    // defined below (needs Value)
-    Anything(KiritoVM& vm, std::nullptr_t) : h(vm.none()) {}
-    Anything(KiritoVM& vm, bool b) : h(vm.makeBool(b)) {}
-    Anything(KiritoVM& vm, int v) : h(vm.makeInt(static_cast<int64_t>(v))) {}
-    Anything(KiritoVM& vm, unsigned v) : h(vm.makeInt(static_cast<int64_t>(v))) {}
-    Anything(KiritoVM& vm, long v) : h(vm.makeInt(static_cast<int64_t>(v))) {}
-    Anything(KiritoVM& vm, long long v) : h(vm.makeInt(static_cast<int64_t>(v))) {}
-    Anything(KiritoVM& vm, unsigned long v) : h(vm.makeInt(static_cast<int64_t>(v))) {}
-    Anything(KiritoVM& vm, unsigned long long v) : h(vm.makeInt(static_cast<int64_t>(v))) {}
-    Anything(KiritoVM& vm, float v) : h(vm.makeFloat(static_cast<double>(v))) {}
-    Anything(KiritoVM& vm, double v) : h(vm.makeFloat(v)) {}
-    Anything(KiritoVM& vm, const char* s) : h(vm.makeString(std::string(s))) {}
-    Anything(KiritoVM& vm, std::string s) : h(vm.makeString(std::move(s))) {}
-    Anything(KiritoVM& vm, std::string_view s) : h(vm.makeString(std::string(s))) {}
+    std::variant<Handle, int64_t, double, bool, std::string, std::nullptr_t> v;
+    Anything(Handle x)                : v(x) {}
+    Anything(const Value& val);                                             // defined below
+    Anything(std::nullptr_t)          : v(nullptr) {}
+    Anything(bool b)                  : v(b) {}
+    Anything(int x)                   : v(static_cast<int64_t>(x)) {}
+    Anything(unsigned x)              : v(static_cast<int64_t>(x)) {}
+    Anything(long x)                  : v(static_cast<int64_t>(x)) {}
+    Anything(long long x)             : v(static_cast<int64_t>(x)) {}
+    Anything(unsigned long x)         : v(static_cast<int64_t>(x)) {}
+    Anything(unsigned long long x)    : v(static_cast<int64_t>(x)) {}
+    Anything(float x)                 : v(static_cast<double>(x)) {}
+    Anything(double x)                : v(x) {}
+    Anything(const char* s)           : v(std::string(s)) {}
+    Anything(std::string s)           : v(std::move(s)) {}
+    Anything(std::string_view s)      : v(std::string(s)) {}
+
+    // Realise into an arena handle now that a VM is available.
+    Handle toHandle(KiritoVM& vm) const {
+        return std::visit([&vm](const auto& x) -> Handle {
+            using T = std::decay_t<decltype(x)>;
+            if      constexpr (std::is_same_v<T, Handle>)         return x;
+            else if constexpr (std::is_same_v<T, int64_t>)        return vm.makeInt(x);
+            else if constexpr (std::is_same_v<T, double>)         return vm.makeFloat(x);
+            else if constexpr (std::is_same_v<T, bool>)           return vm.makeBool(x);
+            else if constexpr (std::is_same_v<T, std::string>)    return vm.makeString(x);
+            else /* nullptr_t */                                   return vm.none();
+        }, v);
+    }
 };
 
 }  // namespace detail
@@ -261,7 +276,7 @@ public:
     Value call(std::initializer_list<detail::Anything> args) const {
         std::vector<Handle> hs;
         hs.reserve(args.size());
-        for (const auto& a : args) hs.push_back(a.h);
+        for (const auto& a : args) hs.push_back(a.toHandle(*vm_));
         return call(std::span<const Handle>(hs));
     }
 
@@ -511,7 +526,7 @@ public:
         RootScope roots(vm);
         auto lv = std::make_unique<ListVal>();
         lv->elems.reserve(items.size());
-        for (const auto& a : items) { roots.add(a.h); lv->elems.push_back(a.h); }
+        for (const auto& a : items) { Handle h = a.toHandle(vm); roots.add(h); lv->elems.push_back(h); }
         adopt(vm, vm.alloc(std::move(lv)));
     }
     // Fresh List from an existing vector of Handles (bulk).
@@ -611,9 +626,10 @@ public:
              std::pair<detail::Anything, detail::Anything>> entries) {
         RootScope roots(vm);
         auto dv = std::make_unique<DictVal>();
-        for (const auto& [k, v] : entries) {
-            roots.add(k.h); roots.add(v.h);
-            dv->set(vm.arena(), k.h, v.h);
+        for (const auto& [ka, va] : entries) {
+            Handle kh = ka.toHandle(vm), vh = va.toHandle(vm);
+            roots.add(kh); roots.add(vh);
+            dv->set(vm.arena(), kh, vh);
         }
         adopt(vm, vm.alloc(std::move(dv)));
     }
@@ -743,7 +759,7 @@ public:
     Set(KiritoVM& vm, std::initializer_list<detail::Anything> items) {
         RootScope roots(vm);
         auto sv = std::make_unique<SetVal>();
-        for (const auto& a : items) { roots.add(a.h); sv->add(vm.arena(), a.h); }
+        for (const auto& a : items) { Handle h = a.toHandle(vm); roots.add(h); sv->add(vm.arena(), h); }
         adopt(vm, vm.alloc(std::move(sv)));
     }
 
@@ -848,7 +864,7 @@ private:
 // helpers that depend on the BytesVal layout.
 // ================================================================================================
 
-inline detail::Anything::Anything(const Value& v) : h(v.handle()) {}
+inline detail::Anything::Anything(const Value& val) : v(val.handle()) {}
 
 inline Bool    Value::asBoolV(const char* who)   const { return Bool(*vm_, h_, who); }
 inline Integer Value::asInteger(const char* who) const { return Integer(*vm_, h_, who); }

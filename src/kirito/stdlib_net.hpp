@@ -1029,8 +1029,8 @@ public:
         m.fn("Session", {}, "Session", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
             auto s = std::make_unique<SessionVal>();
             RootScope rs(vm);
-            s->headersH = rs.add(Dict(vm).build());
-            s->cookiesH = rs.add(Dict(vm).build());
+            s->headersH = rs.add(Dict(vm).handle());
+            s->cookiesH = rs.add(Dict(vm).handle());
             return vm.alloc(std::move(s));
         });
 
@@ -1086,8 +1086,8 @@ public:
         });
         m.fn("urlsplit", {{"url", "String"}}, "Dict", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             net::UrlParts p = net::splitUrl(Args(vm, a, "urlsplit")[0].asStringRef("urlsplit"));
-            return Dict(vm).set("scheme", p.scheme).set("host", p.host).set("port", p.port)
-                           .set("path", p.path).set("query", p.query).set("fragment", p.fragment).build();
+            return Dict(vm, {{"scheme", p.scheme}, {"host", p.host}, {"port", p.port},
+                             {"path", p.path}, {"query", p.query}, {"fragment", p.fragment}});
         });
     }
 };
