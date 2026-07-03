@@ -143,7 +143,7 @@ public:
             return bind("read", {"size"}, [self, file](KiritoVM& vm, std::span<const Handle> a) {
                 std::optional<std::size_t> n;
                 if (!a.empty()) {
-                    int64_t want = argInt(vm, a[0], "read");
+                    int64_t want = Value(vm, a[0]).asInt("read");
                     if (want >= 0) n = static_cast<std::size_t>(want);
                 }
                 auto& f = file(vm, self);
@@ -156,7 +156,7 @@ public:
             });
         if (name == "write")
             return bind("write", {"data"}, [self, file](KiritoVM& vm, std::span<const Handle> a) {
-                requireArgs(a, 1, "write");
+                Args(vm, a, "write").require(1);
                 file(vm, self).streamWrite(ioRawBytes(vm, a[0], "write"));  // String or Bytes
                 return vm.none();
             });
@@ -177,7 +177,7 @@ public:
             });
         if (name == "writelines")
             return bind("writelines", {"lines"}, [self, file](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                requireArgs(a, 1, "writelines");
+                Args(vm, a, "writelines").require(1);
                 auto items = vm.arena().deref(a[0]).iterate(vm);
                 auto& f = file(vm, self);
                 for (Handle h : items.value()) f.streamWrite(ioRawBytes(vm, h, "writelines"));  // String or Bytes
@@ -201,8 +201,8 @@ public:
             return bind("seek", {"offset", "whence"}, [self, file](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 file(vm, self).requireOpen();
                 if (a.empty()) throw KiritoError("seek expects an offset");
-                int64_t off = argInt(vm, a[0], "seek");
-                int64_t whence = (a.size() > 1) ? argInt(vm, a[1], "seek") : 0;  // 0=set, 1=cur, 2=end
+                int64_t off = Value(vm, a[0]).asInt("seek");
+                int64_t whence = (a.size() > 1) ? Value(vm, a[1]).asInt("seek") : 0;  // 0=set, 1=cur, 2=end
                 if (whence < 0 || whence > 2) throw KiritoError("seek: whence must be 0 (set), 1 (cur), or 2 (end)");
                 auto& s = file(vm, self).stream;
                 s.clear();
@@ -291,7 +291,7 @@ public:
         };
         if (name == "write")
             return bind("write", {"data"}, [self, io](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                requireArgs(a, 1, "BytesIO.write");                                // guard the positional fast path (a[0] OOB otherwise)
+                Args(vm, a, "BytesIO.write").require(1);                                // guard the positional fast path (a[0] OOB otherwise)
                 const std::string& data = ioRawBytes(vm, a[0], "BytesIO.write");   // String or Bytes
                 io(vm, self).streamWrite(data);
                 return vm.makeInt(static_cast<int64_t>(data.size()));
@@ -300,7 +300,7 @@ public:
             return bind("read", {"size"}, [self, io](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 std::optional<std::size_t> n;
                 if (!a.empty() && vm.arena().deref(a[0]).kind() != ValueKind::None) {
-                    int64_t want = argInt(vm, a[0], "read");   // throw on a non-Integer size, not silently read-all
+                    int64_t want = Value(vm, a[0]).asInt("read");   // throw on a non-Integer size, not silently read-all
                     if (want >= 0) n = static_cast<std::size_t>(want);
                 }
                 return vm.makeString(io(vm, self).streamRead(n));
@@ -323,8 +323,8 @@ public:
             return bind("seek", {"offset", "whence"}, [self, io](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 auto& b = io(vm, self);
                 if (a.empty()) throw KiritoError("seek expects an offset");
-                int64_t off = argInt(vm, a[0], "seek");
-                int whence = a.size() > 1 ? static_cast<int>(argInt(vm, a[1], "seek")) : 0;
+                int64_t off = Value(vm, a[0]).asInt("seek");
+                int whence = a.size() > 1 ? static_cast<int>(Value(vm, a[1]).asInt("seek")) : 0;
                 if (whence < 0 || whence > 2) throw KiritoError("seek: whence must be 0 (set), 1 (cur), or 2 (end)");
                 int64_t base = whence == 1 ? static_cast<int64_t>(b.pos)
                              : whence == 2 ? static_cast<int64_t>(b.buf.size()) : 0;
@@ -423,14 +423,14 @@ public:
         auto me = [](KiritoVM& vm, Handle self) -> StdStream& { return static_cast<StdStream&>(vm.arena().deref(self)); };
         if (name == "write")
             return bind("write", {"data"}, [self, me](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                requireArgs(a, 1, "write");
-                me(vm, self).streamWrite(argString(vm, a[0], "write"));
+                Args(vm, a, "write").require(1);
+                me(vm, self).streamWrite(Value(vm, a[0]).asStringRef("write"));
                 return vm.none();
             });
         if (name == "read")
             return bind("read", {"size"}, [self, me](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 std::optional<std::size_t> n;
-                if (!a.empty()) { int64_t w = argInt(vm, a[0], "read"); if (w >= 0) n = static_cast<std::size_t>(w); }
+                if (!a.empty()) { int64_t w = Value(vm, a[0]).asInt("read"); if (w >= 0) n = static_cast<std::size_t>(w); }
                 return vm.makeString(me(vm, self).streamRead(n));
             });
         if (name == "readline")
@@ -469,7 +469,7 @@ inline std::string streamReadLineFrom(KiritoVM& vm, Handle target) {
     if (auto* st = dynamic_cast<IoStream*>(&o)) return st->streamReadLine();
     RootScope rs(vm);
     Handle rf = rs.add(o.getAttr(vm, target, "readline"));
-    return argString(vm, vm.arena().deref(rf).call(vm, {}), "readline");
+    return Value(vm, vm.arena().deref(rf).call(vm, {})).asStringRef("readline");
 }
 inline std::string streamReadFrom(KiritoVM& vm, Handle target, std::optional<std::size_t> n) {
     Object& o = vm.arena().deref(target);
@@ -477,8 +477,8 @@ inline std::string streamReadFrom(KiritoVM& vm, Handle target, std::optional<std
     RootScope rs(vm);
     Handle rf = rs.add(o.getAttr(vm, target, "read"));
     if (n) { std::array<Handle, 1> a{rs.add(vm.makeInt(static_cast<int64_t>(*n)))};
-             return argString(vm, vm.arena().deref(rf).call(vm, a), "read"); }
-    return argString(vm, vm.arena().deref(rf).call(vm, {}), "read");
+             return Value(vm, vm.arena().deref(rf).call(vm, a)).asStringRef("read"); }
+    return Value(vm, vm.arena().deref(rf).call(vm, {})).asStringRef("read");
 }
 
 // The `io` standard module, authored via the extension API exactly as a third party would.
@@ -569,7 +569,7 @@ public:
                                     std::span<const NamedArg> named) -> Handle {
             Handle src = pickStream(vm, named, "stdin", "read");
             std::optional<std::size_t> n;
-            if (!a.empty()) { int64_t w = argInt(vm, a[0], "read"); if (w >= 0) n = static_cast<std::size_t>(w); }
+            if (!a.empty()) { int64_t w = Value(vm, a[0]).asInt("read"); if (w >= 0) n = static_cast<std::size_t>(w); }
             return vm.makeString(streamReadFrom(vm, src, n));
         });
         // write(*args, stream=io.stdout): raw, no separator, no newline.

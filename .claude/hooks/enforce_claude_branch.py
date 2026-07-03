@@ -104,8 +104,10 @@ def current_branch() -> str:
 def deny(msg: str) -> None:
     print(f"blocked by claude-branch policy: {msg}", file=sys.stderr)
     print(
-        f"hint: work only on '{ALLOWED_BRANCH}' (see CLAUDE.md '## Git'). Restart the "
-        f"branch with `git fetch origin main && git checkout -B {ALLOWED_BRANCH} origin/main`.",
+        f"hint: work only on '{ALLOWED_BRANCH}' (see CLAUDE.md '## Git'). Switch back with "
+        f"`git checkout {ALLOWED_BRANCH}` if it exists (keeps any unmerged work); only create it "
+        f"fresh when it's missing or its previous PR merged: "
+        f"`git fetch origin main && git checkout -B {ALLOWED_BRANCH} origin/main`.",
         file=sys.stderr,
     )
     sys.exit(2)

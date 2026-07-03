@@ -50,7 +50,7 @@ int main() {
     {
         Dict d(vm);
         d.set("x", Value(vm, 1)).set("y", Value(vm, 2));
-        Handle dh = d.build().handle();
+        Handle dh = d.handle();
         Object& dobj = arena.deref(dh);
         std::array<Handle, 1> kx{vm.makeString("x")};
         CHECK(vm.stringify(dobj.getItem(vm, kx)) == "1");

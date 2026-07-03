@@ -74,7 +74,7 @@ public:
                           "' (expected 'xoshiro' or 'mersenne_twister')");
     }
 
-    static int64_t asInt(KiritoVM& vm, Handle h) { return argInt(vm, h, "argument"); }
+    static int64_t asInt(KiritoVM& vm, Handle h) { return Value(vm, h).asInt("argument"); }
     static double asNum(KiritoVM& vm, Handle h) {
         const Object& o = vm.arena().deref(h);
         if (o.kind() == ValueKind::Integer) return static_cast<double>(static_cast<const IntVal&>(o).value());

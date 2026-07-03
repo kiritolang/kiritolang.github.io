@@ -75,8 +75,8 @@ struct Grid : NativeClass<Grid> {
     Handle slice(KiritoVM& vm, Handle start, Handle stop, Handle step) override {
         std::vector<int64_t> idx = sliceIndices(vm, 4, start, stop, step);
         List out(vm);
-        for (int64_t k : idx) out.add(cells[static_cast<std::size_t>(k)]);
-        return out.build();
+        for (int64_t k : idx) out.push(cells[static_cast<std::size_t>(k)]);
+        return out;
     }
     // A non-call slot whose C++ throw must surface as a catchable Kirito error.
     std::optional<std::vector<Handle>> iterate(KiritoVM&) override {

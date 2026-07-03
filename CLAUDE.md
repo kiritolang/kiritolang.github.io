@@ -7,20 +7,31 @@ It is the source of truth for what Kirito is, how we build it, and how we work.
 
 **ONLY commit and push to `claude-branch`.** That branch is Claude's own scratch branch and the
 only place Claude's work lives while it is in flight; pushing to `main` (or any other branch) is
-forbidden. The cycle is: base `claude-branch` off the current `main`, do the work, open a pull
-request, wait for the human to merge; on the next task, restart `claude-branch` from `main` again.
+forbidden. The cycle is: work on `claude-branch`, open a pull request, wait for the human to merge.
 
-Restart it with:
+**Only (re)start `claude-branch` from `main` when it doesn't already exist, or when its previous
+pull request has already been merged.** A merged PR is finished — never reuse it; branch fresh from
+`main` so the next PR starts clean. But if `claude-branch` already exists with **unmerged** work
+(an open PR, or commits not yet in `main`), **keep working on it** — do NOT recreate it, or you will
+discard commits the open PR still needs. Don't force a new branch just because a new task arrived.
 
 ```sh
 git fetch origin main
+# Branch missing, or its previous PR already merged -> (re)start fresh from main:
 git checkout -B claude-branch origin/main
+# Branch exists with unmerged work -> just switch to it and keep going (do NOT use -B):
+git checkout claude-branch
 ```
+
+Pick the one that matches the situation; when unsure whether the last PR merged, check before
+recreating (a merged PR shows in `git log origin/main`, or ask). Follow-up commits for an
+unmerged PR simply land on the existing `claude-branch` and update that same PR.
 
 A PreToolUse hook (`.claude/hooks/enforce_claude_branch.py`, wired in `.claude/settings.json`)
 enforces this — it blocks any `git commit` off `claude-branch` and any `git push` that touches
 `main` or leaves `claude-branch`. If the hook fires, do not try to bypass it: switch to
-`claude-branch` (recreating it from `origin/main` if needed) and retry.
+`claude-branch` with `git checkout claude-branch` (or create it from `origin/main` if it genuinely
+doesn't exist) and retry — never `-B` over a branch that still has unmerged work.
 
 Opening and updating a pull request from `claude-branch` is fine; no other GitHub write is.
 

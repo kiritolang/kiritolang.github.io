@@ -161,10 +161,10 @@ public:
             });
         if (name == "_setstate_")
             return bind("_setstate_", {"state"}, [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                requireArgs(a, 1, "_setstate_");
+                Args(vm, a, "_setstate_").require(1);
                 KiritoDispatcher& d = requireDispatcher(vm, "parallel.Queue");
                 auto& qv = static_cast<QueueVal&>(vm.arena().deref(self));
-                qv.q = d.queueById(static_cast<uint64_t>(argInt(vm, a[0], "Queue _setstate_")));
+                qv.q = d.queueById(static_cast<uint64_t>(Value(vm, a[0]).asInt("Queue _setstate_")));
                 if (!qv.q)
                     throw KiritoError("parallel.Queue: cannot rebind (unknown id; queues do not cross dispatchers)");
                 return vm.none();
@@ -264,10 +264,10 @@ public:
             });
         if (name == "_setstate_")
             return bind("_setstate_", {"state"}, [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                requireArgs(a, 1, "_setstate_");
+                Args(vm, a, "_setstate_").require(1);
                 KiritoDispatcher& d = requireDispatcher(vm, "parallel.Lock");
                 auto& lv = static_cast<LockVal&>(vm.arena().deref(self));
-                lv.lock = d.lockById(static_cast<uint64_t>(argInt(vm, a[0], "Lock _setstate_")));
+                lv.lock = d.lockById(static_cast<uint64_t>(Value(vm, a[0]).asInt("Lock _setstate_")));
                 if (!lv.lock) throw KiritoError("parallel.Lock: cannot rebind (unknown id)");
                 return vm.none();
             });
@@ -320,10 +320,10 @@ public:
             });
         if (name == "_setstate_")
             return bind("_setstate_", {"state"}, [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                requireArgs(a, 1, "_setstate_");
+                Args(vm, a, "_setstate_").require(1);
                 KiritoDispatcher& d = requireDispatcher(vm, "parallel.Event");
                 auto& v = static_cast<EventVal&>(vm.arena().deref(self));
-                v.event = d.eventById(static_cast<uint64_t>(argInt(vm, a[0], "Event _setstate_")));
+                v.event = d.eventById(static_cast<uint64_t>(Value(vm, a[0]).asInt("Event _setstate_")));
                 if (!v.event) throw KiritoError("parallel.Event: cannot rebind (unknown id)");
                 return vm.none();
             });
@@ -379,10 +379,10 @@ public:
             });
         if (name == "_setstate_")
             return bind("_setstate_", {"state"}, [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                requireArgs(a, 1, "_setstate_");
+                Args(vm, a, "_setstate_").require(1);
                 KiritoDispatcher& d = requireDispatcher(vm, "parallel.Semaphore");
                 auto& v = static_cast<SemaphoreVal&>(vm.arena().deref(self));
-                v.sem = d.semaphoreById(static_cast<uint64_t>(argInt(vm, a[0], "Semaphore _setstate_")));
+                v.sem = d.semaphoreById(static_cast<uint64_t>(Value(vm, a[0]).asInt("Semaphore _setstate_")));
                 if (!v.sem) throw KiritoError("parallel.Semaphore: cannot rebind (unknown id)");
                 return vm.none();
             });
@@ -439,10 +439,10 @@ public:
             });
         if (name == "_setstate_")
             return bind("_setstate_", {"state"}, [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                requireArgs(a, 1, "_setstate_");
+                Args(vm, a, "_setstate_").require(1);
                 KiritoDispatcher& d = requireDispatcher(vm, "parallel.Barrier");
                 auto& v = static_cast<BarrierVal&>(vm.arena().deref(self));
-                v.bar = d.barrierById(static_cast<uint64_t>(argInt(vm, a[0], "Barrier _setstate_")));
+                v.bar = d.barrierById(static_cast<uint64_t>(Value(vm, a[0]).asInt("Barrier _setstate_")));
                 if (!v.bar) throw KiritoError("parallel.Barrier: cannot rebind (unknown id)");
                 return vm.none();
             });

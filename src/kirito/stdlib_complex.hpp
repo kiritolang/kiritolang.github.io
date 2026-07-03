@@ -185,7 +185,7 @@ inline Handle ComplexVal::getAttr(KiritoVM& vm, Handle self, std::string_view na
         });
     if (name == "_setstate_")
         return makeMethod(vm, "_setstate_", {"state"}, [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            requireArgs(a, 1, "_setstate_");
+            Args(vm, a, "_setstate_").require(1);
             auto items = Value(vm, a[0]).items();
             if (items.size() < 2) throw KiritoError("Complex _setstate_: malformed state");
             static_cast<ComplexVal&>(vm.arena().deref(self)).z =
@@ -378,14 +378,14 @@ inline Handle ComplexMatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_v
             std::vector<Handle>{self}));
     }
     if (name == "get") return bind("get", {"row", "col"}, [self, self_m, idx](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 2, "get");
+        Args(vm, a, "get").require(2);
         auto& m = self_m(vm, self);
         std::size_t r = idx(vm, a[0]), c = idx(vm, a[1]);
         if (r >= m.rows() || c >= m.cols()) throw KiritoError("ComplexMatrix index out of range");
         return cpx::make(vm, m.at(r, c));
     });
     if (name == "set") return bind("set", {"row", "col", "value"}, [self, self_m, idx](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 3, "set");
+        Args(vm, a, "set").require(3);
         auto& m = self_m(vm, self);
         std::size_t r = idx(vm, a[0]), c = idx(vm, a[1]);
         if (r >= m.rows() || c >= m.cols()) throw KiritoError("ComplexMatrix index out of range");
@@ -393,7 +393,7 @@ inline Handle ComplexMatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_v
         return vm.none();
     });
     if (name == "row") return bind("row", {"i"}, [self, self_m, idx](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 1, "row");
+        Args(vm, a, "row").require(1);
         auto& m = self_m(vm, self);
         std::size_t r = idx(vm, a[0]);
         if (r >= m.rows()) throw KiritoError("row index out of range");
@@ -434,7 +434,7 @@ inline Handle ComplexMatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_v
     });
     // apply(fn): map fn over every element, returning a new ComplexMatrix (the element-wise map).
     if (name == "apply") return bind("apply", {"fn"}, [self, self_m](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 1, "apply");
+        Args(vm, a, "apply").require(1);
         Handle fn = a[0];
         auto& m = self_m(vm, self);
         auto out = cpx::makeMatrix(m.rows(), m.cols());
@@ -447,7 +447,7 @@ inline Handle ComplexMatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_v
     });
     // --- vector operations (a ComplexMatrix with one dimension == 1 is a vector) ---
     if (name == "dot") return bind("dot", {"other"}, [self, self_m](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 1, "dot");
+        Args(vm, a, "dot").require(1);
         auto& m = self_m(vm, self);
         const auto* o = dynamic_cast<const ComplexMatrixVal*>(&vm.arena().deref(a[0]));
         if (!o) throw KiritoError("dot expects a ComplexMatrix vector");
@@ -458,7 +458,7 @@ inline Handle ComplexMatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_v
         return cpx::make(vm, acc);
     });
     if (name == "cross") return bind("cross", {"other"}, [self, self_m](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 1, "cross");
+        Args(vm, a, "cross").require(1);
         auto& m = self_m(vm, self);
         const auto* o = dynamic_cast<const ComplexMatrixVal*>(&vm.arena().deref(a[0]));
         if (!o) throw KiritoError("cross expects a ComplexMatrix vector");
@@ -487,7 +487,7 @@ inline Handle ComplexMatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_v
         return st.handle();
     });
     if (name == "_setstate_") return bind("_setstate_", {"state"}, [self, self_m](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 1, "_setstate_");
+        Args(vm, a, "_setstate_").require(1);
         auto& m = self_m(vm, self);
         auto items = Value(vm, a[0]).items();
         if (items.size() < 3) throw KiritoError("ComplexMatrix _setstate_: malformed state");

@@ -226,7 +226,7 @@ public:
             return makeMethod(vm,
                 "format", {"fmt"},
                 [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                    requireArgs(a, 1, "format");                       // guard the positional fast path (a[0] OOB otherwise)
+                    Args(vm, a, "format").require(1);                       // guard the positional fast path (a[0] OOB otherwise)
                     auto& dt = static_cast<DateTime&>(vm.arena().deref(self));
                     const Object& o = vm.arena().deref(a[0]);
                     if (o.kind() != ValueKind::String) throw KiritoError("format expects a String");
@@ -261,7 +261,7 @@ public:
         if (name == "_setstate_")
             return makeMethod(vm, "_setstate_", {"state"},
                 [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                    requireArgs(a, 1, "_setstate_");                  // guard the positional fast path (a[0] OOB otherwise)
+                    Args(vm, a, "_setstate_").require(1);                  // guard the positional fast path (a[0] OOB otherwise)
                     const Object& o = vm.arena().deref(a[0]);
                     if (o.kind() != ValueKind::Integer)
                         throw KiritoError("DateTime _setstate_: expected an Integer epoch");

@@ -156,18 +156,18 @@ int main() {
         CHECK_THROWS(Value(vm, "x").asInt("n"));
         CHECK_THROWS(Value(vm, 1).asStringRef("s"));
 
-        // builders + facade reads (List/Dict/Set), and stringify of a nested String (repr form).
-        Value lst = List(vm).add(1).add(2).add("three").build();
+        // construction + facade reads (List/Dict/Set), and stringify of a nested String (repr form).
+        Value lst = List(vm, {1, 2, "three"});
         CHECK(lst.isList() && lst.len() == 3);
         CHECK(lst.at(0).asInt() == 1 && lst.at(-1).asStringRef() == "three");
         CHECK(vm.stringify(lst) == "[1, 2, 'three']");
 
-        Value d = Dict(vm).set("k", 5).set("name", "Ada").build();
+        Value d = Dict(vm, {{"k", 5}, {"name", "Ada"}});
         CHECK(d.isDict() && d.get("k").asInt() == 5 && d.get("name").asStringRef() == "Ada");
         CHECK(d.has("k") && !d.has("absent"));
         CHECK(d.get("absent", Value(vm, -1)).asInt() == -1);
 
-        Value s = Set(vm).add(1).add(1).add(2).build();
+        Value s = Set(vm, {1, 1, 2});
         CHECK(s.isSet() && s.len() == 2);
 
         // a native function authored against Args + the facade, driven from Kirito.
