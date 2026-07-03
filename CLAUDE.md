@@ -651,10 +651,22 @@ bits). Measured ~10% on function-local arithmetic loops; no regression on call-h
   closures capture their lexical scope by handle. Only functions/modules/class-bodies introduce scopes.
 - **Extending in C++**: subclass `NativeModule` (override `setup`) or `NativeClass` (override only
   the slots you need) and register with one call — indistinguishable from a built-in to the VM.
-  Prefer the built-in types via the ergonomic `value.hpp` API (`Value` facade + `Args` + `List`/
-  `Dict`/`Set` builders + `val(...)`; builders root intermediates for the GC). Returning built-in
-  values is the default; defining a new `NativeClass` is the fallback (only for genuinely new
-  behaviour). `value.hpp` is included by `native.hpp`, so every module gets it.
+  Prefer the built-in types via the ergonomic `value.hpp` API. Every Kirito builtin has a matching
+  C++ wrapper — `Bool`/`Integer`/`Float`/`String`/`Bytes`/`List`/`Dict`/`Set` — all derived from a
+  polymorphic `Value` base and constructed idiomatically (`Value(vm, 42)`, `String(vm, "hi")`,
+  `List(vm, {1, "a", 3.14})`, `Dict(vm, {{"k", 1}, {"n", "s"}})`, `Set(vm, {1, 2, 3})`,
+  `Value::None(vm)`). Peek then wrap zero-alloc: `arg.isDict()` then `Dict d = arg.asDict()`. The
+  wrappers mirror Kirito's method surface (`d[k]`/`d.contains(k)`/`d.get(k, dflt)`/`d.set(k, v)`,
+  `s[i]` code-point on `String` / byte on `Bytes`, `xs.push(v)`/`xs.pop()`/`xs.contains(v)` on
+  `List`, `s.contains(v)`/`s.add(v)`/`s.discard(v)` on `Set`, range-for on every collection). The
+  full operator surface (`+ - * / % ** == != < <= > >=`, unary `-`/`!`, `in`, `.hash()`) delegates
+  to `applyBinaryOp`/`applyUnaryOp` so C++ `a + b` is byte-identical to Kirito's `a + b` (same
+  wraparound, true-division, exact IEEE-754 `==`). Fresh-alloc wrapper constructors GC-pin their
+  handle for the wrapper's lifetime via `KiritoVM::pinHandle`/`unpinHandle` (a refcounted companion
+  to `tempRoots_` scanned by `collectGarbage`), so mid-expression allocations don't sweep partially-
+  built containers. Returning built-in values is the default; defining a new `NativeClass` is the
+  fallback (only for genuinely new behaviour). `value.hpp` is included by `native.hpp`, so every
+  module gets it.
 
 ## Build & test
 
