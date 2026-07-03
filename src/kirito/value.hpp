@@ -40,6 +40,7 @@
 namespace kirito {
 
 class Value;
+class Bool;
 class Integer;
 class Float;
 class String;
@@ -145,14 +146,16 @@ public:
     }
 
     // Peek + wrap. Throw on wrong kind; use `tryString()` etc. for optional wrapping.
+    Bool asBoolV(const char* who = "value") const;                          // "V" -> Value-typed
     Integer asInteger(const char* who = "value") const;
-    Float asFloatV(const char* who = "value") const;                       // "V" -> Value-typed
+    Float asFloatV(const char* who = "value") const;
     String asString(const char* who = "value") const;
     Bytes asBytes(const char* who = "value") const;
     List asList(const char* who = "value") const;
     Dict asDict(const char* who = "value") const;
     Set asSet(const char* who = "value") const;
 
+    std::optional<Bool> tryBoolV() const;
     std::optional<Integer> tryInteger() const;
     std::optional<Float> tryFloatV() const;
     std::optional<String> tryString() const;
@@ -220,6 +223,23 @@ protected:
     }
     KiritoVM* vm_ = nullptr;
     Handle h_{};
+};
+
+// ================================================================================================
+// Bool — Kirito's boolean. Implicitly converts to C++ `bool` for painless conditionals; construct
+// with `Bool(vm, true)` or the ambient `Value(vm, true)`.
+// ================================================================================================
+class Bool : public Value {
+public:
+    Bool() = default;
+    Bool(KiritoVM& vm, Handle h, const char* who = "Bool") {
+        vm_ = &vm; h_ = h;
+        if (!isBool()) typeError(who, "Bool");
+    }
+    explicit Bool(KiritoVM& vm, bool v) { vm_ = &vm; h_ = vm.makeBool(v); }
+
+    bool value() const { return static_cast<const BoolVal&>(ref()).value(); }
+    operator bool() const { return value(); }
 };
 
 // ================================================================================================
@@ -759,6 +779,7 @@ private:
 
 inline detail::Anything::Anything(const Value& v) : h(v.handle()) {}
 
+inline Bool    Value::asBoolV(const char* who)   const { return Bool(*vm_, h_, who); }
 inline Integer Value::asInteger(const char* who) const { return Integer(*vm_, h_, who); }
 inline Float   Value::asFloatV(const char* who)  const { return Float(*vm_, h_, who); }
 inline String  Value::asString(const char* who)  const { return String(*vm_, h_, who); }
@@ -767,6 +788,9 @@ inline Dict    Value::asDict(const char* who)    const { return Dict(*vm_, h_, w
 inline Set     Value::asSet(const char* who)     const { return Set(*vm_, h_, who); }
 inline Bytes   Value::asBytes(const char* who)   const { return Bytes(*vm_, h_, who); }
 
+inline std::optional<Bool> Value::tryBoolV() const {
+    return isBool() ? std::optional<Bool>(Bool(*vm_, h_)) : std::nullopt;
+}
 inline std::optional<Integer> Value::tryInteger() const {
     return isInt() ? std::optional<Integer>(Integer(*vm_, h_)) : std::nullopt;
 }
