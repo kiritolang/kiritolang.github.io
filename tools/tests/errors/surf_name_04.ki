@@ -1,0 +1,7 @@
+# name resolution: a name from a sibling function is invisible in another function
+var a = Function():
+    var secret = 1
+    return secret
+var b = Function():
+    return secret
+discard b()

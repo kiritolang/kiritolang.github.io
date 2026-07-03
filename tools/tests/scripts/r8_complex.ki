@@ -1,0 +1,214 @@
+# r8_complex.ki — round-8 exhaustive, COMPLEMENTARY self-check of the `complex` stdlib module.
+# r6_complex covers the constructors/operators/analytic-set/domain errors; r7_complex covers
+# str/-0.0 normalization, NaN-in-==, De Moivre/Euler/double-angle, serde, hermitian shapes. r8 takes
+# FRESH angles, inputs and identities with NO duplication:
+#   - str of fractional/scientific/negative-zero-real complex (only the IMAG -0.0 is normalized),
+#   - NaN/inf flowing through the ARITHMETIC operators (+,*,/) not just ==, inf == inf vs -inf,
+#   - the addition formula sin(a+b), log(z1 z2)=log z1+log z2, the triangle inequality, |z|^2=re^2+im^2,
+#   - asinh/acosh/atan round-trips at FRESH complex points, branch facts (sqrt has re>=0),
+#   - 3x3 complex inverse identity, distributivity A(B+C)=AB+AC, det(singular)=0, trace linearity,
+#   - complex-vector positivity (u.dot(u) real & >= 0) at a fresh vector, dump/serialize of NaN complex,
+#   - the rest of the kwarg surface (of/real/zeros/ones/identity/vector/get/set/row/apply/compare).
+# Computed values use .compare; structural/exact use ==. Final: "r8_complex: <n> checks passed".
+
+var complex = import("complex")
+var math = import("math")
+var io = import("io")
+var dump = import("dump")
+var serialize = import("serialize")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+var C = complex.Complex
+var cmp = Function(z, expected): return z.compare(expected, 1e-9, 1e-12)
+
+# ---------------------------------------------------------------- str: fresh forms
+ok(String(C(0.5, 0.25)) == "0.5+0.25i", "str fractional 0.5+0.25i")
+ok(String(C(1e10, -2e-3)) == "10000000000.0-0.002i", "str scientific magnitudes")
+ok(String(C(7, 0)) == "7.0+0.0i", "str integral real")
+# only the IMAGINARY -0.0 is collapsed to +0.0; a -0.0 REAL part is printed as-is.
+ok(String(C(-0.0, 0)) == "-0.0+0.0i", "str keeps -0.0 real, normalizes +0.0 imag")
+ok(String(C(2, -0.0)) == "2.0+0.0i", "str normalizes -0.0 imag to +0.0")
+# nested in a Dict value uses complexToString too
+ok(String({"z": C(1, -1)}) == "{'z': 1.0-1.0i}", "Complex as a Dict value")
+
+# ---------------------------------------------------------------- NaN/inf through ARITHMETIC operators
+# Not just == (r7) — the operators themselves propagate NaN/inf per IEEE.
+ok(math.isnan((C(math.nan, 0) + C(1, 1)).re), "(nan+1i)+(1+1i) has NaN real")
+ok(math.isnan((C(1, 1) * C(math.nan, 0)).re), "mul by NaN -> NaN real")
+ok(math.isinf((C(math.inf, 0) * C(2, 0)).re), "(inf)*(2) -> inf real")
+ok(math.isinf((C(math.inf, 0) + C(5, 5)).re), "(inf)+(5+5i) -> inf real")
+# identical inf are == (exact); inf vs -inf differ
+ok(C(math.inf, 0) == C(math.inf, 0), "inf == inf (exact)")
+ok(C(math.inf, 0) != C(-math.inf, 0), "inf != -inf")
+ok(C(0, math.inf) == C(0, math.inf), "imaginary inf == itself")
+# a NaN anywhere makes == false and .compare false
+ok(not (C(math.nan, 5) == C(math.nan, 5)), "NaN real -> != (==)")
+ok(not C(1, math.nan).compare(C(1, math.nan)), "NaN imag -> compare false")
+# inf .compare a finite is false (the non-equal-infinity branch)
+ok(not C(math.inf, 1).compare(C(1, 1), 1e9), "inf vs finite never close")
+
+# ---------------------------------------------------------------- magnitude / norm2 algebra (fresh)
+# |z|^2 = re^2 + im^2 and norm2 == modulus^2; fresh non-Pythagorean z.
+var z = C(2, 5)
+ok(z.norm2().compare(2.0 * 2.0 + 5.0 * 5.0, 1e-12), "norm2 = re^2 + im^2 = 29")
+ok(z.modulus().compare(math.sqrt(29.0), 1e-12), "|2+5i| = sqrt(29)")
+ok(z.norm2().compare(z.modulus() ** 2, 1e-9), "norm2 = |z|^2")
+# conj(z)*z is real and equals norm2
+ok(cmp(z.conjugate() * z, C(z.norm2(), 0)), "conj(z)*z = |z|^2 (real)")
+# argument via atan2(im, re) at a fresh point
+ok(z.argument().compare(math.atan2(5, 2), 1e-12), "arg(2+5i) = atan2(5,2)")
+# triangle inequality |u+v| <= |u| + |v| (fresh u,v)
+ok(C(1, 2).modulus() + C(3, 1).modulus() >= (C(1, 2) + C(3, 1)).modulus(), "triangle inequality")
+# |z1 z2| = |z1| |z2| (multiplicativity of modulus)
+ok((C(1, 2) * C(3, 4)).modulus().compare(C(1, 2).modulus() * C(3, 4).modulus(), 1e-9),
+   "|z1 z2| = |z1| |z2|")
+
+# ---------------------------------------------------------------- analytic identities (FRESH points)
+# addition formula: sin(a+b) = sin a cos b + cos a sin b over the plane
+var a = C(0.3, 0.2)
+var b = C(0.1, 0.4)
+ok(cmp(complex.sin(a + b), complex.sin(a) * complex.cos(b) + complex.cos(a) * complex.sin(b)),
+   "sin(a+b) addition formula (complex)")
+# cos(a+b) = cos a cos b - sin a sin b
+ok(cmp(complex.cos(a + b), complex.cos(a) * complex.cos(b) - complex.sin(a) * complex.sin(b)),
+   "cos(a+b) addition formula (complex)")
+# log(z1 z2) = log z1 + log z2 (principal, small args)
+ok(cmp(complex.log(C(1, 1) * C(2, 1)), complex.log(C(1, 1)) + complex.log(C(2, 1))),
+   "log(z1 z2) = log z1 + log z2")
+# exp(log z) = z (off the negative real axis)
+ok(cmp(complex.exp(complex.log(C(3, -2))), C(3, -2)), "exp(log z) = z")
+# asinh round trip at a fresh complex point
+ok(cmp(complex.asinh(complex.sinh(C(0.5, 0.3))), C(0.5, 0.3)), "asinh(sinh z) = z")
+# acosh round trip
+ok(cmp(complex.acosh(complex.cosh(C(0.7, 0.1))), C(0.7, 0.1)), "acosh(cosh z) = z")
+# atan round trip
+ok(cmp(complex.atan(complex.tan(C(0.4, 0.25))), C(0.4, 0.25)), "atan(tan z) = z")
+# tanh = sinh/cosh at a fresh point
+ok(cmp(complex.tanh(C(0.6, 0.5)), complex.sinh(C(0.6, 0.5)) / complex.cosh(C(0.6, 0.5))),
+   "tanh = sinh/cosh (complex)")
+# Pythagorean over the plane at a fresh point: cosh^2 - sinh^2 = 1
+ok(cmp(complex.cosh(C(0.9, 0.2)) ** C(2, 0) - complex.sinh(C(0.9, 0.2)) ** C(2, 0), C(1, 0)),
+   "cosh^2 - sinh^2 = 1 (complex)")
+# sqrt principal branch: re(sqrt(z)) >= 0 for a fresh z in the left half-plane
+ok(complex.sqrt(C(-5, 2)).re >= 0.0, "sqrt principal branch has re >= 0")
+ok(cmp(complex.sqrt(C(-5, 2)) ** C(2, 0), C(-5, 2)), "sqrt(z)^2 = z (fresh)")
+# pow with a complex exponent: (1+i)^(1+i) is well-defined and round-trips via log/exp
+ok(cmp(complex.pow(C(1, 1), C(1, 1)),
+       complex.exp(C(1, 1) * complex.log(C(1, 1)))), "z^w = exp(w log z)")
+
+# ---------------------------------------------------------------- analytic domain throws (fresh framings)
+# log/log10 of zero via a freshly-built zero, atanh(+-1) via real(1)/real(-1)
+ok(throws(Function(): return complex.log(C(0, 0))), "log(0+0i) throws")
+ok(throws(Function(): return complex.log10(complex.real(0))), "log10(real 0) throws")
+ok(throws(Function(): return complex.atanh(complex.real(1))), "atanh(real 1) throws")
+ok(throws(Function(): return complex.atanh(complex.one)), "atanh(complex.one) throws")
+# pow/** zero to a negative real or any non-real power throws
+ok(throws(Function(): return complex.pow(C(0, 0), C(-2, 0))), "pow(0, -2) throws")
+ok(throws(Function(): return C(0, 0) ** C(0, 3)), "0 ** 3i throws (non-real exponent)")
+# but valid analytic edges do NOT throw (fresh)
+ok(not throws(Function(): return complex.acos(C(5, 0))), "acos(5) valid (complex)")
+ok(not throws(Function(): return complex.asin(C(0, 3))), "asin(3i) valid (complex)")
+ok(not throws(Function(): return complex.log(C(-1, 0))), "log(-1) valid = i*pi")
+
+# ---------------------------------------------------------------- operator-order + div-by-zero (fresh)
+ok(throws(Function(): return 5 - C(2, 2)), "Integer - Complex throws (real on left)")
+ok(throws(Function(): return 4.0 / C(1, 1)), "Float / Complex throws (real on left)")
+ok(throws(Function(): return C(3, 3) / complex.zero), "Complex / zero-constant throws")
+ok(throws(Function(): return C(3, 3) / 0.0), "Complex / 0.0 (real) throws")
+
+# ---------------------------------------------------------------- serialization: NaN/inf round trips
+ok(math.isnan(dump.loads(dump.dumps(C(math.nan, 1))).re), "dump preserves NaN real")
+ok(math.isinf(serialize.loads(serialize.dumps(C(math.inf, 0))).re), "serialize preserves inf real")
+ok(dump.loads(dump.dumps(C(-0.0, 0))).re == 0.0, "dump round-trips -0.0 real (compares == 0)")
+ok(dump.loads(dump.dumps(C(1.5, -2.5))) == C(1.5, -2.5), "dump exact for halves")
+
+# ================================================================ complex matrices: fresh edges
+var I3 = complex.identity(3)
+ok(cmp(I3.determinant(), C(1, 0)), "det(I_3) = 1")
+ok(cmp(I3.trace(), C(3, 0)), "trace(I_3) = 3")
+# 3x3 inverse identity (fresh matrix)
+var M3 = complex.Matrix([[C(2, 0), C(1, 0), C(0, 0)], [C(0, 1), C(1, 0), C(0, 0)], [C(0, 0), C(0, 0), C(1, 1)]])
+ok((M3.inverse() * M3).compare(I3, 1e-9), "3x3 complex inv(M)*M = I")
+ok((M3 * M3.inverse()).compare(I3, 1e-9), "3x3 complex M*inv(M) = I")
+# determinant of a singular complex matrix is exactly 0 (not a throw)
+ok(complex.Matrix([[C(1, 0), C(2, 0)], [C(2, 0), C(4, 0)]]).determinant() == C(0, 0),
+   "singular complex det is 0 (no throw)")
+# distributivity A(B+C) = AB + AC (fresh 2x2)
+var A = complex.Matrix([[C(1, 1), C(0, 1)], [C(2, 0), C(1, -1)]])
+var B = complex.Matrix([[C(0, 1), C(1, 0)], [C(1, 1), C(0, -1)]])
+var Cm = complex.Matrix([[C(2, 0), C(0, 2)], [C(1, 0), C(1, 1)]])
+ok((A * (B + Cm)).compare(A * B + A * Cm), "A(B+C) = AB + AC")
+# associativity (AB)C = A(BC)
+ok(((A * B) * Cm).compare(A * (B * Cm)), "(AB)C = A(BC)")
+# trace linearity: trace(A+B) = trace(A)+trace(B)
+ok(cmp((A + B).trace(), A.trace() + B.trace()), "trace(A+B) = trace A + trace B")
+# scalar distributes: (A+B)*s = A*s + B*s
+ok(((A + B) * C(2, 1)).compare(A * C(2, 1) + B * C(2, 1)), "(A+B)*s = As + Bs")
+# transpose is an involution and (A+B)^T = A^T + B^T
+ok(A.transpose().transpose().compare(A), "(A^T)^T = A")
+ok((A + B).transpose().compare(A.transpose() + B.transpose()), "(A+B)^T = A^T + B^T")
+# det(A^T) = det(A) for complex
+ok(cmp(A.transpose().determinant(), A.determinant()), "det(A^T) = det(A) (complex)")
+
+# ================================================================ complex vectors: fresh
+var u = complex.vector([C(2, 1), C(0, 3), C(1, -1)])
+# u.dot(u) is real and non-negative (Hermitian positivity)
+ok(u.dot(u).im.compare(0.0, 1e-12), "u.dot(u) is real")
+ok(u.dot(u).re >= 0.0, "u.dot(u) >= 0 (Hermitian positive)")
+# u.dot(u) = sum |u_i|^2 = (4+1)+(0+9)+(1+1) = 16
+ok(u.dot(u).re.compare(16.0, 1e-9), "u.dot(u) = sum|u_i|^2 = 16")
+ok(u.norm().compare(4.0, 1e-9), "|u| = sqrt(16) = 4")
+# conjugate-linearity in the first argument: dot(c*u, v) = conj(c)*dot(u, v) — check magnitude only
+var v = complex.vector([C(1, 0), C(0, 1), C(2, 0)])
+ok(cmp((u * C(0, 0) + complex.vector([C(0, 1), C(0, 1), C(0, 1)])).dot(v),
+       complex.vector([C(0, 1), C(0, 1), C(0, 1)]).dot(v)), "dot is additive in 1st arg")
+# dot(u,v) = conj(dot(v,u))
+ok(cmp(u.dot(v), v.dot(u).conjugate()), "dot(u,v) = conj(dot(v,u))")
+# cross anti-commutes: u x v = -(v x u) for 3-vectors
+var p = complex.vector([C(1, 0), C(0, 1), C(2, 0)])
+var q = complex.vector([C(0, 1), C(1, 0), C(1, 1)])
+ok(p.cross(q).compare(q.cross(p) * C(-1, 0)), "u x v = -(v x u)")
+# self cross is zero
+ok(p.cross(p).compare(complex.vector([C(0, 0), C(0, 0), C(0, 0)])), "u x u = 0")
+
+# ================================================================ kwarg surface (fresh)
+ok(cmp(complex.of(re = 5, im = -2), C(5, -2)), "of(re=,im=) kwargs")
+ok(cmp(complex.of(im = -2, re = 5), C(5, -2)), "of out-of-order kwargs")
+ok(cmp(complex.real(re = 9), C(9, 0)), "real(re=) kwarg")
+ok(cmp(complex.polar(r = 2, theta = math.pi), C(-2, 0)), "polar(r=,theta=) kwargs")
+ok(cmp(complex.Complex(im = 3, re = 1), C(1, 3)), "Complex out-of-order kwargs")
+ok(cmp(complex.Complex(re = 4), C(4, 0)), "Complex(re=) only (im defaults 0)")
+ok(complex.modulus(z = C(6, 8)).compare(10.0, 1e-12), "modulus(z=) kwarg")
+ok(complex.phase(z = C(0, 1)).compare(math.pi / 2, 1e-12), "phase(z=) kwarg")
+ok(complex.norm2(z = C(3, 4)).compare(25.0, 1e-12), "norm2(z=) kwarg")
+ok(cmp(complex.conjugate(z = C(1, 1)), C(1, -1)), "conjugate(z=) kwarg")
+ok(cmp(complex.sqrt(z = C(-1, 0)), complex.i), "sqrt(z=) kwarg")
+ok(cmp(complex.pow(z = C(2, 0), w = C(3, 0)), C(8, 0)), "pow(z=,w=) kwargs")
+ok(cmp(complex.exp(z = C(0, 0)), C(1, 0)), "exp(z=) kwarg")
+ok(complex.zeros(rows = 2, cols = 3).shape() == [2, 3], "complex.zeros(rows=,cols=) kwargs")
+ok(complex.ones(cols = 4, rows = 1).shape() == [1, 4], "complex.ones out-of-order kwargs")
+ok(complex.identity(n = 3).shape() == [3, 3], "complex.identity(n=) kwarg")
+ok(complex.vector(values = [C(1, 0), C(2, 0)]).shape() == [1, 2], "complex.vector(values=) kwarg")
+ok(complex.Matrix(rows = [[C(1, 0)]]).shape() == [1, 1], "complex.Matrix(rows=) kwarg")
+# instance-method kwargs (fresh)
+var Z = complex.zeros(2, 2)
+Z.set(value = C(3, 4), row = 1, col = 0)
+ok(cmp(Z.get(col = 0, row = 1), C(3, 4)), "cmatrix set/get out-of-order kwargs")
+ok(Z.row(i = 1) == [C(3, 4), C(0, 0)], "cmatrix row(i=) kwarg")
+ok(A.apply(fn = Function(x): return x + C(1, 1)).compare(A + complex.ones(2, 2) * C(1, 1)),
+   "cmatrix apply(fn=) kwarg")
+ok(A.compare(other = A, rel_tol = 0.0, abs_tol = 0.0), "cmatrix compare(other=,rel_tol=,abs_tol=) kwargs")
+ok(C(1, 2).compare(other = C(1, 2), rel_tol = 1e-6), "Complex compare(other=,rel_tol=) kwargs")
+
+io.print("r8_complex: " + String(n) + " checks passed")

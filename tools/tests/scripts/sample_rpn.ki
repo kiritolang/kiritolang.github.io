@@ -1,0 +1,59 @@
+# A Reverse-Polish-Notation calculator as a class with a private stack.
+# Showcases: classes, private members (_stack), exceptions, string parsing, the in-operator.
+#
+# Run:  ki examples/rpn_calculator.ki
+
+var io = import("io")
+
+class RPN:
+    var _init_ = Function(self):
+        self._stack = []   # private: only RPN methods may touch it
+
+    var _push = Function(self, x):
+        self._stack.append(x)
+
+    var _pop = Function(self):
+        if len(self._stack) == 0:
+            throw "stack underflow"
+        return self._stack.pop()
+
+    var evaluate = Function(self, expr):
+        self._stack = []
+        for token in expr.split(" "):
+            var t = token.strip()
+            if len(t) == 0:
+                pass
+            elif t in ["+", "-", "*", "/"]:
+                var b = self._pop()
+                var a = self._pop()
+                if t == "+":
+                    self._push(a + b)
+                elif t == "-":
+                    self._push(a - b)
+                elif t == "*":
+                    self._push(a * b)
+                else:
+                    self._push(a / b)
+            else:
+                self._push(Float(t))
+        if len(self._stack) != 1:
+            throw "malformed expression"
+        return self._pop()
+
+var calc = RPN()
+io.print(String(calc.evaluate("3 4 +")))            # 7.0
+io.print(String(calc.evaluate("5 1 2 + 4 * + 3 -"))) # 14.0
+io.print(String(calc.evaluate("2 3 4 * +")))         # 14.0
+io.print(String(calc.evaluate("10 2 /")))            # 5.0
+
+# Errors are reported, not crashes.
+var safe = Function(e):
+    try:
+        return String(calc.evaluate(e))
+    catch as err:
+        return "error: " + err
+io.print(safe("1 +"))           # underflow
+io.print(safe("1 2 3"))         # malformed
+
+# The private stack is inaccessible from outside:
+io.print(safe("4 5 +"))         # 9.0 still works after errors

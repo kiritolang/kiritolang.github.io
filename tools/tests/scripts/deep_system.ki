@@ -1,0 +1,500 @@
+# Deep, adversarial audit of Kirito's SYSTEM/IO stack: io (files, BytesIO, the stream protocol,
+# filesystem + path helpers), sys, time (clocks + DateTime), and net's offline URL helpers. Goes
+# beyond spec_io / audit_sys / audit_time / audit_net — hits boundary/error paths that crash or
+# misbehave, and only asserts derived booleans (no wall-clock values printed), so it stays
+# deterministic. NO real network here (offline URL strings only). Temp files live under gettempdir
+# and are cleaned up.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var time = import("time")
+var net = import("net")
+
+var tmp = path.gettempdir()
+var P = Function(name): return path.join(tmp, name)
+
+# Helper: did calling a zero-arg function throw? (Anonymous functions are single-line only.)
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch as e:
+        return True
+
+# ============================ io — files, modes, error paths ============================
+
+# --- text round-trip across w / a / r+ and the closed/wrong-mode throwing contract ---
+var fp = P("kds_file.txt")
+var f = io.open(fp, "w")
+discard f.write("0123456789")
+f.close()
+# double close is a harmless no-op
+f.close()
+# every op on a closed file throws (no silent data loss)
+assert throws(Function(): return f.write("x")), "write on closed file throws"
+assert throws(Function(): return f.read()), "read on closed file throws"
+assert throws(Function(): return f.seek(0)), "seek on closed file throws"
+assert throws(Function(): return f.tell()), "tell on closed file throws"
+
+# read-only rejects writes; write-only rejects reads (both directions enforced)
+var ro = io.open(fp, "r")
+assert throws(Function(): return ro.write("nope")), "write to read-only file throws"
+ro.close()
+var wo = io.open(fp, "w")
+discard wo.write("0123456789")
+assert throws(Function(): return wo.read()), "read from write-only file throws"
+assert throws(Function(): return wo.readline()), "readline from write-only file throws"
+wo.close()
+
+# r+ reads AND writes in place (overwrite at the cursor)
+var rp = io.open(fp, "r+")
+assert rp.read(3) == "012", "r+ reads"
+assert rp.tell() == 3, "r+ tell after read"
+discard rp.write("XY")
+rp.seek(0)
+assert rp.read() == "012XY56789", "r+ overwrites at the cursor"
+rp.close()
+
+# append mode adds to the end
+var fa = io.open(fp, "a")
+discard fa.write("Z")
+fa.close()
+with io.open(fp, "r") as fr:
+    assert fr.read() == "012XY56789Z", "append mode appends"
+
+# --- reading past EOF is empty, not an error ---
+# tell after an *exact* read is the byte length...
+var fx = io.open(fp, "r")
+discard fx.read(11)
+assert fx.tell() == 11, "tell after an exact read is the byte length"
+fx.close()
+# ...and after an over-long read tell() still reports the position (the EOF bit is cleared for
+# tell, matching the doc's "current byte position") rather than -1.
+var fe = io.open(fp, "r")
+assert fe.read(1000) == "012XY56789Z", "over-long read returns what's there"
+assert fe.read() == "", "read at EOF returns empty"
+assert fe.readline() == "", "readline at EOF returns empty"
+assert fe.tell() == 11, "tell after an over-long read reports the byte length (not -1)"
+fe.close()
+
+# --- a File can seek BEYOND end safely: read there is empty (no crash) ---
+var fb = io.open(fp, "r")
+discard fb.seek(500)
+assert fb.tell() == 500, "File seek beyond end moves tell"
+assert fb.read() == "", "File read beyond end is empty (safe)"
+assert fb.read(5) == "", "File read(n) beyond end is empty (safe)"
+fb.close()
+
+# --- binary mode: read/readline/iteration yield Bytes; write accepts Bytes ---
+var bp = P("kds_bin.dat")
+var bf = io.open(bp, "wb")
+discard bf.write(Bytes([0, 1, 255, 65, 10, 66, 10]))   # embeds NULs, high bytes, newlines
+bf.close()
+var br = io.open(bp, "rb")
+var blob = br.read()
+assert type(blob) == "Bytes", "binary read yields Bytes"
+assert len(blob) == 7 and blob[2] == 255, "binary bytes are exact (0..255)"
+br.close()
+var br2 = io.open(bp, "rb")
+assert type(br2.readline()) == "Bytes", "binary readline yields Bytes"
+br2.close()
+var br3 = io.open(bp, "rb")
+var biter = []
+for chunk in br3:
+    biter.append(type(chunk))
+br3.close()
+assert len(biter) >= 1 and biter[0] == "Bytes", "binary iteration yields Bytes"
+discard path.remove(bp, missing_ok = True)
+
+# --- open of a missing file / an unsupported mode throws ---
+assert throws(Function(): return io.open(P("kds_no_such_file.zzz"), "r")), "open missing (r) throws"
+assert throws(Function(): return io.open(fp, "x")), "unsupported mode throws"
+
+# --- writelines + iterate ---
+var fw = io.open(fp, "w")
+fw.writelines(["a\n", "b\n", "c\n"])
+fw.close()
+var collected = []
+with io.open(fp, "r") as it:
+    for ln in it:
+        collected.append(ln)
+assert collected == ["a", "b", "c"], "writelines + line iteration (newlines stripped)"
+discard path.remove(fp, missing_ok = True)
+
+# ============================ io — BytesIO cursor semantics ============================
+
+# read/getvalue return String (Kirito Strings are byte-transparent), len == size
+var b = io.BytesIO("0123456789")
+assert type(b.read()) == "String", "BytesIO.read returns a String"
+assert type(b.getvalue()) == "String", "BytesIO.getvalue returns a String"
+assert len(b) == b.size() and len(b) == 10, "len(BytesIO) == size()"
+
+# write at the cursor overwrites in place and returns the count
+b.seek(3)
+assert b.write("XY") == 2, "BytesIO.write returns the byte count"
+assert b.getvalue() == "012XY56789", "BytesIO write overwrites at the cursor"
+assert b.tell() == 5, "BytesIO cursor advances by what was written"
+
+# seek whences: 0=start, 1=cur, 2=end; negative result clamps to 0
+var b2 = io.BytesIO("abcdef")
+b2.seek(2)
+assert b2.seek(2, 1) == 4, "seek whence=1 is relative to current"
+assert b2.read() == "ef", "read after relative seek"
+assert b2.seek(-2, 2) == 4, "seek whence=2 is from the end"
+assert b2.read() == "ef", "read after end-relative seek"
+assert b2.seek(-100, 0) == 0, "negative absolute seek clamps to 0"
+assert b2.read() == "abcdef", "read after clamped seek"
+
+# write beyond the end zero-fills the gap, no garbage
+var b3 = io.BytesIO("ab")
+discard b3.seek(5)
+discard b3.write("Z")
+assert len(b3) == 6, "write beyond end grows the buffer"
+assert b3.getvalue().encode("latin-1") == Bytes([97, 98, 0, 0, 0, 90]), "gap is zero-filled"
+
+# truncate drops everything after the cursor
+var b4 = io.BytesIO("0123456789")
+b4.seek(4)
+assert b4.truncate() == 4, "truncate returns the new length"
+assert b4.getvalue() == "0123", "truncate cuts at the cursor"
+
+# readline includes up to a newline; final unterminated chunk is returned, then empty at EOF
+var b5 = io.BytesIO("p\nq\nr")
+assert b5.readline() == "p", "BytesIO readline 1"
+assert b5.readline() == "q", "BytesIO readline 2"
+assert b5.readline() == "r", "BytesIO readline 3 (no trailing newline)"
+assert b5.readline() == "", "BytesIO readline at EOF is empty"
+
+# BytesIO("initial") preloads; round-trips arbitrary binary via latin-1
+var b6 = io.BytesIO(Bytes([200, 0, 13, 255]).decode("latin-1"))
+assert b6.getvalue().encode("latin-1") == Bytes([200, 0, 13, 255]), "BytesIO byte round-trip"
+
+# ADVERSARIAL: reading after a seek BEYOND end returns empty (like File and BytesIO), not
+# a crash — the cursor sits past the buffer and read/readline yield "". (Was a SIGABRT before the
+# fix: avail = size - pos underflowed and substr(pos,...) threw.)
+var bx = io.BytesIO("abc")
+discard bx.seek(10)
+assert bx.tell() == 10, "BytesIO seek past end moves tell"
+assert bx.read() == "", "BytesIO read past end is empty (safe, no crash)"
+assert bx.readline() == "", "BytesIO readline past end is empty (safe)"
+bx.seek(1)
+assert bx.read() == "bc", "BytesIO read works again after seeking back in-range"
+assert bx.read(5) == "", "BytesIO read(n) at EOF is empty (safe)"
+assert bx.readline() == "", "BytesIO readline at EOF is empty (safe)"
+
+# ============================ io — stream protocol / redirection ============================
+
+# rebind io.stdout to a BytesIO, then restore from __stdout__
+var cap = io.BytesIO()
+io.stdout = cap
+io.print("redir", 7)
+io.write("raw")
+io.stdout = io.__stdout__
+assert cap.getvalue() == "redir 7\nraw", "stdout rebinding captures print + write"
+
+# per-call stream= overrides without touching the std slots
+var sink = io.BytesIO()
+var untouched = io.BytesIO()
+io.stdout = untouched
+io.print("to-sink", stream=sink)
+io.stdout = io.__stdout__
+assert sink.getvalue() == "to-sink\n", "stream= directs that one call"
+assert untouched.getvalue() == "", "stream= leaves the std slot alone"
+
+# read/input from a BytesIO via stream=
+var feed = io.BytesIO("one\ntwo\nrest")
+assert io.input(stream=feed) == "one", "input one line from stream="
+assert io.read(3, stream=feed) == "two", "read(n) from stream="
+
+# print to a CLOSED file throws (caught), not silently dropped
+var cf = io.open(fp, "w")
+cf.close()
+assert throws(Function(): return io.print("x", stream=cf)), "print to a closed-file stream throws"
+discard path.remove(fp, missing_ok = True)
+
+# an unknown keyword and a non-stream stream= both throw
+assert throws(Function(): return io.print("x", stream=42)), "stream= to a non-stream throws"
+
+# ============================ io — filesystem + path helpers ============================
+
+var ddir = P("kds_dir")
+assert path.mkdir(ddir), "mkdir creates a directory"
+assert path.isdir(ddir) and not path.isfile(ddir), "isdir/isfile on a directory"
+var inside = path.join(ddir, "x.txt")
+with io.open(inside, "w") as nf:
+    discard nf.write("hello")
+assert path.exists(inside) and path.isfile(inside), "exists/isfile on a file"
+assert path.getsize(inside) == 5, "getsize counts bytes"
+assert "x.txt" in path.listdir(ddir), "listdir lists entries"
+assert len(path.walk(ddir)) == 1, "walk finds the one file"
+
+# rename then remove
+var moved = path.join(ddir, "y.txt")
+path.rename(inside, moved)
+assert path.exists(moved) and not path.exists(inside), "rename moves the file"
+assert path.remove(moved) and not path.exists(moved), "remove deletes the file"
+discard path.remove(ddir, missing_ok = True)
+
+# missing-path operations: rename/getsize RAISE; remove of a missing path does NOT throw
+assert throws(Function(): return path.rename(P("kds_missing_a"), P("kds_missing_b"))), "rename of a missing path throws"
+assert throws(Function(): return path.getsize(P("kds_missing_a"))), "getsize of a missing path throws"
+discard path.remove(P("kds_missing_a"), missing_ok = True)   # tolerant: removing a missing path is a no-op, not an error
+
+# exists/isfile/isdir on a missing path are all False; listdir/walk of a missing dir are empty
+assert not path.exists(P("kds_missing_a")), "exists False for a missing path"
+assert not path.isfile(P("kds_missing_a")) and not path.isdir(P("kds_missing_a")), "isfile/isdir False for missing"
+assert path.listdir(P("kds_missing_dir")) == [], "listdir of a missing dir is empty"
+assert path.walk(P("kds_missing_dir")) == [], "walk of a missing dir is empty"
+
+# path helpers (normalize backslashes so the assertions hold on Windows too)
+var nslash = Function(s): return s.replace("\\", "/")
+assert path.basename("/a/b/c.txt") == "c.txt", "basename"
+assert path.basename("just") == "just", "basename of a bare name"
+assert nslash(path.dirname("/a/b/c.txt")) == "/a/b", "dirname"
+assert path.dirname("bare") == "", "dirname of a bare name is empty"
+assert path.splitext("a.tar.gz") == ["a.tar", ".gz"], "splitext takes the last extension"
+assert path.splitext("noext") == ["noext", ""], "splitext with no extension"
+assert path.splitext(".hidden") == [".hidden", ""], "splitext of a dotfile has no extension"
+
+# ============================ sys ============================
+
+assert sys.platform == "linux" or sys.platform == "darwin" or sys.platform == "windows", "platform value"
+assert sys.arch == "x64" or sys.arch == "arm64" or sys.arch == "x86" or sys.arch == "unknown", "arch value"
+assert sys.version.count(".") >= 2, "version is semver-shaped"
+assert path.executable != "", "executable is set under ki"
+
+# getenv/setenv/unsetenv ASCII round-trip; default kicks in; environ is a snapshot
+sys.setenv("KDS_E", "first")
+assert sys.getenv("KDS_E") == "first", "setenv then getenv"
+sys.setenv("KDS_E", "second")
+assert sys.getenv("KDS_E") == "second", "setenv overwrites"
+var snap = sys.environ()
+assert type(snap) == "Dict" and snap["KDS_E"] == "second", "environ reflects current state"
+sys.unsetenv("KDS_E")
+assert sys.getenv("KDS_E") == None, "unsetenv removes (getenv -> None)"
+assert sys.getenv("KDS_E", "fallback") == "fallback", "getenv default when unset"
+assert snap["KDS_E"] == "second", "environ() is a frozen snapshot"
+
+# empty value: POSIX round-trips ""; Windows treats it as unset (be honest on either)
+sys.setenv("KDS_EMPTY", "")
+var ev = sys.getenv("KDS_EMPTY")
+if sys.platform == "windows":
+    assert ev == "" or ev == None, "Windows: empty env reads back empty-or-unset"
+else:
+    assert ev == "", "POSIX: empty env value round-trips"
+sys.unsetenv("KDS_EMPTY")
+
+# path.join: variadic, '/' separator, absolute resets, empty components, needs >= 1 part
+assert path.join("a", "b", "c") == "a/b/c", "path.join joins with '/'"
+assert path.join("a/", "b") == "a/b", "path.join: trailing slash does not double up"
+assert path.join("a", "/b", "c") == "/b/c", "path.join: a later absolute component resets"
+assert path.join("", "x") == "x", "path.join: empty first stays relative"
+assert path.join("/only") == "/only", "path.join: a single absolute part"
+assert throws(Function(): return path.join()), "path.join() with no parts throws"
+
+# type errors throw across sys entry points
+assert throws(Function(): return sys.getenv(1)), "getenv rejects a non-String name"
+assert throws(Function(): return sys.setenv("k", 1)), "setenv rejects a non-String value"
+assert throws(Function(): return path.join("a", 5)), "path.join rejects a non-String part"
+
+assert path.gettempdir() != "", "gettempdir is non-empty"
+
+# ============================ time — clocks ============================
+
+assert type(time.time()) == "Float", "time() is a Float"
+assert type(time.timens()) == "Integer", "timens() is an Integer"
+assert type(time.monotonic()) == "Float", "monotonic() is a Float"
+assert type(time.perfcounterns()) == "Integer", "perfcounterns() is an Integer"
+
+# monotonic never decreases over a burst (no wall-clock value printed -> deterministic)
+var prev = time.monotonic()
+var mono_ok = True
+var i = 0
+while i < 300:
+    var cur = time.monotonic()
+    if cur < prev:
+        mono_ok = False
+    prev = cur
+    i = i + 1
+assert mono_ok, "monotonic never goes backwards"
+
+# perfcounterns never decreases over a burst
+var pprev = time.perfcounterns()
+var perf_ok = True
+var k = 0
+while k < 300:
+    var pcur = time.perfcounterns()
+    if pcur < pprev:
+        perf_ok = False
+    pprev = pcur
+    k = k + 1
+assert perf_ok, "perfcounterns never goes backwards"
+
+# timens is on a nanosecond scale relative to time() seconds (loose ordering, not exact values)
+assert time.timens() > 1000000000 * 1000000000, "timens() is a recent epoch in ns"
+
+# a short sleep advances the monotonic clock (loose bound to stay non-flaky)
+var s0 = time.monotonic()
+time.sleep(0.005)
+var s1 = time.monotonic()
+assert s1 - s0 >= 0.0, "sleep does not move the clock backwards"
+# sleep(0) and a negative duration are safe no-ops
+time.sleep(0)
+time.sleep(-1)
+
+# ============================ time — DateTime ============================
+
+var dt = time.make(2024, 1, 15, 10, 30, 45)
+assert dt.year == 2024 and dt.month == 1 and dt.day == 15, "make: date fields"
+assert dt.hour == 10 and dt.minute == 30 and dt.second == 45, "make: time fields"
+assert dt.weekday >= 0 and dt.weekday <= 6, "weekday in 0..6"
+assert dt.yearday == 15, "yearday for Jan 15"
+assert type(dt.timestamp) == "Integer", "timestamp is an Integer attribute"
+assert time.make(2020, 1, 1, 0, 0, 0).timestamp == 1577836800, "known epoch (2020-01-01)"
+assert time.make(1970, 1, 1, 0, 0, 0).timestamp == 0, "epoch zero"
+
+# normalization (C mktime-style): over- AND under-range components roll over
+assert time.make(2024, 13, 1).year == 2025, "month 13 -> next year"
+assert time.make(2024, 13, 1).month == 1, "month 13 -> January"
+assert time.make(2024, 1, 32).month == 2 and time.make(2024, 1, 32).day == 1, "day 32 -> Feb 1"
+assert time.make(2024, 0, 1).year == 2023 and time.make(2024, 0, 1).month == 12, "month 0 -> Dec prev year"
+assert time.make(2024, 1, 0).month == 12 and time.make(2024, 1, 0).day == 31, "day 0 -> last day of prev month"
+assert time.make(2024, 1, 1, -1).hour == 23, "hour -1 -> 23:00 the previous day"
+
+# pre-epoch (negative timestamp) is representable
+assert time.make(1969, 12, 31, 23, 59, 59).timestamp == -1, "one second before the epoch"
+var beforeEpoch = time.datetime(-86400)
+assert beforeEpoch.year == 1969 and beforeEpoch.month == 12 and beforeEpoch.day == 31, "datetime(-1 day)"
+
+# iso / isoformat / format
+assert dt.iso() == "2024-01-15T10:30:45", "iso shape"
+assert dt.isoformat() == dt.iso(), "isoformat is an alias of iso"
+assert dt.format("%Y-%m-%d") == "2024-01-15", "format %Y-%m-%d"
+assert dt.format("%H:%M:%S") == "10:30:45", "format %H:%M:%S"
+assert dt.format("literal") == "literal", "format passes literal text through"
+# a long format string is no longer truncated (the strftime buffer grows as needed)
+var bigfmt = "x" * 300
+assert dt.format(bigfmt) == bigfmt, "a long literal format string round-trips in full"
+
+# add / sub / diff in seconds
+var base = time.make(2024, 1, 1, 0, 0, 0)
+assert base.add(86400).day == 2, "add(86400) advances one day"
+assert base.add(86400).diff(base) == 86400, "diff is +86400 s"
+assert base.sub(60).diff(base) == -60, "sub(60) leaves a -60 s diff"
+assert base.add(3600.5).hour == 1, "Float seconds truncate toward the second"
+assert throws(Function(): return dt.diff(5)), "diff with a non-DateTime throws"
+
+# strptime: supported codes, defaults, literal matching, %% , and an unsupported code throwing
+var sp = time.strptime("2024-06-01 13:30:45", "%Y-%m-%d %H:%M:%S")
+assert sp.year == 2024 and sp.month == 6 and sp.day == 1 and sp.hour == 13, "strptime fields"
+assert time.strptime("2030", "%Y").month == 1, "strptime fills sensible date defaults"
+assert time.strptime("2024%06", "%Y%%%m").month == 6, "strptime %% matches a literal percent"
+assert time.strptime(dt.iso(), "%Y-%m-%dT%H:%M:%S").timestamp == dt.timestamp, "iso -> strptime round-trip"
+assert throws(Function(): return time.strptime("nope", "%Y-%m-%d")), "strptime rejects non-matching text"
+assert throws(Function(): return time.strptime("2024/01", "%Y-%m")), "strptime rejects a literal mismatch"
+assert throws(Function(): return time.strptime("2024", "%Z")), "strptime rejects an unsupported directive"
+
+# equality + hashing by instant (Dict/Set keys)
+var dEq1 = time.make(2024, 1, 1, 0, 0, 0)
+var dEq2 = time.make(2024, 1, 1, 0, 0, 0)
+var dDiff = time.make(2024, 1, 1, 0, 0, 1)
+assert dEq1 == dEq2, "DateTimes equal at the same instant"
+assert dEq1 != dDiff, "DateTimes differ by instant"
+assert len({dEq1, dEq2, dDiff}) == 2, "DateTime hashable in a Set (two distinct instants)"
+var dmap = {}
+dmap[dEq1] = "A"
+assert dmap[dEq2] == "A", "an equal DateTime hits the same Dict key"
+
+# datetime(0) is the epoch; datetime()/datetime(None) are a plausible 'now'
+assert time.datetime(0).year == 1970, "datetime(0) is the epoch start"
+assert time.datetime().year >= 2024, "datetime() defaults to now"
+assert time.datetime(None).year >= 2024, "datetime(None) defaults to now"
+
+# serialization round-trip (text + binary) preserves the instant
+var dump = import("dump")
+var serialize = import("serialize")
+assert dump.loads(dump.dumps(dt)) == dt, "DateTime round-trips through dump (binary)"
+assert serialize.loads(serialize.dumps(dt)) == dt, "DateTime round-trips through serialize (text)"
+
+# ============================ net — URL helpers (offline only) ============================
+
+# quote: leave the unreserved set, percent-encode everything else over UTF-8 bytes
+assert net.quote("safe-._~AZaz09") == "safe-._~AZaz09", "quote leaves the unreserved set"
+assert net.quote("a b") == "a%20b", "quote a space"
+assert net.quote("a/b?c=d&e") == "a%2Fb%3Fc%3Dd%26e", "quote reserved chars"
+assert net.quote("café") == "caf%C3%A9", "quote a multi-byte UTF-8 char byte-by-byte"
+assert net.quote("+") == "%2B", "quote a literal plus"
+
+# unquote: decode %XX (upper+lower hex), '+' -> space, malformed/truncated escapes pass through
+assert net.unquote("a%2Fb") == "a/b", "unquote an escape"
+assert net.unquote("caf%c3%a9") == "café", "unquote lowercase-hex multi-byte"
+assert net.unquote("a+b") == "a b", "unquote + -> space"
+assert net.unquote("%41") == "A", "unquote a whole-string escape (no off-by-one)"
+assert net.unquote("x%2F") == "x/", "unquote a trailing escape (no off-by-one)"
+assert net.unquote("%G0") == "%G0", "a malformed escape passes through"
+assert net.unquote("ab%") == "ab%", "a bare trailing % passes through"
+assert net.unquote("ab%4") == "ab%4", "a truncated escape passes through"
+
+# round-trip every ASCII code point and a Unicode sampler
+var ascii_ok = True
+var c = 0
+while c < 128:
+    var ch = chr(c)
+    if net.unquote(net.quote(ch)) != ch:
+        ascii_ok = False
+    c = c + 1
+assert ascii_ok, "quote/unquote round-trips every ASCII code point"
+for s in ["café", "漢字 — naïve", "/", "?=&", "a b", ""]:
+    assert net.unquote(net.quote(s)) == s, "quote/unquote round-trips Unicode + reserved"
+
+# urlencode: a Dict -> k=v&..., both sides encoded; numeric values stringify
+assert net.urlencode({}) == "", "urlencode of an empty Dict"
+assert net.urlencode({"a": "1"}) == "a=1", "urlencode a single pair"
+assert net.urlencode({"k=k": "v&v"}) == "k%3Dk=v%26v", "urlencode escapes both key and value"
+
+# parseqs: decode values, '+' -> space, empty values, repeated keys (later wins), '=' in value
+assert net.parseqs("") == {}, "parseqs of an empty query"
+assert net.parseqs("flag") == {"flag": ""}, "a valueless key parses to an empty value"
+assert net.parseqs("a=1&b=2") == {"a": "1", "b": "2"}, "parseqs two pairs"
+assert net.parseqs("k=hello%20world") == {"k": "hello world"}, "parseqs decodes %20"
+assert net.parseqs("k=a+b") == {"k": "a b"}, "parseqs decodes + as space"
+assert net.parseqs("a=&b=2") == {"a": "", "b": "2"}, "parseqs handles an empty value"
+assert net.parseqs("&&a=1&&") == {"a": "1"}, "parseqs skips empty segments"
+assert net.parseqs("a=1&a=2")["a"] == "2", "parseqs duplicate key: later wins"
+assert net.parseqs("a=b=c")["a"] == "b=c", "only the first '=' splits; the rest is the value"
+
+# urlencode -> parseqs round-trip
+var rt = net.parseqs(net.urlencode({"k": "v v", "n": "x=y"}))
+assert rt["k"] == "v v" and rt["n"] == "x=y", "urlencode/parseqs round-trip"
+
+# urlsplit: scheme/host/port/path/query/fragment; port is the textual digits
+var u = net.urlsplit("http://example.com:8080/p/q?x=1#frag")
+assert u["scheme"] == "http" and u["host"] == "example.com", "urlsplit scheme + host"
+assert u["port"] == "8080" and type(u["port"]) == "String", "urlsplit port is a String"
+assert u["path"] == "/p/q" and u["query"] == "x=1" and u["fragment"] == "frag", "urlsplit parts"
+assert net.urlsplit("https://h/p")["port"] == "", "urlsplit: a missing port is empty"
+assert net.urlsplit("/bare/path")["scheme"] == "", "urlsplit: no scheme on a bare path"
+assert net.urlsplit("http://h#x")["fragment"] == "x", "urlsplit: a fragment with no path"
+assert net.urlsplit("http://h#x")["path"] == "", "urlsplit: empty path before a fragment"
+assert net.urlsplit("http://h/p?a?b")["query"] == "a?b", "urlsplit: a second '?' stays in the query"
+assert net.urlsplit("file:///etc/hosts")["host"] == "", "urlsplit: file:/// has an empty host"
+assert net.urlsplit("")["scheme"] == "" and net.urlsplit("")["host"] == "", "urlsplit of an empty string"
+
+# bracketed IPv6 literals keep their brackets in host; the port follows after ']'
+var v6 = net.urlsplit("http://[::1]:8080/p")
+assert v6["host"] == "[::1]" and v6["port"] == "8080", "urlsplit keeps IPv6 brackets, port after ]"
+var v6np = net.urlsplit("http://[2001:db8::1]/p")
+assert v6np["host"] == "[2001:db8::1]" and v6np["port"] == "", "urlsplit IPv6 with no port"
+
+# every URL helper rejects a wrong argument type
+assert throws(Function(): return net.quote(1)), "quote rejects a non-String"
+assert throws(Function(): return net.unquote([1])), "unquote rejects a non-String"
+assert throws(Function(): return net.urlencode("nope")), "urlencode rejects a non-Dict"
+assert throws(Function(): return net.parseqs(1)), "parseqs rejects a non-String"
+assert throws(Function(): return net.urlsplit({})), "urlsplit rejects a non-String"
+
+# a Socket allocates without touching the network, and closes cleanly
+var sock = net.Socket()
+sock.close()
+
+io.print("OK deep-system")

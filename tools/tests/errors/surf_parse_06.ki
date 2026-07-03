@@ -1,0 +1,5 @@
+# PARSER: an else clause with a body that is not indented
+if 1 < 2:
+    discard 1
+else:
+discard 2

@@ -1,0 +1,2 @@
+# builtin ord() called with no argument (required param missing)
+discard ord()

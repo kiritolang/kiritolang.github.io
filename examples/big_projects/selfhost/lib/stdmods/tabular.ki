@@ -1,0 +1,928 @@
+# A dataframe-style (pandas-like) data-analysis library in pure Kirito: labelled 1-D `Series` and
+# 2-D `DataFrame`,
+# with construction from columns/rows/CSV, label- and position-based indexing (loc/iloc), boolean
+# masking, element-wise arithmetic and comparisons, aggregations, group-by, sorting, joins,
+# concatenation, missing-data handling, and CSV round-tripping. Public names follow Kirito's
+# lowercase-no-underscore convention (sortvalues, readcsv, valuecounts, resetindex, ...).
+
+var _csv = import("csv")
+var path = import("path")
+
+# Aliases for builtins that share a name with a Series/DataFrame method (min/max). Inside a
+# method a bare `min` resolves to the sibling method (class-body scope), so capture the
+# builtins here at module scope where no such method exists.
+var _min = min
+var _max = max
+
+# ----------------------------------------------------------------------------- helpers (private)
+var _isnan = Function(x) -> Bool:
+    # a missing value is None; also treat a Float NaN (x != x) as missing
+    if x == None:
+        return True
+    if isinstance(x, "Float") and x != x:
+        return True
+    return False
+
+var _numeric = Function(values):
+    # the non-missing numeric values; Bool counts as 0/1 (like pandas)
+    var out = []
+    for v in values:
+        if not _isnan(v):
+            if isinstance(v, "Bool"):
+                out.append(1 if v else 0)
+            elif isinstance(v, "Integer") or isinstance(v, "Float"):
+                out.append(v)
+    return out
+
+# True iff a column has at least one non-missing value and every non-missing value is numeric
+# (Integer/Float/Bool) — used to pick which columns participate in frame/group reductions.
+var _isnumericcol = Function(values) -> Bool:
+    var seen = False
+    for v in values:
+        if not _isnan(v):
+            if isinstance(v, "Integer") or isinstance(v, "Float") or isinstance(v, "Bool"):
+                seen = True
+            else:
+                return False
+    return seen
+
+var _range = Function(n):
+    var out = []
+    var i = 0
+    while i < n:
+        out.append(i)
+        i = i + 1
+    return out
+
+var _infer = Function(text):
+    # turn a CSV cell string into Integer / Float / Bool / None / String
+    if text == "":
+        return None
+    if text == "True" or text == "true":
+        return True
+    if text == "False" or text == "false":
+        return False
+    try:
+        return Integer(text)
+    catch as e:
+        discard e
+    try:
+        return Float(text)
+    catch as e:
+        discard e
+    return text
+
+# ===================================================================================== Series
+class Series:
+    var _init_ = Function(self, values, index = None, name = None):
+        self.values = List(values)
+        if index == None:
+            self.index = _range(len(self.values))
+        else:
+            self.index = List(index)
+        if len(self.index) != len(self.values):
+            throw "Series: index length does not match values length"
+        self.name = name
+
+    var _len_ = Function(self) -> Integer:
+        return len(self.values)
+
+    var _iter_ = Function(self):
+        return self.values
+
+    # by label first (if the label exists in the index), else by position
+    var _getitem_ = Function(self, key):
+        var pos = self.index.index(key) if key in self.index else key
+        return self.values[pos]
+
+    var _setitem_ = Function(self, key, value):
+        var pos = self.index.index(key) if key in self.index else key
+        self.values[pos] = value
+
+    var iat = Function(self, pos):
+        return self.values[pos]
+
+    var tolist = Function(self):
+        return List(self.values)
+
+    var copy = Function(self):
+        return Series(List(self.values), List(self.index), self.name)
+
+    # --- element-wise arithmetic (Series-Series aligned by position, or Series-scalar) ---
+    var _binop = Function(self, other, op):
+        var out = []
+        if isinstance(other, "Series"):
+            if len(self.values) != len(other.values):
+                throw "Series: length mismatch (" + String(len(self.values)) + " vs " + String(len(other.values)) + ")"
+            var i = 0
+            while i < len(self.values):
+                out.append(op(self.values[i], other.values[i]))
+                i = i + 1
+        else:
+            for v in self.values:
+                out.append(op(v, other))
+        return Series(out, List(self.index), self.name)
+
+    var _add_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a + b)
+    var _sub_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a - b)
+    var _mul_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a * b)
+    var _div_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a / b)
+    var _floordiv_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a // b)
+    var _mod_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a % b)
+
+    # --- comparisons produce a boolean Series (for masking) ---
+    var _gt_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a > b)
+    var _ge_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a >= b)
+    var _lt_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a < b)
+    var _le_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a <= b)
+
+    var eq = Function(self, other):
+        return self._binop(other, Function(a, b): return a == b)
+    var ne = Function(self, other):
+        return self._binop(other, Function(a, b): return a != b)
+    # `==`/`!=` are element-wise like `<`/`>` (and pandas), so `df[df["c"] == v]` masks rows. (Note
+    # the pandas caveat this inherits: a Series can no longer be used directly in a boolean `if`.)
+    var _eq_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a == b)
+    var _ne_ = Function(self, other):
+        return self._binop(other, Function(a, b): return a != b)
+
+    var isin = Function(self, values):
+        var out = []
+        for v in self.values:
+            out.append(v in values)
+        return Series(out, List(self.index), self.name)
+
+    # --- aggregations (skip missing) ---
+    var sum = Function(self):
+        var total = 0
+        for v in _numeric(self.values):
+            total = total + v
+        return total
+    var count = Function(self) -> Integer:
+        # non-null tally of ANY type (like pandas), not just numeric values
+        var c = 0
+        for v in self.values:
+            if not _isnan(v):
+                c = c + 1
+        return c
+    var mean = Function(self):
+        var nums = _numeric(self.values)
+        if len(nums) == 0:
+            return None
+        return self.sum() / len(nums)
+    var min = Function(self):
+        var nums = _numeric(self.values)
+        return _min(nums) if len(nums) > 0 else None
+    var max = Function(self):
+        var nums = _numeric(self.values)
+        return _max(nums) if len(nums) > 0 else None
+    var median = Function(self):
+        var nums = sorted(_numeric(self.values))
+        var n = len(nums)
+        if n == 0:
+            return None
+        if n % 2 == 1:
+            return nums[n // 2]
+        return (nums[n // 2 - 1] + nums[n // 2]) / 2
+    var variance = Function(self):
+        var nums = _numeric(self.values)
+        var n = len(nums)
+        if n < 2:
+            return None
+        var m = self.mean()
+        var acc = 0.0
+        for v in nums:
+            acc = acc + (v - m) * (v - m)
+        return acc / (n - 1)
+    var std = Function(self):
+        var v = self.variance()
+        return v ** 0.5 if v != None else None
+    var prod = Function(self):
+        var p = 1
+        for v in _numeric(self.values):
+            p = p * v
+        return p
+
+    var unique = Function(self):
+        var seen = []
+        for v in self.values:
+            if v not in seen:
+                seen.append(v)
+        return seen
+
+    var nunique = Function(self) -> Integer:
+        return len(self.unique())
+
+    var valuecounts = Function(self):
+        # a Series of counts indexed by value, descending by count
+        var counts = {}
+        for v in self.values:
+            if _isnan(v):
+                continue
+            counts[v] = counts.get(v, 0) + 1
+        var items = []
+        for k in counts.keys():
+            items.append([k, counts[k]])
+        items.sort(Function(p): return p[1], True)
+        var idx = []
+        var cnt = []
+        for p in items:
+            idx.append(p[0])
+            cnt.append(p[1])
+        return Series(cnt, idx, "count")
+
+    var apply = Function(self, fn):
+        var out = []
+        for v in self.values:
+            out.append(fn(v))
+        return Series(out, List(self.index), self.name)
+    var map = Function(self, fn):
+        return self.apply(fn)
+
+    var astype = Function(self, typename):
+        var conv = String
+        if typename == "Integer":
+            conv = Integer
+        elif typename == "Float":
+            conv = Float
+        elif typename == "Bool":
+            conv = Bool
+        return self.apply(conv)
+
+    var fillna = Function(self, value):
+        var out = []
+        for v in self.values:
+            out.append(value if _isnan(v) else v)
+        return Series(out, List(self.index), self.name)
+
+    var dropna = Function(self):
+        var out = []
+        var idx = []
+        var i = 0
+        while i < len(self.values):
+            if not _isnan(self.values[i]):
+                out.append(self.values[i])
+                idx.append(self.index[i])
+            i = i + 1
+        return Series(out, idx, self.name)
+
+    var head = Function(self, n = 5):
+        return Series(self.values[0:n], self.index[0:n], self.name)
+    var tail = Function(self, n = 5):
+        var start = len(self.values) - n
+        if start < 0:
+            start = 0
+        return Series(self.values[start:], self.index[start:], self.name)
+
+    var sortvalues = Function(self, ascending = True):
+        var pairs = []
+        var i = 0
+        while i < len(self.values):
+            pairs.append([self.values[i], self.index[i]])
+            i = i + 1
+        pairs.sort(Function(p): return p[0], not ascending)
+        var vals = []
+        var idx = []
+        for p in pairs:
+            vals.append(p[0])
+            idx.append(p[1])
+        return Series(vals, idx, self.name)
+
+    var resetindex = Function(self):
+        return Series(List(self.values), _range(len(self.values)), self.name)
+
+    var _str_ = Function(self) -> String:
+        var lines = []
+        var i = 0
+        while i < len(self.values):
+            lines.append(String(self.index[i]) + "    " + String(self.values[i]))
+            i = i + 1
+        if self.name != None:
+            lines.append("Name: " + String(self.name))
+        return "\n".join(lines)
+
+# =========================================================================== loc / iloc helpers
+# Position-based row access: frame.iloc[i] -> row as a Series (indexed by column); frame.iloc[[i,j]]
+# -> a DataFrame of those rows.
+class _Iloc:
+    var _init_ = Function(self, frame):
+        self.frame = frame
+    var _getitem_ = Function(self, key):
+        if isinstance(key, "List"):
+            return self.frame.rowsat(key)
+        return self.frame.rowat(key)
+
+# Label-based row access: frame.loc[label] -> row as a Series; frame.loc[[l1, l2]] -> DataFrame.
+class _Loc:
+    var _init_ = Function(self, frame):
+        self.frame = frame
+    var _getitem_ = Function(self, key):
+        if isinstance(key, "List"):
+            var positions = []
+            for label in key:
+                positions.append(self.frame.index.index(label))
+            return self.frame.rowsat(positions)
+        return self.frame.rowat(self.frame.index.index(key))
+
+# ===================================================================================== DataFrame
+class DataFrame:
+    var _init_ = Function(self, data = None, columns = None, index = None):
+        self.columns = []
+        self.data = {}
+        if data == None:
+            self.index = [] if index == None else List(index)
+        elif isinstance(data, "Dict"):
+            self._fromcolumns(data, columns)
+            self.index = _range(self.nrows()) if index == None else List(index)
+        elif isinstance(data, "List"):
+            self._fromrows(data, columns)
+            self.index = _range(self.nrows()) if index == None else List(index)
+        else:
+            throw "DataFrame: data must be a Dict of columns or a List of rows"
+        self.iloc = _Iloc(self)
+        self.loc = _Loc(self)
+
+    var _fromcolumns = Function(self, data, columns):
+        var cols = columns if columns != None else data.keys()
+        var length = None
+        for c in cols:
+            var col = List(data[c])
+            if length == None:
+                length = len(col)
+            elif len(col) != length:
+                throw "DataFrame: all columns must have the same length"
+            self.columns.append(c)
+            self.data[c] = col
+
+    var _fromrows = Function(self, rows, columns):
+        if len(rows) == 0:
+            if columns != None:
+                for c in columns:
+                    self.columns.append(c)
+                    self.data[c] = []
+            return
+        if isinstance(rows[0], "Dict"):
+            # union of keys, first-seen order (or the given column order)
+            var cols = columns
+            if cols == None:
+                cols = []
+                for r in rows:
+                    for k in r.keys():
+                        if k not in cols:
+                            cols.append(k)
+            for c in cols:
+                self.columns.append(c)
+                var col = []
+                for r in rows:
+                    col.append(r.get(c, None))
+                self.data[c] = col
+        else:
+            var ncols = len(rows[0])
+            var cols = columns if columns != None else _defaultcols(ncols)
+            var ci = 0
+            while ci < len(cols):
+                var col = []
+                for r in rows:
+                    col.append(r[ci])
+                self.columns.append(cols[ci])
+                self.data[cols[ci]] = col
+                ci = ci + 1
+
+    var nrows = Function(self) -> Integer:
+        if len(self.columns) == 0:
+            return 0
+        return len(self.data[self.columns[0]])
+
+    var _len_ = Function(self) -> Integer:
+        return self.nrows()
+
+    var shape = Function(self):
+        return [self.nrows(), len(self.columns)]
+
+    var rowat = Function(self, pos):
+        var vals = []
+        for c in self.columns:
+            vals.append(self.data[c][pos])
+        return Series(vals, List(self.columns), self.index[pos])
+
+    var rowsat = Function(self, positions):
+        var newdata = {}
+        for c in self.columns:
+            var col = []
+            for p in positions:
+                col.append(self.data[c][p])
+            newdata[c] = col
+        var newindex = []
+        for p in positions:
+            newindex.append(self.index[p])
+        return DataFrame(newdata, List(self.columns), newindex)
+
+    # --- selection: column (String), column-subset (List of String), or row mask (boolean) ---
+    var _getitem_ = Function(self, key):
+        if isinstance(key, "Series"):
+            return self._mask(key.values)
+        if isinstance(key, "List"):
+            if len(key) > 0 and isinstance(key[0], "Bool"):
+                return self._mask(key)
+            return self._subset(key)
+        return Series(List(self.data[key]), List(self.index), key)
+
+    var _setitem_ = Function(self, key, value):
+        var col = []
+        if isinstance(value, "Series"):
+            col = List(value.values)
+        elif isinstance(value, "List"):
+            col = List(value)
+        else:
+            var i = 0
+            while i < self.nrows():
+                col.append(value)
+                i = i + 1
+        if len(col) != self.nrows() and self.nrows() > 0:
+            throw "DataFrame: new column length must match row count"
+        if key not in self.columns:
+            self.columns.append(key)
+        self.data[key] = col
+        if len(self.index) != self.nrows():     # adding the first column to an empty frame: sync the index
+            self.index = _range(self.nrows())
+
+    var _mask = Function(self, flags):
+        if len(flags) != self.nrows():           # a wrong-length boolean mask must not silently drop rows
+            throw "boolean mask length does not match row count"
+        var positions = []
+        var i = 0
+        while i < len(flags):
+            if flags[i]:
+                positions.append(i)
+            i = i + 1
+        return self.rowsat(positions)
+
+    var _subset = Function(self, cols):
+        var newdata = {}
+        for c in cols:
+            newdata[c] = List(self.data[c])
+        return DataFrame(newdata, List(cols), List(self.index))
+
+    var column = Function(self, name):
+        return Series(List(self.data[name]), List(self.index), name)
+
+    var at = Function(self, label, col):
+        return self.data[col][self.index.index(label)]
+    var iat = Function(self, pos, col):
+        return self.data[self.columns[col]][pos]
+
+    var head = Function(self, n = 5):
+        return self.rowsat(_range(n if n < self.nrows() else self.nrows()))
+    var tail = Function(self, n = 5):
+        var total = self.nrows()
+        var start = total - n
+        if start < 0:
+            start = 0
+        var positions = []
+        var i = start
+        while i < total:
+            positions.append(i)
+            i = i + 1
+        return self.rowsat(positions)
+    var slice = Function(self, start, stop):
+        var positions = []
+        var i = start
+        while i < stop:
+            positions.append(i)
+            i = i + 1
+        return self.rowsat(positions)
+
+    var copy = Function(self):
+        var newdata = {}
+        for c in self.columns:
+            newdata[c] = List(self.data[c])
+        return DataFrame(newdata, List(self.columns), List(self.index))
+
+    var rename = Function(self, columns):
+        var newcols = []
+        var newdata = {}
+        for c in self.columns:
+            var nc = columns.get(c, c)
+            newcols.append(nc)
+            newdata[nc] = List(self.data[c])
+        return DataFrame(newdata, newcols, List(self.index))
+
+    var drop = Function(self, columns):
+        var keep = []
+        for c in self.columns:
+            if c not in columns:
+                keep.append(c)
+        return self._subset(keep)
+
+    var assign = Function(self, name, value):
+        var out = self.copy()
+        out[name] = value
+        return out
+
+    var resetindex = Function(self):
+        return DataFrame(self._datacopy(), List(self.columns), _range(self.nrows()))
+
+    var setindex = Function(self, col):
+        var newindex = List(self.data[col])
+        var out = self.drop([col])
+        return DataFrame(out._datacopy(), List(out.columns), newindex)
+
+    var _datacopy = Function(self):
+        var newdata = {}
+        for c in self.columns:
+            newdata[c] = List(self.data[c])
+        return newdata
+
+    # --- per-column numeric aggregations -> a Series indexed by column name ---
+    var _aggcols = Function(self, fn):
+        var idx = []
+        var vals = []
+        for c in self.columns:
+            if _isnumericcol(self.data[c]):
+                idx.append(c)
+                vals.append(fn(Series(self.data[c])))
+        return Series(vals, idx, None)
+    var sum = Function(self):
+        return self._aggcols(Function(s): return s.sum())
+    var mean = Function(self):
+        return self._aggcols(Function(s): return s.mean())
+    var min = Function(self):
+        return self._aggcols(Function(s): return s.min())
+    var max = Function(self):
+        return self._aggcols(Function(s): return s.max())
+    var std = Function(self):
+        return self._aggcols(Function(s): return s.std())
+    var count = Function(self):
+        var idx = []
+        var vals = []
+        for c in self.columns:
+            idx.append(c)
+            vals.append(Series(self.data[c]).count())
+        return Series(vals, idx, None)
+
+    var describe = Function(self):
+        # count/mean/std/min/median/max for every numeric column -> a DataFrame
+        var stats = ["count", "mean", "std", "min", "median", "max"]
+        var newdata = {}
+        var numcols = []
+        for c in self.columns:
+            if _isnumericcol(self.data[c]):
+                var s = Series(self.data[c])
+                numcols.append(c)
+                newdata[c] = [s.count(), s.mean(), s.std(), s.min(), s.median(), s.max()]
+        return DataFrame(newdata, numcols, stats)
+
+    var sortvalues = Function(self, by, ascending = True):
+        var positions = _range(self.nrows())
+        var col = self.data[by]
+        positions.sort(Function(p): return col[p], not ascending)
+        return self.rowsat(positions)
+
+    var apply = Function(self, fn):
+        # apply fn to each column Series -> a Series of results (axis=columns reduction)
+        return self._aggcols(fn)
+
+    var iterrows = Function(self):
+        var out = []
+        var i = 0
+        while i < self.nrows():
+            out.append([self.index[i], self.rowat(i)])
+            i = i + 1
+        return out
+
+    var todict = Function(self):
+        var out = {}
+        for c in self.columns:
+            out[c] = List(self.data[c])
+        return out
+
+    var torows = Function(self):
+        var rows = []
+        var i = 0
+        while i < self.nrows():
+            var row = {}
+            for c in self.columns:
+                row[c] = self.data[c][i]
+            rows.append(row)
+            i = i + 1
+        return rows
+
+    # --- missing data ---
+    var dropna = Function(self):
+        var positions = []
+        var i = 0
+        while i < self.nrows():
+            var keep = True
+            for c in self.columns:
+                if _isnan(self.data[c][i]):
+                    keep = False
+            if keep:
+                positions.append(i)
+            i = i + 1
+        return self.rowsat(positions)
+    var fillna = Function(self, value):
+        var newdata = {}
+        for c in self.columns:
+            var col = []
+            for v in self.data[c]:
+                col.append(value if _isnan(v) else v)
+            newdata[c] = col
+        return DataFrame(newdata, List(self.columns), List(self.index))
+
+    var groupby = Function(self, by):
+        return GroupBy(self, by)
+
+    var merge = Function(self, other, on, how = "inner"):
+        return _merge(self, other, on, how)
+
+    var tocsv = Function(self):
+        var rows = [List(self.columns)]
+        var i = 0
+        while i < self.nrows():
+            var row = []
+            for c in self.columns:
+                var v = self.data[c][i]
+                row.append("" if v == None else String(v))
+            rows.append(row)
+            i = i + 1
+        return _csv.format(rows)
+
+    var _str_ = Function(self) -> String:
+        var widths = {}
+        for c in self.columns:
+            widths[c] = len(String(c))
+        var i = 0
+        while i < self.nrows():
+            for c in self.columns:
+                var w = len(String(self.data[c][i]))
+                if w > widths[c]:
+                    widths[c] = w
+            i = i + 1
+        var idxw = len("index")
+        for label in self.index:
+            if len(String(label)) > idxw:
+                idxw = len(String(label))
+        var header = "".ljust(idxw)
+        for c in self.columns:
+            header = header + "  " + String(c).rjust(widths[c])
+        var lines = [header]
+        i = 0
+        while i < self.nrows():
+            var line = String(self.index[i]).ljust(idxw)
+            for c in self.columns:
+                var v = self.data[c][i]
+                line = line + "  " + ("" if v == None else String(v)).rjust(widths[c])
+            lines.append(line)
+            i = i + 1
+        return "\n".join(lines)
+
+# ===================================================================================== GroupBy
+class GroupBy:
+    var _init_ = Function(self, frame, by):
+        self.frame = frame
+        self.by = by
+        # ordered group keys + the row positions in each group
+        self.keys = []
+        self.groups = {}
+        var col = frame.data[by]
+        var i = 0
+        while i < frame.nrows():
+            var k = col[i]
+            if k not in self.groups:
+                self.keys.append(k)
+                self.groups[k] = []
+            self.groups[k].append(i)
+            i = i + 1
+
+    var _valuecols = Function(self):
+        var out = []
+        for c in self.frame.columns:
+            if c != self.by:
+                out.append(c)
+        return out
+
+    # apply a Series-reduction to every value column of every group -> a DataFrame indexed by key
+    var _reduce = Function(self, fn):
+        var valcols = []
+        for c in self._valuecols():
+            if _isnumericcol(self.frame.data[c]):
+                valcols.append(c)
+        var newdata = {}
+        for c in valcols:
+            newdata[c] = []
+            for k in self.keys:
+                var vals = []
+                for p in self.groups[k]:
+                    vals.append(self.frame.data[c][p])
+                newdata[c].append(fn(Series(vals)))
+        return DataFrame(newdata, valcols, List(self.keys))
+
+    var sum = Function(self):
+        return self._reduce(Function(s): return s.sum())
+    var mean = Function(self):
+        return self._reduce(Function(s): return s.mean())
+    var min = Function(self):
+        return self._reduce(Function(s): return s.min())
+    var max = Function(self):
+        return self._reduce(Function(s): return s.max())
+    var std = Function(self):
+        return self._reduce(Function(s): return s.std())
+    var count = Function(self):
+        var valcols = self._valuecols()
+        var newdata = {}
+        for c in valcols:
+            newdata[c] = []
+            for k in self.keys:
+                newdata[c].append(len(self.groups[k]))
+        return DataFrame(newdata, valcols, List(self.keys))
+
+    var size = Function(self):
+        var vals = []
+        for k in self.keys:
+            vals.append(len(self.groups[k]))
+        return Series(vals, List(self.keys), "size")
+
+    # agg(dict): {column: reduction-name} -> a DataFrame; reduction is one of sum/mean/min/max/std/count
+    var agg = Function(self, spec):
+        var reducers = {"sum": Function(s): return s.sum(), "mean": Function(s): return s.mean(),
+                        "min": Function(s): return s.min(), "max": Function(s): return s.max(),
+                        "std": Function(s): return s.std(), "count": Function(s): return s.count(),
+                        "median": Function(s): return s.median()}
+        var cols = []
+        var newdata = {}
+        for c in spec.keys():
+            cols.append(c)
+            newdata[c] = []
+        for k in self.keys:
+            var positions = self.groups[k]
+            for c in spec.keys():
+                var vals = []
+                for p in positions:
+                    vals.append(self.frame.data[c][p])
+                newdata[c].append(reducers[spec[c]](Series(vals)))
+        return DataFrame(newdata, cols, List(self.keys))
+
+    var apply = Function(self, fn):
+        # fn receives the sub-DataFrame for each group -> a Series indexed by key
+        var vals = []
+        for k in self.keys:
+            vals.append(fn(self.frame.rowsat(self.groups[k])))
+        return Series(vals, List(self.keys), None)
+
+# ===================================================================================== module funcs
+var _defaultcols = Function(n):
+    var out = []
+    var i = 0
+    while i < n:
+        out.append("col" + String(i))
+        i = i + 1
+    return out
+
+var _merge = Function(left, right, on, how):
+    # validate `how` here so BOTH entry points (DataFrame.merge and module-level merge) reject a bad join
+    if how != "inner" and how != "left" and how != "right" and how != "outer":
+        throw "merge: how must be one of inner/left/right/outer, got '" + how + "'"
+    # build an index of right rows by join key
+    var rightidx = {}
+    var rpos = 0
+    while rpos < right.nrows():
+        var k = right.data[on][rpos]
+        if k not in rightidx:
+            rightidx[k] = []
+        rightidx[k].append(rpos)
+        rpos = rpos + 1
+    var leftcols = left.columns
+    var rightvalcols = []
+    for c in right.columns:
+        if c != on:
+            rightvalcols.append(c)
+    # A non-key column present in BOTH frames would collide on one output name; suffix _x/_y (pandas-style).
+    var lset = {}
+    for c in leftcols:
+        lset[c] = True
+    var rset = {}
+    for c in rightvalcols:
+        rset[c] = True
+    var leftout = []
+    for c in leftcols:
+        leftout.append(c + "_x" if c != on and c in rset else c)
+    var rightout = []
+    for c in rightvalcols:
+        rightout.append(c + "_y" if c in lset else c)
+    var outcols = []
+    for c in leftout:
+        outcols.append(c)
+    for c in rightout:
+        outcols.append(c)
+    var newdata = {}
+    for c in outcols:
+        newdata[c] = []
+
+    var emitrow = Function(lp, rp):
+        var li = 0
+        while li < len(leftcols):
+            newdata[leftout[li]].append(left.data[leftcols[li]][lp])
+            li = li + 1
+        var ri = 0
+        while ri < len(rightvalcols):
+            newdata[rightout[ri]].append(None if rp == None else right.data[rightvalcols[ri]][rp])
+            ri = ri + 1
+
+    var matchedright = {}
+    var lp = 0
+    while lp < left.nrows():
+        var k = left.data[on][lp]
+        if k in rightidx:
+            for rp in rightidx[k]:
+                emitrow(lp, rp)
+                matchedright[rp] = True
+        elif how == "left" or how == "outer":
+            emitrow(lp, None)
+        lp = lp + 1
+
+    if how == "right" or how == "outer":
+        # right rows with no left match (emit left columns as None except the join key)
+        var rp2 = 0
+        while rp2 < right.nrows():
+            if rp2 not in matchedright:
+                var li3 = 0
+                while li3 < len(leftcols):
+                    if leftcols[li3] == on:
+                        newdata[leftout[li3]].append(right.data[on][rp2])
+                    else:
+                        newdata[leftout[li3]].append(None)
+                    li3 = li3 + 1
+                var ri3 = 0
+                while ri3 < len(rightvalcols):
+                    newdata[rightout[ri3]].append(right.data[rightvalcols[ri3]][rp2])
+                    ri3 = ri3 + 1
+            rp2 = rp2 + 1
+
+    return DataFrame(newdata, outcols, None)
+
+var merge = Function(left, right, on, how = "inner"):
+    return _merge(left, right, on, how)
+
+var concat = Function(frames):
+    # stack DataFrames vertically (union of columns, missing filled with None)
+    var cols = []
+    for f in frames:
+        for c in f.columns:
+            if c not in cols:
+                cols.append(c)
+    var newdata = {}
+    for c in cols:
+        newdata[c] = []
+    for f in frames:
+        var i = 0
+        while i < f.nrows():
+            for c in cols:
+                newdata[c].append(f.data[c][i] if c in f.columns else None)
+            i = i + 1
+    return DataFrame(newdata, cols, None)
+
+var readcsv = Function(source, header = True, infer = True):
+    # source is CSV text (or a filename if it has no newline and the file exists)
+    var text = source
+    var io = import("io")
+    if "\n" not in source and path.exists(source):
+        with io.open(source, "r") as fh:
+            text = fh.read()
+    var rows = _csv.parse(text)
+    if len(rows) == 0:
+        return DataFrame({})
+    var cols = []
+    var start = 0
+    if header:
+        cols = rows[0]
+        start = 1
+    else:
+        cols = _defaultcols(len(rows[0]))
+    var newdata = {}
+    for c in cols:
+        newdata[c] = []
+    var r = start
+    while r < len(rows):
+        var row = rows[r]
+        # A row with MORE fields than the header would silently lose its surplus cells; reject it
+        # (like pandas' ParserError) rather than truncate. Short rows are still padded with "".
+        if len(row) > len(cols):
+            throw "readcsv: row " + String(r + 1) + " has " + String(len(row)) + " fields, expected " + String(len(cols))
+        var ci = 0
+        while ci < len(cols):
+            var cell = row[ci] if ci < len(row) else ""
+            newdata[cols[ci]].append(_infer(cell) if infer else cell)
+            ci = ci + 1
+        r = r + 1
+    return DataFrame(newdata, cols, None)

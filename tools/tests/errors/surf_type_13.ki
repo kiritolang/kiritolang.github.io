@@ -1,0 +1,2 @@
+# type/operator: a List can only be repeated by an Integer, not a String
+discard [1, 2] * "x"

@@ -1,0 +1,48 @@
+# A small to-do manager showcasing classes, exceptions, f-strings, and collections.
+var io = import("io")
+
+class TaskError:
+    var _init_ = Function(self, msg):
+        self.msg = msg
+
+class TodoList:
+    var _init_ = Function(self):
+        self.tasks = []
+        self.done = {}
+
+    var add = Function(self, name):
+        self.tasks.append(name)
+        self.done[name] = False
+
+    var complete = Function(self, name):
+        if name not in self.done:
+            throw TaskError(f"no such task: {name}")
+        self.done[name] = True
+
+    var summary = Function(self):
+        var finished = 0
+        for name in self.tasks:
+            if self.done[name]:
+                finished = finished + 1
+        return f"{finished}/{len(self.tasks)} tasks done"
+
+var list = TodoList()
+list.add("write parser")
+list.add("write evaluator")
+list.add("write GC")
+
+list.complete("write parser")
+list.complete("write GC")
+
+io.print(list.summary())             # 2/3 tasks done
+
+try:
+    list.complete("nonexistent")
+catch TaskError as e:
+    io.print(f"error: {e.msg}")       # error: no such task: nonexistent
+
+for name in list.tasks:
+    var mark = "x"
+    if not list.done[name]:
+        mark = " "
+    io.print(f"[{mark}] {name}")

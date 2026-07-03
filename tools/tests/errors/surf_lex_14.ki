@@ -1,0 +1,2 @@
+# LEXER: an f-string with an empty {} placeholder (no expression inside the braces)
+var s = f"value is {}"

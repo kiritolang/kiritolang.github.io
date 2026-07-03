@@ -1,0 +1,6 @@
+# The other arm of the diamond: also imports the shared base. The base runs only once (cached), and
+# this module likewise sees argmain False.
+var base = import("amarg_diamond_base")
+var m = argmain
+var baseMain = base.m
+var via = "b"

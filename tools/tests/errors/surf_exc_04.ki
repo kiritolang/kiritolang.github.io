@@ -1,0 +1,4 @@
+# multi-target assignment with surplus values is an unpack arity error
+var a = 1
+var b = 2
+a, b = 1, 2, 3

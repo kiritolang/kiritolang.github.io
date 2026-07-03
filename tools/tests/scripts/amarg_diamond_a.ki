@@ -1,0 +1,6 @@
+# One arm of a diamond: imports the shared base and re-exposes the base's argmain view alongside
+# its own. Both must be False.
+var base = import("amarg_diamond_base")
+var m = argmain
+var baseMain = base.m
+var via = "a"

@@ -1,0 +1,446 @@
+# r6_builtins.ki — exhaustive audit of every built-in function against docs/pages/08-builtins.md.
+# Self-checking: each `ok(cond, msg)` advances a counter; the final line prints the total.
+# Run: build-release/ki tools/tests/scripts/r6_builtins.ki   (must print zero warnings to stderr)
+
+var io = import("io")
+
+var n = 0
+var ok = Function(c, m):
+  assert c, m
+  n = n + 1
+
+# throws(f) -> True iff calling f() throws a catchable error.
+var throws = Function(f):
+  try:
+    discard f()
+    return False
+  catch String as e:
+    discard e
+    return True
+
+# ============================================================ type() ===
+ok(type(1) == "Integer", "type Integer")
+ok(type(1.0) == "Float", "type Float")
+ok(type("x") == "String", "type String")
+ok(type(True) == "Bool", "type Bool")
+ok(type(None) == "None", "type None")
+ok(type([]) == "List", "type List")
+ok(type({}) == "Dict", "type Dict")
+ok(type({1, 2}) == "Set", "type Set")
+ok(type(min) == "Function", "type native function")
+ok(type(io) == "Module", "type Module")
+ok(type(x = 5) == "Integer", "type keyword arg")
+
+# =================================================== Integer() / Float() ===
+ok(Integer(42) == 42, "Integer of Integer")
+ok(Integer(3.9) == 3, "Integer truncates toward zero")
+ok(Integer(-3.9) == -3, "Integer truncates negative toward zero")
+ok(Integer(True) == 1, "Integer of True")
+ok(Integer(False) == 0, "Integer of False")
+ok(Integer("42") == 42, "Integer of decimal string")
+ok(Integer("  -42 ") == -42, "Integer trims whitespace + sign")
+ok(Integer("0xFF") == 255, "Integer hex string")
+ok(Integer("0o17") == 15, "Integer octal string")
+ok(Integer("0b1010") == 10, "Integer binary string")
+ok(Integer("0XfF") == 255, "Integer hex case-insensitive")
+ok(Integer(x = "42") == 42, "Integer keyword arg")
+ok(Integer(hex(-1)) == -1, "Integer round-trips hex(-1) two's-complement")
+ok(throws(Function(): return Integer("--5")), "Integer doubled sign throws")
+ok(throws(Function(): return Integer("+ 5")), "Integer space after sign throws")
+ok(throws(Function(): return Integer("0x-5")), "Integer 0x-5 throws")
+ok(throws(Function(): return Integer("42abc")), "Integer trailing garbage throws")
+ok(throws(Function(): return Integer("12.5")), "Integer fractional string throws")
+ok(throws(Function(): return Integer("")), "Integer empty string throws")
+ok(throws(Function(): return Integer([])), "Integer of List throws")
+
+ok(Float(5) == 5.0, "Float of Integer")
+ok(type(Float(5)) == "Float", "Float yields Float")
+ok(Float(True) == 1.0, "Float of Bool")
+ok(Float("1e3") == 1000.0, "Float scientific notation")
+ok(Float("1.5e-3") == 0.0015, "Float negative exponent")
+ok(Float("  2.5 ") == 2.5, "Float trims whitespace")
+var finf = Float("inf")
+ok(finf > 1e308, "Float parses inf")
+var fnan = Float("nan")
+ok(fnan != fnan, "Float parses nan (NaN != NaN)")
+ok(throws(Function(): return Float("0x1p4")), "Float rejects C99 hex-float")
+ok(throws(Function(): return Float("abc")), "Float of bad string throws")
+ok(throws(Function(): return Float([])), "Float of List throws")
+ok(throws(Function(): return Integer(Float("nan"))), "Integer of NaN throws")
+ok(throws(Function(): return Integer(Float("inf"))), "Integer of inf throws")
+
+# ====================================================== String() / Bool() ===
+ok(String(42) == "42", "String of Integer")
+ok(String(2.0) == "2.0", "String of Float keeps point")
+ok(String(True) == "True", "String of Bool")
+ok(String(None) == "None", "String of None")
+ok(String(x = 7) == "7", "String keyword arg")
+ok(Bool([]) == False, "Bool of empty list")
+ok(Bool([1]) == True, "Bool of non-empty list")
+ok(Bool(0) == False, "Bool of zero")
+ok(Bool("") == False, "Bool of empty string")
+ok(Bool(None) == False, "Bool of None")
+ok(Bool("x") == True, "Bool of non-empty string")
+
+# ============================================ List() / Set() / Dict() ctors ===
+ok(List() == [], "List() empty")
+ok(List([1, 2, 3]) == [1, 2, 3], "List of list copies")
+ok(List("abc") == ["a", "b", "c"], "List of string -> chars")
+ok(len(List(range(5))) == 5, "List of range")
+ok(List(iterable = [9]) == [9], "List keyword arg")
+ok(len(Set([1, 1, 2, 3])) == 3, "Set dedupes")
+ok(2 in Set([1, 2, 3]), "Set membership")
+var dd = Dict([["a", 1], ["b", 2]])
+ok(dd["a"] == 1 and dd["b"] == 2, "Dict from pairs")
+ok(len(Dict()) == 0, "Dict() empty")
+ok(throws(Function(): return List(5)), "List of non-iterable throws")
+ok(throws(Function(): return Dict([[1]])), "Dict bad pair throws")
+
+# ============================================== Bytes() / fromhex() ===
+ok(Bytes([72, 105]).decode() == "Hi", "Bytes from int list")
+ok(len(Bytes(3)) == 3, "Bytes(n) zero bytes")
+ok(Bytes("Hi").decode() == "Hi", "Bytes from string")
+ok(len(Bytes()) == 0, "Bytes() empty")
+ok(type(Bytes([1])) == "Bytes", "Bytes type")
+ok(fromhex("48 69").decode() == "Hi", "fromhex with spaces")
+ok(fromhex("4869") == Bytes([72, 105]), "fromhex round-trips Bytes")
+
+# =============================================================== isinstance ===
+ok(isinstance(1, Integer), "isinstance Integer constructor")
+ok(isinstance(1, "Integer"), "isinstance type-name string")
+ok(isinstance(1.0, Float), "isinstance Float")
+ok(isinstance("x", String), "isinstance String")
+ok(isinstance([], List), "isinstance List")
+ok(isinstance({}, Dict), "isinstance Dict")
+ok(isinstance({1}, Set), "isinstance Set")
+ok(isinstance(True, Bool), "isinstance Bool")
+ok(isinstance(None, "None"), "isinstance None by name")
+ok(isinstance(1, Float) == False, "isinstance Integer is not Float")
+# Bool is NOT an Integer in Kirito (distinct kind) — a divergence from Python.
+ok(isinstance(True, Integer) == False, "isinstance Bool is not Integer")
+ok(isinstance(1, Bool) == False, "isinstance Integer is not Bool")
+ok(throws(Function(): return isinstance(1, 5)), "isinstance non-type throws")
+
+class Animal:
+  var legs = 4
+  var _init_ = Function(self): self.alive = True
+class Dog(Animal):
+  var _init_ = Function(self): self._super_()
+var pup = Dog()
+var beast = Animal()
+ok(isinstance(pup, Dog), "isinstance own class")
+ok(isinstance(pup, Animal), "isinstance base class (inheritance-aware)")
+ok(isinstance(pup, "Animal"), "isinstance base class by name")
+ok(isinstance(beast, Dog) == False, "isinstance base is not subclass")
+ok(isinstance(pup, Integer) == False, "isinstance instance vs builtin type")
+
+# ================================================================= len ===
+ok(len("hello") == 5, "len of String")
+ok(len("héllo") == 5, "len counts code points not bytes")
+ok(len([1, 2, 3]) == 3, "len of List")
+ok(len({"a": 1, "b": 2}) == 2, "len of Dict")
+ok(len({1, 2, 3}) == 3, "len of Set")
+ok(len(Bytes([1, 2, 3])) == 3, "len of Bytes")
+ok(len("") == 0, "len of empty string")
+ok(len(x = [1, 2]) == 2, "len keyword arg")
+ok(throws(Function(): return len([1], [2])), "len too many positionals throws")
+
+# ================================================================ range ===
+ok(range(5) == [0, 1, 2, 3, 4], "range(stop)")
+ok(range(2, 5) == [2, 3, 4], "range(start, stop)")
+ok(range(0, 10, 2) == [0, 2, 4, 6, 8], "range with step")
+ok(range(5, 1, -1) == [5, 4, 3, 2], "range negative step")
+ok(range(5, 1) == [], "range empty when start>stop")
+ok(range(0, 0) == [], "range zero span")
+ok(range(end = 5) == [0, 1, 2, 3, 4], "range end keyword alias")
+ok(range(1, 10, step = 2) == [1, 3, 5, 7, 9], "range step keyword")
+ok(range(start = 2, stop = 5) == [2, 3, 4], "range start/stop keywords")
+ok(throws(Function(): return range(0, 5, 0)), "range step zero throws")
+ok(throws(Function(): return range()), "range missing stop throws")
+ok(throws(Function(): return range(0, 1000000000000)), "range too large throws (not OOM)")
+ok(throws(Function(): return range(2, 5, start = 1)), "range positional/keyword clash throws")
+
+# ============================================================ enumerate ===
+ok(enumerate(["a", "b"]) == [[0, "a"], [1, "b"]], "enumerate default start 0")
+ok(enumerate(["a", "b"], 1) == [[1, "a"], [2, "b"]], "enumerate start positional")
+ok(enumerate(["a", "b"], start = 5) == [[5, "a"], [6, "b"]], "enumerate start keyword")
+ok(enumerate(["a"], -2) == [[-2, "a"]], "enumerate negative start")
+ok(enumerate([]) == [], "enumerate empty")
+ok(throws(Function(): return enumerate(5)), "enumerate non-iterable throws")
+ok(throws(Function(): return enumerate([1], 1.5)), "enumerate float start throws")
+
+# ================================================================= zip ===
+ok(zip([1, 2, 3], ["a", "b"]) == [[1, "a"], [2, "b"]], "zip truncates to shortest")
+ok(zip([1, 2], [3, 4], [5, 6]) == [[1, 3, 5], [2, 4, 6]], "zip three-way")
+ok(zip() == [], "zip of nothing")
+ok(zip([], [1, 2]) == [], "zip with empty input")
+ok(throws(Function(): return zip(5)), "zip non-iterable throws")
+
+# ============================================================ map / filter ===
+var dbl = Function(x): return x * 2
+var isEven = Function(x): return x % 2 == 0
+ok(map(dbl, [1, 2, 3]) == [2, 4, 6], "map applies fn")
+ok(map(dbl, range(3)) == [0, 2, 4], "map over range (eager List)")
+ok(map(dbl, []) == [], "map empty")
+ok(filter(isEven, range(6)) == [0, 2, 4], "filter keeps truthy")
+ok(filter(isEven, []) == [], "filter empty")
+ok(map(function = dbl, iterable = [1, 2]) == [2, 4], "map keyword args")
+ok(filter(function = isEven, iterable = [1, 2, 3, 4]) == [2, 4], "filter keyword args")
+ok(throws(Function(): return map(dbl, 5)), "map non-iterable throws")
+
+# ============================================================= reversed ===
+ok(reversed([1, 2, 3]) == [3, 2, 1], "reversed of list")
+ok(reversed("abc") == ["c", "b", "a"], "reversed of string -> char list")
+ok(reversed(range(3)) == [2, 1, 0], "reversed of range")
+ok(reversed([]) == [], "reversed empty")
+ok(reversed(iterable = [1, 2]) == [2, 1], "reversed keyword arg")
+ok(throws(Function(): return reversed(5)), "reversed non-iterable throws")
+
+# =============================================================== sorted ===
+ok(sorted([3, 1, 2]) == [1, 2, 3], "sorted ascending")
+ok(sorted([3, 1, 2], reverse = True) == [3, 2, 1], "sorted reverse keyword")
+var byNeg = Function(x): return -x
+ok(sorted([3, 1, 2], key = byNeg) == [3, 2, 1], "sorted with key")
+ok(sorted(["bb", "a", "ccc"], key = len) == ["a", "bb", "ccc"], "sorted by len key")
+ok(sorted([]) == [], "sorted empty")
+ok(sorted("dcba") == ["a", "b", "c", "d"], "sorted of string")
+# Stability: equal keys keep input order.
+var st = sorted([[1, "a"], [2, "b"], [1, "c"], [2, "d"], [1, "e"]], key = Function(x): return x[0])
+ok(st == [[1, "a"], [1, "c"], [1, "e"], [2, "b"], [2, "d"]], "sorted is stable")
+# key is precomputed once per element (count calls).
+var calls = 0
+var counting = Function(x):
+  calls = calls + 1
+  return x
+discard sorted([5, 3, 1, 4, 2], key = counting)
+ok(calls == 5, "sorted key computed once per element")
+ok(throws(Function(): return sorted(5)), "sorted non-iterable throws")
+
+# ================================================================== sum ===
+ok(sum([1, 2, 3]) == 6, "sum of integers")
+ok(type(sum([1, 2, 3])) == "Integer", "sum of integers is Integer")
+ok(sum([1.0, 2, 3]) == 6.0, "sum with a float is Float")
+ok(type(sum([1.0, 2, 3])) == "Float", "sum mixed is Float")
+ok(sum([]) == 0, "sum empty is 0")
+ok(sum([], 10) == 10, "sum empty with start")
+ok(sum([1, 2, 3], 10) == 16, "sum with start")
+ok(sum([1, 2], start = 100) == 103, "sum start keyword")
+ok(sum(iterable = [1, 2, 3]) == 6, "sum iterable keyword")
+ok(throws(Function(): return sum(["a"])), "sum of non-numbers throws")
+ok(throws(Function(): return sum(5)), "sum non-iterable throws")
+ok(throws(Function(): return sum([1], 2, 3)), "sum too many positionals throws")
+
+# ============================================================== min / max ===
+ok(min([3, 1, 2]) == 1, "min of iterable")
+ok(max([3, 1, 2]) == 3, "max of iterable")
+ok(min(3, 1, 2) == 1, "min of positionals")
+ok(max(3, 1, 2) == 3, "max of positionals")
+ok(min(["bb", "a", "ccc"], key = len) == "a", "min with key")
+ok(max(["bb", "a", "ccc"], key = len) == "ccc", "max with key")
+ok(min([], default = 99) == 99, "min default on empty")
+ok(max([], default = -1) == -1, "max default on empty")
+ok(min([5]) == 5, "min single element")
+ok(min(2.0, 1) == 1, "min mixed numeric")
+ok(throws(Function(): return min([])), "min empty throws without default")
+ok(throws(Function(): return max([])), "max empty throws without default")
+ok(throws(Function(): return min([1], bogus = 2)), "min unknown keyword throws")
+
+# ============================================================== all / any ===
+ok(all([]) == True, "all empty is vacuously True")
+ok(all([1, 1, 1]) == True, "all truthy")
+ok(all([1, 0, 1]) == False, "all with a falsy")
+ok(any([]) == False, "any empty is False")
+ok(any([0, 0, 1]) == True, "any with a truthy")
+ok(any([0, 0, 0]) == False, "any all falsy")
+ok(all(iterable = [1, 2]) == True, "all keyword arg")
+ok(any(iterable = [0, 1]) == True, "any keyword arg")
+ok(throws(Function(): return all(5)), "all non-iterable throws")
+ok(throws(Function(): return any(5)), "any non-iterable throws")
+
+# ================================================================== abs ===
+ok(abs(-5) == 5, "abs negative int")
+ok(abs(5) == 5, "abs positive int")
+ok(abs(-5.5) == 5.5, "abs negative float")
+ok(type(abs(-5)) == "Integer", "abs int stays Integer")
+ok(type(abs(-5.5)) == "Float", "abs float stays Float")
+ok(abs(0) == 0, "abs zero")
+# abs(INT64_MIN) wraps to itself (two's-complement, documented).
+ok(abs(-9223372036854775808) == -9223372036854775808, "abs INT64_MIN wraps to itself")
+ok(abs(x = -3) == 3, "abs keyword arg")
+ok(throws(Function(): return abs("x")), "abs of non-number throws")
+
+# ================================================================ round ===
+ok(round(2.4) == 2, "round down")
+ok(round(2.6) == 3, "round up")
+ok(type(round(2.4)) == "Integer", "round to Integer by default")
+# Ties: half away from zero (NOT banker's rounding).
+ok(round(0.5) == 1, "round half away from zero (0.5 -> 1)")
+ok(round(1.5) == 2, "round 1.5 -> 2")
+ok(round(2.5) == 3, "round 2.5 -> 3 (not banker's 2)")
+ok(round(-1.5) == -2, "round -1.5 -> -2")
+ok(round(-2.5) == -3, "round -2.5 -> -3")
+ok(round(3.14159, 2) == 3.14, "round to 2 decimals")
+ok(type(round(3.14159, 2)) == "Float", "round with ndigits yields Float")
+ok(round(2.675, 2) == 2.67, "round avoids double-rounding (2.675 -> 2.67)")
+ok(round(123.456, -1) == 120.0, "round negative ndigits")
+ok(round(123.456, -2) == 100.0, "round to hundreds")
+ok(round(3.14, ndigits = 1) == 3.1, "round ndigits keyword")
+ok(round(5.0, 1000) == 5.0, "round huge ndigits is no-op")
+ok(throws(Function(): return round(Float("nan"))), "round NaN to Integer throws")
+ok(throws(Function(): return round(Float("inf"))), "round inf to Integer throws")
+ok(throws(Function(): return round(3.14, 1.5)), "round non-Integer ndigits throws")
+ok(throws(Function(): return round(3.14, True)), "round Bool ndigits throws (Bool != Integer)")
+
+# =============================================================== divmod ===
+ok(divmod(7, 3) == [2, 1], "divmod positive")
+# Floor semantics: quotient toward -inf, remainder takes the divisor's sign.
+ok(divmod(-7, 3) == [-3, 2], "divmod negative dividend (floor)")
+ok(divmod(7, -3) == [-3, -2], "divmod negative divisor")
+ok(divmod(-7, -3) == [2, -1], "divmod both negative")
+ok(divmod(6, 3) == [2, 0], "divmod exact")
+ok(divmod(-7.0, 3) == [-3.0, 2.0], "divmod with floats")
+ok(divmod(a = 7, b = 3) == [2, 1], "divmod keyword args")
+ok(throws(Function(): return divmod(5, 0)), "divmod by zero throws")
+
+# ================================================================== pow ===
+ok(pow(2, 10) == 1024, "pow two-arg")
+ok(pow(2, -1) == 0.5, "pow negative exponent -> Float")
+ok(type(pow(2, -1)) == "Float", "pow negative exp is Float")
+ok(pow(2.0, 3) == 8.0, "pow float base")
+ok(pow(2, 10, 1000) == 24, "pow three-arg modular")
+ok(pow(3, 4, 5) == 1, "pow modular 81 % 5")
+ok(pow(2, 10, mod = 1000) == 24, "pow mod keyword")
+ok(pow(base = 2, exp = 5) == 32, "pow base/exp keywords")
+ok(pow(2, 0, 5) == 1, "pow exp zero modular")
+ok(throws(Function(): return pow(2, -1, 5)), "pow negative exp with mod throws")
+ok(throws(Function(): return pow(2, 3, 0)), "pow zero modulus throws")
+ok(throws(Function(): return pow(2, 3, -5)), "pow negative modulus throws")
+
+# ========================================================= bin / oct / hex ===
+ok(bin(10) == "0b1010", "bin")
+ok(bin(0) == "0b0", "bin zero")
+ok(bin(-10) == "-0b1010", "bin negative (sign-aware)")
+ok(oct(64) == "0o100", "oct")
+ok(oct(0) == "0o0", "oct zero")
+ok(oct(-8) == "-0o10", "oct negative")
+ok(hex(255) == "0xff", "hex")
+ok(hex(0) == "0x0", "hex zero")
+ok(hex(-255) == "-0xff", "hex negative")
+ok(bin(n = 5) == "0b101", "bin keyword arg")
+ok(throws(Function(): return bin(1.0)), "bin of Float throws")
+ok(throws(Function(): return hex("x")), "hex of String throws")
+
+# ================================================================= ord / chr ===
+ok(ord("A") == 65, "ord ASCII")
+ok(ord("€") == 8364, "ord of euro sign")
+ok(chr(65) == "A", "chr ASCII")
+ok(chr(8364) == "€", "chr to euro sign")
+ok(ord(chr(0x1F600)) == 0x1F600, "ord/chr round-trip astral")
+ok(ord(char = "Z") == 90, "ord keyword arg")
+ok(chr(codepoint = 66) == "B", "chr keyword arg")
+ok(throws(Function(): return ord("ab")), "ord multi-char throws")
+ok(throws(Function(): return ord("")), "ord empty throws")
+ok(throws(Function(): return chr(-1)), "chr negative throws")
+ok(throws(Function(): return chr(0x110000)), "chr above max throws")
+ok(throws(Function(): return chr(0xD800)), "chr surrogate throws")
+
+# ============================================================ bit operations ===
+ok(bitand(12, 10) == 8, "bitand")
+ok(bitor(12, 10) == 14, "bitor")
+ok(bitxor(12, 10) == 6, "bitxor")
+ok(bitnot(0) == -1, "bitnot 0")
+ok(bitnot(5) == -6, "bitnot 5 (-a-1)")
+ok(bitnot(-1) == 0, "bitnot -1")
+# Two's-complement on negatives.
+ok(bitand(-1, 255) == 255, "bitand -1 masks low byte")
+ok(bitor(-2, 1) == -1, "bitor -2 | 1")
+ok(bitxor(-1, -1) == 0, "bitxor of equal")
+ok(bitand(a = 6, b = 3) == 2, "bitand keyword args")
+ok(throws(Function(): return bitand(1.0, 2)), "bitand of Float throws")
+
+# ============================================================= shl / shr ===
+ok(shl(1, 4) == 16, "shl")
+ok(shl(1, 0) == 1, "shl zero")
+ok(shl(1, 63) == -9223372036854775808, "shl 1<<63 = INT64_MIN")
+ok(shl(1, 64) == 0, "shl beyond width is 0")
+ok(shl(255, 100) == 0, "shl huge count is 0")
+ok(shr(16, 2) == 4, "shr")
+ok(shr(-16, 2) == -4, "shr arithmetic (sign-preserving)")
+ok(shr(-1, 64) == -1, "shr negative beyond width fills sign")
+ok(shr(255, 100) == 0, "shr positive beyond width is 0")
+ok(shl(a = 1, n = 3) == 8, "shl keyword args")
+ok(throws(Function(): return shl(1, -1)), "shl negative shift throws")
+ok(throws(Function(): return shr(1, -1)), "shr negative shift throws")
+
+# ================================================================== format ===
+ok(format(42) == "42", "format no spec")
+ok(format(42, "05d") == "00042", "format zero-pad width")
+ok(format(255, "x") == "ff", "format hex")
+ok(format(255, "X") == "FF", "format upper hex")
+ok(format(10, "b") == "1010", "format binary")
+ok(format(64, "o") == "100", "format octal")
+ok(format(255, "#x") == "0xff", "format # adds hex prefix")
+ok(format(255, "#X") == "0XFF", "format # upper hex prefix")
+ok(format(10, "#b") == "0b1010", "format # binary prefix")
+ok(format(8, "#o") == "0o10", "format # octal prefix")
+ok(format(255, "#08x") == "0x0000ff", "format # with zero-pad width")
+ok(format(255, "#d") == "255", "format # no effect on decimal")
+ok(format(3.14159, ".2f") == "3.14", "format float fixed precision")
+ok(format(3.0, ".0f") == "3", "format float zero precision")
+ok(format(1234.5, ".1e") == "1.2e+03", "format scientific")
+ok(format(0.0001234, ".2g") == "0.00012", "format general")
+ok(format(0.25, ".1%") == "25.0%", "format percent")
+ok(format(1234567, ",") == "1,234,567", "format thousands separator")
+ok(format(1234.5, ",.1f") == "1,234.5", "format comma with float")
+ok(format(5, "+") == "+5", "format sign +")
+ok(format(5, " d") == " 5", "format space sign")
+ok(format(-5, "+") == "-5", "format sign + on negative")
+ok(format(-42, "+06d") == "-00042", "format sign + zero-pad")
+ok(format(42, "=+8d") == "+     42", "format = align sign-aware")
+ok(format(7, ">06d") == "000007", "format zero-pad with explicit align")
+ok(format("hi", "^6") == "  hi  ", "format center")
+ok(format("hi", "<6") == "hi    ", "format left align (string default)")
+ok(format("hi", ">6") == "    hi", "format right align")
+ok(format("x", "*^7") == "***x***", "format custom fill")
+ok(format("hello", ".3s") == "hel", "format string precision truncates")
+ok(format(3.14) == "3.14", "format bare float uses general")
+ok(format(True) == "True", "format bare Bool stringifies")
+ok(format(None) == "None", "format None")
+ok(format([1, 2]) == "[1, 2]", "format list stringifies")
+ok(format(value = 42, spec = "03d") == "042", "format keyword args")
+ok(throws(Function(): return format(42, "q")), "format unknown type throws")
+ok(throws(Function(): return format(3.14, "d")), "format float with d throws")
+ok(throws(Function(): return format("x", "d")), "format string with d throws")
+ok(throws(Function(): return format(42, ".2d")), "format precision on integer throws")
+ok(throws(Function(): return format(42, ",x")), "format comma with hex throws")
+
+# ================================================================ id ===
+var idA = [1, 2, 3]
+var idB = idA
+var idC = [1, 2, 3]
+ok(id(idA) == id(idB), "id same for aliases")
+ok(id(idA) != id(idC), "id differs for distinct objects")
+ok(id(1) == id(1), "id equal for interned small ints")
+ok(type(id(idA)) == "Integer", "id returns Integer")
+
+# ================================================================ import ===
+ok(type(import("math")) == "Module", "import returns Module")
+ok(import(name = "math") == import("math"), "import cached + keyword arg")
+ok(throws(Function(): return import("no_such_module_xyz_123")), "import missing module throws")
+
+# ============================================================== inspect ===
+# inspect returns a String describing signatures; just assert it produces text and reflects names.
+var insSorted = inspect(sorted)
+ok(type(insSorted) == "String", "inspect returns String")
+ok("sorted" in insSorted, "inspect names the function")
+ok("reverse" in insSorted, "inspect shows parameter names")
+ok("-> List" in insSorted, "inspect shows return type")
+ok("(...)" in inspect(min), "inspect shows variadic min as (...)")
+ok("(...)" in inspect(zip), "inspect shows variadic zip as (...)")
+ok("(...)" in inspect(range), "inspect shows variadic range as (...)")
+ok("base" in inspect(pow), "inspect shows pow parameters")
+ok("Integer" in inspect(Integer), "inspect shows Integer signature")
+ok(type(inspect(io)) == "String", "inspect of module")
+ok(type(inspect(Animal)) == "String", "inspect of class")
+
+io.print("r6_builtins: " + String(n) + " checks passed")

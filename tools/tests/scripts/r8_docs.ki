@@ -1,0 +1,628 @@
+# r8_docs.ki — doc-accuracy regression net for round R8.
+# Each ok(...) transcribes a DISTINCT documented example (course lessons, recipes, language
+# guide, types reference, builtins reference) and asserts the output the docs state. Every
+# example here was executed against build-release/ki and confirmed to match the docs.
+# Complements r7_docs.ki with fresh, non-duplicated examples.
+# Pages: 04-language-guide, 05-builtins, 06-types, 08-recipes, 11..30 course/bonus lessons.
+# (07-stdlib.md is covered by other agents.)
+
+var io = import("io")
+var path = import("path")
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# ---- Language guide: numbers (a leading zero is NOT octal; / always Float) ----
+ok(007 == 7, "leading zero is decimal, not octal")
+ok(6 / 2 == 3.0, "/ yields Float even when even")
+ok((6 / 2 == 3) == True, "3.0 == 3 by value")
+ok(-7 // 2 == -4, "floor division toward negative infinity")
+ok(bitor(0b1000, 0b0001) == 9, "guide bitor example")
+ok(bitxor(5, 1) == 4, "guide bitxor example")
+ok(1e3 == 1000.0 and 1.5e3 == 1500.0, "scientific notation literals")
+ok((2e-3).compare(0.002), "scientific notation small")
+
+# ---- Types: Integer reference block ----
+ok(hex(255) == "0xff" and bin(5) == "0b101", "Integer hex/bin")
+ok(255 // 10 == 25 and 255 % 10 == 5, "Integer floor/mod")
+ok(bitand(0xFF, 0x0F) == 15, "Integer bitand reference")
+ok(2 ** 3 ** 2 == 512, "exponentiation right-associative reference")
+
+# ---- Types: String reference block ----
+ok(len("café") == 4 and "café"[3] == "é", "String len/index reference")
+ok("café"[::-1] == "éfac", "String reverse slice")
+ok("chrząszcz"[::-1] == "zczsązrhc", "Unicode reverse slice")
+ok(", ".join(["a", "b", "c"]) == "a, b, c", "join with comma-space")
+
+# ---- Types: String.apply flat-map (and Bytes/List/Dict/Set apply) ----
+ok("ab".apply(Function(c): return c + c) == "aabb", "String apply expands")
+ok(String(Bytes([1, 2, 3]).apply(Function(x): return x + 1)) == "b'\\x02\\x03\\x04'", "Bytes apply")
+ok(String([1, 2, 3].apply(Function(x): return x * x)) == "[1, 4, 9]", "List apply")
+ok(String({"a": 1, "b": 2}.apply(Function(v): return v * 10)) == "{'a': 10, 'b': 20}", "Dict apply over values")
+ok(String(sorted({1, 2, 3}.apply(Function(x): return x * 2))) == "[2, 4, 6]", "Set apply")
+
+# ---- Types: Bytes latin-1 round-trip bridge ----
+var rawbytes = Bytes([200, 100, 50])
+ok(rawbytes.decode("latin-1").encode("latin-1") == rawbytes, "latin-1 byte<->codepoint bridge")
+
+# ---- Types: List methods (insert / pop(i)) ----
+var lst3 = [1, 2, 3]
+lst3.insert(1, 99)
+ok(String(lst3) == "[1, 99, 2, 3]", "list insert at index")
+ok(lst3.pop(0) == 1, "list pop(i) returns element")
+ok(String(lst3) == "[99, 2, 3]", "list after pop(0)")
+
+# ---- Types: Set algebra accepts any iterable; operator forms ----
+ok(String(sorted({1, 2}.union([2, 3]))) == "[1, 2, 3]", "set union with a List")
+ok(String(sorted({1, 2, 3}.intersection([2, 3, 4]))) == "[2, 3]", "set intersection with a List")
+ok(String(sorted({1, 2, 3} - {2})) == "[1, 3]", "set difference operator")
+ok(({1, 2} < {1, 2, 3}) == True, "proper subset operator")
+ok(({1, 2, 3} > {1, 2}) == True, "proper superset operator")
+
+# ---- Types: Dict methods (setdefault / pop / update) ----
+var dct = {"a": 1}
+ok(dct.setdefault("a", 99) == 1, "setdefault existing key keeps value")
+ok(dct.setdefault("b", 2) == 2, "setdefault missing key inserts")
+dct.update({"c": 3})
+ok(String(sorted(dct.items())) == "[['a', 1], ['b', 2], ['c', 3]]", "dict update")
+ok(dct.pop("c") == 3 and ("c" in dct) == False, "dict pop removes")
+
+# ---- Language guide: slicing with negative indices / steps ----
+var seq6 = [0, 1, 2, 3, 4, 5]
+ok(String(seq6[3:-1]) == "[3, 4]", "slice [3:-1]")
+ok(String(seq6[::-1]) == "[5, 4, 3, 2, 1, 0]", "slice [::-1]")
+ok(String(seq6[::2]) == "[0, 2, 4]", "slice [::2]")
+
+# ---- Language guide: for iterates a snapshot ----
+var snap = [1, 2, 3]
+var visited = []
+for sv in snap:
+    visited.append(sv)
+    if sv == 1:
+        snap.append(99)
+ok(String(visited) == "[1, 2, 3]", "for walks a snapshot, appended item not visited")
+
+# ---- Language guide: conditional expression has lowest precedence ----
+ok((True or False if False else "x") == "x", "(a or b) if c else d grouping")
+
+# ---- Builtins: enumerate(start) / zip / all / any ----
+ok(String(enumerate(["a", "b"], start = 1)) == "[[1, 'a'], [2, 'b']]", "enumerate start=1")
+ok(String(zip([1, 2, 3], ["a", "b"])) == "[[1, 'a'], [2, 'b']]", "zip truncates to shortest")
+ok(all([1, 2, 3]) == True and all([1, 0, 3]) == False, "all")
+ok(any([0, 0, 1]) == True and any([0, 0, 0]) == False, "any")
+ok(all([]) == True and any([]) == False, "all/any vacuous")
+
+# ---- Builtins notes: divmod floor / pow modular / sum start / reversed ----
+ok(String(divmod(-7, 3)) == "[-3, 2]", "divmod floor semantics")
+ok(pow(2, 10, mod = 1000) == 24, "pow modular")
+ok(pow(3, 4) == 81, "pow two-arg")
+ok(sum([1, 2, 3], 10) == 16, "sum with start")
+ok(sum([]) == 0, "sum empty is 0")
+ok(String(reversed([1, 2, 3])) == "[3, 2, 1]", "reversed")
+
+# ---- Builtins: min/max with key and default ----
+ok(min(["aa", "b", "ccc"], key = len) == "b", "min by key")
+ok(max(["aa", "b", "ccc"], key = len) == "ccc", "max by key")
+ok(min([], default = -1) == -1, "min default on empty")
+
+# ---- Builtins: range materializes / ord / chr ----
+ok(String(range(3)) == "[0, 1, 2]", "range(stop)")
+ok(String(range(1, 11)) == "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]", "range(start, stop)")
+ok(String(range(0, 10, 2)) == "[0, 2, 4, 6, 8]", "range with step")
+ok(ord("A") == 65 and chr(97) == "a", "ord/chr")
+
+# ---- Lesson 1: comment arithmetic ----
+ok(24 * 60 * 60 == 86400, "seconds per day")
+
+# ---- Lesson 3: title-casing worked example ----
+var title_case = Function(sentence : String) -> String:
+    var words = sentence.split(" ")
+    var capitalized = []
+    for word in words:
+        if len(word) > 0:
+            capitalized.append(word[0].upper() + word[1:])
+    return " ".join(capitalized)
+ok(title_case("the quick brown fox") == "The Quick Brown Fox", "title_case worked example")
+
+# ---- Lesson 4: enumerate/zip f-strings; range accumulate; first-multiple loop ----
+var eout = []
+for ep in enumerate(["red", "green", "blue"]):
+    eout.append(f"{ep[0]}: {ep[1]}")
+ok(String(eout) == "['0: red', '1: green', '2: blue']", "enumerate f-string rows")
+var names4 = ["Ada", "Alan", "Grace"]
+var ages4 = [36, 41, 45]
+var zout = []
+for zp in zip(names4, ages4):
+    zout.append(f"{zp[0]} is {zp[1]}")
+ok(String(zout) == "['Ada is 36', 'Alan is 41', 'Grace is 45']", "zip f-string rows")
+var run_total = 0
+for rn in range(1, 11):
+    run_total = run_total + rn
+ok(run_total == 55, "sum 1..10 via range")
+var first_mult = None
+for fn in range(21, 100):
+    if fn % 7 == 0:
+        first_mult = fn
+        break
+ok(first_mult == 21, "first multiple of 7 above 20")
+
+# ---- Lesson 5: multi-return + unpack; divide ----
+var divide = Function(numerator : Integer, denominator : Integer):
+    return numerator // denominator, numerator % denominator
+var qd, rd = divide(17, 5)
+ok(f"17 = 5 * {qd} + {rd}" == "17 = 5 * 3 + 2", "divide multi-return unpack")
+
+# ---- Lesson 6: function value list; default-None log; higher-order ----
+var double6 = Function(x): return x * 2
+var triple6 = Function(x): return x * 3
+var ops6 = [double6, triple6]
+var or6 = []
+for op6 in ops6:
+    or6.append(op6(10))
+ok(String(or6) == "[20, 30]", "list of functions")
+var noret = Function(z):
+    var w = z + 1
+    discard w
+ok(noret(5) == None, "function with no return yields None")
+
+# ---- Lesson 7: Any / no annotation accept everything; describe_type ----
+var identity7 = Function(x : Any):
+    return x
+var describe_type = Function(value):
+    return type(value)
+ok(identity7(42) == 42 and identity7("hi") == "hi", "Any accepts anything")
+ok(describe_type([1, 2]) == "List", "no annotation accepts anything")
+ok(describe_type(3.5) == "Float", "type via no-annotation helper")
+
+# ---- Lesson 7: inheritance-aware annotation (describe accepts a subclass) ----
+class Animal7:
+    var _init_ = Function(self, name):
+        self.name = name
+class Dog7(Animal7):
+    var bark = Function(self) -> String:
+        return f"{self.name} says woof"
+var describe7 = Function(creature : Animal7) -> String:
+    return creature.name
+ok(describe7(Dog7("Rex")) == "Rex", "subclass satisfies base annotation")
+
+# ---- Lesson 8: Stack worked example (pop None on empty) ----
+class Stack8:
+    var _init_ = Function(self):
+        self._items = []
+    var push = Function(self, item):
+        self._items.append(item)
+    var pop = Function(self):
+        if len(self._items) == 0:
+            return None
+        return self._items.pop()
+    var size = Function(self) -> Integer:
+        return len(self._items)
+var work8 = Stack8()
+work8.push("a")
+work8.push("b")
+ok(work8.pop() == "b" and work8.size() == 1, "Stack push/pop/size")
+
+# ---- Lesson 9: container protocol _iter_ / _contains_ ----
+class Range3:
+    var _iter_ = Function(self):
+        return [0, 1, 2]
+    var _contains_ = Function(self, x) -> Bool:
+        return x == 0 or x == 1 or x == 2
+var r3out = []
+for r3 in Range3():
+    r3out.append(r3)
+ok(String(r3out) == "[0, 1, 2]", "_iter_ drives for")
+ok((1 in Range3()) == True and (5 in Range3()) == False, "_contains_ drives in")
+
+# ---- Lesson 10: shape hierarchy worked example (_super_ chains a name) ----
+class Shape2:
+    var _init_ = Function(self, name):
+        self.name = name
+    var area = Function(self) -> Float:
+        return 0.0
+class Rect2(Shape2):
+    var _init_ = Function(self, width, height):
+        self._super_()._init_("rectangle")
+        self.width = width
+        self.height = height
+    var area = Function(self) -> Float:
+        return Float(self.width * self.height)
+class Circ2(Shape2):
+    var _init_ = Function(self, radius):
+        self._super_()._init_("circle")
+        self.radius = radius
+    var area = Function(self) -> Float:
+        return 3.14159 * self.radius * self.radius
+var shapes10 = [Rect2(3, 4), Circ2(1), Rect2(2, 2)]
+var total10 = 0.0
+for sh in shapes10:
+    total10 = total10 + sh.area()
+ok(total10.compare(19.14159), "shape hierarchy total area")
+ok(shapes10[0].name == "rectangle" and shapes10[1].name == "circle", "_super_ set the name")
+
+# ---- Recipes: Stack class ----
+class StackR:
+    var _init_ = Function(self):
+        self._items = []
+    var push = Function(self, x):
+        self._items.append(x)
+    var pop = Function(self):
+        if len(self._items) == 0:
+            throw "pop from empty stack"
+        return self._items.pop()
+    var _len_ = Function(self) -> Integer:
+        return len(self._items)
+var sr = StackR()
+sr.push(1)
+sr.push(2)
+ok(sr.pop() == 2 and len(sr) == 1, "recipe Stack")
+
+# ---- Recipes: Countdown iterable ----
+class Countdown:
+    var _init_ = Function(self, k):
+        self._k = k
+    var _iter_ = Function(self):
+        var out = []
+        var i = self._k
+        while i > 0:
+            out.append(i)
+            i = i - 1
+        return out
+var cdr = []
+for cx in Countdown(3):
+    cdr.append(cx)
+ok(String(cdr) == "[3, 2, 1]", "recipe Countdown iterable")
+
+# ---- Recipes: defaultdict grouping ----
+var col = import("collections")
+var groups = col.defaultdict(Function(): return [])
+for gi in range(10):
+    groups[gi % 3].append(gi)
+ok(String(groups[0]) == "[0, 3, 6, 9]" and String(groups[1]) == "[1, 4, 7]", "recipe defaultdict groups")
+
+# ---- Recipes: JSON round-trip (parse/stringify aliases) ----
+var json = import("json")
+var jdata = json.parse("{\"name\": \"Kirito\", \"version\": 1}")
+ok(jdata["name"] == "Kirito" and jdata["version"] == 1, "recipe json.parse")
+
+# ---- Lesson 13: path helpers + path.join ----
+var sys = import("sys")
+ok(path.join("dir", "sub", "file.txt").endswith("file.txt"), "path.join")
+ok(path.basename("/a/b/c.txt") == "c.txt", "path.basename")
+ok(path.dirname("/a/b/c.txt") == "/a/b", "path.dirname")
+ok(String(path.splitext("report.csv")) == "['report', '.csv']", "path.splitext")
+
+# ---- Lesson 13: file round-trip + line iteration + append ----
+var fpath = path.join(path.gettempdir(), "r8_docs_io.txt")
+with io.open(fpath, "w") as fw:
+    fw.writelines(["first\n", "second\n", "third\n"])
+with io.open(fpath, "a") as fa:
+    fa.write("fourth\n")
+var flines = []
+with io.open(fpath, "r") as fr:
+    for fl in fr:
+        flines.append(fl.strip())
+ok(String(flines) == "['first', 'second', 'third', 'fourth']", "file write/append/iterate round-trip")
+discard path.remove(fpath, missing_ok = True)
+
+# ---- Lesson 13: stdout redirect is just an assignment ----
+var redir = io.BytesIO()
+io.stdout = redir
+io.print("this is captured")
+io.print("so is this")
+io.stdout = io.__stdout__
+ok(redir.getvalue() == "this is captured\nso is this\n", "io.stdout rebind captures output")
+
+# ---- Lesson 14: json dumps/loads + indent; collections.Counter ----
+var profile14 = {"name": "Ada", "langs": ["Kirito", "C++"], "active": True}
+var ptext14 = json.dumps(profile14)
+var parsed14 = json.loads(ptext14)
+ok(parsed14["langs"][0] == "Kirito", "lesson14 json round-trip nested")
+ok(json.dumps(profile14, indent = 2).startswith("{"), "json pretty indent")
+
+# ---- Lesson 15 capstone: Task ordering / _str_ / reload / TaskNotFound ----
+var capjson = import("json")
+var RANK = {"high": 0, "medium": 1, "low": 2}
+class Task:
+    var _init_ = Function(self, title : String, priority : String = "medium"):
+        if not (priority in RANK):
+            throw f"unknown priority: {priority}"
+        self.title = title
+        self.priority = priority
+        self.done = False
+    var _str_ = Function(self) -> String:
+        var box = "[x]" if self.done else "[ ]"
+        return f"{box} {self.priority:<6} {self.title}"
+    var _key = Function(self):
+        return [Integer(self.done), RANK[self.priority], self.title]
+    var _lt_ = Function(self, other : Task) -> Bool:
+        return self._key() < other._key()
+    var to_dict = Function(self) -> Dict:
+        return {"title": self.title, "priority": self.priority, "done": self.done}
+class TaskNotFound:
+    var _init_ = Function(self, title):
+        self.title = title
+class TaskList:
+    var _init_ = Function(self):
+        self._tasks = []
+    var add = Function(self, task : Task):
+        self._tasks.append(task)
+    var complete = Function(self, title : String):
+        for task in self._tasks:
+            if task.title == title:
+                task.done = True
+                return
+        throw TaskNotFound(title)
+    var pending = Function(self):
+        var out = []
+        for task in self._tasks:
+            if not task.done:
+                out.append(task)
+        return out
+    var _len_ = Function(self) -> Integer:
+        return len(self._tasks)
+    var ordered = Function(self):
+        return sorted(self._tasks)
+    var save = Function(self, path : String):
+        var records = []
+        for task in self.ordered():
+            records.append(task.to_dict())
+        with io.open(path, "w") as f:
+            f.write(capjson.dumps(records, indent = 2))
+    var load = Function(self, path : String):
+        with io.open(path, "r") as f:
+            var records = capjson.loads(f.read())
+        for record in records:
+            var task = Task(record["title"], record["priority"])
+            task.done = record["done"]
+            self.add(task)
+var inbox = TaskList()
+inbox.add(Task("Write the report", "high"))
+inbox.add(Task("Water the plants", "low"))
+inbox.add(Task("Reply to Ada", "medium"))
+inbox.add(Task("Ship the release", "high"))
+inbox.complete("Water the plants")
+ok(len(inbox) == 4 and len(inbox.pending()) == 3, "capstone counts")
+var ordered_lines = []
+for t in inbox.ordered():
+    ordered_lines.append(String(t))
+ok(ordered_lines[0] == "[ ] high   Ship the release", "capstone ordering: high alphabetical first")
+ok(ordered_lines[1] == "[ ] high   Write the report", "capstone ordering: second high")
+ok(ordered_lines[2] == "[ ] medium Reply to Ada", "capstone ordering: medium")
+ok(ordered_lines[3] == "[x] low    Water the plants", "capstone ordering: done sinks to bottom")
+var cappath = path.join(path.gettempdir(), "r8_docs_tasks.json")
+inbox.save(cappath)
+var reloaded = TaskList()
+reloaded.load(cappath)
+ok(len(reloaded) == 4, "capstone reload count")
+var miss = ""
+try:
+    reloaded.complete("Take over the world")
+catch TaskNotFound as ce:
+    miss = ce.title
+ok(miss == "Take over the world", "capstone TaskNotFound carries title")
+discard path.remove(cappath, missing_ok = True)
+
+# ---- Bonus 1: regex char classes, anchors, quantifiers (distinct from r7) ----
+var re = import("regex")
+ok(re.search("[aeiou]", "rhythm and blues").group() == "a", "regex class first vowel")
+ok(re.search("[^0-9]+", "123abc").group() == "abc", "regex negated class")
+ok(re.search(r"\w+", "  hi_there!").group() == "hi_there", "regex word chars")
+ok(re.search(r"\d{3}-\d{4}", "call 555-0199 now").group() == "555-0199", "regex {n} quantifier")
+ok(re.search("ab+c", "abbbc").group() == "abbbc", "regex plus quantifier")
+ok(re.search("^id", "id 99").group() == "id", "regex start anchor")
+ok(re.search("99$", "id 99").group() == "99", "regex end anchor")
+ok(re.match("id", "id 4821 x").group() == "id", "regex match at start")
+
+# ---- Bonus 1: named groups, optional groups, findall group arity ----
+var who = re.search(r"(?P<user>\w+)@(?P<host>[\w.]+)", "write ada@kirito.dev today")
+ok(who.group("user") == "ada" and who.group("host") == "kirito.dev", "named groups by name")
+var partial = re.search(r"(\d+)?-(\d+)", "-5")
+ok(partial.group(1) == None and partial.group(2) == "5", "optional group is None")
+ok(String(re.findall("(jan|feb|mar)", "feb and mar")) == "['feb', 'mar']", "findall one group -> strings")
+ok(String(re.findall(r"(\w+)=(\d+)", "x=1 y=22")) == "[['x', '1'], ['y', '22']]", "findall two groups -> tuples")
+
+# ---- Bonus 1: split keeps separator; inline flags; MULTILINE; sub count; escape ----
+ok(String(re.split(r"(\s+)", "one two")) == "['one', ' ', 'two']", "split retains captured separator")
+ok(re.search("(?i)hello", "HELLO there").group() == "HELLO", "inline (?i) flag")
+ok(re.search("a(?i)b", "AB").group() == "AB", "inline flag applies to whole pattern")
+ok(String(re.findall(r"^\w+", "one\ntwo\nthree", re.MULTILINE)) == "['one', 'two', 'three']", "MULTILINE ^ per line")
+ok(re.sub("a", "X", "aaaa", 2) == "XXaa", "sub with count limit")
+ok(re.search(re.escape("3.14"), "pi=3.14").group() == "3.14", "escape makes dot literal")
+
+# ---- Bonus 2: arg typed Float/String, greet upcased, wordcount, help ----
+var arg = import("arg")
+var pg = arg.Parser("greet someone")
+discard pg.positional("name")
+discard pg.option("count", 1)
+discard pg.flag("loud")
+var gopts = pg.parse(["Ada", "--count", "3", "--loud"])
+var greeting = f"Hello, {gopts['name']}!"
+if gopts["loud"]:
+    greeting = greeting.upper()
+ok(greeting == "HELLO, ADA!" and gopts["count"] == 3, "arg greet upcased")
+var wordcount = Function(args):
+    var pw = arg.Parser("count words")
+    discard pw.positional("text")
+    discard pw.flag("by-char")
+    discard pw.flag("upper")
+    var opts = pw.parse(args)
+    if opts == None:
+        return None
+    var text = opts["text"]
+    if opts["upper"]:
+        text = text.upper()
+    var amount = len(text) if opts["by-char"] else len(text.split())
+    var unit = "characters" if opts["by-char"] else "words"
+    return f"{text}: {amount} {unit}"
+ok(wordcount(["the quick brown fox", "--upper"]) == "THE QUICK BROWN FOX: 4 words", "wordcount words")
+ok(wordcount(["hello world", "--by-char"]) == "hello world: 11 characters", "wordcount chars")
+# --help prints to stdout and returns None — capture it so stdout stays clean
+var helpcap = io.BytesIO()
+var ph = arg.Parser("greet")
+discard ph.positional("name")
+discard ph.option("count", 1)
+io.stdout = helpcap
+var hopts = ph.parse(["--help"])
+io.stdout = io.__stdout__
+ok(hopts == None, "--help returns None")
+ok(helpcap.getvalue().startswith("usage:"), "--help prints usage")
+
+# ---- Bonus 2: arg error messages ----
+var pe = arg.Parser()
+discard pe.positional("name")
+discard pe.option("count", 1)
+var errs = []
+for bad in [[], ["Ada", "--count", "ten"], ["Ada", "--oops"]]:
+    try:
+        discard pe.parse(bad)
+        errs.append("ok")
+    catch as ee:
+        errs.append(ee)
+ok(errs[0] == "missing required argument: <name>", "arg missing positional error")
+ok(errs[1] == "option --count expects an integer, got 'ten'", "arg bad integer error")
+ok(errs[2] == "unknown option: --oops", "arg unknown option error")
+
+# ---- Bonus 3: tabular Series ==/!= mask; DataFrame build; groupby agg via tolist ----
+var tb = import("tabular")
+var ser3 = tb.Series([10, 20, 30, 40])
+ok(String((ser3 == 20).tolist()) == "[False, True, False, False]", "Series == mask")
+var df3 = tb.DataFrame([["Ada", "eng", 120], ["Alan", "eng", 110], ["Grace", "ops", 95], ["Edsger", "ops", 130]], columns = ["name", "dept", "salary"])
+ok(String(df3.shape()) == "[4, 3]" and String(df3.columns) == "['name', 'dept', 'salary']", "DataFrame from rows")
+var dfc = tb.readcsv("name,dept,salary\nAda,eng,120\nAlan,eng,110\nGrace,ops,95\nEdsger,ops,130")
+ok(String(dfc.groupby("dept").mean()["salary"].tolist()) == "[115.0, 112.5]", "groupby mean per dept")
+ok(String(dfc.groupby("dept").agg({"salary": "max"})["salary"].tolist()) == "[120, 130]", "groupby agg max")
+dfc["bonus"] = dfc["salary"] * 0.1
+ok(String(dfc["bonus"].tolist()) == "[12.0, 11.0, 9.5, 13.0]", "derived column")
+ok(String(dfc.sortvalues("salary", ascending = False)["name"].tolist()) == "['Edsger', 'Ada', 'Alan', 'Grace']", "sortvalues descending")
+
+# ---- Bonus 4: matrix factories/apply, keyword args; complex Euler / hermitian ----
+var m = import("matrix")
+ok(String(m.zeros(2, 3)) == "[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]", "matrix zeros")
+ok(String(m.identity(2)) == "[[1.0, 0.0], [0.0, 1.0]]", "matrix identity")
+ok(String(m.zeros(rows = 2, cols = 3)) == "[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]", "matrix zeros keyword args")
+var A4 = m.Matrix([[1, 2], [3, 4]])
+ok(A4.get(row = 0, col = 1) == 2.0, "matrix get keyword args")
+ok(String(A4.apply(Function(x): return x + 10)) == "[[11.0, 12.0], [13.0, 14.0]]", "matrix apply +10")
+ok(String(m.vector([1, 2, 3]).apply(Function(x): return x * 10)) == "[[10.0, 20.0, 30.0]]", "vector apply")
+var C = import("complex")
+ok(String(C.of(re = 1, im = 2)) == "1.0+2.0i", "complex keyword constructor")
+var euler = C.exp(C.of(0, import("math").pi))    # complex has no pi; use math.pi (single source of truth)
+ok(euler.re.compare(-1.0, abs_tol = 1e-9) and euler.im.compare(0.0, abs_tol = 1e-9), "Euler identity ~ -1")
+var Mc4 = C.Matrix([[C.of(1, 1), C.of(2, 0)], [C.of(0, 1), C.of(1, -1)]])
+ok(String(Mc4.hermitian()) == "[[1.0-1.0i, 0.0-1.0i], [2.0+0.0i, 1.0+1.0i]]", "complex hermitian")
+ok(String(Mc4.apply(Function(z): return C.conjugate(z))) == "[[1.0-1.0i, 2.0+0.0i], [0.0-1.0i, 1.0+1.0i]]", "complex matrix apply conjugate")
+
+# ---- Bonus 5: tensor factories/broadcasting/selection (distinct from r7) ----
+var T = import("tensor")
+ok(String(T.full([2, 2], 9)) == "[[9.0, 9.0], [9.0, 9.0]]", "tensor full")
+ok(String(T.diag(T.Tensor([1, 2, 3]))) == "[[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]", "diag vector -> matrix")
+ok(String(T.diag(T.Tensor([[1, 2], [3, 4]]))) == "[1.0, 4.0]", "diag matrix -> vector")
+ok(String(T.tril(T.ones([3, 3]))) == "[[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0]]", "tril")
+var ta5 = T.Tensor([[1, 2, 3], [4, 5, 6]])
+ok(String(ta5 + T.Tensor([[10, 20, 30]])) == "[[11.0, 22.0, 33.0], [14.0, 25.0, 36.0]]", "broadcast row over rows")
+ok(String(ta5 + T.Tensor([[100], [200]])) == "[[101.0, 102.0, 103.0], [204.0, 205.0, 206.0]]", "broadcast col over cols")
+ok(String(-ta5) == "[[-1.0, -2.0, -3.0], [-4.0, -5.0, -6.0]]", "tensor negation")
+ok(String(ta5[[1, 0]]) == "[[4.0, 5.0, 6.0], [1.0, 2.0, 3.0]]", "tensor index list rows")
+
+# ---- Bonus 5: logic/where/clip/maximum; reductions; structural ----
+var tb5 = T.Tensor([1, 2, 3, 4, 5])
+var mask5 = tb5.gt(1).logicaland(tb5.lt(5))
+ok(String(mask5) == "[0.0, 1.0, 1.0, 1.0, 0.0]", "logicaland mask")
+ok(String(T.where(mask5, tb5, T.zeros([5]))) == "[0.0, 2.0, 3.0, 4.0, 0.0]", "where selects by mask")
+ok(String(tb5.clip(2, 4)) == "[2.0, 2.0, 3.0, 4.0, 4.0]", "clip clamps")
+ok(String(tb5.maximum(T.full([5], 3))) == "[3.0, 3.0, 3.0, 4.0, 5.0]", "elementwise maximum")
+ok(ta5.mean() == 3.5 and ta5.min() == 1.0 and ta5.max() == 6.0, "reductions mean/min/max")
+var tc5 = T.Tensor([[1, 5, 2], [4, 0, 6]])
+ok(String(tc5.argmax(1)) == "[1.0, 2.0]", "argmax along rows")
+ok(tc5.all() == False and tc5.any() == True, "all/any non-zero")
+ok(String(ta5.reshape([3, 2])) == "[[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]", "tensor reshape")
+ok(String(ta5.permute([1, 0])) == "[[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]", "tensor permute")
+ok(String(ta5.flip()) == "[[6.0, 5.0, 4.0], [3.0, 2.0, 1.0]]", "tensor flip")
+
+# ---- Bonus 5: structural shapes / split ----
+ok(String(T.zeros([1, 3, 1]).squeeze().shape()) == "[3]", "squeeze drops size-1 axes")
+ok(String(T.Tensor([1, 2]).expanddims(0).shape()) == "[1, 2]", "expanddims inserts axis")
+ok(String(T.Tensor([[1], [2]]).broadcastto([2, 3])) == "[[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]", "broadcastto")
+ok(String(T.Tensor([1, 2]).repeat(2)) == "[1.0, 1.0, 2.0, 2.0]", "tensor repeat")
+ok(String(T.Tensor([1, 2]).tile([2])) == "[1.0, 2.0, 1.0, 2.0]", "tensor tile")
+ok(String(T.concatenate([ta5, ta5], 0).shape()) == "[4, 3]", "concatenate rows")
+ok(len(T.split(T.Tensor([[1, 2], [3, 4]]), 2, 0)) == 2, "split into pieces")
+
+# ---- Bonus 5: linear algebra / sorting ----
+var Mlin = T.Tensor([[4, 3], [6, 3]])
+ok(T.det(Mlin) == -6.0 and T.trace(Mlin) == 7.0, "tensor det/trace")
+ok(String(T.inv(Mlin).matmul(Mlin)) == "[[1.0, 0.0], [0.0, 1.0]]", "inv times M is identity")
+ok(String(T.outer(T.Tensor([1, 2]), T.Tensor([3, 4]))) == "[[3.0, 4.0], [6.0, 8.0]]", "outer product")
+ok(String(T.Tensor([3, 1, 2]).argsort()) == "[1.0, 2.0, 0.0]", "argsort order")
+ok(String(T.nonzero(T.Tensor([0, 5, 0, 7]))) == "[[1.0, 3.0]]", "nonzero indices")
+ok(String(T.einsum("ij->ji", T.Tensor([[1, 2], [3, 4]]))) == "[[1.0, 3.0], [2.0, 4.0]]", "einsum transpose")
+ok(String(T.einsum("ij,jk->ik", T.Tensor([[1, 2], [3, 4]]), T.eye(2))) == "[[1.0, 2.0], [3.0, 4.0]]", "einsum matmul")
+ok(String(T.contract(T.full([2, 3, 4], 1), T.full([4, 3, 5], 2), [1, 2], [1, 0]).shape()) == "[2, 5]", "contract chosen axes")
+
+# ---- Bonus 5: autograd worked example (fit y = 2x + 1) ----
+var xs5 = T.Tensor([[0], [1], [2], [3]])
+var ys5 = T.Tensor([[1], [3], [5], [7]])
+var w5 = T.zeros([1, 1], requiresgrad = True)
+var b5 = T.zeros([1, 1], requiresgrad = True)
+var gstep = 0
+while gstep < 600:
+    var pred5 = xs5.matmul(w5) + b5
+    var loss5 = (pred5 - ys5).square().mean()
+    w5.zerograd()
+    b5.zerograd()
+    loss5.backward()
+    with T.nograd():
+        w5 = w5 - w5.grad * 0.05
+        b5 = b5 - b5.grad * 0.05
+    w5.requiresgrad(True)
+    b5.requiresgrad(True)
+    gstep = gstep + 1
+ok(w5[0, 0].compare(2.0, abs_tol = 0.01) and b5[0, 0].compare(1.0, abs_tol = 0.01), "autograd fits y = 2x + 1")
+
+# ---- Bonus 5: detach / nograd disable tracking; complex tensor conj ----
+var wgt = T.Tensor([1.0, 2.0], requiresgrad = True)
+ok(wgt.detach().requiresgrad() == False, "detach stops tracking")
+var probe_tracked = True
+with T.nograd():
+    probe_tracked = (wgt * 2).requiresgrad()
+ok(probe_tracked == False, "nograd block disables tracking")
+var zt5 = T.Tensor([[1, 2], [3, 4]], dtype = "Complex")
+ok(zt5.dtype() == "Complex" and String(zt5[0, 0]) == "1.0+0.0i", "complex tensor dtype + element value")
+ok(String(zt5.conj()) == "[[1.0+0.0i, 2.0+0.0i], [3.0+0.0i, 4.0+0.0i]]", "complex tensor conj")
+
+# ---- Prose claims verified as errors (the docs say these RAISE) ----
+var prose_err = Function(thunk):
+    var msg = ""
+    try:
+        discard thunk()
+    catch as pe2:
+        msg = pe2
+    return msg
+ok("does not support this binary operator" in prose_err(Function(): return True + 1), "True + 1 is a type error (Bool is not numeric)")
+ok("sum expects numbers" in prose_err(Function(): return sum([True, False])), "sum([True, False]) throws")
+var ann_repeat = Function(text : String, times : Integer) -> String:
+    return text * times
+ok("argument 'times' must be Integer, got String" in prose_err(Function(): return ann_repeat("ab", "3")), "annotation rejects wrong type")
+var ann_half = Function(x : Float) -> Float:
+    return x / 2.0
+ok("argument 'x' must be Float, got Integer" in prose_err(Function(): return ann_half(3)), "Integer does not satisfy Float annotation")
+ok("cannot convert String to Integer" in prose_err(Function(): return Integer("not a number")), "Integer of non-number throws")
+class MulOnly:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _mul_ = Function(self, k):
+        return MulOnly(self.v * k)
+ok("unsupported operand type 'MulOnly'" in prose_err(Function(): return 3 * MulOnly(2)), "no reflected operator: instance must be on the left")
+var ann_ret = Function(x) -> Integer:
+    if x > 0:
+        return 1
+ok("function must return Integer, got None" in prose_err(Function(): return ann_ret(-1)), "implicit None violates return annotation")
+ok("backreferences are not supported" in prose_err(Function(): return re.compile(r"(a)\1")), "regex rejects backreferences")
+class NoBase:
+    var meth = Function(self):
+        return self._super_()
+ok("does not inherit from any class" in prose_err(Function(): return NoBase().meth()), "_super_ on a base-less class throws")
+
+io.print("r8_docs: " + String(n) + " checks passed")

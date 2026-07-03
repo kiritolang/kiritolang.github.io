@@ -1,0 +1,226 @@
+# Adversarial audit of the `statistics` stdlib module: every documented function (mean, median,
+# mode, multimode, variance, stdev, pvariance, pstdev, quantiles) is probed against hand-computed
+# oracles and edge cases. Probes cover: known statistical edges (single sample, even/odd lengths,
+# all-equal values, tied modes), the documented throws (empty input for mean/median/pvariance,
+# n<2 for variance/quantiles), Float vs Integer inputs, the sample-vs-population variance
+# relationship (sample = population * n / (n-1)), the stdev = sqrt(variance) identity, the n
+# parameter of quantiles, and a randomized fuzz vs the long way.
+
+var io = import("io")
+var st = import("statistics")
+var math = import("math")
+var random = import("random")
+
+# Helper: 'close enough' for Floats.
+var near = Function(a, b) -> Bool:
+    var diff = a - b
+    if diff < 0:
+        diff = -diff
+    return diff < 1e-9
+
+# --- mean ---------------------------------------------------------------------------------------
+assert st.mean([1, 2, 3, 4, 5]) == 3.0, "mean of 1..5"
+assert st.mean([10]) == 10.0, "mean of single element"
+assert st.mean([1.0, 2.0]) == 1.5, "mean of Floats"
+assert st.mean([-5, 5]) == 0.0, "symmetric data mean is 0"
+assert st.mean([2, 4, 4, 4, 5, 5, 7, 9]) == 5.0, "standard 8-sample mean"
+assert type(st.mean([1, 2])) == "Float", "mean returns Float even from Integers"
+# throws on empty
+var threw = False
+try:
+    discard st.mean([])
+catch as e:
+    threw = "at least one" in e
+assert threw, "mean of empty list throws 'at least one'"
+
+# --- median -------------------------------------------------------------------------------------
+assert st.median([1, 2, 3]) == 2.0, "median of 3 (odd)"
+assert st.median([1, 2, 3, 4]) == 2.5, "median of 4 (even)"
+assert st.median([1]) == 1.0, "median of single element"
+assert st.median([5, 3, 1, 4, 2]) == 3.0, "median sorts internally"
+assert st.median([1.0, 2.0, 3.0, 4.0]) == 2.5, "median of Floats"
+threw = False
+try:
+    discard st.median([])
+catch as e:
+    threw = "at least one" in e
+assert threw, "median of empty throws"
+
+# --- mode ---------------------------------------------------------------------------------------
+assert st.mode([1, 2, 2, 3]) == 2, "single mode"
+assert st.mode([1, 1, 2, 2]) == 1, "tied mode goes to the value that reaches max-count first"
+assert st.mode([1]) == 1, "mode of single element"
+assert st.mode([3, 3, 1, 1, 2]) == 3, "tied: 3 hits count=2 before 1 does"
+assert st.mode(["a", "b", "a", "c"]) == "a", "mode works on Strings"
+var modeEmptyRaised = False
+try:
+    discard st.mode([])
+catch as e:
+    modeEmptyRaised = True
+assert modeEmptyRaised, "mode of empty -> throws"
+
+# --- multimode ----------------------------------------------------------------------------------
+assert st.multimode([1, 2, 2, 3]) == [2], "single-mode multimode returns one-element list"
+assert st.multimode([1, 1, 2, 2]) == [1, 2], "tied multimode returns all in first-seen order"
+assert st.multimode([3, 1, 3, 1]) == [3, 1], "first-seen order preserved on a tie"
+assert st.multimode([]) == [], "multimode of empty -> []"
+assert st.multimode([7]) == [7], "multimode of single element"
+assert st.multimode([1, 2, 3]) == [1, 2, 3], "all-distinct: every element is a mode"
+
+# --- variance / pvariance / stdev / pstdev ------------------------------------------------------
+# A canonical data set with hand-computed sample variance 32/7.
+var sv = [2, 4, 4, 4, 5, 5, 7, 9]
+assert st.mean(sv) == 5.0, "canonical mean"
+assert near(st.variance(sv), 32.0 / 7.0), "sample variance of canonical data"
+assert near(st.pvariance(sv), 4.0), "population variance of canonical data"
+assert near(st.stdev(sv), math.sqrt(32.0 / 7.0)), "sample stdev = sqrt(sample var)"
+assert near(st.pstdev(sv), 2.0), "population stdev = 2.0"
+
+# sample variance = population variance * n / (n-1)
+var trial = 0
+var rng = random.Random(112233)
+while trial < 50:
+    var n = rng.randint(2, 30)
+    var data = []
+    var i = 0
+    while i < n:
+        data.append(rng.randint(-50, 50))
+        i = i + 1
+    var sv2 = st.variance(data)
+    var pv2 = st.pvariance(data)
+    # sv = pv * n / (n-1)
+    assert near(sv2, pv2 * Float(n) / Float(n - 1)), "sample = pop * n / (n-1)"
+    assert near(st.stdev(data), math.sqrt(sv2)), "stdev = sqrt(variance)"
+    assert near(st.pstdev(data), math.sqrt(pv2)), "pstdev = sqrt(pvariance)"
+    trial = trial + 1
+
+# variance of identical values is 0
+assert st.variance([5, 5, 5, 5]) == 0.0, "all-equal sample variance is 0"
+assert st.pvariance([5, 5, 5, 5]) == 0.0, "all-equal population variance is 0"
+assert st.stdev([5, 5, 5, 5]) == 0.0, "all-equal stdev is 0"
+
+# pvariance of a single sample is 0 (mean equals the value)
+assert st.pvariance([7]) == 0.0, "pvariance of single sample is 0"
+assert st.pstdev([7]) == 0.0, "pstdev of single sample is 0"
+
+# variance / stdev REQUIRE >= 2 samples
+threw = False
+try:
+    discard st.variance([5])
+catch as e:
+    threw = "at least two" in e
+assert threw, "variance of single sample throws 'at least two'"
+threw = False
+try:
+    discard st.variance([])
+catch as e:
+    threw = "at least two" in e
+assert threw, "variance of empty throws 'at least two'"
+threw = False
+try:
+    discard st.pvariance([])
+catch as e:
+    threw = "at least one" in e
+assert threw, "pvariance of empty throws 'at least one'"
+
+# stdev passes through to sqrt(variance) so its throwing contract follows variance.
+threw = False
+try:
+    discard st.stdev([5])
+catch as e:
+    threw = True
+assert threw, "stdev with n<2 throws (via variance)"
+
+# --- quantiles --------------------------------------------------------------------------------
+# n=4 (default) produces 3 cut points; n=10 produces 9.
+assert len(st.quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])) == 3, "default quantiles n=4 yields 3 cuts"
+assert len(st.quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 10)) == 9, "quantiles n=10 yields 9 cuts"
+assert len(st.quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 2)) == 1, "quantiles n=2 yields 1 cut (median-ish)"
+assert len(st.quantiles([1, 2, 3, 4], 1)) == 0, "quantiles n=1 yields 0 cuts"
+# At n=4 on a perfect arithmetic sequence: cuts at 2.75, 5.5, 8.25 (the exclusive method).
+var qs = st.quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+assert near(qs[0], 2.75), "quartile Q1"
+assert near(qs[1], 5.5), "quartile Q2 (median)"
+assert near(qs[2], 8.25), "quartile Q3"
+# Sorted input vs. unsorted input must give the same result.
+assert st.quantiles([5, 1, 3, 4, 2]) == st.quantiles([1, 2, 3, 4, 5]), "quantiles sorts internally"
+# n=2 single-cut should equal the median for many inputs (exclusive cut at the middle).
+# (For a 5-element odd-length list, n=2 cut at (5+1)/2 = 3 -> the middle value 3.0.)
+assert near(st.quantiles([1, 2, 3, 4, 5], 2)[0], 3.0), "quantiles(n=2) on odd list is the middle value"
+threw = False
+try:
+    discard st.quantiles([5])
+catch as e:
+    threw = "at least two" in e
+assert threw, "quantiles of n<2 throws"
+
+# --- Float vs Integer return types --------------------------------------------------------------
+assert type(st.mean([1, 2, 3])) == "Float", "mean returns Float"
+assert type(st.median([1, 2, 3])) == "Float", "median returns Float"
+assert type(st.variance([1, 2, 3])) == "Float", "variance returns Float"
+assert type(st.stdev([1, 2, 3])) == "Float", "stdev returns Float"
+
+# --- A non-numeric input fails (mean uses sum, sum requires numbers) ----------------------------
+threw = False
+try:
+    discard st.mean(["a", "b"])
+catch as e:
+    threw = True
+assert threw, "mean of Strings throws (sum is the choke point)"
+
+# --- big fuzz: oracle the long way ------------------------------------------------------------
+trial = 0
+while trial < 100:
+    var n = rng.randint(2, 50)
+    var data = []
+    var i = 0
+    while i < n:
+        data.append(rng.randint(-100, 100))
+        i = i + 1
+    var oracle_mean = 0.0
+    for v in data:
+        oracle_mean = oracle_mean + Float(v)
+    oracle_mean = oracle_mean / Float(n)
+    assert near(st.mean(data), oracle_mean), "fuzz mean matches long oracle"
+    # median oracle
+    var s2 = sorted(data)
+    var om = 0.0
+    if n % 2 == 1:
+        om = Float(s2[n // 2])
+    else:
+        om = (Float(s2[n // 2 - 1]) + Float(s2[n // 2])) / 2.0
+    assert near(st.median(data), om), "fuzz median matches long oracle"
+    # variance oracle
+    var ssd = 0.0
+    for v in data:
+        ssd = ssd + (Float(v) - oracle_mean) * (Float(v) - oracle_mean)
+    assert near(st.variance(data), ssd / Float(n - 1)), "fuzz variance matches oracle"
+    assert near(st.pvariance(data), ssd / Float(n)), "fuzz pvariance matches oracle"
+    trial = trial + 1
+
+# --- multimode fuzz: every returned value really does have the maximum count -------------------
+trial = 0
+while trial < 50:
+    var len2 = rng.randint(1, 20)
+    var data = []
+    var i = 0
+    while i < len2:
+        data.append(rng.randint(0, 5))
+        i = i + 1
+    var counts = {}
+    for v in data:
+        counts[v] = counts.get(v, 0) + 1
+    var maxc = 0
+    for k in counts.keys():
+        if counts[k] > maxc:
+            maxc = counts[k]
+    var mm = st.multimode(data)
+    for x in mm:
+        assert counts[x] == maxc, "every multimode value has the max count"
+    # mode just has to be SOMEWHERE in multimode (both pick a value tied for the max count;
+    # they don't guarantee the same tie-break order -- mode uses first-to-reach-max, multimode
+    # uses first-seen, so they can differ on a tie).
+    assert st.mode(data) in mm, "mode is one of the multimode values"
+    trial = trial + 1
+
+io.print("OK audit-statistics")

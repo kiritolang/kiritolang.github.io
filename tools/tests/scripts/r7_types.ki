@@ -1,0 +1,315 @@
+# r7_types.ki — a COMPLEMENTARY, harder audit of the built-in types reference
+# (docs/pages/09-types.md). Where r4_*/r5_*/r6_types cover the mainline of every
+# method/operator/arg, this suite hammers the *corners*: exact-equality keying
+# (NaN/-0.0/mixed-type Dict & Set keys), the str.format() auto-vs-explicit counter,
+# value/type-preservation of arithmetic, reference sharing through `*`, str/repr
+# coercion, and the full special-method protocol from unusual angles (reflected
+# operands, slice rejection, _iter_ over non-Lists, truthiness, _not_ raw return,
+# kwargs+defaults in dunders). Every check increments `n`; the final asserted line
+# is produced by r7_types.expected. Run: build-release/ki tools/tests/scripts/r7_types.ki
+var io = import("io")
+var math = import("math")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(thunk) -> True iff calling thunk() throws (a bare catch traps any error).
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+var inf = math.inf
+var nan = math.nan
+var imax = 9223372036854775807
+var imin = -9223372036854775808
+
+# =============================================================================
+# Integer — value/type preservation, wraparound corners, ** associativity
+# =============================================================================
+# `//` and `%` keep Integer for int/int but promote to Float if either side is Float.
+ok(type(7 // 2) == "Integer", "// of two Integers is Integer")
+ok(type(7.0 // 2) == "Float" and type(7 // 2.0) == "Float", "// with a Float promotes")
+ok(type(7 % 3) == "Integer" and type(7.0 % 3) == "Float", "% type preservation")
+ok(type(7 / 2) == "Float" and type(6 / 2) == "Float", "/ is always Float")
+# ** keeps Integer for Integer**nonneg-Integer; a negative exponent yields Float.
+ok(type(2 ** 3) == "Integer" and 2 ** 3 == 8, "Integer ** nonneg Integer stays Integer")
+ok(type(2 ** -1) == "Float" and 2 ** -1 == 0.5, "Integer ** negative is Float")
+ok(type(2.0 ** 3) == "Float", "Float ** Integer is Float")
+ok(0 ** 0 == 1 and 1 ** 0 == 1, "anything ** 0 is 1")
+ok(throws(Function(): return 0 ** -1), "0 ** negative throws (1/0)")
+# Right-associativity past two operators.
+ok(2 ** 2 ** 3 == 256, "** right-assoc (2 ** (2 ** 3))")
+ok(2 ** 3 ** 2 == 512, "** right-assoc (2 ** (3 ** 2))")
+ok(-2 ** 2 == -4, "unary minus binds looser than **")
+# Two's-complement wraparound past the int64 ceiling in pure exponentiation.
+ok(3 ** 40 == -6289078614652622815, "3 ** 40 wraps (deterministic two's complement)")
+ok(2 ** 63 == imin, "2 ** 63 wraps to INT64_MIN")
+ok(2 ** 64 == 0, "2 ** 64 wraps to 0")
+ok(imax * imax == 1, "INT64_MAX squared wraps to 1")
+ok(imin // -1 == imin, "INT64_MIN // -1 wraps (no SIGFPE)")
+ok(imin % -1 == 0, "INT64_MIN % -1 == 0 (no UB)")
+# divmod floors; remainder takes the divisor's sign (the doc's worked example).
+ok(divmod(-7, 3) == [-3, 2], "divmod(-7, 3) floors toward -inf")
+ok(divmod(7, -3) == [-3, -2], "divmod(7, -3) negative divisor")
+ok(7 % -3 == -2 and -7 % -3 == -1, "% takes sign of a negative divisor")
+# bitwise builtins at the bit boundaries (no operators in the language).
+ok(bitnot(imax) == imin and bitnot(imin) == imax, "bitnot flips the int64 bounds")
+ok(shl(1, 63) == imin, "shl(1, 63) sets the sign bit")
+ok(shl(1, 64) == 0, "shl by the full width clears all bits")
+ok(shr(-8, 100) == -1, "arithmetic shr of a negative saturates to -1")
+ok(bitxor(0xFF, 0xFF) == 0, "bitxor self is 0")
+# Integer.compare — negative/zero tolerances, 3-arg positional, exact-int vs float.
+ok((5).compare(5, rel_tol = -1.0), "compare of equal values holds for a negative rel_tol")
+ok(not (5).compare(6, abs_tol = -1.0), "compare with a negative abs_tol is False when unequal")
+ok((1.0).compare(1.5, 0.0, 1.0), "compare accepts rel_tol, abs_tol positionally")
+ok((imax).compare(9223372036854775807.0), "compare int64 max to its (rounded) Float is True")
+
+# =============================================================================
+# Float — exact ==/!= consequences for KEYING, ordering/hashing agreement
+# =============================================================================
+# -0.0 and 0.0 are ONE Dict key (they are ==), and the value is overwritten.
+var zk = {}
+zk[0.0] = "p"
+zk[-0.0] = "q"
+ok(len(zk) == 1 and zk[0.0] == "q" and zk[-0.0] == "q", "0.0 and -0.0 are one Dict key")
+ok(0.0 == -0.0 and String(-0.0) == "-0.0", "0.0 == -0.0 but -0.0 still stringifies signed")
+# A NaN key is WRITE-ONLY: it never equals an existing key, so inserts pile up and
+# lookup/`in` can never find it (a direct consequence of exact, NaN-never-equal ==).
+var nk = {}
+nk[nan] = "a"
+nk[nan] = "b"
+ok(len(nk) == 2, "each NaN inserted is a distinct (write-only) Dict key")
+ok(not (nan in nk), "a NaN key is never `in` the Dict (NaN != NaN)")
+ok(throws(Function(): return nk[nan]), "retrieving a NaN key throws (write-only)")
+ok(len({nan, nan}) == 2, "each NaN is a distinct Set element")
+# Mixed Integer/Float/Bool keying: 1 and 1.0 collapse (== + hash agree); True is distinct.
+ok(len({1, 1.0, True}) == 2, "1 and 1.0 collapse; True is a distinct element")
+ok((1 in {1, 1.0, True}) and (1.0 in {1, 1.0, True}) and (True in {1, 1.0, True}), "all three test as members")
+var mk = {}
+mk[1] = "i"
+mk[1.0] = "f"
+ok(len(mk) == 1 and mk[1] == "f", "1.0 overwrites the 1 Dict entry (one key)")
+# Trichotomy: for non-NaN floats exactly one of <, ==, > holds.
+ok((1.0 < 2.0) and not (1.0 == 2.0) and not (1.0 > 2.0), "trichotomy holds for distinct floats")
+ok(not (0.1 + 0.2 == 0.3) and (0.1 + 0.2 > 0.3), "0.1+0.2 is strictly greater than 0.3 (exact)")
+ok((0.1 + 0.2).compare(0.3), ".compare bridges the exact-inequality gap")
+# NaN is unordered with everything; inf comparisons are ordinary.
+ok(not (nan < 1.0) and not (nan > 1.0) and not (nan == 1.0), "NaN is unordered")
+ok(inf > 1e308 and -inf < -1e308 and inf == inf, "infinities order/compare normally")
+ok(not (inf).compare(1.0) and (inf).compare(inf), "inf.compare(finite) False, inf.compare(inf) True")
+# Float repr is %.15g (clean, round-trippy-ish); the .0 marks a Float.
+ok(String(1.0) == "1.0" and String(100.0) == "100.0", "whole Floats keep a .0")
+ok(String(1e100) == "1e+100" and String(1e-100) == "1e-100", "extreme magnitudes use exponent form")
+ok(String(inf) == "inf" and String(-inf) == "-inf" and String(nan) == "nan", "non-finite stringify")
+# round() is half-AWAY-from-zero (NOT banker's/half-to-even like Python).
+ok(round(0.5) == 1 and round(1.5) == 2 and round(2.5) == 3 and round(3.5) == 4, "round ties go half away from zero")
+ok(round(-0.5) == -1 and round(-2.5) == -3, "negative ties round away from zero")
+ok(round(12345.678, -2) == 12300.0 and type(round(12345.0, -2)) == "Float", "negative ndigits rounds to hundreds (Float)")
+ok(abs(-0.0) == 0.0 and String(abs(-0.0)) == "0.0", "abs(-0.0) is +0.0")
+
+# =============================================================================
+# String — slice corners, repetition commutativity, ordering by code point
+# =============================================================================
+# Negative-step slices with explicit bounds.
+ok("abcdef"[4:1:-1] == "edc", "negative-step slice with bounds")
+ok("abcdef"[::-2] == "fdb", "negative-step-2 slice")
+ok("abcdef"[-1:-4:-1] == "fed", "negative bounds + negative step")
+ok("abcdef"[5:0:-2] == "fdb", "negative step skipping")
+ok(""[::-1] == "" and "x"[::-1] == "x", "reverse of empty/singleton")
+# Repetition is commutative; Bool is rejected (strong typing).
+ok(3 * "ab" == "ababab" and "ab" * 3 == "ababab", "Integer * String == String * Integer")
+ok(throws(Function(): return "x" * True), "String * Bool throws (Bool is not an Integer)")
+ok(throws(Function(): return "abc"[True]), "String indexed by a Bool throws")
+# Ordering is lexicographic by code point.
+ok("Z" < "a" and "a" < "é", "String order is by code point (Z<a, a<é)")
+ok("abc" < "abd" and "ab" < "abc" and "" < "a", "lexicographic / prefix ordering")
+ok(type("a" < "b") == "Bool", "String comparison yields a Bool")
+# zfill is sign-aware even for a bare sign; non-numeric text just left-zero-pads.
+ok("ab".zfill(5) == "000ab", "zfill left-pads non-numeric text")
+ok("+".zfill(5) == "+0000" and "-".zfill(5) == "-0000", "zfill keeps a leading sign in front")
+# str.format(): the {} auto-counter is INDEPENDENT of explicit {N} (Python forbids the mix).
+ok("{} {0}".format("x", "y") == "x x", "auto {} and explicit {0} both read index 0")
+ok("{0} {}".format("x", "y") == "x x", "explicit {0} then auto {} (counter still starts at 0)")
+ok("{} {} {0}".format("p", "q", "r") == "p q p", "auto counter advances independently of {0}")
+ok("{1} {}".format("p", "q") == "q p", "{1} then auto {} reads index 0")
+ok("{}".format("a", "b", "c") == "a", "extra positional arguments are ignored")
+ok("{{}} {}".format("v") == "{} v", "escaped braces alongside a real field")
+
+# =============================================================================
+# Bytes — repr escaping detail, contiguous-subsequence `in`, cross-type ==
+# =============================================================================
+# The b'...' repr always uses single-quote delimiters, escaping control bytes and
+# the single quote; printable ASCII shows literally.
+ok(String(Bytes([72, 105])) == "b'Hi'", "printable bytes show literally")
+ok(String(Bytes([0, 9, 10, 13])) == "b'\\x00\\t\\n\\r'", "control bytes escape as \\x00/\\t/\\n/\\r")
+ok(String(Bytes([39])) == "b'\\''", "a single-quote byte is backslash-escaped")
+ok(String(Bytes([92])) == "b'\\\\'", "a backslash byte is doubled")
+ok(String(Bytes([127, 128, 255])) == "b'\\x7f\\x80\\xff'", "high/DEL bytes use \\xHH")
+# `in` is a contiguous-subsequence test (not scattered membership).
+ok(Bytes([1, 2, 3]) in Bytes([0, 1, 2, 3, 4]), "contiguous Bytes subsequence is `in`")
+ok(not (Bytes([1, 3]) in Bytes([1, 2, 3])), "a non-contiguous Bytes is not `in`")
+ok(Bytes([]) in Bytes([1, 2]), "the empty Bytes is `in` everything")
+# Cross-type == is False, never an error (Bytes is its own type, distinct from String/List).
+ok(not (Bytes([72, 105]) == "Hi"), "Bytes != the equivalent String")
+ok(not (Bytes([1]) == [1]), "Bytes != a List of the same bytes")
+ok(Bytes("Hi") == Bytes([72, 105]), "Bytes from String equals Bytes from byte values")
+# Repetition is commutative and guarded; hex is always lowercase.
+ok(3 * Bytes([1]) == Bytes([1, 1, 1]), "Integer * Bytes repeats")
+ok(Bytes([255, 0, 171]).hex() == "ff00ab", "hex is lowercase")
+ok(throws(Function(): return Bytes([1]) * 100000000000), "huge Bytes repeat is guarded")
+# decode is byte-exact; a truncated multibyte lead is rejected.
+ok(Bytes([0xc3, 0xa9]).decode("latin-1") == String(Bytes([0xc3, 0xa9]).decode("latin-1")), "latin-1 decode is a String")
+ok(throws(Function(): return Bytes([0xc3]).decode("utf-8")), "a truncated UTF-8 lead byte throws on decode")
+
+# =============================================================================
+# List / Set / Dict — reference sharing, cross-type ==, indexing rules
+# =============================================================================
+# `*` shares the SAME inner handle across copies (mutation is visible in all).
+var inner = [0]
+var rep = [inner] * 3
+rep[0].append(9)
+ok(rep == [[0, 9], [0, 9], [0, 9]], "List * shares the inner element by reference")
+# apply / copy return fresh containers (original untouched).
+var base = {"a": [1]}
+var mapped = base.apply(Function(v): return v + [2])
+ok(mapped["a"] == [1, 2] and base["a"] == [1], "Dict.apply returns a new Dict (original intact)")
+# Cross-type equality across collections is always False (never throws).
+ok(not ([] == {}) and not ({} == Set()) and not (Set() == []), "empty List/Dict/Set are pairwise unequal")
+ok(not ([1] == "x") and not ({1} == [1]) and not ({"a": 1} == 1), "collection == foreign type is False")
+ok([1] != "x" and {1} != [1], "!= across types is True")
+# Ordering across types throws (only `==`/`!=` are cross-type).
+ok(throws(Function(): return [1] < {1}), "List < Set throws")
+ok(throws(Function(): return {1} < [1]), "Set < non-Set throws")
+ok(throws(Function(): return {"a": 1} < {"b": 2}), "Dict has no ordering")
+# Multi-key indexing is rejected on the built-in containers (it is a user-type feature).
+ok(throws(Function(): return [1, 2, 3][0, 1]), "List takes exactly one index")
+ok(throws(Function(): return {"a": 1}["a", "b"]), "Dict takes exactly one index")
+ok(throws(Function(): return {1, 2, 3}[0]), "Set is not indexable")
+# Negative out-of-range index assignment throws with a clear message.
+var oob = [1, 2, 3]
+ok(throws(Function(): oob[-4] = 0), "negative out-of-range index assignment throws")
+# Set/Dict keys must be hashable; a List element/key is unhashable.
+ok(throws(Function(): return {[1]}), "a List is an unhashable Set element")
+ok(throws(Function(): return {[1]: 2}), "a List is an unhashable Dict key")
+# Single-element Set/Dict repr (deterministic at size 1) keeps repr-quoted Strings.
+ok(String({42}) == "{42}", "single-element Set repr")
+ok(String({"k": "v"}) == "{'k': 'v'}", "Dict String value is repr-quoted")
+ok(String([None, True, Bytes([65]), "x"]) == "[None, True, b'A', 'x']", "mixed container repr")
+
+# =============================================================================
+# Special methods — value-model corners beyond the documented worked example
+# =============================================================================
+# Operators dispatch ONLY on the left operand's dunder — there is no reflected form.
+class V:
+    var _init_ = Function(self, v): self.v = v
+    var _mul_ = Function(self, k): return V(self.v * k)
+    var _add_ = Function(self, o): return V(self.v + o)
+    var _str_ = Function(self): return "V" + String(self.v)
+ok(String(V(2) * 3) == "V6", "_mul_ fires when the instance is on the left")
+ok(throws(Function(): return 3 * V(2)), "Integer * instance throws (no reflected _mul_)")
+ok(throws(Function(): return 3 + V(2)), "Integer + instance throws (no reflected _add_)")
+# A user _str_ returning a non-String is coerced via the normal stringifier.
+class S42:
+    var _str_ = Function(self): return 42
+ok(String(S42()) == "42" and type(String(S42())) == "String", "_str_ returning Integer is coerced to its String form")
+ok(String([S42()]) == "[42]", "the coerced _str_ value appears unquoted when nested")
+# _ne_ is honored verbatim when defined (it does NOT have to be the negation of _eq_).
+class NE:
+    var _init_ = Function(self, v): self.v = v
+    var _eq_ = Function(self, o): return self.v == o.v
+    var _ne_ = Function(self, o): return "NE"
+ok((NE(1) != NE(1)) == "NE" and (NE(1) != NE(2)) == "NE", "an explicit _ne_ is used as-is")
+# _ne_ falls back to `not _eq_` only when _ne_ is absent.
+class EQonly:
+    var _init_ = Function(self, v): self.v = v
+    var _eq_ = Function(self, o): return self.v == o.v
+ok(EQonly(1) != EQonly(2) and not (EQonly(1) != EQonly(1)), "_ne_ defaults to not _eq_")
+# `not x` returns the RAW _not_ result (it is not coerced to a Bool).
+class NOT:
+    var _not_ = Function(self): return 99
+ok((not NOT()) == 99 and type(not NOT()) == "Integer", "not <instance> returns the raw _not_ value")
+# Instances are ALWAYS truthy — there is no _bool_, and _len_ does NOT drive truthiness.
+class LenZero:
+    var _len_ = Function(self): return 0
+class HasBool:
+    var _bool_ = Function(self): return False
+ok(Bool(LenZero()) == True, "_len_ == 0 does NOT make an instance falsy")
+ok(Bool(HasBool()) == True, "there is no _bool_ dunder (instance stays truthy)")
+var truthyHit = False
+if LenZero():
+    truthyHit = True
+ok(truthyHit, "an instance is truthy in an `if`")
+# _len_ must return an Integer.
+class BadLen:
+    var _len_ = Function(self): return 2.5
+ok(throws(Function(): return len(BadLen())), "_len_ returning a non-Integer throws")
+# Slicing an instance does NOT route through _getitem_ — it throws.
+class GI:
+    var _getitem_ = Function(self, k): return k
+ok(GI()[7] == 7, "scalar _getitem_ works")
+ok(throws(Function(): return GI()[1:3]), "slicing an instance throws (no slice protocol)")
+# _iter_ may return ANY iterable (here a String) and drives every iteration form.
+class StrIter:
+    var _iter_ = Function(self): return "abc"
+var collected = []
+for ch in StrIter():
+    collected.append(ch)
+ok(collected == ["a", "b", "c"], "_iter_ returning a String yields its characters")
+ok(List(StrIter()) == ["a", "b", "c"], "_iter_ drives the List() constructor")
+class NumIter:
+    var _iter_ = Function(self): return [3, 1, 2]
+ok(sum(NumIter()) == 6 and sorted(NumIter()) == [1, 2, 3] and max(NumIter()) == 3, "_iter_ drives sum/sorted/max")
+var ua, ub, uc = NumIter()
+ok(ua == 3 and ub == 1 and uc == 2, "_iter_ drives unpacking")
+# Dunders accept keyword arguments and per-call defaults (uniform call protocol).
+class Mul:
+    var _call_ = Function(self, a, b = 10): return a * b
+ok(Mul()(5) == 50 and Mul()(5, 3) == 15 and Mul()(b = 4, a = 2) == 8, "_call_ takes kwargs + a default")
+class Pt:
+    var _init_ = Function(self, x, y = 0):
+        self.x = x
+        self.y = y
+    var _str_ = Function(self): return f"({self.x},{self.y})"
+ok(String(Pt(y = 5, x = 1)) == "(1,5)" and String(Pt(3)) == "(3,0)", "_init_ forwards kwargs + default")
+class GIdef:
+    var _getitem_ = Function(self, i, j = 0): return [i, j]
+ok(GIdef()[5] == [5, 0] and GIdef()[5, 7] == [5, 7], "variadic _getitem_ honors a default key")
+# A mutable default in a dunder is fresh per call (not a shared-once footgun).
+class Acc:
+    var _call_ = Function(self, x, bucket = []):
+        bucket.append(x)
+        return bucket
+var acc = Acc()
+ok(acc(1) == [1] and acc(2) == [2], "a mutable default in a dunder is fresh each call")
+# _enter_/_exit_: _exit_ runs even when the body throws.
+class Ctx:
+    var _init_ = Function(self): self.exited = False
+    var _enter_ = Function(self): return 7
+    var _exit_ = Function(self): self.exited = True
+var ctx = Ctx()
+var bound = 0
+with ctx as cv:
+    bound = cv
+ok(bound == 7 and ctx.exited, "_enter_ binds the value and _exit_ runs on normal exit")
+var ctx2 = Ctx()
+try:
+    with ctx2 as cv2:
+        throw "boom"
+catch:
+    discard None
+ok(ctx2.exited, "_exit_ runs when the with-body throws")
+# A type with no operator dunder throws a clear error rather than a silent fallback.
+class Bare:
+    var _init_ = Function(self): self.v = 1
+ok(throws(Function(): return Bare() - Bare()), "missing _sub_ throws")
+ok(throws(Function(): return Bare() < Bare()), "missing _lt_ throws")
+ok(throws(Function(): return len(Bare())), "missing _len_ throws")
+ok(throws(Function(): return Bare()[0]), "missing _getitem_ throws")
+ok(String(Bare()) == "<Bare object>", "the default _str_ is <Type object>")
+
+io.print("r7_types: " + String(n) + " checks passed")

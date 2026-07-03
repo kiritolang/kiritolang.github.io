@@ -1,0 +1,33 @@
+var reduce = Function(func, iterable, initial = None):
+    # `have` tracks whether we hold an accumulator yet — NOT `acc == None`, so a fold that legitimately
+    # produces None (reduce(fn, [1,2,3]) where fn returns None) is not mistaken for an empty sequence.
+    var acc = initial
+    var have = initial != None
+    for x in iterable:
+        if have:
+            acc = func(acc, x)
+        else:
+            acc = x
+            have = True
+    if not have:
+        throw "reduce of empty sequence with no initial value"
+    return acc
+
+var partial = Function(func, bound):
+    # partial(f, [a, b]) -> g(rest...) calls f(a, b, rest...). `bound` is a list of leading args,
+    # SNAPSHOT at creation (like Python's functools.partial) so a later mutation of the caller's list
+    # never leaks into subsequent calls.
+    var frozen = bound.copy()
+    return Function(rest):
+        var allargs = frozen.copy()
+        for x in rest:
+            allargs.append(x)
+        return func(allargs)
+
+var cache = Function(func):
+    # Memoize a single-argument function (the argument must be hashable). Returns a wrapper.
+    var store = {}
+    return Function(x):
+        if x not in store:
+            store[x] = func(x)
+        return store[x]

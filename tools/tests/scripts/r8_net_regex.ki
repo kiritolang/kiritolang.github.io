@@ -1,0 +1,503 @@
+# r8_net_regex.ki — round-8 exhaustive re-audit of the `net` (TCP + HTTP/1.1 client + URL helpers)
+# and `regex` (linear-time Thompson-NFA / Pike-VM engine) stdlib modules against
+# docs/pages/10-stdlib.md (+ docs/pages/26-bonus-01-regex.md).
+#
+# This file deliberately COMPLEMENTS the existing golden suites (r7_net_regex, r6_net, r6_regex,
+# r4_net_parallel, r4_compress_regex, spec_net, spec_regex, spec_regex_corpus, audit_regex). It does
+# NOT re-assert what those already cover; instead it hits fresh angles found by reading the source:
+#   regex — inline flags are GLOBAL irrespective of position; \A/\z stay absolute under MULTILINE;
+#           $ (non-multiline) matches before a single trailing \n but not a mid-string \n; class
+#           literal-bracket/dash edge cases; zero-width {0}/{0,0}; empty alternation branches; a
+#           brace-quantifier after a brace-quantifier reads as literals; possessive/double quantifiers
+#           rejected; \U astral + out-of-range escapes; \f \v \a; NUL octal; Unicode (Latin-1) case
+#           folding under IGNORECASE; duplicate/empty/bad group names; huge \g<NNN> refs; findall/
+#           finditer with pos+endpos; the 1-group-non-participating '' shape; split interleaving None;
+#           a FRESH long pathological input for the linear-time proof.
+#   net   — urlsplit scheme-relative / empty-host / non-numeric-port / multi-@ userinfo / '?' in the
+#           fragment; quote of gen-/sub-delims byte-exact + 4-byte UTF-8; unquote lowercase/mixed hex;
+#           parseqs ';' is NOT a separator; request() tolerates a non-Dict opts (ignored, no crash);
+#           BINARY multipart files= fidelity (embedded NUL/0xFF, the R7 raw-Bytes fix) via [name,
+#           content]; data=Bytes octet-stream; DELETE/PATCH/OPTIONS request lines; allowredirects=False
+#           and maxredirects=0; multiple Set-Cookie folding; Response indexing of content as Bytes;
+#           a re-adopted (fromfd) socket can RECEIVE; recv() default size.
+#
+# NO EXTERNAL NETWORK. Every TCP/HTTP exchange is a 127.0.0.1 loopback, engineered to be FLAKE-FREE
+# even under heavy parallel load (measured 0/200 under 10x self-contention, vs the worker-scans-a-port
+# pattern's ~6%): the MAIN thread does the single-threaded, race-free work — scan a free port and
+# bind+listen ATOMICALLY (a `listen` failure just advances to the next port, since two sockets can both
+# bind one port under SO_REUSEADDR but only one can listen) — then hands the already-listening fd to a
+# one-shot `parallel` worker via socket.detach()/net.fromfd (same OS process). So the worker can never
+# fail to bind and there is no port-publish Queue to come up empty; the main already knows the port.
+# All blocking ops carry generous timeouts so nothing can hang; results are asserted on values, never
+# timing. HTTPS/TLS is not exercised (this build has no TLS; external network is off).
+#
+# Worker functions MUST be module-level (a worker re-evaluates this file with argmain False), so the
+# side-effecting checks live under `if argmain:` while the workers are merely defined.
+
+var io = import("io")
+var net = import("net")
+var re = import("regex")
+var parallel = import("parallel")
+var tm = import("time")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(f) -> Bool: True iff calling f() throws a catchable error.
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+# ===================================================================== loopback plumbing
+# bindListenDetach(lo) -> [listenFd, port]: scan [lo, lo+300) for a free 127.0.0.1 port, bind AND
+# listen on it ATOMICALLY (listen is inside the retry — under concurrency two sockets can both bind one
+# port via SO_REUSEADDR, but only one can listen, so a listen failure means "try the next"), then
+# detach the listening fd for handing to a worker. Runs in the MAIN single-threaded VM, so the scan
+# never races and the worker can never fail to come up.
+var bindListenDetach = Function(lo):
+    var p = lo
+    while p < lo + 300:
+        var s = net.Socket()
+        s.settimeout(20.0)
+        var good = True
+        try:
+            s.bind("127.0.0.1", p)
+            s.listen(2)
+        catch as e:
+            good = False
+            s.close()
+        if good:
+            return [s.detach(), p]
+        p = p + 1
+    throw "no free port in range"
+
+# ---- one-shot worker servers: each receives an already-LISTENING fd (handed over by the main via
+# detach()), re-adopts it with net.fromfd, accepts one connection, and replies. No bind, no port scan,
+# no port-publish — so a worker can never fail to come up. ----
+
+# Reply a fixed status/reason/body with TWO Set-Cookie headers + a couple of extra headers.
+var twoCookieServer = Function(listenFd, status, reason, body):
+    var srv = net.fromfd(listenFd)
+    srv.settimeout(20.0)
+    var c = srv.accept()
+    discard c.recv(8192)
+    var resp = "HTTP/1.1 " + String(status) + " " + reason + "\r\n"
+    resp = resp + "Content-Type: text/plain\r\nX-One: 1\r\nX-Two: 2\r\n"
+    resp = resp + "Set-Cookie: a=1; Path=/\r\nSet-Cookie: b=2; Path=/; HttpOnly\r\n"
+    resp = resp + "Content-Length: " + String(len(body)) + "\r\n\r\n" + body
+    discard c.send(resp)
+    c.close()
+    srv.close()
+    return "served"
+
+# Capture the raw request as BYTES (so a binary upload can be checked byte-for-byte), reply 200.
+var rawCaptureServer = Function(listenFd, reqq):
+    var srv = net.fromfd(listenFd)
+    srv.settimeout(20.0)
+    var c = srv.accept()
+    var data = c.recv(65536)
+    reqq.put(data)
+    discard c.send("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+    c.close()
+    srv.close()
+    return "served"
+
+# Capture the raw request as TEXT (latin-1 is a lossless byte<->code-point map), reply 200.
+var textCaptureServer = Function(listenFd, reqq):
+    var srv = net.fromfd(listenFd)
+    srv.settimeout(20.0)
+    var c = srv.accept()
+    var data = c.recv(65536)
+    reqq.put(data.decode("latin-1"))
+    discard c.send("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+    c.close()
+    srv.close()
+    return "served"
+
+# Reply 302 -> /elsewhere (Content-Length 0). With redirects disabled the client sees the 302 itself.
+var redirectOnceServer = Function(listenFd):
+    var srv = net.fromfd(listenFd)
+    srv.settimeout(20.0)
+    var c = srv.accept()
+    discard c.recv(8192)
+    discard c.send("HTTP/1.1 302 Found\r\nLocation: /elsewhere\r\nContent-Length: 0\r\n\r\n")
+    c.close()
+    srv.close()
+    return "served"
+
+# Spin up the text-capture server on a fresh port, send one request with the given verb/opts, and
+# return [Response, rawRequestText]. Module-level so it is re-eval-safe inside any worker.
+var captureText = Function(verb, opts):
+    var bp = bindListenDetach(57000)
+    var rq = parallel.Queue()
+    var t = parallel.spawn(textCaptureServer, bp[0], rq)
+    var resp = net.request(verb, "http://127.0.0.1:" + String(bp[1]) + "/r8", opts)
+    var req = rq.get(True, 20.0)
+    discard t.join()
+    return [resp, req]
+
+# Find `needle` (Bytes) as a contiguous byte run inside `hay` (Bytes). Proves binary fidelity without
+# relying on a b'...' repr appearing in the wire bytes.
+var bytesContain = Function(hay, needle):
+    var i = 0
+    while i + len(needle) <= len(hay):
+        var j = 0
+        var matched = True
+        while j < len(needle):
+            if hay[i + j] != needle[j]:
+                matched = False
+                j = len(needle)
+            else:
+                j = j + 1
+        if matched:
+            return True
+        i = i + 1
+    return False
+
+if argmain:
+    # =========================================================================================
+    # REGEX — inline flags are GLOBAL irrespective of position (parser sets prog.flags regardless)
+    # =========================================================================================
+    ok(re.search("a(?i)b", "AB").group() == "AB", "inline (?i) mid-pattern applies to the whole pattern")
+    ok(re.search("abc(?i)", "ABC").group() == "ABC", "inline (?i) at the end still case-folds everything")
+    ok(re.search("(?s)X.Y", "X\nY").group() == "X\nY", "inline (?s) anywhere enables DOTALL globally")
+    ok(re.findall("foo(?m)$", "foo\nfoo") == ["foo", "foo"], "inline (?m) anywhere enables MULTILINE $")
+    ok(re.search("(?im)A", "x\na").group() == "a", "stacked inline (?im) sets both flags")
+
+    # =========================================================================================
+    # REGEX — anchor subtleties not covered elsewhere
+    # =========================================================================================
+    # \A is the ABSOLUTE start even under MULTILINE (unlike ^), so it matches only the first line.
+    ok(re.findall("(?m)\\Aword", "word\nword") == ["word"], "\\A stays absolute under MULTILINE")
+    # \z is the absolute end even under MULTILINE.
+    ok(re.findall("(?m)word\\z", "word\nword") == ["word"], "\\z stays absolute under MULTILINE")
+    # $ (non-multiline) matches just before a single trailing newline, but NOT a mid-string newline.
+    ok(re.search("abc$", "abc\n").group() == "abc", "$ (no MULTILINE) matches before one trailing \\n")
+    ok(re.search("abc$", "abc\ndef") == None, "$ (no MULTILINE) does not match a mid-string \\n")
+    ok(re.search("abc$", "abc\n\n") == None, "$ (no MULTILINE) matches before at most ONE trailing \\n")
+    # ^ with MULTILINE anchors after each newline.
+    ok(re.findall("(?m)^.", "a\nb\nc") == ["a", "b", "c"], "MULTILINE ^ anchors after each newline")
+
+    # =========================================================================================
+    # REGEX — character-class edge cases (literal ] / -, ranges, shorthand mixes)
+    # =========================================================================================
+    ok(re.search("[]]", "x]y").group() == "]", "a ']' as the first class member is a literal")
+    ok(re.search("[]a]+", "a]a]b").group() == "a]a]", "']' first then more members")
+    ok(re.search("[^]]+", "abc]").group() == "abc", "negated class with a literal leading ']'")
+    ok(re.search("[a-]+", "a-a-b").group() == "a-a-", "a trailing '-' before ']' is a literal dash")
+    ok(re.search("[-a]+", "-a-b").group() == "-a-", "a leading '-' is a literal dash")
+    ok(re.findall("[\\d-]+", "12-34 x") == ["12-34"], "shorthand \\d plus a literal '-' in a class")
+    ok(re.search("[a-cx-z]+", "abcwxyz").group() == "abc", "two ranges in one class")
+    ok(re.search("[\\w.-]+", "a.b-c_d!").group() == "a.b-c_d", "class mixing \\w, '.', '-'")
+    ok(re.search("[.]", "a.b").group() == ".", "a '.' inside a class is a literal dot")
+    ok(re.search("[*+?]", "x+y").group() == "+", "metachars are literals inside a class")
+
+    # =========================================================================================
+    # REGEX — quantifier edge cases: zero-width {0}/{0,0}, empty alternation, double-quantifier reject
+    # =========================================================================================
+    ok(re.search("a{0}", "bbb").group() == "", "{0} matches the empty string")
+    ok(re.search("a{0,0}b", "b").group() == "b", "{0,0} consumes nothing")
+    ok(re.search("ab{0,2}c", "ac").group() == "ac", "{0,2} allows zero of the inner atom")
+    ok(re.search("ab{0,2}c", "abbc").group() == "abbc", "{0,2} allows the upper bound")
+    ok(re.findall("a||b", "ab") == ["a", "", ""], "empty alternation branch is a valid empty match")
+    ok(re.search("(x|)", "y").group() == "", "an empty alternative matches the empty string")
+    ok(throws(Function(): return re.compile("a++")), "a double quantifier (possessive a++) is rejected")
+    ok(throws(Function(): return re.compile("a*+")), "a*+ (possessive star) is rejected")
+    ok(throws(Function(): return re.compile("a{1,2}+")), "{1,2}+ (possessive bound) is rejected")
+    # A second BRACE-quantifier is not stacked: `parseAtom` never starts with '{', so a '{3}' after a
+    # '{1,2}' is read as the literal characters '{','3','}' — distinct from the '*'/'+'/'?' postfixes
+    # above, which the next atom rejects as "nothing to repeat".
+    ok(re.search("a{1,2}{3}", "aa{3}").group() == "aa{3}", "a brace-quantifier after a brace-quantifier reads '{3}' as a literal")
+
+    # =========================================================================================
+    # REGEX — escapes: \U astral, out-of-range, NUL octal, \f \v \a, \uHHHH
+    # =========================================================================================
+    var emoji = chr(128512)   # U+1F600 (an astral, 4-byte UTF-8 code point) — Kirito strings have no \U escape
+    ok(re.search("\\U0001F600", "x" + emoji + "y").group() == emoji, "\\U........ matches an astral code point")
+    ok(len(re.search("\\0", "a\0b").group()) == 1 and ord(re.search("\\0", "a\0b").group()) == 0, "\\0 matches a NUL byte")
+    ok(ord(re.search("\\f", "x" + chr(12) + "y").group()) == 12, "\\f matches a form feed")
+    ok(ord(re.search("\\v", "x" + chr(11) + "y").group()) == 11, "\\v matches a vertical tab")
+    ok(ord(re.search("\\a", "x" + chr(7) + "y").group()) == 7, "\\a matches a bell")
+    ok(re.search("\\u00e9", "café").group() == "é", "\\uHHHH matches a BMP code point")
+    ok(throws(Function(): return re.compile("\\U00110000")), "an escape above U+10FFFF is rejected")
+    ok(throws(Function(): return re.compile("\\u4")), "an incomplete \\uHHHH escape is rejected")
+    ok(throws(Function(): return re.compile("\\uZZZZ")), "a non-hex \\u escape is rejected")
+
+    # =========================================================================================
+    # REGEX — Unicode case folding under IGNORECASE (Latin-1, beyond ASCII)
+    # =========================================================================================
+    ok(re.search("é", "cafÉ", re.I).group() == "É", "IGNORECASE folds é<->É (Latin-1)")
+    ok(re.search("[a-z]+", "HELLO", re.I).group() == "HELLO", "IGNORECASE makes a [a-z] class match uppercase")
+    ok(re.findall("straße", "STRAßE", re.I) == ["STRAßE"], "IGNORECASE matches a non-folding ß literally")
+    ok(re.search("[À-ÿ]+", "éèê", re.I).group() == "éèê", "a Latin-1 class range matches")
+
+    # =========================================================================================
+    # REGEX — group naming validation + huge replacement references
+    # =========================================================================================
+    ok(throws(Function(): return re.compile("(?P<a>x)(?P<a>y)")), "a duplicate group name is rejected")
+    ok(throws(Function(): return re.compile("(?P<>x)")), "an empty group name is rejected")
+    ok(throws(Function(): return re.compile("(?P<1a>x)")), "a group name starting with a digit is rejected")
+    ok(throws(Function(): return re.compile("(?P<a-b>x)")), "a group name with a dash is rejected")
+    ok(throws(Function(): return re.compile("(?P<a")), "an unterminated named group is rejected")
+    ok(throws(Function(): return re.compile("(?<a>x)(?<a>y)")), "a duplicate (?<name>) is rejected")
+    ok(throws(Function(): return re.compile("(a)").sub("\\g<99999999999999999999>", "a")), "an overflowing \\g<NNN> reference is rejected")
+    ok(throws(Function(): return re.compile("(a)").sub("\\g<>", "a")), "an empty \\g<> reference is rejected")
+    ok(throws(Function(): return re.compile("(a)").sub("\\g1", "a")), "\\g without '<' in a template is rejected")
+
+    # =========================================================================================
+    # REGEX — findall / finditer with pos and endpos; group-shape edge cases
+    # =========================================================================================
+    var rxd = re.compile("\\d")
+    ok(rxd.findall("12345", 2) == ["3", "4", "5"], "findall honours a start pos")
+    ok(rxd.findall("12345", 0, 3) == ["1", "2", "3"], "findall honours endpos")
+    ok(rxd.findall("12", 99) == [], "findall with pos past the end -> empty List")
+    var fi = re.compile("\\w+").finditer("ab cd ef", 3)
+    ok(len(fi) == 2 and fi[0].group() == "cd" and fi[1].group() == "ef", "finditer honours a start pos")
+    var fi2 = re.compile("\\w+").finditer("ab cd ef", 0, 4)
+    ok(len(fi2) == 2 and fi2[1].group() == "c", "finditer honours endpos (truncates mid-token: 'ab','c')")
+    # 1-group findall where the group is non-participating -> '' (NOT None), unlike Match.group.
+    ok(re.findall("(a)?b", "b ab") == ["", "a"], "findall 1-group non-participating -> '' in the result")
+    # group() with key 0 explicitly, and a multi-key list including 0.
+    var gm = re.search("(\\d+)x(\\d+)", "12x34")
+    ok(gm.group(0) == "12x34", "group(0) is the whole match")
+    ok(gm.group(0, 1, 2) == ["12x34", "12", "34"], "group(0, 1, 2) -> a List including the whole match")
+    ok(gm.span(0) == [0, 5], "span(0) is the whole-match span")
+
+    # =========================================================================================
+    # REGEX — split interleaving None for a non-participating capture (fresh input)
+    # =========================================================================================
+    ok(re.split("(,)|(;)", "a,b;c") == ["a", ",", None, "b", None, ";", "c"], "split interleaves None for the non-matching branch")
+    ok(re.split("(?:,)", "a,b,c") == ["a", "b", "c"], "split on a non-capturing group keeps no separators")
+    ok(re.split("x*", "abc") == ["", "a", "b", "c", ""], "split on an empty-capable pattern yields per-position pieces")
+    ok(re.split(",", "", 0) == [""], "split of an empty string -> ['']")
+
+    # =========================================================================================
+    # REGEX — sub edge cases: empty-pattern count, \g<0N> leading zero, no-match passthrough
+    # =========================================================================================
+    ok(re.sub("", "-", "abc", 2) == "-a-bc", "sub on an empty pattern honours the count limit")
+    ok(re.compile("(a)(b)").sub("\\g<01>", "ab") == "a", "\\g<01> (leading-zero numeric) is group 1")
+    ok(re.sub("z", "Q", "abc") == "abc", "sub with no match returns the subject unchanged")
+    ok(re.sub("\\d+", "#", "no digits here") == "no digits here", "sub leaves a no-match string intact")
+    var tagcount = 0
+    var tagger = Function(mm):
+        tagcount = tagcount + 1
+        return "<" + String(tagcount) + ">"
+    ok(re.sub("\\w+", tagger, "a b c") == "<1> <2> <3>", "sub callable is invoked once per match, in order")
+
+    # =========================================================================================
+    # REGEX — LINEAR-TIME guarantee: FRESH pathological shapes + a long input, all return promptly
+    # =========================================================================================
+    var t0 = tm.monotonic()
+    ok(re.search("(a|aa)*c", "a" * 6000 + "x") == None, "pathological (a|aa)*c on a long input: no match")
+    ok(re.search("(.*)*z", "a" * 4500 + "Q") == None, "pathological (.*)*z: no match")
+    ok(re.fullmatch("(a*)*", "a" * 5000).group() == "a" * 5000, "(a*)* still matches a long all-a string fast")
+    ok(tm.monotonic() - t0 < 5.0, "every pathological pattern ran in linear time (no exponential blow-up)")
+
+    # =========================================================================================
+    # NET — urlsplit corner cases (scheme-relative, empty host, bad port, multi-@, '?' in fragment)
+    # =========================================================================================
+    # A scheme-relative URL has no "://", so the whole thing stays in `path` (documented behaviour:
+    # urlsplit splits the authority only after "://").
+    var sr = net.urlsplit("//host/path")
+    ok(sr["scheme"] == "" and sr["host"] == "" and sr["path"] == "//host/path", "urlsplit of a scheme-relative URL keeps it all in path")
+    # An authority with an empty host but an explicit port.
+    var eh = net.urlsplit("http://:8080/p")
+    ok(eh["host"] == "" and eh["port"] == "8080" and eh["path"] == "/p", "urlsplit handles an empty host with a port")
+    # urlsplit does NOT validate the port (only the HTTP request path does) — a non-numeric port is kept verbatim.
+    ok(net.urlsplit("http://h:zz/p")["port"] == "zz", "urlsplit keeps a non-numeric port verbatim (no validation)")
+    # Userinfo with multiple '@' — host is everything after the LAST '@'.
+    var ma = net.urlsplit("http://u:p@a@host:7/p")
+    ok(ma["host"] == "host" and ma["port"] == "7", "urlsplit takes the host after the LAST '@' (userinfo with '@')")
+    # The fragment captures everything after the first '#', including a later '?'.
+    var fq = net.urlsplit("http://h/p#frag?notquery")
+    ok(fq["fragment"] == "frag?notquery" and fq["query"] == "", "urlsplit: '#' wins over a later '?' (fragment holds it)")
+    # '#' before '?' in the raw string: the fragment is split off first, so the '?' lands in the fragment.
+    var hb = net.urlsplit("http://h/p#a?b=c")
+    ok(hb["fragment"] == "a?b=c", "urlsplit splits the fragment before the query")
+    # An empty path with a query present (query immediately after the host).
+    var pq2 = net.urlsplit("http://h?x=1")
+    ok(pq2["host"] == "h" and pq2["path"] == "" and pq2["query"] == "x=1", "urlsplit: query right after host -> empty path")
+
+    # =========================================================================================
+    # NET — quote / unquote byte-exact corner cases (gen/sub-delims, 4-byte UTF-8, hex case)
+    # =========================================================================================
+    ok(net.quote(":/?#[]@") == "%3A%2F%3F%23%5B%5D%40", "quote encodes every RFC 3986 gen-delim")
+    ok(net.quote("!$&'()*+,;=") == "%21%24%26%27%28%29%2A%2B%2C%3B%3D", "quote encodes every sub-delim")
+    ok(net.quote(" ") == "%20" and net.quote("\t") == "%09", "quote encodes space and tab")
+    ok(net.quote(emoji) == "%F0%9F%98%80", "quote encodes a 4-byte UTF-8 code point byte-by-byte")
+    ok(net.unquote("%c3%a9") == "é", "unquote accepts lowercase hex")
+    ok(net.unquote("%C3%A9") == "é", "unquote accepts uppercase hex")
+    ok(net.unquote("a%2Bb+c") == "a+b c", "unquote: %2B is a literal '+', a bare '+' is a space")
+    ok(net.unquote("%F0%9F%98%80") == emoji, "unquote reassembles a 4-byte UTF-8 code point")
+    ok(net.unquote(net.quote(":/?#[]@!$&'()*+,;= \t")) == ":/?#[]@!$&'()*+,;= \t", "quote/unquote round-trips every delimiter + whitespace")
+
+    # parseqs: ';' is NOT a separator in this implementation (only '&').
+    ok(net.parseqs("a=1;b=2") == {"a": "1;b=2"}, "parseqs treats ';' as part of the value, not a separator")
+    ok(net.parseqs("a=%E2%98%83") == {"a": "☃"}, "parseqs decodes a percent-escaped multi-byte value")
+    ok(net.parseqs("a==b") == {"a": "=b"}, "parseqs: only the first '=' splits, the rest is the value")
+
+    # =========================================================================================
+    # NET — request() tolerates a non-Dict `options` (silently ignored, no crash)
+    # =========================================================================================
+    # A non-Dict opts means netOpt() returns None for every key, so the request proceeds with defaults.
+    var stx = captureText("GET", "this is not a dict")
+    ok(stx[0].status == 200, "request with a String `options` is tolerated (opts ignored)")
+    ok(stx[1].startswith("GET /r8 "), "the ignored-opts request still has a correct request line")
+    var stn = captureText("GET", 12345)
+    ok(stn[0].status == 200, "request with an Integer `options` is tolerated too")
+
+    # =========================================================================================
+    # NET — BINARY multipart files= fidelity (the R7 raw-Bytes fix): embedded NUL/0xFF survive
+    # =========================================================================================
+    var bbp = bindListenDetach(57400)
+    var brq = parallel.Queue()
+    var bt = parallel.spawn(rawCaptureServer, bbp[0], brq)
+    var blob = Bytes([0, 1, 255, 254, 13, 10, 0, 65, 0, 0, 200, 7])
+    var br = net.post("http://127.0.0.1:" + String(bbp[1]) + "/up", {"files": {"f": ["raw.bin", blob]}})
+    var rawReq = brq.get(True, 20.0)
+    discard bt.join()
+    ok(br.status == 200, "binary multipart upload got 200")
+    ok(type(rawReq) == "Bytes", "captured the raw request as Bytes")
+    ok(bytesContain(rawReq, blob), "the binary file content is present byte-for-byte in the multipart body")
+    var hdrTxt = rawReq.decode("latin-1")
+    ok("multipart/form-data; boundary=" in hdrTxt, "Content-Type is multipart/form-data with a boundary")
+    ok("filename=\"raw.bin\"" in hdrTxt, "the [filename, content] form sets the filename")
+    ok("name=\"f\"" in hdrTxt, "the field name is in the Content-Disposition")
+
+    # plain-content files= (value is the content directly; filename defaults to the field name)
+    var fc = captureText("POST", {"files": {"doc": "plaincontent"}})
+    ok("filename=\"doc\"" in fc[1], "files= with a bare content value defaults the filename to the field name")
+    ok("plaincontent" in fc[1], "files= bare-content body carries the content")
+
+    # =========================================================================================
+    # NET — data=Bytes octet-stream (fresh binary content) on the wire
+    # =========================================================================================
+    var dbp2 = bindListenDetach(57800)
+    var dbrq = parallel.Queue()
+    var dbt = parallel.spawn(rawCaptureServer, dbp2[0], dbrq)
+    var dblob = Bytes([72, 73, 0, 255, 10])
+    discard net.post("http://127.0.0.1:" + String(dbp2[1]) + "/raw", {"data": dblob})
+    var dbRaw = dbrq.get(True, 20.0)
+    discard dbt.join()
+    var dbTxt = dbRaw.decode("latin-1")
+    ok("application/octet-stream" in dbTxt, "data=Bytes sets Content-Type: application/octet-stream")
+    ok(bytesContain(dbRaw, dblob), "data=Bytes body is byte-exact (embedded NUL/0xFF survive)")
+
+    # =========================================================================================
+    # NET — DELETE / PATCH / OPTIONS request lines reach the wire
+    # =========================================================================================
+    var dl = captureText("DELETE", None)
+    ok(dl[1].startswith("DELETE /r8 "), "DELETE verb -> a DELETE request line")
+    var pc = captureText("PATCH", {"data": "patchbody"})
+    ok(pc[1].startswith("PATCH /r8 ") and "patchbody" in pc[1], "PATCH verb -> a PATCH request line with the body")
+    var opn = captureText("OPTIONS", None)
+    ok(opn[1].startswith("OPTIONS /r8 "), "OPTIONS verb -> an OPTIONS request line")
+    # the high-level net.delete shortcut produces the same verb
+    var dl2bp = bindListenDetach(58200)
+    var dl2q = parallel.Queue()
+    var dl2t = parallel.spawn(textCaptureServer, dl2bp[0], dl2q)
+    discard net.delete("http://127.0.0.1:" + String(dl2bp[1]) + "/r8")
+    var dl2req = dl2q.get(True, 20.0)
+    discard dl2t.join()
+    ok(dl2req.startswith("DELETE /r8 "), "net.delete() shortcut sends DELETE")
+
+    # =========================================================================================
+    # NET — redirect control: allowredirects=False and maxredirects=0 return the 302 itself
+    # =========================================================================================
+    var r1bp = bindListenDetach(58600)
+    var r1t = parallel.spawn(redirectOnceServer, r1bp[0])
+    var r1 = net.get("http://127.0.0.1:" + String(r1bp[1]) + "/s", {"allowredirects": False})
+    ok(r1.status == 302, "allowredirects=False returns the 302 directly")
+    ok(r1.header("location") == "/elsewhere", "the unfollowed 302 still exposes its Location header")
+    ok(r1.ok == True, "a 302 is `ok` (1xx-3xx) per the documented rule")
+    discard r1t.join()
+
+    var r2bp = bindListenDetach(59000)
+    var r2t = parallel.spawn(redirectOnceServer, r2bp[0])
+    var r2 = net.get("http://127.0.0.1:" + String(r2bp[1]) + "/s", {"maxredirects": 0})
+    ok(r2.status == 302, "maxredirects=0 stops at the first 302 (does not follow)")
+    discard r2t.join()
+
+    # =========================================================================================
+    # NET — multiple Set-Cookie headers fold into r.cookies; extra headers; Response content index
+    # =========================================================================================
+    var tcbp = bindListenDetach(59400)
+    var tct = parallel.spawn(twoCookieServer, tcbp[0], 200, "OK", "payload-body")
+    var tr = net.get("http://127.0.0.1:" + String(tcbp[1]) + "/")
+    ok(tr.cookies["a"] == "1" and tr.cookies["b"] == "2", "both Set-Cookie headers fold into r.cookies")
+    ok(tr.headers["X-One"] == "1" and tr.headers["X-Two"] == "2", "all response headers are present")
+    ok(tr.text == "payload-body" and type(tr.content) == "Bytes", "text is a String, content is Bytes")
+    ok(tr["content"] == Bytes("payload-body"), "Response['content'] indexing returns the body as Bytes")
+    ok(tr["statuscode"] == 200, "Response['statuscode'] index alias works")
+    ok(tr.header("x-one") == "1", "header() is case-insensitive for a custom header")
+    discard tct.join()
+
+    # =========================================================================================
+    # NET — Socket: fromfd RECEIVES too (r7 only proved send), recv() default size (single process)
+    # =========================================================================================
+    # detach -> fromfd round-trip in one process, then prove the re-adopted fd RECEIVES (r7 proved it
+    # can send): bind+listen, connect, accept, detach the accepted peer, re-adopt it, and send from the
+    # client through the re-adopted server-side socket back to the client.
+    var dconnFd = bindListenDetach(59800)
+    var dsrv = net.fromfd(dconnFd[0])
+    var dport = dconnFd[1]
+    var dcli = net.Socket()
+    dcli.settimeout(20.0)
+    dcli.connect("127.0.0.1", dport)
+    var dconn = dsrv.accept()
+    var dfd = dconn.detach()
+    ok(type(dfd) == "Integer", "accepted socket.detach() yields an Integer fd")
+    var dconn2 = net.fromfd(dfd)
+    discard dconn2.send(Bytes([1, 2, 3, 255, 0]))
+    var rcvd = dcli.recv(16)
+    ok(rcvd == Bytes([1, 2, 3, 255, 0]), "a re-adopted (fromfd) socket can send bytes the original peer receives")
+    dconn2.close()
+    dcli.close()
+    dsrv.close()
+
+    # recv() with no argument uses the documented 4096 default (the small loopback payload fits).
+    var econnFd = bindListenDetach(60200)
+    var esrv = net.fromfd(econnFd[0])
+    var eport = econnFd[1]
+    var ecli = net.Socket()
+    ecli.settimeout(20.0)
+    ecli.connect("127.0.0.1", eport)
+    var econn = esrv.accept()
+    discard econn.send("default-recv")
+    var edata = ecli.recv()
+    ok(type(edata) == "Bytes" and edata.decode() == "default-recv", "recv() with no arg uses the 4096 default")
+    econn.close()
+    ecli.close()
+    esrv.close()
+
+    # =========================================================================================
+    # NET — inspect surfaces (fresh assertions vs r7): Response + Session + module member shape
+    # =========================================================================================
+    var insResp = inspect(tr)
+    ok("content: Bytes" in insResp and "json() -> Any" in insResp, "inspect Response lists content + json()")
+    ok("raiseforstatus()" in insResp and "header(name, default) -> String" in insResp, "inspect Response lists raiseforstatus + header")
+    var insSess = inspect(net.Session())
+    ok("get(url, opts) -> Response" in insSess and "post(url, opts) -> Response" in insSess, "inspect Session lists get/post")
+    ok("delete(url, opts) -> Response" in insSess and "options(url, opts) -> Response" in insSess, "inspect Session lists delete/options")
+    var insNet = inspect(net)
+    ok("fromfd(fd: Integer) -> Socket" in insNet, "inspect net lists fromfd")
+    ok("Session() -> Session" in insNet and "Socket() -> Socket" in insNet, "inspect net lists the Session/Socket constructors")
+    ok("parseqs(query: String) -> Dict" in insNet and "urlencode(params: Dict) -> String" in insNet, "inspect net lists parseqs/urlencode signatures")
+
+    # =========================================================================================
+    # NET — kwargs on the HTTP verb shortcuts (options= keyword) reach the wire
+    # =========================================================================================
+    var kbp = bindListenDetach(60600)
+    var kq = parallel.Queue()
+    var kt = parallel.spawn(textCaptureServer, kbp[0], kq)
+    discard net.get(url = "http://127.0.0.1:" + String(kbp[1]) + "/r8", options = {"headers": {"X-Kw": "yes"}})
+    var kreq = kq.get(True, 20.0)
+    discard kt.join()
+    ok("X-Kw: yes" in kreq, "net.get(url=, options=) keyword form sends the headers")
+
+    io.print("r8_net_regex: " + String(n) + " checks passed")

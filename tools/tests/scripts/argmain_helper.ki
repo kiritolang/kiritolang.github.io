@@ -1,0 +1,6 @@
+# An import-only helper (no .expected, so it is never run directly). It captures the argmain/arglist
+# it sees when imported, and exposes a function that reads its module's argmain at call time.
+var wasMain = argmain
+var argsSeen = arglist
+var amImain = Function():
+    return argmain

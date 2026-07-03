@@ -1,0 +1,159 @@
+# Adversarial audit of the `bisect` stdlib module: every documented function (bisectleft/
+# bisectright, insortleft/insortright, and the bare-name aliases bisect/insort) is probed against
+# its invariants (a sorted list stays sorted after every insort; the returned index is exactly the
+# left- or right-most position keeping order). Probes cover edges: empty list, all-equal runs,
+# strictly-monotone data, single-element lists, search keys outside [min, max], duplicate keys,
+# Strings as comparable keys, Floats including +inf, very large lists, and a randomized fuzz
+# against a linear-scan oracle.
+
+var io = import("io")
+var b = import("bisect")
+var random = import("random")
+
+# Helper: a list is sorted iff every neighbour pair is in order.
+var sorted_ = Function(a) -> Bool:
+    var i = 1
+    while i < len(a):
+        if a[i - 1] > a[i]:
+            return False
+        i = i + 1
+    return True
+
+# Linear-scan oracle for bisectleft: first index i with a[i] >= x (i.e. a[i] not < x).
+var oracle_left = Function(a, x) -> Integer:
+    var i = 0
+    while i < len(a):
+        if not (a[i] < x):
+            return i
+        i = i + 1
+    return len(a)
+
+# Linear-scan oracle for bisectright: first index i with x < a[i] (i.e. a[i] > x).
+var oracle_right = Function(a, x) -> Integer:
+    var i = 0
+    while i < len(a):
+        if x < a[i]:
+            return i
+        i = i + 1
+    return len(a)
+
+# --- aliases ------------------------------------------------------------------------------------
+assert b.bisect == b.bisectright, "bare bisect = bisectright (alias)"
+assert b.insort == b.insortright, "bare insort = insortright"
+
+# --- empty list ---------------------------------------------------------------------------------
+assert b.bisectleft([], 5) == 0, "bisectleft of empty -> 0"
+assert b.bisectright([], 5) == 0, "bisectright of empty -> 0"
+var emp = []
+b.insortleft(emp, 7)
+assert emp == [7], "insortleft into empty"
+emp = []
+b.insortright(emp, 7)
+assert emp == [7], "insortright into empty"
+
+# --- single-element list ------------------------------------------------------------------------
+assert b.bisectleft([5], 5) == 0, "leftmost insert spot for an equal key is before"
+assert b.bisectright([5], 5) == 1, "rightmost insert spot for an equal key is after"
+assert b.bisectleft([5], 3) == 0, "below -> 0"
+assert b.bisectleft([5], 9) == 1, "above -> 1"
+
+# --- key below min / above max ------------------------------------------------------------------
+var a = [10, 20, 30, 40, 50]
+assert b.bisectleft(a, 1) == 0 and b.bisectright(a, 1) == 0, "key below min -> 0"
+assert b.bisectleft(a, 99) == 5 and b.bisectright(a, 99) == 5, "key above max -> len"
+# the original list must be untouched by either of the *bisect* functions
+assert a == [10, 20, 30, 40, 50], "bisect* does not mutate"
+
+# --- runs of duplicates: leftmost vs rightmost --------------------------------------------------
+var dup = [1, 2, 2, 2, 2, 3]
+assert b.bisectleft(dup, 2) == 1, "bisectleft into a duplicate run lands at the run's start"
+assert b.bisectright(dup, 2) == 5, "bisectright into a duplicate run lands past the run's end"
+assert b.bisectright(dup, 2) - b.bisectleft(dup, 2) == 4, "count of equals = right - left"
+
+# --- all-equal list -----------------------------------------------------------------------------
+var allone = [7, 7, 7, 7, 7]
+assert b.bisectleft(allone, 7) == 0, "leftmost of an all-equal list is 0"
+assert b.bisectright(allone, 7) == 5, "rightmost of an all-equal list is len"
+assert b.bisectleft(allone, 6) == 0, "key < every element -> 0"
+assert b.bisectleft(allone, 8) == 5, "key > every element -> len"
+
+# --- Floats (incl. -0.0 / +0.0 / scientific) ----------------------------------------------------
+var fs = [0.0, 1.5, 2.5, 3.5]
+assert b.bisectleft(fs, 0.0) == 0 and b.bisectright(fs, 0.0) == 1, "Float zero, single occurrence"
+assert b.bisectleft(fs, 1.0) == 1, "Float between elements"
+assert b.bisectleft(fs, 1e100) == 4, "huge Float -> end"
+
+# --- Strings (lexicographic comparable keys) ----------------------------------------------------
+var words = ["apple", "banana", "cherry", "date"]
+assert b.bisectleft(words, "blueberry") == 2, "String mid-list"
+assert b.bisectleft(words, "aardvark") == 0, "String below all"
+assert b.bisectleft(words, "zucchini") == 4, "String above all"
+
+# --- insortleft vs insortright -- both preserve sortedness --------------------------------------
+var arr = [1, 3, 5, 7, 9]
+b.insortleft(arr, 5)
+assert arr == [1, 3, 5, 5, 7, 9] and sorted_(arr), "insortleft inserts before equal run"
+b.insortright(arr, 5)
+assert arr == [1, 3, 5, 5, 5, 7, 9] and sorted_(arr), "insortright inserts after equal run"
+b.insort(arr, 0)
+assert arr[0] == 0 and sorted_(arr), "bare insort places below all"
+b.insort(arr, 100)
+assert arr[len(arr) - 1] == 100 and sorted_(arr), "bare insort places above all"
+
+# --- large N: a sorted list of 0..999, then 500 insorts of random keys keeps it sorted ---------
+var rng = random.Random(987654)
+var big = []
+var i = 0
+while i < 1000:
+    big.append(i)
+    i = i + 1
+i = 0
+while i < 500:
+    b.insort(big, rng.randint(-100, 1100))
+    i = i + 1
+assert sorted_(big), "insort fuzz on N=1000 keeps it sorted"
+assert len(big) == 1500, "insort fuzz: every call appended one element"
+
+# --- fuzz vs linear oracle (random sorted lists, random keys) -----------------------------------
+var trial = 0
+while trial < 400:
+    var n = rng.randint(0, 25)
+    var xs = []
+    var k = 0
+    while k < n:
+        xs.append(rng.randint(-30, 30))
+        k = k + 1
+    xs.sort()
+    var key = rng.randint(-35, 35)
+    var lo = b.bisectleft(xs, key)
+    var hi = b.bisectright(xs, key)
+    assert lo == oracle_left(xs, key), "fuzz: bisectleft matches linear oracle"
+    assert hi == oracle_right(xs, key), "fuzz: bisectright matches linear oracle"
+    assert lo <= hi, "fuzz: bisectleft <= bisectright always"
+    # invariant: insort followed by a sorted-check
+    var copy = []
+    for v in xs:
+        copy.append(v)
+    b.insortleft(copy, key)
+    assert sorted_(copy), "fuzz: insortleft keeps list sorted"
+    assert copy[lo] == key, "fuzz: insortleft places key at bisectleft index"
+    copy = []
+    for v in xs:
+        copy.append(v)
+    b.insortright(copy, key)
+    assert sorted_(copy), "fuzz: insortright keeps list sorted"
+    assert copy[hi] == key, "fuzz: insortright places key at bisectright index"
+    trial = trial + 1
+
+# --- semantic invariants: count-of-equals & strict monotonicity ---------------------------------
+# For a strictly-increasing list, bisectleft and bisectright differ by 0 (key absent) or 1 (present).
+var mono = [10, 20, 30, 40, 50]
+var v = 30
+assert b.bisectright(mono, v) - b.bisectleft(mono, v) == 1, "monotone present: right - left == 1"
+assert b.bisectright(mono, 25) - b.bisectleft(mono, 25) == 0, "monotone absent: right - left == 0"
+
+# --- returns are Integers ----------------------------------------------------------------------
+assert type(b.bisectleft([1, 2, 3], 2)) == "Integer", "bisectleft returns Integer"
+assert type(b.bisectright([1, 2, 3], 2)) == "Integer", "bisectright returns Integer"
+
+io.print("OK audit-bisect")

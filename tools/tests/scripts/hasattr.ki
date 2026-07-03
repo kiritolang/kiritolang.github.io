@@ -1,0 +1,198 @@
+# hasattr.ki — exhaustive audit of the hasattr(obj, name) builtin.
+#
+# hasattr(obj, name) -> Bool: True iff `obj.name` resolves to an attribute or method (True even when
+# the value is None — an attribute set to None still EXISTS), False when the name is absent. It works
+# uniformly across every value: instances, classes, native + .ki modules, the built-in types and
+# their methods, native objects, and functions. The core invariant, cross-checked throughout with a
+# direct-access thunk: hasattr(obj, name) == "does obj.name evaluate without throwing".
+#
+# Final golden line: "hasattr: <n> checks passed".
+var io = import("io")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+# Does a direct `obj.name` access (wrapped in a thunk) succeed? Used to cross-validate hasattr.
+var canGet = Function(thunk):
+    try:
+        discard thunk()
+        return True
+    catch:
+        return False
+# Does `thunk()` throw? (for the error-hardening section)
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+# =========================================================== 1. instances: attributes (incl. None)
+class Box:
+    var _init_ = Function(self, v):
+        self.value = v
+        self.empty = None                 # exists, but is None
+        self.flag = False                 # exists, but falsy
+        self.zero = 0                      # exists, but zero
+        self._hidden = 7                   # private attribute
+    var describe = Function(self):
+        return String(self.value)
+    var _str_ = Function(self):
+        return "Box(" + String(self.value) + ")"
+    var reach = Function(self):            # private access from inside the class
+        return hasattr(self, "_hidden")
+
+var b = Box(10)
+ok(hasattr(b, "value") == True, "instance attribute that exists -> True")
+ok(hasattr(b, "empty") == True, "instance attribute set to None still EXISTS -> True")
+ok(hasattr(b, "flag") == True, "instance attribute set to False exists -> True")
+ok(hasattr(b, "zero") == True, "instance attribute set to 0 exists -> True")
+ok(hasattr(b, "missing") == False, "absent instance attribute -> False")
+ok(hasattr(b, "") == False, "empty-string name -> False (no such member)")
+# the None-vs-missing distinction is the whole point:
+ok(hasattr(b, "empty") != hasattr(b, "missing"), "None-valued attr is distinguishable from a missing one")
+# cross-check the invariant against direct access:
+ok(hasattr(b, "value") == canGet(Function(): return b.value), "hasattr agrees with direct access (present)")
+ok(hasattr(b, "empty") == canGet(Function(): return b.empty), "hasattr agrees with direct access (None)")
+ok(hasattr(b, "missing") == canGet(Function(): return b.missing), "hasattr agrees with direct access (absent)")
+
+# =========================================================== 2. instances: methods and dunders
+ok(hasattr(b, "describe") == True, "instance method -> True")
+ok(hasattr(b, "_str_") == True, "defined dunder (_str_) -> True")
+ok(hasattr(b, "_init_") == True, "the constructor _init_ -> True")
+ok(hasattr(b, "_add_") == False, "an undefined dunder (_add_) -> False")
+ok(hasattr(b, "reach") == True, "another method -> True")
+
+# =========================================================== 3. private members (existence semantics)
+# From OUTSIDE the class, a private member cannot be READ, yet it EXISTS — hasattr reports existence.
+ok(hasattr(b, "_hidden") == True, "private attribute EXISTS (hasattr is existence, not accessibility)")
+ok(canGet(Function(): return b._hidden) == False, "...though reading it from outside the class throws")
+ok(b.reach() == True, "hasattr(self, '_hidden') from INSIDE a method -> True")
+
+# =========================================================== 4. inheritance
+class Animal:
+    var _init_ = Function(self, name):
+        self.name = name
+    var speak = Function(self):
+        return "..."
+    var legs = Function(self):
+        return 4
+class Dog(Animal):
+    var _init_ = Function(self, name):
+        self._super_()._init_(name)       # run the base constructor -> self.name is set
+        self.tricks = []
+    var speak = Function(self):           # override
+        return "woof"
+var d = Dog("Rex")
+ok(hasattr(d, "name") == True, "attribute set by the inherited (super) constructor -> True")
+ok(hasattr(d, "tricks") == True, "attribute set by the subclass constructor -> True")
+ok(hasattr(d, "speak") == True, "an overridden method -> True")
+ok(hasattr(d, "legs") == True, "a method inherited from the base class -> True")
+ok(hasattr(d, "fly") == False, "a method defined on neither class -> False")
+
+# =========================================================== 5. shared class attributes (read via instance)
+class Config:
+    var VERSION = "1.0"                    # non-function class-body var = shared class attribute
+    var _init_ = Function(self):
+        self.local = 1
+var cfg = Config()
+ok(hasattr(cfg, "VERSION") == True, "a shared class attribute, read through the instance -> True")
+ok(hasattr(cfg, "local") == True, "an ordinary instance attribute -> True")
+ok(cfg.VERSION == "1.0", "sanity: the shared attribute reads correctly")
+
+# =========================================================== 6. classes themselves
+# A Kirito class is an instantiation factory, not an attribute namespace: `Class.x` always throws, so
+# hasattr(Class, ...) is uniformly False (and stays consistent with that).
+ok(hasattr(Box, "describe") == False, "hasattr(Class, method) -> False (classes expose no member access)")
+ok(hasattr(Box, "value") == False, "hasattr(Class, attr) -> False")
+ok(hasattr(Config, "VERSION") == False, "hasattr(Class, shared-var) -> False")
+ok(hasattr(Box, "describe") == canGet(Function(): return Box.describe), "hasattr(Class,..) matches direct (both fail)")
+
+# =========================================================== 7. built-in primitive types + their methods
+# String
+ok(hasattr("hello", "upper") == True, "String.upper -> True")
+ok(hasattr("hello", "split") == True, "String.split -> True")
+ok(hasattr("hello", "strip") == True, "String.strip -> True")
+ok(hasattr("hello", "format") == True, "String.format -> True")
+ok(hasattr("hello", "nonesuch") == False, "String.<missing> -> False")
+ok(hasattr("hello", "upper") == canGet(Function(): return "hello".upper), "String: hasattr matches access")
+# Integer
+ok(hasattr(5, "compare") == True, "Integer.compare -> True")
+ok(hasattr(5, "bogus") == False, "Integer.<missing> -> False")
+# Float
+ok(hasattr(2.5, "compare") == True, "Float.compare -> True")
+ok(hasattr(2.5, "bogus") == False, "Float.<missing> -> False")
+# List
+ok(hasattr([1, 2], "append") == True, "List.append -> True")
+ok(hasattr([1, 2], "sort") == True, "List.sort -> True")
+ok(hasattr([1, 2], "apply") == True, "List.apply -> True")
+ok(hasattr([1, 2], "bogus") == False, "List.<missing> -> False")
+# Set
+ok(hasattr(Set([1]), "add") == True, "Set.add -> True")
+ok(hasattr(Set([1]), "union") == True, "Set.union -> True")
+ok(hasattr(Set([1]), "bogus") == False, "Set.<missing> -> False")
+# Dict
+ok(hasattr({"a": 1}, "keys") == True, "Dict.keys -> True")
+ok(hasattr({"a": 1}, "get") == True, "Dict.get -> True")
+ok(hasattr({"a": 1}, "bogus") == False, "Dict.<missing> -> False")
+# Bytes
+ok(hasattr(Bytes([1, 2]), "hex") == True, "Bytes.hex -> True")
+ok(hasattr(Bytes([1, 2]), "decode") == True, "Bytes.decode -> True")
+ok(hasattr(Bytes([1, 2]), "bogus") == False, "Bytes.<missing> -> False")
+# None + Bool: no accessible members -> any name is False (and consistent with direct access)
+ok(hasattr(None, "anything") == False, "None.<anything> -> False")
+ok(hasattr(None, "anything") == canGet(Function(): return None.anything), "None: hasattr matches access")
+ok(hasattr(True, "anything") == False, "Bool.<missing> -> False")
+
+# =========================================================== 8. modules (native + .ki), members
+var math = import("math")
+ok(hasattr(math, "pi") == True, "native module: math.pi (a constant attribute) -> True")
+ok(hasattr(math, "sqrt") == True, "native module: math.sqrt (a function) -> True")
+ok(hasattr(math, "nope") == False, "native module: absent member -> False")
+ok(hasattr(math, "pi") == canGet(Function(): return math.pi), "module: hasattr matches access")
+var random = import("random")
+ok(hasattr(random, "Random") == True, "native module: random.Random (a class) -> True")
+ok(hasattr(random, "zzz") == False, "native module: absent member -> False")
+var itertools = import("itertools")
+ok(hasattr(itertools, "chain") == True, ".ki module: itertools.chain -> True")
+ok(hasattr(itertools, "islice") == True, ".ki module: itertools.islice -> True")
+ok(hasattr(itertools, "zzz") == False, ".ki module: absent member -> False")
+var functools = import("functools")
+ok(hasattr(functools, "reduce") == True, ".ki module: functools.reduce -> True")
+ok(hasattr(functools, "zzz") == False, ".ki module: absent member -> False")
+
+# =========================================================== 9. native objects
+var rng = random.Random(1)
+ok(hasattr(rng, "random") == True, "native object: Random.random -> True")
+ok(hasattr(rng, "choice") == True, "native object: Random.choice -> True")
+ok(hasattr(rng, "choices") == True, "native object: Random.choices -> True")
+ok(hasattr(rng, "sample") == True, "native object: Random.sample -> True")
+ok(hasattr(rng, "zzz") == False, "native object: absent member -> False")
+var matrix = import("matrix")
+var mtx = matrix.zeros(2, 2)
+ok(hasattr(mtx, "transpose") == True, "native object: Matrix.transpose -> True")
+ok(hasattr(mtx, "determinant") == True, "native object: Matrix.determinant -> True")
+ok(hasattr(mtx, "zzz") == False, "native object: absent member -> False")
+
+# =========================================================== 10. functions
+var fn = Function(x):
+    return x * 2
+ok(hasattr(fn, "anything") == False, "a plain function exposes no attributes -> False")
+ok(hasattr(fn, "call") == False, "function.<missing> -> False")
+
+# =========================================================== 11. error hardening
+ok(throws(Function(): return hasattr(fn)), "hasattr with one argument throws")
+ok(throws(Function(): return hasattr(fn, "a", "b")), "hasattr with three arguments throws")
+ok(throws(Function(): return hasattr(b, 5)), "hasattr with a non-String name (Integer) throws")
+ok(throws(Function(): return hasattr(b, None)), "hasattr with a None name throws")
+ok(throws(Function(): return hasattr(b, ["x"])), "hasattr with a List name throws")
+ok(throws(Function(): return hasattr()), "hasattr with no arguments throws")
+
+# =========================================================== 12. the headline guarantee, restated
+# hasattr distinguishes "exists but is None" from "does not exist" — the exact case the feature is for.
+var probe = Box(0)
+ok(hasattr(probe, "empty") and probe.empty == None, "attribute is present AND its value is None")
+ok(not hasattr(probe, "ghost"), "a never-assigned name is absent")
+
+io.print("hasattr: " + String(n) + " checks passed")

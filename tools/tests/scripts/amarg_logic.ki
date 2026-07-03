@@ -1,0 +1,7 @@
+# Boolean operators and/or/not applied to argmain. For an imported module argmain is False, so
+# `or` falls through to the alternative and `not` is True.
+var a = argmain and True
+var b = argmain or "fallback"
+var c = not argmain
+var d = (len(arglist) == 0) and not argmain
+var m = argmain

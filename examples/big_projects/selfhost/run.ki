@@ -1,0 +1,21 @@
+# CLI front-end for the self-hosted interpreter: run a .ki file through Kirito-in-Kirito.
+#
+#   ki --lib examples/big_projects/selfhost/lib examples/big_projects/selfhost/run.ki program.ki
+#
+# Whatever the inner program prints is forwarded to this process's stdout.
+
+var io = import("io")
+var sys = import("sys")
+var kirito = import("kirito")
+
+# `arglist` is the host CLI's global list of the script's own arguments (arglist[0] is the first one).
+if len(arglist) < 1:
+    io.eprint("usage: run.ki <program.ki>")
+    sys.exit(2)
+
+var path = arglist[0]
+var fh = io.open(path, "r")
+var src = fh.read()
+fh.close()
+
+io.write(kirito.run(src))

@@ -1,0 +1,4 @@
+# PARSER: assignment to the result of a function call, not a valid target
+var f = Function():
+    return 1
+f() = 5

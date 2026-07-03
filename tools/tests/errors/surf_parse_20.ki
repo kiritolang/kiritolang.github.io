@@ -1,0 +1,3 @@
+# PARSER: 'return' used at top level inside an if (not inside any function)
+if 1 < 2:
+    return 7

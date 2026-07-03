@@ -1,0 +1,89 @@
+# ledger/book.ki — the in-memory book model. Wraps the parsed transaction list with the
+# aggregation queries every report needs: per-account balance, filter by date range, filter by
+# account prefix (so "Expenses" matches "Expenses:Food"), and enum-classified top-level account
+# category (Assets / Liabilities / Income / Expenses / Equity).
+
+var enum = import("enum")
+var time = import("time")
+
+# Standard five-way chart-of-accounts categories.
+var Category = enum.Enum(["Assets", "Liabilities", "Income", "Expenses", "Equity"])
+
+# Return a compact date key for lexicographic sort/compare (YYYYMMDD as Integer).
+var _dateKey = Function(d : Dict) -> Integer:
+    return d["y"] * 10000 + d["m"] * 100 + d["d"]
+
+# Top-level category from an account name ("Expenses:Food" -> "Expenses" -> Category["Expenses"]).
+# An unknown top segment throws.
+var categoryOf = Function(account : String):
+    var top = account.split(":")[0]
+    if top == "Assets":
+        return Category["Assets"]
+    if top == "Liabilities":
+        return Category["Liabilities"]
+    if top == "Income":
+        return Category["Income"]
+    if top == "Expenses":
+        return Category["Expenses"]
+    if top == "Equity":
+        return Category["Equity"]
+    throw "unknown top-level account category: " + top + " (in '" + account + "')"
+
+# Filter transactions to a date range (inclusive; either bound may be None). Both bounds are given
+# as ISO-format strings "YYYY-MM-DD".
+var filterDateRange = Function(txs : List, fromIso, toIso) -> List:
+    var lo = 0
+    var hi = 99999999
+    if fromIso != None:
+        var parts = fromIso.split("-")
+        lo = Integer(parts[0]) * 10000 + Integer(parts[1]) * 100 + Integer(parts[2])
+    if toIso != None:
+        var parts2 = toIso.split("-")
+        hi = Integer(parts2[0]) * 10000 + Integer(parts2[1]) * 100 + Integer(parts2[2])
+    var out = []
+    for tx in txs:
+        var k = _dateKey(tx["date"])
+        if k >= lo and k <= hi:
+            out.append(tx)
+    return out
+
+# Balance every account (dict account -> Float total). Zero balances are dropped for a tidy report.
+var accountBalances = Function(txs : List) -> Dict:
+    var bal = {}
+    for tx in txs:
+        for p in tx["postings"]:
+            bal[p["account"]] = bal.get(p["account"], 0.0) + p["amount"]
+    var out = {}
+    for k in bal:
+        if not bal[k].compare(0.0, abs_tol = 0.001):
+            out[k] = bal[k]
+    return out
+
+# Roll balances up under a top-level account (Expenses:Food + Expenses:Rent -> Expenses).
+var categoryTotals = Function(txs : List) -> Dict:
+    var out = {}
+    for tx in txs:
+        for p in tx["postings"]:
+            var top = p["account"].split(":")[0]
+            out[top] = out.get(top, 0.0) + p["amount"]
+    return out
+
+# Every posting on a matching account, chronological. `account` matches by EXACT name or by PREFIX
+# with a `:` boundary (Expenses matches Expenses:Food, but Expenses does NOT match ExpensesOther).
+var accountPostings = Function(txs : List, account : String) -> List:
+    var out = []
+    var pfx = account + ":"
+    for tx in txs:
+        for p in tx["postings"]:
+            if p["account"] == account or p["account"].startswith(pfx):
+                out.append({
+                    "date":    tx["date"],
+                    "desc":    tx["desc"],
+                    "account": p["account"],
+                    "amount":  p["amount"],
+                })
+    return out
+
+# Sort transactions chronologically (stable — same-date order is preserved from the source file).
+var sortByDate = Function(txs : List) -> List:
+    return sorted(txs, key = Function(t): return _dateKey(t["date"]))

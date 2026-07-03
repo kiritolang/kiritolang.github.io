@@ -1,0 +1,18 @@
+# Two ways to compute factorial in Kirito, contrasted.
+
+var io = import("io")
+
+var factRec = Function(n : Integer) -> Integer:
+    if n <= 1:
+        return 1
+    return n * factRec(n - 1)
+
+var factIter = Function(n : Integer) -> Integer:
+    var acc = 1
+    var i = 2
+    while i <= n:
+        acc = acc * i
+        i = i + 1
+    return acc
+
+io.print("5! =", factRec(5), factIter(5))

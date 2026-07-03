@@ -1,0 +1,130 @@
+# A tiny web framework over the HTTP layer: an App with method+path routing (including `:name` path
+# parameters), middleware, and static-file serving. Handlers take a Request and return a Response.
+
+var http = import("http")
+var path = import("path")
+var io = import("io")
+
+# Split a path into non-empty segments: "/users/42/" -> ["users", "42"].
+var segments = Function(path):
+    var out = []
+    for s in path.split("/"):
+        if len(s) > 0:
+            out.append(s)
+    return out
+
+# Guess a Content-Type from a file extension.
+var CONTENT_TYPES = {
+    "html": "text/html; charset=utf-8", "htm": "text/html; charset=utf-8",
+    "css": "text/css", "js": "application/javascript", "json": "application/json",
+    "txt": "text/plain; charset=utf-8", "svg": "image/svg+xml",
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif"
+}
+var content_type_for = Function(name):
+    var dot = name.rfind(".")
+    if dot >= 0:
+        var ext = name[dot + 1:].lower()
+        if ext in CONTENT_TYPES:
+            return CONTENT_TYPES[ext]
+    return "application/octet-stream"
+
+class App:
+    var _init_ = Function(self):
+        self._routes = []        # list of [method, segments, has_params, handler]
+        self._middleware = []     # list of Function(req) -> None
+        self._static = []         # list of [url_prefix_segments, directory]
+
+    var route = Function(self, method, path, handler):
+        self._routes.append([method.upper(), segments(path), handler])
+        return self
+
+    var get = Function(self, path, handler):
+        return self.route("GET", path, handler)
+    var post = Function(self, path, handler):
+        return self.route("POST", path, handler)
+    var put = Function(self, path, handler):
+        return self.route("PUT", path, handler)
+    var delete = Function(self, path, handler):
+        return self.route("DELETE", path, handler)
+
+    # Register a middleware run before every handler (e.g. logging). It receives the Request.
+    var use = Function(self, fn):
+        self._middleware.append(fn)
+        return self
+
+    # Serve files under `directory` for any path starting with `url_prefix`.
+    var static = Function(self, url_prefix, directory):
+        self._static.append([segments(url_prefix), directory])
+        return self
+
+    # Try to match one route's segment pattern against the request segments, filling params.
+    var _match = Function(self, pattern, segs):
+        if len(pattern) != len(segs):
+            return None
+        var params = {}
+        for p, s in zip(pattern, segs):
+            if len(p) > 0 and p[0:1] == ":":
+                params[p[1:]] = s
+            elif p != s:
+                return None
+        return params
+
+    var _serve_static = Function(self, req):
+        var segs = segments(req.path)
+        for entry in self._static:
+            var prefix = entry[0]
+            var directory = entry[1]
+            if len(segs) < len(prefix):
+                continue
+            var matched = True
+            for p, s in zip(prefix, segs):
+                if p != s:
+                    matched = False
+            if not matched:
+                continue
+            var rest = segs[len(prefix):]
+            # Reject path traversal outright.
+            for r in rest:
+                if r == ".." or r == ".":
+                    return http.Response().text("forbidden", 403)
+            if len(rest) == 0:
+                rest = ["index.html"]
+            var fpath = directory + "/" + "/".join(rest)
+            if not path.exists(fpath) or path.isdir(fpath):
+                return None
+            var f = io.open(fpath, "r")
+            var data = f.read()
+            f.close()
+            var resp = http.Response()
+            resp.body = data
+            resp.headers["Content-Type"] = content_type_for(fpath)
+            return resp
+        return None
+
+    # Resolve a request to a Response: middleware, then routes, then static, then 404. Any handler
+    # error becomes a 500 (the server never dies on a bad handler).
+    var handle = Function(self, req):
+        try:
+            for mw in self._middleware:
+                mw(req)
+            var segs = segments(req.path)
+            var path_exists = False
+            for r in self._routes:
+                var method = r[0]
+                var pattern = r[1]
+                var handler = r[2]
+                var params = self._match(pattern, segs)
+                if params != None:
+                    path_exists = True
+                    if method == req.method:
+                        req.params = params
+                        return handler(req)
+            # A static file?
+            var st = self._serve_static(req)
+            if st != None:
+                return st
+            if path_exists:
+                return http.Response().text("method not allowed", 405)
+            return http.Response().text("not found: " + req.path, 404)
+        catch as e:
+            return http.Response().text("internal server error: " + String(e), 500)

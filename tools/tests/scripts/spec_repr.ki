@@ -1,0 +1,59 @@
+# How values stringify (String() / print / nested-in-collection repr) — a corner rarely pinned down.
+var io = import("io")
+var math = import("math")
+
+# --- integers ---
+assert String(0) == "0" and String(42) == "42" and String(-7) == "-7", "int repr"
+assert String(9223372036854775807) == "9223372036854775807", "int max repr"
+assert String(-9223372036854775808) == "-9223372036854775808", "int min repr"
+
+# --- floats: trailing .0, sign, scientific, repeating ---
+assert String(3.0) == "3.0" and String(-3.0) == "-3.0", "whole float keeps .0"
+assert String(0.0) == "0.0" and String(-0.0) == "-0.0", "signed zero repr"
+assert String(0.5) == "0.5" and String(-5.5) == "-5.5", "simple decimals"
+assert String(0.1) == "0.1", "0.1 repr (not 0.1000000…)"
+assert String(1.0 / 3.0) == "0.333333333333333", "repeating decimal (15 sig figs)"
+assert String(1.0e20) == "1e+20" and String(1.0e-10) == "1e-10", "scientific notation repr"
+assert String(math.inf) == "inf" and String(-math.inf) == "-inf", "infinity repr"
+assert String(math.nan) == "nan", "nan repr"
+
+# --- bool / None ---
+assert String(True) == "True" and String(False) == "False", "bool repr"
+assert String(None) == "None", "None repr"
+
+# --- strings: stringify is identity; nested-in-collection is QUOTED (repr) ---
+assert String("hello") == "hello" and String("") == "", "string identity repr"
+assert String(["a", "b"]) == "['a', 'b']", "strings quoted (repr) inside a List"
+assert String([1, "two", 3.0, True, None]) == "[1, 'two', 3.0, True, None]", "mixed list repr"
+assert String(["it's", "say \"hi\""]) == "[\"it's\", 'say \"hi\"']", "repr picks the quote"
+
+# --- collections ---
+assert String([]) == "[]" and String([1]) == "[1]" and String([1, 2, 3]) == "[1, 2, 3]", "list repr"
+assert String([[1, 2], [3]]) == "[[1, 2], [3]]", "nested list repr"
+assert String({"a": 1}) == "{'a': 1}", "single-key dict repr (key quoted)"
+assert String({}) == "{}", "empty dict repr"
+# set repr is unordered; check shape rather than exact order
+assert String(Set()) == "Set()" or String(Set()) == "{}", "empty set repr"
+var sr = String({1, 2, 3})
+assert sr[0] == "{" and sr[len(sr) - 1] == "}" and "1" in sr and "2" in sr and "3" in sr, "set repr shape"
+
+# --- print joins with spaces, ends with newline (captured) ---
+var cap = io.BytesIO()
+io.stdout = cap
+io.print("a", 1, True, [2, 3])
+io.print()
+io.stdout = io.__stdout__
+assert cap.getvalue() == "a 1 True [2, 3]\n\n", "print spacing + trailing newline"
+
+# --- f-string interpolation uses the same repr ---
+assert f"{3.0}" == "3.0" and f"{[1, 2]}" == "[1, 2]" and f"{None}" == "None" and f"{True}" == "True", "f-string repr"
+
+# --- cyclic / self-referential repr is bounded ---
+var c = []
+c.append(c)
+assert String(c) == "[[...]]", "self-referential list repr"
+var dc = {}
+dc["k"] = dc
+assert String(dc) == "{'k': {...}}", "self-referential dict repr (key quoted)"
+
+io.print("OK")

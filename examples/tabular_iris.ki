@@ -1,0 +1,82 @@
+# Exploratory data analysis of the classic Fisher/Anderson **iris** dataset using Kirito's
+# dataframe-style `tabular` library — entirely in pure Kirito. Reads the CSV, summarizes it, groups by species,
+# engineers a feature, filters, sorts, and computes a correlation between two columns from the
+# Series primitives.
+#
+# Run from the repository root:   ki examples/tabular_iris.ki
+# (optionally pass a path:        ki examples/tabular_iris.ki path/to/iris.csv)
+
+var io = import("io")
+var tb = import("tabular")
+var sys = import("sys")
+var path = import("path")
+
+var csvpath = arglist[0] if len(arglist) >= 1 else "examples/data/iris.csv"
+if not path.exists(csvpath):
+    io.eprint("iris.csv not found at '" + csvpath + "' — run from the repo root or pass a path")
+    sys.exit(1)
+
+var df = tb.readcsv(csvpath)
+
+io.print("=== iris dataset ===")
+io.print("shape: " + String(df.shape()) + "   columns: " + String(df.columns))
+io.print("")
+io.print("first 5 rows:")
+io.print(df.head(5))
+io.print("")
+
+# --- class balance ---
+io.print("species counts:")
+var counts = df["species"].valuecounts()
+var ci = 0
+while ci < len(counts.index):
+    io.print("  " + String(counts.index[ci]) + ": " + String(counts.tolist()[ci]))
+    ci = ci + 1
+io.print("")
+
+# --- per-species feature means (the headline groupby) ---
+io.print("mean measurement per species:")
+io.print(df.groupby("species").mean())
+io.print("")
+io.print("max petal_length per species:")
+io.print(df.groupby("species").agg({"petal_length": "max"}))
+io.print("")
+
+# --- describe the whole frame (numeric columns only) ---
+io.print("describe (all numeric columns):")
+io.print(df.describe())
+io.print("")
+
+# --- feature engineering: a derived 'petal_area' column, then sort to find the largest blooms ---
+df["petal_area"] = df["petal_length"] * df["petal_width"]
+io.print("top 5 by petal_area:")
+var top = df.sortvalues("petal_area", ascending=False).head(5)
+var rows = top[["species", "petal_area"]]
+io.print(rows)
+io.print("")
+
+# --- boolean masking: the big-petal flowers are overwhelmingly virginica ---
+var big = df[df["petal_area"] > 10.0]
+io.print("flowers with petal_area > 10.0: " + String(len(big)) + " of " + String(len(df)))
+io.print("  species breakdown: " + String(big["species"].valuecounts().tolist()) +
+        " for " + String(big["species"].valuecounts().index))
+io.print("")
+
+# --- a Pearson correlation between two columns, built from the Series primitives ---
+var pearson = Function(a, b):
+    var ma = a.mean()
+    var mb = b.mean()
+    var da = a - ma                       # element-wise Series arithmetic
+    var db = b - mb
+    var cov = (da * db).sum() / (len(a) - 1)
+    return cov / (a.std() * b.std())
+
+var pl = df["petal_length"]
+var pw = df["petal_width"]
+var sl = df["sepal_length"]
+io.print("correlations:")
+io.print("  petal_length ~ petal_width : " + String(round(pearson(pl, pw), 4)))
+io.print("  petal_length ~ sepal_length: " + String(round(pearson(pl, sl), 4)))
+
+io.print("")
+io.print("done.")

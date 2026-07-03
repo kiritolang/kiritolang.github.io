@@ -1,0 +1,211 @@
+# The native `tensor` module: N-dimensional arrays with a Float (default) or Complex dtype, all
+# operations defined for arbitrary rank, broadcasting, and the matrix types built on the same engine.
+var io = import("io")
+var T = import("tensor")
+var C = import("complex")
+
+# --- construction / shape / dtype ---
+var a = T.Tensor([[1, 2, 3], [4, 5, 6]])
+assert a.shape() == [2, 3], "shape"
+assert a.ndim() == 2 and a.size() == 6, "ndim / size"
+assert a.dtype() == "Float", "default dtype is Float"
+assert T.zeros([2, 2]) == T.Tensor([[0, 0], [0, 0]]), "zeros"
+assert T.ones([3]) == T.Tensor([1, 1, 1]), "ones (1-D)"
+assert T.full([2], 7) == T.Tensor([7, 7]), "full"
+assert T.eye(2) == T.Tensor([[1, 0], [0, 1]]), "eye"
+assert T.arange(5) == T.Tensor([0, 1, 2, 3, 4]), "arange(stop)"
+assert T.arange(1, 7, 2) == T.Tensor([1, 3, 5]), "arange(start, stop, step)"
+
+# --- indexing: full index -> scalar; partial index -> sub-tensor ---
+var b = T.Tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])   # 2x2x2
+assert b.shape() == [2, 2, 2], "3-D shape"
+assert b[1, 0, 1] == 6.0, "full index -> element"
+assert b[0] == T.Tensor([[1, 2], [3, 4]]), "partial index -> sub-tensor"
+b[0, 0, 0] = 99
+assert b[0, 0, 0] == 99.0, "element assignment"
+
+# --- elementwise arithmetic, scalars, broadcasting ---
+assert a + a == T.Tensor([[2, 4, 6], [8, 10, 12]]), "elementwise add"
+assert a - a == T.zeros([2, 3]), "elementwise sub"
+assert a * a == T.Tensor([[1, 4, 9], [16, 25, 36]]), "elementwise multiply (Hadamard, not matmul)"
+assert a * 2 == T.Tensor([[2, 4, 6], [8, 10, 12]]), "scalar multiply"
+assert -a == T.Tensor([[-1, -2, -3], [-4, -5, -6]]), "negate"
+# broadcasting: (2,3) + (1,3) and (2,3) + (2,1)
+assert a + T.Tensor([[10, 20, 30]]) == T.Tensor([[11, 22, 33], [14, 25, 36]]), "broadcast a row"
+assert a + T.Tensor([[100], [200]]) == T.Tensor([[101, 102, 103], [204, 205, 206]]), "broadcast a column"
+
+# --- matmul (a method; `*` stays elementwise) and dot ---
+var p = T.Tensor([[1, 2], [3, 4]])
+var q = T.Tensor([[5, 6], [7, 8]])
+assert p.matmul(q) == T.Tensor([[19, 22], [43, 50]]), "matmul (2-D)"
+assert T.Tensor([1, 2, 3]).dot(T.Tensor([4, 5, 6])) == 32.0, "dot (1-D)"
+# batched matmul: (2,2,2) @ (2,2,2) per batch
+assert b.matmul(b).shape() == [2, 2, 2], "batched matmul keeps the batch dim"
+
+# --- reductions: whole-tensor and along an axis ---
+assert a.sum() == 21.0, "sum (all)"
+assert a.sum(0) == T.Tensor([5, 7, 9]), "sum along axis 0"
+assert a.sum(1) == T.Tensor([6, 15]), "sum along axis 1"
+assert a.mean() == 3.5, "mean (all)"
+assert a.mean(1) == T.Tensor([2, 5]), "mean along axis 1"
+assert a.min() == 1.0 and a.max() == 6.0, "min / max"
+assert T.Tensor([1, 2, 3, 4]).prod() == 24.0, "prod"
+
+# --- shape ops ---
+assert a.transpose() == T.Tensor([[1, 4], [2, 5], [3, 6]]), "transpose"
+assert a.reshape([3, 2]) == T.Tensor([[1, 2], [3, 4], [5, 6]]), "reshape"
+assert a.flatten() == T.Tensor([1, 2, 3, 4, 5, 6]), "flatten"
+assert a.permute([1, 0]) == a.transpose(), "permute([1,0]) == transpose for 2-D"
+
+# --- apply (the element-wise map) ---
+assert T.Tensor([1, 4, 9]).apply(Function(x): return x ** 0.5) == T.Tensor([1, 2, 3]), "apply (map) sqrt"
+
+# --- complex dtype ---
+var z = T.Tensor([[1, 2], [3, 4]], dtype = "Complex")
+assert z.dtype() == "Complex", "complex dtype"
+assert z.matmul(z) == T.Tensor([[7, 10], [15, 22]], dtype = "Complex"), "complex matmul"
+assert z[0, 0] == C.of(1, 0), "complex element is a Complex"
+assert z.astype("Float") == p, "astype Complex -> Float (real part)"
+assert T.Tensor([1, 2]).astype("Complex").dtype() == "Complex", "astype Float -> Complex"
+# a Float tensor + a Complex tensor promotes to Complex
+assert (T.Tensor([1, 2]) + T.Tensor([1, 1], dtype = "Complex")).dtype() == "Complex", "mixed-dtype promotes to Complex"
+
+# --- tensordot / contract ---
+assert T.tensordot(p, q, 1) == p.matmul(q), "tensordot axes=1 == matmul"
+assert T.tensordot(p, q, 2) == T.full([], 70), "tensordot axes=2 (Frobenius) -> 0-D scalar 70"
+var xc = T.full([2, 3, 4], 1)
+var yc = T.full([4, 3, 5], 2)
+assert T.contract(xc, yc, [1, 2], [1, 0]).shape() == [2, 5], "contract over two axis pairs"
+assert T.contract(xc, yc, [1, 2], [1, 0])[0, 0] == 24.0, "contract value (sum of 3*4 of 1*2)"
+
+# --- autograd: off by default, opt-in, backward, grad, zerograd, detach, nograd ---
+assert T.zeros([2]).requiresgrad() == False, "tensors do not require grad by default"
+var gw = T.Tensor([[1, 2], [3, 4]], requiresgrad = True)
+var gb = T.Tensor([[1, 1], [1, 1]], requiresgrad = True)
+var loss = (gw * gb + gb).sum()                 # d/dgw = gb ; d/dgb = gw + 1
+loss.backward()
+assert gw.grad == T.Tensor([[1, 1], [1, 1]]), "grad wrt gw == gb"
+assert gb.grad == T.Tensor([[2, 3], [4, 5]]), "grad wrt gb == gw + 1"
+# matmul backward
+var mw = T.Tensor([[1, 2], [3, 4]], requiresgrad = True)
+mw.matmul(T.eye(2)).sum().backward()
+assert mw.grad == T.ones([2, 2]), "matmul grad through an identity is ones"
+# differentiable math: d/dx sum(x^2) = 2x
+var xv = T.Tensor([1, 2, 3], requiresgrad = True)
+xv.square().sum().backward()
+assert xv.grad == T.Tensor([2, 4, 6]), "d/dx sum(x^2) = 2x"
+# relu gradient is the positive mask
+var rv = T.Tensor([-2, -1, 1, 2], requiresgrad = True)
+rv.relu().sum().backward()
+assert rv.grad == T.Tensor([0, 0, 1, 1]), "relu grad is the positive mask"
+# post-creation enable; zerograd clears; grad accumulates across backward calls
+var pv = T.Tensor([1, 2], requiresgrad = True)
+pv.requiresgrad(True)
+pv.sum().backward()
+pv.sum().backward()
+assert pv.grad == T.Tensor([2, 2]), "grad accumulates across backward() calls"
+pv.zerograd()
+assert pv.grad == None, "zerograd clears the gradient"
+# tensordot is differentiable
+var ta = T.Tensor([[1, 2], [3, 4]], requiresgrad = True)
+T.tensordot(ta, T.eye(2), 1).sum().backward()
+assert ta.grad == T.ones([2, 2]), "tensordot is differentiable"
+# nograd disables tracking; detach drops grad
+with T.nograd():
+    assert (pv * 2).requiresgrad() == False, "ops inside nograd() do not track"
+assert (pv * 2).requiresgrad() == True, "tracking resumes after the with block"
+assert pv.detach().requiresgrad() == False, "detach drops grad tracking"
+
+# --- NumPy-style surface: indexing, comparisons, reductions, structural, linalg, sorting ---
+# slicing (axis 0) / fancy / boolean
+assert a[0:1] == T.Tensor([[1, 2, 3]]), "axis-0 slice"
+assert a[[1, 0]] == T.Tensor([[4, 5, 6], [1, 2, 3]]), "fancy index"
+assert a[a.gt(3)] == T.Tensor([4, 5, 6]), "boolean mask select"
+# comparisons + logic (0/1 masks)
+assert a.gt(3) == T.Tensor([[0, 0, 0], [1, 1, 1]]), "gt mask"
+assert (a > 3) == a.gt(3), "the > operator matches .gt"
+assert a.eq(T.Tensor([[1, 0, 3], [0, 5, 0]])) == T.Tensor([[1, 0, 1], [0, 1, 0]]), "eq mask"
+assert a.gt(2).logicaland(a.lt(5)) == T.Tensor([[0, 0, 1], [1, 0, 0]]), "logical and"
+# selection / clip / maximum-minimum
+assert T.where(a.gt(3), a, T.zeros([2, 3])) == T.Tensor([[0, 0, 0], [4, 5, 6]]), "where"
+assert a.clip(2, 5) == T.Tensor([[2, 2, 3], [4, 5, 5]]), "clip"
+assert a.maximum(T.full([2, 3], 3)) == T.Tensor([[3, 3, 3], [4, 5, 6]]), "maximum"
+# axis reductions / statistics
+assert a.min(0) == T.Tensor([1, 2, 3]) and a.max(1) == T.Tensor([3, 6]), "min/max along axis"
+assert a.argmax(1) == T.Tensor([2, 2]), "argmax along axis"
+assert a.argmin() == 0, "argmin (flat) is an Integer"
+assert a.var(0) == T.Tensor([2.25, 2.25, 2.25]), "var along axis"
+assert T.Tensor([1, 2, 3]).cumsum() == T.Tensor([1, 3, 6]), "cumsum"
+assert T.Tensor([3, 1, 2]).median() == 2.0, "median"
+assert a.gt(5).any() == True and a.gt(0).all() == True, "any / all"
+# element-wise rounding / mod / power
+assert T.Tensor([1.7, -1.2]).floor() == T.Tensor([1, -2]), "floor"
+assert (T.Tensor([5, 7]) % 3) == T.Tensor([2, 1]), "modulo operator"
+assert (T.Tensor([2, 3]) ** 2) == T.Tensor([4, 9]), "power operator"
+# structural
+assert T.concatenate([a, a], 0).shape() == [4, 3], "concatenate"
+assert T.stack([T.Tensor([1, 2]), T.Tensor([3, 4])], 0) == T.Tensor([[1, 2], [3, 4]]), "stack"
+assert len(T.split(a, 3, 1)) == 3, "split"
+assert T.zeros([1, 3, 1]).squeeze().shape() == [3], "squeeze"
+assert T.Tensor([1, 2]).expanddims(0).shape() == [1, 2], "expanddims"
+assert a.swapaxes(0, 1) == a.transpose(), "swapaxes"
+assert T.Tensor([1, 2, 3]).flip() == T.Tensor([3, 2, 1]), "flip"
+assert T.Tensor([1, 2]).repeat(2) == T.Tensor([1, 1, 2, 2]), "repeat"
+assert T.Tensor([1, 2]).tile([2]) == T.Tensor([1, 2, 1, 2]), "tile"
+assert T.Tensor([[1], [2]]).broadcastto([2, 3]) == T.Tensor([[1, 1, 1], [2, 2, 2]]), "broadcastto"
+# creation helpers
+assert T.linspace(0, 1, 5) == T.Tensor([0, 0.25, 0.5, 0.75, 1]), "linspace"
+assert T.zeroslike(a) == T.zeros([2, 3]), "zeroslike"
+assert T.diag(T.Tensor([1, 2])) == T.Tensor([[1, 0], [0, 2]]), "diag (vector -> matrix)"
+assert T.diag(T.Tensor([[1, 2], [3, 4]])) == T.Tensor([1, 4]), "diag (matrix -> vector)"
+assert T.tril(T.ones([2, 2])) == T.Tensor([[1, 0], [1, 1]]), "tril"
+# linear algebra
+var M = T.Tensor([[4, 3], [6, 3]])
+assert T.det(M) == -6.0 and T.trace(M) == 7.0, "det / trace"
+# inv/solve are computed floats — `==` is exact now, so compare within tolerance via `.compare`.
+# (abs_tol because eye / the solution have exact zeros: rel_tol alone can't match a near-zero element.)
+assert T.inv(M).matmul(M).compare(T.eye(2), abs_tol = 1e-9), "inverse"
+assert T.solve(M, T.Tensor([[1], [1]])).compare(T.Tensor([[0], [1.0 / 3]]), abs_tol = 1e-9), "solve"
+assert T.norm(T.Tensor([3, 4])) == 5.0, "norm"
+assert T.outer(T.Tensor([1, 2]), T.Tensor([3, 4])) == T.Tensor([[3, 4], [6, 8]]), "outer"
+assert T.cross(T.Tensor([1, 0, 0]), T.Tensor([0, 1, 0])) == T.Tensor([0, 0, 1]), "cross"
+assert T.inner(T.Tensor([1, 2, 3]), T.Tensor([4, 5, 6])) == T.full([], 32), "inner"
+assert T.einsum("ij,jk->ik", T.Tensor([[1, 2], [3, 4]]), T.eye(2)) == T.Tensor([[1, 2], [3, 4]]), "einsum matmul"
+assert T.einsum("ii->", M) == T.full([], 7), "einsum trace"
+# sorting / searching
+assert T.Tensor([3, 1, 2]).sort() == T.Tensor([1, 2, 3]), "sort"
+assert T.Tensor([3, 1, 2]).argsort() == T.Tensor([1, 2, 0]), "argsort"
+assert T.unique(T.Tensor([3, 1, 3, 2, 1])) == T.Tensor([1, 2, 3]), "unique"
+assert T.searchsorted(T.Tensor([1, 3, 5]), 4) == 2, "searchsorted"
+# complex helpers
+var zc = T.Tensor([[1, 2], [3, 4]], dtype = "Complex")
+assert zc.real() == T.Tensor([[1, 2], [3, 4]]), "real part"
+assert zc.imag() == T.zeros([2, 2]), "imag part of a real-valued complex tensor"
+# autograd flows through the new differentiable ops
+var ga = T.Tensor([1, 2, 3, 4], requiresgrad = True)
+T.where(T.Tensor([1, 0, 1, 0]), ga, T.zeros([4])).sum().backward()
+assert ga.grad == T.Tensor([1, 0, 1, 0]), "where is differentiable"
+var gc = T.Tensor([1, 1, 1], requiresgrad = True)
+gc.cumsum().sum().backward()
+assert gc.grad == T.Tensor([3, 2, 1]), "cumsum is differentiable (reverse cumsum)"
+
+# --- serialization: gradient-free tensors round-trip; grad-requiring ones refuse ---
+var ser = import("serialize")
+var dmp = import("dump")
+var st = T.Tensor([[1.5, 2.5], [3.5, 4.5]])
+assert ser.loads(ser.dumps(st)) == st, "text serialization round-trips a tensor"
+assert dmp.loads(dmp.dumps(st)) == st, "binary serialization round-trips a tensor"
+assert ser.loads(ser.dumps(T.Tensor([[1, 2]], dtype = "Complex"))) == T.Tensor([[1, 2]], dtype = "Complex"), "complex tensor round-trips"
+var gtensor = T.Tensor([1.0, 2.0], requiresgrad = True)
+assert ser.loads(ser.dumps(gtensor.detach())) == T.Tensor([1.0, 2.0]), "a detached grad tensor serializes"
+
+# --- errors ---
+var thrown = 0
+for thunk in [Function(): return T.Tensor([[1, 2], [3]]), Function(): return T.zeros([2]).matmul(T.zeros([3])), Function(): return T.Tensor([1, 2], dtype = "Complex").min(), Function(): return T.Tensor([1]).reshape([2, 2]), Function(): return T.zeros([2]).backward(), Function(): return T.zeros([2], dtype = "Complex").requiresgrad(True), Function(): return import("serialize").dumps(T.Tensor([1.0], requiresgrad = True))]:
+    try:
+        discard thunk()
+    catch as e:
+        thrown = thrown + 1
+assert thrown == 7, "ragged list, bad matmul, complex min, bad reshape, backward-without-grad, complex-requiresgrad, and serializing-a-grad-tensor all throw"
+
+io.print("OK")

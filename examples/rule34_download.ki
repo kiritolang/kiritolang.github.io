@@ -1,0 +1,75 @@
+# Find and download images from rule34.xxx using its public API.
+#
+# The API returns JSON when you pass json=1, e.g.:
+#   https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1&tags=<tags>&limit=<n>
+# Each post has a "file_url" we can fetch and save.
+#
+# Run:  ki --lib examples/lib examples/rule34_download.ki <tags> <count>
+# (Requires outbound network; in sandboxes without it, the request throws and we report cleanly.)
+
+var io = import("io")
+var path = import("path")
+var net = import("net")
+var json = import("json")
+
+# Build the API URL. Tags are space-separated; the API wants '+' between them.
+# rule34 requires HTTPS, so build ki with -DKIRITO_ENABLE_TLS=ON (links OpenSSL).
+var buildUrl = Function(tags, limit):
+    var joined = "+".join(tags.split(" "))
+    return "https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1&limit=" + String(limit) + "&tags=" + joined
+
+# Fetch and parse the post list. Returns a List of Dicts (may be empty).
+var fetchPosts = Function(tags, limit):
+    var url = buildUrl(tags, limit)
+    io.print("GET " + url)
+    var resp = net.get(url)
+    if resp.status != 200:
+        throw "API returned status " + String(resp.status)
+    var body = resp.text
+    if len(body) == 0:
+        return []
+    return json.parse(body)
+
+# Download one post's file_url to the given directory; returns the saved path.
+var downloadPost = Function(post, dir):
+    var url = post["file_url"]
+    # derive a filename from the post id + extension
+    var ext = "jpg"
+    if "image" in post:
+        var parts = post["image"].split(".")
+        ext = parts[len(parts) - 1]
+    var path = dir + "/" + String(post["id"]) + "." + ext
+    var resp = net.get(url)
+    if resp.status != 200:
+        throw "download failed: status " + String(resp.status)
+    with io.open(path, "w") as f:
+        f.write(resp.text)
+    return path
+
+# --- main -------------------------------------------------------------------------------------
+var tags = "neko"
+var count = 3
+if len(arglist) >= 1:
+    tags = arglist[0]
+if len(arglist) >= 2:
+    count = Integer(arglist[1])
+
+var outDir = "/tmp/rule34_out"
+discard path.mkdir(outDir, exist_ok = True)
+
+try:
+    var posts = fetchPosts(tags, count)
+    io.print("Found " + String(len(posts)) + " posts")
+    var saved = 0
+    for post in posts:
+        try:
+            var path = downloadPost(post, outDir)
+            io.print("  saved " + path)
+            saved = saved + 1
+        catch as e:
+            io.print("  skip: " + e)
+    io.print("Downloaded " + String(saved) + " / " + String(len(posts)) + " images")
+catch as e:
+    # No network / no TLS support / API down: report cleanly rather than crashing.
+    # (If you see an https error, rebuild ki with -DKIRITO_ENABLE_TLS=ON.)
+    io.print("Could not reach rule34 API: " + e)

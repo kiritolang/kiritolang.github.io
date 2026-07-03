@@ -1,0 +1,15 @@
+# Kirito-in-Kirito: a complete Kirito interpreter written in Kirito.
+#
+# Umbrella module. `run(source)` lexes, parses and evaluates a Kirito program and returns everything
+# it printed (via io.print) as a single String — so a harness can compare it to the expected output.
+#
+# Usage from another script:
+#     var kirito = import("kirito")
+#     var output = kirito.run("var io = import(\"io\")\nio.print(\"hi\")\n")
+
+var interp = import("interp")
+
+var run = interp.run
+var runWithInput = interp.runWithInput
+var run4 = interp.run4
+var run5 = interp.run5      # like run4 but also seeds the program's arglist (CLI-argv tests)

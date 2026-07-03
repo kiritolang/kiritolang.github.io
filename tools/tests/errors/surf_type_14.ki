@@ -1,0 +1,2 @@
+# type/operator: '**' is undefined for Strings
+discard "a" ** "b"

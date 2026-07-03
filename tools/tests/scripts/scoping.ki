@@ -1,0 +1,29 @@
+# Scoping: global builtins, module-level, function-local, and closures.
+var io = import("io")
+
+var x = "module"
+
+var readOuter = Function():
+    return x                 # reads the module-level x
+
+var shadow = Function():
+    var x = "local"          # a new local, does not touch module x
+    return x
+
+io.print(readOuter())        # module
+io.print(shadow())           # local
+io.print(x)                  # module (unchanged)
+
+var counter = Function():
+    var n = 0
+    var step = Function():
+        n = n + 1            # rebinds the captured n
+        return n
+    return step
+
+var c1 = counter()
+var c2 = counter()           # independent closure state
+io.print(c1())               # 1
+io.print(c1())               # 2
+io.print(c2())               # 1
+io.print(c1())               # 3

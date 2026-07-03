@@ -1,0 +1,2 @@
+# LEXER: a \x escape with only one hex digit before the closing quote
+var s = "byte \xA"

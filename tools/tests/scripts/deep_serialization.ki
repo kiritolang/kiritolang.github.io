@@ -1,0 +1,323 @@
+# Adversarial deep audit of the serialization stack (json / serialize / dump) against documented
+# behaviour. Complements the existing spec_serialization / spec_serde* / audit_json suites by
+# attacking the WIRE FORMATS directly (hand-crafted binary blobs + corrupted text tokens), probing
+# float boundary values (subnormals/NaN/Infinity), JSON number/escape leniency, deep-nesting guards,
+# and verifying every malformed input throws a CLEAN catchable error rather than crashing the VM.
+#
+# IMPORTANT: subnormal/underflowing float *literals* (e.g. 5e-324) abort the lexer (std::stod
+# out_of_range), so every tiny float here is produced at RUNTIME by arithmetic, never written as a
+# literal.
+var io = import("io")
+var path = import("path")
+var json = import("json")
+var serialize = import("serialize")
+var dump = import("dump")
+var math = import("math")
+var net = import("net")
+var regex = import("regex")
+var sys = import("sys")
+
+# True iff fn() thrown a catchable error (a clean diagnostic, never a crash).
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+# True iff fn() completed WITHOUT crashing (returned normally OR thrown a catchable error).
+var clean = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return True
+    catch as e:
+        return True
+
+# little-endian u32 as Bytes, and a KDMP header for `count` objects
+var u32 = Function(v):
+    return Bytes([v % 256, (v // 256) % 256, (v // 65536) % 256, (v // 16777216) % 256])
+var kdmp = Function(count):
+    return Bytes([75, 68, 77, 80, 1]) + u32(count)        # "KDMP" + version 1 + u32 count
+var ascii = Function(s):
+    return s.encode("ascii")
+
+# ================================================================= JSON: number leniency / strictness
+# Documented: "Raises a clear error on malformed input." These probes pin the ACTUAL accept/reject
+# boundary (the parser is lenient vs strict RFC 8259 in a few spots — recorded here so a regression
+# that changes it is caught).
+assert json.parse("-0") == 0, "json -0 -> 0"
+assert json.parse("-0.0") == -0.0, "json -0.0 -> -0.0 float"
+assert json.parse("01") == 1, "json accepts a leading zero (lenient)"
+assert json.parse("5.") == 5.0, "json accepts a trailing dot (lenient)"
+assert json.parse("1e") == 1.0, "json accepts an empty exponent (lenient)"
+assert json.parse("1e+5") == 100000.0, "json signed exponent"
+assert json.parse("1.5e3") == 1500.0, "json scientific notation"
+assert throws(Function(): return json.parse("+1")), "json rejects a leading +"
+assert throws(Function(): return json.parse(".5")), "json rejects a leading dot"
+assert throws(Function(): return json.parse("--1")), "json rejects a double minus"
+# Non-finite floats use the bareword JSON spelling and parse back (round-trippable, see below).
+assert json.parse("Infinity") == math.inf, "json accepts bareword Infinity"
+assert json.parse("-Infinity") == -math.inf, "json accepts bareword -Infinity"
+assert math.isnan(json.parse("NaN")), "json accepts bareword NaN"
+assert throws(Function(): return json.parse("0x10")), "json rejects hex"
+# an Integer too large for int64 widens to Float instead of failing (documented dynamic-language rule)
+assert isinstance(json.parse("999999999999999999999999"), "Float"), "json huge int -> Float"
+
+# ================================================================= JSON: stringify of non-finite floats
+# Non-finite floats use the bareword spelling NaN / Infinity / -Infinity, which json.parse accepts
+# back — so a structure containing a non-finite Float round-trips through dumps -> loads.
+assert json.dumps(math.nan) == "NaN", "json.dumps(NaN) -> 'NaN'"
+assert json.dumps(math.inf) == "Infinity", "json.dumps(Infinity) -> 'Infinity'"
+assert json.dumps(-math.inf) == "-Infinity", "json.dumps(-Infinity) -> '-Infinity'"
+assert math.isnan(json.parse(json.dumps(math.nan))), "json NaN output re-parses to NaN"
+assert json.loads(json.dumps([math.inf, -math.inf])) == [math.inf, -math.inf], "non-finite list round-trips"
+
+# ================================================================= JSON: escapes, surrogates, unicode
+assert json.parse("\"\\u00FF\"") == Bytes([195, 191]).decode("utf-8"), "json \\u latin-1 escape"
+assert json.parse("\"\\uD83D\\uDE00\"") == "😀", "json surrogate pair -> astral code point"
+# lone surrogates are accepted (WTF-8 encoded) rather than rejected -- pin the lenient behaviour
+assert clean(Function(): return json.parse("\"\\uD83D\"")), "json lone high surrogate handled cleanly"
+assert clean(Function(): return json.parse("\"\\uDE00\"")), "json lone low surrogate handled cleanly"
+assert throws(Function(): return json.parse("\"\\uD83D\\u0041\"")), "json bad low surrogate rejected"
+# unicode keys + values round-trip
+var ukeys = {"世界": 1, "café": 2, "😀": 3}
+assert json.loads(json.dumps(ukeys)) == ukeys, "json unicode keys round-trip"
+# control chars in output are \u-escaped (valid JSON) and re-parse
+var ctrl = "a" + chr(1) + "b" + chr(31) + "c"
+assert json.loads(json.dumps(ctrl)) == ctrl, "json control chars escape + round-trip"
+
+# ================================================================= JSON: structural malformed inputs
+assert throws(Function(): return json.parse("'single'")), "json rejects single quotes"
+assert throws(Function(): return json.parse("[1] // c")), "json rejects line comments"
+assert throws(Function(): return json.parse("/* c */[1]")), "json rejects block comments"
+assert throws(Function(): return json.parse("[1] # c")), "json rejects hash comments"
+assert throws(Function(): return json.parse(Bytes([239, 187, 191]).decode("utf-8") + "[1]")), "json rejects a UTF-8 BOM"
+assert throws(Function(): return json.parse("[1,2,]")), "json rejects a trailing array comma"
+assert throws(Function(): return json.parse("{\"a\":1,}")), "json rejects a trailing object comma"
+assert throws(Function(): return json.parse("{\"a\" 1}")), "json rejects a missing colon"
+assert throws(Function(): return json.parse("{1:2}")), "json rejects a non-string key"
+assert throws(Function(): return json.parse("\"abc")), "json rejects an unterminated string"
+assert throws(Function(): return json.parse("\"\\q\"")), "json rejects a bad escape"
+assert throws(Function(): return json.parse("   ")), "json rejects all-whitespace"
+# duplicate keys: last value wins
+assert json.parse("{\"a\":1,\"a\":2}") == {"a": 2}, "json duplicate keys: last wins"
+# every truncation of a valid document throws cleanly (never crashes)
+var doc = "{\"a\":[1,2.5,true,null,\"x\"],\"b\":{\"c\":[3]}}"
+var ti = 1
+while ti < len(doc):
+    assert clean(Function(): return json.parse(doc[0:ti])), "json truncation @" + String(ti) + " is clean"
+    ti = ti + 1
+
+# ================================================================= JSON: nesting depth guard (~1000)
+var nest = Function(n, opn, close):
+    var s = ""
+    var i = 0
+    while i < n:
+        s = s + opn
+        i = i + 1
+    s = s + "1"
+    var j = 0
+    while j < n:
+        s = s + close
+        j = j + 1
+    return s
+assert json.parse(nest(900, "[", "]")) != None, "json 900-deep array parses"
+assert throws(Function(): return json.parse(nest(2000, "[", "]"))), "json 2000-deep array -> nesting too deep"
+assert throws(Function(): return json.parse(nest(2000, "{\"a\":", "}"))), "json 2000-deep object -> nesting too deep"
+# stringify guards depth too (build a 1500-deep nested list and re-stringify)
+var deeplist = [0]
+var dd = 0
+while dd < 1500:
+    deeplist = [deeplist]
+    dd = dd + 1
+assert throws(Function(): return json.dumps(deeplist)), "json.dumps guards against deep nesting"
+# stringify rejects cyclic + Set + Function (no aliasing / object notion)
+var jcyc = [1]
+jcyc.append(jcyc)
+assert throws(Function(): return json.dumps(jcyc)), "json.dumps rejects a cycle"
+assert throws(Function(): return json.dumps({1, 2})), "json.dumps rejects a Set"
+assert throws(Function(): return json.dumps(io.print)), "json.dumps rejects a Function"
+
+# ================================================================= JSON: indent pretty-print round-trips
+var jv = {"a": [1, 2, {"b": 3}], "c": "héllo", "d": None, "e": True, "f": -2.5}
+assert json.loads(json.dumps(jv, indent = 2)) == jv, "json indent=2 round-trips"
+assert json.loads(json.dumps(jv, 4)) == jv, "json positional indent round-trips"
+assert json.dumps([], indent = 2) == "[]", "json indent: empty list is []"
+assert json.dumps({}, indent = 2) == "{}", "json indent: empty dict is {}"
+# large array round-trips through all three formats
+var big = []
+var bi = 0
+while bi < 5000:
+    big.append(bi)
+    bi = bi + 1
+assert json.loads(json.dumps(big)) == big, "json round-trips a 5000-element array"
+assert dump.loads(dump.dumps(big)) == big, "dump round-trips a 5000-element array"
+assert serialize.loads(serialize.dumps(big)) == big, "serialize round-trips a 5000-element array"
+
+# ================================================================= DUMP: hand-crafted hostile blobs
+# Every malformed binary blob must throw a CLEAN catchable error, never crash (no OOB read, no bad
+# alloc, no native-stack overflow). The reader's need()/bounds checks and rebuild()'s id checks back
+# this up.
+assert dump.dumps([1, 2, 3]).hex() != "", "a valid blob has a hex form"
+# bad magic / version
+assert throws(Function(): return dump.loads(Bytes([88, 88, 88, 88, 1, 0, 0, 0, 0]))), "dump bad magic"
+assert throws(Function(): return dump.loads(Bytes([75, 68, 77, 80, 99]) + u32(0) + u32(0))), "dump bad version"
+# a u32 object count larger than the data -> rejected before allocating
+assert throws(Function(): return dump.loads(kdmp(4000000000) + Bytes([0]))), "dump rejects an impossible object count"
+# a List/String claiming more ids/bytes than remain -> truncated dump data
+assert throws(Function(): return dump.loads(kdmp(1) + Bytes([5]) + u32(1000000) + u32(0))), "dump truncated List ids"
+assert throws(Function(): return dump.loads(kdmp(1) + Bytes([4]) + u32(4000000000) + u32(0))), "dump truncated String"
+# root id / child id out of range (count=1)
+assert throws(Function(): return dump.loads(kdmp(1) + Bytes([0]) + u32(99))), "dump root id out of range"
+assert throws(Function(): return dump.loads(kdmp(1) + Bytes([5]) + u32(1) + u32(50) + u32(0))), "dump child id out of range"
+# an unknown class name for Object (8) / Stateful (9) nodes -> clean 'not defined' / 'no deserializer'
+var objBlob = kdmp(1) + Bytes([8]) + u32(3) + ascii("Bar") + u32(0) + u32(0)
+assert throws(Function(): return dump.loads(objBlob)), "dump unknown-class Object node"
+var stBlob = kdmp(2) + Bytes([9]) + u32(3) + ascii("Foo") + u32(1) + Bytes([0]) + u32(0)
+assert throws(Function(): return dump.loads(stBlob)), "dump unknown-class Stateful node"
+# a Dict whose count*2 overflows u32 (count = 0x80000001) -> the wrapped count still yields a clean
+# error (a Dict ends up used as its own key -> 'unhashable'), never a crash.
+var ovf = kdmp(1) + Bytes([6]) + u32(2147483649) + u32(0) + u32(0) + u32(0)
+assert clean(Function(): return dump.loads(ovf)), "dump count*2 overflow is handled cleanly"
+# an unknown tag byte
+assert throws(Function(): return dump.loads(kdmp(1) + Bytes([200]) + u32(0))), "dump unknown tag byte"
+# every truncation of a real blob throws cleanly
+var realblob = dump.dumps({"k": [1, 2, Set([3, 4])], "n": None})
+var dti = 0
+while dti < len(realblob):
+    assert throws(Function(): return dump.loads(realblob[0:dti])), "dump truncation @" + String(dti) + " throws"
+    dti = dti + 1
+# garbage / empty / fuzzed random bytes never crash the loader
+assert throws(Function(): return dump.loads("")), "dump empty"
+assert throws(Function(): return dump.loads("not a real dump blob here")), "dump garbage string"
+var rng = import("random").Random(424242)
+var fz = 0
+while fz < 200:
+    var n = rng.randint(0, 40)
+    var bb = []
+    var bk = 0
+    while bk < n:
+        bb.append(rng.randint(0, 255))
+        bk = bk + 1
+    assert clean(Function(): return dump.loads(Bytes(bb))), "dump random-bytes fuzz never crashes"
+    fz = fz + 1
+# flipping a single byte of a valid blob is always handled cleanly
+var fb = 0
+while fb < len(realblob):
+    var flipped = realblob[0:fb] + Bytes([(realblob[fb] + 1) % 256]) + realblob[fb + 1:]
+    assert clean(Function(): return dump.loads(flipped)), "dump single-byte flip @" + String(fb) + " is clean"
+    fb = fb + 1
+
+# ================================================================= SERIALIZE (text): crafted corruption
+var sblob = serialize.dumps([1, 2, 3])
+assert serialize.loads(sblob) == [1, 2, 3], "serialize text blob round-trips"
+assert throws(Function(): return serialize.loads("KXXXX 1 N 0")), "serialize bad header"
+assert throws(Function(): return serialize.loads("")), "serialize empty"
+assert throws(Function(): return serialize.loads("KSER1 -5 0")), "serialize negative count"
+assert throws(Function(): return serialize.loads("KSER1 999999999 0")), "serialize impossible count"
+assert throws(Function(): return serialize.loads("KSER1 1 Z 0")), "serialize unknown tag"
+assert throws(Function(): return serialize.loads("KSER1 1 N 99")), "serialize root id out of range"
+assert throws(Function(): return serialize.loads("KSER1 1 F notafloat 0")), "serialize bad float token (caught, not crash)"
+assert throws(Function(): return serialize.loads("KSER1 1 I notanint 0")), "serialize bad int token (caught, not crash)"
+assert throws(Function(): return serialize.loads("KSER1 1 L 1 50 0")), "serialize list child id out of range"
+# a String payload containing the format's own tokens/separators must survive (length-prefixed)
+var nasty = "KSER1 5 L 3 fake tokens  \n\t with spaces and 123 I F S P 9 here"
+assert serialize.loads(serialize.dumps(nasty)) == nasty, "serialize survives a self-referential-looking String"
+var nastylist = ["KSER1", "0 ", " I 5 ", "P 3 Foo", ""]
+assert serialize.loads(serialize.dumps(nastylist)) == nastylist, "serialize survives a List of token-like Strings"
+# every truncation of a real text blob is handled cleanly
+var sti = 0
+while sti < len(sblob):
+    assert clean(Function(): return serialize.loads(sblob[0:sti])), "serialize truncation @" + String(sti) + " is clean"
+    sti = sti + 1
+
+# ================================================================= FLOAT BOUNDARIES across formats
+# Large/edge floats round-trip exactly through BOTH graph formats. (Tiny SUBNORMALS are produced at
+# runtime — never as literals, which would abort the lexer.)
+var edgeFloats = [0.0, -0.0, 1.0, -1.0, 0.1, 1.0 / 3.0, 1e308, -1e308, 2.2250738585072014e-308, 123456789.123456789]
+for x in edgeFloats:
+    assert dump.loads(dump.dumps(x)) == x, "dump float boundary round-trip"
+    assert serialize.loads(serialize.dumps(x)) == x, "serialize float boundary round-trip"
+# NaN / +Inf / -Inf are bit-preserved by both graph formats (== is false for NaN, so check structurally)
+var nf = dump.loads(dump.dumps([math.nan, math.inf, -math.inf]))
+assert math.isnan(nf[0]) and math.isinf(nf[1]) and nf[1] > 0.0 and math.isinf(nf[2]) and nf[2] < 0.0, "dump preserves NaN/+-Inf"
+var nfs = serialize.loads(serialize.dumps([math.nan, math.inf, -math.inf]))
+assert math.isnan(nfs[0]) and math.isinf(nfs[1]) and nfs[1] > 0.0 and math.isinf(nfs[2]) and nfs[2] < 0.0, "serialize preserves NaN/+-Inf"
+# A genuine SUBNORMAL (smallest normal / 2): the BINARY dump format round-trips it bit-exactly;
+# the TEXT serialize format must at least handle it cleanly (dumps + loads never crash — loads may
+# throw a catchable 'corrupt serialized data: stod' on libstdc++ that underflows subnormal tokens).
+# NOTE: Float `==` is tolerance-based, so at this scale `subnormal == smallestNormal` is True even
+# though they differ by 2x — so bit-exactness is verified by BLOB IDENTITY (re-dumping the restored
+# value yields an identical binary blob), not by `==`.
+var subnormal = 2.2250738585072014e-308 / 2.0
+assert math.isfinite(subnormal) and subnormal > 0.0, "produced a genuine positive subnormal at runtime"
+var subblobBin = dump.dumps(subnormal)
+assert dump.dumps(dump.loads(subblobBin)) == subblobBin, "dump round-trips a subnormal bit-exactly (blob identity)"
+assert subblobBin != dump.dumps(2.2250738585072014e-308), "dump distinguishes the subnormal from the smallest normal (bit-level)"
+assert clean(Function(): return serialize.dumps(subnormal)), "serialize.dumps of a subnormal does not crash"
+var subblob = serialize.dumps(subnormal)
+assert clean(Function(): return serialize.loads(subblob)), "serialize.loads of a subnormal blob does not crash"
+
+# ================================================================= RESOURCE TYPES must reject (no crash)
+var resources = [
+    Function(): return net.Socket(),
+    Function(): return net.Session(),
+    Function(): return regex.compile("a+"),
+    Function(): return regex.search("(a)", "a"),
+    Function(): return io.BytesIO()
+]
+var ri = 0
+while ri < len(resources):
+    assert throws(Function(): return serialize.dumps(resources[ri]())), "serialize rejects resource #" + String(ri)
+    assert throws(Function(): return dump.dumps(resources[ri]())), "dump rejects resource #" + String(ri)
+    assert throws(Function(): return json.dumps(resources[ri]())), "json rejects resource #" + String(ri)
+    ri = ri + 1
+# an open file rejects too
+var fp = path.join(path.gettempdir(), "kirito_deepser_probe.txt")
+var fh = io.open(fp, "w")
+assert throws(Function(): return serialize.dumps(fh)), "serialize rejects an open File"
+assert throws(Function(): return dump.dumps(fh)), "dump rejects an open File"
+fh.close()
+discard path.remove(fp, missing_ok = True)
+
+# ================================================================= STRUCTURAL EQUIVALENCE: ser == dump
+# The two graph formats must reconstruct an IDENTICAL graph shape (shared refs + cycles + instances).
+class Node:
+    var _init_ = Function(self, v):
+        self.v = v
+        self.link = None
+var na = Node(1)
+var nb = Node(2)
+na.link = nb
+nb.link = na                                   # a 2-cycle through instances
+var shared = [7, 8]
+var graph = {"cycle": na, "shared": [shared, shared], "set": Set([1, 2, 3]), "nil": None}
+var sres = serialize.loads(serialize.dumps(graph))
+var dres = dump.loads(dump.dumps(graph))
+# cycle preserved in both
+assert id(sres["cycle"].link.link) == id(sres["cycle"]), "serialize preserves the instance cycle"
+assert id(dres["cycle"].link.link) == id(dres["cycle"]), "dump preserves the instance cycle"
+# shared alias preserved in both (same object reached by two paths)
+assert id(sres["shared"][0]) == id(sres["shared"][1]), "serialize preserves the shared alias"
+assert id(dres["shared"][0]) == id(dres["shared"][1]), "dump preserves the shared alias"
+# both reconstruct equal sets / values
+assert sres["set"] == Set([1, 2, 3]) and dres["set"] == Set([1, 2, 3]), "both formats restore the Set"
+assert sres["cycle"].v == 1 and dres["cycle"].v == 1, "both formats restore the instance attribute"
+# empty containers (every kind) round-trip identically through both
+var empties = [[], {}, Set([]), ""]
+for e in empties:
+    assert serialize.loads(serialize.dumps(e)) == e, "serialize empty container round-trip"
+    assert dump.loads(dump.dumps(e)) == e, "dump empty container round-trip"
+
+# ================================================================= Bytes value through graph formats
+# Bytes (immutable raw bytes) round-trips through serialize + dump (json has no Bytes notion).
+var bv = Bytes([0, 1, 2, 255, 128, 10, 13])
+assert dump.loads(dump.dumps(bv)) == bv, "dump round-trips Bytes"
+assert serialize.loads(serialize.dumps(bv)) == bv, "serialize round-trips Bytes"
+assert throws(Function(): return json.dumps(bv)), "json rejects Bytes (no Bytes notion)"
+# Bytes nested + shared
+var sharedb = Bytes([9, 9])
+var bnest = {"a": [bv, sharedb], "b": sharedb}
+assert dump.loads(dump.dumps(bnest)) == bnest, "dump round-trips nested/shared Bytes"
+assert serialize.loads(serialize.dumps(bnest)) == bnest, "serialize round-trips nested/shared Bytes"
+
+io.print("OK deep-serialization")

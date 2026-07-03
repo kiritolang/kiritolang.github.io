@@ -1,0 +1,93 @@
+# Pure-Kirito follow-up tests for the deep-audit fixes the math-agent surfaced.
+# Each fix from runtime.hpp / stdlib_tensor.hpp gets a probe set here so the language behavior is
+# pinned at the .ki layer (not just C++): Complex equality symmetry, tensor.take(axis=N), einsum
+# output-label validation, plus a few regression probes for the related semantics.
+
+var io = import("io")
+var C = import("complex")
+var T = import("tensor")
+
+# --- Complex equality is symmetric across number kinds (audit fix in runtime.hpp::kiEquals) -----
+# Before the fix: 2 == Complex(2,0) was False (only LHS.equals dispatched). After: both directions
+# yield the same result, matching the documented "Complex(2,0) == 2" behavior.
+assert C.of(2, 0) == 2 and 2 == C.of(2, 0), "Complex == Integer (both directions)"
+assert C.of(2, 0) == 2.0 and 2.0 == C.of(2, 0), "Complex == Float (both directions)"
+assert not (C.of(2, 1) == 2) and not (2 == C.of(2, 1)), "nonzero imag stays unequal (both directions)"
+assert C.of(0, 0) == 0 and 0 == C.of(0, 0), "zero round-trip"
+assert C.of(-3, 0) == -3 and -3 == C.of(-3, 0), "negative round-trip"
+# != consistency
+assert (2 != C.of(2, 1)) == (C.of(2, 1) != 2), "!= mirrors =="
+# Non-numeric cross-type pairs still compare unequal (no false matches from symmetric retry)
+assert not (1 == "1") and not ("1" == 1), "Integer vs String stays unequal"
+assert not (None == 0) and not (0 == None), "None vs Integer stays unequal"
+assert not ([1] == 1) and not (1 == [1]), "List vs Integer stays unequal"
+# Within-kind comparisons unaffected
+assert 1 == 1.0 and 1.0 == 1, "Integer/Float numeric equality preserved"
+
+# --- tensor.take supports any axis (audit fix in stdlib_tensor.hpp) ---------------------------
+var m = T.Tensor([[1.0, 2, 3], [4, 5, 6], [7, 8, 9]])
+assert m.take([0, 2], axis = 0).tolist() == [[1.0, 2, 3], [7, 8, 9]], "take axis 0 (rows)"
+assert m.take([0, 2], axis = 1).tolist() == [[1.0, 3], [4, 6], [7, 9]], "take axis 1 (cols)"
+assert m.take([0, 2], axis = -1).tolist() == [[1.0, 3], [4, 6], [7, 9]], "take axis -1 (last)"
+assert m.take([0, 2], axis = -2).tolist() == [[1.0, 2, 3], [7, 8, 9]], "take axis -2 (penultimate)"
+# axis defaults to 0
+assert m.take([1]).tolist() == [[4.0, 5, 6]], "take with no axis defaults to 0"
+# Single-element take
+assert m.take([0], axis = 0).tolist() == [[1.0, 2, 3]], "take([0]) is a row"
+assert m.take([1], axis = 1).tolist() == [[2.0], [5], [8]], "take([1], axis = 1) is a column"
+# Out-of-range axis throws
+var threw = False
+try:
+    discard m.take([0], axis = 5)
+catch as e:
+    threw = "axis" in e and "range" in e
+assert threw, "axis out of range throws"
+threw = False
+try:
+    discard m.take([0], axis = -10)
+catch as e:
+    threw = "axis" in e
+assert threw, "very-negative axis throws"
+# 3-D take along each axis
+var t3 = T.arange(24).reshape([2, 3, 4])
+assert t3.take([0], axis = 0).shape() == [1, 3, 4], "3-D take axis 0 shape"
+assert t3.take([0, 2], axis = 1).shape() == [2, 2, 4], "3-D take axis 1 shape"
+assert t3.take([0, 1, 2], axis = 2).shape() == [2, 3, 3], "3-D take axis 2 shape"
+assert t3.take([0, 3], axis = -1).shape() == [2, 3, 2], "3-D take axis -1 shape"
+
+# --- einsum rejects an output label not present in any input (audit fix in stdlib_tensor.hpp) ---
+var sq = T.Tensor([[1.0, 2], [3, 4]])
+threw = False
+try:
+    discard T.einsum("ij->kk", sq)
+catch as e:
+    threw = "output label" in e
+assert threw, "einsum: output label 'k' not in any input throws"
+threw = False
+try:
+    discard T.einsum("ij->ijk", sq)
+catch as e:
+    threw = "output label" in e
+assert threw, "einsum: extra output label throws"
+threw = False
+try:
+    discard T.einsum("ij,jk->il", sq, T.eye(2))
+catch as e:
+    threw = "output label" in e
+assert threw, "einsum: 'l' not in any operand throws"
+# Sanity: real patterns still work
+assert T.einsum("ij,jk->ik", sq, T.eye(2)).tolist() == sq.tolist(), "matmul still works"
+assert T.einsum("ii->", sq).item() == 5.0, "trace still works"
+assert T.einsum("ij->ji", sq).tolist() == sq.transpose().tolist(), "transpose still works"
+assert T.einsum("ij->i", sq).tolist() == [3.0, 7.0], "row sum still works"
+
+# --- Bonus: parallel.cpucount() returns a positive Integer (for the user's CPU-count question) ---
+var p = import("parallel")
+var n = p.cpucount()
+assert type(n) == "Integer" and n > 0, "parallel.cpucount returns positive Integer"
+
+# --- Sanity: existing inspect contracts unchanged ---
+assert "count(value)" in inspect([1, 2]), "List inspect still uses 'value'"
+assert Integer("0xFF") == 255, "Integer hex prefix still works"
+
+io.print("OK audit-followups")

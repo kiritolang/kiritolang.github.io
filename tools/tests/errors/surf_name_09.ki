@@ -1,0 +1,4 @@
+# name resolution: bare '=' to an undefined name inside a function
+var f = Function():
+    counter = counter + 1
+discard f()

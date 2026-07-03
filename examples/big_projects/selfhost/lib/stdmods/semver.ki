@@ -1,0 +1,356 @@
+# ---- low-level identifier helpers ----
+var _isnum = Function(s) -> Bool:
+    # a non-empty run of ASCII digits
+    if len(s) == 0:
+        return False
+    return s.isdigit()
+
+# Strip a leading 'v'/'='/'V' and surrounding whitespace, e.g. "v1.2.3" -> "1.2.3".
+var clean = Function(s) -> String:
+    var t = s.strip()
+    while len(t) > 0 and (t[0] == "v" or t[0] == "V" or t[0] == "=" or t[0] == " "):
+        t = t[1:]
+    return t.strip()
+
+# Parse a strict "MAJOR.MINOR.PATCH[-pre][+build]" into a Dict, or throw. `pre`/`build` are Lists of
+# dot-separated identifier Strings. A leading 'v' is tolerated.
+var parse = Function(s):
+    var raw = clean(s)
+    var build = []
+    var plus = raw.find("+")
+    var core = raw
+    if plus >= 0:
+        build = raw[plus + 1:].split(".")
+        core = raw[0:plus]
+    var pre = []
+    var dash = core.find("-")
+    if dash >= 0:
+        pre = core[dash + 1:].split(".")
+        core = core[0:dash]
+    var nums = core.split(".")
+    if len(nums) != 3:
+        throw "invalid version '" + s + "': need MAJOR.MINOR.PATCH"
+    if not (_isnum(nums[0]) and _isnum(nums[1]) and _isnum(nums[2])):
+        throw "invalid version '" + s + "': non-numeric core"
+    # prerelease identifiers must be non-empty [0-9A-Za-z-]; numeric ones carry no meaning beyond value
+    for p in pre:
+        if len(p) == 0:
+            throw "invalid version '" + s + "': empty prerelease identifier"
+    return {"major": Integer(nums[0]), "minor": Integer(nums[1]), "patch": Integer(nums[2]),
+            "prerelease": pre, "build": build, "raw": raw}
+
+# Is `s` a valid semver? Returns the cleaned string, or None.
+var valid = Function(s):
+    try:
+        var v = parse(s)
+        return v["raw"]
+    catch as e:
+        return None
+
+var major = Function(s):
+    return parse(s)["major"]
+var minor = Function(s):
+    return parse(s)["minor"]
+var patch = Function(s):
+    return parse(s)["patch"]
+var prerelease = Function(s):
+    var p = parse(s)["prerelease"]
+    return p if len(p) > 0 else None
+
+# ---- precedence comparison ----
+var _cmpint = Function(a, b):
+    return -1 if a < b else (1 if a > b else 0)
+
+var _cmpident = Function(x, y):
+    var xn = _isnum(x)
+    var yn = _isnum(y)
+    if xn and yn:
+        return _cmpint(Integer(x), Integer(y))
+    if xn:
+        return -1                 # numeric identifiers have lower precedence than alphanumeric
+    if yn:
+        return 1
+    return -1 if x < y else (1 if x > y else 0)
+
+var _cmppre = Function(a, b):
+    # [] (a release) has HIGHER precedence than any prerelease
+    if len(a) == 0 and len(b) == 0:
+        return 0
+    if len(a) == 0:
+        return 1
+    if len(b) == 0:
+        return -1
+    var i = 0
+    while i < len(a) and i < len(b):
+        var c = _cmpident(a[i], b[i])
+        if c != 0:
+            return c
+        i = i + 1
+    return _cmpint(len(a), len(b))   # all shared identifiers equal -> the longer one wins
+
+# Compare two version strings: -1 if a < b, 0 if equal precedence, 1 if a > b. Build metadata is
+# ignored (per the spec).
+var compare = Function(a, b):
+    var pa = parse(a)
+    var pb = parse(b)
+    var c = _cmpint(pa["major"], pb["major"])
+    if c != 0:
+        return c
+    c = _cmpint(pa["minor"], pb["minor"])
+    if c != 0:
+        return c
+    c = _cmpint(pa["patch"], pb["patch"])
+    if c != 0:
+        return c
+    return _cmppre(pa["prerelease"], pb["prerelease"])
+
+var eq = Function(a, b):
+    return compare(a, b) == 0
+var neq = Function(a, b):
+    return compare(a, b) != 0
+var lt = Function(a, b):
+    return compare(a, b) < 0
+var lte = Function(a, b):
+    return compare(a, b) <= 0
+var gt = Function(a, b):
+    return compare(a, b) > 0
+var gte = Function(a, b):
+    return compare(a, b) >= 0
+
+# The kind of change from a to b: "major"/"minor"/"patch"/"prerelease", or None if equal.
+var diff = Function(a, b):
+    var pa = parse(a)
+    var pb = parse(b)
+    if pa["major"] != pb["major"]:
+        return "major"
+    if pa["minor"] != pb["minor"]:
+        return "minor"
+    if pa["patch"] != pb["patch"]:
+        return "patch"
+    if _cmppre(pa["prerelease"], pb["prerelease"]) != 0:
+        return "prerelease"
+    return None
+
+# Increment a version by a release type: "major"/"minor"/"patch". Drops prerelease/build.
+var inc = Function(s, release) -> String:
+    var p = parse(s)
+    var mj = p["major"]
+    var mn = p["minor"]
+    var pt = p["patch"]
+    if release == "major":
+        mj = mj + 1
+        mn = 0
+        pt = 0
+    elif release == "minor":
+        mn = mn + 1
+        pt = 0
+    elif release == "patch":
+        pt = pt + 1
+    else:
+        throw "inc: release must be major/minor/patch, got '" + String(release) + "'"
+    return String(mj) + "." + String(mn) + "." + String(pt)
+
+# ---- ranges ----
+# A comparator is {"op": ">="/"<="/">"/"<"/"=", "v": <parsed-version-dict>}. A "set" is a List of
+# comparators ANDed together; a range is a List of sets ORed together.
+var _mkver = Function(mj, mn, pt, pre):
+    return {"major": mj, "minor": mn, "patch": pt, "prerelease": pre, "build": []}
+
+# Compare a parsed version dict to another (precedence only).
+var _cmpv = Function(a, b):
+    var c = _cmpint(a["major"], b["major"])
+    if c != 0:
+        return c
+    c = _cmpint(a["minor"], b["minor"])
+    if c != 0:
+        return c
+    c = _cmpint(a["patch"], b["patch"])
+    if c != 0:
+        return c
+    return _cmppre(a["prerelease"], b["prerelease"])
+
+# Expand one token ("^1.2", "~1", ">=1.0.0", "1.2.x", "*", "1.2.3") into a List of comparators.
+var _expand = Function(tok):
+    if tok == "" or tok == "*" or tok == "x" or tok == "X":
+        return [{"op": ">=", "v": _mkver(0, 0, 0, [])}]
+    var op = ""
+    var rest = tok
+    if rest[0:2] == ">=" or rest[0:2] == "<=":
+        op = rest[0:2]
+        rest = rest[2:]
+    elif rest[0] == ">" or rest[0] == "<" or rest[0] == "=":
+        op = rest[0]
+        rest = rest[1:]
+    elif rest[0] == "^" or rest[0] == "~":
+        op = rest[0]
+        rest = rest[1:]
+    rest = clean(rest)
+    # split the (possibly partial / x) version into up to 3 parts
+    var parts = rest.split("-")[0].split(".")
+    # reject a 4th+ component (1.2.3.4) — `valid` is strict about this, so a range must be too, else
+    # validrange("1.2.3.4") would disagree with valid("1.2.3.4")
+    if len(parts) > 3:
+        throw "invalid version (too many components): " + rest
+    var prepart = []
+    var dash = rest.find("-")
+    if dash >= 0:
+        prepart = rest[dash + 1:].split(".")
+    var hasx = Function(p):
+        return p == "x" or p == "X" or p == "*" or p == ""
+    var mj = 0
+    var mn = 0
+    var pt = 0
+    var xmj = len(parts) < 1 or hasx(parts[0])
+    var xmn = len(parts) < 2 or hasx(parts[1])
+    var xpt = len(parts) < 3 or hasx(parts[2])
+    if not xmj:
+        mj = Integer(parts[0])
+    if not xmn:
+        mn = Integer(parts[1])
+    if not xpt:
+        pt = Integer(parts[2])
+    if op == "^":
+        var lo = _mkver(mj, mn, pt, prepart)
+        var hi = None
+        if mj > 0 or xmn:
+            hi = _mkver(mj + 1, 0, 0, [])
+        elif mn > 0 or xpt:
+            hi = _mkver(0, mn + 1, 0, [])
+        else:
+            hi = _mkver(0, 0, pt + 1, [])
+        return [{"op": ">=", "v": lo}, {"op": "<", "v": hi}]
+    if op == "~":
+        var lo = _mkver(mj, mn, pt, prepart)
+        var hi = None
+        if xmn:
+            hi = _mkver(mj + 1, 0, 0, [])      # ~1 -> >=1.0.0 <2.0.0
+        else:
+            hi = _mkver(mj, mn + 1, 0, [])      # ~1.2 / ~1.2.3 -> >=1.2.x <1.3.0
+        return [{"op": ">=", "v": lo}, {"op": "<", "v": hi}]
+    if op == "" or op == "=":
+        # x-ranges: a missing/x part widens to a range; a full version is exact.
+        if xmj:
+            return [{"op": ">=", "v": _mkver(0, 0, 0, [])}]
+        if xmn:
+            return [{"op": ">=", "v": _mkver(mj, 0, 0, [])}, {"op": "<", "v": _mkver(mj + 1, 0, 0, [])}]
+        if xpt:
+            return [{"op": ">=", "v": _mkver(mj, mn, 0, [])}, {"op": "<", "v": _mkver(mj, mn + 1, 0, [])}]
+        return [{"op": "=", "v": _mkver(mj, mn, pt, prepart)}]
+    # explicit comparator (>, >=, <, <=): fill missing parts with 0
+    return [{"op": op, "v": _mkver(mj, mn, pt, prepart)}]
+
+# Parse a range string into a List of comparator sets (OR of ANDs).
+var _parserange = Function(rng):
+    var sets = []
+    for orpart in rng.split("||"):
+        var toks = []
+        for t in orpart.strip().split(" "):
+            if len(t) > 0:
+                toks.append(t)
+        var comps = []
+        var i = 0
+        while i < len(toks):
+            # hyphen range:  A - B  -> >=A <=B
+            if i + 2 < len(toks) and toks[i + 1] == "-":
+                var lo = _expand(toks[i])
+                var hi = _expand(toks[i + 2])
+                comps.append({"op": ">=", "v": lo[0]["v"]})
+                # upper bound: a partial hi (e.g. "2.3") becomes "<next", else "<=hi"
+                if len(hi) == 2:
+                    comps.append(hi[1])
+                else:
+                    comps.append({"op": "<=", "v": hi[0]["v"]})
+                i = i + 3
+            else:
+                for c in _expand(toks[i]):
+                    comps.append(c)
+                i = i + 1
+        if len(comps) == 0:
+            comps.append({"op": ">=", "v": _mkver(0, 0, 0, [])})
+        sets.append(comps)
+    return sets
+
+var _testcomp = Function(pv, comp):
+    var c = _cmpv(pv, comp["v"])
+    var op = comp["op"]
+    if op == ">=":
+        return c >= 0
+    if op == "<=":
+        return c <= 0
+    if op == ">":
+        return c > 0
+    if op == "<":
+        return c < 0
+    return c == 0                # "="
+
+# Does `version` satisfy `range`? Prerelease versions match only when a comparator in the same
+# satisfied set pins the same major.minor.patch with a prerelease (node-semver's default).
+var satisfies = Function(version, rng) -> Bool:
+    var sets = None
+    try:
+        sets = _parserange(rng)         # an unparseable range satisfies nothing (node-semver)
+    catch as e:
+        return False
+    var pv = parse(version)
+    for comps in sets:
+        var ok = True
+        for comp in comps:
+            if not _testcomp(pv, comp):
+                ok = False
+        if ok and len(pv["prerelease"]) > 0:
+            var allowed = False
+            for comp in comps:
+                if len(comp["v"]["prerelease"]) > 0 and comp["v"]["major"] == pv["major"] and comp["v"]["minor"] == pv["minor"] and comp["v"]["patch"] == pv["patch"]:
+                    allowed = True
+            if not allowed:
+                ok = False
+        if ok:
+            return True
+    return False
+
+# Is `rng` a parseable range?
+var validrange = Function(rng) -> Bool:
+    try:
+        discard _parserange(rng)
+        return True
+    catch as e:
+        return False
+
+# Sort version strings by precedence (insertion sort with compare(); invalid versions are dropped).
+var _sortby = Function(versions, rev):
+    var arr = []
+    for v in versions:
+        if valid(v) != None:
+            arr.append(v)
+    var i = 1
+    while i < len(arr):
+        var key = arr[i]
+        var j = i - 1
+        while j >= 0 and (compare(arr[j], key) < 0 if rev else compare(arr[j], key) > 0):
+            arr[j + 1] = arr[j]
+            j = j - 1
+        arr[j + 1] = key
+        i = i + 1
+    return arr
+# ascending by precedence
+var sort = Function(versions):
+    return _sortby(versions, False)
+# descending by precedence
+var rsort = Function(versions):
+    return _sortby(versions, True)
+
+# The highest / lowest version in `versions` that satisfies `range`, or None.
+var maxsatisfying = Function(versions, rng):
+    var best = None
+    for v in versions:
+        if valid(v) != None and satisfies(v, rng):
+            if best == None or compare(v, best) > 0:
+                best = v
+    return best
+var minsatisfying = Function(versions, rng):
+    var best = None
+    for v in versions:
+        if valid(v) != None and satisfies(v, rng):
+            if best == None or compare(v, best) < 0:
+                best = v
+    return best

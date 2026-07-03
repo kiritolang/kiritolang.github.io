@@ -1,0 +1,3 @@
+# Set-algebra operators require a Set on the right-hand side.
+var a = {1, 2, 3}
+discard a - [1]

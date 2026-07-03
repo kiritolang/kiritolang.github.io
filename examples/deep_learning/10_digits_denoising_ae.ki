@@ -1,0 +1,70 @@
+# Project 10 — Denoising autoencoder: corrupt each digit image with noise, then train the network to
+# reconstruct the CLEAN image from the noisy one. This forces the bottleneck to learn robust structure
+# rather than copying pixels. We report the reconstruction error on noisy held-out images against the
+# clean targets, versus the error of the noisy images themselves. Real data: scikit-learn digits.
+var io = import("io")
+var T = import("tensor")
+var nn = import("nn")
+var data = import("data")
+var random = import("random")
+
+io.print("=== Denoising autoencoder (noisy 8x8 digit -> clean reconstruction) ===")
+
+var ds = data.load_digits()
+var Xall = data.scale_range(ds[0], 0.0, 16.0)            # clean images in [0, 1]
+var rng0 = random.Random(13)
+rng0.shuffle(Xall)
+var Xtr = Xall[0:700]
+var Xte = Xall[700:1000]
+io.print(f"train {len(Xtr)} images, test {len(Xte)} images")
+
+# Add clipped Gaussian noise to a matrix of pixels (the corruption the AE must undo).
+var corrupt = Function(rows, sigma, rng):
+    var out = []
+    for row in rows:
+        var r = []
+        for v in row:
+            r.append(max(0.0, min(1.0, v + rng.gauss(0.0, sigma))))
+        out.append(r)
+    return out
+
+nn.seed(10)
+var model = nn.Sequential([
+    nn.Linear(64, 48), nn.ReLU(),
+    nn.Linear(48, 16), nn.ReLU(),                        # bottleneck
+    nn.Linear(16, 48), nn.ReLU(),
+    nn.Linear(48, 64), nn.Sigmoid()
+])
+var opt = nn.Adam(model.parameters(), lr = 0.005)
+
+var sigma = 0.4
+var noise_rng = random.Random(1)
+var rng = random.Random(0)
+var epoch = 0
+while epoch < 40:
+    var total = 0.0
+    var nb = 0
+    for batch in data.minibatches(len(Xtr), 64, rng):
+        var clean = data.gather(Xtr, batch)
+        var noisy = T.Tensor(corrupt(clean, sigma, noise_rng))
+        var loss = nn.mse_loss(model(noisy), T.Tensor(clean))   # reconstruct the clean target
+        loss.backward()
+        opt.step()
+        total = total + loss.item()
+        nb = nb + 1
+    if epoch % 10 == 0:
+        io.print(f"  epoch {epoch:2d}  train denoise MSE {total / nb:.5f}")
+    epoch = epoch + 1
+
+# On held-out images: how close is the reconstruction (from noisy input) to the clean image, vs how
+# far the noisy input itself is from clean?
+var Xte_clean = T.Tensor(Xte)
+var Xte_noisy = T.Tensor(corrupt(Xte, sigma, noise_rng))
+var recon_mse = 0.0
+var noisy_mse = 0.0
+with T.nograd():
+    recon_mse = nn.mse_loss(model(Xte_noisy), Xte_clean)
+    noisy_mse = nn.mse_loss(Xte_noisy, Xte_clean)
+io.print(f"test: noisy-vs-clean MSE {noisy_mse:.5f}   reconstruction-vs-clean MSE {recon_mse:.5f}")
+assert recon_mse < noisy_mse * 0.7, "the denoiser should recover the clean image better than the noise"
+io.print("OK denoising-autoencoder")

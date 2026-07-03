@@ -1,0 +1,3 @@
+# a class body referencing an undefined name is a name error
+class C:
+    var x = undefinedthing

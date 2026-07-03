@@ -1,0 +1,113 @@
+var json = import("json")
+var io = import("io")
+
+# ---- documented signatures (parse/loads/stringify/dumps) ---------------------------------------
+io.print(json.parse("[1, 2, 3]"))
+io.print(json.loads("[1, 2, 3]"))          # alias
+io.print(json.dumps([1, 2, 3]))            # alias of stringify
+io.print(json.stringify([1, 2, 3]))
+
+# ---- scalar parsing ----------------------------------------------------------------------------
+io.print(json.parse("true"))
+io.print(json.parse("false"))
+io.print(json.parse("null"))
+io.print(json.parse("0"))
+io.print(json.parse("-0"))
+io.print(json.parse("1.5e3"))               # scientific notation
+io.print(json.parse("-1.25"))
+
+# ---- string escapes (n t r b f / \\ ") ---------------------------------------------------------
+io.print(json.parse("\"a\\nb\""))
+io.print(json.parse("\"\\\"\\\\\""))         # "\"\\" --> "\
+io.print(json.parse("\"a\\tb\""))
+io.print(json.parse("\"a\\/b\""))            # \/ is valid in JSON
+
+# ---- \uHHHH unicode escapes + surrogate pair (doc claim) ---------------------------------------
+io.print(json.parse("\"\\u00FF\""))           # latin-1
+io.print(json.parse("\"\\uD83D\\uDE00\""))   # surrogate pair => U+1F600 (smiley)
+
+# ---- empty container parse ---------------------------------------------------------------------
+io.print(json.parse("[]"))
+io.print(json.parse("{}"))
+io.print(json.parse("{\"\": 0}"))            # empty key
+
+# ---- nested mixed ------------------------------------------------------------------------------
+io.print(json.parse("{\"a\":[1,{\"b\":true,\"c\":null}]}"))
+
+# ---- whitespace handling -----------------------------------------------------------------------
+io.print(json.parse("  \n\t [ 1 , 2 ]  "))   # surrounding ws OK
+
+# ---- stringify primitives ----------------------------------------------------------------------
+io.print(json.stringify(None))
+io.print(json.stringify(True))
+io.print(json.stringify(False))
+io.print(json.stringify(42))
+io.print(json.stringify("hi"))
+
+# control chars in output get \u-escaped (RFC 8259 compliance)
+io.print(json.stringify("a" + chr(1) + "b"))
+io.print(json.stringify("tab\there"))
+
+# ---- stringify pretty (indent kwarg) -----------------------------------------------------------
+io.print(json.stringify([1, 2], indent = 2))
+io.print(json.stringify({"a": 1}, 4))         # positional indent
+
+# ---- non-string dict key gets stringified (impl behaviour) -------------------------------------
+io.print(json.stringify({1: "v"}))
+
+# ---- malformed input rejection -----------------------------------------------------------------
+var caught = Function(fn):
+    try:
+        discard fn()
+        return "no-error"
+    catch as e:
+        return String(e)
+
+# trailing characters
+io.print("trailing:" if "trailing" in caught(Function(): return json.parse("1 2")) else "BAD")
+# trailing comma in array
+io.print("trail-comma:" if "unexpected" in caught(Function(): return json.parse("[1,2,]")) else "BAD")
+# leading + sign
+io.print("plus:" if "unexpected" in caught(Function(): return json.parse("+1")) else "BAD")
+# unterminated string
+io.print("unterm:" if "unterminated" in caught(Function(): return json.parse("\"abc")) else "BAD")
+# bad \ escape
+io.print("badesc:" if "bad escape" in caught(Function(): return json.parse("\"\\q\"")) else "BAD")
+# bad \u escape (non-hex)
+io.print("badu:" if "invalid \\u" in caught(Function(): return json.parse("\"\\uZZZZ\"")) else "BAD")
+# missing colon in object
+io.print("nocolon:" if "':'" in caught(Function(): return json.parse("{\"a\" 1}")) else "BAD")
+# non-string key (numeric)
+io.print("intkey:" if "expected string key" in caught(Function(): return json.parse("{1:2}")) else "BAD")
+# bad low surrogate
+io.print("badlow:" if "low surrogate" in caught(Function(): return json.parse("\"\\uD83D\\u0041\"")) else "BAD")
+# all-whitespace
+io.print("ws:" if "unexpected" in caught(Function(): return json.parse("   ")) else "BAD")
+# invalid literal
+io.print("inv:" if "invalid" in caught(Function(): return json.parse("tru")) else "BAD")
+
+# ---- nesting too deep (doc'd impl guard) -------------------------------------------------------
+var deep = ""
+var i = 0
+while i < 2000:
+    deep = deep + "["
+    i = i + 1
+io.print("deep:" if "deep" in caught(Function(): return json.parse(deep)) else "BAD")
+
+# ---- stringify rejects cyclic structures -------------------------------------------------------
+var cyc = [1, 2]
+cyc.append(cyc)
+io.print("cyc:" if "cyclic" in caught(Function(): return json.stringify(cyc)) else "BAD")
+
+# ---- stringify rejects unserializable types ----------------------------------------------------
+io.print("set:" if "Set" in caught(Function(): return json.stringify({1, 2})) else "BAD")
+io.print("fn:" if "Function" in caught(Function(): return json.stringify(io.print)) else "BAD")
+
+# ---- large integer overflows into Float --------------------------------------------------------
+io.print(json.parse("999999999999999999999999"))   # too big for int64
+
+# ---- round-trip a structure of all primitives --------------------------------------------------
+var orig = {"n": None, "b": True, "i": 1, "f": 2.5, "s": "x", "a": [1, "two"]}
+io.print(json.parse(json.stringify(orig)) == orig)
+
+io.print("OK audit-json")

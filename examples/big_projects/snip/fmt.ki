@@ -1,0 +1,78 @@
+# snip/fmt.ki — pretty-printers for the CLI.
+
+var time = import("time")
+
+var _padRight = Function(s : String, w : Integer) -> String:
+    if len(s) >= w:
+        return s
+    return s + " " * (w - len(s))
+
+var _padLeft = Function(s : String, w : Integer) -> String:
+    if len(s) >= w:
+        return s
+    return " " * (w - len(s)) + s
+
+# Human-readable "N units ago" using the delta between now and `ts` (unix epoch seconds).
+var humanAge = Function(ts : Integer) -> String:
+    var now = time.now().timestamp
+    var delta = now - ts
+    if delta < 0:
+        delta = 0
+    if delta < 60:
+        return String(delta) + "s ago"
+    if delta < 60 * 60:
+        return String(delta // 60) + "m ago"
+    if delta < 24 * 60 * 60:
+        return String(delta // (60 * 60)) + "h ago"
+    if delta < 30 * 24 * 60 * 60:
+        return String(delta // (24 * 60 * 60)) + "d ago"
+    return String(delta // (30 * 24 * 60 * 60)) + "mo ago"
+
+# Compact one-line-per-snippet listing.
+var listLine = Function(s : Dict) -> String:
+    var t = s["title"]
+    if len(t) > 44:
+        t = t[0:43] + "…"
+    var tagStr = ""
+    if len(s["tags"]) > 0:
+        tagStr = "[" + ",".join(s["tags"]) + "]"
+    return "  " + s["id"] + "  " + _padRight(s["lang"], 8) + " " + _padRight(t, 45) + _padRight(humanAge(s["modified"]), 8) + " " + tagStr
+
+var list = Function(items : List) -> String:
+    if len(items) == 0:
+        return "  (no snippets)\n"
+    var lines = []
+    for s in items:
+        lines.append(listLine(s))
+    return "\n".join(lines) + "\n"
+
+# Full body with line numbers, header block on top.
+var show = Function(s : Dict) -> String:
+    var lines = []
+    lines.append("  id:       " + s["id"])
+    lines.append("  title:    " + s["title"])
+    lines.append("  lang:     " + s["lang"])
+    lines.append("  tags:     " + ",".join(s["tags"]))
+    lines.append("  created:  " + humanAge(s["created"]))
+    lines.append("  modified: " + humanAge(s["modified"]))
+    lines.append("  " + "-" * 60)
+    var bodyLines = s["body"].split("\n")
+    var digits = len(String(len(bodyLines)))
+    var i = 1
+    for bl in bodyLines:
+        lines.append("  " + _padLeft(String(i), digits) + "  " + bl)
+        i = i + 1
+    return "\n".join(lines) + "\n"
+
+# Statistics summary.
+var stats = Function(items : List, top : List, langs : List) -> String:
+    var lines = []
+    lines.append("  total:     " + String(len(items)))
+    lines.append("  languages: " + String(len(langs)))
+    if len(langs) > 0:
+        lines.append("    " + ",".join(langs))
+    if len(top) > 0:
+        lines.append("  top tags:")
+        for row in top:
+            lines.append("    " + _padRight(row["tag"], 20) + _padLeft(String(row["count"]), 4))
+    return "\n".join(lines) + "\n"

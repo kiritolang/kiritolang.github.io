@@ -1,0 +1,321 @@
+# r9_tensor_matrix.ki — edge-case and error-hardening for tensor and matrix modules.
+# tensor: creation/indexing/arithmetic/reductions/linalg/domain-errors/shape-errors;
+# matrix: creation/indexing/arithmetic/determinant/inverse/cross/OOB/shape-errors.
+# All domain errors must throw; silent wrong answers are bugs.
+
+var io = import("io")
+var tensor = import("tensor")
+var matrix = import("matrix")
+var math = import("math")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== tensor creation
+var t1d = tensor.Tensor([1.0, 2.0, 3.0])
+ok(type(t1d) == "Tensor", "Tensor type")
+ok(t1d.shape() == [3], "Tensor 1D shape")
+ok(t1d.dtype() == "Float", "Tensor dtype default Float")
+
+var t2d = tensor.Tensor([[1.0, 2.0], [3.0, 4.0]])
+ok(t2d.shape() == [2, 2], "Tensor 2D shape")
+ok(t2d[0, 0] == 1.0, "Tensor 2D [0,0]")
+ok(t2d[1, 1] == 4.0, "Tensor 2D [1,1]")
+ok(t2d[0, 1] == 2.0, "Tensor 2D [0,1]")
+
+# Factory functions
+var z = tensor.zeros([2, 3])
+ok(z.shape() == [2, 3], "zeros shape")
+ok(z[0, 0] == 0.0, "zeros element is 0.0")
+
+var o = tensor.ones([3])
+ok(o.shape() == [3], "ones shape")
+ok(o[0] == 1.0, "ones element is 1.0")
+
+var f = tensor.full([2, 2], 7.0)
+ok(f[0, 0] == 7.0 and f[1, 1] == 7.0, "full elements")
+
+var e = tensor.eye(3)
+ok(e.shape() == [3, 3], "eye shape")
+ok(e[0, 0] == 1.0, "eye diagonal 1")
+ok(e[0, 1] == 0.0, "eye off-diagonal 0")
+ok(e[2, 2] == 1.0, "eye last diagonal")
+
+var ar = tensor.arange(0.0, 5.0, 1.0)
+ok(ar.shape() == [5], "arange shape")
+ok(ar[0] == 0.0, "arange first")
+ok(ar[4] == 4.0, "arange last")
+
+var ls = tensor.linspace(0.0, 1.0, num=5)
+ok(ls.shape() == [5], "linspace shape")
+ok(ls[0] == 0.0, "linspace first")
+ok(ls[4] == 1.0, "linspace last")
+
+# item() — one-element tensor to scalar
+var t_one = tensor.Tensor([42.0])
+ok(t_one.item() == 42.0, "item() returns scalar")
+ok(type(t_one.item()) == "Float", "item() returns Float")
+
+# tolist() — tensor to nested Kirito list
+ok(t1d.tolist() == [1.0, 2.0, 3.0], "tolist() 1D")
+ok(t2d.tolist() == [[1.0, 2.0], [3.0, 4.0]], "tolist() 2D")
+
+# =========================================================== tensor indexing
+ok(t1d[0] == 1.0, "1D index 0")
+ok(t1d[2] == 3.0, "1D index 2")
+ok(throws(Function(): return t1d[5]), "OOB 1D index throws")
+ok(throws(Function(): return t2d[5, 0]), "OOB 2D row index throws")
+ok(throws(Function(): return t2d[0, 5]), "OOB 2D col index throws")
+
+# =========================================================== tensor arithmetic
+var a = tensor.Tensor([1.0, 2.0, 3.0])
+var b = tensor.Tensor([4.0, 5.0, 6.0])
+ok((a + b).tolist() == [5.0, 7.0, 9.0], "element-wise +")
+ok((b - a).tolist() == [3.0, 3.0, 3.0], "element-wise -")
+ok((a * b).tolist() == [4.0, 10.0, 18.0], "element-wise *")
+ok((b / a).tolist() == [4.0, 2.5, 2.0], "element-wise /")
+
+# Shape mismatch throws
+var c = tensor.Tensor([1.0, 2.0])
+ok(throws(Function(): return a + c), "shape mismatch + throws")
+ok(throws(Function(): return a * c), "shape mismatch * throws")
+
+# Division by zero throws
+var zero = tensor.Tensor([0.0, 1.0])
+ok(throws(Function(): return a / zero), "div by zero in element-wise / throws")
+ok(throws(Function(): return b // tensor.zeros([3])), "floor-div by zero throws")
+ok(throws(Function(): return b % tensor.zeros([3])), "modulo by zero throws")
+
+# Scalar operations
+ok((a * 2.0).tolist() == [2.0, 4.0, 6.0], "scalar multiply")
+ok((b / 2.0).tolist() == [2.0, 2.5, 3.0], "scalar divide")
+
+# Exponentiation
+var t_exp = tensor.Tensor([2.0, 3.0, 4.0])
+ok((t_exp ** 2.0).tolist() == [4.0, 9.0, 16.0], "element-wise **")
+ok(throws(Function(): return tensor.Tensor([0.0]) ** (-1.0)), "0 ** negative throws")
+
+# =========================================================== tensor reductions (no-axis → Float)
+var tr = tensor.Tensor([[1.0, 2.0], [3.0, 4.0]])
+ok(tr.sum() == 10.0, "sum() all elements -> Float")
+ok(tr.mean() == 2.5, "mean() all elements -> Float")
+ok(tr.min() == 1.0, "min() all elements -> Float")
+ok(tr.max() == 4.0, "max() all elements -> Float")
+ok(tr.prod() == 24.0, "prod() all elements -> Float")
+
+# Per-axis reductions → Tensor
+ok(tr.sum(axis=0).tolist() == [4.0, 6.0], "sum(axis=0)")
+ok(tr.sum(axis=1).tolist() == [3.0, 7.0], "sum(axis=1)")
+ok(tr.min(axis=0).tolist() == [1.0, 2.0], "min(axis=0)")
+ok(tr.max(axis=1).tolist() == [2.0, 4.0], "max(axis=1)")
+
+# argmin/argmax (no-axis → Integer; with axis → Tensor)
+ok(tensor.Tensor([3.0, 1.0, 2.0]).argmin() == 1, "argmin no-axis -> Integer index")
+ok(tensor.Tensor([3.0, 1.0, 5.0]).argmax() == 2, "argmax no-axis -> Integer index")
+
+# =========================================================== tensor shape/structure ops
+var flat_src = tensor.Tensor([1.0, 2.0, 3.0, 4.0])
+var rs = flat_src.reshape([2, 2])
+ok(rs.shape() == [2, 2], "reshape shape")
+ok(rs[0, 0] == 1.0 and rs[1, 1] == 4.0, "reshape values")
+ok(throws(Function(): return flat_src.reshape([3])), "reshape incompatible throws")
+
+ok(tr.flatten().shape() == [4], "flatten shape")
+ok(tr.flatten().tolist() == [1.0, 2.0, 3.0, 4.0], "flatten values")
+
+var trT = tr.transpose()
+ok(trT.shape() == [2, 2], "transpose shape")
+ok(trT[0, 1] == 3.0, "transpose [0,1] = original [1,0]")
+ok(trT[1, 0] == 2.0, "transpose [1,0] = original [0,1]")
+
+# concatenate / stack
+var ca = tensor.Tensor([1.0, 2.0])
+var cb = tensor.Tensor([3.0, 4.0])
+var cat = tensor.concatenate([ca, cb], axis=0)
+ok(cat.tolist() == [1.0, 2.0, 3.0, 4.0], "concatenate axis=0")
+
+var stk = tensor.stack([ca, cb], axis=0)
+ok(stk.shape() == [2, 2], "stack shape")
+ok(stk[0, 0] == 1.0, "stack [0,0]")
+ok(stk[1, 1] == 4.0, "stack [1,1]")
+
+# =========================================================== tensor element-wise math (domain errors)
+ok(tensor.Tensor([4.0]).sqrt().item() == 2.0, "sqrt(4) = 2")
+ok(throws(Function(): return tensor.Tensor([-1.0]).sqrt()), "sqrt(-1) throws")
+ok(tensor.Tensor([1.0]).log().item() == 0.0, "log(1) = 0")
+ok(throws(Function(): return tensor.Tensor([-1.0]).log()), "log(-1) throws")
+ok(tensor.Tensor([0.0]).exp().item() == 1.0, "exp(0) = 1")
+ok(throws(Function(): return tensor.Tensor([2.0]).asin()), "asin(2) throws")
+ok(throws(Function(): return tensor.Tensor([-2.0]).acos()), "acos(-2) throws")
+ok(throws(Function(): return tensor.Tensor([1.0]).atanh()), "atanh(1) throws")
+ok(throws(Function(): return tensor.Tensor([-1.0]).atanh()), "atanh(-1) throws")
+
+# apply (element-wise user function)
+var ta = tensor.Tensor([1.0, 2.0, 3.0])
+var tb2 = ta.apply(Function(x): return x * x)
+ok(tb2.tolist() == [1.0, 4.0, 9.0], "apply squares each element")
+
+# clip
+var tc = tensor.Tensor([1.0, 5.0, 10.0])
+ok(tc.clip(2.0, 7.0).tolist() == [2.0, 5.0, 7.0], "clip")
+
+# =========================================================== tensor matmul
+var ma = tensor.Tensor([[1.0, 2.0], [3.0, 4.0]])
+var mb = tensor.Tensor([[5.0], [6.0]])
+var mc = ma.matmul(mb)
+ok(mc.shape() == [2, 1], "matmul shape")
+ok(mc[0, 0] == 17.0, "matmul [0,0] = 1*5 + 2*6")
+ok(mc[1, 0] == 39.0, "matmul [1,0] = 3*5 + 4*6")
+
+# matmul shape mismatch throws
+var bad_b = tensor.Tensor([[1.0, 2.0]])
+ok(throws(Function(): return ma.matmul(bad_b)), "matmul shape mismatch throws")
+
+# dot product
+var v1 = tensor.Tensor([1.0, 2.0, 3.0])
+var v2 = tensor.Tensor([4.0, 5.0, 6.0])
+ok(v1.dot(v2) == 32.0, "dot product")
+
+# =========================================================== tensor linalg (module-level)
+var sq = tensor.Tensor([[1.0, 2.0], [3.0, 4.0]])
+var d = tensor.det(sq)
+ok(d.compare(-2.0, abs_tol=1e-10), "det of 2x2")
+
+var inv = tensor.inv(sq)
+ok(inv.shape() == [2, 2], "inv shape")
+ok(throws(Function(): return tensor.inv(tensor.Tensor([[1.0, 2.0], [2.0, 4.0]]))), "inv singular throws")
+
+ok(tensor.trace(sq) == 5.0, "trace = sum of diagonal")
+ok(tensor.norm(tensor.Tensor([3.0, 4.0])) == 5.0, "norm of [3,4] = 5")
+
+# =========================================================== tensor where
+var cond = tensor.Tensor([1.0, 0.0, 1.0])
+var tw_a = tensor.Tensor([10.0, 20.0, 30.0])
+var tw_b = tensor.Tensor([100.0, 200.0, 300.0])
+var tw = tensor.where(cond, tw_a, tw_b)
+ok(tw.tolist() == [10.0, 200.0, 30.0], "where: 1.0 selects a, 0.0 selects b")
+
+# =========================================================== tensor unique/argsort/nonzero
+var tu = tensor.Tensor([3.0, 1.0, 4.0, 1.0, 5.0])
+ok(tensor.unique(tu).tolist() == [1.0, 3.0, 4.0, 5.0], "unique sorted")
+ok(tu.argsort().tolist() == [1.0, 3.0, 0.0, 2.0, 4.0], "argsort indices")
+var tnz = tensor.Tensor([0.0, 1.0, 0.0, 2.0])
+var nz_result = tensor.nonzero(tnz)
+ok(len(nz_result) == 1, "nonzero returns list of axis-index lists")
+var nz_list = nz_result[0].tolist()
+ok(1.0 in nz_list and 3.0 in nz_list, "nonzero indices are 1 and 3")
+
+# =========================================================== tensor == (exact, whole-tensor Bool)
+var teq_a = tensor.Tensor([1.0, 2.0, 3.0])
+var teq_b = tensor.Tensor([1.0, 2.0, 3.0])
+var teq_c = tensor.Tensor([1.0, 2.0, 4.0])
+ok(teq_a == teq_b, "tensor == identical -> True")
+ok(not (teq_a == teq_c), "tensor == different -> False")
+ok(teq_a.compare(teq_b), "tensor .compare identical -> True")
+
+# dtype bad input throws
+ok(throws(Function(): return tensor.Tensor([1.0, 2.0], dtype="invalid")), "bad dtype throws")
+
+# =========================================================== matrix creation
+var m22 = matrix.Matrix([[1.0, 2.0], [3.0, 4.0]])
+ok(m22.rows() == 2, "matrix rows")
+ok(m22.cols() == 2, "matrix cols")
+ok(m22[0, 0] == 1.0, "matrix [0,0]")
+ok(m22[1, 1] == 4.0, "matrix [1,1]")
+ok(m22[0, 1] == 2.0, "matrix [0,1]")
+
+var mz = matrix.zeros(2, 3)
+ok(mz.rows() == 2, "matrix zeros rows")
+ok(mz.cols() == 3, "matrix zeros cols")
+ok(mz[0, 0] == 0.0, "matrix zeros element")
+
+var mo = matrix.ones(2, 2)
+ok(mo[0, 0] == 1.0 and mo[1, 1] == 1.0, "matrix ones elements")
+
+var mid = matrix.identity(3)
+ok(mid[0, 0] == 1.0, "identity diagonal")
+ok(mid[0, 1] == 0.0, "identity off-diagonal")
+ok(mid[2, 2] == 1.0, "identity last diagonal")
+
+# =========================================================== matrix arithmetic
+var m_a = matrix.Matrix([[1.0, 2.0], [3.0, 4.0]])
+var m_b = matrix.Matrix([[5.0, 6.0], [7.0, 8.0]])
+var m_sum = m_a + m_b
+ok(m_sum[0, 0] == 6.0, "matrix add [0,0]")
+ok(m_sum[1, 1] == 12.0, "matrix add [1,1]")
+
+# Shape mismatch add throws
+var m_small = matrix.Matrix([[1.0]])
+ok(throws(Function(): return m_a + m_small), "matrix add shape mismatch throws")
+
+# Scalar multiply
+var m_scaled = m_a * 2.0
+ok(m_scaled[0, 0] == 2.0, "matrix scalar multiply")
+ok(m_scaled[1, 1] == 8.0, "matrix scalar multiply corner")
+
+# Matrix multiply (*): 2x2 * 2x1
+var m_col = matrix.Matrix([[5.0], [6.0]])
+var m_prod = m_a * m_col
+ok(m_prod[0, 0] == 17.0, "matrix matmul [0,0] = 1*5 + 2*6")
+ok(m_prod[1, 0] == 39.0, "matrix matmul [1,0] = 3*5 + 4*6")
+
+# matmul shape mismatch throws
+var bad_shape = matrix.Matrix([[1.0, 2.0, 3.0]])
+ok(throws(Function(): return m_a * bad_shape), "matrix matmul shape mismatch throws")
+
+# =========================================================== matrix linalg
+ok(m22.determinant().compare(-2.0, abs_tol=1e-10), "matrix determinant")
+ok(m22.trace() == 5.0, "matrix trace")
+
+var m22_inv = m22.inverse()
+ok(m22_inv.rows() == 2, "inverse shape rows")
+ok(m22_inv.cols() == 2, "inverse shape cols")
+ok((m22_inv[0, 0]).compare(-2.0, abs_tol=1e-10), "inverse [0,0]")
+
+# Singular matrix inverse throws
+var m_sing = matrix.Matrix([[1.0, 2.0], [2.0, 4.0]])
+ok(throws(Function(): return m_sing.inverse()), "singular matrix inverse throws")
+
+# Non-square determinant throws
+var m_rect = matrix.Matrix([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+ok(throws(Function(): return m_rect.determinant()), "non-square matrix determinant throws")
+
+# =========================================================== matrix indexing errors
+ok(throws(Function(): return m22[5, 0]), "matrix OOB row index throws")
+ok(throws(Function(): return m22[0, 5]), "matrix OOB col index throws")
+
+# =========================================================== matrix transpose and apply
+var m_T = m22.transpose()
+ok(m_T[0, 1] == 3.0, "matrix transpose [0,1] = original [1,0]")
+ok(m_T[1, 0] == 2.0, "matrix transpose [1,0] = original [0,1]")
+
+var m_applied = m22.apply(Function(x): return x * 2)
+ok(m_applied[0, 0] == 2.0, "matrix apply [0,0]")
+ok(m_applied[1, 1] == 8.0, "matrix apply [1,1]")
+
+# =========================================================== matrix vector operations
+var mv1 = matrix.vector([1.0, 2.0, 3.0])
+var mv2 = matrix.vector([4.0, 5.0, 6.0])
+ok(mv1.dot(mv2) == 32.0, "vector dot product")
+ok(mv1.norm().compare(math.sqrt(14.0), abs_tol=1e-10), "vector norm = sqrt(14)")
+
+var cross_v = mv1.cross(mv2)
+ok(type(cross_v) == "Matrix", "vector cross product is Matrix")
+ok(cross_v[0, 0].compare(-3.0, abs_tol=1e-10), "cross [0,0] = 2*6-3*5 = -3")
+ok(cross_v[0, 1].compare(6.0, abs_tol=1e-10), "cross [0,1] = 3*4-1*6 = 6")
+ok(cross_v[0, 2].compare(-3.0, abs_tol=1e-10), "cross [0,2] = 1*5-2*4 = -3")
+
+# cross on non-3D throws
+var mv2d = matrix.vector([1.0, 2.0])
+ok(throws(Function(): return mv2d.cross(mv2d)), "cross on 2D vector throws")
+
+io.print("r9_tensor_matrix: " + String(n) + " checks passed")

@@ -1,0 +1,77 @@
+# Self-checking audit of the `sys` stdlib module (docs/pages/10-stdlib.md "sys").
+# Asserts platform/arch/version/executable shape, getenv/setenv/unsetenv/environ
+# round-trips on a unique variable name (cleaned up), and the path helpers
+# gettempdir / path.join. Never calls sys.exit.
+
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var time = import("time")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f, m):
+    var threw = False
+    try:
+        f()
+    catch:
+        threw = True
+    assert threw, m
+    n = n + 1
+
+# --- platform / arch are non-empty strings ---
+ok(type(sys.platform) == "String", "platform is a String")
+ok(len(sys.platform) > 0, "platform is non-empty")
+ok(sys.platform == "linux" or sys.platform == "darwin" or sys.platform == "windows", "platform is one of the documented values")
+ok(type(sys.arch) == "String", "arch is a String")
+ok(len(sys.arch) > 0, "arch is non-empty")
+ok(sys.arch == "x64" or sys.arch == "arm64" or sys.arch == "x86" or sys.arch == "unknown", "arch is one of the documented values")
+
+# --- version: a non-empty dotted semver-shaped String ---
+ok(type(sys.version) == "String", "version is a String")
+ok(len(sys.version) > 0, "version is non-empty")
+var parts = sys.version.split(".")
+ok(len(parts) >= 2, "version has at least major.minor")
+ok(parts[0].isdigit(), "version major is numeric")
+ok(parts[1].isdigit(), "version minor is numeric")
+
+# --- executable is a String (may be "" if undeterminable, but here it resolves) ---
+ok(type(path.executable) == "String", "executable is a String")
+ok(len(path.executable) > 0, "executable resolves to a path")
+
+# --- getenv default behavior ---
+var missing = "KIRITO_R6_SYS_DEFINITELY_UNSET_" + String(time.perfcounterns())
+ok(sys.getenv(missing) == None, "getenv of an unset var returns None")
+ok(sys.getenv(missing, "fallback") == "fallback", "getenv returns the default for an unset var")
+ok(sys.getenv(name = missing, default = "kw") == "kw", "getenv accepts keyword args")
+
+# --- setenv / getenv / unsetenv / environ round-trip on a unique name ---
+var key = "KIRITO_R6_SYS_VAR_" + String(time.perfcounterns())
+ok(sys.getenv(key) == None, "the unique var starts unset")
+sys.setenv(key, "round-trip-value")
+ok(sys.getenv(key) == "round-trip-value", "getenv sees a set value")
+var env = sys.environ()
+ok(type(env) == "Dict", "environ returns a Dict")
+ok(key in env, "environ includes a just-set var")
+ok(env[key] == "round-trip-value", "environ value matches")
+sys.setenv(key, "second-value")
+ok(sys.getenv(key) == "second-value", "setenv overwrites")
+sys.unsetenv(key)
+ok(sys.getenv(key) == None, "unsetenv removes the var")
+ok((key in sys.environ()) == False, "environ no longer lists the unset var")
+
+# --- gettempdir ---
+ok(type(path.gettempdir()) == "String", "gettempdir returns a String")
+ok(len(path.gettempdir()) > 0, "gettempdir is non-empty")
+
+# --- path.join ---
+ok(path.join("a", "b", "c") == "a/b/c", "path.join joins with /")
+ok(path.join("only") == "only", "path.join single component")
+ok(path.join("a", "/b", "c") == "/b/c", "path.join: an absolute component resets")
+ok(path.join("a/", "b") == "a/b", "path.join avoids a double separator")
+ok(path.join("", "b") == "b", "path.join with an empty first part")
+throws(Function(): path.join(), "path.join with no parts throws")
+
+io.print("r6_sys: " + String(n) + " checks passed")

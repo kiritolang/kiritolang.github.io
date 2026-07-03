@@ -1,0 +1,4 @@
+class Lonely:
+    var go = Function(self):
+        return self._super_()
+Lonely().go()

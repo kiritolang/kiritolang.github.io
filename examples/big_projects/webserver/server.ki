@@ -1,0 +1,94 @@
+# A CONCURRENT HTTP/1.1 server in pure Kirito, via the `parallel` module. The request handlers are
+# pure (request -> Response) and the App is read-only, so no owner is needed — just a pool of stateless
+# workers. The acceptor hands each connection's fd to the pool (`workq`); each worker builds its own
+# read-only App and serves connections in parallel. Prints "LISTENING <host> <port>" once ready (the
+# test harness waits for that line), then serves until it receives GET /__shutdown__.
+#
+# Run:  ki --lib lib server.ki [host] [port] [static_dir]
+#   defaults: 127.0.0.1 8080 ./static
+#
+# The worker function lives at module level so a spawned worker (which re-evaluates this file with
+# argmain False) defines it and skips the driver under `if argmain:`.
+
+var net = import("net")
+var io = import("io")
+var http = import("http")
+var appmod = import("app")
+var parallel = import("parallel")
+
+# One of N connection workers: builds its own read-only App, then serves handed-off connections.
+var conn_worker = Function(workq, host, port, stop, static_dir):
+    var app = appmod.create(static_dir)
+    var serving = True
+    while serving:
+        var fd = None
+        try:
+            fd = workq.get()
+        catch as e:
+            serving = False
+        if fd != None:
+            var conn = net.fromfd(fd)
+            try:
+                var reader = http.Reader(conn)
+                var req = None
+                try:
+                    req = http.parse_request(reader)
+                catch as e:
+                    discard http.Response().text("bad request: " + String(e), 400).write_to(conn)
+                if req != None:
+                    if req.path == "/__shutdown__":
+                        stop.set()
+                        discard http.Response().text("bye", 200).write_to(conn)
+                    else:
+                        var resp = app.handle(req)
+                        discard resp.write_to(conn)
+            catch as e:
+                # A connection-level failure must not take a worker (or the server) down.
+                io.eprint("connection error: " + String(e))
+            conn.close()
+            if stop.isset():
+                # Wake the acceptor (blocked in accept()) so it can notice `stop` and stop the server.
+                var waker = net.Socket()
+                try:
+                    waker.connect(host, port)
+                catch as e:
+                    pass
+                waker.close()
+                serving = False
+
+if argmain:
+    var host = "127.0.0.1"
+    var port = 8080
+    var static_dir = "static"
+    if len(arglist) >= 1:
+        host = arglist[0]
+    if len(arglist) >= 2:
+        port = Integer(arglist[1])
+    if len(arglist) >= 3:
+        static_dir = arglist[2]
+
+    var workq = parallel.Queue()
+    var stop = parallel.Event()
+    var nworkers = parallel.cpucount()
+    var w = 0
+    while w < nworkers:
+        discard parallel.spawn(conn_worker, workq, host, port, stop, static_dir)
+        w = w + 1
+
+    var srv = net.Socket()
+    srv.bind(host, port)
+    srv.listen(16)
+    io.print("LISTENING " + host + " " + String(port))
+
+    var running = True
+    while running:
+        var conn = srv.accept()
+        if stop.isset():
+            conn.close()
+            running = False
+        else:
+            workq.put(conn.detach())
+
+    workq.close()   # idle workers drain + exit
+    srv.close()
+    io.print("STOPPED")

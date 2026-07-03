@@ -1,0 +1,3 @@
+var T = import("tensor")
+# log of zero element throws a math domain error per docs
+discard T.Tensor([0.0, 1.0, 2.0]).log()

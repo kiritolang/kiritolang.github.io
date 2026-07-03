@@ -1,0 +1,57 @@
+# Project 4 — Autoencoder: compress 8x8 digit images through an 8-dimensional bottleneck and
+# reconstruct them. An unsupervised task (input == target) trained with MSE reconstruction loss; the
+# encoder learns a compact code and the decoder rebuilds the image. Real data: scikit-learn digits.
+var io = import("io")
+var T = import("tensor")
+var nn = import("nn")
+var data = import("data")
+var random = import("random")
+
+io.print("=== Digit autoencoder (64 -> 8 -> 64, MSE reconstruction) ===")
+
+var ds = data.load_digits()
+var Xall = data.scale_range(ds[0], 0.0, 16.0)        # pixels -> [0, 1]
+var rng0 = random.Random(9)
+rng0.shuffle(Xall)
+var Xtr = Xall[0:700]
+var Xte = Xall[700:1000]
+io.print(f"train {len(Xtr)} images, test {len(Xte)} images")
+
+# Symmetric encoder/decoder with an 8-unit bottleneck; sigmoid output keeps pixels in [0, 1].
+nn.seed(4)
+var model = nn.Sequential([
+    nn.Linear(64, 32), nn.ReLU(),
+    nn.Linear(32, 8), nn.ReLU(),                      # latent code (8 numbers)
+    nn.Linear(8, 32), nn.ReLU(),
+    nn.Linear(32, 64), nn.Sigmoid()
+])
+var opt = nn.Adam(model.parameters(), lr = 0.005)
+
+var Xtr_t = T.Tensor(Xtr)
+var Xte_t = T.Tensor(Xte)
+var rng = random.Random(0)
+var epoch = 0
+while epoch < 40:
+    var total = 0.0
+    var nb = 0
+    for batch in data.minibatches(len(Xtr), 64, rng):
+        var xb = T.Tensor(data.gather(Xtr, batch))
+        var loss = nn.mse_loss(model(xb), xb)        # reconstruct the input
+        loss.backward()
+        opt.step()
+        total = total + loss.item()
+        nb = nb + 1
+    if epoch % 10 == 0:
+        io.print(f"  epoch {epoch:2d}  train recon MSE {total / nb:.5f}")
+    epoch = epoch + 1
+
+# Reconstruction error on held-out images, vs. the trivial baseline of predicting the mean pixel.
+# (Outside the autograd graph, tensor reductions return a plain Float directly.)
+var recon_mse = 0.0
+with T.nograd():
+    recon_mse = nn.mse_loss(model(Xte_t), Xte_t)
+var mean_pixel = Xte_t.mean()
+var baseline = nn.mse_loss(T.full([len(Xte), 64], mean_pixel), Xte_t)
+io.print(f"test reconstruction MSE {recon_mse:.5f}   (mean-pixel baseline {baseline:.5f})")
+assert recon_mse < baseline * 0.5, "the autoencoder should beat the mean-pixel baseline comfortably"
+io.print("OK digits-autoencoder")

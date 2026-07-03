@@ -1,0 +1,22 @@
+# Strings: slicing, methods, formatting, Unicode.
+var io = import("io")
+
+var s = "Hello, World"
+io.print(s.upper())              # HELLO, WORLD
+io.print(s.lower())              # hello, world
+io.print(s[0:5])                 # Hello
+io.print(s[7:])                  # World
+io.print(s[::-1])                # dlroW ,olleH
+io.print(len(s))                 # 12
+
+io.print("a,b,c,d".split(","))   # [a, b, c, d]
+io.print("-".join(["x", "y", "z"]))  # x-y-z
+io.print("banana".count("a"))    # 3
+io.print("Hello".startswith("He"))   # True
+io.print("  trim  ".strip())     # trim
+io.print("{} squared is {}".format(4, 16))  # 4 squared is 16
+io.print("ab" * 3)               # ababab
+
+# Unicode: counted and indexed by code point
+io.print(len("café"))            # 4
+io.print("café"[3])              # é

@@ -1,0 +1,524 @@
+# ============================================================================
+# r11_stdlib_gaps.ki — targeted stdlib docs-vs-impl checks for corner cases
+# documented in docs/pages/10-stdlib.md. Focus on:
+#   - Rare error paths (throws vs tolerant behaviour)
+#   - Exact numeric edge cases (mod-by-zero, negative n, out-of-range)
+#   - Alias equivalence (statuscode == status, gunzip == decompress, ...)
+#   - "returns None when absent" vs "throws when absent"
+#   - Documented parameter defaults (missing_ok, exist_ok, block, timeout)
+# ============================================================================
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+var threw = Function(fn):
+    try:
+        fn()
+    catch as e:
+        return True
+    return False
+
+# ---------------------------------------------------------------------------
+# path — strict-by-default mutation
+# ---------------------------------------------------------------------------
+var tmp = path.gettempdir()
+assert path.exists(tmp), "gettempdir exists"
+assert path.isdir(tmp), "gettempdir is a dir"
+
+# Build a unique scratch dir
+var scratch = path.join(tmp, "kirito_r11_" + String(sys.getenv("USER", "u")))
+if path.exists(scratch):
+    path.rmtree(scratch, missing_ok = True)
+
+assert path.mkdir(scratch) == True, "mkdir returns True on create"
+# mkdir on existing (default) throws
+assert threw(Function(): return path.mkdir(scratch)), "mkdir strict-by-default throws"
+# mkdir exist_ok = True → returns False
+assert path.mkdir(scratch, exist_ok = True) == False, "mkdir exist_ok returns False when present"
+
+# listdir on missing dir → [] (tolerant)
+var missing = path.join(scratch, "nope")
+assert path.listdir(missing) == [], "listdir on missing is []"
+assert path.exists(missing) == False, "exists on missing is False"
+assert path.isfile(missing) == False, "isfile tolerant on missing"
+assert path.isdir(missing) == False, "isdir tolerant on missing"
+
+# getsize on missing throws
+assert threw(Function(): return path.getsize(missing)), "getsize on missing throws"
+
+# remove strict-by-default: remove missing throws
+assert threw(Function(): return path.remove(missing)), "remove missing (strict) throws"
+# missing_ok = True → False, no throw
+assert path.remove(missing, missing_ok = True) == False, "remove missing_ok returns False"
+
+# Create a file so we can rename/remove
+var f_path = path.join(scratch, "note.txt")
+with io.open(f_path, "w") as f:
+    f.write("hi")
+assert path.getsize(f_path) == 2, "getsize gives byte count"
+# rename returns None
+assert path.rename(f_path, path.join(scratch, "moved.txt")) == None, "rename returns None"
+assert path.exists(f_path) == False, "rename removed src"
+assert path.exists(path.join(scratch, "moved.txt")) == True, "rename created dst"
+
+# rmtree removes non-empty
+assert path.rmtree(scratch) == True, "rmtree returns True"
+assert path.exists(scratch) == False, "rmtree removed"
+
+# rmtree missing strict throws; missing_ok skips
+assert threw(Function(): return path.rmtree(scratch)), "rmtree missing (strict) throws"
+assert path.rmtree(scratch, missing_ok = True) == False, "rmtree missing_ok False"
+
+# join with no parts throws
+assert threw(Function(): return path.join()), "path.join() with no parts throws"
+# join with absolute component resets
+assert path.join("/a", "/b", "c") == "/b/c", "absolute path resets join"
+# dirname/basename edge cases
+assert path.dirname("/a") == "/", "dirname of root-child is '/'"
+assert path.basename("/a/") == "", "basename of trailing-slash is empty"
+assert path.splitext(".bashrc") == [".bashrc", ""], "splitext protects leading dot"
+assert path.splitext("..")[1] == "", "splitext(..) no extension"
+
+# ---------------------------------------------------------------------------
+# io.open modes and closed-file behaviour
+# ---------------------------------------------------------------------------
+var f2_path = path.join(tmp, "kirito_r11_file.txt")
+if path.exists(f2_path):
+    path.remove(f2_path)
+var wf = io.open(f2_path, "w")
+wf.write("hello\nworld\n")
+wf.close()
+
+# Reading from a closed file throws
+var _read_closed = Function():
+    var f = io.open(f2_path, "r")
+    f.close()
+    return f.read()
+assert threw(_read_closed), "read on closed throws"
+
+# Reading a write-mode file throws
+var wf2 = io.open(f2_path, "w")
+assert threw(Function(): return wf2.read()), "read on 'w' file throws"
+wf2.close()
+
+# Writing a read-mode file throws
+var rf = io.open(f2_path, "r")
+assert threw(Function(): return rf.write("x")), "write on 'r' file throws"
+rf.close()
+
+# Re-write the file (the 'w' checks above truncated it)
+var wf3 = io.open(f2_path, "w")
+wf3.write("hello\nworld\n")
+wf3.close()
+# Iterate over file → lines
+var lines = []
+with io.open(f2_path, "r") as f:
+    for line in f:
+        lines.append(line.strip())
+assert lines == ["hello", "world"], "iterating file yields lines"
+
+# Binary mode: read yields Bytes
+with io.open(f2_path, "rb") as fb:
+    var chunk = fb.read()
+    assert type(chunk) == "Bytes", "binary read yields Bytes"
+    assert len(chunk) > 0, "binary read non-empty"
+
+path.remove(f2_path)
+
+# BytesIO seek clamps at 0 (unlike File.seek which throws)
+var bio = io.BytesIO()
+discard bio.write("hello")
+assert bio.seek(-100) == 0, "BytesIO seek negative clamps to 0"
+
+# ---------------------------------------------------------------------------
+# json: float round-trip is exact
+# ---------------------------------------------------------------------------
+var json = import("json")
+var x = 0.1 + 0.2
+var s = json.dumps(x)
+assert json.loads(s) == x, "json float round-trip is bit-exact"
+# loads alias parse
+assert json.parse("[1,2,3]") == [1, 2, 3], "json.parse = json.loads"
+assert json.stringify([1, 2, 3]) == "[1, 2, 3]" or json.stringify([1, 2, 3]) == "[1,2,3]", "stringify emits array"
+# indent for pretty printing
+var pretty = json.dumps({"a": 1}, indent = 2)
+assert "\n" in pretty, "indent > 0 pretty-prints"
+
+# ---------------------------------------------------------------------------
+# math domain errors (docs enumerate a specific list — check each throws)
+# ---------------------------------------------------------------------------
+var math = import("math")
+assert threw(Function(): return math.sqrt(-1)), "sqrt(-1) throws domain error"
+assert threw(Function(): return math.log(0)), "log(0) throws"
+assert threw(Function(): return math.log(-1)), "log(-1) throws"
+assert threw(Function(): return math.log2(0)), "log2(0) throws"
+assert threw(Function(): return math.log10(0)), "log10(0) throws"
+assert threw(Function(): return math.log1p(-1)), "log1p(-1) throws"
+assert threw(Function(): return math.asin(2)), "asin(2) throws"
+assert threw(Function(): return math.acos(2)), "acos(2) throws"
+assert threw(Function(): return math.acosh(0)), "acosh(0) throws"
+assert threw(Function(): return math.atanh(1)), "atanh(1) throws"
+assert threw(Function(): return math.gamma(0)), "gamma(0) throws"
+assert threw(Function(): return math.lgamma(0)), "lgamma(0) throws"
+assert threw(Function(): return math.pow(-2, 0.5)), "pow(-2, 0.5) throws (negative base, non-int exp)"
+assert threw(Function(): return math.pow(0, -1)), "pow(0, -1) throws"
+assert threw(Function(): return math.fmod(1, 0)), "fmod(x, 0) throws"
+# But NaN passes through
+assert math.isnan(math.sqrt(math.nan)), "sqrt(nan) is nan (not an error)"
+# And overflow to inf is fine
+assert math.isinf(math.exp(1000)), "exp(1000) → inf (not an error)"
+# integer gcd/lcm/factorial
+assert math.gcd(12, 8) == 4, "gcd"
+assert math.lcm(4, 6) == 12, "lcm"
+assert math.factorial(5) == 120, "factorial(5)"
+assert threw(Function(): return math.factorial(-1)), "factorial(-1) throws"
+assert math.comb(5, 2) == 10, "comb"
+assert math.perm(5) == 120, "perm(n) = n!"
+assert math.perm(5, 2) == 20, "perm(5, 2) = 20"
+# prod
+assert math.prod([1, 2, 3, 4]) == 24, "prod"
+assert math.prod([], 5) == 5, "prod empty with start"
+assert math.prod([1.0, 2.0]) == 2.0, "prod float"
+
+# ---------------------------------------------------------------------------
+# statistics — quantiles edge cases
+# ---------------------------------------------------------------------------
+var stats = import("statistics")
+assert stats.mean([1, 2, 3, 4]) == 2.5, "mean"
+assert stats.median([1, 2, 3]) == 2, "median odd"
+assert stats.median([1, 2, 3, 4]) == 2.5, "median even"
+assert stats.mode([1, 1, 2]) == 1, "mode"
+assert stats.multimode([1, 1, 2, 2]) == [1, 2] or stats.multimode([1, 1, 2, 2]) == [2, 1], "multimode ties"
+# quantiles — need at least 2 points; n>=1
+assert threw(Function(): return stats.quantiles([1])), "quantiles([1]) throws (< 2)"
+assert threw(Function(): return stats.quantiles([1, 2], 0)), "quantiles n=0 throws"
+
+# ---------------------------------------------------------------------------
+# random — negative k / empty / huge
+# ---------------------------------------------------------------------------
+var random = import("random")
+var rng = random.Random(42)
+assert 0.0 <= rng.random() and rng.random() < 1.0, "random in [0,1)"
+assert rng.choices([1, 2, 3], k = 0) == [], "choices k=0 gives []"
+assert len(rng.choices([1, 2, 3], k = 5)) == 5, "choices k > len (with replacement)"
+assert threw(Function(): return rng.choices([1, 2], k = -1)), "choices negative k throws"
+assert threw(Function(): return rng.choices([], k = 3)), "choices empty pop throws"
+assert threw(Function(): return rng.choice([])), "choice empty throws"
+
+# ---------------------------------------------------------------------------
+# time — DateTime attributes, weekday convention
+# ---------------------------------------------------------------------------
+var time = import("time")
+var t0 = time.make(2024, 1, 1)  # Monday
+assert t0.year == 2024, "year"
+assert t0.month == 1, "month"
+assert t0.day == 1, "day"
+assert t0.hour == 0, "hour"
+# weekday: 0=Sunday, so Mon 2024-01-01 → 1
+assert t0.weekday == 1, "Monday 2024-01-01 weekday=1 (Sun=0)"
+# add/sub/diff
+var t1 = t0.add(3600)
+assert t1.diff(t0) == 3600, "diff = 3600 seconds"
+assert t0.sub(3600).diff(t0) == -3600, "sub then diff"
+# Normalization: month 13
+var t_norm = time.make(2024, 13, 1)
+assert t_norm.year == 2025 and t_norm.month == 1, "month 13 normalizes to next Jan"
+# strptime strict on trailing input
+assert threw(Function(): return time.strptime("2024-01-01XYZ", "%Y-%m-%d")), "strptime trailing input throws"
+# strptime out-of-range
+assert threw(Function(): return time.strptime("2024-99-99", "%Y-%m-%d")), "strptime out-of-range throws"
+
+# DateTime value equality
+var a = time.make(2024, 1, 1)
+var b = time.make(2024, 1, 1)
+assert a == b, "DateTime value equality"
+# Serializable as Dict/Set key
+var d = {a: "new year"}
+assert d[b] == "new year", "DateTime as Dict key"
+
+# ---------------------------------------------------------------------------
+# hash — string vs bytes agree; hash of Integer is identity
+# ---------------------------------------------------------------------------
+var hash = import("hash")
+assert hash.md5("hello") == hash.md5(Bytes("hello")), "md5 String == md5 Bytes"
+assert hash.sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 empty vector"
+assert hash.hash(42) == 42, "hash of Integer = identity"
+assert hash.hash("a") == hash.hash("a"), "hash is deterministic for same String"
+assert hash.hash(None) == hash.hash(None), "hash(None) deterministic"
+# unhashable throws
+class UnhashCls:
+    var _init_ = Function(self): self.x = 1
+assert threw(Function(): return hash.hash(UnhashCls())), "hash(unhashable) throws"
+
+# ---------------------------------------------------------------------------
+# base64 — round-trip
+# ---------------------------------------------------------------------------
+var b64 = import("base64")
+var raw = "Hello, world!"
+var enc = b64.encode(raw)
+var dec = b64.decode(enc)  # → List of byte values
+var joined = ""
+for byte in dec:
+    joined = joined + chr(byte)
+assert joined == raw, "base64 round-trip"
+# urlsafe variant uses - and _
+var url_enc = b64.urlsafeencode(Bytes([0xFB, 0xFF]))
+assert "+" not in url_enc and "/" not in url_enc, "urlsafe uses - and _"
+
+# ---------------------------------------------------------------------------
+# bisect
+# ---------------------------------------------------------------------------
+var bisect = import("bisect")
+var sorted_list = [1, 3, 5, 7, 9]
+assert bisect.bisectleft(sorted_list, 5) == 2, "bisectleft on found"
+assert bisect.bisectright(sorted_list, 5) == 3, "bisectright on found"
+assert bisect.bisect(sorted_list, 5) == bisect.bisectright(sorted_list, 5), "bisect alias"
+var xs = [1, 3, 5]
+bisect.insortleft(xs, 4)
+assert xs == [1, 3, 4, 5], "insortleft"
+
+# ---------------------------------------------------------------------------
+# heapq — nlargest/nsmallest
+# ---------------------------------------------------------------------------
+var heapq = import("heapq")
+assert heapq.nlargest(3, [5, 1, 9, 2, 8, 4]) == [9, 8, 5], "nlargest"
+assert heapq.nsmallest(3, [5, 1, 9, 2, 8, 4]) == [1, 2, 4], "nsmallest"
+var heap = [3, 1, 4, 1, 5, 9, 2, 6]
+var h = heapq.heapify(heap)
+# heapify does NOT modify input, returns new
+assert heap == [3, 1, 4, 1, 5, 9, 2, 6], "heapify does not modify input"
+assert heapq.heappop(h) == 1, "heappop smallest"
+
+# ---------------------------------------------------------------------------
+# collections
+# ---------------------------------------------------------------------------
+var coll = import("collections")
+var dq = coll.deque([1, 2, 3])
+dq.appendleft(0)
+assert dq.popleft() == 0, "deque left"
+assert dq.pop() == 3, "deque right"
+var c = coll.Counter(["a", "b", "a", "c", "a"])
+assert c["a"] == 3, "Counter counts"
+assert c["z"] == 0, "Counter missing = 0"
+var mc = c.mostcommon(2)
+assert mc[0][0] == "a", "mostcommon top is 'a'"
+# negative n = "all but |n| least common"
+var mc_neg = c.mostcommon(-1)
+# = all but 1 least common — should be 2 elements
+assert len(mc_neg) == 2, "mostcommon(-1) = all but 1"
+
+var dd = coll.defaultdict(Function(): return [])
+dd["x"].append(1)
+dd["x"].append(2)
+assert dd["x"] == [1, 2], "defaultdict factory ()"
+
+# ---------------------------------------------------------------------------
+# copy
+# ---------------------------------------------------------------------------
+var copy = import("copy")
+var orig = [1, 2, [3, 4]]
+var shallow = copy.copy(orig)
+shallow[2].append(5)
+assert orig[2] == [3, 4, 5], "shallow copy shares inner list"
+var deep = copy.deepcopy(orig)
+deep[2].append(99)
+assert 99 not in orig[2], "deepcopy is independent"
+
+# ---------------------------------------------------------------------------
+# enum
+# ---------------------------------------------------------------------------
+var enum = import("enum")
+var Color = enum.Enum(["RED", "GREEN", "BLUE"])
+assert Color["RED"] == 0, "Enum[name]"
+assert Color.get("BLUE") == 2, "Enum.get"
+assert Color.nameof(1) == "GREEN", "Enum.nameof"
+assert "RED" in Color, "in Enum"
+assert Color.names() == ["RED", "GREEN", "BLUE"], "Enum.names"
+assert threw(Function(): return Color.get("PURPLE")), "unknown Enum name throws"
+
+# ---------------------------------------------------------------------------
+# functools
+# ---------------------------------------------------------------------------
+var ft = import("functools")
+var add = Function(a, b): return a + b
+assert ft.reduce(add, [1, 2, 3, 4]) == 10, "reduce"
+assert ft.reduce(add, [1, 2, 3], 100) == 106, "reduce initial"
+
+# cache
+var call_count = 0
+var slow = Function(x):
+    call_count = call_count + 1
+    return x * 2
+var cached = ft.cache(slow)
+discard cached(3)
+discard cached(3)
+assert call_count == 1, "cache memoizes"
+discard cached(4)
+assert call_count == 2, "cache new arg reruns"
+
+# ---------------------------------------------------------------------------
+# semver
+# ---------------------------------------------------------------------------
+var semver = import("semver")
+assert semver.gt("1.0.10", "1.0.9") == True, "semver numeric not lexical"
+assert semver.compare("1.0.0", "2.0.0") == -1, "compare"
+assert semver.compare("1.0.0", "1.0.0") == 0, "compare eq"
+assert semver.satisfies("1.4.0", "^1.2.0") == True, "satisfies caret"
+assert semver.satisfies("2.0.0", "^1.2.0") == False, "satisfies excludes major bump"
+assert semver.satisfies("1.4.0", "~1.4.0") == True, "satisfies tilde"
+assert semver.satisfies("1.5.0", "~1.4.0") == False, "satisfies tilde excludes minor"
+assert semver.validrange("^1.0.0") == True, "validrange caret"
+assert semver.validrange("main") == False, "validrange bare name False"
+assert semver.maxsatisfying(["v1.0.0", "v1.4.2", "v2.0.0"], "^1.0.0") == "v1.4.2", "maxsatisfying returns original"
+assert semver.sort(["1.10.0", "1.2.0", "1.1.0"]) == ["1.1.0", "1.2.0", "1.10.0"], "semver sort"
+# clean
+assert semver.clean("v1.2.3") == "1.2.3", "clean strips v"
+# valid returns cleaned or None
+assert semver.valid("v1.2.3") == "1.2.3", "valid cleans and returns"
+assert semver.valid("garbage") == None, "valid returns None for garbage"
+# inc
+assert semver.inc("1.2.3", "major") == "2.0.0", "inc major"
+assert semver.inc("1.2.3", "minor") == "1.3.0", "inc minor"
+assert semver.inc("1.2.3", "patch") == "1.2.4", "inc patch"
+
+# ---------------------------------------------------------------------------
+# zlib + gzip aliases
+# ---------------------------------------------------------------------------
+var zlib = import("zlib")
+var gzip = import("gzip")
+var payload = "Hello, zlib!" * 20
+var z_c = zlib.compress(payload)
+assert type(z_c) == "String", "zlib.compress(String) -> String"
+assert zlib.decompress(z_c) == payload, "zlib round-trip"
+var b_payload = Bytes(payload)
+var z_b = zlib.compress(b_payload)
+assert type(z_b) == "Bytes", "zlib.compress(Bytes) -> Bytes"
+assert zlib.decompress(z_b) == b_payload, "zlib Bytes round-trip"
+# gzip alias check: gzip == compress, gunzip == decompress
+var g_c = gzip.compress(payload)
+var g_c2 = gzip.gzip(payload)
+assert gzip.decompress(g_c) == payload, "gzip round-trip"
+assert gzip.gunzip(g_c2) == payload, "gunzip alias"
+# corrupted throws
+assert threw(Function(): return zlib.decompress("garbage")), "zlib.decompress bad throws"
+assert threw(Function(): return gzip.decompress("garbage")), "gzip.decompress bad throws"
+
+# ---------------------------------------------------------------------------
+# textwrap
+# ---------------------------------------------------------------------------
+var tw = import("textwrap")
+assert tw.wrap("hello world", 5) == ["hello", "world"] or len(tw.wrap("hello world", 5)) == 2, "wrap"
+assert tw.dedent("  a\n  b") == "a\nb", "dedent"
+assert tw.indent("a\nb", "> ") == "> a\n> b", "indent"
+
+# ---------------------------------------------------------------------------
+# string module: closest/similarity
+# ---------------------------------------------------------------------------
+var strm = import("string")
+assert strm.closest("aple", ["apple", "grape", "mango"]) == "apple", "closest"
+assert strm.closest("xxx", []) == None, "closest empty returns None"
+var sim = strm.similarity("abc", "abc")
+assert sim == 1.0, "similarity identical = 1.0"
+assert strm.similarity("", "") == 1.0, "similarity two empties = 1.0"
+# List form
+var sims = strm.similarity("abc", ["abc", "abd", "xyz"])
+assert sims[0] == 1.0, "similarity list first"
+# fuzzymatch
+var fm = strm.fuzzymatch("apple", ["apple", "apricot", "banana"], cutoff = 0.5)
+# should include apple with 1.0
+var found_apple = False
+for pair in fm:
+    if pair[0] == "apple":
+        found_apple = True
+assert found_apple, "fuzzymatch includes exact"
+# capwords
+assert strm.capwords("hello world") == "Hello World", "capwords"
+
+# ---------------------------------------------------------------------------
+# csv
+# ---------------------------------------------------------------------------
+var csv = import("csv")
+assert csv.parserow("a,b,c") == ["a", "b", "c"], "csv parserow"
+assert csv.parserow("\"a,b\",c") == ["a,b", "c"], "csv quoted"
+assert csv.formatrow(["a", "b,c"]) == "a,\"b,c\"", "csv formatrow quotes commas"
+var rows = csv.parse("a,b\n1,2\n3,4")
+assert rows == [["a", "b"], ["1", "2"], ["3", "4"]], "csv.parse"
+
+# ---------------------------------------------------------------------------
+# xml — lenient parsing, findtext default
+# ---------------------------------------------------------------------------
+var xml = import("xml")
+var root = xml.parse("<a><b>hello</b><c/></a>")
+assert root.tag == "a", "tag"
+assert root.findtext("b") == "hello", "findtext"
+assert root.findtext("nope", "MISSING") == "MISSING", "findtext default"
+assert root.find("nope") == None, "find missing returns None"
+assert root.findall("b")[0].text == "hello", "findall"
+assert root.get("nope") == None, "get missing = None"
+assert root.get("nope", "def") == "def", "get default"
+# Entities
+var r2 = xml.parse("<a>&lt;&gt;&amp;&#65;</a>")
+assert r2.text == "<>&A", "entity decoding"
+
+# ---------------------------------------------------------------------------
+# sys.exit is wrapped in a Function to avoid termination
+# ---------------------------------------------------------------------------
+assert sys.platform in ["linux", "darwin", "windows"], "platform is known"
+assert sys.arch in ["x64", "arm64", "x86", "unknown"], "arch normalized"
+assert len(sys.version) > 0, "version non-empty"
+# getenv default
+assert sys.getenv("NO_SUCH_VAR_ZZZ_9999") == None, "getenv missing = None"
+assert sys.getenv("NO_SUCH_VAR_ZZZ_9999", "fallback") == "fallback", "getenv with default"
+
+# ---------------------------------------------------------------------------
+# regex — linear time + capture kinds
+# ---------------------------------------------------------------------------
+var regex = import("regex")
+# Backreferences rejected
+assert threw(Function(): return regex.compile("(a)\\1")), "backreference rejected"
+# Lookaround rejected
+assert threw(Function(): return regex.compile("a(?=b)")), "lookahead rejected"
+assert threw(Function(): return regex.compile("a(?!b)")), "negative lookahead rejected"
+# Match object shape
+var m = regex.search("(\\w+)@(\\w+)", "hello foo@bar world")
+assert m != None, "search matched"
+assert m.group() == "foo@bar", "group() whole"
+assert m.group(1) == "foo", "group(1)"
+assert m.group(2) == "bar", "group(2)"
+assert m.groups() == ["foo", "bar"], "groups()"
+assert m.start() >= 0, "start()"
+# groupdict on named
+var mn = regex.search("(?P<user>\\w+)", "hi ada")
+assert mn.groupdict() == {"user": "hi"} or mn.groupdict()["user"] == "hi", "groupdict"
+# findall with 1 group returns list of that group
+assert regex.findall("(\\d+)", "1 22 333") == ["1", "22", "333"], "findall 1 group"
+# findall no groups
+assert regex.findall("\\d+", "1 22 333") == ["1", "22", "333"], "findall no groups"
+
+# ---------------------------------------------------------------------------
+# regex — non-participating group is None (m.group(k))
+# ---------------------------------------------------------------------------
+var m2 = regex.search("(a)|(b)", "b")
+if m2 != None:
+    # group 1 didn't participate
+    assert m2.group(1) == None, "non-participating group is None"
+
+# ---------------------------------------------------------------------------
+# net URL helpers (offline)
+# ---------------------------------------------------------------------------
+var net = import("net")
+assert net.quote("hello world") == "hello%20world", "quote space"
+assert net.quote("a+b") == "a%2Bb", "quote encodes literal +"
+assert net.unquote("hello%20world") == "hello world", "unquote"
+assert net.unquote("a+b") == "a b", "unquote + → space"
+assert net.urlencode({"a": "1"}) == "a=1", "urlencode single"
+var qs = net.parseqs("a=1&b=2&c=")
+assert qs["a"] == "1" and qs["b"] == "2" and qs["c"] == "", "parseqs"
+var u = net.urlsplit("http://[::1]:8080/p?q=1#frag")
+assert u["host"] == "[::1]", "IPv6 host preserved"
+assert u["port"] == "8080", "port after IPv6"
+assert u["path"] == "/p", "path"
+assert u["query"] == "q=1", "query"
+assert u["fragment"] == "frag", "fragment"
+
+io.print("OK r11-stdlib-gaps")

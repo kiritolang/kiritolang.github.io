@@ -1,0 +1,148 @@
+# Exhaustive + adversarial checks for exceptions and context managers.
+var io = import("io")
+
+# --- basic throw / catch ---
+var caught = None
+try:
+    throw "boom"
+catch as e:
+    caught = e
+assert caught == "boom", "throw/catch a String"
+
+# --- catch binds the thrown value; finally always runs ---
+var log = []
+var run = Function(doThrow):
+    try:
+        log.append("try")
+        if doThrow:
+            throw "x"
+        log.append("after")
+    catch as e:
+        log.append("catch")
+    finally:
+        log.append("finally")
+run(False)
+assert log == ["try", "after", "finally"], "no-throw path runs try+finally"
+log = []
+run(True)
+assert log == ["try", "catch", "finally"], "throw path runs try+catch+finally"
+
+# finally runs even when there's a return in try
+var withReturn = Function():
+    var marks = []
+    var inner = Function():
+        try:
+            return 1
+        finally:
+            marks.append("fin")
+    var rv = inner()
+    return [rv, marks]
+assert withReturn() == [1, ["fin"]], "finally runs on return"
+
+# --- typed catch via the class chain ---
+class AppError:
+    var _init_ = Function(self, msg):
+        self.msg = msg
+class NotFound(AppError):
+    var _init_ = Function(self, msg):
+        self._super_()._init_(msg)
+# catch the exact type
+var r1 = "none"
+try:
+    throw NotFound("missing")
+catch NotFound as e:
+    r1 = "notfound:" + e.msg
+assert r1 == "notfound:missing", "typed catch exact"
+# a base-type catch catches a subclass
+var r2 = "none"
+try:
+    throw NotFound("gone")
+catch AppError as e:
+    r2 = "app:" + e.msg
+assert r2 == "app:gone", "base catch catches subclass"
+# a non-matching typed catch does NOT catch (falls through to outer)
+var r3 = "none"
+try:
+    try:
+        throw AppError("oops")
+    catch NotFound as e:
+        r3 = "inner"
+    finally:
+        r3 = r3 + "+fin"
+catch AppError as e:
+    r3 = r3 + "+outer"
+assert r3 == "none+fin+outer", "non-matching typed catch falls through (finally still runs)"
+
+# --- re-throw from a catch ---
+var rethrown = "none"
+try:
+    try:
+        throw "deep"
+    catch as e:
+        throw "wrapped:" + e
+catch as e:
+    rethrown = e
+assert rethrown == "wrapped:deep", "re-throw"
+
+# --- bare catch also catches errors crossing from native code ---
+var nativeCaught = False
+try:
+    discard (1 / 0)
+catch as e:
+    nativeCaught = True
+assert nativeCaught, "bare catch catches a runtime error"
+# catch a type error
+var typeCaught = False
+try:
+    discard (1 + "string")
+catch as e:
+    typeCaught = True
+assert typeCaught, "catch a type error"
+# catch index/key errors
+var idxCaught = False
+try:
+    discard [1, 2][10]
+catch as e:
+    idxCaught = True
+assert idxCaught, "catch index out of range"
+
+# --- nested try, inner handles, outer continues ---
+var seq = []
+try:
+    seq.append(1)
+    try:
+        throw "inner"
+    catch as e:
+        seq.append(2)
+    seq.append(3)
+catch as e:
+    seq.append(99)
+assert seq == [1, 2, 3], "inner catch lets outer continue"
+
+# ===== context managers (with / as) =====
+class Resource:
+    var _init_ = Function(self, log):
+        self.log = log
+    var _enter_ = Function(self):
+        self.log.append("enter")
+        return self
+    var _exit_ = Function(self):
+        self.log.append("exit")
+    var use = Function(self):
+        self.log.append("use")
+var wl = []
+with Resource(wl) as res:
+    res.use()
+assert wl == ["enter", "use", "exit"], "with: enter/body/exit"
+# _exit_ runs even if the body throws
+var wl2 = []
+var threw = False
+try:
+    with Resource(wl2) as res2:
+        res2.use()
+        throw "fail"
+catch as e:
+    threw = True
+assert threw and wl2 == ["enter", "use", "exit"], "with: exit runs on exception"
+
+io.print("OK")

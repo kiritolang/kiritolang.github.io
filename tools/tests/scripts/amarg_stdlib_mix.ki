@@ -1,0 +1,5 @@
+# Importing a native stdlib module (math) does not disturb this module's own argmain/arglist view.
+var math = import("math")
+var sq = math.sqrt(16.0)
+var m = argmain
+var n = len(arglist)

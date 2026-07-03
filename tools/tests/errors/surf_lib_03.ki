@@ -1,0 +1,3 @@
+# A trailing comma in a JSON object is rejected (expects another key).
+var j = import("json")
+discard j.loads("{\"a\": 1,}")

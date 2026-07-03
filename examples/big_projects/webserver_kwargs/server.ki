@@ -1,0 +1,86 @@
+# A CONCURRENT HTTP/1.1 server in pure Kirito (the keyword-argument edition: every call passes its
+# arguments by name, variadic io.print/eprint excepted). Same stateless worker-pool model as
+# ../webserver/server.ki — a pool of workers each builds its own read-only App and serves handed-off
+# connections — exercising that keyword arguments work uniformly, now across the `parallel` API too.
+#
+# Run:  ki --lib lib server.ki [host] [port] [static_dir]   (defaults: 127.0.0.1 8080 ./static)
+
+var net = import(name = "net")
+var io = import(name = "io")
+var http = import(name = "http")
+var appmod = import(name = "app")
+var parallel = import(name = "parallel")
+
+var conn_worker = Function(workq, host, port, stop, static_dir):
+    var app = appmod.create(static_dir = static_dir)
+    var serving = True
+    while serving:
+        var fd = None
+        try:
+            fd = workq.get()
+        catch as e:
+            serving = False
+        if fd != None:
+            var conn = net.fromfd(fd = fd)
+            try:
+                var reader = http.Reader(conn = conn)
+                var req = None
+                try:
+                    req = http.parse_request(reader = reader)
+                catch as e:
+                    discard http.Response().text(s = "bad request: " + String(x = e), status = 400).write_to(conn = conn)
+                if req != None:
+                    if req.path == "/__shutdown__":
+                        stop.set()
+                        discard http.Response().text(s = "bye", status = 200).write_to(conn = conn)
+                    else:
+                        var resp = app.handle(req = req)
+                        discard resp.write_to(conn = conn)
+            catch as e:
+                io.eprint("connection error: " + String(x = e))
+            conn.close()
+            if stop.isset():
+                var waker = net.Socket()
+                try:
+                    waker.connect(host = host, port = port)
+                catch as e:
+                    pass
+                waker.close()
+                serving = False
+
+if argmain:
+    var host = "127.0.0.1"
+    var port = 8080
+    var static_dir = "static"
+    if len(x = arglist) >= 1:
+        host = arglist[0]
+    if len(x = arglist) >= 2:
+        port = Integer(x = arglist[1])
+    if len(x = arglist) >= 3:
+        static_dir = arglist[2]
+
+    var workq = parallel.Queue()
+    var stop = parallel.Event()
+    var nworkers = parallel.cpucount()
+    var w = 0
+    while w < nworkers:
+        discard parallel.spawn(conn_worker, workq = workq, host = host, port = port, stop = stop, static_dir = static_dir)
+        w = w + 1
+
+    var srv = net.Socket()
+    srv.bind(host = host, port = port)
+    srv.listen(backlog = 16)
+    io.print("LISTENING " + host + " " + String(x = port))
+
+    var running = True
+    while running:
+        var conn = srv.accept()
+        if stop.isset():
+            conn.close()
+            running = False
+        else:
+            workq.put(item = conn.detach())
+
+    workq.close()
+    srv.close()
+    io.print("STOPPED")

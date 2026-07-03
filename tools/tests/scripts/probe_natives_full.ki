@@ -1,0 +1,85 @@
+# ============================================ Native C++ modules: the previously-untested members
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var close = Function(a, b) -> Bool:
+    return abs(a - b) < 0.000001
+
+# ===================== io: File.flush, BytesIO.readline/flush/len =====================
+var tmp = path.gettempdir() + "/ki_nat_file.txt"
+var f = io.open(tmp, "w")
+discard f.write("hello\nworld\n")
+f.flush()                                  # File.flush (was untested)
+f.close()
+var g = io.open(tmp, "r")
+assert g.readline().strip() == "hello", "File.readline after flush"
+g.close()
+path.remove(tmp, missing_ok = True)
+
+var b = io.BytesIO("line1\nline2\n")
+assert b.readline() == "line1", "BytesIO.readline"
+assert b.readline() == "line2", "BytesIO.readline advances"
+b.flush()                                  # BytesIO.flush (no-op, was untested)
+var b2 = io.BytesIO("abcde")
+assert len(b2) == 5, "len(BytesIO) via _len_"
+
+# ===================== math: asinh / acosh / atanh (untested inverse hyperbolics) =====================
+var math = import("math")
+assert close(math.asinh(0.0), 0.0), "asinh(0)=0"
+assert close(math.asinh(math.sinh(1.5)), 1.5), "asinh inverts sinh"
+assert close(math.acosh(1.0), 0.0), "acosh(1)=0"
+assert close(math.acosh(math.cosh(2.0)), 2.0), "acosh inverts cosh"
+assert close(math.atanh(0.0), 0.0), "atanh(0)=0"
+assert close(math.atanh(math.tanh(0.5)), 0.5), "atanh inverts tanh"
+
+# ===================== random: seed, normalvariate, expovariate (untested) =====================
+var random = import("random")
+var r1 = random.Random()
+r1.seed(12345)                             # Random.seed method (was untested)
+var a1 = r1.random()
+var r2 = random.Random()
+r2.seed(12345)
+assert r1 != r2 or r2.random() == a1, "seed makes the sequence reproducible"
+var rn = random.Random(7)
+var nv = rn.normalvariate(0.0, 1.0)        # alias of gauss (was untested)
+assert type(nv) == "Float", "normalvariate returns a Float"
+var ev = rn.expovariate(1.0)               # was untested
+assert type(ev) == "Float" and ev >= 0.0, "expovariate returns a non-negative Float"
+
+# ===================== matrix: cols(), single-index m[i] row, _eq_ =====================
+var matrix = import("matrix")
+var m = matrix.identity(3)
+assert m.rows() == 3 and m.cols() == 3, "Matrix.cols (was untested)"
+assert m[0] == [1.0, 0.0, 0.0], "m[i] single-index returns the whole row"
+assert m == matrix.identity(3), "Matrix _eq_ (==)"
+assert m != matrix.zeros(3, 3), "Matrix != "
+
+# ===================== time: yearday, isoformat, add/sub (Float now accepted) =====================
+var time = import("time")
+var dt = time.make(2021, 1, 1, 0, 0, 0)    # Jan 1 -> yearday 1
+assert dt.yearday == 1, "yearday attribute (was untested)"
+assert dt.isoformat() == dt.iso(), "isoformat is an alias of iso (was untested)"
+assert dt.add(86400).day == 2, "add(seconds) advances a day"
+assert dt.sub(86400).year == 2020, "sub(seconds) goes back across the year boundary"
+assert dt.add(3600.0).hour == 1, "add accepts a Float number of seconds"
+
+# ===================== regex: groupindex, Match.string, pos/endpos =====================
+var re = import("regex")
+var pat = re.compile("(?P<year>\\d{4})-(?P<month>\\d{2})")
+assert pat.groupindex == {"year": 1, "month": 2}, "Regex.groupindex (was untested)"
+var mt = pat.search("date: 2021-06")
+assert mt.string == "date: 2021-06", "Match.string attribute (was untested)"
+assert mt.group("year") == "2021" and mt.group("month") == "06", "named groups"
+# pos / endpos now honored
+assert re.compile("a+").search("xaaax", 1).group() == "aaa", "pos starts the search"
+assert re.compile("a+").search("aaaa", 0, 2).group() == "aa", "endpos limits the search"
+assert re.compile("\\w").findall("abcd", 1, 3) == ["b", "c"], "findall honors pos and endpos"
+
+# ===================== json: loads/dumps aliases + indent pretty-print =====================
+var json = import("json")
+assert json.loads(json.dumps([1, 2, 3])) == [1, 2, 3], "json loads/dumps aliases round-trip"
+var pretty = json.dumps({"a": 1, "b": [2, 3]}, indent = 2)
+assert "\n" in pretty and "  " in pretty, "json indent pretty-prints with newlines + spaces"
+assert json.loads(pretty) == {"a": 1, "b": [2, 3]}, "pretty json re-parses"
+
+io.print("OK natives-full")

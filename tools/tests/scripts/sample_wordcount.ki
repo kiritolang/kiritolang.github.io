@@ -1,0 +1,45 @@
+# Word-frequency analysis: count words in a text, report the top-N most frequent.
+# Showcases: strings (split/lower/strip), Dict accumulation, sorting with a custom key via a
+# list of [count, word] pairs, and f-strings.
+#
+# Run:  ki examples/wordcount.ki
+
+var io = import("io")
+
+var text = "the quick brown fox the lazy dog the fox jumps over the lazy dog again and the dog barks"
+
+# Tally word frequencies into a Dict.
+var counts = {}
+for word in text.split(" "):
+    var w = word.lower().strip()
+    if len(w) > 0:
+        if w in counts:
+            counts[w] = counts[w] + 1
+        else:
+            counts[w] = 1
+
+# Build a list of [count, word] and sort descending by count (then word for stable ties).
+var pairs = []
+for w in counts.keys():
+    pairs.append([counts[w], w])
+
+# simple insertion sort, descending by count then ascending by word
+var n = len(pairs)
+var i = 1
+while i < n:
+    var key = pairs[i]
+    var j = i - 1
+    while j >= 0 and (pairs[j][0] < key[0] or (pairs[j][0] == key[0] and pairs[j][1] > key[1])):
+        pairs[j + 1] = pairs[j]
+        j = j - 1
+    pairs[j + 1] = key
+    i = i + 1
+
+io.print("Top words:")
+var shown = 0
+for p in pairs:
+    if shown < 5:
+        io.print(f"  {p[1]}: {p[0]}")
+        shown = shown + 1
+
+io.print(f"Total distinct words: {len(counts)}")

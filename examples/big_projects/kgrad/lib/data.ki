@@ -1,0 +1,41 @@
+# Dataset / DataLoader abstractions: batching, shuffling, iteration.
+#
+# A Dataset exposes len + indexed access. A DataLoader is iterable (`for batch in loader:`), yielding
+# [X_batch, y_batch] where X_batch is a nested list (batch, features) and y_batch a list of labels.
+# The training loop wraps those in autograd Tensors.
+
+var random = import("random")
+
+class TensorDataset:
+    var _init_ = Function(self, X, y):
+        self.X = X            # nested list: (n, features)
+        self.y = y            # list: (n,)
+    var _len_ = Function(self):
+        return len(self.X)
+    var _getitem_ = Function(self, i):
+        return [self.X[i], self.y[i]]
+
+class DataLoader:
+    var _init_ = Function(self, dataset, batch_size, shuffle, seed):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.rng = random.Random(seed)
+
+    # produce the full list of batches for this epoch (eager — Kirito has no lazy generators).
+    var _iter_ = Function(self):
+        var n = len(self.dataset)
+        var order = range(n)
+        if self.shuffle:
+            self.rng.shuffle(order)
+        var batches = []
+        for start in range(0, n, self.batch_size):
+            var stop = min(start + self.batch_size, n)
+            var Xb = []
+            var yb = []
+            for k in range(start, stop):
+                var item = self.dataset[order[k]]
+                Xb.append(item[0])
+                yb.append(item[1])
+            batches.append([Xb, yb])
+        return batches

@@ -1,0 +1,3 @@
+# PARSER: assignment to a binary expression, not a valid assignment target
+var a = 1
+a + 1 = 5

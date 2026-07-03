@@ -1,0 +1,79 @@
+# Exhaustive + adversarial checks for built-in functions and value conversions.
+var io = import("io")
+
+# --- type / isinstance ---
+assert type(1) == "Integer" and type(1.0) == "Float" and type("s") == "String", "type scalars"
+assert type([1]) == "List" and type({1}) == "Set" and type({"a": 1}) == "Dict", "type collections"
+assert type(True) == "Bool" and type(None) == "None", "type Bool/None"
+assert isinstance(1, "Integer") and isinstance(1.0, "Float") and isinstance("s", "String"), "isinstance scalars"
+assert isinstance([1], "List") and not isinstance([1], "Dict"), "isinstance collections"
+
+# --- len ---
+assert len("abc") == 3 and len([1, 2]) == 2 and len({1, 2, 3}) == 3 and len({"a": 1}) == 1, "len"
+
+# --- range (all forms) ---
+assert range(3) == [0, 1, 2] and range(2, 5) == [2, 3, 4], "range"
+assert range(0, 10, 2) == [0, 2, 4, 6, 8] and range(10, 0, -3) == [10, 7, 4, 1], "range step"
+assert range(5, 5) == [] and range(3, 0) == [], "range empty"
+
+# --- sum / min / max ---
+assert sum([1, 2, 3]) == 6 and sum([]) == 0, "sum"
+assert min(5, 2, 8) == 2 and max(5, 2, 8) == 8, "min/max variadic"
+assert min([3, 1, 2]) == 1 and max([3, 1, 2]) == 3, "min/max iterable"
+assert min("banana") == "a" and max("banana") == "n", "min/max over string"
+
+# --- sorted / reversed / enumerate / zip ---
+assert sorted([3, 1, 2]) == [1, 2, 3], "sorted"
+assert sorted([3, 1, 2], reverse=True) == [3, 2, 1], "sorted reverse"
+assert sorted(["bb", "a", "ccc"], key=Function(w): return len(w)) == ["a", "bb", "ccc"], "sorted key"
+assert List(reversed([1, 2, 3])) == [3, 2, 1], "reversed"
+assert List(enumerate(["a", "b"])) == [[0, "a"], [1, "b"]], "enumerate"
+assert List(zip([1, 2], ["a", "b"], [True, False])) == [[1, "a", True], [2, "b", False]], "zip three-way"
+
+# --- map / filter ---
+assert List(map(Function(x): return x + 1, [1, 2, 3])) == [2, 3, 4], "map"
+assert List(filter(Function(x): return x > 2, [1, 2, 3, 4])) == [3, 4], "filter"
+
+# --- all / any ---
+assert all([True, True, True]) and not all([True, False]), "all"
+assert any([False, True]) and not any([False, False]), "any"
+assert all([]) and not any([]), "all([])=True, any([])=False"
+
+# --- abs / round / divmod / pow ---
+assert abs(-7) == 7 and abs(-2.5) == 2.5, "abs"
+assert round(3.14159, 2) == 3.14 and round(2.5) == 3, "round"
+assert divmod(17, 5) == [3, 2] and divmod(-7, 3) == [-3, 2], "divmod"
+assert pow(2, 8) == 256.0 and pow(3, 4, 10) == 1, "pow 2/3-arg"
+
+# --- ord / chr round-trip ---
+assert ord("A") == 65 and chr(65) == "A", "ord/chr ASCII"
+assert chr(ord("é")) == "é" and ord("€") == 8364, "ord/chr unicode"
+
+# --- bin / oct / hex ---
+assert bin(10) == "0b1010" and oct(64) == "0o100" and hex(255) == "0xff", "bin/oct/hex"
+
+# --- format (mini-spec) ---
+assert format(42, "05d") == "00042", "format width/zero"
+assert format(255, "x") == "ff" and format(255, "X") == "FF", "format hex"
+assert format(3.14159, ".2f") == "3.14", "format precision"
+assert format(1000000, ",") == "1,000,000", "format thousands"
+assert format(7, "<5") == "7    " and format(7, ">5") == "    7" and format(7, "^5") == "  7  ", "format align"
+
+# --- constructors / converters ---
+assert Integer("42") == 42 and Integer(3.9) == 3 and Integer(True) == 1, "Integer()"
+assert Float("2.5") == 2.5 and Float(3) == 3.0, "Float()"
+assert String(42) == "42" and String([1, 2]) == "[1, 2]" and String(True) == "True", "String()"
+assert Bool(0) == False and Bool(1) == True and Bool("") == False and Bool([1]) == True, "Bool() truthiness"
+assert List("abc") == ["a", "b", "c"] and List(range(3)) == [0, 1, 2], "List() from iterable"
+assert sorted(List(Set([1, 1, 2, 3, 3]))) == [1, 2, 3], "Set() dedup via List()"
+assert sorted(Dict([["a", 1], ["b", 2]]).keys()) == ["a", "b"], "Dict() from pairs"
+
+# --- truthiness across the board ---
+assert not Bool(None) and not Bool(0) and not Bool(0.0) and not Bool("") and not Bool([]) and not Bool({}), "falsy values"
+assert Bool(1) and Bool(-1) and Bool("x") and Bool([0]) and Bool({"a": 1}), "truthy values"
+
+# --- inspect returns a describing String ---
+var math_desc = inspect(import("math"))
+assert "module math" in math_desc and "sqrt" in math_desc and "-> Float" in math_desc, "inspect describes the module's members + signatures"
+
+io.print("OK")

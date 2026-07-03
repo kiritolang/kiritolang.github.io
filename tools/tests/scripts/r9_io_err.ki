@@ -1,0 +1,273 @@
+# r9_io_err.ki — edge-case and error-hardening tests for the io module:
+# file open/read/write/close, BytesIO, filesystem helpers (exists/remove/mkdir/
+# rename/listdir/isfile/isdir/getsize/walk), path helpers (basename/dirname/
+# splitext/join), io.print/io.write redirect.
+# Key Kirito behaviour (vs Python): readline()/readlines()/iteration strip the
+# trailing newline; path.walk returns a flat List of file path strings (not tuples).
+
+var io = import("io")
+var path = import("path")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== Temp directory setup
+var tmpdir = "/tmp/r9_io_test"
+discard path.mkdir(tmpdir, exist_ok = True)
+var tmpfile = tmpdir + "/test.txt"
+var tmpfile2 = tmpdir + "/test2.txt"
+var tmpbin = tmpdir + "/test.bin"
+
+# =========================================================== io.write / io.print with stream=
+
+var buf = io.BytesIO()
+io.write("hello", stream=buf)
+buf.seek(0)
+ok(buf.read() == "hello", "io.write with stream= kwarg")
+
+var buf2 = io.BytesIO()
+io.print("world", stream=buf2)
+buf2.seek(0)
+ok(buf2.read() == "world\n", "io.print adds newline, stream= kwarg")
+
+var buf3 = io.BytesIO()
+io.print("a", "b", "c", stream=buf3)
+buf3.seek(0)
+ok(buf3.read() == "a b c\n", "io.print joins multiple args with space")
+
+# =========================================================== File write / read text
+var f = io.open(tmpfile, "w")
+f.write("line1\nline2\nline3\n")
+f.close()
+
+var f2 = io.open(tmpfile, "r")
+var content = f2.read()
+f2.close()
+ok(content == "line1\nline2\nline3\n", "write then read full text")
+
+# Kirito readline() and readlines() strip trailing newlines
+var f3 = io.open(tmpfile, "r")
+var ln1 = f3.readline()
+var ln2 = f3.readline()
+f3.close()
+ok(ln1 == "line1", "readline strips trailing newline")
+ok(ln2 == "line2", "readline second line also stripped")
+
+var f4 = io.open(tmpfile, "r")
+var lines = f4.readlines()
+f4.close()
+ok(lines == ["line1", "line2", "line3"], "readlines returns list without newlines")
+
+# for-in iteration also strips newlines
+var iterLines = []
+var f5 = io.open(tmpfile, "r")
+for line in f5:
+    iterLines.append(line)
+f5.close()
+ok(iterLines == ["line1", "line2", "line3"], "file iteration strips newlines")
+
+# =========================================================== seek / tell
+var f6 = io.open(tmpfile, "r")
+var t0 = f6.tell()
+discard f6.read(5)
+var t5 = f6.tell()
+f6.seek(0)
+var fromStart = f6.read(5)
+f6.close()
+ok(t0 == 0, "tell() at start is 0")
+ok(t5 == 5, "tell() after read(5) is 5")
+ok(fromStart == "line1", "seek(0) then read gives start of file")
+
+# =========================================================== append mode
+var fa = io.open(tmpfile, "a")
+fa.write("line4\n")
+fa.close()
+var fc = io.open(tmpfile, "r")
+var allLines = fc.readlines()
+fc.close()
+ok(len(allLines) == 4, "append mode adds a line")
+ok(allLines[3] == "line4", "appended line is last (no newline)")
+
+# =========================================================== writelines
+var fw = io.open(tmpfile2, "w")
+fw.writelines(["alpha\n", "beta\n", "gamma\n"])
+fw.close()
+var fr = io.open(tmpfile2, "r")
+ok(fr.readlines() == ["alpha", "beta", "gamma"], "writelines then readlines round-trips (stripped)")
+fr.close()
+
+# =========================================================== Context manager (with)
+with io.open(tmpfile2, "r") as wf:
+    var wcontent = wf.read()
+ok(wcontent == "alpha\nbeta\ngamma\n", "with io.open reads full content")
+
+# =========================================================== Binary mode (rb/wb)
+var fb = io.open(tmpbin, "wb")
+fb.write(Bytes([72, 101, 108, 108, 111]))
+fb.close()
+
+var fbr = io.open(tmpbin, "rb")
+var bdata = fbr.read()
+fbr.close()
+ok(type(bdata) == "Bytes", "rb mode read returns Bytes")
+ok(bdata == Bytes([72, 101, 108, 108, 111]), "binary round-trip preserved")
+
+var fbr2 = io.open(tmpbin, "rb")
+var bpart = fbr2.read(3)
+fbr2.close()
+ok(bpart == Bytes([72, 101, 108]), "rb read(n) returns first n bytes")
+
+# r+b mode: read+write binary in-place
+var frwb = io.open(tmpbin, "r+b")
+frwb.seek(0)
+frwb.write(Bytes([0]))
+frwb.close()
+var fcheck = io.open(tmpbin, "rb")
+var bcheck = fcheck.read()
+fcheck.close()
+ok(bcheck[0] == 0, "r+b overwrites first byte in place")
+
+# =========================================================== Errors
+
+# open non-existent for read throws
+ok(throws(Function(): return io.open("/tmp/r9_io_test/__no_such__.txt", "r")),
+   "open non-existent file for read throws")
+
+# Double-close is safe
+var fdc = io.open(tmpfile, "r")
+fdc.close()
+fdc.close()
+ok(True, "double close does not crash")
+
+# =========================================================== BytesIO
+var bio = io.BytesIO()
+bio.write("Hello")
+bio.write(", World")
+bio.seek(0)
+ok(bio.read() == "Hello, World", "BytesIO write then read")
+
+var bio2 = io.BytesIO()
+bio2.write("abcdef")
+bio2.seek(2)
+ok(bio2.read(3) == "cde", "BytesIO seek + partial read")
+
+# BytesIO readline strips newline (consistent with file)
+var bio3 = io.BytesIO()
+bio3.write("line1\nline2\n")
+bio3.seek(0)
+var bl1 = bio3.readline()
+var bl2 = bio3.readline()
+ok(bl1 == "line1", "BytesIO readline strips newline")
+ok(bl2 == "line2", "BytesIO readline second line stripped")
+
+# tell on BytesIO
+var bio4 = io.BytesIO()
+bio4.write("abc")
+ok(bio4.tell() == 3, "BytesIO tell after write")
+bio4.seek(1)
+ok(bio4.tell() == 1, "BytesIO tell after seek")
+
+# BytesIO readline on content without newline returns all
+var bio5 = io.BytesIO()
+bio5.write("noline")
+bio5.seek(0)
+ok(bio5.readline() == "noline", "BytesIO readline with no newline returns all content")
+
+# =========================================================== Filesystem helpers
+
+ok(path.exists(tmpfile), "exists() on real file")
+ok(not path.exists("/tmp/r9_io_test/__nope__.txt"), "exists() on missing file is False")
+ok(path.isfile(tmpfile), "isfile() on file")
+ok(not path.isfile(tmpdir), "isfile() on directory is False")
+ok(path.isdir(tmpdir), "isdir() on directory")
+ok(not path.isdir(tmpfile), "isdir() on file is False")
+
+var sz = path.getsize(tmpfile)
+ok(type(sz) == "Integer", "getsize returns Integer")
+ok(sz > 0, "getsize > 0 for non-empty file")
+
+var subdir = tmpdir + "/subdir"
+discard path.mkdir(subdir, exist_ok = True)
+ok(path.isdir(subdir), "mkdir creates directory")
+
+var fl = io.open(subdir + "/f1.txt", "w")
+fl.write("x")
+fl.close()
+var entries = path.listdir(subdir)
+ok(type(entries) == "List", "listdir returns List")
+ok("f1.txt" in entries, "listdir contains created file")
+
+# rename
+var oldpath = subdir + "/f1.txt"
+var newpath = subdir + "/f2.txt"
+path.rename(oldpath, newpath)
+ok(not path.exists(oldpath), "rename: old path gone")
+ok(path.exists(newpath), "rename: new path exists")
+
+# remove
+path.remove(newpath, missing_ok = True)
+ok(not path.exists(newpath), "remove deletes file")
+
+# remove non-existent is a silent no-op (does not throw)
+path.remove("/tmp/r9_io_test/__ghost__.txt", missing_ok = True)
+ok(True, "remove non-existent file is silent no-op")
+
+# path.walk returns flat list of file paths (not tuples like Python os.walk)
+var walkroot = tmpdir + "/walktree"
+discard path.mkdir(walkroot, exist_ok = True)
+discard path.mkdir(walkroot + "/a", exist_ok = True)
+var wf1 = io.open(walkroot + "/root.txt", "w")
+wf1.write("r")
+wf1.close()
+var wf2 = io.open(walkroot + "/a/deep.txt", "w")
+wf2.write("d")
+wf2.close()
+
+var walkPaths = path.walk(walkroot)
+ok(type(walkPaths) == "List", "path.walk returns a List")
+ok(len(walkPaths) == 2, "path.walk finds 2 files recursively")
+# Paths are absolute strings
+ok(type(walkPaths[0]) == "String", "path.walk entries are strings")
+
+# =========================================================== Path helpers
+
+ok(path.basename("/some/path/file.txt") == "file.txt", "basename")
+ok(path.dirname("/some/path/file.txt") == "/some/path", "dirname")
+ok(path.dirname("file.txt") == "", "dirname of bare filename is empty")
+# path JOINING is path.join's job (single source of truth), not io's.
+
+var se = path.splitext("document.tar.gz")
+ok(se[0] == "document.tar" and se[1] == ".gz", "splitext splits last extension")
+var se2 = path.splitext("noext")
+ok(se2[0] == "noext" and se2[1] == "", "splitext no extension gives empty string")
+
+var cwd = path.getcwd()
+ok(type(cwd) == "String" and len(cwd) > 0, "getcwd returns non-empty String")
+
+# chmod
+var chmodfile = subdir + "/chmod_test.txt"
+var cfh = io.open(chmodfile, "w")
+cfh.write("x")
+cfh.close()
+path.chmod(chmodfile, 0o755)
+ok(path.exists(chmodfile), "file still exists after chmod")
+
+# =========================================================== stdout redirect
+var savedOut = io.stdout
+var capbuf = io.BytesIO()
+io.stdout = capbuf
+io.print("captured")
+io.stdout = savedOut
+capbuf.seek(0)
+ok(capbuf.read() == "captured\n", "stdout redirect captures print output")
+
+io.print("r9_io_err: " + String(n) + " checks passed")

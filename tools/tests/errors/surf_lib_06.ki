@@ -1,0 +1,3 @@
+# A doubled quantifier has nothing to repeat.
+var r = import("regex")
+discard r.compile("a**")

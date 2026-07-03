@@ -1,0 +1,107 @@
+# Deep pure-Kirito test of the gzip + zlib codecs and the hash checksums, including String/Bytes
+# same-type behavior, round-trips over binary data, interop, and malformed/adversarial inputs.
+var io = import("io")
+var path = import("path")
+var gzip = import("gzip")
+var zlib = import("zlib")
+var hash = import("hash")
+var random = import("random")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# --- gzip round-trips ------------------------------------------------------------------------
+var text = "The quick brown fox jumps over the lazy dog. " * 30
+assert gzip.decompress(gzip.compress(text)) == text, "gzip String round-trip"
+assert type(gzip.compress(text)) == "String", "String in -> String out"
+assert type(gzip.compress(Bytes([1, 2, 3]))) == "Bytes", "Bytes in -> Bytes out"
+assert gzip.gunzip(gzip.gzip(text)) == text, "gzip/gunzip aliases"
+# binary payload with every byte value round-trips byte-exactly
+var allbytes = []
+var i = 0
+while i < 256:
+    allbytes.append(i)
+    i = i + 1
+var bin = Bytes(allbytes) * 8
+assert gzip.decompress(gzip.compress(bin)) == bin, "gzip binary (all 256 byte values) round-trip"
+assert gzip.decompress(gzip.compress(Bytes())) == Bytes(), "gzip empty"
+# the gzip header magic is 0x1f 0x8b (interoperable container)
+var gz = gzip.compress(Bytes([1, 2, 3]))
+assert gz[0] == 31 and gz[1] == 139, "gzip magic bytes 1f 8b"
+# malformed gzip throws cleanly
+assert throws(Function(): return gzip.decompress("not a gzip stream at all")), "corrupt gzip rejected"
+assert throws(Function(): return gzip.decompress(Bytes([31, 139, 8, 0, 0]))), "truncated gzip rejected"
+assert throws(Function(): return gzip.compress(42)), "gzip rejects non-String/Bytes"
+
+# --- zlib + raw deflate ----------------------------------------------------------------------
+assert zlib.decompress(zlib.compress(text)) == text, "zlib round-trip"
+assert zlib.inflate(zlib.deflate(text)) == text, "raw deflate round-trip"
+assert zlib.inflate(zlib.deflate(bin)) == bin, "raw deflate binary round-trip"
+assert type(zlib.compress(Bytes([1]))) == "Bytes" and type(zlib.compress("x")) == "String", "zlib same-type"
+assert throws(Function(): return zlib.decompress("garbage zlib data here")), "corrupt zlib rejected"
+assert throws(Function(): return zlib.inflate(Bytes([255, 255, 255]))), "corrupt inflate rejected"
+# gzip and zlib are DIFFERENT containers (a gzip stream is not a valid zlib stream)
+assert throws(Function(): return zlib.decompress(gzip.compress(Bytes([1, 2, 3])))), "gzip != zlib container"
+
+# --- hash checksums (now in the hash module) -------------------------------------------------
+assert hash.crc32("") == 0, "crc32 empty"
+assert hash.crc32("hello") == 907060870, "crc32 hello (known)"
+assert hash.adler32("") == 1, "adler32 empty"
+assert hash.adler32("Wikipedia") == 300286872, "adler32 Wikipedia (known)"
+assert hash.crc64("") == 0, "crc64 empty"
+assert hash.crc64("123456789") == -7395533204333446662, "crc64/XZ check value (signed)"
+# String and Bytes of the same bytes hash identically
+assert hash.crc32(Bytes([104, 101, 108, 108, 111])) == hash.crc32("hello"), "crc32 Bytes == String"
+assert hash.sha256("abc".encode()) == hash.sha256("abc"), "sha256 Bytes == String"
+assert hash.md5(Bytes([97, 98, 99])) == hash.md5("abc"), "md5 Bytes == String"
+assert hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc vector"
+assert len(hash.sha256(bin)) == 64 and len(hash.md5(bin)) == 32, "digest lengths fixed over binary"
+# determinism + avalanche
+assert hash.crc64("repeat") == hash.crc64("repeat"), "crc64 deterministic"
+assert hash.crc32("hello") != hash.crc32("hellp"), "crc32 avalanche"
+assert throws(Function(): return hash.crc32([1, 2])), "crc32 rejects wrong type"
+
+# --- a realistic pipeline: dump -> gzip -> hash -> file (binary) -> verify --------------------
+var dump = import("dump")
+var payload = {"users": [], "n": 500}
+var j = 0
+while j < 200:
+    payload["users"].append({"id": j, "v": j * j})
+    j = j + 1
+var blob = dump.dumps(payload)                 # Bytes
+var packed = gzip.compress(blob)               # Bytes
+var digest = hash.sha256(packed)
+var fp = import("path").gettempdir() + "/spec_gzip_pipe.bin"
+var f = io.open(fp, "wb")
+f.write(packed)
+f.close()
+var g = io.open(fp, "rb")
+var readback = g.read()
+g.close()
+discard path.remove(fp, missing_ok = True)
+assert type(readback) == "Bytes", "binary file read -> Bytes"
+assert hash.sha256(readback) == digest, "file round-trip preserves bytes"
+assert dump.loads(gzip.decompress(readback)) == payload, "full pipeline round-trips the object"
+assert len(packed) < len(blob), "structured data compresses"
+
+# --- fuzz: random binary blobs survive gzip + zlib round-trips --------------------------------
+var rng = random.Random(2024)
+var trial = 0
+while trial < 40:
+    var nlen = rng.randint(0, 300)
+    var lst = []
+    var k = 0
+    while k < nlen:
+        lst.append(rng.randint(0, 255))
+        k = k + 1
+    var blobf = Bytes(lst)
+    assert gzip.decompress(gzip.compress(blobf)) == blobf, "fuzz gzip round-trip"
+    assert zlib.decompress(zlib.compress(blobf)) == blobf, "fuzz zlib round-trip"
+    assert zlib.inflate(zlib.deflate(blobf)) == blobf, "fuzz deflate round-trip"
+    trial = trial + 1
+
+io.print("OK gzip")

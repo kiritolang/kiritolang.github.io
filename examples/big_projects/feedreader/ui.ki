@@ -1,0 +1,79 @@
+# feedreader/ui.ki — pretty-printers for the CLI. Uses textwrap for a tidy summary block.
+
+var textwrap = import("textwrap")
+var regex    = import("regex")
+
+# Strip inline HTML tags from a summary before printing (feeds put &lt;p&gt;/&lt;em&gt; etc. in there).
+var _tagRe = regex.compile("<[^>]+>")
+var _wsRe  = regex.compile("\\s+")
+var stripHtml = Function(s : String) -> String:
+    var t = _tagRe.sub("", s)
+    t = t.replace("&amp;",  "&")
+    t = t.replace("&lt;",   "<")
+    t = t.replace("&gt;",   ">")
+    t = t.replace("&quot;", "\"")
+    t = t.replace("&#39;",  "'")
+    return _wsRe.sub(" ", t.strip())
+
+var _pad = Function(s : String, w : Integer) -> String:
+    if len(s) >= w:
+        return s
+    return s + " " * (w - len(s))
+
+# Compact one-line-per-item listing. Items are pre-decorated with a read/unread flag.
+var listItems = Function(items : List, isRead) -> String:
+    if len(items) == 0:
+        return "  (no items)\n"
+    var w = 0
+    for it in items:
+        var ft = it["feed_title"]
+        if len(ft) > w:
+            w = len(ft)
+    if w > 24:
+        w = 24
+    var lines = []
+    for it in items:
+        var flag = " "
+        if isRead(it["key"]):
+            flag = "R"
+        var ft = it["feed_title"]
+        if len(ft) > w:
+            ft = ft[0:w - 1] + "…"
+        var d = it["date"]
+        if len(d) > 20:
+            d = d[0:20]
+        lines.append("  [" + flag + "] " + it["key"] + "  " + _pad(ft, w + 2) + _pad(d, 22) + it["title"])
+    return "\n".join(lines) + "\n"
+
+# Full detail: title / feed / date / link + wrapped summary.
+var detail = Function(it : Dict, width : Integer) -> String:
+    var lines = []
+    lines.append("  " + it["title"])
+    lines.append("  feed:  " + it["feed_title"])
+    lines.append("  date:  " + it["date"])
+    lines.append("  link:  " + it["link"])
+    lines.append("  ---")
+    var body = stripHtml(it["summary"])
+    for line in textwrap.wrap(body, width):
+        lines.append("  " + line)
+    return "\n".join(lines) + "\n"
+
+# Feed roster with per-feed unread counts.
+var listFeeds = Function(state : Dict, isRead) -> String:
+    var urls = sorted(List(state["feeds"].keys()))
+    if len(urls) == 0:
+        return "  (no feeds)\n"
+    var lines = []
+    for url in urls:
+        var rec = state["feeds"][url]
+        var total = len(rec["items"])
+        var unread = 0
+        var store = import("store")
+        for iid in rec["items"]:
+            if not isRead(store.itemKey(url, iid)):
+                unread = unread + 1
+        var tagsStr = ""
+        if len(rec["tags"]) > 0:
+            tagsStr = " [" + ",".join(rec["tags"]) + "]"
+        lines.append("  " + _pad(rec["title"], 30) + "  " + _pad(String(unread) + "/" + String(total), 8) + url + tagsStr)
+    return "\n".join(lines) + "\n"

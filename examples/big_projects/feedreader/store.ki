@@ -1,0 +1,134 @@
+# feedreader/store.ki — persistent state (subscribed feeds + which items are read + user tags).
+#
+# On-disk shape is a JSON file:
+#   {
+#     "feeds": {URL: {"title": String, "tags": [String], "items": {ID: Item}}, ...},
+#     "read":  [ID_HASH, ID_HASH, ...]                # a Set on disk, but JSON has no Set
+#   }
+# An item's ID is hashed with sha256 to keep IDs opaque + fixed-length in the read-list.
+
+var io   = import("io")
+var json = import("json")
+var path = import("path")
+var hash = import("hash")
+
+# A fresh empty store.
+var _empty = Function() -> Dict:
+    return {"feeds": {}, "read": []}
+
+var load = Function(file : String) -> Dict:
+    if not path.isfile(file):
+        return _empty()
+    var fh = io.open(file, "r")
+    var raw = fh.read()
+    fh.close()
+    return json.loads(raw)
+
+var save = Function(file : String, state : Dict):
+    var dir = path.dirname(file)
+    if len(dir) > 0 and not path.isdir(dir):
+        discard path.mkdir(dir, exist_ok = True)
+    var fh = io.open(file, "w")
+    fh.write(json.dumps(state, indent = 2))
+    fh.close()
+
+# Stable hash of a feed URL + item ID pair. sha256(url + "\0" + id)[0:16] gives 64 bits of key.
+var itemKey = Function(feedUrl : String, itemId : String) -> String:
+    return hash.sha256(feedUrl + "|" + itemId)[0:16]
+
+var addFeed = Function(state : Dict, url : String, tags : List):
+    if url in state["feeds"]:
+        return state
+    state["feeds"][url] = {"title": "", "tags": tags.copy(), "items": {}}
+
+var removeFeed = Function(state : Dict, url : String) -> Bool:
+    if url not in state["feeds"]:
+        return False
+    # Also drop every read-marker for this feed's items so the read set stays lean.
+    var stillRead = []
+    for k in state["read"]:
+        var keep = True
+        for iid in state["feeds"][url]["items"]:
+            if k == itemKey(url, iid):
+                keep = False
+                break
+        if keep:
+            stillRead.append(k)
+    state["read"] = stillRead
+    state["feeds"].pop(url)
+    return True
+
+# Merge `feedContent` (as returned by feed.parseString) into the state under `url`. New items are
+# added; existing items are left alone (so a re-fetch doesn't overwrite a locally-edited summary).
+# Returns the count of newly-added items.
+var mergeFeed = Function(state : Dict, url : String, feedContent : Dict) -> Integer:
+    if url not in state["feeds"]:
+        addFeed(state, url, [])
+    var rec = state["feeds"][url]
+    rec["title"] = feedContent["title"]
+    var added = 0
+    for it in feedContent["items"]:
+        var id = it["id"]
+        if id == "":
+            continue
+        if id not in rec["items"]:
+            rec["items"][id] = it
+            added = added + 1
+    return added
+
+# Every stored item across every feed, flat, tagged with its feed url; sortable by whatever key.
+var allItems = Function(state : Dict) -> List:
+    var out = []
+    for url in state["feeds"]:
+        for iid in state["feeds"][url]["items"]:
+            var it = state["feeds"][url]["items"][iid]
+            out.append({
+                "feed_url":   url,
+                "feed_title": state["feeds"][url]["title"],
+                "id":         iid,
+                "key":        itemKey(url, iid),
+                "title":      it["title"],
+                "link":       it["link"],
+                "summary":    it["summary"],
+                "date":       it["date"],
+            })
+    return out
+
+# Restrict to items on feeds tagged with any of the given tags. Empty `tags` returns all items.
+var filterByTag = Function(state : Dict, items : List, tags : List) -> List:
+    if len(tags) == 0:
+        return items
+    var want = Set()
+    for t in tags:
+        want.add(t)
+    var out = []
+    for it in items:
+        var url = it["feed_url"]
+        var itsTags = state["feeds"][url]["tags"]
+        var hit = False
+        for t in itsTags:
+            if t in want:
+                hit = True
+                break
+        if hit:
+            out.append(it)
+    return out
+
+# read/unread bookkeeping. `key` is the compact hash (Set membership; the on-disk list becomes a
+# Set only when it's loaded).
+var isRead = Function(state : Dict, key : String) -> Bool:
+    for k in state["read"]:
+        if k == key:
+            return True
+    return False
+
+var markRead = Function(state : Dict, key : String):
+    if not isRead(state, key):
+        state["read"].append(key)
+
+var markUnread = Function(state : Dict, key : String):
+    var keep = []
+    for k in state["read"]:
+        if k != key:
+            keep.append(k)
+    state["read"] = keep

@@ -1,0 +1,170 @@
+# The `xml` module (ElementTree-style parser/serializer), exercised from Kirito: typical parsing,
+# attributes, entities, comments/CDATA/declarations, edge cases, adversarial malformed input, and a
+# randomized fuzz that builds trees, serializes them, re-parses, and checks the structure survives.
+var io = import("io")
+var xml = import("xml")
+var random = import("random")
+
+# --- a representative document ---
+var doc = ("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
+           "<!DOCTYPE library>\n" +
+           "<library name=\"central\" open=\"true\">\n" +
+           "  <!-- catalogue -->\n" +
+           "  <book id=\"1\" genre=\"fantasy\">\n" +
+           "    <title>The Hobbit</title>\n" +
+           "    <author>Tolkien</author>\n" +
+           "    <price currency=\"USD\">10.99</price>\n" +
+           "  </book>\n" +
+           "  <book id=\"2\">\n" +
+           "    <title>SICP</title>\n" +
+           "    <author>Abelson &amp; Sussman</author>\n" +
+           "  </book>\n" +
+           "  <note><![CDATA[ raw <unparsed> & text ]]></note>\n" +
+           "  <empty/>\n" +
+           "</library>")
+var root = xml.parse(doc)
+
+# --- structure + attributes ---
+assert root.tag == "library", "root tag"
+assert root.get("name") == "central", "root attribute"
+assert root.get("missing") == None, "absent attribute -> None"
+assert root.get("missing", "dflt") == "dflt", "absent attribute -> default"
+assert len(root.findall("book")) == 2, "findall count"
+assert root.find("book").get("id") == "1", "find returns first match"
+assert root.find("nope") == None, "find returns None when absent"
+
+# --- child text + nested access ---
+var first = root.find("book")
+assert first.find("title").text == "The Hobbit", "nested child text"
+assert first.findtext("author") == "Tolkien", "findtext"
+assert first.findtext("nope", "??") == "??", "findtext default"
+assert first.find("price").get("currency") == "USD", "grandchild attribute"
+assert first.find("price").text == "10.99", "grandchild text"
+
+# --- entities decode on the way in ---
+assert root.findall("book")[1].find("author").text == "Abelson & Sussman", "&amp; decoded"
+
+# --- CDATA kept raw (no entity decoding inside) ---
+assert root.find("note").text == " raw <unparsed> & text ", "CDATA verbatim"
+
+# --- self-closing / empty element ---
+assert len(root.find("empty")) == 0, "empty element has no children"
+assert root.find("empty").text == "", "empty element has no text"
+
+# --- comments, declaration and DOCTYPE are skipped (not elements) ---
+assert root.find("library") == None and len(root.findall("book")) == 2, "non-element nodes skipped"
+
+# --- all the standard entities, including numeric ---
+var ent = xml.parse("<e>&lt;&gt;&amp;&quot;&apos;&#65;&#x42;</e>")
+assert ent.text == "<>&\"'AB", "all entities decode (incl numeric dec + hex)"
+# an unknown entity is preserved verbatim
+assert xml.parse("<e>a&unknown;b</e>").text == "a&unknown;b", "unknown entity kept verbatim"
+
+# --- single- and double-quoted attributes are equivalent ---
+assert xml.parse("<e a='1' b=\"2\"/>").get("a") == "1", "single-quoted attribute"
+assert xml.parse("<e a='1' b=\"2\"/>").get("b") == "2", "double-quoted attribute"
+
+# --- iteration + indexing over children, itertext ---
+var lst = xml.parse("<r><a>1</a><b>2</b><c>3</c></r>")
+assert len(lst) == 3 and lst[0].tag == "a" and lst[2].text == "3", "len/index over children"
+var collected = []
+for child in lst:
+    collected.append(child.tag)
+assert collected == ["a", "b", "c"], "iterating yields children"
+assert "".join(xml.parse("<r>x<a>y</a>z</r>").itertext()) == "xyz", "itertext gathers text in order"
+
+# --- serialization round-trips (re-escaping the entities) ---
+var ser = xml.tostring(xml.parse("<r k=\"a&amp;b\">x &lt; y</r>"))
+assert ser == "<r k=\"a&amp;b\">x &lt; y</r>", "tostring re-escapes text + attributes"
+assert xml.tostring(xml.parse("<a/>")) == "<a />", "empty element serializes self-closed"
+
+# --- ADVERSARIAL: a lenient parser must never crash, even on malformed input ---
+var safe = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return True
+    catch as e:
+        return False
+assert safe(Function(): return xml.parse("<a><b></a>")), "unclosed nested tag does not crash"
+assert safe(Function(): return xml.parse("<a")), "truncated open tag does not crash"
+assert safe(Function(): return xml.parse("")), "empty input does not crash"
+assert safe(Function(): return xml.parse("plain text, no tags")), "text-only does not crash"
+assert safe(Function(): return xml.parse("<a>&#xZZ;</a>") or True), "bad numeric entity is contained"
+assert xml.parse("") == None, "empty input -> None root"
+
+# ================================================================= FUZZ: build -> serialize -> reparse
+# A random tree, serialized to XML and parsed back, must reproduce the same tag/attribute/children
+# structure (text included). Tags/attr names/values are drawn from a safe alphabet.
+var rng = random.Random(20260603)
+var letters = "abcdefghijklmnop"
+var randname = Function():
+    var k = rng.randint(1, 5)
+    var s = ""
+    var i = 0
+    while i < k:
+        s = s + letters[rng.randint(0, len(letters) - 1)]
+        i = i + 1
+    return s
+
+var build = Function(depth):
+    var e = xml.Element(randname())
+    var na = rng.randint(0, 3)
+    var ai = 0
+    while ai < na:
+        e.attrib[randname()] = randname()
+        ai = ai + 1
+    if depth > 0 and rng.randint(0, 1) == 1:
+        var nc = rng.randint(1, 3)
+        var ci = 0
+        while ci < nc:
+            e.children.append(build(depth - 1))
+            ci = ci + 1
+    elif rng.randint(0, 1) == 1:
+        e.text = randname()
+    return e
+
+# structural equality of two Elements
+var same = Function(a, b) -> Bool:
+    if a.tag != b.tag:
+        return False
+    if a.text != b.text or a.tail != b.tail:
+        return False
+    if len(a.children) != len(b.children):
+        return False
+    for k in a.attrib.keys():
+        if b.get(k) != a.attrib[k]:
+            return False
+    if len(a.attrib.keys()) != len(b.attrib.keys()):
+        return False
+    var i = 0
+    while i < len(a.children):
+        if not same(a.children[i], b.children[i]):
+            return False
+        i = i + 1
+    return True
+
+var trial = 0
+while trial < 400:
+    var tree = build(rng.randint(0, 4))
+    var text = xml.tostring(tree)
+    var back = xml.parse(text)
+    assert same(tree, back), "fuzz: tree survives serialize -> parse round-trip"
+    trial = trial + 1
+
+# A pathologically deep tree: tostring/itertext are iterative, so this must not overflow the stack.
+var deep = ""
+var depth = 2000
+var di = 0
+while di < depth:
+    deep = "<n>" + deep
+    di = di + 1
+deep = deep + "leaf"
+di = 0
+while di < depth:
+    deep = deep + "</n>"
+    di = di + 1
+var deeproot = xml.fromstring(deep)
+assert "leaf" in xml.tostring(deeproot), "deep tree serializes without recursion"
+assert "leaf" in deeproot.itertext(), "deep tree itertext without recursion"
+
+io.print("OK")

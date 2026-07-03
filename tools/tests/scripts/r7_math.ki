@@ -1,0 +1,184 @@
+# r7_math.ki — hardened, COMPLEMENTARY self-check of the `math` stdlib module.
+# Where r6_math covers typical values and the headline domain errors, r7 leans on the harder
+# edges: overflow guards (factorial/comb/perm/prod/lcm/gcd), INT64_MIN magnitude handling (no
+# UB), NaN passthrough on the TWO-argument functions, type/shape errors on bad input, deeper
+# identities, the integer-conversion guards, and full kwarg coverage. Computed floats use
+# .compare (never == on a computed float). Final line: "r7_math: <n> checks passed".
+
+var math = import("math")
+var io = import("io")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# Returns True iff the thunk throws (used to assert documented domain/overflow errors).
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+# ---------------------------------------------------------------- NaN passthrough (2-arg fns)
+# r6 covers NaN through the unary set; here the binary functions must pass a NaN through too
+# (NaN is never a domain error).
+ok(math.isnan(math.copysign(math.nan, 1.0)), "copysign(nan, y) -> nan")
+ok(math.isnan(math.atan2(math.nan, 1.0)), "atan2(nan, x) -> nan")
+ok(math.isnan(math.atan2(1.0, math.nan)), "atan2(y, nan) -> nan")
+ok(math.isnan(math.hypot(math.nan, 1.0)), "hypot(nan, y) -> nan")
+ok(math.isnan(math.fmod(math.nan, 3.0)), "fmod(nan, y) -> nan")
+ok(math.isnan(math.fmod(3.0, math.nan)), "fmod(x, nan) -> nan (not a domain error)")
+ok(math.isnan(math.pow(math.nan, 2.0)), "pow(nan, y) -> nan")
+ok(math.isnan(math.pow(2.0, math.nan)), "pow(x, nan) -> nan")
+ok(math.isnan(math.log(math.nan, 2.0)), "log(nan, base) -> nan")
+ok(math.isnan(math.log(8.0, math.nan)), "log(x, nan base) -> nan (not a domain error)")
+# hypot with one infinite leg is +inf even if the other is NaN (IEEE rule), not a domain error
+ok(math.isinf(math.hypot(math.inf, math.nan)), "hypot(inf, nan) -> inf (IEEE)")
+
+# ---------------------------------------------------------------- range, not domain (no throw)
+# Overflow-to-inf is a *range* condition; the binary fns must not throw on it.
+ok(math.isinf(math.pow(10.0, 400.0)), "pow(10,400) -> inf (range, not domain)")
+ok(math.isinf(math.cosh(1000.0)), "cosh(1000) -> inf (range)")
+ok(math.isinf(math.sinh(1000.0)), "sinh(1000) -> inf (range)")
+ok(math.isinf(math.gamma(200.0)), "gamma(200) -> inf (range)")
+ok(math.exp(-1000.0).compare(0.0, 0.0, 1e-300), "exp(-1000) underflows to 0 (not an error)")
+
+# ---------------------------------------------------------------- signed zero / copysign
+ok(math.copysign(0.0, -1.0) == 0.0, "copysign(0,-1) compares == 0.0 (signed zero)")
+# copysign(1.0, x) recovers the SIGN of x as +/-1.0, so it distinguishes -0.0 from +0.0.
+ok(math.copysign(1.0, math.copysign(0.0, -1.0)) == -1.0, "copysign(0,-1) is truly -0.0")
+ok(math.copysign(1.0, math.copysign(0.0, 1.0)) == 1.0, "copysign(0,+1) is +0.0")
+ok(math.copysign(5.0, -0.0) == -5.0, "copysign(5,-0.0) takes the sign of -0.0")
+
+# ---------------------------------------------------------------- trunc / floor / ceil deeper
+ok(math.trunc(1e300) == 1e300, "trunc of a huge value is itself (stays Float)")
+ok(type(math.trunc(1e300)) == "Float", "trunc stays Float for large values")
+ok(math.trunc(-0.9).compare(0.0, 1e-12), "trunc(-0.9) -> 0 (toward zero)")
+ok(math.floor(-0.0001) == -1, "floor(-0.0001) = -1")
+ok(math.ceil(0.0001) == 1, "ceil(0.0001) = 1")
+ok(math.floor(5.0) == 5, "floor of an exact integer-valued Float")
+ok(math.ceil(5.0) == 5, "ceil of an exact integer-valued Float")
+# floor/ceil accept an Integer too (coerced through Number)
+ok(math.floor(7) == 7, "floor(Integer) works")
+ok(math.ceil(7) == 7, "ceil(Integer) works")
+
+# ---------------------------------------------------------------- expm1 / log1p tiny-arg accuracy
+# The whole point of expm1/log1p is accuracy near 0 where exp(x)-1 / log(1+x) lose precision.
+ok(math.expm1(1e-10).compare(1e-10, 1e-6), "expm1(1e-10) ~ 1e-10")
+ok(math.log1p(1e-10).compare(1e-10, 1e-6), "log1p(1e-10) ~ 1e-10")
+ok(math.expm1(math.log1p(0.25)).compare(0.25, 1e-12), "expm1(log1p(x)) = x")
+ok(math.log1p(math.expm1(0.25)).compare(0.25, 1e-12), "log1p(expm1(x)) = x")
+
+# ---------------------------------------------------------------- log base / change-of-base
+ok(math.log(27, 3).compare(3.0, 1e-12), "log(27,3)=3")
+ok((math.log(50) / math.log(7)).compare(math.log(50, 7), 1e-12), "change of base identity")
+ok(math.log(0.5, 2).compare(-1.0, 1e-12), "log(0.5,2)=-1 (fractional argument ok)")
+ok(math.log(2, 0.5).compare(-1.0, 1e-12), "log base 0.5 (a fractional base is fine)")
+
+# ---------------------------------------------------------------- atan2 axis cases
+ok(math.atan2(0, 1).compare(0.0, 1e-12), "atan2(0,1)=0")
+ok(math.atan2(1, 0).compare(math.pi / 2, 1e-12), "atan2(1,0)=pi/2")
+ok(math.atan2(-1, 0).compare(-math.pi / 2, 1e-12), "atan2(-1,0)=-pi/2")
+ok(math.atan2(0, 0).compare(0.0, 1e-12), "atan2(0,0)=0 (well defined)")
+
+# ---------------------------------------------------------------- gamma reflection / hypot identity
+# Reflection: gamma(x)*gamma(1-x) = pi / sin(pi x)
+ok((math.gamma(0.3) * math.gamma(0.7)).compare(math.pi / math.sin(math.pi * 0.3), 1e-9),
+   "gamma reflection formula")
+# hypot is sqrt(x^2+y^2)
+ok(math.hypot(8, 15).compare(17.0, 1e-12), "hypot(8,15)=17")
+ok(math.hypot(-3, -4).compare(5.0, 1e-12), "hypot is sign-insensitive")
+ok(math.isfinite(math.hypot(1e308, 1e308)), "hypot avoids intermediate overflow")
+
+# ---------------------------------------------------------------- gcd / lcm: INT64_MIN, magnitudes
+# std::abs(INT64_MIN) is UB; the implementation works in unsigned magnitudes. These must not crash.
+ok(math.gcd(-9223372036854775808, 4) == 4, "gcd(INT64_MIN, 4) = 4 (magnitude, no UB)")
+ok(math.gcd(6, -9223372036854775807) == 1, "gcd with a large negative")
+ok(math.gcd(-12, -18) == 6, "gcd(-12,-18)=6 (both negative)")
+ok(math.lcm(-9223372036854775807, 1) == 9223372036854775807, "lcm(INT64_MIN+1, 1)")
+# |INT64_MIN| = 2^63 overflows int64, so it cannot be returned: must throw, not wrap to a negative.
+ok(throws(Function(): return math.gcd(-9223372036854775808, 0)), "gcd(INT64_MIN, 0) overflows -> throws")
+ok(throws(Function(): return math.lcm(-9223372036854775808, 3)), "lcm(INT64_MIN, 3) overflows -> throws")
+
+# ---------------------------------------------------------------- gcd / lcm: overflow + type guards
+ok(throws(Function(): return math.lcm(1000000000000, 999999999999)), "lcm overflow -> throws")
+ok(throws(Function(): return math.gcd(1.5, 2)), "gcd of a Float -> throws")
+ok(throws(Function(): return math.lcm(2, 3.0)), "lcm of a Float -> throws")
+ok(throws(Function(): return math.gcd("a", 2)), "gcd of a String -> throws")
+
+# ---------------------------------------------------------------- factorial: exact + overflow
+ok(math.factorial(20) == 2432902008176640000, "factorial(20) (largest that fits int64)")
+ok(throws(Function(): return math.factorial(21)), "factorial(21) overflows -> throws")
+ok(throws(Function(): return math.factorial(-5)), "factorial(-5) throws")
+ok(throws(Function(): return math.factorial(3.5)), "factorial of a non-Integer throws")
+
+# ---------------------------------------------------------------- comb: exact partial-product path
+# comb multiplies-then-divides so a result that fits int64 doesn't overflow on the numerator.
+ok(math.comb(62, 31) == 465428353255261088, "comb(62,31) exact (no numerator overflow)")
+ok(math.comb(40, 20) == 137846528820, "comb(40,20)")
+ok(math.comb(0, 0) == 1, "comb(0,0)=1")
+ok(math.comb(10, 3) == math.comb(10, 7), "comb symmetry (n-k path)")
+ok(throws(Function(): return math.comb(100, 50)), "comb(100,50) overflows -> throws")
+ok(throws(Function(): return math.comb(-1, 2)), "comb negative n throws")
+ok(throws(Function(): return math.comb(5, -1)), "comb negative k throws")
+
+# ---------------------------------------------------------------- perm: defaults + overflow
+ok(math.perm(20) == math.factorial(20), "perm(n) = n! (k omitted)")
+ok(math.perm(10, 10) == math.factorial(10), "perm(n,n) = n!")
+ok(math.perm(10, 0) == 1, "perm(n,0)=1")
+ok(math.perm(100, 2) == 9900, "perm(100,2)=100*99")
+ok(throws(Function(): return math.perm(50, 30)), "perm(50,30) overflows -> throws")
+ok(throws(Function(): return math.perm(-1, 2)), "perm negative n throws")
+
+# ---------------------------------------------------------------- prod: start, types, errors
+ok(math.prod([5]) == 5, "prod single element")
+ok(math.prod([2, 3, 5, 7]) == 210, "prod of primes")
+ok(math.prod([1, 2, 3], start = 10) == 60, "prod with start kwarg")
+ok(math.prod([2, 3], start = 2.0).compare(12.0, 1e-12), "prod with a Float start -> Float")
+ok(type(math.prod([2, 3], start = 2.0)) == "Float", "Float start makes prod Float")
+ok(math.prod([], start = 5) == 5, "prod([], start) = start")
+ok(math.prod([2, 0, 9]) == 0, "prod with a zero is 0")
+ok(math.prod([-2, -3]) == 6, "prod of two negatives")
+ok(throws(Function(): return math.prod([1000000000, 1000000000, 1000000000])), "all-int prod overflow throws")
+ok(throws(Function(): return math.prod(5)), "prod of a non-iterable throws")
+ok(throws(Function(): return math.prod([1, "x"])), "prod with a non-number element throws")
+ok(throws(Function(): return math.prod([1, 2], start = "x")), "prod with a non-number start throws")
+# a Float in the mix means no overflow concept even with huge magnitudes
+ok(math.isinf(math.prod([1e200, 1e200, 1e200])), "prod with floats overflows to inf, no throw")
+
+# ---------------------------------------------------------------- cbrt over negatives, identities
+ok(math.cbrt(-27).compare(-3.0, 1e-12), "cbrt(-27)=-3 (negatives are fine)")
+ok((math.cbrt(5.0) ** 3).compare(5.0, 1e-9), "cbrt(x)^3 = x")
+ok(math.cbrt(0).compare(0.0, 1e-12), "cbrt(0)=0")
+
+# ---------------------------------------------------------------- erf/erfc symmetry, tails
+ok(math.erf(-1).compare(-math.erf(1), 1e-12), "erf is odd: erf(-x) = -erf(x)")
+ok((math.erf(2.5) + math.erfc(2.5)).compare(1.0, 1e-12), "erf+erfc=1 (tail)")
+ok(math.erfc(-100).compare(2.0, 1e-12), "erfc(-100) -> 2")
+ok(math.erf(0).compare(0.0, 1e-12), "erf(0)=0")
+
+# ---------------------------------------------------------------- kwargs: the rest of the surface
+ok(math.atan2(y = 1, x = 1).compare(math.pi / 4, 1e-12), "atan2(y=,x=) kwargs")
+ok(math.atan2(x = 1, y = 1).compare(math.pi / 4, 1e-12), "atan2 out-of-order kwargs")
+ok(math.fmod(x = 7, y = 3).compare(1.0, 1e-12), "fmod kwargs")
+ok(math.copysign(x = 3, y = -1).compare(-3.0, 1e-12), "copysign kwargs")
+ok(math.gcd(a = 12, b = 18) == 6, "gcd kwargs")
+ok(math.lcm(a = 4, b = 6) == 12, "lcm kwargs")
+ok(math.floor(x = 3.7) == 3, "floor kwarg")
+ok(math.ceil(x = 3.2) == 4, "ceil kwarg")
+ok(math.trunc(x = 3.7).compare(3.0, 1e-12), "trunc kwarg")
+ok(math.factorial(n = 6) == 720, "factorial kwarg")
+ok(math.perm(n = 5, k = 2) == 20, "perm kwargs")
+ok(math.perm(n = 5) == 120, "perm with only n= kwarg")
+ok(math.prod(iterable = [2, 3, 4]) == 24, "prod(iterable=) kwarg")
+ok(math.degrees(x = math.pi).compare(180.0, 1e-9), "degrees kwarg")
+ok(math.radians(x = 180).compare(math.pi, 1e-12), "radians kwarg")
+ok(math.fabs(x = -7).compare(7.0, 1e-12), "fabs kwarg")
+ok(math.isfinite(x = 1.0), "isfinite kwarg")
+ok(math.isinf(x = math.inf), "isinf kwarg")
+ok(math.gamma(x = 5).compare(24.0, 1e-9), "gamma kwarg")
+ok(math.erf(x = 0).compare(0.0, 1e-12), "erf kwarg")
+
+io.print("r7_math: " + String(n) + " checks passed")

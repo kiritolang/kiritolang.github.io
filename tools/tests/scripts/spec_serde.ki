@@ -1,0 +1,91 @@
+# Thorough checks for json, hash, zlib, serialize, dump.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+# ===== json =====
+var json = import("json")
+assert json.loads("42") == 42 and json.loads("-3.5") == -3.5, "json numbers"
+assert json.loads("true") == True and json.loads("false") == False and json.loads("null") == None, "json literals"
+assert json.loads("\"hi\"") == "hi", "json string"
+assert json.loads("[1, 2, [3, 4]]") == [1, 2, [3, 4]], "json nested array"
+var obj = json.loads("{\"a\": 1, \"b\": {\"c\": [2, 3]}}")
+assert obj["a"] == 1 and obj["b"]["c"] == [2, 3], "json nested object"
+# unicode + escapes
+assert json.loads("\"caf\\u00e9\"") == "café", "json \\u escape -> unicode"
+assert json.loads("\"a\\nb\\tc\"") == "a\nb\tc", "json escapes"
+# dumps round-trips (re-parse, since key order is unspecified)
+var rt = json.loads(json.dumps({"x": [1, 2, 3], "y": True, "z": None, "n": 3.5}))
+assert rt["x"] == [1, 2, 3] and rt["y"] == True and rt["z"] == None and rt["n"] == 3.5, "json round-trip"
+assert json.dumps([1, 2]) == "[1, 2]", "json dumps compact array"
+assert json.dumps([1, 2], indent=2) != json.dumps([1, 2]), "json indent differs"
+# loads/parse are the same
+assert json.parse("[1]") == json.loads("[1]"), "parse == loads"
+# adversarial: malformed JSON throws
+var jerr = False
+try:
+    discard json.loads("{not valid")
+catch as e:
+    jerr = True
+assert jerr, "malformed json throws"
+
+# ===== hash (known vectors) =====
+var h = import("hash")
+assert h.md5("") == "d41d8cd98f00b204e9800998ecf8427e", "md5 empty"
+assert h.md5("abc") == "900150983cd24fb0d6963f7d28e17f72", "md5 abc"
+assert h.sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d", "sha1 abc"
+assert h.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc"
+assert h.sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 empty"
+# determinism
+assert h.sha256("kirito") == h.sha256("kirito"), "hash deterministic"
+
+# ===== zlib =====
+var z = import("zlib")
+var payloads = ["", "a", "the quick brown fox " * 50, "binary-ish: " + String(range(200))]
+for p in payloads:
+    assert z.decompress(z.compress(p)) == p, "zlib compress/decompress round-trip"
+    assert z.inflate(z.deflate(p)) == p, "zlib deflate/inflate round-trip"
+assert h.adler32("") == 1, "adler32 empty == 1"
+assert h.adler32("abc") == h.adler32("abc"), "adler32 deterministic"
+# compression actually shrinks a repetitive payload
+var big = "x" * 10000
+assert len(z.compress(big)) < len(big), "zlib compresses repetitive data"
+# adversarial: garbage to decompress throws
+var zerr = False
+try:
+    discard z.decompress("not valid zlib data!!!")
+catch as e:
+    zerr = True
+assert zerr, "zlib decompress of garbage throws"
+
+# ===== serialize (text, preserves shared refs + cycles) =====
+var ser = import("serialize")
+assert ser.loads(ser.dumps({"a": [1, 2, 3], "b": None})) == {"a": [1, 2, 3], "b": None}, "serialize round-trip"
+# shared reference preserved
+var shared = [1, 2]
+var graph = [shared, shared]
+var restored = ser.loads(ser.dumps(graph))
+restored[0].append(99)
+assert restored[1] == [1, 2, 99], "serialize preserves shared references"
+# cycle survives
+var cyc = [1]
+cyc.append(cyc)
+var rcyc = ser.loads(ser.dumps(cyc))
+assert rcyc[1][1][0] == 1, "serialize preserves cycles"
+
+# ===== dump (binary, preserves refs + cycles) =====
+var dump = import("dump")
+assert dump.loads(dump.dumps({"k": [1, [2, [3]]]})) == {"k": [1, [2, [3]]]}, "dump round-trip"
+var dshared = [7]
+var dg = [dshared, dshared]
+var dr = dump.loads(dump.dumps(dg))
+dr[0].append(8)
+assert dr[1] == [7, 8], "dump preserves shared references"
+
+# ===== file save/load via temp file =====
+var p = path.join(path.gettempdir(), "kirito_spec_serde.dat")
+ser.save({"saved": [1, 2, 3]}, p)
+assert ser.load(p) == {"saved": [1, 2, 3]}, "serialize save/load file"
+discard path.remove(p, missing_ok = True)
+
+io.print("OK")

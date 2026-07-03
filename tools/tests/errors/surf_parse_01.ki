@@ -1,0 +1,3 @@
+# PARSER: a Function header missing the ':' before its body
+var f = Function(x)
+    return x

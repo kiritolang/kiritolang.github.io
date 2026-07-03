@@ -1,0 +1,119 @@
+# Fuzz the serialization core (used by both `dump` [binary] and `serialize` [text], and by parallel's
+# cross-VM transfer): seeded-random value graphs round-trip through both codecs and must compare equal
+# (Kirito == is deep-structural). Plus targeted checks: shared-reference preservation, cycles, class
+# instances, and that resource-like / unsupported values are rejected cleanly.
+var io = import("io")
+var dump = import("dump")
+var serialize = import("serialize")
+var random = import("random")
+
+var genval = Function(rng, depth):
+    var pick = rng.randint(0, 6) if depth > 0 else rng.randint(0, 5)
+    if pick == 0:
+        return rng.randint(-100000000, 100000000)
+    elif pick == 1:
+        return rng.uniform(-1e6, 1e6)
+    elif pick == 2:
+        return rng.random() < 0.5
+    elif pick == 3:
+        return None
+    elif pick == 4:
+        var n = rng.randint(0, 10)
+        var s = ""
+        var i = 0
+        while i < n:
+            s = s + chr(rng.randint(32, 126))
+            i = i + 1
+        return s
+    elif pick == 5:
+        var n = rng.randint(0, 10)
+        var bs = []
+        var i = 0
+        while i < n:
+            bs.append(rng.randint(0, 255))
+            i = i + 1
+        return Bytes(bs)
+    else:
+        var kind = rng.randint(0, 2)
+        var n = rng.randint(0, 5)
+        if kind == 0:
+            var lst = []
+            var i = 0
+            while i < n:
+                lst.append(genval(rng, depth - 1))
+                i = i + 1
+            return lst
+        elif kind == 1:
+            var d = {}
+            var i = 0
+            while i < n:
+                d[rng.randint(0, 1000)] = genval(rng, depth - 1)   # mixed Integer keys
+                i = i + 1
+            return d
+        else:
+            var items = []
+            var i = 0
+            while i < n:
+                items.append(rng.randint(0, 30))
+                i = i + 1
+            return Set(items)
+
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _eq_ = Function(self, o):
+        return self.x == o.x and self.y == o.y
+
+if argmain:
+    var rng = random.Random(424242)
+
+    # --- 400 random graphs: dump (binary) AND serialize (text) round-trips must equal the original ---
+    var t = 0
+    while t < 400:
+        var v = genval(rng, 4)
+        assert dump.loads(dump.dumps(v)) == v, "dump round-trip mismatch at " + String(t)
+        assert serialize.loads(serialize.dumps(v)) == v, "serialize round-trip mismatch at " + String(t)
+        t = t + 1
+
+    # --- dump returns Bytes; loads accepts the Bytes (and a String of the same bytes) ---
+    var blob = dump.dumps([1, "two", Bytes([3, 4])])
+    assert isinstance(blob, "Bytes"), "dumps returns Bytes"
+    assert dump.loads(blob)[2] == Bytes([3, 4])
+
+    # --- shared references are preserved (one object reachable by two paths stays one object) ---
+    var shared = {"n": 1}
+    var pair = [shared, shared]
+    var rebuilt = dump.loads(dump.dumps(pair))
+    rebuilt[0]["n"] = 99
+    assert rebuilt[1]["n"] == 99, "dump must preserve shared references"
+    var rebuilt2 = serialize.loads(serialize.dumps(pair))
+    rebuilt2[0]["n"] = 7
+    assert rebuilt2[1]["n"] == 7, "serialize must preserve shared references"
+
+    # --- cycles round-trip (structural check, not ==, to avoid walking the cycle) ---
+    var cyc = [1]
+    cyc.append(cyc)
+    var c2 = dump.loads(dump.dumps(cyc))
+    assert c2[0] == 1 and c2[1][1][0] == 1, "dump must preserve cycles"
+
+    # --- user class instances round-trip (by attributes / class registry) ---
+    var p = Point(3, 4)
+    assert dump.loads(dump.dumps(p)) == p, "dump class instance"
+    assert serialize.loads(serialize.dumps(p)) == p, "serialize class instance"
+
+    # --- adversarial: corrupt/garbage blobs are rejected, not crashed ---
+    var caught = False
+    try:
+        discard dump.loads(Bytes([1, 2, 3, 4, 5]))   # not a KDMP blob
+    catch as e:
+        caught = True
+    assert caught, "garbage dump blob must throw"
+    caught = False
+    try:
+        discard serialize.loads("not a serialized graph {{{")
+    catch as e:
+        caught = True
+    assert caught, "garbage serialize text must throw"
+
+    io.print("OK serde fuzz")

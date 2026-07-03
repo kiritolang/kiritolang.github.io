@@ -1,0 +1,105 @@
+# The `gzip` module in pure Kirito: the gzip container (RFC 1952), distinct from the bare zlib
+# stream (RFC 1950) -- a 10-byte header (magic 0x1f 0x8b, CM=8, FLG, MTIME, XFL, OS) wrapping a
+# DEFLATE body, trailed by a CRC-32 + ISIZE (mod 2^32). compress/decompress are TYPE-PRESERVING
+# (String in -> String out, Bytes in -> Bytes out, bridged through latin-1) and gzip/gunzip alias
+# them. decompress skips the optional FEXTRA/FNAME/FCOMMENT/FHCRC header fields per FLG (RFC 1952
+# S2.3.1) and accepts multi-member streams (concatenated gzip members decompress to the
+# concatenation, matching gunzip). Real DEFLATE's bitstream is self-terminating (an explicit
+# block-final bit), so a real gzip decoder locates the trailer from what INFLATE consumed; this
+# self-host's LZ77 token stream (zlib.deflate) isn't self-terminating, so each member additionally
+# carries a 4-byte body-length prefix right after the fixed header/optional fields -- an internal
+# detail invisible to every offset the format itself defines (header bytes, trailer bytes).
+
+var zlib = import("zlib")
+var hash = import("hash")
+
+var _u32le = Function(n):
+    return Bytes([n % 256, (n // 256) % 256, (n // 65536) % 256, (n // 16777216) % 256])
+
+var _u32at = Function(b, off):
+    return b[off] + b[off + 1] * 256 + b[off + 2] * 65536 + b[off + 3] * 16777216
+
+# One gzip member wrapping raw (a Bytes payload) -> Bytes.
+var _gzMember = Function(raw):
+    var header = Bytes([31, 139, 8, 0, 0, 0, 0, 0, 0, 255])   # magic, CM=8, FLG=0, MTIME=0, XFL=0, OS=unknown
+    var body = zlib.deflate(raw)
+    return header + _u32le(len(body)) + body + _u32le(hash.crc32(raw)) + _u32le(len(raw) % 4294967296)
+
+# Skip the optional fields RFC 1952 S2.3.1 allows between the fixed header and the body, per FLG;
+# returns the position right after them.
+var _skipOptionalFields = Function(data, pos, flg, n):
+    if bitand(flg, 4) != 0:                                 # FEXTRA: 2-byte XLEN (LE), then that many bytes
+        if pos + 2 > n:
+            throw "gzip: truncated FEXTRA"
+        var xlen = data[pos] + data[pos + 1] * 256
+        pos = pos + 2 + xlen
+        if pos > n:
+            throw "gzip: truncated FEXTRA"
+    if bitand(flg, 8) != 0:                                 # FNAME: NUL-terminated
+        while pos < n and data[pos] != 0:
+            pos = pos + 1
+        if pos >= n:
+            throw "gzip: truncated FNAME"
+        pos = pos + 1
+    if bitand(flg, 16) != 0:                                # FCOMMENT: NUL-terminated
+        while pos < n and data[pos] != 0:
+            pos = pos + 1
+        if pos >= n:
+            throw "gzip: truncated FCOMMENT"
+        pos = pos + 1
+    if bitand(flg, 2) != 0:                                 # FHCRC: 2-byte header CRC
+        if pos + 2 > n:
+            throw "gzip: truncated FHCRC"
+        pos = pos + 2
+    return pos
+
+# Decompress every concatenated gzip member in `data` (a Bytes stream) -> one Bytes payload.
+var _gunzAll = Function(data):
+    var n = len(data)
+    if n == 0:
+        throw "gzip: empty stream"
+    var out = Bytes()
+    var pos = 0
+    while pos < n:
+        if pos + 10 > n or data[pos] != 31 or data[pos + 1] != 139:
+            throw "gzip: not a gzip stream"
+        if data[pos + 2] != 8:
+            throw "gzip: unsupported compression method"
+        var flg = data[pos + 3]
+        pos = _skipOptionalFields(data, pos + 10, flg, n)
+        if pos + 4 > n:
+            throw "gzip: truncated stream"
+        var bodyLen = _u32at(data, pos)
+        pos = pos + 4
+        if pos + bodyLen + 8 > n:
+            throw "gzip: truncated stream"
+        var piece = zlib.inflate(data[pos:pos + bodyLen])
+        pos = pos + bodyLen
+        var wantCrc = _u32at(data, pos)
+        var wantSize = _u32at(data, pos + 4)
+        pos = pos + 8
+        if hash.crc32(piece) != wantCrc:
+            throw "gzip: CRC-32 mismatch (corrupt stream)"
+        if len(piece) % 4294967296 != wantSize:
+            throw "gzip: ISIZE mismatch (corrupt stream)"
+        out = out + piece
+    return out
+
+var compress = Function(data):
+    var t = type(data)
+    if t == "Bytes":
+        return _gzMember(data)
+    if t == "String":
+        return _gzMember(data.encode()).decode("latin-1")
+    throw "gzip: expected a String or Bytes"
+
+var decompress = Function(data):
+    var t = type(data)
+    if t == "Bytes":
+        return _gunzAll(data)
+    if t == "String":
+        return _gunzAll(data.encode("latin-1")).decode()
+    throw "gzip: expected a String or Bytes"
+
+var gzip = compress
+var gunzip = decompress

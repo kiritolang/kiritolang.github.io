@@ -1,0 +1,3 @@
+# zlib.decompress of a too-short stream must throw.
+var z = import("zlib")
+discard z.decompress(Bytes([1, 2, 3]))

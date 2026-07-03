@@ -1,0 +1,363 @@
+# knn — a small PyTorch-like deep-learning library, in pure Kirito, built on the native `tensor`
+# module's reverse-mode autograd. Layers/losses/optimizers compose tensor ops; the autograd graph and
+# `backward()` come from the engine. A model is any object with `forward(x)` (and `_call_` so it is
+# callable) and `parameters()` (a flat List of Parameter). Keep dimensions small — this is a
+# tree-walking interpreter.
+var T = import("tensor")
+var random = import("random")
+var math = import("math")
+
+var _rng = random.Random(1234)
+var seed = Function(n):
+    _rng = random.Random(n)                       # reseed the weight-init RNG (reproducible runs)
+
+# Global train/eval mode (held in a one-element list so it stays mutable). BatchNorm uses batch
+# statistics and updates its running averages while training; at eval time it uses those averages.
+var _mode = [True]
+var train = Function(flag : Bool):
+    _mode[0] = flag
+
+# A trainable tensor. Tensors are immutable and an update under `nograd` detaches, so the optimizer
+# rebinds `.t` to a fresh leaf each step — this indirection is how a parameter is "updated in place".
+class Parameter:
+    var _init_ = Function(self, t):
+        t.requiresgrad(True)
+        self.t = t
+
+# Build a (rows x cols) tensor of Gaussian noise * scale (for weight initialisation).
+var _randmat = Function(rows, cols, scale):
+    var grid = []
+    var i = 0
+    while i < rows:
+        var row = []
+        var j = 0
+        while j < cols:
+            row.append(_rng.gauss(0.0, 1.0) * scale)
+            j = j + 1
+        grid.append(row)
+        i = i + 1
+    return T.Tensor(grid)
+
+# ----------------------------------------------------------------------------- layers
+
+# Fully-connected layer: y = x @ W + b. x is (batch, nin); W is (nin, nout); y is (batch, nout).
+class Linear:
+    var _init_ = Function(self, nin : Integer, nout : Integer):
+        var scale = math.sqrt(2.0 / nin)          # He initialisation (good with ReLU)
+        self.W = Parameter(_randmat(nin, nout, scale))
+        self.b = Parameter(T.zeros([nout]))
+    var forward = Function(self, x):
+        return x.matmul(self.W.t) + self.b.t
+    var _call_ = Function(self, x):
+        return self.forward(x)
+    var parameters = Function(self):
+        return [self.W, self.b]
+
+# Stateless activation layers (so they slot into a Sequential and report no parameters).
+class ReLU:
+    var forward = Function(self, x):
+        return x.relu()
+    var _call_ = Function(self, x):
+        return self.forward(x)
+    var parameters = Function(self):
+        return []
+
+class Sigmoid:
+    var forward = Function(self, x):
+        return x.sigmoid()
+    var _call_ = Function(self, x):
+        return self.forward(x)
+    var parameters = Function(self):
+        return []
+
+class Tanh:
+    var forward = Function(self, x):
+        return x.tanh()
+    var _call_ = Function(self, x):
+        return self.forward(x)
+    var parameters = Function(self):
+        return []
+
+# Flatten everything after the batch axis: (batch, a, b, ...) -> (batch, a*b*...).
+class Flatten:
+    var forward = Function(self, x):
+        var shp = x.shape()
+        var n = shp[0]
+        var feat = 1
+        var i = 1
+        while i < len(shp):
+            feat = feat * shp[i]
+            i = i + 1
+        return x.reshape([n, feat])
+    var _call_ = Function(self, x):
+        return self.forward(x)
+    var parameters = Function(self):
+        return []
+
+# 2-D convolution (stride 1, no padding) implemented as a differentiable im2col + matmul, so the
+# autograd engine backprops to the kernel and the input. Input (N, Cin, H, W); weight (Cout, Cin, k,
+# k); output (N, Cout, H-k+1, W-k+1). Only the `k*k` shifted slices are materialised (not one patch
+# per output pixel), so it stays cheap on small images.
+class Conv2d:
+    var _init_ = Function(self, cin : Integer, cout : Integer, ksize : Integer):
+        self.cin = cin
+        self.cout = cout
+        self.k = ksize
+        var scale = math.sqrt(2.0 / (cin * ksize * ksize))
+        self.W = Parameter(_randmat(cout, cin * ksize * ksize, scale).reshape([cout, cin, ksize, ksize]))
+        self.b = Parameter(T.zeros([cout]))
+    var forward = Function(self, x):
+        var shp = x.shape()                       # N, Cin, H, W
+        var n = shp[0]
+        var cin = shp[1]
+        var hh = shp[2]
+        var ww = shp[3]
+        var k = self.k
+        var hout = hh - k + 1
+        var wout = ww - k + 1
+        var cols = []                             # k*k slices, each (N, hout*wout, Cin)
+        var di = 0
+        while di < k:
+            var dj = 0
+            while dj < k:
+                var patch = x.slice(di, di + hout, 1, 2).slice(dj, dj + wout, 1, 3)   # (N, Cin, hout, wout)
+                cols.append(patch.reshape([n, cin, hout * wout]).permute([0, 2, 1]))  # (N, hout*wout, Cin)
+                dj = dj + 1
+            di = di + 1
+        var col = T.concatenate(cols, axis = 2)   # (N, hout*wout, k*k*Cin)
+        var kk = k * k * cin
+        var wflat = self.W.t.permute([2, 3, 1, 0]).reshape([kk, self.cout])          # (k*k*Cin, Cout)
+        var out = col.reshape([n * hout * wout, kk]).matmul(wflat) + self.b.t        # (N*hw, Cout)
+        return out.reshape([n, hout * wout, self.cout]).permute([0, 2, 1]).reshape([n, self.cout, hout, wout])
+    var _call_ = Function(self, x):
+        return self.forward(x)
+    var parameters = Function(self):
+        return [self.W, self.b]
+
+# Non-overlapping average pooling (window k, stride k). H and W must be divisible by k. Differentiable
+# (it is just a mean over the window axes).
+class AvgPool2d:
+    var _init_ = Function(self, ksize : Integer):
+        self.k = ksize
+    var forward = Function(self, x):
+        var shp = x.shape()                       # N, C, H, W
+        var n = shp[0]
+        var c = shp[1]
+        var hh = shp[2]
+        var ww = shp[3]
+        var k = self.k
+        var r = x.reshape([n, c, hh // k, k, ww // k, k])
+        return r.mean(axis = 5).mean(axis = 3)    # mean over the two window axes -> (N, C, H/k, W/k)
+    var _call_ = Function(self, x):
+        return self.forward(x)
+    var parameters = Function(self):
+        return []
+
+# Batch normalization for conv feature maps (N, C, H, W): normalize each channel over the batch and
+# spatial dims, then scale/shift with learnable gamma/beta. While training it uses the batch
+# statistics (so gradients flow through them) and updates running averages; at eval time (nn.train(
+# False)) it normalizes with those running averages. The ConvNormAct building block is
+# Conv2d -> BatchNorm2d -> ReLU.
+class BatchNorm2d:
+    var _init_ = Function(self, channels : Integer, momentum : Float = 0.1, eps : Float = 1e-5):
+        self.c = channels
+        self.momentum = momentum
+        self.eps = eps
+        self.gamma = Parameter(T.ones([channels]))      # scale (init 1)
+        self.beta = Parameter(T.zeros([channels]))      # shift (init 0)
+        self.running_mean = T.zeros([channels])
+        self.running_var = T.ones([channels])
+    var forward = Function(self, x):
+        var shp = x.shape()
+        var c = shp[1]
+        var mean = self.running_mean
+        var varv = self.running_var
+        if _mode[0]:
+            # per-channel mean/variance over (N, H, W), computed on a (C, N*H*W) view
+            var flat = x.permute([1, 0, 2, 3]).reshape([c, shp[0] * shp[2] * shp[3]])
+            mean = flat.mean(axis = 1)
+            var centered = flat - mean.reshape([c, 1])
+            varv = (centered * centered).mean(axis = 1)
+            with T.nograd():                            # update the running averages (not tracked)
+                self.running_mean = (self.running_mean * (1.0 - self.momentum) + mean.detach() * self.momentum).detach()
+                self.running_var = (self.running_var * (1.0 - self.momentum) + varv.detach() * self.momentum).detach()
+        var xhat = (x - mean.reshape([1, c, 1, 1])) / (varv.reshape([1, c, 1, 1]) + self.eps).sqrt()
+        return xhat * self.gamma.t.reshape([1, c, 1, 1]) + self.beta.t.reshape([1, c, 1, 1])
+    var _call_ = Function(self, x):
+        return self.forward(x)
+    var parameters = Function(self):
+        return [self.gamma, self.beta]
+
+# A linear stack of layers. forward chains them; parameters gathers every child's parameters.
+class Sequential:
+    var _init_ = Function(self, layers : List):
+        self.layers = layers
+    var forward = Function(self, x):
+        var out = x
+        for layer in self.layers:
+            out = layer(out)
+        return out
+    var _call_ = Function(self, x):
+        return self.forward(x)
+    var parameters = Function(self):
+        var ps = []
+        for layer in self.layers:
+            for p in layer.parameters():
+                ps.append(p)
+        return ps
+
+# ----------------------------------------------------------------------------- losses
+
+# Mean squared error between two same-shape tensors.
+var mse_loss = Function(pred, target):
+    var d = pred - target
+    return (d * d).mean()
+
+# One-hot encode a List of integer class indices into a (batch, num_classes) tensor.
+var onehot = Function(targets : List, num_classes : Integer):
+    var grid = []
+    for t in targets:
+        var row = []
+        var c = 0
+        while c < num_classes:
+            row.append(1.0 if c == t else 0.0)
+            c = c + 1
+        grid.append(row)
+    return T.Tensor(grid)
+
+# Softmax cross-entropy from raw logits (batch, C) and integer targets (a List of class indices).
+# Numerically stabilised by subtracting a detached row-max before exponentiating.
+var cross_entropy = Function(logits, targets : List, num_classes : Integer):
+    var batch = logits.shape()[0]
+    var mx = logits                               # row-max for numerical stability (a constant w.r.t.
+    with T.nograd():                              # gradient, so compute it with tracking off)
+        mx = logits.max(axis = 1).reshape([batch, 1])
+    var shifted = logits - mx
+    var sumexp = shifted.exp().sum(axis = 1).reshape([batch, 1])
+    var logprobs = shifted - sumexp.log()         # log-softmax, (batch, C)
+    var oh = onehot(targets, num_classes)
+    return (oh * logprobs).sum(axis = 1).mean() * (-1.0)
+
+# Binary cross-entropy from logits (any shape) and 0/1 targets of the same shape, via the stable
+# softplus form: BCE = softplus(z) - z*y  (== -[y*log(sig(z)) + (1-y)*log(1-sig(z))]).
+var bce_loss = Function(logits, target):
+    return (logits.softplus() - logits * target).mean()
+
+# ----------------------------------------------------------------------------- optimizers
+
+# Stochastic gradient descent with optional momentum. step() reads each parameter's .grad (filled by
+# loss.backward()) and rebinds the parameter to a fresh leaf, so gradients never accumulate across
+# steps and no separate zero_grad is required.
+class SGD:
+    var _init_ = Function(self, params : List, lr : Float = 0.01, momentum : Float = 0.0):
+        self.params = params
+        self.lr = lr
+        self.momentum = momentum
+        self.vel = []
+        for p in params:
+            self.vel.append(None)
+    var step = Function(self):
+        with T.nograd():
+            var i = 0
+            while i < len(self.params):
+                var p = self.params[i]
+                var g = p.t.grad
+                if g != None:
+                    var upd = g
+                    if self.momentum > 0.0:
+                        var v = self.vel[i]
+                        upd = g if v == None else v * self.momentum + g
+                        self.vel[i] = upd.detach()
+                    var newt = (p.t - upd * self.lr).detach()
+                    p.t = newt
+                    p.t.requiresgrad(True)
+                i = i + 1
+    var zero_grad = Function(self):
+        for p in self.params:
+            p.t.zerograd()
+
+# Adam (Kingma & Ba). Keeps first/second moment estimates per parameter, keyed by position.
+class Adam:
+    var _init_ = Function(self, params : List, lr : Float = 0.001, beta1 : Float = 0.9, beta2 : Float = 0.999, eps : Float = 1e-8):
+        self.params = params
+        self.lr = lr
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.eps = eps
+        self.m = []
+        self.v = []
+        for p in params:
+            self.m.append(None)
+            self.v.append(None)
+        self.t = 0
+    var step = Function(self):
+        self.t = self.t + 1
+        var b1 = self.beta1
+        var b2 = self.beta2
+        var bc1 = 1.0 - b1 ** self.t                 # bias corrections
+        var bc2 = 1.0 - b2 ** self.t
+        with T.nograd():
+            var i = 0
+            while i < len(self.params):
+                var p = self.params[i]
+                var g = p.t.grad
+                if g != None:
+                    var mi = g * (1.0 - b1) if self.m[i] == None else self.m[i] * b1 + g * (1.0 - b1)
+                    var vi = (g * g) * (1.0 - b2) if self.v[i] == None else self.v[i] * b2 + (g * g) * (1.0 - b2)
+                    self.m[i] = mi.detach()
+                    self.v[i] = vi.detach()
+                    var mhat = mi * (1.0 / bc1)
+                    var vhat = vi * (1.0 / bc2)
+                    var newt = (p.t - mhat * self.lr / (vhat.sqrt() + self.eps)).detach()
+                    p.t = newt
+                    p.t.requiresgrad(True)
+                i = i + 1
+    var zero_grad = Function(self):
+        for p in self.params:
+            p.t.zerograd()
+
+# ----------------------------------------------------------------------------- helpers
+
+# Argmax along axis 1 of a (batch, C) tensor -> a List of predicted class indices.
+var argmax_rows = Function(scores):
+    var idx = scores.argmax(axis = 1)
+    var out = []
+    var i = 0
+    var n = idx.shape()[0]
+    while i < n:
+        out.append(Integer(idx[i]))
+        i = i + 1
+    return out
+
+# Classification accuracy between predicted-index and true-index Lists.
+var accuracy = Function(preds : List, truth : List) -> Float:
+    var correct = 0
+    var i = 0
+    while i < len(preds):
+        if preds[i] == truth[i]:
+            correct = correct + 1
+        i = i + 1
+    return correct / len(preds)
+
+# ----------------------------------------------------------------------------- weights save / load
+# A model's parameters are gradient-tracking tensors; detach them to a gradient-free List that the
+# `serialize` module can persist. save_weights writes a checkpoint; load_weights restores it into a
+# model of the same shape (parameters are re-marked as trainable leaves).
+var save_weights = Function(model, path : String):
+    var serialize = import("serialize")
+    var weights = []
+    for p in model.parameters():
+        weights.append(p.t.detach())
+    serialize.save(weights, path)
+
+var load_weights = Function(model, path : String):
+    var serialize = import("serialize")
+    var weights = serialize.load(path)
+    var params = model.parameters()
+    if len(weights) != len(params):
+        throw f"checkpoint has {len(weights)} tensors but the model has {len(params)} parameters"
+    var i = 0
+    while i < len(params):
+        params[i].t = weights[i].detach()
+        params[i].t.requiresgrad(True)
+        i = i + 1

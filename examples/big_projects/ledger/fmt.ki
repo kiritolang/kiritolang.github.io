@@ -1,0 +1,19 @@
+# ledger/fmt.ki — small formatting helpers so the reports stay legible without pulling in the
+# full `tabular` module for every line.
+
+# Money: two decimal places, thousands-separator comma, explicit sign for negatives.
+var money = Function(x : Float) -> String:
+    var abs_val = x
+    if x < 0.0:
+        abs_val = 0.0 - x
+    var s = format(abs_val, ",.2f")
+    if x < 0.0:
+        return "-" + s
+    return s
+
+# Format a {"y": Y, "m": M, "d": D} record as ISO YYYY-MM-DD.
+var iso = Function(d : Dict) -> String:
+    var y = format(d["y"], "04d")
+    var m = format(d["m"], "02d")
+    var day = format(d["d"], "02d")
+    return y + "-" + m + "-" + day

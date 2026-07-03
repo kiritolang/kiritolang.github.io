@@ -1,0 +1,191 @@
+# r6_net.ki — audit of the `net` stdlib module against docs/pages/10-stdlib.md.
+# NO EXTERNAL NETWORK. Covers the offline surface: URL helpers (quote/unquote/urlencode/parseqs/
+# urlsplit incl. IPv6, userinfo, empty/missing parts), socket construction + argument/error paths
+# (closed-port connect, out-of-range port, under-arity, negative recv, malformed-URL request), the
+# `with` context manager, and a single-process loopback round-trip over 127.0.0.1 (send -> Integer,
+# recv -> Bytes, accept -> Socket) using a resilient port pick so it stays deterministic. HTTPS and
+# real HTTP requests are NOT exercised (this build has no TLS, and the task forbids external network).
+var io = import("io")
+var net = import("net")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(fn):
+    var threw = False
+    try:
+        discard fn()
+    catch as e:
+        threw = True
+    return threw
+
+# ======================= URL helpers =======================
+# quote: percent-encode all but the RFC 3986 unreserved set
+ok(net.quote("a b") == "a%20b", "quote encodes space")
+ok(net.quote("a/b?c=d&e") == "a%2Fb%3Fc%3Dd%26e", "quote encodes reserved chars")
+ok(net.quote("safe-_.~AZaz09") == "safe-_.~AZaz09", "quote leaves unreserved set alone")
+ok(net.quote("") == "", "quote empty")
+
+# unquote: percent-decode (and '+' -> space, query-style)
+ok(net.unquote("a%20b") == "a b", "unquote decodes %XX")
+ok(net.unquote("a%2Fb") == "a/b", "unquote decodes slash")
+ok(net.unquote("a+b") == "a b", "unquote turns + into space")
+ok(net.unquote("100%") == "100%", "unquote passes a lone % through")
+ok(net.unquote(net.quote("round trip / ?&=")) == "round trip / ?&=", "quote/unquote round-trip")
+
+# urlencode: build k=v&... from a Dict (keys + values encoded)
+ok(net.urlencode({"a": "1"}) == "a=1", "urlencode single pair")
+ok(net.urlencode({"q": "x y"}) == "q=x%20y", "urlencode encodes value")
+ok(net.urlencode({}) == "", "urlencode empty dict")
+
+# parseqs: parse k=v&... into a Dict (values decoded)
+ok(net.parseqs("a=1&b=2") == {"a": "1", "b": "2"}, "parseqs basic")
+ok(net.parseqs("q=x+y") == {"q": "x y"}, "parseqs decodes +")
+ok(net.parseqs("a=1&flag&b=2") == {"a": "1", "flag": "", "b": "2"}, "parseqs valueless key -> ''")
+ok(net.parseqs("") == {}, "parseqs empty")
+ok(net.parseqs("k=%2F") == {"k": "/"}, "parseqs decodes %XX in value")
+
+# urlsplit: scheme/host/port/path/query/fragment (all String; port textual)
+var u = net.urlsplit("http://example.com:8080/a/b?x=1&y=2#frag")
+ok(u["scheme"] == "http", "urlsplit scheme")
+ok(u["host"] == "example.com", "urlsplit host")
+ok(u["port"] == "8080", "urlsplit port (textual digits)")
+ok(u["path"] == "/a/b", "urlsplit path")
+ok(u["query"] == "x=1&y=2", "urlsplit query")
+ok(u["fragment"] == "frag", "urlsplit fragment")
+ok(Integer(u["port"]) == 8080, "urlsplit port -> Integer conversion")
+
+var u2 = net.urlsplit("https://example.com/path")
+ok(u2["scheme"] == "https", "urlsplit https scheme")
+ok(u2["port"] == "", "urlsplit absent port -> empty String")
+ok(u2["query"] == "", "urlsplit absent query -> empty")
+ok(u2["fragment"] == "", "urlsplit absent fragment -> empty")
+
+# IPv6 literal: brackets preserved in host, port after ]:
+var u6 = net.urlsplit("http://[::1]:8080/p")
+ok(u6["host"] == "[::1]", "urlsplit keeps IPv6 brackets in host")
+ok(u6["port"] == "8080", "urlsplit IPv6 port after ]:")
+var u6b = net.urlsplit("http://[2001:db8::1]/x")
+ok(u6b["host"] == "[2001:db8::1]", "urlsplit IPv6 without port")
+ok(u6b["port"] == "", "urlsplit IPv6 no port -> empty")
+
+# userinfo is excluded from host/port
+var uu = net.urlsplit("http://user:pass@host.example:90/p")
+ok(uu["host"] == "host.example", "urlsplit drops userinfo from host")
+ok(uu["port"] == "90", "urlsplit port after userinfo")
+
+# no-scheme / no-path forms are handled leniently
+var uns = net.urlsplit("example.com/p")
+ok(uns["scheme"] == "", "urlsplit no-scheme -> empty scheme")
+ok(uns["host"] == "example.com", "urlsplit no-scheme host")
+ok(net.urlsplit("http://host")["path"] == "", "urlsplit no path -> empty path")
+
+# keyword arguments on the fixed-arity helpers
+ok(net.quote(s = "a b") == "a%20b", "quote keyword arg (s=)")
+ok(net.urlsplit(url = "http://h:9/p")["port"] == "9", "urlsplit keyword arg (url=)")
+ok(net.parseqs(query = "k=v") == {"k": "v"}, "parseqs keyword arg (query=)")
+
+# ======================= Socket construction =======================
+var s0 = net.Socket()
+ok(type(s0) == "Socket", "Socket() constructs a Socket")
+s0.close()
+# close is idempotent (no crash on a second close)
+var s1 = net.Socket()
+s1.close()
+s1.close()
+ok(True, "double close is safe")
+
+# `with` context manager closes the socket on exit
+with net.Socket() as ws:
+    ok(type(ws) == "Socket", "Socket usable as a with-context manager")
+
+# ======================= argument / error paths =======================
+# connect to an almost-certainly-closed port throws (127.0.0.1:1 is reserved/unused)
+ok(throws(Function(): return net.Socket().connect("127.0.0.1", 1)), "connect to a closed port throws")
+
+# out-of-range port throws (validated before the syscall)
+ok(throws(Function(): return net.Socket().connect("127.0.0.1", 99999)), "connect port > 65535 throws")
+ok(throws(Function(): return net.Socket().connect("127.0.0.1", -1)), "connect negative port throws")
+
+# under-arity guard: send()/connect()/settimeout() need their leading args
+ok(throws(Function(): return net.Socket().send()), "send() with no data throws (arity guard)")
+ok(throws(Function(): return net.Socket().connect("127.0.0.1")), "connect() needs host AND port")
+ok(throws(Function(): return net.Socket().settimeout()), "settimeout() needs seconds")
+
+# recv size must be non-negative
+ok(throws(Function(): return net.Socket().recv(-1)), "recv negative size throws")
+
+# send accepts a String or Bytes but not other types
+ok(throws(Function(): return net.Socket().send(123)), "send rejects a non-String/Bytes argument")
+
+# settimeout accepts an Integer or Float without error (on a fresh socket)
+var st = net.Socket()
+st.settimeout(1)
+st.settimeout(0.5)
+ok(True, "settimeout accepts Integer and Float")
+st.close()
+
+# bind + listen on the loopback works (server side, no accept)
+var srv0 = net.Socket()
+srv0.bind("127.0.0.1", 0)
+srv0.listen(4)
+ok(True, "bind(127.0.0.1, 0) + listen succeeds")
+srv0.close()
+
+# ======================= HTTP request argument paths (no network reached) =======================
+# a non-http(s) scheme is rejected before any connection
+ok(throws(Function(): return net.get("ftp://example.com/x")), "get rejects a non-http(s) URL")
+ok(throws(Function(): return net.request("GET", "notaurl")), "request rejects a malformed URL")
+# Session() constructs and exposes its mutable headers/cookies Dicts
+var sess = net.Session()
+ok(type(sess.headers) == "Dict", "Session().headers is a Dict")
+ok(type(sess.cookies) == "Dict", "Session().cookies is a Dict")
+ok(throws(Function(): return sess.get("ftp://nope/x")), "Session.get rejects a non-http(s) URL")
+
+# ======================= single-process loopback round-trip =======================
+# bind+listen, connect a second socket (the SYN sits in the accept backlog), accept it, exchange
+# both directions. connect() to a listening localhost socket completes via the backlog without a
+# blocking peer, so the whole exchange runs in one single-threaded VM. A resilient port pick keeps
+# it deterministic: try a handful of high ports and use the first that binds.
+var openServer = Function():
+    var ports = [53801, 53811, 53821, 53831, 53841, 53851, 53861, 53871, 53881, 53891]
+    for p in ports:
+        var srv = net.Socket()
+        var bound = True
+        try:
+            srv.bind("127.0.0.1", p)
+            srv.listen(8)
+        catch as e:
+            bound = False
+            srv.close()
+        if bound:
+            return [srv, p]
+    return None
+
+var server = openServer()
+if server == None:
+    io.print("r6_net: loopback round-trip skipped (no candidate port could bind)")
+else:
+    var srv = server[0]
+    var port = server[1]
+    var cli = net.Socket()
+    cli.connect("127.0.0.1", port)
+    var conn = srv.accept()
+    ok(type(conn) == "Socket", "accept() returns a Socket")
+    var sent = cli.send("ping-123")
+    ok(sent == 8, "send() returns the byte count")
+    var got = conn.recv(4096)
+    ok(type(got) == "Bytes", "recv() returns Bytes")
+    ok(got.decode("utf-8") == "ping-123", "loopback delivered the payload")
+    # the reverse direction, and Bytes payloads survive byte-exact
+    var sentB = conn.send(Bytes([0, 255, 10, 13, 200]))
+    ok(sentB == 5, "send(Bytes) returns the byte count")
+    var back = cli.recv(4096)
+    ok(back == Bytes([0, 255, 10, 13, 200]), "loopback is byte-exact for Bytes")
+    conn.close()
+    cli.close()
+    srv.close()
+
+io.print("r6_net: " + String(n) + " checks passed")

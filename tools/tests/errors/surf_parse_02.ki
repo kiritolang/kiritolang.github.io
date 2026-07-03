@@ -1,0 +1,3 @@
+# PARSER: a class header missing the ':' before its body
+class Point
+    var x = 0

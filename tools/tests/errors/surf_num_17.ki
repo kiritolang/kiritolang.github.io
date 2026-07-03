@@ -1,0 +1,3 @@
+# Complex division by zero must throw.
+var c = import("complex")
+discard c.of(1, 1) / c.zero

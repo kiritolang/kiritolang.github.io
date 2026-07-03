@@ -1,0 +1,2 @@
+# LEXER: a hex literal prefix with no hex digits following it
+var x = 0x

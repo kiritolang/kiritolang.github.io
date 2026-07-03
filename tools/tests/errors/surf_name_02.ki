@@ -1,0 +1,2 @@
+# name resolution: call an undefined function
+compute()

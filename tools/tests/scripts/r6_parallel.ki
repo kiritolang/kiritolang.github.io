@@ -1,0 +1,271 @@
+# r6_parallel.ki — self-checking audit of the `parallel` multiprocessing module.
+# Covers: spawn + Task.join/done (positional, keyword, mixed args; parallel map-reduce);
+# Queue put/get FIFO + putnowait/getnowait/qsize/empty/full/close (close drains then throws);
+# cross-VM round-trip of a structured value through a worker; Lock (mutual exclusion across
+# workers, timeout, non-reentrant, release-of-unlocked, context manager); Event (timeout, set,
+# broadcast to N workers); Semaphore (bounded permits, context manager); Barrier (rendezvous
+# across workers, broken-on-timeout); cpucount; and error cases (non-function spawn, native fn,
+# captured-local does-not-cross, non-serializable arg/result).
+#
+# DETERMINISTIC + TERMINATING: small worker counts, every Task joined, every blocking call that
+# could stall a buggy build carries a timeout so a regression FAILS instead of hanging. Final
+# line: "r6_parallel: <n> checks passed".
+
+var parallel = import("parallel")
+var io = import("io")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# Returns True iff the thunk throws (used to assert documented error cases).
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+# --- spawnable workers: MUST be file-defined (top level). A worker re-evaluates this file with
+# argmain False, so it defines these and skips the driver block below. ---
+var w_add = Function(a, b):
+    return a + b
+
+var w_rangesum = Function(lo, hi):     # sum [lo, hi)
+    var s = 0
+    var i = lo
+    while i < hi:
+        s = s + i
+        i = i + 1
+    return s
+
+var w_lock_holder = Function(lock, q, id):
+    with lock:
+        q.put(id)
+
+var w_event_waiter = Function(ev, out, id):
+    discard ev.wait()
+    out.put(id)
+
+var w_barrier_party = Function(bar, out, id):
+    discard bar.wait()
+    out.put(id)
+
+var w_producer = Function(out, count):
+    var i = 0
+    while i < count:
+        out.put(i)
+        i = i + 1
+    out.close()
+
+var w_echo_struct = Function(qin, qout):    # mutate a structured value handed across VMs
+    var v = qin.get()
+    v.append(99)
+    qout.put(v)
+
+var w_boom = Function():
+    throw "worker kaboom"
+
+# A function that captures an enclosing local; the closure does NOT cross to the worker, so the
+# worker throws a name error when it runs. (Documented share-nothing rule.)
+var spawn_capturing = Function():
+    var captured = 12345
+    var inner = Function():
+        return captured
+    return parallel.spawn(inner)
+
+if argmain:
+    # ---------------------------------------------------------------- cpucount
+    ok(parallel.cpucount() >= 1, "cpucount >= 1")
+    ok(type(parallel.cpucount()) == "Integer", "cpucount is Integer")
+
+    # ---------------------------------------------------------------- spawn + join + done
+    var t = parallel.spawn(w_add, 3, 4)
+    ok(t.join() == 7, "spawn positional args -> result serialized back")
+    ok(t.done() == True, "done() True after join")
+
+    var tk = parallel.spawn(w_add, a = 10, b = 5)
+    ok(tk.join() == 15, "spawn keyword args (by name)")
+
+    var tm = parallel.spawn(w_add, 100, b = 7)
+    ok(tm.join() == 107, "spawn mixed positional + keyword")
+
+    # multiple workers in parallel, deterministic reduce: sum 0..99 == 4950
+    var tasks = []
+    var i = 0
+    while i < 4:
+        tasks.append(parallel.spawn(w_rangesum, i * 25, i * 25 + 25))
+        i = i + 1
+    var total = 0
+    for tt in tasks:
+        total = total + tt.join()
+    ok(total == 4950, "4 parallel workers reduce to 4950")
+
+    # ---------------------------------------------------------------- Queue: FIFO / sizes / flags
+    var q = parallel.Queue()
+    ok(q.empty() == True, "fresh queue empty")
+    ok(q.full() == False, "unbounded queue never full")
+    q.put(10)
+    q.put(20)
+    q.put(30)
+    ok(q.qsize() == 3, "qsize after 3 puts")
+    ok(q.empty() == False, "non-empty after puts")
+    ok(q.get() == 10, "FIFO get 1")
+    ok(q.get() == 20, "FIFO get 2")
+    ok(q.getnowait() == 30, "getnowait returns last in order")
+    ok(q.empty() == True, "drained -> empty")
+    ok(throws(Function(): return q.getnowait()), "getnowait on empty throws")
+
+    # bounded queue + full() + putnowait throws when full
+    var bq = parallel.Queue(2)
+    bq.putnowait("a")
+    bq.putnowait("b")
+    ok(bq.full() == True, "bounded queue reports full")
+    ok(throws(Function(): return bq.putnowait("c")), "putnowait on full throws")
+    ok(bq.get() == "a", "bounded drain FIFO 1")
+    bq.put("c")
+    ok(bq.get() == "b" and bq.get() == "c", "bounded retains FIFO after refill")
+
+    # close(): drains remaining items in order, THEN get throws; put after close throws
+    var cq = parallel.Queue()
+    cq.put(1)
+    cq.put(2)
+    cq.close()
+    ok(cq.get() == 1, "closed queue drains item 1")
+    ok(cq.get() == 2, "closed queue drains item 2")
+    ok(throws(Function(): return cq.get()), "closed+drained get throws")
+    ok(throws(Function(): return cq.put(3)), "put on closed queue throws")
+
+    # cross-VM Queue: a worker produces, main consumes until close ends the loop
+    var pq = parallel.Queue()
+    var pt = parallel.spawn(w_producer, pq, 5)
+    var got = []
+    var producing = True
+    while producing:
+        try:
+            got.append(pq.get(True, 5))     # timeout so a stuck producer FAILS rather than hangs
+        catch:
+            producing = False
+    discard pt.join()
+    got.sort()
+    ok(got == [0, 1, 2, 3, 4], "cross-VM producer/consumer FIFO")
+
+    # cross-VM round-trip of a structured value (List) through a worker that mutates it
+    var qin = parallel.Queue()
+    var qout = parallel.Queue()
+    var st = parallel.spawn(w_echo_struct, qin, qout)
+    qin.put([1, 2, 3])
+    ok(qout.get(True, 5) == [1, 2, 3, 99], "structured value round-trips through worker")
+    discard st.join()
+
+    # ---------------------------------------------------------------- Lock
+    var l = parallel.Lock()
+    ok(l.locked() == False, "fresh lock unlocked")
+    ok(l.acquire() == True, "acquire returns True")
+    ok(l.locked() == True, "now locked")
+    # re-acquire by the holding thread must not silently succeed: it is reentrant -> throws
+    ok(throws(Function(): return l.acquire(False)), "reentrant non-blocking acquire throws")
+    l.release()
+    ok(l.locked() == False, "released")
+    ok(throws(Function(): return l.release()), "release of unlocked lock throws")
+    with l:
+        ok(l.locked() == True, "context manager acquires")
+    ok(l.locked() == False, "context manager releases on exit")
+
+    # Lock mutual exclusion: 3 workers race; each reports its id under the lock
+    var lk = parallel.Lock()
+    var lq = parallel.Queue()
+    var lt = []
+    var li = 0
+    while li < 3:
+        lt.append(parallel.spawn(w_lock_holder, lk, lq, li))
+        li = li + 1
+    var ids = []
+    while len(ids) < 3:
+        ids.append(lq.get(True, 5))
+    for tt in lt:
+        discard tt.join()
+    ids.sort()
+    ok(ids == [0, 1, 2], "lock-protected workers all reported")
+
+    # ---------------------------------------------------------------- Event
+    var ev = parallel.Event()
+    ok(ev.isset() == False, "fresh Event not set")
+    ok(ev.wait(0.05) == False, "wait on unset times out -> False")
+    ev.set()
+    ok(ev.isset() == True, "set sticks")
+    ok(ev.wait(0.05) == True, "wait on set -> True")
+    ev.clear()
+    ok(ev.isset() == False, "clear resets")
+    # broadcast: 3 workers all wait, one set() releases them all
+    var bev = parallel.Event()
+    var beq = parallel.Queue()
+    var bt = []
+    var bk = 0
+    while bk < 3:
+        bt.append(parallel.spawn(w_event_waiter, bev, beq, bk))
+        bk = bk + 1
+    bev.set()
+    var released = []
+    while len(released) < 3:
+        released.append(beq.get(True, 5))
+    for tt in bt:
+        discard tt.join()
+    released.sort()
+    ok(released == [0, 1, 2], "Event broadcast released all waiters")
+
+    # ---------------------------------------------------------------- Semaphore
+    var sem = parallel.Semaphore(2)
+    ok(sem.acquire(False) == True, "semaphore permit 1")
+    ok(sem.acquire(False) == True, "semaphore permit 2")
+    ok(sem.acquire(False) == False, "no permits left -> False (non-blocking)")
+    sem.release()
+    ok(sem.acquire(False) == True, "release restores a permit")
+    sem.release()
+    sem.release()
+    # context manager holds the only permit for the duration of the block
+    var sem1 = parallel.Semaphore(1)
+    with sem1:
+        ok(sem1.acquire(False) == False, "ctx-mgr holds the only permit")
+    ok(sem1.acquire(False) == True, "permit restored after with-block")
+
+    # ---------------------------------------------------------------- Barrier
+    var b1 = parallel.Barrier(1)
+    ok(b1.parties() == 1, "Barrier parties()")
+    ok(b1.nwaiting() == 0, "fresh barrier 0 waiting")
+    ok(b1.wait() == 0, "single-party barrier returns immediately")
+    # 3-party rendezvous across 3 workers
+    var bar = parallel.Barrier(3)
+    var bqr = parallel.Queue()
+    var bts = []
+    var bi = 0
+    while bi < 3:
+        bts.append(parallel.spawn(w_barrier_party, bar, bqr, bi))
+        bi = bi + 1
+    var idxs = []
+    while len(idxs) < 3:
+        idxs.append(bqr.get(True, 5))
+    for tt in bts:
+        discard tt.join()
+    idxs.sort()
+    ok(idxs == [0, 1, 2], "all parties rendezvoused at the barrier")
+    # under-filled wait times out -> broken -> throws
+    var bbar = parallel.Barrier(3)
+    ok(throws(Function(): return bbar.wait(0.05)), "under-filled barrier wait throws on timeout")
+
+    # ---------------------------------------------------------------- error cases
+    ok(throws(Function(): return parallel.spawn(42)), "spawn rejects a non-function")
+    ok(throws(Function(): return parallel.spawn(len, [1, 2])), "spawn rejects a native function")
+    # captured enclosing local does NOT cross: the worker throws a name error, surfaced at join
+    ok(throws(Function(): return spawn_capturing().join()),
+       "captured local does not cross to worker (name error at join)")
+    # a non-serializable ARGUMENT (a resource-like BytesIO) cannot be sent to a worker
+    var bio = io.BytesIO()
+    ok(throws(Function(): return parallel.spawn(w_add, bio, 1)),
+       "non-serializable arg throws")
+    # a worker that throws -> join re-throws the worker's error
+    var tb = parallel.spawn(w_boom)
+    ok(throws(Function(): return tb.join()), "worker throw re-thrown at join")
+
+    io.print("r6_parallel: " + String(n) + " checks passed")

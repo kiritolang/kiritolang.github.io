@@ -1,0 +1,3 @@
+# PARSER: a while-loop header with a body that is not indented
+while 1 < 2:
+pass

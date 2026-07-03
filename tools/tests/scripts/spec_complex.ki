@@ -1,0 +1,130 @@
+# The native `complex` library: complex numbers (with the full analytic math set) and complex
+# matrices (Gaussian determinant + fast Gauss-Jordan inverse). Float results are checked within a
+# tolerance via the modulus of the difference.
+var io = import("io")
+var C = import("complex")
+var MTH = import("math")
+
+var close = Function(a, b) -> Bool:
+    return (a - b).modulus() < 0.000000001
+var closef = Function(x, y) -> Bool:
+    var d = x - y
+    if d < 0:
+        d = -d
+    return d < 0.000000001
+
+# --- construction + accessors ---
+var z = C.of(3, 4)
+assert z.re == 3.0 and z.im == 4.0, "re/im accessors"
+assert C.real(5).im == 0.0 and C.real(5).re == 5.0, "real()"
+assert C.Complex(7).re == 7.0 and C.Complex(7).im == 0.0, "Complex(re) default im"
+assert C.zero == C.of(0, 0) and C.one == C.of(1, 0), "zero/one"
+assert C.i == C.of(0, 1), "imaginary unit i"
+
+# --- arithmetic ---
+assert C.of(1, 2) + C.of(3, 4) == C.of(4, 6), "add"
+assert C.of(5, 0) - C.of(2, 3) == C.of(3, -3), "sub"
+assert C.of(1, 2) * C.of(3, 4) == C.of(-5, 10), "mul"
+assert C.of(1, 1) / C.of(1, 1) == C.one, "div"
+assert -C.of(2, -3) == C.of(-2, 3), "neg"
+# `**` goes through std::pow (exp/log), so the result is 2i only within tolerance — Complex `==` is
+# now exact, so use the tolerant `.compare()` (rel/abs epsilon) for a computed value.
+assert (C.of(1, 1) ** C.of(2, 0)).compare(C.of(0, 2)), "pow ((1+i)^2 = 2i)"
+# a Complex with zero imaginary part equals the corresponding real number
+assert C.of(2, 0) == 2, "Complex == real number"
+
+# --- reductions ---
+assert z.conjugate() == C.of(3, -4), "conjugate"
+assert closef(z.modulus(), 5.0), "modulus"
+assert closef(z.norm2(), 25.0), "norm2"
+assert closef(C.of(0, 1).argument(), MTH.pi / 2.0), "argument"
+assert C.zero.is_zero() and not C.one.is_zero(), "is_zero"
+
+# --- analytic functions (complex extensions of math) ---
+assert close(C.exp(C.of(0, MTH.pi)), C.of(-1, 0)), "exp(i*pi) = -1 (Euler)"
+assert close(C.sqrt(C.of(-1, 0)), C.i), "sqrt(-1) = i"
+assert close(C.log(C.of(MTH.e, 0)), C.one), "log(e) = 1"
+assert close(C.sin(C.of(0, 0)), C.zero), "sin(0) = 0"
+assert close(C.cos(C.of(0, 0)), C.one), "cos(0) = 1"
+# sin^2 + cos^2 = 1 for a complex argument too
+var w = C.of(1, 2)
+assert close(C.sin(w) * C.sin(w) + C.cos(w) * C.cos(w), C.one), "sin^2 + cos^2 = 1"
+assert close(C.polar(2.0, 0.0), C.of(2, 0)), "polar(2, 0) = 2"
+assert closef(C.abs(C.of(3, 4)), 5.0), "module-level abs"
+
+# --- division by zero and ordering are errors ---
+var threw = False
+try:
+    discard C.one / C.zero
+catch as e:
+    threw = "complex division by zero" in e
+assert threw, "division by zero throws"
+var threw2 = False
+try:
+    discard C.one < C.of(2, 0)
+catch as e:
+    threw2 = "not ordered" in e
+assert threw2, "complex ordering throws"
+
+# ============================================================= complex matrices
+var M = C.Matrix([
+    [C.of(1, 1), C.of(2, 0)],
+    [C.of(0, 1), C.of(1, -1)]
+])
+assert M.rows() == 2 and M.cols() == 2, "rows/cols"
+assert M.shape() == [2, 2], "shape"
+assert M[0, 0] == C.of(1, 1) and M[1, 0] == C.of(0, 1), "element access"
+assert M.row(0) == [C.of(1, 1), C.of(2, 0)], "row access"
+
+# add / sub / scalar multiply
+var S = M + M
+assert S[0, 0] == C.of(2, 2), "matrix add"
+assert (M - M)[0, 0] == C.zero, "matrix sub"
+assert (M * C.of(2, 0))[0, 1] == C.of(4, 0), "scalar multiply"
+
+# transpose / conjugate / hermitian
+assert M.transpose()[0, 1] == C.of(0, 1), "transpose"
+assert M.conjugate()[0, 0] == C.of(1, -1), "elementwise conjugate"
+assert M.hermitian()[0, 1] == C.of(0, -1), "hermitian (conjugate transpose)"
+
+# determinant (Gaussian): det([[1+i,2],[i,1-i]]) = (1+i)(1-i) - 2i = 2 - 2i
+assert close(M.determinant(), C.of(2, -2)), "determinant (Gaussian)"
+
+# inverse (fast Gauss-Jordan): M * inverse(M) = I
+var inv = M.inverse()
+var prod = M * inv
+var I = C.identity(2)
+assert close(prod[0, 0], I[0, 0]) and close(prod[0, 1], I[0, 1]), "M*inv row 0 = I"
+assert close(prod[1, 0], I[1, 0]) and close(prod[1, 1], I[1, 1]), "M*inv row 1 = I"
+
+# trace
+assert M.trace() == C.of(2, 0), "trace"
+
+# factories
+assert C.zeros(2, 2)[0, 0] == C.zero, "zeros"
+assert C.ones(2, 3).cols() == 3 and C.ones(2, 3)[1, 2] == C.one, "ones"
+assert C.identity(3)[2, 2] == C.one and C.identity(3)[0, 2] == C.zero, "identity"
+
+# a singular matrix has no inverse
+var threw3 = False
+try:
+    discard C.Matrix([[C.of(1, 0), C.of(2, 0)], [C.of(2, 0), C.of(4, 0)]]).inverse()
+catch as e:
+    threw3 = "singular" in e
+assert threw3, "singular matrix inverse throws"
+
+# --- complex vectors ---
+var cv1 = C.vector([C.of(1, 1), C.of(2, 0)])
+var cv2 = C.vector([C.of(1, 0), C.of(0, 1)])
+assert cv1.rows() == 1 and cv1.cols() == 2, "vector() builds a 1xn complex row vector"
+# Hermitian inner product: conj(1+i)*1 + conj(2)*i = (1-i) + 2i = 1+i
+assert cv1.dot(cv2) == C.of(1, 1), "complex dot is the Hermitian inner product"
+# v . v = sum |v_i|^2 is real and non-negative: |1+i|^2 + |2|^2 = 2 + 4 = 6
+assert cv1.dot(cv1) == C.of(6, 0), "z.dot(z) = sum |z_i|^2 (real)"
+assert closef(cv1.norm(), C.sqrt(C.of(6, 0)).re), "complex vector 2-norm = sqrt(6)"
+# cross product of two complex 3-vectors (bilinear formula): (i e_x) x (i e_y) = i^2 e_z = -e_z
+var x = C.vector([C.of(0, 1), C.zero, C.zero])
+var y = C.vector([C.zero, C.of(0, 1), C.zero])
+assert x.cross(y) == C.vector([C.zero, C.zero, C.of(-1, 0)]), "complex cross product"
+
+io.print("OK")

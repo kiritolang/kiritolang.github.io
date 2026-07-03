@@ -1,0 +1,111 @@
+var io = import("io")
+var path = import("path")
+var json = import("json")
+var sys = import("sys")
+
+# Priorities, ranked most urgent (0) to least. The rank drives the ordering below.
+var RANK = {"high": 0, "medium": 1, "low": 2}
+
+class Task:
+    var _init_ = Function(self, title : String, priority : String = "medium"):
+        if not (priority in RANK):
+            throw f"unknown priority: {priority}"
+        self.title = title
+        self.priority = priority
+        self.done = False
+
+    # A one-line view: a checkbox, the priority in a fixed-width column, then the title.
+    var _str_ = Function(self) -> String:
+        var box = "[x]" if self.done else "[ ]"
+        return f"{box} {self.priority:<6} {self.title}"
+
+    # The sort key: pending tasks before done ones, then by priority rank, then by title.
+    # Returning a List lets one comparison rank on three fields at once — Lists compare
+    # element by element, so `[0, 0, "a"] < [0, 1, "b"]`.
+    var _key = Function(self):
+        return [Integer(self.done), RANK[self.priority], self.title]
+
+    # With _lt_ defined, sorted()/min()/max()/< all order Tasks — no key function needed anywhere.
+    var _lt_ = Function(self, other : Task) -> Bool:
+        return self._key() < other._key()
+
+    # Reduce to a plain Dict so the json module can store it.
+    var to_dict = Function(self) -> Dict:
+        return {"title": self.title, "priority": self.priority, "done": self.done}
+
+class TaskNotFound:
+    var _init_ = Function(self, title):
+        self.title = title
+
+class TaskList:
+    var _init_ = Function(self):
+        self._tasks = []                       # private: a List of Task
+
+    var add = Function(self, task : Task):
+        self._tasks.append(task)
+
+    var complete = Function(self, title : String):
+        for task in self._tasks:
+            if task.title == title:
+                task.done = True
+                return
+        throw TaskNotFound(title)
+
+    # Only the unfinished tasks.
+    var pending = Function(self):
+        var out = []
+        for task in self._tasks:
+            if not task.done:
+                out.append(task)
+        return out
+
+    # len(tasklist) works because of _len_.
+    var _len_ = Function(self) -> Integer:
+        return len(self._tasks)
+
+    # Tasks in urgency order — sorted() leans on Task._lt_.
+    var ordered = Function(self):
+        return sorted(self._tasks)
+
+    var save = Function(self, path : String):
+        var records = []
+        for task in self.ordered():
+            records.append(task.to_dict())
+        with io.open(path, "w") as f:
+            f.write(json.dumps(records, indent = 2))
+
+    var load = Function(self, path : String):
+        with io.open(path, "r") as f:
+            var records = json.loads(f.read())
+        for record in records:
+            var task = Task(record["title"], record["priority"])
+            task.done = record["done"]
+            self.add(task)
+
+var inbox = TaskList()
+inbox.add(Task("Write the report", "high"))
+inbox.add(Task("Water the plants", "low"))
+inbox.add(Task("Reply to Ada", "medium"))
+inbox.add(Task("Ship the release", "high"))
+
+inbox.complete("Water the plants")
+
+io.print(f"{len(inbox)} tasks, {len(inbox.pending())} still pending:")
+for task in inbox.ordered():
+    io.print(f"  {task}")                       # uses Task._str_
+
+# Persist to disk and reload into a brand-new list.
+var store = path.join(path.getcwd(), "tasks.json")
+inbox.save(store)
+
+var reloaded = TaskList()
+reloaded.load(store)
+io.print(f"reloaded {len(reloaded)} tasks from disk")
+
+# Completing a task that doesn't exist is handled, not fatal.
+try:
+    reloaded.complete("Take over the world")
+catch TaskNotFound as e:
+    io.print(f"no such task: {e.title}")
+
+discard path.remove(store, missing_ok = True)                        # clean up the demo file

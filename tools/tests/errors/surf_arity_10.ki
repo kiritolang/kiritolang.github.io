@@ -1,0 +1,5 @@
+# class instantiation with too many positional args to _init_
+class Box:
+    var _init_ = Function(self, w):
+        self.w = w
+discard Box(1, 2, 3)

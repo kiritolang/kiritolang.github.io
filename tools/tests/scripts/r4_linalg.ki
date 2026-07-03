@@ -1,0 +1,408 @@
+# r4_linalg.ki — exhaustive audit of the `matrix` (real matrices/vectors) and `complex` (complex
+# numbers + complex matrices) stdlib modules. Probes every constructor/operator/method/constant from
+# every angle: typical, edge (1x1, 0x0, identity, rectangular, real-coercion), and the full RAISE
+# surface (non-square det/inv/trace, singular inverse, dimension mismatch, non-3-vec cross, ordering,
+# domain errors). Computed floats are checked with the tolerant `.compare()` / a modulus epsilon —
+# NEVER exact `==` on a transcendental — while exact `==` is asserted exactly where it must hold.
+#
+# Each `chk` asserts and bumps a counter; the final two lines are a deterministic summary.
+var io = import("io")
+var m = import("matrix")
+var C = import("complex")
+var MTH = import("math")
+
+var n = 0
+var chk = Function(b, msg):
+    assert b, msg
+    n = n + 1
+
+# True iff `thunk` throws — for asserting the error surface.
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        return True
+    return False
+
+# absolute-tolerance Float compare (never exact == on a computed/transcendental value)
+var approx = Function(x, y) -> Bool:
+    var d = x - y
+    if d < 0:
+        d = -d
+    return d < 0.000000001
+
+# =================================================================================================
+# matrix — construction & factories
+# =================================================================================================
+var A = m.Matrix([[1, 2], [3, 4]])
+chk(A.shape() == [2, 2], "Matrix nested shape")
+chk(A.rows() == 2 and A.cols() == 2, "rows/cols")
+chk(A[0, 0] == 1.0 and A[0, 1] == 2.0 and A[1, 1] == 4.0, "element access (Floats)")
+chk(A[1] == [3.0, 4.0], "m[i] is the whole row as a List")
+chk(A.row(0) == [1.0, 2.0], "row(i) method")
+chk(type(A[0, 0]) == "Float", "elements are Float even from Integer cells")
+# (rows, cols) form -> zero matrix; keyword form
+chk(m.Matrix(2, 3).shape() == [2, 3] and m.Matrix(2, 3)[1, 2] == 0.0, "Matrix(rows, cols) zero")
+chk(m.Matrix(rows = 2, cols = 2).shape() == [2, 2], "Matrix(rows=, cols=) keyword")
+# factories
+chk(m.zeros(2, 3).shape() == [2, 3] and m.zeros(2, 3)[0, 0] == 0.0, "zeros")
+chk(m.ones(2, 2)[1, 1] == 1.0, "ones")
+chk(m.identity(3)[2, 2] == 1.0 and m.identity(3)[0, 2] == 0.0, "identity")
+chk(m.zeros(rows = 2, cols = 3).shape() == [2, 3], "zeros keyword args")
+chk(m.identity(n = 2).shape() == [2, 2], "identity keyword arg")
+# edge shapes: 1x1, 0x0, empty list, rectangular
+chk(m.Matrix([[5]]).shape() == [1, 1] and m.Matrix([[5]])[0, 0] == 5.0, "1x1 matrix")
+chk(m.Matrix(0, 0).shape() == [0, 0], "0x0 matrix")
+chk(m.Matrix([]).shape() == [0, 0], "Matrix([]) -> 0x0")
+chk(m.Matrix([[1, 2, 3], [4, 5, 6]]).shape() == [2, 3], "rectangular 2x3")
+
+# =================================================================================================
+# matrix — get/set (method + index forms)
+# =================================================================================================
+var G = m.Matrix([[1, 2], [3, 4]])
+G.set(0, 0, 99)
+chk(G.get(0, 0) == 99.0, "set/get methods")
+G.set(row = 1, col = 1, value = 88)
+chk(G.get(row = 1, col = 1) == 88.0, "set/get keyword args")
+G[0, 1] = 77
+chk(G[0, 1] == 77.0, "m[i, j] = v index-set")
+
+# =================================================================================================
+# matrix — arithmetic (+, -, * matrix & scalar) and the RAISE surface
+# =================================================================================================
+var B = m.Matrix([[5, 6], [7, 8]])
+chk(A + B == m.Matrix([[6, 8], [10, 12]]), "matrix add (exact, integral)")
+chk(B - A == m.Matrix([[4, 4], [4, 4]]), "matrix sub (exact)")
+chk(A * B == m.Matrix([[19, 22], [43, 50]]), "matrix multiply")
+chk(A * 2 == m.Matrix([[2, 4], [6, 8]]), "scalar multiply (right operand)")
+chk((A * 0.5) == m.Matrix([[0.5, 1.0], [1.5, 2.0]]), "float scalar multiply")
+# non-conformable matrix multiply where inner dims agree (rectangular) is fine
+chk(m.Matrix([[1, 2, 3], [4, 5, 6]]) * m.Matrix([[1], [2], [3]]) == m.Matrix([[14], [32]]), "rectangular multiply")
+# RAISE: shape-mismatch add/sub, inner-dim-mismatch multiply, scalar-on-LEFT, unsupported ops
+chk(throws(Function(): return A + m.Matrix([[1, 2, 3]])), "add shape mismatch throws")
+chk(throws(Function(): return A - m.Matrix([[1]])), "sub shape mismatch throws")
+chk(throws(Function(): return m.Matrix([[1, 2]]) * m.Matrix([[1, 2]])), "multiply inner-dim mismatch throws")
+chk(throws(Function(): return 2 * A), "scalar on LEFT throws (2 * A)")
+chk(throws(Function(): return A / 2), "matrix division unsupported -> throws")
+chk(throws(Function(): return A ** A), "matrix ** unsupported -> throws")
+
+# =================================================================================================
+# matrix — transpose / determinant / inverse / trace / sum / apply
+# =================================================================================================
+chk(A.transpose() == m.Matrix([[1, 3], [2, 4]]), "transpose 2x2")
+chk(m.Matrix([[1, 2, 3], [4, 5, 6]]).transpose().shape() == [3, 2], "transpose rectangular shape")
+chk(A.determinant() == -2.0, "determinant 2x2 (exact small ints)")
+chk(m.Matrix([[5]]).determinant() == 5.0, "determinant 1x1")
+chk(m.Matrix(0, 0).determinant() == 1.0, "determinant 0x0 == 1 (convention)")
+chk(approx(m.Matrix([[6, 1, 1], [4, -2, 5], [2, 8, 7]]).determinant(), -306.0), "determinant 3x3")
+chk(A.trace() == 5.0, "trace 2x2")
+chk(m.Matrix([[5]]).trace() == 5.0, "trace 1x1")
+chk(A.sum() == 10.0, "sum of all elements")
+# singular: determinant returns 0.0 (does NOT throw); inverse RAISES
+chk(m.Matrix([[1, 2], [2, 4]]).determinant() == 0.0, "singular determinant -> 0.0 (no throw)")
+chk(throws(Function(): return m.Matrix([[1, 2], [2, 4]]).inverse()), "singular inverse throws")
+# A * inv(A) ~ I  (numerical correctness, tolerant compare with abs_tol for the exact-zero off-diagonals)
+var Ai = m.Matrix([[4, 7], [2, 6]])
+chk((Ai * Ai.inverse()).compare(m.identity(2), abs_tol = 0.000000001), "A * inv(A) == I (tolerant)")
+chk((Ai.inverse() * Ai).compare(m.identity(2), abs_tol = 0.000000001), "inv(A) * A == I (tolerant)")
+# exact == on a computed inverse is roundoff-prone (the doc's own example): use compare instead
+var Aw = m.Matrix([[1, 2], [3, 4]])
+chk((Aw * Aw.inverse() == m.identity(2)) == False, "exact == on computed inverse is False (roundoff)")
+# 1x1 inverse is the reciprocal
+chk(approx(m.Matrix([[2]]).inverse()[0, 0], 0.5), "1x1 inverse = reciprocal")
+# RAISE: non-square det/inverse/trace
+chk(throws(Function(): return m.Matrix([[1, 2, 3], [4, 5, 6]]).determinant()), "non-square determinant throws")
+chk(throws(Function(): return m.Matrix([[1, 2, 3], [4, 5, 6]]).inverse()), "non-square inverse throws")
+chk(throws(Function(): return m.Matrix([[1, 2, 3], [4, 5, 6]]).trace()), "non-square trace throws")
+# apply maps over every element, returns a new same-shape matrix
+chk(A.apply(Function(x): return x * x) == m.Matrix([[1, 4], [9, 16]]), "apply square")
+chk(A.apply(Function(x): return x + 10) == m.Matrix([[11, 12], [13, 14]]), "apply add")
+
+# =================================================================================================
+# matrix — equality (EXACT) and tolerant compare
+# =================================================================================================
+chk(m.Matrix([[1, 2]]) == m.Matrix([[1, 2]]), "exact == equal matrices")
+chk((m.Matrix([[1, 2]]) == m.Matrix([[1, 3]])) == False, "exact == unequal")
+chk((m.Matrix([[1, 2]]) == m.Matrix([[1]])) == False, "== different shape -> False")
+chk((m.Matrix([[1, 2]]) == 5) == False, "== with non-matrix -> False")
+chk(m.Matrix([[1.0]]).compare(m.Matrix([[1.0000001]])) == False, "compare default rel_tol distinguishes (1e-7 diff)")
+chk(m.Matrix([[1.0]]).compare(m.Matrix([[1.0000000001]])) == True, "compare default rel_tol: 1e-10 diff is within 1e-9")
+chk(m.Matrix([[1.0]]).compare(m.Matrix([[1.0000001]]), rel_tol = 0.001) == True, "compare loose rel_tol")
+chk(m.Matrix([[1, 2]]).compare(m.Matrix([[1]])) == False, "compare different shape -> False")
+chk(throws(Function(): return m.Matrix([[1]]).compare(5)), "compare with non-matrix throws")
+
+# =================================================================================================
+# matrix — vectors: dot / cross / norm (any orientation)
+# =================================================================================================
+var u = m.vector([1, 2, 3])
+var v = m.vector([4, 5, 6])
+chk(u.shape() == [1, 3], "vector() builds a 1xn row vector")
+chk(m.vector(values = [1, 2]).shape() == [1, 2], "vector keyword arg")
+chk(u.dot(v) == 32.0, "dot product (row . row)")
+chk(u.transpose().dot(v) == 32.0, "dot ignores orientation (col . row)")
+chk(u.cross(v) == m.Matrix([[-3, 6, -3]]), "cross product (3-vec)")
+chk(u.transpose().cross(v).shape() == [3, 1], "cross keeps left operand orientation")
+chk(m.vector([3, 4]).norm() == 5.0, "vector norm (3-4-5)")
+chk(approx(m.Matrix([[1, 2], [3, 4]]).norm(), 5.477225575051661), "norm is Frobenius for a matrix (sqrt 30)")
+# `*` is matrix multiply, never a dot: two same-shape row vectors have incompatible inner dims
+chk(throws(Function(): return u * v), "u * v throws (not a dot product)")
+# RAISE: dot length mismatch, dot on a non-vector, cross on non-3-element
+chk(throws(Function(): return m.vector([1, 2]).dot(m.vector([1, 2, 3]))), "dot length mismatch throws")
+chk(throws(Function(): return m.Matrix([[1, 2], [3, 4]]).dot(m.Matrix([[1, 2], [3, 4]]))), "dot on a 2x2 (non-vector) throws")
+chk(throws(Function(): return m.vector([1, 2]).cross(m.vector([3, 4]))), "cross on 2-vec throws")
+chk(throws(Function(): return m.vector([1, 2, 3, 4]).cross(m.vector([1, 2, 3, 4]))), "cross on 4-vec throws")
+chk(throws(Function(): return u.dot(5)), "dot with non-matrix throws")
+chk(throws(Function(): return u.cross(5)), "cross with non-matrix throws")
+
+# =================================================================================================
+# matrix — index / dimension error surface
+# =================================================================================================
+chk(throws(Function(): return A[5]), "row index out of range throws")
+chk(throws(Function(): return A[0, 9]), "element index out of range throws")
+chk(throws(Function(): return A[-1, 0]), "negative index throws")
+chk(throws(Function(): return A[0, 1, 2]), "3-index get throws")
+chk(throws(Function(): return m.Matrix(-1, 2)), "negative dimension throws")
+chk(throws(Function(): return m.Matrix([[1, 2], [3]])), "ragged rows throw")
+var setbad = Function():
+    var g = m.Matrix([[1, 2]])
+    g[0] = 5
+    return g
+chk(throws(setbad), "single-index assignment throws")
+
+# =================================================================================================
+# complex — construction, constants, accessors
+# =================================================================================================
+var z = C.of(3, 4)
+chk(z.re == 3.0 and z.im == 4.0, "re/im accessors")
+chk(z.real == 3.0 and z.imag == 4.0, "real/imag accessor aliases")
+chk(C.Complex(7).re == 7.0 and C.Complex(7).im == 0.0, "Complex(re) default im = 0")
+chk(C.Complex(re = 1, im = 2) == C.of(1, 2), "Complex keyword args")
+chk(C.real(5) == C.of(5, 0) and C.real(5).im == 0.0, "real() puts a number on the real axis")
+chk(C.of(re = 1, im = 2) == C.of(1, 2), "of keyword args")
+chk(approx(C.polar(2.0, 0.0).re, 2.0) and approx(C.polar(2.0, 0.0).im, 0.0), "polar(2, 0) = 2")
+chk(C.polar(-1, 0).compare(C.of(-1, 0)), "polar negative r")
+chk(C.zero == C.of(0, 0) and C.one == C.of(1, 0), "zero / one constants")
+chk(C.i == C.of(0, 1), "imaginary unit i")
+chk(approx(MTH.pi, 3.141592653589793) and approx(MTH.tau, 6.283185307179586), "pi / tau constants")
+chk(approx(MTH.e, 2.718281828459045), "e constant")
+
+# =================================================================================================
+# complex — arithmetic operators (+, -, *, /, **, unary -) and real coercion
+# =================================================================================================
+chk(C.of(1, 2) + C.of(3, 4) == C.of(4, 6), "add (exact)")
+chk(C.of(5, 0) - C.of(2, 3) == C.of(3, -3), "sub (exact)")
+chk(C.of(1, 2) * C.of(3, 4) == C.of(-5, 10), "mul (exact)")
+chk(C.of(1, 1) / C.of(1, 1) == C.one, "div (exact)")
+chk(-C.of(2, -3) == C.of(-2, 3), "unary neg")
+# real coercion: a number on the RIGHT works; a number on the LEFT throws
+chk(C.of(1, 1) + 2 == C.of(3, 1), "Complex + real (right)")
+chk(C.of(4, 2) - 2 == C.of(2, 2), "Complex - real (right)")
+chk(C.of(1, 1) * 2 == C.of(2, 2), "Complex * real (right)")
+chk(C.of(4, 2) / 2 == C.of(2, 1), "Complex / real (right)")
+chk(throws(Function(): return 2 + C.of(1, 1)), "real + Complex (LEFT) throws")
+chk(throws(Function(): return 2 * C.of(1, 1)), "real * Complex (LEFT) throws")
+# ** is computed via std::pow -> tolerant compare for the result
+chk((C.of(1, 1) ** C.of(2, 0)).compare(C.of(0, 2)), "(1+i)^2 = 2i (tolerant)")
+# division by zero throws (Complex or real zero)
+chk(throws(Function(): return C.one / C.zero), "div by Complex zero throws")
+chk(throws(Function(): return C.of(1, 1) / 0), "div by real zero throws")
+
+# =================================================================================================
+# complex — equality (EXACT), real-equality both directions, NaN, ordering RAISE
+# =================================================================================================
+chk(C.of(2, 0) == 2 and 2 == C.of(2, 0), "Complex(re,0) == real, both directions")
+chk(C.of(2.0, 0) == 2.0 and 2.0 == C.of(2.0, 0), "Complex == Float, both directions")
+chk(C.of(2, 1) != 2 and 2 != C.of(2, 1), "Complex with nonzero im != real")
+chk((C.of(2, 0) == 3) == False, "Complex != different real")
+# EXACT ==: 0.1 + 0.2 != 0.3 in the complex plane too (IEEE-754 exact)
+chk((C.of(0.1, 0) + C.of(0.2, 0) == C.of(0.3, 0)) == False, "exact == : 0.1+0.2 != 0.3")
+chk(C.of(1, 1) == C.of(1, 1), "exact == reflexive")
+# ordering throws for all four operators
+chk(throws(Function(): return C.one < C.of(2, 0)), "< throws (unordered)")
+chk(throws(Function(): return C.one <= C.zero), "<= throws (unordered)")
+chk(throws(Function(): return C.one > C.zero), "> throws (unordered)")
+chk(throws(Function(): return C.one >= C.zero), ">= throws (unordered)")
+
+# =================================================================================================
+# complex — reductions (conjugate / modulus / argument / norm2 / is_zero) + tolerant compare
+# =================================================================================================
+chk(z.conjugate() == C.of(3, -4), "conjugate")
+chk(approx(z.modulus(), 5.0), "modulus |3+4i| = 5")
+chk(approx(z.abs(), 5.0) and approx(z.magnitude(), 5.0), "abs / magnitude aliases of modulus")
+chk(approx(z.norm2(), 25.0), "norm2 = |z|^2")
+chk(approx(C.of(0, 1).argument(), MTH.pi / 2.0), "argument(i) = pi/2")
+chk(approx(C.of(0, 1).arg(), MTH.pi / 2.0) and approx(C.of(0, 1).phase(), MTH.pi / 2.0), "arg / phase aliases")
+chk(C.zero.is_zero() and not C.one.is_zero(), "is_zero exact 0 / nonzero")
+# is_zero is tolerant (|z| < 1e-10); EXACT == is not. 1e-10 is NOT zero by either; .compare with abs_tol is.
+chk((C.of(0.0000000001, 0) == C.zero) == False, "exact == : 1e-10 != 0")
+chk(C.of(0.0000000001, 0).is_zero() == False, "is_zero: 1e-10 magnitude is not zero")
+chk(C.of(0.0000000001, 0).compare(C.zero, abs_tol = 0.001), "compare with abs_tol says approximately zero")
+chk(C.of(2, 0).compare(2), "compare accepts a real number")
+chk(C.of(1, 1).compare(C.of(1, 1)), "compare reflexive")
+chk(C.of(1, 1).compare(C.of(1, 1.0000001)) == False, "compare default rel_tol distinguishes (1e-7 diff)")
+chk(C.of(1, 1).compare(C.of(1, 1.0000001), rel_tol = 0.001), "compare loose rel_tol")
+
+# module-level scalar reductions (accept Complex OR a number)
+chk(approx(C.modulus(C.of(3, 4)), 5.0) and approx(C.abs(C.of(3, 4)), 5.0), "module modulus / abs")
+chk(approx(C.modulus(5), 5.0), "module modulus of a real")
+chk(approx(C.phase(C.of(0, 1)), MTH.pi / 2.0) and approx(C.argument(C.of(0, 1)), MTH.pi / 2.0), "module phase / argument")
+chk(approx(C.norm2(C.of(3, 4)), 25.0), "module norm2")
+chk(C.conjugate(C.of(3, 4)) == C.of(3, -4), "module conjugate")
+chk(C.conjugate(5) == C.of(5, 0), "module conjugate of a real")
+
+# =================================================================================================
+# complex — analytic functions (exp/log/log10/sqrt/cbrt/pow + trig/inverse/hyperbolic)
+# =================================================================================================
+chk(C.exp(C.of(0, MTH.pi)).compare(C.of(-1, 0), abs_tol = 0.000000001), "exp(i*pi) = -1 (Euler)")
+chk(C.sqrt(C.of(-1, 0)).compare(C.i, abs_tol = 0.000000001), "sqrt(-1) = i")
+chk(C.sqrt(C.of(-4, 0)).compare(C.of(0, 2), abs_tol = 0.000000001), "sqrt(-4) = 2i")
+chk(C.log(C.of(MTH.e, 0)).compare(C.one, abs_tol = 0.000000001), "log(e) = 1")
+chk(approx(C.log(C.of(-1, 0)).im, MTH.pi), "log(-1) = i*pi (principal branch, valid)")
+chk(approx(C.log10(C.of(100, 0)).re, 2.0), "log10(100) = 2")
+chk(approx(C.cbrt(C.of(-8, 0)).im, 1.7320508075688772), "cbrt(-8) principal value is complex")
+chk(C.pow(C.of(2, 0), C.of(2, 0)).compare(C.of(4, 0), abs_tol = 0.000000001), "pow(2, 2) = 4")
+chk(C.pow(z = C.of(2, 0), w = C.of(3, 0)).compare(C.of(8, 0), abs_tol = 0.000000001), "pow keyword args")
+chk(C.sin(C.zero).compare(C.zero, abs_tol = 0.000000001), "sin(0) = 0")
+chk(C.cos(C.zero).compare(C.one, abs_tol = 0.000000001), "cos(0) = 1")
+chk(C.tan(C.zero).compare(C.zero, abs_tol = 0.000000001), "tan(0) = 0")
+# sin^2 + cos^2 = 1 for a complex argument
+var w2 = C.of(1, 2)
+chk((C.sin(w2) * C.sin(w2) + C.cos(w2) * C.cos(w2)).compare(C.one, abs_tol = 0.000000001), "sin^2 + cos^2 = 1")
+# asin(2) / acos(2) / acosh(0) are VALID across the plane (must NOT throw)
+chk(approx(C.asin(C.of(2, 0)).re, MTH.pi / 2.0), "asin(2) is valid (real part pi/2)")
+chk(C.asin(C.of(2, 0)).im != 0.0, "asin(2) has a nonzero imaginary part")
+chk(C.acos(C.of(2, 0)).im != 0.0, "acos(2) is valid")
+chk(approx(C.acosh(C.of(0, 0)).im, MTH.pi / 2.0), "acosh(0) is valid")
+chk(C.atan(C.zero).compare(C.zero, abs_tol = 0.000000001), "atan(0) = 0")
+# hyperbolic + inverse round-trips
+chk(C.sinh(C.zero).compare(C.zero, abs_tol = 0.000000001), "sinh(0) = 0")
+chk(C.cosh(C.zero).compare(C.one, abs_tol = 0.000000001), "cosh(0) = 1")
+chk(C.tanh(C.zero).compare(C.zero, abs_tol = 0.000000001), "tanh(0) = 0")
+chk(C.asinh(C.zero).compare(C.zero, abs_tol = 0.000000001), "asinh(0) = 0")
+chk(C.atanh(C.zero).compare(C.zero, abs_tol = 0.000000001), "atanh(0) = 0")
+# analytic functions accept plain numbers (real coercion)
+chk(C.exp(0).compare(C.one, abs_tol = 0.000000001), "exp accepts a real number")
+chk(C.sqrt(4).compare(C.of(2, 0), abs_tol = 0.000000001), "sqrt accepts a real number")
+# 0 ** 0 == 1 in the complex flavour
+chk(C.zero ** C.zero == C.one, "complex 0 ** 0 == 1")
+chk(C.pow(C.zero, C.zero) == C.one, "complex pow(0, 0) == 1")
+
+# complex — analytic DOMAIN ERRORS (throw exactly where cmath does)
+chk(throws(Function(): return C.log(C.zero)), "log(0) throws")
+chk(throws(Function(): return C.log10(C.zero)), "log10(0) throws")
+chk(throws(Function(): return C.atanh(C.of(1, 0))), "atanh(1) throws")
+chk(throws(Function(): return C.atanh(C.of(-1, 0))), "atanh(-1) throws")
+chk(throws(Function(): return C.zero ** C.of(-1, 0)), "0 ** -1 throws (zero to a negative power)")
+chk(throws(Function(): return C.zero ** C.i), "0 ** i throws (zero to a complex power)")
+chk(throws(Function(): return C.pow(C.zero, C.of(-2, 0))), "pow(0, -2) throws")
+chk(throws(Function(): return C.pow(C.of(2, 0))), "pow with one argument throws")
+
+# =================================================================================================
+# complex matrices — construction, factories, indexing
+# =================================================================================================
+var M = C.Matrix([[C.of(1, 1), C.of(2, 0)], [C.of(0, 1), C.of(1, -1)]])
+chk(M.rows() == 2 and M.cols() == 2 and M.shape() == [2, 2], "ComplexMatrix rows/cols/shape")
+chk(M[0, 0] == C.of(1, 1) and M[1, 0] == C.of(0, 1), "ComplexMatrix element access")
+chk(M[0] == [C.of(1, 1), C.of(2, 0)], "ComplexMatrix m[i] is the row")
+chk(M.row(1) == [C.of(0, 1), C.of(1, -1)], "ComplexMatrix row(i)")
+# real cells coerce to the real axis
+chk(C.Matrix([[1, 2], [3, 4]])[0, 0] == C.of(1, 0), "ComplexMatrix coerces Integer cells")
+chk(C.Matrix([[1.5]])[0, 0] == C.of(1.5, 0), "ComplexMatrix coerces Float cells")
+# factories
+chk(C.zeros(2, 2)[0, 0] == C.zero, "complex zeros")
+chk(C.ones(2, 3).cols() == 3 and C.ones(2, 3)[1, 2] == C.one, "complex ones")
+chk(C.identity(3)[2, 2] == C.one and C.identity(3)[0, 2] == C.zero, "complex identity")
+chk(C.Matrix([[C.of(2, 0)]]).shape() == [1, 1], "1x1 complex matrix")
+chk(C.Matrix(rows = [[C.one]]).shape() == [1, 1], "complex Matrix keyword arg")
+# get/set
+var CG = C.Matrix([[C.one, C.zero], [C.zero, C.one]])
+CG.set(0, 1, C.of(5, 5))
+chk(CG.get(0, 1) == C.of(5, 5), "complex set/get")
+CG[1, 0] = C.of(7, 0)
+chk(CG[1, 0] == C.of(7, 0), "complex m[i, j] = v")
+chk(C.Matrix([[C.one]]).get(row = 0, col = 0) == C.one, "complex get keyword args")
+
+# =================================================================================================
+# complex matrices — arithmetic + RAISE surface
+# =================================================================================================
+chk((M + M)[0, 0] == C.of(2, 2), "complex matrix add")
+chk((M - M)[0, 0] == C.zero, "complex matrix sub")
+chk((M * C.of(2, 0))[0, 1] == C.of(4, 0), "complex scalar (Complex) multiply")
+chk((M * 2)[0, 1] == C.of(4, 0), "complex scalar (Integer) multiply")
+chk((C.Matrix([[C.one, C.zero], [C.zero, C.one]]) * M) == M, "complex identity * M = M")
+chk(throws(Function(): return M + C.Matrix([[C.one]])), "complex add shape mismatch throws")
+chk(throws(Function(): return C.Matrix([[C.one], [C.one]]) * C.Matrix([[C.one], [C.one]])), "complex multiply inner-dim mismatch throws")
+chk(throws(Function(): return M ** M), "complex matrix ** unsupported throws")
+
+# =================================================================================================
+# complex matrices — transpose / conjugate / hermitian / det / inverse / trace / apply
+# =================================================================================================
+chk(M.transpose()[0, 1] == C.of(0, 1), "complex transpose")
+chk(M.transpose().shape() == [2, 2], "complex transpose shape (square)")
+chk(C.Matrix([[C.of(1, 1), C.of(2, 2), C.of(3, 3)]]).transpose().shape() == [3, 1], "complex transpose rectangular")
+chk(M.conjugate()[0, 0] == C.of(1, -1), "complex elementwise conjugate")
+chk(M.hermitian()[0, 1] == C.of(0, -1), "hermitian (conjugate transpose)")
+chk(M.conjugatetranspose() == M.hermitian(), "conjugatetranspose alias of hermitian")
+chk(C.Matrix([[C.of(1, 1), C.of(2, 2), C.of(3, 3)]]).hermitian().shape() == [3, 1], "hermitian rectangular shape")
+# determinant: det([[1+i,2],[i,1-i]]) = (1+i)(1-i) - 2i = 2 - 2i
+chk(M.determinant().compare(C.of(2, -2), abs_tol = 0.000000001), "complex determinant (Gaussian)")
+chk(C.Matrix([[C.of(2, 0)]]).determinant() == C.of(2, 0), "complex determinant 1x1")
+# inverse via Gauss-Jordan: M * inv(M) ~ I
+var Minv = M.inverse()
+chk((M * Minv).compare(C.identity(2), abs_tol = 0.000001), "complex M * inv(M) = I (tolerant)")
+chk((Minv * M).compare(C.identity(2), abs_tol = 0.000001), "complex inv(M) * M = I (tolerant)")
+chk(C.Matrix([[C.of(2, 0)]]).inverse()[0, 0].compare(C.of(0.5, 0), abs_tol = 0.000000001), "complex 1x1 inverse")
+chk(M.trace() == C.of(2, 0), "complex trace")
+chk(M.apply(Function(zz): return C.conjugate(zz)) == M.conjugate(), "complex apply (elementwise conj)")
+# singular complex matrix: determinant 0, inverse RAISES
+chk(C.Matrix([[C.of(1, 0), C.of(2, 0)], [C.of(2, 0), C.of(4, 0)]]).determinant().compare(C.zero, abs_tol = 0.000000001), "complex singular determinant ~ 0")
+chk(throws(Function(): return C.Matrix([[C.of(1, 0), C.of(2, 0)], [C.of(2, 0), C.of(4, 0)]]).inverse()), "complex singular inverse throws")
+chk(throws(Function(): return C.zeros(2, 2).inverse()), "complex zero matrix inverse throws (singular)")
+# RAISE: non-square det/inverse/trace
+chk(throws(Function(): return C.Matrix([[C.one, C.one]]).determinant()), "complex non-square determinant throws")
+chk(throws(Function(): return C.Matrix([[C.one, C.one]]).inverse()), "complex non-square inverse throws")
+chk(throws(Function(): return C.Matrix([[C.one, C.one]]).trace()), "complex non-square trace throws")
+
+# complex matrix equality (EXACT) + tolerant compare
+chk(C.Matrix([[C.one]]) == C.Matrix([[C.one]]), "complex matrix exact ==")
+chk((C.Matrix([[C.one]]) == C.Matrix([[C.zero]])) == False, "complex matrix == unequal")
+chk((C.Matrix([[C.one]]) == C.Matrix([[C.one, C.one]])) == False, "complex matrix == diff shape -> False")
+chk((C.Matrix([[C.one]]) == 5) == False, "complex matrix == non-matrix -> False")
+chk(C.Matrix([[C.one]]).compare(C.Matrix([[C.one, C.one]])) == False, "complex compare diff shape -> False")
+chk(throws(Function(): return C.Matrix([[C.one]]).compare(5)), "complex compare non-matrix throws")
+
+# =================================================================================================
+# complex vectors — dot (Hermitian) / cross / norm
+# =================================================================================================
+var cv1 = C.vector([C.of(1, 1), C.of(2, 0)])
+var cv2 = C.vector([C.of(1, 0), C.of(0, 1)])
+chk(cv1.rows() == 1 and cv1.cols() == 2, "complex vector is a 1xn row")
+chk(C.vector(values = [C.one]).shape() == [1, 1], "complex vector keyword arg")
+# Hermitian inner product: conj(1+i)*1 + conj(2)*i = (1-i) + 2i = 1+i
+chk(cv1.dot(cv2) == C.of(1, 1), "complex dot is the Hermitian inner product (conj on the left)")
+# v . v = sum |v_i|^2 is real and non-negative: |1+i|^2 + |2|^2 = 6
+chk(cv1.dot(cv1) == C.of(6, 0), "z.dot(z) = sum |z_i|^2 (real, nonneg)")
+chk(approx(cv1.norm(), C.sqrt(C.of(6, 0)).re), "complex vector norm = sqrt(6)")
+chk(type(cv1.norm()) == "Float", "complex vector norm is a Float")
+# cross of two complex 3-vectors (bilinear): (i e_x) x (i e_y) = i^2 e_z = -e_z
+var cx = C.vector([C.of(0, 1), C.zero, C.zero])
+var cy = C.vector([C.zero, C.of(0, 1), C.zero])
+chk(cx.cross(cy) == C.vector([C.zero, C.zero, C.of(-1, 0)]), "complex cross product")
+# RAISE: dot length mismatch, dot non-vector, cross non-3-vec
+chk(throws(Function(): return cv1.dot(C.vector([C.one, C.one, C.one]))), "complex dot length mismatch throws")
+chk(throws(Function(): return M.dot(M)), "complex dot on a 2x2 (non-vector) throws")
+chk(throws(Function(): return C.vector([C.one, C.one]).cross(C.vector([C.one, C.one]))), "complex cross on 2-vec throws")
+
+# =================================================================================================
+# inspect — both modules expose their full signatured surface
+# =================================================================================================
+chk(inspect(C.sqrt) == "sqrt(z) -> Complex", "inspect a native analytic function")
+chk(inspect(m.identity) == "identity(n: Integer) -> Matrix", "inspect a native factory signature")
+chk("compare(other, rel_tol = 1e-09, abs_tol = 0.0)" in inspect(C.of(1, 1)), "inspect a Complex instance shows compare")
+chk("determinant() -> Float" in inspect(A), "inspect a Matrix instance shows determinant")
+chk("hermitian() -> ComplexMatrix" in inspect(M), "inspect a ComplexMatrix instance")
+chk("polar(r: Number, theta: Number) -> Complex" in inspect(C), "inspect the complex module")
+
+# -------------------------------------------------------------------------------------------------
+io.print(n)
+io.print("OK r4_linalg")

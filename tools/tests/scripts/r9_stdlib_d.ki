@@ -1,0 +1,317 @@
+# r9_stdlib_d.ki — edge-case and error-hardening for arg, xml, tee, and semver modules.
+# Key API notes:
+#   arg.Parser: positional("name"), option("name", default=val), flag("name"),
+#               parse(list) -> Dict, usage() -> String; -h returns None;
+#               extra positionals go to result["rest"]; option type inferred from default.
+#   xml: fromstring/parse(src)->Element; find/findall/findtext/itertext/get; tostring;
+#        tail="" (empty string) when no tail; lenient (unclosed tags OK, no throw).
+#   tee: Tee(primary, copies=None); tee_stdout/tee_stderr context managers.
+#   semver: valid/parse/clean/compare/diff/inc/sort/rsort/satisfies/validrange/
+#           maxsatisfying/minsatisfying; valid() returns the string or None.
+
+var io = import("io")
+var arg = import("arg")
+var xml = import("xml")
+var tee = import("tee")
+var sv = import("semver")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== arg module
+var p = arg.Parser(description="Test parser")
+p.positional("name")
+p.option("count", default=1)
+p.flag("verbose")
+
+# Full parse
+var r = p.parse(["Alice", "--count", "5", "--verbose"])
+ok(r["name"] == "Alice", "arg: positional bound to name")
+ok(r["count"] == 5, "arg: --count option parsed as Integer")
+ok(r["verbose"] == True, "arg: --verbose flag is True")
+ok(r["rest"] == [], "arg: no extra positionals")
+
+# Defaults when flags/options absent
+var r2 = p.parse(["Bob"])
+ok(r2["name"] == "Bob", "arg: positional without options")
+ok(r2["count"] == 1, "arg: option defaults to 1")
+ok(r2["verbose"] == False, "arg: flag defaults to False")
+
+# Extra positionals go into 'rest'
+var p2 = arg.Parser()
+p2.positional("first")
+var r3 = p2.parse(["a", "b", "c"])
+ok(r3["first"] == "a", "arg: first positional bound")
+ok(r3["rest"] == ["b", "c"], "arg: extra positionals in rest")
+
+# -h returns None
+var p3 = arg.Parser()
+p3.positional("x")
+ok(p3.parse(["-h"]) == None, "arg: -h returns None")
+ok(p3.parse(["--help"]) == None, "arg: --help returns None")
+
+# usage() returns String
+var p4 = arg.Parser(description="My tool")
+p4.positional("input")
+p4.option("output", default="out.txt", help="output path")
+p4.flag("verbose", help="enable verbose")
+var u = p4.usage()
+ok(type(u) == "String", "arg: usage() returns String")
+ok("input" in u, "arg: usage() contains positional name")
+ok("output" in u, "arg: usage() contains option name")
+ok("verbose" in u, "arg: usage() contains flag name")
+
+# Error on unknown option
+ok(throws(Function(): return p.parse(["Alice", "--unknown"])), "arg: unknown option throws")
+
+# Error on missing positional
+ok(throws(Function(): return p.parse([])), "arg: missing positional throws")
+
+# String-defaulted option stays String
+var p5 = arg.Parser()
+p5.positional("f")
+p5.option("tag", default="latest")
+var r5 = p5.parse(["file.txt", "--tag", "v1.0"])
+ok(r5["tag"] == "v1.0", "arg: string option stays String")
+ok(type(r5["tag"]) == "String", "arg: string option type is String")
+
+# Parser with description only (no positionals)
+var p6 = arg.Parser(description="Standalone")
+var r6 = p6.parse([])
+ok(r6["rest"] == [], "arg: empty parse with no positionals OK")
+
+# =========================================================== xml module
+# fromstring basic
+var root = xml.fromstring("<root><child name='a'>text1</child><child name='b'>text2</child></root>")
+ok(root.tag == "root", "xml: root tag")
+ok(len(root.children) == 2, "xml: two children")
+ok(root.children[0].tag == "child", "xml: child tag")
+ok(root.children[0].text == "text1", "xml: child text")
+ok(root.children[0].attrib == {"name": "a"}, "xml: child attrib")
+ok(root.children[0].get("name") == "a", "xml: get() returns attrib value")
+ok(root.children[0].get("missing") == None, "xml: get() missing returns None")
+ok(root.children[0].get("missing", "def") == "def", "xml: get() missing with default")
+
+# find / findall
+var ch = root.find("child")
+ok(ch.tag == "child", "xml: find() returns first match")
+ok(ch.text == "text1", "xml: find() first child text")
+var all_ch = root.findall("child")
+ok(len(all_ch) == 2, "xml: findall() returns all matches")
+ok(all_ch[1].text == "text2", "xml: findall() second child")
+ok(root.find("missing") == None, "xml: find() non-existent returns None")
+
+# findtext
+ok(root.findtext("child") == "text1", "xml: findtext() first child text")
+ok(root.findtext("missing") == "", "xml: findtext() missing returns empty string")
+ok(root.findtext("missing", "default") == "default", "xml: findtext() missing with default")
+
+# itertext
+var it = root.itertext()
+ok(type(it) == "List", "xml: itertext() returns List")
+ok("text1" in it, "xml: itertext() contains first text")
+ok("text2" in it, "xml: itertext() contains second text")
+
+# tail (text after a closing tag)
+var r_tail = xml.fromstring("<root><a/>tail text</root>")
+ok(r_tail.children[0].tail == "tail text", "xml: tail text after child")
+
+# no tail
+var r_notail = xml.fromstring("<root><a>inside</a></root>")
+ok(r_notail.children[0].tail == "", "xml: no tail is empty string")
+
+# tostring
+var out = xml.tostring(root)
+ok(type(out) == "String", "xml: tostring() returns String")
+ok("child" in out, "xml: tostring() contains child tags")
+ok("text1" in out, "xml: tostring() contains text content")
+ok("name=" in out, "xml: tostring() contains attributes")
+
+# parse() is alias for fromstring()
+var r_parse = xml.parse("<x>val</x>")
+ok(r_parse.tag == "x", "xml: parse() is alias for fromstring()")
+ok(r_parse.text == "val", "xml: parse() text content")
+
+# entities decoded
+var r_ent = xml.fromstring("<r>&amp;&lt;&gt;&quot;&#65;</r>")
+ok(r_ent.text == '&<>"A', "xml: named + numeric entities decoded")
+
+# CDATA section
+var r_cdata = xml.fromstring("<r><![CDATA[hello <world>]]></r>")
+ok(r_cdata.text == "hello <world>", "xml: CDATA section content")
+
+# Lenient: unclosed tag doesn't throw
+var r_len = xml.fromstring("<open>text")
+ok(r_len.tag == "open", "xml: lenient parser handles unclosed tag")
+ok(r_len.text == "text", "xml: lenient parser preserves text")
+
+# XML declaration is ignored
+var r_decl = xml.fromstring('<?xml version="1.0" encoding="UTF-8"?><root/>')
+ok(r_decl.tag == "root", "xml: <?xml?> declaration accepted")
+
+# Nested children
+var r_nested = xml.fromstring("<a><b><c>deep</c></b></a>")
+ok(r_nested.find("b").find("c").text == "deep", "xml: nested find() chain")
+
+# =========================================================== tee module
+# Tee(primary, copies=None) - single copy stream
+var pri1 = io.BytesIO()
+var cpy1 = io.BytesIO()
+var t1 = tee.Tee(pri1, cpy1)
+t1.write("hello")
+pri1.seek(0)
+cpy1.seek(0)
+ok(pri1.read() == "hello", "tee: primary receives write")
+ok(cpy1.read() == "hello", "tee: copy receives write")
+
+# Tee with list of copies
+var pri2 = io.BytesIO()
+var cpy2a = io.BytesIO()
+var cpy2b = io.BytesIO()
+var t2 = tee.Tee(pri2, [cpy2a, cpy2b])
+t2.write("fan")
+pri2.seek(0)
+cpy2a.seek(0)
+cpy2b.seek(0)
+ok(pri2.read() == "fan", "tee: multiple copies - primary")
+ok(cpy2a.read() == "fan", "tee: multiple copies - copy a")
+ok(cpy2b.read() == "fan", "tee: multiple copies - copy b")
+
+# Tee None primary (pure fan-out)
+var fan = io.BytesIO()
+var t3 = tee.Tee(None, fan)
+t3.write("F")
+fan.seek(0)
+ok(fan.read() == "F", "tee: None primary - copy still written")
+
+# Tee primary only (no copies)
+var solo = io.BytesIO()
+var t4 = tee.Tee(solo)
+t4.write("S")
+solo.seek(0)
+ok(solo.read() == "S", "tee: primary-only write")
+
+# streams() returns list of active streams
+var t5 = tee.Tee(pri1, [cpy2a])
+var strms = t5.streams()
+ok(type(strms) == "List", "tee: streams() returns List")
+ok(len(strms) == 2, "tee: streams() has primary + copy")
+
+# writelines
+var wb = io.BytesIO()
+var tc = io.BytesIO()
+var t6 = tee.Tee(wb, tc)
+t6.writelines(["line1", "line2"])
+wb.seek(0)
+tc.seek(0)
+ok(wb.read() == "line1line2", "tee: writelines writes all lines")
+ok(tc.read() == "line1line2", "tee: writelines copy correct")
+
+# tee_stdout context manager
+var stdout_cap = io.BytesIO()
+with tee.tee_stdout(stdout_cap) as _:
+    io.print("captured")
+stdout_cap.seek(0)
+var cap_text = stdout_cap.read()
+ok("captured" in cap_text, "tee_stdout: captured print output")
+
+# tee_stderr context manager
+var stderr_cap = io.BytesIO()
+with tee.tee_stderr(stderr_cap) as _:
+    io.eprint("err_msg")
+stderr_cap.seek(0)
+ok("err_msg" in stderr_cap.read(), "tee_stderr: captured eprint output")
+
+# =========================================================== semver module
+# valid() returns the cleaned string or None
+ok(sv.valid("1.2.3") == "1.2.3", "semver: valid returns string")
+ok(sv.valid("1.2.3-alpha.1") == "1.2.3-alpha.1", "semver: valid with prerelease")
+ok(sv.valid("not-a-version") == None, "semver: invalid returns None")
+ok(sv.valid("") == None, "semver: empty string returns None")
+
+# clean
+ok(sv.clean("  =v1.2.3  ") == "1.2.3", "semver: clean strips whitespace and prefix")
+ok(sv.clean("1.2.3") == "1.2.3", "semver: clean already clean")
+
+# parse
+var parsed = sv.parse("1.2.3-alpha.1+build.456")
+ok(type(parsed) == "Dict", "semver: parse returns Dict")
+ok(parsed["major"] == 1, "semver: parse major")
+ok(parsed["minor"] == 2, "semver: parse minor")
+ok(parsed["patch"] == 3, "semver: parse patch")
+ok(type(parsed["prerelease"]) == "List", "semver: parse prerelease is List")
+ok("alpha" in parsed["prerelease"], "semver: parse prerelease contains 'alpha'")
+
+# major/minor/patch
+ok(sv.major("2.3.4") == 2, "semver: major()")
+ok(sv.minor("2.3.4") == 3, "semver: minor()")
+ok(sv.patch("2.3.4") == 4, "semver: patch()")
+ok(sv.prerelease("1.0.0-beta") != None, "semver: prerelease() non-None for prerelease")
+ok(sv.prerelease("1.0.0") == None, "semver: prerelease() None for stable")
+
+# compare: -1 / 0 / 1
+ok(sv.compare("1.0.0", "2.0.0") == -1, "semver: compare 1 < 2 -> -1")
+ok(sv.compare("2.0.0", "1.0.0") == 1, "semver: compare 2 > 1 -> 1")
+ok(sv.compare("1.0.0", "1.0.0") == 0, "semver: compare equal -> 0")
+
+# comparison predicates
+ok(sv.eq("1.0.0", "1.0.0") == True, "semver: eq")
+ok(sv.neq("1.0.0", "2.0.0") == True, "semver: neq")
+ok(sv.lt("1.0.0", "2.0.0") == True, "semver: lt")
+ok(sv.lte("1.0.0", "1.0.0") == True, "semver: lte equal")
+ok(sv.gt("2.0.0", "1.0.0") == True, "semver: gt")
+ok(sv.gte("2.0.0", "2.0.0") == True, "semver: gte equal")
+ok(sv.lt("2.0.0", "1.0.0") == False, "semver: lt false")
+
+# diff
+ok(sv.diff("1.0.0", "2.0.0") == "major", "semver: diff major")
+ok(sv.diff("1.0.0", "1.1.0") == "minor", "semver: diff minor")
+ok(sv.diff("1.0.0", "1.0.1") == "patch", "semver: diff patch")
+ok(sv.diff("1.0.0", "1.0.0") == None, "semver: diff equal -> None")
+
+# inc
+ok(sv.inc("1.2.3", "major") == "2.0.0", "semver: inc major")
+ok(sv.inc("1.2.3", "minor") == "1.3.0", "semver: inc minor")
+ok(sv.inc("1.2.3", "patch") == "1.2.4", "semver: inc patch")
+ok(throws(Function(): return sv.inc("1.0.0", "premajor")), "semver: inc invalid release throws")
+ok(throws(Function(): return sv.major("not-semver")), "semver: major on invalid throws")
+
+# sort / rsort
+var vs = ["1.2.0", "1.0.0", "1.3.0", "0.9.0"]
+var sorted_vs = sv.sort(vs)
+ok(sorted_vs == ["0.9.0", "1.0.0", "1.2.0", "1.3.0"], "semver: sort ascending")
+var rsorted_vs = sv.rsort(vs)
+ok(rsorted_vs == ["1.3.0", "1.2.0", "1.0.0", "0.9.0"], "semver: rsort descending")
+
+# satisfies
+ok(sv.satisfies("1.2.3", "^1.0.0") == True, "semver: satisfies ^1")
+ok(sv.satisfies("2.0.0", "^1.0.0") == False, "semver: satisfies ^1 fails for 2.0")
+ok(sv.satisfies("1.2.5", "~1.2.0") == True, "semver: satisfies ~ patch range")
+ok(sv.satisfies("1.3.0", "~1.2.0") == False, "semver: satisfies ~ fails for different minor")
+ok(sv.satisfies("1.5.0", ">=1.0.0 <2.0.0") == True, "semver: satisfies >=< range")
+ok(sv.satisfies("2.0.0", ">=1.0.0 <2.0.0") == False, "semver: satisfies >=< upper exclusive")
+
+# validrange
+ok(sv.validrange("^1.0.0") == True, "semver: validrange ^")
+ok(sv.validrange("~1.2.0") == True, "semver: validrange ~")
+ok(sv.validrange(">=1.0.0 <2.0.0") == True, "semver: validrange >=<")
+ok(sv.validrange("not-valid") == False, "semver: validrange invalid")
+
+# maxsatisfying / minsatisfying
+var pool = ["0.9.0", "1.0.0", "1.5.0", "2.0.0", "2.1.0"]
+ok(sv.maxsatisfying(pool, "^1.0.0") == "1.5.0", "semver: maxsatisfying ^1")
+ok(sv.minsatisfying(pool, "^1.0.0") == "1.0.0", "semver: minsatisfying ^1")
+ok(sv.maxsatisfying(pool, "^2.0.0") == "2.1.0", "semver: maxsatisfying ^2")
+ok(sv.maxsatisfying(pool, "^9.0.0") == None, "semver: maxsatisfying no match -> None")
+ok(sv.minsatisfying(pool, "^9.0.0") == None, "semver: minsatisfying no match -> None")
+
+io.print("r9_stdlib_d: " + String(n) + " checks passed")

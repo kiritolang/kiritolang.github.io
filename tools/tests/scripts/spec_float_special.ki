@@ -1,0 +1,34 @@
+# Float equality semantics for the special IEEE values inf / -inf / NaN. Kirito's float `==` is
+# epsilon-based for finite values, but must still get the non-finite cases right: NaN is never equal
+# to anything (including itself) and an infinity equals only an identical infinity.
+var io = import("io")
+var math = import("math")
+
+var inf = math.inf
+var nan = math.nan
+
+# --- infinity ---
+assert inf == inf, "inf equals itself"
+assert -inf == -inf, "-inf equals itself"
+assert not (inf == -inf), "+inf and -inf are not equal"
+assert not (inf == 1.0) and not (1.0 == inf), "an infinity does not equal a finite value"
+assert not (inf == 1.0e308), "inf is not equal to the largest finite double"
+assert inf != 1.0 and inf != -inf, "inf is unequal to finite and to -inf"
+
+# --- NaN: unequal to everything, including itself ---
+assert not (nan == nan), "NaN is not equal to itself"
+assert nan != nan, "NaN compares unequal to itself"
+assert not (nan == 0.0) and not (nan == inf), "NaN is not equal to anything"
+assert nan != 1.0, "NaN is unequal to a finite value"
+
+# --- finite values: equality is EXACT IEEE-754 (no epsilon); .compare() gives tolerance ---
+assert 1.0 == 1.0 and 2.5 == 2.5, "exact float equality"
+assert 0.0 == -0.0, "signed zero equality"
+assert not (0.1 + 0.2 == 0.3), "0.1+0.2 != 0.3 (exact, not epsilon)"
+assert (0.1 + 0.2).compare(0.3) and (0.1 + 0.2).compare(0.3, abs_tol = 1e-9), ".compare gives tolerance"
+assert not (1.0 == 2.0), "distinct finite values are unequal"
+
+# --- Integer/Float cross comparisons unaffected ---
+assert 1 == 1.0 and not (inf == 9223372036854775807), "int/float compare; inf != int max"
+
+io.print("OK")

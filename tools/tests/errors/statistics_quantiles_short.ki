@@ -1,0 +1,2 @@
+var stats = import("statistics")
+discard stats.quantiles([1])

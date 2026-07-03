@@ -1,0 +1,7 @@
+seeded randint: 357630 400443 689384
+seeded randrange: 35 40
+seeded choice: 10
+seeded shuffle: [6, 4, 1, 7, 2, 8, 5, 3]
+seeded sample: [9, 5, 4, 7]
+checks: 224
+OK r4_math_sys

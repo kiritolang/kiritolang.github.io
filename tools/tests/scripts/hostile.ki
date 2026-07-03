@@ -1,0 +1,152 @@
+# Adversarial probes: each should either work or throw a clean error — never crash the VM.
+var io = import("io")
+var matrix = import("matrix")
+var json = import("json")
+
+var passed = 0
+var total = 0
+
+var probe = Function(f):
+    total = total + 1
+    try:
+        f()
+        passed = passed + 1
+    catch as e:
+        passed = passed + 1   # a clean Kirito error also counts as "survived"
+
+# --- self-referential containers ---
+var p_selflist = Function():
+    var a = []
+    a.append(a)
+    return String(a)
+probe(p_selflist)
+
+var p_selfdict = Function():
+    var d = {}
+    d["k"] = d
+    return String(d)
+probe(p_selfdict)
+
+var p_cyceq = Function():
+    var a = []
+    a.append(a)
+    return a == a
+probe(p_cyceq)
+
+var p_twocyc = Function():
+    var a = []
+    a.append(a)
+    var b = []
+    b.append(b)
+    return a == b
+probe(p_twocyc)
+
+# --- deep nesting ---
+var p_deepnest = Function():
+    var x = []
+    var i = 0
+    while i < 5000:
+        x = [x]
+        i = i + 1
+    return len(x)
+probe(p_deepnest)
+
+# --- huge allocations ---
+var p_hugestr = Function():
+    return len("ab" * 500000)
+probe(p_hugestr)
+
+var p_hugesum = Function():
+    return sum(range(1000000))
+probe(p_hugesum)
+
+# --- pathological indices ---
+var p_negoob = Function():
+    return [1, 2, 3][-100]
+probe(p_negoob)
+
+var p_bigidx = Function():
+    return [1, 2, 3][999999999]
+probe(p_bigidx)
+
+var p_strob = Function():
+    return "hi"[50]
+probe(p_strob)
+
+# --- type confusion ---
+var p_addsi = Function():
+    return "x" + 5
+probe(p_addsi)
+
+var p_callint = Function():
+    var n = 5
+    return n()
+probe(p_callint)
+
+var p_iterint = Function():
+    for x in 42:
+        return x
+    return 0
+probe(p_iterint)
+
+# --- dict abuse ---
+var p_unhashable = Function():
+    var d = {}
+    d[[1]] = 2
+    return d
+probe(p_unhashable)
+
+var p_misskey = Function():
+    return {"a": 1}["zzz"]
+probe(p_misskey)
+
+# --- zero division ---
+var p_intdiv0 = Function():
+    return 1 // 0
+probe(p_intdiv0)
+
+var p_mod0 = Function():
+    return 5 % 0
+probe(p_mod0)
+
+# --- matrix abuse ---
+var p_singular = Function():
+    return matrix.Matrix([[1, 1], [1, 1]]).inverse()
+probe(p_singular)
+
+var p_nonsqdet = Function():
+    return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).determinant()
+probe(p_nonsqdet)
+
+var p_matdim = Function():
+    return matrix.Matrix([[1, 2]]) * matrix.Matrix([[1, 2]])
+probe(p_matdim)
+
+var p_matoob = Function():
+    return matrix.Matrix([[1, 2], [3, 4]])[9, 9]
+probe(p_matoob)
+
+# --- slice abuse ---
+var p_zerostep = Function():
+    return [1, 2, 3][0:3:0]
+probe(p_zerostep)
+
+# --- recursion ---
+var p_deeprec = Function():
+    var r = Function(n):
+        if n <= 0:
+            return 0
+        return r(n - 1)
+    return r(50000)
+probe(p_deeprec)
+
+# --- json abuse ---
+var p_badjson = Function():
+    return json.parse("{[}]")
+probe(p_badjson)
+
+var p_deepjson = Function():
+    return json.parse("[[[[[[[[[[1]]]]]]]]]]")
+probe(p_deepjson)
+
+io.print(String(passed) + "/" + String(total) + " survived")

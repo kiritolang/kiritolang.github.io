@@ -1,0 +1,3 @@
+# pop from an empty Set
+var s = Set()
+discard s.pop()

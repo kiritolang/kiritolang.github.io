@@ -1,0 +1,576 @@
+# The `complex` module in pure Kirito: complex numbers (with the analytic math set) and complex
+# matrices/vectors (Gaussian determinant + Gauss-Jordan inverse, Hermitian vector ops). Mirrors the
+# native module's surface so spec_complex / the linear-algebra examples run through the self-host.
+
+var math = import("math")
+
+var pi = math.pi
+var e = math.e
+var tau = 2.0 * math.pi
+
+# Coerce a Complex-or-real into a Complex (reals land on the real axis).
+var _toC = Function(x):
+    if type(x) == "Complex":
+        return x
+    return Complex(Float(x), 0.0)
+
+class Complex:
+    var _init_ = Function(self, re, im = 0.0):
+        self.re = Float(re)
+        self.im = Float(im)
+        # `.real`/`.imag` aliases for `.re`/`.im` (matching native getAttr). Complex never mutates
+        # re/im after construction, so these stored copies are an equivalent read-only alias.
+        self.real = self.re
+        self.imag = self.im
+
+    var _add_ = Function(self, o):
+        var c = _toC(o)
+        return Complex(self.re + c.re, self.im + c.im)
+    var _sub_ = Function(self, o):
+        var c = _toC(o)
+        return Complex(self.re - c.re, self.im - c.im)
+    var _mul_ = Function(self, o):
+        var c = _toC(o)
+        return Complex(self.re * c.re - self.im * c.im, self.re * c.im + self.im * c.re)
+    var _div_ = Function(self, o):
+        var c = _toC(o)
+        var d = c.re * c.re + c.im * c.im
+        if d == 0.0:
+            throw "complex division by zero"
+        return Complex((self.re * c.re + self.im * c.im) / d, (self.im * c.re - self.re * c.im) / d)
+    var _neg_ = Function(self):
+        return Complex(-self.re, -self.im)
+    var _pow_ = Function(self, o):
+        var c = _toC(o)
+        # Singularity: zero to a negative or non-real power is a domain error (0**0 stays 1, below).
+        if self.re == 0.0 and self.im == 0.0 and (c.re < 0.0 or c.im != 0.0):
+            throw "complex pow: zero to a negative or complex power"
+        # exact integer powers via repeated multiplication; general case via exp(w*log(z))
+        if c.im == 0.0 and c.re == math.floor(c.re) and c.re >= 0.0:
+            var n = Integer(c.re)
+            var result = Complex(1.0, 0.0)
+            var k = 0
+            while k < n:
+                result = result * self
+                k = k + 1
+            return result
+        return exp(c * log(self))
+
+    var _eq_ = Function(self, o):
+        var c = _toC(o)
+        return self.re == c.re and self.im == c.im
+    var _ne_ = Function(self, o):
+        return not self._eq_(o)
+    var _lt_ = Function(self, o):
+        throw "complex numbers are not ordered"
+    var _le_ = Function(self, o):
+        throw "complex numbers are not ordered"
+    var _gt_ = Function(self, o):
+        throw "complex numbers are not ordered"
+    var _ge_ = Function(self, o):
+        throw "complex numbers are not ordered"
+
+    var conjugate = Function(self):
+        return Complex(self.re, -self.im)
+    var modulus = Function(self):
+        return math.hypot(self.re, self.im)
+    var norm2 = Function(self):
+        return self.re * self.re + self.im * self.im
+    var argument = Function(self):
+        return math.atan2(self.im, self.re)
+    var is_zero = Function(self):
+        return self.modulus() < 0.0000000001        # tolerant (magnitude < 1e-10), matching native
+    # Tolerant comparison (rel/abs tolerance), mirroring native: |a-b| <= max(rel_tol*max(|a|,|b|),
+    # abs_tol) with |.| the complex modulus. `==` stays exact; NaN/inf components are never close.
+    var compare = Function(self, other, rel_tol = 0.000000001, abs_tol = 0.0):
+        var c = _toC(other)
+        if self.re == c.re and self.im == c.im:
+            return True
+        if math.isnan(self.re) or math.isnan(self.im) or math.isnan(c.re) or math.isnan(c.im):
+            return False
+        if math.isinf(self.re) or math.isinf(self.im) or math.isinf(c.re) or math.isinf(c.im):
+            return False
+        var diff = (self - c).modulus()
+        return diff <= max(rel_tol * max(self.modulus(), c.modulus()), abs_tol)
+
+    var _str_ = Function(self):
+        var imv = self.im
+        if imv == 0.0:
+            imv = 0.0                # collapse -0.0 -> +0.0 so we never print "+-0.0i"
+        var sign = "+"
+        if imv < 0.0:
+            sign = "-"
+            imv = -imv
+        return String(self.re) + sign + String(imv) + "i"
+
+# constructors / constants
+var of = Function(re, im):
+    return Complex(re, im)
+var real = Function(re):
+    return Complex(re, 0.0)
+var zero = Complex(0.0, 0.0)
+var one = Complex(1.0, 0.0)
+var i = Complex(0.0, 1.0)
+
+# Analytic functions over a Complex-or-number — the complex extensions of `math`'s transcendental
+# set. Like the native module they throw at exactly the genuine singularities (log/log10 of zero,
+# atanh of ±1, zero to a negative/non-real power) while staying defined on the rest of the plane
+# (sqrt(-1)=i, log(-1)=iπ, asin(2), acosh(0) are all valid and must NOT throw). Comparisons against
+# these in the test corpus use `.compare` (tolerant), so the principal-branch formulas suffice.
+var exp = Function(z):
+    var c = _toC(z)
+    var ex = math.exp(c.re)
+    return Complex(ex * math.cos(c.im), ex * math.sin(c.im))
+var log = Function(z):
+    var c = _toC(z)
+    if c.re == 0.0 and c.im == 0.0:
+        throw "complex log: math domain error (logarithm of zero)"
+    return Complex(math.log(math.hypot(c.re, c.im)), math.atan2(c.im, c.re))
+var log10 = Function(z):
+    var c = _toC(z)
+    if c.re == 0.0 and c.im == 0.0:
+        throw "complex log10: math domain error (logarithm of zero)"
+    return log(c) / Complex(math.log(10.0), 0.0)
+var sqrt = Function(z):
+    var c = _toC(z)
+    var r = math.hypot(c.re, c.im)
+    var re2 = math.sqrt((r + c.re) / 2.0)
+    var im2 = math.sqrt((r - c.re) / 2.0)
+    if c.im < 0.0:
+        im2 = -im2
+    return Complex(re2, im2)
+# pow(z, w): zero to a negative/non-real power is a domain error; 0 ** 0 == 1; otherwise z^w via
+# the Complex `**` operator (exact integer powers, else exp(w*log(z))).
+var pow = Function(z, w):
+    var b = _toC(z)
+    var ex = _toC(w)
+    if b.re == 0.0 and b.im == 0.0 and (ex.re < 0.0 or ex.im != 0.0):
+        throw "complex pow: zero to a negative or complex power"
+    if b.re == 0.0 and b.im == 0.0 and ex.re == 0.0 and ex.im == 0.0:
+        return Complex(1.0, 0.0)
+    return b ** ex
+var cbrt = Function(z):
+    return _toC(z) ** Complex(1.0 / 3.0, 0.0)
+var sin = Function(z):
+    var c = _toC(z)
+    return Complex(math.sin(c.re) * math.cosh(c.im), math.cos(c.re) * math.sinh(c.im))
+var cos = Function(z):
+    var c = _toC(z)
+    return Complex(math.cos(c.re) * math.cosh(c.im), -math.sin(c.re) * math.sinh(c.im))
+var tan = Function(z):
+    var c = _toC(z)
+    return sin(c) / cos(c)
+var sinh = Function(z):
+    var c = _toC(z)
+    return Complex(math.sinh(c.re) * math.cos(c.im), math.cosh(c.re) * math.sin(c.im))
+var cosh = Function(z):
+    var c = _toC(z)
+    return Complex(math.cosh(c.re) * math.cos(c.im), math.sinh(c.re) * math.sin(c.im))
+var tanh = Function(z):
+    var c = _toC(z)
+    return sinh(c) / cosh(c)
+# Inverse trig/hyperbolic via the principal-branch logarithmic forms.
+var asin = Function(z):
+    var c = _toC(z)
+    return -i * log(i * c + sqrt(one - c * c))
+var acos = Function(z):
+    var c = _toC(z)
+    return -i * log(c + i * sqrt(one - c * c))
+var atan = Function(z):
+    var c = _toC(z)
+    return (i / Complex(2.0, 0.0)) * (log(one - i * c) - log(one + i * c))
+var asinh = Function(z):
+    var c = _toC(z)
+    return log(c + sqrt(c * c + one))
+var acosh = Function(z):
+    var c = _toC(z)
+    return log(c + sqrt(c - one) * sqrt(c + one))
+var atanh = Function(z):
+    var c = _toC(z)
+    if (c.re == 1.0 and c.im == 0.0) or (c.re == 0.0 - 1.0 and c.im == 0.0):
+        throw "complex atanh: math domain error (atanh of ±1)"
+    return (log(one + c) - log(one - c)) / Complex(2.0, 0.0)
+var polar = Function(r, theta):
+    return Complex(r * math.cos(theta), r * math.sin(theta))
+var abs = Function(z):
+    var c = _toC(z)
+    return math.hypot(c.re, c.im)
+var modulus = Function(z):
+    return _toC(z).modulus()
+var phase = Function(z):
+    return _toC(z).argument()
+var argument = Function(z):
+    return _toC(z).argument()
+var norm2 = Function(z):
+    return _toC(z).norm2()
+var conjugate = Function(z):
+    return _toC(z).conjugate()
+
+# ================================================================= complex matrices
+# Named ComplexMatrix (matching the native type name) so it is distinct from matrix.Matrix for
+# serialization (which keys instances by class name); exposed below as the module member `Matrix`.
+class ComplexMatrix:
+    var _init_ = Function(self, rows):
+        var data = []
+        var ncol = -1
+        for row in rows:
+            if ncol < 0:
+                ncol = len(row)
+            elif len(row) != ncol:
+                throw "complex matrix: all rows must have the same length"
+            var r = []
+            for v in row:
+                r.append(_toC(v))
+            data.append(r)
+        self._data = data
+        self._r = len(data)
+        self._c = ncol
+        if self._c < 0:
+            self._c = 0
+
+    var rows = Function(self):
+        return self._r
+    var cols = Function(self):
+        return self._c
+    var shape = Function(self):
+        return [self._r, self._c]
+
+    var _getitem_ = Function(self, i, j = None):
+        if j == None:
+            return List(self._data[i])
+        if i < 0 or i >= self._r or j < 0 or j >= self._c:
+            throw "complex matrix index out of range"
+        return self._data[i][j]
+    var row = Function(self, i):
+        return List(self._data[i])
+    var _setitem_ = Function(self, i, j, v):
+        if i < 0 or i >= self._r or j < 0 or j >= self._c:
+            throw "complex matrix index out of range"
+        self._data[i][j] = _toC(v)
+    var get = Function(self, row, col):
+        return self._getitem_(row, col)
+    var set = Function(self, row, col, value):
+        self._setitem_(row, col, value)
+        return None
+
+    var apply = Function(self, fn):
+        var out = []
+        var i = 0
+        while i < self._r:
+            var rr = []
+            var j = 0
+            while j < self._c:
+                rr.append(_toC(fn(self._data[i][j])))
+                j = j + 1
+            out.append(rr)
+            i = i + 1
+        return Matrix(out)
+
+    var _ew = Function(self, o, add):
+        if self._r != o._r or self._c != o._c:
+            throw "complex matrix: shape mismatch"
+        var out = []
+        var i = 0
+        while i < self._r:
+            var rr = []
+            var j = 0
+            while j < self._c:
+                if add:
+                    rr.append(self._data[i][j] + o._data[i][j])
+                else:
+                    rr.append(self._data[i][j] - o._data[i][j])
+                j = j + 1
+            out.append(rr)
+            i = i + 1
+        return Matrix(out)
+    var _add_ = Function(self, o):
+        return self._ew(o, True)
+    var _sub_ = Function(self, o):
+        return self._ew(o, False)
+
+    var _mul_ = Function(self, o):
+        if type(o) == "Complex" or type(o) == "Integer" or type(o) == "Float":
+            var sc = _toC(o)
+            var out = []
+            for row in self._data:
+                var nr = []
+                for v in row:
+                    nr.append(v * sc)
+                out.append(nr)
+            return Matrix(out)
+        if self._c != o._r:
+            throw "complex matrix: incompatible shapes for multiplication"
+        var res = []
+        var i = 0
+        while i < self._r:
+            var rrow = []
+            var j = 0
+            while j < o._c:
+                var s = Complex(0.0, 0.0)
+                var k = 0
+                while k < self._c:
+                    s = s + self._data[i][k] * o._data[k][j]
+                    k = k + 1
+                rrow.append(s)
+                j = j + 1
+            res.append(rrow)
+            i = i + 1
+        return Matrix(res)
+
+    var transpose = Function(self):
+        var out = []
+        var j = 0
+        while j < self._c:
+            var col = []
+            var i = 0
+            while i < self._r:
+                col.append(self._data[i][j])
+                i = i + 1
+            out.append(col)
+            j = j + 1
+        return Matrix(out)
+    var conjugate = Function(self):
+        var out = []
+        for row in self._data:
+            var nr = []
+            for v in row:
+                nr.append(v.conjugate())
+            out.append(nr)
+        return Matrix(out)
+    var hermitian = Function(self):
+        return self.transpose().conjugate()
+
+    var trace = Function(self):
+        if self._r != self._c:
+            throw "complex matrix: trace requires a square matrix"
+        var s = Complex(0.0, 0.0)
+        var i = 0
+        while i < self._r:
+            s = s + self._data[i][i]
+            i = i + 1
+        return s
+
+    var _copyData = Function(self):
+        var out = []
+        for row in self._data:
+            var nr = []
+            for v in row:
+                nr.append(v)
+            out.append(nr)
+        return out
+
+    var determinant = Function(self):
+        if self._r != self._c:
+            throw "complex matrix: determinant requires a square matrix"
+        var n = self._r
+        var a = self._copyData()
+        var det = Complex(1.0, 0.0)
+        var col = 0
+        while col < n:
+            var piv = col
+            var best = a[col][col].modulus()
+            var r = col + 1
+            while r < n:
+                var m = a[r][col].modulus()
+                if m > best:
+                    best = m
+                    piv = r
+                r = r + 1
+            if best < 1.0e-15:
+                return Complex(0.0, 0.0)
+            if piv != col:
+                var tmp = a[piv]
+                a[piv] = a[col]
+                a[col] = tmp
+                det = -det
+            det = det * a[col][col]
+            var rr = col + 1
+            while rr < n:
+                var f = a[rr][col] / a[col][col]
+                var cc = col
+                while cc < n:
+                    a[rr][cc] = a[rr][cc] - f * a[col][cc]
+                    cc = cc + 1
+                rr = rr + 1
+            col = col + 1
+        return det
+
+    var inverse = Function(self):
+        if self._r != self._c:
+            throw "complex matrix: inverse requires a square matrix"
+        var n = self._r
+        var a = self._copyData()
+        var inv = []
+        var i = 0
+        while i < n:
+            var row = []
+            var j = 0
+            while j < n:
+                if i == j:
+                    row.append(Complex(1.0, 0.0))
+                else:
+                    row.append(Complex(0.0, 0.0))
+                j = j + 1
+            inv.append(row)
+            i = i + 1
+        var col = 0
+        while col < n:
+            var piv = col
+            var best = a[col][col].modulus()
+            var r = col + 1
+            while r < n:
+                var m = a[r][col].modulus()
+                if m > best:
+                    best = m
+                    piv = r
+                r = r + 1
+            if best < 1.0e-15:
+                throw "complex matrix: singular matrix has no inverse"
+            if piv != col:
+                var t1 = a[piv]
+                a[piv] = a[col]
+                a[col] = t1
+                var t2 = inv[piv]
+                inv[piv] = inv[col]
+                inv[col] = t2
+            var d = a[col][col]
+            var k = 0
+            while k < n:
+                a[col][k] = a[col][k] / d
+                inv[col][k] = inv[col][k] / d
+                k = k + 1
+            var rr = 0
+            while rr < n:
+                if rr != col:
+                    var f = a[rr][col]
+                    var cc = 0
+                    while cc < n:
+                        a[rr][cc] = a[rr][cc] - f * a[col][cc]
+                        inv[rr][cc] = inv[rr][cc] - f * inv[col][cc]
+                        cc = cc + 1
+                rr = rr + 1
+            col = col + 1
+        return Matrix(inv)
+
+    # --- vector ops (a complex vector is a 1xn Matrix) ---
+    var _flat = Function(self):
+        var out = []
+        for row in self._data:
+            for v in row:
+                out.append(v)
+        return out
+    var dot = Function(self, o):
+        var a = self._flat()
+        var b = o._flat()
+        if len(a) != len(b):
+            throw "complex vector: dot requires equal length"
+        var s = Complex(0.0, 0.0)
+        var k = 0
+        while k < len(a):
+            s = s + a[k].conjugate() * b[k]
+            k = k + 1
+        return s
+    var norm = Function(self):
+        var s = 0.0
+        for v in self._flat():
+            s = s + v.norm2()
+        return math.sqrt(s)
+    var cross = Function(self, o):
+        var a = self._flat()
+        var b = o._flat()
+        if len(a) != 3 or len(b) != 3:
+            throw "complex vector: cross requires two 3-vectors"
+        var x = a[1] * b[2] - a[2] * b[1]
+        var y = a[2] * b[0] - a[0] * b[2]
+        var z = a[0] * b[1] - a[1] * b[0]
+        if self._c == 1:
+            return Matrix([[x], [y], [z]])              # keep this (self's) vector orientation
+        return Matrix([[x, y, z]])
+
+    var _eq_ = Function(self, o):
+        if type(o) != "ComplexMatrix":
+            return False
+        if self._r != o._r or self._c != o._c:
+            return False
+        var i = 0
+        while i < self._r:
+            var j = 0
+            while j < self._c:
+                if not (self._data[i][j] == o._data[i][j]):
+                    return False
+                j = j + 1
+            i = i + 1
+        return True
+
+    var _str_ = Function(self):
+        return String(self._data)
+
+    # tolerant whole-matrix comparison (cClose per element), since == is exact; a non-ComplexMatrix
+    # argument throws (unlike _eq_, which returns False for a type mismatch).
+    var compare = Function(self, other, rel_tol = 1.0e-9, abs_tol = 0.0):
+        if type(other) != "ComplexMatrix":
+            throw "compare expects a ComplexMatrix"
+        if self._r != other._r or self._c != other._c:
+            return False
+        var i = 0
+        while i < self._r:
+            var j = 0
+            while j < self._c:
+                if not self._data[i][j].compare(other._data[i][j], rel_tol, abs_tol):
+                    return False
+                j = j + 1
+            i = i + 1
+        return True
+
+# expose the complex matrix as `Matrix` (the module member used as C.Matrix)
+var Matrix = ComplexMatrix
+
+var zeros = Function(rows, cols):
+    if rows < 0 or cols < 0:
+        throw "complex.zeros: dimensions must be non-negative"
+    var out = []
+    var i = 0
+    while i < rows:
+        var row = []
+        var j = 0
+        while j < cols:
+            row.append(Complex(0.0, 0.0))
+            j = j + 1
+        out.append(row)
+        i = i + 1
+    return Matrix(out)
+var ones = Function(rows, cols):
+    if rows < 0 or cols < 0:
+        throw "complex.ones: dimensions must be non-negative"
+    var out = []
+    var i = 0
+    while i < rows:
+        var row = []
+        var j = 0
+        while j < cols:
+            row.append(Complex(1.0, 0.0))
+            j = j + 1
+        out.append(row)
+        i = i + 1
+    return Matrix(out)
+var identity = Function(n):
+    if n < 0:
+        throw "complex.identity: dimension must be non-negative"
+    var rows = []
+    var i = 0
+    while i < n:
+        var row = []
+        var j = 0
+        while j < n:
+            if i == j:
+                row.append(Complex(1.0, 0.0))
+            else:
+                row.append(Complex(0.0, 0.0))
+            j = j + 1
+        rows.append(row)
+        i = i + 1
+    return Matrix(rows)
+
+# complex vectors: a 1xn Matrix; dot is the Hermitian inner product.
+var vector = Function(values):
+    return Matrix([values])

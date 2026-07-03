@@ -1,0 +1,106 @@
+# r7_regressions.ki — regressions for bugs found in the round-4 (R7) static-analysis sweep.
+#   P0 slice with a near-INT64_MAX step signed-overflowed `i += step` (UB) -> OOB read / SIGSEGV on
+#      String/Bytes (and garbage on List/Tensor). Now count-driven via sliceIndices/slicePicks.
+#   P0/P1 range() with a huge step had the same overflow in its fill loop, plus a count-overflow that
+#      could spin forever on an int64-straddling span. Now overflow-safe count + count-driven fill.
+#   P2 the `**` operator returned a silent NaN for a negative base ^ fractional exponent, violating
+#      the math-domain-error policy; now throws (a NaN operand still passes through).
+#   P2 the `Number` pseudo-type (advertised by inspect on abs/round/sum/math.*) was rejected by a
+#      user annotation `Function(x : Number)`; now accepts Integer or Float.
+#   P3 a user `_len_` returning a negative Integer was accepted; now throws.
+# Round-4 step-2 (numeric stdlib) additions:
+#   P2 outer/kron/matmul/tensordot/broadcastto/concatenate/stack let a result far larger than the
+#      inputs hit std::bad_alloc; now the engine bounds every shape-allocation -> clean, catchable
+#      "Tensor too large".
+#   P2 a fixed absolute 1e-15 pivot tolerance declared well-conditioned small-magnitude matrices
+#      (e.g. diag(1e-200)) singular; the threshold is now scale-relative.
+#   P3 tensor.median used a non-NaN-safe sort unlike its siblings; now NaN sorts last (deterministic).
+#   P3 tensor .take()/fancy-indexing rejected negative indices; now NumPy-style (count from the end).
+var io = import("io")
+var T = import("tensor")
+var math = import("math")
+var matrix = import("matrix")
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+var BIG = 9223372036854775807
+
+# --- slice with a huge step: no crash, exactly one element; normal slices unaffected ---
+ok("abcde"[1::BIG] == "b", "String slice huge step -> single element")
+ok([0, 1, 2][1::BIG] == [1], "List slice huge step")
+ok(Bytes([1, 2, 3, 4, 5])[1::BIG] == Bytes([2]), "Bytes slice huge step")
+ok(T.arange(0, 10)[1::BIG].tolist() == [1.0], "Tensor slice huge step")
+ok("abcde"[BIG:0:0 - BIG] == "e", "String slice huge negative step")
+ok("abcdef"[1:5:2] == "bd" and [0, 1, 2, 3, 4, 5][::2] == [0, 2, 4], "normal step slices unaffected")
+ok("abcde"[::0 - 1] == "edcba", "reverse slice unaffected")
+
+# --- range() with a huge / straddling step: correct, terminates ---
+ok(range(1, 100, BIG) == [1], "range huge step -> single element")
+ok(range(0, 10, 3) == [0, 3, 6, 9], "range normal step unaffected")
+ok(len(range(0 - 9223372036854775808, BIG, BIG)) == 3, "range straddling int64 terminates, exact count")
+
+# --- ** negative base ^ fractional exponent throws (was silent NaN) ---
+ok(throws(Function(): return (0 - 2.0) ** 0.5), "neg base ^ fractional throws")
+ok(throws(Function(): return (0 - 8.0) ** 0.5), "neg base ^ fractional throws (2)")
+ok((0 - 2.0) ** 3.0 == 0 - 8.0 and (0 - 2.0) ** 2.0 == 4.0, "neg base ^ integer exponent still works")
+ok((0 - 2.0) ** math.nan != (0 - 2.0) ** math.nan, "NaN exponent passes through (no throw)")
+
+# --- Number annotation accepts Integer or Float, rejects others ---
+var addone = Function(x : Number) -> Number:
+    return x + 1
+ok(addone(5) == 6 and addone(2.5) == 3.5, "Number annotation accepts Integer + Float")
+ok(throws(Function(): return addone("s")), "Number annotation rejects String")
+
+# --- negative _len_ throws ---
+class NegLen:
+    var _len_ = Function(self):
+        return 0 - 5
+ok(throws(Function(): return len(NegLen())), "negative _len_ throws")
+
+# --- tensor ops bound their RESULT size: huge result from small inputs throws cleanly ---
+var msg = ""
+try:
+    discard T.outer(T.ones([1000000]), T.ones([1000000]))   # 1e12 elements
+catch as e:
+    msg = String(e)
+ok("too large" in msg, "outer with a huge result -> clean 'Tensor too large' (not bad_alloc)")
+ok(throws(Function(): return T.ones([100000, 1]).matmul(T.ones([1, 100000]))), "matmul huge result throws")
+ok(throws(Function(): return T.kron(T.ones([9000, 1]), T.ones([9000, 1]))), "kron huge result throws")
+ok(throws(Function(): return T.ones([1, 1]).broadcastto([100000, 100000])), "broadcastto huge result throws")
+# small versions of the same ops still work
+ok(T.outer(T.arange(0, 3), T.arange(0, 2)).shape() == [3, 2], "small outer still works")
+ok(T.ones([2, 3]).matmul(T.ones([3, 4])).shape() == [2, 4], "small matmul still works")
+
+# --- scale-relative singularity: a well-conditioned tiny-magnitude matrix is NOT falsely singular ---
+var tiny = T.inv(T.Tensor([[1e-200, 0.0], [0.0, 1e-200]]))
+ok(tiny[0, 0].compare(1e200) and tiny[1, 1].compare(1e200), "diag(1e-200) inverts to diag(1e200), not 'singular'")
+var mtiny = matrix.Matrix([[1e-200, 0.0], [0.0, 1e-200]]).inverse()
+ok(mtiny.get(0, 0).compare(1e200), "matrix diag(1e-200) inverse not falsely singular")
+# a genuinely singular matrix still throws
+ok(throws(Function(): return T.inv(T.Tensor([[1.0, 2.0], [2.0, 4.0]]))), "genuinely singular matrix still throws")
+ok(throws(Function(): return matrix.Matrix([[1.0, 2.0], [2.0, 4.0]]).inverse()), "singular matrix.inverse still throws")
+# a normal matrix is unaffected
+ok(T.inv(T.Tensor([[4.0, 7.0], [2.0, 6.0]]))[0, 0].compare(0.6), "ordinary 2x2 inverse unaffected")
+
+# --- median is NaN-safe (deterministic, NaN sorts last) like sort/argsort/unique ---
+ok(T.Tensor([4.0, 2.0, 1.0, 3.0, 5.0]).median().compare(3.0), "clean median unaffected")
+var md = T.Tensor([4.0, 2.0, math.nan, 1.0, 3.0]).median()   # NaN sorts last -> [1,2,3,4,nan], middle = 3.0
+ok(md.compare(3.0), "median with NaN is deterministic (NaN sorts last)")
+
+# --- negative indices in take / fancy indexing (NumPy-style) ---
+var rows = T.Tensor([[10.0, 11.0], [20.0, 21.0], [30.0, 31.0]])
+ok(rows[[0 - 1]].tolist() == [[30.0, 31.0]], "fancy index with a negative index gathers the last row")
+ok(rows.take([0 - 1, 0 - 2]).tolist() == [[30.0, 31.0], [20.0, 21.0]], "take with negative indices")
+ok(throws(Function(): return rows.take([0 - 4])), "take negative index past the start still throws")
+
+# --- conjugate appears in inspect (working alias was missing) ---
+ok("conjugate(" in inspect(T.zeros([2])), "inspect lists the conjugate() alias")
+
+io.print("r7_regressions: " + String(n) + " checks passed")

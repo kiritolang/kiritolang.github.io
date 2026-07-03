@@ -1,0 +1,108 @@
+var io = import("io")
+var matrix = import("matrix")
+
+var close = Function(a, b) -> Bool:
+    return abs(a - b) < 0.000001
+
+# ---- factories ---------------------------------------------------------------------------------
+var z = matrix.zeros(2, 3)
+io.print(z[0, 0] == 0.0)
+io.print(z.shape() == [2, 3])
+io.print(matrix.ones(2, 2)[1, 1] == 1.0)
+io.print(matrix.identity(3)[1, 1] == 1.0 and matrix.identity(3)[0, 1] == 0.0)
+io.print(matrix.Matrix(3, 4).shape() == [3, 4])      # (rows, cols) ctor -> zero matrix
+io.print(matrix.Matrix(3, 4)[2, 3] == 0.0)
+
+# ---- nested-list construction & element access -------------------------------------------------
+var a = matrix.Matrix([[1, 2], [3, 4]])
+io.print(a[0, 0] == 1.0 and a[1, 1] == 4.0)
+io.print(a[0] == [1.0, 2.0])         # whole row as List
+io.print(a.row(0) == [1.0, 2.0])
+io.print(a.get(0, 1) == 2.0)
+a[1, 0] = 99
+io.print(a[1, 0] == 99.0)
+a.set(1, 0, 3)
+io.print(a[1, 0] == 3.0)
+
+# rows / cols / shape
+io.print(a.rows() == 2 and a.cols() == 2)
+io.print(a.shape() == [2, 2])
+
+# ---- arithmetic --------------------------------------------------------------------------------
+var b = matrix.Matrix([[5, 6], [7, 8]])
+io.print((a + b)[0, 0] == 6.0)
+io.print((a + b)[1, 1] == 12.0)
+io.print((b - a)[0, 0] == 4.0)
+io.print((a * 2)[0, 0] == 2.0)         # scalar multiply
+io.print((a * 2)[1, 1] == 8.0)
+# matrix product
+var prod = a * b
+io.print(prod[0, 0] == 19.0 and prod[0, 1] == 22.0)
+io.print(prod[1, 0] == 43.0 and prod[1, 1] == 50.0)
+
+# transpose
+io.print(matrix.Matrix([[1, 2, 3], [4, 5, 6]]).transpose().shape() == [3, 2])
+
+# trace, det, inverse, sum
+io.print(close(matrix.Matrix([[1, 2], [3, 4]]).determinant(), -2.0))
+io.print(close(matrix.Matrix([[1, 2], [3, 4]]).trace(), 5.0))
+io.print(close(matrix.identity(4).determinant(), 1.0))
+io.print(close(matrix.Matrix([[1, 2], [3, 4]]).sum(), 10.0))
+
+# A * A^-1 = I (numerically)
+var A = matrix.Matrix([[4, 7], [2, 6]])
+var inv = A.inverse()
+var check = A * inv
+io.print(close(check[0, 0], 1.0) and close(check[1, 1], 1.0))
+io.print(close(check[0, 1], 0.0) and close(check[1, 0], 0.0))
+
+# ---- apply -------------------------------------------------------------------------------------
+var m2 = matrix.Matrix([[1, 2], [3, 4]]).apply(Function(x): return x * x)
+io.print(m2[0, 0] == 1.0 and m2[1, 1] == 16.0)
+
+# ---- vector ops --------------------------------------------------------------------------------
+var v1 = matrix.vector([1, 2, 3])
+var v2 = matrix.vector([4, 5, 6])
+io.print(v1.rows() == 1 and v1.cols() == 3)
+io.print(v1.dot(v2) == 32.0)        # 1*4+2*5+3*6
+io.print(v1.cross(v2) == matrix.Matrix([[-3, 6, -3]]))
+io.print(matrix.vector([3, 4]).norm() == 5.0)
+
+# column vector dot
+io.print(matrix.Matrix([[1], [2], [3]]).dot(matrix.Matrix([[4], [5], [6]])) == 32.0)
+
+# matrix times column vector stays matrix multiply
+io.print(matrix.Matrix([[1, 0], [0, 1]]) * matrix.Matrix([[5], [6]]) == matrix.Matrix([[5], [6]]))
+
+# norm on a (general) matrix is the Frobenius norm
+io.print(close(matrix.Matrix([[1, 2], [3, 4]]).norm(), 5.477225575051661))   # sqrt(30)
+
+# equality is EXACT (1.0 != 1.0000000001); tolerant comparison is via .compare
+io.print((matrix.Matrix([[1.0]]) == matrix.Matrix([[1.0000000001]])) == False and matrix.Matrix([[1.0]]).compare(matrix.Matrix([[1.0000000001]])))
+# shape mismatch -> unequal
+io.print(matrix.zeros(2, 3) != matrix.zeros(3, 2))
+
+# ---- errors (square-only ops, ragged, OOB, inv-of-singular, bad shapes) -----------------------
+var thrown = 0
+for thunk in [Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).determinant(), Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).inverse(), Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).trace(), Function(): return matrix.Matrix([[1, 2], [2, 4]]).inverse(), Function(): return matrix.Matrix([[1, 2], [3]]), Function(): return matrix.zeros(2, 2)[5, 5], Function(): return matrix.zeros(2, 2).get(5, 5), Function(): return matrix.Matrix([[1, 2]]) * matrix.Matrix([[1, 2]]), Function(): return matrix.vector([1, 2]).dot(matrix.vector([1, 2, 3])), Function(): return matrix.vector([1, 2]).cross(matrix.vector([3, 4])), Function(): return v1 * v2]:
+    try:
+        discard thunk()
+    catch as e:
+        thrown = thrown + 1
+io.print(thrown == 11)
+
+# Apply on a matrix gives a Matrix back (not a List)
+var ap = matrix.Matrix([[1, 2], [3, 4]]).apply(Function(x): return x + 1)
+io.print(type(ap))
+
+# ---- serialization round-trip -------------------------------------------------------------
+var dump = import("dump")
+var Ms = matrix.Matrix([[1.5, 2.5], [3.5, 4.5]])
+io.print(dump.loads(dump.dumps(Ms)) == Ms)
+var V = matrix.vector([1, 2, 3])
+io.print(dump.loads(dump.dumps(V)) == V)
+
+# Identity construction shortcut
+io.print(matrix.identity(2) * matrix.Matrix([[3, 4], [5, 6]]) == matrix.Matrix([[3, 4], [5, 6]]))
+
+io.print("OK audit-matrix")

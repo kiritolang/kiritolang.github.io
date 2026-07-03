@@ -1,0 +1,2 @@
+# padding a String to a huge width is guarded (throws, not OOM)
+discard "x".center(100000000000)

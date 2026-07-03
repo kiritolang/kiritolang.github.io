@@ -1,0 +1,54 @@
+# r5_regressions.ki — regressions for bugs found in the round-2 audit sweep.
+#   P2 Integer() string converter rejected int64-boundary values (round-trip break).
+#   P2 chr() admitted UTF-16 surrogates -> invalid UTF-8 String.
+#   P2 tensor sort/argsort/unique used a bare-< comparator -> UB on NaN.
+var io = import("io")
+var T = import("tensor")
+var math = import("math")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# --- Integer() full 64-bit two's-complement round-trip ---
+var imin = -9223372036854775808
+ok(Integer(String(imin)) == imin, "Integer(String(INT64_MIN)) round-trips")
+ok(Integer("-9223372036854775808") == imin, "Integer INT64_MIN decimal")
+ok(Integer("0xFFFFFFFFFFFFFFFF") == -1, "Integer 0xFFFF...F == -1")
+ok(Integer("0x8000000000000000") == imin, "Integer 0x8000...0 == INT64_MIN")
+ok(Integer("42") == 42 and Integer("-42") == -42, "Integer normal cases unchanged")
+ok(throws(Function(): return Integer("999999999999999999999999")), "Integer beyond uint64 still throws")
+ok(throws(Function(): return Integer("42abc")), "Integer trailing garbage still throws")
+
+# --- chr() rejects UTF-16 surrogates (would make invalid UTF-8) ---
+ok(throws(Function(): return chr(0xD800)), "chr(0xD800) surrogate throws")
+ok(throws(Function(): return chr(0xDFFF)), "chr(0xDFFF) surrogate throws")
+ok(not throws(Function(): return chr(0xD7FF)), "chr(0xD7FF) just below surrogates ok")
+ok(not throws(Function(): return chr(0xE000)), "chr(0xE000) just above surrogates ok")
+ok(chr(65) == "A", "chr normal case")
+
+# --- tensor sort/argsort/unique NaN-safe (NaN sorts last; no strict-weak-ordering UB) ---
+var nan = math.nan
+var st = T.Tensor([3.0, nan, 1.0, 2.0]).sort().tolist()
+ok(st[0] == 1.0 and st[1] == 2.0 and st[2] == 3.0, "sort orders non-NaN ascending")
+ok(st[3] != st[3], "sort puts NaN last")
+var uq = T.unique(T.Tensor([3.0, nan, 1.0, 1.0, 2.0])).tolist()
+ok(uq[0] == 1.0 and uq[1] == 2.0 and uq[2] == 3.0, "unique dedups + sorts non-NaN")
+ok(len(uq) == 4 and uq[3] != uq[3], "unique keeps one NaN at the end")
+
+# --- matrix zeros/ones/identity negative-dimension guard ---
+var mx = import("matrix")
+ok(throws(Function(): return mx.zeros(-1, 3)), "matrix.zeros negative row throws")
+ok(throws(Function(): return mx.zeros(3, -1)), "matrix.zeros negative col throws")
+ok(throws(Function(): return mx.ones(-1, 3)), "matrix.ones negative row throws")
+ok(throws(Function(): return mx.identity(-1)), "matrix.identity negative n throws")
+ok(not throws(Function(): return mx.zeros(0, 0)), "matrix.zeros(0,0) ok")
+
+io.print("r5_regressions: " + String(n) + " checks passed")

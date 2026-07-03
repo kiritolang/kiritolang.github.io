@@ -1,0 +1,5 @@
+var hash = import("hash")
+class NoHash:
+    var _init_ = Function(self):
+        self.x = 1
+discard hash.hash(NoHash())

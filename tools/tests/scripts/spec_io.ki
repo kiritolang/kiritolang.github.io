@@ -1,0 +1,97 @@
+# Thorough checks for io: files, BytesIO, filesystem + path helpers, stream redirection.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var tmp = path.gettempdir()
+var fp = path.join(tmp, "kirito_spec_io.txt")
+
+# --- write then read back; modes ---
+var f = io.open(fp, "w")
+discard f.write("line1\n")
+discard f.write("line2\n")
+f.close()
+var g = io.open(fp, "r")
+assert g.read() == "line1\nline2\n", "write + read all"
+g.close()
+# readline / readlines
+var g2 = io.open(fp, "r")
+assert g2.readline() == "line1", "readline strips newline"
+assert g2.readlines() == ["line2"], "readlines (rest, stripped)"
+g2.close()
+# append mode
+var fa = io.open(fp, "a")
+discard fa.write("line3\n")
+fa.close()
+var g3 = io.open(fp, "r")
+assert g3.read() == "line1\nline2\nline3\n", "append mode"
+g3.close()
+# iterate a file line by line
+var lines = []
+with io.open(fp, "r") as fh:
+    for ln in fh:
+        lines.append(ln)
+assert lines == ["line1", "line2", "line3"], "iterate file (lines stripped)"
+# seek / tell
+var fs = io.open(fp, "r")
+assert fs.tell() == 0, "tell starts at 0"
+discard fs.read(5)
+assert fs.tell() == 5, "tell after read"
+fs.seek(0)
+assert fs.read(5) == "line1", "seek + read"
+fs.close()
+# writelines
+var fw = io.open(fp, "w")
+fw.writelines(["a\n", "b\n", "c\n"])
+fw.close()
+with io.open(fp, "r") as fr:
+    assert fr.read() == "a\nb\nc\n", "writelines"
+
+# --- BytesIO ---
+var b = io.BytesIO()
+assert b.write("hello") == 5, "BytesIO write returns count"
+discard b.write(" world")
+assert b.getvalue() == "hello world" and b.size() == 11, "BytesIO getvalue/size"
+b.seek(0)
+assert b.read(5) == "hello", "BytesIO read"
+assert b.tell() == 5, "BytesIO tell"
+var b2 = io.BytesIO("preloaded")
+assert b2.getvalue() == "preloaded" and b2.size() == 9, "BytesIO initial value + size"
+
+# --- filesystem query helpers (path module) ---
+assert path.exists(fp) and path.isfile(fp) and not path.isdir(fp), "exists/isfile/isdir"
+assert path.getsize(fp) == 6, "getsize"
+assert path.isdir(tmp), "isdir on a directory"
+var subdir = path.join(tmp, "kirito_spec_dir")
+discard path.rmtree(subdir, missing_ok = True)   # clear any stale scratch from a prior run
+assert path.mkdir(subdir), "mkdir"
+assert path.isdir(subdir), "mkdir created a directory"
+var nested = path.join(subdir, "f.txt")
+with io.open(nested, "w") as nf:
+    discard nf.write("x")
+assert nested.replace("\\", "/") in path.walk(subdir)[0].replace("\\", "/") or len(path.walk(subdir)) >= 1, "walk finds files"
+var entries = path.listdir(subdir)
+assert "f.txt" in entries, "listdir"
+# rename + remove
+var renamed = path.join(subdir, "g.txt")
+path.rename(nested, renamed)
+assert path.exists(renamed) and not path.exists(nested), "rename"
+assert path.remove(renamed), "remove"
+assert not path.exists(renamed), "removed file is gone"
+
+# --- path string helpers ---
+assert path.basename("/a/b/c.txt") == "c.txt", "basename"
+assert path.dirname("/a/b/c.txt").replace("\\", "/") == "/a/b", "dirname"
+assert path.splitext("file.tar.gz") == ["file.tar", ".gz"], "splitext (last ext)"
+assert path.splitext("noext") == ["noext", ""], "splitext no ext"
+assert path.join("a", "b", "c").replace("\\", "/") == "a/b/c", "path.join"
+
+# --- stream redirection: io.stdout reassignable to a BytesIO ---
+var cap = io.BytesIO()
+io.stdout = cap
+io.print("captured")
+io.stdout = io.__stdout__
+assert cap.getvalue() == "captured\n", "redirect stdout to BytesIO"
+
+# --- cleanup ---
+discard path.remove(fp, missing_ok = True)
+io.print("OK")

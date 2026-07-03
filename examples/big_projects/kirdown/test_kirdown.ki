@@ -1,0 +1,201 @@
+# test_kirdown.ki — self-test for the kirdown Markdown-to-HTML converter. Every ok(cond, msg)
+# advances a counter; the final line prints "kirdown: N checks passed" which the CTest harness
+# matches against test_kirdown.expected.
+#
+# Run:  ki --lib examples/big_projects/kirdown/lib examples/big_projects/kirdown/test_kirdown.ki
+# The --lib flag makes the kirdown modules resolvable.
+
+var io = import("io")
+var path = import("path")
+var kirdown = import("kirdown")
+var inline = import("inline")
+var block = import("block")
+var render = import("render")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+var containsAll = Function(hay : String, needles : List) -> Bool:
+    for needle in needles:
+        if needle not in hay:
+            return False
+    return True
+
+# =============================================================================
+# inline formatting
+# =============================================================================
+ok(inline.render("hello") == "hello", "plain text passes through unchanged")
+ok(inline.render("a < b & c > d") == "a &lt; b &amp; c &gt; d", "HTML special chars are escaped")
+ok(inline.render("she said \"hi\"") == "she said &quot;hi&quot;", "double quote escapes")
+ok(inline.render("**bold**") == "<strong>bold</strong>", "bold with **")
+ok(inline.render("__bold__") == "<strong>bold</strong>", "bold with __")
+ok(inline.render("*italic*") == "<em>italic</em>", "italic with *")
+ok(inline.render("_italic_") == "<em>italic</em>", "italic with _")
+ok(inline.render("`code`") == "<code>code</code>", "inline code with `")
+ok(inline.render("`x < y`") == "<code>x &lt; y</code>", "code content is HTML-escaped")
+ok(inline.render("``a`b``") == "<code>a`b</code>", "double-tick code allows a literal backtick inside")
+ok(inline.render("**bold with *em***") == "<strong>bold with <em>em</em></strong>", "nested em inside strong")
+ok(inline.render("[hi](https://example.com)") == "<a href=\"https://example.com\">hi</a>", "basic link")
+ok(inline.render("[**b**](u)") == "<a href=\"u\"><strong>b</strong></a>", "bold inside link text")
+ok(inline.render("![alt](img.png)") == "<img src=\"img.png\" alt=\"alt\"/>", "image")
+ok(inline.render("<https://a.b>") == "<a href=\"https://a.b\">https://a.b</a>", "auto-link")
+ok(inline.render("\\*not em\\*") == "*not em*", "backslash escapes the special")
+ok(inline.render("`x` and *y* and **z**") == "<code>x</code> and <em>y</em> and <strong>z</strong>", "mixed inline markup")
+ok(inline.render("") == "", "empty input")
+# Deliberately malformed: an unbalanced marker falls through as literal.
+ok(inline.render("**unclosed") == "**unclosed", "unclosed strong falls through")
+ok(inline.render("*unclosed") == "*unclosed", "unclosed em falls through")
+ok("&#39;" in inline.render("it's"), "single quote is escaped to &#39;")
+
+# =============================================================================
+# block parsing
+# =============================================================================
+var mkBlocks = Function(text : String) -> List:
+    return block.parse(text.split("\n"))
+
+var b1 = mkBlocks("# hello")
+ok(len(b1) == 1 and b1[0]["kind"] == "heading" and b1[0]["level"] == 1 and b1[0]["text"] == "hello", "ATX H1")
+var b2 = mkBlocks("###### deep")
+ok(b2[0]["level"] == 6 and b2[0]["text"] == "deep", "ATX H6")
+var b3 = mkBlocks("####### too many")
+ok(b3[0]["kind"] == "paragraph", "seven # is a paragraph, not a heading")
+var b4 = mkBlocks("# heading ###")
+ok(b4[0]["text"] == "heading", "trailing # after heading is stripped")
+
+var b5 = mkBlocks("just some\nprose\nwrapped")
+ok(len(b5) == 1 and b5[0]["kind"] == "paragraph" and b5[0]["text"] == "just some\nprose\nwrapped", "multi-line paragraph")
+
+var b6 = mkBlocks("para one\n\npara two")
+ok(len(b6) == 2 and b6[0]["text"] == "para one" and b6[1]["text"] == "para two", "blank splits paragraphs")
+
+var b7 = mkBlocks("- one\n- two\n- three")
+ok(b7[0]["kind"] == "list" and b7[0]["ordered"] == False and len(b7[0]["items"]) == 3, "unordered list")
+ok(b7[0]["items"] == ["one", "two", "three"], "unordered items are stripped correctly")
+
+var b8 = mkBlocks("1. first\n2. second")
+ok(b8[0]["kind"] == "list" and b8[0]["ordered"] == True and b8[0]["items"] == ["first", "second"], "ordered list")
+
+var b9 = mkBlocks("* a\n* b")
+ok(b9[0]["kind"] == "list" and b9[0]["items"] == ["a", "b"], "* bullet works")
+
+var b10 = mkBlocks("---")
+ok(b10[0]["kind"] == "hr", "--- is a horizontal rule")
+var b10a = mkBlocks("***")
+ok(b10a[0]["kind"] == "hr", "*** is also a horizontal rule")
+
+var b11 = mkBlocks("> quote line 1\n> quote line 2")
+ok(b11[0]["kind"] == "blockquote" and "quote line 1" in b11[0]["text"], "blockquote content")
+
+var b12 = mkBlocks("```python\nprint(1)\nprint(2)\n```")
+ok(b12[0]["kind"] == "code_fence" and b12[0]["lang"] == "python", "code fence with language")
+ok(b12[0]["code"] == "print(1)\nprint(2)", "code fence preserves body exactly")
+
+var b13 = mkBlocks("```\nno lang\n```")
+ok(b13[0]["lang"] == "" and b13[0]["code"] == "no lang", "code fence with no language")
+
+var b14 = mkBlocks("```\nunterminated")
+ok(b14[0]["kind"] == "code_fence" and b14[0]["code"] == "unterminated", "unterminated fence still parses to EOF")
+
+var b15 = mkBlocks("")
+ok(b15 == [], "empty input yields no blocks")
+
+var b16 = mkBlocks("\n\n\n")
+ok(b16 == [], "blank-only input yields no blocks")
+
+# A paragraph must NOT eat a heading that follows without a blank line.
+var b17 = mkBlocks("para\n# heading")
+ok(len(b17) == 2 and b17[0]["kind"] == "paragraph" and b17[1]["kind"] == "heading", "paragraph stops at a heading")
+
+# ...nor a code fence.
+var b18 = mkBlocks("para\n```\ncode\n```")
+ok(len(b18) == 2 and b18[1]["kind"] == "code_fence", "paragraph stops at a fence")
+
+# =============================================================================
+# end-to-end render
+# =============================================================================
+var body1 = kirdown.toBody("# Title\n\nSome *emphatic* text.\n")
+ok(containsAll(body1, ["<h1>Title</h1>", "<p>Some <em>emphatic</em> text.</p>"]), "end-to-end heading + paragraph")
+
+var body2 = kirdown.toBody("- **bold**\n- `code`\n- [link](x)\n")
+ok(containsAll(body2, ["<ul>", "<li><strong>bold</strong></li>", "<li><code>code</code></li>", "<li><a href=\"x\">link</a></li>", "</ul>"]), "end-to-end list with inline markup")
+
+var body3 = kirdown.toBody("```js\nvar x = 1;\n```\n")
+ok("<pre><code class=\"language-js\">var x = 1;</code></pre>" in body3, "end-to-end code fence with language class")
+
+var body4 = kirdown.toBody("> quoted <text>\n")
+ok("<blockquote><p>quoted &lt;text&gt;</p></blockquote>" in body4, "end-to-end blockquote with escaping")
+
+var body5 = kirdown.toBody("Line 1\n\n---\n\nLine 2\n")
+ok(containsAll(body5, ["<p>Line 1</p>", "<hr/>", "<p>Line 2</p>"]), "end-to-end HR between paragraphs")
+
+# Full-page shell
+var page = kirdown.toPage("# My Title\n\nBody.", "")
+ok(containsAll(page, ["<!doctype html>", "<title>My Title</title>", "<h1>My Title</h1>", "<p>Body.</p>", "</html>"]), "toPage builds a full HTML5 shell")
+
+var page2 = kirdown.toPage("no heading here", "Explicit")
+ok("<title>Explicit</title>" in page2, "explicit title wins over the auto-detected one")
+
+var page3 = kirdown.toPage("no title anywhere", "")
+ok("<title>Untitled</title>" in page3, "fallback title 'Untitled'")
+
+# =============================================================================
+# hardening — malformed / hostile inputs must not crash
+# =============================================================================
+var junk = "<script>alert('xss')</script>"
+ok("&lt;script&gt;" in kirdown.toBody(junk), "hostile HTML is escaped, not rendered")
+
+# A pathologically deep run of `***` around actual letters must not hang or blow the stack.
+var big = ""
+for i in range(50):
+    big = big + "*"
+big = big + "abc"
+for i in range(50):
+    big = big + "*"
+ok(len(kirdown.toBody(big)) > 0 and "<p>" in kirdown.toBody(big), "pathological asterisk-run around content doesn't hang or crash")
+# A solid run of `*` >= 3 is a legit horizontal rule, so pin that here rather than surprise later.
+var starHr = ""
+for i in range(200):
+    starHr = starHr + "*"
+ok("<hr/>" in kirdown.toBody(starHr), "a solid *** run of any length is a horizontal rule")
+
+# A code fence whose body contains a stray fence-looking line inside
+var m = "```\nnot ```closing this way\nreal close:\n```\n"
+var b19 = mkBlocks(m)
+ok(b19[0]["kind"] == "code_fence" and "not " in b19[0]["code"], "a fence body with a leading-tick line ends at the real close")
+
+# =============================================================================
+# end-to-end via a real temp file (exercises io.open + write path)
+# =============================================================================
+var dir = path.gettempdir() + "/kirdown_selftest"
+if path.exists(dir):
+    discard path.rmtree(dir, missing_ok = True)
+discard path.mkdir(dir, exist_ok = True)
+var src = path.join(dir, "sample.md")
+var fh = io.open(src, "w")
+fh.write("# Hello\n\nWorld.\n")
+fh.close()
+var dst = path.join(dir, "sample.html")
+var fr = io.open(src, "r")
+var raw = fr.read()
+fr.close()
+var out = kirdown.toPage(raw, "")
+var fw = io.open(dst, "w")
+fw.write(out)
+fw.close()
+ok(path.isfile(dst) and path.getsize(dst) > 0, "file round-trip: wrote a non-empty HTML file")
+var check = io.open(dst, "r")
+var got = check.read()
+check.close()
+ok(containsAll(got, ["<title>Hello</title>", "<h1>Hello</h1>"]), "file round-trip: content matches expectations")
+discard path.rmtree(dir, missing_ok = True)
+
+io.print("kirdown: " + String(n) + " checks passed")

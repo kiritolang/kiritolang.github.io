@@ -1,0 +1,298 @@
+# =============================================================================================
+# r7_kimods_a.ki — round-7 exhaustive re-audit of the Kirito-authored frozen-source stdlib
+# modules (src/kirito/stdlib_kimodules.hpp), GROUP A:
+#   itertools, functools, collections, statistics, heapq, bisect, copy, enum.
+#
+# This suite COMPLEMENTS the existing r4_kimods_a / r6_kimods_a / deep_kimods / audit_* suites
+# rather than repeating them. It concentrates on the angles those leave thin:
+#   - keyword-argument binding on EVERY documented function/constructor (these are pure-Kirito,
+#     so kwargs come for free — but it had never been asserted across the board);
+#   - inspect() of each module returns a non-empty description;
+#   - islice's start/step interaction, accumulate's func kwarg + explicit-None func, groupby's
+#     key function emitting the COMPUTED key, permutations/combinations over DUPLICATE values,
+#     iterating String/Bytes as the source iterable;
+#   - documented-absent surface throwing cleanly (deque slicing, len(defaultdict), Counter has no
+#     update/elements/subtract, statistics has no median_low/median_high/harmonic_mean/..., heapq
+#     nlargest/nsmallest reject a `key` kwarg, bisect has no underscore names or lo/hi bounds);
+#   - quantiles clamp branches + kwargs, mostcommon's negative-n end-slice exactly;
+#   - partial's bound-list snapshot timing, cache returning the stored reference, 0-vs-False as
+#     DISTINCT cache keys (Kirito's exact equality);
+#   - deepcopy of deep nesting / shared class-instance refs / immutable Bytes.
+#
+# Every assertion bumps `n`; the final line reports the count. Deterministic, exit 0, zero stderr.
+# =============================================================================================
+var io = import("io")
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+# Float closeness (computed floats are never compared with ==).
+var close = Function(a, b):
+    return a.compare(b, 1e-9, 1e-12)
+
+var it = import("itertools")
+var ft = import("functools")
+var co = import("collections")
+var st = import("statistics")
+var hq = import("heapq")
+var bi = import("bisect")
+var cp = import("copy")
+var en = import("enum")
+
+# ===================================================================== inspect() of each module
+# Every module describes itself (non-empty). Never asserted by the other suites.
+ok(len(inspect(it)) > 0, "inspect itertools non-empty")
+ok(len(inspect(ft)) > 0, "inspect functools non-empty")
+ok(len(inspect(co)) > 0, "inspect collections non-empty")
+ok(len(inspect(st)) > 0, "inspect statistics non-empty")
+ok(len(inspect(hq)) > 0, "inspect heapq non-empty")
+ok(len(inspect(bi)) > 0, "inspect bisect non-empty")
+ok(len(inspect(cp)) > 0, "inspect copy non-empty")
+ok(len(inspect(en)) > 0, "inspect enum non-empty")
+# A public function name surfaces in the description (itertools.chain, functools.reduce).
+ok("chain" in inspect(it), "inspect itertools mentions chain")
+ok("reduce" in inspect(ft), "inspect functools mentions reduce")
+
+# ===================================================================== itertools: keyword args
+# These functions are pure Kirito, so every parameter is keyword-bindable. Assert it directly.
+ok(it.count(stop = 4) == [0, 1, 2, 3], "count stop= kwarg")
+ok(it.count(start = 1, step = 2, stop = 8) == [1, 3, 5, 7], "count all kwargs")
+ok(it.count(start = 0.0, step = 0.5, stop = 1.5) == [0.0, 0.5, 1.0], "count Float kwargs")
+ok(it.repeat(value = "z", times = 2) == ["z", "z"], "repeat kwargs")
+ok(it.cycle(iterable = [1, 2], times = 2) == [1, 2, 1, 2], "cycle kwargs")
+ok(it.chain(lists = [[1], [2]]) == [1, 2], "chain kwarg")
+ok(it.islice(iterable = [0, 1, 2, 3, 4], start = 1, stop = 4, step = 1) == [1, 2, 3], "islice kwargs")
+ok(it.accumulate(iterable = [1, 2, 3], func = None) == [1, 3, 6], "accumulate func=None kwarg")
+ok(it.product(lists = [[1, 2], [3]]) == [[1, 3], [2, 3]], "product kwarg")
+ok(it.permutations(items = [1, 2, 3], r = 2) == [[1, 2], [1, 3], [2, 1], [2, 3], [3, 1], [3, 2]], "permutations kwargs")
+ok(it.combinations(items = [1, 2, 3], r = 2) == [[1, 2], [1, 3], [2, 3]], "combinations kwargs")
+ok(it.takewhile(pred = Function(x): return x < 3, iterable = [1, 2, 3, 1]) == [1, 2], "takewhile kwargs")
+ok(it.dropwhile(pred = Function(x): return x < 3, iterable = [1, 2, 3, 1]) == [3, 1], "dropwhile kwargs")
+ok(it.filterfalse(pred = Function(x): return x > 0, iterable = [-1, 0, 1]) == [-1, 0], "filterfalse kwargs")
+ok(it.compress(data = [1, 2, 3], selectors = [1, 0, 1]) == [1, 3], "compress kwargs")
+ok(it.starmap(func = Function(t): return t[0] + t[1], argtuples = [[1, 2]]) == [3], "starmap kwargs")
+ok(it.ziplongest(lists = [[1, 2], [3]], fillvalue = 0) == [[1, 3], [2, 0]], "ziplongest kwargs")
+ok(it.groupby(iterable = [1, 1, 2], key = None) == [[1, [1, 1]], [2, [2]]], "groupby kwargs")
+
+# ===================================================================== itertools: deeper edges
+# islice: start offset interacts with stop AND step through (i - start) % step.
+ok(it.islice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 2, 10, 3) == [2, 5, 8], "islice start=2 step=3")
+ok(it.islice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 0, 10, 4) == [0, 4, 8], "islice start=0 step=4")
+ok(it.islice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 3, 9, 2) == [3, 5, 7], "islice odd offset, even step")
+ok(it.islice([0, 1, 2, 3], 1, 100) == [1, 2, 3], "islice stop beyond length caps")
+ok(throws(Function(): return it.islice([1, 2, 3], 0, 3, 0)), "islice step=0 throws (mod by zero)")
+# accumulate: a custom binary op AND the leading-None semantics (folds, not 'not started').
+ok(it.accumulate([3, 1, 4, 1, 5], Function(a, b): return a if a > b else b) == [3, 3, 4, 4, 5], "accumulate running max")
+ok(it.accumulate(["a", "b", "c"]) == ["a", "ab", "abc"], "accumulate concatenates Strings via +")
+ok(it.accumulate([None]) == [None], "accumulate single None folds, not skips")
+# count: negative step lands exactly, stop is exclusive on the way down.
+ok(it.count(10, -2, 2) == [10, 8, 6, 4], "count down stop=2 exclusive")
+ok(it.count(10, -2, 0) == [10, 8, 6, 4, 2], "count down to 0 exclusive")
+# product: a single factor wraps each element; one empty factor annihilates; tuples independent.
+ok(it.product([[1, 2, 3]]) == [[1], [2], [3]], "product of one factor")
+ok(it.product([[1, 2], []]) == [], "product with an empty factor is empty")
+var prodIndep = it.product([[1], [2]])
+prodIndep[0].append(99)
+ok(it.product([[1], [2]]) == [[1, 2]], "product tuples are independent copies")
+# permutations / combinations over DUPLICATE VALUES enumerate by POSITION (Python parity).
+ok(it.permutations([1, 1]) == [[1, 1], [1, 1]], "permutations of duplicates emit by position (2 results)")
+ok(it.combinations([1, 1, 2], 2) == [[1, 1], [1, 2], [1, 2]], "combinations of duplicates emit by position")
+ok(len(it.permutations([1, 2, 3, 4], 3)) == 24, "permutations P(4,3) count = 24")
+ok(len(it.combinations([1, 2, 3, 4, 5, 6], 3)) == 20, "combinations C(6,3) count = 20")
+# chain / cycle / accumulate / islice can take a String or Bytes as the iterable.
+ok(it.chain(["ab", "cd"]) == ["a", "b", "c", "d"], "chain iterates Strings by character")
+ok(it.cycle("ab", 2) == ["a", "b", "a", "b"], "cycle iterates a String by character")
+ok(it.islice("hello", 1, 4) == ["e", "l", "l"], "islice over a String yields chars")
+ok(it.chain([Bytes([1, 2]), Bytes([3])]) == [1, 2, 3], "chain iterates Bytes by byte value")
+# groupby with a key function: the EMITTED key is the COMPUTED key, not the element.
+ok(it.groupby([1, 2, 3, 4, 5], Function(x): return x // 2) == [[0, [1]], [1, [2, 3]], [2, [4, 5]]], "groupby key emits the computed key")
+# starmap on a too-short tuple throws (index error inside func).
+ok(throws(Function(): return it.starmap(Function(t): return t[0] + t[1], [[7]])), "starmap on a short tuple throws")
+
+# ===================================================================== functools: deeper edges
+# reduce: keyword args; a falsy non-None initial (0) seeds; a 1-arg func throws.
+ok(ft.reduce(func = Function(a, b): return a + b, iterable = [1, 2, 3], initial = 10) == 16, "reduce all kwargs")
+ok(ft.reduce(Function(a, b): return a + b, [1, 2, 3], 0) == 6, "reduce with falsy non-None initial 0")
+ok(throws(Function(): return ft.reduce(Function(a): return a, [1, 2, 3])), "reduce with a 1-arg func throws")
+# partial: the bound list is SNAPSHOT AT CREATION time (like Python's functools.partial), so mutating
+# the caller's list after creating the partial does NOT leak into later calls.
+var boundList = [1]
+var pf = ft.partial(Function(args): return args, boundList)
+ok(pf([9]) == [1, 9], "partial uses the bound list")
+boundList.append(2)
+ok(pf([9]) == [1, 9], "partial froze the bound list at creation (later mutation does not leak in)")
+# cache: returns the STORED reference (mutating a cached mutable result corrupts the cache).
+var cacheRef = ft.cache(Function(x): return [x])
+var first = cacheRef(5)
+first.append(99)
+ok(cacheRef(5) == [5, 99], "cache returns the stored reference (mutation persists)")
+# cache: 0, False, and None are DISTINCT keys (Kirito's exact equality: 0 != False as a Dict key).
+var falsyCalls = [0]
+var falsyBody = Function(x):
+    falsyCalls[0] = falsyCalls[0] + 1
+    return x
+var falsyCached = ft.cache(falsyBody)
+discard falsyCached(0)
+discard falsyCached(False)
+discard falsyCached(None)
+discard falsyCached(0)
+discard falsyCached(False)
+discard falsyCached(None)
+ok(falsyCalls[0] == 3, "cache treats 0, False, None as three distinct keys")
+
+# ===================================================================== collections: deeper edges
+# deque constructor / Counter / defaultdict / Enum keyword args.
+ok(String(co.deque(items = [1, 2, 3])) == "deque([1, 2, 3])", "deque items= kwarg")
+ok(co.Counter(items = ["a", "a"]).get("a") == 2, "Counter items= kwarg")
+var ddFactory = Function(): return 7
+ok(co.defaultdict(factory = ddFactory)["x"] == 7, "defaultdict factory= kwarg")
+# deque: integer indexing works, but SLICING throws cleanly (no _getitem_ slice support on the class).
+var dqSlice = co.deque([10, 20, 30, 40])
+ok(dqSlice[1] == 20, "deque integer index")
+ok(throws(Function(): return co.deque([10, 20, 30])[1:3]), "deque slicing throws cleanly")
+# deque str uses repr form for nested Strings (quoted).
+ok(String(co.deque(["a", "b"])) == "deque(['a', 'b'])", "deque str uses repr for nested Strings")
+# Counter mostcommon negative n is an END-SLICE (drops the |n| least-common), exactly.
+var cnt = co.Counter(["a", "a", "a", "b", "b", "c"])
+ok(cnt.mostcommon(-1) == [["a", 3], ["b", 2]], "mostcommon(-1) drops the single least-common")
+ok(cnt.mostcommon(-2) == [["a", 3]], "mostcommon(-2) drops the two least-common")
+ok(String(cnt) == "Counter({'a': 3, 'b': 2, 'c': 1})", "Counter str repr form")
+# Counter documented-absent surface: no update / elements / subtract / arithmetic.
+ok(throws(Function(): return co.Counter([1]).update([2])), "Counter has no update")
+ok(throws(Function(): return co.Counter([1]).elements()), "Counter has no elements")
+ok(throws(Function(): return co.Counter([1]).subtract([1])), "Counter has no subtract")
+# defaultdict: membership does NOT insert; explicit set bypasses the factory; NO _len_ / get.
+var ddProbe = co.defaultdict(Function(): return 0)
+ddProbe["set"] = 99
+ok(ddProbe["set"] == 99, "defaultdict explicit set bypasses the factory")
+discard ("ghost" in ddProbe)
+ok(("ghost" in ddProbe) == False, "defaultdict membership on an absent key is False")
+ok(sorted(ddProbe.keys()) == ["set"], "defaultdict membership did NOT insert the key")
+ok(throws(Function(): return len(co.defaultdict(Function(): return 0))), "len(defaultdict) throws (no _len_)")
+ok(throws(Function(): return co.defaultdict(Function(): return 0).get("k", 0)), "defaultdict has no get method")
+# defaultdict str uses repr form for nested Strings.
+var ddStr = co.defaultdict(Function(): return 0)
+ddStr["k"] = "v"
+ok(String(ddStr) == "defaultdict({'k': 'v'})", "defaultdict str repr form")
+
+# ===================================================================== statistics: deeper edges
+# quantiles: the clamp branches (lo < 1 / lo >= ld) on tiny data; the n kwarg.
+ok(st.quantiles([1, 2], 4) == [1.0, 1.5, 2.0], "quantiles n=4 on 2 points hits both clamp branches")
+ok(len(st.quantiles([1, 2, 3], 5)) == 4, "quantiles n=5 yields 4 cut points")
+ok(close(st.quantiles(data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], n = 2)[0], 5.5), "quantiles data=/n= kwargs (median cut)")
+ok(close(st.quantiles([10, 1, 5], 2)[0], st.median([10, 1, 5])), "quantiles n=2 cut equals the median (sorts internally)")
+# mode tie -> the value reaching the max count FIRST (single-valued); multimode keeps first-seen ties.
+ok(st.mode([3, 3, 1, 1]) == 3, "mode tie -> first-to-reach-max")
+ok(st.multimode([3, 3, 1, 1]) == [3, 1], "multimode keeps both tied modes (first-seen order)")
+ok(st.mode(["a", "b", "a", "c"]) == "a", "mode works on Strings")
+# variance / stdev relationships, asserted via the close() helper.
+var canon = [2, 4, 4, 4, 5, 5, 7, 9]
+ok(close(st.stdev(canon) * st.stdev(canon), st.variance(canon)), "stdev^2 == variance")
+ok(close(st.pstdev(canon) * st.pstdev(canon), st.pvariance(canon)), "pstdev^2 == pvariance")
+ok(close(st.variance(canon), st.pvariance(canon) * 8.0 / 7.0), "sample == population * n/(n-1)")
+ok(type(st.mean([1, 2, 3])) == "Float", "mean returns Float")
+ok(type(st.variance([1, 2, 3])) == "Float", "variance returns Float")
+# statistics surface that is NOT implemented (Python has these; Kirito's module does not) — must throw.
+ok(throws(Function(): return st.median_low([1, 2, 3, 4])), "no median_low")
+ok(throws(Function(): return st.median_high([1, 2, 3, 4])), "no median_high")
+ok(throws(Function(): return st.harmonic_mean([1, 2, 4])), "no harmonic_mean")
+ok(throws(Function(): return st.geometric_mean([1, 2, 4])), "no geometric_mean")
+ok(throws(Function(): return st.fmean([1, 2, 3])), "no fmean")
+ok(throws(Function(): return st.mode([])), "mode of empty throws")
+ok(throws(Function(): return st.stdev([5])), "stdev needs >= 2 samples")
+
+# ===================================================================== heapq: deeper edges
+# Heap of comparable Lists drains lexicographically (a [priority, payload] priority queue).
+ok(hq.nsmallest(2, [[2, "b"], [1, "z"], [1, "a"]]) == [[1, "a"], [1, "z"]], "heap of pairs drains lexicographically")
+# merge over Strings (re-heaps every element -> tolerant of unsorted inputs).
+ok(hq.merge([["a", "c"], ["b", "d"]]) == ["a", "b", "c", "d"], "merge over Strings")
+ok(hq.merge([[3, 1], [2, 0]]) == [0, 1, 2, 3], "merge re-sorts even unsorted inputs")
+ok(hq.merge([[]]) == [], "merge of one empty list")
+# heapreplace where the new item is larger than the whole heap: old min returned, new item sinks.
+var hrBig = hq.heapify([1, 2, 3])
+ok(hq.heapreplace(hrBig, 100) == 1, "heapreplace returns the old min even when the new item is large")
+ok(hrBig[0] == 2, "heapreplace re-establishes the min at the root")
+# nlargest / nsmallest do NOT accept a `key` kwarg (Python's do; Kirito's signature is (n, items)).
+ok(throws(Function(): return hq.nlargest(2, [[1, 5], [2, 3]], key = Function(p): return p[1])), "nlargest rejects a key kwarg")
+ok(throws(Function(): return hq.nsmallest(2, [[1, 5], [2, 3]], key = Function(p): return p[1])), "nsmallest rejects a key kwarg")
+# heapq keyword args on the (n, items) functions.
+ok(hq.nlargest(n = 2, items = [5, 1, 9, 3]) == [9, 5], "nlargest n=/items= kwargs")
+ok(hq.nsmallest(n = 2, items = [5, 1, 9, 3]) == [1, 3], "nsmallest n=/items= kwargs")
+# a heap mixing non-comparable types throws.
+ok(throws(Function(): return hq.heapify([1, "a"])), "heap of mixed non-comparable types throws")
+
+# ===================================================================== bisect: deeper edges
+# Underscore (Python) spellings and lo/hi bounds are NOT part of Kirito's bisect — must throw.
+ok(throws(Function(): return bi.bisect_left([1, 2, 3], 2)), "no bisect_left underscore name")
+ok(throws(Function(): return bi.bisect_right([1, 2, 3], 2)), "no bisect_right underscore name")
+ok(throws(Function(): return bi.bisectleft([1, 2, 3, 4, 5], 3, 1, 4)), "bisectleft takes no lo/hi bounds")
+# bisect keyword args.
+ok(bi.bisectleft(a = [1, 3, 3, 5], x = 3) == 1, "bisectleft a=/x= kwargs")
+ok(bi.bisectright(a = [1, 3, 3, 5], x = 3) == 3, "bisectright a=/x= kwargs")
+# The bare aliases ARE the same function object as the *right variants.
+ok(id(bi.bisect) == id(bi.bisectright), "bisect IS bisectright")
+ok(id(bi.insort) == id(bi.insortright), "insort IS insortright")
+# insort returns None and mutates in place; left vs right on a run.
+var insArr = [1, 3, 5]
+ok(bi.insort(insArr, 4) == None, "insort returns None")
+ok(insArr == [1, 3, 4, 5], "insort keeps the list sorted")
+var insL = [1, 2, 2, 3]
+bi.insortleft(insL, 2)
+ok(insL == [1, 2, 2, 2, 3], "insortleft inserts before the equal run")
+
+# ===================================================================== copy: deeper edges
+# deepcopy of deep nesting (dict-in-list-in-dict) is independent at the deepest level.
+var deepNest = {"a": [{"b": [1]}]}
+var deepNestCopy = cp.deepcopy(deepNest)
+deepNestCopy["a"][0]["b"].append(2)
+ok(deepNest["a"][0]["b"] == [1], "deepcopy leaves deep nesting untouched")
+ok(deepNestCopy["a"][0]["b"] == [1, 2], "deepcopy carries deep nesting")
+# deepcopy preserves a shared CLASS-INSTANCE reference (mapped once via the serde shell).
+class Node:
+    var _init_ = Function(self, v):
+        self.v = v
+var sharedNode = Node([1])
+var nodePairCopy = cp.deepcopy([sharedNode, sharedNode])
+ok(id(nodePairCopy[0]) == id(nodePairCopy[1]), "deepcopy maps a shared instance ref to one copy")
+ok(id(nodePairCopy[0]) != id(sharedNode), "the deepcopied instance is fresh")
+# copy/deepcopy of immutable Bytes returns an equal Bytes (Bytes is in the immutable set).
+ok(cp.copy(Bytes([1, 2, 3])) == Bytes([1, 2, 3]), "copy of Bytes")
+ok(cp.deepcopy(Bytes([1, 2, 3])) == Bytes([1, 2, 3]), "deepcopy of Bytes")
+ok(cp.copy(None) == None and cp.deepcopy(True) == True, "copy/deepcopy of None and Bool")
+# copy keyword arg.
+ok(cp.copy(obj = [1, 2]) == [1, 2], "copy obj= kwarg")
+ok(cp.deepcopy(obj = {"k": [1]})["k"] == [1], "deepcopy obj= kwarg")
+# A Set of immutable members deepcopies to an equal, independent Set.
+var setOrig = Set([1, 2, 3])
+var setCopy = cp.deepcopy(setOrig)
+ok(setCopy == Set([1, 2, 3]) and id(setCopy) != id(setOrig), "deepcopy of a Set is equal but independent")
+
+# ===================================================================== enum: deeper edges
+# Enum members need not be Strings — any hashable name works (integer member names).
+var IntEnum = en.Enum([10, 20, 30])
+ok(IntEnum.get(10) == 0, "enum with Integer member names: get")
+ok(IntEnum.nameof(0) == 10, "enum with Integer member names: nameof")
+ok((10 in IntEnum) == True and (99 in IntEnum) == False, "enum membership with Integer names")
+# nameof of an unknown VALUE throws (a Dict key-miss; not documented to throw, but it does, cleanly).
+ok(throws(Function(): return en.Enum(["A", "B"]).nameof(99)), "enum nameof of an unknown value throws")
+# _getitem_ of an unknown name throws with the documented message.
+var enumMsg = ""
+try:
+    discard en.Enum(["A"])["ZZ"]
+catch as e:
+    enumMsg = e
+ok("no such enum member" in enumMsg, "enum [] of an unknown name carries the documented message")
+# Enum names= kwarg; names() defensive copy.
+var KwEnum = en.Enum(names = ["P", "Q"])
+ok(KwEnum.get("Q") == 1, "enum names= kwarg")
+var enumNames = KwEnum.names()
+enumNames.append("HACK")
+ok(KwEnum.names() == ["P", "Q"], "enum names() returns a defensive copy")
+
+io.print("r7_kimods_a: " + String(n) + " checks passed")

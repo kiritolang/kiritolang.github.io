@@ -1,0 +1,28 @@
+# Functions: recursion, closures, higher-order.
+var io = import("io")
+
+var fib = Function(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+io.print(fib(15))            # 610
+
+var makeAdder = Function(n):
+    return Function(x):
+        return x + n
+var add5 = makeAdder(5)
+io.print(add5(10))           # 15
+
+var apply = Function(f, x):
+    return f(x)
+var square = Function(x):
+    return x * x
+io.print(apply(square, 9))   # 81
+
+var compose = Function(f, g):
+    return Function(x):
+        return f(g(x))
+var inc = Function(x):
+    return x + 1
+var incThenSquare = compose(square, inc)
+io.print(incThenSquare(4))   # 25

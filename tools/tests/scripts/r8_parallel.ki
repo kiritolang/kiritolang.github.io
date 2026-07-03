@@ -1,0 +1,339 @@
+# r8_parallel.ki — ROUND 8 exhaustive, fresh-angle audit of the `parallel` multiprocessing module.
+#
+# Deliberately COMPLEMENTS the existing golden scripts (audit_parallel, probe_parallel,
+# probe_parallel_adversarial, probe_parallel_fuzz, r5/r6/r7_parallel) and the C++ test_parallel* suite
+# rather than repeating their spawn/Queue/Lock/Event/Semaphore/Barrier core. r8 concentrates on angles
+# those leave thin or untouched:
+#   - Lock/Semaphore block=/timeout= kwargs + falsy/truthy NON-Bool block; a blocking acquire that
+#     TIMES OUT returns False (not throw) — for both Lock (worker-held) and Semaphore (value 0);
+#   - Lock & Semaphore used DIRECTLY as `with` context managers (the _enter_/_exit_ protocol);
+#   - Barrier: nwaiting() observed mid-rendezvous (gated, bounded poll, never timing); wait() timeout
+#     RAISES (contrast with Lock/Sem/Event which return False); abort() is PERMANENT (reset() after
+#     abort still throws); reset() returns None and the barrier is reusable after a plain reset();
+#   - spawn of an INLINE anonymous function literal, and of a function defined INSIDE `if argmain:`
+#     (found by source span even though that branch never runs in a worker); a duplicate
+#     positional+keyword binding and an extra kwarg to a 0-arg worker both surface at join();
+#     float-exact round-trip; 3-level nested spawn (each worker owns its own dispatcher);
+#   - a worker that CREATES each primitive (Lock/Event/Semaphore/Barrier) and returns it — it crosses
+#     back by identity AND retains its state (r5 covered only Queue);
+#   - a primitive nested in a LIST (not a Dict) keeps cross-VM identity;
+#   - idempotent ERROR re-throw: two join()s on a throwing worker throw the SAME error text;
+#   - Queue: putnowait(item=) kw, an unknown kw throws, a surplus positional is tolerated (pinned),
+#     a huge maxsize never pre-allocates (no OOM), close-drain on a BOUNDED full queue;
+#   - primitives are UNHASHABLE (a Queue/Lock as a Dict key throws catchably), and `==` after a
+#     round-trip is False even though the two handles reference the SAME underlying object (shown by
+#     shared state) — the documented identity-vs-equality gotcha.
+#
+# DETERMINISTIC + TERMINATING: tiny worker counts (<=5), every Task joined, every cross-thread step
+# gated by a Queue/Event handshake or join, every blocking call a buggy build could stall on carries a
+# SHORT timeout so a regression FAILS instead of hanging, and a bounded poll (never an unbounded spin)
+# observes mid-rendezvous state. Every assertion is on an order-independent invariant/aggregate
+# (a sorted list, a set, a count, a flag) — never on arrival order or timing. Final line:
+# "r8_parallel: <n> checks passed".
+
+var io = import("io")
+var parallel = import("parallel")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# True iff the thunk throws (asserts documented error cases catchably).
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# A bounded cross-thread pause: wait up to `seconds` on a never-set Event (a regression cannot turn
+# this into an unbounded spin). Used only to widen a contention window, never to make an assertion.
+var pause = Function(seconds):
+    var e = parallel.Event()
+    discard e.wait(seconds)
+
+# ---- module-level workers — a worker re-evaluates this file with argmain False, so it defines these
+# and skips the driver block. They MUST be file-defined for spawn to re-read them by source span. ----
+
+var w_id = Function(x):
+    return x
+
+var w_float = Function(x):                  # float-exact round-trip through spawn
+    return x * 2.0
+
+var w_noargs = Function():
+    return 5
+
+var w_sub = Function(x, y):                 # duplicate positional+keyword binding probe
+    return x - y
+
+var w_leaf = Function(x):                   # 3-level nested spawn
+    return x + 1
+var w_mid = Function(x):
+    return parallel.spawn(w_leaf, x).join() * 10
+var w_top = Function(x):
+    return parallel.spawn(w_mid, x).join() + 1
+
+var w_boom = Function():                    # idempotent error re-throw
+    throw "r8-specific-boom"
+
+var w_make_lock = Function():               # worker creates a Lock, holds it, returns it
+    var l = parallel.Lock()
+    discard l.acquire(True, 5.0)
+    return l
+var w_make_event = Function():              # worker creates an Event, sets it, returns it
+    var e = parallel.Event()
+    e.set()
+    return e
+var w_make_sem = Function():                # worker creates a Semaphore(3), takes 1 permit, returns it
+    var s = parallel.Semaphore(3)
+    discard s.acquire(False)
+    return s
+var w_make_barrier = Function():            # worker creates a Barrier(5), returns it
+    return parallel.Barrier(5)
+
+var w_list_ident = Function(lst):           # a primitive nested in a LIST keeps cross-VM identity
+    lst[0].put("via-list")
+    return lst[1]
+
+var w_hold_lock = Function(lk, gotit, rel):     # hold a lock across a handshake so main can time out
+    discard lk.acquire(True, 5.0)
+    gotit.put(1)
+    discard rel.wait(5.0)
+    lk.release()
+
+var w_barrier_party = Function(bar, ready, go, out):    # gated party: signal ready, await go, rendezvous
+    ready.put(1)
+    discard go.wait(5.0)
+    try:
+        discard bar.wait(5.0)
+        out.put("ok")
+    catch:
+        out.put("broken")
+
+var w_with_ctx = Function(lk, sm, q):       # exercise Lock + Semaphore as `with` managers in a worker
+    with lk:
+        with sm:
+            q.put("held")
+
+# Attempt to use a primitive as a Dict key (it must be rejected as unhashable). These are run on the
+# MAIN VM via `throws(...)`; they are top-level only so the file parses uniformly (a multi-statement
+# body can't be an inline one-liner lambda).
+var use_queue_as_key = Function():
+    var d = {}
+    d[parallel.Queue()] = 1
+    return d
+var use_lock_as_key = Function():
+    var d = {}
+    d[parallel.Lock()] = 1
+    return d
+
+if argmain:
+    # ============================================================= inspect: the thin members
+    ok(inspect(parallel.Lock()).find("_enter_") >= 0, "inspect(Lock) lists _enter_ (context-manager)")
+    ok(inspect(parallel.Lock()).find("_exit_") >= 0 and inspect(parallel.Lock()).find("locked") >= 0, "inspect(Lock) lists _exit_/locked")
+    ok(inspect(parallel.Semaphore()).find("_enter_") >= 0 and inspect(parallel.Semaphore()).find("_exit_") >= 0, "inspect(Semaphore) lists _enter_/_exit_")
+    ok(inspect(parallel.Event()).find("set") >= 0 and inspect(parallel.Event()).find("clear") >= 0 and inspect(parallel.Event()).find("wait") >= 0, "inspect(Event) lists set/clear/wait")
+    var bins = inspect(parallel.Barrier(2))
+    ok(bins.find("reset") >= 0 and bins.find("abort") >= 0 and bins.find("nwaiting") >= 0, "inspect(Barrier) lists reset/abort/nwaiting")
+
+    # ============================================================= spawn: fresh arg/definition forms
+    # an INLINE anonymous function literal passed straight to spawn (file-defined by span, no captures)
+    ok(parallel.spawn(Function(z): return z + 1, 41).join() == 42, "spawn an inline anonymous Function literal")
+
+    # a function defined INSIDE the `if argmain:` block: a worker (argmain False) never runs this
+    # branch, yet finds the function purely by AST source span (findInStmt descends into If branches)
+    var inside = Function(z): return z * 100
+    ok(parallel.spawn(inside, 3).join() == 300, "spawn a function defined inside `if argmain:` (located by span)")
+
+    # float argument round-trips bit-exact
+    ok(parallel.spawn(w_float, 1.5).join() == 3.0, "spawn float arg round-trips exactly")
+
+    # 3-level nested spawn: each worker VM owns its own dispatcher
+    ok(parallel.spawn(w_top, 5).join() == 61, "3-level nested spawn (w_top->w_mid->w_leaf)")
+
+    # a duplicate positional+keyword binding for the same parameter surfaces at join()
+    ok(throws(Function(): return parallel.spawn(w_sub, 10, x = 1).join()), "duplicate positional+keyword arg throws at join")
+    # an extra keyword to a 0-arg worker surfaces at join()
+    ok(throws(Function(): return parallel.spawn(w_noargs, bogus = 1).join()), "extra keyword to a 0-arg worker throws at join")
+
+    # ============================================================= idempotent ERROR re-throw
+    var bt = parallel.spawn(w_boom)
+    var e1 = ""
+    try:
+        discard bt.join()
+    catch as ex:
+        e1 = String(ex)
+    var e2 = ""
+    try:
+        discard bt.join()                       # second join re-throws from the cached result
+    catch as ex:
+        e2 = String(ex)
+    ok(e1.find("r8-specific-boom") >= 0, "first join surfaces the worker's specific error text")
+    ok(e1 == e2 and len(e1) > 0, "join() re-throws the SAME cached error on a second call")
+
+    # ============================================================= Lock kwargs + blocking timeout = False
+    var l = parallel.Lock()
+    ok(l.acquire(block = False, timeout = None) == True, "Lock.acquire(block=, timeout=) keywords")
+    l.release()
+    # falsy/truthy NON-Bool block on a fresh lock: 0 is non-blocking (still acquires, returns True);
+    # a truthy non-Bool blocks (acquires immediately on a free lock)
+    ok(l.acquire(0) == True, "Lock.acquire(block=0) (falsy) on a free lock acquires")
+    l.release()
+    ok(l.acquire(7) == True, "Lock.acquire(block=7) (truthy non-Bool) on a free lock acquires")
+    l.release()
+
+    # a worker HOLDS the lock; main's blocking acquire then TIMES OUT and returns False (not throw)
+    var hlk = parallel.Lock()
+    var gotit = parallel.Queue()
+    var rel = parallel.Event()
+    var ht = parallel.spawn(w_hold_lock, hlk, gotit, rel)
+    discard gotit.get(True, 5.0)                 # worker now holds the lock
+    ok(hlk.acquire(True, 0.05) == False, "Lock blocking acquire on a worker-held lock TIMES OUT -> False")
+    ok(hlk.acquire(False) == False, "Lock non-blocking acquire on a worker-held lock -> False")
+    rel.set()
+    discard ht.join()
+    ok(hlk.locked() == False, "lock free after the holding worker releases and joins")
+
+    # ============================================================= Semaphore kwargs + blocking timeout = False
+    var sm = parallel.Semaphore(value = 1)
+    ok(sm.acquire(block = False, timeout = None) == True, "Semaphore.acquire(block=, timeout=) keywords")
+    ok(sm.acquire(0) == False, "Semaphore.acquire(block=0) (falsy) when exhausted -> False")
+    # a Semaphore with ZERO permits: a blocking acquire with a short timeout returns False (not throw)
+    var sm0 = parallel.Semaphore(0)
+    ok(sm0.acquire(True, 0.05) == False, "Semaphore blocking acquire (0 permits) TIMES OUT -> False")
+    ok(sm0.acquire(5, 0.05) == False, "Semaphore acquire(block=5 truthy, timeout) still times out -> False")
+
+    # ============================================================= Lock + Semaphore as `with` managers
+    # directly (not just via a method) — exercise the _enter_/_exit_ protocol in main AND a worker
+    var clk = parallel.Lock()
+    with clk:
+        ok(clk.locked() == True, "with Lock: acquires (locked inside the block)")
+    ok(clk.locked() == False, "with Lock: releases on block exit")
+    var csm = parallel.Semaphore(1)
+    with csm:
+        ok(csm.acquire(False) == False, "with Semaphore: holds the only permit inside the block")
+    ok(csm.acquire(False) == True, "with Semaphore: permit restored after the block")
+
+    var wlk = parallel.Lock()
+    var wsm = parallel.Semaphore(1)
+    var wq = parallel.Queue()
+    var wt = parallel.spawn(w_with_ctx, wlk, wsm, wq)
+    ok(wq.get(True, 5.0) == "held", "a worker holds a cross-VM Lock+Semaphore via `with` and signals")
+    discard wt.join()
+    ok(wlk.locked() == False and wsm.acquire(False) == True, "the worker's `with` released both on exit")
+
+    # ============================================================= Barrier: nwaiting / timeout / abort / reset
+    # nwaiting() observed == 1 while one gated worker is parked at a 2-party barrier (deterministic via
+    # a ready/go handshake + a BOUNDED poll; main is the 2nd party and releases it).
+    var bar = parallel.Barrier(2)
+    var ready = parallel.Queue()
+    var go = parallel.Event()
+    var bout = parallel.Queue()
+    var bpt = parallel.spawn(w_barrier_party, bar, ready, go, bout)
+    discard ready.get(True, 5.0)                 # worker alive, about to await `go`
+    go.set()                                     # release it toward bar.wait()
+    var seenWaiting = 0
+    var tries = 0
+    while tries < 300:                           # bounded poll: at most ~3s, then give up (no hang)
+        if bar.nwaiting() == 1:
+            seenWaiting = 1
+            tries = 300
+        else:
+            pause(0.01)
+            tries = tries + 1
+    ok(seenWaiting == 1, "Barrier.nwaiting() observed == 1 while a worker is parked")
+    var myidx = bar.wait(5.0)                     # main is the 2nd party -> releases both (call ONCE)
+    ok(myidx == 0 or myidx == 1, "main is the 2nd party and the barrier releases (index 0 or 1)")
+    ok(bout.get(True, 5.0) == "ok", "the parked worker rendezvoused and reported ok")
+    discard bpt.join()
+
+    # wait() that times out RAISES (broken) — contrast with Lock/Semaphore/Event returning False
+    var ubar = parallel.Barrier(2)
+    ok(throws(Function(): return ubar.wait(0.05)), "under-filled Barrier.wait(timeout) RAISES (not False)")
+
+    # abort() is PERMANENT: even reset() afterward does not revive the barrier (a fresh wait still throws)
+    var abar = parallel.Barrier(1)
+    abar.abort()
+    ok(throws(Function(): return abar.wait(0.5)), "wait() on an aborted barrier throws")
+    abar.reset()
+    ok(throws(Function(): return abar.wait(0.5)), "reset() does NOT clear abort() — an aborted barrier stays aborted")
+
+    # reset() (without a prior abort) returns None and the barrier is REUSABLE afterward
+    var rbar = parallel.Barrier(1)
+    ok(rbar.reset() == None, "Barrier.reset() returns None")
+    ok(rbar.wait(1.0) == 0, "a single-party barrier still rendezvouses after a plain reset()")
+
+    # ============================================================= worker-CREATED primitives cross back
+    # each primitive type made in a worker crosses back by identity AND retains its state (r5 did Queue)
+    var rl = parallel.spawn(w_make_lock).join()
+    ok(type(rl) == "Lock" and rl.locked() == True, "a worker-created Lock crosses back held")
+    rl.release()
+    ok(rl.locked() == False, "and the returned Lock is the live object (main can release it)")
+
+    var re = parallel.spawn(w_make_event).join()
+    ok(type(re) == "Event" and re.isset() == True, "a worker-created Event crosses back set")
+
+    var rs = parallel.spawn(w_make_sem).join()
+    ok(type(rs) == "Semaphore", "a worker-created Semaphore crosses back")
+    ok(rs.acquire(False) and rs.acquire(False) and rs.acquire(False) == False, "the returned Semaphore retains 2 of its 3 permits (worker took 1)")
+
+    var rb = parallel.spawn(w_make_barrier).join()
+    ok(type(rb) == "Barrier" and rb.parties() == 5, "a worker-created Barrier crosses back with parties()==5")
+
+    # ============================================================= primitive nested in a LIST
+    var nq = parallel.Queue()
+    var nres = parallel.spawn(w_list_ident, [nq, [7, 8]]).join()
+    ok(nres == [7, 8], "a List-nested-primitive spawn round-trips the plain data")
+    ok(nq.get(True, 2.0) == "via-list", "a primitive nested in a LIST keeps cross-VM identity")
+
+    # ============================================================= Queue: kw, surplus args, OOM, close-drain
+    var pq = parallel.Queue()
+    pq.putnowait(item = 5)                        # putnowait takes item= by keyword
+    ok(pq.getnowait() == 5, "Queue.putnowait(item=) keyword")
+    ok(throws(Function(): return pq.getnowait(bogus = 1)), "an unknown keyword to a Queue method throws")
+    ok(throws(Function(): return parallel.Queue(bogus = 1)), "an unknown keyword to the Queue constructor throws")
+
+    # a SURPLUS positional arg to a native method is tolerated (read-what-it-needs dispatch). Pinned as
+    # the actual behavior — see the audit report's KWARGS/INSPECT note.
+    var sq = parallel.Queue()
+    sq.put(9)
+    ok(sq.get(True, None, "surplus") == 9, "a surplus positional to Queue.get is ignored (actual behavior)")
+    ok(sq.empty(123) == True, "a surplus positional to a 0-param Queue method is ignored (actual behavior)")
+
+    # a huge maxsize must NOT pre-allocate (no OOM): construct, use, and confirm it isn't full
+    var hugeq = parallel.Queue(1000000000)
+    hugeq.put(1)
+    ok(hugeq.get() == 1 and hugeq.full() == False, "a huge-maxsize Queue does not pre-allocate (no OOM)")
+
+    # close-drain on a BOUNDED, FULL queue: get drains every buffered item in order, then throws
+    var cbq = parallel.Queue(2)
+    cbq.put("a")
+    cbq.put("b")
+    ok(cbq.full() == True, "bounded queue full before close")
+    cbq.close()
+    ok(cbq.get() == "a" and cbq.get() == "b", "a closed bounded queue drains its buffered items in order")
+    ok(throws(Function(): return cbq.get()), "a closed, drained bounded queue then throws on get")
+    ok(throws(Function(): return cbq.putnowait("c")), "putnowait after close throws (bounded queue)")
+
+    # ============================================================= identity vs equality + hashability
+    # primitives are UNHASHABLE (no hash): using one as a Dict key throws catchably
+    ok(throws(use_queue_as_key), "a Queue cannot be a Dict key (unhashable) — catchable")
+    ok(throws(use_lock_as_key), "a Lock cannot be a Dict key (unhashable) — catchable")
+
+    # `==` after a round-trip is False even though both handles reference the SAME underlying object:
+    # there is no _eq_, so equality is per-wrapper identity. Identity is PROVEN by shared state.
+    var idq = parallel.Queue()
+    var carrier = parallel.Queue()
+    carrier.put(idq)
+    var idq2 = carrier.get()
+    ok((idq == idq2) == False, "two handles to the same queue are NOT == (no _eq_; per-wrapper identity)")
+    idq.put("shared-state")
+    ok(idq2.get(True, 2.0) == "shared-state", "...yet they reference the SAME queue (a put on one is got on the other)")
+    ok((idq == idq) == True, "a queue handle is == itself (self-identity)")
+
+    # ============================================================= cpucount (light)
+    ok(type(parallel.cpucount()) == "Integer" and parallel.cpucount() >= 1, "cpucount is a positive Integer")
+
+    io.print("r8_parallel: " + String(n) + " checks passed")

@@ -1,0 +1,4 @@
+# PARSER: a non-default parameter declared after a default parameter
+var f = Function(a = 1, b):
+    return b
+discard f

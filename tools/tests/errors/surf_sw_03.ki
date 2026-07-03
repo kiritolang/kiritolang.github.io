@@ -1,0 +1,3 @@
+# a switch body with no case/default arms is rejected
+switch 1:
+    pass

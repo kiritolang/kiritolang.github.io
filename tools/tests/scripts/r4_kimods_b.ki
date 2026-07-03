@@ -1,0 +1,740 @@
+# =============================================================================================
+# r4_kimods_b.ki — exhaustive probe of the Kirito-authored frozen-source stdlib modules,
+# GROUP B: string, textwrap, base64, csv, tabular, xml, tee, arg, semver.
+# (Implementation: src/kirito/stdlib_kimodules.hpp.)
+#
+# Every documented function/class/method/argument is exercised from typical, edge (empty/unicode/
+# quoted-CSV-with-commas+newlines/malformed-XML/semver-prerelease+ranges/base64-roundtrip+bad-input/
+# tabular-merge+groupby+missing-data), and malformed/wrong-type angles. Wrong-type and out-of-domain
+# inputs are asserted to RAISE via the `throws` helper. Keyword-argument and `inspect` support are
+# checked for every module. Everything is DETERMINISTIC; the final line is a fixed summary. Only
+# behavior CONFIRMED correct on the release interpreter is asserted here — suspected oddities are
+# reported separately, not encoded as passing assertions.
+# =============================================================================================
+var io = import("io")
+
+var checks = [0]
+var ok = Function(cond, msg):
+    assert cond, msg
+    checks[0] = checks[0] + 1
+
+# "this thunk throws" probe (a bare catch also catches a native std::exception / a thrown String).
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+        return False
+    catch as e:
+        return True
+
+# float近-equality for the few Float results (group std / describe std).
+var near = Function(x, y) -> Bool:
+    var d = x - y
+    return (d if d >= 0 else -d) < 1e-9
+
+# Run a thunk with io.stdout redirected to a throwaway buffer, returning the thunk's result. A few
+# probes (arg's --help, which prints usage by design) would otherwise spill onto the console and break
+# the "single final summary line" contract; this swallows that incidental output deterministically.
+var quietly = Function(thunk):
+    var saved = io.stdout
+    io.stdout = io.BytesIO()
+    var result = thunk()
+    io.stdout = saved
+    return result
+
+# ====================================================================== string
+var str = import("string")
+
+# --- constants (exact spellings).
+ok(str.ascii_lowercase == "abcdefghijklmnopqrstuvwxyz", "ascii_lowercase")
+ok(str.ascii_uppercase == "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ascii_uppercase")
+ok(str.ascii_letters == str.ascii_lowercase + str.ascii_uppercase, "ascii_letters is lower+upper")
+ok(str.digits == "0123456789", "digits")
+ok(str.hexdigits == "0123456789abcdefABCDEF", "hexdigits")
+ok(str.octdigits == "01234567", "octdigits")
+ok(str.whitespace == " \t\n\r", "whitespace is space/tab/newline/cr")
+ok("!" in str.punctuation and "~" in str.punctuation, "punctuation includes ! and ~")
+
+# --- capwords: capitalizes each SPACE-separated word; only single-space splits.
+ok(str.capwords("hello world") == "Hello World", "capwords capitalizes each word")
+ok(str.capwords("HELLO WORLD") == "Hello World", "capwords lowercases the tail of each word")
+ok(str.capwords("") == "", "capwords of empty -> empty")
+ok(str.capwords("a  b") == "A  B", "capwords keeps the empty word from a double space (no collapse)")
+ok(str.capwords("a\tb") == "A\tb", "capwords splits only on space, NOT tab (one 'word' here)")
+ok(str.capwords("café au lait") == "Café Au Lait", "capwords is Unicode-aware via String.upper")
+
+# --- similarity(a, b): 1 - editdistance/longerlength; b a String -> Float, b a List -> List.
+ok(str.similarity("abc", "abc") == 1.0, "similarity of identical strings is 1.0")
+ok(str.similarity("", "") == 1.0, "similarity of two empty strings is 1.0 (longer==0)")
+ok(str.similarity("", "abc") == 0.0, "similarity of empty vs non-empty is 0.0")
+ok(near(str.similarity("kitten", "sitting"), 1.0 - 3.0 / 7.0), "similarity reflects edit distance / longer length")
+ok(str.similarity("abc", ["abc", "abd", "xyz"]) == [1.0, 1.0 - 1.0 / 3.0, 0.0], "similarity List form -> one score per candidate")
+ok(str.similarity("x", []) == [], "similarity against an empty candidate List -> []")
+
+# --- closest(query, candidates): smallest edit distance; ties to earliest; None for [].
+ok(str.closest("aple", ["apple", "grape", "mango"]) == "apple", "closest finds the nearest candidate")
+ok(str.closest("x", []) == None, "closest of an empty list -> None")
+ok(str.closest("ab", ["ba", "xy"]) == "ba", "closest breaks ties toward the earliest candidate")
+ok(str.closest("apple", ["apple", "apply"]) == "apple", "closest returns an exact match")
+
+# --- fuzzymatch(query, candidates, cutoff=0.6): [candidate, score] pairs >= cutoff, score-desc.
+ok(str.fuzzymatch("aple", ["apple", "grape", "mango"]) == [["apple", 0.8]], "fuzzymatch keeps only >= cutoff (default 0.6)")
+ok(str.fuzzymatch("zzz", ["apple"], 0.0) == [["apple", 0.0]], "fuzzymatch cutoff=0 keeps even a 0-score match")
+ok(str.fuzzymatch("zzz", ["apple"]) == [], "fuzzymatch default cutoff drops a poor match")
+var fm = str.fuzzymatch("abc", ["abc", "abd", "ab"], 0.0)
+ok(fm[0] == ["abc", 1.0], "fuzzymatch sorts by score descending (best first)")
+ok(str.fuzzymatch("abc", ["abc", "abd", "ab"], cutoff = 0.9) == [["abc", 1.0]], "fuzzymatch honors a cutoff keyword")
+
+# ====================================================================== textwrap
+var tw = import("textwrap")
+
+# --- wrap(text, width=70): greedy word wrap into a List of lines (single-space split).
+ok(tw.wrap("the quick brown fox", 10) == ["the quick", "brown fox"], "wrap packs words up to width")
+ok(tw.wrap("", 10) == [], "wrap of empty text -> [] (no lines)")
+ok(tw.wrap("a b c", 100) == ["a b c"], "wrap that fits on one line -> one line")
+ok(tw.wrap("supercalifragilistic", 5) == ["supercalifragilistic"], "wrap keeps an over-long word whole (no hard break)")
+ok(tw.wrap("hi superlongword bye", 5) == ["hi", "superlongword", "bye"], "wrap emits an over-long word on its own line")
+ok(tw.wrap("one two three") == ["one two three"], "wrap default width=70 fits a short line")
+
+# --- fill(text, width=70): wrap joined by newlines.
+ok(tw.fill("a b c d e", 3) == "a b\nc d\ne", "fill joins wrapped lines with newlines")
+ok(tw.fill("word", 2) == "word", "fill of a single over-long word")
+ok(tw.fill("", 10) == "", "fill of empty -> empty (join of [])")
+
+# --- indent(text, prefix): prefix every NON-empty line (blank lines untouched).
+ok(tw.indent("a\nb", "> ") == "> a\n> b", "indent prefixes each line")
+ok(tw.indent("a\n\nb", "> ") == "> a\n\n> b", "indent leaves a blank line unprefixed")
+ok(tw.indent("", "> ") == "", "indent of empty text -> empty")
+ok(tw.indent("x", "") == "x", "indent with an empty prefix is a no-op")
+
+# --- dedent(text): strip the common leading whitespace (counts characters, tab==1).
+ok(tw.dedent("    a\n    b") == "a\nb", "dedent removes the common 4-space indent")
+ok(tw.dedent("    a\n  b") == "  a\nb", "dedent removes only the COMMON (minimum) indent")
+ok(tw.dedent("a\n  b") == "a\n  b", "dedent with no common indent is a no-op")
+ok(tw.dedent("\t\ta\n\t\tb") == "a\nb", "dedent removes a common tab indent")
+ok(tw.dedent("") == "", "dedent of empty -> empty")
+
+# ====================================================================== base64
+var b64 = import("base64")
+
+# --- RFC 4648 test vectors (encode a String -> base64 String).
+ok(b64.encode("") == "", "base64 encode of empty -> empty")
+ok(b64.encode("f") == "Zg==", "base64 'f'")
+ok(b64.encode("fo") == "Zm8=", "base64 'fo'")
+ok(b64.encode("foo") == "Zm9v", "base64 'foo'")
+ok(b64.encode("foob") == "Zm9vYg==", "base64 'foob'")
+ok(b64.encode("fooba") == "Zm9vYmE=", "base64 'fooba'")
+ok(b64.encode("foobar") == "Zm9vYmFy", "base64 'foobar'")
+ok(b64.encode("Man") == "TWFu", "base64 'Man'")
+
+# --- encode accepts a List of byte values and a Bytes; decode returns a List of byte values.
+ok(b64.encode([77, 97, 110]) == "TWFu", "encode a List of byte values")
+ok(b64.encode(Bytes([77, 97, 110])) == "TWFu", "encode a Bytes")
+ok(b64.decode("TWFu") == [77, 97, 110], "decode -> List of byte values")
+ok(Bytes(b64.decode("Zm9vYmFy")).decode() == "foobar", "decode round-trips through Bytes")
+ok(b64.decode("") == [], "decode of empty -> []")
+
+# --- round-trips, incl. Unicode (encoded as UTF-8 bytes) and the full byte range.
+ok(Bytes(b64.decode(b64.encode("héllo 日本"))).decode() == "héllo 日本", "Unicode round-trips (UTF-8 bytes)")
+ok(b64.decode(b64.encode([0, 1, 127, 128, 254, 255])) == [0, 1, 127, 128, 254, 255], "the full 0..255 byte range round-trips")
+
+# --- padding tolerance + strict validation of leftover bits.
+ok(b64.decode("TWE") == [77, 97], "decode tolerates a missing '=' pad when the bits are whole")
+ok(b64.decode("TWE=") == [77, 97], "decode with the canonical pad agrees")
+ok(b64.decode("AA") == [0], "decode 'AA' -> one zero byte (4 leftover zero bits is valid)")
+ok(b64.decode("AAA") == [0, 0], "decode 'AAA' -> two zero bytes")
+ok(throws(Function(): return b64.decode("A")), "decode of a lone trailing character throws (invalid length)")
+ok(throws(Function(): return b64.decode("AB")), "decode with non-zero leftover bits (truncated) throws")
+ok(throws(Function(): return b64.decode("!!!!")), "decode of an invalid character throws")
+ok(throws(Function(): return b64.decode("TW Fu")), "decode does NOT tolerate embedded whitespace (invalid char)")
+
+# --- URL-safe alphabet: '+' -> '-', '/' -> '_'.
+ok(b64.urlsafeencode([255, 255, 255]) == "____", "urlsafe maps 0x3F groups to '_'")
+ok(b64.encode([255, 255, 255]) == "////", "standard alphabet uses '/'")
+ok(b64.urlsafedecode(b64.urlsafeencode([251, 255, 191])) == [251, 255, 191], "urlsafe round-trips")
+ok(b64.urlsafedecode("____") == [255, 255, 255], "urlsafedecode of '____'")
+
+# ====================================================================== csv
+var csv = import("csv")
+
+# --- parserow(line): one line -> a List of fields, RFC-4180 quoting.
+ok(csv.parserow("a,b,c") == ["a", "b", "c"], "parserow splits on commas")
+ok(csv.parserow("") == [""], "parserow of an empty line -> one empty field")
+ok(csv.parserow("a,") == ["a", ""], "parserow keeps a trailing empty field")
+ok(csv.parserow("\"a,b\",c") == ["a,b", "c"], "parserow keeps a comma inside quotes")
+ok(csv.parserow("\"he said \"\"hi\"\"\",x") == ["he said \"hi\"", "x"], "parserow unescapes a doubled quote")
+ok(csv.parserow(",,") == ["", "", ""], "parserow of bare commas -> three empty fields")
+
+# --- parse(text): whole text -> rows; a quoted newline does NOT split a row; CR is dropped.
+ok(csv.parse("a,b\n1,2\n3,4") == [["a", "b"], ["1", "2"], ["3", "4"]], "parse splits rows on newlines")
+ok(csv.parse("") == [], "parse of empty text -> no rows")
+ok(csv.parse("\n") == [[""]], "parse of a lone newline -> one row with one empty field")
+ok(csv.parse("a,b\n") == [["a", "b"]], "parse drops a trailing empty line")
+ok(csv.parse("a,b\r\n1,2\r\n") == [["a", "b"], ["1", "2"]], "parse treats CRLF as LF (CR dropped)")
+ok(csv.parse("\"x\ny\",z") == [["x\ny", "z"]], "parse keeps a newline inside quotes (one row)")
+
+# --- formatrow / format: List(s) of fields -> CSV text, quoting only when needed.
+ok(csv.formatrow(["a", "b", "c"]) == "a,b,c", "formatrow joins with commas")
+ok(csv.formatrow(["a,b", "c"]) == "\"a,b\",c", "formatrow quotes a field containing a comma")
+ok(csv.formatrow(["he\"llo"]) == "\"he\"\"llo\"", "formatrow quotes and doubles an embedded quote")
+ok(csv.formatrow(["a\nb"]) == "\"a\nb\"", "formatrow quotes a field containing a newline")
+ok(csv.formatrow([1, 2.5, None]) == "1,2.5,None", "formatrow stringifies non-String fields (None -> 'None')")
+ok(csv.format([["a", "b"], ["1", "2"]]) == "a,b\n1,2", "format joins rows with newlines")
+
+# --- the round-trip property over awkward fields (comma, embedded quote, embedded newline).
+ok(csv.parse(csv.format([["a,x", "b"], ["c\nd", "e\"f"]])) == [["a,x", "b"], ["c\nd", "e\"f"]], "format -> parse round-trips comma/quote/newline")
+
+# ====================================================================== xml
+var xml = import("xml")
+
+# --- parse + tree navigation (find / findall / findtext / get / indexing / iteration).
+var root = xml.parse("<a><b>x</b><b>y</b><c>z</c></a>")
+ok(root.tag == "a", "parse returns the root element")
+ok(len(root) == 3, "len(element) is the child count")
+ok(root[0].text == "x", "element indexing returns a child")
+ok(root.find("b").text == "x", "find returns the FIRST matching direct child")
+ok(root.find("zzz") == None, "find of a missing tag -> None")
+ok(len(root.findall("b")) == 2, "findall returns every matching direct child")
+ok(root.findtext("c") == "z", "findtext returns a child's text")
+ok(root.findtext("zzz", "DEF") == "DEF", "findtext default for a missing tag")
+var iterTags = []
+for child in root:
+    iterTags.append(child.tag)
+ok(iterTags == ["b", "b", "c"], "an element iterates its children in order")
+
+# --- find searches only DIRECT children (not descendants).
+ok(xml.parse("<r><x><target>deep</target></x></r>").find("target") == None, "find is not recursive")
+
+# --- attributes: quoted (either quote), valueless (-> ''), get with default, entity-decoded.
+var at = xml.parse("<e id='1' name=\"bob\" disabled cls='x &amp; y'/>")
+ok(at.get("id") == "1", "get reads a single-quoted attribute")
+ok(at.get("name") == "bob", "get reads a double-quoted attribute")
+ok(at.get("disabled") == "", "a valueless attribute decodes to the empty string")
+ok(at.get("missing", "D") == "D", "get returns the default for an absent attribute")
+ok(at.get("cls") == "x & y", "an attribute value is entity-decoded")
+
+# --- entities in text: named, numeric decimal and hex; a malformed one is kept verbatim.
+ok(xml.parse("<x>a &lt; b &gt; c &amp; d &quot;e&quot; &apos;f&apos;</x>").text == "a < b > c & d \"e\" 'f'", "named entities decode in text")
+ok(xml.parse("<x>&#65;&#x42;&#x61;</x>").text == "ABa", "numeric decimal and hex entities decode")
+ok(xml.parse("<x>&#zz;</x>").text == "&#zz;", "a malformed numeric entity is kept verbatim (lenient)")
+ok(xml.parse("<x>&unknown;</x>").text == "&unknown;", "an unknown named entity is kept verbatim")
+
+# --- CDATA (raw, no decoding), comments, the <?xml?> decl and <!DOCTYPE> are skipped.
+ok(xml.parse("<x><![CDATA[a < b & c]]></x>").text == "a < b & c", "CDATA content is taken raw")
+ok(xml.parse("<x><!-- comment -->hi</x>").text == "hi", "a comment is skipped")
+ok(xml.parse("<?xml version='1.0'?><r>hi</r>").tag == "r", "the <?xml?> declaration is skipped")
+ok(xml.parse("<!DOCTYPE html><r>hi</r>").tag == "r", "a <!DOCTYPE> is skipped")
+
+# --- tail text (character data after a child's end tag), used for mixed content.
+ok(xml.parse("<r><a/>tail</r>").find("a").tail == "tail", "an element captures its tail text")
+ok(xml.parse("<r>a<b>c</b>d</r>").itertext() == ["a", "c", "d"], "itertext walks text in document order")
+
+# --- serialization round-trips; an empty element self-closes ' />'; entities are re-escaped.
+ok(xml.tostring(xml.parse("<a x='1'><b>t</b></a>")) == "<a x=\"1\"><b>t</b></a>", "tostring round-trips nesting + an attribute")
+ok(xml.tostring(xml.parse("<a></a>")) == "<a />", "an empty element serializes self-closed")
+ok(xml.tostring(xml.parse("<x>1 &lt; 2 &amp; 3</x>")) == "<x>1 &lt; 2 &amp; 3</x>", "special characters re-escape on serialize")
+ok(xml.tostring(xml.parse("<e a='x &lt; y'/>")) == "<e a=\"x &lt; y\" />", "an attribute value re-escapes '<'")
+
+# --- parse returns None when there is no element; Element ctor; fromstring alias; _str_.
+ok(xml.parse("   ") == None, "parse of element-free text -> None")
+ok(xml.parse("just text") == None, "parse of bare text (no tag) -> None")
+ok(xml.Element("foo").tag == "foo", "Element constructs a standalone node")
+ok(xml.Element("p", {"k": "v"}).get("k") == "v", "Element takes an attrib Dict")
+ok(xml.fromstring("<z/>").tag == "z", "fromstring is an alias for parse")
+ok(String(xml.parse("<n>hi</n>")) == "<n>hi</n>", "an element's _str_ is its serialization")
+
+# --- malformed markup is tolerated (lenient), not thrown.
+ok(xml.parse("<a><b></a>").tag == "a", "an unclosed child is tolerated")
+# parse insists on a String argument (annotated param).
+ok(throws(Function(): return xml.parse(123)), "parse of a non-String throws (typed parameter)")
+
+# ====================================================================== tee
+var tee = import("tee")
+
+# --- Tee(primary, copies): writes go to copies first, then primary; write returns the length.
+var bufP = io.BytesIO()
+var bufC = io.BytesIO()
+var t = tee.Tee(bufP, bufC)
+ok(t.write("hello") == 5, "Tee.write returns the data length")
+ok(bufP.getvalue() == "hello" and bufC.getvalue() == "hello", "Tee writes to both the primary and the copy")
+ok(len(t.streams()) == 2, "streams() lists the copy then the primary")
+
+# --- a List of copies; writelines; a pure fan-out sink (primary None).
+var b1 = io.BytesIO()
+var b2 = io.BytesIO()
+var b3 = io.BytesIO()
+var tMulti = tee.Tee(b1, [b2, b3])
+discard tMulti.write("xyz")
+ok(b1.getvalue() == "xyz" and b2.getvalue() == "xyz" and b3.getvalue() == "xyz", "Tee fans out to every copy + primary")
+var bWl = io.BytesIO()
+var tWl = tee.Tee(bWl)
+ok(tWl.writelines(["a", "b", "c"]) == None and bWl.getvalue() == "abc", "writelines writes each line, returns None")
+var bSink = io.BytesIO()
+var tSink = tee.Tee(None, bSink)
+discard tSink.write("only")
+ok(bSink.getvalue() == "only" and len(tSink.streams()) == 1, "a None-primary Tee is a pure fan-out sink")
+
+# --- context-manager protocol (flushes on exit) + close().
+var bCtx = io.BytesIO()
+var tCtx = tee.Tee(bCtx)
+with tCtx as inner:
+    discard inner.write("ctx")
+ok(bCtx.getvalue() == "ctx", "Tee works as a with-context manager")
+ok(tee.Tee(io.BytesIO()).close() == None, "Tee.close() returns None")
+
+# --- tee_stdout: io.stdout also writes to the copy inside the block, restored on exit. The real
+# stdout is first parked on a buffer so the mirrored line never reaches the console (the Tee primary
+# becomes that buffer); this still exercises the mirror-to-copy + restore behavior.
+var realStdout = io.stdout
+io.stdout = io.BytesIO()
+var primaryStdout = io.stdout
+var logBuf = io.BytesIO()
+with tee.tee_stdout(logBuf):
+    io.print("captured-line")
+ok(logBuf.getvalue() == "captured-line\n", "tee_stdout mirrors io.print into the copy stream")
+ok(id(io.stdout) == id(primaryStdout) and primaryStdout.getvalue() == "captured-line\n", "tee_stdout restores io.stdout (which also received the line as the primary)")
+io.stdout = realStdout
+# tee_stderr mirrors stderr similarly; park stderr on a buffer too so nothing reaches the real stderr.
+var realStderr = io.stderr
+io.stderr = io.BytesIO()
+var primaryStderr = io.stderr
+var errBuf = io.BytesIO()
+with tee.tee_stderr(errBuf):
+    discard io.stderr.write("e")
+ok(errBuf.getvalue() == "e", "tee_stderr mirrors writes into the copy stream")
+ok(id(io.stderr) == id(primaryStderr) and primaryStderr.getvalue() == "e", "tee_stderr restores io.stderr (the primary received the write)")
+io.stderr = realStderr
+
+# ====================================================================== arg
+var arg = import("arg")
+
+# --- declaration chains; parse returns a Dict typed by each option's default.
+var par = arg.Parser("a demo parser")
+ok(id(par.positional("name")) == id(par), "positional() returns the parser (chainable)")
+discard par.option("count", 1)
+discard par.option("ratio", 1.0)
+discard par.option("title", "untitled")
+discard par.flag("loud")
+var r = par.parse(["Ada", "--count", "3", "--ratio", "0.5", "--loud"])
+ok(r["name"] == "Ada", "a positional is captured")
+ok(r["count"] == 3 and type(r["count"]) == "Integer", "an option with an Integer default parses an Integer")
+ok(r["ratio"] == 0.5 and type(r["ratio"]) == "Float", "an option with a Float default parses a Float")
+ok(r["title"] == "untitled", "an unspecified option keeps its default")
+ok(r["loud"] == True, "a flag present -> True")
+ok(r["rest"] == [], "no extra positionals -> empty rest")
+
+# --- the --name=value form, short -x for flags and options, default flag is False.
+ok(par.parse(["Bob", "--count=5"])["count"] == 5, "the --name=value form is parsed")
+ok(par.parse(["Cy", "-l"])["loud"] == True, "a short -x matches a flag by its first letter")
+ok(par.parse(["Dee", "-c", "9"])["count"] == 9, "a short -x matches an option by its first letter")
+ok(par.parse(["Ed"])["loud"] == False, "an absent flag defaults to False")
+
+# --- extra positionals collect under 'rest'; a String-default option stays a String.
+var rRest = par.parse(["Fay", "extra1", "extra2"])
+ok(rRest["name"] == "Fay" and rRest["rest"] == ["extra1", "extra2"], "extra positionals land in rest")
+var parStr = arg.Parser()
+discard parStr.option("name", None)
+ok(type(parStr.parse(["--name", "x"])["name"]) == "String", "an option with a None default keeps the value as a String")
+ok(parStr.parse([])["name"] == None, "an unspecified None-default option is None")
+
+# --- -h/--help prints usage (swallowed here) and returns None; usage() is the documented text.
+ok(quietly(Function(): return par.parse(["--help"])) == None, "--help returns None")
+ok(quietly(Function(): return par.parse(["-h"])) == None, "-h returns None")
+var helpParser = arg.Parser("greet someone, maybe loudly")
+discard helpParser.positional("name", "who to greet")
+discard helpParser.option("count", 1, "how many times")
+discard helpParser.flag("loud", "shout it")
+var expectedUsage = "usage: <name> [--count VALUE] [--loud]\n\ngreet someone, maybe loudly\n\narguments:\n  <name>  who to greet\n  --count VALUE  (default 1)  how many times\n  --loud  shout it\n  -h, --help  show this help and stop"
+ok(helpParser.usage() == expectedUsage, "usage() generates the documented help text")
+
+# --- a negative number / a lone '-' is a positional, not an option.
+var parNeg = arg.Parser()
+discard parNeg.positional("n")
+ok(parNeg.parse(["-42"])["n"] == "-42", "a -NUMBER token is a positional (len != 2)")
+ok(parNeg.parse(["-"])["n"] == "-", "a lone '-' is a positional")
+
+# --- error cases: unknown option, missing positional, unconvertible value, missing value.
+ok(throws(Function(): return par.parse(["Ada", "--oops"])), "an unknown long option throws")
+ok(throws(Function(): return par.parse([])), "a missing required positional throws")
+ok(throws(Function(): return par.parse(["Ada", "--count", "ten"])), "an unconvertible Integer value throws")
+ok(throws(Function(): return par.parse(["Ada", "--count"])), "an option with no following value throws")
+ok(throws(Function(): return par.parse(["Ada", "-z"])), "an unknown short option throws")
+var parF = arg.Parser()
+discard parF.option("ratio", 1.0)
+ok(throws(Function(): return parF.parse(["--ratio", "abc"])), "an unconvertible Float value throws")
+var redMsg = ""
+try:
+    discard par.parse([])
+catch as e:
+    redMsg = e
+ok("missing required argument" in redMsg, "the missing-positional error carries the documented message")
+
+# ====================================================================== semver
+var sv = import("semver")
+
+# --- parse: components + prerelease/build Lists + the cleaned raw; clean strips a v/= prefix.
+var pv = sv.parse("1.2.3-alpha.1+build.5")
+ok(pv["major"] == 1 and pv["minor"] == 2 and pv["patch"] == 3, "parse splits MAJOR.MINOR.PATCH")
+ok(pv["prerelease"] == ["alpha", "1"] and pv["build"] == ["build", "5"], "parse splits dot-separated pre/build")
+ok(pv["raw"] == "1.2.3-alpha.1+build.5", "parse keeps the cleaned raw string")
+ok(sv.parse("v2.0.0")["major"] == 2, "parse tolerates a leading 'v'")
+ok(sv.clean("  =v1.2.3  ") == "1.2.3", "clean strips '=', 'v' and surrounding whitespace")
+ok(sv.parse("1.2.3")["prerelease"] == [] and sv.parse("1.2.3")["build"] == [], "a plain version has empty pre/build")
+
+# --- valid / major / minor / patch / prerelease.
+ok(sv.valid("1.2.3") == "1.2.3", "valid returns the cleaned version when valid")
+ok(sv.valid("v1.2.3") == "1.2.3", "valid cleans a 'v' prefix")
+ok(sv.valid("1.2") == None, "valid of an incomplete version -> None")
+ok(sv.valid("1.2.3.4") == None, "valid rejects a 4th component")
+ok(sv.valid("a.b.c") == None, "valid rejects a non-numeric core")
+ok(sv.major("1.2.3") == 1 and sv.minor("1.2.3") == 2 and sv.patch("1.2.3") == 3, "major/minor/patch accessors")
+ok(sv.prerelease("1.2.3-rc.1") == ["rc", "1"], "prerelease returns the identifiers")
+ok(sv.prerelease("1.2.3") == None, "prerelease of a release -> None")
+
+# --- compare + precedence rules (numeric, pre<release, numeric pre < alphanumeric, longer pre wins).
+ok(sv.compare("1.0.9", "1.0.10") == -1, "compare is numeric, not lexical (9 < 10)")
+ok(sv.compare("1.2.3", "1.2.3") == 0, "compare of equal versions -> 0")
+ok(sv.compare("1.2.3+a", "1.2.3+b") == 0, "compare ignores build metadata")
+ok(sv.compare("1.0.0-alpha", "1.0.0") == -1, "a prerelease sorts before its release")
+ok(sv.compare("1.0.0-1", "1.0.0-2") == -1, "numeric prerelease identifiers compare numerically")
+ok(sv.compare("1.0.0-1", "1.0.0-alpha") == -1, "a numeric prerelease ident sorts before an alphanumeric one")
+ok(sv.compare("1.0.0-alpha", "1.0.0-alpha.1") == -1, "a longer prerelease wins when the prefix is equal")
+ok(sv.compare("1.0.0-rc.2", "1.0.0-rc.10") == -1, "rc.2 < rc.10 (numeric, not lexical)")
+
+# --- eq / neq / lt / lte / gt / gte shortcuts.
+ok(sv.eq("1.2.3", "v1.2.3") == True, "eq treats a 'v' prefix as equal")
+ok(sv.eq("1.0.0+a", "1.0.0+b") == True, "eq ignores build metadata")
+ok(sv.neq("1.2.3", "1.2.4") == True, "neq of different versions")
+ok(sv.lt("1.0.0", "2.0.0") == True and sv.gt("2.0.0", "1.0.0") == True, "lt / gt")
+ok(sv.lte("1.0.0", "1.0.0") == True and sv.gte("1.0.0", "1.0.0") == True, "lte / gte include equality")
+
+# --- diff (kind of change) + inc (bump, dropping pre/build).
+ok(sv.diff("1.0.0", "2.0.0") == "major", "diff detects a major change")
+ok(sv.diff("1.0.0", "1.1.0") == "minor", "diff detects a minor change")
+ok(sv.diff("1.0.0", "1.0.1") == "patch", "diff detects a patch change")
+ok(sv.diff("1.0.0-a", "1.0.0-b") == "prerelease", "diff detects a prerelease change")
+ok(sv.diff("1.0.0", "1.0.0") == None, "diff of equal versions -> None")
+ok(sv.inc("1.2.3", "major") == "2.0.0", "inc major zeroes minor+patch")
+ok(sv.inc("1.2.3", "minor") == "1.3.0", "inc minor zeroes patch")
+ok(sv.inc("1.2.3-pre", "patch") == "1.2.4", "inc patch drops the prerelease")
+
+# --- satisfies: caret, tilde, comparators, x-ranges, star, hyphen, OR, exact, prerelease gating.
+ok(sv.satisfies("1.4.0", "^1.2.0") == True, "caret allows a higher minor within the same major")
+ok(sv.satisfies("2.0.0", "^1.2.0") == False, "caret excludes the next major")
+ok(sv.satisfies("0.2.5", "^0.2.0") == True, "caret on 0.x pins the minor")
+ok(sv.satisfies("0.3.0", "^0.2.0") == False, "caret 0.2.x excludes 0.3.0")
+ok(sv.satisfies("0.0.3", "^0.0.3") == True and sv.satisfies("0.0.4", "^0.0.3") == False, "caret on 0.0.x pins the patch")
+ok(sv.satisfies("1.2.9", "~1.2.0") == True and sv.satisfies("1.3.0", "~1.2.0") == False, "tilde pins the minor")
+ok(sv.satisfies("1.5.0", "~1") == True, "tilde on a bare major spans the major")
+ok(sv.satisfies("1.2.9", "1.2.x") == True and sv.satisfies("1.3.0", "1.2.x") == False, "an x-range pins the given parts")
+ok(sv.satisfies("1.9.0", "1.x") == True, "a minor-level x-range spans the major")
+ok(sv.satisfies("9.9.9", "*") == True, "a '*' range matches anything")
+ok(sv.satisfies("1.5.0", ">=1.0.0 <2.0.0") == True and sv.satisfies("2.0.0", ">=1.0.0 <2.0.0") == False, "ANDed comparators")
+ok(sv.satisfies("1.5.0", "1.0.0 - 2.0.0") == True and sv.satisfies("2.1.0", "1.0.0 - 2.0.0") == False, "a hyphen range")
+ok(sv.satisfies("2.3.9", "1.0.0 - 2.3") == True and sv.satisfies("2.4.0", "1.0.0 - 2.3") == False, "a hyphen range with a partial upper bound")
+ok(sv.satisfies("3.0.0", "^1.0.0 || ^3.0.0") == True, "an ORed range (||)")
+ok(sv.satisfies("1.2.3", "1.2.3") == True and sv.satisfies("1.2.4", "1.2.3") == False, "an exact version range")
+ok(sv.satisfies("1.2.3-alpha", ">=1.2.3-alpha <2.0.0") == True, "a prerelease matches when a comparator pins the same core+pre")
+ok(sv.satisfies("1.2.3-alpha", "^1.0.0") == False, "a prerelease is excluded by a non-prerelease range (node-semver default)")
+ok(sv.satisfies("1.0.0", "not a range") == False, "an unparseable range satisfies nothing")
+
+# --- validrange / sort / rsort / maxsatisfying / minsatisfying.
+ok(sv.validrange("^1.2.0") == True, "validrange of a real range")
+ok(sv.validrange("1.2.3.4") == False, "validrange rejects a 4-component token (agrees with valid)")
+ok(sv.sort(["1.10.0", "1.2.0", "1.1.0"]) == ["1.1.0", "1.2.0", "1.10.0"], "sort is by precedence ascending")
+ok(sv.rsort(["1.0.0", "2.0.0", "1.5.0"]) == ["2.0.0", "1.5.0", "1.0.0"], "rsort is by precedence descending")
+ok(sv.sort(["1.0.0", "not-a-version", "0.9.0"]) == ["0.9.0", "1.0.0"], "sort drops invalid versions")
+ok(sv.sort(["1.0.0", "1.0.0-beta", "1.0.0-alpha"]) == ["1.0.0-alpha", "1.0.0-beta", "1.0.0"], "sort orders prereleases before the release")
+ok(sv.maxsatisfying(["v1.0.0", "v1.4.2", "v2.0.0"], "^1.0.0") == "v1.4.2", "maxsatisfying returns the highest match (original string)")
+ok(sv.minsatisfying(["1.4.2", "1.0.0", "1.2.0"], "^1.0.0") == "1.0.0", "minsatisfying returns the lowest match")
+ok(sv.maxsatisfying(["1.0.0"], "^2.0.0") == None, "maxsatisfying with no match -> None")
+
+# --- semver error cases.
+ok(throws(Function(): return sv.parse("1.2")), "parse of an incomplete version throws")
+ok(throws(Function(): return sv.parse("a.b.c")), "parse of a non-numeric core throws")
+ok(throws(Function(): return sv.parse("1.2.3-")), "parse of an empty prerelease identifier throws")
+ok(throws(Function(): return sv.parse("1.2.3.4")), "parse of a 4-component version throws")
+ok(throws(Function(): return sv.inc("1.2.3", "bogus")), "inc with a bad release kind throws")
+ok(throws(Function(): return sv.compare("1.2.3", "nope")), "compare with an invalid operand throws")
+
+# ====================================================================== tabular
+var tb = import("tabular")
+
+# --- Series construction (explicit index + name; length-mismatch throws).
+var ser = tb.Series([10, 20, 30], index = ["a", "b", "c"], name = "col")
+ok(ser.tolist() == [10, 20, 30] and ser.index == ["a", "b", "c"] and ser.name == "col", "Series keeps values/index/name")
+ok(tb.Series([]).tolist() == [], "an empty Series")
+ok(throws(Function(): return tb.Series([1, 2, 3], index = ["x", "y"])), "a Series index/values length mismatch throws")
+
+# --- Series indexing: label first, position fallback; iat is positional.
+var sl = tb.Series([100, 200, 300], index = ["x", "y", "z"])
+ok(sl["x"] == 100, "Series indexes by label")
+ok(sl[1] == 200, "Series falls back to position when the key is not a label")
+ok(tb.Series(["A", "B", "C"], index = [10, 20, 30])[10] == "A", "an Integer label wins over position")
+ok(sl.iat(0) == 100 and sl.iat(-1) == 300, "iat is purely positional (negative allowed)")
+
+# --- Series element-wise arithmetic (Series-Series aligned; Series-scalar) and comparisons.
+var a = tb.Series([1, 2, 3, 4])
+var bSeries = tb.Series([4, 3, 2, 1])
+ok((a + bSeries).tolist() == [5, 5, 5, 5], "Series + Series")
+ok((a - bSeries).tolist() == [-3, -1, 1, 3], "Series - Series")
+ok((a * bSeries).tolist() == [4, 6, 6, 4], "Series * Series")
+ok((a / bSeries).tolist() == [0.25, 2.0 / 3.0, 1.5, 4.0], "Series / Series is true division (Float)")
+ok((a // bSeries).tolist() == [0, 0, 1, 4], "Series // Series is floor division")
+ok((a % bSeries).tolist() == [1, 2, 1, 0], "Series % Series")
+ok((a + 10).tolist() == [11, 12, 13, 14], "Series + scalar broadcasts")
+ok((a > 2).tolist() == [False, False, True, True], "Series > scalar -> boolean Series")
+ok((a >= 2).tolist() == [False, True, True, True], "Series >= scalar")
+ok((a < 3).tolist() == [True, True, False, False], "Series < scalar")
+ok((a <= 3).tolist() == [True, True, True, False], "Series <= scalar")
+ok((a == 2).tolist() == [False, True, False, False], "Series == is element-wise (boolean Series)")
+ok((a != 2).tolist() == [True, False, True, True], "Series != is element-wise")
+ok(a.eq(3).tolist() == [False, False, True, False], "Series.eq")
+ok(a.ne(3).tolist() == [True, True, False, True], "Series.ne")
+ok(a.isin([2, 4]).tolist() == [False, True, False, True], "Series.isin")
+ok(a.isin([]).tolist() == [False, False, False, False], "Series.isin with an empty set")
+# the shared _binop throws on a length mismatch, in either direction.
+ok(throws(Function(): return tb.Series([1, 2]) + tb.Series([1, 2, 3])), "Series + Series of unequal length throws")
+ok(throws(Function(): return tb.Series([1, 2, 3]) + tb.Series([1, 2])), "the length-mismatch throw is symmetric")
+# element-wise ops RAISE on a None element (None can't take an operator / be ordered).
+ok(throws(Function(): return tb.Series([1, None, 3]) + 1), "Series + scalar throws on a None element")
+
+# --- Series aggregations (skip missing; Bool counts as 0/1).
+var canon = tb.Series([2, 4, 4, 4, 5, 5, 7, 9])
+ok(canon.sum() == 40, "Series.sum")
+ok(canon.mean() == 5.0, "Series.mean")
+ok(canon.min() == 2 and canon.max() == 9, "Series.min / max")
+ok(near(canon.variance(), 32.0 / 7.0), "Series.variance is the sample variance")
+ok(near(canon.std(), (32.0 / 7.0) ** 0.5), "Series.std is sqrt(variance)")
+ok(canon.prod() == 2 * 4 * 4 * 4 * 5 * 5 * 7 * 9, "Series.prod")
+ok(tb.Series([1, 2, 3]).median() == 2 and type(tb.Series([1, 2, 3]).median()) == "Integer", "median of odd length returns the middle element (Integer in)")
+ok(tb.Series([1, 2, 3, 4]).median() == 2.5, "median of even length averages the two middles")
+var smix = tb.Series([1, None, 3])
+ok(smix.sum() == 4 and smix.count() == 2, "aggregations skip a None element")
+ok(tb.Series([True, False, True, True, False]).sum() == 3, "Bool Series sum counts True as 1")
+ok(tb.Series([True, False, True, True, False]).mean() == 0.6, "Bool Series mean treats Bool as 0/1")
+ok(tb.Series(["x", "y", None, "z"]).count() == 3, "count is the non-null tally of ANY type")
+# empty-Series identities and None-returns.
+var es = tb.Series([])
+ok(es.sum() == 0 and es.prod() == 1, "empty Series sum/prod are the additive/multiplicative identities")
+ok(es.count() == 0, "empty Series count is 0")
+ok(es.mean() == None and es.median() == None and es.min() == None and es.max() == None, "empty Series mean/median/min/max -> None")
+ok(es.variance() == None and es.std() == None, "empty Series variance/std -> None")
+ok(tb.Series([7]).variance() == None and tb.Series([7]).std() == None, "variance/std need >= 2 values")
+
+# --- Series unique / nunique / valuecounts (descending; drops missing).
+ok(tb.Series([1, 1, 2, 3, 3, 3]).unique() == [1, 2, 3], "unique preserves first-seen order")
+ok(tb.Series([1, 1, 2, 3, 3, 3]).nunique() == 3, "nunique")
+var vc = tb.Series(["a", "b", "a", "a", "b", "c"]).valuecounts()
+ok(vc.tolist() == [3, 2, 1] and vc.index == ["a", "b", "c"], "valuecounts is descending by count, indexed by value")
+ok(tb.Series([1, None, 1, 2, None]).valuecounts().tolist() == [2, 1], "valuecounts drops missing")
+
+# --- Series transforms: apply/map, astype, fillna, dropna, head/tail, sortvalues, resetindex, copy.
+ok(tb.Series([1, 2, 3]).apply(Function(x): return x * x).tolist() == [1, 4, 9], "Series.apply maps a function")
+ok(tb.Series([1, 2, 3]).map(Function(x): return x + 1).tolist() == [2, 3, 4], "Series.map is apply")
+ok(tb.Series(["1", "2"]).astype("Integer").tolist() == [1, 2], "astype Integer parses Strings")
+ok(tb.Series([1.7, -1.7]).astype("Integer").tolist() == [1, -1], "astype Integer truncates floats toward zero")
+ok(tb.Series([1, 2]).astype("Float").tolist() == [1.0, 2.0], "astype Float")
+ok(tb.Series([1, 0, 1]).astype("Bool").tolist() == [True, False, True], "astype Bool")
+ok(tb.Series([1, 2]).astype("String").tolist() == ["1", "2"], "astype String")
+ok(tb.Series([1, None, 3]).fillna(0).tolist() == [1, 0, 3], "fillna replaces missing")
+ok(tb.Series([1, None, 3]).dropna().tolist() == [1, 3], "dropna removes missing")
+var bigs = tb.Series([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+ok(bigs.head().tolist() == [1, 2, 3, 4, 5] and bigs.tail().tolist() == [6, 7, 8, 9, 10], "head/tail default n=5")
+ok(bigs.head(0).tolist() == [] and bigs.head(100).tolist() == bigs.tolist(), "head(0) / head(>len)")
+ok(tb.Series([3, 1, 2]).sortvalues().tolist() == [1, 2, 3], "sortvalues ascending")
+ok(tb.Series([3, 1, 2]).sortvalues(ascending = False).tolist() == [3, 2, 1], "sortvalues descending (keyword)")
+ok(tb.Series([3, 1, 2]).sortvalues().index == [1, 2, 0], "sortvalues carries the original index labels")
+var sr = tb.Series([10, 20, 30], index = ["a", "b", "c"])
+ok(sr.resetindex().index == [0, 1, 2], "resetindex relabels 0..n-1")
+var sc = tb.Series([1, 2, 3])
+var sc2 = sc.copy()
+sc2.values[0] = 99
+ok(sc.values[0] == 1, "copy is independent of the original")
+
+# --- DataFrame construction: from columns, row-lists, row-Dicts, empty; bad inputs throw.
+var df = tb.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}, columns = ["a", "b"])
+ok(df.columns == ["a", "b"] and df.shape() == [3, 2] and len(df) == 3, "DataFrame from columns + explicit order")
+ok(tb.DataFrame([[1, 2], [3, 4]], columns = ["x", "y"]).todict() == {"x": [1, 3], "y": [2, 4]}, "DataFrame from row-lists")
+ok(tb.DataFrame([[1, 2], [3, 4]]).columns == ["col0", "col1"], "row-lists without columns -> col0,col1,...")
+var dfu = tb.DataFrame([{"a": 1, "b": 2}, {"b": 3, "c": 4}])
+ok(dfu["a"].tolist() == [1, None] and dfu["c"].tolist() == [None, 4], "row-Dicts: the key union, missing -> None")
+ok(tb.DataFrame([], columns = ["a", "b", "c"]).shape() == [0, 3], "empty rows + columns -> [0, ncols]")
+ok(tb.DataFrame().shape() == [0, 0], "a bare DataFrame() is [0, 0]")
+ok(throws(Function(): return tb.DataFrame({"a": [1, 2], "b": [3]}, columns = ["a", "b"])), "ragged columns throw")
+ok(throws(Function(): return tb.DataFrame(42)), "an Integer data argument throws")
+ok(throws(Function(): return tb.DataFrame("nope")), "a String data argument throws")
+
+# --- DataFrame selection: column, subset, masks, loc/iloc, at/iat, column().
+var dfs = tb.DataFrame({"a": [1, 2, 3, 4], "b": [10, 20, 30, 40], "c": ["w", "x", "y", "z"]}, columns = ["a", "b", "c"])
+ok(dfs["a"].tolist() == [1, 2, 3, 4], "a column selection -> Series")
+ok(throws(Function(): return dfs["nope"]), "a missing column throws")
+ok(dfs[["a", "c"]].columns == ["a", "c"], "a column subset -> DataFrame")
+ok(throws(Function(): return dfs[["a", "missing"]]), "a subset with a missing column throws")
+ok(dfs[dfs["a"] > 2]["a"].tolist() == [3, 4], "a boolean Series mask")
+ok(dfs[[True, False, True, False]]["a"].tolist() == [1, 3], "a boolean List mask")
+var di = tb.DataFrame({"x": [10, 20, 30]}, columns = ["x"], index = ["a", "b", "c"])
+ok(di.iloc[0]["x"] == 10 and di.iloc[[0, 2]]["x"].tolist() == [10, 30], "iloc by position (single + list)")
+ok(di.loc["b"]["x"] == 20 and di.loc[["a", "c"]]["x"].tolist() == [10, 30], "loc by label (single + list)")
+ok(di.at("b", "x") == 20 and di.iat(2, 0) == 30, "at(label,col) / iat(pos,col)")
+ok(di.column("x").tolist() == [10, 20, 30], "column(name) -> Series")
+
+# --- DataFrame mutation: add/replace column, scalar broadcast, assign (copy), wrong length throws.
+var dm = tb.DataFrame({"a": [1, 2, 3]}, columns = ["a"])
+dm["b"] = [10, 20, 30]
+ok(dm.columns == ["a", "b"] and dm["b"].tolist() == [10, 20, 30], "assignment adds a column")
+dm["c"] = 99
+ok(dm["c"].tolist() == [99, 99, 99], "a scalar broadcasts to a new column")
+var dmOrig = tb.DataFrame({"a": [1, 2]}, columns = ["a"])
+var dmNew = dmOrig.assign("b", [9, 8])
+ok(dmOrig.columns == ["a"] and dmNew.columns == ["a", "b"], "assign returns an extended copy (original unchanged)")
+ok(throws(Function(): return dmOrig.__setitem__("d", [1, 2, 3])), "a new column of the wrong length throws")
+
+# --- shape views: rename / drop / setindex / resetindex / head / tail / slice / copy.
+var dr = tb.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]}, columns = ["a", "b", "c"])
+ok(dr.rename({"a": "A", "c": "C"}).columns == ["A", "b", "C"], "rename maps multiple columns")
+ok(dr.drop(["b"]).columns == ["a", "c"], "drop removes a column")
+var ds = tb.DataFrame({"k": ["x", "y", "z"], "v": [1, 2, 3]}, columns = ["k", "v"])
+var dsi = ds.setindex("k")
+ok(dsi.index == ["x", "y", "z"] and ("k" not in dsi.columns), "setindex moves a column into the index")
+ok(dsi.resetindex().index == [0, 1, 2], "resetindex relabels 0..n-1")
+var dh = tb.DataFrame({"x": [1, 2, 3, 4, 5]}, columns = ["x"])
+ok(dh.head(2)["x"].tolist() == [1, 2] and dh.tail(2)["x"].tolist() == [4, 5], "DataFrame head/tail")
+ok(dh.head(0).shape() == [0, 1] and dh.head(100).shape() == [5, 1], "head(0) keeps columns; head(>len) caps")
+ok(dh.slice(1, 4)["x"].tolist() == [2, 3, 4], "slice(start, stop)")
+var dcopy = tb.DataFrame({"a": [1, 2, 3]}, columns = ["a"])
+var dc2 = dcopy.copy()
+dc2["a"][0] = 999
+ok(dcopy["a"][0] == 1, "DataFrame copy is independent")
+
+# --- DataFrame aggregations (numeric columns -> Series; count over EVERY column) + describe.
+var df2 = tb.DataFrame({"name": ["A", "B", "C", "D"], "age": [10, 20, 30, 40], "score": [1.0, 2.0, 3.0, 4.0]}, columns = ["name", "age", "score"])
+ok(df2.sum().index == ["age", "score"], "frame sum skips a non-numeric column")
+ok(df2.sum()["age"] == 100 and df2.sum()["score"] == 10.0, "frame sum totals each numeric column")
+ok(df2.mean()["age"] == 25.0, "frame mean")
+ok(df2.min()["age"] == 10 and df2.max()["age"] == 40, "frame min / max")
+ok(df2.count()["name"] == 4 and df2.count().index == ["name", "age", "score"], "frame count covers EVERY column")
+var desc = df2.describe()
+ok(desc.index == ["count", "mean", "std", "min", "median", "max"], "describe rows")
+ok(("name" not in desc.columns) and desc["age"].tolist()[0] == 4, "describe excludes non-numeric columns")
+ok(tb.DataFrame({"k": ["a", "b"]}, columns = ["k"]).describe().columns == [], "describe of an all-String frame -> no columns")
+ok(tb.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}, columns = ["a", "b"]).apply(Function(s): return s.sum()).tolist() == [6, 15], "frame apply reduces each numeric column")
+# frame-level reductions are exactly sum/mean/min/max/std/count — median/variance/prod are Series-only.
+ok(throws(Function(): return tb.DataFrame({"a": [1, 2]}, columns = ["a"]).median()), "DataFrame.median does not exist (Series-only)")
+ok(throws(Function(): return tb.DataFrame({"a": [1, 2]}, columns = ["a"]) + 1), "DataFrame has no element-wise '+' (Series-only)")
+
+# --- sortvalues (stable) + groupby reductions + agg + size + apply.
+var stab = tb.DataFrame([[1, "a"], [1, "b"], [1, "c"], [2, "d"]], columns = ["k", "v"])
+ok(stab.sortvalues("k")["v"].tolist() == ["a", "b", "c", "d"], "sortvalues is stable on ties")
+ok(tb.DataFrame({"v": [3, 1, 2]}, columns = ["v"]).sortvalues("v", ascending = False)["v"].tolist() == [3, 2, 1], "sortvalues descending")
+var dg = tb.DataFrame({"k": ["B", "A", "B", "A", "C"], "v": [10, 20, 30, 40, 50]}, columns = ["k", "v"])
+var g = dg.groupby("k")
+ok(g.keys == ["B", "A", "C"], "groupby keys are in first-seen order")
+ok(g.sum()["v"].tolist() == [40, 60, 50], "group sum")
+ok(g.mean()["v"].tolist() == [20.0, 30.0, 50.0], "group mean")
+ok(g.min()["v"].tolist() == [10, 20, 50] and g.max()["v"].tolist() == [30, 40, 50], "group min / max")
+ok(g.count()["v"].tolist() == [2, 2, 1] and g.size().tolist() == [2, 2, 1], "group count / size")
+ok(g.agg({"v": "sum"})["v"].tolist() == [40, 60, 50], "agg sum")
+ok(g.agg({"v": "median"})["v"].tolist() == [20.0, 30.0, 50], "agg median (even -> Float, singleton -> the element)")
+ok(g.apply(Function(sub): return len(sub)).tolist() == [2, 2, 1], "group apply over each sub-frame")
+ok(("k" not in dg.groupby("k").sum().columns), "group reductions drop the by-column")
+ok(throws(Function(): return dg.groupby("nope")), "groupby on a missing column throws")
+ok(throws(Function(): return dg.groupby("k").agg({"v": "BOGUS"})), "agg with an unknown reducer throws")
+# a singleton group's std is None (needs >= 2); a >=2 group computes it.
+var gstd = tb.DataFrame({"k": ["a", "b", "b"], "v": [5, 10, 20]}, columns = ["k", "v"]).groupby("k").std()
+ok(gstd["v"].tolist()[0] == None and near(gstd["v"].tolist()[1], (50.0) ** 0.5), "group std: None for a singleton, value for >= 2")
+
+# --- merge (inner/left/right/outer), collisions suffixed _x/_y, one-to-many, no-match, errors.
+var mL = tb.DataFrame([[1, "Ada"], [2, "Alan"], [3, "Grace"]], columns = ["id", "name"])
+var mR = tb.DataFrame([[1, "math"], [2, "cs"], [4, "navy"]], columns = ["id", "dept"])
+var inner = tb.merge(mL, mR, on = "id")
+ok(inner.shape() == [2, 3] and inner["name"].tolist() == ["Ada", "Alan"], "inner merge keeps only matched rows")
+ok(tb.merge(mL, mR, on = "id", how = "left")["dept"].tolist() == ["math", "cs", None], "left merge: unmatched right -> None")
+ok(tb.merge(mL, mR, on = "id", how = "right")["name"].tolist() == ["Ada", "Alan", None], "right merge: unmatched left -> None")
+ok(tb.merge(mL, mR, on = "id", how = "outer").shape() == [4, 3], "outer merge keeps both unmatched sides")
+ok(tb.merge(mL, mR, on = "id").index == [0, 1], "the merge result index is reset to 0..n-1")
+var collL = tb.DataFrame({"id": [1, 2], "v": [10, 20]}, columns = ["id", "v"])
+var collR = tb.DataFrame({"id": [1, 2], "v": [100, 200]}, columns = ["id", "v"])
+var coll = tb.merge(collL, collR, on = "id")
+ok(("v_x" in coll.columns) and ("v_y" in coll.columns), "a colliding non-key column is suffixed _x/_y")
+ok(coll["v_x"].tolist() == [10, 20] and coll["v_y"].tolist() == [100, 200], "the suffixed columns hold the right data")
+var omL = tb.DataFrame([[1, "a"], [2, "b"]], columns = ["id", "x"])
+var omR = tb.DataFrame([[1, "p"], [1, "q"], [2, "r"]], columns = ["id", "y"])
+ok(len(tb.merge(omL, omR, on = "id")) == 3, "a one-to-many merge expands rows")
+ok(tb.merge(mL, tb.DataFrame([[99, "x"]], columns = ["id", "dept"]), on = "id").shape() == [0, 3], "inner merge with no matches -> 0 rows, columns kept")
+ok(mL.merge(mR, on = "id", how = "inner").shape() == [2, 3], "the df.merge instance method")
+ok(throws(Function(): return tb.merge(mL, mR, on = "missing")), "merge on a missing key throws")
+ok(throws(Function(): return tb.merge(mL, mR, on = "id", how = "bogus")), "merge with a bad 'how' throws")
+
+# --- concat (column union, missing -> None, index reset, empty/single).
+var c1 = tb.DataFrame({"a": [1, 2]}, columns = ["a"])
+var c2 = tb.DataFrame({"a": [3], "b": [9]}, columns = ["a", "b"])
+var cc = tb.concat([c1, c2])
+ok(cc.columns == ["a", "b"] and cc["a"].tolist() == [1, 2, 3] and cc["b"].tolist() == [None, None, 9], "concat unions columns, fills missing with None")
+ok(cc.index == [0, 1, 2], "concat resets the index")
+ok(tb.concat([]).shape() == [0, 0], "concat of [] -> [0, 0]")
+ok(tb.concat([c1])["a"].tolist() == [1, 2], "concat of a single frame")
+
+# --- readcsv: header + inference, header=False, infer=False, missing cells, corners, long-row throw.
+var rc = tb.readcsv("name,age,score\nAda,36,9.5\nAlan,41,8.0")
+ok(rc.columns == ["name", "age", "score"], "readcsv reads the header")
+ok(type(rc["age"][0]) == "Integer" and type(rc["score"][0]) == "Float" and type(rc["name"][0]) == "String", "readcsv infers Integer/Float/String")
+ok(tb.readcsv("a\nTrue\nFalse\ntrue\nfalse")["a"].tolist() == [True, False, True, False], "readcsv infers Bool (case-insensitive)")
+ok(tb.readcsv("a,b\n1,\n,2")["a"].tolist() == [1, None], "readcsv: an empty cell -> None")
+ok(tb.readcsv("1,2\n3,4", header = False).columns == ["col0", "col1"], "readcsv header=False -> default columns")
+ok(type(tb.readcsv("a,b\n1,2.5", infer = False)["a"][0]) == "String", "readcsv infer=False keeps Strings")
+ok(tb.readcsv("").shape() == [0, 0], "readcsv of empty -> [0, 0]")
+ok(tb.readcsv("a,b,c").shape() == [0, 3], "readcsv header-only -> columns, no rows")
+ok(tb.readcsv("a,b,c\n1,2") ["c"].tolist() == [None], "readcsv: a short row pads missing cells with None")
+ok(throws(Function(): return tb.readcsv("a,b\n1,2,3")), "readcsv: a row with more fields than the header throws")
+# tocsv round-trips an embedded comma / quote; a None cell becomes an empty field.
+var dq = tb.DataFrame([["hello, world", "he said \"hi\""]], columns = ["a", "b"])
+var rt = tb.readcsv(dq.tocsv())
+ok(rt["a"].tolist() == ["hello, world"] and rt["b"].tolist() == ["he said \"hi\""], "tocsv -> readcsv preserves comma + quote")
+ok(tb.DataFrame({"a": [1, None]}, columns = ["a"]).tocsv() == "a\n1\n", "tocsv renders a None cell as an empty field")
+# Unicode cells survive a round-trip.
+ok(tb.readcsv("name\ncafé\n日本")["name"].tolist() == ["café", "日本"], "readcsv preserves Unicode cells")
+
+# --- missing-data on a frame: dropna / fillna.
+var dfx = tb.DataFrame({"a": [1, None, 3], "b": [None, 5, 6]}, columns = ["a", "b"])
+ok(dfx.dropna()["a"].tolist() == [3], "frame dropna keeps only complete rows")
+ok(dfx.fillna(0).todict() == {"a": [1, 0, 3], "b": [0, 5, 6]}, "frame fillna replaces missing")
+
+# --- todict / torows / iterrows.
+var dt = tb.DataFrame({"a": [1, 2], "b": [3, 4]}, columns = ["a", "b"])
+ok(dt.todict() == {"a": [1, 2], "b": [3, 4]}, "todict")
+ok(dt.torows() == [{"a": 1, "b": 3}, {"a": 2, "b": 4}], "torows")
+var rows = dt.iterrows()
+ok(rows[0][0] == 0 and rows[1][0] == 1, "iterrows yields [index, rowSeries]")
+
+# ====================================================================== keyword arguments work uniformly
+ok(tb.readcsv(source = "a,b\n1,2", header = True, infer = True).columns == ["a", "b"], "tabular.readcsv accepts keyword arguments")
+ok(tb.Series(values = [1, 2], name = "n").name == "n", "tabular.Series accepts keyword arguments")
+ok(tw.wrap(text = "a b c d", width = 3) == ["a b", "c d"], "textwrap.wrap accepts keyword arguments")
+ok(sv.satisfies(version = "1.4.0", rng = "^1.0.0") == True, "semver.satisfies accepts keyword arguments")
+ok(csv.format(rows = [["x", "y"]]) == "x,y", "csv.format accepts keyword arguments")
+ok(xml.Element("a", {"k": "v"}).get(key = "k", default = "d") == "v", "Element.get accepts keyword arguments")
+
+# ====================================================================== inspect describes every module + key types
+ok(len(inspect(import("string"))) > 0, "inspect(string) is non-empty")
+ok(len(inspect(import("textwrap"))) > 0, "inspect(textwrap) is non-empty")
+ok(len(inspect(import("base64"))) > 0, "inspect(base64) is non-empty")
+ok(len(inspect(import("csv"))) > 0, "inspect(csv) is non-empty")
+ok(len(inspect(import("xml"))) > 0, "inspect(xml) is non-empty")
+ok(len(inspect(import("arg"))) > 0, "inspect(arg) is non-empty")
+var svInsp = inspect(import("semver"))
+ok(("satisfies" in svInsp) and ("_expand" not in svInsp), "inspect(semver) lists public, hides private members")
+ok(len(inspect(tb.Series([1, 2]))) > 0, "inspect of a Series instance")
+ok(len(inspect(tb.DataFrame({"a": [1]}, columns = ["a"]))) > 0, "inspect of a DataFrame instance")
+ok(len(inspect(xml.Element("a"))) > 0, "inspect of an xml Element")
+ok(len(inspect(arg.Parser())) > 0, "inspect of an arg Parser")
+ok(len(inspect(tee.Tee(io.BytesIO()))) > 0, "inspect of a Tee")
+
+# ====================================================================== private members are not importable
+ok(throws(Function(): return import("tabular")._merge), "tabular._merge is private")
+ok(throws(Function(): return import("semver")._expand), "semver._expand is private")
+ok(throws(Function(): return import("csv")._needsQuote), "csv._needsQuote is private")
+ok(throws(Function(): return import("base64")._alphabet), "base64._alphabet is private")
+ok(throws(Function(): return import("xml")._decode), "xml._decode is private")
+
+# ====================================================================== summary
+io.print("OK r4_kimods_b", checks[0], "checks")

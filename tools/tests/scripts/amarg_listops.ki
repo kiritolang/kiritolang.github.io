@@ -1,0 +1,8 @@
+# arglist exercised through List operations/methods. All reflect an empty list for an import.
+var copyArgs = arglist.copy()
+var sliced = arglist[:]
+var plused = arglist + ["x", "y"]
+var contains = "x" in arglist
+var same = arglist == []
+var applied = arglist.apply(Function(s): return s.upper())
+var m = argmain

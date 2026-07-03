@@ -1,0 +1,65 @@
+# The demo application: a few routes exercising text/HTML/JSON responses, path params, query
+# strings, a POST body, and static files. `create(static_dir)` returns a configured App.
+#
+# Keyword-argument edition: handlers register and build responses entirely through named arguments.
+#
+# Note on style: a *block-bodied* function must be bound to a name (it can't be written inline as a
+# call argument — only single-expression `Function(x): expr` can). So each handler is a named
+# function, then registered. This reflects the block-bodied-vs-inline function split.
+
+var framework = import(name = "framework")
+var http = import(name = "http")
+var time = import(name = "time")
+var io = import(name = "io")
+var json = import(name = "json")
+
+# GET / -> a small HTML index.
+var index_page = Function(req):
+    return http.Response().html(
+        s = "<!doctype html><title>Kirito web</title><h1>Kirito web server</h1>" +
+        "<p>Try <a href=\"/hello/world\">/hello/world</a>, " +
+        "<a href=\"/api/time\">/api/time</a>, or the static " +
+        "<a href=\"/static/about.html\">/static/about.html</a>.</p>", status = 200)
+
+# GET /hello/:name -> greet, honoring an optional ?loud=1 query flag.
+var hello = Function(req):
+    var msg = "Hello, " + req.params["name"] + "!"
+    if "loud" in req.query and req.query["loud"] == "1":
+        msg = msg.upper()
+    return http.Response().text(s = msg, status = 200)
+
+# GET /api/time -> JSON with the current epoch seconds.
+var api_time = Function(req):
+    return http.Response().json(value = {"epoch": time.time(), "unit": "seconds"}, status = 200)
+
+# GET /api/add?a=2&b=3 -> JSON sum (query parsing + input validation).
+var api_add = Function(req):
+    if "a" not in req.query or "b" not in req.query:
+        return http.Response().json(value = {"error": "need query params a and b"}, status = 400)
+    var a = Integer(x = req.query["a"])
+    var b = Integer(x = req.query["b"])
+    return http.Response().json(value = {"a": a, "b": b, "sum": a + b}, status = 200)
+
+# POST /echo -> echo back the parsed JSON body, with its byte length.
+var echo = Function(req):
+    var parsed = None
+    try:
+        parsed = json.parse(text = req.body)
+    catch as e:
+        return http.Response().json(value = {"error": "invalid JSON body"}, status = 400)
+    return http.Response().json(value = {"you_sent": parsed, "bytes": len(x = req.body)}, status = 200)
+
+# A request logger middleware -> stderr (so it never corrupts a response written to stdout).
+var logger = Function(req):
+    io.eprint(req.method + " " + req.path)
+
+var create = Function(static_dir):
+    var app = framework.App()
+    discard app.use(fn = logger)
+    discard app.get(path = "/", handler = index_page)
+    discard app.get(path = "/hello/:name", handler = hello)
+    discard app.get(path = "/api/time", handler = api_time)
+    discard app.get(path = "/api/add", handler = api_add)
+    discard app.post(path = "/echo", handler = echo)
+    discard app.static(url_prefix = "/static", directory = static_dir)
+    return app

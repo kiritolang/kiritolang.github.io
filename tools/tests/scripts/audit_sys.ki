@@ -1,0 +1,106 @@
+# Adversarial audit of the `sys` module: every documented function/constant, plus edge cases for
+# environment round-trips and path.join's absolute-resets-and-no-double-separator semantics.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+# --- constants: platform / arch / version / executable ---
+assert type(sys.platform) == "String", "platform is a String"
+assert sys.platform == "linux" or sys.platform == "darwin" or sys.platform == "windows", "platform value"
+assert type(sys.arch) == "String", "arch is a String"
+assert sys.arch == "x64" or sys.arch == "arm64" or sys.arch == "x86" or sys.arch == "unknown", "arch value"
+assert type(sys.version) == "String", "version is a String"
+# semver shape: at least two dots, all components numeric (allow pre-release with -)
+var dots = sys.version.count(".")
+assert dots >= 2, "version has >= 2 dots"
+assert type(path.executable) == "String", "executable is a String"
+# under `ki` it's the absolute path to the binary
+assert path.executable != "", "executable is set when running via `ki`"
+
+# --- getenv / setenv / unsetenv with adversarial keys ---
+sys.setenv("KIRITO_AUDIT_VAR", "v1")
+assert sys.getenv("KIRITO_AUDIT_VAR") == "v1", "setenv then getenv round-trip"
+sys.setenv("KIRITO_AUDIT_VAR", "v2")
+assert sys.getenv("KIRITO_AUDIT_VAR") == "v2", "setenv overwrites"
+sys.unsetenv("KIRITO_AUDIT_VAR")
+assert sys.getenv("KIRITO_AUDIT_VAR") == None, "unsetenv removes (returns None)"
+assert sys.getenv("KIRITO_AUDIT_VAR", "fb") == "fb", "getenv default kicks in when unset"
+# default may be any type
+assert sys.getenv("KIRITO_AUDIT_VAR_X", 42) == 42, "default may be Integer"
+assert sys.getenv("KIRITO_AUDIT_VAR_X", [1, 2]) == [1, 2], "default may be List"
+
+# empty value: POSIX round-trips an empty string; Windows treats an empty value as *unset* (the
+# narrow CRT API deletes the variable), so getenv returns None there. Assert the platform-appropriate
+# result — strict on POSIX, honest on Windows.
+sys.setenv("KIRITO_AUDIT_EMPTY", "")
+var emptyval = sys.getenv("KIRITO_AUDIT_EMPTY")
+if sys.platform == "windows":
+    assert emptyval == "" or emptyval == None, "Windows: empty value reads back empty-or-unset"
+else:
+    assert emptyval == "", "POSIX: empty value round-trips"
+sys.unsetenv("KIRITO_AUDIT_EMPTY")
+assert sys.getenv("KIRITO_AUDIT_EMPTY") == None, "unset after empty"
+
+# weird values (spaces, equals) — ASCII only: the narrow (*A / ANSI) env APIs used on Windows can't
+# round-trip arbitrary UTF-8 bytes, so a non-ASCII env value is not a cross-platform guarantee.
+sys.setenv("KIRITO_AUDIT_WEIRD", "a b = c d")
+assert sys.getenv("KIRITO_AUDIT_WEIRD") == "a b = c d", "spaces and '=' in env value"
+sys.unsetenv("KIRITO_AUDIT_WEIRD")
+
+# --- environ() returns a Dict reflecting current state ---
+sys.setenv("KIRITO_AUDIT_ENV_X", "marker-99")
+var env = sys.environ()
+assert type(env) == "Dict", "environ returns a Dict"
+assert env["KIRITO_AUDIT_ENV_X"] == "marker-99", "environ contains a just-set variable"
+sys.unsetenv("KIRITO_AUDIT_ENV_X")
+# environ snapshot from before is a separate Dict, doesn't change retroactively
+assert env["KIRITO_AUDIT_ENV_X"] == "marker-99", "environ is a snapshot (Dict copy)"
+
+# --- gettempdir is a non-empty String, and `path.join` builds usable paths under it ---
+assert type(path.gettempdir()) == "String", "gettempdir is a String"
+assert path.gettempdir() != "", "gettempdir non-empty"
+
+# --- path.join: variadic, '/' separator, absolute resets, no double sep ---
+assert path.join("a", "b", "c") == "a/b/c", "join three parts"
+assert path.join("a") == "a", "single part is identity"
+assert path.join("a/", "b") == "a/b", "trailing slash does NOT double-up"
+assert path.join("/abs", "rel") == "/abs/rel", "absolute first stays absolute"
+assert path.join("a", "/b", "c") == "/b/c", "later absolute resets the result"
+assert path.join("a", "b", "/c", "d") == "/c/d", "absolute resets even after multiple parts"
+assert path.join("", "x") == "x", "empty first does not produce a leading slash"
+assert path.join("a", "") == "a/", "empty trailing keeps separator"
+# requires at least one component
+var thrown = False
+try:
+    discard path.join()
+catch as e:
+    thrown = True
+assert thrown, "path.join() with no args throws"
+
+# Compose a usable temp path
+var tp = path.join(path.gettempdir(), "kirito_audit_scratch.txt")
+assert tp != "", "composed temp path"
+
+# --- type errors throw (path.join demands String parts; getenv demands String name) ---
+thrown = False
+try:
+    discard sys.getenv(42)
+catch as e:
+    thrown = True
+assert thrown, "getenv rejects non-String name"
+
+thrown = False
+try:
+    discard sys.setenv("k", 42)
+catch as e:
+    thrown = True
+assert thrown, "setenv rejects non-String value"
+
+thrown = False
+try:
+    discard path.join("a", 5)
+catch as e:
+    thrown = True
+assert thrown, "path.join rejects non-String parts"
+
+io.print("OK audit-sys")

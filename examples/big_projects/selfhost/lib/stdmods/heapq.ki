@@ -1,0 +1,83 @@
+var _siftup = Function(heap, pos):
+    var i = pos
+    while i > 0:
+        var parent = (i - 1) // 2
+        if heap[i] < heap[parent]:
+            var tmp = heap[i]
+            heap[i] = heap[parent]
+            heap[parent] = tmp
+            i = parent
+        else:
+            break
+
+var _siftdown = Function(heap):
+    var n = len(heap)
+    var i = 0
+    while True:
+        var left = 2 * i + 1
+        var right = 2 * i + 2
+        var smallest = i
+        if left < n and heap[left] < heap[smallest]:
+            smallest = left
+        if right < n and heap[right] < heap[smallest]:
+            smallest = right
+        if smallest == i:
+            break
+        var tmp = heap[i]
+        heap[i] = heap[smallest]
+        heap[smallest] = tmp
+        i = smallest
+
+var heappush = Function(heap, item):
+    heap.append(item)
+    _siftup(heap, len(heap) - 1)
+
+var heappop = Function(heap):
+    var n = len(heap)
+    if n == 0:
+        throw "heappop from empty heap"
+    var top = heap[0]
+    var last = heap.pop()
+    if len(heap) > 0:
+        heap[0] = last
+        _siftdown(heap)
+    return top
+
+var heapify = Function(items):
+    var heap = []
+    for x in items:
+        heappush(heap, x)
+    return heap
+
+var nsmallest = Function(n, items):
+    var heap = heapify(items)
+    var out = []
+    while len(out) < n and len(heap) > 0:
+        out.append(heappop(heap))
+    return out
+
+var nlargest = Function(n, items):
+    if n <= 0:           # match nsmallest: a non-positive n yields [], not a tail slice
+        return []
+    var s = sorted(items, None, True)
+    return s[0:n]
+
+var heapreplace = Function(heap, item):
+    # Pop the smallest then push item (more efficient than separate pop+push).
+    if len(heap) == 0:
+        throw "heapreplace on empty heap"
+    var top = heap[0]
+    heap[0] = item
+    _siftdown(heap)
+    return top
+
+var merge = Function(lists):
+    # Merge already-sorted lists into one sorted list.
+    var heap = []
+    for lst in lists:
+        for x in lst:
+            heappush(heap, x)
+    var out = []
+    while len(heap) > 0:
+        out.append(heappop(heap))
+    return out

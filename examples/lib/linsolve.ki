@@ -1,0 +1,95 @@
+# Solve a complex linear system A x = b by Gauss-Jordan elimination on the augmented matrix
+# [A | b], detecting which of the three cases holds:
+#   - "unique"   : exactly one solution (returned as a List of Complex)
+#   - "none"     : no solution (inconsistent system)
+#   - "infinite" : infinitely many solutions (one particular solution returned)
+#
+# Import as:  var solver = import("linsolve")
+# Then:       var result = solver.solve(A, b)   # A: ComplexMatrix, b: List of Complex
+#             result["kind"] is one of "unique"/"none"/"infinite"; result["x"] is a solution.
+
+var C = import("complex")
+
+# Reduce the augmented matrix to reduced row-echelon form in place, returning the pivot column for
+# each row (or -1 if the row is all zero in the coefficient part).
+var solve = Function(A, b):
+    var n = A.rows()
+    var m = A.cols()
+    # Build the augmented matrix [A | b] as a fresh grid of Complex.
+    var aug = []
+    for i in range(n):
+        var row = []
+        for j in range(m):
+            row.append(A[i, j])
+        row.append(b[i])
+        aug.append(row)
+
+    var width = m + 1
+    var pivotCols = []   # for each pivot, which column it lives in
+    var row = 0
+    var col = 0
+    while row < n and col < m:
+        # Find a pivot in this column at or below `row` (largest magnitude for stability).
+        var pivot = -1
+        var best = 0.0
+        for r in range(row, n):
+            var mag = aug[r][col].norm2()
+            if mag > best:
+                best = mag
+                pivot = r
+        if pivot == -1:
+            # No pivot in this column; move to the next column, same row.
+            col = col + 1
+        else:
+            # Swap pivot row up.
+            var tmp = aug[row]
+            aug[row] = aug[pivot]
+            aug[pivot] = tmp
+            # Normalize the pivot row so the pivot becomes 1.
+            var inv = C.one / aug[row][col]
+            for c in range(width):
+                aug[row][c] = aug[row][c] * inv
+            # Eliminate this column from all other rows.
+            for r in range(n):
+                if r != row and not aug[r][col].is_zero():
+                    var factor = aug[r][col]
+                    for c in range(width):
+                        aug[r][c] = aug[r][c] - factor * aug[row][c]
+            pivotCols.append(col)
+            row = row + 1
+            col = col + 1
+
+    var rank = len(pivotCols)
+
+    # Inconsistency check: a row with all-zero coefficients but a non-zero augmented entry means
+    # 0 == (non-zero) -> no solution.
+    for r in range(n):
+        var allZero = True
+        for c in range(m):
+            if not aug[r][c].is_zero():
+                allZero = False
+        if allZero and not aug[r][m].is_zero():
+            return {"kind": "none", "x": None, "rank": rank}
+
+    # Build a particular solution: free variables = 0, pivot variables read from the augmented col.
+    var x = []
+    for j in range(m):
+        x.append(C.zero)
+    for p in range(rank):
+        var pcol = pivotCols[p]
+        x[pcol] = aug[p][m]
+
+    if rank < m:
+        # Fewer pivots than unknowns -> free variables -> infinitely many solutions.
+        return {"kind": "infinite", "x": x, "rank": rank}
+    return {"kind": "unique", "x": x, "rank": rank}
+
+# Verify a candidate solution x against A x = b, returning True if A x == b within tolerance.
+var verify = Function(A, x, b):
+    for i in range(A.rows()):
+        var acc = C.zero
+        for j in range(A.cols()):
+            acc = acc + A[i, j] * x[j]
+        if not (acc - b[i]).is_zero():
+            return False
+    return True

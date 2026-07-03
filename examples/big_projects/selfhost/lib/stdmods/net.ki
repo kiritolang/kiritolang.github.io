@@ -1,0 +1,136 @@
+# The `net` module's URL helpers in pure Kirito (the suite exercises only these, no sockets):
+# percent-encoding, query-string encode/parse, and URL splitting. UTF-8 aware via arithmetic.
+
+var _UNRESERVED = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+var _HEX = "0123456789ABCDEF"
+
+var _hexByte = Function(b):
+    return "%" + _HEX[b // 16] + _HEX[b % 16]
+
+# code point -> its UTF-8 bytes (list of 0..255)
+var _utf8 = Function(cp):
+    if cp < 128:
+        return [cp]
+    if cp < 2048:
+        return [192 + cp // 64, 128 + cp % 64]
+    if cp < 65536:
+        return [224 + cp // 4096, 128 + (cp // 64) % 64, 128 + cp % 64]
+    return [240 + cp // 262144, 128 + (cp // 4096) % 64, 128 + (cp // 64) % 64, 128 + cp % 64]
+
+var quote = Function(s):
+    if type(s) != "String":
+        throw "net.quote expects a String"
+    var out = ""
+    for c in s:
+        if c in _UNRESERVED:
+            out = out + c
+        else:
+            for b in _utf8(ord(c)):
+                out = out + _hexByte(b)
+    return out
+
+var _hexVal = Function(c):
+    if c >= "0" and c <= "9":
+        return ord(c) - 48
+    if c >= "a" and c <= "f":
+        return ord(c) - 87
+    return ord(c) - 55
+
+# decode a list of UTF-8 bytes back into a String
+var _fromUtf8 = Function(bytes):
+    var out = ""
+    var i = 0
+    var n = len(bytes)
+    while i < n:
+        var b = bytes[i]
+        if b < 128:
+            out = out + chr(b)
+            i = i + 1
+        elif b < 224:
+            out = out + chr((b - 192) * 64 + (bytes[i + 1] - 128))
+            i = i + 2
+        elif b < 240:
+            out = out + chr((b - 224) * 4096 + (bytes[i + 1] - 128) * 64 + (bytes[i + 2] - 128))
+            i = i + 3
+        else:
+            out = out + chr((b - 240) * 262144 + (bytes[i + 1] - 128) * 4096 + (bytes[i + 2] - 128) * 64 + (bytes[i + 3] - 128))
+            i = i + 4
+    return out
+
+var unquote = Function(s):
+    var bytes = []
+    var i = 0
+    var n = len(s)
+    while i < n:
+        if s[i] == "%":
+            bytes.append(_hexVal(s[i + 1]) * 16 + _hexVal(s[i + 2]))
+            i = i + 3
+        else:
+            bytes.append(ord(s[i]))
+            i = i + 1
+    return _fromUtf8(bytes)
+
+var urlencode = Function(d):
+    if type(d) != "Dict":
+        throw "net.urlencode expects a Dict"
+    var parts = []
+    for k in d:
+        parts.append(quote(String(k)) + "=" + quote(String(d[k])))
+    return "&".join(parts)
+
+var parseqs = Function(s):
+    var out = {}
+    if len(s) == 0:
+        return out
+    for pair in s.split("&"):
+        var eq = pair.find("=")
+        if eq >= 0:
+            out[unquote(pair[0:eq])] = unquote(pair[eq + 1:])
+        else:
+            out[unquote(pair)] = ""
+    return out
+
+var urlsplit = Function(url):
+    var out = {"scheme": "", "host": "", "port": "", "path": "", "query": "", "fragment": ""}
+    var rest = url
+    var si = rest.find("://")
+    if si >= 0:
+        out["scheme"] = rest[0:si]
+        rest = rest[si + 3:]
+    # fragment
+    var hi = rest.find("#")
+    if hi >= 0:
+        out["fragment"] = rest[hi + 1:]
+        rest = rest[0:hi]
+    # query
+    var qi = rest.find("?")
+    if qi >= 0:
+        out["query"] = rest[qi + 1:]
+        rest = rest[0:qi]
+    # authority vs path
+    var pi = rest.find("/")
+    var authority = rest
+    if pi >= 0:
+        authority = rest[0:pi]
+        out["path"] = rest[pi:]
+    # Strip any "user:pass@" userinfo so it doesn't mangle host/port (urlsplit excludes
+    # userinfo from hostname/port). The authority host is everything after the LAST '@'.
+    var at = authority.rfind("@")
+    if at >= 0:
+        authority = authority[at + 1:]
+    # IPv6 literals are bracketed: `[::1]:8080`. Keep the brackets in `host`; the port (if any)
+    # is the `:NNNN` after `]`. Without this the plain find(":") would split the address itself.
+    if len(authority) > 0 and authority[0] == "[":
+        var rb = authority.find("]")
+        if rb >= 0:
+            out["host"] = authority[0:rb + 1]
+            if rb + 1 < len(authority) and authority[rb + 1] == ":":
+                out["port"] = authority[rb + 2:]
+            return out
+    var ci = authority.find(":")
+    if ci >= 0:
+        out["host"] = authority[0:ci]
+        out["port"] = authority[ci + 1:]
+    else:
+        out["host"] = authority
+    return out

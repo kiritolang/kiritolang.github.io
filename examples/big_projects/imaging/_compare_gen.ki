@@ -1,0 +1,43 @@
+# _compare_gen.ki -- generates reference images + operation results for compare_pillow.py to check
+# against Pillow. Not a standalone test (leading underscore); driven by compare_pillow.py. Writes
+# PNGs into a temp subdirectory and prints that directory as its last line.
+
+var Image = import("imaging")
+var path = import("path")
+var io = import("io")
+var sys = import("sys")
+
+var outdir = path.join(path.gettempdir(), "ki_imaging_xval")
+discard path.mkdir(outdir, exist_ok = True)
+var out = Function(name):
+    return path.join(outdir, name)
+
+# A deterministic 12x9 RGB pattern that exercises all three channels independently.
+var W = 12
+var H = 9
+var base = Image.new("RGB", [W, H])
+var y = 0
+while y < H:
+    var x = 0
+    while x < W:
+        base.putpixel([x, y], [(x * 21) % 256, (y * 28) % 256, (x * x + y * y) % 256])
+        x = x + 1
+    y = y + 1
+
+base.save(out("base.png"))
+base.resize([W * 2, H * 2], Image.NEAREST).save(out("nearest2x.png"))
+base.transpose(Image.FLIP_LEFT_RIGHT).save(out("fliplr.png"))
+base.transpose(Image.FLIP_TOP_BOTTOM).save(out("fliptb.png"))
+base.transpose(Image.ROTATE_90).save(out("rot90.png"))
+base.transpose(Image.ROTATE_180).save(out("rot180.png"))
+base.transpose(Image.ROTATE_270).save(out("rot270.png"))
+base.transpose(Image.TRANSPOSE).save(out("transpose.png"))
+base.crop([2, 1, 10, 8]).save(out("crop.png"))
+base.convert("L").save(out("gray.png"))
+base.convert("RGBA").save(out("rgba.png"))
+
+# Also emit the base in PPM and BMP so the harness checks those codecs against PIL too.
+base.save(out("base.ppm"))
+base.save(out("base.bmp"))
+
+io.print(outdir)

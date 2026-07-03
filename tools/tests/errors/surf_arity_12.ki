@@ -1,0 +1,4 @@
+# native matrix method given wrong arity: get() with no indices
+var m = import("matrix")
+var a = m.identity(2)
+discard a.get()

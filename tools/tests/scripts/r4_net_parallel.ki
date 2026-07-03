@@ -1,0 +1,432 @@
+# Exhaustive, DETERMINISTIC probe of the `net` (sockets + HTTP client) and `parallel`
+# (multiprocessing) stdlib modules. Run through `ki`, which installs the dispatcher that backs
+# `parallel`. NO external network: every HTTP/TCP exchange is a loopback (127.0.0.1) server run in a
+# spawned worker that picks its own free port and reports it back through a Queue (the assigned port of
+# an OS-ephemeral bind is not observable from Kirito — there is no getsockname — so a worker scans a
+# small range, see FINDINGS). All blocking ops carry SHORT timeouts so nothing can hang; cross-thread
+# results are asserted on values/aggregates, never on timing or order.
+
+var net = import("net")
+var parallel = import("parallel")
+var io = import("io")
+
+# A program that must throw: returns True iff calling fn() throws (mirrors the house `throws` helper).
+var throws = Function(fn):
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# ---- spawnable workers MUST be module-level (a worker re-evaluates this file with argmain False) ----
+
+var w_add = Function(a, b = 10):
+    return a + b
+var w_ident = Function(x):
+    return x
+var w_boom = Function():
+    throw "kaboom-marker"
+var w_barrier = Function(bar, out, id):
+    discard bar.wait(5.0)
+    out.put(id)
+var w_event = Function(ev, out, id):
+    discard ev.wait(5.0)
+    out.put(id)
+var w_produce = Function(q, n):
+    var i = 0
+    while i < n:
+        q.put(i)
+        i = i + 1
+    q.close()
+
+# Bind the first free 127.0.0.1 port in [lo, lo+span); return [socket, port]. A fresh socket per
+# attempt (a socket whose bind failed is not reused). Raises if the whole range is busy.
+var bind_free = Function(lo, span):
+    var p = lo
+    while p < lo + span:
+        var s = net.Socket()
+        s.settimeout(5.0)
+        try:
+            s.bind("127.0.0.1", p)
+            return [s, p]
+        catch as e:
+            s.close()
+            p = p + 1
+    throw "no free port in range"
+
+# One-shot loopback TCP echo server: bind+listen, publish the chosen port, accept one client, echo the
+# bytes it sends, return the byte count it echoed.
+var echo_server = Function(portq):
+    var bp = bind_free(49500, 80)
+    var srv = bp[0]
+    srv.listen(1)
+    portq.put(bp[1])
+    var c = srv.accept()
+    var data = c.recv(1024)
+    var n = c.send(data)
+    c.close()
+    srv.close()
+    return n
+
+# One-shot loopback HTTP/1.1 server returning a fixed status/reason/body with a couple headers and a
+# Set-Cookie; publishes its port, then serves exactly one request.
+var http_server = Function(portq, status, reason, body):
+    var bp = bind_free(49600, 120)
+    var srv = bp[0]
+    srv.listen(1)
+    portq.put(bp[1])
+    var c = srv.accept()
+    discard c.recv(8192)
+    var resp = "HTTP/1.1 " + String(status) + " " + reason + "\r\n"
+    resp = resp + "Content-Type: application/json\r\nX-Test: yes\r\n"
+    resp = resp + "Set-Cookie: sid=abc123; Path=/\r\n"
+    resp = resp + "Content-Length: " + String(len(body)) + "\r\n\r\n" + body
+    discard c.send(resp)
+    c.close()
+    srv.close()
+    return "served"
+
+# Loopback server that captures the raw request text (so the client can assert what was sent) and
+# replies 200 ok.
+var capture_server = Function(portq, reqq):
+    var bp = bind_free(49750, 120)
+    var srv = bp[0]
+    srv.listen(1)
+    portq.put(bp[1])
+    var c = srv.accept()
+    var req = c.recv(8192).decode()
+    reqq.put(req)
+    discard c.send("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+    c.close()
+    srv.close()
+    return "served"
+
+var checks = 0
+var ck = Function(cond, msg):
+    assert cond, msg
+    checks = checks + 1
+
+if argmain:
+    # =========================================================================================
+    # net — URL helpers (pure, fully deterministic)
+    # =========================================================================================
+    ck(net.quote("a b/c") == "a%20b%2Fc", "quote space+slash")
+    ck(net.quote("a~b-c.d_e") == "a~b-c.d_e", "quote leaves unreserved set")
+    ck(net.quote("café") == "caf%C3%A9", "quote utf-8 multibyte")
+    ck(net.quote("a+b") == "a%2Bb", "quote encodes '+'")
+    ck(net.quote(s = "a b") == "a%20b", "quote keyword arg")
+
+    ck(net.unquote("a%20b%2Fc") == "a b/c", "unquote %XX")
+    ck(net.unquote("a+b") == "a b", "unquote '+' as space")
+    ck(net.unquote("x%41") == "xA", "unquote trailing %XX")
+    ck(net.unquote("a%2") == "a%2", "unquote incomplete escape passes through")
+    ck(net.unquote("a%ZZ") == "a%ZZ", "unquote bad hex passes through")
+    ck(net.unquote(net.quote("hello world & friends=2")) == "hello world & friends=2", "quote/unquote round-trip")
+
+    ck(net.urlencode({"a": "1", "b": "x y"}) == "a=1&b=x%20y", "urlencode encodes values")
+    ck(net.urlencode(params = {"x": "y z"}) == "x=y%20z", "urlencode keyword arg")
+
+    var pq = net.parseqs("a=1&b=x%20y&c")
+    ck(pq["a"] == "1" and pq["b"] == "x y", "parseqs decodes values")
+    ck("c" in pq and pq["c"] == "", "parseqs bare key -> empty value")
+    ck(len(net.parseqs("=v")) == 0, "parseqs skips an empty key")
+
+    var us = net.urlsplit("http://user:pass@example.com:8080/p/q?x=1#frag")
+    ck(us["scheme"] == "http", "urlsplit scheme")
+    ck(us["host"] == "example.com", "urlsplit drops userinfo from host")
+    ck(us["port"] == "8080" and us["path"] == "/p/q", "urlsplit port+path")
+    ck(us["query"] == "x=1" and us["fragment"] == "frag", "urlsplit query+fragment")
+    var us6 = net.urlsplit("http://[::1]:8080/p")
+    ck(us6["host"] == "[::1]" and us6["port"] == "8080", "urlsplit keeps bracketed IPv6 + port")
+    var usn = net.urlsplit("example.com/path?q=1")
+    ck(usn["scheme"] == "" and usn["host"] == "example.com" and usn["path"] == "/path", "urlsplit no-scheme")
+
+    # URL-helper argument validation
+    ck(throws(Function(): return net.urlencode()), "urlencode() no-arg throws")
+    ck(throws(Function(): return net.urlencode([1, 2])), "urlencode(non-Dict) throws")
+    ck(throws(Function(): return net.parseqs()), "parseqs() no-arg throws")
+    ck(throws(Function(): return net.urlsplit()), "urlsplit() no-arg throws")
+
+    # =========================================================================================
+    # net — Socket + request error paths (no live peer needed)
+    # =========================================================================================
+    ck(throws(Function(): return net.Socket().connect("127.0.0.1")), "connect missing port throws")
+    ck(throws(Function(): return net.Socket().connect("127.0.0.1", 70000)), "connect port>65535 throws")
+    ck(throws(Function(): return net.Socket().bind("127.0.0.1", -1)), "bind negative port throws")
+    ck(throws(Function(): return net.Socket().send()), "send() no-arg throws")
+    ck(throws(Function(): return net.Socket().send(123)), "send(Integer) throws (String|Bytes only)")
+    ck(throws(Function(): return net.Socket().recv(-5)), "recv(-5) throws")
+    ck(throws(Function(): return net.Socket().recv(10)), "recv on unconnected socket throws (no crash)")
+    var refused = net.Socket()
+    refused.settimeout(2.0)
+    ck(throws(Function(): return refused.connect("127.0.0.1", 9)), "connect to dead port throws")
+    refused.close()
+    ck(throws(Function(): return net.get("ftp://example.com")), "get(ftp://) throws")
+    ck(throws(Function(): return net.get("not a url")), "get(malformed url) throws")
+    # https://<dead loopback> throws either way: 'requires TLS' (no-TLS build) or connection refused.
+    ck(throws(Function(): return net.get("https://127.0.0.1:1/")), "get(https dead) throws")
+
+    # Socket / Session inspect surfaces the documented members.
+    var sins = inspect(net.Socket())
+    ck("recv(n) -> Bytes" in sins and "send(data) -> Integer" in sins, "inspect Socket lists recv/send")
+    ck("detach() -> Integer" in sins, "inspect Socket lists detach")
+    ck("request(method, url, opts) -> Response" in inspect(net.Session()), "inspect Session lists request")
+
+    # =========================================================================================
+    # net — loopback TCP echo through a worker (bind/listen/accept/recv/send, Bytes round-trip)
+    # =========================================================================================
+    var eq = parallel.Queue()
+    var et = parallel.spawn(echo_server, eq)
+    var eport = eq.get(True, 5.0)
+    ck(eport > 0, "echo worker bound a port")
+    var es = net.Socket()
+    es.settimeout(5.0)
+    es.connect("127.0.0.1", eport)
+    var payload = Bytes([0, 1, 255, 128, 10, 13, 0, 65])
+    var nsent = es.send(payload)
+    ck(nsent == 8, "send returns the byte count")
+    var got = es.recvall()
+    es.close()
+    ck(type(got) == "Bytes", "recvall returns Bytes")
+    ck(got == payload, "TCP echo round-trips bytes exactly (NUL/0xFF/0x80 safe)")
+    ck(et.join() == 8, "echo server echoed 8 bytes")
+
+    # =========================================================================================
+    # net — full Response object via a loopback HTTP/1.1 server
+    # =========================================================================================
+    var hq = parallel.Queue()
+    var body = "{\"n\": 42, \"ok\": true}"
+    var ht = parallel.spawn(http_server, hq, 201, "Created", body)
+    var hport = hq.get(True, 5.0)
+    var r = net.get("http://127.0.0.1:" + String(hport) + "/path")
+    ck(r.status == 201 and r.statuscode == 201, "Response status + statuscode alias")
+    ck(r.reason == "Created", "Response reason")
+    ck(r.ok == True, "Response ok True for 2xx")
+    ck(r.text == body and r.body == body, "Response text + body alias")
+    ck(type(r.content) == "Bytes", "Response content is Bytes")
+    ck(r.header("CONTENT-TYPE") == "application/json", "Response header() case-insensitive")
+    ck(r.header("nope", "DEF") == "DEF", "Response header() returns supplied default")
+    ck(r.header("nope") == None, "Response header() returns None when absent")
+    ck(r.headers["X-Test"] == "yes", "Response headers Dict")
+    ck(r.cookies["sid"] == "abc123", "Response cookies from Set-Cookie")
+    ck(r.url.endswith("/path"), "Response url is the final URL")
+    ck(r.json()["n"] == 42 and r.json()["ok"] == True, "Response json() parses the body")
+    # Dict-style indexing
+    ck(r["status"] == 201 and r["body"] == body and r["reason"] == "Created", "Response index status/body/reason")
+    ck(r["ok"] == True and r["headers"]["X-Test"] == "yes", "Response index ok/headers")
+    ck(type(r["content"]) == "Bytes", "Response index content is Bytes")
+    ck(throws(Function(): return r["nope"]), "Response index unknown key throws")
+    ck(not throws(Function(): return r.raiseforstatus()), "raiseforstatus on 2xx does not throw")
+    discard ht.join()
+
+    # 4xx: ok False and raiseforstatus throws
+    var hq2 = parallel.Queue()
+    var ht2 = parallel.spawn(http_server, hq2, 404, "Not Found", "no")
+    var hport2 = hq2.get(True, 5.0)
+    var r2 = net.get("http://127.0.0.1:" + String(hport2) + "/")
+    ck(r2.ok == False, "Response ok False for 404")
+    ck(throws(Function(): return r2.raiseforstatus()), "raiseforstatus on 404 throws")
+    discard ht2.join()
+
+    # =========================================================================================
+    # net — request options reach the wire (params / auth / headers / json / data)
+    # =========================================================================================
+    var cq = parallel.Queue()
+    var crq = parallel.Queue()
+    var ct = parallel.spawn(capture_server, cq, crq)
+    var cport = cq.get(True, 5.0)
+    var rr = net.put("http://127.0.0.1:" + String(cport) + "/x",
+                     {"params": {"a": "1"}, "auth": ["user", "pass"], "headers": {"X-Foo": "bar"}})
+    var req = crq.get(True, 5.0)
+    ck(rr.status == 200, "put with opts got 200")
+    ck(req.startswith("PUT /x?a=1 "), "params appended to the request line")
+    ck("X-Foo: bar" in req, "custom header sent")
+    ck("Authorization: Basic " in req, "auth -> Basic Authorization header")
+    discard ct.join()
+
+    var cq2 = parallel.Queue()
+    var crq2 = parallel.Queue()
+    var ct2 = parallel.spawn(capture_server, cq2, crq2)
+    var cport2 = cq2.get(True, 5.0)
+    discard net.post("http://127.0.0.1:" + String(cport2) + "/", {"json": {"name": "ada"}})
+    var req2 = crq2.get(True, 5.0)
+    ck("Content-Type: application/json" in req2, "json= sets application/json")
+    ck("\"name\": \"ada\"" in req2, "json= serializes the body")
+    discard ct2.join()
+
+    var cq3 = parallel.Queue()
+    var crq3 = parallel.Queue()
+    var ct3 = parallel.spawn(capture_server, cq3, crq3)
+    var cport3 = cq3.get(True, 5.0)
+    discard net.post("http://127.0.0.1:" + String(cport3) + "/", {"data": {"a": "1", "b": "x y"}})
+    var req3 = crq3.get(True, 5.0)
+    ck("application/x-www-form-urlencoded" in req3, "data Dict -> form-urlencoded")
+    ck("a=1" in req3 and "b=x%20y" in req3, "data Dict values form-encoded")
+    discard ct3.join()
+
+    # =========================================================================================
+    # parallel — spawn / Task
+    # =========================================================================================
+    ck(parallel.spawn(w_add, 5).join() == 15, "spawn uses the default kwarg b=10")
+    ck(parallel.spawn(w_add, 5, 6).join() == 11, "spawn positional args")
+    ck(parallel.spawn(w_add, b = 1, a = 2).join() == 3, "spawn keyword args, any order")
+    ck(parallel.spawn(w_add, 7, b = 3).join() == 10, "spawn mixed positional + keyword")
+    ck(parallel.spawn(w_ident, None).join() == None, "spawn round-trips None")
+    ck(parallel.spawn(w_ident, "héllo ✓").join() == "héllo ✓", "spawn round-trips a unicode String")
+    ck(parallel.spawn(w_ident, {1, 2, 3}).join() == {1, 2, 3}, "spawn round-trips a Set")
+    var graph = parallel.spawn(w_ident, [1, [2, 3], {"k": 4}]).join()
+    ck(graph[2]["k"] == 4, "spawn round-trips a nested value graph")
+
+    var dt = parallel.spawn(w_ident, 1)
+    discard dt.join()
+    ck(dt.done() == True, "Task.done() True after join")
+
+    # worker fault is isolated and surfaced by join; the host keeps running
+    var emsg = ""
+    try:
+        discard parallel.spawn(w_boom).join()
+    catch as e:
+        emsg = String(e)
+    ck("kaboom-marker" in emsg, "worker exception text surfaced by join")
+    ck(2 + 2 == 4, "host VM survives a worker fault")
+
+    # spawn argument validation
+    ck(throws(Function(): return parallel.spawn(len, [1, 2])), "spawn(native fn) throws (not a .ki function)")
+    ck(throws(Function(): return parallel.spawn(42)), "spawn(non-function) throws")
+    ck(throws(Function(): return parallel.spawn()), "spawn() with no function throws")
+    # a non-serializable argument is rejected at the spawn boundary
+    var nsock = net.Socket()
+    ck(throws(Function(): return parallel.spawn(w_ident, nsock)), "spawn non-serializable arg throws")
+    nsock.close()
+
+    # =========================================================================================
+    # parallel — Queue (single-VM deterministic + cross-VM identity)
+    # =========================================================================================
+    var q = parallel.Queue()
+    ck(q.empty() and q.qsize() == 0, "fresh Queue empty")
+    q.put(1)
+    q.put("two")
+    q.put([3])
+    ck(q.qsize() == 3 and not q.empty(), "Queue qsize after puts")
+    ck(q.get() == 1 and q.get() == "two" and q.get()[0] == 3, "Queue FIFO order")
+    ck(q.empty(), "Queue empty after draining")
+    ck(throws(Function(): return q.getnowait()), "getnowait on empty throws")
+    ck(throws(Function(): return q.get(True, 0.02)), "get with timeout on empty throws")
+    q.put(item = 7)
+    ck(q.get() == 7, "Queue put keyword arg")
+
+    var bq = parallel.Queue(2)
+    bq.put(1)
+    bq.put(2)
+    ck(bq.full(), "bounded Queue full")
+    ck(throws(Function(): return bq.putnowait(3)), "putnowait on full throws")
+    ck(throws(Function(): return bq.put(3, True, 0.02)), "put with timeout on full throws")
+    ck(bq.get() == 1, "bounded Queue drains")
+
+    var clq = parallel.Queue()
+    clq.put(9)
+    clq.close()
+    ck(clq.get() == 9, "closed Queue drains remaining")
+    ck(throws(Function(): return clq.get()), "get on closed+drained Queue throws")
+    ck(throws(Function(): return clq.put(1)), "put on closed Queue throws")
+
+    ck(throws(Function(): return parallel.Queue(-1)), "Queue(maxsize<0) throws")
+
+    # cross-VM Queue identity: a worker produces, main consumes; close ends the loop
+    var prq = parallel.Queue()
+    var prt = parallel.spawn(w_produce, prq, 10)
+    var collected = []
+    var running = True
+    while running:
+        try:
+            collected.append(prq.get(True, 5.0))
+        catch as e:
+            running = False
+    discard prt.join()
+    collected.sort()
+    ck(collected == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "cross-VM Queue produce/consume")
+
+    # a non-serializable value is rejected at the Queue boundary
+    var bsock = net.Socket()
+    ck(throws(Function(): return parallel.Queue().put(bsock)), "Queue.put non-serializable throws")
+    bsock.close()
+
+    # =========================================================================================
+    # parallel — Lock / Event / Semaphore / Barrier
+    # =========================================================================================
+    var lock = parallel.Lock()
+    ck(lock.locked() == False, "Lock initially unlocked")
+    ck(lock.acquire() == True, "Lock.acquire returns True")
+    ck(lock.locked() == True, "Lock locked after acquire")
+    ck(throws(Function(): return lock.acquire(False)), "same-thread re-acquire throws (non-reentrant)")
+    lock.release()
+    ck(lock.locked() == False, "Lock unlocked after release")
+    ck(throws(Function(): return lock.release()), "release of unlocked Lock throws")
+    with lock:
+        ck(lock.locked() == True, "Lock held inside with-block")
+    ck(lock.locked() == False, "Lock released on with-block exit")
+
+    var ev = parallel.Event()
+    ck(ev.isset() == False, "Event initially clear")
+    ck(ev.wait(0.02) == False, "Event.wait times out while clear")
+    ev.set()
+    ck(ev.isset() == True and ev.wait(0.02) == True, "Event set -> isset/wait True")
+    ev.clear()
+    ck(ev.isset() == False, "Event cleared")
+    # broadcast to workers (set is sticky -> no race)
+    var bev = parallel.Event()
+    var bevq = parallel.Queue()
+    var i = 0
+    while i < 3:
+        discard parallel.spawn(w_event, bev, bevq, i)
+        i = i + 1
+    bev.set()
+    var ewoke = 0
+    while ewoke < 3:
+        discard bevq.get(True, 5.0)
+        ewoke = ewoke + 1
+    ck(ewoke == 3, "Event broadcast woke all workers")
+
+    var sem = parallel.Semaphore(2)
+    ck(sem.acquire() == True and sem.acquire() == True, "Semaphore drains its permits")
+    ck(sem.acquire(False) == False, "Semaphore acquire(False) returns False when exhausted")
+    sem.release()
+    ck(sem.acquire(False) == True, "Semaphore acquirable after release")
+    var sem1 = parallel.Semaphore(1)
+    with sem1:
+        ck(sem1.acquire(False) == False, "Semaphore exhausted inside with-block")
+    ck(sem1.acquire(False) == True, "Semaphore released on with-block exit")
+    ck(throws(Function(): return parallel.Semaphore(-1)), "Semaphore(value<0) throws")
+
+    var b1 = parallel.Barrier(1)
+    ck(b1.parties() == 1, "Barrier parties()")
+    ck(b1.wait() == 0, "single-party Barrier releases immediately at index 0")
+    var b2 = parallel.Barrier(3)
+    ck(b2.parties() == 3 and b2.nwaiting() == 0, "Barrier parties/nwaiting")
+    ck(throws(Function(): return b2.wait(0.02)), "under-filled Barrier breaks on timeout")
+    ck(throws(Function(): return parallel.Barrier(0)), "Barrier(parties<1) throws")
+    # full rendezvous across workers (aggregate, not order)
+    var bar = parallel.Barrier(4)
+    var barq = parallel.Queue()
+    var bi = 0
+    while bi < 4:
+        discard parallel.spawn(w_barrier, bar, barq, bi)
+        bi = bi + 1
+    var idxs = []
+    while len(idxs) < 4:
+        idxs.append(barq.get(True, 5.0))
+    idxs.sort()
+    ck(idxs == [0, 1, 2, 3], "Barrier full rendezvous releases all four parties")
+
+    # =========================================================================================
+    # parallel — cpucount + spawn churn (no leaks; correct results)
+    # =========================================================================================
+    ck(parallel.cpucount() >= 1, "cpucount >= 1")
+    var churn = 0
+    var c = 0
+    while c < 30:
+        churn = churn + parallel.spawn(w_add, c, 0).join()
+        c = c + 1
+    ck(churn == 435, "spawn churn sums 0..29 correctly")
+
+    io.print("r4 net+parallel: all " + String(checks) + " checks passed")

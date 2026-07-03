@@ -1,0 +1,240 @@
+# Neural-network layers, PyTorch-style.
+#
+# Everything is a Module: it owns named parameters, buffers, and sub-modules, supports train()/eval(),
+# zero_grad(), and state_dict()/load_state_dict(). Calling a module (via _call_) runs forward().
+# Subclasses call self._super_()._init_() then register parameters/sub-modules, and override forward.
+# Losses are plain functions over autograd Tensors returning a scalar Tensor.
+
+var ag = import("autograd")
+var nd = import("ndarray")
+var random = import("random")
+
+# A shared RNG for parameter initialisation (seedable for reproducibility).
+var RNG = [random.Random(1234)]
+var manual_seed = Function(s):
+    RNG[0] = random.Random(s)
+
+var parameter = Function(data):
+    return ag.tensor(data, True)
+
+# Kaiming-ish uniform init in [-k, k], k = 1/sqrt(fan_in).
+var _init_matrix = Function(fan_in, fan_out):
+    var math = import("math")
+    var k = 1.0 / math.sqrt(Float(fan_in))
+    var rng = RNG[0]
+    var rows = []
+    for i in range(fan_in):
+        var row = []
+        for j in range(fan_out):
+            row.append(rng.uniform(-k, k))
+        rows.append(row)
+    return rows
+
+class Module:
+    var _init_ = Function(self):
+        self.params_ = {}      # name -> Tensor
+        self.modules_ = {}     # name -> Module
+        self.buffers_ = {}     # name -> NdArray
+        self.training = True
+
+    var register_param = Function(self, name, t):
+        self.params_[name] = t
+        return t
+    var register_module = Function(self, name, m):
+        self.modules_[name] = m
+        return m
+    var register_buffer = Function(self, name, ndarr):
+        self.buffers_[name] = ndarr
+        return ndarr
+
+    # all parameters of this module and its sub-modules (a flat List of Tensors)
+    var parameters = Function(self):
+        var out = []
+        for name in self.params_.keys():
+            out.append(self.params_[name])
+        for mname in self.modules_.keys():
+            for p in self.modules_[mname].parameters():
+                out.append(p)
+        return out
+
+    var zero_grad = Function(self):
+        for p in self.parameters():
+            p.zero_grad()
+
+    var train = Function(self):
+        self.training = True
+        for mname in self.modules_.keys():
+            discard self.modules_[mname].train()
+        return self
+    var eval = Function(self):
+        self.training = False
+        for mname in self.modules_.keys():
+            discard self.modules_[mname].eval()
+        return self
+
+    # state_dict: dotted-name -> nested data, for params AND buffers (graph-independent weights).
+    var state_dict = Function(self):
+        var sd = {}
+        self._collect_state("", sd)
+        return sd
+    var _collect_state = Function(self, prefix, sd):
+        for name in self.params_.keys():
+            sd[prefix + name] = self.params_[name].data.to_nested()
+        for bname in self.buffers_.keys():
+            sd[prefix + bname] = self.buffers_[bname].to_nested()
+        for mname in self.modules_.keys():
+            self.modules_[mname]._collect_state(prefix + mname + ".", sd)
+    var load_state_dict = Function(self, sd):
+        self._load_state("", sd)
+    var _load_state = Function(self, prefix, sd):
+        for name in self.params_.keys():
+            self.params_[name].data = nd.array(sd[prefix + name])
+        for bname in self.buffers_.keys():
+            self.buffers_[bname] = nd.array(sd[prefix + bname])
+        for mname in self.modules_.keys():
+            self.modules_[mname]._load_state(prefix + mname + ".", sd)
+
+    var _call_ = Function(self, x):
+        return self.forward(x)
+    var forward = Function(self, x):
+        throw "Module.forward not implemented"
+
+# ---- layers --------------------------------------------------------------------------------------
+
+class Linear(Module):
+    var _init_ = Function(self, in_features, out_features):
+        discard self._super_()._init_()
+        self.weight = self.register_param("weight", ag.tensor(_init_matrix(in_features, out_features), True))
+        self.bias = self.register_param("bias", ag.tensor(nd.zeros([out_features]).to_nested(), True))
+    var forward = Function(self, x):
+        return ag.add(ag.matmul(x, self.weight), self.bias)
+
+class ReLU(Module):
+    var _init_ = Function(self):
+        discard self._super_()._init_()
+    var forward = Function(self, x):
+        return ag.relu(x)
+
+class Sigmoid(Module):
+    var _init_ = Function(self):
+        discard self._super_()._init_()
+    var forward = Function(self, x):
+        return ag.sigmoid(x)
+
+class Tanh(Module):
+    var _init_ = Function(self):
+        discard self._super_()._init_()
+    var forward = Function(self, x):
+        return ag.tanh(x)
+
+# BatchNorm over the feature axis of a (batch, features) input. The normalization is composed from
+# autograd ops, so its backward is automatic; only the running-stat buffers are updated off-graph.
+# Demonstrates parameters + buffers + train/eval behavior.
+class BatchNorm1d(Module):
+    var _init_ = Function(self, features, momentum, eps):
+        discard self._super_()._init_()
+        self.features = features
+        self.momentum = momentum
+        self.eps = eps
+        self.gamma = self.register_param("weight", ag.tensor(nd.ones([features]).to_nested(), True))
+        self.beta = self.register_param("bias", ag.tensor(nd.zeros([features]).to_nested(), True))
+        self.register_buffer("running_mean", nd.zeros([features]))
+        self.register_buffer("running_var", nd.ones([features]))
+
+    var forward = Function(self, x):
+        if self.training:
+            var bs = x.shape()[0]
+            var inv_n = 1.0 / Float(bs)
+            var mean = ag.mul_scalar(ag.sum_axis(x, 0), inv_n)        # (features,)
+            var xc = ag.sub(x, mean)
+            var var_ = ag.mul_scalar(ag.sum_axis(ag.mul(xc, xc), 0), inv_n)
+            var denom = ag.sqrt(ag.add_scalar(var_, self.eps))
+            var norm = ag.div(xc, denom)
+            var out = ag.add(ag.mul(norm, self.gamma), self.beta)
+            # update running stats off-graph (use unbiased var for the buffer, like PyTorch)
+            var bmean = mean.data.contiguous()
+            var bvar = var_.data.contiguous()
+            var m = self.momentum
+            self.buffers_["running_mean"] = nd.add(nd.mul_scalar(self.buffers_["running_mean"], 1.0 - m), nd.mul_scalar(bmean, m))
+            self.buffers_["running_var"] = nd.add(nd.mul_scalar(self.buffers_["running_var"], 1.0 - m), nd.mul_scalar(bvar, m))
+            return out
+        # eval: use the running statistics (constants)
+        var rm = ag.from_nd(self.buffers_["running_mean"], False)
+        var rv = ag.from_nd(self.buffers_["running_var"], False)
+        var norm = ag.div(ag.sub(x, rm), ag.sqrt(ag.add_scalar(rv, self.eps)))
+        return ag.add(ag.mul(norm, self.gamma), self.beta)
+
+# Example CUSTOM layer (PyTorch-style): subclass Module, register params, override forward — the
+# backward is handled automatically because forward is built from autograd ops. This one learns a
+# per-feature affine map followed by a squaring nonlinearity: y = (a*x + b)^2.
+class AffineSquare(Module):
+    var _init_ = Function(self, features):
+        discard self._super_()._init_()
+        self.a = self.register_param("a", ag.tensor(nd.ones([features]).to_nested(), True))
+        self.b = self.register_param("b", ag.tensor(nd.zeros([features]).to_nested(), True))
+    var forward = Function(self, x):
+        var z = ag.add(ag.mul(x, self.a), self.b)
+        return ag.mul(z, z)
+
+class Sequential(Module):
+    var _init_ = Function(self, layers):
+        discard self._super_()._init_()
+        self.layers = layers
+        for i, layer in enumerate(layers):
+            discard self.register_module(String(i), layer)
+    var forward = Function(self, x):
+        var h = x
+        for layer in self.layers:
+            h = layer(h)
+        return h
+
+# ---- losses --------------------------------------------------------------------------------------
+
+# one-hot (rows, classes) NdArray (constant) from a List of class indices
+var _one_hot = Function(targets, classes):
+    var rows = len(targets)
+    var oh = nd.zeros([rows, classes])
+    var buf = oh.buf
+    for i, t in enumerate(targets):
+        buf[i * classes + t] = 1.0
+    return oh
+
+var mse_loss = Function(pred, target):
+    var diff = ag.sub(pred, target)
+    return ag.mean_all(ag.mul(diff, diff))
+
+# numerically-stable softplus(z) = log(1+exp(z)), used by BCEWithLogits
+var _softplus = Function(z):
+    # log(1+exp(z)) = relu(z) + log(1 + exp(-|z|))  (stable). Compose from autograd ops.
+    var absz = ag.add(ag.relu(z), ag.relu(ag.neg(z)))            # |z|
+    return ag.add(ag.relu(z), ag.log(ag.add_scalar(ag.exp(ag.neg(absz)), 1.0)))
+
+# BCEWithLogits: mean(softplus(z) - z*y), y in {0,1}. Stable, no separate sigmoid needed.
+var bce_with_logits = Function(logits, target):
+    var term = ag.sub(_softplus(logits), ag.mul(logits, target))
+    return ag.mean_all(term)
+
+# stable log-softmax over rows (2-D). max-shift is a constant (no grad through it).
+var log_softmax = Function(logits):
+    var rows = logits.shape()[0]
+    var cls = logits.shape()[1]
+    var mx = nd.max_axis(logits.data, 1).reshape([rows, 1])
+    var mxt = ag.from_nd(mx.broadcast_to([rows, cls]).contiguous(), False)
+    var shifted = ag.sub(logits, mxt)
+    var e = ag.exp(shifted)
+    var denom = ag.reshape(ag.sum_axis(e, 1), [rows, 1])
+    var logden = ag.log(denom)
+    # broadcast logden (rows,1) -> (rows,cls) via a non-grad expand is handled by sub's broadcasting
+    return ag.sub(shifted, logden)
+
+# negative log-likelihood given LOG-probabilities and integer class targets
+var nll_loss = Function(log_probs, targets):
+    var rows = log_probs.shape()[0]
+    var cls = log_probs.shape()[1]
+    var oh = ag.from_nd(_one_hot(targets, cls), False)
+    var picked = ag.sum_axis(ag.mul(log_probs, oh), 1)          # (rows,)
+    return ag.neg(ag.mean_all(picked))
+
+# cross-entropy from raw logits + integer targets = NLL(log_softmax(logits))
+var cross_entropy = Function(logits, targets):
+    return nll_loss(log_softmax(logits), targets)

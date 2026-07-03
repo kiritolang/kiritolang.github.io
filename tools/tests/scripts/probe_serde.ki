@@ -1,0 +1,106 @@
+# ============================================================ SERIALIZATION: serialize/dump/json, fuzz
+var io = import("io")
+var serialize = import("serialize")
+var dump = import("dump")
+var json = import("json")
+var random = import("random")
+
+# --- every builtin value kind round-trips through serialize (text) and dump (binary) ---
+var values = [None, True, False, 0, -42, 9223372036854775807, 3.14, -0.0, "", "héllo😀世",
+              [], [1, [2, [3, [4]]]], {}, {"a": 1, "b": [2, 3], "c": {"d": 4}}, Set([1, 2, 3])]
+for v in values:
+    assert serialize.loads(serialize.dumps(v)) == v, "serialize round-trip"
+    assert dump.loads(dump.dumps(v)) == v, "dump round-trip"
+
+# --- shared references preserved (serialize + dump) ---
+var shared = [1, 2]
+var pair = [shared, shared]
+var rt = serialize.loads(serialize.dumps(pair))
+assert id(rt[0]) == id(rt[1]), "serialize preserves shared reference"
+var rtd = dump.loads(dump.dumps(pair))
+assert id(rtd[0]) == id(rtd[1]), "dump preserves shared reference"
+
+# --- cycles survive ---
+var cyc = [1]
+cyc.append(cyc)
+var rc = serialize.loads(serialize.dumps(cyc))
+assert rc[0] == 1 and id(rc[1]) == id(rc), "serialize preserves a self-cycle"
+var rcd = dump.loads(dump.dumps(cyc))
+assert rcd[0] == 1 and id(rcd[1]) == id(rcd), "dump preserves a self-cycle"
+
+# --- user-class instance: auto-by-attributes ---
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _eq_ = Function(self, o) -> Bool:
+        return self.x == o.x and self.y == o.y
+var p = Point(3, 4)
+assert serialize.loads(serialize.dumps(p)) == p, "serialize instance (auto)"
+assert dump.loads(dump.dumps(p)) == p, "dump instance (auto)"
+
+# --- instance with _getstate_/_setstate_ ---
+class Temperature:
+    var _init_ = Function(self, celsius):
+        self.celsius = celsius
+    var _getstate_ = Function(self):
+        return {"c": self.celsius}
+    var _setstate_ = Function(self, state):
+        self.celsius = state["c"]
+    var _eq_ = Function(self, o) -> Bool:
+        return self.celsius == o.celsius
+var temp = Temperature(21)
+assert serialize.loads(serialize.dumps(temp)) == temp, "serialize via _getstate_/_setstate_"
+assert dump.loads(dump.dumps(temp)) == temp, "dump via _getstate_/_setstate_"
+
+# --- a graph of instances with a shared sub-instance ---
+var sub = Point(1, 1)
+var graph = [sub, sub, Point(2, 2)]
+var rg = serialize.loads(serialize.dumps(graph))
+assert id(rg[0]) == id(rg[1]) and rg[0] == Point(1, 1), "shared instance preserved through serialize"
+
+# --- json: flat data only, indent, round-trip ---
+assert json.loads(json.dumps({"x": [1, 2], "y": "z", "n": None, "b": True})) == {"x": [1, 2], "y": "z", "n": None, "b": True}, "json round-trip"
+assert "\n" in json.dumps({"a": 1}, indent = 2), "json indent pretty-prints"
+
+# --- json ADVERSARIAL: rejects Set + instances + malformed input cleanly ---
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+assert throws(Function(): return json.dumps(Set([1]))), "json rejects Set"
+assert throws(Function(): return json.dumps(p)), "json rejects instance"
+assert throws(Function(): return json.loads("{not valid")), "json rejects malformed"
+assert throws(Function(): return json.loads("")), "json rejects empty"
+
+# --- dump corrupt input throws cleanly, never crashes ---
+assert throws(Function(): return dump.loads("not a dump blob at all")), "dump rejects garbage"
+
+# --- resource-like natives (live sockets/streams) throw a clear opt-in error; value-like natives
+#     (matrix/complex/datetime/...) opt in via _getstate_/_setstate_ and round-trip ---
+assert throws(Function(): return serialize.dumps(import("net").Socket())), "native Socket not auto-serializable"
+var mtx = import("matrix").identity(2)
+assert dump.loads(dump.dumps(mtx)) == mtx, "native Matrix round-trips (opted-in via _getstate_)"
+
+# --- FUZZ: random nested structures round-trip through both formats and equal themselves ---
+var rng = random.Random(20260603)
+var t = 0
+while t < 300:
+    # build a random shallow structure (lists/dicts/scalars)
+    var kind = rng.randint(0, 3)
+    var v = None
+    if kind == 0:
+        v = rng.randint(-1000, 1000)
+    elif kind == 1:
+        v = [rng.randint(0, 9), "s" + String(rng.randint(0, 9)), rng.randint(0, 1) == 1]
+    elif kind == 2:
+        v = {"a": rng.randint(0, 99), "b": [rng.randint(0, 9), rng.randint(0, 9)]}
+    else:
+        v = Set([rng.randint(0, 5), rng.randint(0, 5), rng.randint(0, 5)])
+    assert serialize.loads(serialize.dumps(v)) == v, "fuzz: serialize round-trip equal"
+    assert dump.loads(dump.dumps(v)) == v, "fuzz: dump round-trip equal"
+    t = t + 1
+
+io.print("OK serde")

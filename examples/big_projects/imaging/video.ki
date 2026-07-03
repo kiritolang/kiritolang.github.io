@@ -1,0 +1,466 @@
+# video.ki -- reading video as frames, in the spirit of OpenCV's cv2.VideoCapture, in pure Kirito.
+#
+# Like OpenCV, a VideoCapture is opened on a *source* and yields frames as images. The sources that
+# are decodable in pure Kirito (no external codec/ffmpeg) are supported:
+#
+#   - an MJPEG file (".mjpeg"/".mjpg"): a stream of baseline JPEGs (decoded by `jpeg.ki`)
+#   - an animated GIF (".gif"): composited frames (decoded by `gif.ki`)
+#   - a raw YUV4MPEG2 file (".y4m"): the uncompressed interchange ffmpeg pipes
+#   - an image sequence ("dir/frame_%04d.png"): numbered PNG/PPM/BMP/JPEG frames
+#   - a network MJPEG stream ("http://host/path"): multipart/x-mixed-replace, read over a socket
+#
+# Frames come back as `imaging` Images, so the whole imaging/imageops/imagefilter toolkit applies.
+#
+#   var cv = import("video")
+#   var cap = cv.VideoCapture("clip.gif")
+#   while True:
+#       var pair = cap.read()
+#       if not pair[0]:
+#           break
+#       discard pair[1].convert("L").save("frame.png")
+#   cap.release()
+#
+# TRUE compressed video (H.264/HEVC in MP4/MKV, and RTSP, which transports H.264 over RTP) is NOT
+# decodable here: a full video codec is far beyond a tree-walked script, and Kirito has no subprocess
+# to delegate to ffmpeg the way OpenCV's FFMPEG backend does. Transcode such input to MJPEG first
+# (`ffmpeg -i in.mp4 -c:v mjpeg out.mjpeg`, or `ffmpeg -rtsp_transport tcp -i rtsp://... out.mjpeg`)
+# and open the result here; the network MJPEG backend handles the common IP-camera MJPEG-over-HTTP case
+# directly.
+
+var Image = import("imaging")
+var path = import("path")
+var jpeg = import("jpeg")
+var gif = import("gif")
+var io = import("io")
+var T = import("tensor")
+
+# OpenCV CAP_PROP_* identifiers (same numeric values), for get()/set().
+var CAP_PROP_POS_MSEC = 0
+var CAP_PROP_POS_FRAMES = 1
+var CAP_PROP_FRAME_WIDTH = 3
+var CAP_PROP_FRAME_HEIGHT = 4
+var CAP_PROP_FPS = 5
+var CAP_PROP_FRAME_COUNT = 7
+
+# ---------------------------------------------------------------- helpers
+var _ends = Function(s, suf):
+    return len(s) >= len(suf) and s[len(s) - len(suf):] == suf
+
+# Index of the first occurrence of sub-`needle` in `hay` (both Bytes) at or after `start`, else -1.
+var _findbytes = Function(hay, needle, start):
+    var nl = len(needle)
+    var hl = len(hay)
+    if nl == 0:
+        return start
+    var i = start
+    while i + nl <= hl:
+        var j = 0
+        var match = True
+        while j < nl:
+            if hay[i + j] != needle[j]:
+                match = False
+                j = nl
+            else:
+                j = j + 1
+        if match:
+            return i
+        i = i + 1
+    return -1
+
+# Split a concatenated-JPEG (MJPEG) blob into a list of [start, end) byte ranges (SOI..EOI).
+var _split_mjpeg = Function(data):
+    var ranges = []
+    var i = 0
+    var n = len(data)
+    var start = -1
+    while i + 1 < n:
+        if data[i] == 255 and data[i + 1] == 216:        # SOI
+            start = i
+            i = i + 2
+        elif data[i] == 255 and data[i + 1] == 217 and start >= 0:   # EOI
+            ranges.append([start, i + 2])
+            start = -1
+            i = i + 2
+        else:
+            i = i + 1
+    return ranges
+
+# Render a sequence path from a printf-style "%0Nd" / "%d" pattern.
+var _seq_path = Function(pattern, idx):
+    var pc = pattern.find("%")
+    if pc < 0:
+        return pattern
+    var j = pc + 1
+    var width = 0
+    if j < len(pattern) and pattern[j] == "0":
+        j = j + 1
+    while j < len(pattern) and pattern[j] >= "0" and pattern[j] <= "9":
+        width = width * 10 + Integer(pattern[j])
+        j = j + 1
+    if j < len(pattern) and pattern[j] == "d":
+        j = j + 1
+    var num = String(idx)
+    while len(num) < width:
+        num = "0" + num
+    return pattern[0:pc] + num + pattern[j:]
+
+# ---------------------------------------------------------------- the capture object
+class VideoCapture:
+    var _init_ = Function(self, source):
+        self.source = source
+        self.kind = ""
+        self.pos = 0
+        self.width = 0
+        self.height = 0
+        self.fps = 0.0
+        self.count = 0
+        self._data = None
+        self._ranges = None
+        self._frames = None
+        self._sock = None
+        self._buf = None
+        self._grabbed = None
+        self._opened = False
+        self._open(source)
+
+    var _str_ = Function(self):
+        return "<VideoCapture " + self.kind + " " + String(self.width) + "x" + String(self.height) + ">"
+
+    var _open = Function(self, source):
+        var lower = source.lower()
+        if lower.startswith("http://") or lower.startswith("https://"):
+            self._open_http(source)
+        elif source.find("%") >= 0:
+            self._open_seq(source)
+        elif _ends(lower, ".gif"):
+            self._open_gif(source)
+        elif _ends(lower, ".y4m"):
+            self._open_y4m(source)
+        else:
+            self._open_mjpeg(source)
+
+    # ---- MJPEG file ----
+    var _open_mjpeg = Function(self, path):
+        var f = io.open(path, "rb")
+        self._data = f.read()
+        f.close()
+        self._ranges = _split_mjpeg(self._data)
+        self.kind = "mjpeg"
+        self.count = len(self._ranges)
+        self.fps = 25.0
+        if self.count > 0:
+            var im = self._decode_range(0)
+            self.width = im.width
+            self.height = im.height
+        self._opened = self.count > 0
+
+    var _decode_range = Function(self, i):
+        var r = self._ranges[i]
+        var pair = jpeg.decode(self._data[r[0]:r[1]])
+        return Image.fromtensor(pair[0], pair[1])
+
+    # ---- animated GIF ----
+    var _open_gif = Function(self, path):
+        var f = io.open(path, "rb")
+        var data = f.read()
+        f.close()
+        self._frames = gif.frames(data)
+        self.kind = "gif"
+        self.count = len(self._frames)
+        if self.count > 0:
+            var sh = self._frames[0]["rgb"].shape()
+            self.height = sh[0]
+            self.width = sh[1]
+            var d = self._frames[0]["delay"]
+            self.fps = 10.0
+            if d > 0:
+                self.fps = 1000.0 / Float(d)
+        self._opened = self.count > 0
+
+    # ---- raw YUV4MPEG2 ----
+    var _open_y4m = Function(self, path):
+        var f = io.open(path, "rb")
+        self._data = f.read()
+        f.close()
+        # header line up to '\n'
+        var nl = 0
+        while nl < len(self._data) and self._data[nl] != 10:
+            nl = nl + 1
+        var header = self._data[0:nl].decode("ascii")
+        self.kind = "y4m"
+        self.fps = 25.0
+        var sub = "420"
+        for tok in header.split(" "):
+            if len(tok) >= 1 and tok[0] == "W":
+                self.width = Integer(tok[1:])
+            elif len(tok) >= 1 and tok[0] == "H":
+                self.height = Integer(tok[1:])
+            elif len(tok) >= 1 and tok[0] == "F":
+                var fr = tok[1:].split(":")
+                if len(fr) == 2 and Integer(fr[1]) > 0:
+                    self.fps = Float(Integer(fr[0])) / Float(Integer(fr[1]))
+            elif len(tok) >= 1 and tok[0] == "C":
+                sub = tok[1:]
+        self._sub = "420"
+        if sub.startswith("444"):
+            self._sub = "444"
+        elif sub.startswith("422"):
+            self._sub = "422"
+        # index frame offsets
+        self._ranges = []
+        var p = nl + 1
+        var ysz = self.width * self.height
+        var csz = ysz
+        if self._sub == "420":
+            csz = (self.width // 2) * (self.height // 2)
+        elif self._sub == "422":
+            csz = (self.width // 2) * self.height
+        var framesz = ysz + 2 * csz
+        while p < len(self._data):
+            # each frame starts with "FRAME" + optional params + '\n'
+            var q = p
+            while q < len(self._data) and self._data[q] != 10:
+                q = q + 1
+            q = q + 1
+            self._ranges.append(q)
+            p = q + framesz
+        self.count = len(self._ranges)
+        self._opened = self.count > 0
+
+    var _decode_y4m = Function(self, i):
+        var off = self._ranges[i]
+        var w = self.width
+        var h = self.height
+        var ysz = w * h
+        var cw = w
+        var ch = h
+        if self._sub == "420":
+            cw = w // 2
+            ch = h // 2
+        elif self._sub == "422":
+            cw = w // 2
+        var csz = cw * ch
+        var d = self._data
+        # build planes as nested lists, then tensors
+        var Yp = _plane(d, off, w, h)
+        var Cbp = _plane(d, off + ysz, cw, ch)
+        var Crp = _plane(d, off + ysz + csz, cw, ch)
+        var Yt = T.Tensor(Yp)
+        var Cbt = _upsample(T.Tensor(Cbp), w, h)
+        var Crt = _upsample(T.Tensor(Crp), w, h)
+        var Cb = Cbt + (-128.0)
+        var Cr = Crt + (-128.0)
+        var R = Yt + Cr * 1.402
+        var G = Yt + Cb * (-0.344136) + Cr * (-0.714136)
+        var B = Yt + Cb * 1.772
+        var rgb = T.stack([R, G, B], 2).clip(0.0, 255.0).round()
+        return Image.fromtensor(rgb, "RGB")
+
+    # ---- image sequence ----
+    var _open_seq = Function(self, pattern):
+        self.kind = "seq"
+        self.fps = 25.0
+        # count by probing consecutive files (start at 0, then 1 if 0 missing)
+        self._seqstart = 0
+        if not path.exists(_seq_path(pattern, 0)):
+            self._seqstart = 1
+        var i = self._seqstart
+        while path.exists(_seq_path(pattern, i)):
+            i = i + 1
+        self.count = i - self._seqstart
+        if self.count > 0:
+            var im = Image.open(_seq_path(pattern, self._seqstart))
+            self.width = im.width
+            self.height = im.height
+        self._opened = self.count > 0
+
+    # ---- HTTP MJPEG stream ----
+    var _open_http = Function(self, url):
+        var net = import("net")
+        var rest = url[url.find("://") + 3:]
+        var slash = rest.find("/")
+        var hostport = rest
+        var path = "/"
+        if slash >= 0:
+            hostport = rest[0:slash]
+            path = rest[slash:]
+        var host = hostport
+        var port = 80
+        var colon = hostport.find(":")
+        if colon >= 0:
+            host = hostport[0:colon]
+            port = Integer(hostport[colon + 1:])
+        var s = net.Socket()
+        s.connect(host, port)
+        discard s.send("GET " + path + " HTTP/1.0\r\nHost: " + host + "\r\nAccept: */*\r\n\r\n")
+        self._sock = s
+        self._buf = Bytes()
+        self.kind = "http"
+        self.fps = 0.0
+        self.count = 0
+        # read past the response headers
+        self._fill_until(Bytes([13, 10, 13, 10]))
+        var hdrend = _findbytes(self._buf, Bytes([13, 10, 13, 10]), 0)
+        self._buf = self._buf[hdrend + 4:]
+        self._opened = True
+
+    var _fill_until = Function(self, marker):
+        while _findbytes(self._buf, marker, 0) < 0:
+            var chunk = self._sock.recv(8192)
+            if len(chunk) == 0:
+                return False
+            self._buf = self._buf + chunk
+        return True
+
+    # Pull the next JPEG out of a multipart MJPEG stream (locate SOI..EOI in the byte buffer).
+    var _http_next = Function(self):
+        while True:
+            var soi = _findbytes(self._buf, Bytes([255, 216]), 0)
+            if soi >= 0:
+                var eoi = _findbytes(self._buf, Bytes([255, 217]), soi)
+                if eoi > soi:
+                    var jpg = self._buf[soi:eoi + 2]
+                    self._buf = self._buf[eoi + 2:]
+                    var pair = jpeg.decode(jpg)
+                    return Image.fromtensor(pair[0], pair[1])
+            var chunk = self._sock.recv(8192)
+            if len(chunk) == 0:
+                return None
+            self._buf = self._buf + chunk
+
+    # ---------------------------------------------------------------- OpenCV-style surface
+    var isopened = Function(self):
+        return self._opened
+
+    # Decode and return the next frame as [ok, Image]; ok is False past the end of the stream.
+    var _read_next = Function(self):
+        if not self._opened:
+            return [False, None]
+        if self.kind == "mjpeg":
+            if self.pos >= self.count:
+                return [False, None]
+            var im = self._decode_range(self.pos)
+            self.pos = self.pos + 1
+            return [True, im]
+        if self.kind == "gif":
+            if self.pos >= self.count:
+                return [False, None]
+            var im = Image.fromtensor(self._frames[self.pos]["rgb"], "RGB")
+            self.pos = self.pos + 1
+            return [True, im]
+        if self.kind == "y4m":
+            if self.pos >= self.count:
+                return [False, None]
+            var im = self._decode_y4m(self.pos)
+            self.pos = self.pos + 1
+            return [True, im]
+        if self.kind == "seq":
+            var p = _seq_path(self.source, self._seqstart + self.pos)
+            if not path.exists(p):
+                return [False, None]
+            self.pos = self.pos + 1
+            return [True, Image.open(p)]
+        if self.kind == "http":
+            var im = self._http_next()
+            if im == None:
+                return [False, None]
+            self.pos = self.pos + 1
+            return [True, im]
+        return [False, None]
+
+    # OpenCV's grab()/retrieve() split: grab() advances to the next frame (and buffers it),
+    # retrieve() returns the buffered frame; read() is grab()+retrieve().
+    var read = Function(self):
+        if self.grab():
+            return self.retrieve()
+        return [False, None]
+
+    var grab = Function(self):
+        var pair = self._read_next()
+        if pair[0]:
+            self._grabbed = pair[1]
+            return True
+        self._grabbed = None
+        return False
+
+    var retrieve = Function(self):
+        if self._grabbed == None:
+            return [False, None]
+        return [True, self._grabbed]
+
+    var get = Function(self, prop):
+        if prop == CAP_PROP_FRAME_WIDTH:
+            return Float(self.width)
+        if prop == CAP_PROP_FRAME_HEIGHT:
+            return Float(self.height)
+        if prop == CAP_PROP_FPS:
+            return self.fps
+        if prop == CAP_PROP_FRAME_COUNT:
+            return Float(self.count)
+        if prop == CAP_PROP_POS_FRAMES:
+            return Float(self.pos)
+        if prop == CAP_PROP_POS_MSEC:
+            if self.fps > 0.0:
+                return Float(self.pos) * 1000.0 / self.fps
+            return 0.0
+        return 0.0
+
+    # set() supports seeking by frame index on the random-access (file) backends.
+    var set = Function(self, prop, value):
+        if prop == CAP_PROP_POS_FRAMES and self.kind != "http":
+            self.pos = Integer(value)
+            return True
+        return False
+
+    var release = Function(self):
+        if self._sock != None:
+            self._sock.close()
+            self._sock = None
+        self._opened = False
+        return None
+
+    # Iteration: `for frame in cap:` yields successive Images. Kirito's `_iter_` must return an
+    # iterable, so we drain the remaining frames into a List (fine for finite video; for an unbounded
+    # network stream prefer the `read()` loop, which is lazy).
+    var _iter_ = Function(self):
+        var out = []
+        var pair = self.read()
+        while pair[0]:
+            out.append(pair[1])
+            pair = self.read()
+        return out
+
+# Build a (h,w) Float plane (list of rows of Integer byte values) from raw bytes at `off`.
+var _plane = Function(data, off, w, h):
+    var rows = []
+    var y = 0
+    while y < h:
+        var row = []
+        var x = 0
+        while x < w:
+            row.append(data[off + y * w + x])
+            x = x + 1
+        rows.append(row)
+        y = y + 1
+    return rows
+
+# Nearest-upsample a 2-D plane tensor to (h, w).
+var _upsample = Function(t, w, h):
+    var sh = t.shape()
+    if sh[0] == h and sh[1] == w:
+        return t
+    var iy = []
+    var y = 0
+    while y < h:
+        iy.append(min(sh[0] - 1, y * sh[0] // h))
+        y = y + 1
+    var ix = []
+    var x = 0
+    while x < w:
+        ix.append(min(sh[1] - 1, x * sh[1] // w))
+        x = x + 1
+    return t.take(iy, 0).swapaxes(0, 1).take(ix, 0).swapaxes(0, 1)
+
+# Open a capture (mirrors cv2.VideoCapture(source)).
+var open = Function(source):
+    return VideoCapture(source)

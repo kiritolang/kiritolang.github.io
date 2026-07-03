@@ -1,0 +1,968 @@
+# Exhaustive audit of docs/pages/09-types.md against the actual interpreter.
+# Every documented method/attribute/operator on every built-in type is probed.
+# Prints "OK audit-types" iff everything matches; a failing assert names the broken claim.
+
+var io = import("io")
+var math = import("math")
+
+# ============================================================================
+# None
+# ============================================================================
+assert None == None, "None equals itself"
+assert not (None != None), "None != None is False"
+assert String(None) == "None", "stringifies as \"None\""
+assert not Bool(None), "None is falsy"
+assert type(None) == "None", "type(None) is the String 'None'"
+
+# None is hashable (Dict/Set key)
+var dN = {None: "n"}
+assert dN[None] == "n", "None usable as Dict key"
+var sN = {None}
+assert None in sN, "None usable as Set element"
+
+# Equality only to itself
+assert not (None == 0), "None != 0"
+assert not (None == False), "None != False"
+assert not (None == ""), "None != empty String"
+
+# No arithmetic, no ordering
+var threw = False
+try:
+    discard None + 1
+catch as e:
+    threw = True
+assert threw, "None + 1 throws"
+threw = False
+try:
+    discard None < 0
+catch as e:
+    threw = True
+assert threw, "None < 0 throws"
+
+# ============================================================================
+# Bool
+# ============================================================================
+assert type(True) == "Bool" and type(False) == "Bool", "type(True/False) is Bool"
+assert True != False, "True != False"
+assert Bool(0) == False and Bool(0.0) == False, "0 and 0.0 are falsy"
+assert Bool("") == False and Bool([]) == False, "empty String/List are falsy"
+assert Bool({}) == False and Bool(Set()) == False, "empty Dict/Set are falsy"
+assert Bool(None) == False, "None is falsy"
+assert Bool(1) == True and Bool("x") == True and Bool([0]) == True, "non-empty things are truthy"
+
+# Doc claim: Bool is a distinct type, not an Integer
+assert True != 1, "doc claim: True != 1 (distinct type)"
+assert False != 0, "doc claim: False != 0"
+assert not isinstance(True, "Integer"), "Bool not an Integer subtype"
+assert isinstance(True, "Bool"), "Bool is Bool"
+
+# Doc claim: True + 1 is a type error
+threw = False
+try:
+    discard True + 1
+catch as e:
+    threw = "Bool" in e or "binary" in e or "operator" in e
+assert threw, "True + 1 throws (Bool not numeric)"
+threw = False
+try:
+    discard True * 3
+catch as e:
+    threw = True
+assert threw, "True * 3 throws"
+threw = False
+try:
+    discard True < False
+catch as e:
+    threw = True
+assert threw, "True < False throws (no ordering)"
+threw = False
+try:
+    discard -True
+catch as e:
+    threw = True
+assert threw, "-True throws"
+
+# Explicit conversion to count
+assert Integer(True) == 1 and Integer(False) == 0, "Integer(Bool) explicit conversion"
+assert Float(True) == 1.0 and Float(False) == 0.0, "Float(Bool) explicit conversion"
+
+# Hashable (Dict/Set key)
+var dB = {True: "t", False: "f"}
+assert dB[True] == "t" and dB[False] == "f", "Bool usable as Dict key"
+assert True in {True, False}, "Bool usable as Set element"
+
+# Logical operators on truthy/falsy: short-circuit returns operand value
+assert (1 and 2) == 2 and (0 or 3) == 3, "and/or return the operand value"
+assert not True == False, "not True is False"
+assert not 0 == True, "not 0 is True"
+
+# ============================================================================
+# Integer
+# ============================================================================
+assert type(1) == "Integer" and type(-7) == "Integer", "Integer literals"
+assert 0xFF == 255 and 0XFF == 255 and 0xff == 255, "hex literals, case-insensitive prefix"
+assert 0o17 == 15 and 0O17 == 15, "octal literals"
+assert 0b1010 == 10 and 0B1010 == 10, "binary literals"
+
+# Arithmetic + types
+assert 1 + 2 == 3 and 3 - 5 == -2 and 4 * 5 == 20, "+,-,*"
+assert type(7 / 2) == "Float" and 7 / 2 == 3.5, "/ always yields Float (doc claim)"
+assert type(4 / 2) == "Float" and 4 / 2 == 2.0, "/ even when divisible -> Float"
+assert type(4 // 2) == "Integer" and 7 // 2 == 3, "// Integer floor"
+assert -7 // 2 == -4 and 7 // -2 == -4, "// floors toward -inf"
+assert -7 % 2 == 1 and 7 % -2 == -1, "% sign follows divisor"
+assert 2 ** 10 == 1024, "** exponent"
+assert 2 ** 3 ** 2 == 512, "** is right-associative"
+
+# divmod
+var dm = divmod(-7, 3)
+assert dm[0] == -3 and dm[1] == 2, "divmod(-7, 3) == [-3, 2]"
+
+# Overflow wraps two's-complement (doc claim)
+assert (9223372036854775807 + 1) == -9223372036854775808, "int64 add overflow wraps"
+assert (-9223372036854775808 - 1) == 9223372036854775807, "int64 sub overflow wraps"
+assert 2 ** 63 == -9223372036854775808, "2**63 wraps"
+
+# Division by zero throws
+threw = False
+try:
+    discard 1 / 0
+catch as e:
+    threw = "zero" in e
+assert threw, "1/0 throws"
+threw = False
+try:
+    discard 1 // 0
+catch as e:
+    threw = True
+assert threw, "1//0 throws"
+threw = False
+try:
+    discard 5 % 0
+catch as e:
+    threw = True
+assert threw, "5%0 throws"
+
+# bin/oct/hex
+assert hex(255) == "0xff", "hex(255) == '0xff'"
+assert bin(5) == "0b101", "bin(5) == '0b101'"
+assert oct(8) == "0o10", "oct(8) == '0o10'"
+
+# Bitwise builtins
+assert bitand(0xFF, 0x0F) == 15, "bitand"
+assert bitor(0xF0, 0x0F) == 255, "bitor"
+assert bitxor(0xF0, 0xFF) == 15, "bitxor"
+assert bitnot(0) == -1, "bitnot(0) == -1"
+assert shl(1, 8) == 256, "shl(1, 8) == 256"
+assert shr(256, 2) == 64, "shr(256, 2) == 64"
+
+# pow 2/3-arg
+assert pow(2, 10) == 1024, "pow 2-arg"
+assert pow(2, 10, 1000) == 24, "pow 3-arg modular"
+
+# Hashable
+assert {1: "a", 2: "b"}[1] == "a", "Integer usable as Dict key"
+
+# Unary neg
+assert -42 + 42 == 0, "unary -"
+
+# Comparison operators
+assert (1 < 2) and (2 <= 2) and (3 > 2) and (3 >= 3), "Integer ordering"
+
+# ============================================================================
+# Float
+# ============================================================================
+assert type(3.14) == "Float", "Float literal"
+assert 1.5e3 == 1500.0 and 2e-3 == 0.002, "scientific notation"
+assert type(1 + 1.5) == "Float", "Int + Float -> Float"
+
+# Float == is EXACT IEEE-754 (0.1+0.2 != 0.3); .compare() gives tolerance
+assert not (0.1 + 0.2 == 0.3), "0.1+0.2 != 0.3 (exact eq)"
+assert (0.1 + 0.2).compare(0.3), "0.1+0.2 ~ 0.3 (.compare tolerance)"
+# 1.0 == 1 (cross-type)
+assert 1.0 == 1, "1.0 == 1 cross-type"
+
+# Doc claim: NaN never equal
+assert math.nan != math.nan, "NaN != NaN"
+assert not (math.nan == math.nan), "not (NaN == NaN)"
+
+# Doc claim: +0 == -0
+assert 0.0 == -0.0, "+0 == -0"
+
+# Doc claim: inf == inf, inf != finite
+var inf = math.inf
+assert inf == inf, "inf == inf"
+assert -inf == -inf, "-inf == -inf"
+assert not (inf == 1e300), "inf != finite"
+assert not (inf == -inf), "inf != -inf"
+
+# Float == is now EXACT IEEE-754, so it AGREES with ordering (trichotomy holds): not both == and >.
+assert not (0.1 + 0.2 == 0.3) and (0.1 + 0.2 > 0.3), "== agrees with > (exact, trichotomy)"
+
+# Doc claim: hashing by exact value -- 1.0 and 1 are the same Dict key
+var dF = {1: "int"}
+dF[1.0] = "float"
+assert len(dF) == 1 and dF[1] == "float", "1.0 and 1 hash to same key"
+
+# Doc claim: two distinct floats that compare == within tolerance hash DIFFERENTLY
+var dF2 = {}
+dF2[0.3] = "a"
+dF2[0.1 + 0.2] = "b"
+assert len(dF2) == 2, "0.3 and 0.1+0.2 are SEPARATE Dict keys (doc claim)"
+
+# round/abs
+assert abs(-3.5) == 3.5 and abs(-3) == 3, "abs Float/Integer"
+assert round(3.14159, 2) == 3.14, "round with ndigits"
+assert type(round(3.14159, 2)) == "Float", "round(x, n) -> Float"
+assert type(round(3.5)) == "Integer", "round(x) -> Integer"
+
+# Float arithmetic
+assert 1.0 + 2.0 == 3.0 and 1.0 / 2.0 == 0.5, "Float arithmetic"
+
+# Float to Integer conversion
+threw = False
+try:
+    discard Integer(math.nan)
+catch as e:
+    threw = True
+assert threw, "Integer(NaN) throws"
+threw = False
+try:
+    discard Integer(math.inf)
+catch as e:
+    threw = True
+assert threw, "Integer(inf) throws"
+
+# ============================================================================
+# String
+# ============================================================================
+assert type("hi") == "String", "String literal type"
+assert len("abc") == 3, "len counts code points"
+
+# Doc claim: Unicode, indexed by code point
+var sUni = "café"
+assert len(sUni) == 4, "len('café') == 4 (code points, not bytes)"
+assert sUni[3] == "é", "index by code point"
+assert sUni[-1] == "é", "negative code-point index"
+assert sUni[::-1] == "éfac", "reverse via slice"
+
+# Concatenation + repetition
+assert "ab" + "cd" == "abcd", "+ concatenates"
+assert "ab" * 3 == "ababab", "* repeats"
+assert "ab" * 0 == "", "* by 0 is empty"
+assert "ab" * -1 == "", "* by negative is empty"
+
+# Doc claim: + only with String
+threw = False
+try:
+    discard "a" + 1
+catch as e:
+    threw = "String" in e
+assert threw, "'a' + 1 throws (strong typing)"
+
+# Comparison (lex)
+assert "abc" < "abd", "lex ordering"
+assert "" < "a", "empty < non-empty"
+
+# `in` substring
+assert "ab" in "cabd" and "z" not in "abc", "substring `in`"
+threw = False
+try:
+    discard 1 in "abc"
+catch as e:
+    threw = True
+assert threw, "Integer in String throws"
+
+# Iteration yields characters (Strings)
+var chars = []
+for c in "ab":
+    chars.append(c)
+assert chars == ["a", "b"] and type(chars[0]) == "String", "iteration yields Strings"
+
+# Hashable
+assert {"k": 1}["k"] == 1, "String usable as Dict key"
+
+# String slicing OOB clamps
+assert "abc"[5:10] == "", "OOB slice clamps to empty"
+assert "abc"[-100:100] == "abc", "very negative start clamps to 0"
+
+# upper / lower
+assert "abc".upper() == "ABC" and "ABC".lower() == "abc", "case conversion"
+assert "café".upper() == "CAFÉ", "Latin-1 case conversion"
+
+# strip family
+assert "  hi  ".strip() == "hi", "strip default whitespace"
+assert "xxhixx".strip("x") == "hi", "strip chars"
+assert "  hi  ".lstrip() == "hi  ", "lstrip default"
+assert "xxhixx".lstrip("x") == "hixx", "lstrip chars"
+assert "  hi  ".rstrip() == "  hi", "rstrip default"
+assert "xxhixx".rstrip("x") == "xxhi", "rstrip chars"
+
+# split
+assert "a b c".split() == ["a", "b", "c"], "split whitespace"
+assert "a,b,c".split(",") == ["a", "b", "c"], "split sep"
+assert "a,b,c,d".split(",", 2) == ["a", "b", "c,d"], "split maxsplit"
+assert "a,b,c".split(sep=",", maxsplit=1) == ["a", "b,c"], "split kwargs"
+
+# join
+assert ", ".join(["a", "b", "c"]) == "a, b, c", "join"
+assert "-".join([]) == "", "join empty"
+assert "-".join(iterable=["x", "y"]) == "x-y", "join kwarg"
+
+# replace
+assert "hello".replace("l", "L") == "heLLo", "replace all"
+assert "hello".replace("l", "L", 1) == "heLlo", "replace count"
+assert "abc".replace("", "X") == "XaXbXcX", "replace empty pattern"
+assert "abc".replace(old="b", new="B") == "aBc", "replace kwargs"
+
+# startswith/endswith with windows
+assert "hello world".startswith("hello"), "startswith"
+assert "hello world".startswith("world", 6), "startswith with start"
+assert "hello world".endswith("world"), "endswith"
+assert "hello world".endswith("hello", 0, 5), "endswith with [start, end]"
+assert "abc".startswith(prefix="ab"), "startswith kwarg"
+
+# find/rfind/index/rindex
+assert "hello".find("l") == 2 and "hello".rfind("l") == 3, "find/rfind"
+assert "hello".find("z") == -1, "find missing -> -1"
+assert "hello".index("l") == 2, "index"
+threw = False
+try:
+    discard "hello".index("z")
+catch as e:
+    threw = "not found" in e or "substring" in e
+assert threw, "index missing throws"
+threw = False
+try:
+    discard "hello".rindex("z")
+catch as e:
+    threw = True
+assert threw, "rindex missing throws"
+assert "abcabc".find("b", 2) == 4, "find with start"
+assert "abcabc".find("b", 0, 1) == -1, "find with [start, end] excludes pos 1"
+assert "abcabc".index(sub="c", start=4) == 5, "index kwargs"
+
+# count with windows
+assert "hello".count("l") == 2, "count"
+assert "aabaa".count("a", 1, 4) == 2, "count with window"
+assert "abc".count("") == 4, "count empty = boundaries"
+assert "abcabc".count(sub="b") == 2, "count kwarg"
+
+# format (positional + indexed)
+assert "{}-{}".format(1, 2) == "1-2", "{} sequential"
+assert "{0}-{1}-{0}".format("a", "b") == "a-b-a", "{0} indexed"
+threw = False
+try:
+    discard "{x}".format(1)
+catch as e:
+    threw = True
+assert threw, "named field throws (only f-strings allow {name})"
+
+# Predicates: empty -> False for all
+assert not "".isdigit() and not "".isalpha() and not "".isalnum(), "empty string predicates -> False"
+assert not "".isspace() and not "".islower() and not "".isupper(), "empty string predicates -> False"
+assert "123".isdigit() and not "12a".isdigit(), "isdigit"
+assert "abc".isalpha() and not "a1".isalpha(), "isalpha"
+assert "ab1".isalnum() and not "a b".isalnum(), "isalnum"
+assert " \t\n".isspace(), "isspace"
+assert "abc".islower() and not "Abc".islower(), "islower"
+assert "ABC".isupper() and not "Abc".isupper(), "isupper"
+
+# removeprefix / removesuffix
+assert "test_foo".removeprefix("test_") == "foo", "removeprefix"
+assert "foo".removeprefix("nope") == "foo", "removeprefix no match"
+assert "foo.ki".removesuffix(".ki") == "foo", "removesuffix"
+assert "foo".removesuffix(".ki") == "foo", "removesuffix no match"
+
+# ljust/rjust/center/zfill
+assert "abc".ljust(7, ".") == "abc...." and "abc".rjust(7, ".") == "....abc", "ljust/rjust"
+assert "abc".center(7, ".") == "..abc..", "center"
+assert "42".zfill(5) == "00042" and "-42".zfill(5) == "-0042", "zfill sign-aware"
+assert "abc".ljust(width=5) == "abc  ", "ljust kwarg"
+
+# partition / rpartition
+assert "a-b-c".partition("-") == ["a", "-", "b-c"], "partition"
+assert "a-b-c".rpartition("-") == ["a-b", "-", "c"], "rpartition"
+assert "abc".partition("-") == ["abc", "", ""], "partition no sep"
+assert "abc".rpartition("-") == ["", "", "abc"], "rpartition no sep"
+
+# levenshtein
+assert "kitten".levenshtein("sitting") == 3, "levenshtein scalar"
+assert "foo".levenshtein(["foo", "bar", "fop"]) == [0, 3, 1], "levenshtein list"
+assert "café".levenshtein("cafe") == 1, "levenshtein code-point-aware"
+
+# apply
+assert "abc".apply(Function(c): return c.upper()) == "ABC", "String.apply"
+
+# encode / decode round trip
+assert "hi".encode() == Bytes([104, 105]), "encode default utf-8"
+assert "café".encode("utf-8").decode("utf-8") == "café", "utf-8 round trip"
+assert "hi".encode("ascii") == Bytes([104, 105]), "encode ascii"
+threw = False
+try:
+    discard "café".encode("ascii")
+catch as e:
+    threw = "ascii" in e or "encode" in e
+assert threw, "encode non-ASCII as ascii throws"
+
+# ============================================================================
+# Bytes
+# ============================================================================
+assert type(Bytes()) == "Bytes", "Bytes type name"
+assert len(Bytes([1, 2, 3])) == 3, "Bytes length"
+
+# Construction modes (doc claim)
+assert Bytes() == Bytes([]), "empty Bytes"
+assert len(Bytes(5)) == 5 and Bytes(5) == Bytes([0, 0, 0, 0, 0]), "Bytes(n) = n zero bytes"
+assert Bytes([65, 66, 67]) == Bytes("ABC"), "from List == from String (ASCII)"
+assert Bytes("héllo", "utf-8") == "héllo".encode(), "from String with encoding"
+var bCopy = Bytes(Bytes([1, 2, 3]))
+assert bCopy == Bytes([1, 2, 3]), "Bytes(Bytes) copies"
+
+# Hashable (doc claim)
+var dBy = {Bytes([1, 2]): "x"}
+assert dBy[Bytes([1, 2])] == "x", "Bytes usable as Dict key"
+var sBy = {Bytes("hi")}
+assert Bytes("hi") in sBy, "Bytes usable as Set element"
+
+# Indexing -> Integer
+assert Bytes([72, 105])[0] == 72, "b[i] is Integer"
+assert type(Bytes("hi")[0]) == "Integer", "b[i] is Integer"
+assert Bytes([1, 2, 3])[-1] == 3, "negative index"
+threw = False
+try:
+    discard Bytes([1, 2])[10]
+catch as e:
+    threw = "Bytes" in e or "range" in e
+assert threw, "Bytes OOB throws"
+
+# Slicing -> Bytes (doc claim)
+assert Bytes([1, 2, 3, 4])[1:3] == Bytes([2, 3]), "slice -> Bytes"
+assert Bytes([1, 2, 3, 4, 5])[::-1] == Bytes([5, 4, 3, 2, 1]), "reverse slice"
+assert Bytes([1, 2, 3, 4, 5])[::2] == Bytes([1, 3, 5]), "step slice"
+assert type(Bytes("hi")[0:1]) == "Bytes", "slice is Bytes"
+
+# Iteration -> Integers
+var bSum = 0
+for x in Bytes([1, 2, 3]):
+    bSum = bSum + x
+assert bSum == 6, "iteration yields Integers"
+
+# `in`: Integer byte OR Bytes subsequence
+assert 72 in Bytes([72, 105]), "Integer in Bytes"
+assert not (200 in Bytes([72, 105])), "missing Integer in Bytes"
+assert Bytes([105]) in Bytes([72, 105, 108]), "Bytes subseq in Bytes"
+threw = False
+try:
+    discard "x" in Bytes([72])
+catch as e:
+    threw = True
+assert threw, "String in Bytes throws"
+
+# Out-of-range byte value
+assert not (-1 in Bytes([72])), "negative byte value in Bytes -> False"
+assert not (256 in Bytes([72])), "byte > 255 in Bytes -> False"
+
+# Concatenation / repetition
+assert Bytes([1, 2]) + Bytes([3]) == Bytes([1, 2, 3]), "Bytes + Bytes"
+assert Bytes([1, 2]) * 3 == Bytes([1, 2, 1, 2, 1, 2]), "Bytes * Integer"
+assert Bytes([1]) * 0 == Bytes(), "Bytes * 0 empty"
+threw = False
+try:
+    discard Bytes([1]) + "abc"
+catch as e:
+    threw = True
+assert threw, "Bytes + String throws"
+
+# Ordering (lex)
+assert Bytes([1, 2]) < Bytes([1, 3]), "Bytes lex <"
+assert Bytes([1, 2]) < Bytes([1, 2, 3]), "Bytes prefix <"
+assert Bytes([1, 2]) <= Bytes([1, 2]), "<="
+assert not (Bytes([1, 2]) > Bytes([1, 2])), "not (= > =)"
+
+# decode / encode
+assert Bytes([104, 105]).decode() == "hi", "decode default utf-8"
+assert Bytes([0xc3, 0xa9]).decode("utf-8") == "é", "decode UTF-8 multibyte"
+# Doc note: latin-1 is lossless byte<->code-point bridge
+var bAll = Bytes([0, 127, 200, 255])
+assert bAll.decode("latin-1").encode("latin-1") == bAll, "latin-1 byte/codepoint round trip"
+threw = False
+try:
+    discard Bytes([200]).decode("ascii")
+catch as e:
+    threw = "ascii" in e or "decode" in e
+assert threw, "non-ASCII byte decoded as ascii throws"
+
+# hex / fromhex
+assert Bytes([72, 105]).hex() == "4869", "hex"
+assert fromhex("4869") == Bytes([72, 105]), "fromhex"
+assert fromhex("48 69") == Bytes([72, 105]), "fromhex whitespace ignored"
+assert Bytes([72, 105]).hex().lower() == Bytes([72, 105]).hex(), "hex is lowercase"
+threw = False
+try:
+    discard fromhex("XY")
+catch as e:
+    threw = "hex" in e
+assert threw, "fromhex non-hex throws"
+threw = False
+try:
+    discard fromhex("abc")
+catch as e:
+    threw = "odd" in e or "hex" in e
+assert threw, "fromhex odd-length throws"
+
+# apply
+assert Bytes([1, 2, 3]).apply(Function(b): return b + 1) == Bytes([2, 3, 4]), "Bytes.apply"
+threw = False
+try:
+    discard Bytes([1]).apply(Function(b): return 300)
+catch as e:
+    threw = True
+assert threw, "apply out-of-range result throws"
+
+# ============================================================================
+# List
+# ============================================================================
+assert type([1, 2]) == "List", "List literal type"
+assert len([1, 2, 3]) == 3, "len(List)"
+
+# Indexing
+var xs = [10, 20, 30, 40]
+assert xs[0] == 10 and xs[-1] == 40, "indexing + negative"
+threw = False
+try:
+    discard xs[100]
+catch as e:
+    threw = "range" in e
+assert threw, "OOB throws"
+
+# Slicing
+assert xs[1:3] == [20, 30], "slice"
+assert xs[::-1] == [40, 30, 20, 10], "reverse"
+assert xs[::2] == [10, 30], "step"
+assert xs[-2:] == [30, 40], "neg start"
+threw = False
+try:
+    discard xs[::0]
+catch as e:
+    threw = True
+assert threw, "slice step 0 throws"
+
+# + concat (doc claim: only List)
+assert [1, 2] + [3, 4] == [1, 2, 3, 4], "+ concat"
+threw = False
+try:
+    discard [1] + 5
+catch as e:
+    threw = "List" in e or "concatenate" in e
+assert threw, "List + non-List throws"
+
+# * repeat (Integer)
+assert [1, 2] * 3 == [1, 2, 1, 2, 1, 2], "* repeat"
+assert [1] * 0 == [], "* by 0 empty"
+assert 2 * [1, 2] == [1, 2, 1, 2], "Integer * List works (commuted)"
+threw = False
+try:
+    discard [1] * "x"
+catch as e:
+    threw = True
+assert threw, "List * non-Integer throws"
+
+# Lex ordering
+assert [1, 2] < [1, 3], "lex <"
+assert [1, 2] < [1, 2, 0], "prefix < longer"
+assert [1, 2] == [1, 2] and [1] != [2], "== / !="
+assert not ([1, 2] < [1, 2]), "not less when equal"
+
+# `in` and iteration
+assert 2 in [1, 2, 3] and not (99 in [1, 2, 3]), "in"
+var iterAcc = []
+for x in [1, 2, 3]:
+    iterAcc.append(x * 10)
+assert iterAcc == [10, 20, 30], "for-iter"
+
+# Lists are unhashable
+threw = False
+try:
+    discard {[1, 2]: 5}
+catch as e:
+    threw = "unhashable" in e
+assert threw, "List unhashable as Dict key"
+threw = False
+try:
+    discard {[1, 2]}
+catch as e:
+    threw = "unhashable" in e
+assert threw, "List unhashable as Set element"
+
+# Multi-index indexing throws (doc claim: only types that define it)
+threw = False
+try:
+    xs[0, 1] = 5
+catch as e:
+    threw = "List" in e or "one index" in e
+assert threw, "List m[i, j] = v throws"
+
+# All methods (with kwarg names)
+var ys = [3, 1, 2]
+ys.append(4)
+assert ys == [3, 1, 2, 4], "append"
+ys.append(item=5)
+assert ys == [3, 1, 2, 4, 5], "append kwarg item"
+assert ys.pop() == 5 and ys == [3, 1, 2, 4], "pop default last"
+assert ys.pop(0) == 3 and ys == [1, 2, 4], "pop at index"
+assert ys.pop(index=-1) == 4 and ys == [1, 2], "pop kwarg index"
+threw = False
+try:
+    discard [].pop()
+catch as e:
+    threw = "empty" in e
+assert threw, "pop empty throws"
+threw = False
+try:
+    discard [1].pop(10)
+catch as e:
+    threw = "range" in e
+assert threw, "pop OOB throws"
+
+ys = [1, 2, 3]
+ys.insert(0, 99)
+assert ys == [99, 1, 2, 3], "insert"
+ys.insert(index=2, item=77)
+assert ys == [99, 1, 77, 2, 3], "insert kwargs"
+ys.insert(-1, 88)
+assert ys == [99, 1, 77, 2, 88, 3], "insert negative"
+ys.insert(1000, 999)
+assert ys[-1] == 999, "insert past end clamps"
+
+ys = [1, 2, 3, 2, 1]
+ys.remove(2)
+assert ys == [1, 3, 2, 1], "remove first match"
+ys.remove(value=1)
+assert ys == [3, 2, 1], "remove kwarg value"
+threw = False
+try:
+    [1, 2].remove(99)
+catch as e:
+    threw = "remove" in e or "not in" in e
+assert threw, "remove missing throws"
+
+assert [1, 2, 3, 2, 1].index(2) == 1, "index first match"
+assert [1, 2, 3, 2, 1].index(2, 2) == 3, "index with start"
+assert [1, 2, 3, 2, 1].index(2, 0, 3) == 1, "index with [start, end]"
+assert [1, 2, 3, 2, 1].index(value=2, start=2) == 3, "index kwargs"
+threw = False
+try:
+    discard [1, 2].index(99)
+catch as e:
+    threw = "index" in e or "not in" in e
+assert threw, "index missing throws"
+
+assert [1, 2, 3, 2, 1].count(2) == 2, "count"
+assert [].count(99) == 0, "count empty"
+assert [1, 1, 1].count(value=1) == 3, "count kwarg"
+
+ys = [1, 2, 3]
+ys.reverse()
+assert ys == [3, 2, 1], "reverse in place"
+
+ys = [3, 1, 2]
+ys.sort()
+assert ys == [1, 2, 3], "sort default"
+ys = [3, 1, 2]
+ys.sort(reverse=True)
+assert ys == [3, 2, 1], "sort reverse"
+ys = ["bb", "aaa", "c"]
+ys.sort(key=Function(s): return len(s))
+assert ys == ["c", "bb", "aaa"], "sort key"
+# Doc claim: stable sort
+ys = [[1, "a"], [2, "b"], [1, "c"], [2, "d"]]
+ys.sort(key=Function(p): return p[0])
+assert ys == [[1, "a"], [1, "c"], [2, "b"], [2, "d"]], "sort is stable"
+
+ys = [1, 2]
+ys.extend([3, 4])
+assert ys == [1, 2, 3, 4], "extend"
+ys.extend(iterable=[5])
+assert ys[-1] == 5, "extend kwarg"
+ys.extend("ab")  # iterable of String chars
+assert ys[-2:] == ["a", "b"], "extend over iterable String"
+ys.extend({99})
+assert 99 in ys, "extend over Set"
+
+ys = [1, 2, 3]
+var cp = ys.copy()
+cp.append(99)
+assert ys == [1, 2, 3] and cp == [1, 2, 3, 99], "copy is shallow + independent top-level"
+
+ys = [1, 2, 3]
+ys.clear()
+assert ys == [] and len(ys) == 0, "clear"
+
+# apply (like tensor.apply)
+assert [1, 2, 3].apply(Function(x): return x * x) == [1, 4, 9], "apply"
+assert [].apply(Function(x): return x) == [], "apply empty"
+
+# ============================================================================
+# Set
+# ============================================================================
+assert type({1, 2, 3}) == "Set", "Set literal"
+assert type(Set()) == "Set", "Set() empty"
+assert len({1, 2, 3, 2, 1}) == 3, "Set dedupes"
+
+# `in`, len, iteration
+assert 1 in {1, 2} and not (99 in {1, 2}), "Set in"
+var seen = []
+for x in {1, 2}:
+    seen.append(x)
+assert sorted(seen) == [1, 2], "Set iteration"
+
+# Hashable elements only
+threw = False
+try:
+    discard {[1, 2]}
+catch as e:
+    threw = "unhashable" in e
+assert threw, "Set: unhashable elements throw"
+
+# Set algebra
+var a = {1, 2, 3}
+var b = {3, 4}
+assert a.union(b) == {1, 2, 3, 4}, "union"
+assert a.intersection(b) == {3}, "intersection"
+assert a.difference(b) == {1, 2}, "difference"
+assert a.symmetricdifference(b) == {1, 2, 4}, "sym diff"
+assert {1, 2}.issubset({1, 2, 3}), "issubset"
+assert {1, 2, 3}.issuperset({1}), "issuperset"
+assert {1}.isdisjoint({2, 3}), "isdisjoint"
+assert not {1}.isdisjoint({1}), "isdisjoint false case"
+assert a.union(other=b) == {1, 2, 3, 4}, "union kwarg"
+
+# add / contains / discard / remove
+var s = Set()
+s.add(1)
+s.add(2)
+s.add(1)  # dup
+assert len(s) == 2 and 1 in s, "add (dup is no-op)"
+s.add(value=99)
+assert 99 in s, "add kwarg value"
+assert s.contains(1) and not s.contains(77), "contains"
+assert s.contains(value=99), "contains kwarg"
+s.discard(77)  # no error
+s.discard(1)
+assert not (1 in s), "discard removes if present"
+s.discard(value=99)
+assert not (99 in s), "discard kwarg"
+threw = False
+try:
+    s.remove(999)
+catch as e:
+    threw = "remove" in e or "not in" in e
+assert threw, "remove missing throws (unlike discard)"
+s.add(7)
+s.remove(value=7)
+assert not (7 in s), "remove kwarg"
+
+# pop arbitrary
+var sP = {1, 2, 3}
+var popped = sP.pop()
+assert popped == 1 or popped == 2 or popped == 3, "pop returns one element"
+assert len(sP) == 2, "pop shrinks"
+threw = False
+try:
+    discard Set().pop()
+catch as e:
+    threw = "empty" in e
+assert threw, "Set pop empty throws"
+
+# copy + clear
+var sC = {1, 2, 3}
+var sCp = sC.copy()
+sCp.add(99)
+assert sC == {1, 2, 3} and 99 in sCp, "copy is independent"
+sC.clear()
+assert len(sC) == 0, "clear"
+
+# apply: collisions collapse (doc)
+assert {1, 2, 3, 4}.apply(Function(x): return x % 2) == {0, 1}, "Set.apply collapses dup"
+assert Set().apply(Function(x): return x) == Set(), "apply empty"
+
+# Set ordering operators are subset/superset
+assert ({1} < {1, 2}) and ({1, 2} <= {1, 2}) and ({1, 2, 3} > {1, 2}) and not ({1} > {1, 2}), "Set </<=/> are subset/superset"
+assert ({1, 2, 3} - {2}) == {1, 3}, "Set - is difference"
+
+# Sets are unhashable
+threw = False
+try:
+    discard {{1, 2}}
+catch as e:
+    threw = "unhashable" in e
+assert threw, "Set unhashable as Set element"
+threw = False
+try:
+    discard {{1, 2}: 1}
+catch as e:
+    threw = "unhashable" in e
+assert threw, "Set unhashable as Dict key"
+
+# ============================================================================
+# Dict
+# ============================================================================
+assert type({"a": 1}) == "Dict", "Dict literal"
+assert type({}) == "Dict", "{} is Dict (not Set)"
+assert type(Dict()) == "Dict", "Dict()"
+assert len({"a": 1, "b": 2}) == 2, "len(Dict)"
+
+# get/set
+var d = {"a": 1, "b": 2}
+d["c"] = 3
+assert d["c"] == 3, "d[k] = v"
+threw = False
+try:
+    discard d["zz"]
+catch as e:
+    threw = "key" in e or "not found" in e
+assert threw, "missing key throws"
+
+# `in` is over keys (doc claim)
+assert "a" in d and not ("zz" in d), "in is over keys"
+assert not (1 in d), "values are not in `in`"
+
+# Iteration yields keys
+var ks = []
+for k in d:
+    ks.append(k)
+assert sorted(ks) == ["a", "b", "c"], "for-iter yields keys"
+
+# Keys must be hashable
+threw = False
+try:
+    discard {[1]: 2}
+catch as e:
+    threw = "unhashable" in e
+assert threw, "List key throws"
+
+# Multi-index not supported on Dict
+threw = False
+try:
+    discard d[1, 2]
+catch as e:
+    threw = "Dict" in e or "one index" in e
+assert threw, "Dict m[i, j] throws (per doc: types that define it)"
+
+# keys / values / items
+var d2 = {"x": 10, "y": 20}
+assert sorted(d2.keys()) == ["x", "y"], "keys"
+assert sorted(d2.values()) == [10, 20], "values"
+var its = d2.items()
+assert len(its) == 2, "items length"
+# each item is [k, v]
+for pair in its:
+    assert len(pair) == 2, "item is [key, value]"
+
+# get
+assert d2.get("x") == 10, "get existing"
+assert d2.get("z") == None, "get missing defaults to None"
+assert d2.get("z", 0) == 0, "get missing with default"
+assert d2.get(key="x") == 10, "get kwarg"
+assert d2.get(key="z", default=99) == 99, "get kwargs"
+
+# pop
+var d3 = {"a": 1, "b": 2}
+assert d3.pop("a") == 1 and not ("a" in d3), "pop removes + returns"
+assert d3.pop("zz", "DFLT") == "DFLT", "pop default"
+threw = False
+try:
+    discard d3.pop("zz")
+catch as e:
+    threw = "key" in e or "not" in e
+assert threw, "pop missing without default throws"
+assert d3.pop(key="b") == 2, "pop kwarg"
+
+# remove: returns None and deletes the key; throws "key not found" if absent (matches the doc:
+# "throws if absent; like `pop` but returns nothing"). The missing-key throw is asserted below.
+var d4 = {"a": 1}
+var rmRes = d4.remove("a")
+assert rmRes == None and not ("a" in d4), "remove returns None, deletes key"
+var d4silent = {"a": 1}
+threw = False
+try:
+    d4silent.remove("zz")
+catch as e:
+    threw = "key" in e or "not" in e
+assert threw, "Dict.remove on a missing key throws (matches the doc)"
+assert d4silent == {"a": 1}, "Dict unchanged after the throw"
+var d4b = {"x": 5}
+d4b.remove(key="x")
+assert not ("x" in d4b), "remove kwarg"
+
+# popitem
+var d5 = {"k": 1}
+var item = d5.popitem()
+assert len(item) == 2 and item[0] == "k" and item[1] == 1, "popitem [k, v]"
+assert len(d5) == 0, "popitem removes"
+threw = False
+try:
+    discard {}.popitem()
+catch as e:
+    threw = "empty" in e
+assert threw, "popitem empty throws"
+
+# setdefault
+var d6 = {"a": 1}
+assert d6.setdefault("a", 99) == 1, "setdefault existing returns existing"
+assert d6.setdefault("b", 99) == 99, "setdefault missing inserts default"
+assert d6["b"] == 99, "setdefault really inserted"
+assert d6.setdefault("c") == None, "setdefault no default -> None"
+assert "c" in d6 and d6["c"] == None, "setdefault inserts None"
+assert d6.setdefault(key="d", default=5) == 5, "setdefault kwargs"
+
+# update (Dict)
+var d7 = {"a": 1}
+d7.update({"b": 2, "c": 3})
+assert d7["b"] == 2 and d7["c"] == 3, "update with Dict"
+# update with iterable of pairs
+d7.update([["d", 4], ["e", 5]])
+assert d7["d"] == 4 and d7["e"] == 5, "update with [[k,v]]"
+d7.update(other={"f": 6})
+assert d7["f"] == 6, "update kwarg"
+threw = False
+try:
+    d7.update([["bad"]])  # single-element pair
+catch as e:
+    threw = "pair" in e or "elements" in e
+assert threw, "update bad pair throws"
+
+# apply (like tensor.apply: keys unchanged, fn over values)
+var d8 = {"a": 1, "b": 2}
+var d8a = d8.apply(Function(v): return v * 10)
+assert d8a["a"] == 10 and d8a["b"] == 20, "apply over values"
+assert d8 == {"a": 1, "b": 2}, "apply does not mutate original"
+assert {}.apply(Function(v): return v) == {}, "apply empty"
+
+# copy + clear
+var d9 = {"a": 1}
+var d9c = d9.copy()
+d9c["b"] = 2
+assert d9 == {"a": 1} and "b" in d9c, "copy independent"
+d9.clear()
+assert len(d9) == 0, "clear"
+
+# ============================================================================
+# Equality + hashability claims summary check
+# ============================================================================
+
+# Hashable: None, Bool, Integer, Float, String, Bytes
+var hashKeys = {None: 1, True: 2, 42: 3, 1.5: 4, "s": 5, Bytes([0]): 6}
+assert len(hashKeys) == 6, "all hashable types as Dict keys"
+
+# Unhashable: List, Set, Dict
+for unhashed in [[1], {1, 2}, {"a": 1}]:
+    threw = False
+    try:
+        discard {unhashed: 1}
+    catch as e:
+        threw = "unhashable" in e
+    assert threw, "List/Set/Dict unhashable"
+
+io.print("OK audit-types")

@@ -1,0 +1,98 @@
+# SQL tokenizer. Turns a SQL string into a List of token Dicts: {"type": ..., "value": ...}.
+# Token types: keyword, ident, number, string, punct, star, eof.
+# A small, deliberately exercising piece of Kirito: string indexing/slicing, Dicts, Sets, classes.
+
+var _keywords = Set([
+    "select", "from", "where", "insert", "into", "values", "update", "set", "delete",
+    "create", "table", "drop", "and", "or", "not", "null", "order", "by", "asc", "desc",
+    "limit", "primary", "key", "integer", "text", "true", "false", "is", "count", "as"
+])
+
+var is_space = Function(c) -> Bool:
+    return c == " " or c == "\t" or c == "\n" or c == "\r"
+
+var is_digit = Function(c) -> Bool:
+    return c >= "0" and c <= "9"
+
+var is_ident_start = Function(c) -> Bool:
+    return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_"
+
+var is_ident_part = Function(c) -> Bool:
+    return is_ident_start(c) or is_digit(c)
+
+# Raised on a malformed token. Carries a message and the column where it occurred.
+class SqlLexError:
+    var _init_ = Function(self, msg : String, col : Integer):
+        self.msg = msg
+        self.col = col
+    var _str_ = Function(self) -> String:
+        return "SqlLexError at col " + String(self.col) + ": " + self.msg
+
+var tokenize = Function(src : String) -> List:
+    var tokens = []
+    var i = 0
+    var n = len(src)
+    while i < n:
+        var c = src[i]
+        if is_space(c):
+            i = i + 1
+        elif is_digit(c):
+            var start = i
+            while i < n and is_digit(src[i]):
+                i = i + 1
+            tokens.append({"type": "number", "value": src[start:i]})
+        elif is_ident_start(c):
+            var start = i
+            while i < n and is_ident_part(src[i]):
+                i = i + 1
+            var word = src[start:i]
+            var lower = word.lower()
+            if lower in _keywords:
+                tokens.append({"type": "keyword", "value": lower})
+            else:
+                tokens.append({"type": "ident", "value": word})
+        elif c == "'":
+            # single-quoted string literal; '' is an escaped quote
+            var start = i + 1
+            var buf = ""
+            i = i + 1
+            var closed = False
+            while i < n:
+                if src[i] == "'":
+                    if i + 1 < n and src[i + 1] == "'":
+                        buf = buf + "'"
+                        i = i + 2
+                    else:
+                        i = i + 1
+                        closed = True
+                        break
+                else:
+                    buf = buf + src[i]
+                    i = i + 1
+            if not closed:
+                throw SqlLexError("unterminated string literal", start)
+            tokens.append({"type": "string", "value": buf})
+        elif c == "*":
+            tokens.append({"type": "star", "value": "*"})
+            i = i + 1
+        elif c == "," or c == "(" or c == ")" or c == ";":
+            tokens.append({"type": "punct", "value": c})
+            i = i + 1
+        elif c == "=" or c == "<" or c == ">":
+            # one- or two-char comparison operators: = < > <= >= <> !=
+            var op = c
+            if i + 1 < n and (src[i + 1] == "=" or src[i + 1] == ">"):
+                op = op + src[i + 1]
+                i = i + 1
+            tokens.append({"type": "op", "value": op})
+            i = i + 1
+        elif c == "!":
+            if i + 1 < n and src[i + 1] == "=":
+                tokens.append({"type": "op", "value": "!="})
+                i = i + 2
+            else:
+                throw SqlLexError("unexpected character '!'", i)
+        else:
+            throw SqlLexError("unexpected character '" + c + "'", i)
+    tokens.append({"type": "eof", "value": ""})
+    return tokens

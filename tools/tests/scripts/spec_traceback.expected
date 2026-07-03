@@ -1,0 +1,4 @@
+empty: True
+caught: kaboom
+frames: ['<module>@17', 'outer@11', 'middle@9', 'boom@7']
+innermost-fn: divzero

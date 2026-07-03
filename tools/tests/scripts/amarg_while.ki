@@ -1,0 +1,7 @@
+# arglist walked by index with a while loop. Zero iterations for an imported (empty-arglist) module.
+var i = 0
+var steps = 0
+while i < len(arglist):
+    steps = steps + 1
+    i = i + 1
+var m = argmain

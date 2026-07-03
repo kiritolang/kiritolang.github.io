@@ -1,0 +1,3 @@
+# type/operator: a Float is not iterable
+for x in 3.14:
+    discard x

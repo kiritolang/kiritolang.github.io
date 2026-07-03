@@ -1,0 +1,360 @@
+# Reverse-mode automatic differentiation over a computational graph.
+#
+# A Tensor wraps an NdArray `data`, an optional `grad` (NdArray), a `requires_grad` flag, the list of
+# parent Tensors `prev_`, and a `grad_fn` closure that pushes gradients to those parents. Each
+# differentiable op builds the forward value AND records a graph node (parents + backward). Calling
+# `loss.backward()` topologically orders the graph and runs the backward closures in reverse, so
+# gradients accumulate correctly (gradient accumulation is the default — call `zero_grad`/`zero_()`
+# between steps). `no_grad()` is a context manager that suspends graph construction; `detach()`
+# returns a graph-free view. This is the dynamic computational graph the optimizers and nn layers
+# build on; `compile_graph()` provides the "build then run" topological compile step.
+
+var nd = import("ndarray")
+
+# Mutable global box for the no-grad flag (a 1-element list, so functions mutate without rebinding).
+var GRAD_ENABLED = [True]
+var grad_on = Function():
+    return GRAD_ENABLED[0]
+
+class NoGrad:
+    var _init_ = Function(self):
+        self.prev = True
+    var _enter_ = Function(self):
+        self.prev = GRAD_ENABLED[0]
+        GRAD_ENABLED[0] = False
+        return self
+    var _exit_ = Function(self):
+        GRAD_ENABLED[0] = self.prev
+        return None
+
+var no_grad = Function():
+    return NoGrad()
+
+# Sum `grad` (an NdArray) down to `shape`, reversing any broadcasting that happened in the forward op.
+var unbroadcast = Function(grad, shape):
+    var g = grad
+    # 1) collapse leading extra axes
+    while g.ndim() > len(shape):
+        g = nd.sum_axis(g, 0)
+    # 2) sum axes that were size-1 in the target (broadcast), keeping rank
+    for i in range(len(shape)):
+        if shape[i] == 1 and g.shape[i] != 1:
+            var s = nd.sum_axis(g, i)
+            g = s.reshape(_with_one(g.shape, i))
+    return g
+
+var _with_one = Function(shape, axis):
+    var out = shape.copy()
+    out[axis] = 1
+    return out
+
+class Tensor:
+    var _init_ = Function(self, data, requires_grad = False):
+        self.data = data                 # NdArray
+        self.requires_grad = requires_grad
+        self.grad = None                 # NdArray or None
+        self.prev_ = []                  # parent Tensors
+        self.grad_fn = None            # Function() -> None
+        self.visited_ = False
+
+    var shape = Function(self):
+        return self.data.shape
+    var size = Function(self):
+        return self.data.size()
+    var item = Function(self):
+        return self.data.item()
+    var nested = Function(self):
+        return self.data.to_nested()
+    var _str_ = Function(self):
+        return "Tensor(" + String(self.data.to_nested()) + ")"
+
+    # accumulate `g` (an NdArray, already reduced to self.data.shape) into self.grad
+    var accum = Function(self, g):
+        if self.grad == None:
+            self.grad = g.contiguous()
+        else:
+            self.grad = nd.add(self.grad, g)
+
+    var zero_grad = Function(self):
+        self.grad = None
+
+    # graph-free view sharing the same data buffer
+    var detach = Function(self):
+        return Tensor(self.data, False)
+
+    # --- operator overloading (elementwise) ---
+    var _add_ = Function(self, other):
+        return add(self, _astensor(other))
+    var _sub_ = Function(self, other):
+        return sub(self, _astensor(other))
+    var _mul_ = Function(self, other):
+        return mul(self, _astensor(other))
+    var _div_ = Function(self, other):
+        return div(self, _astensor(other))
+    var _neg_ = Function(self):
+        return neg(self)
+
+    var matmul = Function(self, other):
+        return matmul(self, other)
+    var t = Function(self):
+        return transpose(self, 0, 1)
+    var reshape = Function(self, shape):
+        return reshape(self, shape)
+    var sum = Function(self):
+        return sum_all(self)
+    var mean = Function(self):
+        return mean_all(self)
+
+    # seed gradients and run reverse-mode backprop from this (scalar) tensor.
+    var backward = Function(self):
+        var topo = []
+        _build_topo(self, topo)
+        if self.grad == None:
+            self.grad = nd.ones(self.data.shape)
+        for node in reversed(topo):
+            if node.grad_fn != None:
+                node.grad_fn()
+        # clear visit marks so the graph can be traversed again (retain-graph)
+        for node in topo:
+            node.visited_ = False
+
+var _build_topo = Function(node, topo):
+    if not node.visited_:
+        node.visited_ = True
+        for p in node.prev_:
+            _build_topo(p, topo)
+        topo.append(node)
+
+# Topologically order the graph rooted at `root` WITHOUT running backward — the static "compile"
+# step. Returns the node list (inputs first), which the engine could cache/validate/execute.
+var compile_graph = Function(root):
+    var topo = []
+    _build_topo(root, topo)
+    for node in topo:
+        node.visited_ = False
+    return topo
+
+var _astensor = Function(x):
+    if type(x) == "Tensor":
+        return x
+    if type(x) == "Integer" or type(x) == "Float":
+        return Tensor(nd.from_flat([Float(x)], []), False)
+    return Tensor(nd.array(x), False)
+
+var tensor = Function(data, requires_grad):
+    return Tensor(nd.array(data), requires_grad)
+var from_nd = Function(ndarr, requires_grad):
+    return Tensor(ndarr, requires_grad)
+
+# build an output Tensor, wiring up the graph node if grad is on and any input needs it
+var _make = Function(data, parents, backward):
+    var needs = False
+    for p in parents:
+        if p.requires_grad:
+            needs = True
+    var out = Tensor(data, needs and grad_on())
+    if out.requires_grad:
+        out.prev_ = parents
+        out.grad_fn = backward
+    return out
+
+# Public builder for custom differentiable ops (e.g. Conv2d): wraps `data`, records `parents` and a
+# `backward` closure, and turns grad-tracking on only when an input requires it and grad is enabled.
+var record = Function(data, parents, backward):
+    return _make(data, parents, backward)
+
+# ---- differentiable ops --------------------------------------------------------------------------
+
+var add = Function(a, b):
+    var out = _make(nd.add(a.data, b.data), [a, b], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(unbroadcast(out.grad, a.data.shape))
+        if b.requires_grad:
+            b.accum(unbroadcast(out.grad, b.data.shape))
+    out.grad_fn = bw
+    return out
+
+var sub = Function(a, b):
+    var out = _make(nd.sub(a.data, b.data), [a, b], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(unbroadcast(out.grad, a.data.shape))
+        if b.requires_grad:
+            b.accum(unbroadcast(nd.neg(out.grad), b.data.shape))
+    out.grad_fn = bw
+    return out
+
+var mul = Function(a, b):
+    var out = _make(nd.mul(a.data, b.data), [a, b], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(unbroadcast(nd.mul(out.grad, b.data), a.data.shape))
+        if b.requires_grad:
+            b.accum(unbroadcast(nd.mul(out.grad, a.data), b.data.shape))
+    out.grad_fn = bw
+    return out
+
+var div = Function(a, b):
+    var out = _make(nd.div(a.data, b.data), [a, b], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(unbroadcast(nd.div(out.grad, b.data), a.data.shape))
+        if b.requires_grad:
+            # -g * a / b^2
+            var num = nd.mul(nd.neg(out.grad), a.data)
+            b.accum(unbroadcast(nd.div(num, nd.mul(b.data, b.data)), b.data.shape))
+    out.grad_fn = bw
+    return out
+
+var matmul = Function(a, b):
+    var out = _make(nd.matmul(a.data, b.data), [a, b], None)
+    var bw = Function():
+        # only the 2-D @ 2-D case is differentiated here (what the layers use)
+        if a.requires_grad:
+            a.accum(nd.matmul(out.grad, b.data.transpose(0, 1)))
+        if b.requires_grad:
+            b.accum(nd.matmul(a.data.transpose(0, 1), out.grad))
+    out.grad_fn = bw
+    return out
+
+var neg = Function(a):
+    var out = _make(nd.neg(a.data), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(nd.neg(out.grad))
+    out.grad_fn = bw
+    return out
+
+var exp = Function(a):
+    var out = _make(nd.exp(a.data), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(nd.mul(out.grad, out.data))
+    out.grad_fn = bw
+    return out
+
+var log = Function(a):
+    var out = _make(nd.log(a.data), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(nd.div(out.grad, a.data))
+    out.grad_fn = bw
+    return out
+
+var relu = Function(a):
+    var out = _make(nd.relu(a.data), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            var mask = nd._unary(a.data, "sign_pos")
+            a.accum(nd.mul(out.grad, mask))
+    out.grad_fn = bw
+    return out
+
+var sigmoid = Function(a):
+    # stable: out = 1/(1+exp(-x)); d/dx = out*(1-out)
+    var negx = nd.neg(a.data)
+    var s = nd.div(nd.ones(a.data.shape), nd.add_scalar(nd.exp(negx), 1.0))
+    var out = _make(s, [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            var one_minus = nd.add_scalar(nd.neg(out.data), 1.0)
+            a.accum(nd.mul(out.grad, nd.mul(out.data, one_minus)))
+    out.grad_fn = bw
+    return out
+
+var tanh = Function(a):
+    var out = _make(nd.tanh(a.data), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            # 1 - tanh^2
+            var d = nd.add_scalar(nd.neg(nd.mul(out.data, out.data)), 1.0)
+            a.accum(nd.mul(out.grad, d))
+    out.grad_fn = bw
+    return out
+
+var sqrt = Function(a):
+    var out = _make(nd.sqrt(a.data), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            # d/dx sqrt(x) = 0.5 / sqrt(x) = 0.5 / out
+            a.accum(nd.mul(out.grad, nd.mul_scalar(nd.div(nd.ones(out.data.shape), out.data), 0.5)))
+    out.grad_fn = bw
+    return out
+
+var mul_scalar = Function(a, s):
+    var out = _make(nd.mul_scalar(a.data, s), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(nd.mul_scalar(out.grad, s))
+    out.grad_fn = bw
+    return out
+
+var add_scalar = Function(a, s):
+    var out = _make(nd.add_scalar(a.data, s), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(out.grad)
+    out.grad_fn = bw
+    return out
+
+var reshape = Function(a, shape):
+    var orig = a.data.shape
+    var out = _make(a.data.reshape(shape), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(out.grad.reshape(orig))
+    out.grad_fn = bw
+    return out
+
+var transpose = Function(a, i, j):
+    var out = _make(a.data.transpose(i, j), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(out.grad.transpose(i, j))
+    out.grad_fn = bw
+    return out
+
+var sum_all = Function(a):
+    var out = _make(nd.sum_all(a.data), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            a.accum(nd.mul_scalar(nd.ones(a.data.shape), out.grad.item()))
+    out.grad_fn = bw
+    return out
+
+var mean_all = Function(a):
+    var out = _make(nd.mean_all(a.data), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            var scale = out.grad.item() / Float(a.data.size())
+            a.accum(nd.mul_scalar(nd.ones(a.data.shape), scale))
+    out.grad_fn = bw
+    return out
+
+var sum_axis = Function(a, axis):
+    var out = _make(nd.sum_axis(a.data, axis), [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            # broadcast grad back along the reduced axis
+            var g = out.grad.reshape(_with_one(a.data.shape, axis))
+            a.accum(g.broadcast_to(a.data.shape).contiguous())
+    out.grad_fn = bw
+    return out
+
+# softmax over the last axis of a 2-D tensor (numerically stable), then -log on the true class for CE.
+var softmax_rows = Function(a):
+    var mx = nd.max_axis(a.data, 1)                       # (rows,)
+    var shifted = nd.sub(a.data, mx.reshape([a.data.shape[0], 1]).broadcast_to(a.data.shape).contiguous())
+    var e = nd.exp(shifted)
+    var denom = nd.sum_axis(e, 1).reshape([a.data.shape[0], 1]).broadcast_to(a.data.shape).contiguous()
+    var sm = nd.div(e, denom)
+    var out = _make(sm, [a], None)
+    var bw = Function():
+        if a.requires_grad:
+            # dx = sm * (g - sum(g*sm, axis=1, keepdim))
+            var gs = nd.mul(out.grad, out.data)
+            var ss = nd.sum_axis(gs, 1).reshape([a.data.shape[0], 1]).broadcast_to(a.data.shape).contiguous()
+            a.accum(nd.mul(out.data, nd.sub(out.grad, ss)))
+    out.grad_fn = bw
+    return out

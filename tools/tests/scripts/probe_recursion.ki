@@ -1,0 +1,108 @@
+# ====================================================== ITERATIVE STDLIB: deepcopy/perms/combos + _ne_
+var io = import("io")
+var copy = import("copy")
+var it = import("itertools")
+var random = import("random")
+
+# --- deepcopy: independence at all levels ---
+var orig = [[1, 2], [3, [4, 5]]]
+var dc = copy.deepcopy(orig)
+dc[0].append(99)
+dc[1][1].append(6)
+assert orig == [[1, 2], [3, [4, 5]]], "deepcopy leaves original untouched"
+assert dc == [[1, 2, 99], [3, [4, 5, 6]]], "deepcopy mutated independently"
+
+# --- deepcopy: dict + set nesting ---
+var nested = {"a": [1, 2], "b": {"c": Set([1, 2])}}
+var nc = copy.deepcopy(nested)
+nc["a"].append(3)
+assert nested["a"] == [1, 2], "deepcopy dict value independent"
+
+# --- deepcopy: shared references preserved (copied once) ---
+var shared = [0]
+var holder = [shared, shared, {"ref": shared}]
+var hc = copy.deepcopy(holder)
+assert id(hc[0]) == id(hc[1]), "shared list copied once"
+assert id(hc[0]) == id(hc[2]["ref"]), "shared ref through dict preserved"
+hc[0].append(1)
+assert hc[1] == [0, 1], "mutating shared copy reflects in all aliases"
+
+# --- deepcopy: self-cycles ---
+var cyc = [1, 2]
+cyc.append(cyc)
+var cc = copy.deepcopy(cyc)
+assert cc[0] == 1 and cc[1] == 2, "cycle scalars preserved"
+assert id(cc[2]) == id(cc), "self-reference recreated"
+assert id(cc) != id(cyc), "fresh object"
+# mutual cycle
+var aa = [1]
+var bb = [2]
+aa.append(bb)
+bb.append(aa)
+var ac = copy.deepcopy(aa)
+assert id(ac[1][1]) == id(ac), "mutual cycle recreated"
+
+# --- deepcopy: very deep does not overflow the native stack ---
+var deep = [0]
+var n = 0
+while n < 30000:
+    deep = [deep]
+    n = n + 1
+discard copy.deepcopy(deep)
+assert True, "30000-deep deepcopy does not recurse"
+
+# --- permutations: correct count and ordering ---
+assert it.permutations([1, 2, 3], 2) == [[1, 2], [1, 3], [2, 1], [2, 3], [3, 1], [3, 2]], "perm r=2 order"
+assert len(it.permutations([1, 2, 3, 4])) == 24, "perm full count 4! = 24"
+assert it.permutations([1, 2, 3]) == [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]], "perm full order"
+assert it.permutations([1, 2], 3) == [], "perm r>n empty"
+assert it.permutations([], 0) == [[]], "perm of empty, r=0 is one empty"
+assert len(it.permutations([1, 2, 3, 4, 5], 3)) == 60, "P(5,3) = 60"
+
+# --- combinations: correct count and ordering ---
+assert it.combinations([1, 2, 3, 4], 2) == [[1, 2], [1, 3], [1, 4], [2, 3], [2, 4], [3, 4]], "comb order"
+assert len(it.combinations([1, 2, 3, 4, 5], 3)) == 10, "C(5,3) = 10"
+assert it.combinations([1], 2) == [], "comb r>n empty"
+assert it.combinations([1, 2, 3], 0) == [[]], "comb r=0 is one empty"
+assert len(it.combinations(range(10), 5)) == 252, "C(10,5) = 252"
+
+# --- fuzz: perms are distinct and each is a permutation of a subset; combos are sorted-index subsets ---
+var rng = random.Random(99)
+var f = 0
+while f < 60:
+    var sz = rng.randint(1, 5)
+    var items = range(sz)
+    var r = rng.randint(1, sz)
+    var perms = it.permutations(items, r)
+    var combos = it.combinations(items, r)
+    # all permutations unique
+    var seen = Set()
+    for p in perms:
+        seen.add(String(p))
+    assert len(seen) == len(perms), "fuzz: permutations are unique"
+    # each combo is strictly increasing in value (since items == range)
+    for cmb in combos:
+        var ok = True
+        var j = 1
+        while j < len(cmb):
+            if not (cmb[j - 1] < cmb[j]):
+                ok = False
+            j = j + 1
+        assert ok, "fuzz: combination indices strictly increasing"
+    f = f + 1
+
+# --- _ne_ defaults to "not _eq_" (only _eq_ defined) ---
+class Money:
+    var _init_ = Function(self, cents):
+        self.cents = cents
+    var _eq_ = Function(self, o) -> Bool:
+        return self.cents == o.cents
+var m1 = Money(100)
+var m2 = Money(100)
+var m3 = Money(250)
+assert m1 == m2 and not (m1 != m2), "equal instances: == true, != false"
+assert m1 != m3 and not (m1 == m3), "unequal instances: != true, == false"
+# in a list/dedup context
+assert (m1 != m2) == False, "consistency of != with =="
+
+io.print("OK recursion")

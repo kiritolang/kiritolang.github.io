@@ -1,0 +1,2 @@
+# fromhex of an odd-length hex string must throw.
+discard fromhex("abc")

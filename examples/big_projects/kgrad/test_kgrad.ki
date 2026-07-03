@@ -1,0 +1,174 @@
+# End-to-end test + training demo for kgrad. Prints "PASS"/"FAIL" lines; trains real models and
+# checks they actually learn. Sizes are deliberately tiny (pure-Kirito math is slow).
+
+var io = import("io")
+var nd = import("ndarray")
+var ag = import("autograd")
+var nn = import("nn")
+var optim = import("optim")
+var data = import("data")
+var models = import("models")
+var ser = import("checkpoint")
+var math = import("math")
+
+var pass_n = [0]
+var fail_n = [0]
+var check = Function(name, cond):
+    if cond:
+        pass_n[0] = pass_n[0] + 1
+        io.print("PASS", name)
+    else:
+        fail_n[0] = fail_n[0] + 1
+        io.print("FAIL", name)
+
+# ---- losses sanity ----
+var lp = nn.mse_loss(ag.tensor([[1.0, 2.0]], False), ag.tensor([[1.0, 2.0]], False))
+check("mse zero on equal", lp.item() < 0.000001)
+var lp2 = nn.mse_loss(ag.tensor([[3.0]], False), ag.tensor([[1.0]], False))
+check("mse (3-1)^2=4", abs(lp2.item() - 4.0) < 0.000001)
+
+# bce_with_logits: logit 0 -> -log(0.5)=0.693 when y matches sigmoid; for y=1,z=0 loss=softplus(0)=0.693
+var bl = nn.bce_with_logits(ag.tensor([[0.0]], False), ag.tensor([[1.0]], False))
+check("bce logit0 y1 ~0.693", abs(bl.item() - 0.6931) < 0.01)
+
+# cross_entropy: uniform logits over 3 classes -> -log(1/3)=1.0986
+var ce = nn.cross_entropy(ag.tensor([[0.0, 0.0, 0.0]], False), [0])
+check("ce uniform 3-class ~1.0986", abs(ce.item() - 1.0986) < 0.01)
+
+# nll on log-probs
+var lp3 = ag.tensor([[-0.5, -1.5]], False)
+var nl = nn.nll_loss(lp3, [0])
+check("nll picks class0 = 0.5", abs(nl.item() - 0.5) < 0.000001)
+
+# ---- logistic regression training (linearly separable) ----
+var rng = import("random").Random(7)
+var X = []
+var y = []
+var nsamp = 40
+var i = 0
+while i < nsamp:
+    var a = rng.uniform(-2.0, 2.0)
+    var b = rng.uniform(-2.0, 2.0)
+    X.append([a, b])
+    if a + b > 0.0:
+        y.append([1.0])
+    else:
+        y.append([0.0])
+    i = i + 1
+
+var train_logreg = Function(optimizer_kind):
+    var model = models.LogisticRegression(2)
+    var opt = None
+    if optimizer_kind == "adam":
+        opt = optim.adam(model.parameters(), 0.2)
+    else:
+        opt = optim.sgd(model.parameters(), 0.5, 0.9)
+    var Xt = ag.tensor(X, False)
+    var yt = ag.tensor(y, False)
+    var first_loss = 0.0
+    var last_loss = 0.0
+    var epoch = 0
+    while epoch < 60:
+        var logits = model(Xt)
+        var loss = nn.bce_with_logits(logits, yt)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        if epoch == 0:
+            first_loss = loss.item()
+        last_loss = loss.item()
+        epoch = epoch + 1
+    # accuracy
+    var preds = model.predict(Xt)
+    var correct = 0
+    var k = 0
+    while k < nsamp:
+        if Float(preds[k]) == y[k][0]:
+            correct = correct + 1
+        k = k + 1
+    return [first_loss, last_loss, correct, model]
+
+var r_adam = train_logreg("adam")
+io.print("  logreg(adam): loss", r_adam[0], "->", r_adam[1], "| acc", r_adam[2], "/", nsamp)
+check("logreg adam loss decreases", r_adam[1] < r_adam[0])
+check("logreg adam accuracy >= 38/40", r_adam[2] >= 38)
+
+var r_sgd = train_logreg("sgd")
+io.print("  logreg(sgd):  loss", r_sgd[0], "->", r_sgd[1], "| acc", r_sgd[2], "/", nsamp)
+check("logreg sgd loss decreases", r_sgd[1] < r_sgd[0])
+check("logreg sgd accuracy >= 38/40", r_sgd[2] >= 38)
+
+# ---- MLP learns XOR (needs a hidden layer + nonlinearity) ----
+nn.manual_seed(3)
+var xorX = ag.tensor([[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]], False)
+var xorY = ag.tensor([[0.0], [1.0], [1.0], [0.0]], False)
+var mlp = nn.Sequential([nn.Linear(2, 8), nn.Tanh(), nn.Linear(8, 1)])
+var mopt = optim.adam(mlp.parameters(), 0.08)
+var xor_first = 0.0
+var xor_last = 0.0
+var ep = 0
+while ep < 400:
+    var out = mlp(xorX)
+    var loss = nn.bce_with_logits(out, xorY)
+    mopt.zero_grad()
+    loss.backward()
+    mopt.step()
+    if ep == 0:
+        xor_first = loss.item()
+    xor_last = loss.item()
+    ep = ep + 1
+var xorpred = ag.sigmoid(mlp(xorX)).data.contiguous().buf
+io.print("  XOR: loss", xor_first, "->", xor_last, "| preds", xorpred)
+check("XOR loss decreases", xor_last < xor_first)
+check("XOR solved (preds correct)", xorpred[0] < 0.5 and xorpred[1] >= 0.5 and xorpred[2] >= 0.5 and xorpred[3] < 0.5)
+
+# ---- PCA finds the principal direction ----
+# data strongly correlated along (1,1)
+var pcaX = []
+var j = 0
+while j < 30:
+    var t = rng.uniform(-3.0, 3.0)
+    pcaX.append([t + rng.gauss(0.0, 0.05), t + rng.gauss(0.0, 0.05)])
+    j = j + 1
+var pca = models.PCA(2)
+discard pca.fit(pcaX)
+var pc0 = pca.components.to_nested()[0]
+# principal axis should be ~ (±0.707, ±0.707)
+io.print("  PCA component0:", pc0, "| explained:", pca.explained_variance)
+check("PCA principal axis ~ diagonal", abs(abs(pc0[0]) - 0.707) < 0.1 and abs(abs(pc0[1]) - 0.707) < 0.1)
+check("PCA var0 >> var1", pca.explained_variance[0] > pca.explained_variance[1] * 10.0)
+
+# ---- Dataset / DataLoader ----
+var ds = data.TensorDataset(X, y)
+check("dataset len", len(ds) == nsamp)
+var loader = data.DataLoader(ds, 16, True, 1)
+var nbatches = 0
+var seen = 0
+for batch in loader:
+    nbatches = nbatches + 1
+    seen = seen + len(batch[0])
+check("dataloader covers all samples", seen == nsamp)
+check("dataloader batched", nbatches == 3)
+
+# ---- serialization: save weights, load into a fresh model, identical predictions ----
+var trained = r_adam[3]
+var path = "/tmp/kgrad_weights.txt"
+ser.save_module(trained, path)
+var fresh = models.LogisticRegression(2)
+var before = fresh.predict(ag.tensor(X, False))
+discard ser.load_module(fresh, path)
+var after = fresh.predict(ag.tensor(X, False))
+var same = (after == trained.predict(ag.tensor(X, False)))
+check("loaded weights reproduce predictions", same)
+io.print("  (fresh-before vs trained differ:", not (before == trained.predict(ag.tensor(X,False))), ")")
+
+# ---- train/eval + state_dict shape ----
+discard trained.eval()
+check("eval sets training=False", trained.training == False)
+discard trained.train()
+check("train sets training=True", trained.training == True)
+var sd = trained.state_dict()
+check("state_dict has linear.weight + linear.bias", "linear.weight" in sd and "linear.bias" in sd)
+
+io.print("")
+io.print(String(pass_n[0]) + " passed, " + String(fail_n[0]) + " failed")

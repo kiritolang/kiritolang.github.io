@@ -1,0 +1,6 @@
+# unbounded mutual recursion hits the call-depth guard (catchable, no crash)
+var a = Function(n):
+    return b(n)
+var b = Function(n):
+    return a(n)
+discard a(0)

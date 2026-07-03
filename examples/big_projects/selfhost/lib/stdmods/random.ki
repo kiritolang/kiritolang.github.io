@@ -1,0 +1,141 @@
+# The `random` module in pure Kirito: an object-based PRNG (no global state). A 64-bit LCG drives a
+# prime modulus to produce uniform doubles; this is deterministic and seed-sensitive, which is all
+# the suite checks (it never asserts exact host values).
+
+var math = import("math")
+var time = import("time")
+
+var _A = 6364136223846793005
+var _C = 1442695040888963407
+var _M = 9007199254740881            # a prime below 2^53, for the [0,1) mantissa
+
+var _reqInt = Function(x):
+    if type(x) != "Integer":
+        throw "argument expects an Integer"
+    return x
+
+class Random:
+    var _init_ = Function(self, seed = None):
+        # No seed (or an explicit None) -> OS-seeded: mix two independent high-resolution clocks
+        # (pure Kirito has no direct OS-entropy builtin, so time is the closest available source).
+        var s = seed
+        if s == None:
+            s = bitxor(time.timens(), time.perfcounterns())
+        # mix the seed so small/zero seeds still scatter
+        self._state = s * 2862933555777941757 + 3037000493
+
+    # Random is a native type on the real interpreter (NativeClass), whose default str() is
+    # "<Random>" — not the "<Random object>" a genuine guest class without _str_ would show.
+    var _str_ = Function(self):
+        return "<Random>"
+
+    var _step = Function(self):
+        # int64 multiply/add wrap (two's complement) — well-defined in Kirito
+        self._state = self._state * _A + _C
+        return self._state
+
+    var random = Function(self):
+        var s = self._step()
+        return Float(s % _M) / Float(_M)
+
+    var uniform = Function(self, a, b):
+        return a + (b - a) * self.random()
+
+    var randint = Function(self, a, b):
+        var lo = _reqInt(a)
+        var hi = _reqInt(b)
+        if lo > hi:
+            throw "randint: empty range"
+        return lo + Integer(self.random() * Float(hi - lo + 1))
+
+    var randrange = Function(self, start = None, stop = None, step = None):
+        # randrange(stop) | randrange(start, stop[, step]) — with start/stop/step keyword names.
+        var lo = 0
+        var hi = 0
+        var st = 1
+        if step != None:
+            st = _reqInt(step)
+        if st == 0:
+            throw "randrange: step must not be zero"
+        if stop == None:
+            hi = _reqInt(start)              # the lone value is the stop bound
+        else:
+            lo = 0 if start == None else _reqInt(start)
+            hi = _reqInt(stop)
+        var nchoices = 0
+        if st > 0 and hi > lo:
+            nchoices = (hi - lo + st - 1) // st
+        elif st < 0 and lo > hi:
+            nchoices = (lo - hi + (-st) - 1) // (-st)
+        if nchoices <= 0:
+            throw "randrange: empty range"
+        return lo + st * Integer(self.random() * Float(nchoices))
+
+    var seed = Function(self, a):
+        self._state = a * 2862933555777941757 + 3037000493
+        return None
+
+    var normalvariate = Function(self, mu = 0.0, sigma = 1.0):
+        return self.gauss(mu, sigma)
+
+    var choice = Function(self, seq):
+        if len(seq) == 0:
+            throw "choice from empty sequence"
+        return seq[self.randint(0, len(seq) - 1)]
+
+    var choices = Function(self, population, k = 1):
+        var kk = k
+        if kk == None:
+            kk = 1
+        if kk < 0:
+            throw "choices: k must be non-negative"
+        # Resource guard on the result length (native's kMaxRepeat = 256Mi): an enormous k would
+        # otherwise try to build a multi-billion-element list and hang instead of throwing.
+        if kk > 268435456:
+            throw "choices: k too large"
+        var pool = []
+        for x in population:
+            pool.append(x)
+        if len(pool) == 0:
+            throw "choices from empty population"
+        var out = []
+        var i = 0
+        while i < kk:
+            out.append(pool[self.randint(0, len(pool) - 1)])
+            i = i + 1
+        return out
+
+    var shuffle = Function(self, seq):
+        var i = len(seq) - 1
+        while i > 0:
+            var j = self.randint(0, i)
+            var t = seq[i]
+            seq[i] = seq[j]
+            seq[j] = t
+            i = i - 1
+
+    var sample = Function(self, population, k):
+        var copy = []
+        for x in population:
+            copy.append(x)
+        if k < 0 or k > len(copy):
+            throw "sample: k out of range"
+        self.shuffle(copy)
+        return copy[0:k]
+
+    var gauss = Function(self, mu = 0.0, sigma = 1.0):
+        # Box–Muller transform
+        var u1 = self.random()
+        if u1 < 1.0e-12:
+            u1 = 1.0e-12
+        var u2 = self.random()
+        var z = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
+        return mu + sigma * z
+
+    var expovariate = Function(self, lambd = 1.0):
+        if lambd <= 0.0:
+            throw "expovariate: lambda must be positive"
+        var u = self.random()
+        if u < 1.0e-12:
+            u = 1.0e-12
+        return -math.log(u) / lambd

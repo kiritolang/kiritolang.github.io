@@ -1,0 +1,1 @@
+discard import("hash").sha256(123)

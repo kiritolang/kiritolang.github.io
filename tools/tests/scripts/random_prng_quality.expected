@@ -1,0 +1,5 @@
+--- xoshiro ---
+all quality tests passed for xoshiro
+--- mersenne_twister ---
+all quality tests passed for mersenne_twister
+OK random-prng-quality

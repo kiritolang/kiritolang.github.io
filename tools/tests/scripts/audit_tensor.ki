@@ -1,0 +1,392 @@
+var io = import("io")
+var T = import("tensor")
+var C = import("complex")
+
+var closef = Function(x, y) -> Bool:
+    var d = x - y
+    if d < 0:
+        d = -d
+    return d < 0.0000001
+
+# ---- construction / shape / dtype --------------------------------------------------------------
+var a = T.Tensor([[1, 2, 3], [4, 5, 6]])
+io.print(a.shape() == [2, 3])
+io.print(a.ndim() == 2)
+io.print(a.size() == 6)
+io.print(a.dtype() == "Float")
+io.print(T.zeros([2, 2]) == T.Tensor([[0, 0], [0, 0]]))
+io.print(T.ones([3]) == T.Tensor([1, 1, 1]))
+io.print(T.full([2, 2], 7) == T.Tensor([[7, 7], [7, 7]]))
+io.print(T.eye(2) == T.Tensor([[1, 0], [0, 1]]))
+io.print(T.arange(5) == T.Tensor([0, 1, 2, 3, 4]))
+io.print(T.arange(1, 7, 2) == T.Tensor([1, 3, 5]))
+io.print(T.zeros([0]).shape() == [0])               # empty tensor allowed
+io.print(T.Tensor([]).size() == 0)
+io.print(T.full([], 5).shape() == [])              # 0-D scalar tensor
+
+# Integers are stored as Float (the default dtype)
+io.print(T.Tensor([1, 2]).dtype() == "Float")
+
+# ---- ragged-list rejection ----------------------------------------------------------------------
+var ragged_raised = 0
+for thunk in [Function(): return T.Tensor([[1, 2], [3]]), Function(): return T.Tensor([[1, 2, 3], [4, 5]])]:
+    try:
+        discard thunk()
+    catch as e:
+        ragged_raised = ragged_raised + 1
+io.print(ragged_raised == 2)
+
+# ---- indexing: full -> scalar, partial -> sub-tensor; element assignment ------------------------
+var cube = T.Tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
+io.print(cube.shape() == [2, 2, 2])
+io.print(cube[1, 0, 1] == 6.0)
+io.print(cube[0] == T.Tensor([[1, 2], [3, 4]]))
+io.print(cube[0, 1] == T.Tensor([3, 4]))
+cube[0, 0, 0] = 99
+io.print(cube[0, 0, 0] == 99.0)
+
+# index OOB throws
+var ioob = 0
+for thunk in [Function(): return T.zeros([3, 4])[10, 0], Function(): return T.zeros([3])[1, 2, 3]]:
+    try:
+        discard thunk()
+    catch as e:
+        ioob = ioob + 1
+io.print(ioob == 2)
+
+# ---- broadcasting --------------------------------------------------------------------------------
+# (2,3) + (3,) broadcast as a row
+io.print(a + T.Tensor([10, 20, 30]) == T.Tensor([[11, 22, 33], [14, 25, 36]]))
+# (2,3) + (2,1) broadcast as a column
+io.print(a + T.Tensor([[100], [200]]) == T.Tensor([[101, 102, 103], [204, 205, 206]]))
+# (3,1) + (3,) -> (3,3)
+io.print((T.Tensor([[1], [2], [3]]) + T.Tensor([10, 20, 30])).shape() == [3, 3])
+# scalar broadcast
+io.print(a + 10 == T.Tensor([[11, 12, 13], [14, 15, 16]]))
+# incompatible shape throws
+var braised = 0
+for thunk in [Function(): return T.zeros([3]) + T.zeros([5]), Function(): return T.zeros([2, 3]) + T.zeros([3, 2])]:
+    try:
+        discard thunk()
+    catch as e:
+        braised = braised + 1
+io.print(braised == 2)
+
+# ---- arithmetic: pure, never mutates ------------------------------------------------------------
+var orig = T.Tensor([1, 2, 3])
+var ignored = orig + 100
+io.print(orig == T.Tensor([1, 2, 3]))    # original unchanged
+# operators: +, -, *, /, %, //, **, unary -
+io.print(T.Tensor([1, 2]) * T.Tensor([3, 4]) == T.Tensor([3, 8]))
+io.print(T.Tensor([6, 8]) / T.Tensor([2, 4]) == T.Tensor([3, 2]))
+io.print(T.Tensor([5, 7]) % 3 == T.Tensor([2, 1]))
+io.print(T.Tensor([5, 7]) // 3 == T.Tensor([1, 2]))
+io.print(T.Tensor([2, 3]) ** 2 == T.Tensor([4, 9]))
+io.print(-T.Tensor([1, -2, 3]) == T.Tensor([-1, 2, -3]))
+
+# ---- dtype promotion: Float + Complex -> Complex ------------------------------------------------
+io.print((T.Tensor([1, 2]) + T.Tensor([1, 1], dtype = "Complex")).dtype() == "Complex")
+io.print((T.Tensor([1, 1], dtype = "Complex") + T.Tensor([1, 2])).dtype() == "Complex")
+# astype round-trip
+io.print(T.Tensor([1.5, 2.5], dtype = "Complex").astype("Float") == T.Tensor([1.5, 2.5]))
+io.print(T.Tensor([1, 2]).astype("Complex").dtype() == "Complex")
+# bad dtype throws
+var dtraised = 0
+try:
+    discard T.zeros([2], dtype = "Garbage")
+catch as e:
+    dtraised = dtraised + 1
+io.print(dtraised == 1)
+
+# ---- matmul: 2D and batched --------------------------------------------------------------------
+io.print(T.Tensor([[1, 2], [3, 4]]).matmul(T.Tensor([[5, 6], [7, 8]])) == T.Tensor([[19, 22], [43, 50]]))
+io.print(T.Tensor([1, 2, 3]).dot(T.Tensor([4, 5, 6])) == 32.0)
+# Batched: leading dims broadcast
+io.print(cube.matmul(cube).shape() == [2, 2, 2])
+# matmul shape error
+var mmraised = 0
+for thunk in [Function(): return T.zeros([2]).matmul(T.zeros([3])), Function(): return T.zeros([2, 3]).matmul(T.zeros([4, 2]))]:
+    try:
+        discard thunk()
+    catch as e:
+        mmraised = mmraised + 1
+io.print(mmraised == 2)
+
+# `*` on tensors is element-wise, NOT matmul
+io.print(T.Tensor([[1, 2], [3, 4]]) * T.Tensor([[2, 2], [2, 2]]) == T.Tensor([[2, 4], [6, 8]]))
+
+# ---- tensordot / contract / einsum -------------------------------------------------------------
+var p = T.Tensor([[1, 2], [3, 4]])
+var q = T.Tensor([[5, 6], [7, 8]])
+io.print(T.tensordot(p, q, 1) == p.matmul(q))    # axes=1 = matmul
+io.print(T.tensordot(p, q, 2) == T.full([], 70))  # axes=2 (Frobenius)
+io.print(T.tensordot(p, q, [[1], [0]]) == p.matmul(q))   # pair form
+
+var xc = T.full([2, 3, 4], 1)
+var yc = T.full([4, 3, 5], 2)
+io.print(T.contract(xc, yc, [1, 2], [1, 0]).shape() == [2, 5])
+io.print(T.contract(xc, yc, [1, 2], [1, 0])[0, 0] == 24.0)
+
+# einsum patterns
+io.print(T.einsum("ij,jk->ik", p, T.eye(2)) == p)               # matmul
+io.print(T.einsum("ij->ji", p) == p.transpose())                # transpose
+io.print(T.einsum("ii->", p) == T.full([], 5))                 # trace
+io.print(T.einsum("ij->", p) == T.full([], 10))                # sum all
+io.print(T.einsum("ij->i", p) == T.Tensor([3, 7]))             # row sum
+io.print(T.einsum("i,i->", T.Tensor([1, 2, 3]), T.Tensor([4, 5, 6])) == T.full([], 32))
+
+# einsum errors
+var eraised = 0
+for thunk in [Function(): return T.einsum("ij,jk->ik", T.Tensor([[1, 2]]), T.Tensor([[1, 2, 3]])), Function(): return T.einsum("ij,jk->ik", T.Tensor([[1, 2]]))]:
+    try:
+        discard thunk()
+    catch as e:
+        eraised = eraised + 1
+io.print(eraised == 2)
+
+# ---- reductions / axis ---------------------------------------------------------------------
+io.print(a.sum() == 21.0)
+io.print(a.sum(0) == T.Tensor([5, 7, 9]))
+io.print(a.sum(1) == T.Tensor([6, 15]))
+io.print(a.mean() == 3.5)
+io.print(a.min() == 1.0 and a.max() == 6.0)
+io.print(T.Tensor([1, 2, 3, 4]).prod() == 24.0)
+io.print(T.Tensor([1, 2, 3, 4]).cumsum() == T.Tensor([1, 3, 6, 10]))
+io.print(T.Tensor([1, 2, 3, 4]).cumprod() == T.Tensor([1, 2, 6, 24]))
+io.print(T.Tensor([3, 1, 4, 1, 5]).median() == 3.0)
+io.print(T.Tensor([5, 3, 8, 1]).ptp() == 7.0)
+io.print(T.Tensor([1, 2, 3]).all() == True)
+io.print(T.Tensor([0, 1, 2]).all() == False)
+io.print(T.Tensor([0, 0, 0]).any() == False)
+io.print(T.Tensor([0, 0, 1]).any() == True)
+io.print(a.argmax(1) == T.Tensor([2, 2]))
+io.print(a.argmin() == 0)
+io.print(a.var(0) == T.Tensor([2.25, 2.25, 2.25]))
+
+# Complex min/max throws (unordered)
+var cmraised = 0
+for thunk in [Function(): return T.Tensor([1, 2], dtype = "Complex").min(), Function(): return T.Tensor([1, 2], dtype = "Complex").max()]:
+    try:
+        discard thunk()
+    catch as e:
+        cmraised = cmraised + 1
+io.print(cmraised == 2)
+
+# ---- comparison operators (Float-only) -> 0/1 mask ----------------------------------------
+io.print(a.gt(3) == T.Tensor([[0, 0, 0], [1, 1, 1]]))
+io.print((a > 3) == a.gt(3))
+io.print(a.eq(T.Tensor([[1, 0, 3], [0, 5, 0]])) == T.Tensor([[1, 0, 1], [0, 1, 0]]))
+io.print(a.gt(2).logicaland(a.lt(5)) == T.Tensor([[0, 0, 1], [1, 0, 0]]))
+io.print(a.lt(3).logicalnot() == T.Tensor([[0, 0, 1], [1, 1, 1]]))
+
+# Complex tensor comparison throws (Float-only)
+var cgraised = 0
+for thunk in [Function(): return T.Tensor([1, 2], dtype = "Complex").gt(0), Function(): return T.Tensor([1, 2], dtype = "Complex").eq(T.zeros([2], dtype = "Complex"))]:
+    try:
+        discard thunk()
+    catch as e:
+        cgraised = cgraised + 1
+io.print(cgraised == 2)
+
+# ---- slicing edges ------------------------------------------------------------------------
+var v = T.Tensor([10, 20, 30, 40, 50])
+io.print(v[1:4] == T.Tensor([20, 30, 40]))
+io.print(v[:2] == T.Tensor([10, 20]))
+io.print(v[-2:] == T.Tensor([40, 50]))
+io.print(v[::2] == T.Tensor([10, 30, 50]))
+io.print(v[::-1] == T.Tensor([50, 40, 30, 20, 10]))
+io.print(v[0:0] == T.Tensor([]))   # empty slice
+
+# fancy indexing: rows along axis 0
+io.print(a[[1, 0]] == T.Tensor([[4, 5, 6], [1, 2, 3]]))
+
+# boolean mask
+io.print(a[a.gt(3)] == T.Tensor([4, 5, 6]))
+# boolean mask wrong shape throws
+var bmraised = 0
+try:
+    discard a[T.Tensor([1, 0, 1]).gt(0)]
+catch as e:
+    bmraised = bmraised + 1
+io.print(bmraised == 1)
+
+# ---- structural ops -----------------------------------------------------------------------
+io.print(a.transpose() == T.Tensor([[1, 4], [2, 5], [3, 6]]))
+io.print(a.reshape([3, 2]) == T.Tensor([[1, 2], [3, 4], [5, 6]]))
+io.print(a.flatten() == T.Tensor([1, 2, 3, 4, 5, 6]))
+io.print(a.permute([1, 0]) == a.transpose())
+io.print(a.swapaxes(0, 1) == a.transpose())
+io.print(T.Tensor([1, 2, 3]).flip() == T.Tensor([3, 2, 1]))
+io.print(T.zeros([1, 3, 1]).squeeze().shape() == [3])
+io.print(T.Tensor([1, 2]).expanddims(0).shape() == [1, 2])
+io.print(T.Tensor([1, 2]).repeat(2) == T.Tensor([1, 1, 2, 2]))
+io.print(T.Tensor([1, 2]).tile([2]) == T.Tensor([1, 2, 1, 2]))
+io.print(T.Tensor([[1], [2]]).broadcastto([2, 3]) == T.Tensor([[1, 1, 1], [2, 2, 2]]))
+io.print(T.concatenate([a, a], 0).shape() == [4, 3])
+io.print(T.stack([T.Tensor([1, 2]), T.Tensor([3, 4])], 0) == T.Tensor([[1, 2], [3, 4]]))
+io.print(len(T.split(a, 3, 1)) == 3)
+
+# concat/stack shape mismatch throws
+var csraised = 0
+for thunk in [Function(): return T.concatenate([T.zeros([2, 2]), T.zeros([2, 3])], 0), Function(): return T.stack([T.zeros([2, 2]), T.zeros([3, 3])], 0)]:
+    try:
+        discard thunk()
+    catch as e:
+        csraised = csraised + 1
+io.print(csraised == 2)
+
+# Bad reshape throws
+var rsraised = 0
+try:
+    discard T.Tensor([1, 2, 3]).reshape([2, 2])
+catch as e:
+    rsraised = rsraised + 1
+io.print(rsraised == 1)
+
+# ---- linear algebra -----------------------------------------------------------------------
+var M = T.Tensor([[4, 3], [6, 3]])
+io.print(T.det(M) == -6.0)
+io.print(T.trace(M) == 7.0)
+io.print(T.inv(M).matmul(M) == T.eye(2))
+io.print(T.solve(M, T.Tensor([[1], [1]])).compare(T.Tensor([[0], [1.0 / 3]]), abs_tol = 1e-9))   # computed -> .compare (abs_tol: exact zero in the solution)
+io.print(T.norm(T.Tensor([3, 4])) == 5.0)
+io.print(T.outer(T.Tensor([1, 2]), T.Tensor([3, 4])) == T.Tensor([[3, 4], [6, 8]]))
+io.print(T.inner(T.Tensor([1, 2, 3]), T.Tensor([4, 5, 6])) == T.full([], 32))
+io.print(T.cross(T.Tensor([1, 0, 0]), T.Tensor([0, 1, 0])) == T.Tensor([0, 0, 1]))
+io.print(T.kron(T.eye(2), T.eye(2)) == T.eye(4))
+
+# det == 0 for singular; inv/solve on singular throw
+io.print(T.det(T.Tensor([[1, 2], [2, 4]])) == 0.0)
+var slraised = 0
+for thunk in [Function(): return T.inv(T.Tensor([[1, 2], [2, 4]])), Function(): return T.solve(T.Tensor([[1, 2], [2, 4]]), T.Tensor([[1], [2]])), Function(): return T.det(T.Tensor([[1, 2, 3]])), Function(): return T.inv(T.Tensor([[1, 2, 3]])), Function(): return T.cross(T.Tensor([1, 2]), T.Tensor([3, 4]))]:
+    try:
+        discard thunk()
+    catch as e:
+        slraised = slraised + 1
+io.print(slraised == 5)
+
+# Norm ord
+io.print(T.norm(T.Tensor([1, 2, 3]), 1) == 6.0)        # l1
+io.print(closef(T.norm(T.Tensor([1, 2, 3]), 2), 3.7416573867739413))
+
+# ---- sorting & search ---------------------------------------------------------------------
+io.print(T.Tensor([3, 1, 2]).sort() == T.Tensor([1, 2, 3]))
+io.print(T.Tensor([3, 1, 2]).argsort() == T.Tensor([1, 2, 0]))
+io.print(T.unique(T.Tensor([3, 1, 3, 2, 1])) == T.Tensor([1, 2, 3]))
+io.print(T.searchsorted(T.Tensor([1, 3, 5]), 4) == 2)
+io.print(T.searchsorted(T.Tensor([1, 3, 5]), 0) == 0)
+io.print(T.searchsorted(T.Tensor([1, 3, 5]), 10) == 3)
+
+# ---- creation helpers ------------------------------------------------------------------
+io.print(T.linspace(0, 1, 5) == T.Tensor([0, 0.25, 0.5, 0.75, 1]))
+io.print(T.zeroslike(a) == T.zeros([2, 3]))
+io.print(T.oneslike(a) == T.ones([2, 3]))
+io.print(T.fulllike(a, 5)[0, 0] == 5.0)
+io.print(T.diag(T.Tensor([1, 2])) == T.Tensor([[1, 0], [0, 2]]))
+io.print(T.diag(T.Tensor([[1, 2], [3, 4]])) == T.Tensor([1, 4]))
+io.print(T.tril(T.ones([2, 2])) == T.Tensor([[1, 0], [1, 1]]))
+io.print(T.triu(T.ones([2, 2])) == T.Tensor([[1, 1], [0, 1]]))
+
+# ---- complex helpers --------------------------------------------------------------------
+var zc = T.Tensor([[1, 2], [3, 4]], dtype = "Complex")
+io.print(zc.real() == T.Tensor([[1, 2], [3, 4]]))
+io.print(zc.imag() == T.zeros([2, 2]))
+io.print(zc.conj()[0, 0] == C.of(1, 0))
+
+# Complex tensor matmul
+io.print(zc.matmul(zc) == T.Tensor([[7, 10], [15, 22]], dtype = "Complex"))
+
+# ---- autograd ---------------------------------------------------------------------------
+# default = no grad
+io.print(T.zeros([2]).requiresgrad() == False)
+
+# Float tensor opt-in
+var x = T.Tensor([1.0, 2.0, 3.0], requiresgrad = True)
+io.print(x.requiresgrad() == True)
+x.square().sum().backward()
+io.print(x.grad == T.Tensor([2, 4, 6]))     # d/dx sum(x^2) = 2x
+
+# grad accumulation + zerograd
+var p2 = T.Tensor([1, 2], requiresgrad = True)
+p2.sum().backward()
+p2.sum().backward()
+io.print(p2.grad == T.Tensor([2, 2]))
+p2.zerograd()
+io.print(p2.grad == None)
+
+# matmul backward
+var mw = T.Tensor([[1, 2], [3, 4]], requiresgrad = True)
+mw.matmul(T.eye(2)).sum().backward()
+io.print(mw.grad == T.ones([2, 2]))
+
+# tensordot is differentiable
+var ta = T.Tensor([[1, 2], [3, 4]], requiresgrad = True)
+T.tensordot(ta, T.eye(2), 1).sum().backward()
+io.print(ta.grad == T.ones([2, 2]))
+
+# relu, sigmoid, sqrt grads
+var rg = T.Tensor([-2.0, -1.0, 1.0, 2.0], requiresgrad = True)
+rg.relu().sum().backward()
+io.print(rg.grad == T.Tensor([0, 0, 1, 1]))
+
+var sx = T.Tensor([4.0, 9.0], requiresgrad = True)
+sx.sqrt().sum().backward()
+io.print(closef(sx.grad[0], 0.25) and closef(sx.grad[1], 1.0 / 6.0))
+
+# where is differentiable
+var wg = T.Tensor([1, 2, 3, 4], requiresgrad = True)
+T.where(T.Tensor([1, 0, 1, 0]), wg, T.zeros([4])).sum().backward()
+io.print(wg.grad == T.Tensor([1, 0, 1, 0]))
+
+# autograd-aware slice / take (gradient scatters back)
+var sl = T.Tensor([1, 2, 3, 4], requiresgrad = True)
+sl.slice(1, 3, 1).sum().backward()
+io.print(sl.grad == T.Tensor([0, 1, 1, 0]))
+
+# nograd context disables tracking
+var w = T.Tensor([1.0, 2.0], requiresgrad = True)
+with T.nograd():
+    io.print((w * 2).requiresgrad() == False)
+io.print((w * 2).requiresgrad() == True)   # resumes after the with-block
+
+# detach drops grad
+io.print(w.detach().requiresgrad() == False)
+
+# Complex cannot require grad (Float-only)
+var craised = 0
+for thunk in [Function(): return T.Tensor([1, 2], dtype = "Complex", requiresgrad = True), Function(): return T.zeros([2], dtype = "Complex").requiresgrad(True)]:
+    try:
+        discard thunk()
+    catch as e:
+        craised = craised + 1
+io.print(craised == 2)
+
+# backward on a non-grad tensor throws; non-scalar without seed throws
+var bwraised = 0
+var bwt1 = Function():
+    return T.zeros([2]).backward()
+var bwt2 = Function():
+    var z = T.Tensor([1, 2], requiresgrad = True)
+    return (z * z).backward()
+for thunk in [bwt1, bwt2]:
+    try:
+        discard thunk()
+    catch as e:
+        bwraised = bwraised + 1
+io.print(bwraised == 2)
+
+# ---- serialization round-trip ----------------------------------------------------------
+var dmp = import("dump")
+var st = T.Tensor([[1.5, 2.5], [3.5, 4.5]])
+io.print(dmp.loads(dmp.dumps(st)) == st)
+io.print(dmp.loads(dmp.dumps(T.Tensor([[1, 2]], dtype = "Complex"))) == T.Tensor([[1, 2]], dtype = "Complex"))
+
+# Grad-tracking tensor refuses to serialize (must detach first)
+var draised = 0
+try:
+    discard dmp.dumps(T.Tensor([1.0, 2.0], requiresgrad = True))
+catch as e:
+    draised = draised + 1
+io.print(draised == 1)
+
+io.print("OK audit-tensor")

@@ -1,0 +1,2 @@
+# Bytes element above the 0..255 range
+discard Bytes([1, 256, 3])

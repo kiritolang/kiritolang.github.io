@@ -1,0 +1,83 @@
+# io.print / eprint / write / input / read accept an optional `stream=` keyword (a File / BytesIO /
+# std stream / any object with write or readline), overriding the current stdout/stdin for that one
+# call. Without it, they use the current standard streams. Typical + edge + adversarial.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+# --- print / write to a BytesIO via stream= (stdout untouched) ---
+var cap = io.BytesIO()
+io.stdout = cap                         # capture stdout to prove it stays empty
+var buf = io.BytesIO()
+io.print("hello", 42, stream=buf)
+io.write("raw", stream=buf)
+io.stdout = io.__stdout__
+assert buf.getvalue() == "hello 42\nraw", "print + write honor stream="
+assert cap.getvalue() == "", "stdout is untouched when stream= is given"
+
+# --- eprint via stream= ---
+var ebuf = io.BytesIO()
+io.eprint("err", "line", stream=ebuf)
+assert ebuf.getvalue() == "err line\n", "eprint honors stream="
+
+# --- read / input from a BytesIO via stream= ---
+var src = io.BytesIO("alpha\nbeta\nremaining data")
+assert io.input(stream=src) == "alpha", "input reads one line from stream="
+assert io.read(4, stream=src) == "beta", "read n from stream="
+assert io.read(stream=src) == "\nremaining data", "read all from stream="
+
+# --- input prompt goes to stdout; the line comes from stream= ---
+var pcap = io.BytesIO()
+io.stdout = pcap
+var src2 = io.BytesIO("yes\n")
+var ans = io.input("Continue? ", stream=src2)
+io.stdout = io.__stdout__
+assert ans == "yes" and pcap.getvalue() == "Continue? ", "prompt to stdout, answer from stream"
+
+# --- no stream= falls back to the current stdout/stdin (unchanged behaviour) ---
+var dcap = io.BytesIO()
+io.stdout = dcap
+io.print("default")
+io.stdout = io.__stdout__
+assert dcap.getvalue() == "default\n", "no stream= uses the current stdout"
+
+# --- stream= a real file round-trips ---
+var fp = path.join(path.getcwd(), "kirito_stream_kw.tmp")
+var f = io.open(fp, "w")
+io.print("file line", stream=f)
+io.write("more", stream=f)
+f.close()
+var rf = io.open(fp, "r")
+assert rf.read() == "file line\nmore", "stream= to a File round-trips"
+rf.close()
+discard path.remove(fp, missing_ok = True)
+
+# --- composes with Tee: stream= accepts a Tee to fan out ---
+var tee = import("tee")
+var t1 = io.BytesIO()
+var t2 = io.BytesIO()
+io.print("teed", stream=tee.Tee(t1, t2))
+assert t1.getvalue() == "teed\n" and t2.getvalue() == "teed\n", "stream= accepts a Tee"
+
+# --- empty / edge: print() with only stream= writes just a newline ---
+var nb = io.BytesIO()
+io.print(stream=nb)
+assert nb.getvalue() == "\n", "print(stream=) with no args writes a newline"
+
+# --- adversarial: an unknown keyword is rejected ---
+var threw = False
+try:
+    io.print("x", bogus=1)
+catch as e:
+    threw = True
+assert threw, "unknown keyword to print is rejected"
+
+# --- adversarial: stream= a non-stream object throws on use ---
+var threw2 = False
+try:
+    io.print("x", stream=42)
+catch as e:
+    threw2 = True
+assert threw2, "stream= to a non-stream object throws"
+
+io.print("OK")

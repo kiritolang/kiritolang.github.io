@@ -1,0 +1,21 @@
+# Weight serialization, independent of any graph/model definition.
+#
+# A state_dict is a plain Dict of dotted-name -> nested-number-data (see nn.Module.state_dict), so it
+# serializes with the stdlib `serialize` module (text, reference/cycle-safe) and can be reloaded into
+# any model with a matching parameter layout via `module.load_state_dict(...)`.
+
+var ser = import("serialize")
+
+var save = Function(state_dict, path):
+    ser.save(state_dict, path)
+
+var load = Function(path):
+    return ser.load(path)
+
+# convenience: save/load a Module's weights directly
+var save_module = Function(module, path):
+    save(module.state_dict(), path)
+
+var load_module = Function(module, path):
+    module.load_state_dict(load(path))
+    return module

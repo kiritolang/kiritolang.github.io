@@ -1,0 +1,64 @@
+var ascii_lowercase = "abcdefghijklmnopqrstuvwxyz"
+var ascii_uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+var ascii_letters = ascii_lowercase + ascii_uppercase
+var digits = "0123456789"
+var hexdigits = "0123456789abcdefABCDEF"
+var octdigits = "01234567"
+var punctuation = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+var whitespace = " \t\n\r"
+
+var capwords = Function(s) -> String:
+    var parts = []
+    for word in s.split(" "):
+        if len(word) > 0:
+            parts.append(word[0:1].upper() + word[1:].lower())
+        else:
+            parts.append(word)
+    return " ".join(parts)
+
+# --- fuzzy comparison (built on the native String.levenshtein edit distance) -------------------
+# A 0.0..1.0 similarity ratio: 1 - editdistance / longerlength. Two empty strings are identical (1.0).
+# similarity(a, b): `a` is a String; `b` is either a String (-> one Float score in [0, 1]) or a List
+# of Strings (-> a List of per-candidate scores). The List form runs a single native levenshtein call.
+var _ratio = Function(alen, dist, blen) -> Float:
+    var longer = alen if alen >= blen else blen
+    return 1.0 if longer == 0 else 1.0 - dist / longer
+var similarity = Function(a, b):
+    if type(b) == "List":
+        var dists = a.levenshtein(b)
+        var scores = []
+        var i = 0
+        while i < len(b):
+            scores.append(_ratio(len(a), dists[i], len(b[i])))
+            i = i + 1
+        return scores
+    return _ratio(len(a), a.levenshtein(b), len(b))
+
+# The candidate most similar to `query` (smallest edit distance), or None for an empty list. Ties go
+# to the earliest candidate. One native call computes every distance at once.
+var closest = Function(query, candidates):
+    if len(candidates) == 0:
+        return None
+    var dists = query.levenshtein(candidates)
+    var best = 0
+    var i = 1
+    while i < len(dists):
+        if dists[i] < dists[best]:
+            best = i
+        i = i + 1
+    return candidates[best]
+
+# Every candidate whose similarity to `query` is at least `cutoff`, as [candidate, score] pairs sorted
+# by score descending (score-annotated close matches).
+var fuzzymatch = Function(query, candidates, cutoff = 0.6):
+    var dists = query.levenshtein(candidates)
+    var scored = []
+    var i = 0
+    while i < len(candidates):
+        var longer = len(query) if len(query) >= len(candidates[i]) else len(candidates[i])
+        var score = 1.0 if longer == 0 else 1.0 - dists[i] / longer
+        if score >= cutoff:
+            scored.append([candidates[i], score])
+        i = i + 1
+    scored.sort(Function(p): return p[1], True)   # by score, descending
+    return scored

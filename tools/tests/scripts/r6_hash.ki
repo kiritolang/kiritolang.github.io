@@ -1,0 +1,118 @@
+# r6_hash.ki — ROUND-6 audit of the `hash` stdlib module (md5/sha1/sha256, adler32/crc32/crc64).
+# Verifies every documented function of docs/pages/10-stdlib.md "## hash" against the implementation
+# (src/kirito/stdlib_hash.hpp + hashing.hpp + deflate.hpp). Non-overlapping companion to r5_serde.ki
+# (which fuzzes arbitrary binary bytes); this pins KNOWN-ANSWER digests/checksums against the
+# published reference vectors and checks String/Bytes equivalence + keyword args.
+# Focus areas:
+#   - exact known-answer digests for "" and "abc" (md5/sha1/sha256) — the canonical RFC/FIPS vectors
+#   - the standard "123456789" checksum vectors: crc32=0xCBF43926, adler32=0x091E01DE,
+#     crc64/XZ=-7395533204333446662 (signed)
+#   - a String and the latin-1-equivalent Bytes hash IDENTICALLY (the byte-exact equivalence claim)
+#   - high bytes (>127) and embedded NUL hash correctly (binary safety)
+#   - checksums are returned as Integers; crc32/adler32 non-negative; crc64 may be negative (signed)
+#   - keyword-argument support (md5(data=...)) per inspect
+#
+# DETERMINISTIC: no RNG, clock, or network. Every digest is compared to a published constant.
+
+var io = import("io")
+var h = import("hash")
+
+var n = 0
+var ok = Function(cond, msg):
+    n = n + 1
+    assert cond, msg
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# ============================================================ MD5 KNOWN-ANSWER (RFC 1321)
+ok(h.md5("") == "d41d8cd98f00b204e9800998ecf8427e", "md5('') KAT")
+ok(h.md5("abc") == "900150983cd24fb0d6963f7d28e17f72", "md5('abc') KAT")
+ok(h.md5("message digest") == "f96b697d7cb7938d525a2f31aaf161d0", "md5('message digest') KAT")
+ok(len(h.md5("anything")) == 32, "md5 digest is 32 lowercase hex chars")
+
+# ============================================================ SHA-1 KNOWN-ANSWER (FIPS 180)
+ok(h.sha1("") == "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha1('') KAT")
+ok(h.sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d", "sha1('abc') KAT")
+ok(len(h.sha1("anything")) == 40, "sha1 digest is 40 hex chars")
+
+# ============================================================ SHA-256 KNOWN-ANSWER (FIPS 180)
+ok(h.sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256('') KAT")
+ok(h.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256('abc') KAT")
+ok(len(h.sha256("anything")) == 64, "sha256 digest is 64 hex chars")
+
+# digests are lowercase hex (no uppercase letters)
+ok(h.sha256("abc") == h.sha256("abc").lower(), "sha256 digest is lowercase")
+
+# ============================================================ CHECKSUMS: "123456789" reference vectors
+# crc32 (IEEE) of "123456789" == 0xCBF43926 == 3421780262
+ok(h.crc32("123456789") == 3421780262, "crc32('123456789') KAT (0xCBF43926)")
+# adler32 of "123456789" == 0x091E01DE == 152961502
+ok(h.adler32("123456789") == 152961502, "adler32('123456789') KAT (0x091E01DE)")
+# crc64/XZ of "123456789" == 0x995DC9BBDF1939FA, as a signed int64 == -7395533204333446662
+ok(h.crc64("123456789") == -7395533204333446662, "crc64('123456789') KAT (signed)")
+
+# checksums of the empty string
+ok(h.crc32("") == 0, "crc32('') == 0")
+ok(h.adler32("") == 1, "adler32('') == 1")
+ok(h.crc64("") == 0, "crc64('') == 0")
+
+# checksums are Integers
+ok(type(h.crc32("x")) == "Integer", "crc32 returns an Integer")
+ok(type(h.adler32("x")) == "Integer", "adler32 returns an Integer")
+ok(type(h.crc64("x")) == "Integer", "crc64 returns an Integer")
+# crc32/adler32 are non-negative (32-bit values widened to a positive Integer)
+ok(h.crc32("hello world") >= 0, "crc32 is non-negative")
+ok(h.adler32("hello world") >= 0, "adler32 is non-negative")
+
+# ============================================================ STRING / BYTES EQUIVALENCE
+# A String and the latin-1-equivalent Bytes (byte<->code-point 1:1) hash identically.
+ok(h.sha256(Bytes([97, 98, 99])) == h.sha256("abc"), "sha256(Bytes 'abc') == sha256('abc')")
+ok(h.md5(Bytes([97, 98, 99])) == h.md5("abc"), "md5(Bytes 'abc') == md5('abc')")
+ok(h.sha1(Bytes([97, 98, 99])) == h.sha1("abc"), "sha1(Bytes 'abc') == sha1('abc')")
+ok(h.crc32(Bytes([49, 50, 51, 52, 53, 54, 55, 56, 57])) == 3421780262, "crc32(Bytes '123456789') KAT")
+ok(h.adler32(Bytes([49, 50, 51, 52, 53, 54, 55, 56, 57])) == 152961502, "adler32(Bytes '123456789') KAT")
+ok(h.crc64(Bytes([49, 50, 51, 52, 53, 54, 55, 56, 57])) == -7395533204333446662, "crc64(Bytes '123456789') KAT")
+
+# round-trip equivalence: a String through latin-1 to Bytes hashes the same as the String
+var s = "The quick brown fox"
+ok(h.sha256(s.encode("latin-1")) == h.sha256(s), "sha256(s.encode latin-1) == sha256(s)")
+ok(h.crc64(s.encode("latin-1")) == h.crc64(s), "crc64(s.encode latin-1) == crc64(s)")
+
+# ============================================================ BINARY SAFETY (high bytes + embedded NUL)
+# Bytes spanning 0..255 (incl. > 127 and a NUL) hash without truncating at the NUL.
+var allbytes = []
+var k = 0
+while k < 256:
+    allbytes.append(k)
+    k = k + 1
+var ab = Bytes(allbytes)
+ok(len(h.md5(ab)) == 32, "md5 of all 256 byte values")
+ok(len(h.sha256(ab)) == 64, "sha256 of all 256 byte values")
+# embedded NUL: hashing must NOT stop at the NUL (a "ab\0cd" differs from "ab")
+var withNul = Bytes([97, 98, 0, 99, 100])
+ok(h.sha256(withNul) != h.sha256(Bytes([97, 98])), "embedded NUL does not truncate the hash")
+ok(h.sha256(withNul) == h.sha256(("ab" + chr(0) + "cd").encode("latin-1")), "Bytes-with-NUL == latin-1 String-with-NUL")
+# a high byte (0xFF) changes the digest
+ok(h.crc32(Bytes([255])) != h.crc32(Bytes([0])), "high byte 0xFF distinct from 0x00")
+
+# ============================================================ DETERMINISM
+ok(h.sha256("repeatable") == h.sha256("repeatable"), "sha256 is deterministic")
+ok(h.crc64("repeatable") == h.crc64("repeatable"), "crc64 is deterministic")
+
+# ============================================================ KEYWORD ARGUMENTS (per inspect)
+ok(h.md5(data="abc") == "900150983cd24fb0d6963f7d28e17f72", "md5 accepts data= keyword")
+ok(h.sha256(data="abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 accepts data= keyword")
+ok(h.crc32(data="123456789") == 3421780262, "crc32 accepts data= keyword")
+ok(h.crc64(data="123456789") == -7395533204333446662, "crc64 accepts data= keyword")
+
+# ============================================================ BAD INPUT throws cleanly
+# A non-String/non-Bytes argument is a clean error, not a crash.
+ok(throws(Function(): return h.md5(42)), "md5 of an Integer throws")
+ok(throws(Function(): return h.crc32([1, 2, 3])), "crc32 of a List throws")
+
+io.print("r6_hash: " + String(n) + " checks passed")

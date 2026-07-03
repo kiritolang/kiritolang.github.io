@@ -1,0 +1,92 @@
+var csv = import("csv")
+var io = import("io")
+
+# ---- documented signatures: parse / parserow / format / formatrow ------------------------------
+io.print(csv.parse("a,b,c\n1,2,3"))
+io.print(csv.parserow("a,b,c"))
+io.print(csv.format([["a", "b"], ["c", "d"]]))
+io.print(csv.formatrow(["a", "b"]))
+
+# ---- empty input -------------------------------------------------------------------------------
+io.print(csv.parse(""))                              # no rows
+io.print(csv.parserow(""))                           # one empty field
+
+# ---- newline handling: trailing newline doesn't add an empty trailing row; blank lines ARE kept ----
+io.print(csv.parse("a,b\nc,d\n"))                    # 2 rows (trailing newline ignored)
+io.print(csv.parse("a,b\n\nc,d"))                    # 3 rows incl. an empty middle row [[a,b],[""],[c,d]]
+
+# ---- trailing comma yields empty trailing field ------------------------------------------------
+io.print(csv.parserow("a,b,"))                       # -> [a, b, ""]
+
+# ---- single field, no commas -------------------------------------------------------------------
+io.print(csv.parserow("solo"))
+
+# ---- quoting: comma inside quoted field --------------------------------------------------------
+io.print(csv.parserow("\"a,b\",c"))                  # [a,b , c]
+
+# ---- escaped quote inside quoted field (doubled "") --------------------------------------------
+io.print(csv.parserow("\"hello \"\"world\"\"\",ok"))   # [hello "world", ok]
+
+# ---- formatrow auto-quotes fields containing comma/quote/newline -------------------------------
+io.print(csv.formatrow(["plain", "has,comma"]))      # second field quoted
+io.print(csv.formatrow(["q\"x"]))                    # quote doubled & wrapped
+io.print(csv.formatrow(["line1\nline2"]))            # newline -> wrapped
+io.print(csv.formatrow([1, 2, 3]))                   # non-strings stringified
+
+# ---- round-trip a row with quoteworthy content (single-line) -----------------------------------
+var row = ["x,y", "z\"w", "plain"]
+var rt = csv.parserow(csv.formatrow(row))
+io.print(rt == row)
+
+# ---- multiple rows format then parse -----------------------------------------------------------
+var rows = [["a", "b"], ["c", "d"]]
+io.print(csv.parse(csv.format(rows)) == rows)
+
+# ---- RFC-4180 quoted-newline: a `\n` inside a quoted field is part of the field, NOT a row sep ----
+io.print(csv.parse("\"a\nb\",c"))                    # [["a\nb", "c"]] — single row
+io.print(csv.parse("a,\"line1\nline2\"\nx,y"))       # [[a,"line1\nline2"],[x,y]]
+
+# ---- ADVERSARIAL: a lone unmatched quote opens quote-mode; rest of line is one field -----------
+io.print(csv.parserow("\"unmatched"))                # [unmatched]
+io.print(csv.parserow("a,\"b"))                      # [a, b]
+
+# ---- ADVERSARIAL: a quoted field followed by junk after closing quote --------------------------
+io.print(csv.parserow("\"ab\"cd"))                   # impl: [abcd] (quote-flips, plain text appended)
+
+# ---- ADVERSARIAL: many fields ------------------------------------------------------------------
+var manyrow = ""
+var i = 0
+while i < 50:
+    if i > 0:
+        manyrow = manyrow + ","
+    manyrow = manyrow + "f" + String(i)
+    i = i + 1
+var parsed = csv.parserow(manyrow)
+io.print(len(parsed))
+io.print(parsed[0] + "/" + parsed[49])
+
+# ---- ADVERSARIAL: large row count --------------------------------------------------------------
+var big = ""
+i = 0
+while i < 100:
+    if i > 0:
+        big = big + "\n"
+    big = big + "row" + String(i) + ",val"
+    i = i + 1
+var bigp = csv.parse(big)
+io.print(len(bigp))
+io.print(bigp[0])
+io.print(bigp[99])
+
+# ---- Unicode in fields -------------------------------------------------------------------------
+io.print(csv.parserow("名前,café"))
+io.print(csv.formatrow(["名前", "café"]))
+
+# ---- field with only a quote-pair "" -----------------------------------------------------------
+io.print(csv.parserow("\"\""))                       # empty quoted field -> [""]
+io.print(csv.parserow("\"\",\"\""))                  # two empties -> ["", ""]
+
+# ---- formatrow on empty row --------------------------------------------------------------------
+io.print(csv.formatrow([]))                          # empty string
+
+io.print("OK audit-csv")

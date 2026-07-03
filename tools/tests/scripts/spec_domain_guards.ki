@@ -1,0 +1,75 @@
+# Regression: bad-input "silent bug" guards added across the stdlib — domain/range/malformed inputs
+# must RAISE a clear error instead of returning NaN/inf/garbage. Each block prints `True` lines.
+var io = import("io")
+var math = import("math")
+var c = import("complex")
+var t = import("tensor")
+var st = import("statistics")
+var tb = import("tabular")
+var tm = import("time")
+
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        return True
+    return False
+
+# --- math: domain errors throw; NaN passes through; overflow-to-inf is not a domain error ----------
+io.print(throws(Function(): return math.sqrt(-1)))
+io.print(throws(Function(): return math.log(0)) and throws(Function(): return math.log(-1)))
+io.print(throws(Function(): return math.asin(2)) and throws(Function(): return math.acos(2)))
+io.print(throws(Function(): return math.acosh(0)) and throws(Function(): return math.atanh(1)))
+io.print(throws(Function(): return math.log2(0)) and throws(Function(): return math.log10(0)))
+io.print(throws(Function(): return math.log1p(-1)) and throws(Function(): return math.log(8, 1)))
+io.print(throws(Function(): return math.gamma(0)) and throws(Function(): return math.gamma(-2)))
+io.print(throws(Function(): return math.pow(-2, 0.5)) and throws(Function(): return math.pow(0, -1)))
+io.print(throws(Function(): return math.fmod(1, 0)))
+io.print(math.isnan(math.sqrt(math.nan)) and math.isinf(math.exp(1000)))   # NaN/overflow do NOT throw
+io.print(math.sqrt(0) == 0.0 and math.pow(2, 10) == 1024.0)                # valid still works
+
+# --- complex: domain errors (log/log10 of 0, pow zero-to-negative, atanh +/-1 throw) ---------------
+io.print(throws(Function(): return c.log(c.zero)) and throws(Function(): return c.log10(c.zero)))
+io.print(throws(Function(): return c.pow(c.zero, c.of(0 - 1, 0))) and throws(Function(): return c.zero ** c.of(0 - 1, 0)))
+io.print(throws(Function(): return c.atanh(c.one)) and throws(Function(): return c.atanh(c.of(0 - 1, 0))))
+io.print(not throws(Function(): return c.sqrt(c.of(0 - 1, 0))))            # sqrt(-1)=i is valid
+io.print(not throws(Function(): return c.log(c.of(0 - 1, 0))))            # log(-1)=i*pi is valid
+io.print(not throws(Function(): return c.acosh(c.zero)))                  # valid in the complex plane
+
+# --- tensor: elementwise math domain + reciprocal(0) + clip(lo>hi) ---------------------------------
+io.print(throws(Function(): return t.Tensor([0 - 1.0]).sqrt()))
+io.print(throws(Function(): return t.Tensor([0.0]).log()) and throws(Function(): return t.Tensor([2.0]).asin()))
+io.print(throws(Function(): return t.Tensor([2.0]).atanh()) and throws(Function(): return t.Tensor([0.5]).acosh()))
+io.print(throws(Function(): return t.Tensor([0.0]).reciprocal()))         # consistent with `/` by zero
+io.print(throws(Function(): return t.Tensor([0 - 2.0]).pow(0.5)))         # negative base, fractional exp
+io.print(throws(Function(): return t.Tensor([1.0]).clip(5.0, 1.0)))       # lower > upper
+io.print(t.norm(t.Tensor([3.0, 0.0, 4.0]), 0.0) == 2.0)                   # ord=0 counts nonzeros (NumPy)
+io.print(t.Tensor([0.0, 4.0]).sqrt().tolist() == [0.0, 2.0])             # sqrt(0)=0 valid; (-8)**3 below
+io.print(t.Tensor([0 - 8.0]).pow(3.0).tolist() == [0 - 512.0])           # integer exponent is fine
+
+# --- builtins: Integer/Float malformed strings + pow negative modulus ------------------------------
+io.print(throws(Function(): return Integer("--5")) and throws(Function(): return Integer("+ 5")))
+io.print(throws(Function(): return Integer("0x-5")) and throws(Function(): return Integer("0b -1")))
+io.print(Integer("  -5 ") == -5 and Integer("-0xFF") == -255)            # well-formed still works
+io.print(throws(Function(): return Float("0x1p4")))                       # C99 hex float rejected
+io.print(Float("1.5e3") == 1500.0 and Float("-inf") < 0)                 # valid floats still parse
+io.print(throws(Function(): return pow(7, 2, 0 - 5)))                     # negative modulus rejected
+io.print(pow(2, 10, 1000) == 24)                                          # valid modular pow
+
+# --- statistics.quantiles: n must be >= 1 ----------------------------------------------------------
+io.print(throws(Function(): return st.quantiles([1, 2, 3], 0)) and throws(Function(): return st.quantiles([1, 2, 3], 0 - 2)))
+io.print(len(st.quantiles([1, 2, 3, 4], 4)) == 3)                        # valid n works
+
+# --- tabular: Series length mismatch (both directions) + ragged CSV --------------------------------
+io.print(throws(Function(): return tb.Series([1, 2]) + tb.Series([1, 2, 3])))
+io.print(throws(Function(): return tb.Series([1, 2, 3]) + tb.Series([1, 2])))   # symmetric now
+io.print(throws(Function(): return tb.readcsv("a,b\n1,2,3,4")))          # ragged (too many fields)
+io.print((tb.Series([1, 2, 3]) + tb.Series([10, 20, 30])).tolist() == [11, 22, 33])  # equal length ok
+
+# --- time.strptime: out-of-range fields + trailing data throw; make() rollover unchanged -----------
+io.print(throws(Function(): return tm.strptime("2024-99-99", "%Y-%m-%d")))
+io.print(throws(Function(): return tm.strptime("2024-01-01XYZ", "%Y-%m-%d")))
+io.print(tm.strptime("2024-06-15", "%Y-%m-%d").iso() == "2024-06-15T00:00:00")   # valid parse
+io.print(tm.make(2024, 13, 1).year == 2025)                              # make() keeps C-mktime rollover
+
+io.print("OK domain-guards")

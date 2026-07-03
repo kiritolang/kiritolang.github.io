@@ -1,0 +1,23 @@
+# A sample crontab exercising every syntactic feature.
+
+# every minute
+* * * * *   echo tick
+
+# top of each hour
+0 * * * *   date
+
+# weekdays at 09:30 (day-of-week 1..5 = Mon..Fri)
+30 9 * * 1-5   echo "weekday morning"
+
+# first of the month, midnight
+0 0 1 * *   echo "monthly-backup"
+
+# a list of specific minutes past every hour
+0,15,30,45 * * * *   echo "quarter-hour"
+
+# a step over the whole day: every 3 hours
+0 */3 * * *   echo "every-3-hours"
+
+# @macros expand to the corresponding 5-field form
+@daily   echo "@daily works"
+@hourly  echo "@hourly works"

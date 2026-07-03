@@ -1,0 +1,114 @@
+# feedreader/feed.ki — parse either RSS 2.0 or Atom XML into a normalized in-memory feed.
+#
+# The normalized shape:
+#   {"title": String, "link": String, "kind": "rss" | "atom", "items": [Item]}
+# Item:
+#   {"id": String, "title": String, "link": String, "summary": String, "date": String}
+#
+# `id` is the feed-specific unique key (guid for RSS, id for Atom), used by the store to dedup on
+# sync. `date` is preserved as the raw string from the feed (RSS uses RFC 822, Atom uses ISO-8601).
+
+var xml = import("xml")
+
+var _text = Function(elt) -> String:
+    if elt == None or elt.text == None:
+        return ""
+    return elt.text
+
+# Atom link element: <link href="..."/>. RSS link element: <link>...</link>.
+var _atomLink = Function(elt) -> String:
+    if elt == None:
+        return ""
+    var href = elt.get("href")
+    if href != None:
+        return href
+    return _text(elt)
+
+# The Atom namespace prefix ({http://www.w3.org/2005/Atom}) appears on every tag name when
+# `xml.fromstring` parses the document. Strip it so callers can look up by bare tag name.
+var _stripNs = Function(tag : String) -> String:
+    if tag.startswith("{"):
+        var close = tag.find("}")
+        if close >= 0:
+            return tag[close + 1:]
+    return tag
+
+# Find a direct child by (namespace-stripped) tag name; None if absent.
+var _findChild = Function(elt, name : String):
+    if elt == None:
+        return None
+    for c in elt.children:
+        if _stripNs(c.tag) == name:
+            return c
+    return None
+
+# `elt` is the root of the parsed document. Sniff RSS vs Atom by looking at the root's tag name.
+var parseString = Function(src : String) -> Dict:
+    var root = xml.fromstring(src)
+    var kind = _stripNs(root.tag)
+    if kind == "rss":
+        return _parseRss(root)
+    if kind == "feed":
+        return _parseAtom(root)
+    throw "unrecognized feed root element: " + kind + " (expected `rss` or `feed`)"
+
+# --- RSS 2.0 ---
+var _parseRss = Function(root) -> Dict:
+    var channel = _findChild(root, "channel")
+    if channel == None:
+        throw "RSS feed has no <channel>"
+    var items = []
+    for c in channel.children:
+        if _stripNs(c.tag) != "item":
+            continue
+        var guidElt = _findChild(c, "guid")
+        var id = _text(guidElt)
+        if id == "":
+            id = _text(_findChild(c, "link"))
+        items.append({
+            "id":      id,
+            "title":   _text(_findChild(c, "title")),
+            "link":    _text(_findChild(c, "link")),
+            "summary": _text(_findChild(c, "description")),
+            "date":    _text(_findChild(c, "pubDate")),
+        })
+    return {
+        "title":  _text(_findChild(channel, "title")),
+        "link":   _text(_findChild(channel, "link")),
+        "kind":   "rss",
+        "items":  items,
+    }
+
+# --- Atom 1.0 ---
+var _parseAtom = Function(root) -> Dict:
+    var items = []
+    for c in root.children:
+        if _stripNs(c.tag) != "entry":
+            continue
+        var link = _atomLink(_findChild(c, "link"))
+        items.append({
+            "id":      _text(_findChild(c, "id")),
+            "title":   _text(_findChild(c, "title")),
+            "link":    link,
+            "summary": _text(_findChild(c, "summary")),
+            "date":    _text(_findChild(c, "updated")),
+        })
+    return {
+        "title":  _text(_findChild(root, "title")),
+        "link":   _atomLink(_findChild(root, "link")),
+        "kind":   "atom",
+        "items":  items,
+    }
+
+# Fetch a feed by URL (http/https) via the net module, or read a local file path directly.
+var fetch = Function(source : String) -> Dict:
+    if source.startswith("http://") or source.startswith("https://"):
+        var net = import("net")
+        var resp = net.get(source)
+        resp.raiseforstatus()
+        return parseString(resp.text)
+    var io = import("io")
+    var fh = io.open(source, "r")
+    var src = fh.read()
+    fh.close()
+    return parseString(src)

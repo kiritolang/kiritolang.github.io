@@ -1,0 +1,1 @@
+discard import("tensor").Tensor([0 - 1.0]).sqrt()

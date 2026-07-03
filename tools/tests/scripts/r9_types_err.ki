@@ -1,0 +1,380 @@
+# r9_types_err.ki — exhaustive error-hardening for ALL built-in type methods.
+# Focus: wrong type, out-of-bounds, boundary, silent-error cases for
+# String / List / Set / Dict / Bytes methods not already in r4-r8.
+# Each ok() increments n; final line is the golden output.
+
+var io = import("io")
+var math = import("math")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== String methods: wrong types
+ok(throws(Function(): return "abc".replace(1, "x")), "replace: non-string old throws")
+ok(throws(Function(): return "abc".replace("a", 1)), "replace: non-string new throws")
+ok(throws(Function(): return "abc".replace(None, "x")), "replace: None old throws")
+ok(throws(Function(): return "abc".split(1)), "split: non-string sep throws")
+ok(throws(Function(): return "abc".split(1.5)), "split: float sep throws")
+ok(throws(Function(): return "abc".find(5)), "find: non-string sub throws")
+ok(throws(Function(): return "abc".find(None)), "find: None sub throws")
+ok(throws(Function(): return "abc".index(5)), "index: non-string throws")
+ok(throws(Function(): return "abc".rfind(5)), "rfind: non-string throws")
+ok(throws(Function(): return "abc".rindex(5)), "rindex: non-string throws")
+ok(throws(Function(): return "abc".count(5)), "count: non-string throws")
+ok(throws(Function(): return "abc".startswith(5)), "startswith: non-string throws")
+ok(throws(Function(): return "abc".endswith(5)), "endswith: non-string throws")
+ok(throws(Function(): return "abc".removeprefix(5)), "removeprefix: non-string throws")
+ok(throws(Function(): return "abc".removesuffix(5)), "removesuffix: non-string throws")
+ok(throws(Function(): return "abc".join(5)), "join: non-iterable throws")
+ok(throws(Function(): return "abc".join([1, 2])), "join: list of non-strings throws")
+ok(throws(Function(): return ",".join([1, 2])), "join: list of ints throws (must be strings)")
+ok(throws(Function(): return "abc".partition(5)), "partition: non-string sep throws")
+ok(throws(Function(): return "abc".rpartition(5)), "rpartition: non-string sep throws")
+ok(throws(Function(): return "abc".partition("")), "partition: empty sep throws")
+ok(throws(Function(): return "abc".rpartition("")), "rpartition: empty sep throws")
+ok(throws(Function(): return "abc".encode(5)), "encode: non-string enc throws")
+ok(throws(Function(): return "abc".encode("utf-99")), "encode: bad encoding throws")
+ok(throws(Function(): return "héllo".encode("ascii")), "encode: non-ASCII to ascii throws")
+ok(throws(Function(): return "abc".zfill("a")), "zfill: non-integer throws")
+ok(throws(Function(): return "abc".ljust("a")), "ljust: non-integer width throws")
+ok(throws(Function(): return "abc".rjust("a")), "rjust: non-integer width throws")
+ok(throws(Function(): return "abc".center("a")), "center: non-integer width throws")
+ok(throws(Function(): return "abc".levenshtein(5)), "levenshtein: non-string/list throws")
+ok(throws(Function(): return "abc".apply(5)), "apply: non-callable throws")
+ok(throws(Function(): return "abc".apply(Function(c): return 5)), "apply: non-string return throws")
+ok(throws(Function(): return "abc".split("")), "split: empty string sep throws")
+
+# =========================================================== String methods: index/rindex missing
+ok("abc".find("z") == -1, "find: missing sub returns -1")
+ok("abc".rfind("z") == -1, "rfind: missing sub returns -1")
+ok(throws(Function(): return "abc".index("z")), "index: missing sub throws")
+ok(throws(Function(): return "abc".rindex("z")), "rindex: missing sub throws")
+
+# =========================================================== String methods: boundary behavior
+ok("abc".replace("x", "y") == "abc", "replace: no match is identity")
+ok("abc".replace("b", "B", 0) == "abc", "replace: count=0 changes nothing")
+ok("aaa".replace("a", "b", 2) == "bba", "replace: count=2 first two only")
+ok("abc".find("b", 1) == 1, "find with start")
+ok("abc".find("b", 2) == -1, "find with start past the match")
+ok("abc".find("b", 0, 1) == -1, "find with end before match")
+ok("abc".find("b", 0, 2) == 1, "find with end at match")
+ok("abcabc".count("a") == 2, "count occurrences")
+ok("abcabc".count("a", 1) == 1, "count with start")
+ok("abcabc".count("a", 1, 3) == 0, "count with start+end excluding match")
+ok("abc".startswith("ab") == True, "startswith basic")
+ok("abc".startswith("ab", 1) == False, "startswith with start")
+ok("abc".endswith("bc") == True, "endswith basic")
+ok("abc".endswith("bc", 0, 2) == False, "endswith with end excludes match")
+ok("abc".partition("b") == ["a", "b", "c"], "partition basic")
+ok("abc".partition("x") == ["abc", "", ""], "partition: no match")
+ok("abc".rpartition("b") == ["a", "b", "c"], "rpartition basic")
+ok("abc".rpartition("x") == ["", "", "abc"], "rpartition: no match")
+ok("abcbca".partition("bc") == ["a", "bc", "bca"], "partition finds FIRST match")
+ok("abcbca".rpartition("bc") == ["abc", "bc", "a"], "rpartition finds LAST match")
+ok("  abc  ".strip() == "abc", "strip default whitespace")
+ok("  abc  ".lstrip() == "abc  ", "lstrip default")
+ok("  abc  ".rstrip() == "  abc", "rstrip default")
+ok("xabcx".strip("x") == "abc", "strip chars")
+ok("abc".strip("x") == "abc", "strip: no match is identity")
+ok("abc".removeprefix("ab") == "c", "removeprefix match")
+ok("abc".removeprefix("xyz") == "abc", "removeprefix no match is identity")
+ok("abc".removesuffix("bc") == "a", "removesuffix match")
+ok("abc".removesuffix("xyz") == "abc", "removesuffix no match is identity")
+ok("abc".removeprefix("abcabc") == "abc", "removeprefix longer than string is identity")
+ok("".removeprefix("x") == "", "removeprefix on empty string")
+ok("abc".center(3) == "abc", "center: width == len is identity")
+ok("abc".center(2) == "abc", "center: width < len is identity")
+ok("abc".zfill(2) == "abc", "zfill: width < len is identity")
+ok("-5".zfill(4) == "-005", "zfill: negative number pads after minus")
+ok("abc".ljust(5) == "abc  ", "ljust pads right")
+ok("abc".rjust(5) == "  abc", "rjust pads left")
+ok("abc".center(7) == "  abc  ", "center pads both sides")
+ok("abc".ljust(5, "-") == "abc--", "ljust custom fill")
+ok("abc".center(7, "*") == "**abc**", "center custom fill")
+
+# =========================================================== String format method limitations
+ok("Hello {}!".format("world") == "Hello world!", "str.format basic {}")
+ok("{0} and {1}".format("a", "b") == "a and b", "str.format indexed")
+ok("{1} then {0}".format("A", "B") == "B then A", "str.format reordering")
+ok("{0} {0}".format("x") == "x x", "str.format repeated index")
+ok("no subs".format() == "no subs", "str.format no placeholders")
+ok(throws(Function(): return "{0} {1}".format("one")), "str.format too few args throws")
+ok(throws(Function(): return "{name}".format(name="Alice")), "str.format named placeholder throws")
+ok(throws(Function(): return "{0:.2f}".format(3.14)), "str.format with format-spec throws")
+ok(throws(Function(): return "{0:05d}".format(42)), "str.format indexed+spec throws")
+
+# =========================================================== String levenshtein
+ok("abc".levenshtein("abc") == 0, "levenshtein identical")
+ok("".levenshtein("") == 0, "levenshtein both empty")
+ok("abc".levenshtein("") == 3, "levenshtein vs empty = length")
+ok("".levenshtein("abc") == 3, "levenshtein from empty = length")
+ok("abc".levenshtein(["abc", "abd"]) == [0, 1], "levenshtein list form")
+ok("abc".levenshtein([]) == [], "levenshtein empty list")
+ok(throws(Function(): return "abc".levenshtein(5)), "levenshtein int throws")
+ok(throws(Function(): return "abc".levenshtein(Bytes([65, 66, 67]))), "levenshtein Bytes throws")
+ok(throws(Function(): return "abc".levenshtein(["abc", 5])), "levenshtein list with int throws")
+
+# =========================================================== String apply
+ok("hello".apply(Function(c): return c.upper()) == "HELLO", "apply upper each char")
+ok("".apply(Function(c): return c) == "", "apply empty string")
+ok("a1b2".apply(Function(c): return c if c.isalpha() else "_") == "a_b_", "apply conditional")
+ok(throws(Function(): return "abc".apply(Function(c): return 5)), "apply must return String")
+ok(throws(Function(): return "abc".apply(5)), "apply non-callable throws")
+
+# =========================================================== String is* predicates
+ok("123".isdigit() == True, "isdigit all digits")
+ok("12a".isdigit() == False, "isdigit mixed")
+ok("".isdigit() == False, "isdigit empty")
+ok("abc".isalpha() == True, "isalpha all alpha")
+ok("abc123".isalpha() == False, "isalpha mixed")
+ok("".isalpha() == False, "isalpha empty")
+ok("abc123".isalnum() == True, "isalnum")
+ok("abc 123".isalnum() == False, "isalnum with space")
+ok("".isalnum() == False, "isalnum empty")
+ok("   ".isspace() == True, "isspace all space")
+ok("".isspace() == False, "isspace empty")
+ok("abc".islower() == True, "islower")
+ok("Abc".islower() == False, "islower mixed case")
+ok("".islower() == False, "islower empty")
+ok("ABC".isupper() == True, "isupper")
+ok("ABc".isupper() == False, "isupper mixed")
+ok("".isupper() == False, "isupper empty")
+ok("123".islower() == False, "islower on digits (no cased chars)")
+ok("123".isupper() == False, "isupper on digits (no cased chars)")
+
+# =========================================================== String split behavior
+ok("a,b,c".split(",") == ["a", "b", "c"], "split comma")
+ok("a  b  c".split() == ["a", "b", "c"], "split whitespace collapses runs")
+ok("  a  ".split() == ["a"], "split leading/trailing whitespace removed")
+ok("".split(",") == [""], "split empty string by sep = ['']")
+ok("".split() == [], "split empty string no sep = []")
+ok("a,,b".split(",") == ["a", "", "b"], "split consecutive seps = empty fields")
+ok("a,b,c".split(",", 1) == ["a", "b,c"], "split maxsplit=1")
+ok("a,b,c".split(",", 0) == ["a,b,c"], "split maxsplit=0")
+# rsplit is not available in Kirito (only split); verified by probe
+
+# =========================================================== List methods: error hardening
+ok(throws(Function(): return [].pop()), "pop() on empty throws")
+ok(throws(Function(): return [1,2].pop(5)), "pop(5) OOB throws")
+ok(throws(Function(): return [1,2].pop(-3)), "pop(-3) OOB throws")
+ok(throws(Function(): return [1,2].index(5)), "index: missing throws")
+ok(throws(Function(): return [1,2].remove(5)), "remove: missing throws")
+ok(throws(Function(): return [1].extend(5)), "extend non-iterable throws")
+ok(throws(Function(): return [1].insert("a", 0)), "insert non-integer index throws")
+ok(throws(Function(): return [1].insert(1.5, 0)), "insert float index throws")
+ok(throws(Function(): return [1, "a"].sort()), "sort mixed non-comparable throws")
+ok(throws(Function(): return [].append()), "append() no args throws")
+
+# =========================================================== List methods: correct behavior
+ok([1,2,3].copy() == [1,2,3], "copy() returns equal list")
+var lst = [3,1,2]
+var lst2 = lst.copy()
+lst2.append(99)
+ok(lst == [3,1,2], "copy() is shallow - original unchanged")
+ok([1,2,3].pop() == 3, "pop() last element")
+ok([1,2,3].pop(0) == 1, "pop(0) first element")
+ok([1,2,3].count(2) == 1, "count: found once")
+ok([1,2,2,3].count(2) == 2, "count: found twice")
+ok([1,2,3].count(5) == 0, "count: not found = 0")
+ok([1,2,3].index(2) == 1, "index found")
+ok([1,2,3,2].index(2) == 1, "index: returns first occurrence")
+ok(throws(Function(): return [1,2,3].index(2, 2)), "index with start past match throws")
+var lcp = [3,1,4,1,5]
+lcp.sort()
+ok(lcp == [1,1,3,4,5], "sort default ascending")
+var lcp2 = [3,1,4,1,5]
+lcp2.sort(reverse=True)
+ok(lcp2 == [5,4,3,1,1], "sort reverse=True")
+var lcp3 = ["banana", "apple", "cherry"]
+lcp3.sort(key=Function(s): return len(s))
+ok(lcp3 == ["apple", "banana", "cherry"], "sort by length")
+var lclear = [1,2,3]
+lclear.clear()
+ok(lclear == [], "clear() empties list")
+ok([1,2]+[3,4] == [1,2,3,4], "list concatenation +")
+ok([1,2]*3 == [1,2,1,2,1,2], "list repetition *")
+ok([1,2]*(-1) == [], "list * negative returns empty (same as * 0)")
+
+# =========================================================== List apply
+ok([1,2,3].apply(Function(x): return x*2) == [2,4,6], "list apply")
+ok([].apply(Function(x): return x) == [], "list apply empty")
+ok(["a","b"].apply(Function(s): return s.upper()) == ["A","B"], "list apply strings")
+
+# =========================================================== Set methods: error hardening
+ok(throws(Function(): return {1,2}.remove(5)), "set.remove: missing throws")
+ok(throws(Function(): return {1,2}.add([1,2])), "set.add: unhashable throws")
+ok(throws(Function(): return {1,2}.remove([1,2])), "set.remove: unhashable throws")
+ok(throws(Function(): return Set([]).pop()), "set.pop: empty throws")
+ok(throws(Function(): return {1} - [1]), "set - list throws (must be Set)")
+ok(throws(Function(): return {1} < [1]), "set < list throws (must be Set)")
+ok(throws(Function(): return {1} <= [1]), "set <= list throws")
+ok(throws(Function(): return {1} > [1]), "set > list throws")
+ok(throws(Function(): return {1} >= [1]), "set >= list throws")
+ok(throws(Function(): return {1}.union(5)), "set.union: non-iterable throws")
+ok(throws(Function(): return {1}.intersection(5)), "set.intersection: non-iterable throws")
+ok(throws(Function(): return {1}.difference(5)), "set.difference: non-iterable throws")
+ok(throws(Function(): return {1}.issubset(5)), "set.issubset: non-iterable throws")
+
+# =========================================================== Set: unhashable silent no-ops
+var sx = {1, 2, 3}
+var discardOk = True
+try:
+    sx.discard([99])
+catch:
+    discardOk = False
+ok(discardOk and sx == {1,2,3}, "set.discard unhashable is silent no-op")
+ok(sx.contains([99]) == False, "set.contains unhashable returns False (no throw)")
+ok(([99] in sx) == False, "in with unhashable value returns False (no throw)")
+
+# =========================================================== Set methods: correct behavior
+ok({1,2}.union([3,4]) == {1,2,3,4}, "union with list (method takes any iterable)")
+ok({1,2,3}.intersection([2,3,4]) == {2,3}, "intersection with list")
+ok({1,2,3}.difference([2,3,4]) == {1}, "difference with list")
+ok({1,2,3}.symmetricdifference([2,3,4]) == {1,4}, "symmetricdifference with list")
+ok({1,2}.issubset([1,2,3]) == True, "issubset with list")
+ok({1,2,3}.issuperset([1,2]) == True, "issuperset with list")
+ok({1,2}.isdisjoint([3,4]) == True, "isdisjoint with list")
+ok({1,2}.isdisjoint([2,3]) == False, "isdisjoint: overlapping False")
+ok({1,2} - {1} == {2}, "set - set difference operator")
+ok({1,2} < {1,2,3} == True, "proper subset <")
+ok({1,2} < {1,2} == False, "proper subset < same is False")
+ok({1,2} <= {1,2} == True, "subset <= same is True")
+ok({1,2,3} > {1,2} == True, "proper superset >")
+var scpy = {1,2,3}.copy()
+scpy.add(4)
+ok(4 in scpy and 4 not in {1,2,3}, "copy() is independent")
+var sclear = {1,2,3}
+sclear.clear()
+ok(sclear == Set([]), "clear() empties set")
+
+# =========================================================== Set apply
+ok({1,2,3}.apply(Function(x): return x*10) == {10,20,30}, "set apply")
+ok(Set([]).apply(Function(x): return x) == Set([]), "set apply empty")
+
+# =========================================================== Dict methods: error hardening
+ok(throws(Function(): return {}.pop("z")), "dict.pop: missing no default throws")
+ok(throws(Function(): return {}.popitem()), "dict.popitem: empty throws")
+ok(throws(Function(): return {}.get([])), "dict.get: unhashable key throws")
+ok(throws(Function(): return {}[[1,2]]), "dict[list] unhashable throws")
+# Note: dict key assignment with unhashable key throws (tested via getitem probe)
+
+# =========================================================== Dict methods: correct behavior
+ok({"a":1}.pop("a") == 1, "dict.pop: returns value")
+ok({"a":1}.pop("z", -1) == -1, "dict.pop with default: missing returns default")
+ok({"a":1}.pop("a", 99) == 1, "dict.pop with default: found returns value")
+var d = {"a": 1}
+d.setdefault("b", 99)
+d.setdefault("a", 99)
+ok(d["a"] == 1 and d["b"] == 99, "setdefault: doesn't overwrite existing, does set missing")
+ok(d.get("a") == 1, "get existing key")
+ok(d.get("z") == None, "get missing key returns None")
+ok(d.get("z", 42) == 42, "get missing with default")
+var d2 = {"x": 10}
+d2.update({"y": 20, "x": 99})
+ok(d2 == {"x": 99, "y": 20}, "update overwrites and adds")
+var dkeys = {"a":1,"b":2}.keys()
+ok(type(dkeys) == "List", "keys() returns List")
+ok("a" in dkeys and "b" in dkeys, "keys() contains keys")
+ok(type({"a":1}.values()) == "List", "values() returns List")
+ok(type({"a":1}.items()) == "List", "items() returns List")
+var dcpy = {"a":1,"b":2}.copy()
+dcpy["c"] = 3
+ok("c" not in {"a":1,"b":2}, "copy() is independent")
+var dclear = {"a":1}
+dclear.clear()
+ok(dclear == {}, "clear() empties dict")
+var pi = {"x":10}.popitem()
+ok(type(pi) == "List" and len(pi) == 2, "popitem returns [key, value] list")
+
+# =========================================================== Dict apply
+ok({"a":1,"b":2}.apply(Function(v): return v*10) == {"a":10,"b":20}, "dict apply maps values")
+ok({}.apply(Function(v): return v*10) == {}, "dict apply empty")
+
+# =========================================================== Bytes methods: construction
+ok(Bytes([65,66,67]) == Bytes("ABC"), "Bytes from list of ints")
+ok(Bytes(3) == Bytes([0,0,0]), "Bytes(n) = n zero bytes")
+ok(Bytes("hi") == Bytes([104,105]), "Bytes from string UTF-8")
+ok(Bytes(Bytes([1,2])) == Bytes([1,2]), "Bytes from Bytes (identity)")
+ok(Bytes([]) == Bytes(0), "Bytes([]) = Bytes(0) = empty")
+ok(fromhex("DEADBEEF") == Bytes([0xDE,0xAD,0xBE,0xEF]), "fromhex uppercase")
+ok(fromhex("deadbeef") == Bytes([0xDE,0xAD,0xBE,0xEF]), "fromhex lowercase")
+ok(fromhex("") == Bytes([]), "fromhex empty = empty Bytes")
+ok(throws(Function(): return Bytes(-1)), "Bytes(-1) throws")
+ok(throws(Function(): return Bytes([256])), "Bytes([256]) out of range throws")
+ok(throws(Function(): return Bytes([-1])), "Bytes([-1]) negative throws")
+ok(throws(Function(): return Bytes(1.5)), "Bytes(1.5) float throws")
+ok(throws(Function(): return fromhex("abc")), "fromhex odd length throws")
+ok(throws(Function(): return fromhex("GG")), "fromhex non-hex char throws")
+ok(fromhex("AB CD") == Bytes([0xAB, 0xCD]), "fromhex silently ignores spaces (Python-compat)")
+
+# =========================================================== Bytes methods: access
+ok(Bytes([65,66,67])[0] == 65, "Bytes index -> integer")
+ok(Bytes([65,66,67])[-1] == 67, "Bytes negative index")
+ok(Bytes([65,66,67])[1:] == Bytes([66,67]), "Bytes slice")
+ok(Bytes([65,66,67])[:2] == Bytes([65,66]), "Bytes slice to end")
+ok(Bytes([65,66,67])[::2] == Bytes([65,67]), "Bytes step slice")
+ok(throws(Function(): return Bytes([1,2,3])[10]), "Bytes OOB index throws")
+ok(throws(Function(): return Bytes([1,2,3])[-4]), "Bytes OOB negative index throws")
+ok(len(Bytes([1,2,3])) == 3, "len(Bytes)")
+ok(len(Bytes([])) == 0, "len(Bytes empty)")
+
+# =========================================================== Bytes methods: decode + hex
+ok(Bytes([72,101,108,108,111]).decode() == "Hello", "decode() default utf-8 (72='H')")
+ok(Bytes([104,105]).decode("utf-8") == "hi", "decode utf-8 explicit")
+ok(Bytes([104,105]).decode("latin-1") == "hi", "decode latin-1")
+ok(Bytes([104,105]).decode("ascii") == "hi", "decode ascii")
+ok(Bytes([0xE9]).decode("latin-1") == "é", "decode latin-1 high byte")
+ok(throws(Function(): return Bytes([0xFF]).decode("ascii")), "decode ascii bad byte throws")
+ok(throws(Function(): return Bytes([0xFF,0xFE]).decode("utf-8")), "decode utf-8 bad sequence throws")
+ok(throws(Function(): return Bytes([]).decode("utf-99")), "decode unknown encoding throws")
+ok(Bytes([0xDE,0xAD]).hex() == "dead", "hex() returns lowercase hex")
+ok(Bytes([]).hex() == "", "hex() empty")
+ok(Bytes([0,255]).hex() == "00ff", "hex() padding zeros")
+
+# =========================================================== Bytes arithmetic
+ok(Bytes([1,2]) + Bytes([3,4]) == Bytes([1,2,3,4]), "Bytes + Bytes")
+ok(Bytes([1,2]) * 3 == Bytes([1,2,1,2,1,2]), "Bytes * int")
+ok(3 * Bytes([1,2]) == Bytes([1,2,1,2,1,2]), "int * Bytes reflected")
+ok(Bytes([1,2]) * 0 == Bytes([]), "Bytes * 0")
+ok(throws(Function(): return Bytes([1]) + [1]), "Bytes + list throws")
+ok(throws(Function(): return Bytes([1]) * 1.5), "Bytes * float throws")
+ok(throws(Function(): return Bytes([1]) < [1]), "Bytes < non-Bytes throws")
+ok(Bytes([1,2]) < Bytes([1,3]) == True, "Bytes lexicographic <")
+ok(Bytes([1,2]) == Bytes([1,2]), "Bytes == Bytes same")
+ok(Bytes([1,2]) != Bytes([1,3]), "Bytes != different")
+ok(Bytes([]) < Bytes([1]) == True, "empty Bytes < non-empty")
+
+# =========================================================== Bytes apply
+ok(Bytes([104,101,108]).apply(Function(b): return b - 32) == Bytes([72,69,76]), "bytes apply subtract 32")
+ok(Bytes([]).apply(Function(b): return b) == Bytes([]), "bytes apply empty")
+ok(throws(Function(): return Bytes([1,2]).apply(5)), "bytes apply non-callable throws")
+ok(throws(Function(): return Bytes([1]).apply(Function(b): return "x")), "bytes apply non-int return throws")
+ok(throws(Function(): return Bytes([1]).apply(Function(b): return 256)), "bytes apply out-of-range return throws")
+ok(throws(Function(): return Bytes([1]).apply(Function(b): return -1)), "bytes apply negative return throws")
+
+# =========================================================== Integer / Float .compare()
+ok((5).compare(5) == True, "int.compare equal")
+ok((5).compare(5, rel_tol=0.0) == True, "int.compare exact equal")
+ok((5).compare(6) == False, "int.compare unequal")
+ok((1.0).compare(1.0) == True, "float.compare equal")
+ok((0.1 + 0.2).compare(0.3) == True, "float.compare 0.1+0.2 approx 0.3")
+ok((0.1 + 0.2) == 0.3 == False, "exact == of 0.1+0.2 is False")
+ok((1.0).compare(1.001, abs_tol=0.01) == True, "float.compare abs_tol 0.01 covers gap")
+ok((1.0).compare(1.001, 0.0, 0.0001) == False, "float.compare abs_tol 0.0001 < gap -> False")
+ok((100.0).compare(101.0, rel_tol=0.01) == True, "float.compare rel_tol 1%")
+ok((100.0).compare(102.0, rel_tol=0.01) == False, "float.compare rel_tol fails at 2%")
+ok(math.inf.compare(math.inf) == True, "inf.compare(inf) True")
+ok(math.inf.compare(1.0) == False, "inf.compare(finite) False")
+ok(math.nan.compare(math.nan) == False, "nan.compare(nan) False (NaN never equal)")
+ok(throws(Function(): return (5).compare("a")), "compare non-numeric throws")
+
+io.print("r9_types_err: " + String(n) + " checks passed")

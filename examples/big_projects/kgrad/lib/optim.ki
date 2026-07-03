@@ -1,0 +1,70 @@
+# Optimizers. Each holds the parameter list (leaf Tensors) and per-parameter state aligned by index
+# (Tensors aren't hashable, so state is a parallel List). `step()` updates each `p.data` in place from
+# `p.grad`; `zero_grad()` clears grads between iterations (gradient accumulation is the default).
+
+var nd = import("ndarray")
+
+class SGD:
+    var _init_ = Function(self, params, lr, momentum):
+        self.params = params
+        self.lr = lr
+        self.momentum = momentum
+        self.vel = []
+        for p in params:
+            self.vel.append(None)
+
+    var zero_grad = Function(self):
+        for p in self.params:
+            p.zero_grad()
+
+    var step = Function(self):
+        for i, p in enumerate(self.params):
+            if p.grad != None:
+                var g = p.grad
+                if self.momentum > 0.0:
+                    if self.vel[i] == None:
+                        self.vel[i] = g.contiguous()
+                    else:
+                        self.vel[i] = nd.add(nd.mul_scalar(self.vel[i], self.momentum), g)
+                    g = self.vel[i]
+                p.data = nd.sub(p.data, nd.mul_scalar(g, self.lr))
+
+class Adam:
+    var _init_ = Function(self, params, lr, beta1, beta2, eps):
+        self.params = params
+        self.lr = lr
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.eps = eps
+        self.t = 0
+        self.m = []
+        self.v = []
+        for p in params:
+            self.m.append(None)
+            self.v.append(None)
+
+    var zero_grad = Function(self):
+        for p in self.params:
+            p.zero_grad()
+
+    var step = Function(self):
+        self.t = self.t + 1
+        var bc1 = 1.0 - self.beta1 ** self.t
+        var bc2 = 1.0 - self.beta2 ** self.t
+        for i, p in enumerate(self.params):
+            if p.grad != None:
+                var g = p.grad
+                if self.m[i] == None:
+                    self.m[i] = nd.zeros(p.data.shape)
+                    self.v[i] = nd.zeros(p.data.shape)
+                self.m[i] = nd.add(nd.mul_scalar(self.m[i], self.beta1), nd.mul_scalar(g, 1.0 - self.beta1))
+                self.v[i] = nd.add(nd.mul_scalar(self.v[i], self.beta2), nd.mul_scalar(nd.mul(g, g), 1.0 - self.beta2))
+                var mhat = nd.mul_scalar(self.m[i], 1.0 / bc1)
+                var vhat = nd.mul_scalar(self.v[i], 1.0 / bc2)
+                var denom = nd.add_scalar(nd.sqrt(vhat), self.eps)
+                p.data = nd.sub(p.data, nd.mul_scalar(nd.div(mhat, denom), self.lr))
+
+var sgd = Function(params, lr, momentum):
+    return SGD(params, lr, momentum)
+var adam = Function(params, lr):
+    return Adam(params, lr, 0.9, 0.999, 0.00000001)

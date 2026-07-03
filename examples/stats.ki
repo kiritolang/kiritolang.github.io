@@ -1,0 +1,31 @@
+# Numeric processing: compute statistics over a dataset using math + closures.
+var io = import("io")
+var math = import("math")
+
+var data = [23, 45, 12, 67, 34, 89, 21, 56, 78, 43]
+
+var mean = Function(xs):
+    var total = 0
+    for x in xs:
+        total = total + x
+    return total / len(xs)
+
+var stddev = Function(xs):
+    var m = mean(xs)
+    var sumSq = 0.0
+    for x in xs:
+        var d = x - m
+        sumSq = sumSq + d * d
+    return math.sqrt(sumSq / len(xs))
+
+var sorted = []
+for x in data:
+    sorted.append(x)
+sorted.sort()
+
+io.print(f"count:  {len(data)}")
+io.print(f"min:    {sorted[0]}")
+io.print(f"max:    {sorted[-1]}")
+io.print(f"mean:   {mean(data)}")
+io.print(f"median: {sorted[len(sorted) // 2]}")
+io.print(f"stddev: {stddev(data)}")

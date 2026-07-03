@@ -1,0 +1,33 @@
+# Exercises the `semver` module through the real interpreter, the way `kpm` resolves
+# `owner/repo@<constraint>` against a repo's git tags. Complements the C++ unit test (test_semver).
+var io = import("io")
+var s = import("semver")
+
+# kpm picks the highest tag that satisfies the constraint, and hands back the ORIGINAL tag string
+# (here the tags carry a leading `v`) so it can be used directly as a git ref.
+var tags = ["v1.0.0", "v1.2.0", "v1.2.5", "v1.3.0", "v2.0.0", "v2.1.0-rc.1"]
+
+assert s.maxsatisfying(tags, "^1.0.0") == "v1.3.0"
+assert s.maxsatisfying(tags, "~1.2.0") == "v1.2.5"
+assert s.maxsatisfying(tags, "1.2.x") == "v1.2.5"
+assert s.maxsatisfying(tags, ">=1.0.0 <2.0.0") == "v1.3.0"
+assert s.maxsatisfying(tags, "2.x") == "v2.0.0"          # the rc prerelease is excluded by default
+assert s.maxsatisfying(tags, "^3.0.0") == None
+assert s.maxsatisfying(tags, "*") == "v2.0.0"            # highest stable
+assert s.maxsatisfying(tags, "1.2.0") == "v1.2.0"        # bare = exact pin
+assert s.minsatisfying(tags, "^1.0.0") == "v1.0.0"
+
+# Version comparison used to decide whether to upgrade `ki` / `kpm` (tolerates a `v` prefix).
+assert s.gt("v1.2.0", "1.1.9") == True
+assert s.gt("1.0.0", "1.0.0-rc.1") == True
+assert s.gt("1.1.0", "1.1.0") == False
+assert s.compare("v2.0.0", "v2.0.0") == 0
+assert s.clean("v1.2.3") == "1.2.3"
+
+# The gate kpm uses to tell a semver constraint from a literal git ref.
+assert s.validrange("^1.2.0") == True
+assert s.validrange("1.x") == True
+assert s.validrange("main") == False
+assert s.validrange("feature/x") == False
+
+io.print("versioning-ok")

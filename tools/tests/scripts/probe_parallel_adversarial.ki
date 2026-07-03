@@ -1,0 +1,100 @@
+# Adversarial probe for `parallel`: tries to break the cross-VM transfer and the share-nothing model
+# with cyclic graphs, deep nesting, non-serializable results, the enclosing-locals caveat, and a
+# cross-VM lock held by a worker. Deterministic (cross-thread steps gated by join / a Queue handshake).
+var io = import("io")
+var parallel = import("parallel")
+
+var w_return_socket = Function():
+    var net = import("net")
+    return net.Socket()                 # not serializable -> join must throw
+var w_lock_hold = Function(lock, q):
+    with lock:
+        q.put("acquired")               # signal main that we hold it
+    # released on block exit, before the worker returns
+var w_deep_sum = Function(x):
+    var s = 0
+    var cur = x
+    while type(cur) == "List":
+        s = s + cur[0]
+        cur = cur[1]
+    return s
+
+if argmain:
+    var caught = False
+
+    # ---- a cyclic structure round-trips through a Queue (dump preserves cycles) ----
+    var a = [1, 2]
+    a.append(a)                          # a = [1, 2, <-a]
+    var q = parallel.Queue()
+    q.put(a)
+    var b = q.get()
+    assert b[0] == 1 and b[1] == 2
+    assert b[2][0] == 1                   # b[2] is b itself
+    assert b[2][2][2][0] == 1            # follow the cycle a few hops
+
+    # ---- shared references are preserved (two slots referencing one dict) ----
+    var shared = {"n": 7}
+    var pair = [shared, shared]
+    q.put(pair)
+    var p2 = q.get()
+    assert p2[0]["n"] == 7
+    p2[0]["n"] = 99                       # mutate via one path...
+    assert p2[1]["n"] == 99               # ...visible via the other (same object)
+
+    # ---- a deeply nested graph survives transfer ----
+    var deep = 0
+    var i = 0
+    while i < 200:
+        deep = [1, deep]                  # [1, [1, [1, ... 0]]]
+        i = i + 1
+    q.put(deep)
+    var got = q.get()
+    var cur = got
+    var depth = 0
+    while type(cur) == "List":
+        cur = cur[1]
+        depth = depth + 1
+    assert depth == 200 and cur == 0
+    # and a worker can walk it too
+    assert parallel.spawn(w_deep_sum, got).join() == 200   # 200 ones
+
+    # ---- a worker returning a non-serializable value: join surfaces the error, host survives ----
+    caught = False
+    try:
+        discard parallel.spawn(w_return_socket).join()
+    catch as e:
+        caught = True
+    assert caught
+    assert 1 + 1 == 2
+
+    # ---- the share-nothing caveat: a function closing over an argmain-only name fails cleanly ----
+    var secret = 1234
+    var leaky = Function():
+        return secret                     # `secret` is only defined here, under argmain
+    caught = False
+    try:
+        discard parallel.spawn(leaky).join()   # worker has no `secret` -> NameError, surfaced by join
+    catch as e:
+        caught = True
+    assert caught
+
+    # ---- a cross-VM Lock held by a worker, released on the with-block exit ----
+    var lock = parallel.Lock()
+    var sig = parallel.Queue()
+    var lt = parallel.spawn(w_lock_hold, lock, sig)
+    assert sig.get() == "acquired"        # worker now holds the lock
+    discard lt.join()                     # worker finished -> lock released on block exit
+    assert lock.acquire(False) == True    # main can take it now
+    lock.release()
+
+    # ---- empty container values round-trip ----
+    q.put([])
+    assert q.get() == []
+    q.put({})
+    assert len(q.get()) == 0
+    q.put("")
+    assert q.get() == ""
+    q.put({1, 2})
+    assert q.get() == {1, 2}
+
+    io.print("OK parallel adversarial")

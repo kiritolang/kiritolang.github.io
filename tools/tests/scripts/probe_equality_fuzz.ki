@@ -1,0 +1,118 @@
+# ============================================ EQUALITY BLAST: VM-aware ==, hashing, cycles, NaN, fuzz
+# Hammers the kiEquals rewrite: structural equality recursing through containers honoring instance
+# _eq_, hash/key consistency, cyclic self-reference, NaN semantics, and a big randomized sweep.
+var io = import("io")
+var random = import("random")
+var copy = import("copy")
+
+# --- scalars: cross-type and exactness ---
+assert 1 == 1 and 1.0 == 1.0 and 1 == 1.0, "int/float numeric equality"
+assert 1 != 1.5 and "a" != "b" and True != False, "inequality basics"
+assert None == None and not (None == 0) and not (None == False), "None only equals None"
+assert "héllo😀" == "héllo😀" and "a" != "á", "unicode string equality"
+
+# --- NaN: never equal to itself, even nested ---
+var nan = import("math").nan
+assert not (nan == nan), "nan != nan"
+assert [nan] != [nan], "nan inside a list breaks element equality"
+assert nan != nan, "direct nan inequality"
+
+# --- containers compare element-wise, deeply ---
+assert [1, [2, [3, [4]]]] == [1, [2, [3, [4]]]], "deep nested list equality"
+assert [1, [2, [3, [4]]]] != [1, [2, [3, [5]]]], "deep nested list inequality"
+assert {"a": [1, 2], "b": {"c": 3}} == {"a": [1, 2], "b": {"c": 3}}, "deep dict equality"
+assert {"a": 1} != {"a": 1, "b": 2}, "dict size mismatch"
+assert {"a": 1, "b": 2} == {"b": 2, "a": 1}, "dict order-independent equality"
+assert Set([1, 2, 3]) == Set([3, 2, 1]), "set equality order-independent"
+assert Set([1, 2]) != Set([1, 2, 3]), "set inequality"
+
+# --- instance _eq_ honored at top level AND nested in every container ---
+class Money:
+    var _init_ = Function(self, c):
+        self.c = c
+    var _eq_ = Function(self, o) -> Bool:
+        return self.c == o.c
+assert Money(5) == Money(5) and Money(5) != Money(6), "instance _eq_"
+assert [Money(1), Money(2)] == [Money(1), Money(2)], "instances in a list"
+assert {"k": Money(9)} == {"k": Money(9)}, "instance as dict value"
+assert [[Money(1)], [Money(2)]] == [[Money(1)], [Money(2)]], "instances nested two deep"
+assert [Money(1)] != [Money(2)], "nested instance inequality"
+
+# --- cycles: a value equals itself (identity short-circuit), no overflow ---
+var cyc = [1, 2]
+cyc.append(cyc)
+assert cyc == cyc, "self-referential list equals itself"
+var dcyc = {}
+dcyc["self"] = dcyc
+assert dcyc == dcyc, "self-referential dict equals itself"
+
+# --- hash/key consistency: equal hashable scalars collapse as dict keys / set members ---
+var d = {}
+d[1] = "int"
+d[1.0] = "float"
+assert d[1] == "float" and len(d) == 1, "1 and 1.0 are the same key"
+assert 1 in Set([1.0]) and "x" in Set(["x"]), "cross-type / string set membership"
+var keyed = {True: "t", 1: "one"}
+assert len(keyed) == 2, "Bool and Integer are DISTINCT keys (1 == True is False in Kirito)"
+assert not (1 == True), "Kirito: Integer 1 is not equal to Bool True"
+
+# --- deeply nested equality does not overflow (bounded recursion) ---
+var deepA = 0
+var deepB = 0
+var k = 0
+while k < 500:
+    deepA = [deepA]
+    deepB = [deepB]
+    k = k + 1
+assert deepA == deepB, "500-deep identical structures compare equal"
+
+# --- FUZZ: build two independent copies of a random structure; they must compare equal, and a
+#     mutated copy must compare unequal ---
+var rng = random.Random(20260603)
+var trial = 0
+while trial < 600:
+    var kind = rng.randint(0, 4)
+    var a = None
+    var b = None
+    if kind == 0:
+        var n = rng.randint(-100, 100)
+        a = n
+        b = n
+    elif kind == 1:
+        var s = "x" + String(rng.randint(0, 50))
+        a = s
+        b = s
+    elif kind == 2:
+        var xs = []
+        var ys = []
+        var m = rng.randint(0, 5)
+        var i = 0
+        while i < m:
+            var v = rng.randint(0, 20)
+            xs.append(v)
+            ys.append(v)
+            i = i + 1
+        a = xs
+        b = ys
+    elif kind == 3:
+        a = {"p": rng.randint(0, 9), "q": [rng.randint(0, 9)]}
+        b = {"q": a["q"].copy(), "p": a["p"]}
+    else:
+        var e1 = Set()
+        var e2 = Set()
+        var m = rng.randint(0, 5)
+        var i = 0
+        while i < m:
+            var v = rng.randint(0, 8)
+            e1.add(v)
+            e2.add(v)
+            i = i + 1
+        a = e1
+        b = e2
+    assert a == b, "fuzz: independent identical builds compare equal"
+    assert not (a != b), "fuzz: != is the negation of =="
+    # deepcopy round-trip is also equal
+    assert copy.deepcopy(a) == a, "fuzz: deepcopy equals original"
+    trial = trial + 1
+
+io.print("OK equality-fuzz")

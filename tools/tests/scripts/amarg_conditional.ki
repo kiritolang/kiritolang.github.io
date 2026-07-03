@@ -1,0 +1,4 @@
+# The conditional expression (THEN if COND else ORELSE) keyed on argmain / arglist length.
+var role = "entry" if argmain else "module"
+var size = "empty" if len(arglist) == 0 else "filled"
+var m = argmain

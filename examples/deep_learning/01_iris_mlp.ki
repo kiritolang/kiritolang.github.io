@@ -1,0 +1,44 @@
+# Project 1 — Iris flower classification with a multi-layer perceptron.
+# A 1-D-feature classification task: 4 measurements -> one of 3 species. Trains a small MLP
+# (4 -> 16 -> 3) with ReLU and softmax cross-entropy, using the native tensor autograd via the knn
+# library. Real data: the classic Fisher iris set, downloaded from the scikit-learn mirror.
+var io = import("io")
+var T = import("tensor")
+var nn = import("nn")
+var data = import("data")
+
+io.print("=== Iris classification (MLP, 4 features -> 3 classes) ===")
+
+# Load, standardise the features, and split 80/20.
+var ds = data.load_iris()
+var X = data.standardize(ds[0])
+var y = ds[1]
+var split = data.train_test_split(X, y, 0.8, 42)
+var Xtr = T.Tensor(split[0])
+var ytr = split[1]
+var Xte = T.Tensor(split[2])
+var yte = split[3]
+io.print(f"train {len(split[0])} samples, test {len(split[2])} samples")
+
+# A two-layer MLP.
+nn.seed(1)
+var model = nn.Sequential([nn.Linear(4, 16), nn.ReLU(), nn.Linear(16, 3)])
+var opt = nn.Adam(model.parameters(), lr = 0.02)
+
+# Full-batch gradient descent (the dataset is tiny).
+var epoch = 0
+while epoch < 120:
+    var loss = nn.cross_entropy(model(Xtr), ytr, 3)
+    loss.backward()
+    opt.step()
+    if epoch % 30 == 0:
+        io.print(f"  epoch {epoch:3d}  loss {loss.item():.4f}")
+    epoch = epoch + 1
+
+# Evaluate (no gradient tracking needed for inference).
+with T.nograd():
+    var train_acc = nn.accuracy(nn.argmax_rows(model(Xtr)), ytr)
+    var test_acc = nn.accuracy(nn.argmax_rows(model(Xte)), yte)
+io.print(f"train accuracy {train_acc:.3f}   test accuracy {test_acc:.3f}")
+assert test_acc > 0.85, "iris MLP should reach >85% test accuracy"
+io.print("OK iris")

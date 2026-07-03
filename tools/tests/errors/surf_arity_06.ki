@@ -1,0 +1,4 @@
+# return annotation violated: -> Dict returning a List
+var f = Function() -> Dict:
+    return [1, 2]
+discard f()

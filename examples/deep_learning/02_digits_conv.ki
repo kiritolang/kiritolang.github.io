@@ -1,0 +1,66 @@
+# Project 2 — Handwritten-digit classification with a convolutional network (an MNIST-style task).
+# Real data: scikit-learn's 8x8 digits (a compact MNIST), downloaded as a gzipped CSV. The model is a
+# CNN of two ConvNormAct blocks (Conv2d -> BatchNorm2d -> ReLU), average pooling, then a linear
+# classifier, trained with softmax cross-entropy and Adam through the native tensor autograd (the conv
+# is a differentiable im2col, gradient-checked). It trains on the full training set for enough epochs
+# to reach high accuracy, while staying small enough to run in the tree-walking interpreter.
+var io = import("io")
+var T = import("tensor")
+var nn = import("nn")
+var data = import("data")
+var random = import("random")
+
+io.print("=== Digit classification with a ConvNormAct CNN (8x8 images, 10 classes) ===")
+
+# Load and scale pixels 0..16 -> 0..1; train on the full training split.
+var ds = data.load_digits()
+var Xall = data.scale_range(ds[0], 0.0, 16.0)
+var split = data.train_test_split(Xall, ds[1], 0.8, 11)
+var Xtr = split[0]
+var ytr = split[1]
+var Xte = split[2]
+var yte = split[3]
+io.print(f"train {len(Xtr)} images, test {len(Xte)} images")
+
+# 1x8x8 -> [Conv 16, 3x3 -> BN -> ReLU] -> [Conv 32, 3x3 -> BN -> ReLU] -> AvgPool(2) -> Linear -> 10.
+nn.seed(2)
+var model = nn.Sequential([
+    nn.Conv2d(1, 16, 3), nn.BatchNorm2d(16), nn.ReLU(),     # 8x8 -> 6x6
+    nn.Conv2d(16, 32, 3), nn.BatchNorm2d(32), nn.ReLU(),    # 6x6 -> 4x4
+    nn.AvgPool2d(2),                                         # 4x4 -> 2x2
+    nn.Flatten(),                                            # 32 * 2 * 2 = 128
+    nn.Linear(128, 10)
+])
+var opt = nn.Adam(model.parameters(), lr = 0.005)
+
+var as_images = Function(rows):
+    return T.Tensor(rows).reshape([len(rows), 1, 8, 8])
+
+var evaluate = Function():
+    nn.train(False)
+    var acc = 0.0
+    with T.nograd():
+        acc = nn.accuracy(nn.argmax_rows(model(as_images(Xte))), yte)
+    return acc
+
+var rng = random.Random(0)
+var epoch = 0
+while epoch < 30:
+    nn.train(True)
+    var total = 0.0
+    var nb = 0
+    for batch in data.minibatches(len(Xtr), 64, rng):
+        var imgs = as_images(data.gather(Xtr, batch))
+        var loss = nn.cross_entropy(model(imgs), data.gather(ytr, batch), 10)
+        loss.backward()
+        opt.step()
+        total = total + loss.item()
+        nb = nb + 1
+    if epoch % 5 == 0 or epoch == 29:
+        io.print(f"  epoch {epoch:2d}  avg loss {total / nb:.4f}  test acc {evaluate():.4f}")
+    epoch = epoch + 1
+
+var final = evaluate()
+io.print(f"final test accuracy {final:.4f}")
+assert final > 0.96, "the ConvNormAct CNN should reach >96% test accuracy on digits"
+io.print("OK digits-conv")

@@ -1,0 +1,211 @@
+# data.ki — download, cache, and preprocess real datasets for the deep-learning examples.
+# Datasets are fetched once over HTTPS (needs a TLS-enabled `ki`), decompressed if gzipped, and cached
+# as plain text under .cache/ so later runs are offline and fast. Everything is pure Kirito.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var net = import("net")
+var gzip = import("gzip")
+var math = import("math")
+var random = import("random")
+
+var CACHE = ".cache"
+
+# Fetch `url`, caching the (decompressed) text under .cache/<name>; gunzip first when `gz` is True.
+var fetch_text = Function(url : String, name : String, gz : Bool = False) -> String:
+    if not path.exists(CACHE):
+        path.mkdir(CACHE, exist_ok = True)
+    var fpath = path.join(CACHE, name)
+    if path.exists(fpath):
+        var fr = io.open(fpath, "r")
+        var cached = fr.read()
+        fr.close()
+        return cached
+    var resp = net.get(url)
+    if resp.status != 200:
+        throw f"download failed ({resp.status}): {url}"
+    var text = gzip.decompress(resp.content).decode("utf-8") if gz else resp.text
+    var fw = io.open(fpath, "w")
+    fw.write(text)
+    fw.close()
+    return text
+
+# Split CSV text into a List of rows (each a List of String cells); blank lines dropped.
+var parse_csv = Function(text : String) -> List:
+    var rows = []
+    for line in text.strip().split("\n"):
+        if len(line.strip()) > 0:
+            rows.append(line.split(","))
+    return rows
+
+# Convert selected String columns [c0, c1) of each row to a List of List of Float.
+var columns_to_floats = Function(rows : List, c0 : Integer, c1 : Integer) -> List:
+    var out = []
+    for row in rows:
+        var feats = []
+        var c = c0
+        while c < c1:
+            feats.append(Float(row[c].strip()))
+            c = c + 1
+        out.append(feats)
+    return out
+
+# Column-wise z-score standardisation (mean 0, std 1) of a Float feature matrix (List of rows).
+# Returns the standardised matrix; columns with zero variance are left centred.
+var standardize = Function(X : List) -> List:
+    var n = len(X)
+    var d = len(X[0])
+    var mean = []
+    var std = []
+    var j = 0
+    while j < d:
+        var s = 0.0
+        var i = 0
+        while i < n:
+            s = s + X[i][j]
+            i = i + 1
+        mean.append(s / n)
+        j = j + 1
+    j = 0
+    while j < d:
+        var v = 0.0
+        var i = 0
+        while i < n:
+            var dx = X[i][j] - mean[j]
+            v = v + dx * dx
+            i = i + 1
+        std.append(math.sqrt(v / n) if v > 0.0 else 1.0)
+        j = j + 1
+    var out = []
+    var i = 0
+    while i < n:
+        var row = []
+        j = 0
+        while j < d:
+            row.append((X[i][j] - mean[j]) / std[j])
+            j = j + 1
+        out.append(row)
+        i = i + 1
+    return out
+
+# Min-max scale every value of a Float matrix into [0, 1] using a known global range (e.g. 0..16 for
+# the 8x8 digits). Useful for image pixels feeding an autoencoder / conv net.
+var scale_range = Function(X : List, lo : Float, hi : Float) -> List:
+    var span = hi - lo
+    var out = []
+    for row in X:
+        var r = []
+        for v in row:
+            r.append((v - lo) / span)
+        out.append(r)
+    return out
+
+# Deterministic shuffle-and-split into (X_train, y_train, X_test, y_test). `ratio` is the train share.
+var train_test_split = Function(X : List, y : List, ratio : Float = 0.8, seed : Integer = 0) -> List:
+    var n = len(X)
+    var idx = []
+    var i = 0
+    while i < n:
+        idx.append(i)
+        i = i + 1
+    var rng = random.Random(seed)
+    rng.shuffle(idx)
+    var cut = Integer(n * ratio)
+    var Xtr = []
+    var ytr = []
+    var Xte = []
+    var yte = []
+    i = 0
+    while i < n:
+        var k = idx[i]
+        if i < cut:
+            Xtr.append(X[k])
+            ytr.append(y[k])
+        else:
+            Xte.append(X[k])
+            yte.append(y[k])
+        i = i + 1
+    return [Xtr, ytr, Xte, yte]
+
+# Yield (X_batch, y_batch) index ranges over a shuffled epoch. Returns a List of [start, indices]
+# where `indices` is a List of row indices for one mini-batch.
+var minibatches = Function(n : Integer, batch_size : Integer, rng) -> List:
+    var idx = []
+    var i = 0
+    while i < n:
+        idx.append(i)
+        i = i + 1
+    rng.shuffle(idx)
+    var batches = []
+    i = 0
+    while i < n:
+        var b = []
+        var j = i
+        while j < i + batch_size and j < n:
+            b.append(idx[j])
+            j = j + 1
+        batches.append(b)
+        i = i + batch_size
+    return batches
+
+# Gather the rows of a matrix `X` (List of rows) at the given indices -> a new matrix.
+var gather = Function(X : List, indices : List) -> List:
+    var out = []
+    for k in indices:
+        out.append(X[k])
+    return out
+
+# ----------------------------------------------------------------- real dataset loaders
+# All are the canonical sklearn-bundled CSVs (so this code mirrors `sklearn.datasets.load_*`).
+# Each returns [X, y] where X is a List of feature-Lists (Float) and y a List of labels/targets.
+var SK = "https://raw.githubusercontent.com/scikit-learn/scikit-learn/main/sklearn/datasets/data/"
+
+# Iris — 150 samples, 4 features, 3 classes (0 setosa, 1 versicolor, 2 virginica).
+var load_iris = Function() -> List:
+    var rows = parse_csv(fetch_text(SK + "iris.csv", "iris.csv"))[1:]   # drop the metadata header
+    var y = []
+    for row in rows:
+        y.append(Integer(row[4].strip()))
+    return [columns_to_floats(rows, 0, 4), y]
+
+# Wine — 178 samples, 13 features, 3 classes.
+var load_wine = Function() -> List:
+    var rows = parse_csv(fetch_text(SK + "wine_data.csv", "wine.csv"))[1:]
+    var y = []
+    for row in rows:
+        y.append(Integer(row[13].strip()))
+    return [columns_to_floats(rows, 0, 13), y]
+
+# Breast cancer (Wisconsin) — 569 samples, 30 features, 2 classes (0 malignant, 1 benign).
+var load_breast_cancer = Function() -> List:
+    var rows = parse_csv(fetch_text(SK + "breast_cancer.csv", "breast_cancer.csv"))[1:]
+    var y = []
+    for row in rows:
+        y.append(Integer(row[30].strip()))
+    return [columns_to_floats(rows, 0, 30), y]
+
+# Digits — 1797 samples of 8x8 grayscale (pixels 0..16), 10 classes (the handwritten digit).
+var load_digits = Function() -> List:
+    var rows = parse_csv(fetch_text(SK + "digits.csv.gz", "digits.csv", True))
+    var y = []
+    for row in rows:
+        y.append(Integer(row[64].strip()))
+    return [columns_to_floats(rows, 0, 64), y]
+
+# Diabetes — 442 samples, 10 features, a continuous regression target. The sklearn raw files are
+# whitespace-separated and the target lives in its own file.
+var load_diabetes = Function() -> List:
+    var dtext = fetch_text(SK + "diabetes_data_raw.csv.gz", "diabetes_data.csv", True)
+    var ttext = fetch_text(SK + "diabetes_target.csv.gz", "diabetes_target.csv", True)
+    var X = []
+    for line in dtext.strip().split("\n"):
+        if len(line.strip()) > 0:
+            var feats = []
+            for c in line.split():                  # whitespace-separated columns
+                feats.append(Float(c))
+            X.append(feats)
+    var y = []
+    for line in ttext.strip().split("\n"):
+        if len(line.strip()) > 0:
+            y.append(Float(line.strip()))
+    return [X, y]

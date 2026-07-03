@@ -1,0 +1,65 @@
+# sys.createprocess driving a REAL external program: ffmpeg. Guarded — if ffmpeg isn't installed the
+# test skips its assertions (so CI without ffmpeg still passes); where ffmpeg IS present (the
+# maintainer's box) it exercises real encode/decode/binary-pipe/timeout against it. The final line is
+# fixed either way so the golden is environment-independent. ffmpeg is the canonical "chatty on
+# stderr + large binary on stdout" program, so it stresses the concurrent pipe draining hard.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+var DIR = path.gettempdir()
+var ran = "skipped (ffmpeg not installed)"
+
+var hasFFmpeg = Function():
+    try:
+        var r = sys.createprocess(["ffmpeg", "-version"])
+        return r["code"] == 0 and ("ffmpeg version" in r["stdout"])
+    catch:
+        return False
+
+if hasFFmpeg():
+    var mp4 = path.join(DIR, "ki_ff_probe.mp4")
+    discard path.remove(mp4, missing_ok = True)
+
+    # encode a short synthetic clip — ffmpeg pours progress onto stderr while we capture it
+    var enc = sys.createprocess(["ffmpeg", "-y", "-f", "lavfi",
+        "-i", "testsrc=duration=1:size=160x120:rate=15", mp4])
+    assert enc["code"] == 0, "ffmpeg encode exits 0"
+    assert len(enc["stderr"]) > 0, "ffmpeg logs to stderr (captured, no deadlock)"
+    assert path.exists(mp4) and path.getsize(mp4) > 0, "ffmpeg produced a non-empty file"
+
+    # decode it back (read path)
+    var dec = sys.createprocess(["ffmpeg", "-v", "error", "-i", mp4, "-f", "null", "-"])
+    assert dec["code"] == 0, "ffmpeg decode exits 0"
+
+    # pipe raw RGB frames out through stdout — a large BINARY capture
+    var raw = sys.createprocess(["ffmpeg", "-v", "error", "-i", mp4,
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+    assert raw["code"] == 0, "ffmpeg rawvideo pipe exits 0"
+    # a large binary payload captured intact on stdout (exact frame count varies by ffmpeg version,
+    # so assert "large" rather than an exact size)
+    assert len(raw["stdout"]) > 100000, "ffmpeg streamed a large binary payload on stdout"
+
+    # a missing input file: ffmpeg exits non-zero with a diagnostic on stderr (not a crash)
+    var bad = sys.createprocess(["ffmpeg", "-v", "error", "-i",
+        path.join(DIR, "ki_ff_nope_zzz.mp4"), "-f", "null", "-"])
+    assert bad["code"] != 0, "ffmpeg on a missing input exits non-zero"
+    assert len(bad["stderr"]) > 0, "ffmpeg error goes to stderr"
+
+    # timeout kills a long encode
+    var slow = path.join(DIR, "ki_ff_slow.mp4")
+    discard path.remove(slow, missing_ok = True)
+    var timedOut = False
+    try:
+        discard sys.createprocess(["ffmpeg", "-y", "-f", "lavfi",
+            "-i", "testsrc=duration=600:size=320x240:rate=30", slow], timeout = 0.8)
+    catch as e:
+        timedOut = True
+    assert timedOut, "a long ffmpeg encode is killed by timeout"
+
+    discard path.remove(mp4, missing_ok = True)
+    discard path.remove(slow, missing_ok = True)
+    ran = "ran against ffmpeg"
+
+io.eprint("sys_proc_ffmpeg: " + ran)
+io.print("sys_proc_ffmpeg: ok")

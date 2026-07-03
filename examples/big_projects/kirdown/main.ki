@@ -1,0 +1,124 @@
+# kirdown/main.ki — CLI entry.
+#
+# Usage:
+#   ki main.ki INPUT.md [-o OUT.html] [--body] [--title TITLE]
+#   ki main.ki -d DOCS_DIR -o OUT_DIR                            # walks a whole directory tree
+#
+# Exit code: 0 on success, 1 on any error (bad args, missing input, write failure).
+
+var io = import("io")
+var path = import("path")
+var arg = import("arg")
+var time = import("time")
+var hash = import("hash")
+var kirdown = import("kirdown")
+
+# One-file conversion. Returns True on success, False + prints a diagnostic on failure.
+var convertFile = Function(src : String, dst : String, wrapPage : Bool, title : String) -> Bool:
+    try:
+        var fh = io.open(src, "r")
+        var text = fh.read()
+        fh.close()
+        var out = text
+        if wrapPage:
+            out = kirdown.toPage(text, title)
+        else:
+            out = kirdown.toBody(text)
+        var dir = path.dirname(dst)
+        if len(dir) > 0 and not path.isdir(dir):
+            discard path.mkdir(dir, exist_ok = True)
+        var wh = io.open(dst, "w")
+        wh.write(out)
+        wh.close()
+        return True
+    catch String as e:
+        io.eprint("kirdown: " + src + ": " + e)
+        return False
+
+# Directory conversion. Walks INPUT_DIR for *.md, mirroring the tree under OUT_DIR with .html.
+# Reports every converted path and a final summary. Returns (ok_count, fail_count).
+var convertDir = Function(inDir : String, outDir : String, wrapPage : Bool) -> List:
+    var ok = 0
+    var fail = 0
+    if not path.isdir(inDir):
+        io.eprint("kirdown: input dir does not exist: " + inDir)
+        return [0, 1]
+    if not path.isdir(outDir):
+        discard path.mkdir(outDir, exist_ok = True)
+    for entry in path.walk(inDir):
+        if not path.isfile(entry):
+            continue
+        var ext = path.splitext(entry)[1]
+        if ext != ".md":
+            continue
+        # Preserve the sub-path under inDir when writing under outDir.
+        var rel = entry[len(inDir):]
+        if rel.startswith("/"):
+            rel = rel[1:]
+        var stem = path.splitext(rel)[0]
+        var dst = path.join(outDir, stem + ".html")
+        if convertFile(entry, dst, wrapPage, ""):
+            ok = ok + 1
+            io.print("  " + entry + " -> " + dst)
+        else:
+            fail = fail + 1
+    return [ok, fail]
+
+# Content-hashed report line for stdout: shows a compact fingerprint of the last emitted file so a
+# CI job can log a stable checksum without re-reading the artefact.
+var _fingerprint = Function(text : String) -> String:
+    return hash.sha256(text)[0:8]
+
+var _main = Function():
+    var p = arg.Parser("convert Markdown to HTML")
+    p.positional("input", "input file OR directory (use -d to enable directory mode)")
+    p.option("output", "-", "output file (single-file mode) or directory (directory mode); default '-' streams to stdout")
+    p.option("title", "", "page <title> when --body is not passed")
+    p.flag("dir", "treat input as a directory and mirror the tree")
+    p.flag("body", "emit only the <body> HTML fragment (no <html>/<head> wrapper)")
+    var opts = p.parse(arglist)
+    if opts == None:
+        return 0
+    var wrapPage = not opts["body"]
+    var start = time.perfcounterns()
+    if opts["dir"]:
+        var outDir = opts["output"]
+        if outDir == "-":
+            io.eprint("kirdown: directory mode requires -o OUT_DIR")
+            return 1
+        var stats = convertDir(opts["input"], outDir, wrapPage)
+        var elapsed = (time.perfcounterns() - start) / 1000000
+        io.print("kirdown: " + String(stats[0]) + " ok, " + String(stats[1]) + " failed, " + String(elapsed) + "ms")
+        if stats[1] > 0:
+            return 1
+        return 0
+    var out = opts["output"]
+    if out == "-":
+        # Print to stdout — write with io.write to avoid a trailing newline from print.
+        try:
+            var fh = io.open(opts["input"], "r")
+            var text = fh.read()
+            fh.close()
+            if wrapPage:
+                io.write(kirdown.toPage(text, opts["title"]))
+            else:
+                io.write(kirdown.toBody(text))
+            return 0
+        catch String as e:
+            io.eprint("kirdown: " + opts["input"] + ": " + e)
+            return 1
+    if convertFile(opts["input"], out, wrapPage, opts["title"]):
+        try:
+            var vh = io.open(out, "r")
+            var verify = vh.read()
+            vh.close()
+            io.print("kirdown: " + opts["input"] + " -> " + out + " (" + _fingerprint(verify) + ")")
+        catch:
+            pass
+        return 0
+    return 1
+
+if argmain:
+    var code = _main()
+    if code != 0:
+        import("sys").exit(code)

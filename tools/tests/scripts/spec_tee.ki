@@ -1,0 +1,141 @@
+# Exhaustive checks for the `tee` module: a Tee fans every write out to its copy streams before the
+# primary, works as io.stdout, and as a context manager. Uses BytesIO as in-memory streams so the
+# behaviour is fully observable. Typical + edge + adversarial + fuzz.
+var io = import("io")
+var tee = import("tee")
+
+# --- typical: fan-out to multiple copies, write returns the byte count ---
+var p = io.BytesIO()
+var a = io.BytesIO()
+var b = io.BytesIO()
+var t = tee.Tee(p, [a, b])
+assert t.write("hello ") == 6, "write returns byte count"
+discard t.write("world")
+assert p.getvalue() == "hello world", "primary received all"
+assert a.getvalue() == "hello world" and b.getvalue() == "hello world", "every copy received all"
+
+# --- copies given as a single stream (not a List) ---
+var p2 = io.BytesIO()
+var c = io.BytesIO()
+var t2 = tee.Tee(p2, c)
+discard t2.write("solo")
+assert p2.getvalue() == "solo" and c.getvalue() == "solo", "single-copy form"
+
+# --- no copies: behaves like the primary ---
+var p3 = io.BytesIO()
+var t3 = tee.Tee(p3)
+discard t3.write("just primary")
+assert p3.getvalue() == "just primary", "no-copy Tee writes only the primary"
+
+# --- primary = None: a pure fan-out sink (no primary) ---
+var d1 = io.BytesIO()
+var d2 = io.BytesIO()
+var sink = tee.Tee(None, [d1, d2])
+discard sink.write("sink")
+assert d1.getvalue() == "sink" and d2.getvalue() == "sink", "primary=None fan-out"
+
+# --- writelines + flush + close are no-throw and complete ---
+var p4 = io.BytesIO()
+var co = io.BytesIO()
+var t4 = tee.Tee(p4, co)
+t4.writelines(["a", "b", "c"])
+t4.flush()
+t4.close()
+assert p4.getvalue() == "abc" and co.getvalue() == "abc", "writelines"
+
+# --- streams() introspection (copies first, then primary) ---
+assert len(t.streams()) == 3, "streams() lists copies + primary"
+
+# --- edge: empty writes, unicode, large data ---
+var pe = io.BytesIO()
+var ce = io.BytesIO()
+var te = tee.Tee(pe, ce)
+discard te.write("")
+discard te.write("café 实现 \t\n")
+discard te.write("Z" * 100000)
+assert pe.getvalue() == ce.getvalue(), "primary and copy stay identical (empty/unicode/large)"
+assert len(pe.getvalue()) == len("café 实现 \t\n") + 100000, "all bytes through"
+
+# --- nested Tee (a Tee whose primary is another Tee) ---
+var leaf1 = io.BytesIO()
+var leaf2 = io.BytesIO()
+var inner = tee.Tee(leaf1, leaf2)
+var outerCopy = io.BytesIO()
+var outer = tee.Tee(inner, outerCopy)
+discard outer.write("nested")
+assert leaf1.getvalue() == "nested" and leaf2.getvalue() == "nested" and outerCopy.getvalue() == "nested", "nested tee reaches every leaf"
+
+# --- as io.stdout via tee_stdout: console + logfile both get the prints ---
+var console = io.BytesIO()
+io.stdout = console
+var logbuf = io.BytesIO()
+with tee.tee_stdout(logbuf):
+    io.print("one")
+    io.write("two")
+io.stdout = io.__stdout__
+assert console.getvalue() == "one\ntwo", "console saw print + write"
+assert logbuf.getvalue() == "one\ntwo", "logfile cloned print + write"
+
+# --- tee_stdout restores stdout even when the block throws ---
+var console2 = io.BytesIO()
+io.stdout = console2
+var log2 = io.BytesIO()
+var threw = False
+try:
+    with tee.tee_stdout(log2):
+        io.print("before")
+        throw "boom"
+catch as e:
+    threw = True
+io.print("after")               # stdout must be restored to console2 (not the Tee)
+io.stdout = io.__stdout__
+assert threw, "exception propagated out of the with block"
+assert "before" in console2.getvalue() and "before" in log2.getvalue(), "data before the throw reached both"
+assert "after" in console2.getvalue() and not ("after" in log2.getvalue()), "stdout restored after the block"
+
+# --- adversarial: a copy stream that fails on write surfaces the error ---
+class Broken:
+    var write = Function(self, data):
+        throw "disk full"
+var okBuf = io.BytesIO()
+var bt = tee.Tee(okBuf, Broken())
+var failed = False
+try:
+    discard bt.write("x")
+catch as e:
+    failed = True
+assert failed, "a failing copy stream throws a catchable error"
+
+# --- adversarial: a non-stream copy (no write method) throws ---
+var nbuf = io.BytesIO()
+var bad = tee.Tee(nbuf, 42)
+var failed2 = False
+try:
+    discard bad.write("y")
+catch as e:
+    failed2 = True
+assert failed2, "writing to a non-stream copy throws"
+
+# --- fuzz: 2000 random chunks; every copy and the primary stay byte-identical to the concatenation ---
+var rng = import("random").Random(0x7EE7EE)
+var fp = io.BytesIO()
+var f1 = io.BytesIO()
+var f2 = io.BytesIO()
+var f3 = io.BytesIO()
+var ft = tee.Tee(fp, [f1, f2, f3])
+var expected = ""
+var i = 0
+while i < 2000:
+    var n = rng.randint(0, 24)
+    var chunk = ""
+    var j = 0
+    while j < n:
+        chunk = chunk + chr(rng.randint(32, 126))
+        j = j + 1
+    discard ft.write(chunk)
+    expected = expected + chunk
+    i = i + 1
+assert fp.getvalue() == expected, "fuzz: primary matches concatenation"
+assert f1.getvalue() == expected and f2.getvalue() == expected and f3.getvalue() == expected, "fuzz: every copy matches"
+
+io.print("OK")

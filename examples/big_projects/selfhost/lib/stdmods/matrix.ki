@@ -1,0 +1,453 @@
+# The `matrix` module in pure Kirito: dense real matrices with element access (m[i, j]), +, -,
+# * (matrix/scalar), transpose, determinant (Gaussian elimination), trace and inverse (Gauss-Jordan).
+
+var math = import("math")
+
+# tolerant element closeness, mirroring the native floatClose: exact match -> True; any NaN/inf ->
+# False; else |a - b| <= max(relTol * max(|a|, |b|), absTol).
+var _close = Function(a, b, relTol, absTol):
+    if a == b:
+        return True
+    if math.isnan(a) or math.isnan(b) or math.isinf(a) or math.isinf(b):
+        return False
+    var diff = a - b
+    if diff < 0.0:
+        diff = -diff
+    var aa = a
+    if aa < 0.0:
+        aa = -aa
+    var bb = b
+    if bb < 0.0:
+        bb = -bb
+    var mx = aa
+    if bb > mx:
+        mx = bb
+    var bound = relTol * mx
+    if absTol > bound:
+        bound = absTol
+    return diff <= bound
+
+# Cap total element count so an absurd dimension throws a catchable error instead of hanging on a
+# huge nested-list build (the doubly-interpreted selfhost is far slower than native C++ at the same
+# iteration count, so the check must happen BEFORE the build, not after). Mirrors the native
+# kMaxMatrixElems (~16M doubles = 128 MB).
+var _MAX_MATRIX_ELEMS = 16 * 1024 * 1024
+var _checkMatSize = Function(r, c):
+    if c != 0 and r > _MAX_MATRIX_ELEMS // c:
+        throw "Matrix too large"
+
+class Matrix:
+    # Matrix(nestedList) builds from row data; Matrix(rows, cols) / Matrix(rows=, cols=) builds a
+    # zero-filled matrix of that shape (both forms native Kirito supports).
+    var _init_ = Function(self, rows, cols = None):
+        if cols != None:
+            if type(rows) != "Integer" or type(cols) != "Integer":
+                throw "Matrix expects a nested list or (rows, cols)"
+            if rows < 0 or cols < 0:
+                throw "Matrix dimensions must be non-negative"
+            _checkMatSize(rows, cols)
+            var zdata = []
+            var zi = 0
+            while zi < rows:
+                var zrow = []
+                var zj = 0
+                while zj < cols:
+                    zrow.append(0.0)
+                    zj = zj + 1
+                zdata.append(zrow)
+                zi = zi + 1
+            self._data = zdata
+            self._r = rows
+            self._c = cols
+            return None
+        var data = []
+        var ncol = -1
+        for row in rows:
+            if ncol < 0:
+                ncol = len(row)
+            elif len(row) != ncol:
+                throw "matrix: all rows must have the same length"
+            var r = []
+            for v in row:
+                r.append(Float(v))
+            data.append(r)
+        var ncolFinal = ncol
+        if ncolFinal < 0:
+            ncolFinal = 0
+        _checkMatSize(len(data), ncolFinal)
+        self._data = data
+        self._r = len(data)
+        self._c = ncolFinal
+
+    var rows = Function(self):
+        return self._r
+    var cols = Function(self):
+        return self._c
+    var shape = Function(self):
+        return [self._r, self._c]
+
+    var sum = Function(self):
+        var s = 0.0
+        for row in self._data:
+            for v in row:
+                s = s + v
+        return s
+
+    var compare = Function(self, other, rel_tol = 1e-9, abs_tol = 0.0):
+        if type(other) != "Matrix":
+            throw "compare expects a Matrix"
+        if self._r != other._r or self._c != other._c:
+            return False
+        var i = 0
+        while i < self._r:
+            var j = 0
+            while j < self._c:
+                if not _close(self._data[i][j], other._data[i][j], rel_tol, abs_tol):
+                    return False
+                j = j + 1
+            i = i + 1
+        return True
+
+    var apply = Function(self, fn):
+        var out = []
+        for row in self._data:
+            var nr = []
+            for v in row:
+                nr.append(fn(v))
+            out.append(nr)
+        return Matrix(out)
+
+    var _getitem_ = Function(self, i, j = None):
+        if j == None:
+            if i < 0 or i >= self._r:
+                throw "matrix index out of range"
+            return List(self._data[i])      # m[i] -> the whole row as a List
+        if i < 0 or i >= self._r or j < 0 or j >= self._c:
+            throw "matrix index out of range"
+        return self._data[i][j]
+
+    var _setitem_ = Function(self, i, j, v):
+        if i < 0 or i >= self._r or j < 0 or j >= self._c:
+            throw "matrix index out of range"
+        self._data[i][j] = Float(v)
+
+    var get = Function(self, row, col):
+        return self._getitem_(row, col)
+
+    var set = Function(self, row, col, value):
+        self._setitem_(row, col, value)
+        return None
+
+    var row = Function(self, i):
+        if i < 0 or i >= self._r:
+            throw "matrix index out of range"
+        return List(self._data[i])
+
+    var _ew = Function(self, o, add):
+        if self._r != o._r or self._c != o._c:
+            throw "matrix: shape mismatch"
+        var out = []
+        var i = 0
+        while i < self._r:
+            var row = []
+            var j = 0
+            while j < self._c:
+                if add:
+                    row.append(self._data[i][j] + o._data[i][j])
+                else:
+                    row.append(self._data[i][j] - o._data[i][j])
+                j = j + 1
+            out.append(row)
+            i = i + 1
+        return Matrix(out)
+
+    var _add_ = Function(self, o):
+        return self._ew(o, True)
+    var _sub_ = Function(self, o):
+        return self._ew(o, False)
+
+    var _mul_ = Function(self, o):
+        if type(o) == "Integer" or type(o) == "Float":
+            var out = []
+            for row in self._data:
+                var nr = []
+                for v in row:
+                    nr.append(v * o)
+                out.append(nr)
+            return Matrix(out)
+        # matrix product
+        if self._c != o._r:
+            throw "matrix: incompatible shapes for multiplication"
+        var res = []
+        var i = 0
+        while i < self._r:
+            var rrow = []
+            var j = 0
+            while j < o._c:
+                var s = 0.0
+                var k = 0
+                while k < self._c:
+                    s = s + self._data[i][k] * o._data[k][j]
+                    k = k + 1
+                rrow.append(s)
+                j = j + 1
+            res.append(rrow)
+            i = i + 1
+        return Matrix(res)
+
+    var transpose = Function(self):
+        var out = []
+        var j = 0
+        while j < self._c:
+            var col = []
+            var i = 0
+            while i < self._r:
+                col.append(self._data[i][j])
+                i = i + 1
+            out.append(col)
+            j = j + 1
+        return Matrix(out)
+
+    var trace = Function(self):
+        if self._r != self._c:
+            throw "matrix: trace requires a square matrix"
+        var s = 0.0
+        var i = 0
+        while i < self._r:
+            s = s + self._data[i][i]
+            i = i + 1
+        return s
+
+    # --- vector helpers (a Vector is a Matrix with one dimension == 1) ---
+    var _flat = Function(self):
+        var out = []
+        for row in self._data:
+            for v in row:
+                out.append(v)
+        return out
+
+    var dot = Function(self, o):
+        var a = self._flat()
+        var b = o._flat()
+        var n = len(a)
+        if n != len(b):
+            throw "matrix: dot requires vectors of equal length"
+        var s = 0.0
+        var i = 0
+        while i < n:
+            s = s + a[i] * b[i]
+            i = i + 1
+        return s
+
+    var cross = Function(self, o):
+        var a = self._flat()
+        var b = o._flat()
+        if len(a) != 3 or len(b) != 3:
+            throw "matrix: cross requires two 3-vectors"
+        return Matrix([[a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]])
+
+    var norm = Function(self):
+        var s = 0.0
+        for v in self._flat():
+            s = s + v * v
+        return s ** 0.5
+
+    var _copyData = Function(self):
+        var out = []
+        for row in self._data:
+            var nr = []
+            for v in row:
+                nr.append(v)
+            out.append(nr)
+        return out
+
+    var _maxAbsElem = Function(self):
+        var m = 0.0
+        for row in self._data:
+            for v in row:
+                var av = v
+                if av < 0.0:
+                    av = -av
+                if av > m:
+                    m = av
+        return m
+
+    var determinant = Function(self):
+        if self._r != self._c:
+            throw "matrix: determinant requires a square matrix"
+        var n = self._r
+        var a = self._copyData()
+        var scale = self._maxAbsElem()
+        if math.isnan(scale) or math.isinf(scale):
+            throw "matrix contains a non-finite value (inf or NaN)"
+        var tol = 1.0e-15
+        if scale > 0.0:
+            tol = scale * 1.0e-15
+        var det = 1.0
+        var col = 0
+        while col < n:
+            # partial pivot
+            var piv = col
+            var best = a[col][col]
+            if best < 0.0:
+                best = -best
+            var r = col + 1
+            while r < n:
+                var v = a[r][col]
+                if v < 0.0:
+                    v = -v
+                if v > best:
+                    best = v
+                    piv = r
+                r = r + 1
+            if math.isnan(best) or math.isinf(best):
+                throw "matrix contains a non-finite value (inf or NaN)"
+            if best < tol:
+                return 0.0
+            if piv != col:
+                var tmp = a[piv]
+                a[piv] = a[col]
+                a[col] = tmp
+                det = -det
+            det = det * a[col][col]
+            var rr = col + 1
+            while rr < n:
+                var f = a[rr][col] / a[col][col]
+                var cc = col
+                while cc < n:
+                    a[rr][cc] = a[rr][cc] - f * a[col][cc]
+                    cc = cc + 1
+                rr = rr + 1
+            col = col + 1
+        return det
+
+    var inverse = Function(self):
+        if self._r != self._c:
+            throw "matrix: inverse requires a square matrix"
+        var n = self._r
+        var a = self._copyData()
+        var scale = self._maxAbsElem()
+        if math.isnan(scale) or math.isinf(scale):
+            throw "matrix contains a non-finite value (inf or NaN)"
+        var tol = 1.0e-15
+        if scale > 0.0:
+            tol = scale * 1.0e-15
+        # augment with identity
+        var inv = []
+        var i = 0
+        while i < n:
+            var row = []
+            var j = 0
+            while j < n:
+                if i == j:
+                    row.append(1.0)
+                else:
+                    row.append(0.0)
+                j = j + 1
+            inv.append(row)
+            i = i + 1
+        var col = 0
+        while col < n:
+            var piv = col
+            var best = a[col][col]
+            if best < 0.0:
+                best = -best
+            var r = col + 1
+            while r < n:
+                var v = a[r][col]
+                if v < 0.0:
+                    v = -v
+                if v > best:
+                    best = v
+                    piv = r
+                r = r + 1
+            if math.isnan(best) or math.isinf(best):
+                throw "matrix contains a non-finite value (inf or NaN)"
+            if best < tol:
+                throw "matrix: singular matrix has no inverse"
+            if piv != col:
+                var t1 = a[piv]
+                a[piv] = a[col]
+                a[col] = t1
+                var t2 = inv[piv]
+                inv[piv] = inv[col]
+                inv[col] = t2
+            var d = a[col][col]
+            var k = 0
+            while k < n:
+                a[col][k] = a[col][k] / d
+                inv[col][k] = inv[col][k] / d
+                k = k + 1
+            var rr = 0
+            while rr < n:
+                if rr != col:
+                    var f = a[rr][col]
+                    var cc = 0
+                    while cc < n:
+                        a[rr][cc] = a[rr][cc] - f * a[col][cc]
+                        inv[rr][cc] = inv[rr][cc] - f * inv[col][cc]
+                        cc = cc + 1
+                rr = rr + 1
+            col = col + 1
+        return Matrix(inv)
+
+    var _eq_ = Function(self, o):
+        if type(o) != "Matrix":
+            return False
+        if self._r != o._r or self._c != o._c:
+            return False
+        var i = 0
+        while i < self._r:
+            var j = 0
+            while j < self._c:
+                if self._data[i][j] != o._data[i][j]:
+                    return False
+                j = j + 1
+            i = i + 1
+        return True
+
+    var _str_ = Function(self):
+        return String(self._data)
+
+var zeros = Function(rows, cols):
+    if rows < 0 or cols < 0:
+        throw "matrix.zeros: dimensions must be non-negative"
+    _checkMatSize(rows, cols)
+    var out = []
+    var i = 0
+    while i < rows:
+        var row = []
+        var j = 0
+        while j < cols:
+            row.append(0.0)
+            j = j + 1
+        out.append(row)
+        i = i + 1
+    return Matrix(out)
+
+var ones = Function(rows, cols):
+    if rows < 0 or cols < 0:
+        throw "matrix.ones: dimensions must be non-negative"
+    var m = zeros(rows, cols)
+    var i = 0
+    while i < rows:
+        var j = 0
+        while j < cols:
+            m[i, j] = 1.0
+            j = j + 1
+        i = i + 1
+    return m
+
+var identity = Function(n):
+    if n < 0:
+        throw "matrix.identity: dimension must be non-negative"
+    var m = zeros(n, n)
+    var i = 0
+    while i < n:
+        m[i, i] = 1.0
+        i = i + 1
+    return m
+
+# A vector is a 1xn row Matrix; dot/cross/norm live on Matrix above.
+var vector = Function(values):
+    return Matrix([values])

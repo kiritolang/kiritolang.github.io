@@ -1,0 +1,4 @@
+# using self in a plain (non-method) function is an undefined-name error
+var f = Function():
+    return self.x
+discard f()

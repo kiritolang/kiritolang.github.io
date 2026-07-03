@@ -1,0 +1,29 @@
+# Classes: construction, methods, inheritance, polymorphism.
+var io = import("io")
+
+class Shape:
+    var _init_ = Function(self, name):
+        self.name = name
+    var describe = Function(self):
+        return self.name + " with area " + String(self.area())
+
+class Circle(Shape):
+    var _init_ = Function(self, r):
+        self.name = "Circle"
+        self.r = r
+    var area = Function(self):
+        return 3 * self.r * self.r
+
+class Square(Shape):
+    var _init_ = Function(self, side):
+        self.name = "Square"
+        self.side = side
+    var area = Function(self):
+        return self.side * self.side
+
+var shapes = [Circle(2), Square(3)]
+for shape in shapes:
+    io.print(shape.describe())
+
+# Circle with area 12
+# Square with area 9

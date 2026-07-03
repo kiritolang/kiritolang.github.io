@@ -1,0 +1,484 @@
+# =============================================================================================
+# DEEP adversarial audit of the Kirito-authored frozen-source stdlib modules
+# (src/kirito/stdlib_kimodules.hpp): itertools, functools, collections, textwrap, base64, copy,
+# enum, heapq, bisect, statistics.
+#
+# This file deliberately goes for the EDGES and the DOC-VS-IMPL gaps that the existing suites
+# (spec_stdmods, probe_stdmods_full, audit_heapq, audit_bisect, audit_statistics) do not cover:
+# sentinel collisions, required-vs-optional parameters, negative counts, non-insertion-ordered
+# tie-breaks, class-instance copy semantics, long-word wrapping, whitespace-only indent, duplicate
+# enum names, and the documented-to-throw vs silently-wrong boundaries. Findings are flagged inline
+# with `# FINDING:`. Everything here is deterministic and asserts the ACTUAL behavior of v1.6.0.
+# =============================================================================================
+var io = import("io")
+
+# A reusable "this expression throws" probe.
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+        return False
+    catch as e:
+        return True
+
+# ====================================================================== itertools
+var it = import("itertools")
+
+# --- count: stop is REQUIRED (eager); step that does not divide the span; single-step span. -------
+assert it.count(0, 1, 0) == [], "count with stop==start is empty"
+assert it.count(0, 5, 1) == [0], "count step overshoots stop after first"
+assert it.count(2, 3, 12) == [2, 5, 8, 11], "count step 3 stops before 12"
+assert throws(Function(): return it.count(0, 1)), "count without stop throws (no lazy generators)"
+
+# --- repeat / cycle: times is REQUIRED (no optional/infinite count form). -------------------------
+# FINDING (doc): itertools.repeat(value) with no count is a TypeError here (no endless iterator).
+# Documented signature is repeat(value, times) so this is by-design.
+assert throws(Function(): return it.repeat("x")), "repeat requires times (no infinite form)"
+assert it.repeat("x", 0) == [], "repeat times=0 -> empty"
+assert it.repeat([1], 2) == [[1], [1]], "repeat repeats the SAME reference twice"
+var rr = it.repeat([0], 2)
+rr[0].append(9)
+assert rr[1] == [0, 9] and id(rr[0]) == id(rr[1]), "FINDING: repeat shares ONE reference -- mutating one slot mutates all"
+assert it.cycle([], 5) == [], "cycle of an empty iterable -> empty regardless of times"
+assert it.cycle([1, 2], 0) == [], "cycle times=0 -> empty"
+
+# --- islice: start AND stop are required; start>stop; step striding; step over the start offset. --
+assert it.islice([0, 1, 2, 3, 4], 3, 1) == [], "islice start>stop -> empty"
+assert it.islice([0, 1, 2, 3, 4, 5, 6, 7], 1, 7, 2) == [1, 3, 5], "islice step=2 from offset 1"
+assert it.islice([0, 1, 2, 3, 4, 5, 6, 7, 8], 2, 9, 3) == [2, 5, 8], "islice step=3"
+assert it.islice([0, 1, 2], 0, 100) == [0, 1, 2], "islice stop past the end caps"
+assert it.islice([], 0, 5) == [], "islice of empty"
+
+# --- accumulate: the None sentinel marks 'first element'. 0/False are NOT None, so they accumulate
+#     correctly -- the sentinel is safe for falsy numerics but would misbehave if an element == None. -
+assert it.accumulate([0, 1, 2]) == [0, 1, 3], "accumulate starting with 0 (not mistaken for empty)"
+assert it.accumulate([5]) == [5], "accumulate single element"
+assert it.accumulate([]) == [], "accumulate empty -> empty"
+assert it.accumulate([3, 1, 4, 1, 5], Function(a, b): return a if a > b else b) == [3, 3, 4, 4, 5], "accumulate running max"
+
+# --- product: an empty factor annihilates; zero factors yields one empty tuple (math identity). ---
+assert it.product([[1, 2], []]) == [], "product with an empty factor is empty"
+assert it.product([]) == [[]], "product of zero lists -> [[]] (the empty product)"
+assert it.product([[1], [2], [3]]) == [[1, 2, 3]], "product of singletons -> one tuple"
+# each emitted tuple is a fresh list (prefix.copy()), not an alias
+var pr = it.product([[1], [2]])
+pr[0].append(99)
+assert it.product([[1], [2]]) == [[1, 2]], "product tuples are independent copies"
+
+# --- permutations / combinations: r=0 -> one empty; r>len -> none; r<0 -> none. -------------------
+assert it.permutations([1, 2, 3], 0) == [[]], "permutations r=0 -> [[]]"
+assert it.permutations([1, 2], 5) == [], "permutations r>len -> []"
+assert it.permutations([], None) == [[]], "permutations of [] -> [[]] (one empty arrangement)"
+assert it.permutations([1, 2, 3]) == it.permutations([1, 2, 3], 3), "permutations default r == len"
+assert len(it.permutations([1, 2, 3, 4])) == 24, "permutations count = 4! = 24"
+assert it.combinations([1, 2, 3], 0) == [[]], "combinations r=0 -> [[]]"
+assert it.combinations([1, 2], 5) == [], "combinations r>len -> []"
+assert len(it.combinations([1, 2, 3, 4, 5], 2)) == 10, "combinations count C(5,2) = 10"
+
+# --- takewhile/dropwhile/filterfalse/compress: empties, all-pass, all-fail. -----------------------
+assert it.takewhile(Function(x): return x < 10, []) == [], "takewhile of empty"
+assert it.takewhile(Function(x): return False, [1, 2, 3]) == [], "takewhile pred never true"
+assert it.dropwhile(Function(x): return True, [1, 2, 3]) == [], "dropwhile pred always true -> []"
+assert it.dropwhile(Function(x): return False, [1, 2, 3]) == [1, 2, 3], "dropwhile pred never true -> all"
+assert it.filterfalse(Function(x): return x > 0, [-1, 0, 1, 2]) == [-1, 0], "filterfalse keeps falsy-pred"
+# compress: selectors shorter than data truncates; longer is ignored.
+assert it.compress([1, 2, 3, 4], [1, 0]) == [1], "compress with short selectors stops at selector end"
+assert it.compress([1, 2], [1, 1, 1, 1]) == [1, 2], "compress with extra selectors ignores them"
+
+# --- pairwise / groupby: single element, key function, CONSECUTIVE-only grouping. -----------------
+assert it.pairwise([1]) == [], "pairwise of one element -> no pairs"
+assert it.pairwise([]) == [], "pairwise of empty"
+# groupby groups only CONSECUTIVE equal keys -> the same key recurs as separate groups.
+assert it.groupby([1, 1, 2, 2, 1]) == [[1, [1, 1]], [2, [2, 2]], [1, [1]]], "groupby splits non-consecutive runs"
+assert it.groupby([]) == [], "groupby of empty"
+assert it.groupby([1, 2, 3, 4], Function(x): return x % 2) == [[1, [1]], [0, [2]], [1, [3]], [0, [4]]], "groupby by parity key (consecutive)"
+
+# --- ziplongest: ragged rows padded with fillvalue (default None). --------------------------------
+assert it.ziplongest([[1, 2, 3], [4]], -1) == [[1, 4], [2, -1], [3, -1]], "ziplongest pads short list"
+assert it.ziplongest([[1], [2]]) == [[1, 2]], "ziplongest equal-length, default fill"
+assert it.ziplongest([[], []]) == [], "ziplongest of all-empty -> []"
+
+# --- starmap: receives the WHOLE tuple as one list arg (no spread). -------------------------------
+assert it.starmap(Function(t): return t[0] * t[1], [[2, 3], [4, 5]]) == [6, 20], "starmap passes the tuple as one arg"
+
+# --- chain: empties interleaved; nested lists are NOT flattened beyond one level. -----------------
+assert it.chain([[], [1], [], [2, 3], []]) == [1, 2, 3], "chain skips empty sublists"
+assert it.chain([[[1]], [[2]]]) == [[1], [2]], "chain flattens exactly one level"
+
+io.print("ok itertools")
+
+# ====================================================================== functools
+var ft = import("functools")
+
+# --- reduce: with/without initial; empty throws; the None-initial ambiguity. ----------------------
+assert ft.reduce(Function(a, b): return a + b, [1, 2, 3, 4]) == 10, "reduce sum, no initial"
+assert ft.reduce(Function(a, b): return a + b, [1, 2, 3], 100) == 106, "reduce sum with initial"
+assert ft.reduce(Function(a, b): return a + b, [7]) == 7, "reduce single element, no func call"
+assert ft.reduce(Function(a, b): return a + b, [], 0) == 0, "reduce empty WITH initial -> initial"
+# FINDING (doc/parity): `initial` defaults to None and the impl uses `initial == None` as the
+# 'no initial given' sentinel -- so an EXPLICIT None initial is indistinguishable from omitting it.
+assert ft.reduce(Function(a, b): return a + b, [1, 2, 3], None) == 6, "FINDING: explicit initial=None is treated as NO initial (sentinel collision)"
+assert throws(Function(): return ft.reduce(Function(a, b): return a + b, [], None)), "FINDING: reduce([], None) RAISES -- None initial cannot seed an empty fold"
+var emptymsg = ""
+try:
+    discard ft.reduce(Function(a, b): return a + b, [])
+catch as e:
+    emptymsg = e
+assert "empty sequence" in emptymsg, "reduce of empty (no initial) throws the documented message"
+# a fold that legitimately produces None mid-stream still works (only the empty-no-initial case throws)
+assert ft.reduce(Function(a, b): return None, [1, 2], 0) == None, "reduce may yield None when seeded"
+
+# --- partial: positional capture + extra args; empty bound; bound is a list, result takes a list. -
+var addbound = ft.partial(Function(args): return args[0] + args[1] + args[2], [10, 20])
+assert addbound([30]) == 60, "partial prepends bound list, rest appended"
+assert ft.partial(Function(args): return args, [1, 2])([3, 4, 5]) == [1, 2, 3, 4, 5], "partial joins bound + rest in order"
+assert ft.partial(Function(args): return len(args), [])([9]) == 1, "partial with empty bound is a passthrough"
+
+# --- cache: memoizes; distinct args -> distinct results -> distinct evaluations; unhashable throws.
+var hits = [0]
+var slow = Function(x):
+    hits[0] = hits[0] + 1
+    return x * x
+var fast = ft.cache(slow)
+assert fast(6) == 36 and fast(6) == 36 and fast(7) == 49, "cache returns correct values"
+assert hits[0] == 2, "cache evaluates once per DISTINCT argument (6 and 7 -> 2 calls)"
+assert throws(Function(): return ft.cache(Function(x): return x)([1, 2])), "FINDING: cache of an unhashable (List) argument RAISES (dict-key requirement, undocumented)"
+
+io.print("ok functools")
+
+# ====================================================================== collections
+var col = import("collections")
+
+# --- deque: both-ends ops, len/getitem/iter, negative index; NO rotate/index/clear/maxlen. --------
+var dq = col.deque()
+dq.append(1)
+dq.append(2)
+dq.appendleft(0)
+assert len(dq) == 3 and dq[0] == 0 and dq[2] == 2, "deque grows at both ends"
+assert dq[-1] == 2, "deque negative index works (List _getitem_)"
+assert dq.pop() == 2 and dq.popleft() == 0, "deque pop/popleft return the ends"
+assert len(dq) == 1, "deque length after popping both ends"
+# Documented-as-absent (Kirito's deque does not have these) -> attribute errors.
+assert throws(Function(): return col.deque([1, 2]).rotate(1)), "FINDING: deque has NO rotate (undocumented gap)"
+assert throws(Function(): return col.deque([1, 2]).index(2)), "deque has NO index method"
+assert throws(Function(): return col.deque([1, 2]).clear()), "deque has NO clear method"
+assert throws(Function(): return col.deque([1, 2], 5)), "deque ctor takes NO maxlen argument (no eviction)"
+
+# --- Counter: counts, missing -> 0, items, mostcommon ordering, the NON-insertion-order tie-break. -
+var ctr = col.Counter(["a", "b", "a", "c", "a", "b"])
+assert ctr["a"] == 3 and ctr["b"] == 2 and ctr["c"] == 1, "Counter tallies"
+assert ctr["zzz"] == 0 and ctr.get("zzz") == 0, "Counter missing key reads as 0 (both [] and get)"
+assert ctr.mostcommon(2) == [["a", 3], ["b", 2]], "Counter.mostcommon(n) top-n by count"
+# FINDING (doc bug): docs/pages/10-stdlib.md:986-987 says mostcommon ties 'keep insertion order'.
+# But Kirito Dicts are NOT insertion-ordered and mostcommon sorts the dict's items() with a STABLE
+# sort -- so the tie order is the Dict's arbitrary iteration order, NOT insertion order. We assert
+# only the multiset of tied entries (order-independent), which is all that actually holds.
+var tied = col.Counter()
+tied.add("zebra")
+tied.add("apple")
+tied.add("mango")
+var tiedpairs = tied.mostcommon()
+assert len(tiedpairs) == 3, "mostcommon returns every distinct value"
+var tiednames = []
+for p in tiedpairs:
+    assert p[1] == 1, "all three tie at count 1"
+    tiednames.append(p[0])
+assert sorted(tiednames) == ["apple", "mango", "zebra"], "FINDING: mostcommon tie order is NOT insertion order (doc 07-stdlib.md:986 wrong); only the SET of entries is stable"
+# Counter has NO +/-/update arithmetic.
+assert throws(Function(): return ctr.update(["a"])), "Counter has NO update method"
+# mostcommon() with no arg returns ALL, sorted by count descending (counts themselves are correct)
+var allmc = col.Counter(["x", "x", "x", "y", "y", "z"]).mostcommon()
+assert allmc[0] == ["x", 3] and allmc[len(allmc) - 1][1] == 1, "mostcommon() full list: highest count first, lowest last"
+
+# --- defaultdict: factory-once-per-missing-key with int/list/dict factories; explicit set; membership. -
+var mkint = Function(): return 0
+var di = col.defaultdict(mkint)
+di["a"] = di["a"] + 1
+di["a"] = di["a"] + 1
+di["b"] = di["b"] + 5
+assert di["a"] == 2 and di["b"] == 5, "defaultdict int factory accumulates"
+var mklist = Function(): return []
+var dl = col.defaultdict(mklist)
+dl["g"].append(1)
+dl["g"].append(2)
+assert dl["g"] == [1, 2], "defaultdict list factory: same list reused per key"
+var mkdict = Function(): return {}
+var dnest = col.defaultdict(mkdict)
+dnest["outer"]["inner"] = 7
+assert dnest["outer"]["inner"] == 7, "defaultdict dict factory builds nested dicts"
+# explicit set bypasses the factory; membership test does NOT insert.
+var dexp = col.defaultdict(mkint)
+dexp["set"] = 99
+assert dexp["set"] == 99, "explicit _setitem_ stores the value"
+assert ("ghost" in dexp) == False, "membership on an absent key is False"
+discard ("ghost" in dexp)
+assert sorted(dexp.keys()) == ["set"], "FINDING-NEGATIVE: membership did NOT insert the key (correct, unlike a naive [] access)"
+assert throws(Function(): return dexp.get("set", 0)), "defaultdict has NO get method (only _getitem_ which inserts)"
+
+io.print("ok collections")
+
+# ====================================================================== textwrap
+var tw = import("textwrap")
+
+# --- wrap: exact-width fit, empty text, single word, and the LONG-WORD non-break behavior. --------
+assert tw.wrap("aa bb cc", 5) == ["aa bb", "cc"], "wrap packs words up to exactly width"
+assert tw.wrap("", 10) == [], "wrap of empty text -> [] (no lines)"
+assert tw.wrap("solo", 2) == ["solo"], "wrap of a single over-width word keeps it whole"
+# FINDING: Kirito's wrap NEVER splits a word (no break_long_words), so an over-long word becomes its
+# own un-truncated line.
+assert tw.wrap("hi superlongword bye", 5) == ["hi", "superlongword", "bye"], "FINDING: long words are NOT broken (no break_long_words); each becomes its own line"
+assert tw.wrap("a b c d e", 3) == ["a b", "c d", "e"], "wrap fills greedily within width"
+
+# --- fill: newline-join of wrap; empty. -----------------------------------------------------------
+assert tw.fill("a b c d", 3) == "a b\nc d", "fill joins wrapped lines with newline"
+assert tw.fill("", 10) == "", "fill of empty text -> empty string"
+
+# --- indent: prefixes lines -- including a WHITESPACE-ONLY line. ----------------------------------
+assert tw.indent("a\nb", "> ") == "> a\n> b", "indent prefixes each content line"
+assert tw.indent("p1\n\np2", "# ") == "# p1\n\n# p2", "indent leaves a truly empty line unprefixed"
+# FINDING: indent prefixes any line of length > 0, so a line of spaces gets the prefix.
+assert tw.indent("a\n   \nb", ">") == ">a\n>   \n>b", "FINDING: a whitespace-only line IS prefixed"
+
+# --- dedent: common-prefix removal; blank lines ignored for the common amount; tabs counted as 1. -
+assert tw.dedent("    a\n    b") == "a\nb", "dedent strips the common 4-space prefix"
+assert tw.dedent("    a\n\n    b") == "a\n\nb", "dedent ignores blank lines when measuring"
+assert tw.dedent("  a\n      b") == "a\n    b", "dedent removes only the COMMON amount"
+assert tw.dedent("abc") == "abc", "dedent with no common indent is a no-op"
+# FINDING: dedent measures indent by character count (tab == 1), not by a whitespace-equality rule
+# -- so a tab-indented block and a space-indented block are treated alike.
+assert tw.dedent("\ta\n\tb") == "a\nb", "FINDING: tabs counted as a single indent char (not expanded)"
+
+io.print("ok textwrap")
+
+# ====================================================================== base64
+var b64 = import("base64")
+
+# --- encode/decode: the three padding regimes (0/1/2 '=') and round-trip via List/Bytes/String. ---
+assert b64.encode([77]) == "TQ==", "1 input byte -> 2 padding chars"
+assert b64.encode([77, 97]) == "TWE=", "2 input bytes -> 1 padding char"
+assert b64.encode([77, 97, 110]) == "TWFu", "3 input bytes -> no padding"
+assert b64.encode([]) == "", "encode of empty -> empty string"
+assert b64.decode("") == [], "decode of empty -> []"
+assert b64.encode("Man") == "TWFu", "encode of a String uses its UTF-8 bytes"
+assert b64.decode("TWFu") == [77, 97, 110], "decode -> list of byte values"
+# round-trip every edge byte through Bytes
+for bs in [[], [0], [255], [0, 255, 128], [200, 150, 0, 255, 64]]:
+    assert b64.decode(b64.encode(Bytes(bs))) == bs, "Bytes round-trip preserves raw bytes"
+# multi-byte Unicode String -> its UTF-8 bytes -> decode back to those bytes
+assert b64.decode(b64.encode("e")) == [101], "ASCII char encodes to its single byte"
+
+# --- invalid input throws; content after the first '=' is silently ignored (lenient). ------------
+assert throws(Function(): return b64.decode("@@@@")), "decode of a non-alphabet char RAISES"
+assert throws(Function(): return b64.decode("ab*d")), "decode rejects an embedded illegal char"
+# FINDING (lenient): everything from the first '=' onward is dropped, so trailing garbage after
+# padding is ignored rather than rejected.
+assert b64.decode("TQ==whatever") == [77], "FINDING: decode stops at the first '=' (trailing junk ignored, not an error)"
+
+# --- urlsafe: '+'->'-', '/'->'_'; round-trips the high-bit bytes that produce + and /. -----------
+assert b64.urlsafeencode([251, 255, 191]) == "-_-_", "urlsafe maps + and / to - and _"
+assert b64.encode([251, 255, 191]) == "+/+/", "standard alphabet uses + and / for the same bytes"
+for ub in [[], [255], [250, 251, 252], [62, 63, 255]]:
+    assert b64.urlsafedecode(b64.urlsafeencode(Bytes(ub))) == ub, "urlsafe round-trip"
+
+io.print("ok base64")
+
+# ====================================================================== copy
+var c = import("copy")
+
+# --- copy (shallow): nested containers are SHARED; deepcopy: independent at every level. ----------
+var orig = {"k": [1, 2]}
+var sh = c.copy(orig)
+sh["k"].append(3)
+assert orig["k"] == [1, 2, 3], "copy.copy is shallow: nested list is shared"
+var deep = c.deepcopy({"k": [1, 2]})
+deep["k"].append(3)
+assert deep["k"] == [1, 2, 3], "deepcopy works on the copy"
+var origd = {"k": [1, 2]}
+var deepd = c.deepcopy(origd)
+deepd["k"].append(3)
+assert origd["k"] == [1, 2], "deepcopy leaves the original's nested objects untouched"
+assert sorted(List(c.copy({1, 2, 3}))) == [1, 2, 3], "copy of a Set"
+
+# --- copy/deepcopy of SCALARS returns the value (immutable, so identity is irrelevant). -----------
+assert c.copy(42) == 42 and c.copy("hi") == "hi" and c.deepcopy(3.5) == 3.5, "copy/deepcopy of scalars returns the value"
+
+# --- deepcopy is cycle-safe and preserves shared references (each original mapped once). ----------
+var shared = [9]
+var twoshared = c.deepcopy([shared, shared])
+assert id(twoshared[0]) == id(twoshared[1]), "deepcopy copies a shared ref ONCE (identity preserved)"
+assert id(twoshared[0]) != id(shared), "the shared copy is fresh, not the original"
+var cyc = [1]
+cyc.append(cyc)
+var dc = c.deepcopy(cyc)
+assert dc[0] == 1 and id(dc[1]) == id(dc) and id(dc) != id(cyc), "deepcopy reconstructs a self-cycle without looping"
+
+# --- copy/deepcopy of a user CLASS INSTANCE makes an INDEPENDENT copy (via the serialize graph
+#     codec, since pure Kirito has no attribute introspection). Mutating the copy can't touch the
+#     original. (For an instance this is necessarily a deep copy.) ------------------------------------
+class Box:
+    var _init_ = Function(self, v):
+        self.v = v
+var bx = Box([1])
+var bc = c.copy(bx)
+assert id(bc) != id(bx), "copy.copy of a class instance is a fresh object"
+bc.v.append(2)
+assert bx.v == [1], "mutating the copy does NOT touch the original instance"
+var bd = c.deepcopy(bx)
+assert id(bd) != id(bx) and bd.v == [1], "deepcopy of a class instance is independent"
+
+io.print("ok copy")
+
+# ====================================================================== enum
+var en = import("enum")
+
+# --- member access by name/index, value<->name, names()/values(), membership. --------------------
+var Color = en.Enum(["RED", "GREEN", "BLUE"])
+assert Color.get("RED") == 0 and Color.get("BLUE") == 2, "get -> ordinal"
+assert Color["GREEN"] == 1, "[] indexing == get"
+assert Color.nameof(0) == "RED" and Color.nameof(2) == "BLUE", "nameof -> name"
+assert sorted(Color.names()) == ["BLUE", "GREEN", "RED"], "names() lists members"
+assert sorted(Color.values()) == [0, 1, 2], "values() lists ordinals"
+assert ("RED" in Color) and (("PURPLE" in Color) == False), "membership test"
+
+# --- unknown name throws (documented); unknown value throws (NOT documented to throw). ------------
+assert throws(Function(): return Color.get("PURPLE")), "get of an unknown name throws"
+var badname = ""
+try:
+    discard Color.get("NOPE")
+catch as e:
+    badname = e
+assert "no such enum member" in badname, "the unknown-name error carries the documented message"
+assert throws(Function(): return Color.nameof(99)), "FINDING: nameof of an unknown value RAISES (undocumented; doc lists no error)"
+
+# --- empty enum; and the SILENT-CORRUPTION on duplicate names. ------------------------------------
+var Empty = en.Enum([])
+assert Empty.names() == [] and (("X" in Empty) == False), "empty enum has no members"
+# FINDING: duplicate names silently corrupt the reverse map -- get('A') returns the LAST index, but
+# BOTH ordinals map back to 'A' via nameof. No error is thrown on the duplicate.
+var Dup = en.Enum(["A", "A"])
+assert Dup.get("A") == 1, "FINDING: duplicate name -> get returns the LAST ordinal (1), shadowing the first"
+assert Dup.nameof(0) == "A" and Dup.nameof(1) == "A", "FINDING: both ordinals map back to the duplicated name"
+
+io.print("ok enum")
+
+# ====================================================================== heapq
+var h = import("heapq")
+
+# --- heapify returns a NEW list; heappush/heappop/heapreplace mutate in place. --------------------
+var src = [5, 3, 8, 1]
+var hp = h.heapify(src)
+assert src == [5, 3, 8, 1], "heapify does not mutate its input"
+assert hp[0] == 1, "heapify -> min at root"
+h.heappush(hp, 0)
+assert hp[0] == 0, "heappush mutates the heap in place"
+assert h.heappop(hp) == 0 and hp[0] == 1, "heappop removes and returns the root"
+
+# --- nlargest and nsmallest agree on a non-positive n: both yield []. -----------------------------
+assert h.nsmallest(-2, [5, 4, 3, 2, 1]) == [], "nsmallest(negative) -> []"
+assert h.nlargest(-2, [5, 4, 3, 2, 1]) == [], "nlargest(negative) -> [] (fixed: was a tail slice)"
+assert h.nlargest(0, [3, 1, 2]) == [] and h.nsmallest(0, [3, 1, 2]) == [], "n=0 agrees: both []"
+
+# --- merge is GIGO-TOLERANT: it re-heaps every element, so it sorts even unsorted inputs. ---------
+# FINDING (doc): docs say merge takes 'already-sorted inputs', but the impl heappushes every
+# element and drains -- so it actually returns sorted output regardless of input order (a true k-way
+# merge would assume sorted inputs and produce GARBAGE on unsorted input).
+assert h.merge([[3, 1], [2]]) == [1, 2, 3], "FINDING: merge sorts even UNSORTED inputs (full re-heap, not a k-way merge)"
+assert h.merge([]) == [], "merge of no lists"
+assert h.merge([[5], [], [1, 3]]) == [1, 3, 5], "merge with an empty sublist"
+
+# --- nlargest/nsmallest are NOT computed by the same algorithm (drain vs sort): cross-check them. -
+var data = [9, 3, 9, 1, 7, 3, 5]
+assert h.nsmallest(3, data) == [1, 3, 3], "nsmallest(3) with duplicates"
+assert h.nlargest(3, data) == [9, 9, 7], "nlargest(3) with duplicates"
+assert h.nsmallest(100, data) == sorted(data), "nsmallest(>len) == fully sorted ascending"
+assert h.nlargest(100, data) == sorted(data, None, True), "nlargest(>len) == fully sorted descending"
+
+# --- heapreplace on empty throws; on a singleton swaps the element. -------------------------------
+assert throws(Function(): return h.heapreplace([], 5)), "heapreplace on empty throws"
+var one = h.heapify([5])
+assert h.heapreplace(one, 9) == 5 and one == [9], "heapreplace swaps the sole element"
+
+io.print("ok heapq")
+
+# ====================================================================== bisect
+var b = import("bisect")
+
+# --- the bare aliases ARE the same function object; insort returns None and mutates in place. -----
+assert id(b.bisect) == id(b.bisectright), "bisect is the very same object as bisectright"
+assert id(b.insort) == id(b.insortright), "insort is the very same object as insortright"
+var arr = [1, 3, 5]
+assert b.insort(arr, 4) == None, "insort returns None (in-place mutation)"
+assert arr == [1, 3, 4, 5], "insort kept the list sorted"
+
+# --- left vs right on a duplicate run; the count-of-equals identity. ------------------------------
+var dup = [1, 2, 2, 2, 3]
+assert b.bisectleft(dup, 2) == 1 and b.bisectright(dup, 2) == 4, "left lands at run start, right past run end"
+assert b.bisectright(dup, 2) - b.bisectleft(dup, 2) == 3, "right - left == multiplicity of the key"
+assert b.bisectleft(dup, 0) == 0 and b.bisectright(dup, 4) == 5, "keys outside the range clamp to 0/len"
+
+# --- insortleft vs insortright place a duplicate on the correct side. -----------------------------
+var li = [1, 2, 2, 3]
+b.insortleft(li, 2)
+assert li == [1, 2, 2, 2, 3], "insortleft inserts before the equal run"
+var ri = [1, 2, 2, 3]
+b.insortright(ri, 2)
+assert ri == [1, 2, 2, 2, 3], "insortright inserts after the equal run"
+# distinguish left vs right by the NEIGHBOUR that changes: tag the run and see which side grows.
+var tagged = ["a1", "b1", "b2", "c1"]
+assert b.bisectleft(tagged, "b0") == 1, "bisectleft on Strings finds the run start"
+assert b.bisectright(tagged, "b9") == 3, "bisectright on Strings finds past the run end"
+
+# --- returns are Integers; empty list. ------------------------------------------------------------
+assert type(b.bisectleft([1, 2], 1)) == "Integer" and type(b.bisectright([1, 2], 1)) == "Integer", "bisect returns Integer"
+assert b.bisectleft([], 5) == 0 and b.bisectright([], 5) == 0, "bisect of empty -> 0"
+
+io.print("ok bisect")
+
+# ====================================================================== statistics
+var st = import("statistics")
+var near = Function(x, y) -> Bool:
+    var d = x - y
+    return (d if d >= 0 else -d) < 1e-9
+
+# --- mean/median always Float (even from Integers); median odd/even. ------------------------------
+assert type(st.mean([1, 2, 3])) == "Float" and st.mean([1, 2, 3]) == 2.0, "mean of ints is a Float"
+assert type(st.median([1, 2, 3])) == "Float" and st.median([1, 2, 3]) == 2.0, "median odd -> Float middle"
+assert st.median([1, 2, 3, 4]) == 2.5 and type(st.median([1, 2, 3, 4])) == "Float", "median even -> Float average"
+assert st.median([3, 1, 2]) == 2.0, "median sorts internally"
+
+# --- mode: single, first-to-reach-max tie-break, and the EMPTY -> throws. --------------------------
+assert st.mode([1, 1, 2, 3]) == 1, "mode picks the most common"
+assert st.mode([4, 4, 5, 5]) == 4, "FINDING: tie -> the value that reaches the max count FIRST (mode is single-valued)"
+# statistics.mode([]) throws with a clear message.
+var modeEmptyRaised = False
+try:
+    discard st.mode([])
+catch as e:
+    modeEmptyRaised = True
+assert modeEmptyRaised, "mode of an empty list throws"
+assert st.multimode([]) == [], "multimode of empty -> [] (consistent)"
+assert st.multimode([1, 2, 3]) == [1, 2, 3], "all-distinct: every value is a mode"
+
+# --- the throw boundaries: variance/quantiles need n>=2; pvariance needs n>=1; stdev follows variance.
+assert st.pvariance([7]) == 0.0 and st.pstdev([7]) == 0.0, "pvariance/pstdev of a single sample is 0"
+assert throws(Function(): return st.variance([5])), "variance needs >= 2 samples"
+assert throws(Function(): return st.pvariance([])), "pvariance needs >= 1 sample"
+assert throws(Function(): return st.stdev([5])), "stdev inherits variance's n>=2 requirement"
+assert throws(Function(): return st.mean([])), "mean of empty throws"
+assert throws(Function(): return st.median([])), "median of empty throws"
+
+# --- sample vs population variance relationship + the stdev = sqrt(variance) identity. ------------
+var sv = [2, 4, 4, 4, 5, 5, 7, 9]
+assert near(st.variance(sv), 32.0 / 7.0), "sample variance of the canonical set"
+assert near(st.pvariance(sv), 4.0), "population variance of the canonical set"
+assert near(st.variance(sv), st.pvariance(sv) * 8.0 / 7.0), "sample == population * n/(n-1)"
+assert near(st.stdev(sv) * st.stdev(sv), st.variance(sv)), "stdev^2 == variance"
+
+# --- quantiles: n=1 -> 0 cuts; default n=4 -> 3 cuts at the exclusive-method positions. ------------
+assert st.quantiles([1, 2, 3], 1) == [], "quantiles n=1 -> no cut points"
+var qs = st.quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+assert len(qs) == 3 and near(qs[0], 2.75) and near(qs[1], 5.5) and near(qs[2], 8.25), "default quartiles (exclusive method)"
+assert st.quantiles([5, 1, 3, 4, 2]) == st.quantiles([1, 2, 3, 4, 5]), "quantiles sorts internally"
+assert throws(Function(): return st.quantiles([5])), "quantiles needs >= 2 samples"
+
+io.print("ok statistics")
+io.print("OK deep-kimods")

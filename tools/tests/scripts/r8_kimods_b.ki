@@ -1,0 +1,685 @@
+var io = import("io")
+
+# r8_kimods_b — round-8 EXHAUSTIVE re-audit of the Kirito-authored frozen-source modules, GROUP B:
+#   string, textwrap, base64, csv, xml, tee, arg, semver.
+# Self-checking: every assertion increments a counter; the final line reports the total.
+# This round COMPLEMENTS r6_kimods_b.ki + r7_kimods_b.ki with FRESH inputs (no duplicated literals):
+# new typical / edge / adversarial / malformed cases, keyword arguments, and `inspect` content.
+# Deterministic, exit 0, zero stderr (no warnings: every dropped value is `discard`-ed).
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(f) -> True iff calling f() throws a catchable error.
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# Float equality on derived values goes through .compare (Kirito `==` on Float is exact).
+var approx = Function(a, b):
+    return a.compare(b, rel_tol = 1e-9, abs_tol = 1e-12)
+
+# =====================================================================================  string
+var st = import("string")
+
+# --- capwords: separators are SINGLE spaces only (not '-', not tab/newline) ---
+ok(st.capwords("hello-world test") == "Hello-world Test", "string capwords does not split on hyphen")
+ok(st.capwords("foo-bar baz") == "Foo-bar Baz", "string capwords hyphen stays in word, tail lowercased")
+# a literal newline lives inside the (single) word: word[0:1].upper() + word[1:].lower()
+ok(st.capwords("a\nb") == "A\nb", "string capwords newline kept inside word")
+ok(st.capwords("DON'T STOP") == "Don't Stop", "string capwords lowercases apostrophe tail")
+# two leading spaces -> two empty words survive, then 'A'
+ok(st.capwords("  a") == "  A", "string capwords two leading spaces preserved")
+ok(st.capwords("AB") == "Ab", "string capwords single all-caps word")
+
+# --- similarity: fresh exact-value pairs (1 - dist/longer) ---
+# flaw/lawn: edit distance 2, longer 4 -> 0.5  (exact, so == is fine here too but use approx)
+ok(approx(st.similarity("flaw", "lawn"), 0.5), "string similarity flaw/lawn = 0.5")
+# abcd/ab: distance 2, longer 4 -> 0.5
+ok(approx(st.similarity("abcd", "ab"), 0.5), "string similarity prefix subset = 0.5")
+# one empty vs non-empty (both orders) -> 0.0
+ok(st.similarity("", "x") == 0.0, "string similarity empty-vs-nonempty -> 0.0")
+ok(st.similarity("x", "") == 0.0, "string similarity nonempty-vs-empty -> 0.0")
+ok(type(st.similarity("p", "q")) == "Float", "string similarity scalar type is Float")
+
+# --- similarity: List form, fresh candidates ---
+var simL = st.similarity("color", ["colour", "color", "couleur"])
+ok(type(simL) == "List" and len(simL) == 3, "string similarity list shape")
+ok(simL[1] == 1.0, "string similarity list identical entry = 1.0")
+ok(approx(simL[0], 5.0 / 6.0), "string similarity list one-edit (color/colour)")
+ok(st.similarity("q", [""]) == [0.0], "string similarity list empty candidate vs nonempty query")
+ok(st.similarity("", []) == [], "string similarity empty candidate list -> []")
+
+# --- closest: fresh typo, verified the EARLIEST-of-min wins (backreference trap) ---
+# wrold vs [world, word, wold]: distances [2, 2, 1] -> "wold" (the unique min), NOT "world"
+ok(st.closest("wrold", ["world", "word", "wold"]) == "wold", "string closest picks the true min distance")
+ok(st.closest("q", []) == None, "string closest empty list -> None")
+ok(st.closest("zzz", ["abc"]) == "abc", "string closest single candidate always returned")
+# exact match always wins (distance 0)
+ok(st.closest("apple", ["grape", "apple", "maple"]) == "apple", "string closest exact match wins")
+
+# --- fuzzymatch: fresh, sorted-desc, cutoff behaviour ---
+var fmc = st.fuzzymatch("colour", ["color", "colour", "couleur"], cutoff = 0.5)
+ok(fmc[0][0] == "colour" and fmc[0][1] == 1.0, "string fuzzymatch best is exact (score 1.0)")
+ok(len(fmc) == 3, "string fuzzymatch cutoff 0.5 keeps all three")
+# strictly non-increasing scores
+var fmsorted = True
+var fmi = 1
+while fmi < len(fmc):
+    if fmc[fmi][1] > fmc[fmi - 1][1]:
+        fmsorted = False
+    fmi = fmi + 1
+ok(fmsorted, "string fuzzymatch sorted by score descending")
+# empty query: a "" candidate scores 1.0 (longer=0), a non-empty one scores 0.0 (below default cutoff)
+ok(st.fuzzymatch("", ["", "z"]) == [["", 1.0]], "string fuzzymatch empty query keeps only empty candidate")
+ok(st.fuzzymatch("q", []) == [], "string fuzzymatch empty candidate list -> []")
+# high cutoff excludes everything distant
+ok(len(st.fuzzymatch("abcdef", ["zzzzzz"], cutoff = 0.9)) == 0, "string fuzzymatch high cutoff excludes distant")
+
+# =====================================================================================  textwrap
+var tw = import("textwrap")
+
+# --- wrap: fresh width boundaries ---
+# "aa bb cc" at width 5: "aa bb" is exactly 5 -> fits, then "cc"
+ok(tw.wrap("aa bb cc", 5) == ["aa bb", "cc"], "textwrap wrap exact-fit two-word line")
+# "aaa bbb" at width 5: "aaa"+1+"bbb"=7 > 5 -> each its own line
+ok(tw.wrap("aaa bbb", 5) == ["aaa", "bbb"], "textwrap wrap break when over width")
+# a single word much longer than width is never split (kept whole, no infinite loop)
+ok(tw.wrap("antidisestablishment", 4) == ["antidisestablishment"], "textwrap wrap oversize word kept whole")
+ok(tw.wrap("just-one", 100) == ["just-one"], "textwrap wrap fits trivially")
+ok(tw.wrap("x y z", width = 1) == ["x", "y", "z"], "textwrap wrap width 1 each word its line")
+
+# --- fill: fresh ---
+ok(tw.fill("aa bb cc", 5) == "aa bb\ncc", "textwrap fill joins wrapped lines with newline")
+ok(tw.fill("solo", width = 8) == "solo", "textwrap fill single word width kwarg")
+
+# --- indent: fresh prefixes; blank-line skipping ---
+ok(tw.indent("x\ny\nz", "**") == "**x\n**y\n**z", "textwrap indent multi-char prefix")
+# a blank middle line is NOT prefixed; surrounding lines are
+ok(tw.indent("p\n\nq", "// ") == "// p\n\n// q", "textwrap indent skips blank middle line")
+# trailing newline -> trailing empty line not prefixed
+ok(tw.indent("only\n", "++") == "++only\n", "textwrap indent trailing newline empty line not prefixed")
+
+# --- dedent: fresh widths and ragged inputs ---
+ok(tw.dedent("      a\n      b\n        c") == "a\nb\n  c", "textwrap dedent 6-space common prefix")
+# ragged: smallest indent (2) is the common prefix
+ok(tw.dedent("   x\n y") == "  x\ny", "textwrap dedent ragged uses smallest indent")
+# a tab counts as ONE character for indent width
+ok(tw.dedent("\tone\n\ttwo") == "one\ntwo", "textwrap dedent uniform single-tab prefix")
+ok(tw.dedent("flush\nleft") == "flush\nleft", "textwrap dedent already-flush identity")
+ok(tw.dedent("  ") == "  ", "textwrap dedent single blank line is identity")
+
+# =====================================================================================  base64
+var b64 = import("base64")
+
+# --- encode: fresh inputs by length-mod-3 (no overlap with prior rounds' f/fo/foo/M/Ma) ---
+ok(b64.encode([1, 2, 3, 4]) == "AQIDBA==", "base64 encode 4 raw bytes -> 2 pad")
+ok(b64.encode("Man") == "TWFu", "base64 encode 3-char string -> no pad")
+ok(b64.encode([66]) == "Qg==", "base64 encode one byte 'B' -> 2 pad")
+ok(b64.encode([66, 67]) == "QkM=", "base64 encode two bytes 'BC' -> 1 pad")
+ok(b64.encode([65, 66, 0]) == "QUIA", "base64 encode bytes incl a zero byte")
+
+# --- decode: fresh + padless ---
+ok(b64.decode("TWFu") == [77, 97, 110], "base64 decode 'TWFu' -> Man bytes")
+ok(b64.decode("AQIDBA==") == [1, 2, 3, 4], "base64 decode padded 4-byte")
+# padless but zero leftover bits decodes
+ok(b64.decode("QUI") == [65, 66], "base64 decode padless 3 chars -> 2 bytes")
+ok(b64.decode("Qg") == [66], "base64 decode padless 2 chars -> 1 byte")
+# decoding stops at the first '=' (even mid-stream garbage afterwards)
+ok(b64.decode("Qg==xyz") == [66], "base64 decode stops at first '='")
+
+# --- Bytes and List inputs agree; binary fidelity for fresh bytes ---
+ok(b64.encode(Bytes([10, 20, 30, 40])) == b64.encode([10, 20, 30, 40]), "base64 Bytes input == List input")
+ok(Bytes(b64.decode(b64.encode("héllo ✓"))).decode() == "héllo ✓", "base64 unicode round-trip via Bytes")
+
+# --- urlsafe: fresh bytes hitting both 62/63 sextets ---
+ok(b64.urlsafeencode([250, 251, 252]) != b64.encode([250, 251, 252]), "base64 urlsafe differs from standard for +//")
+ok("+" not in b64.urlsafeencode([250, 251, 252]) and "/" not in b64.urlsafeencode([250, 251, 252]), "base64 urlsafe has no +//")
+ok(b64.urlsafedecode(b64.urlsafeencode([250, 251, 252])) == [250, 251, 252], "base64 urlsafe round-trip")
+# standard decoder rejects urlsafe-only characters
+ok(throws(Function(): return b64.decode("-_8=")), "base64 standard decode rejects '-'/'_'")
+
+# --- keyword arguments ---
+ok(b64.encode(data = "Man") == "TWFu", "base64 encode data= kwarg")
+ok(b64.urlsafeencode(data = [250, 251, 252]) == b64.urlsafeencode([250, 251, 252]), "base64 urlsafeencode data= kwarg")
+
+# --- malformed input throws ---
+ok(throws(Function(): return b64.decode("@@@@")), "base64 decode bad char throws")
+ok(throws(Function(): return b64.decode("!")), "base64 decode single bad char throws")
+# a lone trailing char (len 1, 6 leftover bits) -> invalid length
+ok(throws(Function(): return b64.decode("Q")), "base64 decode lone char (len 1) throws")
+# len 5 (4k+1) -> lone trailing char
+ok(throws(Function(): return b64.decode("AQIDB")), "base64 decode 5-char (lone trailing) throws")
+# non-zero leftover bits (truncated/corrupted group) throw ("AQJ": 2 bytes + non-zero 2 leftover bits)
+ok(throws(Function(): return b64.decode("AQJ")), "base64 decode truncated non-zero leftover throws")
+
+# =====================================================================================  csv
+var csv = import("csv")
+
+# --- parserow: fresh quoting / specials (note parserow does NOT strip a trailing CR) ---
+ok(csv.parserow("1,2,3,4,5") == ["1", "2", "3", "4", "5"], "csv parserow five plain fields")
+# spaces inside a quoted field are preserved exactly
+ok(csv.parserow("\" a \",b") == [" a ", "b"], "csv parserow preserves spaces inside quotes")
+# parserow keeps a stray CR (only the full `parse` drops CR as part of CRLF handling)
+ok(csv.parserow("a,b\r") == ["a", "b\r"], "csv parserow keeps trailing CR (parse drops it, parserow does not)")
+# an unterminated quote just consumes to end of line as one field
+ok(csv.parserow("\"abc") == ["abc"], "csv parserow unterminated quote -> one field to EOL")
+# a quote in the MIDDLE of an unquoted field is taken literally up to a closing quote
+ok(csv.parserow("a\"b\"c") == ["abc"], "csv parserow mid-field quotes are quote toggles")
+
+# --- formatrow: quoting only when needed; fresh fields ---
+# leading/trailing spaces do NOT trigger quoting (only , " \n \r do)
+ok(csv.formatrow([" x "]) == " x ", "csv formatrow spaces alone do not force quotes")
+# a field with BOTH a quote and a comma is quoted with the inner quote doubled
+ok(csv.formatrow(["a\",b"]) == "\"a\"\",b\"", "csv formatrow quote+comma quoted with doubled quote")
+ok(csv.formatrow(["x\ty"]) == "x\ty", "csv formatrow tab alone does not force quotes")
+# non-string fields stringified (fresh set)
+ok(csv.formatrow([3.14, False, None, 0]) == "3.14,False,None,0", "csv formatrow stringifies mixed types")
+
+# --- parse: fresh multi-row / CR handling ---
+ok(csv.parse("1\n2\n3") == [["1"], ["2"], ["3"]], "csv parse three single-field rows")
+# a lone trailing CR (no LF) is dropped, leaving a single one-field row
+ok(csv.parse("a\r") == [["a"]], "csv parse lone CR dropped")
+# a quoted field with an embedded newline stays one field within one row
+ok(csv.parse("\"l1\nl2\",end") == [["l1\nl2", "end"]], "csv parse newline inside quotes stays one row")
+# CRLF acts as LF
+ok(csv.parse("p,q\r\nr,s\r\n") == [["p", "q"], ["r", "s"]], "csv parse CRLF rows + trailing CRLF no empty row")
+
+# --- format: fresh + round-trips ---
+ok(csv.format([["only"]]) == "only", "csv format single one-field row")
+# format([[]]) -> one empty row -> "" (empty join of zero fields)
+ok(csv.format([[]]) == "", "csv format a single empty-fields row -> empty string")
+var rtfresh = [["alpha,beta", "g\"h"], ["", "trail\nnl"]]
+ok(csv.parse(csv.format(rtfresh)) == rtfresh, "csv format->parse round-trip preserves tricky fields")
+
+# =====================================================================================  xml
+var xml = import("xml")
+
+# --- structure / nesting (deeper than prior rounds) ---
+var deep = xml.parse("<a><b><c><d>leaf</d></c></b></a>")
+ok(deep.find("b").find("c").find("d").text == "leaf", "xml four-level nested find text")
+# find/findall look ONLY at direct children
+var dc = xml.parse("<r><a/><a/><b><a/></b></r>")
+ok(len(dc.findall("a")) == 2, "xml findall is direct-children only (grandchild excluded)")
+ok(dc.find("b").find("a") != None, "xml find descends one level at a time")
+ok(xml.parse("<r><x/></r>").find("missing") == None, "xml find missing -> None")
+
+# --- attributes: counts, mixed quotes, entity-in-attr, '>' inside a quoted value ---
+var attrs = xml.parse("<x a='1' b='2' c='3' d='4'/>")
+ok(len(attrs.attrib) == 4 and attrs.attrib["c"] == "3", "xml four attributes parsed")
+ok(xml.parse("<x a=\"d'q\" b='d\"q'/>").get("b") == "d\"q", "xml single-quoted attr holding a double quote")
+ok(xml.parse("<x v='p&amp;q&lt;r'/>").get("v") == "p&q<r", "xml entities decoded inside an attribute")
+ok(xml.parse("<x a='a>b'/>").get("a") == "a>b", "xml '>' allowed inside a quoted attribute value")
+# get default vs present-empty
+ok(xml.parse("<x a=''/>").get("a", "DEF") == "", "xml present-but-empty attribute returns '' not default")
+ok(xml.parse("<x/>").get("nope", "DEF") == "DEF", "xml absent attribute returns the default")
+
+# --- entities in text: named combos + numeric (fresh) ---
+ok(xml.parse("<a>&apos;&quot;&amp;</a>").text == "'\"&", "xml apos/quot/amp decoded")
+ok(xml.parse("<a>&#72;&#x69;</a>").text == "Hi", "xml numeric dec + hex entities decode")
+# lenient: malformed / unknown entities kept verbatim, no throw (fresh bodies)
+ok(xml.parse("<a>5 &lt 6</a>").text == "5 &lt 6", "xml entity without semicolon kept verbatim")
+ok(xml.parse("<a>&nope;</a>").text == "&nope;", "xml unknown named entity kept verbatim")
+ok(xml.parse("<a>&#xGG;</a>").text == "&#xGG;", "xml bad hex digits kept verbatim")
+ok(xml.parse("<a>&#1234567;</a>").text == "&#1234567;", "xml out-of-range numeric entity kept verbatim")
+
+# --- comments / CDATA / declaration / DOCTYPE (fresh) ---
+var cmt = xml.parse("<a><!-- has a-b dash --><b>kept</b></a>")
+ok(len(cmt.children) == 1 and cmt.find("b").text == "kept", "xml comment containing a dash is skipped")
+ok(xml.parse("<a><![CDATA[x]]y]]></a>").text == "x]]y", "xml CDATA with a stray ]] inside")
+ok(xml.parse("<a><![CDATA[]]></a>").text == "", "xml empty CDATA -> empty text")
+ok(xml.parse("<?xml version=\"1.0\" encoding=\"utf-8\"?><doc>z</doc>").tag == "doc", "xml declaration with encoding skipped")
+ok(xml.parse("<!DOCTYPE note SYSTEM \"note.dtd\"><note>n</note>").tag == "note", "xml DOCTYPE with SYSTEM id skipped")
+
+# --- text / tail / itertext (fresh document-order cases) ---
+ok(xml.parse("<a>  keep  spaces  </a>").text == "  keep  spaces  ", "xml leading/trailing text whitespace preserved")
+# a self-closing child still owns the text after it as its tail
+var sct = xml.parse("<r><img/>after</r>")
+ok(sct.children[0].tail == "after", "xml tail after a self-closing child")
+ok(xml.parse("<a>A<b>B</b>C<c>D</c>E</a>").itertext() == ["A", "B", "C", "D", "E"], "xml itertext interleaves text+children+tails")
+ok(xml.parse("<a><b>x</b><c>y</c></a>").itertext() == ["x", "y"], "xml itertext skips empty text fragments")
+ok(xml.parse("<r><a/>tail</r>").itertext() == ["tail"], "xml itertext picks up a child's tail only")
+
+# --- Element construction + serialization (fresh) ---
+var built = xml.Element("note", {"id": "7"})
+built.text = "body"
+ok(built.tostring() == "<note id=\"7\">body</note>", "xml manual Element build + tostring")
+ok(String(built) == built.tostring(), "xml Element _str_ matches tostring")
+ok(xml.Element("blank").tostring() == "<blank />", "xml empty element self-closes")
+ok(xml.Element("e", attrib = {"k": "v"}).get("k") == "v", "xml Element attrib= kwarg")
+# children but no text -> NOT self-closing
+ok(xml.tostring(xml.parse("<a><b/><c/></a>")) == "<a><b /><c /></a>", "xml element with children but no text is not self-closed")
+# attribute double-quote escaped to &quot;
+ok(xml.Element("x", {"q": "a\"b"}).tostring() == "<x q=\"a&quot;b\" />", "xml attribute double-quote escaped")
+# manual build: text plus a child serializes text first
+var mb = xml.Element("a")
+mb.text = "hi"
+var mbc = xml.Element("b")
+mbc.text = "x"
+mb.children.append(mbc)
+ok(mb.tostring() == "<a>hi<b>x</b></a>", "xml text-before-child serialized in order")
+
+# --- round-trips (fresh) ---
+ok(xml.tostring(xml.parse("<a>2 &lt; 3 &amp;&amp; 4 &gt; 1</a>")) == "<a>2 &lt; 3 &amp;&amp; 4 &gt; 1</a>", "xml text escape round-trip")
+var origfresh = "<cfg ver=\"2\"><item>one</item><flag /></cfg>"
+ok(xml.tostring(xml.parse(origfresh)) == origfresh, "xml structural round-trip")
+ok(xml.fromstring("<solo/>").tag == "solo", "xml fromstring alias of parse")
+# the declaration is dropped on round-trip (parse skips it; tostring does not re-emit it)
+ok(xml.tostring(xml.parse("<?xml version='1.0'?><r>hi</r>")) == "<r>hi</r>", "xml declaration dropped on round-trip")
+
+# --- lenient / documented edge behaviours (fresh) ---
+ok(xml.parse("<a><b>oops").tag == "a", "xml unclosed tags are lenient (no throw)")
+ok(xml.parse("<x a='val").tag == "x", "xml unterminated attribute quote is lenient")
+ok(xml.parse("\n\t  ") == None, "xml whitespace-only input -> None")
+ok(xml.parse("no tags at all") == None, "xml text without any element -> None")
+ok(xml.parse("</orphan><real>y</real>").tag == "real", "xml stray close tag with empty stack ignored")
+# multiple top-level siblings: the LAST top-level element is returned
+ok(xml.parse("<p/><q/><r/>").tag == "r", "xml multiple roots -> the last is returned")
+# findtext returns the (possibly empty) text of a present child, not the default
+ok(xml.parse("<r><a></a></r>").findtext("a", "DEF") == "", "xml findtext of a present empty child -> '' not default")
+ok(xml.parse("<r><a>z</a></r>").findtext("missing", "DEF") == "DEF", "xml findtext missing child -> default")
+
+# =====================================================================================  tee
+var tee = import("tee")
+
+# --- write fans out to copies then primary; returns the data length ---
+var pri = io.BytesIO()
+var cop = io.BytesIO()
+var tt = tee.Tee(pri, cop)
+ok(tt.write("abcd") == 4, "tee write returns the code-point count")
+discard tt.write("EF")
+discard pri.seek(0)
+ok(pri.read() == "abcdEF", "tee primary received both writes")
+discard cop.seek(0)
+ok(cop.read() == "abcdEF", "tee copy received both writes")
+
+# --- streams() ordering: copies FIRST, then primary ---
+var os1 = io.BytesIO()
+var os2 = io.BytesIO()
+var tord = tee.Tee(os1, os2)
+ok(tord.streams()[0] == os2, "tee streams()[0] is the copy")
+ok(tord.streams()[1] == os1, "tee streams()[1] is the primary")
+ok(len(tord.streams()) == 2, "tee streams() length with one copy")
+
+# --- constructor keyword arguments ---
+var kp = io.BytesIO()
+var kc = io.BytesIO()
+var tkw = tee.Tee(primary = kp, copies = kc)
+discard tkw.write("KW")
+discard kp.seek(0)
+ok(kp.read() == "KW", "tee primary= kwarg wrote through")
+discard kc.seek(0)
+ok(kc.read() == "KW", "tee copies= kwarg wrote through")
+
+# --- multiple copies (List) ---
+var mpri = io.BytesIO()
+var mc1 = io.BytesIO()
+var mc2 = io.BytesIO()
+var tmul = tee.Tee(mpri, [mc1, mc2])
+discard tmul.write("DUP")
+ok(len(tmul.streams()) == 3, "tee multi-copy streams() length")
+discard mc1.seek(0)
+ok(mc1.read() == "DUP", "tee multi copy 1 received")
+discard mc2.seek(0)
+ok(mc2.read() == "DUP", "tee multi copy 2 received")
+discard mpri.seek(0)
+ok(mpri.read() == "DUP", "tee multi primary received")
+
+# --- pure fan-out (primary None) and primary-only (copies default None) ---
+var fanout = io.BytesIO()
+var tfan = tee.Tee(None, [fanout])
+discard tfan.write("F")
+ok(len(tfan.streams()) == 1, "tee None primary -> only the copy in streams()")
+discard fanout.seek(0)
+ok(fanout.read() == "F", "tee None primary still writes to copy")
+var solo = io.BytesIO()
+var tsolo = tee.Tee(solo)
+discard tsolo.write("S")
+discard solo.seek(0)
+ok(solo.read() == "S", "tee primary-only (default copies None) writes")
+
+# --- writelines concatenates each item to every stream; returns None ---
+var wlb = io.BytesIO()
+var twl = tee.Tee(wlb)
+ok(twl.writelines(["a", "bc", "d"]) == None, "tee writelines returns None")
+discard wlb.seek(0)
+ok(wlb.read() == "abcd", "tee writelines concatenated")
+
+# --- flush / close are no-ops returning None ---
+ok(tsolo.flush() == None, "tee flush returns None")
+ok(tsolo.close() == None, "tee close returns None")
+
+# --- nested Tee (a Tee whose copy is itself a Tee) fans out to both leaves ---
+var ninn = io.BytesIO()
+var nout = io.BytesIO()
+var tnest = tee.Tee(nout, tee.Tee(ninn))
+discard tnest.write("nest")
+discard ninn.seek(0)
+ok(ninn.read() == "nest", "tee nested inner leaf received")
+discard nout.seek(0)
+ok(nout.read() == "nest", "tee nested outer leaf received")
+
+# --- tee_stdout context manager: install a Tee, restore on exit (redirect real stdout to a sink) ---
+var logBuf = io.BytesIO()
+var sinkBuf = io.BytesIO()
+var savedOut = io.stdout
+io.stdout = sinkBuf
+var insideTee = False
+with tee.tee_stdout(logBuf):
+    io.print("captured")
+    insideTee = isinstance(io.stdout, "Tee")
+var outRestored = (io.stdout == sinkBuf)
+io.stdout = savedOut
+ok(insideTee, "tee_stdout installs a Tee inside the block")
+ok(outRestored, "tee_stdout restores the previous stdout on exit")
+discard logBuf.seek(0)
+ok(logBuf.read().rstrip() == "captured", "tee_stdout copied the print into the log")
+discard sinkBuf.seek(0)
+ok(sinkBuf.read().rstrip() == "captured", "tee_stdout still wrote through to the primary")
+
+# --- tee_stderr context manager: same for stderr (capture into a sink, no real stderr noise) ---
+var elogBuf = io.BytesIO()
+var esinkBuf = io.BytesIO()
+var savedErr = io.stderr
+io.stderr = esinkBuf
+with tee.tee_stderr(elogBuf):
+    io.eprint("errmsg")
+var errRestored = (io.stderr == esinkBuf)
+io.stderr = savedErr
+ok(errRestored, "tee_stderr restores the previous stderr on exit")
+discard elogBuf.seek(0)
+ok(elogBuf.read().rstrip() == "errmsg", "tee_stderr copied the eprint into the log")
+discard esinkBuf.seek(0)
+ok(esinkBuf.read().rstrip() == "errmsg", "tee_stderr still wrote through to the primary stderr")
+
+# =====================================================================================  arg
+var arg = import("arg")
+
+# --- declaration chaining returns self ---
+var pc = arg.Parser("cmd")
+ok(pc.positional("file") == pc, "arg positional returns self (chainable)")
+ok(pc.option("level", 0) == pc, "arg option returns self")
+ok(pc.flag("verbose") == pc, "arg flag returns self")
+
+# --- basic parse: positional + Integer option + flag ---
+var ra = pc.parse(["data.txt", "--level", "9", "--verbose"])
+ok(ra["file"] == "data.txt", "arg parse positional value")
+ok(ra["level"] == 9 and type(ra["level"]) == "Integer", "arg option coerced to Integer (default type)")
+ok(ra["verbose"] == True, "arg present flag -> True")
+ok(ra["rest"] == [], "arg rest empty when no extras")
+
+# --- inline --name=value, short forms, defaults ---
+ok(pc.parse(["f", "--level=4"])["level"] == 4, "arg --name=value inline option")
+ok(pc.parse(["f", "-v"])["verbose"] == True, "arg short flag -v")
+ok(pc.parse(["f", "-l", "6"])["level"] == 6, "arg short option -l with value")
+ok(pc.parse(["f"])["level"] == 0, "arg omitted option keeps default")
+ok(pc.parse(["f"])["verbose"] == False, "arg omitted flag defaults to False")
+
+# --- positionals interspersed with options; surplus -> rest ---
+var rb = pc.parse(["one", "--level", "2", "two", "three"])
+ok(rb["file"] == "one", "arg first positional bound despite interspersed option")
+ok(rb["level"] == 2, "arg interspersed option parsed")
+ok(rb["rest"] == ["two", "three"], "arg surplus positionals collected into rest")
+
+# --- short-option resolution: a FLAG sharing a first letter wins over an option ---
+var pcl = arg.Parser()
+discard pcl.option("count", 1)
+discard pcl.flag("color")    # both start with 'c'; flags are scanned first in _byshort
+ok(pcl.parse(["-c"])["color"] == True, "arg -c resolves to the flag (flags scanned first)")
+ok(pcl.parse(["-c"])["count"] == 1, "arg -c left the option at its default")
+# two options sharing a first letter: the first declared wins for the short form
+var ptwo = arg.Parser()
+discard ptwo.option("count", 1)
+discard ptwo.option("color", "red")
+ok(ptwo.parse(["-c", "8"])["count"] == 8, "arg -c picks the first declared option")
+ok(ptwo.parse(["-c", "8"])["color"] == "red", "arg -c does not touch the later same-letter option")
+
+# --- a '--flag=value' form: the inline value is ignored, the flag is set True ---
+ok(pc.parse(["f", "--verbose=anything"])["verbose"] == True, "arg --flag=value sets the flag True (value ignored)")
+
+# --- option default-type coercion variants ---
+var pfl = arg.Parser()
+discard pfl.option("ratio", 0.5)
+ok(type(pfl.parse(["--ratio", "1.25"])["ratio"]) == "Float", "arg Float-default option coerces to Float")
+ok(pfl.parse(["--ratio", "1.25"])["ratio"] == 1.25, "arg Float option value parsed")
+# a None-default option keeps the raw String value (no coercion)
+var pno = arg.Parser()
+discard pno.option("tag")
+ok(type(pno.parse(["--tag", "x"])["tag"]) == "String", "arg None-default option stays String")
+ok(pno.parse([])["tag"] == None, "arg omitted None-default option present as None")
+# a String-default option stays String
+var pstr = arg.Parser()
+discard pstr.option("mode", "auto")
+ok(pstr.parse(["--mode", "fast"])["mode"] == "fast" and type(pstr.parse(["--mode", "fast"])["mode"]) == "String", "arg String-default option stays String")
+
+# --- declaration keyword arguments ---
+var pk = arg.Parser(description = "tool desc")
+discard pk.positional(name = "src", help = "source")
+discard pk.option(name = "size", default = 10, help = "the size")
+discard pk.flag(name = "dry", help = "dry run")
+var rk = pk.parse(["in.dat"])
+ok(rk["src"] == "in.dat", "arg positional name= kwarg")
+ok(rk["size"] == 10, "arg option default= kwarg present")
+ok(rk["dry"] == False, "arg flag name= kwarg defaults False")
+
+# --- usage text content ---
+var u = pc.usage()
+ok("usage" in u, "arg usage mentions 'usage'")
+ok("file" in u and "--level" in u, "arg usage lists the positional + option")
+ok("-h" in u and "help" in u, "arg usage advertises -h/--help")
+ok("tool desc" in pk.usage(), "arg usage includes the description text")
+
+# --- -h / --help short-circuit to None (suppress the usage print into a sink) ---
+var hsink = io.BytesIO()
+var hsaved = io.stdout
+io.stdout = hsink
+var rh = pc.parse(["-h"])
+var rhl = pc.parse(["--help"])
+io.stdout = hsaved
+ok(rh == None, "arg -h returns None")
+ok(rhl == None, "arg --help returns None")
+
+# --- error conditions throw (catchable) ---
+ok(throws(Function(): return pc.parse(["f", "--unknown"])), "arg unknown long option throws")
+ok(throws(Function(): return pc.parse([])), "arg missing required positional throws")
+ok(throws(Function(): return pc.parse(["f", "--level", "NaNint"])), "arg bad Integer value throws")
+ok(throws(Function(): return pfl.parse(["--ratio", "xx"])), "arg bad Float value throws")
+ok(throws(Function(): return pc.parse(["f", "--level"])), "arg long option missing value throws")
+ok(throws(Function(): return pc.parse(["f", "-z"])), "arg unknown short option throws")
+ok(throws(Function(): return pc.parse(["f", "-l"])), "arg short option missing value throws")
+
+# --- dash-token edge cases ---
+# a lone "-" (length 1) is a positional, not an option
+var pdash = arg.Parser()
+discard pdash.positional("x")
+ok(pdash.parse(["-"])["x"] == "-", "arg lone '-' is a positional value")
+# a "--foo=bar=baz" token: only the FIRST '=' splits name/value (find returns first)
+var peq = arg.Parser()
+discard peq.option("path")
+ok(peq.parse(["--path=a=b=c"])["path"] == "a=b=c", "arg --name=value splits on first '=' only")
+# a "-c=5"-style token (length 4) is neither --, nor a length-2 short, so it is a positional
+var p4 = arg.Parser()
+discard p4.positional("first")
+ok(p4.parse(["-c=5"])["first"] == "-c=5", "arg length-4 dash token treated as a positional")
+
+# =====================================================================================  semver
+var sv = import("semver")
+
+# --- parse: components, lists, raw; leading 'v'/'V' tolerated (fresh versions) ---
+var pv = sv.parse("V3.4.5-rc.2+exp.sha.5114f")
+ok(pv["major"] == 3 and pv["minor"] == 4 and pv["patch"] == 5, "semver parse core (uppercase V)")
+ok(pv["prerelease"] == ["rc", "2"], "semver parse prerelease list")
+ok(pv["build"] == ["exp", "sha", "5114f"], "semver parse build list")
+ok(pv["raw"] == "3.4.5-rc.2+exp.sha.5114f", "semver parse raw is cleaned (no leading V)")
+ok(sv.parse("10.20.30")["prerelease"] == [], "semver parse no prerelease -> []")
+ok(sv.parse("10.20.30")["build"] == [], "semver parse no build -> []")
+ok(sv.parse("007.008.009")["minor"] == 8, "semver parse leading zeros normalized by Integer")
+
+# --- parse failures throw (fresh) ---
+ok(throws(Function(): return sv.parse("1.0")), "semver parse missing patch throws")
+ok(throws(Function(): return sv.parse("1.0.0.0")), "semver parse 4-component throws")
+ok(throws(Function(): return sv.parse("1.y.0")), "semver parse non-numeric core throws")
+ok(throws(Function(): return sv.parse("not-a-version")), "semver parse garbage throws")
+ok(throws(Function(): return sv.parse("-1.0.0")), "semver parse a leading '-' core throws")
+ok(throws(Function(): return sv.parse("2.0.0-")), "semver parse empty prerelease id throws")
+
+# --- valid / clean (fresh) ---
+ok(sv.valid("V3.0.0") == "3.0.0", "semver valid strips leading V, returns cleaned")
+ok(sv.valid("3.0.0+meta.1") == "3.0.0+meta.1", "semver valid keeps build metadata")
+ok(sv.valid("definitely-not") == None, "semver valid on garbage -> None")
+ok(sv.clean("  =v3.4.5  ") == "3.4.5", "semver clean strips =, v, and surrounding spaces")
+ok(sv.clean("V9.9.9") == "9.9.9", "semver clean strips uppercase V")
+ok(sv.clean("4.5.6") == "4.5.6", "semver clean is idempotent on a bare version")
+
+# --- accessors (fresh) ---
+ok(sv.major("8.9.10") == 8 and sv.minor("8.9.10") == 9 and sv.patch("8.9.10") == 10, "semver major/minor/patch")
+ok(sv.prerelease("2.0.0-x.y.z") == ["x", "y", "z"], "semver prerelease list of three ids")
+ok(sv.prerelease("2.0.0") == None, "semver prerelease absent -> None")
+
+# --- compare / precedence (fresh) ---
+ok(sv.compare("2.0.0", "1.9.9") == 1, "semver compare major dominates")
+ok(sv.compare("1.0.20", "1.0.3") == 1, "semver compare numeric patch (not lexical)")
+ok(sv.compare("5.5.5", "5.5.5") == 0, "semver compare equal -> 0")
+ok(sv.compare("1.0.0-beta", "1.0.0") == -1, "semver prerelease < release")
+ok(sv.compare("1.0.0", "1.0.0+anything") == 0, "semver build metadata ignored in compare")
+ok(sv.compare("1.0.0-alpha.1", "1.0.0-alpha.beta") == -1, "semver numeric pre id < alphanumeric at same position")
+ok(sv.compare("1.0.0-alpha.beta", "1.0.0-alpha.beta.1") == -1, "semver shorter prerelease set < longer (prefix)")
+# shortcut helpers (alias is `neq`, NOT `ne`)
+ok(sv.eq("2.2.2", "2.2.2"), "semver eq")
+ok(sv.neq("2.2.2", "2.2.3"), "semver neq alias")
+ok(sv.lt("1.0.0", "1.0.1") and sv.gt("1.0.1", "1.0.0"), "semver lt / gt")
+ok(sv.lte("3.0.0", "3.0.0") and sv.gte("3.0.0", "3.0.0"), "semver lte / gte at equality")
+# keyword arguments
+ok(sv.compare(a = "1.0.0", b = "2.0.0") == -1, "semver compare a=/b= kwargs")
+
+# --- diff (fresh) ---
+ok(sv.diff("3.0.0", "4.0.0") == "major", "semver diff major")
+ok(sv.diff("3.1.0", "3.2.0") == "minor", "semver diff minor")
+ok(sv.diff("3.1.4", "3.1.5") == "patch", "semver diff patch")
+ok(sv.diff("1.0.0-x", "1.0.0-y") == "prerelease", "semver diff prerelease ids")
+ok(sv.diff("1.0.0-rc", "1.0.0") == "prerelease", "semver diff prerelease vs release")
+ok(sv.diff("7.7.7", "7.7.7") == None, "semver diff equal -> None")
+ok(sv.diff("1.0.0+x", "1.0.0+y") == None, "semver diff build-only -> None")
+
+# --- inc (fresh) ---
+ok(sv.inc("3.4.5", "major") == "4.0.0", "semver inc major zeroes minor+patch")
+ok(sv.inc("3.4.5", "minor") == "3.5.0", "semver inc minor zeroes patch")
+ok(sv.inc("3.4.5", "patch") == "3.4.6", "semver inc patch")
+ok(sv.inc("3.4.5-rc.1+b", "patch") == "3.4.6", "semver inc drops prerelease + build")
+ok(sv.inc(s = "3.4.5", release = "minor") == "3.5.0", "semver inc s=/release= kwargs")
+ok(throws(Function(): return sv.inc("1.0.0", "prerelease")), "semver inc unsupported 'prerelease' throws")
+ok(throws(Function(): return sv.inc("1.0.0", "nonsense")), "semver inc bogus release throws")
+
+# --- satisfies: caret (fresh, incl 0.x and 0.0.x pinning) ---
+ok(sv.satisfies("2.7.0", "^2.3.1"), "semver ^2.3.1 allows 2.7.0")
+ok(not sv.satisfies("3.0.0", "^2.3.1"), "semver ^2.3.1 excludes the next major")
+ok(not sv.satisfies("2.3.0", "^2.3.1"), "semver ^2.3.1 excludes below the floor")
+ok(sv.satisfies("0.4.9", "^0.4.2"), "semver ^0.4.2 allows 0.4.9")
+ok(not sv.satisfies("0.5.0", "^0.4.2"), "semver caret on 0.x pins the minor")
+ok(sv.satisfies("0.0.7", "^0.0.7"), "semver ^0.0.7 allows the exact patch")
+ok(not sv.satisfies("0.0.8", "^0.0.7"), "semver caret on 0.0.x pins the patch")
+ok(sv.satisfies("2.9.9", "^2.3") and not sv.satisfies("3.0.0", "^2.3"), "semver caret on a partial ^2.3")
+ok(sv.satisfies("0.9.9", "^0") and not sv.satisfies("1.0.0", "^0"), "semver caret on a bare ^0")
+ok(sv.satisfies(version = "2.5.0", rng = "^2.0.0"), "semver satisfies version=/rng= kwargs")
+
+# --- satisfies: tilde (fresh) ---
+ok(sv.satisfies("2.3.9", "~2.3") and not sv.satisfies("2.4.0", "~2.3"), "semver tilde ~2.3 pins the minor")
+ok(sv.satisfies("2.3.7", "~2.3.4") and not sv.satisfies("2.3.3", "~2.3.4"), "semver tilde ~2.3.4 floor within the minor")
+ok(sv.satisfies("2.9.9", "~2") and not sv.satisfies("3.0.0", "~2"), "semver tilde ~2 pins the major")
+
+# --- satisfies: x-ranges (fresh, incl uppercase + bare-major) ---
+ok(sv.satisfies("2.3.5", "2.3.x") and not sv.satisfies("2.4.0", "2.3.x"), "semver x-range 2.3.x")
+ok(sv.satisfies("2.9.9", "2.x") and not sv.satisfies("3.0.0", "2.x"), "semver x-range 2.x")
+ok(sv.satisfies("2.5.5", "2.X"), "semver x-range uppercase 2.X")
+ok(sv.satisfies("0.7.0", "0") and not sv.satisfies("1.0.0", "0"), "semver bare-major 0 acts as an x-range")
+ok(sv.satisfies("123.456.789", "*"), "semver * matches anything")
+
+# --- satisfies: comparators / AND (fresh) ---
+ok(sv.satisfies("2.5.0", ">=2.0.0 <3.0.0"), "semver AND comparators middle")
+ok(not sv.satisfies("3.0.0", ">=2.0.0 <3.0.0"), "semver AND comparators exclude the upper bound")
+ok(sv.satisfies("2.0.0", ">=2.0.0"), "semver >= inclusive boundary")
+ok(not sv.satisfies("2.0.0", ">2.0.0"), "semver > strict excludes equal")
+ok(sv.satisfies("2.0.0", "=2.0.0") and not sv.satisfies("2.0.1", "=2.0.0"), "semver = exact match")
+
+# --- satisfies: hyphen ranges (fresh, incl partial upper bound) ---
+ok(sv.satisfies("2.5.0", "2.0.0 - 3.0.0"), "semver hyphen middle")
+ok(sv.satisfies("3.0.0", "2.0.0 - 3.0.0"), "semver hyphen inclusive upper")
+ok(not sv.satisfies("3.0.1", "2.0.0 - 3.0.0"), "semver hyphen excludes above the upper")
+ok(sv.satisfies("3.4.9", "2.0.0 - 3.4"), "semver hyphen partial upper allows 3.4.x")
+ok(not sv.satisfies("3.5.0", "2.0.0 - 3.4"), "semver hyphen partial upper excludes 3.5.0")
+
+# --- satisfies: OR (fresh) ---
+ok(sv.satisfies("2.5.0", "2.x || 4.x"), "semver OR matches the first alternative")
+ok(sv.satisfies("4.1.0", "2.x || 4.x"), "semver OR matches the second alternative")
+ok(not sv.satisfies("3.0.0", "2.x || 4.x"), "semver OR matches neither")
+ok(sv.satisfies("4.0.0", "2.x || 3.x || 4.x"), "semver OR with three alternatives")
+
+# --- satisfies: prerelease gating (fresh) ---
+ok(not sv.satisfies("2.3.4-alpha", "^2.3.3"), "semver prerelease excluded by a plain caret")
+ok(sv.satisfies("2.3.4-beta", ">=2.3.4-alpha <3.0.0"), "semver prerelease allowed when the set pins the same tuple")
+ok(sv.satisfies("2.3.4-beta.2", "^2.3.4-beta.1"), "semver caret with a prerelease pins the same tuple")
+ok(not sv.satisfies("1.0.0", "###"), "semver an unparseable range satisfies nothing")
+
+# --- validrange (fresh) ---
+ok(sv.validrange("^2.3") and sv.validrange("~2") and sv.validrange("*"), "semver validrange caret/tilde/star")
+ok(sv.validrange(">=2.0.0 <3.0.0"), "semver validrange comparators")
+ok(sv.validrange("2.0.0 - 3.0.0"), "semver validrange hyphen")
+ok(sv.validrange("2.x || 3.x"), "semver validrange OR")
+ok(sv.validrange("") and sv.validrange("   "), "semver validrange empty/blank is a wildcard range")
+ok(sv.validrange("x") and sv.validrange("X"), "semver validrange bare x/X is a wildcard")
+ok(not sv.validrange("develop"), "semver validrange rejects a git-ref-like token")
+ok(not sv.validrange("1.0.0.0"), "semver validrange rejects a 4-component version")
+
+# --- sort / rsort (fresh; invalid entries dropped) ---
+ok(sv.sort(["2.10.0", "2.2.0", "2.1.0"]) == ["2.1.0", "2.2.0", "2.10.0"], "semver sort numeric ascending")
+ok(sv.rsort(["2.1.0", "2.10.0", "2.2.0"]) == ["2.10.0", "2.2.0", "2.1.0"], "semver rsort descending")
+ok(sv.sort(["2.0.0", "rubbish", "3.0.0"]) == ["2.0.0", "3.0.0"], "semver sort drops invalid entries")
+ok(sv.sort([]) == [], "semver sort empty list")
+ok(sv.rsort(["9.9.9"]) == ["9.9.9"], "semver rsort single element")
+# prereleases sort before their release
+ok(sv.sort(["2.0.0", "2.0.0-rc.1", "2.0.0-alpha"]) == ["2.0.0-alpha", "2.0.0-rc.1", "2.0.0"], "semver sort prerelease precedence")
+
+# --- maxsatisfying / minsatisfying return the ORIGINAL string (fresh) ---
+ok(sv.maxsatisfying(["v2.0.0", "v2.4.2", "v3.0.0"], "^2.0.0") == "v2.4.2", "semver maxsatisfying keeps the v-prefix")
+ok(sv.minsatisfying(["2.4.2", "2.0.0", "2.2.0"], "^2.0.0") == "2.0.0", "semver minsatisfying lowest match")
+ok(sv.maxsatisfying(["2.0.0", "3.0.0"], "^4.0.0") == None, "semver maxsatisfying no match -> None")
+ok(sv.minsatisfying([], "*") == None, "semver minsatisfying empty list -> None")
+ok(sv.maxsatisfying(["2.0.0", "garbage", "2.5.0"], "*") == "2.5.0", "semver maxsatisfying ignores invalid entries")
+
+# =====================================================================================  inspect
+# Each module's `inspect` lists its public surface and hides private (_-prefixed) helpers.
+var insStr = inspect(import("string"))
+ok("capwords" in insStr and "similarity" in insStr and "closest" in insStr and "fuzzymatch" in insStr, "inspect(string) lists the public functions")
+ok("_ratio" not in insStr, "inspect(string) hides the private _ratio helper")
+var insTw = inspect(import("textwrap"))
+ok("wrap" in insTw and "fill" in insTw and "indent" in insTw and "dedent" in insTw, "inspect(textwrap) lists all four functions")
+var insB64 = inspect(import("base64"))
+ok("encode" in insB64 and "decode" in insB64 and "urlsafeencode" in insB64 and "urlsafedecode" in insB64, "inspect(base64) lists encode/decode/urlsafe")
+ok("_alphabet" not in insB64 and "_index" not in insB64, "inspect(base64) hides the private alphabet/index")
+var insCsv = inspect(import("csv"))
+ok("parse" in insCsv and "parserow" in insCsv and "format" in insCsv and "formatrow" in insCsv, "inspect(csv) lists the parse/format functions")
+ok("_needsQuote" not in insCsv, "inspect(csv) hides the private _needsQuote helper")
+var insXml = inspect(import("xml"))
+ok("parse" in insXml and "fromstring" in insXml and "tostring" in insXml and "Element" in insXml, "inspect(xml) lists parse/fromstring/tostring/Element")
+ok("_parse_tag" not in insXml and "_decode" not in insXml and "_escape" not in insXml, "inspect(xml) hides the private parser helpers")
+var insTee = inspect(import("tee"))
+ok("Tee" in insTee and "tee_stdout" in insTee and "tee_stderr" in insTee, "inspect(tee) lists Tee + the context managers")
+ok("_maybeFlush" not in insTee, "inspect(tee) hides the private _maybeFlush helper")
+var insArg = inspect(import("arg"))
+ok("Parser" in insArg, "inspect(arg) lists Parser")
+var insSv = inspect(import("semver"))
+ok("satisfies" in insSv and "maxsatisfying" in insSv and "minsatisfying" in insSv and "validrange" in insSv, "inspect(semver) lists the range API")
+ok("compare" in insSv and "diff" in insSv and "inc" in insSv and "clean" in insSv, "inspect(semver) lists compare/diff/inc/clean")
+ok("_expand" not in insSv and "_parserange" not in insSv and "_cmppre" not in insSv, "inspect(semver) hides the private helpers")
+
+# instance-level inspect is non-empty for the module classes
+ok(len(inspect(xml.Element("z"))) > 0, "inspect(Element instance) is non-empty")
+ok(len(inspect(arg.Parser())) > 0, "inspect(Parser instance) is non-empty")
+ok(len(inspect(tee.Tee(io.BytesIO()))) > 0, "inspect(Tee instance) is non-empty")
+
+io.print("r8_kimods_b: " + String(n) + " checks passed")

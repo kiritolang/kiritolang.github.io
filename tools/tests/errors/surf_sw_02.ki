@@ -1,0 +1,8 @@
+# a switch may have only one default arm
+switch 1:
+    case 1:
+        discard 1
+    default:
+        discard 2
+    default:
+        discard 3

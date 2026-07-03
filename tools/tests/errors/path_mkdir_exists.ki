@@ -1,0 +1,5 @@
+var path = import("path")
+var sys = import("sys")
+var d = path.join(path.gettempdir(), "ki_mkdir_exists_probe")
+discard path.mkdir(d, exist_ok = True)
+path.mkdir(d)

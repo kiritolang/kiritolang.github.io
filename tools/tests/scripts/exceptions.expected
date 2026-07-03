@@ -1,0 +1,4 @@
+5.0
+error: division by zero
+caught: age cannot be negative
+['try', 'catch', 'finally']

@@ -1,0 +1,2 @@
+# Float() of non-numeric text must throw a clear conversion error.
+discard Float("abc")

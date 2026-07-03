@@ -1,0 +1,307 @@
+# r9_stdlib_c.ki — edge-case and error-hardening for string, textwrap, base64,
+# csv, heapq, bisect, copy, enum, time, sys modules.
+# Key API notes: base64.decode returns List<Integer> not String;
+# Enum(names_list) not Enum(name, names_list); bisect uses no underscores (bisectleft);
+# DateTime does not support < > operators (use .diff() to compare).
+
+var io = import("io")
+var strmod = import("string")
+var textwrap = import("textwrap")
+var b64 = import("base64")
+var csv = import("csv")
+var heapq = import("heapq")
+var bisect = import("bisect")
+var cp = import("copy")
+var enm = import("enum")
+var time = import("time")
+var sys = import("sys")
+var path = import("path")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== string module
+ok(strmod.digits == "0123456789", "string.digits")
+ok(strmod.hexdigits == "0123456789abcdefABCDEF", "string.hexdigits")
+ok(strmod.octdigits == "01234567", "string.octdigits")
+ok(len(strmod.ascii_letters) == 52, "string.ascii_letters has 52 chars")
+ok(len(strmod.ascii_lowercase) == 26, "string.ascii_lowercase has 26")
+ok(len(strmod.ascii_uppercase) == 26, "string.ascii_uppercase has 26")
+ok(len(strmod.punctuation) > 0, "string.punctuation is non-empty")
+ok(len(strmod.whitespace) > 0, "string.whitespace is non-empty")
+
+# capwords
+ok(strmod.capwords("hello world foo") == "Hello World Foo", "capwords basic")
+ok(strmod.capwords("") == "", "capwords empty string")
+ok(throws(Function(): return strmod.capwords("a", "-")), "capwords only takes 1 arg")
+
+# levenshtein (on String method, not strmod function)
+ok("hello".levenshtein("hello") == 0, "levenshtein identical = 0")
+ok("hello".levenshtein("helo") == 1, "levenshtein one deletion")
+ok("kitten".levenshtein("sitting") == 3, "levenshtein kitten→sitting = 3")
+ok("".levenshtein("abc") == 3, "levenshtein empty to 3-char")
+
+# similarity (strmod.similarity)
+ok(strmod.similarity("hello", "hello") == 1.0, "similarity identical = 1.0")
+ok(strmod.similarity("hello", "world") < 1.0, "similarity different < 1.0")
+ok(strmod.similarity("", "") == 1.0, "similarity two empty strings = 1.0")
+ok(strmod.similarity("abc", "") == 0.0, "similarity with empty = 0.0")
+
+# closest
+ok(strmod.closest("hellp", ["hello", "world", "help"]) == "hello", "closest finds nearest")
+ok(strmod.closest("abc", ["abc", "xyz"]) == "abc", "closest exact match")
+
+# fuzzymatch returns List of [String, score] pairs
+var fm = strmod.fuzzymatch("hell", ["hello", "world", "helo", "xyz"])
+ok(type(fm) == "List", "fuzzymatch returns List")
+ok(len(fm) >= 1, "fuzzymatch has at least 1 result for close input")
+ok(type(fm[0]) == "List" and len(fm[0]) == 2, "fuzzymatch entry is [string, score]")
+ok(fm[0][0] == "hello" or fm[0][0] == "helo", "fuzzymatch first result is a close match")
+var fm_empty = strmod.fuzzymatch("zzz", ["abc", "def"])
+ok(fm_empty == [], "fuzzymatch no close matches returns empty list")
+
+# =========================================================== textwrap
+# wrap(text, width) -> List of lines
+var wrapped = textwrap.wrap("hello world foo bar baz", 10)
+ok(type(wrapped) == "List", "textwrap.wrap returns List")
+ok(all(map(Function(line): return len(line) <= 10, wrapped)), "wrap respects width")
+
+# fill(text, width) -> single string with newlines
+var filled = textwrap.fill("hello world foo bar baz", 10)
+ok(type(filled) == "String", "textwrap.fill returns String")
+ok("\n" in filled, "textwrap.fill contains newlines")
+
+# indent(text, prefix)
+var indented = textwrap.indent("hello\nworld", "  ")
+ok(indented == "  hello\n  world", "textwrap.indent adds prefix to each line")
+ok(textwrap.indent("", ">>") == "", "textwrap.indent of empty is empty")
+
+# dedent(text)
+ok(textwrap.dedent("  hello\n  world") == "hello\nworld", "textwrap.dedent removes common indent")
+ok(textwrap.dedent("no indent") == "no indent", "textwrap.dedent no indent unchanged")
+
+# =========================================================== base64
+# encode returns String; decode returns List<Integer>
+var enc = b64.encode("Hello!")
+ok(type(enc) == "String", "b64.encode returns String")
+ok(enc == "SGVsbG8h", "b64.encode known value")
+var dec = b64.decode("SGVsbG8h")
+ok(type(dec) == "List", "b64.decode returns List of integers")
+ok(dec == [72,101,108,108,111,33], "b64.decode to integer bytes")
+
+# round-trip via Bytes.decode
+ok(Bytes(b64.decode(b64.encode("round trip"))).decode() == "round trip", "b64 String round-trip via Bytes")
+
+# Bytes input
+var benc = b64.encode(Bytes([72,101,108,108,111]))
+ok(benc == "SGVsbG8=", "b64.encode Bytes input")
+
+# urlsafe
+var uenc = b64.urlsafeencode("hello+world?/")
+ok(type(uenc) == "String", "urlsafeencode returns String")
+var udec = b64.urlsafedecode(uenc)
+ok(type(udec) == "List", "urlsafedecode returns List")
+ok(Bytes(udec).decode() == "hello+world?/", "urlsafe round-trip")
+
+# =========================================================== csv
+# format(rows) -> String
+var rows = [["name", "age"], ["Alice", "30"], ["Bob", "25"]]
+var csvStr = csv.format(rows)
+ok(type(csvStr) == "String", "csv.format returns String")
+ok("Alice" in csvStr, "csv.format includes Alice")
+ok("name" in csvStr, "csv.format includes header")
+
+# parse -> List of Lists
+var parsed = csv.parse(csvStr)
+ok(type(parsed) == "List", "csv.parse returns List")
+ok(len(parsed) == 3, "csv.parse has 3 rows")
+ok(parsed[0][0] == "name", "csv.parse header first field")
+ok(parsed[1][0] == "Alice", "csv.parse data first field")
+
+# formatrow / parserow
+var row = csv.formatrow(["hello", "world", "foo"])
+ok(type(row) == "String", "csv.formatrow returns String")
+var pr = csv.parserow(row)
+ok(pr == ["hello", "world", "foo"], "csv.parserow round-trip")
+
+# quoted fields with commas
+var qrow = csv.formatrow(["a,b", "c\"d", "simple"])
+var qp = csv.parserow(qrow)
+ok(qp[0] == "a,b", "csv comma inside quoted field preserved")
+ok(qp[1] == 'c"d', "csv double-quote inside field preserved")
+
+# =========================================================== heapq
+# heapify(items) returns a NEW heap list (does not modify in place)
+var h = heapq.heapify([3, 1, 4, 1, 5, 9, 2, 6])
+ok(h[0] == 1, "heapify: min element at index 0")
+heapq.heappush(h, 0)
+ok(h[0] == 0, "heappush 0 becomes new minimum")
+ok(heapq.heappop(h) == 0, "heappop returns smallest (0)")
+ok(heapq.heappop(h) == 1, "heappop second smallest (1)")
+
+ok(heapq.nlargest(3, [3,1,4,1,5,9,2,6]) == [9,6,5], "nlargest 3")
+ok(heapq.nsmallest(3, [3,1,4,1,5,9,2,6]) == [1,1,2], "nsmallest 3")
+
+# heapreplace: pops min and pushes new item; modifies in place, returns old min
+var h2 = heapq.heapify([1, 3, 5])
+var old2 = heapq.heapreplace(h2, 2)
+ok(old2 == 1, "heapreplace returns old min (1)")
+ok(h2[0] <= 2, "heapreplace: new min is ≤ inserted value")
+
+# =========================================================== bisect
+var sl = [1, 3, 5, 7, 9]
+ok(bisect.bisect(sl, 5) == 3, "bisect at existing value (right)")
+ok(bisect.bisectleft(sl, 5) == 2, "bisectleft at existing value")
+ok(bisect.bisectright(sl, 5) == 3, "bisectright at existing value")
+ok(bisect.bisect(sl, 4) == 2, "bisect between values")
+ok(bisect.bisect(sl, 0) == 0, "bisect before first element")
+ok(bisect.bisect(sl, 10) == 5, "bisect after last element")
+
+bisect.insort(sl, 4)
+ok(sl == [1, 3, 4, 5, 7, 9], "insort inserts 4 in order")
+bisect.insortleft(sl, 4)
+ok(sl == [1, 3, 4, 4, 5, 7, 9], "insortleft inserts left of existing 4")
+
+# =========================================================== copy
+var orig_list = [1, [2, 3], {"a": 1}]
+var shallow = cp.copy(orig_list)
+var deep = cp.deepcopy(orig_list)
+
+# Shallow: top-level different, nested shared
+ok(id(shallow) != id(orig_list), "shallow copy is new top-level list")
+ok(id(shallow[1]) == id(orig_list[1]), "shallow copy: nested list IS shared")
+
+# Deep: nested objects are independent
+ok(id(deep[1]) != id(orig_list[1]), "deep copy: nested list is new")
+deep[1].append(99)
+ok(orig_list[1] == [2, 3], "deep copy: mutation doesn't affect original")
+
+# Shallow copy of Dict
+var orig_dict = {"x": [1, 2]}
+var sd = cp.copy(orig_dict)
+ok(id(sd["x"]) == id(orig_dict["x"]), "shallow copy dict: nested value is shared")
+
+# Deepcopy of cycle-free objects
+var dc_dict = cp.deepcopy({"a": {"b": 1}})
+ok(dc_dict["a"]["b"] == 1, "deepcopy nested dict works")
+
+# =========================================================== enum
+var Status = enm.Enum(["OPEN", "CLOSED", "PENDING"])
+ok(Status.get("OPEN") == 0, "enum: OPEN is 0")
+ok(Status.get("CLOSED") == 1, "enum: CLOSED is 1")
+ok(Status.get("PENDING") == 2, "enum: PENDING is 2")
+ok(Status["OPEN"] == 0, "enum: _getitem_ access")
+ok(Status.nameof(0) == "OPEN", "enum: nameof(0) = OPEN")
+ok(Status.nameof(2) == "PENDING", "enum: nameof(2) = PENDING")
+ok(Status.names() == ["OPEN", "CLOSED", "PENDING"], "enum: names in order")
+ok(Status.values() == [0, 1, 2], "enum: values in order")
+ok("OPEN" in Status, "enum: 'in' operator works for name")
+ok("UNKNOWN" not in Status, "enum: 'in' false for unknown")
+ok(throws(Function(): return Status.get("UNKNOWN")), "enum: get unknown throws")
+
+# =========================================================== time module
+var t = time.time()
+ok(type(t) == "Float", "time.time() returns Float")
+ok(t > 0, "time.time() > 0")
+
+ok(type(time.timens()) == "Integer", "time.timens() returns Integer")
+ok(type(time.monotonic()) == "Float", "time.monotonic() returns Float")
+ok(type(time.perfcounterns()) == "Integer", "time.perfcounterns() returns Integer")
+
+# now()
+var now = time.now()
+ok(type(now) == "DateTime", "time.now() returns DateTime")
+ok(now.year >= 2024, "now.year >= 2024")
+ok(1 <= now.month and now.month <= 12, "now.month in 1..12")
+ok(1 <= now.day and now.day <= 31, "now.day in 1..31")
+ok(0 <= now.hour and now.hour <= 23, "now.hour in 0..23")
+
+# make(year, month, day, hour, minute, second)
+var dt = time.make(2024, 1, 15, 10, 30, 0)
+ok(dt.year == 2024, "make year")
+ok(dt.month == 1, "make month")
+ok(dt.day == 15, "make day")
+ok(dt.hour == 10, "make hour")
+ok(dt.minute == 30, "make minute")
+ok(dt.second == 0, "make second")
+
+# iso() and format()
+ok(dt.iso() == "2024-01-15T10:30:00", "DateTime.iso()")
+ok(dt.format("%Y-%m-%d") == "2024-01-15", "DateTime.format(%Y-%m-%d)")
+
+# strptime
+var dt2 = time.strptime("2024-06-15 08:00", "%Y-%m-%d %H:%M")
+ok(dt2.year == 2024, "strptime year")
+ok(dt2.month == 6, "strptime month")
+ok(dt2.day == 15, "strptime day")
+
+# add/sub/diff
+var dt3 = dt.add(86400)
+ok(dt3.day == 16, "add 1 day (86400s)")
+var dt4 = dt3.sub(3600)
+ok(dt4.hour == 9, "sub 1 hour")
+ok(dt3.diff(dt) == 86400, "diff = 86400 seconds")
+
+# datetime(timestamp) factory
+var dt5 = time.datetime(0)
+ok(type(dt5) == "DateTime", "time.datetime(0) returns DateTime")
+
+# equality and hash
+ok(dt == dt, "DateTime == itself")
+ok(dt != dt3, "different DateTimes are !=")
+
+# =========================================================== sys module
+ok(type(sys.platform) == "String", "sys.platform is String")
+ok(type(sys.version) == "String", "sys.version is String")
+ok(type(sys.arch) == "String", "sys.arch is String")
+ok(sys.platform in ["linux", "darwin", "windows"], "sys.platform is known value")
+ok(sys.arch in ["x64", "arm64", "x86"], "sys.arch is known value")
+
+# getenv / setenv / unsetenv
+# (no assumption of a pre-existing var like HOME: it's POSIX-only and absent
+# on a bare Windows environment, so every check here sets its own var first)
+ok(sys.getenv("__NO_SUCH_VAR__12345__") == None, "sys.getenv missing returns None")
+sys.setenv("KIRITO_TEST_R9", "test_val")
+ok(type(sys.getenv("KIRITO_TEST_R9")) == "String", "sys.getenv returns String for an existing var")
+ok(sys.getenv("KIRITO_TEST_R9") == "test_val", "setenv then getenv")
+
+# environ
+var env = sys.environ()
+ok(type(env) == "Dict", "sys.environ() returns Dict")
+ok(len(env) > 0, "environ is non-empty")
+ok("KIRITO_TEST_R9" in env, "environ contains the var we just set")
+
+sys.unsetenv("KIRITO_TEST_R9")
+ok(sys.getenv("KIRITO_TEST_R9") == None, "unsetenv removes var")
+ok("KIRITO_TEST_R9" not in sys.environ(), "environ no longer contains var after unsetenv")
+
+# traceback
+ok(type(sys.traceback()) == "String", "sys.traceback() returns String")
+
+# createprocess (external command) — target the running ki binary itself:
+# "echo" has no standalone executable on Windows (cmd.exe builtin only), and
+# createprocess runs by argv with no shell, so it needs a real cross-platform binary.
+var result = sys.createprocess([path.executable, "--version"])
+ok(result["code"] == 0, "createprocess ki --version returns code 0")
+ok("Kirito" in result["stdout"], "createprocess ki --version output contains 'Kirito'")
+ok(type(result["stderr"]) == "String", "createprocess has stderr field")
+
+# shell
+var sresult = sys.shell("echo shell_test")
+ok(sresult["code"] == 0, "shell returns code 0")
+ok("shell_test" in sresult["stdout"], "shell output contains expected text")
+
+# createprocess with bad binary throws
+ok(throws(Function(): return sys.createprocess(["__nonexistent_r9_binary__"])),
+   "createprocess nonexistent binary throws")
+
+io.print("r9_stdlib_c: " + String(n) + " checks passed")

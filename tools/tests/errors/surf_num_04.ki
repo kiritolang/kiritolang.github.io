@@ -1,0 +1,2 @@
+# Zero thrown to a negative power is undefined and must throw.
+discard 0 ** -1

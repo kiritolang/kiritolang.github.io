@@ -1,0 +1,6 @@
+# a switch with two String cases of the same value is a duplicate
+switch "a":
+    case "x":
+        discard 1
+    case "x":
+        discard 2

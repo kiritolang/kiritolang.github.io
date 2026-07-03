@@ -1,0 +1,2 @@
+# type/operator: bitor requires Integer operands, not a Float
+discard bitor(1.5, 2)

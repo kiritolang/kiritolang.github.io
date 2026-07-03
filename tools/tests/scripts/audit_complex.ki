@@ -1,0 +1,197 @@
+var io = import("io")
+var C = import("complex")
+var MTH = import("math")
+
+var close = Function(a, b) -> Bool:
+    return (a - b).modulus() < 0.000000001
+var closef = Function(x, y) -> Bool:
+    var d = x - y
+    if d < 0:
+        d = -d
+    return d < 0.000000001
+
+# ---- constructors & constants ------------------------------------------------------------------
+io.print(C.of(3, 4).re == 3.0)
+io.print(C.of(3, 4).im == 4.0)
+io.print(C.real(5) == C.of(5, 0))
+io.print(C.Complex(7).re == 7.0 and C.Complex(7).im == 0.0)
+io.print(C.zero == C.of(0, 0))
+io.print(C.one == C.of(1, 0))
+io.print(C.i == C.of(0, 1))
+io.print(MTH.pi > 3.14 and MTH.pi < 3.15)
+io.print(close(C.polar(2.0, 0.0), C.of(2, 0)))
+io.print(closef(C.polar(2.0, MTH.pi / 2.0).im, 2.0))
+io.print(closef(C.polar(2.0, MTH.pi / 2.0).re, 0.0))
+
+# ---- Complex(2, 0) == 2 (the documented coercion) ----------------------------------------------
+io.print(C.of(2, 0) == 2)
+io.print(C.of(2, 0) == 2.0)
+io.print(C.of(2, 1) == 2)        # imaginary part nonzero -> False
+io.print(C.of(2, 0) != 3)
+
+# ---- arithmetic --------------------------------------------------------------------------------
+io.print(C.of(1, 2) + C.of(3, 4) == C.of(4, 6))
+io.print(C.of(5, 0) - C.of(2, 3) == C.of(3, -3))
+io.print(C.of(1, 2) * C.of(3, 4) == C.of(-5, 10))
+io.print(C.of(1, 1) / C.of(1, 1) == C.one)
+io.print(close(C.of(1, 1) ** C.of(2, 0), C.of(0, 2)))    # (1+i)^2 = 2i
+io.print(-C.of(2, -3) == C.of(-2, 3))
+
+# Complex with a real number on the right is OK; on the left throws
+io.print(C.of(1, 1) + 2 == C.of(3, 1))
+io.print(C.of(1, 1) - 1 == C.of(0, 1))
+io.print(C.of(2, 0) * 3 == C.of(6, 0))
+io.print(C.of(6, 0) / 2 == C.of(3, 0))
+
+var thrown = 0
+for thunk in [Function(): return 2 + C.of(1, 0), Function(): return 2 - C.of(1, 0), Function(): return 2 * C.of(1, 0), Function(): return 2 / C.of(1, 0)]:
+    try:
+        discard thunk()
+    catch as e:
+        thrown = thrown + 1
+io.print(thrown == 4)
+
+# ---- division by zero throws -------------------------------------------------------------------
+var zeroraised = 0
+try:
+    discard C.one / C.zero
+catch as e:
+    if "complex division by zero" in e:
+        zeroraised = zeroraised + 1
+try:
+    discard C.of(1, 1) / 0
+catch as e:
+    zeroraised = zeroraised + 1
+io.print(zeroraised == 2)
+
+# ---- ordering (<, <=, >, >=) throws ------------------------------------------------------------
+var ordraised = 0
+for thunk in [Function(): return C.one < C.of(2, 0), Function(): return C.one <= C.of(2, 0), Function(): return C.one > C.zero, Function(): return C.one >= C.zero]:
+    try:
+        discard thunk()
+    catch as e:
+        if "not ordered" in e:
+            ordraised = ordraised + 1
+io.print(ordraised == 4)
+
+# ---- reductions --------------------------------------------------------------------------------
+io.print(C.of(3, 4).conjugate() == C.of(3, -4))
+io.print(closef(C.of(3, 4).modulus(), 5.0))
+io.print(closef(C.of(3, 4).magnitude(), 5.0))      # alias
+io.print(closef(C.of(3, 4).abs(), 5.0))             # alias
+io.print(closef(C.of(3, 4).norm2(), 25.0))
+io.print(closef(C.of(0, 1).argument(), MTH.pi / 2.0))
+io.print(closef(C.of(0, 1).phase(), MTH.pi / 2.0))    # alias
+io.print(C.zero.is_zero())
+io.print(not C.one.is_zero())
+
+# ---- analytic functions (Euler, etc.) ----------------------------------------------------------
+io.print(close(C.exp(C.of(0, MTH.pi)), C.of(-1, 0)))     # exp(i*pi) = -1
+io.print(close(C.sqrt(C.of(-1, 0)), C.i))               # sqrt(-1) = i
+io.print(close(C.sqrt(C.of(-4, 0)), C.of(0, 2)))        # sqrt(-4) = 2i
+io.print(close(C.log(C.of(MTH.e, 0)), C.one))              # log(e) = 1
+io.print(close(C.sin(C.of(0, 0)), C.zero))               # sin(0) = 0
+io.print(close(C.cos(C.of(0, 0)), C.one))                # cos(0) = 1
+io.print(close(C.pow(C.i, C.of(2, 0)), C.of(-1, 0)))     # i^2 = -1
+io.print(close(C.cosh(C.of(0, 0)), C.one))
+io.print(close(C.sinh(C.of(0, 0)), C.zero))
+
+# sin^2 + cos^2 = 1 holds for complex
+var w = C.of(1, 2)
+io.print(close(C.sin(w) * C.sin(w) + C.cos(w) * C.cos(w), C.one))
+
+# log10 / cbrt
+io.print(close(C.log10(C.of(100, 0)), C.of(2, 0)))
+io.print(close(C.cbrt(C.of(8, 0)), C.of(2, 0)))
+
+# ---- module function aliases (modulus/abs/phase/argument/norm2/conjugate take any number) -----
+io.print(closef(C.modulus(C.of(3, 4)), 5.0))
+io.print(closef(C.abs(C.of(3, 4)), 5.0))
+io.print(closef(C.phase(C.i), MTH.pi / 2.0))
+io.print(closef(C.argument(C.i), MTH.pi / 2.0))
+io.print(closef(C.norm2(C.of(3, 4)), 25.0))
+io.print(C.conjugate(C.of(3, 4)) == C.of(3, -4))
+
+# Module functions accept plain numbers (real coerces to real axis)
+io.print(close(C.exp(0), C.one))
+io.print(close(C.sqrt(4), C.of(2, 0)))
+
+# ---- complex matrices ---------------------------------------------------------------------
+var M = C.Matrix([[C.of(1, 1), C.of(2, 0)], [C.of(0, 1), C.of(1, -1)]])
+io.print(M.rows() == 2 and M.cols() == 2)
+io.print(M.shape() == [2, 2])
+io.print(M[0, 0] == C.of(1, 1))
+io.print(M.row(0) == [C.of(1, 1), C.of(2, 0)])
+
+# add/sub/scalar multiply
+io.print((M + M)[0, 0] == C.of(2, 2))
+io.print((M - M)[0, 0] == C.zero)
+io.print((M * C.of(2, 0))[0, 1] == C.of(4, 0))
+io.print((M * 2)[0, 1] == C.of(4, 0))   # number-scalar multiply
+
+# transpose / conjugate / hermitian / conjugatetranspose (alias)
+io.print(M.transpose()[0, 1] == C.of(0, 1))
+io.print(M.conjugate()[0, 0] == C.of(1, -1))
+io.print(M.hermitian()[0, 1] == C.of(0, -1))
+io.print(M.conjugatetranspose() == M.hermitian())   # alias
+
+# determinant via Gaussian: det([[1+i, 2],[i, 1-i]]) = (1+i)(1-i) - 2i = 2 - 2i
+io.print(close(M.determinant(), C.of(2, -2)))
+
+# inverse via Gauss-Jordan: M * M^-1 = I (within tolerance)
+var inv = M.inverse()
+var prod = M * inv
+var I = C.identity(2)
+io.print(close(prod[0, 0], I[0, 0]) and close(prod[0, 1], I[0, 1]))
+io.print(close(prod[1, 0], I[1, 0]) and close(prod[1, 1], I[1, 1]))
+
+# trace
+io.print(M.trace() == C.of(2, 0))
+
+# factories
+io.print(C.zeros(2, 3)[0, 0] == C.zero)
+io.print(C.ones(2, 3)[1, 2] == C.one)
+io.print(C.identity(3)[2, 2] == C.one)
+io.print(C.identity(3)[0, 2] == C.zero)
+
+# ---- complex matrix errors --------------------------------------------------------------
+var mraised = 0
+for thunk in [Function(): return C.Matrix([[C.of(1, 0), C.of(2, 0), C.of(3, 0)]]).determinant(), Function(): return C.Matrix([[C.of(1, 0), C.of(2, 0), C.of(3, 0)]]).inverse(), Function(): return C.Matrix([[C.of(1, 0), C.of(2, 0), C.of(3, 0)]]).trace(), Function(): return C.Matrix([[C.one, C.of(2, 0)], [C.of(2, 0), C.of(4, 0)]]).inverse()]:
+    try:
+        discard thunk()
+    catch as e:
+        mraised = mraised + 1
+io.print(mraised == 4)
+
+# ---- complex vectors ----------------------------------------------------------------------
+var cv1 = C.vector([C.of(1, 1), C.of(2, 0)])
+var cv2 = C.vector([C.of(1, 0), C.of(0, 1)])
+io.print(cv1.rows() == 1 and cv1.cols() == 2)
+# Hermitian inner: conj(1+i)*1 + conj(2)*i = (1-i) + 2i = 1+i
+io.print(cv1.dot(cv2) == C.of(1, 1))
+# z.dot(z) is real and non-negative: |1+i|^2 + |2|^2 = 2 + 4 = 6
+io.print(cv1.dot(cv1) == C.of(6, 0))
+# 2-norm = sqrt(6)
+io.print(closef(cv1.norm(), C.sqrt(C.of(6, 0)).re))
+
+# cross of (i e_x) x (i e_y) = i^2 e_z = -e_z
+var x_ax = C.vector([C.of(0, 1), C.zero, C.zero])
+var y_ax = C.vector([C.zero, C.of(0, 1), C.zero])
+io.print(x_ax.cross(y_ax) == C.vector([C.zero, C.zero, C.of(-1, 0)]))
+
+# cross on non-3-vectors throws
+var craised = 0
+for thunk in [Function(): return C.vector([C.one, C.one]).cross(C.vector([C.one, C.one])), Function(): return cv1.dot(C.vector([C.one, C.one, C.one]))]:
+    try:
+        discard thunk()
+    catch as e:
+        craised = craised + 1
+io.print(craised == 2)
+
+# ---- serialization round-trip --------------------------------------------------------------
+var dump = import("dump")
+var z = C.of(3.5, -2.5)
+io.print(dump.loads(dump.dumps(z)) == z)
+io.print(dump.loads(dump.dumps(M))[0, 0] == M[0, 0])
+
+io.print("OK audit-complex")

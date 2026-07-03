@@ -1,0 +1,4 @@
+# LEXER: a triple single-quoted string opened but never closed
+var s = '''opening a triple string
+spanning several lines
+but with no closing delimiter

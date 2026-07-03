@@ -1,0 +1,512 @@
+# Adversarial audit of the `tabular` stdlib module (Series + DataFrame + GroupBy). Every
+# documented function/method is probed; probes are biased toward edges:
+#   * empty Series and DataFrame, empty CSV, header-only CSV
+#   * missing values (None and Float NaN), all-missing columns, mixed dtypes
+#   * Bool counted as 0/1 in numeric aggregations
+#   * boolean masking via a Series and via a List[Bool]
+#   * label vs position indexing fallback in Series
+#   * loc/iloc with scalar and list-of-labels/positions
+#   * CSV round-trip with quoted fields containing commas, quotes, embedded quotes
+#   * groupby with single key, all-distinct keys, agg with each documented reduction
+#   * merge variants: inner / left / right / outer, one-to-many, no-match, multi-key duplicates
+#   * concat: empty list, vertical stacking, column union, missing filled with None
+#   * adversarial constructor inputs that must throw
+#   * fuzz: groupby sums and boolean masking against hand-computed oracles
+
+var io = import("io")
+var tb = import("tabular")
+var math = import("math")
+var random = import("random")
+
+var rng = random.Random(20260615)
+
+# Helper used a lot for "this must throw" assertions.
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# Float NaN for missing-data probes.
+var NAN = math.nan
+
+# ================================================================ Series construction
+# Empty Series
+var es = tb.Series([])
+assert len(es) == 0, "empty Series len"
+assert es.tolist() == [], "empty Series tolist"
+assert es.sum() == 0, "empty Series sum == 0 (empty additive identity)"
+assert es.prod() == 1, "empty Series prod == 1 (empty multiplicative identity)"
+assert es.count() == 0, "empty Series count == 0"
+assert es.mean() == None, "empty Series mean None"
+assert es.min() == None and es.max() == None, "empty Series min/max None"
+assert es.median() == None, "empty Series median None"
+assert es.variance() == None and es.std() == None, "empty Series variance/std None"
+assert es.unique() == [], "empty Series unique []"
+assert es.nunique() == 0, "empty Series nunique 0"
+assert es.valuecounts().tolist() == [], "empty Series valuecounts empty"
+assert es.dropna().tolist() == [], "empty Series dropna"
+
+# Explicit index
+var s = tb.Series([10, 20, 30], index=["a", "b", "c"], name="col")
+assert s.tolist() == [10, 20, 30], "values preserved"
+assert s.index == ["a", "b", "c"], "index preserved"
+assert s.name == "col", "name preserved"
+
+# Index length mismatch throws
+assert throws(Function(): return tb.Series([1, 2, 3], index=["x", "y"])), "index/values length mismatch throws"
+
+# ================================================================ Series indexing
+# Label first, position fallback
+var sl = tb.Series([100, 200, 300], index=["x", "y", "z"])
+assert sl["x"] == 100, "Series indexed by label"
+assert sl[1] == 200, "Series indexed by position when label is absent"
+# Integer label that happens to look positional: the LABEL wins
+var sk = tb.Series(["A", "B", "C"], index=[10, 20, 30])
+assert sk[10] == "A", "Integer label wins over position"
+assert sk[0] == "A", "fallback to position 0 when 0 is not a label"
+# iat is purely positional
+assert sl.iat(0) == 100 and sl.iat(2) == 300, "iat by position"
+assert sl.iat(-1) == 300, "iat with negative index uses List's negative indexing"
+# out-of-range iat throws
+assert throws(Function(): return sl.iat(5)), "iat out of range throws"
+
+# ================================================================ Series arithmetic & comparisons
+var a = tb.Series([1, 2, 3, 4])
+var b = tb.Series([4, 3, 2, 1])
+# all of +, -, *, /, //, %
+assert (a + b).tolist() == [5, 5, 5, 5], "Series + Series"
+assert (a - b).tolist() == [-3, -1, 1, 3], "Series - Series"
+assert (a * b).tolist() == [4, 6, 6, 4], "Series * Series"
+assert (a / b).tolist() == [0.25, 2.0 / 3, 1.5, 4.0], "Series / Series (always Float)"
+assert (a // b).tolist() == [0, 0, 1, 4], "Series // Series"
+assert (a % b).tolist() == [1, 2, 1, 0], "Series % Series"
+# scalar versions
+assert (a + 10).tolist() == [11, 12, 13, 14], "Series + scalar"
+assert (a * 0).tolist() == [0, 0, 0, 0], "Series * 0"
+# comparisons -> boolean Series
+assert (a > 2).tolist() == [False, False, True, True], "gt"
+assert (a >= 2).tolist() == [False, True, True, True], "ge"
+assert (a < 3).tolist() == [True, True, False, False], "lt"
+assert (a <= 3).tolist() == [True, True, True, False], "le"
+# == / != return boolean Series (the documented pandas-like behavior)
+assert (a == 2).tolist() == [False, True, False, False], "== element-wise"
+assert (a != 2).tolist() == [True, False, True, True], "!= element-wise"
+assert a.eq(3).tolist() == [False, False, True, False], "eq method"
+assert a.ne(3).tolist() == [True, True, False, True], "ne method"
+assert a.isin([2, 4]).tolist() == [False, True, False, True], "isin"
+assert a.isin([]).tolist() == [False, False, False, False], "isin with empty"
+
+# ================================================================ Series aggregations
+# Bool counts as 0/1 (documented)
+var bs = tb.Series([True, False, True, True, False])
+assert bs.sum() == 3, "Bool series sum (True=1)"
+assert bs.mean() == 0.6, "Bool series mean"
+assert bs.min() == 0, "Bool series min"
+assert bs.max() == 1, "Bool series max"
+# count is non-null tally of ANY type, NOT numeric-only (doc note)
+assert tb.Series(["x", "y", None, "z"]).count() == 3, "count counts strings (non-null)"
+assert tb.Series([1, None, "a", True]).count() == 3, "count is total non-null"
+# missing handled in numeric aggregations
+var smix = tb.Series([1, None, 3, NAN, 5])
+assert smix.dropna().tolist() == [1, 3, 5], "dropna removes None AND NaN"
+assert smix.sum() == 9, "sum skips missing (None and NaN)"
+assert smix.mean() == 3.0, "mean skips missing"
+assert smix.fillna(0).tolist() == [1, 0, 3, 0, 5], "fillna replaces None AND NaN"
+# all-missing -> count 0, mean None
+var sn = tb.Series([None, None, None])
+assert sn.count() == 0, "all-None count"
+assert sn.mean() == None, "all-None mean None"
+assert sn.sum() == 0, "all-None sum 0"
+# single-element Series std needs >= 2 -> None
+assert tb.Series([7]).variance() == None, "variance needs >= 2"
+assert tb.Series([7]).std() == None, "std needs >= 2"
+# median odd/even
+assert tb.Series([1, 2, 3]).median() == 2, "median odd"
+assert tb.Series([1, 2, 3, 4]).median() == 2.5, "median even"
+
+# ================================================================ Series transforms
+assert tb.Series([1, 2, 3]).apply(Function(x): return x * x).tolist() == [1, 4, 9], "apply"
+assert tb.Series([1, 2, 3]).map(Function(x): return x + 1).tolist() == [2, 3, 4], "map (alias)"
+# astype
+assert tb.Series(["1", "2", "3"]).astype("Integer").tolist() == [1, 2, 3], "astype Integer"
+assert tb.Series([1, 2, 3]).astype("Float").tolist() == [1.0, 2.0, 3.0], "astype Float"
+assert tb.Series([1, 0, 1]).astype("Bool").tolist() == [True, False, True], "astype Bool"
+assert tb.Series([1, 2]).astype("String").tolist() == ["1", "2"], "astype String"
+# head/tail with defaults (n=5)
+var bigs = tb.Series([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+assert bigs.head().tolist() == [1, 2, 3, 4, 5], "head default n=5"
+assert bigs.tail().tolist() == [6, 7, 8, 9, 10], "tail default n=5"
+assert bigs.head(0).tolist() == [], "head(0) empty"
+assert bigs.head(100).tolist() == bigs.tolist(), "head(>len) caps"
+assert bigs.tail(100).tolist() == bigs.tolist(), "tail(>len) caps"
+# sortvalues + ascending kwarg
+assert tb.Series([3, 1, 2]).sortvalues().tolist() == [1, 2, 3], "sortvalues asc"
+assert tb.Series([3, 1, 2]).sortvalues(ascending=False).tolist() == [3, 2, 1], "sortvalues desc (kwarg)"
+# resetindex
+var sr = tb.Series([10, 20, 30], index=["a", "b", "c"])
+assert sr.resetindex().index == [0, 1, 2], "resetindex relabels 0..n"
+# copy is independent
+var sc = tb.Series([1, 2, 3])
+var sc2 = sc.copy()
+sc2.values[0] = 99
+assert sc.values[0] == 1, "copy is independent"
+
+# ================================================================ Series unique / valuecounts
+assert tb.Series([1, 1, 2, 3, 3, 3]).unique() == [1, 2, 3], "unique preserves first-seen order"
+assert tb.Series([1, 1, 2, 3, 3, 3]).nunique() == 3, "nunique"
+var vc = tb.Series(["a", "b", "a", "a", "b", "c"]).valuecounts()
+assert vc.tolist() == [3, 2, 1], "valuecounts values desc"
+assert vc.index == ["a", "b", "c"], "valuecounts index by value"
+# valuecounts skips missing
+var vcm = tb.Series([1, None, 1, 2, None]).valuecounts()
+assert vcm.tolist() == [2, 1], "valuecounts skips None"
+
+# ================================================================ DataFrame construction
+# from columns dict + explicit column order
+var df = tb.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}, columns=["a", "b"])
+assert df.columns == ["a", "b"], "explicit columns order"
+assert df.shape() == [3, 2], "shape"
+assert len(df) == 3, "len = nrows"
+# from row-lists (positional)
+var dfr = tb.DataFrame([[1, 2], [3, 4]], columns=["x", "y"])
+assert dfr.todict() == {"x": [1, 3], "y": [2, 4]}, "from row-lists"
+# from row-lists WITHOUT columns -> default col0, col1, ...
+var dfd = tb.DataFrame([[1, 2], [3, 4]])
+assert dfd.columns == ["col0", "col1"], "default columns when none given"
+# from row-Dicts (union of keys)
+var dfu = tb.DataFrame([{"a": 1, "b": 2}, {"b": 3, "c": 4}])
+assert "a" in dfu.columns and "b" in dfu.columns and "c" in dfu.columns, "row-dict union covers all keys"
+assert dfu["a"].tolist() == [1, None], "missing key filled with None (a)"
+assert dfu["c"].tolist() == [None, 4], "missing key filled with None (c)"
+# from an empty list of rows + explicit columns -> empty frame with named columns
+var dfe = tb.DataFrame([], columns=["a", "b", "c"])
+assert dfe.shape() == [0, 3], "empty rows + columns gives [0, ncols]"
+assert dfe["a"].tolist() == [], "empty rows -> empty columns"
+# DataFrame() -- no data -- yields a [0, 0] frame
+assert tb.DataFrame().shape() == [0, 0], "DataFrame() bare"
+# Ragged columns throw
+assert throws(Function(): return tb.DataFrame({"a": [1, 2], "b": [3]}, columns=["a", "b"])), "ragged columns throw"
+# Non-Dict / non-List data throws
+assert throws(Function(): return tb.DataFrame(42)), "Integer data throws"
+assert throws(Function(): return tb.DataFrame("not a dict")), "String data throws"
+
+# ================================================================ DataFrame selection
+var dfs = tb.DataFrame({"a": [1, 2, 3, 4], "b": [10, 20, 30, 40], "c": ["w", "x", "y", "z"]}, columns=["a", "b", "c"])
+# column -> Series
+assert dfs["a"].tolist() == [1, 2, 3, 4], "column -> Series"
+# missing column throws
+assert throws(Function(): return dfs["nope"]), "missing column throws"
+# column subset -> DataFrame
+var sub = dfs[["a", "c"]]
+assert sub.columns == ["a", "c"], "column subset order preserved"
+assert sub.shape() == [4, 2], "column subset shape"
+# missing column in subset throws
+assert throws(Function(): return dfs[["a", "missing"]]), "missing column in subset throws"
+# boolean Series mask
+assert dfs[dfs["a"] > 2]["a"].tolist() == [3, 4], "Boolean Series mask"
+# boolean List mask
+assert dfs[[True, False, True, False]]["a"].tolist() == [1, 3], "Boolean List mask"
+# loc / iloc -- single & list
+var di = tb.DataFrame({"x": [10, 20, 30]}, columns=["x"], index=["a", "b", "c"])
+assert di.iloc[0]["x"] == 10, "iloc single"
+assert di.iloc[[0, 2]]["x"].tolist() == [10, 30], "iloc list"
+assert di.loc["b"]["x"] == 20, "loc single by label"
+assert di.loc[["a", "c"]]["x"].tolist() == [10, 30], "loc list by label"
+# at / iat
+assert di.at("b", "x") == 20, "at label/col"
+assert di.iat(2, 0) == 30, "iat pos/col"
+# column accessor
+assert di.column("x").tolist() == [10, 20, 30], "column(name)"
+
+# ================================================================ DataFrame mutation
+var dm = tb.DataFrame({"a": [1, 2, 3]}, columns=["a"])
+dm["b"] = [10, 20, 30]
+assert dm.columns == ["a", "b"], "new column appended"
+assert dm["b"].tolist() == [10, 20, 30], "new column values"
+dm["c"] = 99
+assert dm["c"].tolist() == [99, 99, 99], "scalar broadcast to a column"
+# Wrong length throws
+assert throws(Function(): return dm.__setitem__("d", [1, 2])), "new column wrong length throws"
+# assign returns a new copy (original unchanged)
+var orig = tb.DataFrame({"a": [1, 2]}, columns=["a"])
+var dnew = orig.assign("b", [9, 8])
+assert orig.columns == ["a"], "assign does not mutate the original"
+assert dnew.columns == ["a", "b"], "assign returns extended copy"
+
+# ================================================================ shape views, rename, drop
+var dr = tb.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]}, columns=["a", "b", "c"])
+assert dr.rename({"a": "A", "c": "C"}).columns == ["A", "b", "C"], "rename multiple"
+assert dr.rename({"a": "A"}).columns == ["A", "b", "c"], "rename single"
+assert dr.drop(["b"]).columns == ["a", "c"], "drop removes column"
+# Slice & head/tail
+var dh = tb.DataFrame({"x": [1, 2, 3, 4, 5]}, columns=["x"])
+assert dh.head(2)["x"].tolist() == [1, 2], "head(2)"
+assert dh.tail(2)["x"].tolist() == [4, 5], "tail(2)"
+assert dh.slice(1, 4)["x"].tolist() == [2, 3, 4], "slice(start, stop)"
+assert dh.head(0).shape() == [0, 1], "head(0) keeps columns"
+assert dh.head(100).shape() == [5, 1], "head past end caps"
+
+# setindex/resetindex
+var ds = tb.DataFrame({"k": ["x", "y", "z"], "v": [1, 2, 3]}, columns=["k", "v"])
+var di2 = ds.setindex("k")
+assert di2.index == ["x", "y", "z"], "setindex moves column into index"
+assert "k" not in di2.columns, "setindex drops the source column"
+var dr2 = di2.resetindex()
+assert dr2.index == [0, 1, 2], "resetindex relabels 0..n"
+
+# copy is independent
+var dcopy = tb.DataFrame({"a": [1, 2, 3]}, columns=["a"])
+var dc2 = dcopy.copy()
+dc2["a"][0] = 999
+assert dcopy["a"][0] == 1, "copy is independent"
+
+# ================================================================ DataFrame aggregations
+var df2 = tb.DataFrame({"name": ["A", "B", "C", "D"], "age": [10, 20, 30, 40], "score": [1.0, 2.0, 3.0, 4.0]}, columns=["name", "age", "score"])
+var dsum = df2.sum()
+assert "name" not in dsum.index, "df.sum excludes non-numeric"
+assert "age" in dsum.index and dsum["age"] == 100, "df.sum age = 100"
+assert "score" in dsum.index and dsum["score"] == 10.0, "df.sum score"
+assert df2.mean()["age"] == 25.0, "df.mean age"
+assert df2.min()["age"] == 10, "df.min age"
+assert df2.max()["age"] == 40, "df.max age"
+# std on a known dataset
+var dstd = tb.DataFrame({"v": [2, 4, 4, 4, 5, 5, 7, 9]}, columns=["v"]).std()
+assert (dstd["v"] - (32.0 / 7.0) ** 0.5) ** 2 < 1e-15, "df.std matches sample stdev"
+# count is over EVERY column (incl. non-numeric)
+assert df2.count()["name"] == 4, "df.count includes non-numeric columns"
+# describe stats rows
+var desc = df2.describe()
+assert desc.index == ["count", "mean", "std", "min", "median", "max"], "describe stats"
+assert "name" not in desc.columns, "describe excludes non-numeric"
+# describe with only-string columns -> empty stat columns
+var dstr = tb.DataFrame({"k": ["a", "b", "c"]}, columns=["k"])
+assert dstr.describe().columns == [], "describe of all-strings -> no columns"
+
+# apply on a frame: fn(s) -> a scalar per column -> Series indexed by column
+var fap = tb.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}, columns=["a", "b"]).apply(Function(s): return s.sum())
+assert fap.tolist() == [6, 15], "apply on frame"
+
+# ================================================================ DataFrame sort / groupby
+var dg = tb.DataFrame({"k": ["B", "A", "B", "A", "C"], "v": [10, 20, 30, 40, 50]}, columns=["k", "v"])
+assert dg.sortvalues("v")["v"].tolist() == [10, 20, 30, 40, 50], "sortvalues asc"
+assert dg.sortvalues("v", ascending=False)["v"].tolist() == [50, 40, 30, 20, 10], "sortvalues desc"
+# sortvalues is stable: equal keys keep input order
+var stab = tb.DataFrame([[1, "a"], [1, "b"], [1, "c"], [2, "d"]], columns=["k", "v"])
+assert stab.sortvalues("k")["v"].tolist() == ["a", "b", "c", "d"], "sortvalues is stable on ties"
+
+# groupby: keys in first-seen order
+var g = dg.groupby("k")
+assert g.keys == ["B", "A", "C"], "groupby keys are in first-seen order"
+assert g.sum()["v"].tolist() == [40, 60, 50], "group sum"
+assert g.mean()["v"].tolist() == [20.0, 30.0, 50.0], "group mean"
+assert g.min()["v"].tolist() == [10, 20, 50], "group min"
+assert g.max()["v"].tolist() == [30, 40, 50], "group max"
+assert g.size().tolist() == [2, 2, 1], "group size"
+assert g.count()["v"].tolist() == [2, 2, 1], "group count"
+# every documented agg reducer
+assert g.agg({"v": "sum"})["v"].tolist() == [40, 60, 50], "agg sum"
+assert g.agg({"v": "mean"})["v"].tolist() == [20.0, 30.0, 50.0], "agg mean"
+assert g.agg({"v": "min"})["v"].tolist() == [10, 20, 50], "agg min"
+assert g.agg({"v": "max"})["v"].tolist() == [30, 40, 50], "agg max"
+assert g.agg({"v": "count"})["v"].tolist() == [2, 2, 1], "agg count"
+assert g.agg({"v": "median"})["v"].tolist() == [20, 30, 50], "agg median"
+# agg with std (sqrt(variance))
+var as_ = g.agg({"v": "std"})["v"].tolist()
+assert (as_[0] - (200.0) ** 0.5) ** 2 < 1e-12, "agg std"
+# Unknown reducer throws
+assert throws(Function(): return dg.groupby("k").agg({"v": "BOGUS"})), "unknown reducer throws"
+# groupby on a missing column throws
+assert throws(Function(): return dg.groupby("nope")), "groupby missing column throws"
+# group apply
+var gaps = dg.groupby("k").apply(Function(sub): return len(sub))
+assert gaps.tolist() == [2, 2, 1], "group apply returns Series indexed by key"
+# group reductions drop the by-column
+assert "k" not in dg.groupby("k").sum().columns, "group sum drops the by-column"
+# all-distinct keys
+var alldist = tb.DataFrame({"k": [1, 2, 3], "v": [9, 9, 9]}, columns=["k", "v"]).groupby("k").sum()
+assert len(alldist.index) == 3, "all-distinct keys produce one group each"
+
+# ================================================================ merge: inner / left / right / outer
+var L = tb.DataFrame([[1, "Ada"], [2, "Alan"], [3, "Grace"]], columns=["id", "name"])
+var R = tb.DataFrame([[1, "math"], [2, "cs"], [4, "navy"]], columns=["id", "dept"])
+
+var inner = tb.merge(L, R, on="id")
+assert inner.shape() == [2, 3], "inner: only matched rows"
+assert inner["name"].tolist() == ["Ada", "Alan"], "inner names"
+assert inner["dept"].tolist() == ["math", "cs"], "inner dept"
+# left keeps every left row
+var lj = tb.merge(L, R, on="id", how="left")
+assert lj.shape() == [3, 3], "left keeps every left row"
+assert lj["dept"].tolist() == ["math", "cs", None], "unmatched left -> None on right cols"
+# right keeps every right row
+var rj = tb.merge(L, R, on="id", how="right")
+assert rj.shape() == [3, 3], "right keeps every right row"
+assert rj["name"].tolist() == ["Ada", "Alan", None], "unmatched right -> None on left cols"
+assert rj["dept"].tolist() == ["math", "cs", "navy"], "right dept (incl. unmatched)"
+# outer keeps both
+var oj = tb.merge(L, R, on="id", how="outer")
+assert oj.shape() == [4, 3], "outer keeps both"
+# inner with no matches
+var nomatch = tb.merge(L, tb.DataFrame([[99, "x"]], columns=["id", "dept"]), on="id")
+assert nomatch.shape() == [0, 3], "inner with no matches is empty (but with columns)"
+# one-to-many
+var omleft = tb.DataFrame([[1, "a"], [2, "b"]], columns=["id", "x"])
+var omright = tb.DataFrame([[1, "p"], [1, "q"], [2, "r"]], columns=["id", "y"])
+assert len(tb.merge(omleft, omright, on="id")) == 3, "one-to-many expands rows"
+# merge on a missing key column throws
+assert throws(Function(): return tb.merge(L, R, on="missing")), "merge on a missing key throws"
+# merge via instance method
+assert L.merge(R, on="id", how="inner").shape() == [2, 3], "df.merge instance method"
+
+# ================================================================ concat
+var c1 = tb.DataFrame({"a": [1, 2]}, columns=["a"])
+var c2 = tb.DataFrame({"a": [3], "b": [9]}, columns=["a", "b"])
+var c3 = tb.concat([c1, c2])
+assert c3.columns == ["a", "b"], "concat column union"
+assert c3["a"].tolist() == [1, 2, 3], "concat values stacked"
+assert c3["b"].tolist() == [None, None, 9], "concat missing filled with None"
+# concat of an empty list of frames -> [0, 0]
+assert tb.concat([]).shape() == [0, 0], "concat([]) is empty"
+# concat with a single frame
+assert tb.concat([c1])["a"].tolist() == [1, 2], "concat([single]) preserves the frame"
+
+# ================================================================ CSV round-trip
+# readcsv: header=True (default) + type inference
+var df3 = tb.readcsv("name,age,score\nAda,36,9.5\nAlan,41,8.0")
+assert df3.columns == ["name", "age", "score"], "readcsv header columns"
+assert type(df3["age"][0]) == "Integer", "infer Integer"
+assert type(df3["score"][0]) == "Float", "infer Float"
+assert type(df3["name"][0]) == "String", "keep String"
+# Boolean inference
+var dfb = tb.readcsv("a\nTrue\nFalse\ntrue\nfalse")
+assert dfb["a"].tolist() == [True, False, True, False], "infer Bool (case-insensitive)"
+# None / empty cell -> None
+var dfm = tb.readcsv("a,b\n1,\n,2")
+assert dfm["a"].tolist() == [1, None], "empty cell -> None (col a)"
+assert dfm["b"].tolist() == [None, 2], "empty cell -> None (col b)"
+# readcsv with header=False
+var dfh = tb.readcsv("1,2\n3,4", header=False)
+assert dfh.columns == ["col0", "col1"], "readcsv header=False gets default columns"
+# readcsv with infer=False keeps everything as String
+var dfn = tb.readcsv("a,b\n1,2.5", infer=False)
+assert type(dfn["a"][0]) == "String", "infer=False keeps String"
+assert dfn["a"][0] == "1", "infer=False preserves text"
+# readcsv corner inputs
+assert tb.readcsv("").shape() == [0, 0], "readcsv empty"
+assert tb.readcsv("a,b,c").shape() == [0, 3], "readcsv header-only: columns, no rows"
+# tocsv round-trip with quoted comma
+var dq = tb.DataFrame([["hello, world", "x"]], columns=["a", "b"])
+var roundtrip = tb.readcsv(dq.tocsv())
+assert roundtrip["a"].tolist() == ["hello, world"], "CSV round-trip preserves embedded commas via quoting"
+# embedded double-quote
+var deq = tb.DataFrame([["he said \"hi\"", 1]], columns=["msg", "n"])
+assert tb.readcsv(deq.tocsv())["msg"].tolist() == ["he said \"hi\""], "round-trip preserves embedded quotes"
+
+# DataFrame None -> "" in tocsv (the row gets an empty cell, which renders as a bare comma-less line
+# of length 0 for a one-column frame)
+var dfn2 = tb.DataFrame({"a": [1, None]}, columns=["a"])
+var csvout = dfn2.tocsv()
+var lines = csvout.split("\n")
+assert lines[0] == "a", "tocsv first line is header"
+assert lines[1] == "1", "tocsv row 1"
+assert lines[2] == "", "None renders as an empty field in tocsv"
+
+# ================================================================ DataFrame missing-data handling
+var dfx = tb.DataFrame({"a": [1, None, 3], "b": [None, 5, 6]}, columns=["a", "b"])
+assert dfx.dropna().shape() == [1, 2], "dropna keeps complete rows"
+assert dfx.dropna()["a"].tolist() == [3], "dropna leaves complete row"
+assert dfx.fillna(0).todict() == {"a": [1, 0, 3], "b": [0, 5, 6]}, "fillna replaces"
+# fillna with a non-zero default
+assert dfx.fillna(-1)["b"].tolist() == [-1, 5, 6], "fillna with -1"
+# fillna(None) is a no-op (None is itself missing)
+assert dfx.fillna(None)["a"].tolist() == [1, None, 3], "fillna(None) is a no-op"
+
+# ================================================================ todict / torows / iterrows
+var dft = tb.DataFrame({"a": [1, 2], "b": [3, 4]}, columns=["a", "b"])
+assert dft.todict() == {"a": [1, 2], "b": [3, 4]}, "todict"
+assert dft.torows() == [{"a": 1, "b": 3}, {"a": 2, "b": 4}], "torows"
+var pairs = dft.iterrows()
+assert len(pairs) == 2, "iterrows pair count"
+assert pairs[0][0] == 0 and pairs[1][0] == 1, "iterrows yields [index, row]"
+
+# ================================================================ FUZZ (oracles vs implementation)
+var trial = 0
+while trial < 200:
+    var n = rng.randint(1, 25)
+    var keys = []
+    var vals = []
+    var i = 0
+    while i < n:
+        keys.append("g" + String(rng.randint(0, 4)))
+        vals.append(rng.randint(0, 100))
+        i = i + 1
+    var fdf = tb.DataFrame({"k": keys, "v": vals}, columns=["k", "v"])
+    var gsum = fdf.groupby("k").sum()
+    # oracle
+    var osum = {}
+    var ocount = {}
+    i = 0
+    while i < n:
+        osum[keys[i]] = osum.get(keys[i], 0) + vals[i]
+        ocount[keys[i]] = ocount.get(keys[i], 0) + 1
+        i = i + 1
+    var ki = 0
+    while ki < len(gsum.index):
+        var key = gsum.index[ki]
+        assert gsum["v"][ki] == osum[key], "fuzz groupby sum"
+        ki = ki + 1
+    var gcount = fdf.groupby("k").count()
+    ki = 0
+    while ki < len(gcount.index):
+        assert gcount["v"][ki] == ocount[gcount.index[ki]], "fuzz groupby count"
+        ki = ki + 1
+    # boolean masking
+    var thresh = rng.randint(0, 100)
+    var mask = fdf[fdf["v"] > thresh]["v"].tolist()
+    var expected = []
+    i = 0
+    while i < n:
+        if vals[i] > thresh:
+            expected.append(vals[i])
+        i = i + 1
+    assert mask == expected, "fuzz boolean mask"
+    trial = trial + 1
+
+# Fuzz: merge inner row count equals the join-cardinality oracle
+trial = 0
+while trial < 100:
+    var nL = rng.randint(1, 10)
+    var lids = []
+    var i2 = 0
+    while i2 < nL:
+        lids.append(rng.randint(0, 5))
+        i2 = i2 + 1
+    var nR = rng.randint(1, 10)
+    var rids = []
+    i2 = 0
+    while i2 < nR:
+        rids.append(rng.randint(0, 5))
+        i2 = i2 + 1
+    var lf = tb.DataFrame({"id": lids, "x": lids}, columns=["id", "x"])
+    var rf = tb.DataFrame({"id": rids, "y": rids}, columns=["id", "y"])
+    var inn = tb.merge(lf, rf, on="id")
+    var rcount = {}
+    var k = 0
+    while k < nR:
+        rcount[rids[k]] = rcount.get(rids[k], 0) + 1
+        k = k + 1
+    var expect = 0
+    k = 0
+    while k < nL:
+        expect = expect + rcount.get(lids[k], 0)
+        k = k + 1
+    assert len(inn) == expect, "fuzz inner merge cardinality"
+    # outer >= inner; left >= inner; right >= inner
+    assert len(tb.merge(lf, rf, on="id", how="left")) >= len(inn), "left merge >= inner"
+    assert len(tb.merge(lf, rf, on="id", how="right")) >= len(inn), "right merge >= inner"
+    assert len(tb.merge(lf, rf, on="id", how="outer")) >= len(inn), "outer merge >= inner"
+    trial = trial + 1
+
+io.print("OK audit-tabular")

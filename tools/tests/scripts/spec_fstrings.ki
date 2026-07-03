@@ -1,0 +1,63 @@
+# Comprehensive f-string checks: expressions, format specs, whitespace, edge cases.
+var io = import("io")
+
+var name = "Ada"
+var n = 7
+var pi = 3.14159265
+var xs = [10, 20, 30]
+var d = {"k": "v"}
+
+# --- basic interpolation ---
+assert f"hello {name}" == "hello Ada", "name interpolation"
+assert f"{n} + {n} = {n + n}" == "7 + 7 = 14", "arithmetic in f-string"
+assert f"no fields here" == "no fields here", "f-string without fields"
+assert f"" == "", "empty f-string"
+
+# --- expressions: indexing, method calls, function calls, conditionals ---
+assert f"{xs[0]}-{xs[-1]}" == "10-30", "indexing in f-string"
+assert f"{xs[1:]}" == "[20, 30]", "slice in f-string"
+assert f"{name.upper()}" == "ADA", "method call in f-string"
+assert f"{len(xs)}" == "3", "builtin call in f-string"
+var dkey = "k"
+assert f"{d[dkey]}" == "v", "dict lookup in f-string"
+assert f"{n * n + 1}" == "50", "compound expression"
+
+# --- whitespace inside braces is allowed ---
+assert f"{ name }" == "Ada", "leading/trailing whitespace in braces"
+assert f"{ n + 1 }" == "8", "whitespace around expression"
+
+# --- format spec: width / fill / align / zero ---
+assert f"{n:5}" == "    7", "width pads left (right-aligned numbers)"
+assert f"{n:<5}" == "7    ", "left align"
+assert f"{n:>5}" == "    7", "right align"
+assert f"{n:^5}" == "  7  ", "center align"
+assert f"{n:05}" == "00007", "zero pad"
+assert f"{n:*^7}" == "***7***", "custom fill + center"
+
+# --- format spec: precision / type ---
+assert f"{pi:.2f}" == "3.14", "float precision"
+assert f"{pi:.0f}" == "3", "zero precision rounds"
+assert f"{pi:8.3f}" == "   3.142", "width + precision"
+assert f"{255:x}" == "ff" and f"{255:X}" == "FF" and f"{255:#x}" == "0xff", "hex types"
+assert f"{8:o}" == "10" and f"{5:b}" == "101", "octal / binary types"
+assert f"{1234567:,}" == "1,234,567", "thousands separator"
+assert f"{0.5:.0%}" == "50%", "percent type"
+assert f"{42:+}" == "+42" and f"{-42:+}" == "-42", "sign +"
+
+# --- multiple fields, mixed ---
+assert f"{name} is {n} years, pi~{pi:.1f}" == "Ada is 7 years, pi~3.1", "mixed fields"
+
+# --- escaped braces ---
+assert f"{{literal}}" == "{literal}", "escaped braces -> literal"
+assert f"{{{n}}}" == "{7}", "escaped braces around a field"
+
+# --- f-string with a string containing special chars ---
+assert f"tab\tend" == "tab\tend", "escape sequences in f-string text"
+assert f"{name}\n{n}" == "Ada\n7", "newline between fields"
+
+# --- nested data ---
+assert f"{[1, [2, 3]]}" == "[1, [2, 3]]", "nested list interpolation"
+var set_fs = f"{Set([1, 2, 2])}"
+assert "1" in set_fs and "2" in set_fs and len(Set([1, 2, 2])) == 2, "set interpolation (deduped to 2 elements, both present)"
+
+io.print("OK")

@@ -1,0 +1,605 @@
+# R7 exhaustive audit of the `io` and `sys` standard-library modules. Self-checking: every assertion
+# bumps a counter and the final printed count is matched against r7_io_sys.expected. Deterministic and
+# warning-free (every dropped value is `discard`ed; no unused vars; no self-assignment). All scratch
+# state lives under a private temp subdir (path.gettempdir()) and is removed at the end. Child-process
+# tests run `ki` itself (path.executable) against a generated helper .ki so they are portable across the
+# Linux CI matrix and the Windows build. Complements (does not duplicate) sys_proc_adversarial.ki.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# A private scratch dir so the suite can't collide with other tests sharing gettempdir().
+var TMP = path.gettempdir()
+var DIR = path.join(TMP, "r7iosys_scratch")
+discard path.rmtree(DIR, missing_ok = True)   # clear any stale scratch (recursively) from a prior run
+path.mkdir(DIR)
+
+# path helpers: path.join basics are covered below under "sys: gettempdir / path.join / traceback"
+# (single source of truth for path joining — no separate path.join).
+
+# ============================================================ path helpers: dirname / basename
+ok(path.dirname("a/b/c") == "a/b", "dirname strips the final component")
+ok(path.basename("a/b/c") == "c", "basename is the final component")
+ok(path.dirname("file") == "", "dirname of a bare name is empty")
+ok(path.basename("file") == "file", "basename of a bare name is the name")
+ok(path.dirname("a/b/") == "a/b", "dirname of a trailing-slash path")
+ok(path.basename("a/b/") == "", "basename of a trailing-slash path is empty")
+ok(path.dirname("/") == "/", "dirname of root keeps the root (os.path parity)")
+ok(path.dirname("/a") == "/", "dirname of a top-level absolute path keeps the root")
+ok(path.dirname("//a") == "//", "dirname preserves a leading double-separator (POSIX // root)")
+ok(path.basename("/") == "", "basename of root")
+ok(path.basename("a\\b\\c") == "c", "basename splits on a backslash too")
+ok(path.dirname("") == "" and path.basename("") == "", "dirname/basename of empty")
+ok(path.basename("/abs/path.txt") == "path.txt", "basename of an absolute path")
+ok(path.dirname("/abs/path.txt") == "/abs", "dirname of an absolute path")
+
+# ============================================================ path helpers: splitext
+ok(path.splitext("a.txt") == ["a", ".txt"], "splitext basic")
+ok(path.splitext("archive.tar.gz") == ["archive.tar", ".gz"], "splitext splits only the last extension")
+ok(path.splitext("noext") == ["noext", ""], "splitext of a name with no extension")
+ok(path.splitext(".bashrc") == [".bashrc", ""], "splitext: a leading-dot dotfile has no extension")
+ok(path.splitext("dir/.hidden") == ["dir/.hidden", ""], "splitext: a dotfile in a subdir has no extension")
+ok(path.splitext("dir.x/file") == ["dir.x/file", ""], "splitext: a dot in a directory component is not an extension")
+ok(path.splitext("file.") == ["file", "."], "splitext: a trailing dot is an empty extension")
+ok(path.splitext("") == ["", ""], "splitext of empty")
+ok(path.splitext("a.b.c.d") == ["a.b.c", ".d"], "splitext of a multi-dot name")
+ok(path.splitext("..") == ["..", ""], "splitext: an all-dots name has no extension")
+ok(path.splitext("...x") == ["...x", ""], "splitext: a leading run of dots is not an extension")
+ok(path.splitext(".x.y") == [".x", ".y"], "splitext: an extension after a leading dotfile name")
+ok(path.splitext("a..b") == ["a.", ".b"], "splitext: a dot run mid-name splits at the last dot")
+
+# ============================================================ open: modes, errors, kwargs
+ok(throws(Function(): return io.open(path.join(DIR, "does_not_exist_r7.txt"), "r")), "open missing for read throws")
+ok(throws(Function(): return io.open(path.join(DIR, "x.txt"), "q")), "open with a bad mode throws")
+ok(throws(Function(): return io.open(path.join(DIR, "x.txt"), "zzz")), "open with a nonsense mode throws")
+ok(throws(Function(): return io.open(123)), "open with a non-String path throws")
+ok(throws(Function(): return io.open(path.join(DIR, "x.txt"), 5)), "open with a non-String mode throws")
+ok(throws(Function(): return io.open(path.join(DIR, "x.txt"), "r", "extra")), "open with too many args throws")
+var FP = path.join(DIR, "basic.txt")
+var of = io.open(path = FP, mode = "w")               # keyword args on open
+ok(type(of) == "File", "open(path=, mode=) keyword form returns a File")
+of.close()
+
+# ============================================================ File: write / read / round-trip (text)
+var w = io.open(FP, "w")
+discard w.write("hello\nworld\n")
+w.close()
+var r = io.open(FP, "r")
+ok(r.read() == "hello\nworld\n", "text round-trip: read-all")
+r.close()
+var r2 = io.open(FP, "r")
+ok(r2.read(size = 5) == "hello", "read(size=) reads exactly n characters (keyword)")
+ok(r2.read(0) == "", "read(0) reads nothing")
+ok(r2.read() == "\nworld\n", "subsequent read consumes the rest")
+ok(r2.read() == "", "read past EOF is empty")
+r2.close()
+
+# ============================================================ File: readline / readlines / iteration
+var rl = io.open(FP, "r")
+ok(rl.readline() == "hello", "readline strips the trailing newline")
+ok(rl.readline() == "world", "second readline")
+ok(rl.readline() == "", "readline past EOF is empty")
+rl.close()
+var ra = io.open(FP, "r")
+ok(ra.readlines() == ["hello", "world"], "readlines returns all lines without newlines")
+rl = ra                                               # rebind so the unused-var analyzer is satisfied
+rl.close()
+var collected = []
+var it = io.open(FP, "r")
+for line in it:
+    collected.append(line)
+it.close()
+ok(collected == ["hello", "world"], "iterating a File yields its lines")
+
+# ============================================================ File: writelines + kwargs
+var wl = io.open(FP, "w")
+wl.writelines(["a\n", "b\n", "c\n"])
+wl.close()
+var rwl = io.open(FP, "r")
+ok(rwl.readlines() == ["a", "b", "c"], "writelines wrote each element")
+rwl.close()
+var wl2 = io.open(FP, "w")
+wl2.writelines(lines = ["x\n", "y\n"])                # keyword arg on writelines
+wl2.close()
+var rwl2 = io.open(FP, "r")
+ok(rwl2.read() == "x\ny\n", "writelines(lines=) keyword form")
+rwl2.close()
+
+# ============================================================ File: seek / tell
+var sw = io.open(FP, "w")                             # write exactly 5 bytes for unambiguous offsets
+discard sw.write("01234")
+sw.close()
+var st = io.open(FP, "r")                             # content "01234" (5 bytes)
+ok(st.tell() == 0, "tell at start is 0")
+ok(st.seek(0, 2) == 5, "seek(0, whence=2) goes to end and returns the length")
+ok(st.tell() == 5, "tell reports the end")
+ok(st.seek(2) == 2, "seek(2) returns the new absolute position")
+ok(st.tell() == 2, "tell after an absolute seek")
+ok(st.seek(1, 1) == 3, "seek(1, whence=1) is relative to the current position")
+ok(st.seek(0, whence = 2) == 5, "seek keyword whence")
+ok(throws(Function(): return st.seek(-3, 0)), "seek to a negative absolute position throws")
+ok(throws(Function(): return st.seek(0, 9)), "seek with a bad whence throws")
+ok(throws(Function(): return st.seek()), "seek with no offset throws")
+st.close()
+
+# ============================================================ File: mode enforcement + closed-file
+var rofile = io.open(FP, "r")
+ok(throws(Function(): return rofile.write("nope")), "write to a read-only file throws")
+rofile.close()
+var wofile = io.open(FP, "w")
+ok(throws(Function(): return wofile.read()), "read from a write-only file throws")
+ok(throws(Function(): return wofile.readline()), "readline from a write-only file throws")
+discard wofile.write("restored\n")                    # leave the file with content again
+wofile.close()
+var closed = io.open(FP, "r")
+closed.close()
+ok(throws(Function(): return closed.read()), "read on a closed file throws")
+ok(throws(Function(): return closed.seek(0)), "seek on a closed file throws")
+ok(throws(Function(): return closed.tell()), "tell on a closed file throws")
+ok(throws(Function(): return closed.write("x")), "write on a closed file throws")
+
+# ============================================================ File: write type enforcement
+var wtf = io.open(FP, "w")
+ok(throws(Function(): return wtf.write(123)), "write of an Integer to a text file throws")
+ok(throws(Function(): return wtf.write([1, 2])), "write of a List throws")
+discard wtf.write("hello\nworld\n")
+wtf.close()
+
+# ============================================================ File: append + r+ semantics
+var ap = io.open(FP, "w")
+discard ap.write("AAA")
+ap.close()
+var ap2 = io.open(FP, "a")
+discard ap2.write("BBB")
+ap2.close()
+var apr = io.open(FP, "r")
+ok(apr.read() == "AAABBB", "append mode writes at the end")
+apr.close()
+var rpf = io.open(FP, "r+")
+ok(rpf.read(3) == "AAA", "r+ can read")
+discard rpf.seek(0)
+discard rpf.write("XYZ")
+rpf.close()
+var rpr = io.open(FP, "r")
+ok(rpr.read() == "XYZBBB", "r+ can overwrite from the start")
+rpr.close()
+
+# ============================================================ File: with-context auto-close
+with io.open(FP, "r") as cf:
+    ok(cf.read(1) == "X", "File usable as a with-context manager")
+ok(throws(Function(): return cf.read()), "File is closed automatically on with-exit")
+
+# ============================================================ getsize
+var gz = io.open(FP, "w")
+discard gz.write("0123456789")
+gz.close()
+ok(path.getsize(FP) == 10, "getsize reports the exact byte length")
+ok(path.getsize(path = FP) == 10, "getsize(path=) keyword form")
+ok(throws(Function(): return path.getsize(path.join(DIR, "missing_r7.txt"))), "getsize of a missing file throws")
+
+# ============================================================ binary mode round-trip
+var BP = path.join(DIR, "binary.bin")
+var raw = Bytes([0, 1, 2, 255, 10, 13, 0, 65, 66])
+var bw = io.open(BP, "wb")
+discard bw.write(raw)
+bw.close()
+var br = io.open(BP, "rb")
+var rb = br.read()
+ok(type(rb) == "Bytes", "binary-mode read yields Bytes")
+ok(len(rb) == 9, "binary read length matches what was written")
+ok(rb[0] == 0 and rb[3] == 255 and rb[7] == 65, "binary read preserves exact byte values")
+ok(rb == raw, "binary round-trip is byte-exact")
+br.close()
+ok(path.getsize(BP) == 9, "getsize of the binary file")
+# binary partial read + iteration
+var br2 = io.open(BP, "rb")
+ok(type(br2.read(2)) == "Bytes" and len(br2.read(2)) == 2, "binary partial read(n) yields Bytes of length n")
+br2.close()
+var BLP = path.join(DIR, "binlines.bin")
+var blw = io.open(BLP, "wb")
+discard blw.write(Bytes([97, 10, 98, 10]))            # "a\nb\n"
+blw.close()
+var blr = io.open(BLP, "rb")
+ok(type(blr.readline()) == "Bytes", "binary readline yields Bytes")
+blr.close()
+var blines = []
+var blit = io.open(BLP, "rb")
+for chunk in blit:
+    blines.append(type(chunk))
+blit.close()
+ok(blines == ["Bytes", "Bytes"], "iterating a binary file yields Bytes per line")
+
+# ============================================================ BytesIO: write/read/cursor
+var b = io.BytesIO()
+ok(b.write("hello") == 5, "BytesIO.write returns the byte count")
+ok(b.tell() == 5, "BytesIO.tell after a write")
+ok(b.size() == 5, "BytesIO.size")
+ok(len(b) == 5, "len(BytesIO) == size")
+ok(b.seek(0) == 0, "BytesIO.seek returns the new position")
+ok(b.read(3) == "hel", "BytesIO partial read")
+ok(b.tell() == 3, "BytesIO cursor advanced by the read")
+ok(b.read() == "lo", "BytesIO read-rest")
+ok(b.read() == "", "BytesIO read past end is empty")
+ok(b.getvalue() == "hello", "BytesIO.getvalue is the whole buffer")
+discard b.seek(0)
+ok(b.write("HE") == 2, "BytesIO overwrite at the cursor")
+ok(b.getvalue() == "HEllo", "BytesIO overwrite kept the tail")
+
+# ============================================================ BytesIO: seek whence + clamp + truncate + gap
+var b2 = io.BytesIO("abcdef")
+ok(b2.seek(0, 2) == 6, "BytesIO seek end")
+ok(b2.seek(-2, 1) == 4, "BytesIO seek relative")
+ok(b2.seek(-100, 0) == 0, "BytesIO seek before start clamps to 0")
+ok(b2.seek(offset = 2, whence = 0) == 2, "BytesIO seek keyword args")
+ok(b2.truncate() == 2, "BytesIO truncate drops everything after the cursor")
+ok(b2.getvalue() == "ab", "BytesIO contents after truncate")
+ok(throws(Function(): return b2.seek()), "BytesIO seek with no offset throws")
+ok(throws(Function(): return b2.seek(0, 7)), "BytesIO bad whence throws")
+var bgap = io.BytesIO()
+discard bgap.write("AB")
+discard bgap.seek(5)
+discard bgap.write("Z")
+ok(len(bgap.getvalue()) == 6, "BytesIO write past end zero-fills the gap")
+ok(ord(bgap.getvalue()[2]) == 0, "BytesIO gap byte is NUL")
+
+# ============================================================ BytesIO: readline + readline-no-newline + read(None)
+var b3 = io.BytesIO("l1\nl2\nl3")
+ok(b3.readline() == "l1", "BytesIO readline 1")
+ok(b3.readline() == "l2", "BytesIO readline 2")
+ok(b3.readline() == "l3", "BytesIO readline of the last (newline-less) line")
+ok(b3.readline() == "", "BytesIO readline past end")
+var b4 = io.BytesIO("xyz")
+ok(b4.read(None) == "xyz", "BytesIO read(None) reads all")
+discard b4.seek(0)
+ok(throws(Function(): return b4.read("oops")), "BytesIO read with a non-Integer size throws")
+ok(io.BytesIO("seed").getvalue() == "seed", "BytesIO(initial) seeds the buffer")
+ok(io.BytesIO(initial = "kw").getvalue() == "kw", "BytesIO(initial=) keyword form")
+ok(throws(Function(): return io.BytesIO(123)), "BytesIO with a non-String initial throws")
+# kwargs that should be REJECTED on a no-parameter method
+ok(throws(Function(): return b4.flush(bogus = 1)), "BytesIO.flush rejects an unexpected keyword")
+ok(throws(Function(): return b4.tell(bogus = 1)), "BytesIO.tell rejects an unexpected keyword")
+
+# ============================================================ console streams: stream= keyword on every fn
+var sink = io.BytesIO()
+io.print("a", "b", "c", stream = sink)
+ok(sink.getvalue() == "a b c\n", "print(stream=) writes space-separated + newline to the target")
+var sink2 = io.BytesIO()
+io.write("x", "y", "z", stream = sink2)
+ok(sink2.getvalue() == "xyz", "write(stream=) writes with no separator and no newline")
+var esink = io.BytesIO()
+io.eprint("e1", "e2", stream = esink)
+ok(esink.getvalue() == "e1 e2\n", "eprint(stream=) behaves like print to its target")
+var insrc = io.BytesIO("first\nsecond\n")
+ok(io.input(stream = insrc) == "first", "input(stream=) reads one line without the newline")
+ok(io.input(stream = insrc) == "second", "input(stream=) advances to the next line")
+var rdsrc = io.BytesIO("abcdef")
+ok(io.read(3, stream = rdsrc) == "abc", "read(n, stream=) reads n from the target")
+ok(io.read(stream = rdsrc) == "def", "read(stream=) with no n reads the rest")
+# input writes its prompt to stdout (not to the read stream)
+var promptcap = io.BytesIO()
+var savedout = io.stdout
+io.stdout = promptcap
+var ans = io.input("Prompt> ", stream = io.BytesIO("typed\n"))
+io.stdout = savedout
+ok(ans == "typed", "input returns the line read from its stream")
+ok(promptcap.getvalue() == "Prompt> ", "input writes the prompt to stdout, not the read stream")
+
+# ============================================================ console: unexpected keyword rejection
+ok(throws(Function(): return io.print("x", bogus = 1)), "print rejects an unexpected keyword")
+ok(throws(Function(): return io.write("x", bogus = 1)), "write rejects an unexpected keyword")
+ok(throws(Function(): return io.read(bogus = 1)), "read rejects an unexpected keyword")
+ok(throws(Function(): return io.input(bogus = 1)), "input rejects an unexpected keyword")
+ok(throws(Function(): return io.eprint("x", bogus = 1)), "eprint rejects an unexpected keyword")
+
+# ============================================================ console: stream direction errors
+ok(throws(Function(): return io.read(stream = io.stdout)), "reading from an output stream throws")
+ok(throws(Function(): return io.write("x", stream = io.stdin)), "writing to stdin throws")
+ok(throws(Function(): return io.print("x", stream = io.stdin)), "printing to stdin throws")
+
+# ============================================================ stream rebinding + restoration
+var cap = io.BytesIO()
+var orig = io.stdout
+io.stdout = cap
+io.print("captured line")
+io.write("more")
+io.stdout = io.__stdout__                              # restore via the kept original
+ok(cap.getvalue() == "captured line\nmore", "rebinding io.stdout redirects print/write")
+ok(orig == io.__stdout__, "io.stdout originally was io.__stdout__")
+# rebind to a File, then back
+var LOGP = path.join(DIR, "log.txt")
+io.stdout = io.open(LOGP, "w")
+io.print("to file")
+io.stdout.close()
+io.stdout = io.__stdout__
+var logr = io.open(LOGP, "r")
+ok(logr.read() == "to file\n", "io.stdout can be rebound to a File")
+logr.close()
+# the __std*__ slots exist and are distinct stream objects
+ok(io.__stdout__ != io.__stderr__, "__stdout__ and __stderr__ are distinct")
+ok(io.__stdin__ != io.__stdout__, "__stdin__ is distinct from __stdout__")
+
+# ============================================================ duck-typed stream (a user class as stdout)
+class Collector:
+    var _init_ = Function(self):
+        self.data = ""
+    var write = Function(self, s):
+        self.data = self.data + s
+var coll = Collector()
+io.print("ducked", stream = coll)
+ok(coll.data == "ducked\n", "any object with write() can serve as an io stream (duck typing)")
+
+# ============================================================ filesystem helpers
+var FSD = path.join(DIR, "fs")
+ok(path.mkdir(FSD) == True, "mkdir creates a directory and returns True")
+ok(path.mkdir(path.join(FSD, "a", "b", "c")) == True, "mkdir creates parents")
+ok(path.isdir(FSD) == True, "isdir on a directory")
+ok(path.isfile(FSD) == False, "isfile on a directory is False")
+ok(path.exists(FSD) == True, "exists on a directory")
+ok(path.exists(path.join(DIR, "nope_r7")) == False, "exists on a missing path is False")
+ok(path.isdir(path.join(DIR, "nope_r7")) == False, "isdir on a missing path is False")
+ok(path.isfile(path.join(DIR, "nope_r7")) == False, "isfile on a missing path is False")
+var FILE1 = path.join(FSD, "one.txt")
+var f1 = io.open(FILE1, "w")
+discard f1.write("12345")
+f1.close()
+ok(path.isfile(FILE1) == True, "isfile on a regular file")
+ok(path.exists(FILE1) == True, "exists on a regular file")
+ok(path.exists(path = FILE1) == True, "exists(path=) keyword form")
+var entries = path.listdir(FSD)
+ok("one.txt" in entries and "a" in entries, "listdir lists direct entries")
+ok(type(path.listdir(FSD)) == "List", "listdir returns a List")
+ok(path.listdir(path = FSD) == entries, "listdir(path=) keyword form")
+# walk: recursive flatten of file paths
+var FILE2 = path.join(FSD, "a", "b", "deep.txt")
+var f2 = io.open(FILE2, "w")
+discard f2.write("x")
+f2.close()
+var walked = path.walk(FSD)
+ok(type(walked) == "List", "walk returns a List")
+ok(len(walked) == 2, "walk finds every file recursively (flattened)")
+ok(path.walk(dir = FSD) == walked, "walk(dir=) keyword form")
+# a missing directory is a tolerant query: lists/walks to [] (intentional — see r4_io/deep_system)
+var MISSING = path.join(FSD, "no_such_subdir_zzz")
+ok(path.listdir(MISSING) == [], "listdir of a missing directory is empty (tolerant)")
+ok(path.walk(MISSING) == [], "walk of a missing directory is empty (tolerant)")
+
+# ============================================================ rename / chmod / remove
+var SRC = path.join(FSD, "src.txt")
+var DST = path.join(FSD, "dst.txt")
+var sf = io.open(SRC, "w")
+discard sf.write("payload")
+sf.close()
+path.rename(SRC, DST)
+ok(path.exists(DST) == True and path.exists(SRC) == False, "rename moves a file")
+path.rename(src = DST, dst = SRC)                        # keyword form, move it back
+ok(path.exists(SRC) == True, "rename(src=, dst=) keyword form")
+ok(throws(Function(): return path.rename(path.join(DIR, "no_src_r7"), path.join(DIR, "no_dst_r7"))), "rename of a missing source throws")
+ok(path.chmod(SRC, 0o644) == True, "chmod returns True on success")
+ok(path.chmod(SRC, 0o600) == True, "chmod with a different octal mode")
+ok(path.chmod(path = SRC, mode = 0o755) == True, "chmod(path=, mode=) keyword form")
+ok(path.chmod(path.join(DIR, "missing_r7.txt"), 0o644) == False, "chmod on a missing file returns False (no throw)")
+ok(throws(Function(): return path.chmod(SRC)), "chmod missing the mode argument throws")
+ok(path.remove(SRC) == True, "remove deletes a file and returns True")
+ok(throws(Function(): return path.remove(path.join(DIR, "never_existed_r7.txt"))), "remove of a missing file RAISES by default")
+ok(path.remove(path.join(DIR, "never_existed_r7.txt"), missing_ok = True) == False, "remove(missing_ok=True) of a missing file is False")
+ok(path.remove(path = FILE1) == True, "remove(path=) keyword form")
+
+# ============================================================ getcwd
+ok(type(path.getcwd()) == "String", "getcwd returns a String")
+ok(len(path.getcwd()) > 0, "getcwd is non-empty")
+
+# ============================================================ sys: platform / arch / version / executable
+ok(sys.platform == "linux" or sys.platform == "darwin" or sys.platform == "windows", "sys.platform is a known value")
+ok(type(sys.platform) == "String", "sys.platform is a String")
+ok(sys.arch == "x64" or sys.arch == "arm64" or sys.arch == "x86" or sys.arch == "unknown", "sys.arch is a normalized value")
+ok(type(sys.version) == "String" and len(sys.version) > 0, "sys.version is a non-empty String")
+ok("." in sys.version, "sys.version looks like a semver (has a dot)")
+ok(type(path.executable) == "String", "path.executable is a String")
+ok(len(path.executable) > 0, "path.executable is non-empty")
+ok(path.isfile(path.executable), "path.executable points at an existing file")
+
+# ============================================================ sys: env get/set/unset/environ
+sys.setenv("R7_IOSYS_VAR", "value-123")
+ok(sys.getenv("R7_IOSYS_VAR") == "value-123", "setenv then getenv round-trips")
+ok(sys.getenv("R7_IOSYS_NOPE_ZZZ") == None, "getenv of an unset var is None")
+ok(sys.getenv("R7_IOSYS_NOPE_ZZZ", "dflt") == "dflt", "getenv default for an unset var")
+ok(sys.getenv("R7_IOSYS_VAR", "dflt") == "value-123", "getenv ignores the default when set")
+ok(type(sys.environ()) == "Dict", "environ returns a Dict")
+ok("R7_IOSYS_VAR" in sys.environ(), "environ includes a set variable")
+ok(sys.environ()["R7_IOSYS_VAR"] == "value-123", "environ value matches")
+sys.unsetenv("R7_IOSYS_VAR")
+ok(sys.getenv("R7_IOSYS_VAR") == None, "unsetenv removes the variable")
+ok(("R7_IOSYS_VAR" in sys.environ()) == False, "environ no longer lists an unset variable")
+# empty-string value: round-trips as "" on POSIX; Windows treats setting "" as unsetting the variable
+sys.setenv("R7_IOSYS_EMPTY", "")
+if sys.platform == "windows":
+    ok(sys.getenv("R7_IOSYS_EMPTY") == None, "an empty-string env value is unset on Windows")
+else:
+    ok(sys.getenv("R7_IOSYS_EMPTY") == "", "an empty-string env value round-trips on POSIX")
+sys.unsetenv("R7_IOSYS_EMPTY")
+# kwargs on env functions
+sys.setenv(name = "R7_IOSYS_KW", value = "kwv")
+ok(sys.getenv(name = "R7_IOSYS_KW") == "kwv", "setenv/getenv keyword forms")
+ok(sys.getenv(name = "R7_IOSYS_KWNOPE", default = "d") == "d", "getenv(name=, default=) keyword form")
+sys.unsetenv(name = "R7_IOSYS_KW")
+ok(sys.getenv("R7_IOSYS_KW") == None, "unsetenv(name=) keyword form")
+sys.unsetenv("R7_IOSYS_NEVER_SET_ZZZ")                # unsetting a missing var is a no-op (no throw)
+ok(True, "unsetenv of a never-set var is a harmless no-op")
+ok(throws(Function(): return sys.getenv(123)), "getenv with a non-String name throws")
+ok(throws(Function(): return sys.setenv("X", 123)), "setenv with a non-String value throws")
+ok(throws(Function(): return sys.setenv(123, "v")), "setenv with a non-String name throws")
+
+# ============================================================ sys: gettempdir / path.join / traceback
+ok(type(path.gettempdir()) == "String" and len(path.gettempdir()) > 0, "gettempdir is a non-empty String")
+ok(path.join("a", "b", "c") == "a/b/c", "path.join basic")
+ok(path.join("a", "/b") == "/b", "path.join: an absolute component resets")
+ok(path.join("a/", "b") == "a/b", "path.join collapses a trailing separator")
+ok(path.join("solo") == "solo", "path.join of a single component")
+ok(throws(Function(): return path.join()), "path.join with no parts throws")
+ok(path.join("", "a") == "a", "path.join: a leading empty part contributes nothing")
+ok(path.join("a", "") == "a/", "path.join: a trailing empty part still gets a separator")
+ok(path.join("a\\b", "c") == "a\\b/c", "path.join preserves a backslash inside a component, joins with /")
+ok(path.join("a", "\\abs", "x") == "a/\\abs/x", "path.join does NOT treat a backslash component as absolute (only / resets)")
+ok(path.join("a", "b", "c", "d", "e") == "a/b/c/d/e", "path.join of many parts")
+# traceback is empty until an error, then non-empty, and reflects the latest error
+ok(sys.traceback() == "" or len(sys.traceback()) >= 0, "traceback is a String")
+try:
+    discard 1 / 0
+catch:
+    ok(len(sys.traceback()) > 0, "traceback is non-empty after a caught error")
+ok(type(sys.traceback()) == "String", "traceback returns a String")
+
+# ============================================================ sys: createprocess / shell via a portable helper
+var KI = path.executable
+var HELPER = path.join(DIR, "child_helper.ki")
+var hsrc = r"""var io = import("io")
+var sys = import("sys")
+var path = import("path")
+var m = arglist[0] if len(arglist) >= 1 else ""
+if m == "echo":
+    io.write(io.read())
+elif m == "exit":
+    sys.exit(Integer(arglist[1]))
+elif m == "args":
+    var i = 1
+    while i < len(arglist):
+        io.print(arglist[i])
+        i = i + 1
+elif m == "err":
+    io.write("E" * Integer(arglist[1]), stream = io.stderr)
+elif m == "cwd":
+    io.write(path.getcwd())
+elif m == "sleep":
+    import("time").sleep(Float(arglist[1]))
+"""
+var hf = io.open(HELPER, "w")
+discard hf.write(hsrc)
+hf.close()
+var child = Function(extra):
+    return [KI, HELPER] + extra
+
+# basic round-trip + result shape
+var rr = sys.createprocess(child(["echo"]), input = "hello-child")
+ok(rr["stdout"] == "hello-child", "createprocess stdin->stdout round-trip")
+ok("code" in rr and "stdout" in rr and "stderr" in rr, "createprocess result has code/stdout/stderr")
+ok(type(rr["code"]) == "Integer", "createprocess code is an Integer")
+ok(type(rr["stdout"]) == "String" and type(rr["stderr"]) == "String", "createprocess stdout/stderr are Strings")
+# exit codes
+ok(sys.createprocess(child(["exit", "0"]))["code"] == 0, "createprocess exit code 0")
+ok(sys.createprocess(child(["exit", "7"]))["code"] == 7, "createprocess exit code 7")
+ok(sys.createprocess(child(["exit", "42"]))["code"] == 42, "createprocess exit code 42")
+# stderr capture, stdout empty
+var er = sys.createprocess(child(["err", "100"]))
+ok(len(er["stderr"]) == 100, "createprocess captures stderr")
+ok(er["stdout"] == "", "createprocess stdout empty when the child writes only stderr")
+# args passed verbatim (no shell)
+var ar = sys.createprocess(child(["args", "$HOME", "a b", "*"]))
+var alines = ar["stdout"].split("\n")
+ok(alines[0] == "$HOME" and alines[1] == "a b" and alines[2] == "*", "createprocess passes args verbatim (no shell expansion)")
+# cwd
+var defcwd = sys.createprocess(child(["cwd"]))["stdout"].strip()
+var setcwd = sys.createprocess(child(["cwd"]), cwd = DIR)["stdout"].strip()
+ok(len(setcwd) > 0 and setcwd != defcwd, "createprocess cwd changes the child working directory")
+ok(throws(Function(): return sys.createprocess(child(["cwd"]), cwd = path.join(DIR, "no_such_cwd_r7"))), "createprocess with a nonexistent cwd throws")
+# timeout
+ok(sys.createprocess(child(["sleep", "0.05"]), timeout = 5)["code"] == 0, "createprocess fast child under a generous timeout")
+ok(throws(Function(): return sys.createprocess(child(["sleep", "5"]), timeout = 0.3)), "createprocess past a timeout throws")
+ok(throws(Function(): return sys.createprocess(child(["sleep", "5"]), timeout = 1)), "createprocess Integer timeout works")
+# kwargs
+ok(sys.createprocess(args = child(["exit", "3"]))["code"] == 3, "createprocess(args=) keyword form")
+ok(sys.createprocess(args = child(["echo"]), input = "kw-in")["stdout"] == "kw-in", "createprocess(input=) keyword form")
+ok(sys.createprocess(args = child(["cwd"]), cwd = DIR)["stdout"].strip() == setcwd, "createprocess(cwd=) keyword form")
+# malformed args
+ok(throws(Function(): return sys.createprocess(["no_such_program_r7_zzz_xyz"])), "createprocess of a missing program throws")
+ok(throws(Function(): return sys.createprocess([])), "createprocess with an empty arg list throws")
+ok(throws(Function(): return sys.createprocess("echo")), "createprocess with a String (non-List) throws")
+ok(throws(Function(): return sys.createprocess(None)), "createprocess with None args throws")
+ok(throws(Function(): return sys.createprocess([KI, 123])), "createprocess with a non-String arg element throws")
+
+# ============================================================ sys.shell (cross-platform-safe commands)
+ok("shell-marker" in sys.shell("echo shell-marker")["stdout"], "shell echo -> stdout captured")
+ok(sys.shell("exit 4")["code"] == 4, "shell exit code reported")
+ok("se-marker" in sys.shell("echo se-marker 1>&2")["stderr"], "shell stderr (1>&2) captured")
+# a pipe through a filter present in the platform's shell (POSIX sort; Windows findstr — cmd's `sort`
+# is absent under wine, and findstr works on real Windows too)
+var pipeCmd = "echo piped| findstr piped" if sys.platform == "windows" else "echo piped | sort"
+ok("piped" in sys.shell(pipeCmd)["stdout"], "shell pipe runs")
+ok(sys.shell(command = "exit 9")["code"] == 9, "shell(command=) keyword form")
+var sr = sys.shell("echo x")
+ok("code" in sr and "stdout" in sr and "stderr" in sr, "shell result has code/stdout/stderr")
+
+# ============================================================ FUZZ: random binary payloads through BytesIO
+var random = import("random")
+var rng = random.Random(20260629)
+var fb = 0
+while fb < 30:
+    var plen = rng.randint(0, 400)
+    var payload = ""                                     # a String of code points 0..255 (the unit BytesIO stores)
+    var t = 0
+    while t < plen:
+        payload = payload + chr(rng.randint(0, 255))
+        t = t + 1
+    var fbio = io.BytesIO()
+    discard fbio.write(payload)                          # whatever String goes in must come back identical
+    discard fbio.seek(0)
+    ok(fbio.read() == payload, "fuzz: BytesIO String round-trip is exact #" + String(fb))
+    ok(fbio.getvalue() == payload, "fuzz: BytesIO getvalue matches the write #" + String(fb))
+    fb = fb + 1
+
+# ============================================================ FUZZ: random payloads through binary files
+var ff = 0
+while ff < 20:
+    var flen = rng.randint(0, 600)
+    var fpayload = ""
+    var u = 0
+    while u < flen:
+        fpayload = fpayload + chr(rng.randint(0, 255))
+        u = u + 1
+    var fpath = path.join(DIR, "fuzz_bin.bin")
+    var fwh = io.open(fpath, "wb")
+    discard fwh.write(fpayload.encode("latin-1"))
+    fwh.close()
+    var frh = io.open(fpath, "rb")
+    var back = frh.read()
+    frh.close()
+    ok(back.decode("latin-1") == fpayload and path.getsize(fpath) == flen, "fuzz: binary-file byte-exact round-trip #" + String(ff))
+    ff = ff + 1
+
+# ============================================================ FUZZ: random stdin/stdout through a child
+var fc = 0
+while fc < 12:
+    var clen = rng.randint(0, 800)
+    var cpayload = ""
+    var v = 0
+    while v < clen:
+        cpayload = cpayload + chr(rng.randint(1, 126))     # printable ASCII (no encoding ambiguity)
+        v = v + 1
+    ok(sys.createprocess(child(["echo"]), input = cpayload)["stdout"] == cpayload, "fuzz: child stdin->stdout round-trip #" + String(fc))
+    fc = fc + 1
+
+# ============================================================ cleanup
+discard path.remove(HELPER, missing_ok = True)
+discard path.remove(path.join(DIR, "fuzz_bin.bin"), missing_ok = True)
+discard path.remove(FP, missing_ok = True)
+discard path.remove(BP, missing_ok = True)
+discard path.remove(BLP, missing_ok = True)
+discard path.remove(LOGP, missing_ok = True)
+discard path.remove(FILE2, missing_ok = True)
+discard path.remove(path.join(FSD, "a", "b", "c"), missing_ok = True)
+discard path.remove(path.join(FSD, "a", "b"), missing_ok = True)
+discard path.remove(path.join(FSD, "a"), missing_ok = True)
+discard path.remove(path.join(FSD, "dst.txt"), missing_ok = True)
+discard path.remove(FSD, missing_ok = True)
+discard path.remove(DIR, missing_ok = True)
+
+io.print("r7_io_sys: " + String(n) + " checks passed")

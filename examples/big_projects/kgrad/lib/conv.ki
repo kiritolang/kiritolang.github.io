@@ -1,0 +1,127 @@
+# 2-D convolution, as a single fused autograd op (NCHW layout). Implemented with naive loops — it is
+# correctness-first and intentionally small (pure-Kirito math is slow), but its backward is exact and
+# gradient-checked. Demonstrates extending the autograd graph with a custom op + manual backward.
+
+var nd = import("ndarray")
+var ag = import("autograd")
+var nn = import("nn")
+
+# x: (N, Cin, H, W), w: (Cout, Cin, kH, kW), b: (Cout,). Returns (N, Cout, OH, OW).
+var conv2d = Function(x, w, b, stride, pad):
+    var xs = x.data.shape
+    var ws = w.data.shape
+    var N = xs[0]
+    var Cin = xs[1]
+    var H = xs[2]
+    var W = xs[3]
+    var Cout = ws[0]
+    var kH = ws[2]
+    var kW = ws[3]
+    var OH = (H + 2 * pad - kH) / stride + 1
+    OH = Integer(OH)
+    var OW = (W + 2 * pad - kW) / stride + 1
+    OW = Integer(OW)
+    var xc = x.data.contiguous().buf
+    var wc = w.data.contiguous().buf
+    var bc = b.data.contiguous().buf
+
+    # value at x[n,c,i,j] honoring zero padding
+    var xval = Function(n, c, i, j):
+        if i < 0 or j < 0 or i >= H or j >= W:
+            return 0.0
+        return xc[((n * Cin + c) * H + i) * W + j]
+
+    var out = nd.zeros([N, Cout, OH, OW]).buf
+    var n = 0
+    while n < N:
+        var co = 0
+        while co < Cout:
+            var oi = 0
+            while oi < OH:
+                var oj = 0
+                while oj < OW:
+                    var acc = bc[co]
+                    var ci = 0
+                    while ci < Cin:
+                        var ki = 0
+                        while ki < kH:
+                            var kj = 0
+                            while kj < kW:
+                                var iv = oi * stride - pad + ki
+                                var jv = oj * stride - pad + kj
+                                acc = acc + xval(n, ci, iv, jv) * wc[((co * Cin + ci) * kH + ki) * kW + kj]
+                                kj = kj + 1
+                            ki = ki + 1
+                        ci = ci + 1
+                    out[((n * Cout + co) * OH + oi) * OW + oj] = acc
+                    oj = oj + 1
+                oi = oi + 1
+            co = co + 1
+        n = n + 1
+    var out_nd = nd.from_flat(out, [N, Cout, OH, OW])
+
+    # backward closure over the result tensor
+    var result = ag.record(out_nd, [x, w, b], None)
+    var back = Function():
+        var go = result.grad.contiguous().buf      # (N,Cout,OH,OW)
+        var dx = nd.zeros(xs).buf
+        var dw = nd.zeros(ws).buf
+        var db = nd.zeros([Cout]).buf
+        var n2 = 0
+        while n2 < N:
+            var co = 0
+            while co < Cout:
+                var oi = 0
+                while oi < OH:
+                    var oj = 0
+                    while oj < OW:
+                        var gv = go[((n2 * Cout + co) * OH + oi) * OW + oj]
+                        db[co] = db[co] + gv
+                        var ci = 0
+                        while ci < Cin:
+                            var ki = 0
+                            while ki < kH:
+                                var kj = 0
+                                while kj < kW:
+                                    var iv = oi * stride - pad + ki
+                                    var jv = oj * stride - pad + kj
+                                    if iv >= 0 and jv >= 0 and iv < H and jv < W:
+                                        var xidx = ((n2 * Cin + ci) * H + iv) * W + jv
+                                        var widx = ((co * Cin + ci) * kH + ki) * kW + kj
+                                        dw[widx] = dw[widx] + gv * xc[xidx]
+                                        dx[xidx] = dx[xidx] + gv * wc[widx]
+                                    kj = kj + 1
+                                ki = ki + 1
+                            ci = ci + 1
+                        oj = oj + 1
+                    oi = oi + 1
+                co = co + 1
+            n2 = n2 + 1
+        if x.requires_grad:
+            x.accum(nd.from_flat(dx, xs))
+        if w.requires_grad:
+            w.accum(nd.from_flat(dw, ws))
+        if b.requires_grad:
+            b.accum(nd.from_flat(db, [Cout]))
+    result.grad_fn = back
+    return result
+
+class Conv2d(nn.Module):
+    var _init_ = Function(self, in_channels, out_channels, kernel_size, stride, pad):
+        discard self._super_()._init_()
+        self.stride = stride
+        self.pad = pad
+        var math = import("math")
+        var fan_in = in_channels * kernel_size * kernel_size
+        var k = 1.0 / math.sqrt(Float(fan_in))
+        var rng = import("random").Random(99)
+        # weight (out, in, kH, kW)
+        var wbuf = []
+        var n = out_channels * fan_in
+        for i in range(n):
+            wbuf.append(rng.uniform(-k, k))
+        self.weight = self.register_param("weight",
+            ag.from_nd(nd.from_flat(wbuf, [out_channels, in_channels, kernel_size, kernel_size]), True))
+        self.bias = self.register_param("bias", ag.tensor(nd.zeros([out_channels]).to_nested(), True))
+    var forward = Function(self, x):
+        return conv2d(x, self.weight, self.bias, self.stride, self.pad)

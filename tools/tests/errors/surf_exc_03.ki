@@ -1,0 +1,5 @@
+# catching a non-matching type lets the exception escape uncaught
+try:
+    throw "stringerror"
+catch Integer as e:
+    discard e

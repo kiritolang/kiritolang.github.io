@@ -1,0 +1,5 @@
+# a switch arm with an empty body needs an indented block
+switch 1:
+    case 1:
+    case 2:
+        discard 2

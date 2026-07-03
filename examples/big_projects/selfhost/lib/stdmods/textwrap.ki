@@ -1,0 +1,47 @@
+var wrap = Function(text, width = 70):
+    var words = text.split(" ")
+    var lines = []
+    var current = ""
+    for word in words:
+        if len(current) == 0:
+            current = word
+        elif len(current) + 1 + len(word) <= width:
+            current = current + " " + word
+        else:
+            lines.append(current)
+            current = word
+    if len(current) > 0:
+        lines.append(current)
+    return lines
+
+var fill = Function(text, width = 70):
+    return "\n".join(wrap(text, width))
+
+var indent = Function(text, prefix) -> String:
+    var lines = text.split("\n")
+    var out = []
+    for line in lines:
+        if len(line) > 0:
+            out.append(prefix + line)
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+var dedent = Function(text) -> String:
+    var lines = text.split("\n")
+    var minIndent = None
+    for line in lines:
+        var stripped = line.lstrip()
+        if len(stripped) > 0:
+            var ind = len(line) - len(stripped)
+            if minIndent == None or ind < minIndent:
+                minIndent = ind
+    if minIndent == None or minIndent == 0:
+        return text
+    var out = []
+    for line in lines:
+        if len(line) >= minIndent:
+            out.append(line[minIndent:])
+        else:
+            out.append(line)
+    return "\n".join(out)

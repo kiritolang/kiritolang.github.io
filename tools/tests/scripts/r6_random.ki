@@ -1,0 +1,216 @@
+# r6_random.ki — self-checking audit of the `random` stdlib module.
+# No specific random VALUES are hard-coded across runs; instead we assert
+# DETERMINISM (same seed -> same stream; serialize/restore continues the same
+# stream), RANGE invariants, set/permutation invariants, and the error cases.
+var io = import("io")
+var r = import("random")
+var dump = import("dump")
+var serialize = import("serialize")
+
+var n = 0
+var ok = Function(c, msg):
+    assert c, msg
+    n = n + 1
+
+var throws = Function(f, msg):
+    var threw = False
+    try:
+        discard f()
+    catch:
+        threw = True
+    assert threw, msg
+    n = n + 1
+
+# --- determinism: two generators with the same seed produce identical streams ---
+var draw = Function(g, k):
+    var out = []
+    var i = 0
+    while i < k:
+        out.append(g.random())
+        i = i + 1
+    return out
+ok(draw(r.Random(123), 20) == draw(r.Random(123), 20), "same seed -> identical random() stream")
+
+var drawInts = Function(g, k):
+    var out = []
+    var i = 0
+    while i < k:
+        out.append(g.randint(0, 1000000))
+        i = i + 1
+    return out
+ok(drawInts(r.Random(7), 20) == drawInts(r.Random(7), 20), "same seed -> identical randint stream")
+
+# different seeds (almost surely) differ
+ok(draw(r.Random(1), 20) != draw(r.Random(2), 20), "different seeds -> different stream")
+
+# seed() reseeds an existing generator to reproduce a stream
+var gs = r.Random(0)
+gs.seed(55)
+var first = draw(gs, 10)
+gs.seed(55)
+ok(draw(gs, 10) == first, "seed() reproduces the stream")
+
+# --- serialize/restore continues the SAME stream (both formats) ---
+var gA = r.Random(999)
+discard draw(gA, 3)                       # advance the engine
+var restored = dump.loads(dump.dumps(gA))
+ok(draw(gA, 8) == draw(restored, 8), "dump round-trip continues the same stream")
+
+var gB = r.Random(314)
+discard draw(gB, 5)
+var restoredTxt = serialize.loads(serialize.dumps(gB))
+ok(draw(gB, 8) == draw(restoredTxt, 8), "serialize round-trip continues the same stream")
+
+# --- random() in [0.0, 1.0) ---
+var g = r.Random(2024)
+var rngOk = True
+var i = 0
+while i < 2000:
+    var x = g.random()
+    if x < 0.0 or x >= 1.0:
+        rngOk = False
+    i = i + 1
+ok(rngOk, "random() in [0, 1)")
+ok(type(g.random()) == "Float", "random() returns Float")
+
+# --- uniform(a, b) within [a, b] ---
+var unifOk = True
+i = 0
+while i < 2000:
+    var u = g.uniform(2.0, 5.0)
+    if u < 2.0 or u > 5.0:
+        unifOk = False
+    i = i + 1
+ok(unifOk, "uniform(a, b) within [a, b]")
+ok(type(g.uniform(0.0, 1.0)) == "Float", "uniform returns Float")
+
+# --- randint(a, b) inclusive, hits both bounds ---
+var rintOk = True
+var sawLo = False
+var sawHi = False
+i = 0
+while i < 3000:
+    var y = g.randint(3, 7)
+    if y < 3 or y > 7:
+        rintOk = False
+    if y == 3:
+        sawLo = True
+    if y == 7:
+        sawHi = True
+    i = i + 1
+ok(rintOk, "randint(a, b) in [a, b]")
+ok(sawLo and sawHi, "randint reaches both inclusive bounds")
+ok(type(g.randint(1, 2)) == "Integer", "randint returns Integer")
+# a == b always yields a
+var eqOk = True
+i = 0
+while i < 20:
+    if g.randint(5, 5) != 5:
+        eqOk = False
+    i = i + 1
+ok(eqOk, "randint(a, a) == a")
+
+# --- randrange forms ---
+var rr1Ok = True
+i = 0
+while i < 2000:
+    var z = g.randrange(10)               # randrange(stop)
+    if z < 0 or z >= 10:
+        rr1Ok = False
+    i = i + 1
+ok(rr1Ok, "randrange(stop) in [0, stop)")
+
+var rr2Ok = True
+i = 0
+while i < 2000:
+    var z2 = g.randrange(5, 15)            # randrange(start, stop)
+    if z2 < 5 or z2 >= 15:
+        rr2Ok = False
+    i = i + 1
+ok(rr2Ok, "randrange(start, stop) in [start, stop)")
+
+var rr3Ok = True
+i = 0
+while i < 2000:
+    var z3 = g.randrange(2, 20, 3)         # 2,5,8,11,14,17
+    if z3 < 2 or z3 >= 20 or (z3 - 2) % 3 != 0:
+        rr3Ok = False
+    i = i + 1
+ok(rr3Ok, "randrange(start, stop, step) yields valid members")
+
+# negative span
+var rrNegOk = True
+i = 0
+while i < 1000:
+    var z4 = g.randrange(-10, -5)
+    if z4 < -10 or z4 >= -5:
+        rrNegOk = False
+    i = i + 1
+ok(rrNegOk, "randrange with negative bounds")
+
+# negative step (descending range)
+var rrDescOk = True
+i = 0
+while i < 1000:
+    var z5 = g.randrange(10, 0, -2)        # 10,8,6,4,2
+    if z5 > 10 or z5 <= 0 or z5 % 2 != 0:
+        rrDescOk = False
+    i = i + 1
+ok(rrDescOk, "randrange with negative step")
+
+# --- choice ---
+var pool = [10, 20, 30, 40, 50]
+var choiceOk = True
+i = 0
+while i < 1000:
+    var c = g.choice(pool)
+    if not (c in pool):
+        choiceOk = False
+    i = i + 1
+ok(choiceOk, "choice returns a member of the sequence")
+
+# --- sample: size + uniqueness ---
+var samp = g.sample([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 5)
+ok(len(samp) == 5, "sample returns k elements")
+ok(len(Set(samp)) == 5, "sample elements are distinct")
+var sampSubsetOk = True
+for el in samp:
+    if not (el in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]):
+        sampSubsetOk = False
+ok(sampSubsetOk, "sample elements come from the population")
+ok(len(g.sample([1, 2, 3], 0)) == 0, "sample k=0 -> empty list")
+ok(len(Set(g.sample([1, 2, 3, 4], 4))) == 4, "sample k=len -> a full permutation")
+
+# --- shuffle: in place, a permutation ---
+var lst = [1, 2, 3, 4, 5, 6, 7, 8]
+g.shuffle(lst)
+ok(len(lst) == 8, "shuffle preserves length")
+ok(Set(lst) == Set([1, 2, 3, 4, 5, 6, 7, 8]), "shuffle is a permutation")
+
+# --- gauss / normalvariate / expovariate ---
+ok(type(g.gauss(0.0, 1.0)) == "Float", "gauss returns Float")
+ok(type(g.normalvariate(0.0, 1.0)) == "Float", "normalvariate returns Float")
+ok(type(g.expovariate(1.0)) == "Float", "expovariate returns Float")
+ok(g.expovariate(1.0) >= 0.0, "expovariate is non-negative")
+# normalvariate is a true alias of gauss (identical stream from the same seed)
+var streamSame = True
+var ga = r.Random(42)
+var nv = r.Random(42)
+i = 0
+while i < 10:
+    if ga.gauss(1.0, 2.0) != nv.normalvariate(1.0, 2.0):
+        streamSame = False
+    i = i + 1
+ok(streamSame, "normalvariate is an exact alias of gauss")
+
+# --- error cases (must throw) ---
+throws(Function(): return r.Random(1).randint(5, 1), "randint a > b throws")
+throws(Function(): return r.Random(1).randrange(5, 5), "randrange empty range throws")
+throws(Function(): return r.Random(1).randrange(0, 10, 0), "randrange step=0 throws")
+throws(Function(): return r.Random(1).choice([]), "choice from empty sequence throws")
+throws(Function(): return r.Random(1).sample([1, 2, 3], 5), "sample k > len throws")
+throws(Function(): return r.Random(1).sample([1, 2, 3], -1), "sample k < 0 throws")
+throws(Function(): return r.Random(1).expovariate(-1.0), "expovariate lambda <= 0 throws")
+throws(Function(): return r.Random(1).expovariate(0.0), "expovariate lambda == 0 throws")
+
+io.print("r6_random: " + String(n) + " checks passed")

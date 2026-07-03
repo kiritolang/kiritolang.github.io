@@ -1,0 +1,181 @@
+# r9_stdlib_a.ki — edge-case and error-hardening for hash, regex, zlib, gzip.
+
+var io = import("io")
+var hash = import("hash")
+var re = import("regex")
+var zlib = import("zlib")
+var gzip = import("gzip")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== hash
+# Known digests
+ok(hash.md5("") == "d41d8cd98f00b204e9800998ecf8427e", "md5 empty string")
+ok(hash.md5("hello") == "5d41402abc4b2a76b9719d911017c592", "md5 hello")
+ok(hash.sha1("") == "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha1 empty string")
+ok(hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc")
+
+# Bytes input produces same result as String
+ok(hash.md5(Bytes([104,101,108,108,111])) == hash.md5("hello"), "md5 Bytes == md5 String")
+ok(hash.sha256(Bytes([97,98,99])) == hash.sha256("abc"), "sha256 Bytes == sha256 String")
+
+# crc32 / adler32 / crc64
+ok(type(hash.crc32("hello")) == "Integer", "crc32 returns Integer")
+ok(type(hash.adler32("hello")) == "Integer", "adler32 returns Integer")
+ok(type(hash.crc64("hello")) == "Integer", "crc64 returns Integer")
+ok(hash.crc32("") == 0, "crc32 of empty is 0")
+ok(hash.adler32("") == 1, "adler32 of empty is 1 (RFC2315 initial value)")
+
+# Checksums are Bytes-compatible
+ok(hash.crc32(Bytes([104,101,108,108,111])) == hash.crc32("hello"), "crc32 Bytes == crc32 String")
+
+# Error cases
+ok(throws(Function(): return hash.md5(42)), "md5(Integer) throws")
+ok(throws(Function(): return hash.md5(None)), "md5(None) throws")
+ok(throws(Function(): return hash.sha256([1,2,3])), "sha256(List) throws")
+ok(throws(Function(): return hash.crc32({"a":1})), "crc32(Dict) throws")
+
+# =========================================================== regex
+
+# match(pattern, string) — anchored at start
+ok(re.match("hel", "hello") != None, "match anchored at start (hit)")
+ok(re.match("ell", "hello") == None, "match anchored at start (miss: not at pos 0)")
+
+# search(pattern, string) — finds anywhere
+ok(re.search("ell", "hello") != None, "search finds in middle")
+ok(re.search("[0-9]+", "abc123") != None, "search finds digits in middle")
+ok(re.search("[0-9]+", "abc123").group() == "123", "search group() returns full match")
+
+# fullmatch — whole string must match
+ok(re.fullmatch("[0-9]+", "123") != None, "fullmatch on fully matching string")
+ok(re.fullmatch("[0-9]+", "123x") == None, "fullmatch fails on partial match")
+ok(re.fullmatch("[0-9]+", "") == None, "fullmatch fails on empty string with + pattern")
+
+# group / groups / start / end
+var m = re.search("(\\d+)-(\\d+)", "date: 2024-01")
+ok(m != None, "search for dated pattern")
+ok(m.group() == "2024-01", "group() is full match")
+ok(m.group(1) == "2024", "group(1) is first capture")
+ok(m.group(2) == "01", "group(2) is second capture")
+ok(m.groups() == ["2024", "01"], "groups() returns all captures")
+ok(m.start() == 6, "start() is position of match")
+ok(m.end() == 13, "end() is end position")
+ok(m.span() == [6, 13], "span() is [start, end]")
+
+# named groups
+var mn = re.search("(?P<year>\\d{4})-(?P<month>\\d{2})", "2024-06")
+ok(mn != None, "named group search")
+ok(mn.group("year") == "2024", "named group 'year'")
+ok(mn.group("month") == "06", "named group 'month'")
+ok(mn.groupdict() == {"year": "2024", "month": "06"}, "groupdict() for named groups")
+
+# findall — returns List<String> when 0 or 1 capturing group
+ok(re.findall("\\d+", "a1b22c333") == ["1", "22", "333"], "findall no groups")
+ok(re.findall("(\\w+)", "one two") == ["one", "two"], "findall single group")
+# 2+ groups → List of Lists
+var fa2 = re.findall("(\\w)(\\w)", "ab cd")
+ok(fa2 == [["a", "b"], ["c", "d"]], "findall 2 groups yields List of Lists")
+
+# finditer returns List of Match objects
+var fi = re.finditer("\\d+", "1 and 22")
+ok(len(fi) == 2, "finditer count")
+ok(fi[0].group() == "1", "finditer first match")
+ok(fi[1].group() == "22", "finditer second match")
+
+# sub
+ok(re.sub("\\d+", "X", "a1b22c333") == "aXbXcX", "sub replaces all matches")
+ok(re.sub("\\d+", "X", "no digits") == "no digits", "sub with no matches is unchanged")
+
+# Callable replacement
+ok(re.sub("\\d+", Function(m): return "[" + m.group() + "]", "1 and 22") == "[1] and [22]",
+   "sub with callable replacement")
+
+# split
+ok(re.split("\\s+", "a  b   c") == ["a", "b", "c"], "split on whitespace")
+ok(re.split(",", "a,b,c") == ["a", "b", "c"], "split on literal comma")
+
+# escape
+ok(re.escape("a.b*") == "a\\.b\\*", "escape makes meta chars literal")
+
+# compile
+var pat = re.compile("\\d+")
+ok(pat.pattern == "\\d+", "compiled pattern.pattern")
+ok(pat.match("123") != None, "compiled match at start")
+ok(pat.search("abc123") != None, "compiled search")
+ok(pat.findall("1 2 3") == ["1", "2", "3"], "compiled findall")
+ok(pat.sub("X", "a1b2") == "aXbX", "compiled sub")
+
+# pos/endpos on compiled match
+ok(re.compile("b").match("ab", 1) != None, "compiled match at pos=1")
+
+# IGNORECASE flag
+ok(re.match("hello", "HELLO", re.IGNORECASE) != None, "IGNORECASE flag")
+ok(re.match("hello", "HELLO") == None, "case-sensitive (no flag)")
+
+# MULTILINE flag
+ok(re.search("^b", "a\nb", re.MULTILINE) != None, "MULTILINE ^ matches line start")
+
+# Error cases
+ok(throws(Function(): return re.compile("(unclosed")), "bad pattern throws")
+ok(throws(Function(): return re.match("(?P<x>a)(?P<x>b)", "ab")), "duplicate named group throws")
+
+# OOB group access
+var mg = re.match("(a)", "abc")
+ok(throws(Function(): return mg.group(5)), "group(OOB) throws")
+
+# =========================================================== zlib
+
+# String round-trip
+var s = "hello hello hello hello world!"
+var cz = zlib.compress(s)
+ok(type(cz) == "String", "zlib.compress(String) returns String")
+ok(zlib.decompress(cz) == s, "zlib String round-trip")
+ok(len(cz) < len(s), "zlib compresses repetitive data")
+
+# Bytes round-trip
+var b = Bytes([1, 2, 3, 1, 2, 3, 1, 2, 3, 0, 0, 0])
+var cb = zlib.compress(b)
+ok(type(cb) == "Bytes", "zlib.compress(Bytes) returns Bytes")
+ok(zlib.decompress(cb) == b, "zlib Bytes round-trip")
+
+# raw deflate/inflate
+var rd = zlib.deflate(s)
+ok(type(rd) == "String", "zlib.deflate(String) returns String")
+ok(zlib.inflate(rd) == s, "zlib deflate/inflate round-trip")
+
+# Error on corrupt input
+ok(throws(Function(): return zlib.decompress(Bytes([0xFF, 0xFE, 0xFD]))),
+   "zlib.decompress corrupt data throws")
+ok(throws(Function(): return zlib.inflate(Bytes([0xFF, 0xFE, 0xFD]))),
+   "zlib.inflate corrupt data throws")
+
+# =========================================================== gzip
+
+# String round-trip
+var gc = gzip.compress(s)
+ok(type(gc) == "String", "gzip.compress(String) returns String")
+ok(gzip.decompress(gc) == s, "gzip String round-trip")
+
+# Bytes round-trip
+var gbc = gzip.compress(b)
+ok(type(gbc) == "Bytes", "gzip.compress(Bytes) returns Bytes")
+ok(gzip.decompress(gbc) == b, "gzip Bytes round-trip")
+
+# Aliases: gzip() / gunzip()
+ok(gzip.gunzip(gzip.gzip(s)) == s, "gzip()/gunzip() alias round-trip")
+
+# Error on corrupt input
+ok(throws(Function(): return gzip.decompress(Bytes([0xFF, 0xFE, 0xFD]))),
+   "gzip.decompress corrupt data throws")
+
+io.print("r9_stdlib_a: " + String(n) + " checks passed")

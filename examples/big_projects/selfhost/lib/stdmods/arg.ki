@@ -1,0 +1,138 @@
+var _io = import("io")
+
+class Parser:
+    var _init_ = Function(self, description = ""):
+        self._desc = description
+        self._positionals = []    # each: [name, help]
+        self._options = []        # each: [name, default, help]
+        self._flags = []          # each: [name, help]
+
+    # --- declaration (chainable: each returns self) ---
+    var positional = Function(self, name, help = ""):
+        self._positionals.append([name, help])
+        return self
+    var option = Function(self, name, default = None, help = ""):
+        self._options.append([name, default, help])
+        return self
+    var flag = Function(self, name, help = ""):
+        self._flags.append([name, help])
+        return self
+
+    var _isflag = Function(self, name) -> Bool:
+        for f in self._flags:
+            if f[0] == name:
+                return True
+        return False
+    var _isoption = Function(self, name) -> Bool:
+        for o in self._options:
+            if o[0] == name:
+                return True
+        return False
+    var _byshort = Function(self, ch):
+        # a short option -x matches the first letter of a flag or option name
+        for f in self._flags:
+            if f[0][0] == ch:
+                return ["flag", f[0]]
+        for o in self._options:
+            if o[0][0] == ch:
+                return ["option", o[0]]
+        return None
+    var _convert = Function(self, name, value):
+        for o in self._options:
+            if o[0] == name:
+                if isinstance(o[1], "Integer"):
+                    try:
+                        return Integer(value)
+                    catch as e:
+                        throw "option --" + name + " expects an integer, got '" + value + "'"
+                if isinstance(o[1], "Float"):
+                    try:
+                        return Float(value)
+                    catch as e:
+                        throw "option --" + name + " expects a number, got '" + value + "'"
+                return value
+        return value
+
+    var usage = Function(self) -> String:
+        var head = ["usage:"]
+        for p in self._positionals:
+            head.append("<" + p[0] + ">")
+        for o in self._options:
+            head.append("[--" + o[0] + " VALUE]")
+        for f in self._flags:
+            head.append("[--" + f[0] + "]")
+        var lines = [" ".join(head)]
+        if self._desc != "":
+            lines.append("")
+            lines.append(self._desc)
+        lines.append("")
+        lines.append("arguments:")
+        for p in self._positionals:
+            lines.append("  <" + p[0] + ">  " + p[1])
+        for o in self._options:
+            lines.append("  --" + o[0] + " VALUE  (default " + String(o[1]) + ")  " + o[2])
+        for f in self._flags:
+            lines.append("  --" + f[0] + "  " + f[1])
+        lines.append("  -h, --help  show this help and stop")
+        return "\n".join(lines)
+
+    # Parse `args` (a list of Strings, e.g. arglist) -> a Dict of results, or None if -h/--help given.
+    var parse = Function(self, args):
+        var result = {}
+        for o in self._options:
+            result[o[0]] = o[1]
+        for f in self._flags:
+            result[f[0]] = False
+        var positionals = []
+        var i = 0
+        while i < len(args):
+            var token = args[i]
+            if token == "-h" or token == "--help":
+                _io.print(self.usage())
+                return None
+            if token.startswith("--"):
+                var body = token[2:]
+                var name = body
+                var inline = None
+                if "=" in body:
+                    var eq = body.find("=")
+                    name = body[0:eq]
+                    inline = body[eq + 1:]
+                if self._isflag(name):
+                    result[name] = True
+                elif self._isoption(name):
+                    var value = inline
+                    if value == None:
+                        i = i + 1
+                        if i >= len(args):
+                            throw "option --" + name + " requires a value"
+                        value = args[i]
+                    result[name] = self._convert(name, value)
+                else:
+                    throw "unknown option: --" + name
+            elif token.startswith("-") and len(token) == 2:
+                var matched = self._byshort(token[1:])
+                if matched == None:
+                    throw "unknown option: " + token
+                if matched[0] == "flag":
+                    result[matched[1]] = True
+                else:
+                    i = i + 1
+                    if i >= len(args):
+                        throw "option " + token + " requires a value"
+                    result[matched[1]] = self._convert(matched[1], args[i])
+            else:
+                positionals.append(token)
+            i = i + 1
+        if len(positionals) < len(self._positionals):
+            throw "missing required argument: <" + self._positionals[len(positionals)][0] + ">"
+        var pi = 0
+        for p in self._positionals:
+            result[p[0]] = positionals[pi]
+            pi = pi + 1
+        var rest = []
+        while pi < len(positionals):
+            rest.append(positionals[pi])
+            pi = pi + 1
+        result["rest"] = rest
+        return result

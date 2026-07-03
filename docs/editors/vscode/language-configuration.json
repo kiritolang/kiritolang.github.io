@@ -1,0 +1,39 @@
+{
+  "comments": { "lineComment": "#" },
+  "brackets": [["{", "}"], ["[", "]"], ["(", ")"]],
+  "autoClosingPairs": [
+    { "open": "{", "close": "}" },
+    { "open": "[", "close": "]" },
+    { "open": "(", "close": ")" },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
+    { "open": "'", "close": "'", "notIn": ["string", "comment"] }
+  ],
+  "surroundingPairs": [
+    ["{", "}"], ["[", "]"], ["(", ")"], ["\"", "\""], ["'", "'"]
+  ],
+  "autoCloseBefore": ";:.,=}])>` \n\t",
+  "wordPattern": "(-?\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?)|([A-Za-z_][A-Za-z0-9_]*)",
+  "indentationRules": {
+    "increaseIndentPattern": ":\\s*(#.*)?$",
+    "decreaseIndentPattern": "^\\s*(else|elif|catch|finally|case|default)\\b.*:\\s*(#.*)?$"
+  },
+  "onEnterRules": [
+    {
+      "comment": "indent the body after a ':'-introduced block header",
+      "beforeText": ":\\s*(#.*)?$",
+      "action": { "indent": "indent" }
+    },
+    {
+      "comment": "outdent one level after a statement that ends the block's flow",
+      "beforeText": "^\\s*(return|break|continue|pass|throw)\\b.*$",
+      "action": { "indent": "outdent" }
+    }
+  ],
+  "folding": {
+    "offSide": true,
+    "markers": {
+      "start": "^\\s*#\\s*region\\b",
+      "end": "^\\s*#\\s*endregion\\b"
+    }
+  }
+}

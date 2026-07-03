@@ -1,0 +1,130 @@
+# Conditional expression `then if cond else orelse` — exercised from Kirito itself: edge cases,
+# every value position, short-circuit/adversarial robustness, and randomized fuzz against an oracle
+# computed in plain Kirito. (Parse-error adversarial cases live in the C++ suite, since a parse error
+# aborts a whole script and can't be probed from within one.)
+var io = import("io")
+var random = import("random")
+
+# --- basics ---
+assert (1 if True else 2) == 1, "picks then"
+assert (1 if False else 2) == 2, "picks orelse"
+
+# --- the condition uses truthiness, not just Bool ---
+assert ("T" if 0 else "F") == "F", "0 is falsy"
+assert ("T" if 7 else "F") == "T", "non-zero is truthy"
+assert ("T" if "" else "F") == "F", "empty string is falsy"
+assert ("T" if "x" else "F") == "T", "non-empty string is truthy"
+assert ("T" if [] else "F") == "F", "empty list is falsy"
+assert ("T" if [0] else "F") == "T", "non-empty list is truthy"
+assert ("T" if None else "F") == "F", "None is falsy"
+
+# --- branches may be different types ---
+assert (42 if True else "text") == 42, "heterogeneous then"
+assert (42 if False else "text") == "text", "heterogeneous orelse"
+
+# --- precedence: arithmetic/comparison/or/not bind tighter ---
+assert (1 + 2 if True else 99) == 3, "arithmetic binds tighter than conditional"
+assert (10 if 2 < 3 else 20) == 10, "comparison forms the condition"
+assert (False or True if False else 7) == 7, "or binds tighter"
+assert (not False if True else False) == True, "not binds tighter"
+
+# --- right-associative chaining ---
+assert ("a" if False else "b" if True else "c") == "b", "chain picks middle"
+assert ("a" if False else "b" if False else "c") == "c", "chain falls to last"
+assert ("a" if True else "b" if True else "c") == "a", "chain picks first"
+
+# --- nesting: conditional as the condition, and in both branches ---
+assert (1 if (True if False else True) else 2) == 1, "conditional as condition"
+assert ((10 if False else 11) if True else (20 if True else 21)) == 11, "conditional in branches"
+
+# --- usable in every value position ---
+assert [1 if True else 0, 2 if False else 9, 3] == [1, 9, 3], "inside a list"
+assert {"k": 1 if True else 0}["k"] == 1, "as a dict value"
+assert abs(-5 if 1 > 0 else 5) == 5, "as a call argument"
+assert [10, 20, 30][1 if True else 2] == 20, "as an index"
+assert [10, 20, 30, 40][1 if False else 2 : 4] == [30, 40], "as a slice bound"
+var pick = Function(flag):
+    return "on" if flag else "off"
+assert pick(True) == "on" and pick(False) == "off", "as a return value"
+var with_default = Function(x, label = "pos" if True else "neg"):
+    return label
+assert with_default(0) == "pos", "as a default parameter value"
+var sign = "neg" if -3 < 0 else "pos"
+assert f"sign={sign}" == "sign=neg", "result used in an f-string"
+
+# --- packing: each comma element is independent (bare comma packs at statement level) ---
+var packed_then = 1, 2 if True else 3
+assert packed_then == [1, 2], "packing keeps the then-branch"
+var packed_else = 1, 2 if False else 3
+assert packed_else == [1, 3], "packing keeps the else-branch"
+
+# --- a statement-level `if` after a block-bodied Function is NOT a ternary continuation ---
+# (the `var f = Function(): ...` then `if cond:` idiom must parse as two separate statements)
+var blockMade = None
+var blockRun = Function():
+    return 7
+if True:
+    blockMade = blockRun()
+assert blockMade == 7, "if after a block-bodied function is a statement, not a ternary"
+# an inline function, by contrast, still works as a ternary operand
+assert ((Function(): return 1)() if True else 2) == 1, "inline function as ternary operand"
+
+# --- short-circuit / adversarial: the untaken branch is NEVER evaluated ---
+# would divide by zero, but that branch is not taken:
+assert (1 if True else (1 // 0)) == 1, "untaken branch with a runtime error is not evaluated"
+assert ((1 // 0) if False else 1) == 1, "untaken then-branch is not evaluated"
+# a side effect in the untaken branch must not happen:
+var hits = [0]
+var bump = Function():
+    hits[0] = hits[0] + 1
+    return 99
+discard (bump() if True else bump())
+assert hits[0] == 1, "only the taken branch runs its side effect"
+discard (bump() if False else bump())
+assert hits[0] == 2, "the other call runs only when its branch is taken"
+
+# --- fuzz: random two-way picks vs an oracle computed the long way ---
+var rng = random.Random(0xC0FFEE)
+var trial = 0
+while trial < 3000:
+    var a = rng.randint(0, 100000)
+    var b = rng.randint(0, 100000)
+    var cond = rng.randint(0, 1) == 1
+    var got = a if cond else b
+    var want = b
+    if cond:
+        want = a
+    assert got == want, "fuzz: two-way pick matches oracle"
+    trial = trial + 1
+
+# --- fuzz: random 3-level right-associative chains vs an oracle ---
+var trial2 = 0
+while trial2 < 3000:
+    var c0 = rng.randint(0, 1) == 1
+    var c1 = rng.randint(0, 1) == 1
+    var v0 = rng.randint(0, 1000)
+    var v1 = rng.randint(0, 1000)
+    var v2 = rng.randint(0, 1000)
+    var got = v0 if c0 else v1 if c1 else v2
+    # oracle: first value whose condition holds, else the last
+    var want = v2
+    if c0:
+        want = v0
+    elif c1:
+        want = v1
+    assert got == want, "fuzz: 3-level chain matches oracle"
+    trial2 = trial2 + 1
+
+# --- fuzz: random truthiness conditions select correctly ---
+var samples = [[0, False], [1, True], ["", False], ["x", True], [[], False], [[5], True], [None, False]]
+var trial3 = 0
+while trial3 < 3000:
+    var sample = samples[rng.randint(0, len(samples) - 1)]
+    var got = "T" if sample[0] else "F"
+    var want = "F"
+    if sample[1]:
+        want = "T"
+    assert got == want, "fuzz: truthiness selection matches oracle"
+    trial3 = trial3 + 1
+
+io.print("OK")

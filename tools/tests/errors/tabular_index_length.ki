@@ -1,0 +1,2 @@
+var pd = import("tabular")
+var s = pd.Series([1, 2, 3], index=["a", "b"])

@@ -1,0 +1,3 @@
+# popitem on an empty Dict
+var d = {}
+discard d.popitem()

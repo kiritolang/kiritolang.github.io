@@ -1,0 +1,1 @@
+discard import("matrix").Matrix([[1, 2], [2, 4]]).inverse()

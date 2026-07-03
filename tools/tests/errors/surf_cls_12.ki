@@ -1,0 +1,5 @@
+# passing too many positional args to a no-arg _init_ fails
+class C:
+    var _init_ = Function(self):
+        self.x = 1
+discard C(1, 2)

@@ -1,0 +1,30 @@
+# Multiprocessing basics: spawn/join, cpucount, and a producer/consumer Queue.
+# Spawnable functions live at module level so a worker (which re-evaluates this file with argmain
+# False) defines them while skipping the driver below.
+var parallel = import("parallel")
+var io = import("io")
+
+var square = Function(x):
+    return x * x
+
+var producer = Function(out, n):
+    var i = 0
+    while i < n:
+        out.put(i * i)
+        i = i + 1
+    out.close()
+
+if argmain:
+    io.print(parallel.spawn(square, 7).join())
+    io.print(parallel.cpucount() >= 1)
+    var q = parallel.Queue()
+    discard parallel.spawn(producer, q, 5)
+    var got = []
+    var running = True
+    while running:
+        try:
+            got.append(q.get())
+        catch as e:
+            running = False
+    got.sort()
+    io.print(got)

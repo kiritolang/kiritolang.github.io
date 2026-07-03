@@ -1,0 +1,358 @@
+# The `json` module in pure Kirito: a recursive-descent parser (loads/parse) and a serializer
+# (dumps/stringify, compact or indented). Objects map to Dict, arrays to List.
+
+var math = import("math")
+
+# --- parser ---------------------------------------------------------------------------------------
+var _ws = Function(s, i):
+    var n = len(s)
+    while i < n and (s[i] == " " or s[i] == "\t" or s[i] == "\n" or s[i] == "\r"):
+        i = i + 1
+    return i
+
+var _hexVal = Function(c):
+    if c >= "0" and c <= "9":
+        return ord(c) - 48
+    if c >= "a" and c <= "f":
+        return ord(c) - 87
+    if c >= "A" and c <= "F":
+        return ord(c) - 55
+    throw "json: bad \\u escape"
+
+# parse a value starting at i; returns [value, nextIndex]
+var _parseVal = Function(s, i):
+    i = _ws(s, i)
+    if i >= len(s):
+        throw "json: unexpected end of input"
+    var c = s[i]
+    if c == "{":
+        return _parseObj(s, i)
+    if c == "[":
+        return _parseArr(s, i)
+    if c == "\"":
+        return _parseStr(s, i)
+    if c == "t":
+        if s[i:i + 4] == "true":
+            return [True, i + 4]
+        throw "json: invalid literal"
+    if c == "f":
+        if s[i:i + 5] == "false":
+            return [False, i + 5]
+        throw "json: invalid literal"
+    if c == "n":
+        if s[i:i + 4] == "null":
+            return [None, i + 4]
+        throw "json: invalid literal"
+    # Non-finite floats (and what dumps emits): NaN / Infinity / -Infinity.
+    if c == "N":
+        if s[i:i + 3] == "NaN":
+            return [math.nan, i + 3]
+        throw "json: invalid literal"
+    if c == "I":
+        if s[i:i + 8] == "Infinity":
+            return [math.inf, i + 8]
+        throw "json: invalid literal"
+    if c == "-" and s[i:i + 9] == "-Infinity":
+        return [0.0 - math.inf, i + 9]
+    # A number starts with '-' or a digit ONLY (no leading '+', no leading '.') -- anything else here
+    # is not a valid JSON value.
+    if c == "-" or (c >= "0" and c <= "9"):
+        return _parseNum(s, i)
+    throw "json: unexpected character"
+
+var _parseStr = Function(s, i):
+    i = i + 1
+    var out = ""
+    var n = len(s)
+    while i < n and s[i] != "\"":
+        var c = s[i]
+        if c == "\\":
+            i = i + 1
+            if i >= n:
+                throw "json: bad string escape"
+            var e = s[i]
+            if e == "n":
+                out = out + "\n"
+            elif e == "t":
+                out = out + "\t"
+            elif e == "r":
+                out = out + "\r"
+            elif e == "b":
+                out = out + chr(8)
+            elif e == "f":
+                out = out + chr(12)
+            elif e == "/":
+                out = out + "/"
+            elif e == "\\":
+                out = out + "\\"
+            elif e == "\"":
+                out = out + "\""
+            elif e == "u":
+                var cp = _hexVal(s[i + 1]) * 4096 + _hexVal(s[i + 2]) * 256 + _hexVal(s[i + 3]) * 16 + _hexVal(s[i + 4])
+                i = i + 4
+                # Combine a UTF-16 surrogate pair (an astral code point, e.g. an emoji) into one code
+                # point -- but only when a well-formed \uXXXX low surrogate actually follows; a lone
+                # high surrogate must NOT blindly read past the end of the string looking for one.
+                if cp >= 55296 and cp <= 56319 and i + 6 < n and s[i + 1] == "\\" and s[i + 2] == "u":
+                    var lo = _hexVal(s[i + 3]) * 4096 + _hexVal(s[i + 4]) * 256 + _hexVal(s[i + 5]) * 16 + _hexVal(s[i + 6])
+                    if lo >= 56320 and lo <= 57343:
+                        cp = 65536 + (cp - 55296) * 1024 + (lo - 56320)
+                        i = i + 6
+                    else:
+                        throw "json: invalid low surrogate in \\u escape"
+                # An unpaired surrogate (a lone high or a lone low) isn't a valid code point by itself
+                # and would encode to malformed UTF-8; substitute U+FFFD (matches browsers/WHATWG) so
+                # the decoded String is always well-formed.
+                if cp >= 55296 and cp <= 57343:
+                    cp = 65533
+                out = out + chr(cp)
+            else:
+                throw "json: bad string escape"
+            i = i + 1
+        else:
+            out = out + c
+            i = i + 1
+    if i >= n:
+        throw "json: unterminated string"
+    return [out, i + 1]
+
+# Does a decimal magnitude (digits only, no sign) fit in a signed int64? Bound is 2^63-1 for a
+# positive value, 2^63 for a negative one. Compares as digit strings (length, then lexicographic on
+# equal length) so no int64 arithmetic — which would itself overflow — is needed.
+var _int64Fits = Function(digits, neg):
+    var bound = "9223372036854775807"
+    if neg:
+        bound = "9223372036854775808"
+    var d = digits
+    var z = 0
+    while z < len(d) - 1 and d[z] == "0":       # strip leading zeros
+        z = z + 1
+    d = d[z:len(d)]
+    if len(d) < len(bound):
+        return True
+    if len(d) > len(bound):
+        return False
+    return d <= bound
+
+var _parseNum = Function(s, i):
+    var start = i
+    var n = len(s)
+    var isFloat = False
+    if i < n and s[i] == "-":
+        i = i + 1
+    while i < n and s[i] >= "0" and s[i] <= "9":
+        i = i + 1
+    if i < n and s[i] == ".":
+        isFloat = True
+        i = i + 1
+        while i < n and s[i] >= "0" and s[i] <= "9":
+            i = i + 1
+    if i < n and (s[i] == "e" or s[i] == "E"):
+        isFloat = True
+        i = i + 1
+        if i < n and (s[i] == "-" or s[i] == "+"):
+            i = i + 1
+        while i < n and s[i] >= "0" and s[i] <= "9":
+            i = i + 1
+    var text = s[start:i]
+    if len(text) == 0 or text == "-":
+        throw "json: invalid number"
+    if isFloat:
+        return [Float(text), i]
+    # An integer token too large for int64 widens to Float (native mirrors dynamic languages), rather
+    # than wrapping the way the host Integer() constructor would.
+    var neg = text[0] == "-"
+    var mag = text
+    if neg:
+        mag = text[1:len(text)]
+    if _int64Fits(mag, neg):
+        return [Integer(text), i]
+    return [Float(text), i]
+
+var _parseArr = Function(s, i):
+    i = _ws(s, i + 1)
+    var out = []
+    if i < len(s) and s[i] == "]":
+        return [out, i + 1]
+    var go = True
+    while go:
+        var r = _parseVal(s, i)
+        out.append(r[0])
+        i = _ws(s, r[1])
+        if i >= len(s):
+            throw "json: unterminated array"
+        if s[i] == ",":
+            i = _ws(s, i + 1)
+        elif s[i] == "]":
+            go = False
+        else:
+            throw "json: expected ',' or ']'"
+    return [out, i + 1]
+
+var _parseObj = Function(s, i):
+    i = _ws(s, i + 1)
+    var out = {}
+    if i < len(s) and s[i] == "}":
+        return [out, i + 1]
+    var go = True
+    while go:
+        i = _ws(s, i)
+        if i >= len(s) or s[i] != "\"":
+            throw "json: expected string key"
+        var kr = _parseStr(s, i)
+        i = _ws(s, kr[1])
+        if i >= len(s) or s[i] != ":":
+            throw "json: expected ':'"
+        var vr = _parseVal(s, i + 1)
+        out[kr[0]] = vr[0]
+        i = _ws(s, vr[1])
+        if i >= len(s):
+            throw "json: unterminated object"
+        if s[i] == ",":
+            i = i + 1
+        elif s[i] == "}":
+            go = False
+        else:
+            throw "json: expected ',' or '}'"
+    return [out, i + 1]
+
+var loads = Function(text):
+    var r = _parseVal(text, 0)
+    var i = _ws(text, r[1])
+    if i != len(text):
+        throw "json: trailing data"
+    return r[0]
+
+var parse = loads
+
+# --- serializer -----------------------------------------------------------------------------------
+var _hexDigits = "0123456789abcdef"
+
+var _escapeStr = Function(s):
+    var out = "\""
+    for c in s:
+        if c == "\"":
+            out = out + "\\\""
+        elif c == "\\":
+            out = out + "\\\\"
+        elif c == "\n":
+            out = out + "\\n"
+        elif c == "\t":
+            out = out + "\\t"
+        elif c == "\r":
+            out = out + "\\r"
+        elif c == chr(8):
+            out = out + "\\b"
+        elif c == chr(12):
+            out = out + "\\f"
+        elif ord(c) < 32:
+            # JSON requires control characters U+0000..U+001F to be \u-escaped; emitting them raw
+            # produces invalid JSON. Other code points (incl. non-ASCII) pass through unchanged.
+            var o = ord(c)
+            out = out + "\\u00" + _hexDigits[o // 16] + _hexDigits[o % 16]
+        else:
+            out = out + c
+    return out + "\""
+
+# Shortest round-tripping decimal for a finite Float, matching native jsonFloat (floatToRoundtrip).
+# The host String() display (~15 sig digits) already uses the shortest form in the right notation
+# (100.0, not 1e+02) for any value that round-trips at that width -- most values -- so prefer it;
+# only when it's lossy (needs 16-17 digits, e.g. 0.1+0.2) fall back to a 16- then 17-sig form. This
+# keeps native's fixed-vs-scientific choice, which a bare `.Ng` trial would get wrong (`.1g` of 100.0
+# is "1e+02").
+var _floatRepr = Function(v):
+    var disp = String(v)
+    if Float(disp) == v:
+        return disp
+    var s16 = format(v, ".16g")
+    if Float(s16) == v:
+        return s16
+    return format(v, ".17g")
+
+var _dump = Function(v, indent, depth):
+    var t = type(v)
+    if v == None:
+        return "null"
+    if t == "Bool":
+        if v:
+            return "true"
+        return "false"
+    if t == "Integer":
+        return String(v)
+    if t == "Float":
+        if v != v:
+            return "NaN"
+        if v > 1.7976931348623157e308:
+            return "Infinity"
+        if v < 0 - 1.7976931348623157e308:
+            return "-Infinity"
+        var s = _floatRepr(v)
+        # A whole-valued Float formats without any '.'/'e' ("5", "-0"); JSON would then re-read it as
+        # an Integer, losing the type. Force float-ness by appending ".0" so 5.0 -> "5.0" round-trips.
+        var floaty = False
+        for ch in s:
+            if ch == "." or ch == "e" or ch == "E":
+                floaty = True
+        if not floaty:
+            s = s + ".0"
+        return s
+    if t == "String":
+        return _escapeStr(v)
+    if t == "List":
+        return _dumpSeq(v, indent, depth, "[", "]", False)
+    if t == "Dict":
+        return _dumpSeq(v, indent, depth, "{", "}", True)
+    throw "json: cannot serialize type '" + t + "'"
+
+var _pad = Function(indent, depth):
+    if indent <= 0:
+        return ""
+    return "\n" + " " * (indent * depth)
+
+var _dumpSeq = Function(v, indent, depth, openc, closec, isObj):
+    var keys = v
+    if isObj:
+        var ks = []
+        for k in v:
+            ks.append(k)
+        keys = ks
+    var n = len(keys)
+    if n == 0:
+        return openc + closec
+    var sep = ", "
+    if indent > 0:
+        sep = ","
+    var out = openc
+    var first = True
+    var idx = 0
+    for item in keys:
+        if first:
+            first = False
+        else:
+            out = out + sep
+        out = out + _pad(indent, depth + 1)
+        if isObj:
+            # Object keys must be strings. Bool/None keys use JSON's canonical true/false/null (not
+            # Kirito's "True"/"None", which would not round-trip); other non-string scalars use String().
+            var keyStr = item
+            var kt = type(item)
+            if kt == "Bool":
+                keyStr = "true" if item else "false"
+            elif item == None:
+                keyStr = "null"
+            elif kt != "String":
+                keyStr = String(item)
+            out = out + _escapeStr(keyStr) + ": " + _dump(v[item], indent, depth + 1)
+        else:
+            out = out + _dump(item, indent, depth + 1)
+        idx = idx + 1
+    out = out + _pad(indent, depth)
+    return out + closec
+
+var dumps = Function(value, indent = 0):
+    var ind = 0
+    if indent != None:
+        ind = indent
+    return _dump(value, ind, 0)
+
+var stringify = dumps

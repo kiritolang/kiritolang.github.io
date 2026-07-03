@@ -1,0 +1,129 @@
+# Deep pure-Kirito test of the Bytes type: construction, conversions, indexing/slicing, operators,
+# encode/decode, hex, apply, hashing, serialization — plus adversarial/malformed cases. Prints OK.
+var io = import("io")
+var serialize = import("serialize")
+var dump = import("dump")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# --- construction -----------------------------------------------------------------------------
+assert String(Bytes([72, 105])) == "b'Hi'", "from int list"
+assert type(Bytes([1])) == "Bytes", "type name"
+assert len(Bytes(5)) == 5 and Bytes(5) == Bytes([0, 0, 0, 0, 0]), "n zero bytes"
+assert Bytes("AB") == Bytes([65, 66]), "from String (utf-8)"
+assert Bytes(Bytes([9, 8])) == Bytes([9, 8]), "copy"
+assert len(Bytes()) == 0 and len(Bytes([])) == 0, "empty"
+assert isinstance(Bytes([1]), "Bytes"), "isinstance"
+# malformed construction
+assert throws(Function(): return Bytes([256])), "byte > 255 rejected"
+assert throws(Function(): return Bytes([-1])), "negative byte rejected"
+assert throws(Function(): return Bytes([1.5])), "non-Integer element rejected"
+assert throws(Function(): return Bytes(-1)), "negative count rejected"
+assert throws(Function(): return Bytes("x", "utf-99")), "unknown encoding rejected"
+
+# --- indexing / slicing -----------------------------------------------------------------------
+var b = Bytes([10, 20, 30, 40, 50])
+assert b[0] == 10 and b[4] == 50, "index"
+assert b[-1] == 50 and b[-5] == 10, "negative index"
+assert type(b[0]) == "Integer", "index yields Integer"
+assert throws(Function(): return b[5]), "index out of range"
+assert throws(Function(): return b[-6]), "negative index out of range"
+assert b[1:4] == Bytes([20, 30, 40]), "slice"
+assert type(b[1:4]) == "Bytes", "slice yields Bytes"
+assert b[:2] == Bytes([10, 20]) and b[3:] == Bytes([40, 50]), "open slices"
+assert b[::2] == Bytes([10, 30, 50]), "step slice"
+assert b[::-1] == Bytes([50, 40, 30, 20, 10]), "reverse slice"
+assert b[10:20] == Bytes(), "out-of-range slice is empty"
+
+# --- iteration / len / membership -------------------------------------------------------------
+assert len(b) == 5, "len"
+var collected = []
+for x in b:
+    collected.append(x)
+assert collected == [10, 20, 30, 40, 50], "iteration yields Integers"
+assert List(b) == [10, 20, 30, 40, 50], "List(bytes)"
+assert 30 in b and not (99 in b), "Integer membership"
+assert (300 in b) == False, "out-of-byte-range membership is False, not error"
+assert Bytes([20, 30]) in b, "subsequence membership"
+assert not (Bytes([20, 40]) in b), "non-subsequence"
+
+# --- operators --------------------------------------------------------------------------------
+assert Bytes([1, 2]) + Bytes([3, 4]) == Bytes([1, 2, 3, 4]), "concat"
+assert throws(Function(): return Bytes([1]) + "x"), "concat only Bytes"
+assert Bytes([7]) * 3 == Bytes([7, 7, 7]), "repeat"
+assert Bytes([1]) * 0 == Bytes() and Bytes([1]) * -2 == Bytes(), "repeat <= 0 is empty"
+assert Bytes([1, 2]) == Bytes([1, 2]) and Bytes([1, 2]) != Bytes([1, 3]), "equality"
+assert (Bytes([1, 2]) == "ab") == False, "never equal to String of same bytes"
+assert Bytes([1, 2]) < Bytes([1, 3]) and Bytes([1]) < Bytes([1, 0]), "lexicographic ordering"
+assert Bytes([2]) > Bytes([1, 9]) and Bytes([1, 2]) <= Bytes([1, 2]), "ordering"
+
+# --- hashing (Dict key / Set member) ----------------------------------------------------------
+var d = {Bytes([1]): "a", Bytes([2, 3]): "b"}
+assert d[Bytes([1])] == "a" and d[Bytes([2, 3])] == "b", "Bytes as Dict key"
+assert len(Set([Bytes([1]), Bytes([1]), Bytes([2])])) == 2, "Bytes in Set dedups"
+
+# --- encode / decode --------------------------------------------------------------------------
+assert "hello".encode() == Bytes([104, 101, 108, 108, 111]), "String.encode default utf-8"
+assert type("x".encode()) == "Bytes", "encode -> Bytes"
+assert len("héllo".encode("utf-8")) == 6, "é is two utf-8 bytes"
+assert Bytes([104, 105]).decode() == "hi", "decode default utf-8"
+assert "é".encode("latin-1") == Bytes([233]), "latin-1 encode (U+00E9 -> 0xE9)"
+assert Bytes([233]).decode("latin-1") == "é", "latin-1 decode"
+assert throws(Function(): return "€".encode("latin-1")), "code point > 255 rejected by latin-1"
+assert throws(Function(): return "é".encode("ascii")), "non-ascii rejected by ascii"
+assert throws(Function(): return Bytes([200]).decode("ascii")), "byte > 127 rejected by ascii decode"
+# every byte 0..255 round-trips through latin-1
+var allok = True
+var i = 0
+while i < 256:
+    var one = Bytes([i])
+    if one.decode("latin-1").encode("latin-1") != one or one[0] != i:
+        allok = False
+    i = i + 1
+assert allok, "all 256 byte values round-trip through latin-1"
+
+# --- hex / fromhex ----------------------------------------------------------------------------
+assert Bytes([72, 105, 33]).hex() == "486921", "hex"
+assert fromhex("486921") == Bytes([72, 105, 33]), "fromhex"
+assert fromhex("48 69 21") == Bytes([72, 105, 33]), "fromhex ignores whitespace"
+assert fromhex("") == Bytes(), "fromhex empty"
+assert throws(Function(): return fromhex("abc")), "odd-length hex rejected"
+assert throws(Function(): return fromhex("xy")), "non-hex rejected"
+
+# --- apply ------------------------------------------------------------------------------------
+assert Bytes([1, 2, 3]).apply(Function(x): return x * 2) == Bytes([2, 4, 6]), "apply maps bytes"
+assert type(Bytes([1]).apply(Function(x): return x)) == "Bytes", "apply -> Bytes"
+assert Bytes([72, 73]).apply(Function(x): return x + 32).decode() == "hi", "apply upper->lower"
+assert throws(Function(): return Bytes([1]).apply(Function(x): return 999)), "apply result out of byte range"
+assert throws(Function(): return Bytes([1]).apply(Function(x): return -1)), "apply negative result"
+assert Bytes().apply(Function(x): return x) == Bytes(), "apply over empty"
+
+# --- repr edge cases --------------------------------------------------------------------------
+assert String(Bytes([10, 9, 13, 92, 39])) == "b'\\n\\t\\r\\\\\\''", "repr escapes"
+assert String(Bytes([0, 255, 127, 128])) == "b'\\x00\\xff\\x7f\\x80'", "repr hex escapes"
+assert String(Bytes()) == "b''", "empty repr"
+
+# --- conversions both ways --------------------------------------------------------------------
+assert Bytes(List("hello".encode())) == "hello".encode(), "Bytes <-> List of ints"
+assert fromhex("hi".encode().hex()) == "hi".encode(), "hex <-> Bytes round-trip"
+assert "café".encode("utf-8").decode("utf-8") == "café", "String <-> Bytes (utf-8)"
+
+# --- serialization (text + binary) ------------------------------------------------------------
+var sample = Bytes([0, 1, 2, 200, 255, 10, 13, 128])
+assert serialize.loads(serialize.dumps(sample)) == sample, "serialize round-trip"
+assert dump.loads(dump.dumps(sample)) == sample, "dump round-trip"
+# nested inside containers
+var nested = {"k": [Bytes([1, 2]), Bytes([3])], "v": Bytes([255])}
+assert dump.loads(dump.dumps(nested))["k"][1] == Bytes([3]), "nested Bytes round-trips"
+assert serialize.loads(serialize.dumps(nested))["v"] == Bytes([255]), "nested Bytes text round-trip"
+
+# --- inspect ----------------------------------------------------------------------------------
+var ins = inspect(Bytes([1]))
+assert "Bytes object:" in ins and "decode" in ins and "hex" in ins and "apply" in ins, "inspect lists members"
+
+io.print("OK bytes")

@@ -1,0 +1,3 @@
+var f = Function(x : Integer):
+    return x
+f("not an int")

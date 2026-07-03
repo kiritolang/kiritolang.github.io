@@ -1,0 +1,74 @@
+# ============================================================ RANGE / RANDRANGE kwargs + numeric edges
+var io = import("io")
+var random = import("random")
+
+# --- range: classic positional ---
+assert range(0) == [], "range(0) empty"
+assert range(5) == [0, 1, 2, 3, 4], "range(stop)"
+assert range(2, 5) == [2, 3, 4], "range(start, stop)"
+assert range(0, 10, 2) == [0, 2, 4, 6, 8], "range step"
+assert range(10, 0, -2) == [10, 8, 6, 4, 2], "range negative step"
+assert range(5, 5) == [], "range empty span"
+assert range(5, 0) == [], "range backwards with positive step empty"
+
+# --- range: keyword forms (start/stop/step, end alias) ---
+assert range(stop = 4) == [0, 1, 2, 3], "stop="
+assert range(start = 2, stop = 6) == [2, 3, 4, 5], "start=,stop="
+assert range(start = 1, end = 10, step = 3) == [1, 4, 7], "start=/end=/step="
+assert range(5, step = 2) == [0, 2, 4], "lone positional is stop when stop not named"
+assert range(2, stop = 6) == [2, 3, 4, 5], "lone positional is start when stop named"
+assert range(start = 0, stop = 0) == [], "empty keyword range"
+
+# --- range adversarial ---
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+assert throws(Function(): return range()), "range() no args throws"
+assert throws(Function(): return range(0, 10, 0)), "range zero step throws"
+assert throws(Function(): return range(stop = 0, step = 0)), "range keyword zero step throws"
+assert throws(Function(): return range(2, 5, start = 1)), "range positional/keyword collision"
+assert throws(Function(): return range(1, 2, 3, 4)), "range too many positionals"
+assert throws(Function(): return range(bad = 1)), "range unknown keyword"
+
+# --- randrange: honors start/stop/step ---
+var rng = random.Random(seed = 12345)
+var seen = Set()
+var i = 0
+while i < 600:
+    var v = rng.randrange(5, 10)
+    assert v >= 5 and v < 10, "randrange(5,10) bounds"
+    seen.add(v)
+    var w = rng.randrange(0, 20, 5)
+    assert w == 0 or w == 5 or w == 10 or w == 15, "randrange step members"
+    i = i + 1
+assert seen == Set([5, 6, 7, 8, 9]), "randrange(5,10) covers all members"
+assert rng.randrange(stop = 3) < 3, "randrange(stop=)"
+assert rng.randrange(start = 7, stop = 8) == 7, "randrange single member"
+assert rng.randrange(10, 0, -1) <= 10, "randrange negative step in range"
+assert throws(Function(): return rng.randrange(5, 5)), "randrange empty throws"
+assert throws(Function(): return rng.randrange(0)), "randrange(0) empty throws"
+assert throws(Function(): return rng.randrange(5, 0)), "randrange backwards empty throws"
+
+# --- numeric edges: division, floor, power, wraparound, bases ---
+assert 7 / 2 == 3.5, "true division is Float"
+assert 7 // 2 == 3 and -7 // 2 == -4, "floor division rounds down"
+assert 7 % 3 == 1 and -7 % 3 == 2, "modulo sign follows divisor"
+assert 2 ** 10 == 1024 and 2 ** -1 == 0.5, "power"
+assert -2 ** 2 == -4, "unary binds looser than power"
+assert 0xFF == 255 and 0o17 == 15 and 0b1010 == 10, "base literals"
+assert 1e3 == 1000.0 and 2e-3 == 0.002, "scientific notation"
+assert type(7 // 2) == "Integer" and type(7 / 2) == "Float", "division types"
+
+# --- int64 wraparound is well-defined (no UB crash) ---
+var big = 9223372036854775807
+assert big + 1 == -9223372036854775808, "int64 overflow wraps two's complement"
+
+# --- resource guards throw instead of OOMing ---
+assert throws(Function(): return range(0, 10000000000000)), "huge range guarded"
+assert throws(Function(): return "x" * 10000000000000), "huge string repeat guarded"
+assert throws(Function(): return [0] * 10000000000000), "huge list repeat guarded"
+
+io.print("OK numbers")

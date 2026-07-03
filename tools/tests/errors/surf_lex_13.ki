@@ -1,0 +1,2 @@
+# LEXER: a lone '}' inside an f-string (must be doubled as '}}' to be literal)
+var s = f"closing brace here }"

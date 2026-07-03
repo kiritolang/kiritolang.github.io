@@ -1,0 +1,118 @@
+# ===================================================== MUTATING A COLLECTION WHILE ITERATING OVER IT
+# Kirito's `for` iterates a SNAPSHOT taken at loop start (Object::iterate returns a vector of the
+# element/key handles up front). So structural mutation during a loop is well-defined and SAFE: no
+# "dict changed size during iteration" error, no skipped elements when removing (no list-mutation
+# footgun), and never an infinite loop when appending. This spec pins exactly
+# that behavior. In-place mutation of a still-referenced nested object IS visible (same object).
+var io = import("io")
+
+# --- LIST: append during iteration -> the appended items are NOT visited this loop ---
+var xs = [1, 2, 3]
+var seen = []
+for x in xs:
+    seen.append(x)
+    if x == 1:
+        xs.append(99)          # grows the list, but the snapshot is fixed
+assert seen == [1, 2, 3], "append during iteration: only the original elements are visited"
+assert xs == [1, 2, 3, 99], "...but the append still took effect on the list"
+
+# --- LIST: removing every element still visits ALL originals (no skipping) ---
+var ys = [1, 2, 3, 4]
+var seen2 = []
+for y in ys:
+    seen2.append(y)
+    ys.remove(y)
+assert seen2 == [1, 2, 3, 4], "remove during iteration visits every original element (no skip)"
+assert ys == [], "...and the list is emptied"
+
+# --- LIST: clear() mid-iteration; the snapshot keeps the loop alive to completion ---
+var zs = [10, 20, 30]
+var n = 0
+for z in zs:
+    n = n + 1
+    zs.clear()
+assert n == 3, "clear() during iteration: loop still completes over the snapshot"
+assert len(zs) == 0, "...the list is empty afterward"
+
+# --- LIST: index-assignment during iteration doesn't change what the loop sees ---
+# (the snapshot captured the element handles at loop start; rebinding slot 0 doesn't rewrite them)
+var ws = [10, 20, 30]
+var got = []
+for w in ws:
+    got.append(w)
+    ws[0] = 999
+assert got == [10, 20, 30], "index-assign during iteration: loop sees the original values"
+assert ws == [999, 20, 30], "...the assignment still applied to the list"
+
+# --- LIST: in-place mutation of a NESTED element IS visible (it's the same object) ---
+var rows = [[1], [2], [3]]
+for r in rows:
+    r.append(0)
+assert rows == [[1, 0], [2, 0], [3, 0]], "mutating a referenced nested element in place is visible"
+
+# --- DICT: adding keys during iteration doesn't grow the loop and never errors ---
+var d = {"a": 1, "b": 2}
+var kc = 0
+for k in d:
+    kc = kc + 1
+    d["c"] = 3                 # fine in Kirito (snapshot iteration)
+assert kc == 2, "dict key iteration uses a snapshot: new keys are not visited"
+assert len(d) == 3, "...the new key was still added"
+
+# --- DICT: iterating .items()/.keys()/.values() snapshots too ---
+var d2 = {"x": 1}
+var pc = 0
+for pair in d2.items():
+    pc = pc + 1
+    d2["y"] = 2
+assert pc == 1, "dict.items() snapshot: only the original pair is visited"
+assert len(d2) == 2, "...the addition still happened"
+
+# --- DICT: deleting a key during iteration still visits every original key ---
+var d3 = {"a": 1, "b": 2, "c": 3}
+var dseen = []
+for k in d3.keys():
+    dseen.append(k)
+    discard d3.pop(k)
+assert len(dseen) == 3, "pop during dict iteration visits all original keys"
+assert len(d3) == 0, "...the dict ends empty"
+
+# --- SET: add during iteration; the snapshot is fixed ---
+var s = Set([1, 2, 3])
+var sc = 0
+for e in s:
+    sc = sc + 1
+    s.add(100 + e)
+assert sc == 3, "set add during iteration: only original members are visited"
+assert len(s) == 6, "...the new members were added"
+
+# --- SET: discard during iteration visits all originals ---
+var s2 = Set([1, 2, 3])
+var visited = 0
+for e in s2:
+    visited = visited + 1
+    s2.discard(e)
+assert visited == 3, "set discard during iteration visits every original member"
+assert len(s2) == 0, "...the set ends empty"
+
+# --- reversed()/enumerate()/zip() also operate on snapshots ---
+var rs = [1, 2, 3]
+var rev = []
+for v in reversed(rs):
+    rev.append(v)
+    rs.append(v * 10)
+assert rev == [3, 2, 1], "reversed() snapshots before any in-loop append"
+var es = [1, 2]
+var idxs = []
+for pair in enumerate(es):
+    idxs.append(pair[0])
+    es.append(0)
+assert idxs == [0, 1], "enumerate() snapshots the sequence"
+
+# --- a fresh `for` after mutation sees the current contents (snapshot is per-loop) ---
+var again = []
+for x in xs:                   # xs is [1, 2, 3, 99] from the first block
+    again.append(x)
+assert again == [1, 2, 3, 99], "a later loop snapshots the now-current contents"
+
+io.print("OK iter-mutation")

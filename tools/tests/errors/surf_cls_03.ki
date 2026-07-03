@@ -1,0 +1,6 @@
+# instantiating a class whose _init_ needs args without supplying them fails
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+discard Point()

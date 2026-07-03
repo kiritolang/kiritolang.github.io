@@ -1,0 +1,87 @@
+var _needsQuote = Function(field) -> Bool:
+    return "," in field or "\"" in field or "\n" in field or "\r" in field
+
+var formatrow = Function(fields) -> String:
+    var parts = []
+    for f in fields:
+        var s = String(f)
+        if _needsQuote(s):
+            s = "\"" + s.replace("\"", "\"\"") + "\""
+        parts.append(s)
+    return ",".join(parts)
+
+var format = Function(rows) -> String:
+    var lines = []
+    for row in rows:
+        lines.append(formatrow(row))
+    return "\n".join(lines)
+
+# Parse a SINGLE CSV record (no embedded newlines) into its fields — the public parserow(), kept
+# distinct from parse() which is the quote-state-aware whole-text reader.
+var parserow = Function(line):
+    var fields = []
+    var current = ""
+    var inQuotes = False
+    var i = 0
+    var n = len(line)
+    while i < n:
+        var c = line[i]
+        if inQuotes:
+            if c == "\"":
+                if i + 1 < n and line[i + 1] == "\"":
+                    current = current + "\""
+                    i = i + 1
+                else:
+                    inQuotes = False
+            else:
+                current = current + c
+        elif c == "\"":
+            inQuotes = True
+        elif c == ",":
+            fields.append(current)
+            current = ""
+        else:
+            current = current + c
+        i = i + 1
+    fields.append(current)
+    return fields
+
+var parse = Function(text):
+    # RFC-4180-aware parse: track quote state across the whole text so a quoted field may contain
+    # newlines without being split into separate rows. A `\n` is a row terminator only outside quotes.
+    var rows = []
+    var fields = []
+    var current = ""
+    var inQuotes = False
+    var i = 0
+    var n = len(text)
+    while i < n:
+        var c = text[i]
+        if inQuotes:
+            if c == "\"":
+                if i + 1 < n and text[i + 1] == "\"":
+                    current = current + "\""
+                    i = i + 1
+                else:
+                    inQuotes = False
+            else:
+                current = current + c
+        elif c == "\"":
+            inQuotes = True
+        elif c == ",":
+            fields.append(current)
+            current = ""
+        elif c == "\n":
+            fields.append(current)
+            rows.append(fields)
+            fields = []
+            current = ""
+        elif c == "\r":
+            pass        # \r is skipped (CRLF treated as LF)
+        else:
+            current = current + c
+        i = i + 1
+    if current != "" or len(fields) > 0:
+        fields.append(current)
+        rows.append(fields)
+    return rows

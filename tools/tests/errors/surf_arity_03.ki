@@ -1,0 +1,4 @@
+# positional argument after a keyword argument
+var f = Function(a, b):
+    return a
+discard f(a = 1, 2)

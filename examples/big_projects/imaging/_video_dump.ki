@@ -1,0 +1,17 @@
+# _video_dump.ki -- helper for compare_video_pillow.py: open the source in arglist[0], save up to
+# arglist[2] frames as PPM to the arglist[1] prefix, print the frame count. Not a standalone test.
+var cv = import("video")
+var io = import("io")
+
+var src = arglist[0]
+var prefix = arglist[1]
+var maxf = Integer(arglist[2])
+var cap = cv.VideoCapture(src)
+var i = 0
+var pair = cap.read()
+while pair[0] and i < maxf:
+    pair[1].save(prefix + String(i) + ".ppm")
+    i = i + 1
+    pair = cap.read()
+cap.release()
+io.print(i)

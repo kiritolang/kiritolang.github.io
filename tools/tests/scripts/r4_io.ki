@@ -1,0 +1,755 @@
+# Exhaustive, deterministic audit of the `io` stdlib module: the console functions (print / eprint /
+# write / input / read) over rebindable + interchangeable streams (the stream= keyword, stdout/stderr/
+# stdin rebinding and restore via __stdout__/__stderr__/__stdin__), text + BINARY file modes, the File
+# / BytesIO / StdStream objects and their methods, duck-typed streams, and the filesystem + path
+# helpers. Every assertion checks behavior confirmed against the implementation; only derived booleans
+# are asserted so the run is reproducible (no wall-clock / cwd / environment dependence). All file I/O
+# happens inside a uniquely-named scratch dir under the system temp directory, created up front and
+# removed at the end, so the test leaves NO trace and never depends on a cwd-relative writable path.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var time = import("time")
+
+# --- a UNIQUE private scratch directory under the OS temp dir (never the cwd) ---
+# The name carries two high-resolution clock reads so two concurrent runs never collide on a shared
+# path; output stays deterministic (the summary line is identical regardless of the chosen name).
+var uniq = String(time.perfcounterns()) + "_" + String(time.timens())
+var root = path.join(path.gettempdir(), "kirito_r4_io_" + uniq)
+discard path.remove(root, missing_ok = True)          # tolerant: a no-op if (impossibly) a stale one exists
+assert path.mkdir(root), "scratch dir created"
+var P = Function(name): return path.join(root, name)
+
+# Did calling a zero-arg thunk throw? (anonymous functions are single-line only, so multi-statement
+# thunks are named functions defined just above their use).
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch as e:
+        return True
+
+var n = 0   # assertion counter, for a deterministic final summary
+
+# ============================ open: modes, creation, error contract ============================
+
+var fp = P("text.txt")
+
+# "w" truncate-writes and creates; close is idempotent; every op on a closed file throws.
+var f = io.open(fp, "w")
+discard f.write("0123456789")
+f.close()
+f.close()   # idempotent: a double close is a harmless no-op
+n = n + 1
+assert throws(Function(): return f.write("x")), "write on a closed file throws"
+n = n + 1
+assert throws(Function(): return f.read()), "read on a closed file throws"
+n = n + 1
+assert throws(Function(): return f.readline()), "readline on a closed file throws"
+n = n + 1
+assert throws(Function(): return f.readlines()), "readlines on a closed file throws"
+n = n + 1
+assert throws(Function(): return f.seek(0)), "seek on a closed file throws"
+n = n + 1
+assert throws(Function(): return f.tell()), "tell on a closed file throws"
+n = n + 1
+assert throws(Function(): return f.writelines(["a"])), "writelines on a closed file throws"
+
+# read-only rejects writes; write-only rejects reads (both directions enforced, no silent drop).
+var ro = io.open(fp, "r")
+n = n + 1
+assert ro.read() == "0123456789", "read-only reads the file"
+n = n + 1
+assert throws(Function(): return ro.write("nope")), "write to a read-only file throws"
+ro.close()
+var wo = io.open(fp, "w")
+discard wo.write("0123456789")
+n = n + 1
+assert throws(Function(): return wo.read()), "read from a write-only file throws"
+n = n + 1
+assert throws(Function(): return wo.readline()), "readline from a write-only file throws"
+n = n + 1
+assert throws(Function(): return wo.readlines()), "readlines from a write-only file throws"
+var iterWriteOnly = Function():
+    var c = 0
+    for x in wo:
+        c = c + 1
+    return c
+n = n + 1
+assert throws(iterWriteOnly), "iterating a write-only file throws"
+wo.close()
+
+# "r+" reads AND writes in place (overwrite at the cursor).
+var rp = io.open(fp, "r+")
+n = n + 1
+assert rp.read(3) == "012", "r+ reads n chars"
+n = n + 1
+assert rp.tell() == 3, "r+ tell after a partial read"
+discard rp.write("XY")
+discard rp.seek(0)
+n = n + 1
+assert rp.read() == "012XY56789", "r+ overwrites at the cursor"
+rp.close()
+
+# "a" appends to the end (and works as a `with` context manager on the read-back).
+var fa = io.open(fp, "a")
+discard fa.write("Z")
+fa.close()
+with io.open(fp, "r") as fr:
+    n = n + 1
+    assert fr.read() == "012XY56789Z", "append mode appends to the end"
+
+# open of a missing file (read) throws; an unsupported / empty / lone-"b" mode throws; "r+"/"r+b" do
+# NOT create a missing file (in|out without trunc), so opening one throws and leaves nothing behind.
+n = n + 1
+assert throws(Function(): return io.open(P("does_not_exist.zzz"), "r")), "open missing (r) throws"
+n = n + 1
+assert throws(Function(): return io.open(fp, "x")), "an unsupported mode throws"
+n = n + 1
+assert throws(Function(): return io.open(fp, "")), "an empty mode throws"
+n = n + 1
+assert throws(Function(): return io.open(fp, "b")), "a lone 'b' mode throws"
+var rplusMissing = P("rplus_missing.txt")
+discard path.remove(rplusMissing, missing_ok = True)
+n = n + 1
+assert throws(Function(): return io.open(rplusMissing, "r+")), "r+ on a missing file throws"
+n = n + 1
+assert not path.exists(rplusMissing), "r+ on a missing file does not create it"
+
+# open type errors: path / mode must be Strings.
+n = n + 1
+assert throws(Function(): return io.open(123, "r")), "open rejects a non-String path"
+n = n + 1
+assert throws(Function(): return io.open(fp, 5)), "open rejects a non-String mode"
+
+# open is signatured: keyword arguments bind.
+with io.open(path = fp, mode = "r") as fk:
+    n = n + 1
+    assert fk.read() == "012XY56789Z", "open accepts keyword arguments"
+
+# ============================ File: read / readline / readlines / write / iterate ============================
+
+# writelines + line iteration (the trailing newline is stripped per line, getline-style).
+var fw = io.open(fp, "w")
+fw.writelines(["a\n", "b\n", "c\n"])
+fw.close()
+var collected = []
+with io.open(fp, "r") as it:
+    for ln in it:
+        collected.append(ln)
+n = n + 1
+assert collected == ["a", "b", "c"], "writelines + line iteration strips newlines"
+
+# readlines reads all remaining lines into a List (newlines stripped).
+with io.open(fp, "r") as rl:
+    n = n + 1
+    assert rl.readlines() == ["a", "b", "c"], "readlines returns every line"
+
+# readline reads one line at a time; the final unterminated chunk is returned, then "" at EOF.
+var fnl = io.open(fp, "w")
+discard fnl.write("p\nq\nr")          # no trailing newline on the last line
+fnl.close()
+var fr2 = io.open(fp, "r")
+n = n + 1
+assert fr2.readline() == "p", "readline 1"
+n = n + 1
+assert fr2.readline() == "q", "readline 2"
+n = n + 1
+assert fr2.readline() == "r", "readline 3 (no trailing newline)"
+n = n + 1
+assert fr2.readline() == "", "readline at EOF is empty"
+fr2.close()
+
+# read(n) reads exactly n chars; read() reads the rest; read(-1) reads all (negative size == read-all).
+var fr3 = io.open(fp, "w")
+discard fr3.write("hello world")
+fr3.close()
+var fr4 = io.open(fp, "r")
+n = n + 1
+assert fr4.read(5) == "hello", "read(n) reads exactly n"
+n = n + 1
+assert fr4.read() == " world", "read() reads the remainder"
+fr4.close()
+var fr5 = io.open(fp, "r")
+n = n + 1
+assert fr5.read(-1) == "hello world", "read(-1) reads everything"
+fr5.close()
+
+# write rejects a non-String/Bytes argument (a write is never silently coerced); writelines too.
+var fwt = io.open(fp, "w")
+n = n + 1
+assert throws(Function(): return fwt.write(123)), "File.write rejects a non-String/Bytes"
+n = n + 1
+assert throws(Function(): return fwt.writelines(42)), "File.writelines rejects a non-iterable"
+n = n + 1
+assert throws(Function(): return fwt.writelines([1, 2, 3])), "File.writelines rejects non-String/Bytes items"
+fwt.close()
+
+# flush returns None; tell tracks the write cursor.
+var ff = io.open(fp, "w")
+discard ff.write("abc")
+n = n + 1
+assert ff.tell() == 3, "tell after a write"
+n = n + 1
+assert ff.flush() == None, "flush returns None"
+ff.close()
+
+# ============================ File: reading past EOF, seek / tell semantics ============================
+
+var fseek = io.open(fp, "w")
+discard fseek.write("0123456789")     # exactly 10 bytes
+fseek.close()
+
+# tell after an exact read is the byte length; an over-long read returns what's there, and tell still
+# reports the position (the EOF bit is cleared for tell) rather than -1.
+var fe = io.open(fp, "r")
+discard fe.read(10)
+n = n + 1
+assert fe.tell() == 10, "tell after an exact read is the byte length"
+fe.close()
+var fe2 = io.open(fp, "r")
+n = n + 1
+assert fe2.read(1000) == "0123456789", "an over-long read returns only what's there"
+n = n + 1
+assert fe2.read() == "", "read at EOF is empty (not an error)"
+n = n + 1
+assert fe2.readline() == "", "readline at EOF is empty"
+n = n + 1
+assert fe2.tell() == 10, "tell after an over-long read reports the length, not -1"
+fe2.close()
+
+# seek with whence 0/1/2 returns the new position; from-end and relative both resolve correctly.
+var fs = io.open(fp, "r")
+n = n + 1
+assert fs.seek(4) == 4, "seek(4) returns the new position"
+n = n + 1
+assert fs.tell() == 4, "tell agrees with seek"
+n = n + 1
+assert fs.seek(2, 1) == 6, "seek whence=1 is relative to current"
+n = n + 1
+assert fs.read(1) == "6", "read after a relative seek"
+n = n + 1
+assert fs.seek(0, 2) == 10, "seek whence=2 from the end lands at the length"
+n = n + 1
+assert fs.seek(-3, 2) == 7, "seek(-3, end) lands 3 before the end"
+n = n + 1
+assert fs.read() == "789", "read after an end-relative seek"
+fs.close()
+
+# seek validation: an out-of-range whence and a negative resulting position both throw.
+var fsv = io.open(fp, "r")
+n = n + 1
+assert throws(Function(): return fsv.seek(0, 3)), "seek whence=3 throws"
+n = n + 1
+assert throws(Function(): return fsv.seek(0, -1)), "seek whence=-1 throws"
+n = n + 1
+assert throws(Function(): return fsv.seek(-5, 0)), "a negative absolute seek throws"
+fsv.close()
+
+# a File can seek BEYOND end safely: reads there are empty, no crash.
+var fb = io.open(fp, "r")
+n = n + 1
+assert fb.seek(500) == 500, "File seek beyond end moves tell"
+n = n + 1
+assert fb.tell() == 500, "tell reflects a beyond-end seek"
+n = n + 1
+assert fb.read() == "", "File read beyond end is empty (safe)"
+n = n + 1
+assert fb.read(5) == "", "File read(n) beyond end is empty (safe)"
+fb.close()
+
+# ============================ File: binary mode (Bytes) ============================
+
+var bp = P("blob.dat")
+# "wb": write accepts Bytes; embeds NULs, high bytes (0..255), and newlines.
+var bf = io.open(bp, "wb")
+discard bf.write(Bytes([0, 1, 255, 65, 10, 66, 10]))
+bf.close()
+
+# "rb": read / readline / iteration yield Bytes; bytes are exact 0..255; read(n) counts BYTES.
+var br = io.open(bp, "rb")
+var blob = br.read()
+n = n + 1
+assert type(blob) == "Bytes", "binary read yields Bytes"
+n = n + 1
+assert len(blob) == 7, "binary read returns every byte"
+n = n + 1
+assert blob[0] == 0 and blob[2] == 255 and blob[3] == 65, "binary bytes are exact (0..255)"
+br.close()
+var br2 = io.open(bp, "rb")
+n = n + 1
+assert type(br2.readline()) == "Bytes", "binary readline yields Bytes"
+var binEof = br2.readline()
+br2.close()
+var br3 = io.open(bp, "rb")
+n = n + 1
+assert br3.read(3) == Bytes([0, 1, 255]), "binary read(3) counts bytes and is exact"
+br3.close()
+var br4 = io.open(bp, "rb")
+var biter = []
+for chunk in br4:
+    biter.append(type(chunk))
+br4.close()
+n = n + 1
+assert len(biter) >= 1 and biter[0] == "Bytes", "binary iteration yields Bytes"
+
+# binary write accepts a plain String too (byte-transparent); a binary readline at EOF is empty Bytes.
+var bw = io.open(bp, "wb")
+discard bw.write("A\n")
+bw.close()
+var be = io.open(bp, "rb")
+n = n + 1
+assert be.readline() == Bytes([65]), "binary readline strips the newline, returns Bytes"
+var beEof = be.readline()
+n = n + 1
+assert type(beEof) == "Bytes" and len(beEof) == 0, "binary readline at EOF is empty Bytes"
+be.close()
+
+# a Bytes round-trips byte-exactly through a binary file (the binary-I/O use case).
+var rt = Bytes([0, 127, 128, 255, 10, 13, 0])
+var rtf = io.open(bp, "wb")
+discard rtf.write(rt)
+rtf.close()
+var rtr = io.open(bp, "rb")
+n = n + 1
+assert rtr.read() == rt, "Bytes round-trips byte-exactly through a binary file"
+rtr.close()
+discard path.remove(bp, missing_ok = True)
+
+# ============================ BytesIO ============================
+
+# read / getvalue return String (Kirito Strings are byte-transparent); len == size.
+var b = io.BytesIO("0123456789")
+n = n + 1
+assert type(b.read()) == "String", "BytesIO.read returns a String"
+b.seek(0)
+n = n + 1
+assert b.read(5) == "01234", "BytesIO.read(n) reads n bytes"
+n = n + 1
+assert type(b.getvalue()) == "String", "BytesIO.getvalue returns a String"
+n = n + 1
+assert len(b) == b.size() and len(b) == 10, "len(BytesIO) == size()"
+
+# read(None) and read(huge) both read the rest; getvalue is non-consuming.
+var bn = io.BytesIO("abcde")
+n = n + 1
+assert bn.read(None) == "abcde", "BytesIO.read(None) reads everything"
+var bh = io.BytesIO("xy")
+n = n + 1
+assert bh.read(100) == "xy", "BytesIO.read past the end returns only what's there"
+var bg = io.BytesIO("keep")
+n = n + 1
+assert bg.getvalue() == bg.getvalue() and bg.getvalue() == "keep", "getvalue is non-consuming"
+
+# write at the cursor overwrites in place and returns the byte count.
+var bwc = io.BytesIO("0123456789")
+bwc.seek(3)
+n = n + 1
+assert bwc.write("XY") == 2, "BytesIO.write returns the byte count"
+n = n + 1
+assert bwc.getvalue() == "012XY56789", "BytesIO write overwrites at the cursor"
+n = n + 1
+assert bwc.tell() == 5, "BytesIO cursor advances by what was written"
+
+# seek whences: 0=start, 1=cur, 2=end; a negative result clamps to 0.
+var b2 = io.BytesIO("abcdef")
+b2.seek(2)
+n = n + 1
+assert b2.seek(2, 1) == 4, "BytesIO seek whence=1 is relative"
+n = n + 1
+assert b2.read() == "ef", "read after a relative seek"
+n = n + 1
+assert b2.seek(-2, 2) == 4, "BytesIO seek whence=2 is from the end"
+n = n + 1
+assert b2.seek(-100, 0) == 0, "a negative absolute seek clamps to 0"
+n = n + 1
+assert b2.read() == "abcdef", "read after a clamped seek"
+n = n + 1
+assert throws(Function(): return b2.seek(0, 3)), "BytesIO seek whence=3 throws"
+
+# write beyond the end zero-fills the gap (no garbage).
+var b3 = io.BytesIO("ab")
+discard b3.seek(5)
+discard b3.write("Z")
+n = n + 1
+assert len(b3) == 6, "write beyond end grows the buffer"
+n = n + 1
+assert b3.getvalue().encode("latin-1") == Bytes([97, 98, 0, 0, 0, 90]), "the gap is zero-filled"
+
+# truncate drops everything after the cursor and returns the new length.
+var b4 = io.BytesIO("0123456789")
+b4.seek(4)
+n = n + 1
+assert b4.truncate() == 4, "truncate returns the new length"
+n = n + 1
+assert b4.getvalue() == "0123", "truncate cuts at the cursor"
+
+# readline includes up to a newline; the final unterminated chunk is returned, then "" at EOF.
+var b5 = io.BytesIO("p\nq\nr")
+n = n + 1
+assert b5.readline() == "p", "BytesIO readline 1"
+n = n + 1
+assert b5.readline() == "q", "BytesIO readline 2"
+n = n + 1
+assert b5.readline() == "r", "BytesIO readline 3 (no trailing newline)"
+n = n + 1
+assert b5.readline() == "", "BytesIO readline at EOF is empty"
+
+# BytesIO("initial") preloads; arbitrary binary round-trips via latin-1.
+var b6 = io.BytesIO(Bytes([200, 0, 13, 255]).decode("latin-1"))
+n = n + 1
+assert b6.getvalue().encode("latin-1") == Bytes([200, 0, 13, 255]), "BytesIO byte round-trip"
+
+# default constructor is empty; flush is a no-op (None); close is a no-op; works as a `with` manager.
+var b7 = io.BytesIO()
+n = n + 1
+assert len(b7) == 0 and b7.getvalue() == "", "BytesIO() is empty"
+n = n + 1
+assert b7.flush() == None, "BytesIO.flush is a None no-op"
+n = n + 1
+assert b7.close() == None, "BytesIO.close is a None no-op"
+var withResult = ""
+with io.BytesIO() as bw2:
+    discard bw2.write("inside")
+    withResult = bw2.getvalue()
+n = n + 1
+assert withResult == "inside", "BytesIO works as a with-context manager"
+
+# reading / readline after seeking BEYOND end is empty (safe, no crash); reads work again after seeking back.
+var bx = io.BytesIO("abc")
+discard bx.seek(10)
+n = n + 1
+assert bx.tell() == 10, "BytesIO seek past end moves tell"
+n = n + 1
+assert bx.read() == "", "BytesIO read past end is empty (safe)"
+n = n + 1
+assert bx.readline() == "", "BytesIO readline past end is empty (safe)"
+bx.seek(1)
+n = n + 1
+assert bx.read() == "bc", "BytesIO read works again after seeking back in range"
+
+# hostile constructor / write inputs throw.
+n = n + 1
+assert throws(Function(): return io.BytesIO(123)), "BytesIO(non-String) throws"
+n = n + 1
+assert throws(Function(): return io.BytesIO(Bytes([1, 2]))), "BytesIO(Bytes) throws (initial must be a String)"
+var bWrite = io.BytesIO()
+n = n + 1
+assert throws(Function(): return bWrite.write(42)), "BytesIO.write(non-String/Bytes) throws"
+
+# ============================ Console: stream rebinding + restore ============================
+
+# rebind io.stdout to a BytesIO, then restore from __stdout__ (print = space-sep + newline + flush;
+# write = raw, no separator, no newline).
+var cap = io.BytesIO()
+io.stdout = cap
+io.print("redir", 7)
+io.write("raw")
+io.stdout = io.__stdout__
+n = n + 1
+assert cap.getvalue() == "redir 7\nraw", "stdout rebinding captures print + write"
+
+# print()/write() with no args: an empty line / nothing.
+var capE = io.BytesIO()
+io.stdout = capE
+io.print()
+io.write()
+io.stdout = io.__stdout__
+n = n + 1
+assert capE.getvalue() == "\n", "print() writes just a newline; write() writes nothing"
+
+# print/write argument spacing.
+var capS = io.BytesIO()
+io.stdout = capS
+io.print(1, 2, 3)
+io.write("a", "b", "c")
+io.stdout = io.__stdout__
+n = n + 1
+assert capS.getvalue() == "1 2 3\nabc", "print is space-separated; write is not"
+
+# stderr is independently rebindable; eprint targets it and restores from __stderr__.
+var ecap = io.BytesIO()
+io.stderr = ecap
+io.eprint("oops", 1)
+io.stderr = io.__stderr__
+n = n + 1
+assert ecap.getvalue() == "oops 1\n", "stderr rebinding captures eprint"
+
+# stdin is rebindable; input() reads one line (newline stripped), read()/read(n) consume chars.
+io.stdin = io.BytesIO("alpha\nbeta\nrest of it")
+var a1 = io.input()
+var a2 = io.input()
+var a3 = io.read()
+io.stdin = io.__stdin__
+n = n + 1
+assert a1 == "alpha" and a2 == "beta" and a3 == "rest of it", "stdin rebinding feeds input + read"
+io.stdin = io.BytesIO("0123456789")
+var r1 = io.read(4)
+var r2 = io.read(3)
+io.stdin = io.__stdin__
+n = n + 1
+assert r1 == "0123" and r2 == "456", "read(n) reads exactly n from a redirected stdin"
+
+# input() writes its prompt to the CURRENT stdout (honoring a rebinding), then reads the line.
+var promptCap = io.BytesIO()
+io.stdout = promptCap
+io.stdin = io.BytesIO("Alice\n")
+var nm = io.input("Name? ")
+io.stdout = io.__stdout__
+io.stdin = io.__stdin__
+n = n + 1
+assert promptCap.getvalue() == "Name? " and nm == "Alice", "input writes the prompt to the current stdout"
+
+# a real File serves as stdout, interchangeably with the std streams.
+var streamFile = P("stream_out.txt")
+var sfo = io.open(streamFile, "w")
+io.stdout = sfo
+io.print("into the file")
+io.stdout = io.__stdout__
+sfo.close()
+with io.open(streamFile, "r") as sfr:
+    n = n + 1
+    assert sfr.read() == "into the file\n", "a File works as stdout"
+discard path.remove(streamFile, missing_ok = True)
+
+# ============================ Console: the stream= keyword ============================
+
+# per-call stream= overrides without touching the std slots.
+var sink = io.BytesIO()
+var untouched = io.BytesIO()
+io.stdout = untouched
+io.print("to-sink", stream=sink)
+io.write("more", stream=sink)
+io.stdout = io.__stdout__
+n = n + 1
+assert sink.getvalue() == "to-sink\nmore", "stream= directs that one call"
+n = n + 1
+assert untouched.getvalue() == "", "stream= leaves the std slot alone"
+
+# eprint stream= routes to a buffer without touching stderr.
+var esink = io.BytesIO()
+io.eprint("e", 2, stream=esink)
+n = n + 1
+assert esink.getvalue() == "e 2\n", "eprint stream= directs that one call"
+
+# read / input from a BytesIO via stream=.
+var feed = io.BytesIO("one\ntwo\nrest")
+n = n + 1
+assert io.input(stream=feed) == "one", "input one line from stream="
+n = n + 1
+assert io.read(3, stream=feed) == "two", "read(n) from stream="
+n = n + 1
+assert io.read(stream=feed) == "\nrest", "read() (rest) from stream="
+
+# stream= to a closed-file stream throws (caught), not silently dropped.
+var cf = io.open(fp, "w")
+cf.close()
+n = n + 1
+assert throws(Function(): return io.print("x", stream=cf)), "print to a closed-file stream throws"
+
+# a non-stream stream= and an unknown keyword both throw, on every console function.
+n = n + 1
+assert throws(Function(): return io.print("x", stream=42)), "print stream=non-stream throws"
+n = n + 1
+assert throws(Function(): return io.eprint("x", stream=42)), "eprint stream=non-stream throws"
+n = n + 1
+assert throws(Function(): return io.write("x", stream=42)), "write stream=non-stream throws"
+n = n + 1
+assert throws(Function(): return io.input(stream=42)), "input stream=non-stream throws"
+n = n + 1
+assert throws(Function(): return io.read(stream=42)), "read stream=non-stream throws"
+n = n + 1
+assert throws(Function(): return io.print("x", bogus=1)), "print rejects an unknown keyword"
+n = n + 1
+assert throws(Function(): return io.eprint("x", bogus=1)), "eprint rejects an unknown keyword"
+n = n + 1
+assert throws(Function(): return io.write("x", bogus=1)), "write rejects an unknown keyword"
+n = n + 1
+assert throws(Function(): return io.input(stream=io.BytesIO("a\n"), bogus=1)), "input rejects an unknown keyword"
+n = n + 1
+assert throws(Function(): return io.read(stream=io.BytesIO("a"), bogus=1)), "read rejects an unknown keyword"
+
+# ============================ Console: duck-typed streams ============================
+
+# any object exposing write() can be stdout.
+class CaptureOut:
+    var _init_ = Function(self):
+        self.parts = []
+    var write = Function(self, s):
+        self.parts.append(s)
+var duckOut = CaptureOut()
+io.stdout = duckOut
+io.print("a", 1)
+io.write("b")
+io.stdout = io.__stdout__
+n = n + 1
+assert "".join(duckOut.parts) == "a 1\nb", "a duck object with write() serves as stdout"
+
+# an object exposing readline()/read() can be stdin (input via stream=, read via stream=).
+class CaptureIn:
+    var _init_ = Function(self):
+        self.buf = io.BytesIO("l1\nl2\nl3l4")
+    var readline = Function(self):
+        return self.buf.readline()
+    var read = Function(self, size = -1):
+        if size < 0:
+            return self.buf.read()
+        return self.buf.read(size)
+var duckIn = CaptureIn()
+n = n + 1
+assert io.input(stream=duckIn) == "l1", "input from a duck object's readline"
+n = n + 1
+assert io.read(2, stream=duckIn) == "l2", "read(n) from a duck object's read"
+n = n + 1
+assert io.read(stream=duckIn) == "\nl3l4", "read() from a duck object's read"
+
+# an object missing write() cannot serve as stdout (print throws).
+class NoWrite:
+    var noop = Function(self): return 1
+io.stdout = NoWrite()
+var printToBad = throws(Function(): return io.print("x"))
+io.stdout = io.__stdout__
+n = n + 1
+assert printToBad, "print to a stdout object lacking write() throws"
+
+# ============================ Filesystem: exists / isfile / isdir / getsize / listdir / walk ============================
+
+var ddir = P("fs")
+n = n + 1
+assert path.mkdir(ddir), "mkdir creates a directory (returns True)"
+n = n + 1
+assert throws(Function(): return path.mkdir(ddir)), "mkdir on an existing directory RAISES by default"
+n = n + 1
+assert path.mkdir(ddir, exist_ok = True) == False, "mkdir(exist_ok=True) on an existing directory is a no-op (False)"
+n = n + 1
+assert path.isdir(ddir) and not path.isfile(ddir), "isdir/isfile on a directory"
+
+var inside = path.join(ddir, "x.txt")
+with io.open(inside, "w") as nf:
+    discard nf.write("hello")
+n = n + 1
+assert path.exists(inside) and path.isfile(inside) and not path.isdir(inside), "exists/isfile/isdir on a file"
+n = n + 1
+assert path.getsize(inside) == 5, "getsize counts bytes"
+n = n + 1
+assert "x.txt" in path.listdir(ddir), "listdir lists the entry"
+n = n + 1
+assert len(path.walk(ddir)) == 1, "walk finds the one file"
+
+# nested directories: walk is recursive (flattened), listdir is shallow.
+var subdir = path.join(ddir, "sub")
+discard path.mkdir(subdir, exist_ok = True)
+with io.open(path.join(subdir, "y.txt"), "w") as nf2:
+    discard nf2.write("yy")
+n = n + 1
+assert len(path.walk(ddir)) == 2, "walk recurses into subdirectories"
+var names = path.listdir(ddir)
+n = n + 1
+assert "x.txt" in names and "sub" in names, "listdir is shallow (lists the subdir, not its contents)"
+n = n + 1
+assert len(path.listdir(ddir)) == 2, "listdir does not recurse"
+
+# rename moves a file (overwriting any destination); remove deletes and reports success.
+var moved = path.join(ddir, "moved.txt")
+path.rename(inside, moved)
+n = n + 1
+assert path.exists(moved) and not path.exists(inside), "rename moves the file"
+n = n + 1
+assert path.remove(moved) and not path.exists(moved), "remove deletes a file and returns True"
+
+# missing-path semantics: getsize/rename RAISE; remove of a missing path is a tolerant no-op (False);
+# exists/isfile/isdir are False; listdir/walk of a missing dir are empty.
+var missing = P("missing_path")
+discard path.remove(missing, missing_ok = True)
+n = n + 1
+assert throws(Function(): return path.getsize(missing)), "getsize of a missing path throws"
+n = n + 1
+assert throws(Function(): return path.rename(missing, P("missing_dst"))), "rename of a missing path throws"
+n = n + 1
+assert throws(Function(): return path.remove(missing)), "remove of a missing path RAISES by default"
+n = n + 1
+assert path.remove(missing, missing_ok = True) == False, "remove(missing_ok=True) of a missing path is False"
+n = n + 1
+assert not path.exists(missing), "exists is False for a missing path"
+n = n + 1
+assert not path.isfile(missing) and not path.isdir(missing), "isfile/isdir are False for a missing path"
+n = n + 1
+assert path.listdir(P("missing_dir")) == [], "listdir of a missing dir is empty"
+n = n + 1
+assert path.walk(P("missing_dir")) == [], "walk of a missing dir is empty"
+
+# getsize on a directory throws (it isn't a regular file).
+n = n + 1
+assert throws(Function(): return path.getsize(ddir)), "getsize of a directory throws"
+
+# getcwd is a non-empty String.
+n = n + 1
+assert type(path.getcwd()) == "String" and path.getcwd() != "", "getcwd returns a non-empty String"
+
+# filesystem type errors throw.
+n = n + 1
+assert throws(Function(): return path.exists(123)), "exists rejects a non-String"
+n = n + 1
+assert throws(Function(): return path.getsize(123)), "getsize rejects a non-String"
+n = n + 1
+assert throws(Function(): return path.rename(1, "x")), "rename rejects a non-String"
+n = n + 1
+assert throws(Function(): return path.mkdir(1)), "mkdir rejects a non-String"
+
+# ============================ chmod ============================
+
+var perm = path.join(ddir, "perm.txt")
+with io.open(perm, "w") as pf:
+    discard pf.write("x")
+n = n + 1
+assert path.chmod(perm, 0o600) == True, "chmod returns True on success"
+n = n + 1
+assert path.chmod(path = perm, mode = 0o644) == True, "chmod accepts keyword arguments"
+n = n + 1
+assert path.chmod(P("chmod_missing"), 0o644) == False, "chmod of a missing path returns False (no throw)"
+n = n + 1
+assert throws(Function(): return path.chmod(perm, "755")), "chmod rejects a non-Integer mode"
+discard path.remove(perm, missing_ok = True)
+
+# clean out the nested fs tree.
+discard path.remove(path.join(subdir, "y.txt"), missing_ok = True)
+discard path.remove(subdir, missing_ok = True)
+discard path.remove(ddir, missing_ok = True)
+
+# ============================ Path helpers: dirname / basename / splitext / join ============================
+
+# normalize backslashes so the assertions hold on Windows too.
+var nslash = Function(s): return s.replace("\\", "/")
+
+n = n + 1
+assert path.basename("/a/b/c.txt") == "c.txt", "basename"
+n = n + 1
+assert path.basename("just") == "just", "basename of a bare name"
+n = n + 1
+assert path.basename("a/b/") == "", "basename of a trailing slash is empty"
+n = n + 1
+assert nslash(path.dirname("/a/b/c.txt")) == "/a/b", "dirname"
+n = n + 1
+assert path.dirname("bare") == "", "dirname of a bare name is empty"
+n = n + 1
+assert path.splitext("a.tar.gz") == ["a.tar", ".gz"], "splitext takes the last extension"
+n = n + 1
+assert path.splitext("noext") == ["noext", ""], "splitext with no extension"
+n = n + 1
+assert path.splitext(".hidden") == [".hidden", ""], "splitext of a dotfile has no extension"
+n = n + 1
+assert path.splitext("a.") == ["a", "."], "splitext of a bare trailing dot"
+n = n + 1
+assert throws(Function(): return path.basename(123)), "basename rejects a non-String"
+
+# ============================ tear down + deterministic summary ============================
+
+# remove any leftover top-level scratch file, then the (now-empty) scratch dir; confirm no trace.
+discard path.remove(fp, missing_ok = True)
+discard path.remove(rplusMissing, missing_ok = True)
+assert path.remove(root), "scratch dir removed"
+n = n + 1
+assert not path.exists(root), "scratch dir leaves no trace"
+n = n + 1
+
+io.print("r4_io: all", n, "assertions passed")

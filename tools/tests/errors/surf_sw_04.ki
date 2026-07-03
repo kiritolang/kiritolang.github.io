@@ -1,0 +1,4 @@
+# a non-scalar (list) case label is rejected
+switch 1:
+    case [1]:
+        discard 1

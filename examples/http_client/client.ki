@@ -1,0 +1,65 @@
+# A real HTTP client application exercising the full net library against the companion server.ki:
+# typed responses, JSON, POST bodies, redirects, basic auth, query params, sessions/cookies, and
+# error handling. Prints "ok <name>" per check and "ALL OK" at the end; throws (non-zero exit) on
+# any failure. The argument is the server's port.
+var net = import("net")
+var io = import("io")
+
+var base = "http://127.0.0.1:" + arglist[0]
+
+var check = Function(name, cond):
+    if not cond:
+        throw "FAIL: " + name
+    io.print("ok " + name)
+
+# --- GET: text + Response attributes ---
+var r = net.get(base + "/hello")
+check("get text", r.text == "hello world")
+check("status/ok/reason", r.status == 200 and r.ok and len(r.reason) >= 0)
+check("content-type header", r.header("Content-Type") == "text/plain")
+
+# --- GET: JSON decoding ---
+var j = net.get(base + "/json").json()
+check("json fields", j["name"] == "kirito" and j["items"] == [1, 2, 3] and j["ok"] == True)
+
+# --- POST: json body round-trips through /echo ---
+var echo = net.post(base + "/echo", {"json": {"x": 42, "msg": "hello"}}).json()
+check("post json echo", echo["x"] == 42 and echo["msg"] == "hello")
+
+# --- POST: form data ---
+var fecho = net.post(base + "/echo", {"data": {"a": "1", "b": "two words"}})
+check("post form body", "a=1" in fecho.text and "b=two%20words" in fecho.text)
+
+# --- redirect following ---
+var rr = net.get(base + "/redirect")
+check("redirect followed", rr.text == "redirected ok" and rr.url.endswith("/target"))
+
+# --- 404 + raiseforstatus ---
+check("404 status", net.get(base + "/missing").status == 404)
+var threw = False
+try:
+    net.get(base + "/missing").raiseforstatus()
+catch as e:
+    threw = True
+check("raiseforstatus throws", threw)
+
+# --- basic auth ---
+check("protected denied", net.get(base + "/protected").status == 401)
+var pr = net.get(base + "/protected", {"auth": ["user", "pass"]})
+check("protected with auth", pr.status == 200 and pr.text == "secret data")
+
+# --- query params ---
+var pq = net.get(base + "/params", {"params": {"q": "kirito lang", "n": "5"}})
+check("params encoded", "q=kirito%20lang" in pq.text and "n=5" in pq.text)
+
+# --- session: cookie set by /login is resent to /me ---
+var session = net.Session()
+var login = session.get(base + "/login")
+check("login set cookie", login.cookies["sid"] == "SECRET123")
+check("session resends cookie", "sid=SECRET123" in session.get(base + "/me").text)
+
+# --- explicit method + Response repr ---
+check("request() verb", net.request("GET", base + "/hello").status == 200)
+
+io.print("ALL OK")
+discard net.get(base + "/shutdown")

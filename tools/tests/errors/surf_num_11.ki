@@ -1,0 +1,3 @@
+# acosh below 1 is a math domain error.
+var m = import("math")
+discard m.acosh(0)

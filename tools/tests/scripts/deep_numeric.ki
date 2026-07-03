@@ -1,0 +1,398 @@
+# deep_numeric.ki — adversarial audit of Kirito's numeric stack (math/tensor/complex/matrix/random
+# + Integer/Float semantics). Goes deeper than audit_*/spec_* by pinning edge-case behavior the
+# existing suites don't cover: IEEE domain edges, two's-complement wraparound, tensor div-by-zero
+# policy and the negative-axis behavior, complex 0**0 / is_zero thresholds, and RNG determinism.
+#
+# Each block prints exactly `True` lines; a trailing counter confirms none silently vanished.
+var io = import("io")
+var math = import("math")
+var T = import("tensor")
+var C = import("complex")
+var matrix = import("matrix")
+var random = import("random")
+
+# absolute-tolerance float compare (never exact == on transcendental results)
+var approx = Function(x, y) -> Bool:
+    var d = x - y
+    if d < 0:
+        d = -d
+    return d < 0.000000001
+
+var n = 0
+var check = Function(b):
+    assert b, "deep_numeric assertion failed"
+    io.print(b)
+
+# True iff calling `thunk` throws (for asserting domain errors now throw instead of returning NaN/inf)
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        return True
+    return False
+
+# =================================================================================================
+# Integer / Float semantics — overflow, division-by-zero, ** edge cases, promotion
+# =================================================================================================
+# 0**0 is 1 in every numeric flavour
+check(0 ** 0 == 1)
+check(0.0 ** 0 == 1.0)
+check(0 ** 0.0 == 1.0)
+n = n + 3
+
+# negative integer exponent promotes to Float; 0**-n throws (1/0)
+check(2 ** -1 == 0.5)
+check(type(2 ** -1) == "Float")
+var negpow_raised = 0
+for thunk in [Function(): return 0 ** -1, Function(): return 0.0 ** -2]:
+    try:
+        discard thunk()
+    catch as e:
+        negpow_raised = negpow_raised + 1
+check(negpow_raised == 2)
+n = n + 3
+
+# integer ** uses fast-exponentiation and WRAPS silently (well-defined two's complement); even a
+# 10^12 exponent returns instantly (it is O(log exp)), never hangs and never guards.
+check(10 ** 100 == 0)            # repeated squaring carries a factor 2^k -> wraps to 0
+check(2 ** 1000000000 == 0)
+n = n + 2
+
+# scalar division by zero RAISES for /, //, and % (all three)
+var div0_raised = 0
+for thunk in [Function(): return 1 / 0, Function(): return 1 // 0, Function(): return 5 % 0, Function(): return 1.0 / 0.0]:
+    try:
+        discard thunk()
+    catch as e:
+        div0_raised = div0_raised + 1
+check(div0_raised == 4)
+n = n + 1
+
+# int64 wraparound at the boundaries (MIN/MAX), well-defined, never traps
+check(9223372036854775807 + 1 == -9223372036854775808)
+check(-9223372036854775808 - 1 == 9223372036854775807)
+check(-9223372036854775808 * -1 == -9223372036854775808)   # -MIN overflows back to MIN
+check(abs(-9223372036854775808) == -9223372036854775808)    # abs(MIN) cannot be represented
+n = n + 4
+
+# // floors toward -inf, % takes the sign of the divisor, across all sign combinations
+check(-7 // 2 == -4 and 7 // -2 == -4 and -7 // -2 == 3)
+check(-7 % 3 == 2 and 7 % -3 == -2 and -7 % -3 == -1)
+check(divmod(-7, 3) == [-3, 2])
+n = n + 3
+
+# mixed int/float promotes to Float
+check(type(1 + 2.0) == "Float" and type(3 * 2.0) == "Float")
+check(7 / 2 == 3.5 and type(4 / 2) == "Float")
+n = n + 2
+
+# =================================================================================================
+# math — domain edges RAISE (no silent NaN/inf), gcd/lcm/factorial/comb/perm guards, atan2
+# =================================================================================================
+# domain edges: out-of-domain arguments throw a clear "math domain error", not NaN/inf rubbish
+check(throws(Function(): return math.sqrt(-1)))
+check(throws(Function(): return math.log(0)))            # log of <= 0 throws
+check(throws(Function(): return math.log(-1)))
+check(throws(Function(): return math.acos(2)) and throws(Function(): return math.asin(-2)))
+check(throws(Function(): return math.atanh(2)) and throws(Function(): return math.atanh(1)))
+check(throws(Function(): return math.gamma(-1)))         # pole at non-positive integers
+check(throws(Function(): return math.gamma(0)))
+check(throws(Function(): return math.log(10, 1)))        # base 1 (log(1)=0) throws
+n = n + 8
+
+# atan2 covers all four quadrants + axes
+check(approx(math.atan2(1, 1), math.pi / 4))
+check(approx(math.atan2(1, -1), 3 * math.pi / 4))
+check(approx(math.atan2(-1, -1), -3 * math.pi / 4))
+check(approx(math.atan2(-1, 1), -math.pi / 4))
+check(approx(math.atan2(0, -1), math.pi) and math.atan2(0, 1) == 0.0)
+n = n + 5
+
+# fmod takes the sign of x; fmod by zero RAISES (domain error); copysign honours -0.0
+check(math.fmod(-7, 3) == -1.0 and math.fmod(7, -3) == 1.0)
+check(throws(Function(): return math.fmod(5, 0)))
+check(math.copysign(3, -0.0) == -3.0 and math.copysign(-3, 1) == 3.0)
+n = n + 3
+
+# gcd/lcm: magnitudes, zeros, and the INT64_MIN guard (|MIN| = 2^63 > INT64_MAX -> throws)
+check(math.gcd(-12, 8) == 4 and math.gcd(0, 0) == 0)
+check(math.lcm(-4, 6) == 12 and math.lcm(0, 5) == 0)
+var bigmag_raised = 0
+for thunk in [Function(): return math.gcd(-9223372036854775808, 0), Function(): return math.lcm(9223372036854775807, 9223372036854775806)]:
+    try:
+        discard thunk()
+    catch as e:
+        bigmag_raised = bigmag_raised + 1
+check(bigmag_raised == 2)
+n = n + 3
+
+# factorial / comb / perm: domain + overflow guards (each must RAISE, not wrap)
+check(math.factorial(20) == 2432902008176640000)
+check(math.comb(62, 31) == 465428353255261088 and math.comb(5, 10) == 0)
+check(math.perm(10, 5) == 30240 and math.perm(5, 10) == 0)
+var guard_raised = 0
+for thunk in [Function(): return math.factorial(-1), Function(): return math.factorial(21), Function(): return math.comb(100, 50), Function(): return math.perm(100, 50), Function(): return math.comb(-1, 2)]:
+    try:
+        discard thunk()
+    catch as e:
+        guard_raised = guard_raised + 1
+check(guard_raised == 5)
+n = n + 4
+
+# prod of empty == start; floor/ceil of NaN/inf throw (cannot fit Integer)
+check(math.prod([]) == 1 and math.prod([], 2.5) == 2.5)
+var fc_raised = 0
+for thunk in [Function(): return math.floor(math.nan), Function(): return math.ceil(math.inf), Function(): return math.floor(1e30)]:
+    try:
+        discard thunk()
+    catch as e:
+        fc_raised = fc_raised + 1
+check(fc_raised == 3)
+n = n + 2
+
+# =================================================================================================
+# tensor — div-by-zero policy, negative-axis behavior, NaN/inf, dtype, item/tolist
+# =================================================================================================
+var a = T.Tensor([[1, 2, 3], [4, 5, 6]])
+
+# DIV-BY-ZERO POLICY (now consistent): `/`, `//`, `%` AND `reciprocal(0)` ALL throw on a zero
+# divisor, matching scalar Integer/Float (reciprocal(0) was the one inconsistent elementwise op).
+var tdiv_raised = 0
+for thunk in [Function(): return T.Tensor([1.0, 2.0]) / 0, Function(): return T.Tensor([1.0]) / T.Tensor([0.0]), Function(): return T.Tensor([1.0, 2.0]) // 0, Function(): return T.Tensor([1.0, 2.0]) % 0]:
+    try:
+        discard thunk()
+    catch as e:
+        tdiv_raised = tdiv_raised + 1
+check(tdiv_raised == 4)
+check(throws(Function(): return T.Tensor([0.0, 2.0]).reciprocal()))  # reciprocal(0) throws
+n = n + 2
+
+# NEGATIVE AXIS (fixed): a negative axis now counts from the end NumPy-style (-1 = last axis),
+# while no axis (None) still reduces the whole tensor. a is 2x3, so axis 1 == axis -1.
+check(a.sum(1).tolist() == [6.0, 15.0])          # positive axis
+check(a.sum(-1).tolist() == [6.0, 15.0])         # -1 == last axis (axis 1)
+check(a.sum(-2).tolist() == [5.0, 7.0, 9.0])     # -2 == axis 0
+check(a.mean(-1).tolist() == [2.0, 5.0])         # per-row mean
+check(a.argmax(-1).tolist() == [2, 2])           # per-row argmax
+check(a.prod(-1).tolist() == [6.0, 120.0])       # per-row product
+check(a.sum() == 21.0)                           # no axis -> whole-tensor scalar (a plain Float)
+# an out-of-range axis (positive or too-negative) throws cleanly
+var axis_raised = 0
+try:
+    discard a.sum(5)
+catch as e:
+    axis_raised = axis_raised + 1
+try:
+    discard a.sum(-3)
+catch as e:
+    axis_raised = axis_raised + 1
+check(axis_raised == 2)
+n = n + 9
+
+# sqrt/log of a negative element RAISE a tensor domain error (consistent with the scalar math module
+# and the tensor div-by-zero policy); a valid element still computes.
+check(throws(Function(): return T.Tensor([-1.0, 4.0]).sqrt()))
+check(throws(Function(): return T.Tensor([-2.0, 1.0]).log()))
+check(approx(T.Tensor([4.0, 9.0]).sqrt().tolist()[1], 3.0))
+n = n + 3
+
+# tensor.round() rounds half-to-EVEN (nearbyint), diverging from the builtin round()'s half-away
+check(T.Tensor([0.5, 1.5, 2.5]).round() == T.Tensor([0, 2, 2]))
+check(round(0.5) == 1 and round(2.5) == 3)    # builtin: half-away-from-zero
+n = n + 2
+
+# item() and tolist() round-trips; multi-element item() throws
+check(T.full([], 7).item() == 7.0 and T.Tensor([42]).item() == 42.0)
+check(a.tolist() == [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+var item_raised = 0
+try:
+    discard a.item()
+catch as e:
+    item_raised = item_raised + 1
+check(item_raised == 1)
+n = n + 3
+
+# dtype promotion Float+Complex -> Complex; bad dtype, ragged list, broadcast mismatch all throw
+check((T.Tensor([1, 2]) + T.Tensor([1, 1], dtype = "Complex")).dtype() == "Complex")
+var tshape_raised = 0
+for thunk in [Function(): return T.Tensor([[1, 2], [3]]), Function(): return T.zeros([2], dtype = "Garbage"), Function(): return T.zeros([3]) + T.zeros([5]), Function(): return T.zeros([2, 3]).matmul(T.zeros([4, 2])), Function(): return T.Tensor([1, 2, 3]).reshape([2, 2])]:
+    try:
+        discard thunk()
+    catch as e:
+        tshape_raised = tshape_raised + 1
+check(tshape_raised == 5)
+n = n + 2
+
+# einsum / tensordot bad specs throw; matmul on rank<2 throws (must use .dot)
+var spec_raised = 0
+for thunk in [Function(): return T.einsum("ij,jk->ik", T.Tensor([[1, 2]])), Function(): return T.Tensor([1, 2, 3]).matmul(T.Tensor([4, 5, 6]))]:
+    try:
+        discard thunk()
+    catch as e:
+        spec_raised = spec_raised + 1
+check(spec_raised == 2)
+n = n + 1
+
+# autograd: gradient accumulates across backward() calls; zerograd clears; complex cannot grad
+var g = T.Tensor([1.0, 2.0, 3.0], requiresgrad = True)
+g.square().sum().backward()
+g.square().sum().backward()                     # accumulates -> 2 * (2x) = 4x
+check(g.grad == T.Tensor([4, 8, 12]))
+g.zerograd()
+check(g.grad == None)
+var grad_raised = 0
+for thunk in [Function(): return T.Tensor([1, 2], dtype = "Complex", requiresgrad = True), Function(): return T.zeros([2]).backward()]:
+    try:
+        discard thunk()
+    catch as e:
+        grad_raised = grad_raised + 1
+check(grad_raised == 2)
+n = n + 3
+
+# =================================================================================================
+# complex — 0**0, is_zero vs ==zero thresholds, Euler, ordering, matrices, vectors
+# =================================================================================================
+# COMPLEX 0**0 == 1 (matches real 0**0; std::pow's nan is special-cased to 1)
+check(C.zero ** C.zero == C.one)
+check(C.pow(C.zero, C.zero) == C.one)
+n = n + 2
+
+# Euler / principal values
+check((C.exp(C.of(0, math.pi)) - C.of(-1, 0)).modulus() < 0.000000001)   # e^{i pi} = -1
+check((C.sqrt(C.of(-4, 0)) - C.of(0, 2)).modulus() < 0.000000001)        # sqrt(-4) = 2i
+check(approx(C.pow(C.of(-8, 0), C.of(1.0 / 3, 0)).im, 1.7320508075688772))  # principal cube root is complex
+n = n + 3
+
+# Complex `==` is EXACT now, so 1e-10 != 0 (no tolerance); is_zero() (magnitude < 1e-10) also says no;
+# the tolerant `.compare(abs_tol=...)` is how you ask "approximately zero".
+check((C.of(0.0000000001, 0) == C.zero) == False)        # 1e-10: NOT equal under exact ==
+check(C.of(0.0000000001, 0).is_zero() == False)          # is_zero() also says no
+check(C.of(0.0000000001, 0).compare(C.zero, abs_tol = 0.001) == True)   # but .compare with tolerance does
+n = n + 3
+
+# Complex == real works in BOTH directions; ordering throws; division by zero throws
+check(C.of(2, 0) == 2 and 2 == C.of(2, 0))
+check(C.of(2, 0) != 3 and 2 != C.of(2, 1))
+var cerr_raised = 0
+for thunk in [Function(): return C.one < C.of(2, 0), Function(): return C.one >= C.zero, Function(): return C.one / C.zero, Function(): return C.of(1, 1) / 0, Function(): return 2 + C.of(1, 0)]:
+    try:
+        discard thunk()
+    catch as e:
+        cerr_raised = cerr_raised + 1
+check(cerr_raised == 5)                          # ordering x2, div0 x2, real-on-left x1
+n = n + 3
+
+# complex matrix: determinant (Gaussian), inverse (Gauss-Jordan), hermitian; singular inverse throws
+var M = C.Matrix([[C.of(1, 1), C.of(2, 0)], [C.of(0, 1), C.of(1, -1)]])
+check((M.determinant() - C.of(2, -2)).modulus() < 0.000000001)
+var inv = M.inverse()
+var prod = M * inv
+check((prod[0, 0] - C.one).modulus() < 0.000001 and prod[0, 1].modulus() < 0.000001)
+check(M.hermitian()[0, 1] == C.of(0, -1) and M.conjugatetranspose() == M.hermitian())
+var cmat_raised = 0
+for thunk in [Function(): return C.zeros(2, 2).inverse(), Function(): return C.Matrix([[C.one, C.one]]).determinant(), Function(): return C.Matrix([[C.one, C.one]]) * C.Matrix([[C.one, C.one]])]:
+    try:
+        discard thunk()
+    catch as e:
+        cmat_raised = cmat_raised + 1
+check(cmat_raised == 3)
+n = n + 4
+
+# complex vectors: Hermitian dot (conj on the left, so z.dot(z) is real >= 0), cross (3 only)
+var cv1 = C.vector([C.of(1, 1), C.of(2, 0)])
+var cv2 = C.vector([C.of(1, 0), C.of(0, 1)])
+check(cv1.dot(cv2) == C.of(1, 1))                # conj(1+i)*1 + conj(2)*i = 1+i
+check(cv1.dot(cv1) == C.of(6, 0))                # |1+i|^2 + |2|^2 = 6, real
+check(approx(cv1.norm(), C.sqrt(C.of(6, 0)).re))
+var cvec_raised = 0
+for thunk in [Function(): return C.vector([C.one, C.one]).cross(C.vector([C.one, C.one])), Function(): return cv1.dot(C.vector([C.one, C.one, C.one]))]:
+    try:
+        discard thunk()
+    catch as e:
+        cvec_raised = cvec_raised + 1
+check(cvec_raised == 2)
+n = n + 4
+
+# =================================================================================================
+# matrix — det (1x1/0x0/3x3), non-square + singular guards, dimension-mismatch, vectors
+# =================================================================================================
+check(matrix.Matrix([[5]]).determinant() == 5.0)
+check(matrix.Matrix(0, 0).determinant() == 1.0)             # 0x0 det = 1 by convention
+check(approx(matrix.Matrix([[6, 1, 1], [4, -2, 5], [2, 8, 7]]).determinant(), -306.0))
+check(approx(matrix.Matrix([[1, 2], [3, 4]]).norm(), 5.477225575051661))   # Frobenius = sqrt(30)
+n = n + 4
+
+var mat_raised = 0
+for thunk in [Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).determinant(), Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).inverse(), Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).trace(), Function(): return matrix.Matrix([[1, 2], [2, 4]]).inverse(), Function(): return matrix.zeros(2, 3) + matrix.zeros(2, 2), Function(): return matrix.Matrix([[1, 2]]) * matrix.Matrix([[1, 2]]), Function(): return matrix.vector([1, 2]).dot(matrix.vector([1, 2, 3])), Function(): return matrix.vector([1, 2]).cross(matrix.vector([3, 4])), Function(): return matrix.zeros(2, 2)[5, 5]]:
+    try:
+        discard thunk()
+    catch as e:
+        mat_raised = mat_raised + 1
+check(mat_raised == 9)
+n = n + 1
+
+# vector dot / cross / norm; `*` is matrix multiply, never a dot
+check(matrix.vector([1, 2, 3]).dot(matrix.vector([4, 5, 6])) == 32.0)
+check(matrix.vector([1, 2, 3]).cross(matrix.vector([4, 5, 6])) == matrix.Matrix([[-3, 6, -3]]))
+check(matrix.vector([3, 4]).norm() == 5.0)
+n = n + 3
+
+# =================================================================================================
+# random — seeded determinism, bounds, empty/oversized errors, in-place shuffle
+# =================================================================================================
+# same seed => identical stream across every method
+var ra = random.Random(20260616)
+var rb = random.Random(20260616)
+check(ra.random() == rb.random() and ra.randint(0, 1000000) == rb.randint(0, 1000000))
+check(ra.uniform(-5, 5) == rb.uniform(-5, 5) and ra.gauss(0, 1) == rb.gauss(0, 1))
+# normalvariate is an alias of gauss: same seed, same draw via either name
+check(random.Random(7).gauss(2, 3) == random.Random(7).normalvariate(2, 3))
+n = n + 3
+
+# bounds: randint inclusive, randrange respects step, uniform within [a,b], expovariate > 0
+var rc = random.Random(123)
+var bound_ok = True
+for i in range(300):
+    var ri = rc.randint(5, 10)
+    if ri < 5 or ri > 10:
+        bound_ok = False
+    var rr = rc.randrange(0, 20, 5)
+    if rr < 0 or rr >= 20 or rr % 5 != 0:
+        bound_ok = False
+    if rc.uniform(10, 20) < 10 or rc.uniform(10, 20) > 20:
+        bound_ok = False
+check(bound_ok)
+check(random.Random(1).expovariate(2.0) > 0.0)
+n = n + 2
+
+# shuffle is in-place and a permutation; sample is distinct and a subset
+var L = [1, 2, 3, 4, 5, 6]
+random.Random(0).shuffle(L)
+check(len(L) == 6 and Set(L) == Set([1, 2, 3, 4, 5, 6]))
+var sm = random.Random(0).sample([1, 2, 3, 4, 5], 3)
+check(len(sm) == 3 and len(Set(sm)) == 3 and Set(sm).issubset(Set([1, 2, 3, 4, 5])))
+n = n + 2
+
+# error surface: empty choice, empty/zero-step randrange, inverted randint, oversized/negative
+# sample, shuffle of a non-list, non-positive expovariate
+var rng_raised = 0
+for thunk in [Function(): return random.Random(1).choice([]), Function(): return random.Random(1).randrange(0), Function(): return random.Random(1).randrange(5, 5), Function(): return random.Random(1).randint(5, 3), Function(): return random.Random(1).sample([1, 2], 10), Function(): return random.Random(1).sample([1, 2], -1), Function(): return random.Random(1).shuffle("abc"), Function(): return random.Random(1).expovariate(0), Function(): return random.Random(1).randrange(0, 10, 0)]:
+    try:
+        discard thunk()
+    catch as e:
+        rng_raised = rng_raised + 1
+check(rng_raised == 9)
+n = n + 1
+
+# seeded RNG round-trips through dump and resumes the exact stream (reproducible checkpoint)
+var dmp = import("dump")
+var rsv = random.Random(31337)
+discard rsv.random()
+var snap = dmp.dumps(rsv)
+var next_a = rsv.randint(0, 1000000)
+check(dmp.loads(snap).randint(0, 1000000) == next_a)
+n = n + 1
+
+# -------------------------------------------------------------------------------------------------
+io.print(n)
+io.print("OK deep-numeric")

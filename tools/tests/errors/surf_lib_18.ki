@@ -1,0 +1,2 @@
+# fromhex of a non-hex digit must throw.
+discard fromhex("zz")

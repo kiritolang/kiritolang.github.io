@@ -1,0 +1,68 @@
+class deque:
+    var _init_ = Function(self, items = None):
+        self._items = []
+        if items != None:
+            for x in items:
+                self._items.append(x)
+    var append = Function(self, x):
+        self._items.append(x)
+    var appendleft = Function(self, x):
+        self._items.insert(0, x)
+    var pop = Function(self):
+        return self._items.pop()
+    var popleft = Function(self):
+        return self._items.pop(0)
+    var _len_ = Function(self) -> Integer:
+        return len(self._items)
+    var _getitem_ = Function(self, i):
+        return self._items[i]
+    var _str_ = Function(self) -> String:
+        return "deque(" + String(self._items) + ")"
+    var _iter_ = Function(self):
+        return self._items
+
+class Counter:
+    var _init_ = Function(self, items = None):
+        self._counts = {}
+        if items != None:
+            for x in items:
+                self.add(x)
+    var add = Function(self, x):
+        if x in self._counts:
+            self._counts[x] = self._counts[x] + 1
+        else:
+            self._counts[x] = 1
+    var get = Function(self, x):
+        return self._counts.get(x, 0)
+    var items = Function(self):
+        return self._counts.items()
+    var mostcommon = Function(self, n = None):
+        var pairs = sorted(self._counts.items(), Function(p): return p[1], True)
+        if n == None:
+            return pairs
+        return pairs[0:n]
+    var _getitem_ = Function(self, x):
+        return self._counts.get(x, 0)
+    var _str_ = Function(self) -> String:
+        return "Counter(" + String(self._counts) + ")"
+
+class defaultdict:
+    var _init_ = Function(self, factory):
+        self._factory = factory
+        self._data = {}
+    var _getitem_ = Function(self, k):
+        if k not in self._data:
+            self._data[k] = self._factory()
+        return self._data[k]
+    var _setitem_ = Function(self, k, v):
+        self._data[k] = v
+    var _contains_ = Function(self, k):
+        return k in self._data
+    var keys = Function(self):
+        return self._data.keys()
+    var values = Function(self):
+        return self._data.values()
+    var items = Function(self):
+        return self._data.items()
+    var _str_ = Function(self) -> String:
+        return "defaultdict(" + String(self._data) + ")"

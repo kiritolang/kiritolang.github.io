@@ -1,0 +1,6 @@
+# Importing the same module twice returns the identical cached module object (same id), and it is
+# imported context either way (argmain False).
+var first = import("amarg_basic")
+var second = import("amarg_basic")
+var sameId = id(first) == id(second)
+var m = argmain

@@ -1,0 +1,3 @@
+# name resolution: undefined name as an element of a list literal
+var xs = [1, 2, ghost]
+discard xs

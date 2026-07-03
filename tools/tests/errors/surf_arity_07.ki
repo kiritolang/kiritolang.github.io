@@ -1,0 +1,2 @@
+# signatured builtin given an unexpected keyword argument
+discard range(nope = 1)

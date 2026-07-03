@@ -1,0 +1,172 @@
+# r5_tensor.ki — round-2 audit additions for the `tensor` module. Covers CONFIRMED-correct behavior
+# that r4_tensor.ki does not exercise: per-axis cumprod, repeat/tile on inner axes + NumPy multi-dim
+# tile, diag/tril/triu offsets, norm orders, cross-dtype whole-tensor ==, negative tensordot axes,
+# multi-operand / zero-dimension einsum, and (the big gap) NUMERIC gradient checks for the
+# differentiable STRUCTURAL ops (squeeze/expanddims/swapaxes/flip/broadcastto/concatenate/stack/split)
+# and the math ops r4 left unchecked, plus negative-step slice grad-scatter. Every assertion carries a
+# message; a trailing counter confirms none silently vanished. Deterministic — no randomness; only
+# confirmed-correct behavior is asserted (known issues are reported separately, never locked in).
+
+var io = import("io")
+var T = import("tensor")
+var C = import("complex")
+var math = import("math")
+
+var n = 0
+var check = Function(b, msg):
+    assert b, msg
+    n = n + 1
+
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        return True
+    return False
+
+var approx = Function(x, y) -> Bool:
+    var d = x - y
+    if d < 0:
+        d = -d
+    return d < 0.000001
+
+# Central-difference gradient check: builds a grad leaf, runs backward, compares each component to a
+# finite-difference estimate of the scalar function. `f` must return a scalar (0-D Tensor under grad).
+var fd = Function(f, x0, tol) -> Bool:
+    var xg = T.Tensor(x0, requiresgrad = True)
+    f(xg).backward()
+    var ana = xg.grad.tolist()
+    var h = 0.000001
+    var worst = 0.0
+    for i in range(len(x0)):
+        var plus = []
+        var minus = []
+        for j in range(len(x0)):
+            plus = plus + [x0[j] + (h if j == i else 0.0)]
+            minus = minus + [x0[j] - (h if j == i else 0.0)]
+        var fp = f(T.Tensor(plus))
+        var fm = f(T.Tensor(minus))
+        var fpv = fp.item() if type(fp) == "Tensor" else fp
+        var fmv = fm.item() if type(fm) == "Tensor" else fm
+        var d = ana[i] - (fpv - fmv) / (2.0 * h)
+        if d < 0:
+            d = -d
+        if d > worst:
+            worst = d
+    return worst < tol
+
+# =================================================================================================
+# 1. cumprod per-axis (r4 only checks the whole-tensor cumprod and cumsum-per-axis)
+# =================================================================================================
+check(T.Tensor([[1, 2], [3, 4]]).cumprod(0).tolist() == [[1.0, 2.0], [3.0, 8.0]], "cumprod axis 0")
+check(T.Tensor([[1, 2], [3, 4]]).cumprod(1).tolist() == [[1.0, 2.0], [3.0, 12.0]], "cumprod axis 1")
+check(T.Tensor([[1, 2], [3, 4]]).cumprod(-1).tolist() == [[1.0, 2.0], [3.0, 12.0]], "cumprod axis -1")
+check(T.Tensor([C.of(1, 1), C.of(2, 0)], dtype = "Complex").cumprod().tolist() == [C.of(1, 1), C.of(2, 2)], "cumprod complex")
+
+# =================================================================================================
+# 2. repeat on an inner / negative axis; tile NumPy multi-dim semantics
+# =================================================================================================
+check(T.Tensor([[1, 2], [3, 4]]).repeat(2, 1).tolist() == [[1.0, 1.0, 2.0, 2.0], [3.0, 3.0, 4.0, 4.0]], "repeat axis 1")
+check(T.Tensor([[1, 2], [3, 4]]).repeat(2, -1).tolist() == [[1.0, 1.0, 2.0, 2.0], [3.0, 3.0, 4.0, 4.0]], "repeat axis -1")
+check(T.Tensor([[1, 2], [3, 4]]).repeat(2, 0).tolist() == [[1.0, 2.0], [1.0, 2.0], [3.0, 4.0], [3.0, 4.0]], "repeat axis 0")
+# tile: reps longer than ndim prepends size-1 axes (NumPy rule); reps shorter tiles the trailing axes
+check(T.Tensor([[1, 2]]).tile([2, 2]).tolist() == [[1.0, 2.0, 1.0, 2.0], [1.0, 2.0, 1.0, 2.0]], "tile 2-D reps")
+check(T.Tensor([1, 2]).tile([2, 3]).tolist() == [[1.0, 2.0, 1.0, 2.0, 1.0, 2.0], [1.0, 2.0, 1.0, 2.0, 1.0, 2.0]], "tile reps longer than ndim")
+check(T.Tensor([[1, 2], [3, 4]]).tile([2]).tolist() == [[1.0, 2.0, 1.0, 2.0], [3.0, 4.0, 3.0, 4.0]], "tile reps shorter than ndim")
+
+# =================================================================================================
+# 3. diag / tril / triu offsets (r4 covers k=+1 for diag only)
+# =================================================================================================
+check(T.diag(T.Tensor([1, 2]), -1).tolist() == [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0]], "diag k=-1")
+check(T.diag(T.Tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]]), 1).tolist() == [2.0, 6.0], "diag matrix superdiagonal")
+check(T.diag(T.Tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]]), -1).tolist() == [4.0, 8.0], "diag matrix subdiagonal")
+check(T.tril(T.ones([3, 3]), 1).tolist() == [[1.0, 1.0, 0.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], "tril k=1")
+check(T.triu(T.ones([3, 3]), -1).tolist() == [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]], "triu k=-1")
+
+# =================================================================================================
+# 4. norm orders (r4 covers 2, 1, 0 only)
+# =================================================================================================
+check(T.norm(T.Tensor([3.0, -7.0, 2.0]), math.inf) == 7.0, "norm inf == max abs")
+check(approx(T.norm(T.Tensor([1.0, 2.0, 2.0]), 3), 2.5712815906582148), "norm p=3")
+check(T.norm(T.Tensor([[3.0, 0.0], [0.0, 4.0]])) == 5.0, "norm 2 flattens (Frobenius)")
+
+# =================================================================================================
+# 5. cross-dtype whole-tensor == ; 0-D ==
+# =================================================================================================
+check((T.Tensor([1.0, 2.0]) == T.Tensor([1, 2], dtype = "Complex")) == True, "Float == Complex(zero imag)")
+check((T.Tensor([1.0, 2.0]) == T.Tensor([C.of(1, 1), C.of(2, 0)], dtype = "Complex")) == False, "Float != Complex(nonzero imag)")
+check((T.full([], 3.0) == T.full([], 3.0)) == True, "0-D == 0-D equal")
+check((T.full([], 3.0) == T.Tensor([3.0])) == False, "0-D != [1] (shape mismatch)")
+
+# =================================================================================================
+# 6. tensordot negative axes ; einsum multi-operand / repeated-input / zero-dim
+# =================================================================================================
+check(T.tensordot(T.full([2, 3, 4], 1.0), T.full([4, 3, 5], 2.0), [[-1, -2], [0, 1]]).shape() == [2, 5], "tensordot negative axes")
+check(T.einsum("ij,jk,kl->il", T.eye(2), T.eye(2), T.Tensor([[1, 2], [3, 4]])).tolist() == [[1.0, 2.0], [3.0, 4.0]], "einsum 3 operands")
+check(T.einsum("ii,ii->", T.eye(2), T.eye(2)).item() == 2.0, "einsum repeated input label across operands")
+check(T.einsum("ij,jk->ik", T.zeros([2, 0]), T.zeros([0, 3])).shape() == [2, 3], "einsum zero-dim contraction")
+check(T.einsum("->", T.full([], 3.0)).item() == 3.0, "einsum scalar identity")
+check(throws(Function(): return T.einsum("ij,ij->ij", T.zeros([2, 3]), T.zeros([3, 2]))), "einsum inconsistent dim throws")
+
+# =================================================================================================
+# 7. Autograd through the differentiable STRUCTURAL ops (FD-checked) — r4 checks
+#    where/clip/maximum/cumsum/slice/take/tensordot grads but not these.
+# =================================================================================================
+check(fd(Function(t): return (t.reshape([1, 4, 1]).squeeze() * T.Tensor([1, 2, 3, 4])).sum(), [1.0, 2.0, 3.0, 4.0], 0.0001), "FD grad squeeze")
+check(fd(Function(t): return t.expanddims(0).sum(), [1.0, 2.0, 3.0], 0.0001), "FD grad expanddims")
+check(fd(Function(t): return (t.reshape([2, 2]).swapaxes(0, 1) * T.Tensor([[1, 2], [3, 4]])).sum(), [1.0, 2.0, 3.0, 4.0], 0.0001), "FD grad swapaxes")
+check(fd(Function(t): return (t.flip() * T.Tensor([1, 2, 3])).sum(), [1.0, 2.0, 3.0], 0.0001), "FD grad flip")
+check(fd(Function(t): return t.reshape([3, 1]).broadcastto([3, 4]).sum(), [1.0, 2.0, 3.0], 0.0001), "FD grad broadcastto")
+check(fd(Function(t): return T.concatenate([t, t * 2], 0).sum(), [1.0, 2.0, 3.0], 0.0001), "FD grad concatenate")
+check(fd(Function(t): return T.stack([t, t * 2], 0).sum(), [1.0, 2.0], 0.0001), "FD grad stack")
+check(fd(Function(t): return T.split(t, 2, 0)[0].sum(), [1.0, 2.0, 3.0, 4.0], 0.0001), "FD grad split (first piece)")
+# explicit (non-FD) checks of the structural grad shapes/values
+var sq = T.Tensor([[1.0], [2.0], [3.0]], requiresgrad = True)
+sq.broadcastto([3, 4]).sum().backward()
+check(sq.grad.tolist() == [[4.0], [4.0], [4.0]], "broadcastto grad sums stretched axis")
+var cc = T.Tensor([1.0, 2.0], requiresgrad = True)
+T.concatenate([cc, cc], 0).sum().backward()
+check(cc.grad.tolist() == [2.0, 2.0], "concatenate grad accumulates a reused part")
+
+# =================================================================================================
+# 8. Negative-step slice grad-scatter (the picks loop with step < 0) — order-sensitive weighting
+# =================================================================================================
+var sl = T.Tensor([1.0, 2.0, 3.0], requiresgrad = True)
+(sl.slice(None, None, -1, 0) * T.Tensor([10.0, 20.0, 30.0])).sum().backward()
+check(sl.grad.tolist() == [30.0, 20.0, 10.0], "negative-step slice grad reverses the weights")
+var st2 = T.Tensor([1.0, 2.0, 3.0, 4.0, 5.0], requiresgrad = True)
+st2.slice(0, 5, 2, 0).sum().backward()
+check(st2.grad.tolist() == [1.0, 0.0, 1.0, 0.0, 1.0], "step-2 slice grad mask")
+
+# =================================================================================================
+# 9. FD gradient checks for the differentiable math ops r4 did not numerically verify
+# =================================================================================================
+check(fd(Function(t): return t.cbrt().sum(), [1.0, 8.0, 27.0], 0.001), "FD grad cbrt")
+check(fd(Function(t): return t.reciprocal().sum(), [1.0, 2.0, 4.0], 0.001), "FD grad reciprocal")
+check(fd(Function(t): return t.erf().sum(), [0.1, 0.5, 1.0], 0.001), "FD grad erf")
+check(fd(Function(t): return t.atanh().sum(), [0.1, 0.3, 0.5], 0.001), "FD grad atanh")
+check(fd(Function(t): return t.acosh().sum(), [1.5, 2.0, 3.0], 0.001), "FD grad acosh")
+check(fd(Function(t): return t.asinh().sum(), [0.1, 1.0, 2.0], 0.001), "FD grad asinh")
+check(fd(Function(t): return t.log10().sum(), [1.0, 2.0, 5.0], 0.001), "FD grad log10")
+check(fd(Function(t): return t.log2().sum(), [1.0, 2.0, 5.0], 0.001), "FD grad log2")
+check(fd(Function(t): return t.abs().sum(), [-2.0, 3.0, -0.5], 0.001), "FD grad abs")
+check(fd(Function(t): return t.pow(3.0).sum(), [1.0, 2.0, 3.0], 0.001), "FD grad pow(p)")
+check(fd(Function(t): return (t ** T.Tensor([2.0, 3.0, 1.5])).sum(), [1.0, 2.0, 3.0], 0.001), "FD grad tensor ** tensor")
+check(fd(Function(t): return t.mean(), [1.0, 2.0, 3.0, 4.0], 0.0001), "FD grad mean")
+
+# =================================================================================================
+# 10. Adversarial axis-out-of-range throws (huge int64 axes) — r4 covers reductions; these are the
+#     structural/indexing entry points.
+# =================================================================================================
+check(throws(Function(): return T.Tensor([1, 2, 3]).expanddims(9223372036854775807)), "expanddims huge axis throws")
+check(throws(Function(): return T.zeros([1, 3]).squeeze(9223372036854775807)), "squeeze huge axis throws")
+check(throws(Function(): return T.zeros([2, 3]).swapaxes(0, 99)), "swapaxes oob throws")
+check(throws(Function(): return T.zeros([2, 3]).permute([0, 99])), "permute oob throws")
+check(throws(Function(): return T.zeros([2, 3]).take([0], 99)), "take axis oob throws")
+check(throws(Function(): return T.zeros([2, 3]).slice(0, 1, 1, 99)), "slice axis oob throws")
+check(throws(Function(): return T.Tensor([1, 2]).repeat(-1)), "repeat negative count throws")
+check(throws(Function(): return T.Tensor([1, 2, 3]).reshape([-1, 2])), "reshape negative dim throws")
+
+# -------------------------------------------------------------------------------------------------
+io.print(n)
+io.print("OK r5-tensor")

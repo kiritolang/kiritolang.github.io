@@ -1,0 +1,489 @@
+# r8_types.ki — round-8, fresh-angle re-audit of the built-in types reference
+# (docs/pages/09-types.md). It deliberately AVOIDS re-running the mainline already
+# covered by r4_*/audit_types/r6_types and the value-model corners in r7_types, and
+# instead hammers the spots those left thin:
+#   * Unicode case-mapping & predicate BOUNDARIES (where Latin-Extended-A ends, ß never
+#     expands, astral/emoji pass through, titlecase chars, Greek/Cyrillic are "uncased");
+#   * strip-as-a-character-SET, split/partition empty-separator, removeprefix/suffix("");
+#   * the format() mini-spec from new angles ('='/'^' align, a sign on a String is
+#     ignored, '#' base prefix, '%' percent, ','+precision grouping, code-point width);
+#   * center()'s odd-padding placement and the width-/fill-validation error paths;
+#   * the Set asymmetry — METHODS take any iterable, OPERATORS require a Set on the RHS —
+#     and the unhashable-argument inconsistency (add/remove throw; discard/contains/in
+#     silently no-op);
+#   * Bytes construction with an ignored encoding, fromhex prefix rejection, and UTF-8
+#     decode rejecting overlong/surrogate/lone-continuation byte sequences;
+#   * List sort stability UNDER reverse, key-precompute-once, EXACT Integer/Float ordering
+#     past 2**53, and shallow-copy/slice aliasing;
+#   * Dict integral-Float key collapse, and **keyword arguments on every named method**;
+#   * inspect() actually listing each built-in type's methods.
+# Every check increments `n`; the final asserted line is produced by r8_types.expected.
+# Run: build-release/ki tools/tests/scripts/r8_types.ki
+var io = import("io")
+var math = import("math")
+var random = import("random")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(thunk) -> True iff calling thunk() throws (a bare `catch` traps any error,
+# including a C++ std::exception surfaced across the native boundary).
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+var inf = math.inf
+var nan = math.nan
+
+# =============================================================================
+# String — Unicode case mapping at the EDGES of the supported range
+# =============================================================================
+# Coverage is ASCII + Latin-1 Supplement + Latin Extended-A, as a 1:1 code-point map.
+# Latin Extended-A round-trips both ways.
+ok("ĳŀ".upper() == "ĲĿ", "Latin Extended-A upper (ĳ->Ĳ, ŀ->Ŀ)")
+ok("ĲĿ".lower() == "ĳŀ", "Latin Extended-A lower (Ĳ->ĳ, Ŀ->ŀ)")
+ok("ÀÉÑÖ".lower() == "àéñö", "Latin-1 Supplement lower")
+ok("àéñö".upper() == "ÀÉÑÖ", "Latin-1 Supplement upper")
+# Special-cased letters in the mapping table.
+ok("ÿ".upper() == "Ÿ" and "Ÿ".lower() == "ÿ", "ÿ <-> Ÿ special case (U+00FF/U+0178)")
+ok("ı".upper() == "I", "dotless ı uppercases to ASCII I (U+0131)")
+ok("ſ".upper() == "S", "long s ſ uppercases to S (U+017F)")
+# NO 1:many case folding: German sharp s does NOT expand to "SS" (unlike Python).
+ok("ß".upper() == "ß", "ß does not expand to SS (no 1:many folding)")
+ok("ﬀ".upper() == "ﬀ", "the ﬀ ligature is left unchanged by upper")
+# Outside the supported ranges, case mapping is the identity: Greek, Cyrillic, astral.
+ok("αβγ".upper() == "αβγ", "Greek is unchanged by upper (outside coverage)")
+ok("ДЖ".lower() == "ДЖ", "Cyrillic is unchanged by lower (outside coverage)")
+ok("𝐀".lower() == "𝐀", "astral math-bold A is unchanged by lower")
+ok("😀".upper() == "😀", "an emoji is unchanged by upper")
+# ÷ and × sit inside the Latin-1 block but are NOT letters, so case mapping skips them.
+ok("×÷".upper() == "×÷" and "×÷".lower() == "×÷", "× and ÷ are not cased")
+
+# =============================================================================
+# String — astral / combining-mark indexing, slicing, reversal (code points)
+# =============================================================================
+ok(len("😀") == 1, "an astral emoji is one code point")
+ok("a😀b"[1] == "😀", "indexing addresses the astral code point")
+ok("a😀b"[::-1] == "b😀a", "reversing keeps the astral code point intact")
+ok(len("a😀b") == 3, "astral does not inflate the code-point count")
+# A base letter + a combining acute accent is TWO code points (no normalization).
+var combining = "e" + chr(0x301)
+ok(len(combining) == 2, "base + combining mark is two code points")
+ok(combining[1] == chr(0x301), "the combining mark is independently indexable")
+ok(combining[::-1] == chr(0x301) + "e", "reversal swaps base and combining mark")
+# upper/lower over a string mixing covered and uncovered code points: only covered move.
+ok(("aα😀".upper()) == "Aα😀", "upper touches only the covered letter")
+
+# =============================================================================
+# String — predicate BOUNDARIES (what counts as a digit / letter / space)
+# =============================================================================
+# isdigit is ASCII 0-9 ONLY — rejects superscripts, fractions, fullwidth, other scripts.
+ok(not "²".isdigit(), "superscript two is not isdigit (ASCII-only)")
+ok(not "½".isdigit(), "the fraction ½ is not isdigit")
+ok(not "１".isdigit(), "a fullwidth digit is not isdigit")
+ok(not "٣".isdigit(), "an Arabic-Indic digit is not isdigit")
+ok("0123456789".isdigit(), "ASCII 0-9 are isdigit")
+# isalpha / isalnum: ASCII letters OR any code point >= 0x80 (a coarse non-ASCII rule).
+ok("αβγ".isalpha(), "Greek passes isalpha (every code point >= 0x80 counts)")
+ok("漢字".isalpha(), "CJK passes isalpha (>= 0x80)")
+ok("😀".isalpha(), "an emoji passes isalpha (>= 0x80 rule, surprising)")
+ok("«»".isalpha(), "non-ASCII punctuation passes isalpha (>= 0x80 rule)")
+ok(not "a b".isalpha(), "an embedded ASCII space breaks isalpha")
+ok("a²".isalnum(), "superscript (>= 0x80) makes a² isalnum even though not isdigit")
+# isspace: only the six ASCII whitespace chars — no Unicode spaces.
+ok(not chr(0xA0).isspace(), "NBSP is not isspace (ASCII-only)")
+ok(not chr(0x2003).isspace(), "EM SPACE is not isspace")
+ok((" \t\n\r" + chr(0x0c) + chr(0x0b)).isspace(), "the six ASCII whitespace chars are isspace")
+# islower/isupper need a CASED char; uncovered scripts are uncased and thus ignored.
+ok(not "αβγ".islower(), "Greek letters are uncased, so islower is False (no cased char)")
+ok(not "123".isupper(), "digits are uncased, so isupper is False")
+ok("ñ".islower() and "Ñ".isupper(), "Latin-1 letters are cased")
+# A titlecase code point (U+01C5 ǅ) is neither lower nor upper here.
+ok(not "ǅ".islower() and not "ǅ".isupper(), "a titlecase char is neither islower nor isupper")
+# Mixed cased + uncased: the cased chars decide.
+ok("abc123".islower() and "ABC123".isupper(), "uncased chars are ignored by islower/isupper")
+
+# =============================================================================
+# String — strip treats `chars` as a SET; split/partition empty-sep; remove*("")
+# =============================================================================
+ok("xyabcyx".strip("xy") == "abc", "strip chars is a SET (both x and y trimmed)")
+ok("abcabc".strip("ab") == "cabc", "strip stops at the first non-set char (left a,b; right c stays)")
+ok("aXbXa".strip("a") == "XbX", "strip only touches the ends, not the interior")
+ok(("--mark" + chr(0x301)).strip("-") == "mark" + chr(0x301), "strip is code-point aware")
+ok("".strip() == "" and "   ".strip() == "", "strip of empty/all-whitespace is empty")
+# An empty separator is rejected for split / partition / rpartition.
+ok(throws(Function(): return "abc".split("")), "split with an empty separator throws")
+ok(throws(Function(): return "abc".partition("")), "partition with an empty separator throws")
+ok(throws(Function(): return "abc".rpartition("")), "rpartition with an empty separator throws")
+# split with no/None sep collapses whitespace runs and drops empties; all-space -> [].
+ok("".split() == [], "split() of empty is []")
+ok("   ".split() == [], "split() of all-whitespace is []")
+ok("".split(",") == [""], "split with an explicit sep on empty is ['']")
+ok(",a,".split(",") == ["", "a", ""], "split keeps leading/trailing empty fields")
+ok("a::b::c".split("::") == ["a", "b", "c"], "split on a multi-char separator")
+# maxsplit boundary: 0 means no split, negative means unlimited.
+ok("a,b,c".split(",", 0) == ["a,b,c"], "split maxsplit=0 yields the whole string")
+ok("a,b,c".split(",", -1) == ["a", "b", "c"], "split maxsplit<0 is unlimited")
+ok("  a  b  c  ".split(None, 1) == ["a", "b  c  "], "whitespace split keeps the trailing run after maxsplit")
+# removeprefix("")/removesuffix("") return the string unchanged.
+ok("abc".removeprefix("") == "abc", "removeprefix of empty is identity")
+ok("abc".removesuffix("") == "abc", "removesuffix of empty is identity")
+# count is non-overlapping; the empty pattern counts boundaries.
+ok("aaaa".count("aa") == 2, "count is non-overlapping (aaaa has 2 'aa')")
+ok("".count("") == 1, "count of empty in empty is 1 (one boundary)")
+ok("abc".count("", 1, 2) == 2, "count empty within a window is the boundary count")
+
+# =============================================================================
+# String — format() mini-spec from fresh angles
+# =============================================================================
+# '=' (sign-aware) and '^' (center) alignment with an explicit fill.
+ok(format("hi", "=^6") == "==hi==", "center align with '=' fill char")
+ok(format("hi", ">6") == "    hi", "right align a String")
+ok(format("hi", "<6") == "hi    ", "left align a String (the default for strings)")
+ok(format(7, ">06d") == "000007", "'0' zero-pad applies even with an explicit '>' align")
+# A sign flag is meaningless for a String, so it is rejected rather than silently ignored.
+ok(throws(Function(): return format("x", "+5")), "a sign flag on a String throws, not silently ignored")
+# '#' alternate form prepends the base prefix, placed before the zero padding.
+ok(format(255, "#x") == "0xff" and format(255, "#X") == "0XFF", "'#' adds the 0x/0X base prefix")
+ok(format(255, "#08x") == "0x0000ff", "'#' prefix precedes the zero padding")
+ok(format(10, "#b") == "0b1010" and format(8, "#o") == "0o10", "'#' for binary/octal")
+ok(format(-255, "#x") == "-0xff", "'#' prefix follows the sign for a negative")
+# '%' percent type multiplies by 100 and appends '%'.
+ok(format(0.5, ".0%") == "50%" and format(0.125, ".1%") == "12.5%", "'%' presentation type")
+# ',' thousands grouping, including together with a float precision.
+ok(format(1234567, ",") == "1,234,567", "',' groups an integer by thousands")
+ok(format(1234567.891, ",.2f") == "1,234,567.89", "',' groups the integer part of a fixed float")
+# A sign on a number.
+ok(format(7, "+") == "+7" and format(-7, "+") == "-7", "'+' shows an explicit sign")
+ok(format(7, " ") == " 7", "space-flag pads a positive with a leading space")
+# Width is counted in CODE POINTS, not bytes, so a multibyte body is not under-padded.
+ok(format("é", ">3") == "  é", "format width counts code points (multibyte)")
+ok(len(format("é", "^5")) == 5, "centered multibyte body fills the full code-point width")
+# Error paths: a precision on an integer type, and ',' with a non-decimal base, both throw.
+ok(throws(Function(): return format(5, ".2d")), "precision on an integer type throws")
+ok(throws(Function(): return format(255, ",x")), "',' grouping with a hex type throws")
+ok(throws(Function(): return format(3.0, "d")), "a 'd' type on a Float throws")
+ok(throws(Function(): return format("x", "d")), "a 'd' type on a String throws")
+ok(throws(Function(): return format(5, "Q")), "an unknown presentation type throws")
+
+# =============================================================================
+# String — center()/ljust()/rjust()/zfill() padding placement & validation
+# =============================================================================
+# Odd total padding: center puts the SMALLER half on the left.
+ok("ab".center(5) == " ab  ", "center puts the extra pad on the right for an odd gap")
+ok("ab".center(5, "-") == "-ab--", "center with a fill keeps the smaller half left")
+ok("x".center(4) == " x  ", "center single char, odd gap")
+# width <= len is the identity (including negative width).
+ok("hello".center(3) == "hello" and "hello".ljust(0) == "hello", "width <= len is identity")
+ok("hi".rjust(-5) == "hi", "a negative width is identity (no crash)")
+# zfill left-zero-pads non-numeric text and keeps a leading sign.
+ok("abc".zfill(5) == "00abc", "zfill pads non-numeric text with zeros")
+ok("+7".zfill(5) == "+0007" and "-7".zfill(5) == "-0007", "zfill keeps a leading sign ahead of the zeros")
+ok("7".zfill(0) == "7", "zfill width 0 is identity")
+# A multi-character (or empty) fill is rejected; the width must be an Integer.
+ok(throws(Function(): return "x".center(5, "ab")), "center multi-char fill throws")
+ok(throws(Function(): return "x".ljust(5, "")), "ljust empty fill throws")
+ok(throws(Function(): return "x".rjust(2.0)), "a Float width throws (Integer required)")
+ok(throws(Function(): return "x".ljust("5")), "a String width throws")
+
+# =============================================================================
+# String — apply() is a flat-map (result need not be one char), and join over a Set
+# =============================================================================
+ok("ab".apply(Function(c): return c + c) == "aabb", "apply may return multiple chars (flat-map)")
+ok("abc".apply(Function(c): return "") == "", "apply returning '' drops the char")
+ok(throws(Function(): return "ab".apply(Function(c): return 5)), "apply returning a non-String throws")
+ok(", ".join({"solo"}) == "solo", "join over a single-element Set")
+ok(throws(Function(): return ",".join([1, 2])), "join over non-Strings throws")
+ok(throws(Function(): return ",".join(5)), "join over a non-iterable throws cleanly (not a crash)")
+# rsplit / capitalize / title / casefold are NOT part of the surface — they throw.
+ok(throws(Function(): return "a,b".rsplit(",")), "rsplit is absent")
+ok(throws(Function(): return "x".casefold()), "casefold is absent")
+ok(throws(Function(): return "x".format_map({})), "format_map is absent")
+
+# =============================================================================
+# Bytes — construction edge cases, fromhex, and UTF-8 decode validation
+# =============================================================================
+# The encoding argument is consulted only for a String source; ignored otherwise.
+ok(Bytes([72, 105], "ascii") == Bytes([72, 105]), "Bytes(List, encoding) ignores the encoding")
+ok(Bytes(3, "utf-8") == Bytes([0, 0, 0]), "Bytes(n, encoding) ignores the encoding")
+ok(Bytes("é", "latin-1") == Bytes([0xe9]), "Bytes(String, 'latin-1') uses the encoding")
+ok(throws(Function(): return Bytes(3.0)), "Bytes(Float) throws (no Float construction)")
+ok(throws(Function(): return Bytes(True)), "Bytes(Bool) throws (Bool is not an Integer)")
+ok(throws(Function(): return Bytes([1, 2.0, 3])), "a Float in the byte List throws")
+# Encoding-name normalization: dashes/underscores/case are equivalent.
+ok("hi".encode("UTF_8") == "hi".encode("utf-8"), "encoding names normalize (UTF_8 == utf-8)")
+ok(Bytes([0xe9]).decode("ISO-8859-1") == "é", "iso-8859-1 is an alias for latin-1")
+# fromhex: case-insensitive, whitespace ignored, but a 0x prefix is NOT accepted.
+ok(fromhex("DEADbeef") == Bytes([0xde, 0xad, 0xbe, 0xef]), "fromhex is case-insensitive")
+ok(fromhex("  48   69  ") == Bytes([72, 105]), "fromhex ignores runs of whitespace")
+ok(throws(Function(): return fromhex("0x4869")), "fromhex rejects a 0x prefix")
+ok(throws(Function(): return fromhex("4 8")), "fromhex with a split nibble throws (odd length)")
+ok(Bytes([]).hex() == "", "hex of empty Bytes is empty")
+# UTF-8 decode validation: lone continuation, overlong, surrogate, out-of-range, bad lead.
+ok(throws(Function(): return Bytes([0x80]).decode("utf-8")), "a lone continuation byte fails UTF-8 decode")
+ok(throws(Function(): return Bytes([0xc0, 0x80]).decode("utf-8")), "an overlong NUL (C0 80) fails UTF-8 decode")
+ok(throws(Function(): return Bytes([0xed, 0xa0, 0x80]).decode("utf-8")), "a surrogate (ED A0 80) fails UTF-8 decode")
+ok(throws(Function(): return Bytes([0xf4, 0x90, 0x80, 0x80]).decode("utf-8")), "a code point > U+10FFFF fails UTF-8 decode")
+ok(throws(Function(): return Bytes([0xf8, 0x80, 0x80, 0x80, 0x80]).decode("utf-8")), "a 5-byte lead (F8) fails UTF-8 decode")
+ok(throws(Function(): return Bytes([0xc3]).decode("utf-8")), "a truncated 2-byte sequence fails UTF-8 decode")
+# latin-1 is the lossless bridge for ANY byte (fuzz a random buffer round-trip).
+var rng = random.Random(80808)
+var fuzzbuf = []
+var fi = 0
+while fi < 64:
+    fuzzbuf.append(rng.randint(0, 255))
+    fi = fi + 1
+var fb = Bytes(fuzzbuf)
+ok(fb.decode("latin-1").encode("latin-1") == fb, "latin-1 round-trips a random 64-byte buffer")
+# Bytes `in` with an out-of-range Integer is False (not an error); a String throws.
+ok(not (256 in Bytes([1, 2])) and not (-1 in Bytes([1, 2])), "an out-of-range Integer is not `in` Bytes (False, no throw)")
+ok(throws(Function(): return "x" in Bytes([120])), "a String operand to `in Bytes` throws")
+# Bytes ordering only against Bytes; cross-type == is False.
+ok(throws(Function(): return Bytes([1]) < [1]), "Bytes < List throws (cross-type ordering)")
+ok(not (Bytes([1]) == [1]) and not (Bytes("hi") == "hi"), "Bytes is never == a List or String")
+
+# =============================================================================
+# Set — METHODS accept any iterable; OPERATORS require a Set on the RHS
+# =============================================================================
+# The algebra methods iterate their argument, so a List/Dict/String works.
+ok({1, 2, 3}.union([3, 4]) == {1, 2, 3, 4}, "union accepts a List argument")
+ok({1, 2, 3}.intersection([2, 3, 9]) == {2, 3}, "intersection accepts a List")
+ok({1, 2, 3}.difference([2]) == {1, 3}, "difference accepts a List")
+ok({1, 2}.symmetricdifference([2, 3]) == {1, 3}, "symmetricdifference accepts a List")
+ok({1, 2}.issubset([1, 2, 3]), "issubset accepts a List")
+ok({1, 2, 3}.issuperset([1, 2]), "issuperset accepts a List")
+ok({1, 2}.isdisjoint([3, 4]), "isdisjoint accepts a List")
+ok({1, 2}.union({3: "x", 4: "y"}) == {1, 2, 3, 4}, "union over a Dict iterates its keys")
+ok({"a", "b"}.union("bc") == {"a", "b", "c"}, "union over a String iterates its characters")
+# The OPERATOR forms (-, <, <=, >, >=) demand a Set; anything else throws.
+ok(throws(Function(): return {1, 2} - [2]), "the `-` operator rejects a List RHS (methods don't)")
+ok(throws(Function(): return {1, 2} < [1, 2, 3]), "the `<` subset operator rejects a List RHS")
+ok(throws(Function(): return {1, 2} <= [1, 2]), "the `<=` subset operator rejects a List RHS")
+ok(({1, 2} - {2}) == {1, 3} - {3}, "the `-` operator works with a Set on both sides")
+# Subset/superset edge: a set is <= and >= itself but not < or >.
+ok({1, 2} <= {1, 2} and {1, 2} >= {1, 2}, "a set is a (non-proper) subset and superset of itself")
+ok(not ({1, 2} < {1, 2}) and not ({1, 2} > {1, 2}), "a set is not a PROPER subset/superset of itself")
+ok(Set() <= {1} and Set() <= Set(), "the empty set is a subset of everything (incl. itself)")
+ok(Set() < {1} and not (Set() < Set()), "the empty set is a proper subset of a non-empty set only")
+ok({1, 2}.isdisjoint(Set()) and Set().isdisjoint(Set()), "the empty set is disjoint from anything")
+
+# =============================================================================
+# Set — the unhashable-argument inconsistency (add/remove throw; the rest no-op)
+# =============================================================================
+var sx = {1, 2, 3}
+ok(throws(Function(): sx.add([9])), "add of an unhashable value throws")
+ok(throws(Function(): sx.remove([9])), "remove of an unhashable value throws")
+# discard / contains / `in` all treat an unhashable value as simply absent (no throw).
+var discardNoRaise = True
+try:
+    sx.discard([9])
+catch:
+    discardNoRaise = False
+ok(discardNoRaise and sx == {1, 2, 3}, "discard of an unhashable value is a silent no-op")
+ok(sx.contains([9]) == False, "contains of an unhashable value is False (no throw)")
+ok(([9] in sx) == False, "`in` with an unhashable value is False (no throw)")
+
+# =============================================================================
+# List — sort stability under reverse, key-precompute-once, exact ordering
+# =============================================================================
+# Stable sort: equal keys keep input order. With reverse=True, equal keys STILL keep
+# input order (reverse swaps the comparator, it is not a post-pass reversal).
+var stab = [[2, "a"], [1, "b"], [2, "c"], [1, "d"], [2, "e"]]
+stab.sort(key = Function(p): return p[0], reverse = True)
+ok(stab == [[2, "a"], [2, "c"], [2, "e"], [1, "b"], [1, "d"]], "reverse sort is stable within equal keys")
+# The key function is evaluated exactly once per element (Schwartzian precompute).
+var calls = 0
+var counting = Function(x):
+    calls = calls + 1
+    return -x
+var toSort = [4, 2, 7, 1, 9, 3, 8]
+toSort.sort(key = counting)
+ok(calls == 7 and toSort == [9, 8, 7, 4, 3, 2, 1], "sort key runs once per element")
+# An exception thrown inside the key propagates out of sort.
+ok(throws(Function(): [1, 2, 3].sort(key = Function(x): throw "boom")), "an error in the sort key propagates")
+# Sorting mixed/uncomparable element types throws (no silent bogus order).
+ok(throws(Function(): [1, "a"].sort()), "sorting Integer and String together throws")
+ok(throws(Function(): [True, 1].sort()), "sorting Bool and Integer together throws (Bool is not numeric)")
+ok(throws(Function(): [[1], ["a"]].sort()), "sorting Lists with uncomparable elements throws")
+# Lexicographic ordering compares numbers EXACTLY (past 2**53, an int and its rounded
+# Float diverge): 2**53 + 1 is not representable as a double and is strictly greater.
+ok(([9007199254740993] > [9007199254740993.0]), "List ordering compares 2**53+1 exactly (> its rounded Float)")
+ok(not ([9007199254740993] == [9007199254740993.0]), "2**53+1 and its rounded Float are not equal")
+# `<=`/`>=` rely on trichotomy; a tie by value then length resolves correctly.
+ok([1, 2] <= [1, 2, 0] and [1, 2, 0] >= [1, 2], "the shorter list is <= its extension")
+ok([1, 2] <= [1, 2] and not ([1, 2] < [1, 2]), "<= holds at equality; < does not")
+
+# =============================================================================
+# List / Set / Dict — shallow copy & slice/repeat aliasing (inner handles shared)
+# =============================================================================
+# copy() is shallow: the inner element is the SAME handle, so a deep mutation shows in both.
+var outer = [[1], [2]]
+var outerCopy = outer.copy()
+outerCopy[0].append(99)
+ok(outer[0] == [1, 99], "List.copy is shallow (the inner element is shared)")
+# A slice shares element handles too.
+var sliced = outer[0:1]
+sliced[0].append(7)
+ok(outer[0] == [1, 99, 7], "a List slice shares the inner element handle")
+# Dict.copy / Set.copy are shallow as well.
+var dShallow = {"k": [1]}
+var dCopy = dShallow.copy()
+dCopy["k"].append(2)
+ok(dShallow["k"] == [1, 2], "Dict.copy is shallow (the value is shared)")
+# A new top-level binding via copy is independent (adding a key does not affect the original).
+var topIndep = {"a": 1}
+var topCopy = topIndep.copy()
+topCopy["b"] = 2
+ok(topIndep == {"a": 1} and topCopy == {"a": 1, "b": 2}, "copy is independent at the top level")
+
+# =============================================================================
+# Dict — integral-Float key collapse, popitem on empty, and value-distinctness
+# =============================================================================
+# An integral Float key collapses with the equal Integer (one slot); 1, 1.0 are one key.
+var ik = {}
+ik[2] = "int"
+ik[2.0] = "float"
+ok(len(ik) == 1 and ik[2] == "float" and ik[2.0] == "float", "an integral Float key overwrites the Integer slot")
+# A non-integral Float is a distinct key.
+var nik = {}
+nik[2] = "a"
+nik[2.5] = "b"
+ok(len(nik) == 2, "a non-integral Float is a distinct key")
+# 0, 0.0 and False: 0 and 0.0 collapse; False is distinct (Bool is its own type).
+var zk = {}
+zk[0] = "i"
+zk[0.0] = "f"
+zk[False] = "b"
+ok(len(zk) == 2 and zk[0] == "f" and zk[False] == "b", "0/0.0 collapse but False is a distinct key")
+# popitem on an empty Dict throws; on a one-entry Dict returns that [k, v].
+ok(throws(Function(): return {}.popitem()), "popitem on an empty Dict throws")
+var oneEntry = {"solo": 42}
+ok(oneEntry.popitem() == ["solo", 42] and len(oneEntry) == 0, "popitem returns and removes the entry")
+# update merges a Dict and overwrites; a bad pair-shape throws.
+var upd = {"a": 1, "b": 2}
+upd.update({"b": 20, "c": 30})
+ok(upd == {"a": 1, "b": 20, "c": 30}, "update overwrites and adds")
+ok(throws(Function(): return {}.update([[1, 2, 3]])), "update with a 3-element 'pair' throws")
+ok(throws(Function(): return {}.update("ab")), "update over a String (1-char items) throws")
+
+# =============================================================================
+# KEYWORD ARGUMENTS on every named built-in method (the doc promises uniform kwargs)
+# =============================================================================
+# String methods.
+ok("a,b,c".split(sep = ",", maxsplit = 1) == ["a", "b,c"], "split(sep=, maxsplit=)")
+ok("hello".replace(old = "l", new = "L", count = 1) == "heLlo", "replace(old=, new=, count=)")
+ok("abcabc".find(sub = "c", start = 3) == 5, "find(sub=, start=)")
+ok("abcabc".count(sub = "b") == 2, "count(sub=)")
+ok("hi".startswith(prefix = "h"), "startswith(prefix=)")
+ok("hi".endswith(suffix = "i"), "endswith(suffix=)")
+ok("x".center(width = 5, fillchar = "-") == "--x--", "center(width=, fillchar=)")
+ok("x".ljust(width = 3) == "x  ", "ljust(width=)")
+ok("7".zfill(width = 3) == "007", "zfill(width=)")
+ok("ab".strip(chars = "a") == "b", "strip(chars=)")
+ok("café".encode(encoding = "utf-8") == "café".encode(), "encode(encoding=)")
+ok("kit".levenshtein(other = "sit") == 1, "levenshtein(other=)")
+ok("abc".apply(fn = Function(c): return c.upper()) == "ABC", "apply(fn=)")
+ok("foobar".removeprefix(prefix = "foo") == "bar", "removeprefix(prefix=)")
+ok("a=b".partition(sep = "=") == ["a", "=", "b"], "partition(sep=)")
+# An unknown keyword on a method throws a clear error.
+ok(throws(Function(): return "a,b".split(seperator = ",")), "an unknown keyword on split throws")
+# List methods.
+var kl = [3, 1, 2]
+kl.sort(reverse = True)
+ok(kl == [3, 2, 1], "sort(reverse=)")
+kl.append(item = 0)
+ok(kl[-1] == 0, "append(item=)")
+ok([1, 2, 3, 2].index(value = 2, start = 2) == 3, "index(value=, start=)")
+ok([1, 2, 2, 2].count(value = 2) == 3, "count(value=)")
+var kl2 = [1, 2, 3]
+kl2.insert(index = 1, item = 9)
+ok(kl2 == [1, 9, 2, 3], "insert(index=, item=)")
+var kl3 = [1, 2, 3, 2]
+kl3.remove(value = 2)
+ok(kl3 == [1, 3, 2], "remove(value=)")
+var kl4 = [1, 2, 3]
+ok(kl4.pop(index = 0) == 1, "pop(index=)")
+var kl5 = [1]
+kl5.extend(iterable = [2, 3])
+ok(kl5 == [1, 2, 3], "extend(iterable=)")
+ok([1, 2].apply(fn = Function(x): return x * 2) == [2, 4], "List apply(fn=)")
+# Set methods.
+var ks = {1, 2}
+ks.add(value = 3)
+ok(3 in ks, "add(value=)")
+ks.discard(value = 3)
+ok(not (3 in ks), "discard(value=)")
+ok({1, 2, 3}.union(other = {4}) == {1, 2, 3, 4}, "union(other=)")
+ok({1, 2, 3}.issubset(other = {1, 2, 3, 4}), "issubset(other=)")
+ok({1, 2, 3}.contains(value = 2), "contains(value=)")
+ok({1, 2}.apply(fn = Function(x): return x * 0) == {0}, "Set apply(fn=)")
+var ks2 = {1, 2}
+ks2.remove(value = 1)
+ok(not (1 in ks2), "Set remove(value=)")
+# Dict methods.
+ok({"a": 1}.get(key = "a") == 1, "get(key=)")
+ok({"a": 1}.get(key = "z", default = 9) == 9, "get(key=, default=)")
+var kd = {"a": 1, "b": 2}
+ok(kd.pop(key = "a") == 1, "pop(key=)")
+var kd2 = {}
+ok(kd2.setdefault(key = "x", default = 5) == 5 and kd2["x"] == 5, "setdefault(key=, default=)")
+var kd3 = {"a": 1}
+kd3.update(other = {"b": 2})
+ok(kd3 == {"a": 1, "b": 2}, "update(other=)")
+var kd4 = {"a": 1}
+kd4.remove(key = "a")
+ok(not ("a" in kd4), "Dict remove(key=)")
+ok({"a": 1, "b": 2}.apply(fn = Function(v): return v + 10) == {"a": 11, "b": 12}, "Dict apply(fn=)")
+# Bytes methods + constructor by keyword.
+ok(Bytes([72, 105]).decode(encoding = "utf-8") == "Hi", "decode(encoding=)")
+ok(Bytes([1, 2, 3]).apply(fn = Function(b): return b + 1) == Bytes([2, 3, 4]), "Bytes apply(fn=)")
+ok(Bytes(x = "Hi") == Bytes([72, 105]), "Bytes(x=) constructor keyword")
+ok(Bytes(x = "é", encoding = "latin-1") == Bytes([0xe9]), "Bytes(x=, encoding=) constructor keywords")
+# Collection constructors by keyword.
+ok(List(iterable = "ab") == ["a", "b"], "List(iterable=) constructor keyword")
+ok(Set(iterable = [1, 1, 2]) == {1, 2}, "Set(iterable=) constructor keyword")
+ok(fromhex(s = "4869") == Bytes([72, 105]), "fromhex(s=) keyword")
+
+# =============================================================================
+# inspect() — each built-in type lists its methods
+# =============================================================================
+# A helper: does inspect(x) mention every name in `names`?
+var inspectHas = Function(x, names):
+    var text = inspect(x)
+    for nm in names:
+        if not (nm in text):
+            return False
+    return True
+ok(inspectHas("s", ["upper", "lower", "split", "replace", "format", "levenshtein", "encode", "zfill", "apply"]), "inspect(String) lists its methods")
+ok(inspectHas([1], ["append", "pop", "insert", "remove", "index", "count", "sort", "extend", "apply", "copy", "clear"]), "inspect(List) lists its methods")
+ok(inspectHas({1}, ["add", "discard", "remove", "contains", "union", "intersection", "symmetricdifference", "issubset", "apply"]), "inspect(Set) lists its methods")
+ok(inspectHas({"a": 1}, ["keys", "values", "items", "get", "pop", "setdefault", "update", "popitem", "apply"]), "inspect(Dict) lists its methods")
+ok(inspectHas(Bytes([1]), ["decode", "hex", "apply"]), "inspect(Bytes) lists its methods")
+ok(inspectHas(5, ["compare"]) and inspectHas(5.0, ["compare"]), "inspect(Integer/Float) lists compare")
+# inspect signatures advertise the kwarg names (so the doc's uniform-kwargs promise is discoverable).
+ok("sort(key" in inspect([1]) and "reverse" in inspect([1]), "inspect(List) advertises sort's key/reverse params")
+ok("get(key" in inspect({"a": 1}) and "default" in inspect({"a": 1}), "inspect(Dict) advertises get's key/default params")
+ok("split(sep" in inspect("x") and "maxsplit" in inspect("x"), "inspect(String) advertises split's sep/maxsplit params")
+
+# =============================================================================
+# str-vs-repr — nested escapes, and the bare-vs-nested distinction with new content
+# =============================================================================
+# A nested String shows in repr form (quoted), with escapes for special chars.
+ok(String(["a\nb"]) == "['a\\nb']", "a nested newline shows escaped in repr")
+ok(String(["a\tb"]) == "['a\\tb']", "a nested tab shows escaped in repr")
+ok(String(["it's"]) == "[\"it's\"]" or String(["it's"]) == "['it\\'s']", "a nested apostrophe is repr'd (quoted)")
+# A bare String prints raw (no quotes, no escaping) — the str side of the distinction.
+ok(String("a\nb") == "a\nb", "a bare String keeps its raw newline (str form)")
+# Mixed container repr with the newer types.
+ok(String([None, True, False, Bytes([65])]) == "[None, True, False, b'A']", "mixed None/Bool/Bytes container repr")
+ok(String({"k": ["v"]}) == "{'k': ['v']}", "nested-list value inside a Dict is repr'd")
+ok(String([[]]) == "[[]]" and String([""]) == "['']", "an empty nested List vs an empty nested String are distinguishable")
+# An astral emoji nested in a container shows literally (not escaped).
+ok(String(["😀"]) == "['😀']", "a nested emoji shows literally inside its quotes")
+
+io.print("r8_types: " + String(n) + " checks passed")

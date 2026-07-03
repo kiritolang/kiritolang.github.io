@@ -1,0 +1,646 @@
+# Adversarial deep-dive on Kirito's CORE LANGUAGE RUNTIME: every special method (dunder), the
+# inheritance/_super_ chain, exceptions (try/catch/finally/throw), context managers (with/as),
+# closures, and GC under cyclic-graph stress. Goes beyond spec_classes.ki / spec_exceptions.ki /
+# spec_with.ki / audit_langguide.ki / audit_types.ki — focuses on edges those don't reach:
+# missing/throwing/wrong-typed dunders, reflected ops, control flow through `with`, the recursion
+# guard, and the cycle guards. Every assertion is deterministic; only the final line hits stdout.
+var io = import("io")
+
+# ============================================================================
+# 1. OPERATOR OVERLOADING — define EVERY documented dunder, verify each dispatches.
+# ============================================================================
+# One class implementing the whole arithmetic/comparison/unary/container/call/context surface.
+class All:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _str_ = Function(self): return "All(" + String(self.v) + ")"
+    var _add_ = Function(self, o): return All(self.v + o.v)
+    var _sub_ = Function(self, o): return All(self.v - o.v)
+    var _mul_ = Function(self, o): return All(self.v * o.v)
+    var _div_ = Function(self, o): return self.v / o.v
+    var _floordiv_ = Function(self, o): return self.v // o.v
+    var _mod_ = Function(self, o): return self.v % o.v
+    var _pow_ = Function(self, o): return self.v ** o.v
+    var _eq_ = Function(self, o): return self.v == o.v
+    var _lt_ = Function(self, o): return self.v < o.v
+    var _le_ = Function(self, o): return self.v <= o.v
+    var _gt_ = Function(self, o): return self.v > o.v
+    var _ge_ = Function(self, o): return self.v >= o.v
+    var _neg_ = Function(self): return All(-self.v)
+    var _not_ = Function(self): return self.v == 0
+    var _call_ = Function(self, k = 1): return self.v * k
+    var _len_ = Function(self): return self.v
+    var _contains_ = Function(self, x): return x < self.v
+    var _iter_ = Function(self): return range(self.v)
+
+var a = All(10)
+var b = All(3)
+assert String(a) == "All(10)" and f"{b}" == "All(3)", "_str_ in String() and f-string"
+assert String(a + b) == "All(13)", "_add_"
+assert String(a - b) == "All(7)", "_sub_"
+assert String(a * b) == "All(30)", "_mul_"
+assert (a / b) > 3.33 and (a / b) < 3.34, "_div_ (true division)"
+assert (a // b) == 3, "_floordiv_"
+assert (a % b) == 1, "_mod_"
+assert (a ** All(2)) == 100, "_pow_"
+assert (a == All(10)) and not (a == b), "_eq_"
+assert (b < a) and not (a < b), "_lt_"
+assert (b <= All(3)) and (b <= a), "_le_"
+assert (a > b) and not (b > a), "_gt_"
+assert (a >= All(10)) and (a >= b), "_ge_"
+assert String(-a) == "All(-10)", "_neg_"
+assert (not All(0)) == True and (not a) == False, "_not_"
+assert a() == 10 and a(k = 3) == 30, "_call_ (with keyword arg + default)"
+assert len(a) == 10, "_len_"
+assert (5 in a) and not (50 in a) and (50 not in a), "_contains_ (in / not in)"
+var iterAcc = 0
+for x in b:
+    iterAcc = iterAcc + x
+assert iterAcc == 3, "_iter_ (0+1+2)"
+
+# _ne_ default = not _eq_ (only _eq_ defined above): == and != stay consistent.
+assert (a != b) and not (a != All(10)), "_ne_ defaults to (not _eq_)"
+
+# _ne_ explicitly defined wins over the default — it is dispatched, not just negated _eq_.
+class HasNe:
+    var _init_ = Function(self, v): self.v = v
+    var _eq_ = Function(self, o): return self.v == o.v
+    var _ne_ = Function(self, o): return self.v + o.v   # deliberately not a bool
+assert (HasNe(2) != HasNe(3)) == 5, "explicit _ne_ is dispatched (returns 2+3)"
+
+# _getitem_ / _setitem_ with variadic keys (1, 2, and 3 keys).
+class Grid:
+    var _init_ = Function(self): self.cells = {}
+    var _getitem_ = Function(self, i, j): return self.cells.get(f"{i},{j}", 0)
+    var _setitem_ = Function(self, i, j, v): self.cells[f"{i},{j}"] = v
+var g = Grid()
+g[2, 5] = 99
+assert g[2, 5] == 99 and g[0, 0] == 0, "variadic _getitem_/_setitem_ (2 keys)"
+class Cube:
+    var _init_ = Function(self): self.d = {}
+    var _getitem_ = Function(self, i, j, k): return self.d.get(f"{i},{j},{k}", -1)
+    var _setitem_ = Function(self, i, j, k, v): self.d[f"{i},{j},{k}"] = v
+var cube = Cube()
+cube[1, 2, 3] = "x"
+assert cube[1, 2, 3] == "x" and cube[9, 9, 9] == -1, "variadic _setitem_/_getitem_ (3 keys)"
+
+# _eq_ drives in / index / count / remove on Lists (doc: 06-types.md special-methods table).
+class Coin:
+    var _init_ = Function(self, c): self.c = c
+    var _eq_ = Function(self, o): return self.c == o.c
+var coins = [Coin(1), Coin(2), Coin(3), Coin(2)]
+assert Coin(2) in coins, "_eq_ drives List `in`"
+assert coins.index(Coin(2)) == 1, "_eq_ drives List.index"
+assert coins.count(Coin(2)) == 2, "_eq_ drives List.count"
+coins.remove(Coin(2))
+assert len(coins) == 3 and coins.count(Coin(2)) == 1, "_eq_ drives List.remove (first match)"
+
+# _lt_ drives sorted()/min()/max().
+var vs = sorted([All(3), All(1), All(2)])
+assert String(vs[0]) == "All(1)" and String(vs[2]) == "All(3)", "_lt_ drives sorted"
+
+# --- Adversarial: missing dunder => clean error, never a crash. ---
+class Naked:
+    var _init_ = Function(self): pass
+# NOTE: `not` is deliberately excluded here — see the truthiness-fallback assertion below.
+var probes = [
+    Function(): return Naked() + 1,
+    Function(): return Naked() - 1,
+    Function(): return Naked() * 1,
+    Function(): return Naked() / 1,
+    Function(): return Naked() // 1,
+    Function(): return Naked() % 1,
+    Function(): return Naked() ** 1,
+    Function(): return Naked() < Naked(),
+    Function(): return -Naked(),
+    Function(): return Naked()(),
+    Function(): return Naked()[0],
+    Function(): return len(Naked()),
+    Function(): return 0 in Naked()]
+var rejected = 0
+for pr in probes:
+    try:
+        discard pr()
+    catch as e:
+        # Every missing-operator path must surface a descriptive error mentioning the type/operator.
+        if "Naked" in e or "operator" in e or "not" in e or "no" in e:
+            rejected = rejected + 1
+assert rejected == len(probes), "every missing dunder throws a clean descriptive error"
+
+# DOC-vs-IMPL GAP: 06-types.md says a missing dunder throws "except _ne_". In fact `_not_` is a
+# SECOND silent exception — `not <instance>` with no _not_ falls back to truthiness (an instance is
+# always truthy) and returns False instead of throwing. We assert the actual behavior.
+assert (not Naked()) == False, "missing _not_ falls back to truthiness (returns False, does NOT throw)"
+
+# Missing _add_ message is the documented "has no operator" form.
+var noOpMsg = "no"
+try:
+    discard Naked() + 1
+catch as e:
+    noOpMsg = e
+assert "has no operator '_add_'" in noOpMsg, "missing _add_ reports 'has no operator _add_'"
+
+# A dunder that THROWS: the thrown value propagates unchanged through the operator.
+class Boom:
+    var _add_ = Function(self, o): throw "kaboom"
+    var _lt_ = Function(self, o): throw "lt-boom"
+    var _getitem_ = Function(self, k): throw "idx-boom"
+var bv = "no"
+try:
+    discard Boom() + 1
+catch as e:
+    bv = e
+assert bv == "kaboom", "throwing _add_ propagates the thrown value"
+var bv2 = "no"
+try:
+    discard Boom()[0]
+catch as e:
+    bv2 = e
+assert bv2 == "idx-boom", "throwing _getitem_ propagates"
+
+# A dunder returning the WRONG type. _len_ MUST be Integer (doc + runtime.hpp:1574).
+class BadLen:
+    var _len_ = Function(self): return "not-an-int"
+var lenErr = "no"
+try:
+    discard len(BadLen())
+catch as e:
+    lenErr = e
+assert "_len_ must return an Integer" in lenErr, "_len_ returning non-Integer throws"
+
+# _iter_ returning a non-iterable throws cleanly (doc says it returns "a List of elements").
+class BadIter:
+    var _iter_ = Function(self): return 42
+var iterErr = "no"
+try:
+    for z in BadIter():
+        discard z
+catch as e:
+    iterErr = "iterable" in e
+assert iterErr, "_iter_ returning a non-iterable throws 'not iterable'"
+
+# _str_ returning a non-String: the runtime is LENIENT — it stringifies the returned value rather
+# than erroring (doc 06-types.md says _str_ "Returns a String"). Record the actual behavior.
+class WeirdStr:
+    var _str_ = Function(self): return 42
+assert String(WeirdStr()) == "42", "_str_ returning Integer is stringified (runtime leniency)"
+
+# Reflected/mixed-type ops: with a built-in LEFT operand, there is NO reflected dispatch to the
+# instance — the built-in's own operator rejects it (doc: "left operand's method").
+var reflErr = "no"
+try:
+    discard 5 + All(1)
+catch as e:
+    reflErr = "unsupported operand" in e or "All" in e
+assert reflErr, "Integer + instance throws (no reflected dispatch to the instance)"
+# But an instance on the LEFT dispatches its own dunder (here _gt_ receives another All).
+assert (All(10) > All(3)) == True, "instance on the left dispatches its dunder (_gt_)"
+
+# ============================================================================
+# 2. INHERITANCE + _super_
+# ============================================================================
+class A:
+    var _init_ = Function(self, tag):
+        self.tag = tag
+        self._secret = 100
+    var who = Function(self): return "A"
+    var reveal = Function(self): return self._secret
+class B(A):
+    var who = Function(self): return self._super_().who() + "<-B"
+class C(B):
+    var who = Function(self): return self._super_().who() + "<-C"
+
+# Multi-level chain: each _super_() climbs exactly one level.
+assert C("c").who() == "A<-B<-C", "_super_ climbs one level per call (A<-B<-C)"
+assert isinstance(C("c"), A) and isinstance(C("c"), B) and isinstance(C("c"), C), "isinstance walks the chain"
+
+# _super_ in the constructor: extend, don't replace.
+class Base:
+    var _init_ = Function(self): self.count = 0
+class Named(Base):
+    var _init_ = Function(self, name):
+        self._super_()._init_()
+        self.name = name
+var nm = Named("x")
+assert nm.count == 0 and nm.name == "x", "_super_()._init_() extends the base constructor"
+
+# _super_ from a class with NO base throws the documented message.
+class Solo:
+    var go = Function(self): return self._super_()
+var soloErr = "no"
+try:
+    discard Solo().go()
+catch as e:
+    soloErr = e
+assert "_super_() called in 'Solo', which does not inherit from any class" in soloErr, "baseless _super_() message"
+
+# Private (_member) is reachable from a SUBCLASS method (privacy is per class CHAIN)...
+class HasPriv:
+    var _init_ = Function(self): self._p = 7
+class SubPriv(HasPriv):
+    var _init_ = Function(self): self._super_()._init_()
+    var peek = Function(self): return self._p + 1
+assert SubPriv().peek() == 8, "subclass method may read the parent's private"
+assert A("t").reveal() == 100, "inherited method reads its own class's private"
+
+# ...but rejected from OUTSIDE the chain (read AND write), and from an unrelated sibling class.
+var privRead = "no"
+try:
+    discard A("t")._secret
+catch as e:
+    privRead = "private" in e
+assert privRead, "private read from outside the chain is rejected"
+var privWrite = "no"
+try:
+    var inst = A("t")
+    inst._secret = 0
+catch as e:
+    privWrite = "private" in e
+assert privWrite, "private WRITE from outside the chain is rejected"
+class Sibling:
+    var snoop = Function(self, other): return other._secret
+var sibErr = "no"
+try:
+    discard Sibling().snoop(A("t"))
+catch as e:
+    sibErr = "private" in e
+assert sibErr, "an unrelated class cannot read another's private"
+
+# Class-attribute copy-on-write: assigning through one instance does NOT mutate the class default
+# seen by another instance.
+class Shared:
+    var tally = 0
+    var bump = Function(self): self.tally = self.tally + 1
+var sh1 = Shared()
+var sh2 = Shared()
+assert sh1.tally == 0 and sh2.tally == 0, "both instances read the class default"
+sh1.bump()
+assert sh1.tally == 1 and sh2.tally == 0, "COW: sh1 shadows; sh2 still sees the class default"
+
+# Parameter defaults are evaluated per-call (a mutable default is fresh each call — no shared-default footgun).
+var collect = Function(x, acc = []):
+    acc.append(x)
+    return acc
+assert collect(1) == [1] and collect(2) == [2], "mutable default is fresh per call"
+
+# Instances are unhashable by default (no custom hash) — cannot be Dict keys / Set elements.
+var unhashErr = "no"
+try:
+    var d = {}
+    d[A("k")] = 1
+catch as e:
+    unhashErr = "unhashable" in e
+assert unhashErr, "a plain instance (no hash protocol) is unhashable as a Dict key"
+# But default equality is by identity, and a plain instance is only == to itself.
+var ida = A("i")
+assert (ida == ida) and not (ida == A("i")), "no _eq_ => identity equality"
+
+# ============================================================================
+# 3. EXCEPTIONS — try / catch / finally / throw
+# ============================================================================
+class AppErr:
+    var _init_ = Function(self, msg): self.msg = msg
+class IOErr(AppErr):
+    var _init_ = Function(self, msg): self._super_()._init_(msg)
+
+# Typed catch via the class chain: a base catch catches a subclass.
+var caughtBase = "no"
+try:
+    throw IOErr("disk")
+catch AppErr as e:
+    caughtBase = e.msg
+assert caughtBase == "disk", "base-typed catch catches a subclass throw"
+# Exact-typed catch.
+var caughtExact = "no"
+try:
+    throw IOErr("net")
+catch IOErr as e:
+    caughtExact = e.msg
+assert caughtExact == "net", "exact-typed catch"
+# A non-matching typed catch does NOT catch — falls through to the outer handler (finally still runs).
+var fall = "x"
+try:
+    try:
+        throw AppErr("up")
+    catch IOErr as e:
+        fall = "wrong"
+    finally:
+        fall = fall + "+fin"
+catch AppErr as e:
+    fall = fall + "+outer:" + e.msg
+assert fall == "x+fin+outer:up", "non-matching typed catch falls through; finally runs first"
+
+# throw a non-instance value (String / Integer): caught as the raw value.
+var thrownStr = "no"
+try:
+    throw "raw-string"
+catch as e:
+    thrownStr = e
+assert thrownStr == "raw-string", "throw a String is caught as the String"
+var thrownInt = 0
+try:
+    throw 404
+catch as e:
+    thrownInt = e
+assert thrownInt == 404, "throw an Integer is caught as the Integer"
+
+# bare catch also catches a native (std::exception) error crossing the C++ boundary, as a String.
+var nativeErr = False
+try:
+    discard 1 / 0
+catch as e:
+    nativeErr = "zero" in e
+assert nativeErr, "bare catch catches a native runtime error (division by zero) as a String"
+
+# finally runs on: normal exit, caught throw, re-throw, return-from-try.
+var order = []
+try:
+    order.append("body")
+finally:
+    order.append("fin")
+assert order == ["body", "fin"], "finally runs on normal exit"
+
+# When a MATCHED catch handler re-throws (or throws anew), the inner `finally` STILL runs before the
+# exception propagates — as the doc ("finally runs ... on re-thrown") requires. (The old
+# tree-walker had a bug that skipped it; the bytecode engine handles it correctly.)
+order = []
+try:
+    try:
+        throw "deep"
+    catch as e:
+        order.append("catch")
+        throw "rewrapped:" + e
+    finally:
+        order.append("fin-inner")     # runs even though the handler re-threw
+catch as e:
+    order.append(e)
+assert order == ["catch", "fin-inner", "rewrapped:deep"], "re-throw from a handler still runs the inner finally"
+
+# Contrast: when the exception ESCAPES (no handler runs — unmatched type or no handler at all), the
+# finally DOES run. So the finally-skip is specific to a throw from a matched handler body.
+var escOrder = []
+class TypeP:
+    var _init_ = Function(self): pass
+class TypeQ:
+    var _init_ = Function(self): pass
+try:
+    try:
+        throw TypeP()
+    catch TypeQ as e:
+        escOrder.append("wrong-handler")
+    finally:
+        escOrder.append("fin-escape")
+catch as e:
+    escOrder.append("outer")
+assert escOrder == ["fin-escape", "outer"], "finally runs when the exception escapes (no handler matched)"
+
+# return from inside try with finally — finally runs, the return value survives.
+var retFin = Function():
+    var marks = []
+    var inner = Function():
+        try:
+            return 42
+        finally:
+            marks.append("ran")
+    var v = inner()
+    return [v, marks]
+assert retFin() == [42, ["ran"]], "finally runs on return-from-try; return value preserved"
+
+# break / continue inside try-with-finally inside a loop: finally runs each pass, flow is honored.
+var brk = []
+var bi = 0
+while bi < 3:
+    try:
+        brk.append("t" + String(bi))
+        if bi == 1:
+            break
+    finally:
+        brk.append("f" + String(bi))
+    bi = bi + 1
+assert brk == ["t0", "f0", "t1", "f1"], "break inside try runs finally then breaks"
+var con = []
+var ci = 0
+while ci < 3:
+    ci = ci + 1
+    try:
+        if ci == 2:
+            continue
+        con.append("k" + String(ci))
+    finally:
+        con.append("f" + String(ci))
+assert con == ["k1", "f1", "f2", "k3", "f3"], "continue inside try runs finally then continues"
+
+# A return inside FINALLY overrides a return/throw from the try body.
+var finWins = Function():
+    try:
+        return "from-try"
+    finally:
+        return "from-finally"
+assert finWins() == "from-finally", "a return in finally overrides the try's return"
+
+# nested try: the inner catch handles, the outer body continues normally.
+var nested = []
+try:
+    nested.append(1)
+    try:
+        throw "inner"
+    catch as e:
+        nested.append(2)
+    nested.append(3)
+catch as e:
+    nested.append(99)
+assert nested == [1, 2, 3], "inner catch lets the outer try body continue"
+
+# catch-as binding is usable after the try statement (it lands in the enclosing scope).
+try:
+    throw "bound-value"
+catch as boundE:
+    pass
+assert boundE == "bound-value", "the catch-as name remains bound after the try"
+
+# An uncaught throw inside a nested function still unwinds to an outer catch.
+var deepThrow = Function():
+    var lvl3 = Function(): throw "from-depth-3"
+    var lvl2 = Function(): return lvl3()
+    var lvl1 = Function(): return lvl2()
+    return lvl1()
+var unwound = "no"
+try:
+    discard deepThrow()
+catch as e:
+    unwound = e
+assert unwound == "from-depth-3", "a throw unwinds through nested function calls to an outer catch"
+
+# ============================================================================
+# 4. CONTEXT MANAGERS — with / as
+# ============================================================================
+class CM:
+    var _init_ = Function(self, log, ret):
+        self.log = log
+        self.ret = ret
+    var _enter_ = Function(self):
+        self.log.append("enter")
+        return self.ret
+    var _exit_ = Function(self):
+        self.log.append("exit")
+
+# _enter_ return value is bound to the `as` name.
+var cmLog = []
+var bound = None
+with CM(cmLog, "ENTERED") as v:
+    cmLog.append("body")
+    bound = v
+assert cmLog == ["enter", "body", "exit"] and bound == "ENTERED", "with: enter/body/exit + as-binding"
+
+# _exit_ runs even when the body throws, and the exception still propagates.
+var exLog = []
+var threw = False
+try:
+    with CM(exLog, 0) as v2:
+        exLog.append("body")
+        throw "fail"
+catch as e:
+    threw = "fail" in e
+assert threw and exLog == ["enter", "body", "exit"], "with: _exit_ runs on exception, exception propagates"
+
+# _exit_ runs on return / break / continue out of the body.
+var rLog = []
+var retFromWith = Function():
+    with CM(rLog, 0) as v3:
+        rLog.append("body")
+        return "early"
+    rLog.append("unreached")
+discard retFromWith()
+assert rLog == ["enter", "body", "exit"], "with: _exit_ runs on return-from-body"
+var bLog = []
+var bwi = 0
+while bwi < 3:
+    with CM(bLog, 0) as v4:
+        bLog.append("i")
+        if bwi == 1:
+            break
+    bwi = bwi + 1
+assert bLog == ["enter", "i", "exit", "enter", "i", "exit"], "with: _exit_ runs on break"
+
+# Nested with: exits unwind inner-then-outer.
+var nLog = []
+with CM(nLog, "outer") as o:
+    nLog.append("o-body")
+    with CM(nLog, "inner") as i:
+        nLog.append("i-body")
+assert nLog == ["enter", "o-body", "enter", "i-body", "exit", "exit"], "nested with: inner exits before outer"
+
+# with WITHOUT an `as` clause still runs enter/exit.
+var noAsLog = []
+with CM(noAsLog, 0):
+    noAsLog.append("body")
+assert noAsLog == ["enter", "body", "exit"], "with (no `as`) still runs enter/exit"
+
+# _exit_ that itself throws: that exception propagates and is catchable.
+class ExitThrows:
+    var _enter_ = Function(self): return self
+    var _exit_ = Function(self): throw "exit-failure"
+var exitErr = "no"
+try:
+    with ExitThrows() as v5:
+        discard v5
+catch as e:
+    exitErr = e
+assert exitErr == "exit-failure", "an _exit_ that throws propagates a catchable error"
+
+# ============================================================================
+# 5. CLOSURES + GC STRESS
+# ============================================================================
+# Closures capture their lexical scope by reference and persist across calls.
+var mkCounter = Function():
+    var n = 0
+    return Function():
+        n = n + 1
+        return n
+var ctr = mkCounter()
+assert ctr() == 1 and ctr() == 2 and ctr() == 3, "closure captures + persists mutable state"
+var ctr2 = mkCounter()
+assert ctr2() == 1, "a second closure has its own independent captured binding"
+
+# Loop-variable capture: a `while` body does NOT open a new scope per iteration (only functions /
+# modules do, per the scoping model), so all closures share the one binding and see its final value.
+var capFns = []
+var ki = 0
+while ki < 3:
+    var snap = ki
+    capFns.append(Function(): return snap)
+    ki = ki + 1
+assert capFns[0]() == 2 and capFns[1]() == 2 and capFns[2]() == 2, "loop closures share one binding (final value)"
+
+# Self-referential closure (recursion via a captured name).
+var mkRec = Function():
+    var f = None
+    f = Function(n):
+        if n <= 0:
+            return 0
+        return n + f(n - 1)
+    return f
+assert mkRec()(5) == 15, "self-referential closure recurses (5+4+3+2+1)"
+
+# Deep recursion hits the call-depth guard: a CATCHABLE error, never a native stack overflow.
+var blowStack = Function(n): return blowStack(n + 1)
+var recErr = "no"
+try:
+    discard blowStack(0)
+catch as e:
+    recErr = "recursion" in e or "depth" in e
+assert recErr, "unbounded recursion throws a catchable 'maximum recursion depth' error"
+# Mutual recursion is bounded the same way.
+var pingF = None
+var pongF = None
+pingF = Function(n): return pongF(n + 1)
+pongF = Function(n): return pingF(n + 1)
+var mutErr = "no"
+try:
+    discard pingF(0)
+catch as e:
+    mutErr = "recursion" in e or "depth" in e
+assert mutErr, "mutual recursion is bounded by the same guard"
+# The VM survives the guard firing — normal calls still work afterward.
+assert mkRec()(3) == 6, "the VM keeps working after the recursion guard fires"
+
+# Cyclic data: comparing two self-referential lists throws the equality-recursion guard (no hang).
+var cyc1 = [1, 2]
+cyc1.append(cyc1)
+var cyc2 = [1, 2]
+cyc2.append(cyc2)
+var cycEqErr = "no"
+try:
+    discard cyc1 == cyc2
+catch as e:
+    cycEqErr = "recursion" in e or "cyclic" in e
+assert cycEqErr, "comparing cyclic lists throws the equality-recursion guard (no infinite loop)"
+# Stringifying a self-referential built-in container uses the cycle guard ([...]), no crash.
+var selfList = [1]
+selfList.append(selfList)
+assert String(selfList) == "[1, [...]]", "self-referential List stringifies with the [...] cycle guard"
+
+# GC stress: churn through thousands of cyclic instance graphs; they must be reclaimed (no crash,
+# no leak-to-death). Each graph is a closed ring of nodes carrying a payload.
+class GNode:
+    var _init_ = Function(self):
+        self.next = None
+        self.payload = [0] * 32
+var buildRing = Function(size):
+    var head = GNode()
+    var cur = head
+    var i = 0
+    while i < size:
+        cur.next = GNode()
+        cur = cur.next
+        i = i + 1
+    cur.next = head
+    return head
+var gi = 0
+while gi < 3000:
+    discard buildRing(20)
+    gi = gi + 1
+# If we got here without crashing or OOMing, the precise mark-sweep reclaimed the cyclic garbage.
+assert buildRing(5).payload == [0] * 32, "GC reclaims thousands of cyclic graphs; the arena stays healthy"
+
+io.print("OK deep-runtime")

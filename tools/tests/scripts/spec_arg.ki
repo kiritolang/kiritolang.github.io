@@ -1,0 +1,150 @@
+# Exhaustive tests for the `arg` command-line parser: automatic --help, type conversion, values,
+# defaults, positionals, short forms, every edge/adversarial case, and a randomized fuzz against an
+# in-Kirito oracle. The parser holds its spec on the instance; we run parse() ourselves.
+var io = import("io")
+var arg = import("arg")
+var random = import("random")
+
+# A parser exercising every kind: positional, Integer option, String option, Float option, flag.
+var build = Function():
+    var p = arg.Parser("greet someone")
+    p.positional("file")
+    p.option("count", 1)         # Integer default -> values parsed as Integers
+    p.option("name", "world")    # String default  -> values kept as strings
+    p.option("ratio", 1.0)       # Float default   -> values parsed as Floats
+    p.flag("verbose")
+    return p
+
+# ============================================================ values & defaults
+var o1 = build().parse(["in.txt", "--count", "3", "--name=Ada", "--ratio", "2.5", "--verbose"])
+assert o1["file"] == "in.txt", "positional"
+assert o1["count"] == 3 and type(o1["count"]) == "Integer", "Integer option, --k v form"
+assert o1["name"] == "Ada", "String option, --k=v form"
+assert o1["ratio"] == 2.5 and type(o1["ratio"]) == "Float", "Float option"
+assert o1["verbose"] == True, "flag present"
+assert o1["rest"] == [], "no extra positionals"
+
+var d = build().parse(["only.txt"])
+assert d["count"] == 1 and d["name"] == "world" and d["ratio"] == 1.0 and d["verbose"] == False, "defaults applied"
+assert type(d["count"]) == "Integer" and type(d["ratio"]) == "Float", "default types preserved"
+
+# ============================================================ type conversion edges
+assert build().parse(["f", "--count", "-5"])["count"] == -5, "negative Integer"
+assert build().parse(["f", "--count", "0"])["count"] == 0, "zero Integer"
+assert build().parse(["f", "--ratio", "-2.5"])["ratio"] == -2.5, "negative Float"
+assert build().parse(["f", "--ratio", "1e3"])["ratio"] == 1000.0, "scientific Float"
+assert build().parse(["f", "--name", "123"])["name"] == "123" and type(build().parse(["f", "--name", "123"])["name"]) == "String", "numeric-looking String stays String"
+assert build().parse(["f", "--name="])["name"] == "", "empty String value via --k="
+
+# ============================================================ short forms
+var s = build().parse(["f", "-c", "9", "-v"])
+assert s["count"] == 9 and s["verbose"] == True, "short option -c and short flag -v"
+# short matches the FIRST declared name starting with that letter
+assert build().parse(["f", "-n", "Bo"])["name"] == "Bo", "short -n -> name"
+
+# ============================================================ positionals
+var multi = arg.Parser("")
+multi.positional("a")
+multi.positional("b")
+assert multi.parse(["1", "2"]) == {"a": "1", "b": "2", "rest": []}, "two positionals in order"
+assert multi.parse(["1", "2", "3", "4"])["rest"] == ["3", "4"], "extra positionals -> rest"
+# positionals can be interleaved with options
+var inter = build().parse(["--count", "7", "the.txt", "--verbose"])
+assert inter["file"] == "the.txt" and inter["count"] == 7 and inter["verbose"] == True, "positional among options"
+
+# ============================================================ automatic help
+var capture = Function(args):
+    var buf = io.BytesIO()
+    io.stdout = buf
+    var r = build().parse(args)
+    io.stdout = io.__stdout__
+    return [r, buf.getvalue()]
+
+var hres = capture(["--help"])
+assert hres[0] == None, "--help returns None"
+var usage = hres[1]
+assert "usage:" in usage, "help has a usage line"
+assert "<file>" in usage, "help lists the positional"
+assert "--count" in usage and "--name" in usage and "--ratio" in usage, "help lists the options"
+assert "--verbose" in usage, "help lists the flag"
+assert "greet someone" in usage, "help shows the description"
+assert "(default 1)" in usage and "(default world)" in usage, "help shows option defaults"
+assert "-h, --help" in usage, "help documents itself"
+# -h is equivalent to --help
+assert capture(["-h"])[0] == None, "-h returns None too"
+# help wins even with other (valid) args, when seen first
+assert capture(["--help", "in.txt"])[0] == None, "--help short-circuits before positionals"
+# help printed nothing else but the usage (single trailing newline from io.print)
+assert usage.strip() == build().usage().strip(), "printed help equals usage()"
+
+# ============================================================ adversarial / errors
+var fails = Function(args) -> String:
+    try:
+        discard build().parse(args)
+        return ""
+    catch as e:
+        return e
+assert "missing required argument" in fails([]) and "file" in fails([]), "missing positional names it"
+assert "unknown option" in fails(["f", "--nope"]) and "nope" in fails(["f", "--nope"]), "unknown long option"
+assert "unknown option" in fails(["f", "-z"]), "unknown short option"
+assert "expects an integer" in fails(["f", "--count", "abc"]), "bad Integer value"
+assert "expects an integer" in fails(["f", "--count", "3.5"]), "Float string rejected for Integer option"
+assert "expects a number" in fails(["f", "--ratio", "xyz"]), "bad Float value"
+assert "requires a value" in fails(["f", "--count"]), "trailing option with no value"
+assert "requires a value" in fails(["f", "-c"]), "trailing short option with no value"
+assert fails(["f", "--count="]) != "", "empty value for Integer option throws"
+
+# ============================================================ documented quirks (locked-in behavior)
+# an option's value is the very next token, even if it looks like an option
+var q1 = build().parse(["f", "--name", "--verbose"])
+assert q1["name"] == "--verbose" and q1["verbose"] == False, "option value swallows the next token verbatim"
+# `=value` on a flag is ignored (the flag is just set True)
+assert build().parse(["f", "--verbose=anything"])["verbose"] == True, "=value on a flag is ignored"
+# a later repeat of an option wins
+assert build().parse(["f", "--count", "1", "--count", "2"])["count"] == 2, "last option value wins"
+# an empty parser puts everything in rest
+var empty = arg.Parser("")
+assert empty.parse([]) == {"rest": []}, "empty parser, no args"
+assert empty.parse(["a", "b"])["rest"] == ["a", "b"], "empty parser collects positionals in rest"
+
+# ============================================================ fuzz vs an in-Kirito oracle
+var rng = random.Random(0xABCDEF)
+var trial = 0
+while trial < 3000:
+    var fileName = "f" + String(rng.randint(0, 999)) + ".txt"
+    var setCount = rng.randint(0, 1) == 1
+    var wantCount = rng.randint(-100, 100)
+    var wantVerbose = rng.randint(0, 1) == 1
+    var args = []
+    # randomly place the positional before or after the options
+    var fileFirst = rng.randint(0, 1) == 0
+    if fileFirst:
+        args.append(fileName)
+    if setCount:
+        var form = rng.randint(0, 2)
+        if form == 0:
+            args.append("--count")
+            args.append(String(wantCount))
+        elif form == 1:
+            args.append("--count=" + String(wantCount))
+        else:
+            args.append("-c")
+            args.append(String(wantCount))
+    if wantVerbose:
+        if rng.randint(0, 1) == 0:
+            args.append("--verbose")
+        else:
+            args.append("-v")
+    if not fileFirst:
+        args.append(fileName)
+    var got = build().parse(args)
+    assert got["file"] == fileName, "fuzz: positional"
+    var expCount = 1
+    if setCount:
+        expCount = wantCount
+    assert got["count"] == expCount, "fuzz: count value/default"
+    assert got["verbose"] == wantVerbose, "fuzz: flag presence"
+    assert got["name"] == "world" and got["ratio"] == 1.0, "fuzz: untouched defaults"
+    trial = trial + 1
+
+io.print("OK")

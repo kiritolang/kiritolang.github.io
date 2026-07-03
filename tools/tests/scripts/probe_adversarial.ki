@@ -1,0 +1,99 @@
+# ====================================================== INTERPRETER STABILITY: deep, huge, recursive
+var io = import("io")
+var random = import("random")
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# --- recursion guard: unbounded recursion throws a catchable error, never crashes ---
+var rec = Function(n):
+    return rec(n + 1)
+assert throws(Function(): return rec(0)), "infinite recursion throws (call-depth guard)"
+
+# --- deeply nested data structures handled or guarded (no native stack overflow) ---
+var deepList = [0]
+var i = 0
+while i < 50000:
+    deepList = [deepList]
+    i = i + 1
+# stringifying / equality on very deep structures must not overflow — either works or throws cleanly
+discard throws(Function(): return String(deepList))
+assert True, "deep structure operations did not crash the process"
+
+# --- huge allocations are guarded (throw, not OOM) ---
+assert throws(Function(): return [0] * 100000000000), "huge list repeat guarded"
+assert throws(Function(): return "ab" * 100000000000), "huge string repeat guarded"
+assert throws(Function(): return range(100000000000)), "huge range guarded"
+
+# --- cyclic structures: containment / length terminate ---
+var cyc = [1, 2, 3]
+cyc.append(cyc)
+assert len(cyc) == 4, "len of cyclic list is shallow count"
+assert 1 in cyc, "membership in cyclic list terminates"
+
+# --- error recovery: after catching, the VM keeps working ---
+var total = 0
+var n = 0
+while n < 1000:
+    try:
+        if n % 3 == 0:
+            throw "boom " + String(n)
+        total = total + n
+    catch as e:
+        total = total + 1
+    n = n + 1
+assert total > 0, "VM survives a thousand throws/catches"
+
+# --- typed exceptions match by class chain ---
+class AppError:
+    var _init_ = Function(self, msg):
+        self.msg = msg
+class NotFound(AppError):
+    var _init_ = Function(self, msg):
+        self._super_()._init_(msg)
+var caught = ""
+try:
+    throw NotFound("missing")
+catch AppError as e:
+    caught = "base-caught:" + e.msg
+assert caught == "base-caught:missing", "subclass exception caught by base type"
+
+# --- division/modulo by zero, index/key errors all throw cleanly ---
+assert throws(Function(): return 1 / 0), "div by zero throws"
+assert throws(Function(): return 1 // 0), "floordiv by zero throws"
+assert throws(Function(): return 1 % 0), "mod by zero throws"
+assert throws(Function(): return [1, 2][99]), "list index out of range throws"
+assert throws(Function(): return {"a": 1}["z"]), "missing dict key throws"
+assert throws(Function(): return "abc"[100]), "string index out of range throws"
+
+# --- unicode edge cases in slicing/indexing ---
+var u = "a😀b世c"
+assert len(u) == 5, "code-point length"
+assert u[1] == "😀" and u[3] == "世", "code-point indexing"
+assert u[1:4] == "😀b世", "code-point slice"
+assert u[::-1] == "c世b😀a", "reverse with multibyte chars"
+
+# --- FUZZ: random nested literals build, stringify, and survive round operations ---
+var rng = random.Random(20260603)
+var f = 0
+while f < 300:
+    var depth = rng.randint(1, 8)
+    var v = rng.randint(0, 100)
+    var d = 0
+    while d < depth:
+        var pick = rng.randint(0, 2)
+        if pick == 0:
+            v = [v, v]
+        elif pick == 1:
+            v = {"k": v}
+        else:
+            v = [v]
+        d = d + 1
+    var s = String(v)
+    assert len(s) > 0, "fuzz: nested literal stringifies"
+    f = f + 1
+
+io.print("OK adversarial")

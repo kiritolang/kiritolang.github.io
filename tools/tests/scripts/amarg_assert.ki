@@ -1,0 +1,7 @@
+# Module-level assertions that pin the imported-context invariants. If any failed this import would
+# throw; reaching the bottom (ok = True) proves the invariants held.
+assert argmain == False, "an imported module must see argmain == False"
+assert arglist == [], "an imported module must see an empty arglist"
+assert type(arglist) == "List", "arglist is always a List"
+var ok = True
+var m = argmain

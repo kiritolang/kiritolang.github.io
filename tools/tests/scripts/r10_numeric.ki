@@ -1,0 +1,692 @@
+# r10_numeric.ki — docs-vs-impl audit of math/random/matrix/complex/tensor.
+# Cross-checked against docs/pages/10-stdlib.md and src/kirito/stdlib_{math,random,matrix,
+# complex,tensor}.hpp + tensor.hpp. Every assertion mirrors real native behavior. Deterministic:
+# a FIXED RNG seed, no raw clock / unseeded draw asserted.
+var io = import("io")
+var math = import("math")
+var random = import("random")
+var matrix = import("matrix")
+var complex = import("complex")
+var tensor = import("tensor")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+# Float-tolerant compare for inexact scalar results.
+var close = Function(a, b):
+    return a.compare(b, 1e-9, 1e-12)
+
+# ============================================================ MATH: constants
+ok(close(math.pi, 3.141592653589793), "pi")
+ok(close(math.e, 2.718281828459045), "e")
+ok(close(math.tau, 2.0 * math.pi), "tau == 2*pi")
+ok(math.isinf(math.inf), "inf is infinite")
+ok(math.isnan(math.nan), "nan is NaN")
+ok(not math.isfinite(math.inf), "inf not finite")
+ok(math.isfinite(1.0), "1.0 finite")
+
+# ============================================================ MATH: roots / powers
+ok(close(math.sqrt(4), 2.0), "sqrt(4)=2")
+ok(close(math.sqrt(2) ** 2, 2.0), "sqrt(2)^2=2")
+ok(close(math.cbrt(27), 3.0), "cbrt(27)=3")
+ok(close(math.cbrt(-8), -2.0), "cbrt(-8)=-2 (odd root, no domain error)")
+ok(close(math.pow(2, 10), 1024.0), "pow(2,10)=1024")
+ok(type(math.pow(2, 3)) == "Float", "math.pow returns Float")
+ok(close(math.hypot(3, 4), 5.0), "hypot(3,4)=5")
+
+# ============================================================ MATH: trig / inverse
+ok(close(math.sin(0), 0.0), "sin(0)=0")
+ok(close(math.cos(0), 1.0), "cos(0)=1")
+ok(close(math.tan(0), 0.0), "tan(0)=0")
+ok(close(math.sin(math.pi / 2), 1.0), "sin(pi/2)=1")
+ok(close(math.cos(math.pi / 2), 0.0), "cos(pi/2)=0")
+ok(close(math.asin(1), math.pi / 2), "asin(1)=pi/2")
+ok(close(math.acos(1), 0.0), "acos(1)=0")
+ok(close(math.atan(1), math.pi / 4), "atan(1)=pi/4")
+ok(close(math.atan2(1, 1), math.pi / 4), "atan2(1,1)=pi/4")
+ok(close(math.atan2(0, -1), math.pi), "atan2(0,-1)=pi")
+
+# ============================================================ MATH: hyperbolic
+ok(close(math.sinh(0), 0.0), "sinh(0)=0")
+ok(close(math.cosh(0), 1.0), "cosh(0)=1")
+ok(close(math.tanh(0), 0.0), "tanh(0)=0")
+ok(close(math.asinh(0), 0.0), "asinh(0)=0")
+ok(close(math.acosh(1), 0.0), "acosh(1)=0")
+ok(close(math.atanh(0), 0.0), "atanh(0)=0")
+
+# ============================================================ MATH: exp / log
+ok(close(math.exp(0), 1.0), "exp(0)=1")
+ok(close(math.exp(1), math.e), "exp(1)=e")
+ok(close(math.expm1(0), 0.0), "expm1(0)=0")
+ok(close(math.log1p(0), 0.0), "log1p(0)=0")
+ok(close(math.log(math.e), 1.0), "log(e)=1")
+ok(close(math.log2(8), 3.0), "log2(8)=3")
+ok(close(math.log10(1000), 3.0), "log10(1000)=3")
+ok(close(math.log(100, 10), 2.0), "log(100, base=10)=2")
+ok(close(math.log(8, 2), 3.0), "log(8, base=2)=3")
+
+# ============================================================ MATH: gamma / erf
+ok(close(math.gamma(5), 24.0), "gamma(5)=4!=24")
+ok(close(math.gamma(6), 120.0), "gamma(6)=5!=120")
+ok(close(math.lgamma(1), 0.0), "lgamma(1)=0")
+ok(close(math.erf(0), 0.0), "erf(0)=0")
+ok(close(math.erfc(0), 1.0), "erfc(0)=1")
+ok(close(math.erf(math.inf), 1.0), "erf(inf)=1")
+
+# ============================================================ MATH: rounding / sign
+ok(math.floor(3.7) == 3, "floor(3.7)=3")
+ok(type(math.floor(3.7)) == "Integer", "floor -> Integer")
+ok(math.floor(-2.1) == -3, "floor(-2.1)=-3")
+ok(math.ceil(3.2) == 4, "ceil(3.2)=4")
+ok(type(math.ceil(3.2)) == "Integer", "ceil -> Integer")
+ok(math.ceil(-2.9) == -2, "ceil(-2.9)=-2")
+ok(math.trunc(3.9) == 3.0, "trunc(3.9)=3.0")
+ok(type(math.trunc(3.9)) == "Float", "trunc -> Float")
+ok(math.trunc(-3.9) == -3.0, "trunc(-3.9)=-3.0")
+ok(close(math.fabs(-3.5), 3.5), "fabs(-3.5)=3.5")
+ok(close(math.copysign(3, -1), -3.0), "copysign(3,-1)=-3")
+ok(close(math.copysign(-3, 1), 3.0), "copysign(-3,1)=3")
+ok(close(math.fmod(7, 3), 1.0), "fmod(7,3)=1")
+ok(close(math.fmod(-7, 3), -1.0), "fmod keeps sign of x")
+
+# ============================================================ MATH: angles
+ok(close(math.degrees(math.pi), 180.0), "degrees(pi)=180")
+ok(close(math.radians(180), math.pi), "radians(180)=pi")
+
+# ============================================================ MATH: integer functions
+ok(math.gcd(12, 18) == 6, "gcd(12,18)=6")
+ok(math.gcd(0, 0) == 0, "gcd(0,0)=0")
+ok(math.gcd(-12, 18) == 6, "gcd(-12,18)=6")
+ok(math.lcm(4, 6) == 12, "lcm(4,6)=12")
+ok(math.lcm(0, 5) == 0, "lcm(0,5)=0")
+ok(math.factorial(5) == 120, "5!=120")
+ok(math.factorial(0) == 1, "0!=1")
+ok(math.comb(5, 2) == 10, "comb(5,2)=10")
+ok(math.comb(3, 5) == 0, "comb(3,5)=0 (k>n)")
+ok(math.comb(5, 0) == 1, "comb(5,0)=1")
+ok(math.perm(5, 2) == 20, "perm(5,2)=20")
+ok(math.perm(5) == 120, "perm(5)=5!")
+ok(math.perm(5, 0) == 1, "perm(5,0)=1")
+ok(math.prod([1, 2, 3, 4]) == 24, "prod ints=24")
+ok(type(math.prod([1, 2, 3, 4])) == "Integer", "all-int prod -> Integer")
+ok(type(math.prod([1.0, 2, 3])) == "Float", "prod with a Float -> Float")
+ok(math.prod([], 7) == 7, "empty prod = start")
+
+# ============================================================ MATH: NaN passes through
+ok(math.isnan(math.sqrt(math.nan)), "sqrt(nan)=nan (passes)")
+ok(math.isnan(math.log(math.nan)), "log(nan)=nan (passes)")
+ok(math.isnan(math.gamma(math.nan)), "gamma(nan)=nan (passes)")
+ok(math.isnan(math.asin(math.nan)), "asin(nan)=nan (passes)")
+
+# ============================================================ MATH: overflow is not a domain error
+ok(math.isinf(math.exp(1000)), "exp(1000)=inf (range, not domain — no throw)")
+ok(math.isinf(math.pow(10, 400)), "pow(10,400)=inf (no throw)")
+
+# ============================================================ MATH: DOMAIN ERRORS must RAISE
+ok(throws(Function(): return math.sqrt(-1)), "sqrt(-1) throws")
+ok(throws(Function(): return math.log(0)), "log(0) throws")
+ok(throws(Function(): return math.log(-1)), "log(-1) throws")
+ok(throws(Function(): return math.log2(0)), "log2(0) throws")
+ok(throws(Function(): return math.log10(0)), "log10(0) throws")
+ok(throws(Function(): return math.log1p(-1)), "log1p(-1) throws")
+ok(throws(Function(): return math.log1p(-2)), "log1p(-2) throws")
+ok(throws(Function(): return math.log(5, 1)), "log base==1 throws")
+ok(throws(Function(): return math.log(5, 0)), "log base<=0 throws")
+ok(throws(Function(): return math.log(5, -2)), "log base negative throws")
+ok(throws(Function(): return math.asin(2)), "asin(2) throws")
+ok(throws(Function(): return math.asin(-2)), "asin(-2) throws")
+ok(throws(Function(): return math.acos(2)), "acos(2) throws")
+ok(throws(Function(): return math.acosh(0)), "acosh(0) throws")
+ok(throws(Function(): return math.atanh(1)), "atanh(1) throws")
+ok(throws(Function(): return math.atanh(-1)), "atanh(-1) throws")
+ok(throws(Function(): return math.gamma(0)), "gamma(0) throws")
+ok(throws(Function(): return math.gamma(-1)), "gamma(-1) throws")
+ok(throws(Function(): return math.lgamma(0)), "lgamma(0) throws")
+ok(throws(Function(): return math.pow(-2, 0.5)), "pow(-2,0.5) throws")
+ok(throws(Function(): return math.pow(0, -1)), "pow(0,-1) throws")
+ok(throws(Function(): return math.fmod(5, 0)), "fmod(x,0) throws")
+# the required diagnostic text
+var mmsg = ""
+try:
+    discard math.sqrt(-1)
+catch as e:
+    mmsg = String(e)
+ok("math domain error" in mmsg, "domain error message says 'math domain error'")
+
+# ============================================================ MATH: type / overflow errors RAISE
+ok(throws(Function(): return math.factorial(-1)), "factorial(-1) throws")
+ok(throws(Function(): return math.factorial(25)), "factorial(25) Integer overflow throws")
+ok(throws(Function(): return math.prod([1000000000, 1000000000, 1000000000])), "int prod overflow throws")
+ok(throws(Function(): return math.factorial(2.5)), "factorial of non-Integer throws")
+
+# ============================================================ RANDOM: reproducibility (fixed seed)
+var ra = random.Random(12345)
+var rb = random.Random(12345)
+var seqA = []
+var seqB = []
+var k = 0
+while k < 8:
+    seqA.append(ra.random())
+    seqB.append(rb.random())
+    k = k + 1
+ok(seqA == seqB, "random() sequence reproducible for equal seeds")
+
+var ri1 = random.Random(42)
+var ri2 = random.Random(42)
+var iseqA = []
+var iseqB = []
+k = 0
+while k < 8:
+    iseqA.append(ri1.randint(1, 100))
+    iseqB.append(ri2.randint(1, 100))
+    k = k + 1
+ok(iseqA == iseqB, "randint() sequence reproducible")
+
+var ru1 = random.Random(7)
+var ru2 = random.Random(7)
+ok(ru1.uniform(0, 1) == ru2.uniform(0, 1), "uniform reproducible")
+ok(random.Random(3).gauss(0, 1) == random.Random(3).gauss(0, 1), "gauss reproducible")
+ok(random.Random(5).choice([10, 20, 30, 40]) == random.Random(5).choice([10, 20, 30, 40]), "choice reproducible")
+ok(random.Random(8).sample([1, 2, 3, 4, 5], 3) == random.Random(8).sample([1, 2, 3, 4, 5], 3), "sample reproducible")
+ok(random.Random(9).choices([1, 2, 3], 4) == random.Random(9).choices([1, 2, 3], 4), "choices reproducible")
+
+# seed() method re-seeds to reproduce
+var g = random.Random()
+g.seed(2024)
+var first = g.randint(1, 1000000)
+g.seed(2024)
+ok(first == g.randint(1, 1000000), "seed() re-seeds identically")
+
+# ============================================================ RANDOM: ranges / invariants
+var rr = random.Random(999)
+var inRange = True
+var inUnit = True
+var randrangeOk = True
+k = 0
+while k < 60:
+    var d = rr.randint(1, 6)
+    if d < 1 or d > 6:
+        inRange = False
+    var u = rr.random()
+    if u < 0.0 or u >= 1.0:
+        inUnit = False
+    var rg = rr.randrange(0, 10, 2)
+    if rg < 0 or rg >= 10 or rg % 2 != 0:
+        randrangeOk = False
+    k = k + 1
+ok(inRange, "randint stays within [1,6] inclusive")
+ok(inUnit, "random() in [0.0, 1.0)")
+ok(randrangeOk, "randrange(0,10,2) yields even members in range")
+ok(random.Random(1).randint(5, 5) == 5, "randint(5,5)=5 (single-value range)")
+
+var uu = random.Random(2).uniform(10, 20)
+ok(uu >= 10.0 and uu < 20.0, "uniform(10,20) in [10,20)")
+
+# choice / choices / sample / shuffle semantics
+var pop = [11, 22, 33]
+var rc = random.Random(77)
+var memberOk = True
+k = 0
+while k < 30:
+    if not (rc.choice(pop) in pop):
+        memberOk = False
+    k = k + 1
+ok(memberOk, "choice returns a population member")
+ok(len(random.Random(1).choices([1, 2], 5)) == 5, "choices k may exceed len (with replacement)")
+ok(random.Random(1).choices([1, 2, 3], 0) == [], "choices k=0 -> []")
+ok(type(random.Random(1).choices([1, 2, 3])) == "List", "choices returns a List")
+var samp = random.Random(4).sample([1, 2, 3, 4, 5], 5)
+ok(sorted(samp) == [1, 2, 3, 4, 5], "sample(k=len) is a permutation (distinct)")
+ok(len(random.Random(4).sample([1, 2, 3, 4, 5], 3)) == 3, "sample length = k")
+var shl = [1, 2, 3, 4, 5, 6]
+random.Random(6).shuffle(shl)
+ok(sorted(shl) == [1, 2, 3, 4, 5, 6], "shuffle preserves the multiset")
+ok(type(random.Random(1).gauss(0, 1)) == "Float", "gauss -> Float")
+ok(type(random.Random(1).normalvariate(0, 1)) == "Float", "normalvariate -> Float")
+ok(random.Random(2).expovariate(1) > 0.0, "expovariate(1) > 0")
+
+# ============================================================ RANDOM: HARDENING (must throw)
+ok(throws(Function(): return random.Random(1).choice([])), "choice from empty throws")
+ok(throws(Function(): return random.Random(1).choices([], 3)), "choices from empty throws")
+ok(throws(Function(): return random.Random(1).choices([1, 2], -1)), "choices negative k throws")
+ok(throws(Function(): return random.Random(1).choices([1, 2], 999999999999)), "choices enormous k throws")
+ok(throws(Function(): return random.Random(1).sample([1, 2], 5)), "sample k>len throws")
+ok(throws(Function(): return random.Random(1).sample([1, 2], -1)), "sample negative k throws")
+ok(throws(Function(): return random.Random(1).expovariate(0)), "expovariate(0) throws (lambda must be > 0)")
+ok(throws(Function(): return random.Random(1).expovariate(-1)), "expovariate(-1) throws")
+ok(throws(Function(): return random.Random(1).randint(5, 1)), "randint(5,1) empty range throws")
+ok(throws(Function(): return random.Random(1).randrange(0, 0)), "randrange empty throws")
+ok(throws(Function(): return random.Random(1).randrange(0, 10, 0)), "randrange step 0 throws")
+var shufNonList = Function():
+    return random.Random(1).shuffle("abc")
+ok(throws(shufNonList), "shuffle of a non-List throws")
+
+# ============================================================ MATRIX: construction / factories
+var A = matrix.Matrix([[1, 2], [3, 4]])
+ok(A.shape() == [2, 2], "Matrix nested shape [2,2]")
+ok(A.rows() == 2 and A.cols() == 2, "rows()/cols()")
+ok(matrix.Matrix(2, 3).shape() == [2, 3], "Matrix(rows,cols) zero matrix shape")
+ok(close(matrix.Matrix(2, 3).sum(), 0.0), "Matrix(rows,cols) is zero-filled")
+ok(close(matrix.zeros(2, 2).get(0, 0), 0.0), "zeros()")
+ok(close(matrix.ones(2, 2).get(1, 1), 1.0), "ones()")
+ok(close(matrix.identity(3).get(1, 1), 1.0), "identity diagonal = 1")
+ok(close(matrix.identity(3).get(0, 1), 0.0), "identity off-diagonal = 0")
+ok(matrix.vector([1, 2, 3]).shape() == [1, 3], "vector -> 1xn")
+ok(throws(Function(): return matrix.Matrix([[1, 2], [3]])), "ragged Matrix throws")
+
+# ============================================================ MATRIX: element access
+ok(A[0, 0] == 1.0 and A[1, 1] == 4.0, "m[i,j] element access")
+ok(A[0] == [1.0, 2.0], "m[i] returns a row List")
+ok(A.get(0, 1) == 2.0, "get(i,j)")
+ok(A.row(1) == [3.0, 4.0], "row(i)")
+var Aset = matrix.Matrix([[1, 2], [3, 4]])
+Aset[0, 0] = 9
+ok(Aset[0, 0] == 9.0, "m[i,j] = v element assignment")
+Aset.set(1, 1, 8)
+ok(Aset.get(1, 1) == 8.0, "set(i,j,v)")
+ok(throws(Function(): return A[5, 0]), "OOB index throws")
+ok(throws(Function(): return A[-1, 0]), "negative Matrix index throws (no wraparound)")
+
+# ============================================================ MATRIX: arithmetic
+var B = matrix.Matrix([[5, 6], [7, 8]])
+ok((A + B).get(0, 0) == 6.0, "matrix + matrix")
+ok((A - B).get(1, 1) == -4.0, "matrix - matrix")
+ok((A * B).get(0, 0) == 19.0, "matrix * matrix (matmul): 1*5+2*7=19")
+ok((A * 2).get(1, 1) == 8.0, "matrix * scalar (RHS)")
+ok(throws(Function(): return 2 * A), "scalar * matrix (LHS) throws")
+ok(throws(Function(): return A + matrix.Matrix([[1, 2, 3]])), "shape-mismatch add throws")
+ok(throws(Function(): return A * matrix.Matrix([[1, 2, 3]])), "inner-dim-mismatch multiply throws")
+
+# ============================================================ MATRIX: linear algebra
+ok(close(A.determinant(), -2.0), "det([[1,2],[3,4]])=-2")
+ok(close(A.trace(), 5.0), "trace=1+4=5")
+ok(close(A.sum(), 10.0), "sum of all elements")
+ok(A.transpose().get(0, 1) == 3.0, "transpose")
+ok(A.apply(Function(x): return x * 10).get(0, 0) == 10.0, "apply maps each element")
+ok((A * A.inverse()).compare(matrix.identity(2), 1e-9, 1e-9), "A * A.inverse() = I")
+var Sing = matrix.Matrix([[1, 2], [2, 4]])
+ok(close(Sing.determinant(), 0.0), "singular determinant = 0.0")
+ok(throws(Function(): return Sing.inverse()), "singular inverse throws")
+ok(throws(Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).determinant()), "non-square det throws")
+ok(throws(Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).inverse()), "non-square inverse throws")
+ok(throws(Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).trace()), "non-square trace throws")
+
+# ============================================================ MATRIX: equality / vectors
+ok(matrix.Matrix([[1, 2], [3, 4]]) == matrix.Matrix([[1, 2], [3, 4]]), "== is exact and True for equals")
+ok(not (A == B), "== False for different matrices")
+ok(A.compare(matrix.Matrix([[1.0, 2.0], [3.0, 4.0]])), "compare() tolerant equal")
+var v1 = matrix.vector([1, 2, 3])
+var v2 = matrix.vector([4, 5, 6])
+ok(close(v1.dot(v2), 32.0), "vector dot = 4+10+18=32")
+ok(v1.cross(v2).shape() == [1, 3], "cross keeps orientation")
+ok(v1.cross(v2)[0, 2] == -3.0, "cross value component")
+ok(close(matrix.vector([3, 4]).norm(), 5.0), "vector 2-norm = 5")
+ok(throws(Function(): return v1.cross(matrix.vector([1, 2]))), "cross of non-3-vectors throws")
+
+# ============================================================ COMPLEX: construction / constants
+var z = complex.Complex(1, 2)
+ok(z.re == 1.0 and z.im == 2.0, ".re/.im")
+ok(z.real == 1.0 and z.imag == 2.0, ".real/.imag aliases")
+ok(complex.Complex(5).im == 0.0, "Complex(re) defaults im=0")
+ok(complex.of(3, 4).re == 3.0, "of(re,im)")
+ok(complex.real(7).im == 0.0, "real(re) is on the real axis")
+ok(complex.i.im == 1.0 and complex.i.re == 0.0, "i = 0+1i")
+ok(complex.zero.re == 0.0 and complex.zero.im == 0.0, "zero constant")
+ok(complex.one.re == 1.0 and complex.one.im == 0.0, "one constant")
+ok(complex.polar(1, math.pi / 2).compare(complex.i, 1e-9, 1e-9), "polar(1,pi/2) = i")
+
+# ============================================================ COMPLEX: arithmetic
+ok((complex.i * complex.i) == complex.Complex(-1, 0), "i*i = -1 (exact)")
+ok((complex.Complex(1, 2) + complex.Complex(3, 4)) == complex.Complex(4, 6), "add")
+ok((complex.Complex(1, 2) - complex.Complex(3, 4)) == complex.Complex(-2, -2), "sub")
+ok((complex.Complex(1, 2) * complex.Complex(3, 4)) == complex.Complex(-5, 10), "mul")
+ok((complex.Complex(1, 2) / complex.Complex(1, 2)).compare(complex.one, 1e-9, 1e-9), "div self = 1")
+ok((complex.Complex(1, 1) ** complex.Complex(2, 0)).compare(complex.Complex(0, 2), 1e-9, 1e-9), "(1+i)^2 = 2i")
+ok((-complex.Complex(1, -2)) == complex.Complex(-1, 2), "unary neg")
+ok((complex.Complex(1, 2) + 2) == complex.Complex(3, 2), "z + real coerces")
+ok((complex.Complex(1, 2) * 2) == complex.Complex(2, 4), "z * real")
+ok(throws(Function(): return 2 + complex.Complex(1, 2)), "real + Complex (LHS) throws")
+ok(throws(Function(): return complex.one / complex.zero), "complex division by zero throws")
+
+# ============================================================ COMPLEX: equality / ordering
+ok(complex.Complex(2, 0) == 2, "Complex(2,0) == 2 (real match)")
+ok(complex.Complex(2, 0) == 2.0, "Complex(2,0) == 2.0")
+ok(not (complex.Complex(2, 1) == 2), "Complex with nonzero im != real")
+ok(complex.Complex(1, 1).compare(complex.Complex(1, 1)), "compare() tolerant")
+ok(throws(Function(): return complex.i < complex.one), "< throws (complex unordered)")
+ok(throws(Function(): return complex.i > complex.one), "> throws")
+ok(throws(Function(): return complex.i <= complex.one), "<= throws")
+ok(throws(Function(): return complex.i >= complex.one), ">= throws")
+
+# ============================================================ COMPLEX: object methods
+ok(complex.Complex(1, 2).conjugate() == complex.Complex(1, -2), "conjugate()")
+ok(close(complex.Complex(3, 4).modulus(), 5.0), "modulus()=5")
+ok(close(complex.Complex(3, 4).magnitude(), 5.0), "magnitude() alias")
+ok(close(complex.Complex(3, 4).abs(), 5.0), "abs() alias")
+ok(close(complex.Complex(0, 1).argument(), math.pi / 2), "argument()=pi/2")
+ok(close(complex.Complex(0, 1).arg(), math.pi / 2), "arg() alias")
+ok(close(complex.Complex(0, 1).phase(), math.pi / 2), "phase() alias")
+ok(close(complex.Complex(3, 4).norm2(), 25.0), "norm2()=|z|^2=25")
+ok(complex.Complex(0, 0).is_zero(), "is_zero() True for 0")
+ok(not complex.Complex(1, 0).is_zero(), "is_zero() False for 1")
+
+# ============================================================ COMPLEX: module reductions
+ok(close(complex.modulus(complex.Complex(3, 4)), 5.0), "module modulus")
+ok(close(complex.abs(complex.Complex(3, 4)), 5.0), "module abs")
+ok(close(complex.phase(complex.Complex(0, 1)), math.pi / 2), "module phase")
+ok(close(complex.argument(complex.Complex(0, 1)), math.pi / 2), "module argument")
+ok(close(complex.norm2(complex.Complex(3, 4)), 25.0), "module norm2")
+ok(complex.conjugate(complex.Complex(1, 2)) == complex.Complex(1, -2), "module conjugate")
+
+# ============================================================ COMPLEX: analytic set (defined across plane)
+ok(complex.exp(complex.zero).compare(complex.one, 1e-9, 1e-9), "exp(0)=1")
+ok(complex.log(complex.one).compare(complex.zero, 1e-9, 1e-9), "log(1)=0")
+ok(complex.log10(complex.one).compare(complex.zero, 1e-9, 1e-9), "log10(1)=0")
+ok(complex.sqrt(complex.real(-1)).compare(complex.i, 1e-9, 1e-9), "sqrt(-1)=i (valid, no throw)")
+ok(complex.log(complex.real(-1)).compare(complex.Complex(0, math.pi), 1e-9, 1e-9), "log(-1)=i*pi (valid)")
+ok(complex.cbrt(complex.real(8)).compare(complex.real(2), 1e-9, 1e-9), "cbrt(8)=2")
+ok(complex.pow(complex.real(2), complex.real(10)).compare(complex.real(1024), 1e-9, 1e-6), "pow(2,10)=1024")
+ok(complex.sin(complex.zero).compare(complex.zero, 1e-9, 1e-9), "sin(0)=0")
+ok(complex.cos(complex.zero).compare(complex.one, 1e-9, 1e-9), "cos(0)=1")
+ok(complex.tan(complex.zero).compare(complex.zero, 1e-9, 1e-9), "tan(0)=0")
+ok(complex.asin(complex.zero).compare(complex.zero, 1e-9, 1e-9), "asin(0)=0")
+ok(complex.acos(complex.one).compare(complex.zero, 1e-9, 1e-9), "acos(1)=0")
+ok(complex.atan(complex.zero).compare(complex.zero, 1e-9, 1e-9), "atan(0)=0")
+ok(complex.sinh(complex.zero).compare(complex.zero, 1e-9, 1e-9), "sinh(0)=0")
+ok(complex.cosh(complex.zero).compare(complex.one, 1e-9, 1e-9), "cosh(0)=1")
+ok(complex.tanh(complex.zero).compare(complex.zero, 1e-9, 1e-9), "tanh(0)=0")
+ok(complex.asinh(complex.zero).compare(complex.zero, 1e-9, 1e-9), "asinh(0)=0")
+ok(complex.acosh(complex.one).compare(complex.zero, 1e-9, 1e-9), "acosh(1)=0")
+ok(complex.atanh(complex.zero).compare(complex.zero, 1e-9, 1e-9), "atanh(0)=0")
+# valid but off the real-axis domain of the real math module (must NOT throw)
+ok(not throws(Function(): return complex.asin(2)), "complex.asin(2) is valid")
+ok(not throws(Function(): return complex.acosh(0)), "complex.acosh(0) is valid")
+# genuine singularities RAISE
+ok(throws(Function(): return complex.log(complex.zero)), "complex.log(0) throws")
+ok(throws(Function(): return complex.log10(complex.zero)), "complex.log10(0) throws")
+ok(throws(Function(): return complex.atanh(complex.one)), "complex.atanh(1) throws")
+ok(throws(Function(): return complex.atanh(complex.real(-1))), "complex.atanh(-1) throws")
+ok(throws(Function(): return complex.pow(complex.zero, complex.real(-1))), "complex.pow(0,-1) throws")
+
+# ============================================================ COMPLEX MATRIX
+var CM = complex.Matrix([[complex.Complex(1, 0), complex.Complex(2, 0)], [complex.Complex(3, 0), complex.Complex(4, 0)]])
+ok(CM.shape() == [2, 2], "ComplexMatrix shape")
+ok(CM[0, 1] == complex.Complex(2, 0), "cm[i,j]")
+ok(CM.get(1, 0) == complex.Complex(3, 0), "cm.get")
+ok(CM.trace() == complex.Complex(5, 0), "cm trace")
+ok(CM.determinant().compare(complex.real(-2), 1e-9, 1e-9), "cm determinant = -2")
+ok((CM * CM.inverse()).compare(complex.identity(2), 1e-9, 1e-9), "cm * inverse = I")
+ok(CM.transpose()[0, 1] == complex.Complex(3, 0), "cm transpose")
+ok(complex.Matrix([[complex.Complex(1, 1)]]).conjugate()[0, 0] == complex.Complex(1, -1), "cm conjugate")
+ok(complex.Matrix([[complex.Complex(1, 1)]]).hermitian()[0, 0] == complex.Complex(1, -1), "cm hermitian")
+ok(complex.zeros(2, 2)[0, 0] == complex.zero, "cm zeros")
+ok(complex.ones(2, 2)[0, 0] == complex.one, "cm ones")
+ok(complex.identity(2)[0, 0] == complex.one and complex.identity(2)[0, 1] == complex.zero, "cm identity")
+ok(CM == complex.Matrix([[complex.Complex(1, 0), complex.Complex(2, 0)], [complex.Complex(3, 0), complex.Complex(4, 0)]]), "cm == exact")
+var cv = complex.vector([complex.Complex(1, 1), complex.Complex(2, 0)])
+ok(cv.dot(cv).compare(complex.real(6), 1e-9, 1e-9), "cm Hermitian dot: |1+i|^2+|2|^2=6 (real)")
+ok(close(cv.norm(), math.sqrt(6)), "cm vector norm = sqrt(6)")
+ok(throws(Function(): return complex.Matrix([[complex.Complex(1, 0), complex.Complex(2, 0)]]).determinant()), "cm non-square det throws")
+ok(throws(Function(): return complex.Matrix([[complex.Complex(1, 0), complex.Complex(2, 0)]]).trace()), "cm non-square trace throws")
+
+# ============================================================ TENSOR: creation / factories
+ok(tensor.Tensor([[1, 2], [3, 4]]).shape() == [2, 2], "Tensor nested shape")
+ok(tensor.Tensor(5).shape() == [], "Tensor(scalar) is rank-0")
+ok(tensor.Tensor(5).ndim() == 0, "rank-0 ndim=0")
+ok(tensor.Tensor(5).size() == 1, "rank-0 size=1")
+ok(close(tensor.Tensor(5).item(), 5.0), "rank-0 item()")
+ok(tensor.zeros([2, 3]) == tensor.Tensor([[0, 0, 0], [0, 0, 0]]), "zeros")
+ok(tensor.ones([3]) == tensor.Tensor([1, 1, 1]), "ones")
+ok(tensor.full([2], 7) == tensor.Tensor([7, 7]), "full")
+ok(tensor.eye(2) == tensor.Tensor([[1, 0], [0, 1]]), "eye")
+ok(tensor.identity(2) == tensor.eye(2), "identity is an alias of eye")
+ok(tensor.arange(5) == tensor.Tensor([0, 1, 2, 3, 4]), "arange(stop)")
+ok(tensor.arange(1, 9, 2) == tensor.Tensor([1, 3, 5, 7]), "arange(start,stop,step)")
+ok(tensor.linspace(0, 1, 5) == tensor.Tensor([0.0, 0.25, 0.5, 0.75, 1.0]), "linspace")
+ok(tensor.zeroslike(tensor.Tensor([1, 2, 3])) == tensor.Tensor([0, 0, 0]), "zeroslike")
+ok(tensor.oneslike(tensor.Tensor([1, 2])) == tensor.Tensor([1, 1]), "oneslike")
+ok(tensor.fulllike(tensor.Tensor([1, 2]), 9) == tensor.Tensor([9, 9]), "fulllike")
+ok(tensor.diag(tensor.Tensor([1, 2])) == tensor.Tensor([[1, 0], [0, 2]]), "diag 1-D -> matrix")
+ok(tensor.diag(tensor.Tensor([[1, 2], [3, 4]])) == tensor.Tensor([1, 4]), "diag 2-D -> diagonal")
+ok(tensor.tril(tensor.Tensor([[1, 2], [3, 4]])) == tensor.Tensor([[1, 0], [3, 4]]), "tril")
+ok(tensor.triu(tensor.Tensor([[1, 2], [3, 4]])) == tensor.Tensor([[1, 2], [0, 4]]), "triu")
+ok(tensor.Tensor([1, 2], dtype="Complex").dtype() == "Complex", "dtype=Complex")
+ok(tensor.Tensor([1, 2]).dtype() == "Float", "default dtype Float")
+
+# ============================================================ TENSOR: indexing / slicing / assignment
+var T = tensor.Tensor([[1, 2, 3], [4, 5, 6]])
+ok(close(T[0, 1], 2.0), "t[i,j] full index -> scalar")
+ok(T[1] == tensor.Tensor([4, 5, 6]), "t[i] partial index -> sub-tensor")
+ok(close(T[-1, -1], 6.0), "negative index counts from end")
+var Tset = tensor.Tensor([[1, 2], [3, 4]])
+Tset[0, 0] = 99
+ok(close(Tset[0, 0], 99.0), "t[i,j] = v element assignment")
+ok(tensor.arange(5)[1:4] == tensor.Tensor([1, 2, 3]), "t[a:b] axis-0 slice")
+ok(tensor.arange(5)[[0, 2, 4]] == tensor.Tensor([0, 2, 4]), "fancy index")
+var Tmask = tensor.arange(5)
+ok(Tmask[Tmask.gt(2)] == tensor.Tensor([3, 4]), "boolean mask selection")
+ok(throws(Function(): return T[9, 0]), "OOB tensor index throws")
+ok(throws(Function(): return T[0, 0, 0]), "too many indices throws")
+
+# ============================================================ TENSOR: elementwise / broadcasting
+ok((tensor.Tensor([[1, 2, 3], [4, 5, 6]]) + tensor.Tensor([10, 20, 30])) == tensor.Tensor([[11, 22, 33], [14, 25, 36]]), "broadcast add (row)")
+ok((T * 2) == tensor.Tensor([[2, 4, 6], [8, 10, 12]]), "scalar broadcast")
+ok((tensor.Tensor([6, 8]) / 2) == tensor.Tensor([3, 4]), "true division")
+ok((-tensor.Tensor([1, -2])) == tensor.Tensor([-1, 2]), "unary negation")
+ok((tensor.Tensor([7, 8]) % 3) == tensor.Tensor([1, 2]), "% modulo")
+ok((tensor.Tensor([7, 8]) // 3) == tensor.Tensor([2, 2]), "// floordiv")
+ok((tensor.Tensor([2, 3]) ** 2) == tensor.Tensor([4, 9]), "** power")
+ok(throws(Function(): return tensor.Tensor([1, 2]) / tensor.Tensor([0, 1])), "division by zero throws")
+ok(throws(Function(): return tensor.Tensor([1]) % tensor.Tensor([0])), "modulo by zero throws")
+ok(throws(Function(): return tensor.Tensor([1, 2]) + tensor.Tensor([1, 2, 3])), "non-broadcastable shapes throw")
+
+# ============================================================ TENSOR: == exact vs .eq() mask vs .compare tolerant
+ok(type(T == tensor.Tensor([[1, 2, 3], [4, 5, 6]])) == "Bool", "whole == returns Bool")
+ok(T == tensor.Tensor([[1, 2, 3], [4, 5, 6]]), "whole == exact True")
+ok(not (T == tensor.Tensor([[1, 2, 3], [4, 5, 7]])), "whole == exact False on any diff")
+ok(not (T == tensor.Tensor([1, 2, 3])), "whole == False on shape mismatch")
+ok(not (tensor.Tensor([math.nan]) == tensor.Tensor([math.nan])), "whole == : NaN never equal")
+ok(type(T.eq(T)) == "Tensor", ".eq() returns a Tensor mask")
+ok(T.eq(tensor.Tensor([[1, 9, 3], [9, 5, 9]])) == tensor.Tensor([[1, 0, 1], [0, 1, 0]]), ".eq() elementwise 0/1 mask")
+ok(tensor.Tensor([0.1]).compare(tensor.Tensor([0.10000000001]), 1e-6, 1e-9), ".compare() tolerant equal")
+ok(not tensor.Tensor([0.1]).compare(tensor.Tensor([0.2])), ".compare() False when far")
+
+# ============================================================ TENSOR: comparisons / logic
+ok(T.ne(tensor.Tensor([[1, 0, 3], [4, 5, 0]])) == tensor.Tensor([[0, 1, 0], [0, 0, 1]]), "ne mask")
+ok(tensor.Tensor([1, 5]).lt(tensor.Tensor([3, 3])) == tensor.Tensor([1, 0]), "lt mask")
+ok(tensor.Tensor([1, 5]).ge(tensor.Tensor([3, 3])) == tensor.Tensor([0, 1]), "ge mask")
+ok((tensor.Tensor([1, 5]) > tensor.Tensor([3, 3])) == tensor.Tensor([0, 1]), "> operator -> mask")
+ok((tensor.Tensor([1, 5]) <= tensor.Tensor([3, 3])) == tensor.Tensor([1, 0]), "<= operator -> mask")
+ok(tensor.Tensor([1, 0]).logicaland(tensor.Tensor([1, 1])) == tensor.Tensor([1, 0]), "logicaland")
+ok(tensor.Tensor([1, 0]).logicalor(tensor.Tensor([0, 0])) == tensor.Tensor([1, 0]), "logicalor")
+ok(tensor.Tensor([1, 0]).logicalxor(tensor.Tensor([1, 1])) == tensor.Tensor([0, 1]), "logicalxor")
+ok(tensor.Tensor([1, 0]).logicalnot() == tensor.Tensor([0, 1]), "logicalnot")
+
+# ============================================================ TENSOR: reductions
+ok(close(T.sum(), 21.0), "sum whole")
+ok(T.sum(0) == tensor.Tensor([5, 7, 9]), "sum axis 0")
+ok(T.sum(1) == tensor.Tensor([6, 15]), "sum axis 1")
+ok(T.sum(-1) == tensor.Tensor([6, 15]), "sum negative axis")
+ok(close(T.mean(), 3.5), "mean whole")
+ok(close(T.min(), 1.0), "min whole")
+ok(close(T.max(), 6.0), "max whole")
+ok(close(T.prod(), 720.0), "prod whole")
+ok(T.argmin() == 0, "argmin whole (flat index)")
+ok(T.argmax() == 5, "argmax whole (flat index)")
+ok(T.argmax(1) == tensor.Tensor([2, 2]), "argmax axis")
+ok(close(tensor.Tensor([1, 2, 3, 4]).std(), 1.118033988749895), "std ddof=0")
+ok(close(tensor.Tensor([1, 2, 3, 4]).var(), 1.25), "var ddof=0")
+ok(close(tensor.Tensor([1, 2, 3, 4]).std(None, 1), 1.2909944487358056), "std ddof=1")
+ok(tensor.Tensor([1, 1, 1]).all(), "all True")
+ok(not tensor.Tensor([1, 0, 1]).all(), "all False with a zero")
+ok(tensor.Tensor([0, 1, 0]).any(), "any True")
+ok(not tensor.Tensor([0, 0]).any(), "any False all-zero")
+ok(close(T.ptp(), 5.0), "ptp = max - min")
+ok(close(tensor.Tensor([3, 1, 2]).median(), 2.0), "median odd")
+ok(close(tensor.Tensor([1, 2, 3, 4]).median(), 2.5), "median even")
+ok(tensor.Tensor([1, 2, 3]).cumsum() == tensor.Tensor([1, 3, 6]), "cumsum")
+ok(tensor.Tensor([1, 2, 3, 4]).cumprod() == tensor.Tensor([1, 2, 6, 24]), "cumprod")
+
+# ============================================================ TENSOR: linear algebra
+var M = tensor.Tensor([[2, 0], [0, 4]])
+ok(close(tensor.det(M), 8.0), "det")
+ok(tensor.inv(M) == tensor.Tensor([[0.5, 0.0], [0.0, 0.25]]), "inv")
+ok(close(tensor.trace(M), 6.0), "trace")
+ok(tensor.solve(tensor.Tensor([[2, 0], [0, 4]]), tensor.Tensor([4, 8])) == tensor.Tensor([2, 2]), "solve Ax=b")
+ok(close(tensor.norm(tensor.Tensor([3, 4])), 5.0), "norm 2 (default)")
+ok(close(tensor.norm(tensor.Tensor([3, -4]), 1), 7.0), "norm ord=1")
+ok(tensor.outer(tensor.Tensor([1, 2]), tensor.Tensor([3, 4])) == tensor.Tensor([[3, 4], [6, 8]]), "outer")
+ok(close(tensor.inner(tensor.Tensor([1, 2, 3]), tensor.Tensor([4, 5, 6])).item(), 32.0), "inner -> 0-D tensor")
+ok(tensor.kron(tensor.eye(2), tensor.eye(2)).shape() == [4, 4], "kron shape")
+ok(tensor.cross(tensor.Tensor([1, 0, 0]), tensor.Tensor([0, 1, 0])) == tensor.Tensor([0, 0, 1]), "cross")
+ok(close(tensor.Tensor([1, 2, 3]).dot(tensor.Tensor([4, 5, 6])), 32.0), "dot -> Float scalar")
+ok(tensor.Tensor([[1, 2], [3, 4]]).matmul(tensor.eye(2)) == tensor.Tensor([[1, 2], [3, 4]]), "matmul with identity")
+ok(close(tensor.tensordot(tensor.Tensor([1, 2]), tensor.Tensor([3, 4]), 1).item(), 11.0), "tensordot N=1")
+ok(close(tensor.contract(tensor.Tensor([1, 2]), tensor.Tensor([3, 4]), 0, 0).item(), 11.0), "contract explicit axes")
+ok(close(tensor.einsum("ii", M).item(), 6.0), "einsum trace")
+ok(tensor.einsum("ij->ji", tensor.Tensor([[1, 2], [3, 4]])) == tensor.Tensor([[1, 3], [2, 4]]), "einsum transpose")
+ok(throws(Function(): return tensor.einsum("ii->ii", M)), "einsum repeated output label throws")
+
+# ============================================================ TENSOR: reshaping / structural
+ok(tensor.arange(6).reshape([2, 3]) == tensor.Tensor([[0, 1, 2], [3, 4, 5]]), "reshape")
+ok(T.transpose() == tensor.Tensor([[1, 4], [2, 5], [3, 6]]), "transpose")
+ok(T.flatten() == tensor.Tensor([1, 2, 3, 4, 5, 6]), "flatten")
+ok(tensor.arange(6).reshape([2, 3]).permute([1, 0]).shape() == [3, 2], "permute")
+ok(tensor.arange(6).reshape([2, 3]).swapaxes(0, 1).shape() == [3, 2], "swapaxes")
+ok(tensor.arange(4).flip() == tensor.Tensor([3, 2, 1, 0]), "flip")
+ok(tensor.Tensor([[1], [2]]).squeeze() == tensor.Tensor([1, 2]), "squeeze")
+ok(tensor.Tensor([1, 2]).expanddims(0).shape() == [1, 2], "expanddims")
+ok(tensor.Tensor([1, 2, 3]).broadcastto([2, 3]) == tensor.Tensor([[1, 2, 3], [1, 2, 3]]), "broadcastto")
+ok(tensor.Tensor([1, 2]).repeat(2) == tensor.Tensor([1, 1, 2, 2]), "repeat")
+ok(tensor.Tensor([1, 2]).tile([2]) == tensor.Tensor([1, 2, 1, 2]), "tile")
+ok(tensor.concatenate([tensor.Tensor([1, 2]), tensor.Tensor([3, 4])]) == tensor.Tensor([1, 2, 3, 4]), "concatenate")
+ok(tensor.stack([tensor.Tensor([1, 2]), tensor.Tensor([3, 4])]) == tensor.Tensor([[1, 2], [3, 4]]), "stack")
+var Tsplit = tensor.split(tensor.arange(4), [2, 2])
+ok(Tsplit[0] == tensor.Tensor([0, 1]) and Tsplit[1] == tensor.Tensor([2, 3]), "split by sizes")
+ok(tensor.where(tensor.Tensor([1, 0, 1]), tensor.Tensor([1, 2, 3]), tensor.Tensor([9, 9, 9])) == tensor.Tensor([1, 9, 3]), "where")
+ok(tensor.Tensor([-1, 5, 10]).clip(0, 7) == tensor.Tensor([0, 5, 7]), "clip")
+ok(tensor.Tensor([1, 5]).maximum(tensor.Tensor([3, 2])) == tensor.Tensor([3, 5]), "maximum")
+ok(tensor.Tensor([1, 5]).minimum(tensor.Tensor([3, 2])) == tensor.Tensor([1, 2]), "minimum")
+
+# ============================================================ TENSOR: sorting / searching
+ok(tensor.Tensor([3, 1, 2]).sort() == tensor.Tensor([1, 2, 3]), "sort")
+ok(tensor.Tensor([3, 1, 2]).argsort() == tensor.Tensor([1, 2, 0]), "argsort")
+ok(tensor.unique(tensor.Tensor([3, 1, 2, 1, 3])) == tensor.Tensor([1, 2, 3]), "unique sorted")
+ok(tensor.searchsorted(tensor.Tensor([1, 3, 5]), 4) == 2, "searchsorted scalar")
+ok(type(tensor.nonzero(tensor.Tensor([0, 1, 0, 2]))) == "List", "nonzero -> List of index tensors")
+ok(tensor.nonzero(tensor.Tensor([0, 1, 0, 2]))[0] == tensor.Tensor([1, 3]), "nonzero indices")
+
+# ============================================================ TENSOR: element-wise math + domain errors
+ok(tensor.Tensor([4, 9]).sqrt() == tensor.Tensor([2, 3]), "sqrt")
+ok(tensor.Tensor([0]).exp() == tensor.Tensor([1]), "exp(0)=1")
+ok(tensor.Tensor([1]).log() == tensor.Tensor([0]), "log(1)=0")
+ok(tensor.Tensor([8]).log2() == tensor.Tensor([3]), "log2(8)=3")
+ok(tensor.Tensor([2, 3]).square() == tensor.Tensor([4, 9]), "square")
+ok(tensor.Tensor([2, 4]).reciprocal() == tensor.Tensor([0.5, 0.25]), "reciprocal")
+ok(tensor.Tensor([-2, 3]).abs() == tensor.Tensor([2, 3]), "abs")
+ok(tensor.Tensor([-2, 0, 3]).sign() == tensor.Tensor([-1, 0, 1]), "sign")
+ok(tensor.Tensor([1.7]).floor() == tensor.Tensor([1]), "floor")
+ok(tensor.Tensor([1.2]).ceil() == tensor.Tensor([2]), "ceil")
+ok(tensor.Tensor([-1, 2]).relu() == tensor.Tensor([0, 2]), "relu")
+ok(tensor.Tensor([0]).sigmoid() == tensor.Tensor([0.5]), "sigmoid(0)=0.5")
+ok(tensor.Tensor([2, 3]).pow(2) == tensor.Tensor([4, 9]), "pow(p) method")
+ok(close(tensor.Tensor([0]).sin().item(), 0.0), "sin(0)")
+ok(close(tensor.Tensor([0]).cosh().item(), 1.0), "cosh(0)")
+ok(throws(Function(): return tensor.Tensor([-1]).log()), "tensor log of negative throws")
+ok(throws(Function(): return tensor.Tensor([0]).log()), "tensor log(0) throws")
+ok(throws(Function(): return tensor.Tensor([-1]).sqrt()), "tensor sqrt of negative throws")
+ok(throws(Function(): return tensor.Tensor([2]).asin()), "tensor asin out of [-1,1] throws")
+ok(throws(Function(): return tensor.Tensor([0]).acosh()), "tensor acosh below 1 throws")
+ok(throws(Function(): return tensor.Tensor([1]).atanh()), "tensor atanh at 1 throws")
+ok(throws(Function(): return tensor.Tensor([0]).reciprocal()), "tensor reciprocal of 0 throws")
+ok(throws(Function(): return tensor.Tensor([-2]).pow(0.5)), "tensor pow negative base frac exp throws")
+var tmsg = ""
+try:
+    discard tensor.Tensor([-1]).log()
+catch as e:
+    tmsg = String(e)
+ok("math domain error" in tmsg, "tensor domain error text says 'math domain error'")
+
+# ============================================================ TENSOR: dtype mixing / astype / complex helpers
+var CT = tensor.Tensor([1, 2], dtype="Complex")
+ok((tensor.Tensor([1, 2]) + CT).dtype() == "Complex", "Float + Complex promotes to Complex")
+ok(tensor.Tensor([1, 2]).astype("Complex").dtype() == "Complex", "astype Float->Complex")
+ok(tensor.Tensor([complex.Complex(3, 4)], dtype="Complex").astype("Float") == tensor.Tensor([3]), "astype Complex->Float keeps real part")
+ok(tensor.Tensor([complex.Complex(1, 2)], dtype="Complex").real() == tensor.Tensor([1]), "real()")
+ok(tensor.Tensor([complex.Complex(1, 2)], dtype="Complex").imag() == tensor.Tensor([2]), "imag()")
+ok(tensor.Tensor([complex.Complex(1, 2)], dtype="Complex").conj() == tensor.Tensor([complex.Complex(1, -2)], dtype="Complex"), "conj()")
+ok(tensor.Tensor([-1, 1]).angle().compare(tensor.Tensor([math.pi, 0.0]), 1e-9, 1e-9), "angle() of real tensor: pi for negatives")
+ok(throws(Function(): return tensor.zeros([2], dtype="Foo")), "invalid dtype throws")
+
+# ============================================================ TENSOR: Float-only ops throw on Complex
+ok(throws(Function(): return tensor.Tensor([1, 2], dtype="Complex").min()), "Complex min throws (unordered)")
+ok(throws(Function(): return tensor.Tensor([1, 2], dtype="Complex").max()), "Complex max throws")
+ok(throws(Function(): return tensor.Tensor([1, 2], dtype="Complex").sort()), "Complex sort throws")
+ok(throws(Function(): return tensor.Tensor([1, 2], dtype="Complex").std()), "Complex std throws")
+ok(throws(Function(): return tensor.Tensor([1, 2], dtype="Complex").lt(tensor.Tensor([1, 2], dtype="Complex"))), "Complex lt throws")
+ok(throws(Function(): return tensor.Tensor([1, 2], dtype="Complex").exp()), "Complex element-wise math (exp) throws")
+ok(throws(Function(): return tensor.Tensor([1, 2], dtype="Complex") ** 2), "Complex ** throws")
+ok(throws(Function(): return tensor.Tensor([1, 2], dtype="Complex") % tensor.Tensor([1, 2], dtype="Complex")), "Complex % throws")
+ok(throws(Function(): return tensor.Tensor([complex.i], dtype="Complex") < tensor.Tensor([complex.i], dtype="Complex")), "Complex ordering op throws")
+
+# ============================================================ TENSOR: shape / axis / dtype errors
+ok(throws(Function(): return T.sum(5)), "reduction axis out of range throws")
+ok(throws(Function(): return tensor.arange(6).reshape([4, 4])), "incompatible reshape throws")
+ok(throws(Function(): return tensor.Tensor([[1, 2]]).matmul(tensor.Tensor([[1, 2]]))), "matmul inner-dim mismatch throws")
+ok(throws(Function(): return tensor.det(tensor.Tensor([[1, 2, 3], [4, 5, 6]]))), "det of non-square throws")
+ok(throws(Function(): return tensor.solve(tensor.Tensor([[1, 2, 3], [4, 5, 6]]), tensor.Tensor([1, 2]))), "solve non-square throws")
+ok(throws(Function(): return tensor.Tensor([1, 2]).item()), "item() of multi-element throws")
+ok(throws(Function(): return tensor.Tensor([[1, 2], [3]])), "ragged Tensor throws")
+ok(throws(Function(): return tensor.zeros([100000, 100000])), "huge shape throws 'Tensor too large'")
+var hugemsg = ""
+try:
+    discard tensor.zeros([100000, 100000])
+catch as e:
+    hugemsg = String(e)
+ok("too large" in hugemsg, "huge-shape error text mentions 'too large'")
+
+# ============================================================ TENSOR: autograd
+var w = tensor.Tensor([[1, 2], [3, 4]], requiresgrad=True)
+var loss = (w * w).sum()
+loss.backward()
+ok(w.grad == tensor.Tensor([[2, 4], [6, 8]]), "backward: d(sum(w^2))/dw = 2w")
+ok(w.requiresgrad(), "requiresgrad() getter True")
+ok(tensor.Tensor([1.0]).requiresgrad() == False, "default requiresgrad False")
+ok(tensor.Tensor([1.0], requiresgrad=True).detach().requiresgrad() == False, "detach() drops grad tracking")
+ok(throws(Function(): return tensor.Tensor([1, 2], dtype="Complex", requiresgrad=True)), "Complex requiresgrad throws")
+var zgfn = Function():
+    var x = tensor.Tensor([2.0], requiresgrad=True)
+    var l = (x * x).sum()
+    l.backward()
+    x.zerograd()
+    return x.grad
+ok(zgfn() == None, "zerograd() clears the gradient")
+var nonScalarBw = Function():
+    var a = tensor.Tensor([1, 2], requiresgrad=True)
+    var b = a * 2
+    return b.backward()
+ok(throws(nonScalarBw), "backward on non-scalar without seed throws")
+# nograd context manager disables tracking
+var ngfn = Function():
+    var x = tensor.Tensor([1.0, 2.0], requiresgrad=True)
+    var y = tensor.zeros([2])
+    with tensor.nograd():
+        y = x * 2
+    return y.requiresgrad()
+ok(ngfn() == False, "nograd() disables grad tracking in the block")
+# a seeded backward for a non-scalar
+var seededBw = Function():
+    var a = tensor.Tensor([1.0, 2.0, 3.0], requiresgrad=True)
+    var b = a * a
+    b.backward(tensor.Tensor([1.0, 1.0, 1.0]))
+    return a.grad
+ok(seededBw() == tensor.Tensor([2, 4, 6]), "seeded backward on non-scalar: grad = 2a")
+
+io.print("r10_numeric: " + String(n) + " checks passed")

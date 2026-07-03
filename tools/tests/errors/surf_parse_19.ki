@@ -1,0 +1,4 @@
+# PARSER: 'continue' used inside a function but outside any loop
+var f = Function():
+    continue
+discard f

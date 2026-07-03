@@ -1,0 +1,348 @@
+# Extensive pure-Kirito coverage of `argmain` (Bool: True iff this file is run directly) and
+# `arglist` (the command-line arguments as a List, populated only for a directly-run file). This is
+# the ONE registered entry point of the suite: it is run directly (so argmain is True and arglist is
+# its .args tokens) and it imports ~24 helper modules (amarg_*.ki, none with a .expected, so the
+# harness never runs them on their own) to assert the imported-context invariants. Two facts under
+# test, from both sides:
+#   * a directly-run file:   argmain == True,  arglist == the program's arguments
+#   * an imported module:    argmain == False, arglist == []  (the args belong to the entry script)
+# argmain/arglist are per-file module bindings, so a function/method/closure/default defined in a
+# module always reports THAT module's view, no matter who calls it.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# The .args sidecar passes exactly these four tokens (one per line); "beta gamma" carries a space to
+# prove a single argv token is one List element, "--flag" proves option-shaped tokens belong to the
+# script, and "42" proves arguments stay Strings (no numeric coercion).
+var EXPECTED = ["alpha", "beta gamma", "42", "--flag"]
+
+# ============================================================================================
+# Part 1 — this file is the program: argmain is True and arglist is EXPECTED, observed through
+# every language construct that can read them.
+# ============================================================================================
+
+# -- direct reads --
+ok(argmain == True, "a directly-run file has argmain == True")
+ok(argmain != False, "argmain is exactly the Bool True")
+ok(type(arglist) == "List", "arglist is a List")
+ok(arglist == EXPECTED, "arglist is exactly the program's argument tokens")
+ok(len(arglist) == 4, "arglist length matches the number of argument tokens")
+
+# -- through a plain function --
+var getMain = Function():
+    return argmain
+var getArgs = Function():
+    return arglist
+ok(getMain() == True, "a function in the entry file sees argmain True")
+ok(getArgs() == EXPECTED, "a function in the entry file sees the program's arglist")
+
+# -- through if/elif/else --
+var erole = ""
+if argmain:
+    erole = "direct"
+elif not argmain:
+    erole = "imported"
+else:
+    erole = "unknown"
+ok(erole == "direct", "if/elif/else on argmain takes the direct arm")
+
+# -- through a for loop over arglist --
+var gathered = []
+for a in arglist:
+    gathered.append(a)
+ok(gathered == EXPECTED, "for-in over the entry arglist visits every token in order")
+
+# -- through a while loop --
+var wi = 0
+var wcount = 0
+while wi < len(arglist):
+    wcount = wcount + 1
+    wi = wi + 1
+ok(wcount == 4, "while-by-index walks the whole entry arglist")
+
+# -- through a class method --
+class EntryProbe:
+    var seeMain = Function(self):
+        return argmain
+    var seeArgs = Function(self):
+        return arglist
+var ep = EntryProbe()
+ok(ep.seeMain() == True, "a method in the entry file sees argmain True")
+ok(ep.seeArgs() == EXPECTED, "a method in the entry file sees the program's arglist")
+
+# -- through a nested closure --
+var mkOuter = Function():
+    var inner = Function():
+        return argmain
+    return inner()
+ok(mkOuter() == True, "a nested closure in the entry file sees argmain True")
+
+# -- through an f-string --
+ok(f"{argmain}" == "True", "argmain renders as True in an f-string")
+ok(f"argc={len(arglist)}" == "argc=4", "len(arglist) renders in an f-string")
+ok(f"first={arglist[0]}" == "first=alpha", "an arglist element renders in an f-string")
+
+# -- through the conditional expression --
+ok(("direct" if argmain else "imported") == "direct", "conditional expression keyed on argmain")
+ok(("empty" if len(arglist) == 0 else "filled") == "filled", "conditional expression on arglist size")
+
+# -- through switch --
+var swlabel = ""
+switch len(arglist):
+    case 0:
+        swlabel = "none"
+    case 4:
+        swlabel = "four"
+    default:
+        swlabel = "other"
+ok(swlabel == "four", "switch on len(arglist) selects the matching arm")
+
+# -- through and/or/not --
+ok((argmain and True) == True, "argmain and True is True for a direct run")
+ok((argmain or "fallback") == True, "argmain or X short-circuits to True for a direct run")
+ok((not argmain) == False, "not argmain is False for a direct run")
+
+# -- through List operations on arglist --
+ok(arglist[0] == "alpha", "positive index into arglist")
+ok(arglist[-1] == "--flag", "negative index into arglist")
+ok(arglist[:2] == ["alpha", "beta gamma"], "leading slice of arglist")
+ok(arglist[1:3] == ["beta gamma", "42"], "interior slice of arglist")
+ok("alpha" in arglist, "membership in arglist (present)")
+ok(not ("zzz" in arglist), "membership in arglist (absent)")
+ok(arglist.copy() == EXPECTED, "arglist.copy() equals the argument tokens")
+ok(arglist + ["z"] == ["alpha", "beta gamma", "42", "--flag", "z"], "arglist concatenation")
+ok(arglist.apply(Function(s): return s.upper()) == ["ALPHA", "BETA GAMMA", "42", "--FLAG"], "arglist.apply maps elements")
+
+# -- through unpacking --
+var first, *rest = arglist
+ok(first == "alpha", "starred unpack: head binds the first token")
+ok(rest == ["beta gamma", "42", "--flag"], "starred unpack: tail absorbs the rest")
+var headInit, lastTok = arglist[0], arglist[-1]
+ok(headInit == "alpha" and lastTok == "--flag", "tuple-target assignment from arglist elements")
+var w0, w1, w2, w3 = arglist
+ok(w0 == "alpha" and w1 == "beta gamma" and w2 == "42" and w3 == "--flag", "exact unpack of arglist")
+var starHead, *starTail = arglist
+ok(len(starTail) == 3 and starHead == "alpha", "starred head/tail split of the entry arglist")
+
+# -- through recursion --
+var depthMain = Function(k):
+    return argmain if k <= 0 else depthMain(k - 1)
+ok(depthMain(5) == True, "a recursive function in the entry file sees argmain True at its base case")
+
+# -- through a parameter default evaluated at call time --
+var dfn = Function(x = len(arglist)):
+    return x
+ok(dfn() == 4, "a default len(arglist) in the entry file reads the entry's own arglist (4)")
+ok(dfn(7) == 7, "an explicit argument overrides the default")
+
+# ============================================================================================
+# Part 2 — imported modules: every helper sees argmain == False and arglist == [], and its
+# functions/methods/defaults keep reporting that even when called from here.
+# ============================================================================================
+var basic = import("amarg_basic")
+ok(basic.m == False, "amarg_basic: imported argmain is False")
+ok(basic.args == [], "amarg_basic: imported arglist is empty")
+ok(basic.n == 0, "amarg_basic: imported len(arglist) is 0")
+ok(basic.t == "List", "amarg_basic: imported arglist is a List")
+ok(basic.empty == True, "amarg_basic: arglist == [] holds on import")
+
+var modIf = import("amarg_if")
+ok(modIf.role == "imported", "amarg_if: if/elif takes the imported arm")
+ok(modIf.sizeClass == "empty", "amarg_if: arglist size class is empty")
+ok(modIf.m == False, "amarg_if: argmain False")
+
+var modFor = import("amarg_for")
+ok(modFor.collected == [], "amarg_for: for-loop over empty arglist collects nothing")
+ok(modFor.looped == 0, "amarg_for: zero iterations")
+ok(modFor.m == False, "amarg_for: argmain False")
+
+var modWhile = import("amarg_while")
+ok(modWhile.steps == 0, "amarg_while: zero iterations over empty arglist")
+ok(modWhile.m == False, "amarg_while: argmain False")
+
+var modFn = import("amarg_function")
+ok(modFn.m == False, "amarg_function: captured argmain False")
+ok(modFn.args == [], "amarg_function: captured arglist empty")
+ok(modFn.getMain() == False, "amarg_function: getMain() called from here still reports its module (False)")
+ok(modFn.getArgs() == [], "amarg_function: getArgs() called from here still reports its module ([])")
+
+var modCls = import("amarg_class")
+ok(modCls.m == False, "amarg_class: captured argmain False")
+ok(modCls.n == 0, "amarg_class: captured len(arglist) 0")
+ok(modCls.probe.seeMain() == False, "amarg_class: a method called from here reports its module (False)")
+ok(len(modCls.probe.seeArgs()) == 0, "amarg_class: a method called from here sees an empty arglist")
+
+var modCl = import("amarg_closure")
+ok(modCl.m == False, "amarg_closure: captured argmain False")
+ok(modCl.reader() == False, "amarg_closure: the returned closure reports its module (False)")
+
+var modFs = import("amarg_fstring")
+ok(modFs.label == "main=False argc=0", "amarg_fstring: argmain/arglist render for an import")
+ok(modFs.m == False, "amarg_fstring: argmain False")
+
+var modAssert = import("amarg_assert")
+ok(modAssert.ok == True, "amarg_assert: module-level invariants held on import")
+ok(modAssert.m == False, "amarg_assert: argmain False")
+
+var modTry = import("amarg_try")
+ok(modTry.caught == True, "amarg_try: indexing the empty arglist thrown and was caught")
+ok(modTry.m == False, "amarg_try: argmain False")
+ok(modTry.n == 0, "amarg_try: len(arglist) 0")
+
+var modWith = import("amarg_with")
+ok(modWith.captured == False, "amarg_with: argmain read inside a with-block is False")
+ok(modWith.m == False, "amarg_with: argmain False")
+
+var modSwitch = import("amarg_switch")
+ok(modSwitch.label == "none", "amarg_switch: switch on len(arglist) hits case 0")
+ok(modSwitch.m == False, "amarg_switch: argmain False")
+
+var modCond = import("amarg_conditional")
+ok(modCond.role == "module", "amarg_conditional: conditional expr yields the imported role")
+ok(modCond.size == "empty", "amarg_conditional: arglist size empty")
+ok(modCond.m == False, "amarg_conditional: argmain False")
+
+var modLogic = import("amarg_logic")
+ok(modLogic.a == False, "amarg_logic: argmain and True is False")
+ok(modLogic.b == "fallback", "amarg_logic: argmain or X falls through")
+ok(modLogic.c == True, "amarg_logic: not argmain is True")
+ok(modLogic.d == True, "amarg_logic: (len==0) and not argmain is True")
+ok(modLogic.m == False, "amarg_logic: argmain False")
+
+var modList = import("amarg_listops")
+ok(modList.copyArgs == [], "amarg_listops: copy of empty arglist")
+ok(modList.sliced == [], "amarg_listops: slice of empty arglist")
+ok(modList.plused == ["x", "y"], "amarg_listops: empty arglist + list")
+ok(modList.contains == False, "amarg_listops: membership in empty arglist")
+ok(modList.same == True, "amarg_listops: empty arglist == []")
+ok(modList.applied == [], "amarg_listops: apply over empty arglist")
+ok(modList.m == False, "amarg_listops: argmain False")
+
+var modBase = import("amarg_diamond_base")
+ok(modBase.m == False, "amarg_diamond_base: argmain False")
+ok(modBase.tag == "base", "amarg_diamond_base: tag export present")
+ok(modBase.n == 0, "amarg_diamond_base: len(arglist) 0")
+
+var modDa = import("amarg_diamond_a")
+ok(modDa.m == False, "amarg_diamond_a: argmain False")
+ok(modDa.baseMain == False, "amarg_diamond_a: the base it imported also saw argmain False")
+ok(modDa.via == "a", "amarg_diamond_a: arm tag")
+ok(modDa.base.tag == "base", "amarg_diamond_a: reaches the shared base")
+
+var modDb = import("amarg_diamond_b")
+ok(modDb.m == False, "amarg_diamond_b: argmain False")
+ok(modDb.baseMain == False, "amarg_diamond_b: the base it imported also saw argmain False")
+ok(modDb.via == "b", "amarg_diamond_b: arm tag")
+
+# diamond + caching: both arms and the entry share the single cached base module object.
+ok(id(modDa.base) == id(modDb.base), "diamond: both arms share the one cached base module")
+ok(id(modDa.base) == id(modBase), "diamond: the entry's base import is the same cached module")
+
+var modTrans = import("amarg_transitive")
+ok(modTrans.m == False, "amarg_transitive: argmain False")
+ok(modTrans.deepMain == False, "amarg_transitive: a transitively-imported module also saw argmain False")
+ok(modTrans.deepArgs == [], "amarg_transitive: the deep module saw an empty arglist")
+ok(id(modTrans.basic) == id(basic), "transitive import resolves to the same cached amarg_basic")
+
+var modRe = import("amarg_reimport")
+ok(modRe.sameId == True, "amarg_reimport: importing twice returns the identical cached module")
+ok(modRe.m == False, "amarg_reimport: argmain False")
+
+var modMix = import("amarg_stdlib_mix")
+ok(modMix.sq.compare(4.0), "amarg_stdlib_mix: a native stdlib import works alongside argmain")
+ok(modMix.m == False, "amarg_stdlib_mix: importing math does not disturb argmain (False)")
+ok(modMix.n == 0, "amarg_stdlib_mix: arglist still empty")
+
+var modDef = import("amarg_default_param")
+ok(modDef.atImport == 0, "amarg_default_param: default len(arglist) at import was 0")
+ok(modDef.explicit == 99, "amarg_default_param: explicit argument honored")
+ok(modDef.m == False, "amarg_default_param: argmain False")
+ok(modDef.f() == 0, "amarg_default_param: f()'s default reads ITS module's arglist (0), not the caller's (4)")
+ok(modDef.f(7) == 7, "amarg_default_param: an explicit argument still overrides when called from here")
+
+var modRec = import("amarg_recursion")
+ok(modRec.m == False, "amarg_recursion: argmain False at the base case")
+ok(modRec.countdown(3) == False, "amarg_recursion: called from here, recursion still reports its module (False)")
+
+var modUnpack = import("amarg_unpack")
+ok(modUnpack.head == "solo", "amarg_unpack: head bound the padding (empty arglist)")
+ok(modUnpack.tail == [], "amarg_unpack: starred tail is empty for an empty arglist")
+ok(modUnpack.m == False, "amarg_unpack: argmain False")
+
+# ============================================================================================
+# Part 3 — directly-run files with varied argv, exercised by spawning the `ki` interpreter on a
+# generated runner. This covers the True/populated side with edge argv that a single .args set
+# (and the import side) cannot: zero args, spaces, Unicode, an empty-string token, option-shaped
+# tokens and `--`. The runner prints argmain, then the count, then each arg, then END.
+# ============================================================================================
+var KI = path.executable
+var time = import("time")
+var runner = path.join(path.gettempdir(), "amarg_runner_" + String(time.timens()) + ".ki")
+var rsrc = r"""var io = import("io")
+io.print(String(argmain))
+io.print(String(len(arglist)))
+var i = 0
+while i < len(arglist):
+    io.print(arglist[i])
+    i = i + 1
+io.print("END")
+"""
+var rfh = io.open(runner, "w")
+discard rfh.write(rsrc)
+rfh.close()
+
+var spawn = Function(extra):
+    var argv = [KI, runner] + extra
+    var out = sys.createprocess(argv)["stdout"]
+    return out.split("\n")
+
+# zero args -> argmain True, empty arglist
+var c0 = spawn([])
+ok(c0[0] == "True", "spawned direct run (no args): argmain is True")
+ok(c0[1] == "0", "spawned direct run (no args): arglist is empty")
+
+# a single ordinary arg
+var c1 = spawn(["solo"])
+ok(c1[0] == "True", "spawned direct run (1 arg): argmain True")
+ok(c1[1] == "1", "spawned direct run: one argument")
+ok(c1[2] == "solo", "spawned direct run: the argument is delivered verbatim")
+
+# several args, order preserved
+var c3 = spawn(["a", "b", "c"])
+ok(c3[1] == "3", "spawned direct run: three arguments")
+ok(c3[2] == "a" and c3[3] == "b" and c3[4] == "c", "spawned direct run: argument order preserved")
+
+# a token containing a space is ONE element
+var cs = spawn(["two words"])
+ok(cs[1] == "1", "a space-containing argv token is a single arglist element")
+ok(cs[2] == "two words", "the space-containing token is preserved")
+
+# Unicode survives the round trip
+var cu = spawn(["café-π-名"])
+ok(cu[1] == "1", "a Unicode argv token is one element")
+ok(cu[2] == "café-π-名", "Unicode argv is preserved byte-for-byte")
+
+# an empty-string token still counts as an argument
+var ce = spawn([""])
+ok(ce[1] == "1", "an empty-string argv token still counts as one argument")
+ok(ce[2] == "", "the empty-string token is preserved")
+
+# option-shaped tokens and `--` all belong to the script
+var cf = spawn(["--flag", "-x", "--", "tail"])
+ok(cf[1] == "4", "every post-script token (flags and --) belongs to the script")
+ok(cf[2] == "--flag" and cf[3] == "-x" and cf[4] == "--" and cf[5] == "tail", "option-shaped tokens are passed through unchanged")
+
+# numeric-looking tokens stay Strings
+var cn = spawn(["007"])
+ok(cn[2] == "007", "a numeric-looking argv token stays a String (no coercion, leading zeros kept)")
+
+discard path.remove(runner, missing_ok = True)
+ok(path.exists(runner) == False, "the generated runner is cleaned up")
+
+io.print("argmain_arglist: " + String(n) + " checks passed")

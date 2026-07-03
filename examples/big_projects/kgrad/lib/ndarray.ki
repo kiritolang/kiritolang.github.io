@@ -1,0 +1,385 @@
+# Strided n-dimensional array (the value layer beneath autograd).
+#
+# An NdArray is (device, buffer, offset, shape, strides) — the NumPy/PyTorch model. Views
+# (reshape-when-contiguous, transpose/permute, slice, broadcast) SHARE the underlying buffer and only
+# adjust shape/strides/offset; no data is copied. Operations that need packed data call
+# `.contiguous()` (which uses the device `gather` kernel) first, so the kernels stay simple. All
+# compute is delegated to the device — this file contains no arithmetic loops of its own.
+
+var backend = import("backend")
+
+var _prod = Function(shape):
+    var p = 1
+    for d in shape:
+        p = p * d
+    return p
+
+# Broadcast two shapes (right-aligned), returning the result shape or throwing on a mismatch.
+var broadcast_shapes = Function(a, b):
+    var na = len(a)
+    var nb = len(b)
+    var n = na
+    if nb > n:
+        n = nb
+    var out = []
+    var i = 0
+    while i < n:
+        var da = 1
+        var db = 1
+        var ia = na - n + i
+        var ib = nb - n + i
+        if ia >= 0:
+            da = a[ia]
+        if ib >= 0:
+            db = b[ib]
+        if da == db:
+            out.append(da)
+        elif da == 1:
+            out.append(db)
+        elif db == 1:
+            out.append(da)
+        else:
+            throw "shapes not broadcastable: " + String(a) + " vs " + String(b)
+        i = i + 1
+    return out
+
+class NdArray:
+    var _init_ = Function(self, dev, buf, offset, shape, strides):
+        self.dev = dev
+        self.buf = buf
+        self.offset = offset
+        self.shape = shape
+        self.strides = strides
+
+    var size = Function(self):
+        return _prod(self.shape)
+
+    var ndim = Function(self):
+        return len(self.shape)
+
+    var is_contiguous = Function(self):
+        var expected = backend.contig_strides(self.shape)
+        if len(expected) != len(self.strides):
+            return False
+        var i = 0
+        while i < len(expected):
+            # axes of length<=1 don't constrain the stride
+            if self.shape[i] > 1 and self.strides[i] != expected[i]:
+                return False
+            i = i + 1
+        return self.offset == self.offset
+
+    # Pack into a fresh C-order buffer (copy). Returns a new contiguous NdArray.
+    var contiguous = Function(self):
+        var packed = self.dev.gather(self.buf, self.offset, self.shape, self.strides)
+        return NdArray(self.dev, packed, 0, self.shape, backend.contig_strides(self.shape))
+
+    var clone = Function(self):
+        return self.contiguous()
+
+    # reshape: a view when contiguous, else materialise first. Supports a single -1 inferred dim.
+    var reshape = Function(self, new_shape):
+        var shape = new_shape.copy()
+        var known = 1
+        var infer = -1
+        var i = 0
+        while i < len(shape):
+            if shape[i] == -1:
+                infer = i
+            else:
+                known = known * shape[i]
+            i = i + 1
+        if infer >= 0:
+            shape[infer] = self.size() / known
+            shape[infer] = Integer(shape[infer])
+        if _prod(shape) != self.size():
+            throw "reshape size mismatch: " + String(self.shape) + " -> " + String(shape)
+        var src = self
+        if not self.is_contiguous():
+            src = self.contiguous()
+        return NdArray(src.dev, src.buf, src.offset, shape, backend.contig_strides(shape))
+
+    var view = Function(self, new_shape):
+        return self.reshape(new_shape)
+
+    var flatten = Function(self):
+        return self.reshape([self.size()])
+
+    # permute axes (a view); order is a full permutation of 0..ndim-1.
+    var permute = Function(self, order):
+        var ns = []
+        var nst = []
+        for ax in order:
+            ns.append(self.shape[ax])
+            nst.append(self.strides[ax])
+        return NdArray(self.dev, self.buf, self.offset, ns, nst)
+
+    var transpose = Function(self, i, j):
+        var order = []
+        var k = 0
+        while k < self.ndim():
+            order.append(k)
+            k = k + 1
+        var t = order[i]
+        order[i] = order[j]
+        order[j] = t
+        return self.permute(order)
+
+    var T = Function(self):
+        return self.transpose(0, 1)
+
+    # broadcast_to: a view with stride-0 on expanded axes (no copy).
+    var broadcast_to = Function(self, target):
+        var nt = len(target)
+        var nd = self.ndim()
+        var ns = []
+        var nst = []
+        var i = 0
+        while i < nt:
+            var srcax = nd - nt + i
+            if srcax < 0:
+                ns.append(target[i])
+                nst.append(0)
+            else:
+                var sdim = self.shape[srcax]
+                if sdim == target[i]:
+                    ns.append(target[i])
+                    nst.append(self.strides[srcax])
+                elif sdim == 1:
+                    ns.append(target[i])
+                    nst.append(0)
+                else:
+                    throw "cannot broadcast " + String(self.shape) + " to " + String(target)
+            i = i + 1
+        return NdArray(self.dev, self.buf, self.offset, ns, nst)
+
+    # index a single element by a full multi-index list -> Float
+    var at = Function(self, idx):
+        var flat = self.offset
+        var i = 0
+        while i < len(idx):
+            flat = flat + idx[i] * self.strides[i]
+            i = i + 1
+        return self.buf[flat]
+
+    # select along axis 0 (a view): a[i] for an n-d array -> (n-1)-d array sharing storage
+    var select0 = Function(self, i):
+        var off = self.offset + i * self.strides[0]
+        var ns = self.shape[1:]
+        var nst = self.strides[1:]
+        return NdArray(self.dev, self.buf, off, ns, nst)
+
+    # slice along axis 0: a[lo:hi] (a view)
+    var slice0 = Function(self, lo, hi):
+        var off = self.offset + lo * self.strides[0]
+        var ns = self.shape.copy()
+        ns[0] = hi - lo
+        return NdArray(self.dev, self.buf, off, ns, self.strides)
+
+    var to_nested = Function(self):
+        var c = self.contiguous()
+        return _unflatten(c.buf, self.shape, 0, self.size())
+
+    var item = Function(self):
+        return self.buf[self.offset]
+
+# rebuild a nested list from a flat buffer + shape (for display / equality in tests)
+var _unflatten = Function(buf, shape, start, count):
+    if len(shape) == 0:
+        return buf[start]
+    if len(shape) == 1:
+        return buf[start:start + shape[0]]
+    var out = []
+    var sub = count / shape[0]
+    sub = Integer(sub)
+    var i = 0
+    while i < shape[0]:
+        out.append(_unflatten(buf, shape[1:], start + i * sub, sub))
+        i = i + 1
+    return out
+
+# ---- constructors --------------------------------------------------------------------------------
+
+var _infer_shape = Function(nested):
+    var shape = []
+    var cur = nested
+    while type(cur) == "List":
+        shape.append(len(cur))
+        if len(cur) == 0:
+            break
+        cur = cur[0]
+    return shape
+
+var _flatten_into = Function(nested, out):
+    if type(nested) == "List":
+        for x in nested:
+            _flatten_into(x, out)
+    else:
+        out.append(Float(nested))
+
+var array = Function(nested):
+    var dev = backend.default_device()
+    var shape = _infer_shape(nested)
+    var buf = []
+    _flatten_into(nested, buf)
+    return NdArray(dev, buf, 0, shape, backend.contig_strides(shape))
+
+var from_flat = Function(buf, shape):
+    var dev = backend.default_device()
+    return NdArray(dev, buf, 0, shape, backend.contig_strides(shape))
+
+var zeros = Function(shape):
+    var dev = backend.default_device()
+    var buf = dev.zeros_buffer(_prod(shape))
+    return NdArray(dev, buf, 0, shape, backend.contig_strides(shape))
+
+var full = Function(shape, value):
+    var dev = backend.default_device()
+    var buf = dev.full_buffer(_prod(shape), Float(value))
+    return NdArray(dev, buf, 0, shape, backend.contig_strides(shape))
+
+var ones = Function(shape):
+    return full(shape, 1.0)
+
+# ---- elementwise (with broadcasting) -------------------------------------------------------------
+
+var _binary = Function(a, b, op):
+    var shape = broadcast_shapes(a.shape, b.shape)
+    var ac = a.broadcast_to(shape).contiguous()
+    var bc = b.broadcast_to(shape).contiguous()
+    var out = a.dev.binary(op, ac.buf, bc.buf)
+    return NdArray(a.dev, out, 0, shape, backend.contig_strides(shape))
+
+var add = Function(a, b):
+    return _binary(a, b, "add")
+var sub = Function(a, b):
+    return _binary(a, b, "sub")
+var mul = Function(a, b):
+    return _binary(a, b, "mul")
+var div = Function(a, b):
+    return _binary(a, b, "div")
+var maximum = Function(a, b):
+    return _binary(a, b, "max")
+
+var add_scalar = Function(a, s):
+    var c = a.contiguous()
+    return NdArray(a.dev, a.dev.scalar("add", c.buf, Float(s)), 0, a.shape, backend.contig_strides(a.shape))
+var mul_scalar = Function(a, s):
+    var c = a.contiguous()
+    return NdArray(a.dev, a.dev.scalar("mul", c.buf, Float(s)), 0, a.shape, backend.contig_strides(a.shape))
+
+var _unary = Function(a, op):
+    var c = a.contiguous()
+    return NdArray(a.dev, a.dev.unary(op, c.buf), 0, a.shape, backend.contig_strides(a.shape))
+
+var neg = Function(a):
+    return _unary(a, "neg")
+var exp = Function(a):
+    return _unary(a, "exp")
+var log = Function(a):
+    return _unary(a, "log")
+var relu = Function(a):
+    return _unary(a, "relu")
+var tanh = Function(a):
+    return _unary(a, "tanh")
+var sqrt = Function(a):
+    return _unary(a, "sqrt")
+
+# ---- matmul --------------------------------------------------------------------------------------
+# Supports (m,k) @ (k,n). A 1-D vector is treated as a row/column as needed -> result squeezed.
+
+var matmul = Function(a, b):
+    var av = a
+    var bv = b
+    var squeeze_a = False
+    var squeeze_b = False
+    if av.ndim() == 1:
+        av = av.reshape([1, av.shape[0]])
+        squeeze_a = True
+    if bv.ndim() == 1:
+        bv = bv.reshape([bv.shape[0], 1])
+        squeeze_b = True
+    if av.ndim() != 2 or bv.ndim() != 2:
+        throw "matmul expects 2-D operands (got " + String(a.shape) + ", " + String(b.shape) + ")"
+    var m = av.shape[0]
+    var k = av.shape[1]
+    if bv.shape[0] != k:
+        throw "matmul inner dim mismatch: " + String(a.shape) + " @ " + String(b.shape)
+    var n = bv.shape[1]
+    var ac = av.contiguous()
+    var bc = bv.contiguous()
+    var out = av.dev.matmul(ac.buf, m, k, bc.buf, n)
+    var res = NdArray(av.dev, out, 0, [m, n], backend.contig_strides([m, n]))
+    if squeeze_a and squeeze_b:
+        return from_flat(res.buf, [])
+    if squeeze_a:
+        return res.reshape([n])
+    if squeeze_b:
+        return res.reshape([m])
+    return res
+
+# ---- reductions ----------------------------------------------------------------------------------
+# Full reductions return a scalar (0-d). Axis reductions reduce one axis (optionally keepdim).
+
+var sum_all = Function(a):
+    var c = a.contiguous()
+    var acc = 0.0
+    for x in c.buf:
+        acc = acc + x
+    return from_flat([acc], [])
+
+var _reduce_axis = Function(a, axis, op):
+    # move `axis` to the end, make contiguous, then fold the last dimension.
+    var nd = a.ndim()
+    var order = []
+    var i = 0
+    while i < nd:
+        if i != axis:
+            order.append(i)
+        i = i + 1
+    order.append(axis)
+    var perm = a.permute(order).contiguous()
+    var axlen = a.shape[axis]
+    var outer = perm.size() / axlen
+    outer = Integer(outer)
+    var outbuf = []
+    var o = 0
+    while o < outer:
+        var base = o * axlen
+        var acc = perm.buf[base]
+        if op == "sum" or op == "mean":
+            acc = 0.0
+        var j = 0
+        while j < axlen:
+            var v = perm.buf[base + j]
+            switch op:
+                case "sum", "mean":
+                    acc = acc + v
+                case "max":
+                    if j == 0 or v > acc:
+                        acc = v
+                case "min":
+                    if j == 0 or v < acc:
+                        acc = v
+            j = j + 1
+        if op == "mean":
+            acc = acc / Float(axlen)
+        outbuf.append(acc)
+        o = o + 1
+    var outshape = []
+    for ax in order[0:len(order) - 1]:
+        outshape.append(a.shape[ax])
+    return from_flat(outbuf, outshape)
+
+var sum_axis = Function(a, axis):
+    return _reduce_axis(a, axis, "sum")
+var mean_axis = Function(a, axis):
+    return _reduce_axis(a, axis, "mean")
+var max_axis = Function(a, axis):
+    return _reduce_axis(a, axis, "max")
+var min_axis = Function(a, axis):
+    return _reduce_axis(a, axis, "min")
+
+var mean_all = Function(a):
+    var s = sum_all(a)
+    return from_flat([s.item() / Float(a.size())], [])

@@ -1,0 +1,416 @@
+# The `hash` module in pure Kirito: standards-conformant md5 and sha256 (byte-exact digests).
+# 32-bit arithmetic is done with mod 2^32 and pow-of-two multiply/divide; the logical ops are
+# computed bitwise. Inputs are treated as byte strings (each character's ord is one byte).
+
+var _M32 = 4294967296
+
+var _pow2 = Function(n):
+    var r = 1
+    var i = 0
+    while i < n:
+        r = r * 2
+        i = i + 1
+    return r
+
+# Nibble (4-bit) lookup tables make the 32-bit logical ops 8 table reads instead of 32 bit-tests —
+# essential for tractable speed under the self-hosted (doubly-interpreted) runtime.
+var _NAND = []
+var _NOR = []
+var _NXOR = []
+var _na = 0
+while _na < 16:
+    var _nb = 0
+    while _nb < 16:
+        var aa = _na
+        var bb = _nb
+        var ra = 0
+        var ro = 0
+        var rx = 0
+        var bit = 1
+        var bi = 0
+        while bi < 4:
+            var x = aa % 2
+            var y = bb % 2
+            if x == 1 and y == 1:
+                ra = ra + bit
+            if x == 1 or y == 1:
+                ro = ro + bit
+            if x != y:
+                rx = rx + bit
+            bit = bit * 2
+            aa = aa // 2
+            bb = bb // 2
+            bi = bi + 1
+        _NAND.append(ra)
+        _NOR.append(ro)
+        _NXOR.append(rx)
+        _nb = _nb + 1
+    _na = _na + 1
+
+var _op32 = Function(a, b, tbl):
+    var res = 0
+    var pw = 1
+    var i = 0
+    while i < 8:
+        res = res + tbl[((a // pw) % 16) * 16 + ((b // pw) % 16)] * pw
+        pw = pw * 16
+        i = i + 1
+    return res
+
+var _and = Function(a, b):
+    return _op32(a, b, _NAND)
+var _or = Function(a, b):
+    return _op32(a, b, _NOR)
+var _xor = Function(a, b):
+    return _op32(a, b, _NXOR)
+var _not = Function(a):
+    return _M32 - 1 - a
+var _add = Function(a, b):
+    return (a + b) % _M32
+var _shr = Function(x, n):
+    return x // _pow2(n)
+var _rotr = Function(x, n):
+    return (x // _pow2(n) + x * _pow2(32 - n)) % _M32
+var _rotl = Function(x, n):
+    return (x * _pow2(n) + x // _pow2(32 - n)) % _M32
+
+var _HEX = "0123456789abcdef"
+var _hex8 = Function(x):
+    # 32-bit value -> 8 lowercase hex digits, big-endian
+    var out = ""
+    var i = 7
+    while i >= 0:
+        out = out + _HEX[(x // _pow2(i * 4)) % 16]
+        i = i - 1
+    return out
+
+var _bytesOf = Function(s):
+    # Hash the raw bytes: a Bytes yields its bytes directly; a String is its UTF-8 encoding (so the
+    # self-host matches the real byte-transparent String, and hash(s) == hash(s.encode())). Anything
+    # else has no .encode and throws, which is the intended "wrong type" rejection.
+    if type(s) == "Bytes":
+        return List(s)
+    return List(s.encode())
+
+# --- md5 -----------------------------------------------------------------------------------------
+var _MD5_S = [7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+              5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+              4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+              6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21]
+var _MD5_K = [3614090360, 3905402710, 606105819, 3250441966, 4118548399, 1200080426,
+              2821735955, 4249261313, 1770035416, 2336552879, 4294925233, 2304563134,
+              1804603682, 4254626195, 2792965006, 1236535329, 4129170786, 3225465664,
+              643717713, 3921069994, 3593408605, 38016083, 3634488961, 3889429448,
+              568446438, 3275163606, 4107603335, 1163531501, 2850285829, 4243563512,
+              1735328473, 2368359562, 4294588738, 2272392833, 1839030562, 4259657740,
+              2763975236, 1272893353, 4139469664, 3200236656, 681279174, 3936430074,
+              3572445317, 76029189, 3654602809, 3873151461, 530742520, 3299628645,
+              4096336452, 1126891415, 2878612391, 4237533241, 1700485571, 2399980690,
+              4293915773, 2240044497, 1873313359, 4264355552, 2734768916, 1309151649,
+              4149444226, 3174756917, 718787259, 3951481745]
+
+var _le32 = Function(bytes, i):
+    return bytes[i] + bytes[i + 1] * 256 + bytes[i + 2] * 65536 + bytes[i + 3] * 16777216
+
+var _hexLE = Function(x):
+    # 32-bit value -> 8 hex digits in little-endian byte order (md5 output convention)
+    var out = ""
+    var b = 0
+    while b < 4:
+        var byte = (x // _pow2(b * 8)) % 256
+        out = out + _HEX[byte // 16] + _HEX[byte % 16]
+        b = b + 1
+    return out
+
+var md5 = Function(data):
+    var msg = _bytesOf(data)
+    var origLenBits = len(msg) * 8
+    msg.append(128)
+    while len(msg) % 64 != 56:
+        msg.append(0)
+    var lb = 0
+    while lb < 8:
+        msg.append((origLenBits // _pow2(lb * 8)) % 256)
+        lb = lb + 1
+    var a0 = 1732584193
+    var b0 = 4023233417
+    var c0 = 2562383102
+    var d0 = 271733878
+    var chunk = 0
+    while chunk < len(msg):
+        var M = []
+        var w = 0
+        while w < 16:
+            M.append(_le32(msg, chunk + w * 4))
+            w = w + 1
+        var A = a0
+        var B = b0
+        var C = c0
+        var D = d0
+        var i = 0
+        while i < 64:
+            var F = 0
+            var g = 0
+            if i < 16:
+                F = _or(_and(B, C), _and(_not(B), D))
+                g = i
+            elif i < 32:
+                F = _or(_and(D, B), _and(_not(D), C))
+                g = (5 * i + 1) % 16
+            elif i < 48:
+                F = _xor(_xor(B, C), D)
+                g = (3 * i + 5) % 16
+            else:
+                F = _xor(C, _or(B, _not(D)))
+                g = (7 * i) % 16
+            F = _add(_add(F, A), _add(_MD5_K[i], M[g]))
+            A = D
+            D = C
+            C = B
+            B = _add(B, _rotl(F, _MD5_S[i]))
+            i = i + 1
+        a0 = _add(a0, A)
+        b0 = _add(b0, B)
+        c0 = _add(c0, C)
+        d0 = _add(d0, D)
+        chunk = chunk + 64
+    return _hexLE(a0) + _hexLE(b0) + _hexLE(c0) + _hexLE(d0)
+
+# --- sha1 ----------------------------------------------------------------------------------------
+var sha1 = Function(data):
+    var msg = _bytesOf(data)
+    var origLenBits = len(msg) * 8
+    msg.append(128)
+    while len(msg) % 64 != 56:
+        msg.append(0)
+    var lb = 7
+    while lb >= 0:
+        msg.append((origLenBits // _pow2(lb * 8)) % 256)
+        lb = lb - 1
+    var h0 = 1732584193
+    var h1 = 4023233417
+    var h2 = 2562383102
+    var h3 = 271733878
+    var h4 = 3285377520
+    var chunk = 0
+    while chunk < len(msg):
+        var w = []
+        var t = 0
+        while t < 16:
+            w.append(_be32(msg, chunk + t * 4))
+            t = t + 1
+        t = 16
+        while t < 80:
+            w.append(_rotl(_xor(_xor(w[t - 3], w[t - 8]), _xor(w[t - 14], w[t - 16])), 1))
+            t = t + 1
+        var a = h0
+        var b = h1
+        var c = h2
+        var d = h3
+        var e = h4
+        var i = 0
+        while i < 80:
+            var f = 0
+            var k = 0
+            if i < 20:
+                f = _or(_and(b, c), _and(_not(b), d))
+                k = 1518500249
+            elif i < 40:
+                f = _xor(_xor(b, c), d)
+                k = 1859775393
+            elif i < 60:
+                f = _or(_or(_and(b, c), _and(b, d)), _and(c, d))
+                k = 2400959708
+            else:
+                f = _xor(_xor(b, c), d)
+                k = 3395469782
+            var tmp = _add(_add(_rotl(a, 5), f), _add(_add(e, k), w[i]))
+            e = d
+            d = c
+            c = _rotl(b, 30)
+            b = a
+            a = tmp
+            i = i + 1
+        h0 = _add(h0, a)
+        h1 = _add(h1, b)
+        h2 = _add(h2, c)
+        h3 = _add(h3, d)
+        h4 = _add(h4, e)
+        chunk = chunk + 64
+    return _hex8(h0) + _hex8(h1) + _hex8(h2) + _hex8(h3) + _hex8(h4)
+
+# --- sha256 --------------------------------------------------------------------------------------
+var _SHA_K = [1116352408, 1899447441, 3049323471, 3921009573, 961987163, 1508970993,
+              2453635748, 2870763221, 3624381080, 310598401, 607225278, 1426881987,
+              1925078388, 2162078206, 2614888103, 3248222580, 3835390401, 4022224774,
+              264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986,
+              2554220882, 2821834349, 2952996808, 3210313671, 3336571891, 3584528711,
+              113926993, 338241895, 666307205, 773529912, 1294757372, 1396182291,
+              1695183700, 1986661051, 2177026350, 2456956037, 2730485921, 2820302411,
+              3259730800, 3345764771, 3516065817, 3600352804, 4094571909, 275423344,
+              430227734, 506948616, 659060556, 883997877, 958139571, 1322822218,
+              1537002063, 1747873779, 1955562222, 2024104815, 2227730452, 2361852424,
+              2428436474, 2756734187, 3204031479, 3329325298]
+
+var _be32 = Function(bytes, i):
+    return bytes[i] * 16777216 + bytes[i + 1] * 65536 + bytes[i + 2] * 256 + bytes[i + 3]
+
+var sha256 = Function(data):
+    var msg = _bytesOf(data)
+    var origLenBits = len(msg) * 8
+    msg.append(128)
+    while len(msg) % 64 != 56:
+        msg.append(0)
+    var lb = 7
+    while lb >= 0:
+        msg.append((origLenBits // _pow2(lb * 8)) % 256)
+        lb = lb - 1
+    var h = [1779033703, 3144134277, 1013904242, 2773480762,
+             1359893119, 2600822924, 528734635, 1541459225]
+    var chunk = 0
+    while chunk < len(msg):
+        var w = []
+        var t = 0
+        while t < 16:
+            w.append(_be32(msg, chunk + t * 4))
+            t = t + 1
+        t = 16
+        while t < 64:
+            var s0 = _xor(_xor(_rotr(w[t - 15], 7), _rotr(w[t - 15], 18)), _shr(w[t - 15], 3))
+            var s1 = _xor(_xor(_rotr(w[t - 2], 17), _rotr(w[t - 2], 19)), _shr(w[t - 2], 10))
+            w.append(_add(_add(w[t - 16], s0), _add(w[t - 7], s1)))
+            t = t + 1
+        var a = h[0]
+        var b = h[1]
+        var c = h[2]
+        var d = h[3]
+        var e = h[4]
+        var f = h[5]
+        var g = h[6]
+        var hh = h[7]
+        var i = 0
+        while i < 64:
+            var S1 = _xor(_xor(_rotr(e, 6), _rotr(e, 11)), _rotr(e, 25))
+            var ch = _xor(_and(e, f), _and(_not(e), g))
+            var temp1 = _add(_add(hh, S1), _add(ch, _add(_SHA_K[i], w[i])))
+            var S0 = _xor(_xor(_rotr(a, 2), _rotr(a, 13)), _rotr(a, 22))
+            var maj = _xor(_xor(_and(a, b), _and(a, c)), _and(b, c))
+            var temp2 = _add(S0, maj)
+            hh = g
+            g = f
+            f = e
+            e = _add(d, temp1)
+            d = c
+            c = b
+            b = a
+            a = _add(temp1, temp2)
+            i = i + 1
+        h[0] = _add(h[0], a)
+        h[1] = _add(h[1], b)
+        h[2] = _add(h[2], c)
+        h[3] = _add(h[3], d)
+        h[4] = _add(h[4], e)
+        h[5] = _add(h[5], f)
+        h[6] = _add(h[6], g)
+        h[7] = _add(h[7], hh)
+        chunk = chunk + 64
+    var out = ""
+    for v in h:
+        out = out + _hex8(v)
+    return out
+
+# --- non-cryptographic checksums (crc32 / adler32) -----------------------------------------------
+# CRC-32/ISO-HDLC (the zlib/gzip CRC): reflected polynomial 0xEDB88320, init/xorout 0xFFFFFFFF.
+var _CRC32_TABLE = []
+var _ct = 0
+while _ct < 256:
+    var _cc = _ct
+    var _ck = 0
+    while _ck < 8:
+        if _cc % 2 == 1:
+            _cc = _xor(3988292384, _cc // 2)
+        else:
+            _cc = _cc // 2
+        _ck = _ck + 1
+    _CRC32_TABLE.append(_cc)
+    _ct = _ct + 1
+
+var crc32 = Function(data):
+    var crc = 4294967295
+    for b in _bytesOf(data):
+        crc = _xor(crc // 256, _CRC32_TABLE[_xor(crc % 256, b)])
+    return _xor(crc, 4294967295)
+
+var adler32 = Function(data):
+    var a = 1
+    var b = 0
+    for byte in _bytesOf(data):
+        a = (a + byte) % 65521
+        b = (b + a) % 65521
+    return b * 65536 + a
+
+# CRC-64/XZ: reflected poly 0xC96C5795D7870F42, init/xorout all-ones, refin/refout. The 64-bit state
+# is kept as two non-negative 32-bit halves [hi, lo] (the nibble _xor is 32-bit); the final value is
+# reassembled with wrapping int64 multiply, which yields the correct signed two's-complement result.
+var _CRC64_POLY_HI = 3379320725       # 0xC96C5795
+var _CRC64_POLY_LO = 3615952706       # 0xD7870F42
+var _CRC64_TABLE = []
+var _q = 0
+while _q < 256:
+    var hi = 0
+    var lo = _q
+    var kk = 0
+    while kk < 8:
+        var bit0 = lo % 2
+        # crc >> 1 (logical, 64-bit)
+        var nlo = lo // 2 + (hi % 2) * 2147483648
+        var nhi = hi // 2
+        if bit0 == 1:
+            hi = _xor(nhi, _CRC64_POLY_HI)
+            lo = _xor(nlo, _CRC64_POLY_LO)
+        else:
+            hi = nhi
+            lo = nlo
+        kk = kk + 1
+    _CRC64_TABLE.append([hi, lo])
+    _q = _q + 1
+
+var crc64 = Function(data):
+    var hi = 4294967295
+    var lo = 4294967295
+    for b in _bytesOf(data):
+        var ent = _CRC64_TABLE[_xor(lo % 256, b)]
+        var shlo = lo // 256 + (hi % 256) * 16777216
+        var shhi = hi // 256
+        hi = _xor(shhi, ent[0])
+        lo = _xor(shlo, ent[1])
+    hi = 4294967295 - hi
+    lo = 4294967295 - lo
+    return hi * 4294967296 + lo
+
+# hash(value) → Integer — the selfhost's parallel of the native `hash.hash(x)`. Kept simple:
+#  - Integer, Float, Bool, None, String, Bytes → the host's `id()` (which for the selfhost's
+#    scalar/string/bytes representation is deterministic and consistent with Dict/Set lookup —
+#    same value produces the same Integer, distinct values usually produce distinct Integers, and
+#    it matches what the interpreter's `_hkey` fold-into-Dict path uses).
+#  - A user-class instance that defines `_hash_` (a method returning an Integer) — dispatch to it.
+#  - Unhashable containers (List, Set, Dict, Function, Module) throw the standard
+#    `unhashable type '<name>'` message.
+#
+# Composability: a user's own `_hash_` can call `hash.hash(self.subfield)` to fold nested
+# attributes without knowing their type.
+var hash = Function(value):
+    var tn = type(value)
+    if tn == "List" or tn == "Set" or tn == "Function" or tn == "Module":
+        throw "unhashable type '" + tn + "'"
+    # A user-class instance opts in via `_hash_`. Try attribute access; if it exists, call and
+    # validate its return type.
+    if hasattr(value, "_hash_"):
+        var h = value._hash_()
+        if type(h) != "Integer":
+            throw "'" + tn + "'._hash_ must return an Integer, got '" + type(h) + "'"
+        return h
+    # A plain Dict (not an instance) is unhashable — but a Dict-shaped instance was handled above.
+    if tn == "Dict":
+        throw "unhashable type 'Dict'"
+    return id(value)

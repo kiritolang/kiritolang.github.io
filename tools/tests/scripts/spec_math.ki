@@ -1,0 +1,77 @@
+# Thorough checks for the math module: constants, rounding, roots/powers, logs, trig, combinatorics.
+var io = import("io")
+var m = import("math")
+var close = Function(a, b) -> Bool:
+    return abs(a - b) < 0.000001
+
+# --- constants ---
+assert close(m.pi, 3.14159265358979) and close(m.e, 2.71828182845905), "pi/e"
+assert close(m.tau, 2.0 * m.pi), "tau"
+assert m.isinf(m.inf) and m.isnan(m.nan) and not m.isfinite(m.inf), "inf/nan constants"
+
+# --- rounding family (return types) ---
+assert m.floor(3.7) == 3 and m.floor(-3.2) == -4, "floor"
+assert m.ceil(3.2) == 4 and m.ceil(-3.7) == -3, "ceil"
+assert type(m.floor(1.5)) == "Integer" and type(m.ceil(1.5)) == "Integer", "floor/ceil -> Integer"
+assert m.trunc(3.7) == 3.0 and m.trunc(-3.7) == -3.0, "trunc toward zero"
+assert close(m.fabs(-2.5), 2.5), "fabs"
+assert close(m.copysign(3.0, -1.0), -3.0) and close(m.copysign(-3.0, 1.0), 3.0), "copysign"
+assert close(m.fmod(7.0, 3.0), 1.0) and close(m.fmod(-7.0, 3.0), -1.0), "fmod (C remainder)"
+
+# --- roots / powers ---
+assert close(m.sqrt(16.0), 4.0) and close(m.sqrt(2.0), 1.4142135623731), "sqrt"
+assert close(m.cbrt(27.0), 3.0) and close(m.cbrt(-8.0), -2.0), "cbrt"
+assert close(m.pow(2.0, 10.0), 1024.0) and close(m.pow(9.0, 0.5), 3.0), "pow"
+assert close(m.hypot(3.0, 4.0), 5.0), "hypot"
+
+# --- exp / log family ---
+assert close(m.exp(0.0), 1.0) and close(m.exp(1.0), m.e), "exp"
+assert close(m.log(m.e), 1.0) and close(m.log(8.0, 2.0), 3.0), "log natural + base"
+assert close(m.log2(1024.0), 10.0) and close(m.log10(1000.0), 3.0), "log2/log10"
+assert close(m.expm1(0.0), 0.0) and close(m.log1p(0.0), 0.0), "expm1/log1p"
+
+# --- trig / hyperbolic (radians) ---
+assert close(m.sin(0.0), 0.0) and close(m.cos(0.0), 1.0) and close(m.tan(0.0), 0.0), "sin/cos/tan"
+assert close(m.sin(m.pi / 2.0), 1.0), "sin(pi/2)"
+assert close(m.asin(1.0), m.pi / 2.0) and close(m.acos(1.0), 0.0) and close(m.atan(0.0), 0.0), "inverse trig"
+assert close(m.atan2(1.0, 1.0), m.pi / 4.0), "atan2"
+assert close(m.sinh(0.0), 0.0) and close(m.cosh(0.0), 1.0) and close(m.tanh(0.0), 0.0), "hyperbolic"
+assert close(m.degrees(m.pi), 180.0) and close(m.radians(180.0), m.pi), "degrees/radians"
+
+# --- gamma / erf / erfc ---
+assert close(m.gamma(5.0), 24.0), "gamma(5) == 4!"
+assert close(m.erf(0.0), 0.0), "erf(0)"
+assert close(m.erfc(0.0), 1.0), "erfc(0) == 1"
+assert close(m.erf(1.3) + m.erfc(1.3), 1.0), "erf(x) + erfc(x) == 1"
+
+# --- integer combinatorics / number theory ---
+assert m.gcd(54, 24) == 6 and m.gcd(17, 5) == 1, "gcd"
+assert m.lcm(4, 6) == 12 and m.lcm(3, 7) == 21, "lcm"
+assert m.factorial(0) == 1 and m.factorial(6) == 720, "factorial"
+assert m.comb(5, 2) == 10 and m.comb(10, 0) == 1 and m.comb(10, 10) == 1, "comb"
+assert m.perm(5, 2) == 20 and m.perm(5, 0) == 1, "perm"
+assert m.prod([1, 2, 3, 4, 5]) == 120 and m.prod([]) == 1, "prod"
+assert type(m.prod([2, 3])) == "Integer" and type(m.prod([2.0, 3.0])) == "Float", "prod type follows inputs"
+
+# --- isnan/isinf/isfinite on ordinary values ---
+assert not m.isnan(1.0) and not m.isinf(1.0) and m.isfinite(1.0), "finite classification"
+assert m.isinf(1.0 / 0.0001 * m.inf), "inf arithmetic stays inf"
+
+# --- domain edges: out-of-domain args RAISE (no silent NaN/inf), factorial of a negative throws ---
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        return True
+    return False
+assert throws(Function(): return m.sqrt(-1.0)), "sqrt(-1) throws"
+assert throws(Function(): return m.log(-1.0)) and throws(Function(): return m.log(0.0)), "log of <= 0 throws"
+assert throws(Function(): return m.asin(2.0)) and throws(Function(): return m.acos(2.0)), "asin/acos out of [-1,1] throw"
+assert throws(Function(): return m.acosh(0.0)) and throws(Function(): return m.atanh(1.0)), "acosh/atanh domain throw"
+assert throws(Function(): return m.gamma(0.0)) and throws(Function(): return m.pow(-2.0, 0.5)), "gamma pole / negative base throw"
+assert throws(Function(): return m.factorial(-1)), "factorial of a negative throws a catchable error"
+# A NaN argument passes through unchanged; overflow to inf is a range condition, not a domain error.
+assert m.isnan(m.sqrt(m.nan)) and m.isnan(m.log(m.nan)), "NaN passes through unchanged"
+assert m.isinf(m.exp(1000.0)), "overflow to inf does not throw"
+
+io.print("OK")

@@ -1,0 +1,147 @@
+var xml = import("xml")
+var io = import("io")
+
+# ---- module-level signatures: parse / fromstring / tostring / Element --------------------------
+var root = xml.parse("<a><b>1</b><b>2</b></a>")
+io.print(root.tag)
+io.print(xml.fromstring("<x/>").tag)                  # fromstring is alias
+io.print(xml.tostring(root))
+io.print(xml.Element("custom").tag)
+
+# ---- Element attributes (.tag / .attrib / .text / .tail / .children) ---------------------------
+var r = xml.parse("<r x=\"1\" y=\"2\">pre<c>inner</c>post</r>")
+io.print(r.tag)
+io.print(r.attrib)
+io.print(r.text)
+io.print(len(r.children))
+io.print(r.children[0].tag + "=" + r.children[0].text)
+io.print(r.children[0].tail)
+
+# ---- get / find / findall / findtext -----------------------------------------------------------
+io.print(r.get("x"))
+io.print(r.get("missing"))
+io.print(String(r.get("missing", "DEF")))
+io.print(r.find("c").tag)
+io.print(String(r.find("nope")))
+io.print(len(r.findall("c")))
+io.print(r.findtext("c"))
+io.print(r.findtext("missing", "default-text"))
+
+# ---- itertext (whole subtree, document order) --------------------------------------------------
+var doc = xml.parse("<r>a<b>B</b>c<d>D<e>E</e>x</d>e</r>")
+io.print(doc.itertext())
+
+# ---- iteration / len / indexing ----------------------------------------------------------------
+var cnt = 0
+for c in root:
+    cnt = cnt + 1
+io.print(cnt)
+io.print(len(root))
+io.print(root[0].tag)
+
+# ---- Element(tag, attrib) constructor + tostring -----------------------------------------------
+var built = xml.Element("rec", {"id": "42"})
+built.text = "hello"
+io.print(built.tostring())
+# Element with default attrib = None -> empty dict
+io.print(xml.Element("z").attrib)
+
+# ---- Entity decoding: &lt; &gt; &amp; &quot; &apos; --------------------------------------------
+var ent = xml.parse("<x>&lt;&gt;&amp;&quot;&apos;</x>")
+io.print(ent.text)
+
+# ---- Numeric entities (decimal + hex) ----------------------------------------------------------
+io.print(xml.parse("<x>&#65;</x>").text)               # A
+io.print(xml.parse("<x>&#x4F;</x>").text)              # O
+io.print(xml.parse("<x>&#x2603;</x>").text)            # snowman (BMP)
+
+# ---- Unknown entity preserved verbatim (lenient) -----------------------------------------------
+io.print(xml.parse("<x>&unknown;</x>").text)
+
+# ---- Self-closing element ----------------------------------------------------------------------
+var sc = xml.parse("<r><e/><f x=\"1\"/></r>")
+io.print(len(sc))
+io.print(sc[0].tag + " " + sc[1].tag + " " + sc[1].get("x"))
+
+# ---- CDATA preserved verbatim (no entity decoding) ---------------------------------------------
+io.print(xml.parse("<x><![CDATA[a < b && c > d]]></x>").text)
+# CDATA inside which there's an apparent tag — must remain raw text
+io.print(xml.parse("<x><![CDATA[<not-a-tag>]]></x>").text)
+
+# ---- Comments stripped -------------------------------------------------------------------------
+var cm = xml.parse("<r><!-- comment --><b/></r>")
+io.print(len(cm))
+io.print(cm[0].tag)
+
+# ---- XML declaration and DOCTYPE skipped -------------------------------------------------------
+io.print(xml.parse("<?xml version=\"1.0\"?><x>hi</x>").text)
+io.print(xml.parse("<!DOCTYPE html><html><body>b</body></html>").tag)
+
+# ---- single-quoted attribute value -------------------------------------------------------------
+io.print(xml.parse("<a x='one' y=\"two\"/>").attrib)
+
+# ---- Attribute value with entities decoded -----------------------------------------------------
+io.print(xml.parse("<a x='&amp;&lt;&#65;'/>").get("x"))
+
+# ---- doc claim: parse returns None if text contains no element ---------------------------------
+io.print(String(xml.parse("")))
+io.print(String(xml.parse("just plain text")))
+io.print(String(xml.parse("<!-- only a comment -->")))
+
+# ---- ADVERSARIAL: lenient parser tolerates malformed input -------------------------------------
+# unclosed tag — stack never popped, but root returned
+var u = xml.parse("<a><b>txt")
+io.print(u.tag)
+io.print(u.find("b").text)
+
+# mismatched closing tag — parser pops generically (doesn't check name)
+var mm = xml.parse("<a><b>x</c></a>")
+io.print(mm.tag)
+io.print(mm.find("b").text)
+
+# ---- ADVERSARIAL: round-trip preserves text + tail in mixed content ----------------------------
+var mc = xml.parse("<r>pre<a>A</a>mid<b>B</b>post</r>")
+io.print(xml.tostring(mc))
+
+# ---- ADVERSARIAL: tostring of an element with attribute containing quote --------------------
+var q = xml.Element("a", {"x": "has \"quote\""})
+io.print(xml.tostring(q))
+# Re-parse to confirm escape round-trips
+io.print(xml.parse(xml.tostring(q)).get("x"))
+
+# ---- ADVERSARIAL: nested depth -----------------------------------------------------------------
+var deep = ""
+var i = 0
+while i < 30:
+    deep = deep + "<n>"
+    i = i + 1
+i = 0
+while i < 30:
+    deep = deep + "</n>"
+    i = i + 1
+var dp = xml.parse(deep)
+io.print(dp.tag)
+var cursor = dp
+var depth = 0
+while len(cursor.children) > 0:
+    cursor = cursor[0]
+    depth = depth + 1
+io.print(depth)                                      # depth = 29 (29 nested below root)
+
+# ---- ADVERSARIAL: many siblings ----------------------------------------------------------------
+var many = "<r>"
+i = 0
+while i < 50:
+    many = many + "<c>" + String(i) + "</c>"
+    i = i + 1
+many = many + "</r>"
+var mp = xml.parse(many)
+io.print(len(mp))
+io.print(mp.findall("c")[0].text + "/" + mp.findall("c")[49].text)
+
+# ---- ADVERSARIAL: empty element ----------------------------------------------------------------
+var empt = xml.parse("<a/>")
+io.print(empt.tag + " text='" + empt.text + "' children=" + String(len(empt.children)))
+io.print(xml.tostring(empt))                          # serialized as <a />
+
+io.print("OK audit-xml")

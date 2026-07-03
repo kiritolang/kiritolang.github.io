@@ -1,0 +1,293 @@
+# r8_matrix_random.ki — round-8 exhaustive, COMPLEMENTARY self-check of `matrix` + `random`.
+# r6 covers basics; r7 covers serde, triangular/diagonal det, non-finite, Frobenius scaling, the
+# scale-relative singularity, randrange None/wide-span, sample over Set/String, stream continuation.
+# r8 takes FRESH angles, inputs, identities and seeds with NO duplication:
+#   matrix:  det(cA)=c^n det A, trace(AB)=trace(BA), rectangular matmul associativity + shape,
+#            matmul non-commutativity, I as left/right identity on a rectangular matrix, transpose
+#            of a product chain, det of a permutation matrix, row()/get() consistency, apply identity,
+#            sum vs trace on a fresh matrix, exact 0 element after multiply-by-0, the resource guard.
+#   random:  distribution sanity via SEEDED empirical means (gauss mean ~ mu, expovariate mean ~ 1/L)
+#            — deterministic under a fixed seed, descending-step randrange members, sample exhaustiveness,
+#            choice coverage, a fresh mixed-method stream-continuation (serialize + dump), reseed-to-reproduce,
+#            and the FULL kwarg surface for both modules.
+# Computed floats use .compare; random asserts invariants/seeded determinism, never a raw sample.
+# Final line: "r8_matrix_random: <n> checks passed".
+
+var io = import("io")
+var m = import("matrix")
+var r = import("random")
+var mathmod = import("math")
+var dump = import("dump")
+var serialize = import("serialize")
+
+var n = 0
+var ok = Function(c, msg):
+    assert c, msg
+    n = n + 1
+
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+# ================================================================ matrix: fresh identities
+
+var A = m.Matrix([[1, 2], [3, 4]])
+var B = m.Matrix([[2, 0], [1, 3]])
+
+# ---------------------------------------------------------------- det(cA) = c^n det(A)
+ok((A * 3).determinant().compare(9.0 * A.determinant(), 1e-9), "det(3A) = 3^2 det(A) (2x2)")
+ok((A * -2).determinant().compare(4.0 * A.determinant(), 1e-9), "det(-2A) = (-2)^2 det(A)")
+var A3 = m.Matrix([[2, 1, 0], [0, 3, 0], [0, 0, 4]])
+ok((A3 * 2).determinant().compare(8.0 * A3.determinant(), 1e-6), "det(2A) = 2^3 det(A) (3x3)")
+# det of a 0 matrix is 0
+ok((A * 0).determinant().compare(0.0, 1e-12), "det(0*A) = 0")
+
+# ---------------------------------------------------------------- trace(AB) = trace(BA)
+ok((A * B).trace().compare((B * A).trace(), 1e-9), "trace(AB) = trace(BA)")
+# trace(A) = trace(A^T)
+ok(A.transpose().trace().compare(A.trace(), 1e-12), "trace(A^T) = trace(A)")
+# trace is linear: trace(2A) = 2 trace(A)
+ok((A * 2).trace().compare(2.0 * A.trace(), 1e-12), "trace(2A) = 2 trace(A)")
+
+# ---------------------------------------------------------------- rectangular matmul: shape + associativity
+var P = m.Matrix([[1, 2, 3], [4, 5, 6]])         # 2x3
+var Q = m.Matrix([[1, 0], [0, 1], [1, 1]])        # 3x2
+var Rm = m.Matrix([[1, 2, 0, 1], [0, 1, 1, 0]])   # 2x4
+ok((P * Q).shape() == [2, 2], "(2x3)(3x2) -> 2x2")
+ok(((P * Q) * Rm).shape() == [2, 4], "((2x3)(3x2))(2x4) -> 2x4")
+ok(((P * Q) * Rm).compare(P * (Q * Rm), 1e-9), "rectangular matmul is associative")
+# (PQ)^T = Q^T P^T (rectangular)
+ok((P * Q).transpose().compare(Q.transpose() * P.transpose(), 1e-9), "(PQ)^T = Q^T P^T")
+# matmul is NOT commutative in general
+ok(not (A * B).compare(B * A), "AB != BA (matmul not commutative)")
+
+# ---------------------------------------------------------------- I as left/right identity (rectangular)
+ok((m.identity(2) * P).compare(P), "I_2 * (2x3) = (2x3)")
+ok((P * m.identity(3)).compare(P), "(2x3) * I_3 = (2x3)")
+
+# ---------------------------------------------------------------- permutation-matrix determinant = +-1
+# swapping rows is a permutation; its determinant is -1 (odd permutation).
+var Swap = m.Matrix([[0, 1], [1, 0]])
+ok(Swap.determinant().compare(-1.0, 1e-12), "det of a row-swap permutation = -1")
+ok((Swap * Swap).compare(m.identity(2)), "swap is its own inverse (P^2 = I)")
+# a 3x3 cyclic permutation has det +1 (even permutation)
+var Cyc = m.Matrix([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
+ok(Cyc.determinant().compare(1.0, 1e-9), "det of a 3-cycle permutation = +1")
+
+# ---------------------------------------------------------------- row()/get()/[] consistency
+var G = m.Matrix([[10, 20, 30], [40, 50, 60]])
+ok(G.row(0) == [10.0, 20.0, 30.0], "row(0) matches the first row")
+ok(G[1] == G.row(1), "G[i] == G.row(i)")
+ok(G.get(1, 2) == G[1, 2], "get(i,j) == G[i,j]")
+ok(G.get(1, 2) == 60.0, "get(1,2) = 60")
+# set then read back via every accessor
+G.set(0, 0, 99.0)
+ok(G[0, 0] == 99.0 and G.get(0, 0) == 99.0 and G.row(0)[0] == 99.0, "set is visible to [], get, row")
+
+# ---------------------------------------------------------------- apply: identity + sum/trace
+ok(A.apply(Function(x): return x).compare(A), "apply(identity) = A")
+ok(A.apply(Function(x): return x * 0).compare(m.zeros(2, 2)), "apply(*0) = zeros (exact 0)")
+# sum of all elements vs explicit, and sum of A = 10
+ok(A.sum().compare(10.0, 1e-12), "sum of [[1,2],[3,4]] = 10")
+ok(m.identity(5).sum().compare(5.0, 1e-12), "sum(I_5) = 5 (the diagonal)")
+ok(m.identity(5).trace().compare(m.identity(5).sum(), 1e-12), "trace(I) = sum(I) for identity")
+# multiply by 0 gives an exactly-zero matrix (so == zeros, not just compare)
+ok((A * 0) == m.zeros(2, 2), "A*0 == zeros (exact, integer-valued)")
+
+# ---------------------------------------------------------------- determinant cofactor sanity (fresh 3x3)
+# A known 3x3: det([[6,1,1],[4,-2,5],[2,8,7]]) = -306
+ok(m.Matrix([[6, 1, 1], [4, -2, 5], [2, 8, 7]]).determinant().compare(-306.0, 1e-6),
+   "det of a known 3x3 = -306")
+# its inverse times itself is I
+var K = m.Matrix([[6, 1, 1], [4, -2, 5], [2, 8, 7]])
+ok((K.inverse() * K).compare(m.identity(3), abs_tol = 1e-9), "K^-1 * K = I (3x3)")
+
+# ---------------------------------------------------------------- vector identities (fresh)
+var u = m.vector([2, -1, 3])
+var v = m.vector([1, 4, -2])
+# dot is symmetric for real vectors
+ok(u.dot(v).compare(v.dot(u), 1e-12), "real dot is symmetric")
+# u.dot(u) = |u|^2
+ok(u.dot(u).compare(u.norm() ** 2, 1e-9), "u.dot(u) = |u|^2")
+# cross is orthogonal to both operands: (u x v).u = 0 and (u x v).v = 0
+var cx = u.cross(v)
+ok(cx.dot(u).compare(0.0, 0.0, 1e-9), "(u x v) . u = 0 (orthogonal)")
+ok(cx.dot(v).compare(0.0, 0.0, 1e-9), "(u x v) . v = 0 (orthogonal)")
+# cross anti-commutes
+ok(u.cross(v).compare(v.cross(u) * -1), "u x v = -(v x u)")
+
+# ---------------------------------------------------------------- resource guard (fresh absurd dims)
+ok(throws(Function(): return m.zeros(70000, 70000)), "zeros(70000,70000) throws (resource guard)")
+ok(throws(Function(): return m.Matrix(40000, 40000)), "Matrix(40000,40000) throws (resource guard)")
+ok(throws(Function(): return m.ones(1, 100000000)), "ones(1, 1e8) throws (resource guard)")
+
+# ================================================================ random: fresh distribution sanity
+
+# ---------------------------------------------------------------- SEEDED empirical means (deterministic)
+# With a FIXED seed the whole stream is deterministic, so the empirical mean of many draws is a fixed
+# number; we assert it lands near the theoretical mean (a loose, never-flaky band). NOT a raw sample.
+var gMean = r.Random(12345)
+var sumG = 0.0
+var i = 0
+while i < 5000:
+    sumG = sumG + gMean.gauss(10.0, 2.0)
+    i = i + 1
+ok((sumG / 5000.0).compare(10.0, 0.0, 0.2), "gauss(10,2) empirical mean ~ 10 (seeded)")
+
+var gExp = r.Random(54321)
+var sumE = 0.0
+i = 0
+while i < 5000:
+    sumE = sumE + gExp.expovariate(2.0)
+    i = i + 1
+ok((sumE / 5000.0).compare(0.5, 0.0, 0.05), "expovariate(2) empirical mean ~ 1/2 (seeded)")
+
+# uniform empirical mean over [a,b) ~ (a+b)/2
+var gU = r.Random(2718)
+var sumU = 0.0
+i = 0
+while i < 5000:
+    sumU = sumU + gU.uniform(4.0, 10.0)
+    i = i + 1
+ok((sumU / 5000.0).compare(7.0, 0.0, 0.2), "uniform(4,10) empirical mean ~ 7 (seeded)")
+
+# gauss empirical mean is REPRODUCIBLE across two same-seed generators (the strong determinism claim)
+var meanOf = Function(seed):
+    var gg = r.Random(seed)
+    var s = 0.0
+    var j = 0
+    while j < 1000:
+        s = s + gg.gauss(0.0, 1.0)
+        j = j + 1
+    return s
+ok(meanOf(2024) == meanOf(2024), "gauss stream identical for the same seed (exact sum)")
+ok(meanOf(2024) != meanOf(2025), "gauss stream differs for different seeds")
+
+# ---------------------------------------------------------------- randrange: descending step members
+var gR = r.Random(808)
+var descSeen = Set([])
+i = 0
+while i < 400:
+    descSeen.add(gR.randrange(20, 4, -4))    # members: 20, 16, 12, 8
+    i = i + 1
+ok(sorted(List(descSeen)) == [8, 12, 16, 20], "randrange(20,4,-4) members are {8,12,16,20}")
+# a step landing exactly past stop: randrange(0, 10, 3) -> {0,3,6,9}
+var stepSeen = Set([])
+i = 0
+while i < 500:
+    stepSeen.add(gR.randrange(0, 10, 3))
+    i = i + 1
+ok(sorted(List(stepSeen)) == [0, 3, 6, 9], "randrange(0,10,3) members are {0,3,6,9}")
+# every randrange(start,stop,step) member satisfies start <= z < stop and (z-start) % step == 0
+var validStep = True
+i = 0
+while i < 1000:
+    var z = gR.randrange(5, 100, 7)
+    if z < 5 or z >= 100 or (z - 5) % 7 != 0:
+        validStep = False
+    i = i + 1
+ok(validStep, "randrange(5,100,7) members are valid")
+
+# ---------------------------------------------------------------- sample exhaustiveness + choice coverage
+# sample(pop, len(pop)) is a full permutation (every element once)
+ok(Set(r.Random(7).sample([1, 2, 3, 4, 5, 6], 6)) == Set([1, 2, 3, 4, 5, 6]), "sample k=len hits all")
+# sample is a subset with no repeats for k<len
+var samp = r.Random(11).sample([10, 20, 30, 40, 50, 60, 70], 4)
+ok(len(samp) == 4 and len(Set(samp)) == 4, "sample k<len is distinct")
+# choice over many draws covers every element of a small pool (with a fixed seed it's deterministic-and-covers)
+var cg = r.Random(31337)
+var hit = Set([])
+i = 0
+while i < 500:
+    hit.add(cg.choice(["x", "y", "z"]))
+    i = i + 1
+ok(hit == Set(["x", "y", "z"]), "choice covers every element over many seeded draws")
+
+# ---------------------------------------------------------------- shuffle: permutation + multiplicity (fresh)
+var sh = [5, 3, 8, 1, 9, 2, 7, 4, 6, 0]
+r.Random(2222).shuffle(sh)
+ok(sorted(sh) == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "shuffle is a permutation (sorted recovers)")
+ok(len(sh) == 10, "shuffle preserves length")
+# deterministic under a fixed seed (fresh seed vs r7)
+var s1 = [1, 2, 3, 4, 5, 6]
+var s2 = [1, 2, 3, 4, 5, 6]
+r.Random(4040).shuffle(s1)
+r.Random(4040).shuffle(s2)
+ok(s1 == s2, "shuffle deterministic for the same seed")
+
+# ---------------------------------------------------------------- stream continuation: mixed methods (fresh)
+# Advance with a MIX of methods, serialize/dump mid-stream, then both originals and restored must
+# produce identical subsequent mixed streams (the engine state, not just the position, is preserved).
+var mixAdvance = Function(gg, k):
+    var out = []
+    var j = 0
+    while j < k:
+        out.append(gg.randint(0, 50))
+        out.append(gg.gauss(0.0, 1.0))
+        out.append(gg.randrange(100))
+        j = j + 1
+    return out
+var gd = r.Random(98765)
+discard mixAdvance(gd, 4)                       # advance with mixed methods
+var gdDump = dump.loads(dump.dumps(gd))
+ok(mixAdvance(gd, 6) == mixAdvance(gdDump, 6), "dump continues the EXACT mixed stream")
+var gt = r.Random(98765)
+discard mixAdvance(gt, 4)
+var gtSer = serialize.loads(serialize.dumps(gt))
+ok(mixAdvance(gt, 6) == mixAdvance(gtSer, 6), "serialize continues the EXACT mixed stream")
+# a dump-clone taken after advancing reproduces its source's NEXT draw exactly (state, not just seed).
+var ga = r.Random(555)
+discard ga.random()                             # advance ga by one
+var gaClone = dump.loads(dump.dumps(ga))
+ok(gaClone.random() == ga.random(), "dump-clone matches its source's next draw")
+
+# ---------------------------------------------------------------- reseed to reproduce (fresh seed)
+var rs = r.Random(0)
+rs.seed(86753)
+var head = [rs.random(), rs.randint(0, 1000), rs.gauss(0.0, 1.0)]
+rs.seed(86753)
+ok([rs.random(), rs.randint(0, 1000), rs.gauss(0.0, 1.0)] == head, "seed() reproduces a mixed head")
+# seeding two different generators to the same value makes them identical
+var r1 = r.Random(1)
+var r2 = r.Random(2)
+r1.seed(424242)
+r2.seed(424242)
+ok(r1.random() == r2.random(), "same seed() value -> identical next draw")
+
+# ---------------------------------------------------------------- FULL kwarg surface (random)
+ok(type(r.Random(seed = 77)) == "Random", "Random(seed=) kwarg")
+ok(r.Random(seed = 5).random() == r.Random(seed = 5).random(), "Random(seed=) reproducible")
+var kg = r.Random(13)
+ok(kg.randint(a = 3, b = 3) == 3, "randint(a=,b=) kwargs")
+ok(kg.randint(b = 9, a = 9) == 9, "randint out-of-order kwargs")
+ok(kg.uniform(a = 5.0, b = 5.0).compare(5.0, 1e-12), "uniform(a=,b=) kwargs")
+ok(kg.randrange(start = 2, stop = 12, step = 5) in [2, 7], "randrange(start=,stop=,step=) kwargs")
+ok(kg.randrange(stop = 1) == 0, "randrange(stop=) kwarg")
+ok(kg.choice(seq = [42]) == 42, "choice(seq=) kwarg")
+ok(len(kg.sample(population = [1, 2, 3, 4, 5], k = 3)) == 3, "sample(population=,k=) kwargs")
+ok(type(kg.gauss(mu = 1.0, sigma = 2.0)) == "Float", "gauss(mu=,sigma=) kwargs")
+ok(type(kg.normalvariate(mu = 0.0, sigma = 1.0)) == "Float", "normalvariate(mu=,sigma=) kwargs")
+ok(type(kg.expovariate(lambd = 3.0)) == "Float", "expovariate(lambd=) kwarg")
+ok(kg.seed(a = 99) == None, "seed(a=) kwarg returns None")
+var kgList = [3, 1, 2]
+ok(kg.shuffle(seq = kgList) == None, "shuffle(seq=) kwarg returns None")
+ok(sorted(kgList) == [1, 2, 3], "shuffle(seq=) actually shuffled in place")
+
+# ---------------------------------------------------------------- matrix kwarg surface (fresh)
+ok(m.zeros(rows = 3, cols = 2).shape() == [3, 2], "matrix.zeros(rows=,cols=) kwargs")
+ok(m.ones(cols = 5, rows = 1).shape() == [1, 5], "matrix.ones out-of-order kwargs")
+ok(m.identity(n = 4).shape() == [4, 4], "matrix.identity(n=) kwarg")
+ok(m.vector(values = [7, 8, 9]).shape() == [1, 3], "matrix.vector(values=) kwarg")
+ok(m.Matrix(rows = 2, cols = 3).shape() == [2, 3], "matrix.Matrix(rows=,cols=) kwargs")
+var MK = m.Matrix([[1, 2], [3, 4]])
+ok(MK.get(row = 1, col = 1) == 4.0, "matrix get(row=,col=) kwargs")
+MK.set(row = 0, col = 0, value = 5.0)
+ok(MK.get(0, 0) == 5.0, "matrix set(row=,col=,value=) kwargs")
+ok(MK.row(i = 1) == [3.0, 4.0], "matrix row(i=) kwarg")
+ok(MK.compare(other = MK, rel_tol = 0.0, abs_tol = 0.0), "matrix compare(other=,rel_tol=,abs_tol=) kwargs")
+ok(MK.apply(fn = Function(x): return x * 2).compare(MK * 2), "matrix apply(fn=) kwarg")
+
+io.print("r8_matrix_random: " + String(n) + " checks passed")

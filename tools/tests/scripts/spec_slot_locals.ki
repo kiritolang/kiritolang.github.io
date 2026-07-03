@@ -1,0 +1,66 @@
+# Slot-addressed locals (v1.9): a realistic mix that must behave identically to name-based scoping.
+var io = import("io")
+
+# function-local loop (slotted counters + accumulator)
+var sumto = Function(n):
+    var s = 0
+    var i = 1
+    while i <= n:
+        s = s + i
+        i = i + 1
+    return s
+io.print(sumto(10))
+
+# closures capturing a function-scoped local: `k` is captured (-> name-based, shared), so all three
+# see its final value (Kirito's function-level scoping); the loop counter `i` stays slotted.
+var makeAdders = Function():
+    var fns = []
+    var i = 0
+    while i < 3:
+        var k = i
+        fns.append(Function(x): return x + k)
+        i = i + 1
+    return fns
+var adders = makeAdders()
+io.print([adders[0](100), adders[1](100), adders[2](100)])
+
+# nested helper using outer params/locals; helper has its own slotted locals
+var stats = Function(xs):
+    var total = 0
+    var sq = 0
+    var acc = Function(v):
+        total = total + v
+        sq = sq + v * v
+    for x in xs:
+        acc(x)
+    return [total, sq]
+io.print(stats([1, 2, 3, 4]))
+
+# recursion + a method with slotted locals and _super_
+var fib = Function(n): return n if n < 2 else fib(n - 1) + fib(n - 2)
+io.print(fib(12))
+
+class Shape:
+    var _init_ = Function(self, name):
+        self.name = name
+    var describe = Function(self):
+        return self.name
+
+class Box(Shape):
+    var describe = Function(self):
+        var label = "box:"
+        return label + self._super_().describe()
+
+io.print(Box("crate").describe())
+
+# unpacking, swap, starred, try/catch — all slotted store targets
+var rearrange = Function(xs):
+    var a, b, *rest = xs
+    a, b = b, a
+    var msg = ""
+    try:
+        throw "ok"
+    catch String as e:
+        msg = e
+    return [a, b, rest, msg]
+io.print(rearrange([1, 2, 3, 4, 5]))

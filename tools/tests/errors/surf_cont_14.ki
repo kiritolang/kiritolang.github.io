@@ -1,0 +1,3 @@
+# string indexed by a Float instead of an Integer
+var s = "hello"
+discard s[2.5]

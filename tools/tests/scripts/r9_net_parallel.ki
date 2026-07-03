@@ -1,0 +1,257 @@
+# r9_net_parallel.ki — edge-case and error-hardening for net (URL utilities + sockets)
+# and parallel (Queue, Lock, Event, Semaphore, Barrier, cpucount).
+# Network I/O tests (get/post/put/delete/Session) are intentionally NOT included
+# because they require live servers; the CI environment may be offline.
+# Key API notes:
+#   net: quote/unquote/urlencode/parseqs/urlsplit are pure-local (no network);
+#        Socket.connect to a closed port throws; net.get to an invalid host throws.
+#   parallel: Queue(maxsize=0 means unlimited); Event uses isset() not is_set();
+#             Barrier.parties() is a method (not an attr); spawn requires file-defined fn.
+
+var io = import("io")
+var net = import("net")
+var par = import("parallel")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== net URL utilities
+
+# quote encodes special chars as %XX
+ok(net.quote("hello") == "hello", "quote: plain text unchanged")
+ok(net.quote("hello world") == "hello%20world", "quote: space -> %20")
+ok(net.quote("a+b=c") == "a%2Bb%3Dc", "quote: + and = encoded")
+ok(net.quote("foo/bar") == "foo%2Fbar", "quote: / encoded")
+
+# unquote decodes
+ok(net.unquote("hello%20world") == "hello world", "unquote: %20 -> space")
+ok(net.unquote("hello") == "hello", "unquote: plain text unchanged")
+ok(net.unquote("a%2Bb") == "a+b", "unquote: %2B -> +")
+ok(net.unquote("a%2Fb") == "a/b", "unquote: %2F -> /")
+
+# round-trip
+var raw = "hello world foo/bar?baz=1"
+ok(net.unquote(net.quote(raw)) == raw, "quote/unquote round-trip")
+
+# urlencode: encodes a Dict to query string
+var enc = net.urlencode({"a": "1", "b": "hello world"})
+ok(type(enc) == "String", "urlencode returns String")
+ok("a=1" in enc, "urlencode a=1")
+ok("b=" in enc, "urlencode b= present")
+ok("%20" in enc or "+" in enc, "urlencode space is encoded")
+
+# urlencode special chars
+var enc2 = net.urlencode({"q": "foo+bar=baz"})
+ok("q=" in enc2, "urlencode q= present")
+ok("foo" in enc2, "urlencode value partial")
+
+# parseqs: parses query string to Dict
+var qs = net.parseqs("a=1&b=hello%20world&c=3")
+ok(type(qs) == "Dict", "parseqs returns Dict")
+ok(qs["a"] == "1", "parseqs a=1")
+ok(qs["b"] == "hello world", "parseqs decodes %20")
+ok(qs["c"] == "3", "parseqs c=3")
+
+# parseqs empty string
+var qs2 = net.parseqs("")
+ok(type(qs2) == "Dict", "parseqs empty returns Dict")
+ok(len(qs2) == 0, "parseqs empty is empty Dict")
+
+# parseqs + separator
+var qs3 = net.parseqs("x=hello+world")
+ok(qs3["x"] == "hello world", "parseqs + decoded as space")
+
+# urlsplit: parses URL into components
+var u1 = net.urlsplit("https://example.com:8080/path?q=1#hash")
+ok(type(u1) == "Dict", "urlsplit returns Dict")
+ok(u1["scheme"] == "https", "urlsplit scheme")
+ok(u1["host"] == "example.com", "urlsplit host")
+ok(u1["port"] == "8080", "urlsplit port")
+ok(u1["path"] == "/path", "urlsplit path")
+ok(u1["query"] == "q=1", "urlsplit query")
+ok(u1["fragment"] == "hash", "urlsplit fragment")
+
+# urlsplit no port
+var u2 = net.urlsplit("http://localhost/simple")
+ok(u2["scheme"] == "http", "urlsplit http scheme")
+ok(u2["host"] == "localhost", "urlsplit localhost host")
+ok(u2["path"] == "/simple", "urlsplit path")
+
+# urlsplit minimal
+var u3 = net.urlsplit("http://host.com")
+ok(u3["scheme"] == "http", "urlsplit minimal scheme")
+ok(u3["host"] == "host.com", "urlsplit minimal host")
+
+# =========================================================== net Socket / HTTP errors
+
+# Socket connection to a closed port throws
+var socket_refused = False
+try:
+    var sock = net.Socket()
+    sock.connect("127.0.0.1", 19999)
+    io.print("socket connected (unexpected)")
+catch:
+    socket_refused = True
+ok(socket_refused, "Socket.connect to closed port throws")
+
+# HTTP request to an invalid host throws
+var bad_host_raises = False
+try:
+    var resp = net.get("http://this-host-does-not-exist-kirito-r9.invalid/")
+    io.print("got response (unexpected)")
+catch:
+    bad_host_raises = True
+ok(bad_host_raises, "net.get invalid host throws")
+
+# =========================================================== parallel Queue
+
+# Queue(maxsize=0) = unlimited
+var q_unl = par.Queue()
+ok(type(q_unl) == "Queue", "Queue type")
+ok(q_unl.empty(), "Queue starts empty")
+ok(not q_unl.full(), "unlimited Queue never full")
+ok(q_unl.qsize() == 0, "Queue qsize starts 0")
+
+# put/get/qsize
+q_unl.put(10)
+q_unl.put(20)
+q_unl.put(30)
+ok(q_unl.qsize() == 3, "Queue qsize after 3 puts")
+ok(not q_unl.empty(), "Queue not empty after puts")
+ok(q_unl.get() == 10, "Queue FIFO get first")
+ok(q_unl.get() == 20, "Queue FIFO get second")
+ok(q_unl.qsize() == 1, "Queue qsize after 2 gets")
+
+# putnowait/getnowait
+q_unl.putnowait(99)
+ok(q_unl.getnowait() == 30, "getnowait oldest remaining")
+ok(q_unl.getnowait() == 99, "getnowait putnowait element")
+
+# getnowait on empty throws
+ok(throws(Function(): return q_unl.getnowait()), "getnowait empty throws")
+
+# Bounded Queue (maxsize=2)
+var q2 = par.Queue(2)
+q2.put(1)
+q2.put(2)
+ok(q2.full(), "bounded Queue full at maxsize")
+ok(throws(Function(): return q2.putnowait(3)), "putnowait full Queue throws")
+
+# FIFO order
+var q3 = par.Queue()
+q3.put("a")
+q3.put("b")
+q3.put("c")
+ok(q3.get() == "a", "Queue FIFO first")
+ok(q3.get() == "b", "Queue FIFO second")
+ok(q3.get() == "c", "Queue FIFO third")
+
+# Queue.close() — subsequent put throws
+var q4 = par.Queue()
+q4.close()
+ok(throws(Function(): return q4.put(1)), "put after close throws")
+
+# =========================================================== parallel Lock
+
+var lk = par.Lock()
+ok(type(lk) == "Lock", "Lock type")
+ok(not lk.locked(), "Lock starts unlocked")
+
+# acquire/release
+var acq = lk.acquire(False)
+ok(acq == True, "acquire unlocked Lock succeeds")
+ok(lk.locked(), "Lock locked after acquire")
+lk.release()
+ok(not lk.locked(), "Lock unlocked after release")
+
+# non-blocking acquire of already-held Lock throws (non-reentrant)
+var lk_nr = par.Lock()
+lk_nr.acquire(False)
+ok(throws(Function(): return lk_nr.acquire(False)), "non-reentrant acquire of held Lock throws")
+lk_nr.release()
+
+# Lock as context manager
+with lk as _:
+    ok(lk.locked(), "Lock is locked inside with block")
+ok(not lk.locked(), "Lock is unlocked after with block")
+
+# =========================================================== parallel Event
+
+var ev = par.Event()
+ok(type(ev) == "Event", "Event type")
+ok(not ev.isset(), "Event starts unset")
+
+ev.set()
+ok(ev.isset(), "Event.isset() after set()")
+
+ev.clear()
+ok(not ev.isset(), "Event.isset() after clear()")
+
+# wait returns True immediately if set
+ev.set()
+ok(ev.wait(0) == True, "Event.wait(0) returns True if set")
+
+# wait returns False immediately if not set (zero timeout)
+ev.clear()
+ok(ev.wait(0) == False, "Event.wait(0) returns False if not set")
+
+# =========================================================== parallel Semaphore
+
+var sem = par.Semaphore(3)
+ok(type(sem) == "Semaphore", "Semaphore type")
+
+# acquire 3 times succeeds
+ok(sem.acquire(False) == True, "Semaphore acquire 1 of 3")
+ok(sem.acquire(False) == True, "Semaphore acquire 2 of 3")
+ok(sem.acquire(False) == True, "Semaphore acquire 3 of 3")
+
+# 4th non-blocking acquire fails (exhausted)
+ok(sem.acquire(False, 0) == False, "Semaphore acquire fails when exhausted")
+
+# release restores
+sem.release()
+ok(sem.acquire(False) == True, "Semaphore acquire after release")
+
+# Release all
+sem.release()
+sem.release()
+
+# Semaphore as context manager
+var sem2 = par.Semaphore(1)
+with sem2 as _:
+    ok(sem2.acquire(False) == False, "Semaphore locked inside with block")
+ok(sem2.acquire(False) == True, "Semaphore released after with block")
+sem2.release()
+
+# =========================================================== parallel Barrier
+
+var bar = par.Barrier(2)
+ok(type(bar) == "Barrier", "Barrier type")
+ok(bar.parties() == 2, "Barrier.parties()")
+ok(bar.nwaiting() == 0, "Barrier.nwaiting() starts 0")
+
+# abort puts barrier in broken state; reset returns it to initial state
+bar.abort()
+bar.reset()
+ok(bar.nwaiting() == 0, "Barrier.nwaiting() after reset is 0")
+
+# Single-party Barrier can be waited on immediately
+var bar1 = par.Barrier(1)
+ok(bar1.parties() == 1, "Barrier(1) parties=1")
+
+# =========================================================== parallel cpucount
+
+var cpu = par.cpucount()
+ok(type(cpu) == "Integer", "cpucount() returns Integer")
+ok(cpu >= 1, "cpucount() >= 1")
+
+io.print("r9_net_parallel: " + String(n) + " checks passed")

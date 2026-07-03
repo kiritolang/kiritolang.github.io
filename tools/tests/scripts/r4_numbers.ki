@@ -1,0 +1,454 @@
+# ============================================================================
+# r4_numbers.ki — exhaustive probe of Kirito's numeric scalars (None, Bool,
+# Integer, Float) and the numeric/bitwise builtins, against the implementation
+# in src/kirito/{object,runtime,common}.hpp and src/kirito/builtins.hpp, and the
+# documented contracts in docs/pages/{05-builtins,06-types,12-course-02-values-numbers}.md.
+#
+# Every operator, conversion, comparison, method, and builtin is exercised from
+# typical, edge (0, +/-1, INT64_MAX/MIN, huge, NaN, +/-inf, -0.0, every literal
+# base, scientific), and malformed/wrong-type angles. Wrong-type / domain-error
+# cases assert they RAISE via the `throws` helper. Only CONFIRMED-correct
+# behavior is baked in here. Prints exactly one deterministic summary line at the
+# end iff every assertion held (any failure throws and aborts before it).
+# ============================================================================
+var io = import("io")
+var math = import("math")
+
+# Returns True iff calling f() throws (any error). Used for every must-throw probe.
+var throws = Function(f) -> Bool:
+    try:
+        f()
+        return False
+    catch:
+        return True
+
+# Non-finite values from the math module (the language has no inf/nan literals).
+var inf = math.inf
+var nan = math.nan
+var imax = 9223372036854775807
+var imin = -9223372036854775808
+
+# ============================================================================
+# Integer literals: every base, case-insensitive prefix, full-width two's-complement
+# ============================================================================
+assert 255 == 0xFF and 0xff == 0xFF and 0Xff == 255, "hex literal (case-insensitive)"
+assert 0o17 == 15 and 0O17 == 15, "octal literal"
+assert 0b1010 == 10 and 0B1100 == 12, "binary literal"
+assert 0x10 + 0b1 + 0o7 == 24, "mixed-base expression"
+assert 0xFFFFFFFFFFFFFFFF == -1, "full-width two's-complement (all ones = -1)"
+assert 0x8000000000000000 == imin, "sign bit set = INT64_MIN"
+assert 0x7FFFFFFFFFFFFFFF == imax, "INT64_MAX hex"
+assert 0xFFFFFFFFFFFFFFFFFF == -1, "over-64-bit hex literal wraps (keeps low 64 bits)"
+# A giant decimal literal WRAPS two's-complement (it never throws at parse time);
+# this is distinct from Integer("...") on an overflowing string, which RAISES (below).
+assert 99999999999999999999 == 7766279631452241919, "over-wide decimal literal wraps, never throws"
+assert type(255) == "Integer" and type(0xFF) == "Integer", "literal base forms are Integer"
+
+# ============================================================================
+# Float literals: decimal + scientific notation; subnormal + overflow-to-inf
+# ============================================================================
+assert 1.5e3 == 1500.0 and 2e-3 == 0.002 and 1E2 == 100.0, "scientific notation"
+assert 1e10 == 10000000000.0 and 1.5e-3 == 0.0015, "scientific mixed"
+assert type(1.0) == "Float" and type(1e2) == "Float" and type(42.0) == "Float", "float literal type"
+assert 1e308 < inf and 1e400 == inf, "overflow-to-inf literal (no parser crash)"
+assert 5e-324 > 0.0 and 5e-324 < 1e-300, "smallest subnormal literal parses to a tiny positive"
+assert type(2e-3) == "Float", "scientific literal is Float"
+
+# ============================================================================
+# Arithmetic: precedence, Python-3 division, floor/mod sign, exponentiation
+# ============================================================================
+assert 1 + 2 * 3 == 7, "precedence"
+assert (1 + 2) * 3 == 9, "parentheses override precedence"
+assert 2 ** 3 ** 2 == 512, "** is right-associative (2**(3**2))"
+assert -2 ** 2 == -4, "unary minus binds looser than **"
+assert 7 / 2 == 3.5 and 4 / 2 == 2.0, "/ always yields Float"
+assert type(4 / 2) == "Float" and type(6 / 3) == "Float", "/ result is always Float"
+assert 7 // 2 == 3 and -7 // 2 == -4, "// floors toward -inf"
+assert 7 % 3 == 1 and -7 % 3 == 2 and 7 % -3 == -2 and -7 % -3 == -1, "% takes the sign of the divisor"
+assert 2 ** 10 == 1024 and 2 ** 0 == 1 and 5 ** 1 == 5, "** basics"
+assert type(2 ** 3) == "Integer", "Integer**non-negative-Integer stays Integer"
+assert 2 ** -1 == 0.5 and type(2 ** -1) == "Float", "Integer**negative yields Float"
+assert 0 ** 0 == 1 and 0 ** 5 == 0, "0**0 == 1, 0**positive == 0"
+assert 0.0 ** 0 == 1.0 and 0 ** 0.0 == 1.0, "0**0 with a Float operand stays 1.0"
+
+# Mixed Integer/Float promotion
+assert 1 + 2.0 == 3.0 and type(1 + 2.0) == "Float", "Integer + Float promotes to Float"
+assert 7 // 2.0 == 3.0 and type(7 // 2.0) == "Float", "mixed // is Float"
+assert 7.0 // 2.0 == 3.0 and -7.0 // 2.0 == -4.0, "float floor division"
+assert 7.5 % 2.0 == 1.5 and -7.5 % 2.0 == 0.5, "float modulo takes divisor sign"
+assert 1 == 1.0 and 2 == 2.0 and not (1 == 2.0), "Integer and Float compare numerically with =="
+
+# ============================================================================
+# Two's-complement wraparound (well-defined, never traps) + INT64_MIN/-1 edges
+# ============================================================================
+assert imax + 1 == imin, "INT64_MAX + 1 wraps to INT64_MIN"
+assert imin - 1 == imax, "INT64_MIN - 1 wraps to INT64_MAX"
+assert imax * 2 == -2, "multiplication overflow wraps"
+assert 2 ** 63 == imin, "2**63 wraps to INT64_MIN"
+assert 2 ** 64 == 0, "2**64 wraps to 0"
+assert 10 ** 19 == -8446744073709551616, "10**19 overflow wraps deterministically"
+# INT64_MIN / -1 and % -1 are the classic UB traps — they must wrap, not crash.
+assert imin // -1 == imin, "INT64_MIN // -1 wraps (no SIGFPE/UB)"
+assert imin % -1 == 0, "INT64_MIN % -1 == 0 (no UB)"
+assert imin * -1 == imin, "INT64_MIN * -1 wraps to itself"
+assert -imin == imin, "negating INT64_MIN wraps to itself"
+assert imin // 1 == imin and imax // 1 == imax, "floor-div by 1 is identity at the bounds"
+assert divmod(imin, -1) == [imin, 0], "divmod(INT64_MIN, -1) wraps"
+
+# ============================================================================
+# Division / modulo / floordiv by zero ALWAYS throws (int and float)
+# ============================================================================
+assert throws(Function(): return 1 / 0), "Integer / 0 throws"
+assert throws(Function(): return 1.0 / 0.0), "Float / 0.0 throws"
+assert throws(Function(): return 1 // 0), "Integer // 0 throws"
+assert throws(Function(): return 1.0 // 0.0), "Float // 0.0 throws"
+assert throws(Function(): return 1 % 0), "Integer % 0 throws"
+assert throws(Function(): return 1.0 % 0.0), "Float % 0.0 throws"
+assert throws(Function(): return 5 / 0.0), "mixed / 0.0 throws"
+assert throws(Function(): return divmod(1, 0)), "divmod by 0 throws"
+assert throws(Function(): return divmod(1.0, 0.0)), "float divmod by 0.0 throws"
+
+# ============================================================================
+# Power domain: 0 ** negative throws (1/0); a negative base ^ a fractional exponent RAISES (no real
+# root, no complex auto-promotion), matching math.pow's domain policy — a NaN operand passes through.
+# ============================================================================
+assert throws(Function(): return 0 ** -1), "0 ** negative throws"
+assert throws(Function(): return 0.0 ** -1), "0.0 ** negative throws"
+assert throws(Function(): return (-8.0) ** 0.5), "negative base ** fractional exponent throws"
+assert ((-8.0) ** 3.0) == -512.0, "negative base ** integer exponent still works"
+var nanpow = (-2.0) ** math.nan
+assert nanpow != nanpow, "a NaN exponent passes through (no throw)"
+
+# ============================================================================
+# Comparisons: numeric ordering, chains via and, exact large-int ordering
+# ============================================================================
+assert 1 < 2 and 2 <= 2 and 3 > 2 and 3 >= 3 and 1 == 1 and 1 != 2, "comparison operators"
+assert (1 < 2) == True and (2 < 1) == False, "comparison yields a Bool"
+assert type(1 < 2) == "Bool", "comparison result type is Bool"
+assert 1.5 < 2 and 2 > 1.5 and 1.0 <= 1, "mixed Integer/Float ordering"
+# int64 ordering is exact (not collapsed through double): 2^53 boundary stays distinct.
+assert 9007199254740993 > 9007199254740992, "ints beyond 2^53 order exactly (no double rounding)"
+assert imax > imax - 1 and imin < imin + 1, "ordering at the int64 bounds"
+# Comparing a number against a non-number RAISES (ordering, unlike ==, is not cross-type).
+assert throws(Function(): return 1 < "x"), "Integer < String throws"
+assert throws(Function(): return 1 < [1]), "Integer < List throws"
+assert throws(Function(): return 1 < None), "Integer < None throws"
+assert throws(Function(): return 1.0 > {}), "Float > Dict throws"
+
+# ============================================================================
+# Float equality is EXACT IEEE-754; .compare(other, rel_tol, abs_tol) for tolerance
+# ============================================================================
+assert not (0.1 + 0.2 == 0.3), "0.1 + 0.2 != 0.3 (exact bit equality)"
+assert 0.3 == 0.3 and 2.5 == 2.5, "bit-identical floats are =="
+assert (0.1 + 0.2).compare(0.3), ".compare is tolerant where == is not"
+assert not (1.0).compare(1.5), ".compare(1.0, 1.5) is False (too far)"
+assert (1.0).compare(1.5, abs_tol = 1.0), ".compare with widened abs_tol"
+assert (1.0).compare(1.5, abs_tol = 0.5), ".compare abs_tol boundary inclusive"
+assert (100.0).compare(100.0001, rel_tol = 1e-3), ".compare with relative tolerance"
+assert (1).compare(1.0), ".compare across Integer and Float"
+assert (1).compare(1.0000000001), ".compare(1, 1+1e-10) within default rel_tol 1e-9"
+assert (0.0).compare(1e-10, abs_tol = 1e-9), ".compare near zero needs abs_tol"
+assert not (0.0).compare(1e-10), ".compare near zero is False without abs_tol (rel_tol scales to 0)"
+# -0.0 == 0.0; NaN is never equal (not even itself); inf == inf.
+assert 0.0 == -0.0, "0.0 == -0.0 (signed zero equality)"
+assert nan != nan and not (nan == nan), "NaN != NaN"
+assert not (nan < 1.0) and not (nan > 1.0) and not (nan == 1.0), "NaN is unordered"
+assert inf == inf and inf > 1e308 and -inf < 0.0, "infinities compare as expected"
+assert not (nan).compare(nan) and (inf).compare(inf), "NaN.compare is False, inf.compare(inf) is True"
+assert not (inf).compare(1.0), "inf.compare(finite) is False"
+# .compare argument validation
+assert throws(Function(): return (1.0).compare("x")), ".compare(non-number) throws"
+assert throws(Function(): return (1.0).compare(1.0, rel_tol = "x")), ".compare rel_tol must be a number"
+
+# Float hashing agrees with == (distinct-but-close floats are distinct keys; 1.0 == 1 collide)
+var fhash = {}
+fhash[0.1 + 0.2] = "sum"
+fhash[0.3] = "lit"
+assert len(fhash) == 2, "0.1+0.2 and 0.3 are distinct Dict keys (hash agrees with exact ==)"
+fhash[1.0] = "f"
+assert (1 in fhash) and fhash[1] == "f", "1.0 and 1 collide as one Dict key"
+
+# ============================================================================
+# Bool is a DISTINCT type — strongly NOT numeric
+# ============================================================================
+assert type(True) == "Bool" and type(False) == "Bool", "type of Bool literals"
+assert True != 1 and False != 0, "Bool is distinct from Integer (True != 1)"
+assert True == True and False == False and True != False, "Bool self-equality"
+assert not (True == 1.0) and not (False == 0.0), "Bool != Float"
+# Every numeric use of a Bool RAISES (it is not silently 1/0 in arithmetic).
+assert throws(Function(): return True + 1), "True + 1 throws (Bool not numeric)"
+assert throws(Function(): return True * 2), "True * 2 throws"
+assert throws(Function(): return True ** 2), "True ** 2 throws"
+assert throws(Function(): return -True), "-True (unary neg on Bool) throws"
+assert throws(Function(): return abs(True)), "abs(True) throws"
+assert throws(Function(): return round(True)), "round(True) throws"
+assert throws(Function(): return sum([True, False])), "sum([True, False]) throws"
+assert throws(Function(): return sorted([True, False])), "sorted([True, False]) throws"
+assert throws(Function(): return min(True, False)), "min(True, False) throws"
+assert throws(Function(): return True < False), "True < False throws (Bool unordered)"
+assert throws(Function(): return divmod(True, 2)), "divmod(True, 2) throws"
+assert throws(Function(): return pow(True, 2)), "pow(True, 2) throws"
+# 0 and False are distinct Dict keys (strong typing — they don't collide).
+var bkeys = {}
+bkeys[0] = "zero"
+bkeys[False] = "false"
+assert len(bkeys) == 2 and bkeys[0] == "zero" and bkeys[False] == "false", "0 and False are distinct keys"
+
+# ============================================================================
+# None — equal only to itself, falsy, hashable, no arithmetic
+# ============================================================================
+assert None == None, "None == None"
+assert not (None == 0) and not (None == False) and not (None == ""), "None equals only None"
+assert None != 0 and None != False, "None != other falsy values"
+assert not None, "None is falsy"
+var nkey = {}
+nkey[None] = "n"
+assert nkey[None] == "n" and len(nkey) == 1, "None is hashable (usable as a Dict key)"
+assert throws(Function(): return None + 1), "None + 1 throws"
+assert throws(Function(): return None < 1), "None < 1 throws"
+
+# ============================================================================
+# Truthiness of numeric scalars
+# ============================================================================
+assert not 0 and not 0.0 and not False and not None, "0, 0.0, False, None are falsy"
+assert 1 and -1 and 0.1 and -0.5 and True and inf, "non-zero numbers and inf are truthy"
+assert Bool(0) == False and Bool(0.0) == False and Bool(None) == False, "Bool() of falsy"
+assert Bool(42) == True and Bool(-1) == True and Bool(0.001) == True, "Bool() of truthy numbers"
+assert Bool(nan) == True, "NaN is truthy (non-zero)"
+
+# ============================================================================
+# abs(x) -> Number
+# ============================================================================
+assert abs(-5) == 5 and abs(5) == 5 and abs(0) == 0, "abs Integer"
+assert abs(-3.5) == 3.5 and abs(3.5) == 3.5 and abs(-0.0) == 0.0, "abs Float"
+assert type(abs(-5)) == "Integer" and type(abs(-5.0)) == "Float", "abs preserves type"
+assert abs(imin) == imin, "abs(INT64_MIN) wraps to itself (two's complement)"
+assert abs(x = -7) == 7, "abs keyword arg"
+assert throws(Function(): return abs("x")), "abs(non-number) throws"
+assert throws(Function(): return abs(None)), "abs(None) throws"
+
+# ============================================================================
+# round(x[, ndigits]) -> Number  (half away from zero, NOT banker's rounding)
+# ============================================================================
+assert round(2.4) == 2 and round(2.6) == 3, "round to nearest Integer"
+assert round(2.5) == 3 and round(3.5) == 4 and round(0.5) == 1, "ties round half AWAY from zero"
+assert round(-2.5) == -3 and round(-1.5) == -2 and round(-0.5) == -1, "negative ties round away"
+assert type(round(2.5)) == "Integer", "round without ndigits yields Integer"
+assert round(2) == 2 and type(round(2)) == "Integer", "round of an Integer is that Integer"
+assert round(2.71828, 2) == 2.72 and round(3.14159, 3) == 3.142, "round to N decimals"
+assert round(2.675, 2) == 2.67, "round uses extended precision (2.675 -> 2.67, not 2.68)"
+assert type(round(2.7, 0)) == "Float", "round with ndigits given yields a Float"
+assert round(2, 0) == 2.0 and type(round(2, 0)) == "Float", "round(Integer, 0) is Float"
+assert round(12345, -2) == 12300 and round(12345.0, -2) == 12300.0, "negative ndigits rounds to tens/hundreds"
+assert round(3.14159, ndigits = 2) == 3.14, "round ndigits keyword"
+# Extreme ndigits saturate rather than overflowing to NaN.
+assert round(3.14, 400) == 3.14, "huge positive ndigits is a no-op"
+assert round(3.14, -400) == 0.0, "huge negative ndigits gives zero"
+# Non-finite -> Integer throws; ndigits must be Integer.
+assert throws(Function(): return round(inf)), "round(inf) to Integer throws"
+assert throws(Function(): return round(nan)), "round(NaN) to Integer throws"
+assert throws(Function(): return round("x")), "round(non-number) throws"
+assert throws(Function(): return round(1.5, 1.5)), "round ndigits must be an Integer"
+
+# ============================================================================
+# divmod(a, b) -> [a // b, a % b]  (floor semantics, Integer & Float)
+# ============================================================================
+assert divmod(17, 5) == [3, 2], "divmod positive"
+assert divmod(-7, 3) == [-3, 2], "divmod negative dividend (floor)"
+assert divmod(7, -3) == [-3, -2], "divmod negative divisor"
+assert divmod(7.5, 2) == [3.0, 1.5], "divmod with Float dividend"
+assert divmod(-7.5, 2) == [-4.0, 0.5], "divmod negative Float (floor)"
+assert divmod(a = 17, b = 5) == [3, 2], "divmod keyword args"
+assert throws(Function(): return divmod("a", 1)), "divmod non-numeric a throws"
+assert throws(Function(): return divmod(1, "a")), "divmod non-numeric b throws"
+
+# ============================================================================
+# pow(base, exp[, mod])
+# ============================================================================
+# pow(base, exp) delegates to the ** operator, so Integer**non-negative-Integer stays Integer
+# (the builtins doc types it as "Number", not specifically Float).
+assert pow(2, 10) == 1024 and type(pow(2, 10)) == "Integer", "pow(2, 10) follows ** (Integer result)"
+assert pow(2, 10) == 2 ** 10, "pow 2-arg matches the ** operator exactly"
+assert pow(2, -1) == 0.5 and type(pow(2, -1)) == "Float", "pow with negative exponent yields Float"
+assert pow(2.0, 3.0) == 8.0, "pow of floats"
+assert pow(2, 10, 1000) == 24, "pow 3-arg modular exponentiation"
+assert pow(2, 10, mod = 1000) == 24, "pow mod keyword"
+assert pow(0, 0, 1) == 0, "pow(0, 0, 1) == 0"
+assert pow(123, 456, 789) == 699, "pow large modular exponentiation"
+assert pow(base = 2, exp = 8) == 256.0, "pow base/exp keywords"
+assert throws(Function(): return pow("a", 2)), "pow non-numeric base throws"
+assert throws(Function(): return pow(2, "a")), "pow non-numeric exp throws"
+assert throws(Function(): return pow(2, 3, 0)), "pow modulus 0 throws"
+assert throws(Function(): return pow(2, 3, -5)), "pow negative modulus throws"
+assert throws(Function(): return pow(2, -1, 5)), "pow negative exponent with modulus throws"
+assert throws(Function(): return pow(2, 3, 4.0)), "pow 3-arg requires Integer modulus"
+assert throws(Function(): return pow(2.0, 3, 4)), "pow 3-arg requires Integer base"
+
+# ============================================================================
+# bin / oct / hex -> String (sign-aware, with base prefix)
+# ============================================================================
+assert hex(255) == "0xff" and oct(8) == "0o10" and bin(5) == "0b101", "bin/oct/hex basics"
+assert hex(0) == "0x0" and oct(0) == "0o0" and bin(0) == "0b0", "radix of zero"
+assert hex(-255) == "-0xff" and bin(-5) == "-0b101" and oct(-8) == "-0o10", "radix negative (sign-magnitude)"
+assert hex(imin) == "-0x8000000000000000", "hex(INT64_MIN) sign-magnitude"
+assert hex(imax) == "0x7fffffffffffffff", "hex(INT64_MAX)"
+assert hex(n = 255) == "0xff" and bin(n = 5) == "0b101", "bin/hex keyword arg"
+assert Integer(hex(12345)) == 12345 and Integer(bin(12345)) == 12345 and Integer(oct(12345)) == 12345, "radix roundtrip via Integer()"
+assert throws(Function(): return hex(1.0)), "hex(Float) throws"
+assert throws(Function(): return bin("5")), "bin(String) throws"
+assert throws(Function(): return oct(True)), "oct(Bool) throws (Bool not an Integer)"
+
+# ============================================================================
+# Bitwise builtins (no &/|/^/~/<</>> operators) — full 64-bit two's complement
+# ============================================================================
+assert bitand(12, 10) == 8 and bitor(12, 10) == 14 and bitxor(12, 10) == 6, "bitand/or/xor"
+assert bitnot(0) == -1 and bitnot(5) == -6 and bitnot(-1) == 0, "bitnot == -a - 1"
+assert bitand(0xFF, 0x0F) == 15 and bitor(0x0F, 0xF0) == 0xFF, "bitand/or on hex masks"
+assert bitxor(0xFF, 0xFF) == 0 and bitxor(5, 0) == 5, "bitxor identities"
+assert bitnot(imin) == imax and bitand(imin, -1) == imin, "bitwise at INT64_MIN"
+assert bitand(a = 12, b = 10) == 8 and bitnot(a = 5) == -6, "bitwise keyword args"
+# Shifts
+assert shl(1, 8) == 256 and shl(1, 0) == 1 and shl(3, 2) == 12, "shl"
+assert shr(256, 4) == 16 and shr(-8, 1) == -4 and shr(7, 0) == 7, "shr is arithmetic (sign-filling)"
+assert shl(1, 63) == imin, "shl(1, 63) sets the sign bit"
+assert shl(1, 64) == 0 and shr(256, 64) == 0, "shift >= width clears all bits"
+assert shr(-1, 64) == -1 and shr(-1, 100) == -1, "arithmetic shift of -1 stays -1"
+assert shl(1, 1000) == 0 and shl(1, imax) == 0, "huge shl count clears to 0 (no UB)"
+assert shr(-8, 1000) == -1 and shr(-8, imax) == -1, "huge shr of a negative stays -1"
+assert shl(a = 1, n = 8) == 256 and shr(a = 256, n = 4) == 16, "shift keyword args"
+assert throws(Function(): return shl(1, -1)), "shl negative shift count throws"
+assert throws(Function(): return shr(1, -1)), "shr negative shift count throws"
+assert throws(Function(): return bitand(1.0, 2)), "bitand(Float, ...) throws"
+assert throws(Function(): return shl("1", 2)), "shl(String, ...) throws"
+
+# ============================================================================
+# ord / chr  (Unicode code points)
+# ============================================================================
+assert ord("A") == 65 and chr(65) == "A", "ord/chr ASCII roundtrip"
+assert ord("é") == 233 and chr(233) == "é", "ord/chr Latin-1"
+assert ord("😀") == 0x1F600 and chr(0x1F600) == "😀", "ord/chr astral plane"
+assert ord(chr(0x10FFFF)) == 0x10FFFF, "ord/chr at the max code point"
+assert chr(0) == String(chr(0)), "chr(0) is a 1-char NUL string"
+assert ord(char = "Z") == 90 and chr(codepoint = 90) == "Z", "ord/chr keyword args"
+assert throws(Function(): return ord("ab")), "ord requires a single character"
+assert throws(Function(): return ord("")), "ord of empty String throws"
+assert throws(Function(): return ord(65)), "ord(Integer) throws"
+assert throws(Function(): return chr(-1)), "chr(negative) throws"
+assert throws(Function(): return chr(0x110000)), "chr above Unicode max throws"
+assert throws(Function(): return chr("A")), "chr(String) throws"
+
+# ============================================================================
+# Integer(x) converter
+# ============================================================================
+assert Integer(3) == 3 and Integer(3.9) == 3 and Integer(-3.9) == -3, "Integer() identity + truncates toward zero"
+assert Integer(True) == 1 and Integer(False) == 0, "explicit Bool -> Integer"
+assert Integer("42") == 42 and Integer("-7") == -7 and Integer("+7") == 7, "String -> Integer with sign"
+assert Integer("0xFF") == 255 and Integer("0o17") == 15 and Integer("0b1010") == 10, "String base prefixes"
+assert Integer("0XfF") == 255 and Integer("-0x10") == -16, "uppercase prefix + negative prefixed"
+assert Integer("  -42  ") == -42, "Integer() trims surrounding whitespace"
+assert Integer("007") == 7, "leading zeros are decimal, not octal"
+assert Integer(x = "42") == 42, "Integer keyword arg"
+assert type(Integer(3.9)) == "Integer", "Integer() result type"
+# Documented rejections
+assert throws(Function(): return Integer("--5")), "Integer('--5') throws (doubled sign)"
+assert throws(Function(): return Integer("+ 5")), "Integer('+ 5') throws (space after sign)"
+assert throws(Function(): return Integer("0x-5")), "Integer('0x-5') throws"
+assert throws(Function(): return Integer("0b -1")), "Integer('0b -1') throws"
+assert throws(Function(): return Integer("42abc")), "Integer('42abc') throws (trailing garbage)"
+assert throws(Function(): return Integer("12.5")), "Integer('12.5') throws (not an integer)"
+assert throws(Function(): return Integer("")), "Integer('') throws"
+assert throws(Function(): return Integer("0x")), "Integer('0x') throws (no digits)"
+assert throws(Function(): return Integer("   ")), "Integer(whitespace) throws"
+assert throws(Function(): return Integer("99999999999999999999")), "Integer() on an overflowing decimal string RAISES (unlike a literal, which wraps)"
+assert throws(Function(): return Integer(None)), "Integer(None) throws"
+assert throws(Function(): return Integer(inf)), "Integer(inf) throws"
+assert throws(Function(): return Integer(nan)), "Integer(NaN) throws"
+assert throws(Function(): return Integer([])), "Integer(List) throws"
+
+# ============================================================================
+# Float(x) converter
+# ============================================================================
+assert Float(3) == 3.0 and type(Float(3)) == "Float", "Integer -> Float"
+assert Float(2.5) == 2.5, "Float() identity"
+assert Float(True) == 1.0 and Float(False) == 0.0, "explicit Bool -> Float"
+assert Float("2.5") == 2.5 and Float("1e3") == 1000.0 and Float("-0.5") == -0.5, "String -> Float"
+assert Float("  2.5  ") == 2.5, "Float() trims whitespace"
+assert Float("inf") == inf, "Float('inf') parses to infinity"
+assert Float("nan") != Float("nan"), "Float('nan') parses to a NaN"
+assert Float(x = 3) == 3.0, "Float keyword arg"
+assert throws(Function(): return Float("0x1p4")), "Float() rejects C99 hex-float syntax"
+assert throws(Function(): return Float("1.2.3")), "Float('1.2.3') throws"
+assert throws(Function(): return Float("")), "Float('') throws"
+assert throws(Function(): return Float("abc")), "Float('abc') throws"
+assert throws(Function(): return Float(None)), "Float(None) throws"
+assert throws(Function(): return Float([])), "Float(List) throws"
+
+# ============================================================================
+# Bool(x) and String(x) of numeric scalars
+# ============================================================================
+assert Bool(0) == False and Bool(1) == True and Bool(-1) == True, "Bool() of Integers"
+assert Bool(0.0) == False and Bool(0.1) == True, "Bool() of Floats"
+assert Bool(None) == False and Bool(True) == True, "Bool() of None/Bool"
+assert Bool(x = 5) == True, "Bool keyword arg"
+assert String(42) == "42" and String(-7) == "-7", "String() of Integer"
+assert String(3.5) == "3.5" and String(2.0) == "2.0", "String() of Float keeps the .0"
+assert String(True) == "True" and String(False) == "False", "String() of Bool"
+assert String(None) == "None", "String() of None"
+assert String(0.0) == "0.0" and String(-0.0) == "-0.0", "String() distinguishes 0.0 from -0.0"
+assert String(inf) == "inf" and String(-inf) == "-inf" and String(nan) == "nan", "String() of non-finite"
+assert String(imin) == "-9223372036854775808" and String(imax) == "9223372036854775807", "String() at the int64 bounds"
+
+# ============================================================================
+# format(value[, spec]) mini-format-spec on numbers
+# ============================================================================
+assert format(42) == "42" and format(3.5) == "3.5", "format with no spec == String()"
+assert format(42, "05d") == "00042", "zero-padded width"
+assert format(-42, "+06d") == "-00042", "sign + zero-pad"
+assert format(42, "+d") == "+42" and format(42, " d") == " 42", "explicit + and space sign"
+assert format(7, ">06d") == "000007", "the 0 flag pads even under an explicit align"
+assert format(255, "x") == "ff" and format(255, "X") == "FF", "hex format (lower/upper)"
+assert format(255, "#x") == "0xff" and format(255, "#X") == "0XFF", "# adds the base prefix"
+assert format(255, "#08x") == "0x0000ff", "# prefix before zero-padding"
+assert format(10, "b") == "1010" and format(8, "o") == "10", "binary/octal format"
+assert format(1234567, ",") == "1,234,567", "thousands separator"
+assert format(3.14159, ".2f") == "3.14" and format(3.14159, ".0f") == "3", "fixed precision"
+assert format(0.25, ".1%") == "25.0%", "percent format"
+assert format(3.14, "e") == "3.140000e+00", "scientific format"
+assert format(123456.789, ",.2f") == "123,456.79", "grouped + precision"
+assert format("hi", "^6") == "  hi  " and format("x", "*^7") == "***x***", "string align + custom fill"
+assert format(-5, "=8d") == "-      5", "the = align pads between sign and digits"
+assert format(value = 255, spec = "x") == "ff", "format keyword args"
+# Non-finite formatting matches Python (sign applies to inf, NaN keeps its repr)
+assert format(inf, "f") == "inf" and format(-inf, "f") == "-inf", "format of infinities"
+assert format(nan, ".2f") == "nan" and format(nan, "+.2f") == "+nan", "format of NaN (positive math.nan)"
+# Documented errors
+assert throws(Function(): return format(3.14, "d")), "format(Float, 'd') throws"
+assert throws(Function(): return format(3, ".2d")), "format: precision not allowed for integer type"
+assert throws(Function(): return format("hi", "d")), "format(String, 'd') throws"
+assert throws(Function(): return format(42, ",x")), "format: ',' not allowed with non-decimal base"
+assert throws(Function(): return format(42, "z")), "format unknown type throws"
+assert throws(Function(): return format(42, "qq")), "format invalid trailing spec throws"
+
+# ============================================================================
+# type() and isinstance() on numeric scalars
+# ============================================================================
+assert type(1) == "Integer" and type(1.0) == "Float" and type(True) == "Bool" and type(None) == "None", "type() of scalars"
+assert isinstance(1, Integer) and isinstance(1.0, Float) and isinstance(True, Bool), "isinstance with type constructors"
+assert isinstance(1, "Integer") and isinstance(1.0, "Float"), "isinstance with type-name Strings"
+assert not isinstance(1, Float) and not isinstance(1.0, Integer), "Integer is not Float and vice versa"
+assert not isinstance(True, Integer) and not isinstance(1, Bool), "Bool and Integer are disjoint (strong typing)"
+assert isinstance(None, "None"), "isinstance(None, 'None')"
+
+# ============================================================================
+# inspect() of numeric scalars + the numeric builtins exposes signatures
+# ============================================================================
+assert "compare" in inspect(1) and "compare" in inspect(1.0), "inspect(Integer/Float) lists .compare"
+assert "rel_tol" in inspect(1) and "abs_tol" in inspect(1), "inspect(.compare) shows the tolerance kwargs"
+assert "x: Number" in inspect(abs) and "-> Number" in inspect(abs), "inspect(abs) signature"
+assert "ndigits" in inspect(round), "inspect(round) shows ndigits"
+assert "mod" in inspect(pow), "inspect(pow) shows the modulus param"
+assert "spec" in inspect(format), "inspect(format) shows the spec param"
+assert "Integer" in inspect(Integer) and "Float" in inspect(Float), "inspect(Integer/Float ctor)"
+assert "Integer" in inspect(bitand) and "Integer" in inspect(shl), "inspect(bitwise) signatures"
+
+io.print("OK r4-numbers")

@@ -1,0 +1,16 @@
+# File I/O via context-managed files.
+var io = import("io")
+var path = import("path").gettempdir() + "/kirito_script_io.txt"
+
+with io.open(path, "w") as f:
+    f.write("first line\n")
+    f.write("second line\n")
+    f.write("third line\n")
+
+var lines = 0
+with io.open(path, "r") as f:
+    for line in f.read().split("\n"):
+        if len(line) > 0:
+            lines = lines + 1
+
+io.print("wrote and read " + String(lines) + " lines")

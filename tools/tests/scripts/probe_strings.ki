@@ -1,0 +1,76 @@
+# ============================================================ STRING LITERALS: every form, hard cases
+var io = import("io")
+var random = import("random")
+
+# --- all four quote spellings hold the other quote unescaped ---
+assert "it's" == 'it\'s', "double holds apostrophe; single escapes it"
+assert 'say "hi"' == "say \"hi\"", "single holds double; double escapes it"
+assert "" == '', "empty single == empty double"
+assert "a" + 'b' == "ab", "mixed-quote concat"
+
+# --- triple-quoted multiline, lone quotes inside ---
+var tri = """line1
+line2 "quoted" and 'apostrophe'
+line3"""
+assert tri.count("\n") == 2, "triple spans two newlines"
+assert "\"quoted\"" in tri, "triple holds bare double quotes"
+assert "'apostrophe'" in tri, "triple holds bare single quotes"
+assert '''a'b"c''' == "a'b\"c", "triple-single holds both quote kinds"
+
+# --- raw strings: backslashes literal ---
+assert r"\n" == "\\n", "raw backslash-n is two chars"
+assert len(r"\n") == 2, "raw length"
+assert r"\t\r\0" == "\\t\\r\\0", "raw multiple escapes literal"
+assert r"C:\path\to\file" == "C:\\path\\to\\file", "raw windows path"
+assert r'''multi
+\d+''' == "multi\n\\d+", "raw triple keeps newline real but backslash literal"
+
+# --- cooked escapes ---
+assert "\n" == """
+""", "newline escape equals literal newline in triple"
+assert "\t".levenshtein("\t") == 0 if "levenshtein" else True, "tab is one char"
+assert len("\t") == 1 and len("\\") == 1 and len("\0") == 1, "single-char escapes"
+assert "\x41\x42\x43" == "ABC", "hex escapes"
+assert "\x00" != "", "null byte is a real char"
+assert len("\x00") == 1, "null byte length 1"
+
+# --- f-strings: every flavour ---
+var x = 42
+var pi = 3.14159
+assert f"{x}" == "42", "basic f-string"
+assert f"{x:05d}" == "00042", "f-string format spec"
+assert f"{pi:.2f}" == "3.14", "f-string float precision"
+assert f"{ x + 1 }" == "43", "whitespace inside braces"
+assert f'{x}' == "42", "single-quoted f-string"
+assert f"""{x}""" == "42", "triple f-string"
+var d = {"k": "v"}
+assert f"{d['k']}" == "v", "f-string with single-quoted key inside double f-string"
+assert rf"\n{x}" == "\\n42", "raw f-string: backslash literal + interpolation"
+assert fr"\d{x}" == "\\d42", "fr order also works"
+assert f"{{literal braces}}" == "{literal braces}", "escaped braces in f-string"
+assert f"{x}{x}{x}" == "424242", "adjacent fields"
+
+# --- adjacency & nesting fuzz: build a random string from all spellings, compare to a plain build ---
+var rng = random.Random(20260603)
+var trial = 0
+while trial < 500:
+    var n = rng.randint(0, 6)
+    var parts = []
+    var plain = ""
+    var k = 0
+    while k < n:
+        var v = rng.randint(0, 99)
+        parts.append(f"{v}")
+        plain = plain + String(v)
+        k = k + 1
+    assert "".join(parts) == plain, "fuzz: f-string join equals plain concat"
+    trial = trial + 1
+
+# --- unicode in every spelling ---
+assert "héllo😀世" == 'héllo😀世', "unicode across quote kinds"
+assert len("😀") == 1, "emoji is one code point"
+assert f"{'😀' * 3}" == "😀😀😀", "f-string unicode repetition"
+assert """😀
+世""".count("\n") == 1, "unicode triple newline count"
+
+io.print("OK strings")

@@ -1,0 +1,32 @@
+# kirdown/lib/kirdown.ki — the public API: takes Markdown source (a String) and returns HTML.
+# Composes the three stages: split into lines → block-parse → render.
+
+var block = import("block")
+var render = import("render")
+
+# Split source into logical lines. The lexer/lexer stage normalizes CRLF/CR to LF before this ever
+# runs, but Kirito's built-in `.split("\n")` is what we need for LF-only.
+var _splitLines = Function(src : String) -> List:
+    return src.split("\n")
+
+# The whole pipeline. Returns just the <body> content (blocks joined).
+var toBody = Function(src : String) -> String:
+    return render.toHtml(block.parse(_splitLines(src)))
+
+# Full HTML5 page shell. Uses the first heading as a title if the caller didn't supply one.
+var toPage = Function(src : String, title : String) -> String:
+    var body = toBody(src)
+    var t = title
+    if t == "":
+        # Best-effort: pick the first ATX heading text if present.
+        for line in _splitLines(src):
+            var s = line.strip()
+            if s.startswith("#"):
+                var j = 0
+                while j < len(s) and s[j] == "#":
+                    j = j + 1
+                t = s[j:].strip()
+                break
+        if t == "":
+            t = "Untitled"
+    return render.fullPage(t, body)

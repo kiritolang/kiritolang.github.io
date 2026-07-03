@@ -1,0 +1,148 @@
+# Self-checking audit of the `time` stdlib module (docs/pages/10-stdlib.md "time").
+# Deterministic only: asserts types and orderings of the clocks (never wall-clock
+# values), and full round-trips of DateTime fields / iso / format / strptime /
+# add-sub-diff / value-equality+hashing / serialize+dump.
+
+var io = import("io")
+var time = import("time")
+var ser = import("serialize")
+var dump = import("dump")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f, m):
+    var threw = False
+    try:
+        f()
+    catch:
+        threw = True
+    assert threw, m
+    n = n + 1
+
+# --- clock types (no wall-clock value assertions) ---
+ok(type(time.time()) == "Float", "time() is a Float")
+ok(type(time.timens()) == "Integer", "timens() is an Integer")
+ok(type(time.monotonic()) == "Float", "monotonic() is a Float")
+ok(type(time.perfcounterns()) == "Integer", "perfcounterns() is an Integer")
+
+# monotonic / perfcounter are non-decreasing
+var m1 = time.monotonic()
+var m2 = time.monotonic()
+ok(m2 >= m1, "monotonic() is non-decreasing")
+var p1 = time.perfcounterns()
+var p2 = time.perfcounterns()
+ok(p2 >= p1, "perfcounterns() is non-decreasing")
+
+# sleep accepts a number; 0 is a no-op
+time.sleep(0)
+ok(True, "sleep(0) returns")
+
+# --- DateTime from a fixed epoch (1000000000 = 2001-09-09T01:46:40 UTC) ---
+var ep = 1000000000
+var dt = time.datetime(ep)
+ok(type(dt) == "DateTime", "datetime(epoch) returns a DateTime")
+ok(dt.year == 2001, "year field")
+ok(dt.month == 9, "month field")
+ok(dt.day == 9, "day field")
+ok(dt.hour == 1, "hour field")
+ok(dt.minute == 46, "minute field")
+ok(dt.second == 40, "second field")
+ok(dt.weekday == 0, "weekday is 0=Sunday (C convention)")
+ok(dt.yearday == 252, "yearday field")
+ok(dt.timestamp == ep, "timestamp attribute equals the epoch")
+
+# iso / isoformat
+ok(dt.iso() == "2001-09-09T01:46:40", "iso()")
+ok(dt.isoformat() == dt.iso(), "isoformat() aliases iso()")
+
+# format
+ok(dt.format("%Y-%m-%d") == "2001-09-09", "format date codes")
+ok(dt.format("%H:%M:%S") == "01:46:40", "format time codes")
+ok(dt.format("%Y") == "2001", "format single code")
+
+# --- now() / datetime() with no arg / current ---
+ok(type(time.now()) == "DateTime", "now() returns a DateTime")
+ok(type(time.datetime()) == "DateTime", "datetime() with no arg returns a DateTime")
+
+# --- make(): build from UTC components; matches datetime(epoch) ---
+var dm = time.make(2001, 9, 9, 1, 46, 40)
+ok(dm.timestamp == ep, "make components -> the same epoch")
+ok(dm == dt, "make == datetime for the same instant")
+ok(time.make(1970, 1, 1).timestamp == 0, "make epoch 0")
+ok(time.make(year = 2000, month = 1, day = 1).iso() == "2000-01-01T00:00:00", "make accepts keyword args")
+# defaults for hour/minute/second
+ok(time.make(2001, 9, 9).iso() == "2001-09-09T00:00:00", "make hour/minute/second default to 0")
+# make normalizes out-of-range components (C mktime-style), it does NOT throw
+ok(time.make(2024, 13, 1).year == 2025, "make month 13 normalizes to January next year (year)")
+ok(time.make(2024, 13, 1).month == 1, "make month 13 normalizes to January (month)")
+ok(time.make(2024, 1, 32).month == 2, "make day 32 normalizes into the next month")
+ok(time.make(2024, 1, 32).day == 1, "make day 32 -> the 1st")
+
+# --- strptime(): strict parse, round-trips with iso/make ---
+var sp = time.strptime("2001-09-09 01:46:40", "%Y-%m-%d %H:%M:%S")
+ok(sp == dt, "strptime round-trips to the same instant")
+ok(sp.iso() == "2001-09-09T01:46:40", "strptime fields")
+ok(time.strptime(text = "2000-01-01", format = "%Y-%m-%d").iso() == "2000-01-01T00:00:00", "strptime keyword args")
+# strict: out-of-range / trailing / mismatch all throw
+throws(Function(): time.strptime("2024-99-99", "%Y-%m-%d"), "strptime rejects an out-of-range month/day")
+throws(Function(): time.strptime("2024-01-01XYZ", "%Y-%m-%d"), "strptime rejects unconverted trailing input")
+throws(Function(): time.strptime("25", "%H"), "strptime rejects hour 25")
+throws(Function(): time.strptime("notadate", "%Y-%m-%d"), "strptime rejects a literal mismatch")
+
+# --- add / sub / diff arithmetic ---
+var later = dt.add(3600)
+ok(later.hour == 2, "add(3600) advances one hour")
+ok(later.timestamp == ep + 3600, "add shifts the epoch")
+var back = later.sub(3600)
+ok(back == dt, "sub undoes add")
+ok(later.diff(dt) == 3600, "diff(other) = self - other in seconds")
+ok(dt.diff(later) == -3600, "diff is signed")
+ok(dt.add(0) == dt, "add(0) is a no-op instant")
+# add/sub return new DateTimes (immutability)
+ok(dt.timestamp == ep, "add did not mutate the original")
+# add/sub reject a non-number
+throws(Function(): dt.add("nope"), "add rejects a non-number")
+# diff rejects a non-DateTime
+throws(Function(): dt.diff(5), "diff rejects a non-DateTime")
+
+# --- value equality + hashing: same instant compares equal and is one key ---
+var dt_again = time.datetime(ep)
+ok(dt == dt_again, "two DateTimes for the same instant are ==")
+ok((dt == time.datetime(ep + 1)) == False, "different instants are not ==")
+var s = Set()
+discard s.add(dt)
+discard s.add(dt_again)
+discard s.add(time.datetime(ep + 1))
+ok(len(s) == 2, "equal DateTimes collapse to one Set element")
+var d = Dict()
+d[dt] = "first"
+d[dt_again] = "second"
+ok(len(d) == 1, "equal DateTimes are one Dict key")
+ok(d[dt] == "second", "the later assignment wins for an equal key")
+
+# --- serialize (text) and dump (binary) round-trips ---
+var textblob = ser.dumps(dt)
+ok(type(textblob) == "String", "serialize.dumps returns a String")
+var dt_text = ser.loads(textblob)
+ok(dt_text == dt, "serialize text round-trip preserves the instant")
+ok(dt_text.iso() == dt.iso(), "serialize text round-trip preserves fields")
+
+var binblob = dump.dumps(dt)
+ok(type(binblob) == "Bytes", "dump.dumps returns Bytes")
+var dt_bin = dump.loads(binblob)
+ok(dt_bin == dt, "dump binary round-trip preserves the instant")
+
+# nested in a container, references preserved
+var payload = [dt, dt]
+var rebuilt = dump.loads(dump.dumps(payload))
+ok(rebuilt[0] == dt, "DateTime survives nesting in a List (dump)")
+ok(rebuilt[0] == rebuilt[1], "shared DateTime reference preserved")
+
+# --- out-of-range epochs / non-finite timestamps throw (no UB / nonsense dates) ---
+throws(Function(): time.datetime(999999999999999999), "an epoch beyond the representable year range throws")
+throws(Function(): time.datetime(1e400), "an infinite timestamp throws")
+throws(Function(): dt.add(9223372036854775807), "DateTime arithmetic overflow throws")
+
+io.print("r6_time: " + String(n) + " checks passed")

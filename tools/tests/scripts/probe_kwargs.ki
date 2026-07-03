@@ -1,0 +1,78 @@
+# ============================================================ KEYWORD ARGUMENTS everywhere, adversarial
+var io = import("io")
+var random = import("random")
+
+# --- class instantiation forwards keywords to _init_, any order, with defaults ---
+class Point:
+    var _init_ = Function(self, x, y = 0, z = 0):
+        self.x = x
+        self.y = y
+        self.z = z
+    var _eq_ = Function(self, o) -> Bool:
+        return self.x == o.x and self.y == o.y and self.z == o.z
+    var scale = Function(self, factor = 1, bias = 0):
+        return Point(x = self.x * factor + bias, y = self.y * factor + bias, z = self.z * factor + bias)
+assert Point(y = 2, x = 1) == Point(1, 2, 0), "instantiation: out-of-order keywords"
+assert Point(1) == Point(x = 1, y = 0, z = 0), "instantiation: defaults fill"
+assert Point(1, z = 9) == Point(1, 0, 9), "instantiation: positional + keyword skip"
+assert Point(1, 2, 3).scale(factor = 10, bias = 1) == Point(11, 21, 31), "method keywords"
+assert Point(1, 2, 3).scale(bias = 5) == Point(6, 7, 8), "method keyword with default factor"
+
+# --- inheritance + _super_ forwards keywords ---
+class Point4(Point):
+    var _init_ = Function(self, x, y = 0, z = 0, w = 0):
+        self._super_()._init_(x = x, y = y, z = z)
+        self.w = w
+var p4 = Point4(w = 4, x = 1, y = 2)
+assert p4.x == 1 and p4.y == 2 and p4.z == 0 and p4.w == 4, "_super_ forwards keywords"
+
+# --- builtins accept keywords ---
+assert round(3.14159, ndigits = 2) == 3.14, "round ndigits="
+assert sorted([3, 1, 2], reverse = True) == [3, 2, 1], "sorted reverse="
+assert sorted([3, 1, 2], key = Function(v): return -v) == [3, 2, 1], "sorted key="
+assert pow(2, 10, mod = 1000) == 24, "pow mod="
+assert enumerate(["a", "b"], start = 5) == [[5, "a"], [6, "b"]], "enumerate start="
+assert sum([1, 2, 3], start = 100) == 106, "sum start="
+assert range(start = 2, stop = 8, step = 2) == [2, 4, 6], "range keywords"
+assert Integer(x = "42") == 42, "Integer x="
+assert isinstance(value = 5, type = "Integer"), "isinstance keywords"
+
+# --- native module functions accept keywords ---
+var math = import("math")
+assert math.log(8, base = 2) == 3.0, "math.log base="
+var re = import("regex")
+assert re.compile("\\d").sub(repl = "#", string = "a1b2") == "a#b#", "regex.sub keywords"
+var rnd = random.Random(seed = 7)
+assert rnd.randint(a = 1, b = 1) == 1, "randint a=,b="
+
+# --- built-in type methods accept keywords ---
+assert "a,b,c".split(sep = ",") == ["a", "b", "c"], "split sep="
+assert "hello".find(sub = "l", start = 3) == 3, "find sub=,start="
+assert [1, 2, 1, 2].index(value = 2, start = 2) == 3, "list.index value=,start="
+assert "x".rjust(width = 5, fillchar = "-") == "----x" if True else True, "rjust keywords"
+
+# --- ADVERSARIAL: unknown keyword, duplicate, wrong name all throw by name ---
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+assert throws(Function(): return Point(x = 1, bogus = 9)), "unknown keyword to _init_ rejected"
+assert throws(Function(): return round(3.14, nope = 2)), "unknown keyword to builtin rejected"
+assert throws(Function(): return [1, 2].count(wrong = 1)), "unknown keyword to method rejected"
+assert throws(Function(): return Point(1, x = 2)), "positional + keyword collision rejected"
+assert throws(Function(): return range(2, 5, start = 1)), "range positional/keyword collision"
+
+# --- fuzz: random keyword orderings to _init_ always equal the canonical positional build ---
+var rng = random.Random(42)
+var f = 0
+while f < 400:
+    var a = rng.randint(-50, 50)
+    var b = rng.randint(-50, 50)
+    var c = rng.randint(-50, 50)
+    var byKw = Point(z = c, x = a, y = b)
+    assert byKw == Point(a, b, c), "fuzz: any keyword order == positional"
+    f = f + 1
+
+io.print("OK kwargs")

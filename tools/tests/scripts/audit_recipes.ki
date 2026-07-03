@@ -1,0 +1,416 @@
+# =============================================================================
+# audit_recipes.ki — exhaustive audit of every recipe documented in
+# docs/pages/03-recipes.md against the actual interpreter behavior. Each
+# documented snippet is reproduced verbatim where it stands on its own; recipes
+# that are non-runnable fragments are expanded to a minimal form that proves
+# the documented behavior. Inputs are varied adversarially around what each
+# recipe shows. The script asserts the documented outputs and prints
+# "OK audit-recipes" if every probe passes; the assertion message names the
+# failing claim.
+# =============================================================================
+var io = import("io")
+var path = import("path")
+
+# =============================================================================
+# Recipe 1: "Read a file line by line"
+# Doc shows reading data.txt; it's marked <!--norun--> because the path need
+# not exist. We probe the IDIOM: `for line in f` iterates lines; line.strip()
+# removes the trailing newline. We exercise the documented usage by writing a
+# scratch file first, then reading it back.
+# =============================================================================
+var tmppath = "/tmp/audit_recipes_lines.txt"
+with io.open(tmppath, "w") as out:
+    discard out.write("alpha\nbeta\n  gamma  \n\ndelta\n")
+var lines = []
+with io.open(tmppath, "r") as f:
+    for line in f:
+        lines.append(line.strip())
+assert lines == ["alpha", "beta", "gamma", "", "delta"], "recipe1: file line-by-line"
+path.remove(tmppath, missing_ok = True)
+
+# Adversarial: empty file produces no iterations.
+with io.open(tmppath, "w") as out:
+    discard out.write("")
+var emptyLines = []
+with io.open(tmppath, "r") as f:
+    for line in f:
+        emptyLines.append(line.strip())
+assert emptyLines == [], "recipe1 edge: empty file iterates zero lines"
+path.remove(tmppath, missing_ok = True)
+
+# Adversarial: single line, no trailing newline.
+with io.open(tmppath, "w") as out:
+    discard out.write("solo")
+var soloLines = []
+with io.open(tmppath, "r") as f:
+    for line in f:
+        soloLines.append(line.strip())
+assert soloLines == ["solo"], "recipe1 edge: single line no trailing newline"
+path.remove(tmppath, missing_ok = True)
+
+# Adversarial: trailing newline does NOT add an empty entry after iteration
+# (the doc strips the line so a fully-trimmed entry would also flag a real
+# difference).
+with io.open(tmppath, "w") as out:
+    discard out.write("a\nb\n")
+var twoLines = []
+with io.open(tmppath, "r") as f:
+    for line in f:
+        twoLines.append(line.strip())
+assert twoLines == ["a", "b"], "recipe1 edge: trailing newline iterates 2 lines"
+path.remove(tmppath, missing_ok = True)
+
+# =============================================================================
+# Recipe 2: "Count word frequencies"
+# Doc shows .split(" "), counts.get(word, 0)+1, items() iteration. Verify that
+# split returns the documented partition and that the count is correct.
+# =============================================================================
+var text = "the cat sat on the mat the cat"
+var counts = {}
+for word in text.split(" "):
+    counts[word] = counts.get(word, 0) + 1
+assert counts["the"] == 3, "recipe2: 'the' frequency"
+assert counts["cat"] == 2, "recipe2: 'cat' frequency"
+assert counts["sat"] == 1, "recipe2: 'sat' frequency"
+assert counts["on"]  == 1, "recipe2: 'on' frequency"
+assert counts["mat"] == 1, "recipe2: 'mat' frequency"
+assert len(counts) == 5, "recipe2: 5 distinct words"
+# Confirm items() unpacks into (word, n) pairs:
+var seen = 0
+for w, n in counts.items():
+    assert type(w) == "String", "recipe2: items() key is String"
+    assert type(n) == "Integer", "recipe2: items() value is Integer"
+    seen = seen + 1
+assert seen == 5, "recipe2: items() yields all 5 entries"
+
+# Adversarial: empty text -> split(" ") gives [""].
+var emptyCounts = {}
+for w in "".split(" "):
+    emptyCounts[w] = emptyCounts.get(w, 0) + 1
+assert emptyCounts == {"": 1}, "recipe2 edge: empty string splits to one empty token"
+
+# Adversarial: leading/trailing spaces add empty tokens.
+var padded = "  a b  "
+var padCounts = {}
+for w in padded.split(" "):
+    padCounts[w] = padCounts.get(w, 0) + 1
+assert padCounts.get("a", 0) == 1, "recipe2 edge: leading spaces"
+assert padCounts.get("b", 0) == 1, "recipe2 edge: trailing spaces"
+assert padCounts.get("", 0) == 4, "recipe2 edge: empty tokens from runs of spaces"
+
+# =============================================================================
+# Recipe 3: "Sort by a key"
+# Doc shows sorted(people, Function(p): return p[1]) -> "youngest first".
+# Verify the exact order.
+# =============================================================================
+var people = [["Ann", 30], ["Bo", 25], ["Cy", 41]]
+var byAge = sorted(people, Function(p): return p[1])
+assert byAge == [["Bo", 25], ["Ann", 30], ["Cy", 41]], "recipe3: sort by p[1]"
+# Doc shows `String(byAge)` => bracket form (nested strings are repr-quoted).
+assert String(byAge) == "[['Bo', 25], ['Ann', 30], ['Cy', 41]]", "recipe3: stringified form"
+
+# Adversarial: empty input.
+assert sorted([], Function(p): return p) == [], "recipe3 edge: sorting empty list"
+
+# Adversarial: stable sort preserves input order on equal keys.
+var same = [["a", 1], ["b", 1], ["c", 1]]
+assert sorted(same, Function(p): return p[1]) == same, "recipe3 edge: stable sort on equal keys"
+
+# Adversarial: reverse=True (third positional) reverses order.
+assert sorted(people, Function(p): return p[1], True) == [["Cy", 41], ["Ann", 30], ["Bo", 25]], "recipe3 edge: reverse sort"
+
+# Adversarial: sorting Strings by length (different key).
+var words = ["bbb", "a", "cc"]
+assert sorted(words, Function(s): return len(s)) == ["a", "cc", "bbb"], "recipe3 edge: sort by len"
+
+# =============================================================================
+# Recipe 4: "Swap and multiple return values"
+# Doc shows a,b=b,a and var lo,hi = minmax([4,1,7,3]).
+# =============================================================================
+var a = 1
+var b = 2
+a, b = b, a
+assert a == 2 and b == 1, "recipe4: swap a, b"
+
+var minmax = Function(xs):
+    return min(xs), max(xs)
+var lo, hi = minmax([4, 1, 7, 3])
+assert lo == 1, "recipe4: minmax lo"
+assert hi == 7, "recipe4: minmax hi"
+
+# Adversarial: single-element input.
+var lo2, hi2 = minmax([42])
+assert lo2 == 42 and hi2 == 42, "recipe4 edge: single-element minmax"
+
+# Adversarial: three-way swap.
+var sx = 1
+var sy = 2
+var sz = 3
+sx, sy, sz = sz, sx, sy
+assert sx == 3 and sy == 1 and sz == 2, "recipe4 edge: three-way swap"
+
+# Adversarial: doc says "a bare comma sequence packs into a List". Confirm:
+var packedSeq = 10, 20, 30
+assert packedSeq == [10, 20, 30], "recipe4 edge: bare comma packs into List"
+assert type(packedSeq) == "List", "recipe4 edge: packed value is List"
+
+# =============================================================================
+# Recipe 5: "Group with defaultdict"
+# Doc shows defaultdict(Function(): return []) accumulating n%3 buckets.
+# =============================================================================
+var col = import("collections")
+var groups = col.defaultdict(Function(): return [])
+for n in range(10):
+    groups[n % 3].append(n)
+assert groups[0] == [0, 3, 6, 9], "recipe5: defaultdict bucket 0"
+assert groups[1] == [1, 4, 7],    "recipe5: defaultdict bucket 1"
+assert groups[2] == [2, 5, 8],    "recipe5: defaultdict bucket 2"
+# .items() iterates - count total elements.
+var total = 0
+for k, vs in groups.items():
+    total = total + len(vs)
+assert total == 10, "recipe5: items() over defaultdict yields all entries"
+
+# Adversarial: a fresh key produces the default and the factory runs once per key.
+var g2 = col.defaultdict(Function(): return [])
+g2["fresh"].append("x")
+assert g2["fresh"] == ["x"], "recipe5 edge: factory runs on missing key access"
+# A second access returns the SAME list (mutation persists).
+g2["fresh"].append("y")
+assert g2["fresh"] == ["x", "y"], "recipe5 edge: factory result is persistent"
+
+# Adversarial: numeric factory (the defaultdict(int) counting idiom).
+var g3 = col.defaultdict(Function(): return 0)
+for ch in "abracadabra":
+    g3[ch] = g3[ch] + 1
+assert g3["a"] == 5, "recipe5 edge: defaultdict counter"
+assert g3["b"] == 2, "recipe5 edge: defaultdict counter b"
+assert g3["r"] == 2, "recipe5 edge: defaultdict counter r"
+
+# =============================================================================
+# Recipe 6: "A small stack-based class"
+# Doc shows _init_, push, pop with empty-stack throw, and _len_ returning Integer.
+# =============================================================================
+class Stack:
+    var _init_ = Function(self):
+        self._items = []
+    var push = Function(self, x):
+        self._items.append(x)
+    var pop = Function(self):
+        if len(self._items) == 0:
+            throw "pop from empty stack"
+        return self._items.pop()
+    var _len_ = Function(self) -> Integer:
+        return len(self._items)
+
+var s = Stack()
+s.push(1)
+s.push(2)
+assert s.pop() == 2, "recipe6: LIFO pop returns top"
+assert len(s) == 1, "recipe6: len reflects size after pop"
+
+# Empty-stack throw fires.
+var threw = False
+discard s.pop()  # drops to 0
+try:
+    discard s.pop()
+catch as e:
+    threw = True
+assert threw, "recipe6: empty pop throws"
+
+# Adversarial: privacy. Doc says `_items` is private; external access throws.
+var stk2 = Stack()
+stk2.push("x")
+var privThrew = False
+try:
+    discard stk2._items
+catch as e:
+    privThrew = True
+assert privThrew, "recipe6 edge: _items is private from outside"
+
+# Adversarial: many pushes preserve order.
+var bigS = Stack()
+for i in range(100):
+    bigS.push(i)
+assert len(bigS) == 100, "recipe6 edge: 100 pushes"
+assert bigS.pop() == 99, "recipe6 edge: top is last pushed"
+assert len(bigS) == 99, "recipe6 edge: len after pop"
+
+# =============================================================================
+# Recipe 7: "Make a class iterable"
+# Doc shows _iter_ returning a list; iteration yields 3,2,1.
+# =============================================================================
+class Countdown:
+    var _init_ = Function(self, n):
+        self._n = n
+    var _iter_ = Function(self):
+        var out = []
+        var i = self._n
+        while i > 0:
+            out.append(i)
+            i = i - 1
+        return out
+
+var collected = []
+for x in Countdown(3):
+    collected.append(x)
+assert collected == [3, 2, 1], "recipe7: Countdown(3) yields 3,2,1"
+
+# Adversarial: zero/negative inputs produce empty iteration.
+var empty3 = []
+for x in Countdown(0):
+    empty3.append(x)
+assert empty3 == [], "recipe7 edge: Countdown(0) is empty"
+
+var emptyNeg = []
+for x in Countdown(-5):
+    emptyNeg.append(x)
+assert emptyNeg == [], "recipe7 edge: Countdown(-5) is empty"
+
+# Adversarial: larger count.
+var ten = []
+for x in Countdown(10):
+    ten.append(x)
+assert ten == [10, 9, 8, 7, 6, 5, 4, 3, 2, 1], "recipe7 edge: Countdown(10)"
+
+# =============================================================================
+# Recipe 8: "Typed, validated function"
+# Doc shows enforced type annotations throwing a clear error on bad args.
+# =============================================================================
+var area = Function(width : Float, height : Float) -> Float:
+    return width * height
+
+assert area(2.0, 3.0) == 6.0, "recipe8: area(2.0,3.0)=6.0"
+
+# Doc comment: # area("a", 2) -> error: argument 'width' must be Float, got String
+var aThrew = False
+var aMsg = ""
+try:
+    discard area("a", 2.0)
+catch as e:
+    aThrew = True
+    aMsg = e
+assert aThrew, "recipe8: typed function rejects String for Float param"
+# Doc claims the specific message. Verify it.
+assert aMsg.find("width") >= 0,   "recipe8: error names the bad parameter"
+assert aMsg.find("Float") >= 0,   "recipe8: error names the expected type"
+assert aMsg.find("String") >= 0,  "recipe8: error names the actual type"
+
+# Adversarial: bad return-type also fires (doc claims "the function must
+# return that type").
+var badRet = Function() -> Float:
+    return "not a float"
+var retThrew = False
+try:
+    discard badRet()
+catch as e:
+    retThrew = True
+assert retThrew, "recipe8 edge: bad return type throws"
+
+# Adversarial: Integer rejected for Float (annotations are inheritance-aware
+# but Integer is not a Float).
+var intThrew = False
+try:
+    discard area(2, 3.0)
+catch as e:
+    intThrew = True
+assert intThrew, "recipe8 edge: Integer rejected for Float param"
+
+# =============================================================================
+# Recipe 9: "JSON round-trip"
+# Doc shows json.parse + json.stringify; the doc only prints data["name"], so
+# we check that field plus a full round-trip.
+# =============================================================================
+var json = import("json")
+var data = json.parse("{\"name\": \"Kirito\", \"version\": 1}")
+assert data["name"] == "Kirito", "recipe9: json.parse extracts name"
+assert data["version"] == 1, "recipe9: json.parse extracts version"
+# Stringify round-trip: re-parse the output and compare equal.
+var roundtrip = json.parse(json.stringify(data))
+assert roundtrip == data, "recipe9: stringify roundtrip equals parsed"
+
+# Adversarial: empty array / empty object.
+assert json.parse("[]") == [], "recipe9 edge: parse empty array"
+assert json.parse("{}") == {}, "recipe9 edge: parse empty object"
+
+# Adversarial: scalars.
+assert json.parse("null") == None, "recipe9 edge: parse null"
+assert json.parse("true") == True, "recipe9 edge: parse true"
+assert json.parse("42") == 42, "recipe9 edge: parse integer"
+assert json.parse("3.5") == 3.5, "recipe9 edge: parse float"
+
+# Adversarial: nested structures.
+var nested = json.parse("[1,[2,[3,[4]]]]")
+assert nested == [1, [2, [3, [4]]]], "recipe9 edge: nested arrays"
+
+# Adversarial: stringify produces canonical literals.
+assert json.stringify(None) == "null", "recipe9 edge: None -> null"
+assert json.stringify(True) == "true", "recipe9 edge: True -> true"
+assert json.stringify(False) == "false", "recipe9 edge: False -> false"
+assert json.stringify(42) == "42", "recipe9 edge: Integer -> '42'"
+assert json.stringify([1, 2, 3]) == "[1, 2, 3]", "recipe9 edge: List stringify"
+
+# =============================================================================
+# Recipe 10: "Compress and hash data"
+# Doc shows z.compress on a 10000-byte string and hashes it.
+# =============================================================================
+var z = import("zlib")
+var h = import("hash")
+var blob = "x" * 10000
+var packed = z.compress(blob)
+assert len(blob) == 10000, "recipe10: blob is 10000 bytes"
+assert len(packed) < 100, "recipe10: 10000 x's compresses to under 100 bytes"
+# Round-trip via decompress.
+assert z.decompress(packed) == blob, "recipe10: zlib decompress restores blob"
+# sha256 is a hex string of length 64.
+var digest = h.sha256(blob)
+assert type(digest) == "String", "recipe10: sha256 returns String"
+assert len(digest) == 64, "recipe10: sha256 hex digest length"
+
+# Adversarial: hashes of different inputs differ.
+assert h.sha256("a") != h.sha256("b"), "recipe10 edge: different inputs hash differently"
+# Same input hashes the same.
+assert h.sha256("hello") == h.sha256("hello"), "recipe10 edge: hash is deterministic"
+# md5 / sha1 are also documented.
+assert h.md5("abc") == "900150983cd24fb0d6963f7d28e17f72", "recipe10 edge: md5 known vector"
+assert h.sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d", "recipe10 edge: sha1 known vector"
+
+# Adversarial: empty input compresses to a valid (short) blob that round-trips.
+var emptyPacked = z.compress("")
+assert z.decompress(emptyPacked) == "", "recipe10 edge: zlib roundtrips empty input"
+
+# =============================================================================
+# Recipe 11: "Inspect an object at runtime"
+# Doc claims `inspect(math)` lists the module's functions, and `inspect(Stack)`
+# lists Stack's methods + signatures.
+# =============================================================================
+var math = import("math")
+var minfo = inspect(math)
+assert type(minfo) == "String", "recipe11: inspect returns String"
+assert minfo.find("module math") >= 0, "recipe11: inspect(math) names the module"
+# Spot-check a few documented math functions appear:
+assert minfo.find("sqrt") >= 0, "recipe11: inspect(math) lists sqrt"
+assert minfo.find("sin") >= 0, "recipe11: inspect(math) lists sin"
+assert minfo.find("pi") >= 0, "recipe11: inspect(math) lists pi constant"
+
+var sinfo = inspect(Stack)
+assert type(sinfo) == "String", "recipe11: inspect(class) returns String"
+assert sinfo.find("Stack") >= 0, "recipe11: inspect(Stack) names the class"
+assert sinfo.find("push") >= 0, "recipe11: inspect(Stack) lists push"
+assert sinfo.find("pop") >= 0, "recipe11: inspect(Stack) lists pop"
+assert sinfo.find("_len_") >= 0, "recipe11: inspect(Stack) lists _len_"
+# Signature info should reflect the annotation.
+assert sinfo.find("-> Integer") >= 0, "recipe11: inspect(Stack) shows _len_ return annotation"
+
+# Adversarial: inspect on an instance.
+var sInst = Stack()
+var instInfo = inspect(sInst)
+assert instInfo.find("Stack instance") >= 0, "recipe11 edge: inspect(instance) labels it"
+
+# Adversarial: inspect a function with a signature.
+var fSig = Function(x : Integer, y = 0) -> Integer:
+    return x + y
+var fInfo = inspect(fSig)
+assert fInfo.find("Integer") >= 0, "recipe11 edge: inspect(function) shows annotations"
+
+io.print("OK audit-recipes")

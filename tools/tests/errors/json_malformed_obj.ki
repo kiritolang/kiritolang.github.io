@@ -1,0 +1,1 @@
+discard import("json").loads("{bad}")

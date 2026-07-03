@@ -1,0 +1,36 @@
+[['a', 'b', 'c'], ['1', '2', '3']]
+['a', 'b', 'c']
+a,b
+c,d
+a,b
+[]
+['']
+[['a', 'b'], ['c', 'd']]
+[['a', 'b'], [''], ['c', 'd']]
+['a', 'b', '']
+['solo']
+['a,b', 'c']
+['hello "world"', 'ok']
+plain,"has,comma"
+"q""x"
+"line1
+line2"
+1,2,3
+True
+True
+[['a\nb', 'c']]
+[['a', 'line1\nline2'], ['x', 'y']]
+['unmatched']
+['a', 'b']
+['abcd']
+50
+f0/f49
+100
+['row0', 'val']
+['row99', 'val']
+['名前', 'café']
+名前,café
+['']
+['', '']
+
+OK audit-csv

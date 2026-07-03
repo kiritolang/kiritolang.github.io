@@ -1,0 +1,123 @@
+# ledger/report.ki — pretty-printers for the CLI subcommands. Each takes the current book (a list
+# of transactions) and returns a String suitable for `print`. Numerical formatting is delegated to
+# `fmt`; ordering is delegated to `book`.
+
+var book = import("book")
+var fmt  = import("fmt")
+var heapq = import("heapq")
+var statistics = import("statistics")
+
+var _money = Function(x : Float) -> String:
+    return fmt.money(x)
+
+var _padRight = Function(s : String, w : Integer) -> String:
+    if len(s) >= w:
+        return s
+    return s + " " * (w - len(s))
+
+var _padLeft = Function(s : String, w : Integer) -> String:
+    if len(s) >= w:
+        return s
+    return " " * (w - len(s)) + s
+
+# --- `balances`: every account with a nonzero balance, sorted ---
+var balances = Function(txs : List) -> String:
+    var bals = book.accountBalances(txs)
+    if len(bals) == 0:
+        return "(no transactions)\n"
+    var names = sorted(List(bals.keys()))
+    # column widths: 5 chars minimum on the amount
+    var w = 5
+    for n in names:
+        var m = _money(bals[n])
+        if len(m) > w:
+            w = len(m)
+    var wname = 0
+    for n in names:
+        if len(n) > wname:
+            wname = len(n)
+    var lines = []
+    for n in names:
+        lines.append("  " + _padRight(n, wname + 2) + _padLeft(_money(bals[n]), w))
+    lines.append("")
+    lines.append("total accounts: " + String(len(names)))
+    return "\n".join(lines) + "\n"
+
+# --- `income`: profit-and-loss for a range (Income - Expenses = Net) ---
+var income = Function(txs : List) -> String:
+    var cats = book.categoryTotals(txs)
+    var inc = -cats.get("Income", 0.0)     # income is booked with a minus sign
+    var exp = cats.get("Expenses", 0.0)
+    var net = inc - exp
+    var lines = []
+    lines.append("  Income:    " + _padLeft(_money(inc), 12))
+    lines.append("  Expenses:  " + _padLeft(_money(exp), 12))
+    lines.append("  " + "-" * 25)
+    lines.append("  Net:       " + _padLeft(_money(net), 12))
+    return "\n".join(lines) + "\n"
+
+# --- `register ACCOUNT`: every posting on that account, chronological, with a running balance ---
+var register = Function(txs : List, account : String) -> String:
+    var sortedTx = book.sortByDate(txs)
+    var posts = book.accountPostings(sortedTx, account)
+    if len(posts) == 0:
+        return "  (no postings on '" + account + "')\n"
+    var running = 0.0
+    var lines = []
+    lines.append("  " + _padRight("date", 12) + _padRight("account", 26) + _padRight("desc", 30) + _padLeft("amount", 11) + _padLeft("balance", 12))
+    lines.append("  " + "-" * 91)
+    for p in posts:
+        running = running + p["amount"]
+        var d = p["date"]
+        var iso = fmt.iso(d)
+        var desc = p["desc"]
+        if len(desc) > 28:
+            desc = desc[0:27] + "…"
+        lines.append("  " + _padRight(iso, 12) + _padRight(p["account"], 26) + _padRight(desc, 30) + _padLeft(_money(p["amount"]), 11) + _padLeft(_money(running), 12))
+    return "\n".join(lines) + "\n"
+
+# --- `top [N]`: the N largest expense postings (by absolute amount) ---
+var top = Function(txs : List, n : Integer) -> String:
+    var expenses = book.accountPostings(txs, "Expenses")
+    if len(expenses) == 0:
+        return "  (no Expenses postings)\n"
+    # heapq.nlargest lacks a `key=` arg, so pre-decorate (amount, index, posting) so the sort is
+    # stable on ties (the index breaks the tie without recomparing dicts, and the tail slice keeps
+    # the same top-N shape without pulling all of `sorted`).
+    var decorated = []
+    var idx = 0
+    for e in expenses:
+        decorated.append([e["amount"], idx, e])
+        idx = idx + 1
+    var pickedDec = heapq.nlargest(n, decorated)
+    var picked = []
+    for d in pickedDec:
+        picked.append(d[2])
+    var lines = []
+    lines.append("  top " + String(len(picked)) + " expenses:")
+    for p in picked:
+        lines.append("    " + fmt.iso(p["date"]) + "  " + _padRight(p["account"], 24) + " " + _padLeft(_money(p["amount"]), 10) + "  " + p["desc"])
+    return "\n".join(lines) + "\n"
+
+# --- `stats`: mean/median/count of Expenses postings, plus category totals ---
+var stats = Function(txs : List) -> String:
+    var exps = book.accountPostings(txs, "Expenses")
+    var lines = []
+    if len(exps) > 0:
+        var vals = []
+        for p in exps:
+            vals.append(p["amount"])
+        lines.append("  Expenses summary")
+        lines.append("    count:   " + String(len(vals)))
+        lines.append("    mean:    " + _money(statistics.mean(vals)))
+        lines.append("    median:  " + _money(statistics.median(vals)))
+        lines.append("    min:     " + _money(min(vals)))
+        lines.append("    max:     " + _money(max(vals)))
+    else:
+        lines.append("  (no Expenses postings)")
+    var cats = book.categoryTotals(txs)
+    lines.append("")
+    lines.append("  by category")
+    for k in sorted(List(cats.keys())):
+        lines.append("    " + _padRight(k, 14) + _padLeft(_money(cats[k]), 12))
+    return "\n".join(lines) + "\n"

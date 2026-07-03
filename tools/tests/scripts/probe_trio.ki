@@ -1,0 +1,110 @@
+# A thorough re-check that every builtin/native/stdlib value type and function supports the trio:
+#   (1) keyword arguments (where fixed-arity), (2) inspect, (3) serialization (or a clean refusal for
+# resources). Focuses on the features added since regex (Bytes, gzip, hash checksums, dump->Bytes,
+# container apply, tensor item/tolist) and re-sweeps the native value types. Prints OK.
+var io = import("io")
+var serialize = import("serialize")
+var dump = import("dump")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# ====================================================================== (1) KEYWORD ARGUMENTS
+# Every fixed-arity builtin / stdlib function accepts its arguments by name.
+# -- builtins --
+assert round(x = 3.14159, ndigits = 2) == 3.14, "round(x=, ndigits=)"
+assert pow(base = 2, exp = 10) == 1024, "pow(base=, exp=)"
+assert isinstance(value = 5, type = "Integer") == True, "isinstance(value=, type=)"
+assert Integer(x = "42") == 42, "Integer(x=)"
+assert String(x = 42) == "42", "String(x=)"
+assert format(value = 255, spec = "x") == "ff", "format(value=, spec=)"
+assert ord(char = "A") == 65 and chr(codepoint = 65) == "A", "ord(char=)/chr(codepoint=)"
+# -- the binary features added this session --
+assert Bytes(x = [72, 105], encoding = "utf-8") == "Hi".encode(), "Bytes(x=, encoding=)"
+assert fromhex(s = "4869") == Bytes([72, 105]), "fromhex(s=)"
+assert "hi".encode(encoding = "latin-1") == Bytes([104, 105]), "encode(encoding=)"
+assert Bytes([233]).decode(encoding = "latin-1") == "é", "decode(encoding=)"
+assert Bytes([1, 2]).apply(fn = Function(x): return x * 2) == Bytes([2, 4]), "Bytes.apply(fn=)"
+assert [1, 2].apply(fn = Function(x): return x + 1) == [2, 3], "List.apply(fn=)"
+assert {"a": 1}.apply(fn = Function(v): return v * 10)["a"] == 10, "Dict.apply(fn=)"
+assert {5}.apply(fn = Function(x): return x) == {5}, "Set.apply(fn=)"
+assert "ab".apply(fn = Function(c): return c.upper()) == "AB", "String.apply(fn=)"
+var gzip = import("gzip")
+assert gzip.decompress(data = gzip.compress(data = "hello world")) == "hello world", "gzip(data=)"
+var zlib = import("zlib")
+assert zlib.inflate(data = zlib.deflate(data = "x")) == "x", "zlib(data=)"
+var hash = import("hash")
+assert hash.crc32(data = "hello") == 907060870, "crc32(data=)"
+assert hash.crc64(data = "123456789") == -7395533204333446662, "crc64(data=)"
+assert hash.adler32(data = "Wikipedia") == 300286872, "adler32(data=)"
+assert hash.sha256(data = "abc") == hash.sha256("abc"), "sha256(data=)"
+assert dump.loads(data = dump.dumps(value = {"k": [1, 2]})) == {"k": [1, 2]}, "dump(value=/data=)"
+# -- a representative kwarg call into each major stdlib module --
+assert import("math").pow(x = 2.0, y = 3.0) == 8.0, "math.pow(x=, y=)"
+assert import("random").Random(seed = 1).randint(a = 1, b = 1) == 1, "random.Random(seed=).randint(a=,b=)"
+var T = import("tensor")
+assert T.zeros(shape = [2, 2], requiresgrad = False).sum() == 0.0, "tensor.zeros(shape=, requiresgrad=)"
+assert T.full(shape = [2], value = 3.0).item if False else T.full(shape = [2], value = 3.0).sum() == 6.0, "tensor.full(shape=, value=)"
+assert import("matrix").zeros(rows = 2, cols = 2).get(row = 0, col = 0) == 0.0, "matrix.zeros(rows=,cols=).get(row=,col=)"
+assert import("json").stringify(value = [1, 2]) == "[1, 2]", "json.stringify(value=)"
+assert import("regex").compile(pattern = "a+").search(string = "baaa").group() == "aaa", "regex.compile(pattern=).search(string=)"
+
+# ====================================================================== (2) INSPECT
+# Every native value type names its type and lists members; every module function shows a signature.
+var has_members = Function(obj, name):
+    var s = inspect(obj)
+    return ("object:" in s or "value:" in s) and len(s.split("\n")) >= 2
+assert has_members(Bytes([1]), "Bytes"), "inspect Bytes"
+assert has_members(import("matrix").identity(2), "Matrix"), "inspect Matrix"
+assert has_members(import("complex").of(1.0, 2.0), "Complex"), "inspect Complex"
+assert has_members(import("time").now(), "DateTime"), "inspect DateTime"
+assert has_members(import("random").Random(1), "Random"), "inspect Random"
+assert has_members(T.zeros([2]), "Tensor"), "inspect Tensor"
+assert has_members(import("regex").compile("a"), "Regex"), "inspect Regex"
+assert has_members(import("io").BytesIO(), "BytesIO"), "inspect BytesIO"
+# built-in containers describe their methods (incl. apply)
+assert "apply(fn) -> List" in inspect([1]), "inspect List shows apply"
+assert "apply(fn) -> Dict" in inspect({"a": 1}), "inspect Dict shows apply"
+assert "apply(fn) -> Set" in inspect({1}), "inspect Set shows apply"
+assert "apply(fn) -> Bytes" in inspect(Bytes([1])), "inspect Bytes shows apply"
+# new tensor methods appear under inspect
+assert "item()" in inspect(T.zeros([1])) and "tolist()" in inspect(T.zeros([1])), "inspect tensor item/tolist"
+# module functions show their signatures (not generic)
+assert "compress(data)" in inspect(gzip), "inspect gzip.compress signature"
+assert "crc64(data)" in inspect(hash) and "crc32(data)" in inspect(hash), "inspect hash checksums"
+assert "dumps(value)" in inspect(dump), "inspect dump.dumps signature"
+assert "decode" in inspect(Bytes([1])) and "hex" in inspect(Bytes([1])), "inspect Bytes methods"
+
+# ====================================================================== (3) SERIALIZATION
+# every native value type round-trips through BOTH serialize (text) and dump (binary)...
+var roundtrips = Function(v) -> Bool:
+    return serialize.loads(serialize.dumps(v)) == v and dump.loads(dump.dumps(v)) == v
+assert roundtrips(Bytes([0, 1, 255, 128])), "serialize Bytes"
+assert roundtrips(import("matrix").identity(3)), "serialize Matrix"
+assert roundtrips(import("matrix").vector([1.0, 2.0, 3.0])), "serialize Vector"
+assert roundtrips(import("complex").of(1.5, -2.5)), "serialize Complex"
+assert roundtrips(import("complex").Matrix([[import("complex").of(1.0, 1.0)]])), "serialize ComplexMatrix"
+assert roundtrips(import("time").make(2024, 6, 7)), "serialize DateTime"
+assert roundtrips(T.Tensor([[1.0, 2.0], [3.0, 4.0]])), "serialize Tensor (gradient-free)"
+assert roundtrips(T.Tensor([[1, 2]], dtype = "Complex")), "serialize complex Tensor"
+# Random restores its exact stream (a reproducible checkpoint)
+var rng = import("random").Random(99)
+discard rng.random()
+var rng2 = dump.loads(dump.dumps(rng))
+assert rng.random() == rng2.random(), "serialize Random reproduces the stream"
+# ...nested inside containers and class instances...
+assert roundtrips({"name": "x", "blob": Bytes([1, 2, 3]), "pts": [import("complex").of(0.0, 1.0)]}), "serialize nested natives"
+# ...while resource-like natives refuse cleanly (never crash)...
+assert throws(Function(): return serialize.dumps(import("net").Socket())), "Socket not serializable"
+assert throws(Function(): return dump.dumps(import("io").BytesIO())), "BytesIO not serializable"
+assert throws(Function(): return serialize.dumps(import("regex").compile("a"))), "Regex not serializable"
+assert throws(Function(): return dump.dumps(import("io").open(import("path").gettempdir() + "/t.txt", "w"))), "File not serializable"
+# ...and a tensor that requires grad refuses (must detach first).
+assert throws(Function(): return serialize.dumps(T.Tensor([1.0], requiresgrad = True))), "grad tensor not serializable"
+assert roundtrips(T.Tensor([1.0], requiresgrad = True).detach()), "detached grad tensor serializes"
+
+io.print("OK trio")

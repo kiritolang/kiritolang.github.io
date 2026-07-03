@@ -1,0 +1,163 @@
+# ============================================ EVERY special/dunder method on a user class, exhaustively
+var io = import("io")
+var serialize = import("serialize")
+
+# A Vector class that overloads the COMPLETE operator/protocol set.
+class Vec:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _str_ = Function(self) -> String:
+        return f"Vec({self.x}, {self.y})"
+    var _add_ = Function(self, o):
+        return Vec(self.x + o.x, self.y + o.y)
+    var _sub_ = Function(self, o):
+        return Vec(self.x - o.x, self.y - o.y)
+    var _mul_ = Function(self, k):
+        return Vec(self.x * k, self.y * k)
+    var _div_ = Function(self, k):
+        return Vec(self.x / k, self.y / k)
+    var _floordiv_ = Function(self, k):
+        return Vec(self.x // k, self.y // k)
+    var _mod_ = Function(self, k):
+        return Vec(self.x % k, self.y % k)
+    var _pow_ = Function(self, k):
+        return Vec(self.x ** k, self.y ** k)
+    var _neg_ = Function(self):
+        return Vec(-self.x, -self.y)
+    var _eq_ = Function(self, o) -> Bool:
+        return self.x == o.x and self.y == o.y
+    # magnitude-squared ordering
+    var _mag = Function(self):
+        return self.x * self.x + self.y * self.y
+    var _lt_ = Function(self, o) -> Bool:
+        return self._mag() < o._mag()
+    var _le_ = Function(self, o) -> Bool:
+        return self._mag() <= o._mag()
+    var _gt_ = Function(self, o) -> Bool:
+        return self._mag() > o._mag()
+    var _ge_ = Function(self, o) -> Bool:
+        return self._mag() >= o._mag()
+    var _len_ = Function(self) -> Integer:
+        return 2
+    var _getitem_ = Function(self, i):
+        return self.x if i == 0 else self.y
+    var _contains_ = Function(self, v) -> Bool:
+        return v == self.x or v == self.y
+
+var a = Vec(3, 4)
+var b = Vec(1, 2)
+
+# arithmetic operators
+assert (a + b) == Vec(4, 6), "_add_"
+assert (a - b) == Vec(2, 2), "_sub_"
+assert (a * 2) == Vec(6, 8), "_mul_"
+assert (a / 2) == Vec(1.5, 2.0), "_div_"
+assert (a // 2) == Vec(1, 2), "_floordiv_"
+assert (Vec(7, 8) % 3) == Vec(1, 2), "_mod_"
+assert (Vec(2, 3) ** 2) == Vec(4, 9), "_pow_"
+assert (-a) == Vec(-3, -4), "_neg_"
+
+# comparison operators (the previously-untested _le_/_gt_/_ge_ included)
+assert b < a, "_lt_"
+assert b <= a and a <= a, "_le_"
+assert a > b, "_gt_"
+assert a >= b and a >= a, "_ge_"
+assert a == Vec(3, 4) and a != b, "_eq_ / _ne_ (defaults to not _eq_)"
+
+# container protocol
+assert len(a) == 2, "_len_"
+assert a[0] == 3 and a[1] == 4, "_getitem_"
+assert 3 in a and 5 not in a, "_contains_"
+
+# _str_ via String() and f-string and print path
+assert String(a) == "Vec(3, 4)", "_str_ via String()"
+assert f"{a}" == "Vec(3, 4)", "_str_ via f-string"
+
+# --- _call_ : a callable instance ---
+class Adder:
+    var _init_ = Function(self, base):
+        self.base = base
+    var _call_ = Function(self, x):
+        return self.base + x
+var add10 = Adder(10)
+assert add10(5) == 15, "_call_"
+assert add10(x = 7) == 17, "_call_ accepts keyword"
+
+# --- _setitem_ (variadic keys) + _getitem_ multi-key ---
+class Grid:
+    var _init_ = Function(self):
+        self.cells = {}
+    var _setitem_ = Function(self, i, j, value):
+        self.cells[String(i) + "," + String(j)] = value
+    var _getitem_ = Function(self, i, j):
+        return self.cells[String(i) + "," + String(j)]
+var grid = Grid()
+grid[1, 2] = 99
+assert grid[1, 2] == 99, "_setitem_/_getitem_ with multiple keys"
+
+# --- _iter_ : a custom iterable used in for/list/in ---
+class Countdown:
+    var _init_ = Function(self, n):
+        self.n = n
+    var _iter_ = Function(self):
+        var out = []
+        var k = self.n
+        while k > 0:
+            out.append(k)
+            k = k - 1
+        return out
+var collected = []
+for v in Countdown(3):
+    collected.append(v)
+assert collected == [3, 2, 1], "_iter_ in a for-loop"
+assert List(Countdown(3)) == [3, 2, 1], "iterable materializes via List()"
+
+# --- _not_ : custom truthiness negation ---
+class Switch:
+    var _init_ = Function(self, on):
+        self.on = on
+    var _not_ = Function(self) -> Bool:
+        return not self.on
+assert not Switch(False), "_not_"
+assert not (not Switch(True)), "_not_ double"
+
+# --- _enter_/_exit_ : context manager ---
+var log = []
+class Ctx:
+    var _enter_ = Function(self):
+        log.append("enter")
+        return self
+    var _exit_ = Function(self):
+        log.append("exit")
+with Ctx() as c:
+    log.append("body")
+assert log == ["enter", "body", "exit"], "_enter_/_exit_ ordering"
+
+# --- _super_ : parent-view method extension ---
+class Base:
+    var _init_ = Function(self, name):
+        self.name = name
+    var describe = Function(self) -> String:
+        return "Base:" + self.name
+class Derived(Base):
+    var _init_ = Function(self, name):
+        self._super_()._init_(name)
+    var describe = Function(self) -> String:
+        return "Derived+" + self._super_().describe()
+assert Derived("x").describe() == "Derived+Base:x", "_super_ method extension"
+
+# --- _getstate_/_setstate_ : serialization protocol ---
+class Secret:
+    var _init_ = Function(self, raw):
+        self.raw = raw
+    var _getstate_ = Function(self):
+        return {"r": self.raw * 2}
+    var _setstate_ = Function(self, st):
+        self.raw = st["r"] // 2
+    var _eq_ = Function(self, o) -> Bool:
+        return self.raw == o.raw
+var sec = Secret(21)
+assert serialize.loads(serialize.dumps(sec)) == sec, "_getstate_/_setstate_ round-trip"
+
+io.print("OK dunders")

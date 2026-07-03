@@ -1,0 +1,274 @@
+# Adversarial audit of Kirito's compression + checksum + encoding stack: zlib (compress/decompress/
+# deflate/inflate), gzip (compress/decompress + gunzip), hash (md5/sha1/sha256/adler32/crc32/crc64),
+# and base64 (encode/decode + urlsafe). Goes deeper than spec_zlib/spec_gzip/spec_hash/probe_compress_
+# fuzz: known vectors, String/Bytes type preservation (incl. empty), all 256 byte values, byte-flip /
+# CRC / Adler tampering, container mixing, truncation/garbage fuzzing (must RAISE not hang/crash), and
+# the actual (vs documented) behavior of base64 decode on invalid/trailing input. Deterministic.
+var io = import("io")
+var zlib = import("zlib")
+var gzip = import("gzip")
+var hash = import("hash")
+var b64 = import("base64")
+var random = import("random")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# Helpers (named so any multi-line body is hoisted out of a call site).
+var allBytes = Function() -> Bytes:
+    var xs = []
+    var i = 0
+    while i < 256:
+        xs.append(i)
+        i = i + 1
+    return Bytes(xs)
+
+var randBytes = Function(rng, n) -> Bytes:
+    var xs = []
+    var i = 0
+    while i < n:
+        xs.append(rng.randint(0, 255))
+        i = i + 1
+    return Bytes(xs)
+
+# =============================================================================================
+# 1. zlib — round-trips, type preservation (String->String, Bytes->Bytes), raw deflate
+# =============================================================================================
+assert zlib.decompress(zlib.compress("hello")) == "hello", "zlib String round-trip"
+assert zlib.decompress(zlib.compress("")) == "", "zlib empty String"
+assert type(zlib.compress("x")) == "String", "zlib String in -> String out"
+assert type(zlib.compress(Bytes([1, 2, 3]))) == "Bytes", "zlib Bytes in -> Bytes out"
+# empty Bytes: type preserved through compress + decompress
+assert type(zlib.compress(Bytes())) == "Bytes", "zlib empty Bytes -> Bytes"
+assert zlib.decompress(zlib.compress(Bytes())) == Bytes(), "zlib empty Bytes round-trip"
+assert type(zlib.decompress(zlib.compress(Bytes()))) == "Bytes", "zlib empty Bytes decompress type"
+
+# All 256 byte values present, repeated, round-trip byte-exactly
+var full = allBytes() * 8
+assert zlib.decompress(zlib.compress(full)) == full, "zlib all-256 byte values round-trip"
+
+# Highly compressible vs incompressible
+var zeros = Bytes(5000)                         # 5000 NUL bytes
+assert zlib.decompress(zlib.compress(zeros)) == zeros, "zlib zeros round-trip"
+assert len(zlib.compress(zeros)) < 200, "zeros compress tiny"
+var reps = "x" * 5000
+assert len(zlib.compress(reps)) < len(reps), "repetitive shrinks"
+# truly random bytes barely shrink (and may grow); the point is correctness, not ratio
+var rng = random.Random(424242)
+var noise = randBytes(rng, 4000)
+assert zlib.decompress(zlib.compress(noise)) == noise, "zlib incompressible round-trip"
+
+# raw deflate / inflate (no zlib header) round-trips for String and Bytes, type preserved
+assert zlib.inflate(zlib.deflate("raw deflate body")) == "raw deflate body", "deflate String round-trip"
+assert zlib.inflate(zlib.deflate(full)) == full, "deflate Bytes round-trip"
+assert type(zlib.deflate(Bytes([9, 9]))) == "Bytes", "deflate Bytes in -> Bytes out"
+
+# zlib stream and raw deflate are DIFFERENT framings: a raw deflate body is not a valid zlib stream
+# (no 2-byte header / Adler trailer) -> decompress must reject it.
+assert throws(Function(): return zlib.decompress(zlib.deflate("payload payload payload"))), "raw deflate != zlib stream"
+
+# =============================================================================================
+# 2. zlib — adversarial corruption / garbage (must RAISE, never crash or hang)
+# =============================================================================================
+assert throws(Function(): return zlib.decompress("garbage zlib data")), "zlib garbage throws"
+assert throws(Function(): return zlib.decompress(Bytes([1, 2, 3, 4, 5, 6]))), "zlib short garbage throws"
+assert throws(Function(): return zlib.decompress("")), "zlib empty-stream decompress throws"
+assert throws(Function(): return zlib.inflate(Bytes([255, 255, 255]))), "inflate garbage throws"
+assert throws(Function(): return zlib.compress(42)), "zlib compress rejects Integer"
+assert throws(Function(): return zlib.compress([1, 2, 3])), "zlib compress rejects List"
+
+# flip a byte in a valid zlib body -> detected (bad Huffman / Adler mismatch)
+var zb = zlib.compress(Bytes("important payload to corrupt".encode()))
+var zn = len(zb)
+var zflip = zb[0:5] + Bytes([bitxor(zb[5], 255)]) + zb[6:zn]
+assert throws(Function(): return zlib.decompress(zflip)), "zlib body byte-flip detected"
+# tamper the trailing Adler-32 checksum -> detected
+var zadler = zb[0:zn-1] + Bytes([bitxor(zb[zn-1], 255)])
+assert throws(Function(): return zlib.decompress(zadler)), "zlib Adler-32 tamper detected"
+# truncated stream -> throws
+assert throws(Function(): return zlib.decompress(zb[0:zn//2])), "zlib truncated throws"
+
+# =============================================================================================
+# 3. gzip — round-trips, gunzip alias, type preservation, magic header
+# =============================================================================================
+var gtext = "The quick brown fox jumps over the lazy dog. " * 20
+assert gzip.decompress(gzip.compress(gtext)) == gtext, "gzip String round-trip"
+assert gzip.gunzip(gzip.gzip(gtext)) == gtext, "gzip/gunzip alias round-trip"
+assert type(gzip.compress("x")) == "String", "gzip String in -> String out"
+assert type(gzip.compress(Bytes([1, 2]))) == "Bytes", "gzip Bytes in -> Bytes out"
+assert gzip.decompress(gzip.compress(full)) == full, "gzip all-256 byte values round-trip"
+assert gzip.decompress(gzip.compress(Bytes())) == Bytes(), "gzip empty Bytes round-trip"
+assert type(gzip.compress(Bytes())) == "Bytes", "gzip empty Bytes -> Bytes"
+# gzip magic header is 0x1f 0x8b (interoperable .gz container)
+var gz = gzip.compress(Bytes([7, 7, 7]))
+assert gz[0] == 31 and gz[1] == 139, "gzip magic 1f 8b"
+# a real gzip stream of empty input is 20 bytes (10 header + 2 empty-deflate + 8 trailer)
+assert len(gzip.compress(Bytes())) == 20, "gzip empty stream is 20 bytes"
+
+# =============================================================================================
+# 4. gzip — adversarial corruption (must RAISE)
+# =============================================================================================
+assert throws(Function(): return gzip.decompress("not a gzip stream at all")), "gzip bad magic throws"
+assert throws(Function(): return gzip.decompress(Bytes([0, 1, 2, 3]))), "gzip bad magic bytes throw"
+assert throws(Function(): return gzip.decompress(Bytes([31, 139, 8, 0, 0]))), "gzip truncated header throws"
+assert throws(Function(): return gzip.compress(3.14)), "gzip rejects Float"
+# byte-flip in the gzip DEFLATE body -> CRC-32 mismatch detected
+var gg = gzip.compress(Bytes("data that will be corrupted in its body".encode()))
+var gn = len(gg)
+var gflip = gg[0:15] + Bytes([bitxor(gg[15], 255)]) + gg[16:gn]
+assert throws(Function(): return gzip.decompress(gflip)), "gzip body flip detected (CRC)"
+# tamper the CRC-32 trailer (4 bytes at [gn-8 .. gn-5]) -> detected
+var gcrc = gg[0:gn-8] + Bytes([bitxor(gg[gn-8], 255)]) + gg[gn-7:gn]
+assert throws(Function(): return gzip.decompress(gcrc)), "gzip CRC-32 trailer tamper detected"
+
+# Containers do NOT cross: a gzip stream is not a zlib stream and vice-versa.
+assert throws(Function(): return zlib.decompress(gzip.compress(Bytes([1, 2, 3])))), "zlib.decompress rejects gzip"
+assert throws(Function(): return gzip.decompress(zlib.compress(Bytes([1, 2, 3])))), "gzip.decompress rejects zlib"
+# inflate (raw) cannot read a zlib stream (the 2-byte header derails it)
+assert throws(Function(): return zlib.inflate(zlib.compress("abc"))), "inflate rejects zlib stream"
+
+# --- gzip ISIZE (uncompressed-length) trailer IS validated, like a strict gunzip(1). ---
+# gzip.decompress verifies both the CRC-32 and the final 4-byte ISIZE field, so a stream with a
+# corrupt ISIZE is rejected rather than silently accepted.
+var giorig = gzip.compress(Bytes("payload".encode()))
+var gio = giorig[0:len(giorig)-4] + Bytes([255, 255, 255, 255])
+var isize_raised = False
+try:
+    discard gzip.decompress(gio)
+catch as e:
+    isize_raised = True
+assert isize_raised, "gzip rejects a corrupt ISIZE trailer"
+
+# =============================================================================================
+# 5. hash — KNOWN VECTORS + String/Bytes agreement + determinism + lengths
+# =============================================================================================
+assert hash.md5("") == "d41d8cd98f00b204e9800998ecf8427e", "md5 empty vector"
+assert hash.md5("abc") == "900150983cd24fb0d6963f7d28e17f72", "md5 abc vector"
+assert hash.sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d", "sha1 abc vector"
+assert hash.sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 empty vector"
+assert hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc vector"
+assert hash.crc32("123456789") == 3421780262, "crc32 check value"
+assert hash.crc32("") == 0, "crc32 empty"
+assert hash.adler32("Wikipedia") == 300286872, "adler32 Wikipedia vector"
+assert hash.adler32("") == 1, "adler32 empty"
+# CRC-64/XZ check value for "123456789" is 0x995dc9bbdf1939fa (top bit set -> negative int64)
+assert hash.crc64("123456789") == -7395533204333446662, "crc64/XZ check value"
+assert hash.crc64("") == 0, "crc64 empty"
+
+# digest lengths are fixed regardless of input
+assert len(hash.md5("anything")) == 32, "md5 hex len 32"
+assert len(hash.sha1("anything")) == 40, "sha1 hex len 40"
+assert len(hash.sha256("anything")) == 64, "sha256 hex len 64"
+assert len(hash.sha256(full)) == 64, "sha256 over binary still 64"
+
+# String and the equivalent Bytes give identical digests/checksums
+assert hash.md5(Bytes([97, 98, 99])) == hash.md5("abc"), "md5 Bytes == String"
+assert hash.sha1("abc".encode()) == hash.sha1("abc"), "sha1 Bytes == String"
+assert hash.sha256("abc".encode()) == hash.sha256("abc"), "sha256 Bytes == String"
+assert hash.crc32(Bytes([104, 101, 108, 108, 111])) == hash.crc32("hello"), "crc32 Bytes == String"
+assert hash.adler32("hello".encode()) == hash.adler32("hello"), "adler32 Bytes == String"
+assert hash.crc64("hello".encode()) == hash.crc64("hello"), "crc64 Bytes == String"
+
+# determinism + avalanche, over many seeded random inputs (cheap; bounded sizes)
+var hr = random.Random(13579)
+var h = 0
+while h < 60:
+    var b = randBytes(hr, hr.randint(0, 160))
+    assert hash.sha256(b) == hash.sha256(b), "sha256 deterministic"
+    assert hash.md5(b) == hash.md5(b), "md5 deterministic"
+    assert len(hash.sha256(b)) == 64, "sha256 len stable on random"
+    assert hash.crc32(b) >= 0, "crc32 non-negative"
+    assert hash.adler32(b) >= 0, "adler32 non-negative"
+    h = h + 1
+assert hash.sha256("hello") != hash.sha256("hellp"), "sha256 avalanche"
+assert hash.crc32("hello") != hash.crc32("hellp"), "crc32 avalanche"
+
+# wrong-type inputs throw cleanly, never crash
+assert throws(Function(): return hash.md5(42)), "md5 rejects Integer"
+assert throws(Function(): return hash.sha256([1, 2, 3])), "sha256 rejects List"
+assert throws(Function(): return hash.crc32(None)), "crc32 rejects None"
+assert throws(Function(): return hash.crc64(3.14)), "crc64 rejects Float"
+
+# =============================================================================================
+# 6. base64 — round-trip, padding edges (lengths 0..8), all-256, urlsafe alphabet
+# =============================================================================================
+# encode accepts String, Bytes, and List of byte values; decode returns a List of byte values.
+assert b64.encode("Hi") == "SGk=", "base64 encode String"
+assert b64.encode(Bytes([72, 105])) == "SGk=", "base64 encode Bytes"
+assert b64.encode([72, 105]) == "SGk=", "base64 encode List"
+assert Bytes(b64.decode("SGk=")) == Bytes([72, 105]), "base64 decode -> List of bytes"
+
+# padding edges: 1 leftover byte -> 2 '=', 2 leftover -> 1 '='
+assert b64.encode(Bytes([255])) == "/w==", "base64 1-byte padding"
+assert b64.encode(Bytes([255, 255])) == "//8=", "base64 2-byte padding"
+assert b64.encode(Bytes([255, 255, 255])) == "////", "base64 3-byte no padding"
+
+# all 256 byte values + every length 0..8 round-trips through standard AND urlsafe
+var src = allBytes()
+assert Bytes(b64.decode(b64.encode(src))) == src, "base64 all-256 round-trip"
+assert Bytes(b64.urlsafedecode(b64.urlsafeencode(src))) == src, "urlsafe all-256 round-trip"
+var k = 0
+while k <= 8:
+    var sub = src[0:k]
+    assert Bytes(b64.decode(b64.encode(sub))) == sub, "base64 round-trip len 0..8"
+    assert Bytes(b64.urlsafedecode(b64.urlsafeencode(sub))) == sub, "urlsafe round-trip len 0..8"
+    k = k + 1
+
+# urlsafe uses -_ where standard uses +/ (bytes FB FF BF -> standard "+/+/", urlsafe "-_-_")
+var trio = Bytes([251, 255, 191])
+assert b64.encode(trio) == "+/+/", "standard alphabet uses +/"
+assert b64.urlsafeencode(trio) == "-_-_", "urlsafe alphabet uses -_"
+# Cross-alphabet decoding is ASYMMETRIC. Standard decode of a urlsafe string (with - _) throws,
+# because - and _ are not in the standard alphabet.
+assert throws(Function(): return b64.decode("-_-_")), "standard decode rejects urlsafe chars"
+# --- DOCUMENTED-VS-ACTUAL: urlsafedecode is LENIENT and also accepts the standard + / chars. It
+# only translates -_ -> +/ and then runs the standard decoder, which still recognizes + and /, so a
+# standard-alphabet string round-trips through urlsafedecode too (no rejection of the "wrong" alphabet).
+assert Bytes(b64.urlsafedecode("+/+/")) == trio, "urlsafedecode also accepts standard +/ (lenient)"
+assert Bytes(b64.urlsafedecode("-_-_")) == trio, "urlsafedecode accepts urlsafe -_"
+
+# --- DOCUMENTED-VS-ACTUAL base64 decode behaviors (the docs only describe the happy path) ---
+# (a) An invalid character BEFORE the padding throws (Dict key-lookup error, catchable — not a crash).
+assert throws(Function(): return b64.decode("####")), "base64 invalid char throws"
+assert throws(Function(): return b64.decode("SG!o")), "base64 embedded invalid char throws"
+# (b) Whitespace/newlines are NOT tolerated: MIME/PEM-style line-wrapped base64 is rejected. A real
+# base64 decoder usually skips whitespace; Kirito's does not.
+assert throws(Function(): return b64.decode("SGVs\nbG8=")), "base64 rejects embedded newline (no whitespace skipping)"
+# (c) Anything AFTER the first '=' is SILENTLY DROPPED (the decode loop breaks at '='): trailing
+# garbage past the padding is ignored rather than rejected.
+assert b64.decode("SGk=") == b64.decode("SGk=trailing-garbage-ignored"), "base64 silently drops bytes after '='"
+assert Bytes(b64.decode("SGk=!!!@@@")) == Bytes([72, 105]), "base64 trailing-after-pad ignored"
+
+# =============================================================================================
+# 7. fuzz: random garbage into every decoder must terminate (no hang / no crash). The CHECKSUMMED
+# paths (zlib decompress, gzip decompress) must additionally REJECT every garbage stream; raw inflate
+# has no checksum, so a random bitstream may occasionally parse as a valid (meaningless) block.
+# Bounded sizes + a fixed seed keep this deterministic and fast.
+var fz = random.Random(98765)
+var t = 0
+var decompAllRaised = True
+var gzipAllRaised = True
+while t < 120:
+    var g = randBytes(fz, fz.randint(1, 48))
+    # raw inflate of pure garbage: must not crash/hang (return value irrelevant — no checksum).
+    discard throws(Function(): return zlib.inflate(g))
+    # zlib decompress of a valid 2-byte header + garbage body + zero Adler -> checksum must reject all.
+    var withHdr = Bytes([120, 156]) + g + Bytes([0, 0, 0, 0])
+    if not throws(Function(): return zlib.decompress(withHdr)):
+        decompAllRaised = False
+    # gzip decompress of a valid magic + garbage + a NON-zero CRC trailer. A non-zero CRC can't be
+    # matched by the empty-string CRC (0), so even a garbage body that inflates to "" is rejected;
+    # this makes the CRC the decisive guard rather than a coincidence. (Termination is the invariant
+    # regardless.)
+    var withMagic = Bytes([31, 139, 8, 0, 0, 0, 0, 0, 0, 255]) + g + Bytes([1, 2, 3, 4, 0, 0, 0, 0])
+    if not throws(Function(): return gzip.decompress(withMagic)):
+        gzipAllRaised = False
+    t = t + 1
+assert decompAllRaised, "every checksummed zlib stream of garbage was rejected (no hang/crash)"
+assert gzipAllRaised, "every checksummed gzip stream of garbage was rejected (no hang/crash)"
+
+io.print("OK deep-compress")

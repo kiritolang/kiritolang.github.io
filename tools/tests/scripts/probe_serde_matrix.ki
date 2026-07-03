@@ -1,0 +1,144 @@
+# ============================================ SERIALIZATION MATRIX: every kind x every format, exhaustive
+var io = import("io")
+var serialize = import("serialize")
+var dump = import("dump")
+var json = import("json")
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# --- (1) every builtin value kind round-trips identically through serialize AND dump ---
+var scalars = [None, True, False, 0, 1, -1, 42, -42, 9223372036854775807, -9223372036854775808,
+               0.0, -0.0, 3.14159, -2.5, 1e308, "", "a", "héllo😀世界", "tab\there", "nl\nhere",
+               "quote\"s'", "null\x00byte"]
+for v in scalars:
+    assert serialize.loads(serialize.dumps(v)) == v, "serialize scalar round-trip"
+    assert dump.loads(dump.dumps(v)) == v, "dump scalar round-trip"
+
+# --- (2) collections, deeply nested + mixed ---
+var collections = [[], {}, Set(), [1, 2, 3], {"a": 1, "b": 2}, Set([1, 2, 3]),
+                   [1, "two", 3.0, True, None, [4, 5], {"k": "v"}, Set([6, 7])],
+                   {"list": [1, 2], "dict": {"x": [3, {"y": 4}]}, "set": Set([8, 9]), "scalar": 5},
+                   [[[[[[[[1]]]]]]]], {"deep": {"deeper": {"deepest": [1, 2, 3]}}}]
+for v in collections:
+    assert serialize.loads(serialize.dumps(v)) == v, "serialize collection round-trip"
+    assert dump.loads(dump.dumps(v)) == v, "dump collection round-trip"
+
+# --- (3) Dict with every scalar key type (Integer/Float/String/Bool/None) ---
+var keyed = {1: "int", 2.5: "float", "k": "str", True: "bool", None: "none"}
+assert serialize.loads(serialize.dumps(keyed)) == keyed, "serialize mixed-key dict"
+assert dump.loads(dump.dumps(keyed)) == keyed, "dump mixed-key dict"
+
+# --- (4) shared references (copied once) + cycles (self + mutual) ---
+var sh = [9]
+var shg = {"a": sh, "b": [sh, sh]}
+var r1 = serialize.loads(serialize.dumps(shg))
+assert id(r1["a"]) == id(r1["b"][0]) and id(r1["a"]) == id(r1["b"][1]), "serialize shared ref through dict+list"
+var r1d = dump.loads(dump.dumps(shg))
+assert id(r1d["a"]) == id(r1d["b"][0]), "dump shared ref"
+var selfcyc = [1]
+selfcyc.append(selfcyc)
+var sc = serialize.loads(serialize.dumps(selfcyc))
+assert id(sc[1]) == id(sc), "serialize self-cycle"
+var scd = dump.loads(dump.dumps(selfcyc))
+assert scd[0] == 1 and id(scd[1]) == id(scd), "dump self-cycle"
+var A = [1]
+var B = [2]
+A.append(B)
+B.append(A)
+var ra = serialize.loads(serialize.dumps(A))
+assert id(ra[1][1]) == id(ra), "serialize mutual cycle"
+
+# --- (5) user-class instances: auto-by-attributes, nested, shared, and _getstate_/_setstate_ ---
+class Node:
+    var _init_ = Function(self, val):
+        self.val = val
+        self.next = None
+    var _eq_ = Function(self, o) -> Bool:
+        return self.val == o.val and self.next == o.next
+var n1 = Node(1)
+var n2 = Node(2)
+n1.next = n2
+assert serialize.loads(serialize.dumps(n1)) == n1, "serialize linked instances (auto attrs)"
+assert dump.loads(dump.dumps(n1)) == n1, "dump linked instances"
+
+class Boxed:
+    var _init_ = Function(self, x):
+        self.x = x
+    var _getstate_ = Function(self):
+        return [self.x]
+    var _setstate_ = Function(self, st):
+        self.x = st[0]
+    var _eq_ = Function(self, o) -> Bool:
+        return self.x == o.x
+var bx = Boxed([1, {"k": 2}])
+assert serialize.loads(serialize.dumps(bx)) == bx, "serialize _getstate_/_setstate_"
+assert dump.loads(dump.dumps(bx)) == bx, "dump _getstate_/_setstate_"
+
+# shared instance preserved
+var shared = Node(7)
+var pair = [shared, shared]
+var rp = serialize.loads(serialize.dumps(pair))
+assert id(rp[0]) == id(rp[1]), "serialize shared instance copied once"
+
+# instance inside a collection inside an instance
+class Wrap:
+    var _init_ = Function(self, items):
+        self.items = items
+    var _eq_ = Function(self, o) -> Bool:
+        return self.items == o.items
+var w = Wrap([Node(1), Node(2), {"k": Node(3)}])
+assert dump.loads(dump.dumps(w)) == w, "dump instance->list->instance graph"
+
+# --- (6) json: flat data round-trips; indent; rejects Set/instance/malformed cleanly ---
+var flat = {"i": 1, "f": 2.5, "s": "x", "b": True, "n": None, "list": [1, 2, [3]], "obj": {"k": "v"}}
+assert json.loads(json.dumps(flat)) == flat, "json flat round-trip"
+assert "\n" in json.dumps(flat, indent = 2), "json indent"
+assert json.loads("[1, 2.5, \"x\", true, false, null]") == [1, 2.5, "x", True, False, None], "json parse literals"
+assert throws(Function(): return json.dumps(Set([1]))), "json rejects Set"
+assert throws(Function(): return json.dumps(n1)), "json rejects instance"
+assert throws(Function(): return json.loads("{bad")), "json rejects malformed"
+
+# --- (7a) native VALUE types opt into both graph formats via _getstate_/_setstate_ and round-trip
+#          identically (matrix/complex/datetime/tensor all have value equality) ---
+var mat = import("matrix")
+var cpx = import("complex")
+var serializableNatives = [
+    ["Matrix", mat.Matrix([[1.0, 2.0], [3.0, 4.0]])],
+    ["Vector", mat.vector([1.0, 2.0, 3.0])],
+    ["Complex", cpx.of(1.5, -2.5)],
+    ["ComplexMatrix", cpx.identity(3)],
+    ["DateTime", import("time").make(2021, 6, 15, 8, 30, 0)],
+    ["Tensor", import("tensor").Tensor([[1.0, 2.0], [3.0, 4.0]])]
+]
+for nv in serializableNatives:
+    assert serialize.loads(serialize.dumps(nv[1])) == nv[1], "serialize round-trips native " + nv[0]
+    assert dump.loads(dump.dumps(nv[1])) == nv[1], "dump round-trips native " + nv[0]
+# Random has no value equality, so verify the restored generator continues the exact same stream.
+var rgen = import("random").Random(99)
+discard rgen.random()
+var rclone = dump.loads(dump.dumps(rgen))
+assert rgen.random() == rclone.random(), "Random restores its exact stream"
+
+# --- (7b) RESOURCE-like natives (live sockets/streams, compiled regex, opaque blobs) cannot be
+#          serialized and throw a clean (catchable) error, never crash ---
+var resourceNatives = [
+    ["Socket", Function(): return import("net").Socket()],
+    ["Session", Function(): return import("net").Session()],
+    ["Regex", Function(): return import("regex").compile("a")],
+    ["Match", Function(): return import("regex").compile("(a)").search("a")],
+    ["BytesIO", Function(): return import("io").BytesIO()]
+]
+for nv in resourceNatives:
+    assert throws(Function(): return serialize.dumps(nv[1]())), "serialize rejects resource native " + nv[0]
+    assert throws(Function(): return dump.dumps(nv[1]())), "dump rejects resource native " + nv[0]
+
+# --- (8) corrupt/garbage inputs to loaders throw cleanly ---
+assert throws(Function(): return dump.loads("garbage not a blob")), "dump.loads rejects garbage"
+assert throws(Function(): return dump.loads("")), "dump.loads rejects empty"
+assert throws(Function(): return serialize.loads("garbage")), "serialize.loads rejects garbage"
+
+io.print("OK serde-matrix")

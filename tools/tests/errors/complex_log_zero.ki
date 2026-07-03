@@ -1,0 +1,1 @@
+discard import("complex").log(import("complex").zero)

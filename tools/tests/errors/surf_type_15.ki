@@ -1,0 +1,2 @@
+# type/operator: '%' (modulo) is undefined for a String left operand
+discard "abc" % 5

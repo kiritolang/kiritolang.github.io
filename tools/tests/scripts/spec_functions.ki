@@ -1,0 +1,98 @@
+# Exhaustive + adversarial checks for functions: closures, defaults, kwargs, annotations, recursion.
+var io = import("io")
+
+# --- basics + return ---
+var add = Function(a, b):
+    return a + b
+assert add(2, 3) == 5, "basic call"
+var noReturn = Function():
+    discard 1
+assert noReturn() == None, "implicit return None"
+
+# --- default arguments ---
+var power = Function(base, exp=2):
+    return base ** exp
+assert power(5) == 25 and power(5, 3) == 125, "default arg"
+assert power(base=4) == 16 and power(exp=3, base=2) == 8, "keyword args any order"
+
+# --- keyword args mixed with positional ---
+var sub = Function(a, b):
+    return a - b
+assert sub(10, 3) == 7 and sub(a=10, b=3) == 7 and sub(b=3, a=10) == 7 and sub(10, b=3) == 7, "kwargs mixing"
+
+# --- closures capture by reference, can rebind outer ---
+var makeCounter = Function():
+    var n = 0
+    var inc = Function():
+        n = n + 1
+        return n
+    return inc
+var c1 = makeCounter()
+var c2 = makeCounter()
+assert c1() == 1 and c1() == 2 and c1() == 3, "closure accumulates"
+assert c2() == 1, "closures are independent"
+
+# closure captures loop-built value
+var adders = []
+var mk = Function(k):
+    return Function(x): return x + k
+for k in range(3):
+    adders.append(mk(k))
+assert adders[0](10) == 10 and adders[1](10) == 11 and adders[2](10) == 12, "captured params distinct"
+
+# --- recursion + mutual recursion ---
+var fact = Function(n):
+    if n <= 1:
+        return 1
+    return n * fact(n - 1)
+assert fact(5) == 120 and fact(0) == 1, "recursion"
+var isEven = Function(n):
+    if n == 0:
+        return True
+    return isOdd(n - 1)
+var isOdd = Function(n):
+    if n == 0:
+        return False
+    return isEven(n - 1)
+assert isEven(10) and isOdd(7) and not isEven(3), "mutual recursion"
+
+# --- inline (anonymous) functions ---
+var sq = Function(x): return x * x
+assert sq(6) == 36, "inline function"
+assert (Function(a, b): return a * b)(3, 4) == 12, "immediately-invoked inline"
+
+# --- return packing (bare comma) ---
+var minmax = Function(xs):
+    return min(xs), max(xs)
+assert minmax([3, 1, 5, 2]) == [1, 5], "return packs into List"
+var lo, hi = minmax([4, 9, 1])
+assert lo == 1 and hi == 9, "unpack returned pair"
+
+# --- enforced type annotations (param + return), inheritance-aware ---
+var typed = Function(d : Dict) -> Integer:
+    return len(d)
+assert typed({"a": 1, "b": 2}) == 2, "annotation accepts correct type"
+var annErr = False
+try:
+    discard typed([1, 2, 3])
+catch as e:
+    annErr = True
+assert annErr, "param annotation rejects wrong type"
+var retErr = False
+try:
+    var bad = Function() -> Integer:
+        return "nope"
+    bad()
+catch as e:
+    retErr = True
+assert retErr, "return annotation enforced"
+# Any / no annotation accept everything
+var anyf = Function(x : Any):
+    return x
+assert anyf("s") == "s" and anyf([1]) == [1] and anyf(None) == None, "Any accepts all"
+
+# --- higher-order: map / filter receiving functions ---
+assert List(map(Function(x): return x * 2, [1, 2, 3])) == [2, 4, 6], "map with function"
+assert List(filter(Function(x): return x % 2 == 0, [1, 2, 3, 4])) == [2, 4], "filter with function"
+
+io.print("OK")

@@ -1,0 +1,288 @@
+# R7 exhaustive re-audit of the `tabular` stdlib module (Series + DataFrame + GroupBy).
+# COMPLEMENTS tools/tests/scripts/audit_tabular.ki (does not duplicate it) by probing:
+#   * merge column-name COLLISION -> pandas-style _x/_y suffixing (undocumented behavior)
+#   * Bool columns inside DataFrame/GroupBy numeric reductions (audit only does Series-level Bool)
+#   * unique()/nunique() INCLUDE None, asymmetric with valuecounts() which skips it
+#   * multi-key sortvalues / groupby are NOT supported (single column only) -> must throw
+#   * reflected ops (scalar OP Series) throw (Kirito does not dispatch reflected binops to a class)
+#   * Series length-mismatch arithmetic throws in BOTH operand orders
+#   * cartesian merge when the join key is duplicated on BOTH sides
+#   * df.apply / frame reductions SKIP non-numeric columns; all-string frame -> empty Series
+#   * astype conversion failures throw; astype default branch (unknown name -> String)
+#   * empty-frame __setitem__ (scalar broadcast over 0 rows vs a list that sets the row count)
+#   * describe exact stat values + multi-column ordering
+#   * agg median (odd/even) + agg on the BY column itself; group std single-element -> None
+#   * outer-merge row ordering, 3-way concat column-union ordering
+#   * Series integer-label vs position collision (label wins)
+#   * readcsv overlong-row throw, tocsv of an empty frame, deterministic valuecounts tie handling
+#
+# All numeric aggregations are checked with `.compare(...)` (Float == is exact). Data is inline for
+# determinism; no external files are read.
+
+var io = import("io")
+var tabular = import("tabular")
+var math = import("math")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+var NAN = math.nan
+
+# Sort a list of [value, count] pairs so a tie comparison is order-independent (Dict iteration
+# order is documented as not-guaranteed; valuecounts only guarantees descending-by-count).
+var pairsorted = Function(idx, vals):
+    var pairs = []
+    var i = 0
+    while i < len(idx):
+        pairs.append([String(idx[i]), vals[i]])
+        i = i + 1
+    pairs.sort(Function(p): return p[0])
+    return pairs
+
+# ============================================================ merge column-name collision (_x/_y)
+# Two non-key columns named "val" collide -> left becomes val_x, right becomes val_y (pandas-style).
+var L = tabular.DataFrame([[1, "la", 10]], columns=["id", "val", "lonly"])
+var R = tabular.DataFrame([[1, "rb", 20]], columns=["id", "val", "ronly"])
+var mc = tabular.merge(L, R, on="id")
+ok(mc.columns == ["id", "val_x", "lonly", "val_y", "ronly"], "merge suffixes colliding non-key cols _x/_y")
+ok(mc["val_x"].tolist() == ["la"], "merge val_x is the left column")
+ok(mc["val_y"].tolist() == ["rb"], "merge val_y is the right column")
+ok(mc["id"].tolist() == [1], "merge key column keeps its bare name")
+# No collision -> names are preserved unchanged
+var mnc = tabular.merge(tabular.DataFrame([[1, "x"]], columns=["id", "a"]), tabular.DataFrame([[1, "y"]], columns=["id", "b"]), on="id")
+ok(mnc.columns == ["id", "a", "b"], "merge without collision keeps original column names")
+
+# ============================================================ cartesian merge (dup key both sides)
+var CL = tabular.DataFrame([[1, "a"], [1, "b"]], columns=["id", "x"])
+var CR = tabular.DataFrame([[1, "p"], [1, "q"]], columns=["id", "y"])
+var cm = tabular.merge(CL, CR, on="id")
+ok(len(cm) == 4, "duplicate key on both sides -> cartesian (2x2 = 4 rows)")
+ok(cm["x"].tolist() == ["a", "a", "b", "b"], "cartesian left key repeats per right match")
+ok(cm["y"].tolist() == ["p", "q", "p", "q"], "cartesian right cycles within each left row")
+
+# ============================================================ outer-merge ordering
+var OL = tabular.DataFrame([[1, "a"], [2, "b"]], columns=["id", "x"])
+var OR = tabular.DataFrame([[2, "p"], [3, "q"]], columns=["id", "y"])
+var oj = tabular.merge(OL, OR, on="id", how="outer")
+ok(oj["id"].tolist() == [1, 2, 3], "outer: matched/left rows first, then unmatched right rows")
+ok(oj["x"].tolist() == ["a", "b", None], "outer: unmatched right row gets None on left cols")
+ok(oj["y"].tolist() == [None, "p", "q"], "outer: unmatched left row gets None on right cols")
+# right-join unmatched-right key is sourced from the right frame
+var rj = tabular.merge(OL, OR, on="id", how="right")
+ok(rj["id"].tolist() == [2, 3], "right: keeps every right row, key from right")
+
+# merge errors / shared 'how' validation across both entry points
+ok(throws(Function(): return tabular.merge(L, tabular.DataFrame([["z"]], columns=["q"]), on="id")), "merge on a key absent from right throws")
+ok(throws(Function(): return tabular.merge(L, R, on="id", how="cross")), "module merge rejects an unknown how")
+ok(throws(Function(): return L.merge(R, on="id", how="diagonal")), "instance merge rejects an unknown how")
+
+# ============================================================ Bool columns in frame reductions
+var DB = tabular.DataFrame({"flag": [True, False, True, True], "n": [10, 20, 30, 40]}, columns=["flag", "n"])
+ok(DB.sum().tolist() == [3, 100], "df.sum counts Bool column as 0/1")
+ok(DB.mean()["flag"].compare(0.75), "df.mean of a Bool column (3/4)")
+ok(DB.min().tolist() == [0, 10], "df.min Bool column -> 0")
+ok(DB.max().tolist() == [1, 40], "df.max Bool column -> 1")
+# Bool column participates in describe
+var descb = DB.describe()
+ok("flag" in descb.columns, "describe includes a Bool column (numeric)")
+
+# ============================================================ groupby on Bool / numeric keys
+var GB = tabular.DataFrame({"k": [True, False, True], "v": [1, 2, 3]}, columns=["k", "v"])
+var gb = GB.groupby("k")
+ok(gb.keys == [True, False], "groupby keys keep first-seen order (Bool keys)")
+ok(gb.sum()["v"].tolist() == [4, 2], "groupby Bool-key sum")
+ok(gb.size().tolist() == [2, 1], "groupby Bool-key size")
+# numeric (Integer) keys, all distinct
+var GN = tabular.DataFrame({"k": [3, 1, 2], "v": [9, 8, 7]}, columns=["k", "v"])
+ok(GN.groupby("k").keys == [3, 1, 2], "groupby Integer keys in first-seen order")
+ok(GN.groupby("k").sum()["v"].tolist() == [9, 8, 7], "groupby distinct Integer keys -> one row each")
+
+# ============================================================ groupby std single-element -> None
+var GS = tabular.DataFrame({"k": ["A", "A", "B"], "v": [10, 20, 30]}, columns=["k", "v"])
+var gstd = GS.groupby("k").std()["v"].tolist()
+ok(gstd[0].compare(2.0 ** 0.5 * 5.0), "groupby std of a 2-element group")
+ok(gstd[1] == None, "groupby std of a single-element group is None (needs >= 2)")
+# group mean is Float
+ok(GS.groupby("k").mean()["v"][0].compare(15.0), "groupby mean is exact-comparable Float")
+
+# ============================================================ agg median (odd/even) + on by-col
+var GM = tabular.DataFrame({"k": ["A", "A", "A", "B"], "v": [10, 20, 30, 40]}, columns=["k", "v"])
+ok(GM.groupby("k").agg({"v": "median"})["v"].tolist() == [20, 40], "agg median odd group -> middle, single -> itself")
+var GM2 = tabular.DataFrame({"k": ["A", "A", "A", "A"], "v": [1, 2, 3, 4]}, columns=["k", "v"])
+ok(GM2.groupby("k").agg({"v": "median"})["v"][0].compare(2.5), "agg median even group -> mean of middles")
+# agg referencing the BY column itself (count of group members)
+ok(GM.groupby("k").agg({"k": "count"}).todict() == {"k": [3, 1]}, "agg can reduce the by-column")
+# agg std (sqrt variance) is exact-comparable
+var GST = tabular.DataFrame({"k": ["A", "A", "A", "A", "A", "A", "A", "A"], "v": [2, 4, 4, 4, 5, 5, 7, 9]}, columns=["k", "v"])
+ok(GST.groupby("k").agg({"v": "std"})["v"][0].compare((32.0 / 7.0) ** 0.5), "agg std matches sample stdev")
+
+# ============================================================ unique/nunique INCLUDE None (asymmetry)
+var SU = tabular.Series([1, None, 1, 2, None, 3])
+ok(SU.unique() == [1, None, 2, 3], "unique() includes None and preserves first-seen order")
+ok(SU.nunique() == 4, "nunique() counts None as a distinct value")
+# valuecounts SKIPS None (the documented descending-count Series) -> different from unique
+var vcu = SU.valuecounts()
+ok(None not in vcu.index, "valuecounts() omits None (asymmetric with unique)")
+ok(vcu.tolist() == [2, 1, 1], "valuecounts of [1,None,1,2,None,3] is [2,1,1] (None dropped)")
+
+# valuecounts: distinct counts -> fully ordered descending
+var vcd = tabular.Series(["a", "a", "a", "b", "b", "c"]).valuecounts()
+ok(vcd.index == ["a", "b", "c"] and vcd.tolist() == [3, 2, 1], "valuecounts distinct counts fully ordered")
+# valuecounts ties -> descending-by-count holds; tie order compared order-independently
+var vct = tabular.Series(["x", "x", "y", "y", "z"]).valuecounts()
+ok(vct.tolist()[0] == 2 and vct.tolist()[len(vct) - 1] == 1, "valuecounts ties: counts are descending")
+ok(pairsorted(vct.index, vct.tolist()) == [["x", 2], ["y", 2], ["z", 1]], "valuecounts tie membership (order-independent)")
+
+# ============================================================ Series integer-label vs position
+var SL = tabular.Series([10, 20, 30], index=[2, 0, 1])
+ok(SL[0] == 20, "Series label 0 (at position 1) wins over position")
+ok(SL[2] == 10, "Series label 2 (at position 0) wins over position")
+ok(SL[1] == 30, "Series label 1 (at position 2) wins over position")
+# string index falls back to position when the key is not a label
+var SP = tabular.Series([7, 8, 9], index=["a", "b", "c"])
+ok(SP[0] == 7 and SP[2] == 9, "Series with non-integer index falls back to positional access")
+ok(SP.iat(-1) == 9, "Series.iat honors List negative indexing")
+ok(throws(Function(): return SP[10]), "Series out-of-range positional access throws")
+
+# ============================================================ Series length-mismatch both orders
+var A = tabular.Series([1, 2, 3])
+var B = tabular.Series([4, 5])
+ok(throws(Function(): return A + B), "Series+Series length mismatch throws (long+short)")
+ok(throws(Function(): return B + A), "Series+Series length mismatch throws (short+long)")
+ok(throws(Function(): return A > B), "Series comparison length mismatch throws")
+ok(throws(Function(): return A.eq(B)), "Series.eq length mismatch throws")
+
+# ============================================================ reflected ops not dispatched
+ok(throws(Function(): return 10 + tabular.Series([1, 2])), "scalar + Series (reflected) throws")
+ok(throws(Function(): return 10 * tabular.Series([1, 2])), "scalar * Series (reflected) throws")
+# but Series + scalar (left operand is the Series) works
+ok((tabular.Series([1, 2]) + 10).tolist() == [11, 12], "Series + scalar broadcasts")
+
+# ============================================================ multi-key sort/groupby NOT supported
+var MK = tabular.DataFrame({"a": [2, 1, 2], "b": [1, 2, 3]}, columns=["a", "b"])
+ok(throws(Function(): return MK.sortvalues(["a", "b"])), "sortvalues by a List throws (single column only)")
+ok(throws(Function(): return MK.groupby(["a", "b"])), "groupby by a List throws (single column only)")
+# single-key sort still works, ascending kwarg too
+ok(MK.sortvalues("a")["a"].tolist() == [1, 2, 2], "sortvalues single key asc")
+ok(MK.sortvalues("a", ascending=False)["a"].tolist() == [2, 2, 1], "sortvalues single key desc (kwarg)")
+
+# ============================================================ frame reductions skip non-numeric
+var FM = tabular.DataFrame({"a": [1, 2, 3], "txt": ["x", "y", "z"], "b": [4.0, 5.0, 6.0]}, columns=["a", "txt", "b"])
+ok(FM.sum().index == ["a", "b"], "df.sum excludes a non-numeric column")
+ok(FM.apply(Function(s): return s.sum()).index == ["a", "b"], "df.apply runs only over numeric columns")
+ok(FM.describe().columns == ["a", "b"], "describe excludes a non-numeric column")
+# count is the exception: every column
+ok(FM.count().index == ["a", "txt", "b"], "df.count tallies every column incl. non-numeric")
+# all-string frame -> empty numeric reduction
+var AS = tabular.DataFrame({"k": ["a", "b"], "j": ["c", "d"]}, columns=["k", "j"])
+ok(AS.sum().index == [], "all-string df.sum -> empty Series")
+ok(AS.mean().tolist() == [], "all-string df.mean -> empty Series")
+ok(AS.describe().columns == [], "all-string describe -> no stat columns")
+
+# all-string / all-None Series numeric aggregations
+ok(tabular.Series(["a", "b"]).sum() == 0, "all-string Series sum -> 0 (no numerics)")
+ok(tabular.Series(["a", "b"]).mean() == None, "all-string Series mean -> None")
+ok(tabular.Series(["a", "b"]).min() == None and tabular.Series(["a", "b"]).max() == None, "all-string Series min/max -> None")
+ok(tabular.Series([NAN, None]).count() == 0, "Series count skips NaN and None")
+
+# ============================================================ describe exact stat values
+var DD = tabular.DataFrame({"a": [1, 2, 3], "b": [10, 20, 30]}, columns=["a", "b"])
+var dsc = DD.describe()
+ok(dsc.index == ["count", "mean", "std", "min", "median", "max"], "describe stat rows in order")
+ok(dsc["a"][0] == 3, "describe count")
+ok(dsc["a"][1].compare(2.0), "describe mean of a=[1,2,3]")
+ok(dsc["a"][2].compare(1.0), "describe std of a=[1,2,3] (sample)")
+ok(dsc["a"][3] == 1 and dsc["a"][5] == 3, "describe min/max")
+ok(dsc["a"][4] == 2, "describe median")
+ok(dsc["b"][1].compare(20.0), "describe second column mean preserved & ordered")
+
+# ============================================================ astype: failures + default branch
+ok(throws(Function(): return tabular.Series(["1.5"]).astype("Integer")), "astype Integer on a non-int string throws")
+ok(throws(Function(): return tabular.Series(["abc"]).astype("Float")), "astype Float on a non-numeric string throws")
+ok(tabular.Series([1, 2]).astype("Mystery").tolist() == ["1", "2"], "astype unknown typename falls through to String")
+ok(tabular.Series([1, 0, 5]).astype("Bool").tolist() == [True, False, True], "astype Bool truthiness")
+
+# ============================================================ empty-frame __setitem__
+var E1 = tabular.DataFrame()
+E1["x"] = 5
+ok(E1.shape() == [0, 1], "scalar assigned to a 0-row frame yields a 0-length column")
+ok(E1["x"].tolist() == [], "scalar broadcast over 0 rows is empty")
+var E2 = tabular.DataFrame()
+E2["x"] = [1, 2, 3]
+ok(E2.shape() == [3, 1], "a list assigned to an empty frame sets the row count")
+ok(E2.index == [0, 1, 2], "empty-frame first list column syncs the index")
+# wrong-length column on a NON-empty frame throws
+var E3 = tabular.DataFrame({"a": [1, 2, 3]}, columns=["a"])
+ok(throws(Function(): return E3.assign("b", [1, 2])), "assigning a wrong-length column throws")
+
+# ============================================================ concat 3-way column-union ordering
+var C1 = tabular.DataFrame({"a": [1], "b": [2]}, columns=["a", "b"])
+var C2 = tabular.DataFrame({"b": [3], "c": [4]}, columns=["b", "c"])
+var C3 = tabular.DataFrame({"c": [5], "d": [6]}, columns=["c", "d"])
+var cc = tabular.concat([C1, C2, C3])
+ok(cc.columns == ["a", "b", "c", "d"], "concat union preserves first-seen column order across 3 frames")
+ok(cc["a"].tolist() == [1, None, None], "concat fills a missing leading column with None")
+ok(cc["b"].tolist() == [2, 3, None], "concat fills a missing trailing column with None")
+ok(cc["d"].tolist() == [None, None, 6], "concat fills an entirely-new column with None")
+ok(cc.shape() == [3, 4], "concat stacks rows and unions columns")
+
+# ============================================================ readcsv overlong row + tocsv empty
+ok(throws(Function(): return tabular.readcsv("a,b\n1,2,3")), "readcsv rejects a row with more fields than the header")
+ok(tabular.readcsv("a,b\n1,2").shape() == [1, 2], "readcsv with an exact-width row is fine")
+ok(tabular.DataFrame().tocsv() == "", "tocsv of a bare empty frame is the empty string")
+# header-only CSV -> columns, no rows
+var HO = tabular.readcsv("x,y,z")
+ok(HO.shape() == [0, 3] and HO.columns == ["x", "y", "z"], "header-only CSV -> named empty columns")
+
+# full type-inference round-trip (Integer/Float/Bool/String) through tocsv -> readcsv
+var RT = tabular.DataFrame({"i": [1, 2], "f": [1.5, 2.5], "b": [True, False], "s": ["p", "q"]}, columns=["i", "f", "b", "s"])
+var rt = tabular.readcsv(RT.tocsv())
+ok(type(rt["i"][0]) == "Integer", "round-trip infers Integer")
+ok(type(rt["f"][0]) == "Float" and rt["f"][1].compare(2.5), "round-trip infers Float")
+ok(rt["b"].tolist() == [True, False], "round-trip infers Bool")
+ok(rt["s"].tolist() == ["p", "q"], "round-trip keeps String")
+
+# ============================================================ Series sortvalues preserves index
+var SS = tabular.Series([30, 10, 20], index=["c", "a", "b"])
+var ssa = SS.sortvalues()
+ok(ssa.tolist() == [10, 20, 30], "Series sortvalues asc values")
+ok(ssa.index == ["a", "b", "c"], "Series sortvalues carries each value's label along")
+var ssd = SS.sortvalues(ascending=False)
+ok(ssd.tolist() == [30, 20, 10] and ssd.index == ["c", "b", "a"], "Series sortvalues desc keeps labels")
+
+# ============================================================ kwargs across documented surface
+ok(tabular.Series([3, 1, 2], name="q").sortvalues(ascending=True).name == "q", "Series sortvalues ascending= kwarg, name preserved")
+ok(tabular.readcsv("1,2\n3,4", header=False).columns == ["col0", "col1"], "readcsv header= kwarg")
+ok(type(tabular.readcsv("a\n1", infer=False)["a"][0]) == "String", "readcsv infer= kwarg")
+ok(tabular.merge(OL, OR, on="id", how="inner").shape() == [1, 3], "merge on=/how= kwargs")
+ok(GS.groupby("k").agg({"v": "sum"})["v"].tolist() == [30, 30], "groupby agg spec dict")
+ok(tabular.DataFrame({"a": [None, 2]}, columns=["a"]).fillna(value=0)["a"].tolist() == [0, 2], "DataFrame fillna value= kwarg")
+ok(tabular.Series([None, 5]).fillna(value=9).tolist() == [9, 5], "Series fillna value= kwarg")
+ok(tabular.Series([1, 2, 3, 4, 5]).head(n=2).tolist() == [1, 2], "Series head n= kwarg")
+ok(tabular.DataFrame({"v": [1, 2, 3]}, columns=["v"]).tail(n=1)["v"].tolist() == [3], "DataFrame tail n= kwarg")
+ok(GS.sortvalues(by="v", ascending=False)["v"].tolist() == [30, 20, 10], "DataFrame sortvalues by=/ascending= kwargs")
+
+# ============================================================ inspect surface (module + types)
+var insp_mod = inspect(tabular)
+ok("Series: Series" in insp_mod and "DataFrame: DataFrame" in insp_mod, "inspect module lists Series & DataFrame")
+ok("merge(left, right, on, how = ...)" in insp_mod, "inspect module shows merge signature with default")
+ok("readcsv(source, header = ..., infer = ...)" in insp_mod, "inspect module shows readcsv signature")
+ok("concat(frames)" in insp_mod, "inspect module shows concat signature")
+var insp_s = inspect(tabular.Series([1]))
+ok("sortvalues(self, ascending = ...)" in insp_s, "inspect Series shows sortvalues")
+ok("valuecounts(self)" in insp_s and "astype(self, typename)" in insp_s, "inspect Series shows valuecounts/astype")
+ok("_binop" not in insp_s, "inspect hides the private _binop helper")
+var insp_d = inspect(tabular.DataFrame({"a": [1]}, columns=["a"]))
+ok("groupby(self, by)" in insp_d and "merge(self, other, on, how = ...)" in insp_d, "inspect DataFrame shows groupby/merge")
+ok("describe(self)" in insp_d and "tocsv(self)" in insp_d, "inspect DataFrame shows describe/tocsv")
+ok("_mask" not in insp_d and "_aggcols" not in insp_d, "inspect hides DataFrame private helpers")
+
+io.print("r7_tabular: " + String(n) + " checks passed")

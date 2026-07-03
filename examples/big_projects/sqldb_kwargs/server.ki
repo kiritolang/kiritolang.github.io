@@ -1,0 +1,140 @@
+# A CONCURRENT networked SQL server in pure Kirito (the keyword-argument edition: every call passes
+# its arguments by name). Same wire protocol and actor model as ../sqldb/server.ki — the Database
+# lives on one owner VM while a pool of connection workers handles socket I/O — exercising that
+# Kirito's keyword arguments work uniformly, now across the `parallel` API too.
+#
+# Run:  ki --lib lib server.ki [host] [port]   (default 127.0.0.1:5433)
+
+var net = import(name = "net")
+var io = import(name = "io")
+var json = import(name = "json")
+var parallel = import(name = "parallel")
+var eng = import(name = "sql_engine")
+
+class LineReader:
+    var _init_ = Function(self, conn):
+        self._conn = conn
+        self._buf = ""
+    var read_line = Function(self):
+        while True:
+            var nl = self._buf.find(sub = "\n")
+            if nl >= 0:
+                var line = self._buf[0:nl]
+                self._buf = self._buf[nl + 1:]
+                return line
+            var chunk = self._conn.recv(n = 8192).decode(encoding = "latin-1")
+            if len(x = chunk) == 0:
+                if len(x = self._buf) == 0:
+                    return None
+                var rest = self._buf
+                self._buf = ""
+                return rest
+            self._buf = self._buf + chunk
+
+var handle_sql = Function(db, sql : String):
+    try:
+        return db.run(sql = sql)
+    catch as e:
+        return {"ok": False, "error": String(x = e)}
+
+# The single owner of the Database: serves [sql, replyq] messages from reqq. Exits when reqq closes.
+var db_owner = Function(reqq):
+    var db = eng.Database()
+    var running = True
+    while running:
+        var msg = None
+        try:
+            msg = reqq.get()
+        catch as e:
+            running = False
+        if msg != None:
+            msg[1].put(item = handle_sql(db = db, sql = msg[0]))
+
+# A connection worker: serves handed-off fds, forwarding each SQL to the owner via reqq.
+var conn_worker = Function(workq, reqq, host, port, stop):
+    var replyq = parallel.Queue()
+    var serving = True
+    while serving:
+        var fd = None
+        try:
+            fd = workq.get()
+        catch as e:
+            serving = False
+        if fd != None:
+            var conn = net.fromfd(fd = fd)
+            var reader = LineReader(conn = conn)
+            var open = True
+            while open:
+                var line = reader.read_line()
+                if line == None:
+                    open = False
+                else:
+                    var reply = None
+                    var stripped = line.strip()
+                    if len(x = stripped) == 0:
+                        reply = {"ok": False, "error": "empty request"}
+                    else:
+                        var req = None
+                        var bad = False
+                        try:
+                            req = json.parse(text = stripped)
+                        catch as e:
+                            bad = True
+                            reply = {"ok": False, "error": "bad request JSON: " + String(x = e)}
+                        if not bad:
+                            if type(x = req) != "Dict" or "sql" not in req:
+                                reply = {"ok": False, "error": "request must be a JSON object with a 'sql' field"}
+                            elif req["sql"] == "__shutdown__":
+                                reply = {"ok": True, "type": "shutdown"}
+                                open = False
+                                stop.set()
+                            else:
+                                reqq.put(item = [req["sql"], replyq])
+                                reply = replyq.get(block = True, timeout = 30)
+                    discard conn.send(data = json.dumps(value = reply) + "\n")
+            conn.close()
+            if stop.isset():
+                var waker = net.Socket()
+                try:
+                    waker.connect(host = host, port = port)
+                catch as e:
+                    pass
+                waker.close()
+                serving = False
+
+if argmain:
+    var host = "127.0.0.1"
+    var port = 5433
+    if len(x = arglist) >= 1:
+        host = arglist[0]
+    if len(x = arglist) >= 2:
+        port = Integer(x = arglist[1])
+
+    var reqq = parallel.Queue()
+    var workq = parallel.Queue()
+    var stop = parallel.Event()
+    discard parallel.spawn(db_owner, reqq = reqq)
+    var nworkers = parallel.cpucount()
+    var w = 0
+    while w < nworkers:
+        discard parallel.spawn(conn_worker, workq = workq, reqq = reqq, host = host, port = port, stop = stop)
+        w = w + 1
+
+    var srv = net.Socket()
+    srv.bind(host = host, port = port)
+    srv.listen(backlog = 16)
+    io.print("LISTENING " + host + " " + String(x = port))
+
+    var running = True
+    while running:
+        var conn = srv.accept()
+        if stop.isset():
+            conn.close()
+            running = False
+        else:
+            workq.put(item = conn.detach())
+
+    workq.close()
+    reqq.close()
+    srv.close()
+    io.print("STOPPED")

@@ -1,0 +1,2 @@
+# LEXER: an octal literal prefix with no octal digits following it
+var x = 0o

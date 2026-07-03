@@ -1,0 +1,89 @@
+# Scoping semantics: var vs bare =, block scoping, closures, LEGB resolution.
+var io = import("io")
+
+# --- var declares in the current scope; bare = rebinds the nearest existing binding ---
+var a = 1
+a = a + 1
+assert a == 2, "bare = rebinds existing"
+var a2 = 10
+var rebindOuter = Function():
+    a2 = 99          # rebinds the module-level a2 (no `var`)
+rebindOuter()
+assert a2 == 99, "bare = from a function rebinds the outer binding"
+
+# --- var inside a function creates a LOCAL that shadows the outer ---
+var b = "outer"
+var shadows = Function():
+    var b = "inner"
+    return b
+assert shadows() == "inner" and b == "outer", "var inside fn shadows, leaves outer intact"
+
+# --- only functions/modules introduce scopes: if/while/for share the enclosing scope ---
+var c = 0
+if True:
+    var inIf = 5
+    c = inIf
+assert c == 5 and inIf == 5, "var inside `if` is visible after the block"
+for i in range(3):
+    var loopVar = i
+assert loopVar == 2, "loop variable visible after the loop"
+var w = 0
+while w < 3:
+    var inWhile = w
+    w = w + 1
+assert inWhile == 2, "var inside `while` is visible after"
+
+# --- closures capture by reference and can rebind the captured variable ---
+var makeAdder = Function(start):
+    var total = start
+    var add = Function(x):
+        total = total + x
+        return total
+    var get = Function():
+        return total
+    return [add, get]
+var pair = makeAdder(100)
+var add = pair[0]
+var get = pair[1]
+assert add(5) == 105 and add(10) == 115, "closure mutates captured var"
+assert get() == 115, "second closure sees the same captured var"
+
+# --- LEGB: inner function resolves through enclosing -> module -> global ---
+var g = "global-ish"
+var outer = Function():
+    var e = "enclosing"
+    var inner = Function():
+        return e + "/" + g + "/" + String(len([1, 2]))   # enclosing, module, builtin
+    return inner()
+assert outer() == "enclosing/global-ish/2", "LEGB resolution"
+
+# --- each call gets a fresh local scope (recursion doesn't clobber) ---
+var fib = Function(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+assert fib(10) == 55, "recursion: independent frames"
+
+# --- a parameter shadows an outer name for the duration of the call ---
+var x = "module-x"
+var usesParam = Function(x):
+    return x
+assert usesParam("param-x") == "param-x" and x == "module-x", "parameter shadows module var"
+
+# --- closures over a loop: capture the *parameter*, not a shared mutable ---
+var fns = []
+var mk = Function(k):
+    return Function(): return k
+for k in range(3):
+    fns.append(mk(k))
+assert fns[0]() == 0 and fns[1]() == 1 and fns[2]() == 2, "per-iteration captured value"
+
+# --- bare = on an undefined name is now a COMPILE-time error (name resolution runs before execution),
+# so it cannot be caught at run time; it is exercised by tools/tests/errors/undefined_name.ki. ---
+
+# --- module members are accessible and shared via import ---
+var m1 = import("math")
+var m2 = import("math")
+assert m1.pi == m2.pi and m1 == m2, "same module object across imports"
+
+io.print("OK")

@@ -1,0 +1,64 @@
+# Checks for reference-assignment semantics, copying, GC survival, and modules.
+var io = import("io")
+
+# --- reference assignment: A = B shares one value ---
+var a = [1, 2, 3]
+var b = a
+b.append(4)
+assert a == [1, 2, 3, 4], "lists share via reference assignment"
+var d1 = {"k": [1]}
+var d2 = d1
+d2["k"].append(2)
+assert d1["k"] == [1, 2], "nested mutation visible through alias"
+
+# --- copy() breaks the alias (shallow) ---
+var orig = [1, 2, 3]
+var cp = orig.copy()
+cp.append(9)
+assert orig == [1, 2, 3] and cp == [1, 2, 3, 9], "copy is independent (shallow)"
+# shallow: nested objects still shared
+var nested = [[1]]
+var ncp = nested.copy()
+ncp[0].append(2)
+assert nested[0] == [1, 2], "copy is shallow (inner list shared)"
+
+# --- function args are references (mutation visible) ---
+var mutate = Function(lst):
+    lst.append(99)
+var target = [1]
+mutate(target)
+assert target == [1, 99], "function mutates caller's list"
+# rebinding a parameter does NOT affect the caller's binding
+var rebind = Function(lst):
+    lst = [0]
+    lst.append(1)
+var t2 = [5]
+rebind(t2)
+assert t2 == [5], "rebinding a param doesn't touch the caller"
+
+# --- GC survival: allocate a lot, keep some, ensure liveness ---
+var keep = []
+var i = 0
+while i < 5000:
+    var temp = [i, i * 2, "s" + String(i)]   # lots of garbage
+    if i % 1000 == 0:
+        keep.append(temp)
+    i = i + 1
+assert len(keep) == 5, "kept references survive churn"
+assert keep[0] == [0, 0, "s0"] and keep[4][0] == 4000, "kept values intact after GC churn"
+
+# --- cyclic structures: stringify is cycle-safe, equality on identity ---
+var cyc = {"self": None}
+cyc["self"] = cyc
+assert String(cyc) == "{'self': {...}}", "cyclic dict stringify (key quoted)"
+var lcyc = [1]
+lcyc.append(lcyc)
+assert lcyc[1][1][1][0] == 1, "cyclic list is navigable"
+
+# --- modules load once per VM (identity / shared state) ---
+var io2 = import("io")
+assert io2 == io, "import returns the same module object"
+var math = import("math")
+assert math.pi > 3.14 and math.pi < 3.15, "module member access"
+
+io.print("OK")

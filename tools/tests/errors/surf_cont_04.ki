@@ -1,0 +1,3 @@
+# slice with a zero step
+var a = [1, 2, 3]
+discard a[::0]

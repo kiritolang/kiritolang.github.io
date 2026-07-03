@@ -1,0 +1,7 @@
+# Reads input from stdin (name, then a number).
+var io = import("io")
+
+var name = io.input()
+var n = Integer(io.input())
+io.print("Hello, " + name + "!")
+io.print("Your number squared is " + String(n * n))

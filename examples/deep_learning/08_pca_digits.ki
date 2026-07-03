@@ -1,0 +1,55 @@
+# Project 8 — Principal Component Analysis on the digits, built directly on the tensor library (no
+# neural net). PCA finds the orthogonal directions of greatest variance; here we extract the top
+# components by power iteration on the covariance matrix (deflating after each), then report how much
+# of the total variance the first k components capture. Exercises matmul / outer / trace / reductions.
+var io = import("io")
+var T = import("tensor")
+var data = import("data")
+var math = import("math")
+var random = import("random")
+
+io.print("=== PCA on the digits (64-D -> top components, via power iteration) ===")
+
+var X = T.Tensor(data.scale_range(data.load_digits()[0], 0.0, 16.0))   # N x 64
+var n = X.shape()[0]
+var d = X.shape()[1]
+
+# Centre, then form the 64x64 covariance C = Xc^T Xc / n.
+var mean = X.mean(axis = 0)                      # (64,)
+var Xc = X - mean                                # broadcast subtract
+var C = Xc.transpose().matmul(Xc) * (1.0 / n)
+var total_var = T.trace(C)                       # total variance = sum of the eigenvalues
+io.print(f"{n} samples, {d}-D; total variance {total_var:.4f}")
+
+# A unit column vector of Gaussian noise (the power-iteration seed).
+var rng = random.Random(0)
+var rand_unit = Function():
+    var col = []
+    var i = 0
+    while i < d:
+        col.append([rng.gauss(0.0, 1.0)])
+        i = i + 1
+    var v = T.Tensor(col)
+    return v * (1.0 / math.sqrt((v * v).sum()))
+
+var k = 10
+var work = C
+var captured = 0.0
+var comp = 0
+while comp < k:
+    var v = rand_unit()
+    var it = 0
+    while it < 60:                               # power iteration -> the dominant eigenvector
+        v = work.matmul(v)
+        v = v * (1.0 / math.sqrt((v * v).sum()))
+        it = it + 1
+    var lam = (v * work.matmul(v)).sum()         # Rayleigh quotient = the eigenvalue
+    captured = captured + lam
+    work = work - T.outer(v.flatten(), v.flatten()) * lam   # deflate so the next iteration finds the next one
+    io.print(f"  component {comp + 1:2d}: eigenvalue {lam:.4f}   cumulative variance {captured / total_var:.3f}")
+    comp = comp + 1
+
+var ratio = captured / total_var
+io.print(f"top {k} of {d} components capture {ratio:.1%} of the variance")
+assert ratio > 0.7, "the top 10 PCA components should capture most of the digit variance"
+io.print("OK pca")

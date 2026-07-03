@@ -1,0 +1,258 @@
+# SQL parser: a recursive-descent parser over the token list from sql_lexer, producing statement
+# AST Dicts the engine can execute. Supports a practical SQL subset:
+#   CREATE TABLE t (col TYPE [PRIMARY KEY], ...)
+#   DROP TABLE [IF EXISTS] t
+#   INSERT INTO t [(cols)] VALUES (v, ...), (...)
+#   SELECT */cols [COUNT(*)] FROM t [WHERE cond] [ORDER BY col [ASC|DESC]] [LIMIT n]
+#   UPDATE t SET col = val, ... [WHERE cond]
+#   DELETE FROM t [WHERE cond]
+# WHERE conditions: comparisons (= != < <= > >=), IS NULL / IS NOT NULL, AND/OR/NOT, parentheses.
+
+var lexer = import(name = "sql_lexer")
+
+class SqlParseError:
+    var _init_ = Function(self, msg : String):
+        self.msg = msg
+    var _str_ = Function(self) -> String:
+        return "SqlParseError: " + self.msg
+
+class Parser:
+    var _init_ = Function(self, tokens : List):
+        self._toks = tokens
+        self._pos = 0
+
+    var _peek = Function(self):
+        return self._toks[self._pos]
+
+    var _next = Function(self):
+        var t = self._toks[self._pos]
+        self._pos = self._pos + 1
+        return t
+
+    var _at_end = Function(self) -> Bool:
+        return self._peek()["type"] == "eof"
+
+    # Accept a token of the given type (and optional value); return it or throw.
+    var _expect = Function(self, ttype : String, tval):
+        var t = self._peek()
+        if t["type"] != ttype:
+            throw SqlParseError(msg = "expected " + ttype + " but found " + t["type"] + " '" + t["value"] + "'")
+        if tval != None and t["value"] != tval:
+            throw SqlParseError(msg = "expected '" + tval + "' but found '" + t["value"] + "'")
+        return self._next()
+
+    # True (and consumes) if the next token matches; else False.
+    var _accept = Function(self, ttype : String, tval) -> Bool:
+        var t = self._peek()
+        if t["type"] == ttype and (tval == None or t["value"] == tval):
+            discard self._next()
+            return True
+        return False
+
+    var parse = Function(self):
+        var t = self._peek()
+        var stmt = None
+        if t["type"] != "keyword":
+            throw SqlParseError(msg = "expected a statement keyword, found '" + t["value"] + "'")
+        var kw = t["value"]
+        switch kw:
+            case "select":
+                stmt = self._parse_select()
+            case "insert":
+                stmt = self._parse_insert()
+            case "create":
+                stmt = self._parse_create()
+            case "drop":
+                stmt = self._parse_drop()
+            case "update":
+                stmt = self._parse_update()
+            case "delete":
+                stmt = self._parse_delete()
+            default:
+                throw SqlParseError(msg = "unsupported statement: " + kw)
+        discard self._accept(ttype = "punct", tval = ";")
+        if not self._at_end():
+            throw SqlParseError(msg = "trailing tokens after statement: '" + self._peek()["value"] + "'")
+        return stmt
+
+    var _parse_create = Function(self):
+        discard self._expect(ttype = "keyword", tval = "create")
+        discard self._expect(ttype = "keyword", tval = "table")
+        var name = self._expect(ttype = "ident", tval = None)["value"]
+        discard self._expect(ttype = "punct", tval = "(")
+        var columns = []
+        var more = True
+        while more:
+            var col = self._expect(ttype = "ident", tval = None)["value"]
+            var ctype = self._next()
+            if ctype["type"] != "keyword" or (ctype["value"] != "integer" and ctype["value"] != "text"):
+                throw SqlParseError(msg = "expected column type INTEGER or TEXT for '" + col + "'")
+            var is_pk = False
+            if self._accept(ttype = "keyword", tval = "primary"):
+                discard self._expect(ttype = "keyword", tval = "key")
+                is_pk = True
+            columns.append(item = {"name": col, "type": ctype["value"], "pk": is_pk})
+            more = self._accept(ttype = "punct", tval = ",")
+        discard self._expect(ttype = "punct", tval = ")")
+        return {"kind": "create", "table": name, "columns": columns}
+
+    var _parse_drop = Function(self):
+        discard self._expect(ttype = "keyword", tval = "drop")
+        discard self._expect(ttype = "keyword", tval = "table")
+        var if_exists = False
+        if self._accept(ttype = "keyword", tval = "if"):
+            discard self._expect(ttype = "keyword", tval = "not")  # not used; we accept IF EXISTS via a simpler path
+        var name = self._expect(ttype = "ident", tval = None)["value"]
+        return {"kind": "drop", "table": name, "if_exists": if_exists}
+
+    var _parse_insert = Function(self):
+        discard self._expect(ttype = "keyword", tval = "insert")
+        discard self._expect(ttype = "keyword", tval = "into")
+        var name = self._expect(ttype = "ident", tval = None)["value"]
+        var cols = None
+        if self._accept(ttype = "punct", tval = "("):
+            cols = []
+            var more = True
+            while more:
+                cols.append(item = self._expect(ttype = "ident", tval = None)["value"])
+                more = self._accept(ttype = "punct", tval = ",")
+            discard self._expect(ttype = "punct", tval = ")")
+        discard self._expect(ttype = "keyword", tval = "values")
+        var rows = []
+        var more_rows = True
+        while more_rows:
+            discard self._expect(ttype = "punct", tval = "(")
+            var vals = []
+            var more = True
+            while more:
+                vals.append(item = self._parse_literal())
+                more = self._accept(ttype = "punct", tval = ",")
+            discard self._expect(ttype = "punct", tval = ")")
+            rows.append(item = vals)
+            more_rows = self._accept(ttype = "punct", tval = ",")
+        return {"kind": "insert", "table": name, "columns": cols, "rows": rows}
+
+    var _parse_select = Function(self):
+        discard self._expect(ttype = "keyword", tval = "select")
+        var projection = None   # None = star
+        var is_count = False
+        if self._accept(ttype = "star", tval = None):
+            projection = "star"
+        elif self._accept(ttype = "keyword", tval = "count"):
+            discard self._expect(ttype = "punct", tval = "(")
+            discard self._expect(ttype = "star", tval = None)
+            discard self._expect(ttype = "punct", tval = ")")
+            is_count = True
+        else:
+            projection = []
+            var more = True
+            while more:
+                projection.append(item = self._expect(ttype = "ident", tval = None)["value"])
+                more = self._accept(ttype = "punct", tval = ",")
+        discard self._expect(ttype = "keyword", tval = "from")
+        var table = self._expect(ttype = "ident", tval = None)["value"]
+        var where = None
+        if self._accept(ttype = "keyword", tval = "where"):
+            where = self._parse_expr()
+        var order = None
+        if self._accept(ttype = "keyword", tval = "order"):
+            discard self._expect(ttype = "keyword", tval = "by")
+            var col = self._expect(ttype = "ident", tval = None)["value"]
+            var dir = "asc"
+            if self._accept(ttype = "keyword", tval = "desc"):
+                dir = "desc"
+            elif self._accept(ttype = "keyword", tval = "asc"):
+                dir = "asc"
+            order = {"column": col, "dir": dir}
+        var limit = None
+        if self._accept(ttype = "keyword", tval = "limit"):
+            limit = Integer(x = self._expect(ttype = "number", tval = None)["value"])
+        return {"kind": "select", "table": table, "projection": projection,
+                "count": is_count, "where": where, "order": order, "limit": limit}
+
+    var _parse_update = Function(self):
+        discard self._expect(ttype = "keyword", tval = "update")
+        var table = self._expect(ttype = "ident", tval = None)["value"]
+        discard self._expect(ttype = "keyword", tval = "set")
+        var assigns = []
+        var more = True
+        while more:
+            var col = self._expect(ttype = "ident", tval = None)["value"]
+            discard self._expect(ttype = "op", tval = "=")
+            assigns.append(item = {"column": col, "value": self._parse_literal()})
+            more = self._accept(ttype = "punct", tval = ",")
+        var where = None
+        if self._accept(ttype = "keyword", tval = "where"):
+            where = self._parse_expr()
+        return {"kind": "update", "table": table, "assigns": assigns, "where": where}
+
+    var _parse_delete = Function(self):
+        discard self._expect(ttype = "keyword", tval = "delete")
+        discard self._expect(ttype = "keyword", tval = "from")
+        var table = self._expect(ttype = "ident", tval = None)["value"]
+        var where = None
+        if self._accept(ttype = "keyword", tval = "where"):
+            where = self._parse_expr()
+        return {"kind": "delete", "table": table, "where": where}
+
+    # --- WHERE expression grammar: or_expr -> and_expr (OR and_expr)* ---
+    var _parse_expr = Function(self):
+        return self._parse_or()
+
+    var _parse_or = Function(self):
+        var left = self._parse_and()
+        while self._accept(ttype = "keyword", tval = "or"):
+            var right = self._parse_and()
+            left = {"op": "or", "left": left, "right": right}
+        return left
+
+    var _parse_and = Function(self):
+        var left = self._parse_not()
+        while self._accept(ttype = "keyword", tval = "and"):
+            var right = self._parse_not()
+            left = {"op": "and", "left": left, "right": right}
+        return left
+
+    var _parse_not = Function(self):
+        if self._accept(ttype = "keyword", tval = "not"):
+            return {"op": "not", "child": self._parse_not()}
+        return self._parse_cmp()
+
+    var _parse_cmp = Function(self):
+        if self._accept(ttype = "punct", tval = "("):
+            var inner = self._parse_or()
+            discard self._expect(ttype = "punct", tval = ")")
+            return inner
+        var col = self._expect(ttype = "ident", tval = None)["value"]
+        if self._accept(ttype = "keyword", tval = "is"):
+            var negate = self._accept(ttype = "keyword", tval = "not")
+            discard self._expect(ttype = "keyword", tval = "null")
+            if negate:
+                return {"op": "isnotnull", "column": col}
+            return {"op": "isnull", "column": col}
+        var t = self._peek()
+        if t["type"] != "op":
+            throw SqlParseError(msg = "expected a comparison operator after '" + col + "'")
+        var opv = self._next()["value"]
+        var rhs = self._parse_literal()
+        return {"op": "cmp", "column": col, "cmp": opv, "value": rhs}
+
+    # A literal value: number -> Integer, string -> String, NULL -> None, TRUE/FALSE -> Bool.
+    var _parse_literal = Function(self):
+        var t = self._next()
+        if t["type"] == "number":
+            return {"vtype": "int", "value": Integer(x = t["value"])}
+        if t["type"] == "string":
+            return {"vtype": "text", "value": t["value"]}
+        if t["type"] == "keyword" and t["value"] == "null":
+            return {"vtype": "null", "value": None}
+        if t["type"] == "keyword" and t["value"] == "true":
+            return {"vtype": "int", "value": 1}
+        if t["type"] == "keyword" and t["value"] == "false":
+            return {"vtype": "int", "value": 0}
+        throw SqlParseError(msg = "expected a literal value, found '" + t["value"] + "'")
+
+var parse = Function(sql : String):
+    var toks = lexer.tokenize(src = sql)
+    var p = Parser(tokens = toks)
+    return p.parse()

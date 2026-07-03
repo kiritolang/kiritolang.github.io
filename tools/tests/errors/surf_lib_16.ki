@@ -1,0 +1,3 @@
+# Opening a file with an unsupported mode must throw.
+var io = import("io")
+discard io.open("/tmp/kirito_surf_lib_16.txt", "q")

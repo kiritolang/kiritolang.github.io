@@ -1,0 +1,234 @@
+# r5_serde.ki — ROUND-2 audit companion for the serialization + checksum stack (json, serialize,
+# dump, zlib, gzip, hash). It is DELIBERATELY NON-OVERLAPPING with r4_serialization.ki /
+# r4_compress_regex.ki: every assertion here covers a gap those files do not, found by a second deep
+# fuzz/adversarial pass. Focus areas:
+#   - _getstate_/_setstate_ that THROW (during dump AND during load) propagate cleanly — r4 only
+#     covered a _getstate_-only class and a _getstate_ returning a resource.
+#   - stateful cycles: a class with _getstate_/_setstate_ that returns `self`, and two such instances
+#     forming a mutual cycle — the id-reservation must terminate and preserve the cycle.
+#   - JSON malformed-number grammar beyond r4: "1..2", "1e1e1", "1.2.3", "1_000", and the
+#     -Infinity / NaN literal boundaries ("-Inf", "-Infinityy", "NaNx", "Infinityy").
+#   - JSON raw control chars inside a string literal (the parser is LENIENT and accepts them; the
+#     writer always re-escapes them, so a round-trip is safe) — documents the actual behavior.
+#   - large containers above the 2^16 boundary (a 70k-key Dict, a 100k-element List) round-trip
+#     through BOTH graph formats — proving the u32 count encoding (not u16) and the iterative rebuild.
+#   - random binary Bytes round-trip zlib/gzip/raw-deflate at boundary sizes (0, 65535, 65536), and
+#     every documented hash on arbitrary binary bytes.
+#
+# DETERMINISTIC: the only RNG is a FIXED-SEED generator used to synthesize binary payloads that are
+# then round-tripped (never compared to a literal), so the run is reproducible. No clock/network. Any
+# scratch file is removed. Only CONFIRMED-correct behavior is asserted.
+
+var json = import("json")
+var path = import("path")
+var serialize = import("serialize")
+var dump = import("dump")
+var z = import("zlib")
+var g = import("gzip")
+var h = import("hash")
+var io = import("io")
+var sys = import("sys")
+var random = import("random")
+
+var n = 0
+var ok = Function(cond, msg):
+    n = n + 1
+    assert cond, msg
+
+# True iff fn() thrown a catchable error (a clean diagnostic, never a crash).
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# ============================================================ STATEFUL: _getstate_/_setstate_ THROW
+# A _getstate_ that throws must abort dump with that error (not corrupt state / not crash).
+class ThrowGet:
+    var _init_ = Function(self):
+        self.x = 1
+    var _getstate_ = Function(self):
+        throw "boom in getstate"
+    var _setstate_ = Function(self, s):
+        self.x = s
+ok(throws(Function(): return dump.dumps(ThrowGet())), "dump: _getstate_ that throws propagates")
+ok(throws(Function(): return serialize.dumps(ThrowGet())), "serialize: _getstate_ that throws propagates")
+# The exception's text reaches the caller.
+var getErr = Function():
+    try:
+        discard dump.dumps(ThrowGet())
+        return ""
+    catch as e:
+        return String(e)
+ok("boom in getstate" in getErr(), "dump: _getstate_ exception text reaches caller")
+
+# A _setstate_ that throws must abort load with that error.
+class ThrowSet:
+    var _init_ = Function(self):
+        self.x = 1
+    var _getstate_ = Function(self):
+        return self.x
+    var _setstate_ = Function(self, s):
+        throw "boom in setstate"
+var goodBlobD = dump.dumps(ThrowSet())          # dumps fine (getstate works)
+var goodBlobS = serialize.dumps(ThrowSet())
+ok(throws(Function(): return dump.loads(goodBlobD)), "dump: _setstate_ that throws propagates on load")
+ok(throws(Function(): return serialize.loads(goodBlobS)), "serialize: _setstate_ that throws propagates on load")
+
+# ============================================================ STATEFUL: cycles via _getstate_
+# _getstate_ returning self: the id is reserved before recursing, so this terminates (no infinite loop).
+class SelfState:
+    var _init_ = Function(self):
+        self.x = 1
+    var _getstate_ = Function(self):
+        return self
+    var _setstate_ = Function(self, s):
+        self.x = 2
+ok(throws(Function(): return dump.loads(dump.dumps(SelfState()))) == False, "dump: _getstate_ returning self terminates")
+ok(throws(Function(): return serialize.loads(serialize.dumps(SelfState()))) == False, "serialize: _getstate_ returning self terminates")
+
+# Two stateful instances forming a mutual cycle: the cycle survives a round-trip through both formats.
+class MNode:
+    var _init_ = Function(self, label):
+        self.label = label
+        self.peer = None
+    var _getstate_ = Function(self):
+        return [self.label, self.peer]
+    var _setstate_ = Function(self, s):
+        self.label = s[0]
+        self.peer = s[1]
+var checkStatefulCycle = Function(loadfn, dumpfn, fmt):
+    var a = MNode("a")
+    var b = MNode("b")
+    a.peer = b
+    b.peer = a
+    var r = loadfn(dumpfn(a))
+    ok(r.label == "a" and r.peer.label == "b", fmt + " stateful cycle restores labels")
+    ok(id(r.peer.peer) == id(r), fmt + " stateful mutual cycle stays one object")
+checkStatefulCycle(dump.loads, dump.dumps, "dump")
+checkStatefulCycle(serialize.loads, serialize.dumps, "serialize")
+
+# ===================================== JSON: number-grammar edges (round 2)
+# Trailing-character / bad-start forms throw; the parser is intentionally LENIENT on leading zeros,
+# a trailing dot, and an empty exponent (see deep_serialization.ki) — do not assert those throw.
+ok(throws(Function(): return json.parse("1..2")), "json '1..2' throws")
+ok(throws(Function(): return json.parse("1e1e1")), "json '1e1e1' throws")
+ok(throws(Function(): return json.parse("1.2.3")), "json '1.2.3' throws")
+ok(throws(Function(): return json.parse("1_000")), "json '1_000' (underscore) throws")
+ok(throws(Function(): return json.parse(".e1")), "json '.e1' throws")
+ok(throws(Function(): return json.parse("- 1")), "json '- 1' (space after sign) throws")
+ok(json.parse("00") == 0, "json '00' (leading zeros) parses lenient")
+# -Infinity / NaN / Infinity literal boundaries (only the exact tokens are accepted)
+ok(json.parse("Infinity") > 0.0, "json 'Infinity' parses")
+ok(json.parse("-Infinity") < 0.0, "json '-Infinity' parses")
+ok(throws(Function(): return json.parse("Inf")), "json 'Inf' (short) throws")
+ok(throws(Function(): return json.parse("-Inf")), "json '-Inf' (short) throws")
+ok(throws(Function(): return json.parse("-I")), "json '-I' throws")
+ok(throws(Function(): return json.parse("Infinityy")), "json 'Infinityy' (trailing char) throws")
+ok(throws(Function(): return json.parse("-Infinityy")), "json '-Infinityy' (trailing char) throws")
+ok(throws(Function(): return json.parse("NaNx")), "json 'NaNx' (trailing char) throws")
+
+# ============================================================ JSON: raw control chars in a string
+# Strict JSON requires U+0000..U+001F to be \u-escaped inside a string; Kirito's parser is LENIENT and
+# accepts a raw control char. The WRITER always re-escapes it, so a parse->dumps->parse round-trip is
+# safe and lossless. (Asserting the actual behavior, not the strict-RFC behavior.)
+ok(json.parse("\"a\nb\"") == "a\nb", "json accepts a raw newline inside a string (lenient)")
+ok(json.parse("\"a\tb\"") == "a\tb", "json accepts a raw tab inside a string (lenient)")
+ok(json.parse("\"a" + chr(0) + "b\"") == ("a" + chr(0) + "b"), "json accepts a raw NUL inside a string (lenient)")
+# the writer re-escapes them so the text round-trips
+var ctrlStr = "x" + chr(0) + chr(9) + chr(10) + chr(31) + "y"
+ok(json.loads(json.dumps(ctrlStr)) == ctrlStr, "json re-escapes raw control chars on a round-trip")
+
+# ============================================================ LARGE containers above the 2^16 boundary
+# A Dict with >65536 entries: the wire count is a u32 (not a u16), so it must round-trip exactly. This
+# also exercises the legitimate large-count path (distinct from a crafted/corrupt count).
+var bigDict = {}
+var i = 0
+while i < 70000:
+    bigDict[i] = i * 2
+    i = i + 1
+var bdD = dump.loads(dump.dumps(bigDict))
+ok(len(bdD) == 70000 and bdD[69999] == 139998, "dump: 70k-key Dict round-trips (u32 count)")
+var bdS = serialize.loads(serialize.dumps(bigDict))
+ok(len(bdS) == 70000 and bdS[69999] == 139998, "serialize: 70k-key Dict round-trips")
+# A List with >65536 elements.
+var bigList = []
+var j = 0
+while j < 100000:
+    bigList.append(j)
+    j = j + 1
+ok(dump.loads(dump.dumps(bigList))[99999] == 99999, "dump: 100k-element List round-trips")
+ok(serialize.loads(serialize.dumps(bigList))[99999] == 99999, "serialize: 100k-element List round-trips")
+
+# ============================================================ DEEPLY-NESTED graph guard (no overflow)
+# A pathologically deep nested list must RAISE (the flatten depth guard), never overflow the C++ stack.
+var deep = []
+var cur = deep
+var d = 0
+while d < 20000:
+    var nxt = []
+    cur.append(nxt)
+    cur = nxt
+    d = d + 1
+ok(throws(Function(): return dump.dumps(deep)), "dump: 20000-deep nested list throws (depth guard)")
+ok(throws(Function(): return serialize.dumps(deep)), "serialize: 20000-deep nested list throws (depth guard)")
+
+# ============================================================ ZLIB / GZIP: random binary, boundaries
+# A fixed-seed generator makes reproducible binary payloads; we round-trip them (never compare to a
+# literal), exercising the 32K/64K window boundary and the empty case.
+var rng = random.Random(20260628)
+var mkbytes = Function(count):
+    var lst = []
+    var k = 0
+    while k < count:
+        lst.append(rng.randint(0, 255))
+        k = k + 1
+    return Bytes(lst)
+for sz in [0, 1, 255, 256, 65535, 65536]:
+    var data = mkbytes(sz)
+    ok(z.decompress(z.compress(data)) == data, "zlib random binary round-trip @" + String(sz))
+    ok(z.inflate(z.deflate(data)) == data, "raw deflate random binary round-trip @" + String(sz))
+    ok(g.decompress(g.compress(data)) == data, "gzip random binary round-trip @" + String(sz))
+    # type is preserved (Bytes in -> Bytes out)
+    ok(type(z.compress(data)) == "Bytes", "zlib preserves Bytes @" + String(sz))
+
+# ============================================================ HASH: arbitrary binary bytes
+# Every digest/checksum accepts raw binary bytes and a String of the same bytes hashes identically.
+var binData = mkbytes(257)                       # spans a byte > 127 and a length past one block
+ok(len(h.md5(binData)) == 32, "md5 of arbitrary binary bytes (32 hex)")
+ok(len(h.sha1(binData)) == 40, "sha1 of arbitrary binary bytes (40 hex)")
+ok(len(h.sha256(binData)) == 64, "sha256 of arbitrary binary bytes (64 hex)")
+ok(h.adler32(binData) >= 0, "adler32 of binary bytes is non-negative")
+ok(h.crc32(binData) >= 0, "crc32 of binary bytes is non-negative")
+# String/Bytes equivalence for the same bytes (latin-1 maps byte<->code-point 1:1)
+var sameStr = binData.decode("latin-1")
+ok(h.sha256(sameStr.encode("latin-1")) == h.sha256(binData), "sha256(String bytes) == sha256(Bytes)")
+ok(h.crc64(sameStr.encode("latin-1")) == h.crc64(binData), "crc64(String bytes) == crc64(Bytes)")
+# crc64 known-answer (CRC-64/XZ, signed) on both a String and the same Bytes
+ok(h.crc64("123456789") == -7395533204333446662, "crc64('123456789') KAT (signed)")
+ok(h.crc64(Bytes([49, 50, 51, 52, 53, 54, 55, 56, 57])) == -7395533204333446662, "crc64(Bytes) matches the KAT")
+
+# ============================================================ CROSS-FORMAT, FILE round-trip, cleanup
+# A graph with a stateful cycle reconstructs to the same shape through both formats.
+var ca = MNode("ca")
+var cb = MNode("cb")
+ca.peer = cb
+cb.peer = ca
+var graph = {"cycle": ca, "blob": Bytes([1, 2, 3]), "set": Set([4, 5])}
+var sres = serialize.loads(serialize.dumps(graph))
+var dres = dump.loads(dump.dumps(graph))
+ok(id(sres["cycle"].peer.peer) == id(sres["cycle"]), "serialize: stateful cycle in a graph intact")
+ok(id(dres["cycle"].peer.peer) == id(dres["cycle"]), "dump: stateful cycle in a graph intact")
+ok(sres["blob"] == dres["blob"] and sres["set"] == dres["set"], "cross-format Bytes + Set agree")
+
+var SCRATCH = import("path").gettempdir()   # portable temp dir (TMPDIR/TMP/TEMP, falls back to /tmp)
+# dump.save / load a stateful cycle to a real file, then remove it.
+var dpath = path.join(SCRATCH, "r5_serde_cycle.bin")
+dump.save(ca, dpath)
+var loaded = dump.load(dpath)
+ok(loaded.label == "ca" and id(loaded.peer.peer) == id(loaded), "dump.save/load preserves a stateful cycle")
+discard path.remove(dpath, missing_ok = True)
+ok(path.exists(dpath) == False, "scratch file cleaned up")
+
+io.print("r5_serde: all " + String(n) + " assertions passed")

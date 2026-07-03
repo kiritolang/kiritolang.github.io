@@ -1,0 +1,2 @@
+# PARSER: a trailing binary operator with no right-hand operand
+var x = 3 *

@@ -1,0 +1,6 @@
+# two Float case labels of the same value are a duplicate
+switch 1.0:
+    case 2.0:
+        discard 1
+    case 2.0:
+        discard 2

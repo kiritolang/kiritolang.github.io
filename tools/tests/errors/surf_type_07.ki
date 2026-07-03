@@ -1,0 +1,3 @@
+# type/operator: a List is not callable
+var xs = [1, 2]
+discard xs()

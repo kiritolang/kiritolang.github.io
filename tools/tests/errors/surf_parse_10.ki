@@ -1,0 +1,2 @@
+# PARSER: an unmatched '{' - the set/dict brace is never closed
+var s = {1, 2, 3

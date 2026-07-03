@@ -1,0 +1,98 @@
+a
+None
+b
+abc
+None
+['12', '345']
+['a', 'b', 'c']
+x_y
+a\.b\*c\+d\?\(e\)
+hello\.世界
+(?P<x>\w+)=(\d+)
+2
+{'x': 1}
+b
+abc
+['a', 'b']
+['a', 'b']
+[['a', 'b'], ['c', 'd']]
+2
+1
+22
+ada@kirito.dev
+ada
+ada
+['ada', 'kirito.dev']
+['ada', 'kirito.dev']
+{'u': 'ada', 'h': 'kirito.dev'}
+0
+14
+[0, 14]
+ada@kirito.dev
+None
+[-1, -1]
+['a', 'DEF']
+{}
+{'x': 'a', 'y': 'MISSING'}
+['a', 'MISSING']
+['a', 'b', 'c,d']
+['a', ' ', 'b', '  ', 'c']
+1:a 2:b
+1=a
+x [12] y
+\
+2 4 6
+XXa
+True
+True
+True
+cat
+cat
+a
+b
+a
+b
+b
+['ab', 'cd', 'ef']
+aaa
+a
+aaa
+aaaa
+aaa
+abc
+h
+1a 
+True
+True
+A
+ÿ
+8
+abc
+def
+None
+None
+word
+la:
+lb:
+lne:
+br:
+ntr:
+ubr:
+unb:
+clc:
+rng:
+trb:
+bnd:
+None
+trbk:
+gln:
+gnm:
+nstr:
+rtp:
+nsg:
+ngn:
+['', '', '', '']
+['', 'a', 'b', 'c', '']
+3
+4
+OK audit-regex

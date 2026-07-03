@@ -1,0 +1,4 @@
+# name resolution: undefined name in a default-parameter expression
+var f = Function(x = startvalue):
+    return x
+discard f()

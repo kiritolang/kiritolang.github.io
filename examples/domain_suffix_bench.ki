@@ -1,0 +1,180 @@
+# Email domain whitelist/blacklist scanner — two matching strategies, benchmarked.
+#
+# A domain matches a list entry by LABEL-BOUNDARY suffix: "mail.example.com" matches "example.com"
+# (and "example.com" matches itself), but "notexample.com" does NOT match "example.com".
+#
+#   1) Naive:  for each email, test domain.endswith("." + d) (or == d) against every list entry.
+#              O(emails x list_size x domain_length).
+#   2) Trie:   a pure-Kirito suffix tree built from the REVERSED list entries; each email's domain
+#              is matched by walking its reversed form through the tree once. O(domain_length) per
+#              email, independent of list size — the O(n) matcher.
+#
+# Both lists hold >= 100 domains and we scan 10000 emails. The two strategies are cross-checked to
+# produce identical classifications, then timed.
+
+var io = import("io")
+var time = import("time")
+
+# ----------------------------------------------------------------------------- data generation
+var TLDS = ["com", "net", "org", "io", "dev", "co", "app", "xyz", "info", "biz"]
+
+# n distinct domains like "white0.com", "white1.net", ... (deterministic, reproducible).
+var makeDomains = Function(prefix, n) -> List:
+    var out = []
+    var i = 0
+    while i < n:
+        out.append(prefix + String(i) + "." + TLDS[i % len(TLDS)])
+        i = i + 1
+    return out
+
+var WL_SIZE = 120          # >= 100
+var BL_SIZE = 120          # >= 100
+var N_EMAILS = 10000
+
+var whitelist = makeDomains("white", WL_SIZE)
+var blacklist = makeDomains("black", BL_SIZE)
+
+# 10000 emails: a deterministic mix of exact-list, subdomain-of-list, and unlisted addresses, so
+# both matchers have real work and a meaningful hit rate.
+var buildEmails = Function() -> List:
+    var emails = []
+    var i = 0
+    while i < N_EMAILS:
+        var bucket = i % 5
+        var dom = ""
+        if bucket == 0:
+            dom = blacklist[i % BL_SIZE]                                  # exact blacklist
+        elif bucket == 1:
+            dom = "mail." + blacklist[i % BL_SIZE]                        # subdomain of blacklist
+        elif bucket == 2:
+            dom = whitelist[i % WL_SIZE]                                  # exact whitelist
+        elif bucket == 3:
+            dom = "smtp.relay." + whitelist[i % WL_SIZE]                  # deep subdomain of whitelist
+        else:
+            dom = "host" + String(i) + ".example" + String(i % 50) + ".com"   # unlisted
+        emails.append("user" + String(i) + "@" + dom)
+        i = i + 1
+    return emails
+
+var domainOf = Function(email) -> String:
+    var parts = email.split("@")
+    return parts[len(parts) - 1].lower()
+
+# ----------------------------------------------------------------------------- 1) naive matcher
+# domain matches the list if it equals an entry or ends with "." + entry (label boundary).
+var matchNaive = Function(domain, domains) -> Bool:
+    for d in domains:
+        if domain == d or domain.endswith("." + d):
+            return True
+    return False
+
+# ----------------------------------------------------------------------------- 2) trie matcher
+# Build a suffix tree from the reversed domain strings. Each node is a Dict: a char -> child node,
+# plus the sentinel key "$" (not a valid domain char) marking the end of a complete list entry.
+var TERM = "$"
+
+var buildTrie = Function(domains) -> Dict:
+    var root = {}
+    for d in domains:
+        var rev = d[::-1]
+        var node = root
+        for ch in rev:
+            if ch not in node:
+                node[ch] = {}
+            node = node[ch]
+        node[TERM] = True
+    return root
+
+# Walk the reversed domain through the trie. A match is a terminal node reached exactly at a label
+# boundary: either the whole domain was consumed (exact match) or the next reversed char is "."
+# (the list entry is a proper domain suffix, e.g. matching "example.com" inside "mail.example.com").
+var matchTrie = Function(root, domain) -> Bool:
+    var rev = domain[::-1]
+    var n = len(rev)
+    var node = root
+    var i = 0
+    while i < n:
+        var ch = rev[i]
+        if ch not in node:
+            return False                       # no list entry shares this suffix — stop early
+        node = node[ch]
+        i = i + 1
+        if TERM in node and (i == n or rev[i] == "."):
+            return True
+    return False                               # exact-match case is caught by the i == n branch above
+
+# ----------------------------------------------------------------------------- classification
+var classifyNaive = Function(domain) -> String:
+    if matchNaive(domain, blacklist):
+        return "blacklisted"
+    if matchNaive(domain, whitelist):
+        return "whitelisted"
+    return "unlisted"
+
+var classifyTrie = Function(blTrie, wlTrie, domain) -> String:
+    if matchTrie(blTrie, domain):
+        return "blacklisted"
+    if matchTrie(wlTrie, domain):
+        return "whitelisted"
+    return "unlisted"
+
+# ----------------------------------------------------------------------------- run + benchmark
+io.print("domains: whitelist =", len(whitelist), " blacklist =", len(blacklist))
+io.print("emails:", N_EMAILS)
+io.print("")
+
+var emails = buildEmails()
+
+# pre-extract domains so both strategies time only the matching, not the splitting
+var domains = []
+for e in emails:
+    domains.append(domainOf(e))
+
+var msSince = Function(startNs) -> Float:
+    return (time.perfcounterns() - startNs) / 1000000.0
+
+# --- naive ---
+var t0 = time.perfcounterns()
+var naiveCounts = {"blacklisted": 0, "whitelisted": 0, "unlisted": 0}
+for d in domains:
+    var c = classifyNaive(d)
+    naiveCounts[c] = naiveCounts[c] + 1
+var naiveMs = msSince(t0)
+
+# --- trie: build (one-off), then match ---
+var tb = time.perfcounterns()
+var blTrie = buildTrie(blacklist)
+var wlTrie = buildTrie(whitelist)
+var buildMs = msSince(tb)
+
+var t1 = time.perfcounterns()
+var trieCounts = {"blacklisted": 0, "whitelisted": 0, "unlisted": 0}
+for d in domains:
+    var c = classifyTrie(blTrie, wlTrie, d)
+    trieCounts[c] = trieCounts[c] + 1
+var trieMs = msSince(t1)
+
+# --- correctness: the O(n) matcher must agree with the naive baseline on every single email ---
+var mismatches = 0
+var i = 0
+while i < len(domains):
+    if classifyNaive(domains[i]) != classifyTrie(blTrie, wlTrie, domains[i]):
+        mismatches = mismatches + 1
+    i = i + 1
+assert mismatches == 0, "trie and naive classifications must agree on every email"
+assert naiveCounts == trieCounts, "aggregate counts must match"
+
+# ----------------------------------------------------------------------------- report
+io.print("classification (identical for both strategies):")
+io.print("  blacklisted:", naiveCounts["blacklisted"])
+io.print("  whitelisted:", naiveCounts["whitelisted"])
+io.print("  unlisted:   ", naiveCounts["unlisted"])
+io.print("")
+io.print("timing over", N_EMAILS, "emails:")
+io.print("  naive .endswith() scan : ", format(naiveMs, ".1f"), "ms")
+io.print("  trie build (one-off)   : ", format(buildMs, ".1f"), "ms")
+io.print("  trie O(n) match scan   : ", format(trieMs, ".1f"), "ms")
+if trieMs > 0.0:
+    io.print("  speedup (match only)   : ", format(naiveMs / trieMs, ".1f"), "x")
+io.print("")
+io.print("correctness: 0 mismatches across", N_EMAILS, "emails — the O(n) matcher agrees with naive.")

@@ -1,0 +1,44 @@
+# Project 7 — Softmax (multinomial logistic) regression on the digits: a single linear layer mapping
+# the 64 pixels straight to 10 class logits, trained with cross-entropy. No hidden layer — this is the
+# linear baseline the deeper conv net (project 2) is measured against. Real data: scikit-learn digits.
+var io = import("io")
+var T = import("tensor")
+var nn = import("nn")
+var data = import("data")
+var random = import("random")
+
+io.print("=== Digit softmax regression (single linear layer, 64 -> 10) ===")
+
+var ds = data.load_digits()
+var X = data.scale_range(ds[0], 0.0, 16.0)
+var split = data.train_test_split(X, ds[1], 0.8, 31)
+var Xtr = T.Tensor(split[0])
+var ytr = split[1]
+var Xte = T.Tensor(split[2])
+var yte = split[3]
+io.print(f"train {len(split[0])} images, test {len(split[2])} images")
+
+nn.seed(7)
+var model = nn.Linear(64, 10)                    # a bare linear classifier
+var opt = nn.Adam(model.parameters(), lr = 0.05)
+
+var rng = random.Random(0)
+var epoch = 0
+while epoch < 30:
+    for batch in data.minibatches(len(split[0]), 128, rng):
+        var xb = T.Tensor(data.gather(split[0], batch))
+        var loss = nn.cross_entropy(model(xb), data.gather(ytr, batch), 10)
+        loss.backward()
+        opt.step()
+    if epoch % 10 == 0:
+        with T.nograd():
+            var acc = nn.accuracy(nn.argmax_rows(model(Xte)), yte)
+        io.print(f"  epoch {epoch:2d}  test acc {acc:.3f}")
+    epoch = epoch + 1
+
+with T.nograd():
+    var train_acc = nn.accuracy(nn.argmax_rows(model(Xtr)), ytr)
+    var test_acc = nn.accuracy(nn.argmax_rows(model(Xte)), yte)
+io.print(f"train accuracy {train_acc:.3f}   test accuracy {test_acc:.3f}")
+assert test_acc > 0.9, "softmax regression should reach >90% test accuracy on digits"
+io.print("OK digits-softmax")

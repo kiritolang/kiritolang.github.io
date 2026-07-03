@@ -1,0 +1,216 @@
+# path_module.ki — exhaustive audit of the `path` module (Kirito's os.path): the single home for
+# path operations (moved out of io/sys). Covers pure string ops (join/dirname/basename/splitext) and
+# filesystem queries (exists/isfile/isdir/getsize) — correct output on correct input, edge cases,
+# and adversarial/error inputs (wrong types throw; join() with no parts throws; getsize on a
+# missing/non-regular path throws). Deterministic: all scratch state under path.gettempdir(), removed
+# at the end. Final golden line: "path_module: <n> checks passed".
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== join: correct output
+ok(path.join("a", "b", "c") == "a/b/c", "join: basic three parts")
+ok(path.join("a") == "a", "join: a single component is itself")
+ok(path.join("/usr", "local", "bin") == "/usr/local/bin", "join: absolute root kept")
+ok(path.join("a", "b", "c", "d", "e") == "a/b/c/d/e", "join: many parts")
+ok(path.join("x/y", "z") == "x/y/z", "join: a component may itself contain a separator")
+# absolute component resets
+ok(path.join("a", "/b") == "/b", "join: a /-absolute later component resets the result")
+ok(path.join("a", "/b/", "c") == "/b/c", "join: an absolute mid component (trailing slash) resets")
+ok(path.join("a/", "/b") == "/b", "join: /-absolute resets even after a trailing slash")
+# trailing-slash de-duplication
+ok(path.join("a/", "b") == "a/b", "join: a trailing slash does not double the separator")
+ok(path.join("a", "b/", "c") == "a/b/c", "join: a trailing-slash mid component adds no extra sep")
+# empty components
+ok(path.join("", "a") == "a", "join: a leading empty part contributes nothing")
+ok(path.join("a", "", "b") == "a/b", "join: an empty MIDDLE part contributes nothing")
+ok(path.join("a", "", "", "b") == "a/b", "join: multiple empty middle parts collapse")
+ok(path.join("", "", "") == "", "join: only empty parts -> empty string")
+ok(path.join("a", "") == "a/", "join: a single trailing empty part still gets one separator")
+# backslash is NOT a separator for join (only '/' resets); it is preserved verbatim
+ok(path.join("a", "\\b") == "a/\\b", "join: a backslash component is NOT absolute (only / resets)")
+ok(path.join("a\\b", "c\\d") == "a\\b/c\\d", "join: internal backslashes are preserved, joined with /")
+
+# =========================================================== join: adversarial / errors
+ok(throws(Function(): return path.join()), "join: zero arguments throws (needs >= 1 component)")
+ok(throws(Function(): return path.join("a", 5)), "join: a non-String part throws")
+ok(throws(Function(): return path.join(None)), "join: a None part throws")
+ok(throws(Function(): return path.join(["a"])), "join: a List part throws")
+
+# =========================================================== dirname
+ok(path.dirname("a/b/c") == "a/b", "dirname: strips the final component")
+ok(path.dirname("a/b/c.txt") == "a/b", "dirname: with an extension on the leaf")
+ok(path.dirname("file") == "", "dirname: a bare name has no directory")
+ok(path.dirname("") == "", "dirname: of empty is empty")
+ok(path.dirname("a/b/") == "a/b", "dirname: a trailing-slash path")
+ok(path.dirname("a/b///") == "a/b", "dirname: a trailing separator RUN collapses to the parent")
+ok(path.dirname("a///b") == "a", "dirname: an internal separator run collapses to the parent")
+ok(path.dirname("/") == "/", "dirname: root keeps the root (os.path parity)")
+ok(path.dirname("/a") == "/", "dirname: a top-level absolute path keeps the root")
+ok(path.dirname("//a") == "//", "dirname: preserves a leading double-separator (POSIX // root)")
+ok(path.dirname("///") == "///", "dirname: an all-separator path keeps it whole (no parent)")
+ok(path.dirname("\\a\\b") == "\\a", "dirname: splits on backslashes too (literal substring)")
+ok(path.dirname("a/b\\c") == "a/b", "dirname: uses the last of either / or \\")
+
+# =========================================================== basename
+ok(path.basename("a/b/c") == "c", "basename: the final component")
+ok(path.basename("/abs/path.txt") == "path.txt", "basename: of an absolute path")
+ok(path.basename("file") == "file", "basename: a bare name is itself")
+ok(path.basename("") == "", "basename: of empty is empty")
+ok(path.basename("a/b/") == "", "basename: of a trailing-slash path is empty")
+ok(path.basename("a/b///") == "", "basename: of a trailing separator run is empty")
+ok(path.basename("/") == "", "basename: of root is empty")
+ok(path.basename("///") == "", "basename: of an all-separator path is empty")
+ok(path.basename("\\a\\b") == "b", "basename: splits on the final backslash")
+ok(path.basename("a/b\\c") == "c", "basename: uses the last of either / or \\")
+
+# =========================================================== splitext
+ok(path.splitext("a.txt") == ["a", ".txt"], "splitext: basic")
+ok(path.splitext("archive.tar.gz") == ["archive.tar", ".gz"], "splitext: only the LAST extension")
+ok(path.splitext("a.b.c.d") == ["a.b.c", ".d"], "splitext: a multi-dot name")
+ok(path.splitext("noext") == ["noext", ""], "splitext: no extension")
+ok(path.splitext("") == ["", ""], "splitext: of empty")
+ok(path.splitext(".bashrc") == [".bashrc", ""], "splitext: a leading-dot dotfile has no extension")
+ok(path.splitext("..") == ["..", ""], "splitext: an all-dots name has no extension")
+ok(path.splitext("...x") == ["...x", ""], "splitext: a leading run of dots is not an extension")
+ok(path.splitext(".x.y") == [".x", ".y"], "splitext: an extension after a leading dotfile name")
+ok(path.splitext("a..b") == ["a.", ".b"], "splitext: a dot run mid-name splits at the last dot")
+ok(path.splitext("file.") == ["file", "."], "splitext: a trailing dot is an empty extension")
+ok(path.splitext("dir.x/file") == ["dir.x/file", ""], "splitext: a dot in a directory component is not an extension")
+ok(path.splitext("dir/.hidden") == ["dir/.hidden", ""], "splitext: a dotfile in a subdir has no extension")
+ok(path.splitext("a\\b.txt") == ["a\\b", ".txt"], "splitext: finds the extension after a backslash component")
+
+# =========================================================== dirname/basename/splitext: type errors
+ok(throws(Function(): return path.dirname(5)), "dirname: a non-String arg throws")
+ok(throws(Function(): return path.basename(None)), "basename: a non-String arg throws")
+ok(throws(Function(): return path.splitext(["a"])), "splitext: a non-String arg throws")
+
+# =========================================================== filesystem queries: on a real file
+var DIR = path.join(path.gettempdir(), "kirito_path_module_scratch")
+discard path.remove(DIR, missing_ok = True)
+discard path.mkdir(DIR, exist_ok = True)
+var FILE = path.join(DIR, "probe.txt")
+var wf = io.open(FILE, "w")
+discard wf.write("abcdef")           # 6 bytes
+wf.close()
+
+ok(path.exists(FILE) == True, "exists: a file that exists")
+ok(path.exists(DIR) == True, "exists: a directory that exists")
+ok(path.isfile(FILE) == True, "isfile: a regular file")
+ok(path.isfile(DIR) == False, "isfile: False for a directory")
+ok(path.isdir(DIR) == True, "isdir: a directory")
+ok(path.isdir(FILE) == False, "isdir: False for a regular file")
+ok(path.getsize(FILE) == 6, "getsize: the exact byte length")
+ok(type(path.getsize(FILE)) == "Integer", "getsize: returns an Integer")
+
+# empty file -> size 0
+var EMPTY = path.join(DIR, "empty.bin")
+io.open(EMPTY, "w").close()
+ok(path.getsize(EMPTY) == 0, "getsize: an empty file is 0")
+
+# =========================================================== filesystem queries: tolerant on missing
+var GHOST = path.join(DIR, "does_not_exist_zzz.txt")
+ok(path.exists(GHOST) == False, "exists: a missing path is False (tolerant, no throw)")
+ok(path.isfile(GHOST) == False, "isfile: a missing path is False (tolerant)")
+ok(path.isdir(GHOST) == False, "isdir: a missing path is False (tolerant)")
+
+# =========================================================== getsize: adversarial / errors
+ok(throws(Function(): return path.getsize(GHOST)), "getsize: a missing path throws (no sensible size)")
+ok(throws(Function(): return path.getsize(DIR)), "getsize: a directory throws (not a regular file)")
+ok(throws(Function(): return path.exists(5)), "exists: a non-String arg throws")
+ok(throws(Function(): return path.isfile(None)), "isfile: a non-String arg throws")
+
+# =========================================================== inspect(path)
+var INS = inspect(path)
+ok("module path:" in INS, "inspect(path) labels the module")
+ok("join(...)" in INS, "inspect(path) shows join as variadic")
+ok("dirname(path: String) -> String" in INS, "inspect(path) shows dirname's signature")
+ok("basename(path: String) -> String" in INS, "inspect(path) shows basename's signature")
+ok("splitext(path: String) -> List" in INS, "inspect(path) shows splitext's signature")
+ok("exists(path: String) -> Bool" in INS, "inspect(path) shows exists's signature")
+ok("isfile(path: String) -> Bool" in INS, "inspect(path) shows isfile's signature")
+ok("isdir(path: String) -> Bool" in INS, "inspect(path) shows isdir's signature")
+ok("getsize(path: String) -> Integer" in INS, "inspect(path) shows getsize's signature")
+ok("mkdir(path: String, exist_ok: Bool = False)" in INS, "inspect(path) shows mkdir's exist_ok kwarg")
+ok("remove(path: String, missing_ok: Bool = False)" in INS, "inspect(path) shows remove's missing_ok kwarg")
+ok("rmtree(path: String, missing_ok: Bool = False)" in INS, "inspect(path) shows rmtree's missing_ok kwarg")
+ok("rename(src: String, dst: String)" in INS, "inspect(path) shows rename")
+ok("chmod(path: String, mode: Integer) -> Bool" in INS, "inspect(path) shows chmod")
+ok("listdir(path: String) -> List" in INS and "walk(dir: String) -> List" in INS, "inspect(path) shows listdir/walk")
+
+# =========================================================== mkdir: strict by default + exist_ok
+var MK = path.join(DIR, "mk")
+ok(path.mkdir(MK) == True, "mkdir creates a directory (returns True)")
+ok(path.isdir(MK), "mkdir: the directory now exists")
+ok(throws(Function(): return path.mkdir(MK)), "mkdir on an EXISTING directory RAISES by default")
+ok(path.mkdir(MK, exist_ok = True) == False, "mkdir(exist_ok=True) on an existing directory is a no-op (False)")
+ok(path.mkdir(path.join(MK, "a", "b", "c")) == True, "mkdir creates missing parents")
+ok(path.isdir(path.join(MK, "a", "b", "c")), "mkdir: the nested directory exists")
+ok(throws(Function(): return path.mkdir(5)), "mkdir: a non-String path throws")
+
+# =========================================================== remove: strict by default + missing_ok
+var RMF = path.join(MK, "file.txt")
+io.open(RMF, "w").close()
+ok(path.remove(RMF) == True, "remove deletes a file (returns True)")
+ok(not path.exists(RMF), "remove: the file is gone")
+ok(throws(Function(): return path.remove(RMF)), "remove of a MISSING path RAISES by default")
+ok(path.remove(RMF, missing_ok = True) == False, "remove(missing_ok=True) of a missing path is a no-op (False)")
+# remove on a NON-EMPTY directory throws (that is rmtree's job)
+ok(throws(Function(): return path.remove(MK)), "remove of a NON-EMPTY directory throws (use rmtree)")
+
+# =========================================================== rmtree: recursive delete + missing_ok
+ok(path.rmtree(MK) == True, "rmtree recursively deletes a non-empty directory (returns True)")
+ok(not path.exists(MK), "rmtree: the whole tree is gone")
+ok(throws(Function(): return path.rmtree(MK)), "rmtree of a MISSING path RAISES by default")
+ok(path.rmtree(MK, missing_ok = True) == False, "rmtree(missing_ok=True) of a missing path is a no-op (False)")
+
+# =========================================================== rename
+var RA = path.join(DIR, "ra.txt")
+var RB = path.join(DIR, "rb.txt")
+io.open(RA, "w").close()
+ok(path.rename(RA, RB) == None, "rename returns None")
+ok(path.exists(RB) and not path.exists(RA), "rename moved the file")
+ok(throws(Function(): return path.rename(path.join(DIR, "no_such_zzz"), RB)), "rename of a missing source throws")
+discard path.remove(RB, missing_ok = True)
+
+# =========================================================== chmod / getcwd / listdir / walk (moved to path)
+ok(type(path.getcwd()) == "String" and len(path.getcwd()) > 0, "path.getcwd returns a non-empty String")
+ok(type(path.listdir(DIR)) == "List", "path.listdir returns a List")
+ok(path.listdir(path.join(DIR, "no_such_zzz")) == [], "path.listdir is tolerant: a missing dir lists as []")
+ok(type(path.walk(DIR)) == "List", "path.walk returns a List")
+ok(path.walk(path.join(DIR, "no_such_zzz")) == [], "path.walk is tolerant: a missing dir walks to []")
+var CHF = path.join(DIR, "ch.txt")
+io.open(CHF, "w").close()
+ok(path.chmod(CHF, 0o644) == True, "chmod returns True on success")
+ok(path.chmod(path.join(DIR, "no_such_zzz.txt"), 0o644) == False, "chmod is lenient: a missing file returns False")
+discard path.remove(CHF, missing_ok = True)
+
+# =========================================================== the split is real: io/sys no longer have these
+ok(throws(Function(): return io.dirname("/a/b")), "io.dirname is GONE (moved to path)")
+ok(throws(Function(): return io.exists(".")), "io.exists is GONE (moved to path)")
+ok(throws(Function(): return io.mkdir(".")), "io.mkdir is GONE (moved to path)")
+ok(throws(Function(): return io.remove(".")), "io.remove is GONE (moved to path)")
+ok(throws(Function(): return io.getcwd()), "io.getcwd is GONE (moved to path)")
+ok(throws(Function(): return io.listdir(".")), "io.listdir is GONE (moved to path)")
+ok(throws(Function(): return sys.joinpath("a", "b")), "sys.joinpath is GONE (now path.join)")
+# io keeps only actual I/O (streams / BytesIO / open)
+ok(not throws(Function(): return io.BytesIO()), "io still owns BytesIO / streams")
+
+# =========================================================== cleanup
+discard path.remove(FILE, missing_ok = True)
+discard path.remove(EMPTY, missing_ok = True)
+discard path.rmtree(DIR, missing_ok = True)
+ok(not path.exists(DIR), "cleanup: scratch dir removed (recursively)")
+
+io.print("path_module: " + String(n) + " checks passed")

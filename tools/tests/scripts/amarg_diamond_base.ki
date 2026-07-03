@@ -1,0 +1,5 @@
+# Shared base of a diamond import (imported by amarg_diamond_a and amarg_diamond_b, and directly by
+# the entry script). Imported once and cached; every importer sees argmain False here.
+var m = argmain
+var tag = "base"
+var n = len(arglist)

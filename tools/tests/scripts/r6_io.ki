@@ -1,0 +1,271 @@
+# Self-checking audit of the `io` stdlib module (docs/pages/10-stdlib.md "io").
+# Exercises console streams, files (text + binary), BytesIO, the `with` context
+# manager, filesystem helpers, and path helpers. Every temp path is created under
+# the scratchpad dir and removed (and asserted gone) before exit.
+
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var time = import("time")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f, m):
+    var threw = False
+    try:
+        f()
+    catch:
+        threw = True
+    assert threw, m
+    n = n + 1
+
+# A unique scratch directory we own and tear down at the end.
+var root = path.join(path.gettempdir(), "kirito_r6_io_" + String(time.perfcounterns()))
+
+# --- path helpers (pure string ops; os.path style) ---
+ok(path.dirname("/a/b/c.txt") == "/a/b", "dirname")
+ok(path.basename("/a/b/c.txt") == "c.txt", "basename")
+ok(path.basename("/a/b/") == "", "basename trailing slash -> empty")
+ok(path.dirname("file.txt") == "", "dirname with no directory")
+ok(path.splitext("/a/b/c.txt") == ["/a/b/c", ".txt"], "splitext normal")
+ok(path.splitext("/a/b/c") == ["/a/b/c", ""], "splitext no extension")
+ok(path.splitext(".bashrc") == [".bashrc", ""], "splitext dotfile has no ext")
+ok(path.splitext("archive.tar.gz") == ["archive.tar", ".gz"], "splitext last ext only")
+# path JOINING is path.join's job (single source of truth), not io's — covered in the sys suites.
+
+# --- create our scratch tree ---
+ok(path.mkdir(root) == True, "mkdir returns True")
+ok(path.isdir(root) == True, "isdir true on a directory")
+ok(path.isfile(root) == False, "isfile false on a directory")
+ok(path.exists(root) == True, "exists true after mkdir")
+var sub = path.join(root, "sub")
+ok(path.mkdir(sub) == True, "mkdir nested")
+
+# --- text file: write / read / readline / readlines / iterate ---
+var tpath = path.join(root, "text.txt")
+var fw = io.open(tpath, "w")
+discard fw.write("alpha\nbeta\ngamma\n")
+ok(fw.tell() == 17, "tell after write reflects bytes written")
+fw.close()
+
+ok(path.exists(tpath) == True, "file exists after write")
+ok(path.isfile(tpath) == True, "isfile true on a regular file")
+ok(path.getsize(tpath) == 17, "getsize matches byte count")
+
+var fr = io.open(tpath, "r")
+ok(fr.read(5) == "alpha", "read(n) returns n chars")
+ok(type(fr.read(5)) == "String", "text read returns String")
+fr.close()
+
+var frl = io.open(tpath, "r")
+ok(frl.readline() == "alpha", "readline strips newline")
+ok(frl.readline() == "beta", "readline second line")
+frl.close()
+
+var fra = io.open(tpath, "r")
+ok(fra.readlines() == ["alpha", "beta", "gamma"], "readlines returns all lines")
+fra.close()
+
+var iterlines = []
+var fi = io.open(tpath, "r")
+for ln in fi:
+    iterlines = iterlines + [ln]
+fi.close()
+ok(iterlines == ["alpha", "beta", "gamma"], "iterating a file yields its lines")
+
+# --- seek / tell with all whence values ---
+var fs = io.open(tpath, "r")
+ok(fs.tell() == 0, "tell starts at 0")
+ok(fs.seek(6) == 6, "seek(offset) returns new position")
+ok(fs.tell() == 6, "tell after seek")
+ok(fs.read(4) == "beta", "read after seek lands correctly")
+ok(fs.seek(0, 2) == 17, "seek from end (whence=2) -> size")
+ok(fs.seek(-6, 2) == 11, "seek negative from end")
+ok(fs.read() == "gamma\n", "read after relative-from-end seek (to EOF)")
+ok(fs.tell() == 17, "tell at EOF after read")
+ok(fs.seek(-6, 1) == 11, "seek relative to current (whence=1)")
+ok(fs.read(5) == "gamma", "read after relative-to-current seek")
+fs.close()
+
+# --- writelines + append ---
+var fwl = io.open(tpath, "w")
+fwl.writelines(["one\n", "two\n"])
+fwl.close()
+var fa = io.open(tpath, "a")
+discard fa.write("three\n")
+fa.close()
+var fck = io.open(tpath, "r")
+ok(fck.read() == "one\ntwo\nthree\n", "writelines + append")
+fck.close()
+
+# --- r+ read/write ---
+var frw = io.open(tpath, "w")
+discard frw.write("ABCDEF")
+frw.close()
+var frp = io.open(tpath, "r+")
+ok(frp.read(3) == "ABC", "r+ can read")
+discard frp.seek(0)
+discard frp.write("xyz")
+discard frp.seek(0)
+ok(frp.read() == "xyzDEF", "r+ can write in place")
+frp.close()
+
+# --- error cases: closed / wrong-mode / bad mode / missing file / bad seek ---
+# Named helpers so multi-statement bodies stay valid as `throws` arguments.
+var readClosed = Function():
+    var cf = io.open(tpath, "r")
+    cf.close()
+    discard cf.read()
+# `with` so the handle closes even though the op throws — else the leaked handle locks tpath on
+# Windows (which can't delete an open file) and the teardown path.remove(tpath) below fails.
+var writeReadonly = Function():
+    with io.open(tpath, "r") as rf:
+        discard rf.write("nope")
+var readWriteonly = Function():
+    with io.open(tpath, "w") as wf:
+        discard wf.read()
+var seekNeg = Function():
+    with io.open(tpath, "r") as sf2:
+        discard sf2.seek(-5)
+throws(readClosed, "read on a closed file throws")
+throws(writeReadonly, "write to a read-only file throws")
+throws(readWriteonly, "read from a write-only file throws")
+throws(seekNeg, "seek to a negative absolute position throws")
+throws(Function(): io.open(path.join(root, "missing.txt"), "r"), "open missing file for read throws")
+throws(Function(): io.open(path.join(root, "x.txt"), "q"), "open with a bad mode throws")
+throws(Function(): path.getsize(path.join(root, "missing.txt")), "getsize on a missing file throws")
+
+# --- binary mode: write/read/readline/iterate yield + accept Bytes ---
+var bpath = path.join(root, "data.bin")
+var bw = io.open(bpath, "wb")
+discard bw.write(Bytes([104, 105, 10, 98, 121, 101]))   # "hi\nbye"
+bw.close()
+ok(path.getsize(bpath) == 6, "binary write byte count")
+
+var bb = io.open(bpath, "rb")
+var firstline = bb.readline()
+ok(type(firstline) == "Bytes", "binary readline yields Bytes")
+ok(firstline == Bytes([104, 105]), "binary readline content (newline stripped)")
+bb.close()
+
+var bb2 = io.open(bpath, "rb")
+ok(type(bb2.read(2)) == "Bytes", "binary read yields Bytes")
+bb2.close()
+
+var bchunks = []
+var bb3 = io.open(bpath, "rb")
+for c in bb3:
+    bchunks = bchunks + [type(c)]
+bb3.close()
+ok(bchunks == ["Bytes", "Bytes"], "iterating a binary file yields Bytes")
+
+# binary append (ab) + r+b
+var ba = io.open(bpath, "ab")
+discard ba.write(Bytes([33]))
+ba.close()
+ok(path.getsize(bpath) == 7, "binary append grows the file")
+var brp = io.open(bpath, "r+b")
+ok(type(brp.read(1)) == "Bytes", "r+b read yields Bytes")
+brp.close()
+
+# --- BytesIO (in-memory; reads return String per the byte-transparent String) ---
+var bio = io.BytesIO()
+ok(bio.write("hello") == 5, "BytesIO.write returns the byte count")
+ok(bio.tell() == 5, "BytesIO.tell after write")
+ok(bio.getvalue() == "hello", "BytesIO.getvalue")
+ok(bio.size() == 5, "BytesIO.size")
+ok(len(bio) == 5, "len(BytesIO)")
+ok(bio.seek(0) == 0, "BytesIO.seek(0)")
+ok(bio.read(3) == "hel", "BytesIO.read(n)")
+ok(type(bio.read(1)) == "String", "BytesIO read returns String")
+discard bio.seek(0)
+ok(bio.read() == "hello", "BytesIO.read() reads the rest")
+discard bio.seek(2)
+ok(bio.truncate() == 2, "BytesIO.truncate drops after the cursor")
+ok(bio.getvalue() == "he", "BytesIO after truncate")
+ok(io.BytesIO("abc").getvalue() == "abc", "BytesIO(initial)")
+# overwrite-at-cursor semantics
+var bov = io.BytesIO("123456")
+discard bov.seek(2)
+discard bov.write("XY")
+ok(bov.getvalue() == "12XY56", "BytesIO overwrites at the cursor")
+# BytesIO readline includes-and-strips newline behavior
+var brl = io.BytesIO("a\nb\nc")
+ok(brl.readline() == "a", "BytesIO.readline first line")
+ok(brl.readline() == "b", "BytesIO.readline second line")
+ok(brl.readline() == "c", "BytesIO.readline last (no newline)")
+
+# --- `with` context manager on File and BytesIO (auto-close) ---
+var wpath = path.join(root, "with.txt")
+with io.open(wpath, "w") as wf2:
+    discard wf2.write("ctx\n")
+ok(path.exists(wpath) == True, "with-open File wrote the file")
+with io.open(wpath, "r") as rf2:
+    ok(rf2.read() == "ctx\n", "with-open File read back")
+with io.BytesIO() as wb2:
+    discard wb2.write("buf")
+    ok(wb2.getvalue() == "buf", "with-open BytesIO")
+
+# --- console-stream redirection: rebind io.stdout to a BytesIO, capture, restore ---
+var saved = io.stdout
+io.stdout = io.BytesIO()
+io.print("captured line")
+io.write("no-newline")
+var capbuf = io.stdout
+io.stdout = saved
+ok(capbuf.getvalue() == "captured line\nno-newline", "stdout redirection captures print + write")
+io.stdout = io.__stdout__
+ok(True, "stdout restored from __stdout__")
+
+# stream= keyword directs one call without rebinding
+var onebuf = io.BytesIO()
+io.print("one", "two", stream = onebuf)
+ok(onebuf.getvalue() == "one two\n", "print stream= keyword")
+var inbuf = io.BytesIO("answer\nrest")
+ok(io.input(stream = inbuf) == "answer", "input stream= keyword reads a line")
+ok(io.read(2, stream = inbuf) == "re", "read(n) stream= keyword")
+var printBadKw = Function():
+    io.print("x", bogus = 1)
+throws(printBadKw, "an unexpected keyword to print throws")
+
+# --- listdir / walk ---
+var f1 = path.join(root, "f1.txt")
+var f2 = path.join(sub, "f2.txt")
+with io.open(f1, "w") as g1:
+    discard g1.write("a")
+with io.open(f2, "w") as g2:
+    discard g2.write("bb")
+var names = path.listdir(root)
+ok("f1.txt" in names, "listdir lists a direct entry")
+ok("sub" in names, "listdir lists a subdirectory")
+ok(("f2.txt" in names) == False, "listdir is not recursive")
+ok(len(path.walk(root)) >= 2, "walk finds files recursively")
+
+# --- rename ---
+var f3 = path.join(root, "renamed.txt")
+path.rename(f1, f3)
+ok(path.exists(f1) == False, "rename removed the old path")
+ok(path.exists(f3) == True, "rename created the new path")
+var renameMissing = Function():
+    path.rename(path.join(root, "missing.txt"), f1)
+throws(renameMissing, "rename of a missing source throws")
+
+# --- getcwd is a non-empty string ---
+ok(type(path.getcwd()) == "String", "getcwd returns a String")
+ok(len(path.getcwd()) > 0, "getcwd is non-empty")
+
+# --- tear down every temp path and assert it is gone ---
+ok(path.remove(f3) == True, "remove a file")
+ok(path.remove(f2) == True, "remove a nested file")
+ok(path.remove(tpath) == True, "remove the text file")
+ok(path.remove(bpath) == True, "remove the binary file")
+ok(path.remove(wpath) == True, "remove the with file")
+throws(Function(): return path.remove(path.join(root, "missing.txt")), "remove of a missing path RAISES by default")
+ok(path.remove(path.join(root, "missing.txt"), missing_ok = True) == False, "remove(missing_ok=True) of a missing path is False")
+ok(path.remove(sub) == True, "remove the empty subdirectory")
+ok(path.remove(root) == True, "remove the root directory")
+ok(path.exists(root) == False, "scratch tree fully removed")
+
+io.print("r6_io: " + String(n) + " checks passed")

@@ -1,0 +1,3 @@
+# An unbalanced parenthesis is an invalid regex.
+var r = import("regex")
+discard r.compile("(abc")

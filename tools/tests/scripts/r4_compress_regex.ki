@@ -1,0 +1,363 @@
+# Exhaustive probe of the compression + regex stdlib region: `zlib`, `gzip`, `hash`, `regex`.
+# Every public function/method/flag is exercised from typical, edge, and malformed angles:
+#   - zlib/gzip: String|Bytes round-trips, type preservation, interop with real zlib/gzip/raw-deflate
+#     streams produced by a reference implementation, CRC/checksum verification, corrupt-input RAISE.
+#   - hash: md5/sha1/sha256 known-answer vectors, adler32/crc32/crc64 constants, Bytes byte-identity.
+#   - regex: compile/match/search/fullmatch/findall/finditer/sub(str|callable)/split/escape, all flags,
+#     groups (numbered/named/optional), greedy+lazy quantifiers, classes/anchors/boundaries, unicode
+#     code-point semantics, rejection of backreferences + lookaround, and a catastrophic-backtracking
+#     pattern that MUST complete fast (proving the linear-time Thompson-NFA guarantee).
+# Deterministic: no RNG, no clock-value assertions, no network. `ki r4_compress_regex.ki` prints a
+# fixed summary and exits 0 when every assertion holds.
+var io = import("io")
+var z = import("zlib")
+var g = import("gzip")
+var h = import("hash")
+var re = import("regex")
+var time = import("time")
+
+var checks = 0
+var assertEq = Function(got, want, msg):
+    checks = checks + 1
+    assert got == want, msg + " (got " + String(got) + ", want " + String(want) + ")"
+
+var assertTrue = Function(cond, msg):
+    checks = checks + 1
+    assert cond, msg
+
+# `throws(fn)` -> the String form of the error thrown by fn(), or "NO-ERROR" if it didn't throw.
+var throws = Function(fn):
+    try:
+        discard fn()
+        return "NO-ERROR"
+    catch as e:
+        return String(e)
+
+var raisesWith = Function(fn, needle, msg):
+    checks = checks + 1
+    var got = throws(fn)
+    assert needle in got, msg + " -- expected an error containing '" + needle + "', got: " + got
+
+# ============================================================================ zlib
+# --- round-trips (String) ---
+assertEq(z.decompress(z.compress("hello world")), "hello world", "zlib string round-trip")
+assertEq(z.decompress(z.compress("")), "", "zlib empty round-trip")
+assertEq(z.decompress(z.compress("a")), "a", "zlib single-char round-trip")
+assertEq(z.inflate(z.deflate("The quick brown fox " * 20)), "The quick brown fox " * 20, "raw deflate/inflate round-trip")
+
+# --- highly compressible data shrinks; incompressible-ish stays small overhead ---
+var blob = "x" * 10000
+assertTrue(len(z.compress(blob)) < 200, "zlib compresses a repetitive blob a lot")
+assertEq(z.decompress(z.compress(blob)), blob, "zlib big-blob round-trip")
+
+# --- type preservation: Bytes in -> Bytes out, String in -> String out ---
+assertEq(type(z.compress(Bytes([1, 2, 3]))), "Bytes", "zlib compress preserves Bytes type")
+assertEq(type(z.compress("s")), "String", "zlib compress preserves String type")
+assertEq(type(z.decompress(z.compress(Bytes([4, 5])))), "Bytes", "zlib decompress preserves Bytes type")
+var allbytes = Bytes([0, 1, 127, 128, 200, 255, 0, 42])
+assertEq(z.decompress(z.compress(allbytes)), allbytes, "zlib binary-safe round-trip (all byte values)")
+assertEq(z.inflate(z.deflate(allbytes)), allbytes, "raw inflate preserves Bytes")
+
+# --- unicode String round-trips through the UTF-8 byte view ---
+var uni = "héllo 世界 café ☃ ünïcödé" * 4
+assertEq(z.decompress(z.compress(uni)), uni, "zlib unicode String round-trip")
+
+# --- interop: a zlib stream produced by a reference zlib decompresses to the original ---
+var refMsg = "Kirito linear-time regex and DEFLATE. " * 4
+var refZlib = Bytes([120,156,243,206,44,202,44,201,87,200,201,204,75,77,44,210,45,201,204,77,85,40,74,77,79,173,80,72,204,75,81,112,113,117,243,113,12,113,213,83,240,166,187,42,0,176,117,51,105])
+assertEq(z.decompress(refZlib).decode(), refMsg, "zlib decompresses a real reference zlib stream (interop)")
+var refRaw = Bytes([243,206,44,202,44,201,87,200,201,204,75,77,44,210,45,201,204,77,85,40,74,77,79,173,80,72,204,75,81,112,113,117,243,113,12,113,213,83,240,166,187,42,0])
+assertEq(z.inflate(refRaw).decode(), refMsg, "inflate decompresses a real reference raw-DEFLATE stream (interop)")
+
+# --- corrupt / hostile input RAISES cleanly (no crash) ---
+raisesWith(Function(): return z.decompress("not zlib data"), "zlib", "zlib decompress rejects garbage")
+raisesWith(Function(): return z.decompress(""), "zlib", "zlib decompress rejects empty")
+raisesWith(Function(): return z.inflate("\xff\xff\xff"), "zlib", "raw inflate rejects a bad block type")
+raisesWith(Function(): return z.compress(42), "String or Bytes", "zlib compress rejects a non-String/Bytes")
+raisesWith(Function(): return z.decompress([1, 2, 3]), "String or Bytes", "zlib decompress rejects a List")
+# corrupting a valid stream's Adler-32 trailer is detected
+var good = z.compress("important data")
+var corrupt = good[0:len(good) - 1] + "\x00"
+raisesWith(Function(): return z.decompress(corrupt), "checksum", "zlib detects a corrupted Adler-32 trailer")
+
+# ============================================================================ gzip
+# --- round-trips + verb aliases ---
+assertEq(g.decompress(g.compress("hello gzip")), "hello gzip", "gzip round-trip")
+assertEq(g.decompress(g.compress("")), "", "gzip empty round-trip")
+assertEq(g.gunzip(g.gzip("alias check")), "alias check", "gzip/gunzip verb aliases round-trip")
+
+# --- type preservation ---
+assertEq(type(g.compress(Bytes([9, 8, 7]))), "Bytes", "gzip compress preserves Bytes type")
+assertEq(type(g.compress("t")), "String", "gzip compress preserves String type")
+var gbin = Bytes([0, 255, 1, 254, 128, 127])
+assertEq(g.decompress(g.compress(gbin)), gbin, "gzip binary-safe round-trip")
+assertEq(g.decompress(g.compress(uni)), uni, "gzip unicode String round-trip")
+
+# --- interop: decompress a real reference gzip stream; produce a gzip a reference reads (hash check) ---
+var refGzip = Bytes([31,139,8,0,0,0,0,0,2,3,243,206,44,202,44,201,87,200,201,204,75,77,44,210,45,201,204,77,85,40,74,77,79,173,80,72,204,75,81,112,113,117,243,113,12,113,213,83,240,166,187,42,0,160,163,211,250,152,0,0,0])
+assertEq(g.decompress(refGzip).decode(), refMsg, "gzip decompresses a real reference .gz stream (interop)")
+
+# --- multi-member concatenation (gunzip accepts `cat a.gz b.gz`) ---
+assertEq(g.decompress(g.compress("AAA") + g.compress("BBB")), "AAABBB", "gzip decodes concatenated members")
+
+# --- corrupt / truncated input RAISES (CRC + header + trailing-junk) ---
+raisesWith(Function(): return g.decompress("not a gzip stream here"), "gzip", "gzip rejects bad magic")
+raisesWith(Function(): return g.decompress(g.compress("data")[0:5]), "gzip", "gzip rejects a truncated stream")
+raisesWith(Function(): return g.decompress(g.compress("ok") + "JUNK!!!!"), "gzip", "gzip rejects trailing junk after a member")
+raisesWith(Function(): return g.compress(42), "String or Bytes", "gzip compress rejects a non-String/Bytes")
+# tamper a CRC byte (trailer is the last 8 bytes; CRC occupies bytes [len-8 .. len-5])
+var gv = g.compress("verify me please")
+var ngv = len(gv)
+var gtamper = gv[0:ngv - 5] + chr((ord(gv[ngv - 5]) + 1) % 256) + gv[ngv - 4:ngv]
+raisesWith(Function(): return g.decompress(gtamper), "CRC", "gzip detects a corrupted CRC-32 trailer")
+
+# ============================================================================ hash
+# --- MD5 known-answer vectors (RFC 1321) ---
+assertEq(h.md5(""), "d41d8cd98f00b204e9800998ecf8427e", "md5('')")
+assertEq(h.md5("a"), "0cc175b9c0f1b6a831c399e269772661", "md5('a')")
+assertEq(h.md5("abc"), "900150983cd24fb0d6963f7d28e17f72", "md5('abc')")
+assertEq(h.md5("message digest"), "f96b697d7cb7938d525a2f31aaf161d0", "md5('message digest')")
+
+# --- SHA-1 known-answer vectors ---
+assertEq(h.sha1(""), "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha1('')")
+assertEq(h.sha1("abc"), "a9993e364706816aba3e25717850c26c9cd0d89d", "sha1('abc')")
+
+# --- SHA-256 known-answer vectors (FIPS 180) ---
+assertEq(h.sha256(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256('')")
+assertEq(h.sha256("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256('abc')")
+# the multi-block FIPS vector (>64 bytes, exercises padding/length)
+assertEq(h.sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+         "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", "sha256 56-byte FIPS vector")
+# 1,000,000 'a' — the classic large-input vector
+assertEq(h.sha256("a" * 1000000), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0", "sha256 million-a vector")
+
+# --- digest lengths are fixed; determinism; avalanche ---
+assertEq(len(h.md5("anything")), 32, "md5 hex length is 32")
+assertEq(len(h.sha1("anything")), 40, "sha1 hex length is 40")
+assertEq(len(h.sha256("anything")), 64, "sha256 hex length is 64")
+assertEq(h.sha256("repeatable"), h.sha256("repeatable"), "sha256 is deterministic")
+assertTrue(h.sha256("hello") != h.sha256("hellp"), "sha256 avalanche (one-bit change)")
+
+# --- checksums: Adler-32 / CRC-32 (non-negative Integer) and CRC-64/XZ (signed) ---
+assertEq(h.adler32(""), 1, "adler32('') == 1")
+assertEq(h.adler32("Wikipedia"), 300286872, "adler32('Wikipedia')")
+assertEq(h.crc32(""), 0, "crc32('') == 0")
+assertEq(h.crc32("hello"), 907060870, "crc32('hello')")
+assertEq(h.crc64(""), 0, "crc64('') == 0")
+assertEq(h.crc64("123456789"), -7395533204333446662, "crc64('123456789') CRC-64/XZ check value (signed)")
+assertTrue(h.crc32("hello") >= 0, "crc32 is a non-negative Integer")
+assertTrue(h.adler32("test") >= 0, "adler32 is a non-negative Integer")
+
+# --- Bytes hash byte-identically to the same-byte String; high bytes hash too ---
+assertEq(h.md5(Bytes([97, 98, 99])), h.md5("abc"), "md5(Bytes) == md5(String) for the same bytes")
+assertEq(h.sha256("abc".encode()), h.sha256("abc"), "sha256 of a String's encode() matches")
+assertEq(h.crc32(Bytes([104, 101, 108, 108, 111])), h.crc32("hello"), "crc32(Bytes) == crc32(String)")
+assertEq(h.crc64(Bytes([49,50,51,52,53,54,55,56,57])), h.crc64("123456789"), "crc64(Bytes) == crc64(String)")
+assertEq(len(h.sha256(Bytes([0, 255, 128, 1, 254]))), 64, "sha256 hashes arbitrary binary bytes")
+
+# --- cross-check our checksums against the reference values for refMsg ---
+assertEq(h.sha256(refMsg), "3b926d653657e63171d63e7b30c3ac645a3cc67c683b04840a25ef5a1ed586d8", "sha256 matches the reference for refMsg")
+assertEq(h.crc32(refMsg), 4208173984, "crc32 matches the reference for refMsg")
+assertEq(h.adler32(refMsg), 2960470889, "adler32 matches the reference for refMsg")
+
+# --- hostile: wrong argument types RAISE, not crash ---
+raisesWith(Function(): return h.md5(42), "String or Bytes", "md5 rejects an Integer")
+raisesWith(Function(): return h.sha256([1, 2, 3]), "String or Bytes", "sha256 rejects a List")
+raisesWith(Function(): return h.sha1(None), "String or Bytes", "sha1 rejects None")
+raisesWith(Function(): return h.crc32(None), "String or Bytes", "crc32 rejects None")
+
+# --- keyword-argument support (every fixed-arity native declares a signature) ---
+assertEq(h.md5(data = "abc"), h.md5("abc"), "md5 accepts the data= keyword")
+assertEq(z.decompress(z.compress(data = "kw")), "kw", "zlib compress accepts the data= keyword")
+
+# ============================================================================ regex: search / match / fullmatch
+assertEq(re.search("\\d+", "abc123def").group(), "123", "search finds the first run")
+assertEq(re.match("\\d+", "abc123"), None, "match is anchored at the start")
+assertEq(re.match("abc", "abcdef").group(), "abc", "match at the start")
+assertEq(re.fullmatch("\\d+", "12345").group(), "12345", "fullmatch covers the whole string")
+assertEq(re.fullmatch("\\d+", "123a"), None, "fullmatch rejects a partial match")
+assertEq(re.fullmatch("a*?", "aaa").group(), "aaa", "fullmatch forces a lazy quantifier to consume all")
+assertEq(re.search("missing", "text"), None, "search returns None when absent")
+
+# --- groups: numbered, named, spans, optional/non-participating ---
+var m = re.search("(\\d+)-(\\d+)", "id 12-345 x")
+assertEq(m.group(1), "12", "numbered group 1")
+assertEq(m.group(2), "345", "numbered group 2")
+assertEq(m.group(), "12-345", "group() is the whole match")
+assertEq(m.group(0), "12-345", "group(0) is the whole match")
+assertEq(m.groups(), ["12", "345"], "groups() list")
+assertEq(m.span(), [3, 9], "span() of the whole match (code-point indices)")
+assertEq(m.span(2), [6, 9], "span() of group 2")
+assertEq(m.start(1), 3, "start(1)")
+assertEq(m.end(1), 5, "end(1)")
+assertEq(m.string, "id 12-345 x", "Match.string is the subject")
+# multiple keys -> a List
+var mu = re.search("(?P<u>\\w+)@(?P<host>[\\w.]+)", "ada@kirito.dev")
+assertEq(mu.group("u"), "ada", "named group by name")
+assertEq(mu.group("u", "host"), ["ada", "kirito.dev"], "group() with several keys -> List")
+assertEq(mu.groupdict(), {"u": "ada", "host": "kirito.dev"}, "groupdict() maps names to values")
+assertEq(re.search("(?<y>\\d{4})", "2024").group("y"), "2024", "(?<name>) group form")
+# optional group that did not participate
+var opt = re.search("a(b)?c", "ac")
+assertEq(opt.group(1), None, "non-participating optional group -> None")
+assertEq(opt.start(1), -1, "non-participating optional group -> start -1")
+assertEq(opt.span(1), [-1, -1], "non-participating optional group -> span [-1, -1]")
+assertEq(re.search("a(b)?c", "abc").group(1), "b", "participating optional group")
+# defaults for groups()/groupdict()
+var md = re.search("(?P<x>a)(?P<y>b)?", "a")
+assertEq(md.groups("MISS"), ["a", "MISS"], "groups(default) substitutes for absent groups")
+assertEq(md.groupdict("MISS"), {"x": "a", "y": "MISS"}, "groupdict(default) substitutes for absent groups")
+assertEq(md.groupdict(), {"x": "a", "y": None}, "groupdict() default is None")
+# bad group keys RAISE clearly
+raisesWith(Function(): return m.group(99), "no such group", "group() rejects an out-of-range index")
+raisesWith(Function(): return m.group("nope"), "no such group", "group() rejects an unknown name")
+
+# --- quantifiers: greedy vs lazy, {n}/{n,}/{n,m}, alternation priority ---
+assertEq(re.search("<.*>", "<a><b>").group(), "<a><b>", "greedy .*")
+assertEq(re.search("<.*?>", "<a><b>").group(), "<a>", "lazy .*?")
+assertEq(re.search("a+", "aaab").group(), "aaa", "greedy +")
+assertEq(re.search("a+?", "aaab").group(), "a", "lazy +?")
+assertEq(re.search("a{3}", "aaaa").group(), "aaa", "exact {3}")
+assertEq(re.search("a{2,}", "aaaa").group(), "aaaa", "open {2,}")
+assertEq(re.search("a{2,3}", "aaaa").group(), "aaa", "greedy bounded {2,3}")
+assertEq(re.search("a{2,3}?", "aaaa").group(), "aa", "lazy bounded {2,3}?")
+assertEq(re.search("a|ab", "abc").group(), "a", "leftmost-first alternation")
+assertEq(re.search("colou?r", "colour").group(), "colour", "optional ?")
+
+# --- classes, anchors, boundaries, shorthands ---
+assertEq(re.search("[a-c]+", "xabcz").group(), "abc", "char-class range")
+assertEq(re.search("[^0-9]+", "123abc456").group(), "abc", "negated class")
+assertEq(re.search("[a-fA-F0-9]+", "xyz 0FxA z").group(), "0F", "hex class stops at a non-hex char")
+assertEq(re.search("\\d\\w\\s", "1a ").group(), "1a ", "shorthands \\d \\w \\s")
+assertEq(re.findall("\\bword\\b", "word words word"), ["word", "word"], "word boundary \\b")
+assertEq(re.search("^abc$", "abc").group(), "abc", "^ and $ anchors")
+assertEq(re.search("^abc$", "xabc"), None, "anchors reject")
+assertEq(re.search("\\Aabc", "abcdef").group(), "abc", "\\A absolute start")
+assertEq(re.search("def\\z", "abcdef").group(), "def", "\\z absolute end")
+assertEq(re.search("def\\z", "abcdef\n"), None, "\\z is strict (rejects a trailing newline)")
+assertEq(re.search("def\\Z", "abcdef\n"), None, "\\Z is strict end in Kirito (like \\z)")
+assertEq(re.search(".", "\n"), None, "dot excludes newline by default")
+
+# --- escapes inside patterns ---
+assertTrue(re.search("\\n", "x\ny").group() == "\n", "\\n matches a newline")
+assertTrue(re.search("\\t", "x\ty").group() == "\t", "\\t matches a tab")
+assertEq(re.search("\\x41", "A").group(), "A", "\\xHH hex escape")
+assertEq(ord(re.search("[\\b]", chr(8)).group()), 8, "\\b inside a class is a backspace")
+
+# --- flags: constants, aliases, inline forms, combinations ---
+assertTrue(re.IGNORECASE == re.I, "IGNORECASE == I")
+assertTrue(re.MULTILINE == re.M, "MULTILINE == M")
+assertTrue(re.DOTALL == re.S, "DOTALL == S")
+assertEq(re.search("CAT", "cat", re.I).group(), "cat", "IGNORECASE flag")
+assertEq(re.search("(?i)CAT", "cat").group(), "cat", "inline (?i) flag")
+assertEq(re.search("a.b", "a\nb", re.S).group(), "a\nb", "DOTALL flag lets . match newline")
+assertEq(re.search("(?s)a.b", "a\nb").group(), "a\nb", "inline (?s) flag")
+assertEq(re.findall("(?m)^\\w+", "ab\ncd\nef"), ["ab", "cd", "ef"], "MULTILINE ^ at each line")
+assertEq(re.findall("(?m)\\w+$", "ab\ncd"), ["ab", "cd"], "MULTILINE $ at each line")
+assertEq(re.search("a.b", "A\nB", re.I + re.S).group(), "A\nB", "combined IGNORECASE + DOTALL flags")
+
+# --- findall result shape by group count (0 / 1 / 2+) ---
+assertEq(re.findall("\\w+", "a bb ccc"), ["a", "bb", "ccc"], "findall 0 groups -> whole matches")
+assertEq(re.findall("(\\w)\\w*", "foo bar"), ["f", "b"], "findall 1 group -> that group")
+assertEq(re.findall("(\\w+)=(\\d+)", "a=1 b=22"), [["a", "1"], ["b", "22"]], "findall 2+ groups -> per-match lists")
+assertEq(re.findall("(\\w)(\\d)?", "a1b"), [["a", "1"], ["b", ""]], "findall: a non-participating group is '' in the tuple")
+assertEq(re.findall("\\d*", "a1b"), ["", "1", "", ""], "findall includes empty matches")
+
+# --- finditer returns a List of Match objects ---
+var its = re.finditer("\\d+", "a 1 b 22")
+assertEq(type(its), "List", "finditer returns a List")
+assertEq(len(its), 2, "finditer match count")
+assertEq(its[0].group(), "1", "finditer first match")
+assertEq(its[1].group(), "22", "finditer second match")
+
+# --- sub: literal, templates (\1, \g<name>, \g<0>, \\), count, callable, empty-pattern ---
+assertEq(re.sub("\\d+", "#", "a1b22c333"), "a#b#c#", "sub literal replacement")
+assertEq(re.sub("(\\w+)@(\\w+)", "\\2.\\1", "user@host"), "host.user", "sub numbered backref template")
+assertEq(re.sub("(?P<n>\\d+)", "[\\g<n>]", "x9y"), "x[9]y", "sub \\g<name> template")
+assertEq(re.sub("\\d+", "[\\g<0>]", "x 12 y"), "x [12] y", "sub \\g<0> is the whole match")
+assertEq(re.sub("a", "\\\\", "a"), "\\", "sub \\\\ is a literal backslash")
+assertEq(re.sub("a", "X", "aaaa", 2), "XXaa", "sub count limit")
+assertEq(re.sub("a", "X", "aa", 10), "XX", "sub count above the match total replaces all")
+assertEq(re.sub("a", "X", "aaa", -1), "XXX", "sub with a non-positive count replaces all")
+assertEq(re.sub("", "-", "ab"), "-a-b-", "sub on an empty pattern inserts between every position")
+var doubler = Function(mm): return mm.group() + mm.group()
+assertEq(re.sub("\\d", doubler, "a1b2"), "a11b22", "sub with a callable replacement")
+var bracket = Function(mm): return "<" + mm.group() + ">"
+assertEq(re.sub("\\d+", bracket, "a1b22"), "a<1>b<22>", "sub callable sees the whole match")
+# sub error paths
+raisesWith(Function(): return re.sub("a", 42, "a"), "String or a function", "sub rejects a non-String/non-callable repl")
+raisesWith(Function(): return re.sub("a", Function(mm): return 1, "a"), "must return a String", "sub callable must return a String")
+raisesWith(Function(): return re.compile("(a)").sub("\\g<missing>", "a"), "no group named", "sub \\g<name> rejects an unknown name")
+raisesWith(Function(): return re.compile("a").sub("\\", "a"), "trailing backslash", "sub rejects a trailing backslash in the template")
+
+# --- split: basic, maxsplit, captured separators, empty pattern, non-participating capture ---
+assertEq(re.split("\\s+", "a  b   c"), ["a", "b", "c"], "split on whitespace runs")
+assertEq(re.split(",", "a,b,c,d", 2), ["a", "b", "c,d"], "split maxsplit=2 -> 3 pieces")
+assertEq(re.split("(\\s+)", "a b"), ["a", " ", "b"], "split keeps a captured separator")
+assertEq(re.split("(x)|(y)", "axby"), ["a", "x", None, "b", None, "y", ""], "split interleaves all captures (None for absent)")
+assertEq(re.split("", "abc"), ["", "a", "b", "c", ""], "split on an empty pattern")
+
+# --- escape: metacharacters backslashed, non-ASCII left intact, then usable literally ---
+assertEq(re.escape("a.b*c+d?(e)"), "a\\.b\\*c\\+d\\?\\(e\\)", "escape backslashes every metacharacter")
+assertEq(re.escape("hello.世界"), "hello\\.世界", "escape leaves non-ASCII code points alone")
+assertEq(re.search(re.escape("a.b"), "xa.byz").group(), "a.b", "an escaped pattern matches literally")
+
+# --- compile() yields a reusable Regex with attributes; pos/endpos on the methods ---
+var rx = re.compile("(?P<x>\\w+)=(\\d+)")
+assertEq(rx.pattern, "(?P<x>\\w+)=(\\d+)", "Regex.pattern")
+assertEq(rx.groups, 2, "Regex.groups counts capturing groups")
+assertEq(rx.groupindex, {"x": 1}, "Regex.groupindex maps names to numbers")
+var hexrx = re.compile("[0-9a-f]+", re.I)
+assertEq(hexrx.findall("0F xy AB"), ["0F", "AB"], "a compiled Regex is reusable (with its flag)")
+assertEq(re.compile("b").match("ab", 1).group(), "b", "match honors a start pos")
+assertEq(re.compile("a").search("xax", -5).group(), "a", "a negative pos is clamped to 0")
+assertEq(re.compile("c$").search("abc", 0, 2), None, "endpos shortens the subject so $ no longer reaches the 'c'")
+var rxw = re.compile("\\w+$")
+assertEq(rxw.search("abc def", 0, 3).group(), "abc", "endpos=3 makes $ anchor at position 3")
+
+# --- unicode: positions and spans are code-point indices ---
+var su = "café"
+var cm = re.search("é", su)
+assertEq(cm.start(), 3, "unicode match start is a code-point index")
+assertEq(cm.end(), 4, "unicode match end is a code-point index")
+assertEq(re.search(".", "é").group(), "é", "dot matches one code point, not one byte")
+assertEq(re.search("é+", "ééé!").span(), [0, 3], "unicode span counts code points")
+
+# ============================================================================ regex: rejected constructs RAISE cleanly
+raisesWith(Function(): return re.compile("(a)\\1"), "backreferences", "a numbered backreference is rejected")
+raisesWith(Function(): return re.compile("(?=a)"), "lookahead", "positive lookahead is rejected")
+raisesWith(Function(): return re.compile("(?!a)"), "lookahead", "negative lookahead is rejected")
+raisesWith(Function(): return re.compile("(?<=a)b"), "lookbehind", "positive lookbehind is rejected")
+raisesWith(Function(): return re.compile("(?<!a)b"), "lookbehind", "negative lookbehind is rejected")
+# --- malformed patterns RAISE with an actionable message ---
+raisesWith(Function(): return re.compile("*"), "nothing to repeat", "a leading quantifier is rejected")
+raisesWith(Function(): return re.compile("(a"), "missing )", "an unbalanced ( is rejected")
+raisesWith(Function(): return re.compile("a)"), "unbalanced", "an unbalanced ) is rejected")
+raisesWith(Function(): return re.compile("[abc"), "character class", "an unterminated class is rejected")
+raisesWith(Function(): return re.compile("[z-a]"), "character range", "a reversed range is rejected")
+raisesWith(Function(): return re.compile("\\"), "trailing backslash", "a trailing backslash is rejected")
+raisesWith(Function(): return re.compile("a{3,2}"), "repetition bounds", "reversed repetition bounds are rejected")
+raisesWith(Function(): return re.compile("a{5000}"), "too large", "an oversized repeat is rejected")
+
+# ============================================================================ regex: LINEAR-TIME guarantee
+# (a+)+b on a long all-'a' input with NO trailing 'b' is exponential for a backtracking engine; a
+# Thompson NFA returns None essentially instantly. We assert BOTH the correct result and that it
+# completed (it cannot hang) — and, generously, that it ran in well under a second.
+var bomb = "a" * 5000 + "c"
+var t0 = time.monotonic()
+var bombResult = re.search("(a+)+b", bomb)
+var elapsed = time.monotonic() - t0
+assertEq(bombResult, None, "catastrophic-backtracking pattern returns None (no match)")
+assertTrue(elapsed < 2.0, "catastrophic-backtracking pattern completes fast (linear time)")
+# a second pathological shape, nested stars
+var t1 = time.monotonic()
+var bomb2 = re.search("(a*)*c", "a" * 3000 + "x")
+var elapsed2 = time.monotonic() - t1
+assertEq(bomb2, None, "nested-star bomb returns None")
+assertTrue(elapsed2 < 2.0, "nested-star bomb completes fast")
+# the same engine still MATCHES quickly when a 'b' is present
+assertEq(re.search("(a+)+b", "a" * 2000 + "b").group(), "a" * 2000 + "b", "the pathological pattern still matches correctly")
+
+# ============================================================================ summary (deterministic)
+io.print("r4_compress_regex: all", checks, "assertions passed")
+io.print("OK r4-compress-regex")

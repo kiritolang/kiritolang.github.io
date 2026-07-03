@@ -1,0 +1,98 @@
+# ============================================ Frozen-Kirito stdlib: the previously-untested symbols
+var io = import("io")
+var path = import("path")
+
+# ===================== itertools: count, cycle (the untested pair) =====================
+var it = import("itertools")
+assert it.count(0, 1, 5) == [0, 1, 2, 3, 4], "count(start, step, stop)"
+assert it.count(2, 3, 11) == [2, 5, 8], "count with step"
+assert it.cycle([1, 2, 3], 2) == [1, 2, 3, 1, 2, 3], "cycle repeats the sequence"
+assert it.cycle(["a"], 4) == ["a", "a", "a", "a"], "cycle single element"
+
+# ===================== collections: deque dunders, Counter.items, defaultdict accessors =====================
+var col = import("collections")
+var dq = col.deque([1, 2, 3])
+assert len(dq) == 3, "deque _len_"
+assert dq[0] == 1 and dq[2] == 3, "deque _getitem_"
+var dqseen = []
+for x in dq:
+    dqseen.append(x)
+assert dqseen == [1, 2, 3], "deque _iter_"
+
+var counter = col.Counter(["a", "b", "a", "c", "a"])
+var citems = counter.items()
+assert len(citems) == 3, "Counter.items returns each (key, count)"
+# items contains [key, count] pairs; find "a"
+var afound = False
+for pair in citems:
+    if pair[0] == "a":
+        assert pair[1] == 3, "Counter.items count for 'a'"
+        afound = True
+assert afound, "Counter.items includes 'a'"
+
+var dd = col.defaultdict(Function(): return 0)
+dd["x"] = 5
+dd["y"] = 7
+assert "x" in dd and "z" not in dd, "defaultdict _contains_"
+assert sorted(dd.keys()) == ["x", "y"], "defaultdict.keys"
+assert sorted(dd.values()) == [5, 7], "defaultdict.values"
+assert len(dd.items()) == 2, "defaultdict.items"
+
+# ===================== statistics: pstdev (untested) + stdev exact =====================
+var st = import("statistics")
+var close = Function(a, b) -> Bool:
+    return abs(a - b) < 0.000001
+assert close(st.pstdev([1, 2, 3, 4, 5]), 1.4142135623730951), "pstdev exact"
+assert close(st.stdev([2, 4, 4, 4, 5, 5, 7, 9]), 2.138089935299395), "stdev exact value"
+assert sorted(st.multimode([1, 1, 2, 2, 3])) == [1, 2], "multimode"
+
+# ===================== string: the untested constants =====================
+var strmod = import("string")
+assert strmod.hexdigits == "0123456789abcdefABCDEF", "hexdigits"
+assert strmod.octdigits == "01234567", "octdigits"
+assert "!" in strmod.punctuation and "@" in strmod.punctuation, "punctuation"
+assert " " in strmod.whitespace and "\t" in strmod.whitespace, "whitespace"
+
+# ===================== heapq: heapreplace (untested) =====================
+var heapq = import("heapq")
+var h = heapq.heapify([1, 3, 5, 7])
+var popped = heapq.heapreplace(h, 4)
+assert popped == 1, "heapreplace returns the old min"
+assert h[0] == 3, "heapreplace then new min is 3"
+
+# ===================== bisect: insortright (untested) =====================
+var bisect = import("bisect")
+var arr = [1, 3, 3, 5]
+bisect.insortright(arr, 3)
+assert arr == [1, 3, 3, 3, 5], "insortright inserts after equal elements"
+var arr2 = [1, 3, 3, 5]
+bisect.insortleft(arr2, 3)
+assert arr2 == [1, 3, 3, 3, 5], "insortleft inserts before equal elements"
+
+# ===================== enum: values (untested) =====================
+var enum = import("enum")
+var Color = enum.Enum(["RED", "GREEN", "BLUE"])
+assert sorted(Color.values()) == [0, 1, 2], "Enum.values returns ordinals"
+assert sorted(Color.names()) == ["BLUE", "GREEN", "RED"], "Enum.names"
+
+# ===================== csv: format / parse as standalone =====================
+var csv = import("csv")
+assert csv.format([["a", "b"], ["1", "2"]]) == "a,b\n1,2", "csv.format multiple rows"
+assert csv.parse("a,b\n1,2") == [["a", "b"], ["1", "2"]], "csv.parse multiple rows"
+assert csv.parserow("\"quoted, field\",plain") == ["quoted, field", "plain"], "parserow quoted comma"
+assert csv.formatrow(["a,b", "c"]) == "\"a,b\",c", "formatrow quotes when needed"
+
+# ===================== tee: tee_stderr (untested) =====================
+var tee = import("tee")
+var sys = import("sys")
+var logpath = path.gettempdir() + "/ki_tee_stderr.log"
+var logf = io.open(logpath, "w")
+with tee.tee_stderr(logf):
+    io.eprint("mirrored to log")
+logf.close()
+var back = io.open(logpath, "r")
+assert "mirrored to log" in back.read(), "tee_stderr mirrors stderr to the extra stream"
+back.close()
+path.remove(logpath, missing_ok = True)
+
+io.print("OK stdmods-full")

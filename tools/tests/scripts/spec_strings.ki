@@ -1,0 +1,100 @@
+# Exhaustive + adversarial checks for String: indexing, slicing, methods, Unicode, f-strings.
+var io = import("io")
+
+# --- indexing + slicing (by code point), negatives, steps, clamping ---
+var s = "abcdef"
+assert s[0] == "a" and s[-1] == "f", "index + negative index"
+assert s[1:3] == "bc" and s[:2] == "ab" and s[4:] == "ef", "basic slices"
+assert s[-3:-1] == "de", "negative slice"
+assert s[::2] == "ace" and s[1::2] == "bdf", "step slice"
+assert s[::-1] == "fedcba", "reverse slice"
+assert s[2:100] == "cdef" and s[-100:2] == "ab", "out-of-range slice clamps"
+assert s[3:1] == "", "empty slice"
+assert len(s) == 6, "len counts code points"
+
+# --- concat / repeat / membership / iteration ---
+assert "ab" + "cd" == "abcd", "concat"
+assert "ab" * 3 == "ababab" and "x" * 0 == "", "repeat"
+assert "cd" in "abcdef" and "xy" not in "abcdef", "substring membership"
+var chars = []
+for c in "abc":
+    chars.append(c)
+assert chars == ["a", "b", "c"], "iteration yields characters"
+
+# --- Unicode: indexed by code point, not byte ---
+var u = "café"
+assert len(u) == 4 and u[3] == "é", "unicode code-point indexing"
+assert u[::-1] == "éfac", "unicode reverse"
+var pl = "chrząszcz"
+assert len(pl) == 9, "unicode length"
+
+# --- case / whitespace methods ---
+assert "Hello".upper() == "HELLO" and "Hello".lower() == "hello", "upper/lower"
+assert "  hi  ".strip() == "hi" and "xxhixx".strip("x") == "hi", "strip"
+assert "  hi".lstrip() == "hi" and "hi  ".rstrip() == "hi", "lstrip/rstrip"
+
+# --- split / join / replace ---
+assert "a,b,c".split(",") == ["a", "b", "c"], "split sep"
+assert "a b  c".split() == ["a", "b", "c"], "split whitespace runs"
+assert "a,b,c".split(",", 1) == ["a", "b,c"], "split maxsplit"
+assert "-".join(["a", "b", "c"]) == "a-b-c", "join"
+assert "aXbXc".replace("X", "-") == "a-b-c", "replace"
+assert "aaa".replace("a", "b", 2) == "bba", "replace count"
+
+# --- search / predicates ---
+assert "abcabc".find("bc") == 1 and "abcabc".rfind("bc") == 4, "find/rfind"
+assert "abc".find("z") == -1, "find absent"
+assert "abcabc".count("bc") == 2 and "aaa".count("a") == 3, "count"
+assert "hello".startswith("he") and "hello".endswith("lo"), "startswith/endswith"
+assert "12345".isdigit() and not "12a45".isdigit(), "isdigit"
+assert "abc".isalpha() and not "ab1".isalpha(), "isalpha"
+assert "abc123".isalnum() and "   ".isspace(), "isalnum/isspace"
+assert "abc".islower() and "ABC".isupper(), "islower/isupper"
+
+# --- prefix/suffix removal, padding ---
+assert "unhappy".removeprefix("un") == "happy", "removeprefix"
+assert "happily".removesuffix("ly") == "happi", "removesuffix"
+assert "nochange".removeprefix("xx") == "nochange", "removeprefix absent"
+assert "5".rjust(3, "0") == "005" and "5".ljust(3, "0") == "500", "rjust/ljust"
+assert "ab".center(6, "-") == "--ab--", "center"
+assert "42".zfill(5) == "00042" and "-42".zfill(5) == "-0042", "zfill sign-aware"
+
+# --- partition ---
+assert "a=b=c".partition("=") == ["a", "=", "b=c"], "partition"
+assert "a=b=c".rpartition("=") == ["a=b", "=", "c"], "rpartition"
+assert "abc".partition("=") == ["abc", "", ""], "partition no sep"
+
+# --- f-strings + format mini-spec ---
+var n = 7
+assert f"n={n}" == "n=7", "f-string"
+assert f"{n * n}" == "49", "f-string expr"
+assert f"{n:03d}" == "007", "f-string width/zero"
+assert f"{3.14159:.2f}" == "3.14", "f-string float precision"
+assert f"{255:#x}" == "0xff", "f-string alt hex"
+assert format(1234567, ",") == "1,234,567", "format thousands"
+assert format(42, "05d") == "00042", "format width"
+assert "{} and {}".format("a", "b") == "a and b", "str.format positional"
+assert "{0}-{1}-{0}".format("a", "b") == "a-b-a", "str.format indexed"
+
+# --- escapes / String() conversion ---
+assert len("a\tb\nc") == 5, "escape sequences"
+assert String(42) == "42" and String([1, 2]) == "[1, 2]" and String(None) == "None", "String() conversion"
+
+# --- the SAME behaviors hold no matter how the literal is written: ', ", ''', """, and raw ---
+assert "abcdef" == 'abcdef' and 'abcdef' == """abcdef""" and """abcdef""" == '''abcdef''', "form equivalence"
+assert 'abcdef'[1:3] == "bc" and r"abcdef"[::-1] == "fedcba", "slice across forms"
+assert 'Hello'.upper() == "HELLO" and """Hello""".lower() == 'hello', "case across forms"
+assert 'a,b,c'.split(",") == """a,b,c""".split(",") and r"a,b,c".split(",") == ["a", "b", "c"], "split across forms"
+assert ('ab' + """cd""") == r"abcd" and 'x' * 3 == "xxx", "concat/repeat across forms"
+assert 'cd' in """abcdef""" and "xy" not in r'abcdef', "membership across forms"
+# raw keeps backslashes; cooked decodes them; triple spans lines
+assert r"a\nb" == "a\\nb" and len(r"a\nb") == 4, "raw backslash literal"
+assert """one
+two""" == "one\ntwo", "triple multiline == escaped newline"
+assert '''tab\there''' == "tab\there", "escape in triple-single"
+# f-strings in each flavour, plus a single-quote key inside a double-quoted f-string
+var d = {"k": 3}
+assert f"{d['k']}" == "3" and f'{n}' == "7" and f"""{n}""" == "7" and f'''{n}''' == "7", "f flavours"
+assert rf"x\t{n}" == "x\\t7", "raw f keeps backslash, interpolates"
+
+io.print("OK")

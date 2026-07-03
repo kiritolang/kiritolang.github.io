@@ -1,0 +1,457 @@
+# R8 exhaustive re-audit of the `io` and `sys` standard-library modules (docs/pages/10-stdlib.md).
+# Self-checking: every assertion bumps a counter and the final printed count is matched against
+# r8_io_sys.expected. Deterministic and warning-free (every dropped value is `discard`ed; no unused
+# vars; no self-assignment). All scratch state lives under a private temp subdir (path.gettempdir())
+# and is removed at the end. Child-process tests run `ki` itself (path.executable) against a generated
+# helper .ki so they are portable across the Linux CI matrix and the Windows build.
+#
+# This round COMPLEMENTS r4_io / r6_io / r6_sys / r7_io_sys / sys_proc_* with fresh angles and inputs
+# that those suites do not cover, including:
+#   * sys.exit exit-code semantics observed through a child (String->1+stderr, None/no-arg->0,
+#     negative->255, >255 wraps to 8 bits) — never previously tested (can't sys.exit the test itself);
+#   * the documented POSIX "128 + signal" exit code for a signal-killed child;
+#   * path.join's empty-middle-part collapse, dirname/basename of all-separator paths;
+#   * path.join resets only on a '/'-absolute component, never a '\\' one;
+#   * the File.read(None)-throws vs BytesIO.read(None)-reads-all asymmetry, BytesIO.read(-1),
+#     BytesIO.truncate growing a past-end buffer, and the BytesIO 256 MB "too large" guard;
+#   * setenv rejecting a '='/empty name, getenv returning a non-String default verbatim, environ()
+#     being a fresh snapshot (mutation does not change the real environment);
+#   * duck-typed streams missing write/readline, multi-arg io.write type concatenation, byte-vs-
+#     code-point write counts;
+#   * content assertions on inspect() of io / sys / File / BytesIO / StdStream;
+#   * createprocess input/cwd/timeout type-error contracts and sys.shell stdin;
+#   * fresh fuzz seeds (777777 / 13579) distinct from the 20260629 used elsewhere.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# A private scratch dir so the suite can't collide with other tests sharing gettempdir().
+var TMP = path.gettempdir()
+var DIR = path.join(TMP, "r8iosys_scratch")
+discard path.rmtree(DIR, missing_ok = True)   # clear any stale scratch (recursively) from a prior run
+path.mkdir(DIR)
+
+# ============================================================ joinpath: empty-part + reset semantics
+ok(path.join("a", "", "b") == "a/b", "joinpath: an empty MIDDLE part contributes nothing and adds no extra sep")
+ok(path.join("a", "", "", "b") == "a/b", "joinpath: multiple empty middle parts collapse")
+ok(path.join("", "", "") == "", "joinpath of only empty parts is empty")
+ok(path.join("a", "b", "") == "a/b/", "joinpath: a single trailing empty part still gets one separator")
+ok(path.join("/", "a") == "/a", "joinpath: root then a relative part")
+ok(path.join("a", "/b/", "c") == "/b/c", "joinpath: an absolute mid component (with trailing slash) resets")
+ok(path.join("x/y", "z") == "x/y/z", "joinpath: a component may itself contain a separator")
+ok(path.join("a", "b/", "c") == "a/b/c", "joinpath: a trailing-slash component does not double the separator")
+ok(path.join("a\\b", "c\\d") == "a\\b/c\\d", "joinpath: internal (non-leading) backslashes are preserved, joined with /")
+
+# ============================================================ dirname/basename: separator-run paths
+ok(path.dirname("///") == "///", "dirname of an all-separator path keeps it whole (no parent)")
+ok(path.basename("///") == "", "basename of an all-separator path is empty")
+ok(path.dirname("a///b") == "a", "dirname collapses an internal separator run back to the parent")
+ok(path.basename("a///b") == "b", "basename after an internal separator run is the final component")
+ok(path.dirname("a/b///") == "a/b", "dirname of a trailing separator RUN")
+ok(path.basename("a/b///") == "", "basename of a trailing separator run is empty")
+ok(path.dirname("\\\\host") == "\\\\", "dirname of an all-backslash prefix keeps the prefix")
+ok(path.dirname("\\a\\b") == "\\a", "dirname splits on backslashes (literal substring, separators kept)")
+ok(path.basename("\\a\\b") == "b", "basename splits on the final backslash")
+ok(path.dirname("a/b\\c") == "a/b", "dirname uses the last of either / or \\")
+ok(path.basename("a/b\\c") == "c", "basename uses the last of either / or \\")
+
+# ============================================================ splitext: backslash + dir-dot corners
+ok(path.splitext("a\\b.txt") == ["a\\b", ".txt"], "splitext finds the extension after a backslash component")
+ok(path.splitext("a.b\\c") == ["a.b\\c", ""], "splitext: a dot in a backslash-separated dir is not an extension")
+ok(path.splitext("dir\\.hidden") == ["dir\\.hidden", ""], "splitext: a dotfile after a backslash dir has no extension")
+ok(path.splitext("a.tar.gz.bz2") == ["a.tar.gz", ".bz2"], "splitext peels only the final extension of a triple")
+
+# ============================================================ joinpath: absolute-reset is '/'-only
+ok(path.join("a", "/b") == "/b", "resets on a /-absolute component")
+ok(path.join("a", "\\b") == "a/\\b", "does NOT treat a backslash component as absolute (only / resets)")
+ok(path.join("a", "") == "a/", "joinpath: a trailing empty part gets a separator")
+ok(path.join("a", "", "b") == "a/b", "joinpath: an empty middle part contributes nothing")
+ok(path.join("a/", "/b") == "/b", "joinpath: a /-absolute component resets even after a trailing slash")
+ok(throws(Function(): return path.join()), "joinpath needs at least one part (throws)")
+
+# ============================================================ getsize: directory + missing contract
+ok(throws(Function(): return path.getsize(DIR)), "getsize of a DIRECTORY throws (not a regular file)")
+ok(throws(Function(): return path.getsize(path.join(DIR, "ghost_r8.bin"))), "getsize of a missing path throws")
+var SZP = path.join(DIR, "size.bin")
+var szf = io.open(SZP, "wb")
+discard szf.write(Bytes([0, 0, 0, 0, 0]))
+szf.close()
+ok(path.getsize(SZP) == 5, "getsize is the exact byte length")
+ok(type(path.getsize(SZP)) == "Integer", "getsize returns an Integer")
+var szf2 = io.open(SZP, "w")          # truncate to 0 and confirm getsize tracks it
+szf2.close()
+ok(path.getsize(SZP) == 0, "getsize of a truncated (empty) file is 0")
+discard path.remove(SZP, missing_ok = True)
+
+# ============================================================ File vs BytesIO read(None) asymmetry
+var RNP = path.join(DIR, "readnone.txt")
+var rnf = io.open(RNP, "w")
+discard rnf.write("payload")
+rnf.close()
+var rnr = io.open(RNP, "r")
+ok(throws(Function(): return rnr.read(None)), "File.read(None) RAISES (None is not an Integer size)")
+ok(rnr.read() == "payload", "File.read() with no argument reads everything")
+rnr.close()
+var rni = io.BytesIO("payload")
+ok(rni.read(None) == "payload", "BytesIO.read(None) reads ALL (asymmetric with File.read(None))")
+ok(io.BytesIO("xyz").read(-1) == "xyz", "BytesIO.read(-1): a negative size reads everything")
+var rnf2 = io.open(RNP, "r")
+ok(rnf2.read(-1) == "payload", "File.read(-1): a negative size reads everything")
+rnf2.close()
+discard path.remove(RNP, missing_ok = True)
+
+# ============================================================ BytesIO: truncate-grow + size guard
+# truncate() resizes the buffer TO the cursor, so a cursor past the end GROWS (zero-fills) the buffer.
+var tg = io.BytesIO("AB")
+discard tg.seek(6)
+ok(tg.truncate() == 6, "BytesIO.truncate at a past-end cursor returns the grown length")
+ok(len(tg.getvalue()) == 6, "BytesIO.truncate past the end zero-fills up to the cursor")
+ok(ord(tg.getvalue()[4]) == 0, "the grown region is NUL bytes")
+# the 256 MB in-memory guard: a write whose end would exceed the cap throws (never OOMs)
+var guard = io.BytesIO()
+discard guard.seek(9000000000000000000)               # an absurd cursor
+ok(throws(Function(): return guard.write("x")), "BytesIO write at an enormous cursor throws 'too large'")
+var guard2 = io.BytesIO()
+discard guard2.seek(256 * 1024 * 1024 + 1)
+ok(throws(Function(): return guard2.write("x")), "BytesIO write past the 256 MB cap throws")
+# write returns the byte count, 0 for an empty write, and advances tell by that many
+var wc = io.BytesIO()
+ok(wc.write("") == 0, "BytesIO.write('') returns 0")
+ok(wc.tell() == 0, "an empty write does not move the cursor")
+ok(wc.write("abcd") == 4, "BytesIO.write returns the byte count")
+ok(wc.tell() == 4, "the cursor advanced by the byte count")
+
+# ============================================================ BytesIO: seek-past-end read/readline
+var sp = io.BytesIO("abc")
+ok(sp.seek(100) == 100, "BytesIO.seek past end returns the requested position")
+ok(sp.tell() == 100, "BytesIO.tell reflects a past-end cursor")
+ok(sp.read() == "", "BytesIO.read at a past-end cursor is empty")
+ok(sp.readline() == "", "BytesIO.readline at a past-end cursor is empty")
+ok(sp.size() == 3, "a past-end seek does not change size()")
+
+# ============================================================ write(): multi-arg type concatenation
+var mc = io.BytesIO()
+io.write("a", "b", "c", stream = mc)
+ok(mc.getvalue() == "abc", "write concatenates its arguments with NO separator")
+var mc2 = io.BytesIO()
+io.write("n=", 42, " f=", 2.5, " b=", True, stream = mc2)
+ok(mc2.getvalue() == "n=42 f=2.5 b=True", "write stringifies and concatenates mixed-type arguments")
+var mc3 = io.BytesIO()
+io.write(stream = mc3)
+ok(mc3.getvalue() == "", "write of no arguments writes nothing")
+# print stringifies a nested String in REPR form, with spaces between args and a trailing newline
+var mc4 = io.BytesIO()
+io.print(["a", "b"], {"k": "v"}, stream = mc4)
+ok(mc4.getvalue() == "['a', 'b'] {'k': 'v'}\n", "print uses repr form for nested Strings, space-joined + newline")
+var mc5 = io.BytesIO()
+io.print(stream = mc5)
+ok(mc5.getvalue() == "\n", "print of no arguments writes just a newline")
+
+# ============================================================ byte-vs-code-point write counts
+# A multi-byte UTF-8 sequence written as Bytes reports its BYTE length; getvalue()'s len() counts the
+# code points it decodes to. (é = 0xC3 0xA9 -> 2 bytes, 1 code point.)
+var bp = io.BytesIO()
+ok(bp.write(Bytes([0xC3, 0xA9])) == 2, "BytesIO.write(Bytes) returns the BYTE count (2)")
+ok(bp.size() == 2, "size() is the byte count")
+ok(len(bp.getvalue()) == 1, "len(getvalue()) is the CODE-POINT count (1) — the byte/code-point distinction")
+var bp2 = io.BytesIO()
+ok(bp2.write("é") == 2, "writing a 1-code-point multi-byte String returns its byte length")
+
+# ============================================================ duck-typed stream failure modes
+class NoWrite:
+    var _init_ = Function(self):
+        self.tag = "x"
+var nw = NoWrite()
+ok(throws(Function(): return io.print("hi", stream = nw)), "print to an object lacking write() throws")
+ok(throws(Function(): return io.write("hi", stream = nw)), "write to an object lacking write() throws")
+ok(throws(Function(): return io.input(stream = nw)), "input from an object lacking readline() throws")
+ok(throws(Function(): return io.read(3, stream = nw)), "read from an object lacking read() throws")
+# a class supplying read/readline serves as a stream (duck typing) — exercised with fresh shapes
+class FakeIn:
+    var _init_ = Function(self):
+        self.line = "from-fake"
+    var readline = Function(self):
+        return self.line
+    var read = Function(self, k):
+        return "R" * k
+var fi = FakeIn()
+ok(io.input(stream = fi) == "from-fake", "a class with readline() can be an input stream")
+ok(io.read(4, stream = fi) == "RRRR", "a class with read(n) can be a read stream")
+
+# ============================================================ inspect(): content assertions
+var INS_IO = inspect(io)
+ok("module io:" in INS_IO, "inspect(io) labels the io module")
+ok("open(path: String, mode: String = \"r\") -> File" in INS_IO, "inspect(io) shows open's full signature")
+ok("BytesIO(initial: String = \"\") -> BytesIO" in INS_IO, "inspect(io) shows BytesIO's signature")
+ok(not ("chmod" in INS_IO), "inspect(io) no longer shows chmod (moved to the path module)")
+ok("print(...)" in INS_IO and "write(...)" in INS_IO, "inspect(io) shows variadic console fns as (...)")
+ok("stdout: StdStream" in INS_IO and "__stdout__: StdStream" in INS_IO, "inspect(io) lists the stream slots")
+var INS_SYS = inspect(sys)
+ok("module sys:" in INS_SYS, "inspect(sys) labels the sys module")
+ok("createprocess(args: List, cwd = None, input = \"\", timeout = None) -> Dict" in INS_SYS, "inspect(sys) shows createprocess's signature")
+ok("shell(command: String, cwd = None, input = \"\", timeout = None) -> Dict" in INS_SYS, "inspect(sys) shows shell's signature")
+ok("getenv(name: String, default = None) -> String" in INS_SYS, "inspect(sys) shows getenv's signature")
+ok("platform: String" in INS_SYS and "arch: String" in INS_SYS and "version: String" in INS_SYS, "inspect(sys) lists the value members")
+ok(not ("joinpath" in INS_SYS), "inspect(sys) no longer lists joinpath (it moved to the path module)")
+var INS_PATH = inspect(path)
+ok("module path:" in INS_PATH, "inspect(path) labels the path module")
+ok("join(...)" in INS_PATH, "inspect(path) shows join as variadic")
+ok("dirname(path: String) -> String" in INS_PATH, "inspect(path) shows dirname's signature")
+ok("getsize(path: String) -> Integer" in INS_PATH, "inspect(path) shows getsize's signature")
+var fileForInspect = io.open(path.join(DIR, "ins.txt"), "w")
+var INS_FILE = inspect(fileForInspect)
+fileForInspect.close()
+discard path.remove(path.join(DIR, "ins.txt"), missing_ok = True)
+ok("File object:" in INS_FILE, "inspect(File) labels a File object")
+ok("seek(offset, whence) -> Integer" in INS_FILE and "tell() -> Integer" in INS_FILE, "inspect(File) shows seek/tell")
+ok("readlines() -> List" in INS_FILE and "writelines(lines)" in INS_FILE, "inspect(File) shows readlines/writelines")
+var INS_BIO = inspect(io.BytesIO())
+ok("BytesIO object:" in INS_BIO, "inspect(BytesIO) labels a BytesIO object")
+ok("getvalue() -> String" in INS_BIO and "truncate() -> Integer" in INS_BIO, "inspect(BytesIO) shows getvalue/truncate")
+ok("write(data) -> Integer" in INS_BIO, "inspect(BytesIO) shows write returning Integer")
+var INS_STD = inspect(io.__stdout__)
+ok("StdStream object:" in INS_STD, "inspect(StdStream) labels a std stream")
+ok("write(data)" in INS_STD and "readline() -> String" in INS_STD, "inspect(StdStream) shows the stream protocol")
+
+# ============================================================ kwargs on signatured io fns (fresh)
+var KFP = path.join(DIR, "kw.txt")
+var kf = io.open(path = KFP, mode = "w")               # open(path=, mode=)
+discard kf.write("kwdata")
+kf.close()
+ok(path.exists(path = KFP) == True, "exists(path=) keyword")
+ok(path.isfile(path = KFP) == True, "isfile(path=) keyword")
+ok(path.isdir(path = KFP) == False, "isdir(path=) keyword")
+ok(path.getsize(path = KFP) == 6, "getsize(path=) keyword")
+ok(type(path.dirname(path = KFP)) == "String", "dirname(path=) keyword")
+ok(path.basename(path = KFP) == "kw.txt", "basename(path=) keyword")
+ok(path.splitext(path = "x.log") == ["x", ".log"], "splitext(path=) keyword")
+ok(path.chmod(path = KFP, mode = 0o644) == True, "chmod(path=, mode=) keyword")
+var KFP2 = path.join(DIR, "kw2.txt")
+path.rename(src = KFP, dst = KFP2)
+ok(path.exists(KFP2) == True, "rename(src=, dst=) keyword")
+ok(type(path.listdir(path = DIR)) == "List", "listdir(path=) keyword")
+ok(type(path.walk(dir = DIR)) == "List", "walk(dir=) keyword")
+ok(path.remove(path = KFP2) == True, "remove(path=) keyword")
+# unexpected-keyword rejection on the variadic console natives (fresh keyword names)
+ok(throws(Function(): return io.print("x", flush = 1)), "print rejects an unexpected keyword 'flush'")
+ok(throws(Function(): return io.read(size = 3)), "read rejects an unexpected keyword 'size' (only stream= allowed)")
+ok(throws(Function(): return io.input(prompt = "p")), "input rejects an unexpected keyword 'prompt'")
+
+# ============================================================ stream rebinding via __stdin__ too
+var savedin = io.stdin
+io.stdin = io.BytesIO("line-A\nline-B\nrest")
+ok(io.input() == "line-A", "rebound io.stdin feeds io.input")
+ok(io.input() == "line-B", "io.input advances on the rebound stdin")
+ok(io.read(4) == "rest", "io.read consumes from the rebound stdin")
+io.stdin = io.__stdin__                                 # restore from the kept original
+ok(io.stdin == savedin, "io.stdin restored equals the saved original")
+ok(io.stdin == io.__stdin__, "io.__stdin__ is the original stdin")
+# the std slots are three distinct objects
+ok(io.__stdin__ != io.__stdout__ and io.__stdout__ != io.__stderr__ and io.__stdin__ != io.__stderr__, "the three std slots are pairwise distinct")
+# stdin cannot be written, stdout/stderr cannot be read (direction enforcement)
+ok(throws(Function(): return io.write("x", stream = io.__stdin__)), "writing to stdin throws")
+ok(throws(Function(): return io.read(stream = io.__stdout__)), "reading from stdout throws")
+ok(throws(Function(): return io.read(stream = io.__stderr__)), "reading from stderr throws")
+
+# ============================================================ sys: env corner cases (fresh)
+# setenv rejects an illegal name (containing '=' or empty) — POSIX setenv fails, surfaced as a throw.
+ok(throws(Function(): return sys.setenv("BAD=NAME", "v")), "setenv with '=' in the name throws")
+ok(throws(Function(): return sys.setenv("", "v")), "setenv with an empty name throws")
+# getenv returns a NON-String default verbatim (the annotation is advisory, not a coercion)
+var UNSET = "R8_IOSYS_UNSET_ZZZ"
+ok(sys.getenv(UNSET, 42) == 42, "getenv returns a non-String Integer default verbatim")
+ok(sys.getenv(UNSET, [1, 2]) == [1, 2], "getenv returns a List default verbatim")
+ok(sys.getenv(UNSET, None) == None, "getenv with an explicit None default")
+# environ() is a fresh snapshot: mutating the returned Dict does not touch the real environment
+var snap = sys.environ()
+snap["R8_IOSYS_PHANTOM"] = "ghost"
+ok(sys.getenv("R8_IOSYS_PHANTOM") == None, "mutating the environ() Dict does not setenv")
+ok(("R8_IOSYS_PHANTOM" in sys.environ()) == False, "a fresh environ() does not show the phantom key")
+# a real round-trip on a unique name, then a value containing '=' (legal in a VALUE, just not a name)
+sys.setenv("R8_IOSYS_RT", "a=b=c")
+ok(sys.getenv("R8_IOSYS_RT") == "a=b=c", "an env VALUE may contain '=' and round-trips")
+ok(sys.environ()["R8_IOSYS_RT"] == "a=b=c", "environ() preserves a value with '='")
+sys.unsetenv("R8_IOSYS_RT")
+ok(sys.getenv("R8_IOSYS_RT") == None, "unsetenv removed the round-trip var")
+# overwrite semantics
+sys.setenv("R8_IOSYS_OW", "first")
+sys.setenv("R8_IOSYS_OW", "second")
+ok(sys.getenv("R8_IOSYS_OW") == "second", "setenv overwrites an existing value")
+sys.unsetenv("R8_IOSYS_OW")
+# empty-string value: "" round-trips on POSIX, is treated as unset on Windows (documented)
+sys.setenv("R8_IOSYS_EMPTY", "")
+if sys.platform == "windows":
+    ok(sys.getenv("R8_IOSYS_EMPTY") == None, "an empty value is unset on Windows")
+else:
+    ok(sys.getenv("R8_IOSYS_EMPTY") == "", "an empty value round-trips on POSIX")
+sys.unsetenv("R8_IOSYS_EMPTY")
+
+# ============================================================ sys: version / executable (fresh checks)
+# version parses as a dotted run of numeric components
+var vparts = sys.version.split(".")
+ok(len(vparts) >= 2, "sys.version has at least major.minor")
+ok(vparts[0].isdigit() and vparts[1].isdigit(), "the leading version components are numeric")
+ok(path.isfile(path.executable), "path.executable is an existing regular file")
+ok(path.getsize(path.executable) > 0, "the executable file is non-empty")
+ok(path.basename(path.executable).startswith("ki") or len(path.basename(path.executable)) > 0, "executable basename is non-empty")
+
+# ============================================================ sys.exit semantics OBSERVED via a child
+# We cannot call sys.exit in this process (it would kill the test), so we observe a child's exit code.
+var KI = path.executable
+var HELPER = path.join(DIR, "r8_child.ki")
+var hsrc = r"""var io = import("io")
+var sys = import("sys")
+var path = import("path")
+var m = arglist[0] if len(arglist) >= 1 else ""
+if m == "echo":
+    io.write(io.read())
+elif m == "exitint":
+    sys.exit(Integer(arglist[1]))
+elif m == "exitstr":
+    sys.exit("child failure message")
+elif m == "exitnone":
+    sys.exit(None)
+elif m == "exitbare":
+    sys.exit()
+elif m == "stderronly":
+    io.write("E" * Integer(arglist[1]), stream = io.stderr)
+elif m == "cwd":
+    io.write(path.getcwd())
+elif m == "self_signal":
+    discard import("sys").shell("kill -TERM $$")
+"""
+var hf = io.open(HELPER, "w")
+discard hf.write(hsrc)
+hf.close()
+var child = Function(extra):
+    return [KI, HELPER] + extra
+
+ok(sys.createprocess(child(["exitint", "0"]))["code"] == 0, "child sys.exit(0) -> code 0")
+ok(sys.createprocess(child(["exitint", "5"]))["code"] == 5, "child sys.exit(5) -> code 5")
+ok(sys.createprocess(child(["exitnone"]))["code"] == 0, "child sys.exit(None) -> code 0")
+ok(sys.createprocess(child(["exitbare"]))["code"] == 0, "child sys.exit() (no arg) -> code 0")
+# sys.exit with a non-Integer/None arg prints it to stderr and exits 1 (documented; never silently 0)
+var exr = sys.createprocess(child(["exitstr"]))
+ok(exr["code"] == 1, "child sys.exit(<String>) -> code 1")
+ok(exr["stderr"].strip() == "child failure message", "sys.exit(<String>) prints the message to stderr")
+ok(exr["stdout"] == "", "sys.exit(<String>) writes nothing to stdout")
+# POSIX exit codes are 8-bit: negative and >255 wrap. (Windows preserves the full 32-bit value.)
+if sys.platform != "windows":
+    ok(sys.createprocess(child(["exitint", "-1"]))["code"] == 255, "POSIX: sys.exit(-1) -> 255 (8-bit wrap)")
+    ok(sys.createprocess(child(["exitint", "256"]))["code"] == 0, "POSIX: sys.exit(256) -> 0 (8-bit wrap)")
+    ok(sys.createprocess(child(["exitint", "300"]))["code"] == 44, "POSIX: sys.exit(300) -> 44 (300 & 0xFF)")
+else:
+    ok(sys.createprocess(child(["exitint", "300"]))["code"] == 300, "Windows: a >255 exit code is preserved")
+    ok(True, "exit-code wrap is POSIX-specific")
+    ok(True, "exit-code wrap is POSIX-specific")
+
+# ============================================================ POSIX: a signal-killed child reports 128+signal
+if sys.platform != "windows":
+    ok(sys.shell("kill -TERM $$")["code"] == 143, "shell self-SIGTERM -> 128+15 = 143")
+    ok(sys.shell("kill -INT $$")["code"] == 130, "shell self-SIGINT -> 128+2 = 130")
+    ok(sys.createprocess(["/bin/sh", "-c", "kill -KILL $$"])["code"] == 137, "createprocess child SIGKILL -> 128+9 = 137")
+else:
+    ok(True, "128+signal is a POSIX convention")
+    ok(True, "128+signal is a POSIX convention")
+    ok(True, "128+signal is a POSIX convention")
+
+# ============================================================ createprocess/shell: type-error contracts
+ok(throws(Function(): return sys.createprocess(child(["echo"]), input = 123)), "createprocess input must be a String")
+ok(throws(Function(): return sys.createprocess(child(["echo"]), input = ["x"])), "createprocess input must not be a List")
+ok(throws(Function(): return sys.createprocess(child(["echo"]), cwd = 123, input = "x")), "createprocess cwd must be a String")
+ok(throws(Function(): return sys.createprocess(child(["echo"]), input = "x", timeout = "soon")), "createprocess timeout must be a number")
+ok(throws(Function(): return sys.createprocess([KI, [1, 2]])), "createprocess rejects a non-String (nested List) arg element")
+ok(throws(Function(): return sys.createprocess([KI, None])), "createprocess rejects a None arg element")
+ok(throws(Function(): return sys.createprocess(child(["echo"]), input = 1.5)), "createprocess input must not be a Float")
+# timeout = 0 and a negative timeout both mean "no timeout" (the impl waits)
+ok(sys.createprocess(child(["exitint", "0"]), timeout = 0)["code"] == 0, "timeout=0 means wait (no timeout)")
+ok(sys.createprocess(child(["exitint", "0"]), timeout = -1)["code"] == 0, "a negative timeout means wait (no timeout)")
+# shell type errors
+ok(throws(Function(): return sys.shell(123)), "shell command must be a String")
+ok(throws(Function(): return sys.shell("echo x", input = 9)), "shell input must be a String")
+
+# ============================================================ createprocess: cwd round-trip + result shape
+var defcwd = sys.createprocess(child(["cwd"]))["stdout"].strip()
+var setcwd = sys.createprocess(child(["cwd"]), cwd = DIR)["stdout"].strip()
+ok(len(setcwd) > 0 and setcwd != defcwd, "cwd= changes the child working directory")
+ok(throws(Function(): return sys.createprocess(child(["cwd"]), cwd = path.join(DIR, "no_such_cwd_r8"))), "a nonexistent cwd throws")
+var shape = sys.createprocess(child(["echo"]), input = "shapecheck")
+ok(shape["stdout"] == "shapecheck" and "code" in shape and "stderr" in shape, "result shape: stdin->stdout + code/stderr keys")
+ok(type(shape["code"]) == "Integer" and type(shape["stdout"]) == "String" and type(shape["stderr"]) == "String", "result field types are Integer/String/String")
+# a child writing only stderr leaves stdout empty
+var eonly = sys.createprocess(child(["stderronly", "37"]))
+ok(len(eonly["stderr"]) == 37 and eonly["stdout"] == "", "stderr-only child: stderr captured, stdout empty")
+
+# ============================================================ sys.shell: stdin + combined streams
+ok(sys.shell("cat", input = "piped-to-cat")["stdout"] == "piped-to-cat" if sys.platform != "windows" else True, "shell feeds stdin to the command (POSIX cat)")
+ok("M1" in sys.shell("echo M1")["stdout"], "shell echo -> stdout")
+ok(sys.shell("exit 9")["code"] == 9, "shell propagates the exit code")
+ok(sys.shell(command = "exit 11")["code"] == 11, "shell(command=) keyword form")
+var combo = sys.shell("echo OUT; echo ERR 1>&2" if sys.platform != "windows" else "echo OUT& echo ERR 1>&2")
+ok("OUT" in combo["stdout"] and "ERR" in combo["stderr"], "shell captures stdout and stderr separately")
+
+# ============================================================ FUZZ: BytesIO round-trips (fresh seed)
+var random = import("random")
+var rng = random.Random(777777)
+var fb = 0
+while fb < 25:
+    var plen = rng.randint(0, 300)
+    var payload = ""
+    var t = 0
+    while t < plen:
+        payload = payload + chr(rng.randint(0, 255))
+        t = t + 1
+    var bio = io.BytesIO()
+    discard bio.write(payload)
+    discard bio.seek(0)
+    ok(bio.read() == payload and bio.getvalue() == payload, "fuzz: BytesIO String round-trip #" + String(fb))
+    fb = fb + 1
+
+# ============================================================ FUZZ: binary-file round-trips (fresh seed)
+var ff = 0
+while ff < 18:
+    var flen = rng.randint(0, 500)
+    var fpayload = ""
+    var u = 0
+    while u < flen:
+        fpayload = fpayload + chr(rng.randint(0, 255))
+        u = u + 1
+    var fpath = path.join(DIR, "fuzz_r8.bin")
+    var fwh = io.open(fpath, "wb")
+    discard fwh.write(fpayload.encode("latin-1"))
+    fwh.close()
+    var frh = io.open(fpath, "rb")
+    var back = frh.read()
+    frh.close()
+    ok(back.decode("latin-1") == fpayload and path.getsize(fpath) == flen, "fuzz: binary-file byte-exact round-trip #" + String(ff))
+    ff = ff + 1
+discard path.remove(path.join(DIR, "fuzz_r8.bin"), missing_ok = True)
+
+# ============================================================ FUZZ: child stdin->stdout (fresh seed)
+var rng2 = random.Random(13579)
+var fc = 0
+while fc < 10:
+    var clen = rng2.randint(0, 700)
+    var cpayload = ""
+    var v = 0
+    while v < clen:
+        cpayload = cpayload + chr(rng2.randint(1, 126))    # printable ASCII (no encoding ambiguity)
+        v = v + 1
+    ok(sys.createprocess(child(["echo"]), input = cpayload)["stdout"] == cpayload, "fuzz: child stdin->stdout round-trip #" + String(fc))
+    fc = fc + 1
+
+# ============================================================ cleanup
+discard path.remove(HELPER, missing_ok = True)
+discard path.remove(DIR, missing_ok = True)
+
+io.print("r8_io_sys: " + String(n) + " checks passed")

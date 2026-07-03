@@ -1,0 +1,7 @@
+# A nested closure that captures argmain. The returned inner function reads the module's argmain.
+var makeReader = Function():
+    var inner = Function():
+        return argmain
+    return inner
+var reader = makeReader()
+var m = reader()

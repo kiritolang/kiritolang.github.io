@@ -1,0 +1,2 @@
+# repeating Bytes by a huge count is guarded (throws, not OOM)
+discard Bytes([1, 2]) * 100000000000

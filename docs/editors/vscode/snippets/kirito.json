@@ -1,0 +1,110 @@
+{
+  "Function": {
+    "prefix": "fn",
+    "body": [
+      "var ${1:name} = Function(${2:args}):",
+      "\t${0:pass}"
+    ],
+    "description": "A named first-class function"
+  },
+  "Function with return type": {
+    "prefix": "fnt",
+    "body": [
+      "var ${1:name} = Function(${2:args}) -> ${3:Type}:",
+      "\treturn ${0:value}"
+    ],
+    "description": "A function with an enforced return type annotation"
+  },
+  "Inline function": {
+    "prefix": "lambda",
+    "body": ["Function(${1:x}): return ${0:x}"],
+    "description": "An inline (single-line) anonymous function"
+  },
+  "Class": {
+    "prefix": "class",
+    "body": [
+      "class ${1:Name}:",
+      "\tvar _init_ = Function(self${2:, args}):",
+      "\t\t${0:pass}"
+    ],
+    "description": "A class with an _init_ constructor"
+  },
+  "Class with base": {
+    "prefix": "classb",
+    "body": [
+      "class ${1:Name}(${2:Base}):",
+      "\tvar _init_ = Function(self${3:, args}):",
+      "\t\tself._super_()._init_(${4})",
+      "\t\t${0:pass}"
+    ],
+    "description": "A subclass that chains to its base constructor"
+  },
+  "Method": {
+    "prefix": "def",
+    "body": [
+      "var ${1:name} = Function(self${2:, args}):",
+      "\t${0:pass}"
+    ],
+    "description": "A method (a class-body function taking self)"
+  },
+  "if": {
+    "prefix": "if",
+    "body": ["if ${1:cond}:", "\t${0:pass}"],
+    "description": "if statement"
+  },
+  "if / else": {
+    "prefix": "ife",
+    "body": ["if ${1:cond}:", "\t${2:pass}", "else:", "\t${0:pass}"],
+    "description": "if / else statement"
+  },
+  "if / elif / else": {
+    "prefix": "ifee",
+    "body": ["if ${1:cond}:", "\t${2:pass}", "elif ${3:cond}:", "\t${4:pass}", "else:", "\t${0:pass}"],
+    "description": "if / elif / else statement"
+  },
+  "for": {
+    "prefix": "for",
+    "body": ["for ${1:item} in ${2:iterable}:", "\t${0:pass}"],
+    "description": "for-in loop"
+  },
+  "while": {
+    "prefix": "while",
+    "body": ["while ${1:cond}:", "\t${0:pass}"],
+    "description": "while loop"
+  },
+  "try / catch": {
+    "prefix": "try",
+    "body": ["try:", "\t${1:pass}", "catch ${2:as e}:", "\t${0:pass}"],
+    "description": "try / catch"
+  },
+  "try / catch / finally": {
+    "prefix": "tryf",
+    "body": ["try:", "\t${1:pass}", "catch ${2:Type} as ${3:e}:", "\t${4:pass}", "finally:", "\t${0:pass}"],
+    "description": "try / typed catch / finally"
+  },
+  "switch": {
+    "prefix": "switch",
+    "body": ["switch ${1:subject}:", "\tcase ${2:value}:", "\t\t${3:pass}", "\tdefault:", "\t\t${0:pass}"],
+    "description": "switch / case / default (no fallthrough)"
+  },
+  "with": {
+    "prefix": "with",
+    "body": ["with ${1:expr} as ${2:name}:", "\t${0:pass}"],
+    "description": "with context manager"
+  },
+  "import": {
+    "prefix": "import",
+    "body": ["var ${2:io} = import(\"${1:io}\")$0"],
+    "description": "Import a module"
+  },
+  "main guard": {
+    "prefix": "main",
+    "body": ["if argmain:", "\t${0:pass}"],
+    "description": "Run only when the file is executed directly (Kirito's __main__)"
+  },
+  "print": {
+    "prefix": "print",
+    "body": ["io.print(${0})"],
+    "description": "io.print(...)"
+  }
+}

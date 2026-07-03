@@ -1,0 +1,173 @@
+# test_cronki.ki — self-test for the cronki scheduler. Final line "cronki: N checks passed" is
+# matched against test_cronki.expected byte-for-byte.
+
+var io      = import("io")
+var time    = import("time")
+var path    = import("path")
+
+var parse    = import("parse")
+var schedule = import("schedule")
+var runner   = import("runner")
+var history  = import("history")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =============================================================================
+# parse: field expansion
+# =============================================================================
+var one = parse.parseString("* * * * * echo hi", "in")
+ok(len(one) == 1, "one job parsed")
+ok(len(one[0]["minute"]) == 60, "* on minute expands to 60 values")
+ok(len(one[0]["hour"]) == 24, "* on hour expands to 24 values")
+ok(len(one[0]["dom"]) == 31, "* on day-of-month expands to 31 values")
+ok(len(one[0]["month"]) == 12, "* on month expands to 12 values")
+ok(len(one[0]["dow"]) == 7, "* on day-of-week expands to 7 values")
+ok(one[0]["command"] == "echo hi", "command captured after fields")
+
+# specific values
+var j1 = parse.parseString("30 9 * * * cmd", "in")[0]
+ok(30 in j1["minute"] and len(j1["minute"]) == 1, "single minute value")
+ok(9 in j1["hour"] and len(j1["hour"]) == 1, "single hour value")
+
+# ranges
+var j2 = parse.parseString("* * * * 1-5 cmd", "in")[0]
+ok(1 in j2["dow"] and 2 in j2["dow"] and 5 in j2["dow"] and 0 not in j2["dow"] and 6 not in j2["dow"], "range 1-5 for DoW")
+
+# step
+var j3 = parse.parseString("*/15 * * * * cmd", "in")[0]
+ok(0 in j3["minute"] and 15 in j3["minute"] and 30 in j3["minute"] and 45 in j3["minute"] and len(j3["minute"]) == 4, "step */15 gives 4 values")
+
+var j4 = parse.parseString("* */3 * * * cmd", "in")[0]
+ok(0 in j4["hour"] and 3 in j4["hour"] and 21 in j4["hour"] and len(j4["hour"]) == 8, "step */3 for 24h gives 8 values")
+
+# list
+var j5 = parse.parseString("0,15,30 * * * * cmd", "in")[0]
+ok(len(j5["minute"]) == 3 and 15 in j5["minute"], "comma list of 3")
+
+# range + step
+var j6 = parse.parseString("0-30/10 * * * * cmd", "in")[0]
+ok(len(j6["minute"]) == 4 and 0 in j6["minute"] and 30 in j6["minute"], "range 0-30/10 gives 4 (0,10,20,30)")
+
+# @macros
+var m1 = parse.parseString("@daily backup", "in")[0]
+ok(len(m1["minute"]) == 1 and 0 in m1["minute"], "@daily minute is {0}")
+ok(len(m1["hour"]) == 1 and 0 in m1["hour"], "@daily hour is {0}")
+ok(m1["command"] == "backup", "@daily command captured")
+
+var m2 = parse.parseString("@hourly x", "in")[0]
+ok(len(m2["minute"]) == 1 and len(m2["hour"]) == 24, "@hourly: 0 minute across every hour")
+
+var m3 = parse.parseString("@monthly x", "in")[0]
+ok(0 in m3["minute"] and 0 in m3["hour"] and 1 in m3["dom"] and len(m3["dom"]) == 1, "@monthly is 0 0 1 * *")
+
+# comments + blank lines
+var multi = parse.parseString("# top\n\n0 * * * * a\n# mid\n\n30 * * * * b\n", "in")
+ok(len(multi) == 2 and multi[0]["command"] == "a" and multi[1]["command"] == "b", "comments + blanks are ignored, two jobs")
+
+# =============================================================================
+# parse: adversarial inputs
+# =============================================================================
+ok(throws(Function(): return parse.parseString("60 * * * * x", "in")), "minute > 59 throws")
+ok(throws(Function(): return parse.parseString("* 24 * * * x", "in")), "hour > 23 throws")
+ok(throws(Function(): return parse.parseString("* * 0 * * x", "in")), "day 0 throws")
+ok(throws(Function(): return parse.parseString("* * * 13 * x", "in")), "month 13 throws")
+ok(throws(Function(): return parse.parseString("* * * * 7 x", "in")), "day-of-week 7 throws")
+ok(throws(Function(): return parse.parseString("*/0 * * * * x", "in")), "step 0 throws")
+ok(throws(Function(): return parse.parseString("10-5 * * * * x", "in")), "reversed range throws")
+ok(throws(Function(): return parse.parseString("* * * * *", "in")), "missing command throws")
+ok(throws(Function(): return parse.parseString("@bogus x", "in")), "unknown macro throws")
+
+# =============================================================================
+# schedule.matches
+# =============================================================================
+var jTick = parse.parseString("* * * * * x", "in")[0]
+var jHour = parse.parseString("0 * * * * x", "in")[0]
+var jWk   = parse.parseString("30 9 * * 1-5 x", "in")[0]
+var jMonth1 = parse.parseString("0 0 1 * * x", "in")[0]
+
+var d1 = time.make(2024, 1, 15, 9, 30, 0)   # Mon
+ok(schedule.matches(d1, jTick), "* * * * * matches any minute")
+ok(not schedule.matches(d1, jHour), "0 * * * * does NOT match 09:30")
+ok(schedule.matches(d1, jWk), "30 9 * * 1-5 matches Mon 09:30")
+
+var d2 = time.make(2024, 1, 13, 9, 30, 0)   # Sat, so DoW 6
+ok(not schedule.matches(d2, jWk), "30 9 * * 1-5 does NOT match Saturday")
+
+var d3 = time.make(2024, 1, 15, 10, 0, 0)   # Mon 10:00
+ok(schedule.matches(d3, jHour), "0 * * * * matches on the hour")
+
+var d4 = time.make(2024, 2, 1, 0, 0, 0)     # Feb 1 midnight
+ok(schedule.matches(d4, jMonth1), "0 0 1 * * matches on the 1st at midnight")
+
+var d5 = time.make(2024, 2, 2, 0, 0, 0)
+ok(not schedule.matches(d5, jMonth1), "0 0 1 * * does NOT match the 2nd")
+
+# =============================================================================
+# schedule.nextRun / nextRuns
+# =============================================================================
+var start = time.make(2024, 1, 15, 9, 0, 0)   # Mon 09:00
+
+var nHour = schedule.nextRun(start, jHour)
+ok(nHour.year == 2024 and nHour.month == 1 and nHour.day == 15 and nHour.hour == 10 and nHour.minute == 0, "next 0 * * * * from Mon 09:00 = Mon 10:00")
+
+var nWk = schedule.nextRun(start, jWk)
+ok(nWk.hour == 9 and nWk.minute == 30 and nWk.day == 15, "next weekday-morning from Mon 09:00 = Mon 09:30 same day")
+
+var nMonth = schedule.nextRun(start, jMonth1)
+ok(nMonth.month == 2 and nMonth.day == 1 and nMonth.hour == 0, "next 0 0 1 * * from Jan 15 = Feb 1 midnight")
+
+var jQuarter = parse.parseString("0,15,30,45 * * * * x", "in")[0]
+var runs4 = schedule.nextRuns(start, jQuarter, 4)
+ok(len(runs4) == 4, "nextRuns yields 4 entries")
+ok(runs4[0].minute == 15 and runs4[1].minute == 30 and runs4[2].minute == 45 and runs4[3].minute == 0, "quarter-hour firings advance correctly (last rolls to next hour :00)")
+
+# Advancing across a month boundary + DST-agnostic (our make/timestamp is UTC-ish)
+var dEndJan = time.make(2024, 1, 31, 23, 59, 0)
+var jFeb = parse.parseString("0 0 * * * x", "in")[0]
+var nFeb = schedule.nextRun(dEndJan, jFeb)
+ok(nFeb.month == 2 and nFeb.day == 1 and nFeb.hour == 0, "@daily next after 01-31 23:59 = Feb 1 00:00")
+
+# Impossible schedule: 0 0 30 2 * (Feb 30 never happens) — should throw
+var jBad = parse.parseString("0 0 30 2 * x", "in")[0]
+ok(throws(Function(): return schedule.nextRun(start, jBad)), "impossible schedule (Feb 30) throws instead of spinning")
+
+# =============================================================================
+# history: append + read round-trip
+# =============================================================================
+var histFile = path.gettempdir() + "/cronki_selftest.log"
+discard path.remove(histFile, missing_ok = True)
+var r1 = {"raw": "* * * * * x", "command": "echo one", "start": "2024-01-15T09:00:00", "end": "2024-01-15T09:00:00", "elapsed_ms": 3, "code": 0, "stdout": "one\n", "stderr": "", "digest": "abc123"}
+var r2 = {"raw": "* * * * * y", "command": "echo two", "start": "2024-01-15T09:01:00", "end": "2024-01-15T09:01:00", "elapsed_ms": 5, "code": 0, "stdout": "two\n", "stderr": "", "digest": "def456"}
+history.append(histFile, r1)
+history.append(histFile, r2)
+var all = history.readAll(histFile)
+ok(len(all) == 2 and all[0]["command"] == "echo one" and all[1]["command"] == "echo two", "history round-trips 2 entries")
+var last = history.tail(histFile, 1)
+ok(len(last) == 1 and last[0]["command"] == "echo two", "tail(1) returns only the most recent")
+discard path.remove(histFile, missing_ok = True)
+
+# =============================================================================
+# runner: execute a real trivial command
+# =============================================================================
+var jEcho = parse.parseString("* * * * * echo hello_from_cronki", "in")[0]
+var res = runner.runJob(jEcho, 5)
+ok(res["code"] == 0, "echo exits 0")
+ok("hello_from_cronki" in res["stdout"], "echo captured on stdout")
+ok(len(res["digest"]) == 12, "runner emits a 12-char digest")
+
+# a failing command surfaces a non-zero code
+var jFail = parse.parseString("* * * * * false", "in")[0]
+var resF = runner.runJob(jFail, 5)
+ok(resF["code"] != 0, "`false` yields a non-zero exit code")
+
+io.print("cronki: " + String(n) + " checks passed")

@@ -1,0 +1,29 @@
+# r4_regressions.ki — regression tests for bugs found in the r4 audit sweep.
+#   P0  tensor.einsum with a repeated OUTPUT label overran the output buffer (heap overflow).
+# Note: the JSON number parser is intentionally LENIENT (see deep_serialization.ki), so there is
+# deliberately NO "json rejects malformed numbers" regression here.
+var io = import("io")
+var T = import("tensor")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# --- P0: einsum repeated output label now throws (was a heap-buffer-overflow / segfault) ---
+ok(throws(Function(): return T.einsum("ii->ii", T.Tensor([[1, 2], [3, 4]]))), "einsum ii->ii throws")
+ok(throws(Function(): return T.einsum("i->ii", T.Tensor([1, 2, 3]))), "einsum i->ii throws")
+ok(throws(Function(): return T.einsum("i->iii", T.Tensor([1, 2]))), "einsum i->iii throws")
+ok(throws(Function(): return T.einsum("ij->jji", T.Tensor([[1, 2, 3], [4, 5, 6]]))), "einsum ij->jji throws")
+# valid einsum forms are unaffected
+ok(T.einsum("ii->", T.Tensor([[1, 2], [3, 4]])).item() == 5.0, "einsum trace still works")
+ok(T.einsum("ij->ji", T.Tensor([[1, 2], [3, 4]])).tolist() == [[1.0, 3.0], [2.0, 4.0]], "einsum transpose still works")
+ok(T.einsum("ij->", T.Tensor([[1, 2], [3, 4]])).item() == 10.0, "einsum full sum still works")
+
+io.print("r4_regressions: " + String(n) + " checks passed")

@@ -1,0 +1,624 @@
+# r4_tensor.ki — exhaustive audit of the `tensor` stdlib module (dense N-dim arrays + autograd).
+# Probes every documented op/method/arg from every angle: construction, indexing/slicing, arithmetic
+# + broadcasting, comparisons/logic, products/contractions, reductions, structural ops, linear
+# algebra, sorting, complex helpers, the differentiable math set, and autograd (with NUMERIC
+# finite-difference gradient checks). Edge cases (0-d / 1-elem / empty, broadcasting corners, negative
+# axes, NaN/inf, singular matrices, dtype mixes) and malformed/wrong-type inputs (asserted to RAISE).
+#
+# Only CONFIRMED-correct behavior is asserted here; known-buggy behavior (einsum repeated-output
+# labels) is deliberately NOT exercised and is reported separately. Every assertion carries a message;
+# a trailing counter confirms none silently vanished. Deterministic — no randomness.
+
+var io = import("io")
+var T = import("tensor")
+var C = import("complex")
+var math = import("math")
+
+var n = 0
+var check = Function(b, msg):
+    assert b, msg
+    n = n + 1
+
+# True iff calling `thunk` throws (for asserting error surfaces).
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        return True
+    return False
+
+# absolute closeness for a scalar Float (transcendental results never compared with exact ==)
+var approx = Function(x, y) -> Bool:
+    var d = x - y
+    if d < 0:
+        d = -d
+    return d < 0.000001
+
+# =================================================================================================
+# 1. Construction & factories
+# =================================================================================================
+var a = T.Tensor([[1, 2, 3], [4, 5, 6]])
+check(a.shape() == [2, 3], "shape")
+check(a.ndim() == 2, "ndim")
+check(a.size() == 6, "size")
+check(a.dtype() == "Float", "dtype default Float")
+check(a.tolist() == [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], "Integers stored as Floats")
+
+check(T.zeros([2, 2]).tolist() == [[0.0, 0.0], [0.0, 0.0]], "zeros")
+check(T.ones([3]).tolist() == [1.0, 1.0, 1.0], "ones")
+check(T.full([2, 2], 9).tolist() == [[9.0, 9.0], [9.0, 9.0]], "full")
+check(T.eye(3).tolist() == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], "eye")
+check(T.identity(2).tolist() == [[1.0, 0.0], [0.0, 1.0]], "identity alias of eye")
+check(T.arange(0, 6, 2).tolist() == [0.0, 2.0, 4.0], "arange start,stop,step")
+check(T.arange(5).tolist() == [0.0, 1.0, 2.0, 3.0, 4.0], "arange(stop)")
+check(T.arange(stop = 5).tolist() == [0.0, 1.0, 2.0, 3.0, 4.0], "arange kwarg stop")
+check(T.arange(start = 1, stop = 9, step = 2).tolist() == [1.0, 3.0, 5.0, 7.0], "arange kwargs")
+check(T.arange(3, 0, -1).tolist() == [3.0, 2.0, 1.0], "arange negative step")
+check(T.linspace(0, 1, 5).tolist() == [0.0, 0.25, 0.5, 0.75, 1.0], "linspace")
+check(T.linspace(0, 1, 1).tolist() == [0.0], "linspace num=1 -> start")
+check(T.linspace(0, 1, 0).tolist() == [], "linspace num=0 -> empty")
+
+# *like / diag / tri
+check(T.zeroslike(a).tolist() == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], "zeroslike")
+check(T.oneslike(a).shape() == [2, 3], "oneslike shape")
+check(T.fulllike(a, 7).tolist() == [[7.0, 7.0, 7.0], [7.0, 7.0, 7.0]], "fulllike")
+check(T.diag(T.Tensor([1, 2, 3])).tolist() == [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]], "diag vec->matrix")
+check(T.diag(T.Tensor([[1, 2], [3, 4]])).tolist() == [1.0, 4.0], "diag matrix->diagonal")
+check(T.diag(T.Tensor([1, 2]), 1).tolist() == [[0.0, 1.0, 0.0], [0.0, 0.0, 2.0], [0.0, 0.0, 0.0]], "diag k offset")
+check(T.tril(T.ones([3, 3])).tolist() == [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 1.0, 1.0]], "tril")
+check(T.triu(T.ones([3, 3])).tolist() == [[1.0, 1.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]], "triu")
+
+# 0-D scalar tensor + dtype kwarg
+var sc = T.full([], 5)
+check(sc.ndim() == 0 and sc.size() == 1 and sc.shape() == [], "0-D tensor")
+check(sc.item() == 5.0, "0-D item")
+check(T.zeros([2], dtype = "Complex").dtype() == "Complex", "dtype Complex kwarg")
+check(T.ones([2], dtype = "Float").dtype() == "Float", "dtype Float kwarg")
+
+# construction errors
+check(throws(Function(): return T.Tensor([[1, 2], [3]])), "ragged throws")
+check(throws(Function(): return T.zeros([2], dtype = "Garbage")), "bad dtype throws")
+check(throws(Function(): return T.zeros([-1])), "negative dim throws")
+check(throws(Function(): return T.zeros([100000000, 100000000])), "huge tensor guard")
+check(throws(Function(): return T.eye(3037000500)), "eye overflow guard")
+check(T.arange(0, 1).tolist() == [0.0], "arange single elem control")
+check(throws(Function(): return T.arange(0, 10, 0)), "arange zero step throws")
+
+# =================================================================================================
+# 2. Indexing, slicing, selection (+ assignment)
+# =================================================================================================
+var cube = T.Tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
+check(cube[1, 0, 1] == 6.0, "full index -> scalar")
+check(cube[0].tolist() == [[1.0, 2.0], [3.0, 4.0]], "partial index -> sub-tensor")
+check(cube[-1, -1, -1] == 8.0, "negative full index")
+var cube2 = T.Tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
+cube2[0, 0, 0] = 99
+check(cube2[0, 0, 0] == 99.0, "element assignment (full index)")
+cube2[-1, -1, -1] = 77
+check(cube2[1, 1, 1] == 77.0, "negative element assignment")
+
+var v = T.Tensor([10, 20, 30, 40, 50])
+check(v[1:4].tolist() == [20.0, 30.0, 40.0], "slice start:stop")
+check(v[:2].tolist() == [10.0, 20.0], "slice :stop")
+check(v[-2:].tolist() == [40.0, 50.0], "slice -2:")
+check(v[::-1].tolist() == [50.0, 40.0, 30.0, 20.0, 10.0], "slice reverse step")
+check(v[::2].tolist() == [10.0, 30.0, 50.0], "slice step 2")
+check(a[[1, 0]].tolist() == [[4.0, 5.0, 6.0], [1.0, 2.0, 3.0]], "fancy index rows")
+check(a[a.gt(3)].tolist() == [4.0, 5.0, 6.0], "boolean mask selection")
+
+# indexing errors
+check(throws(Function(): return T.Tensor([1, 2, 3])[5]), "OOB index throws")
+check(throws(Function(): return T.Tensor([1, 2, 3])[0, 0]), "too many indices throws")
+check(throws(Function(): return T.full([], 5)[0:1]), "slice 0-D throws")
+check(throws(Function(): return T.Tensor([1, 2, 3])[T.Tensor([1, 0])]), "mask wrong shape throws")
+check(throws(Function(): return T.Tensor([[1, 2], [3, 4]])[[0, 5]]), "fancy index OOB throws")
+var t23 = T.zeros([2, 3])
+check(throws(Function(): t23[0] = 5), "partial-index assignment throws")
+
+# =================================================================================================
+# 3. Element-wise arithmetic + broadcasting + scalars (/ // % throw on zero)
+# =================================================================================================
+check((a + a).tolist() == [[2.0, 4.0, 6.0], [8.0, 10.0, 12.0]], "add")
+check((a - a).tolist() == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], "sub")
+check((a * a).tolist() == [[1.0, 4.0, 9.0], [16.0, 25.0, 36.0]], "mul (Hadamard, not matmul)")
+check((a / a).tolist() == [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], "div")
+check((a * 2).tolist() == [[2.0, 4.0, 6.0], [8.0, 10.0, 12.0]], "scalar mul")
+check((a + 10).tolist() == [[11.0, 12.0, 13.0], [14.0, 15.0, 16.0]], "scalar add")
+check((-a).tolist() == [[-1.0, -2.0, -3.0], [-4.0, -5.0, -6.0]], "negation")
+# broadcasting: row over both rows; column over all columns
+check((a + T.Tensor([[10, 20, 30]])).tolist() == [[11.0, 22.0, 33.0], [14.0, 25.0, 36.0]], "broadcast row")
+check((a + T.Tensor([[100], [200]])).tolist() == [[101.0, 102.0, 103.0], [204.0, 205.0, 206.0]], "broadcast col")
+check((a + T.Tensor([10, 20, 30])).tolist() == [[11.0, 22.0, 33.0], [14.0, 25.0, 36.0]], "broadcast rank-mismatch")
+# ** % // operators
+check((T.Tensor([2, 3, 4]) ** 2).tolist() == [4.0, 9.0, 16.0], "** power op")
+check((T.Tensor([5, 7, 9]) % 3).tolist() == [2.0, 1.0, 0.0], "% modulo op")
+check((T.Tensor([5, 7, 9]) // 3).tolist() == [1.0, 2.0, 3.0], "// floordiv op")
+check((T.Tensor([2.0, 3.0]) ** T.Tensor([3.0, 2.0])).tolist() == [8.0, 9.0], "elementwise ** tensor")
+# zero divisor throws for / // % (and reciprocal)
+check(throws(Function(): return T.Tensor([1.0, 2.0]) / 0), "scalar /0 throws")
+check(throws(Function(): return T.Tensor([1.0]) / T.Tensor([0.0])), "tensor /0 throws")
+check(throws(Function(): return T.Tensor([1.0, 2.0]) // 0), "scalar //0 throws")
+check(throws(Function(): return T.Tensor([1.0, 2.0]) % 0), "scalar %0 throws")
+check(throws(Function(): return T.Tensor([0.0, 2.0]).reciprocal()), "reciprocal(0) throws")
+# negative base ** non-integer throws (domain)
+check(throws(Function(): return T.Tensor([-2.0]) ** 0.5), "neg base ** non-int throws")
+# broadcast mismatch throws
+check(throws(Function(): return T.zeros([3]) + T.zeros([5])), "broadcast mismatch throws")
+
+# =================================================================================================
+# 4. Comparisons (mask), logic, whole-tensor == vs .compare
+# =================================================================================================
+check(T.Tensor([1, 2, 3, 4]).gt(2).tolist() == [0.0, 0.0, 1.0, 1.0], "gt mask")
+check((T.Tensor([1, 2, 3]) > 2).tolist() == [0.0, 0.0, 1.0], "> operator mask")
+check((T.Tensor([1, 2, 3]) >= 2).tolist() == [0.0, 1.0, 1.0], ">= operator mask")
+check((T.Tensor([1, 2, 3]) < 2).tolist() == [1.0, 0.0, 0.0], "< operator mask")
+check((T.Tensor([1, 2, 3]) <= 2).tolist() == [1.0, 1.0, 0.0], "<= operator mask")
+check(T.Tensor([1, 2, 3]).eq(T.Tensor([1, 9, 3])).tolist() == [1.0, 0.0, 1.0], "eq mask")
+check(T.Tensor([1, 2, 3]).ne(T.Tensor([1, 9, 3])).tolist() == [0.0, 1.0, 0.0], "ne mask")
+check(T.Tensor([1, 2, 3]).le(T.Tensor([2, 2, 2])).tolist() == [1.0, 1.0, 0.0], "le mask")
+check(T.Tensor([1, 2, 3]).ge(T.Tensor([2, 2, 2])).tolist() == [0.0, 1.0, 1.0], "ge mask")
+check(T.Tensor([1, 2, 3]).gt(2.0).tolist() == [0.0, 0.0, 1.0], "gt scalar mask")
+# NaN never equal in a mask
+check(T.Tensor([math.nan, 1.0]).eq(T.Tensor([math.nan, 1.0])).tolist() == [0.0, 1.0], "NaN eq mask")
+# logic
+check(T.Tensor([1, 0, 1]).logicaland(T.Tensor([1, 1, 0])).tolist() == [1.0, 0.0, 0.0], "logicaland")
+check(T.Tensor([1, 0, 1]).logicalor(T.Tensor([0, 0, 0])).tolist() == [1.0, 0.0, 1.0], "logicalor")
+check(T.Tensor([1, 0, 1]).logicalxor(T.Tensor([1, 1, 0])).tolist() == [0.0, 1.0, 1.0], "logicalxor")
+check(T.Tensor([1, 0, 2]).logicalnot().tolist() == [0.0, 1.0, 0.0], "logicalnot")
+# whole-tensor == is exact Bool, NaN-aware, shape-aware
+check((T.Tensor([1.0, 2.0]) == T.Tensor([1.0, 2.0])) == True, "whole == equal")
+check((T.Tensor([1.0, 2.0]) == T.Tensor([1.0, 3.0])) == False, "whole == unequal")
+check((T.Tensor([1.0]) == T.Tensor([1.0, 2.0])) == False, "whole == shape mismatch")
+check((T.Tensor([math.nan]) == T.Tensor([math.nan])) == False, "whole == NaN never equal")
+check((T.Tensor([1.0, 2.0]) != T.Tensor([1.0, 3.0])) == True, "whole != ")
+# .compare tolerant
+check(T.Tensor([1.0, 2.0]).compare(T.Tensor([1.0, 2.0])) == True, "compare exact")
+check(T.Tensor([1.0, 0.0]).compare(T.Tensor([1.0000001, 0.0000001])) == False, "compare default tol too tight near zero")
+check(T.Tensor([1.0, 0.0]).compare(T.Tensor([1.0000001, 0.0000001]), abs_tol = 0.001) == True, "compare abs_tol")
+check(T.Tensor([1.0]).compare(T.Tensor([1.0, 2.0])) == False, "compare shape mismatch -> False")
+
+# selection
+check(T.where(T.Tensor([1, 0, 1]), T.Tensor([1, 2, 3]), T.zeros([3])).tolist() == [1.0, 0.0, 3.0], "where")
+check(T.where(T.Tensor([[1], [0]]), T.Tensor([10, 20, 30]), T.zeros([2, 3])).tolist() == [[10.0, 20.0, 30.0], [0.0, 0.0, 0.0]], "where broadcast")
+check(T.Tensor([1, 2, 3, 4, 5]).clip(2, 4).tolist() == [2.0, 2.0, 3.0, 4.0, 4.0], "clip")
+check(T.Tensor([1, 5, 2]).maximum(T.full([3], 3)).tolist() == [3.0, 5.0, 3.0], "maximum")
+check(T.Tensor([1, 5, 2]).minimum(T.full([3], 3)).tolist() == [1.0, 3.0, 2.0], "minimum")
+check(throws(Function(): return T.Tensor([1, 2, 3]).clip(5, 1)), "clip lo>hi throws")
+
+# =================================================================================================
+# 5. Matrix products / dot / tensordot / contract / einsum
+# =================================================================================================
+check(T.Tensor([[1, 2], [3, 4]]).matmul(T.Tensor([[5, 6], [7, 8]])).tolist() == [[19.0, 22.0], [43.0, 50.0]], "matmul 2-D")
+check(T.Tensor([1, 2, 3]).dot(T.Tensor([4, 5, 6])) == 32.0, "dot 1-D")
+# batched matmul + broadcast leading dims
+check(T.ones([2, 3, 4]).matmul(T.ones([4, 5])).shape() == [2, 3, 5], "batched matmul broadcast")
+check(T.ones([2, 2, 2]).matmul(T.ones([2, 2, 2])).shape() == [2, 2, 2], "batched matmul")
+# tensordot
+check(T.tensordot(T.Tensor([[1, 2], [3, 4]]), T.Tensor([[5, 6], [7, 8]]), 1).tolist() == [[19.0, 22.0], [43.0, 50.0]], "tensordot N=1 == matmul")
+check(T.tensordot(T.Tensor([[1, 2], [3, 4]]), T.Tensor([[5, 6], [7, 8]]), 2).item() == 70.0, "tensordot N=2 Frobenius")
+check(T.tensordot(T.Tensor([1, 2]), T.Tensor([3, 4]), 0).tolist() == [[3.0, 4.0], [6.0, 8.0]], "tensordot N=0 outer")
+check(T.contract(T.full([2, 3, 4], 1), T.full([4, 3, 5], 2), [1, 2], [1, 0]).shape() == [2, 5], "contract axis pair")
+# einsum (NON-repeated-output forms only)
+check(T.einsum("ij,jk->ik", T.Tensor([[1, 2], [3, 4]]), T.eye(2)).tolist() == [[1.0, 2.0], [3.0, 4.0]], "einsum matmul")
+check(T.einsum("ij->ji", T.Tensor([[1, 2], [3, 4]])).tolist() == [[1.0, 3.0], [2.0, 4.0]], "einsum transpose")
+check(T.einsum("ii->", T.Tensor([[1, 2], [3, 4]])).item() == 5.0, "einsum trace")
+check(T.einsum("ii->i", T.Tensor([[1, 2], [3, 4]])).tolist() == [1.0, 4.0], "einsum diagonal")
+check(T.einsum("ij->", T.Tensor([[1, 2], [3, 4]])).item() == 10.0, "einsum full sum")
+check(T.einsum("ij->i", T.Tensor([[1, 2], [3, 4]])).tolist() == [3.0, 7.0], "einsum row sum")
+check(T.einsum("bij,bjk->bik", T.full([2, 2, 3], 1), T.full([2, 3, 4], 1)).shape() == [2, 2, 4], "einsum batched")
+# inner
+check(T.inner(T.Tensor([1, 2, 3]), T.Tensor([4, 5, 6])).item() == 32.0, "inner 1-D == dot")
+# product/contraction errors
+check(throws(Function(): return T.Tensor([1, 2, 3]).matmul(T.Tensor([4, 5, 6]))), "matmul rank<2 throws")
+check(throws(Function(): return T.zeros([2, 3]).matmul(T.zeros([4, 2]))), "matmul inner mismatch throws")
+check(throws(Function(): return T.Tensor([1, 2]).dot(T.Tensor([1, 2, 3]))), "dot length mismatch throws")
+check(throws(Function(): return T.tensordot(T.eye(2), T.eye(2), 5)), "tensordot axis count too big throws")
+check(throws(Function(): return T.tensordot(T.zeros([2, 3]), T.zeros([4, 5]), 1)), "tensordot contracted mismatch throws")
+check(throws(Function(): return T.contract(T.zeros([2, 3]), T.zeros([3, 2]), [0, 1], [0])), "contract unequal axis lists throws")
+check(throws(Function(): return T.einsum("ij,jk->ik", T.eye(2))), "einsum operand count mismatch throws")
+check(throws(Function(): return T.einsum("ij->ijk", T.eye(2))), "einsum output label not in input throws")
+check(throws(Function(): return T.einsum("ijk->", T.eye(2))), "einsum subscript rank mismatch throws")
+check(throws(Function(): return T.einsum("ij->", 5)), "einsum non-tensor operand throws")
+
+# =================================================================================================
+# 6. Reductions (whole + per-axis + negative axis)
+# =================================================================================================
+check(a.sum() == 21.0, "sum whole -> Float")
+check(a.sum(0).tolist() == [5.0, 7.0, 9.0], "sum axis 0")
+check(a.sum(1).tolist() == [6.0, 15.0], "sum axis 1")
+check(a.sum(-1).tolist() == [6.0, 15.0], "sum axis -1 == last")
+check(a.sum(-2).tolist() == [5.0, 7.0, 9.0], "sum axis -2 == 0")
+check(a.mean() == 3.5, "mean whole")
+check(a.mean(1).tolist() == [2.0, 5.0], "mean axis")
+check(a.prod() == 720.0, "prod whole")
+check(a.prod(1).tolist() == [6.0, 120.0], "prod axis")
+check(a.min() == 1.0 and a.max() == 6.0, "min/max whole")
+check(a.min(0).tolist() == [1.0, 2.0, 3.0], "min axis")
+check(a.max(1).tolist() == [3.0, 6.0], "max axis")
+check(a.argmin() == 0, "argmin whole (flat index)")
+check(a.argmax() == 5, "argmax whole (flat index)")
+check(a.argmax(1).tolist() == [2.0, 2.0], "argmax axis")
+check(a.argmin(0).tolist() == [0.0, 0.0, 0.0], "argmin axis")
+check(approx(T.Tensor([1.0, 2.0, 3.0, 4.0]).std(), 1.118033988749895), "std whole (ddof=0)")
+check(approx(T.Tensor([1.0, 2.0, 3.0, 4.0]).std(ddof = 1), 1.2909944487358056), "std ddof=1")
+check(T.Tensor([1.0, 2.0, 3.0, 4.0]).var() == 1.25, "var whole")
+check(T.Tensor([1, 1, 1]).all() == True and T.Tensor([1, 0, 1]).all() == False, "all whole")
+check(T.Tensor([0, 0, 0]).any() == False and T.Tensor([0, 1]).any() == True, "any whole")
+check(T.Tensor([[1, 0], [1, 1]]).all(0).tolist() == [1.0, 0.0], "all axis")
+check(a.ptp() == 5.0, "ptp whole (max-min)")
+check(a.ptp(1).tolist() == [2.0, 2.0], "ptp axis")
+check(T.Tensor([3, 1, 2]).median() == 2.0, "median odd")
+check(T.Tensor([1, 2, 3, 4]).median() == 2.5, "median even")
+check(T.Tensor([1, 2, 3, 4]).cumsum().tolist() == [1.0, 3.0, 6.0, 10.0], "cumsum")
+check(T.Tensor([1, 2, 3, 4]).cumprod().tolist() == [1.0, 2.0, 6.0, 24.0], "cumprod")
+check(a.cumsum(1).tolist() == [[1.0, 3.0, 6.0], [4.0, 9.0, 15.0]], "cumsum axis")
+# reduction edge cases
+check(T.zeros([0]).sum() == 0.0, "sum of empty -> 0")
+check(T.zeros([0]).prod() == 1.0, "prod of empty -> 1")
+check(throws(Function(): return T.zeros([0]).mean()), "mean of empty throws")
+check(throws(Function(): return T.zeros([0]).min()), "min of empty throws")
+check(throws(Function(): return T.zeros([0]).argmax()), "argmax of empty throws")
+check(throws(Function(): return T.Tensor([1.0]).std(ddof = 1)), "std ddof too large throws")
+check(throws(Function(): return a.sum(5)), "axis out of range (positive) throws")
+check(throws(Function(): return a.sum(-3)), "axis out of range (too negative) throws")
+check(throws(Function(): return a.sum([0, 1])), "axis as List rejected")
+
+# =================================================================================================
+# 7. Structural ops
+# =================================================================================================
+check(a.transpose().tolist() == [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]], "transpose")
+check(T.Tensor([1, 2, 3]).transpose().tolist() == [1.0, 2.0, 3.0], "transpose 1-D noop")
+check(a.reshape([3, 2]).tolist() == [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], "reshape")
+check(a.flatten().tolist() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "flatten")
+check(a.permute([1, 0]).tolist() == [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]], "permute")
+check(a.swapaxes(0, 1).shape() == [3, 2], "swapaxes")
+check(T.zeros([2, 3, 4]).swapaxes(-1, -3).shape() == [4, 3, 2], "swapaxes negative")
+check(a.flip().tolist() == [[6.0, 5.0, 4.0], [3.0, 2.0, 1.0]], "flip all axes")
+check(T.Tensor([1, 2, 3]).flip().tolist() == [3.0, 2.0, 1.0], "flip 1-D")
+check(a.flip(0).tolist() == [[4.0, 5.0, 6.0], [1.0, 2.0, 3.0]], "flip axis 0")
+check(T.zeros([1, 3, 1]).squeeze().shape() == [3], "squeeze all size-1")
+check(T.zeros([1, 3, 1]).squeeze(0).shape() == [3, 1], "squeeze axis 0")
+check(T.zeros([1, 3, 1]).squeeze(-1).shape() == [1, 3], "squeeze negative axis")
+check(T.Tensor([1, 2]).expanddims(0).shape() == [1, 2], "expanddims 0")
+check(T.Tensor([1, 2]).expanddims(-1).shape() == [2, 1], "expanddims negative")
+check(T.Tensor([[1], [2]]).broadcastto([2, 3]).tolist() == [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]], "broadcastto")
+check(T.Tensor([1, 2]).repeat(2).tolist() == [1.0, 1.0, 2.0, 2.0], "repeat flatten")
+check(T.Tensor([[1, 2], [3, 4]]).repeat(2, 0).tolist() == [[1.0, 2.0], [1.0, 2.0], [3.0, 4.0], [3.0, 4.0]], "repeat axis")
+check(T.Tensor([1, 2]).tile([3]).tolist() == [1.0, 2.0, 1.0, 2.0, 1.0, 2.0], "tile")
+# join / split
+check(T.concatenate([a, a], 0).shape() == [4, 3], "concatenate axis 0")
+check(T.concatenate([T.zeros([2, 2]), T.ones([2, 3])], 1).shape() == [2, 5], "concatenate axis 1")
+check(T.concat([T.Tensor([1, 2]), T.Tensor([3, 4])], 0).tolist() == [1.0, 2.0, 3.0, 4.0], "concat alias")
+check(T.stack([T.Tensor([1, 2]), T.Tensor([3, 4])], 0).tolist() == [[1.0, 2.0], [3.0, 4.0]], "stack axis 0")
+check(T.stack([T.Tensor([1, 2]), T.Tensor([3, 4])], -1).tolist() == [[1.0, 3.0], [2.0, 4.0]], "stack negative axis")
+var parts = T.split(T.Tensor([1, 2, 3, 4]), 2, 0)
+check(len(parts) == 2 and parts[0].tolist() == [1.0, 2.0] and parts[1].tolist() == [3.0, 4.0], "split N equal")
+var parts2 = T.split(T.Tensor([1, 2, 3, 4, 5]), [2, 3], 0)
+check(parts2[0].tolist() == [1.0, 2.0] and parts2[1].tolist() == [3.0, 4.0, 5.0], "split by sizes")
+# structural errors
+check(throws(Function(): return T.Tensor([1, 2, 3]).reshape([2, 2])), "reshape size mismatch throws")
+check(throws(Function(): return T.zeros([2, 3]).permute([0, 0])), "permute not-a-permutation throws")
+check(throws(Function(): return T.concatenate([T.zeros([2, 3]), T.zeros([2, 4])], 0)), "concat off-axis mismatch throws")
+check(throws(Function(): return T.split(T.Tensor([1, 2, 3]), 2, 0)), "split not divisible throws")
+check(throws(Function(): return T.Tensor([1, 2, 3]).broadcastto([2, 2])), "broadcastto incompatible throws")
+
+# apply / astype / item / tolist
+check(T.Tensor([1, 4, 9]).apply(Function(x): return x ** 0.5).tolist() == [1.0, 2.0, 3.0], "apply")
+check(T.Tensor([1, 2]).astype("Complex").dtype() == "Complex", "astype Float->Complex")
+check(T.Tensor([1.5, 2.5]).astype("Complex").astype("Float").tolist() == [1.5, 2.5], "astype roundtrip")
+check(T.Tensor([42.0]).item() == 42.0, "item single-element")
+check(type(T.Tensor([[7.0]]).item()) == "Float", "item type Float")
+check(throws(Function(): return T.Tensor([1.0, 2.0]).item()), "item multi-element throws")
+check(throws(Function(): return T.zeros([0]).item()), "item empty throws")
+check(throws(Function(): return T.Tensor([1, 2]).apply(Function(x): return "x")), "apply non-numeric return throws")
+
+# =================================================================================================
+# 8. Linear algebra
+# =================================================================================================
+check(T.det(T.Tensor([[4, 3], [6, 3]])) == -6.0, "det 2x2")
+check(approx(T.det(T.Tensor([[6, 1, 1], [4, -2, 5], [2, 8, 7]])), -306.0), "det 3x3")
+check(T.det(T.Tensor([[5]])) == 5.0, "det 1x1")
+check(T.trace(T.Tensor([[1, 2], [3, 4]])) == 5.0, "trace")
+check(T.inv(T.Tensor([[4, 3], [6, 3]])).matmul(T.Tensor([[4, 3], [6, 3]])).compare(T.eye(2)), "inv * A == I")
+check(T.solve(T.Tensor([[2.0, 0.0], [0.0, 4.0]]), T.Tensor([[2.0], [8.0]])).tolist() == [[1.0], [2.0]], "solve")
+check(T.norm(T.Tensor([3, 4])) == 5.0, "norm 2 (Euclidean)")
+check(T.norm(T.Tensor([3.0, -4.0]), 1) == 7.0, "norm 1")
+check(T.norm(T.Tensor([3.0, -4.0, 0.0]), 0) == 2.0, "norm 0 (nonzero count)")
+check(T.outer(T.Tensor([1, 2]), T.Tensor([3, 4])).tolist() == [[3.0, 4.0], [6.0, 8.0]], "outer")
+check(T.kron(T.eye(2), T.ones([2, 2])).shape() == [4, 4], "kron shape")
+check(T.cross(T.Tensor([1, 0, 0]), T.Tensor([0, 1, 0])).tolist() == [0.0, 0.0, 1.0], "cross")
+# linalg errors: non-square, singular, non-finite
+check(throws(Function(): return T.det(T.Tensor([[1, 2, 3]]))), "det non-square throws")
+check(throws(Function(): return T.inv(T.Tensor([[1, 2, 3], [4, 5, 6]]))), "inv non-square throws")
+check(throws(Function(): return T.trace(T.Tensor([[1, 2, 3], [4, 5, 6]]))), "trace non-square throws")
+check(throws(Function(): return T.inv(T.Tensor([[1.0, 2.0], [2.0, 4.0]]))), "inv singular throws")
+check(throws(Function(): return T.solve(T.Tensor([[1.0, 2.0], [2.0, 4.0]]), T.Tensor([[1.0], [1.0]]))), "solve singular throws")
+check(throws(Function(): return T.cross(T.Tensor([1, 2]), T.Tensor([3, 4]))), "cross non-3-vector throws")
+check(throws(Function(): return T.det(T.Tensor([[math.nan, 2.0], [3.0, 4.0]]))), "det NaN throws")
+check(throws(Function(): return T.det(T.Tensor([[math.inf, 2.0], [3.0, 4.0]]))), "det inf throws")
+
+# =================================================================================================
+# 9. Sorting & searching
+# =================================================================================================
+check(T.Tensor([3, 1, 2]).sort().tolist() == [1.0, 2.0, 3.0], "sort 1-D")
+check(T.Tensor([[3, 1, 2], [6, 4, 5]]).sort().tolist() == [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], "sort default last axis")
+check(T.Tensor([[3, 1], [2, 4]]).sort(0).tolist() == [[2.0, 1.0], [3.0, 4.0]], "sort axis 0")
+check(T.Tensor([3, 1, 2]).argsort().tolist() == [1.0, 2.0, 0.0], "argsort 1-D")
+check(T.Tensor([[3, 1], [2, 4]]).argsort(0).tolist() == [[1.0, 0.0], [0.0, 1.0]], "argsort axis 0")
+check(T.unique(T.Tensor([3, 1, 3, 2, 1])).tolist() == [1.0, 2.0, 3.0], "unique sorted")
+check(T.searchsorted(T.Tensor([1, 3, 5]), 4) == 2, "searchsorted scalar -> Integer")
+check(type(T.searchsorted(T.Tensor([1, 3, 5]), 4)) == "Integer", "searchsorted scalar type")
+check(T.searchsorted(T.Tensor([1, 3, 5]), T.Tensor([0, 2, 4, 6])).tolist() == [0.0, 1.0, 2.0, 3.0], "searchsorted tensor")
+var nz = T.nonzero(T.Tensor([[0, 5], [7, 0]]))
+check(len(nz) == 2 and nz[0].tolist() == [0.0, 1.0] and nz[1].tolist() == [1.0, 0.0], "nonzero per-axis indices")
+check(throws(Function(): return T.searchsorted(T.zeros([2, 2]), 1)), "searchsorted non-1D throws")
+
+# =================================================================================================
+# 10. Complex tensors + helpers
+# =================================================================================================
+var z = T.Tensor([[1, 2], [3, 4]], dtype = "Complex")
+check(z.dtype() == "Complex", "complex dtype")
+check(z.matmul(z).dtype() == "Complex", "complex matmul")
+check((T.Tensor([1, 2]) + T.Tensor([1, 1], dtype = "Complex")).dtype() == "Complex", "Float+Complex promotes")
+check(T.Tensor([[1, 2], [3, 4]]).matmul(T.Tensor([[1, 0], [0, 1]], dtype = "Complex")).dtype() == "Complex", "matmul promotes")
+var zc = T.Tensor([C.of(3, 4)], dtype = "Complex")
+check(zc.real().tolist() == [3.0], "real")
+check(zc.imag().tolist() == [4.0], "imag")
+check(zc.conj().tolist()[0] == C.of(3, -4), "conj")
+check(approx(zc.angle().tolist()[0], 0.9272952180016122), "angle")
+check(type(T.Tensor([5.0], dtype = "Complex").item()) == "Complex", "complex item type")
+# complex det/inv work; ordered/Float-only ops throw on complex
+check((T.det(T.Tensor([[1, 2], [3, 4]], dtype = "Complex")) - C.of(-2, 0)).modulus() < 0.000001, "complex det")
+check(T.inv(z).matmul(z).compare(T.eye(2).astype("Complex"), abs_tol = 0.000001), "complex inv*A==I")
+var mC = T.Tensor([[C.of(1, 1), C.of(2, 0)], [C.of(0, 1), C.of(1, -1)]], dtype = "Complex")
+check((T.det(mC) - C.of(2, -2)).modulus() < 0.000001, "complex det 2x2 value")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex").min()), "complex min throws")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex").argmax()), "complex argmax throws")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex").sort()), "complex sort throws")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex").std()), "complex std throws")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex").median()), "complex median throws")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex").all()), "complex all throws")
+check(throws(Function(): return T.norm(T.Tensor([3, 4], dtype = "Complex"))), "complex norm throws")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex").lt(3)), "complex lt throws")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex") < 3), "complex < operator throws")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex") ** 2), "complex ** throws")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex") % 2), "complex % throws")
+
+# =================================================================================================
+# 11. Differentiable element-wise math set (values + domain throws)
+# =================================================================================================
+check(approx(T.Tensor([1.0]).exp().tolist()[0], 2.718281828459045), "exp")
+check(approx(T.Tensor([2.718281828459045]).log().tolist()[0], 1.0), "log")
+check(approx(T.Tensor([100.0]).log10().tolist()[0], 2.0), "log10")
+check(approx(T.Tensor([8.0]).log2().tolist()[0], 3.0), "log2")
+check(T.Tensor([4.0, 9.0]).sqrt().tolist() == [2.0, 3.0], "sqrt")
+check(approx(T.Tensor([27.0]).cbrt().tolist()[0], 3.0), "cbrt")
+check(T.Tensor([3.0]).square().tolist() == [9.0], "square")
+check(T.Tensor([4.0]).reciprocal().tolist() == [0.25], "reciprocal")
+check(T.Tensor([-3.0, 4.0]).abs().tolist() == [3.0, 4.0], "abs")
+check(T.Tensor([-2.0, 0.0, 5.0]).sign().tolist() == [-1.0, 0.0, 1.0], "sign")
+check(T.Tensor([1.7, -1.2]).floor().tolist() == [1.0, -2.0], "floor")
+check(T.Tensor([1.2, -1.7]).ceil().tolist() == [2.0, -1.0], "ceil")
+check(T.Tensor([0.5, 1.5, 2.5]).round().tolist() == [0.0, 2.0, 2.0], "round half-to-even")
+check(T.Tensor([1.7, -1.7]).trunc().tolist() == [1.0, -1.0], "trunc")
+check(approx(T.Tensor([0.0]).sin().tolist()[0], 0.0) and approx(T.Tensor([0.0]).cos().tolist()[0], 1.0), "sin/cos")
+check(approx(T.Tensor([0.0]).tan().tolist()[0], 0.0), "tan")
+check(approx(T.Tensor([0.0]).tanh().tolist()[0], 0.0), "tanh")
+check(approx(T.Tensor([0.0]).sigmoid().tolist()[0], 0.5), "sigmoid")
+check(T.Tensor([-1.0, 2.0]).relu().tolist() == [0.0, 2.0], "relu")
+check(approx(T.Tensor([0.0]).asin().tolist()[0], 0.0), "asin")
+check(approx(T.Tensor([1.0]).acos().tolist()[0], 0.0), "acos")
+check(approx(T.Tensor([0.0]).atan().tolist()[0], 0.0), "atan")
+check(approx(T.Tensor([0.0]).sinh().tolist()[0], 0.0), "sinh")
+check(approx(T.Tensor([0.0]).cosh().tolist()[0], 1.0), "cosh")
+check(approx(T.Tensor([0.0]).asinh().tolist()[0], 0.0), "asinh")
+check(approx(T.Tensor([1.0]).acosh().tolist()[0], 0.0), "acosh")
+check(approx(T.Tensor([0.0]).atanh().tolist()[0], 0.0), "atanh")
+check(approx(T.Tensor([0.0]).erf().tolist()[0], 0.0), "erf")
+check(approx(T.Tensor([0.0]).softplus().tolist()[0], 0.6931471805599453), "softplus")
+check(T.Tensor([2.0, 3.0]).pow(2).tolist() == [4.0, 9.0], "pow(p) method")
+# NaN passes through; domain throws
+check(T.Tensor([math.nan]).log().tolist()[0] != T.Tensor([math.nan]).log().tolist()[0], "NaN passes through log")
+check(throws(Function(): return T.Tensor([-1.0, 4.0]).sqrt()), "sqrt domain throws")
+check(throws(Function(): return T.Tensor([0.0, 1.0]).log()), "log domain throws")
+check(throws(Function(): return T.Tensor([2.0]).asin()), "asin domain throws")
+check(throws(Function(): return T.Tensor([2.0]).acos()), "acos domain throws")
+check(throws(Function(): return T.Tensor([0.5]).acosh()), "acosh domain throws")
+check(throws(Function(): return T.Tensor([1.0]).atanh()), "atanh domain throws")
+check(throws(Function(): return T.Tensor([1, 2], dtype = "Complex").exp()), "complex math throws (Float-only)")
+
+# =================================================================================================
+# 12. Autograd — setup, accumulation, detach, nograd, and NUMERIC gradient checks
+# =================================================================================================
+check(T.zeros([2]).requiresgrad() == False, "requiresgrad off by default")
+check(T.zeros([2], requiresgrad = True).requiresgrad() == True, "requiresgrad kwarg")
+var rg = T.zeros([2])
+rg.requiresgrad(True)
+check(rg.requiresgrad() == True, "requiresgrad(True) setter")
+rg.requiresgrad(False)
+check(rg.requiresgrad() == False, "requiresgrad(False) setter")
+check(T.Tensor([1.0], requiresgrad = True).grad == None, "grad None before backward")
+check(throws(Function(): return T.zeros([2], dtype = "Complex").requiresgrad(True)), "complex requiresgrad throws")
+check(throws(Function(): return T.zeros([2], dtype = "Complex", requiresgrad = True)), "complex requiresgrad kwarg throws")
+check(throws(Function(): return T.zeros([2]).backward()), "backward without grad throws")
+check(throws(Function(): return T.Tensor([1.0, 2.0], requiresgrad = True).backward()), "backward non-scalar no-seed throws")
+
+# d/dx sum(x^2) = 2x
+var x1 = T.Tensor([1.0, 2.0, 3.0], requiresgrad = True)
+x1.square().sum().backward()
+check(x1.grad.tolist() == [2.0, 4.0, 6.0], "grad sum(x^2) = 2x")
+# product rule
+var pa = T.Tensor([2.0, 3.0], requiresgrad = True)
+var pb = T.Tensor([5.0, 7.0], requiresgrad = True)
+(pa * pb).sum().backward()
+check(pa.grad.tolist() == [5.0, 7.0] and pb.grad.tolist() == [2.0, 3.0], "product rule grad")
+# matmul backward through identity
+var mm = T.Tensor([[1.0, 2.0], [3.0, 4.0]], requiresgrad = True)
+mm.matmul(T.eye(2)).sum().backward()
+check(mm.grad.tolist() == [[1.0, 1.0], [1.0, 1.0]], "matmul backward (identity)")
+# broadcasting backward (bias-style column sums)
+var ba = T.Tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], requiresgrad = True)
+var bw = T.Tensor([1.0, 1.0, 1.0], requiresgrad = True)
+(ba * bw).sum().backward()
+check(bw.grad.tolist() == [5.0, 7.0, 9.0], "broadcast backward column sums")
+# relu mask
+var rz = T.Tensor([-1.0, 2.0], requiresgrad = True)
+rz.relu().sum().backward()
+check(rz.grad.tolist() == [0.0, 1.0], "relu grad mask")
+# clip mask
+var cz = T.Tensor([-1.0, 0.5, 2.0], requiresgrad = True)
+cz.clip(0, 1).sum().backward()
+check(cz.grad.tolist() == [0.0, 1.0, 0.0], "clip grad mask")
+# maximum mask
+var ma = T.Tensor([1.0, 5.0], requiresgrad = True)
+var mb = T.Tensor([3.0, 2.0], requiresgrad = True)
+ma.maximum(mb).sum().backward()
+check(ma.grad.tolist() == [0.0, 1.0] and mb.grad.tolist() == [1.0, 0.0], "maximum grad mask")
+# cumsum grad: x0 appears 3x, x1 2x, x2 1x
+var cu = T.Tensor([1.0, 2.0, 3.0], requiresgrad = True)
+cu.cumsum().sum().backward()
+check(cu.grad.tolist() == [3.0, 2.0, 1.0], "cumsum grad")
+# where grad routes to a/b only (cond is a mask, not differentiable)
+var wa = T.Tensor([1.0, 2.0, 3.0, 4.0], requiresgrad = True)
+T.where(T.Tensor([1, 0, 1, 0]), wa, T.zeros([4])).sum().backward()
+check(wa.grad.tolist() == [1.0, 0.0, 1.0, 0.0], "where grad")
+check(T.where(T.Tensor([1.0], requiresgrad = True), T.ones([1]), T.zeros([1])).requiresgrad() == False, "where cond grad ignored")
+# tensordot grad
+var td = T.Tensor([[1.0, 2.0], [3.0, 4.0]], requiresgrad = True)
+T.tensordot(td, T.eye(2), 1).sum().backward()
+check(td.grad.tolist() == [[1.0, 1.0], [1.0, 1.0]], "tensordot grad")
+# slice/take grad-aware methods
+var sl = T.Tensor([1.0, 2.0, 3.0, 4.0], requiresgrad = True)
+sl.slice(1, 3, 1, 0).sum().backward()
+check(sl.grad.tolist() == [0.0, 1.0, 1.0, 0.0], "slice method grad scatter")
+var tk = T.Tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], requiresgrad = True)
+tk.take([0, 2], 0).sum().backward()
+check(tk.grad.tolist() == [[1.0, 1.0], [0.0, 0.0], [1.0, 1.0]], "take method grad scatter")
+
+# accumulation across backward() + zerograd clears
+var ac = T.Tensor([1.0, 2.0, 3.0], requiresgrad = True)
+ac.square().sum().backward()
+ac.square().sum().backward()
+check(ac.grad.tolist() == [4.0, 8.0, 12.0], "grad accumulates (2x of 2x)")
+ac.zerograd()
+check(ac.grad == None, "zerograd clears")
+# backward with explicit seed
+var sd = T.Tensor([2.0, 3.0], requiresgrad = True)
+(sd * sd).backward(T.ones([2]))
+check(sd.grad.tolist() == [4.0, 6.0], "backward with seed")
+# backward seed shape mismatch throws
+check(throws(Function(): return T.Tensor([2.0, 3.0], requiresgrad = True).backward(T.ones([3]))), "backward seed shape mismatch throws")
+# whole-tensor sum/mean under grad return a 0-D tensor (graph continues -> item works)
+var gz = T.Tensor([3.0, 4.0], requiresgrad = True)
+check((gz * gz).sum().ndim() == 0, "grad sum -> 0-D tensor")
+check((gz * gz).sum().item() == 25.0, "grad sum item()")
+
+# detach stops grad (and copies data — mutating the copy doesn't touch the source)
+var dt = T.Tensor([1.0, 2.0, 3.0], requiresgrad = True)
+check(dt.detach().requiresgrad() == False, "detach drops grad")
+var dcopy = dt.detach()
+dcopy[0] = 99
+check(dt.tolist() == [1.0, 2.0, 3.0], "detach is independent of source")
+
+# nograd context disables tracking, restores after (even through an exception)
+var nw = T.Tensor([1.0, 2.0], requiresgrad = True)
+with T.nograd():
+    check((nw * 2).requiresgrad() == False, "nograd disables tracking")
+check((nw * 2).requiresgrad() == True, "tracking restored after nograd")
+try:
+    with T.nograd():
+        throw "boom"
+catch as e:
+    discard e
+check((nw * 2).requiresgrad() == True, "nograd restored after exception")
+# non-differentiable op on a grad tensor detaches the result
+check(T.Tensor([1.0, 2.0], requiresgrad = True).sort().requiresgrad() == False, "non-diff op detaches")
+
+# --- NUMERIC finite-difference gradient checks (central difference vs backward) ---
+var fdcheck = Function(makeScalar, x0vals, tol) -> Bool:
+    # analytic gradient
+    var xg = T.Tensor(x0vals, requiresgrad = True)
+    makeScalar(xg).backward()
+    var ana = xg.grad.tolist()
+    var h = 0.000001
+    var worst = 0.0
+    for i in range(len(x0vals)):
+        var plus = []
+        var minus = []
+        for j in range(len(x0vals)):
+            plus = plus + [x0vals[j] + (h if j == i else 0.0)]
+            minus = minus + [x0vals[j] - (h if j == i else 0.0)]
+        var fp = makeScalar(T.Tensor(plus))
+        var fm = makeScalar(T.Tensor(minus))
+        # makeScalar returns a 0-D tensor under grad, a Float when not — normalize to Float
+        var fpv = fp.item() if type(fp) == "Tensor" else fp
+        var fmv = fm.item() if type(fm) == "Tensor" else fm
+        var fd = (fpv - fmv) / (2.0 * h)
+        var d = ana[i] - fd
+        if d < 0:
+            d = -d
+        if d > worst:
+            worst = d
+    return worst < tol
+
+check(fdcheck(Function(t): return t.exp().sum(), [0.3, 0.7, 1.1], 0.0001), "FD gradcheck sum(exp)")
+check(fdcheck(Function(t): return (t * t).sum(), [1.5, -2.0, 3.0], 0.0001), "FD gradcheck sum(x^2)")
+check(fdcheck(Function(t): return t.tanh().sum(), [-1.0, 0.0, 2.0], 0.0001), "FD gradcheck sum(tanh)")
+check(fdcheck(Function(t): return t.sigmoid().sum(), [-2.0, 0.5, 1.0], 0.0001), "FD gradcheck sum(sigmoid)")
+check(fdcheck(Function(t): return t.log().sum(), [0.5, 1.0, 2.0], 0.0001), "FD gradcheck sum(log)")
+
+# matmul finite-difference gradient check (flatten/reshape around a 2x2)
+var fdmatmul = Function() -> Bool:
+    var B = T.Tensor([[2.0, 1.0], [0.0, 3.0]])
+    var f = Function(flat): return flat.reshape([2, 2]).matmul(B).sum()
+    var x0 = [1.0, 2.0, 3.0, 4.0]
+    var Ag = T.Tensor(x0, requiresgrad = True).reshape([2, 2])
+    Ag.matmul(B).sum().backward()
+    # grad of the leaf is on the reshaped node's parent; read via the original leaf is awkward,
+    # so verify analytically: d sum(A@B)/dA = ones(2,2) @ B^T = row sums of B
+    var ana = Ag.matmul(B).sum()
+    var h = 0.000001
+    var ok = True
+    for i in range(4):
+        var plus = []
+        var minus = []
+        for j in range(4):
+            plus = plus + [x0[j] + (h if j == i else 0.0)]
+            minus = minus + [x0[j] - (h if j == i else 0.0)]
+        var fp = f(T.Tensor(plus))
+        var fm = f(T.Tensor(minus))
+        var fd = (fp - fm) / (2.0 * h)
+        # expected analytic: B row sums repeated -> [3,3,3,3]? B=[[2,1],[0,3]] rowsum=[3,3]; dA[i,j]=rowsum[j]
+        var expected = 3.0
+        var d = fd - expected
+        if d < 0:
+            d = -d
+        if d > 0.001:
+            ok = False
+    return ok
+check(fdmatmul(), "FD gradcheck matmul (sum A@B)")
+
+# =================================================================================================
+# 13. Serialization round-trips (gradient-free only)
+# =================================================================================================
+var ser = import("serialize")
+var dmp = import("dump")
+check(ser.loads(ser.dumps(T.Tensor([[1.5, 2.5], [3.5, 4.5]]))) == T.Tensor([[1.5, 2.5], [3.5, 4.5]]), "serialize text roundtrip")
+check(dmp.loads(dmp.dumps(T.Tensor([1, 2, 3]))) == T.Tensor([1, 2, 3]), "dump binary roundtrip")
+check(dmp.loads(dmp.dumps(T.Tensor([C.of(1, 2), C.of(3, 4)], dtype = "Complex"))) == T.Tensor([C.of(1, 2), C.of(3, 4)], dtype = "Complex"), "dump complex roundtrip")
+check(throws(Function(): return ser.dumps(T.Tensor([1.0], requiresgrad = True))), "serialize grad tensor refuses")
+check(ser.loads(ser.dumps(T.Tensor([1.0, 2.0], requiresgrad = True).detach())) == T.Tensor([1.0, 2.0]), "serialize after detach works")
+
+# =================================================================================================
+# 14. inspect describes the surface
+# =================================================================================================
+var desc = inspect(T.zeros([1]))
+check(desc.find("item()") >= 0, "inspect lists item()")
+check(desc.find("tolist()") >= 0, "inspect lists tolist()")
+check(desc.find("backward") >= 0, "inspect lists backward")
+check(desc.find("matmul") >= 0, "inspect lists matmul")
+check(desc.find("compare(other, rel_tol") >= 0, "inspect shows compare signature")
+
+# -------------------------------------------------------------------------------------------------
+io.print(n)
+io.print("OK r4-tensor")

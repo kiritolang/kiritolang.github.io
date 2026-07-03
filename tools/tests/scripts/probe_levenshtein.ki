@@ -1,0 +1,80 @@
+# ============================================================ LEVENSHTEIN + FUZZY: unicode, edge, fuzz
+var io = import("io")
+var random = import("random")
+var string = import("string")
+
+# --- metric identities ---
+assert "".levenshtein("") == 0, "empty/empty = 0"
+assert "abc".levenshtein("abc") == 0, "identical = 0"
+assert "".levenshtein("abc") == 3, "empty to len-3 = 3"
+assert "abc".levenshtein("") == 3, "len-3 to empty = 3"
+assert "kitten".levenshtein("sitting") == 3, "classic kitten/sitting = 3"
+assert "flaw".levenshtein("lawn") == 2, "flaw/lawn = 2"
+
+# --- symmetry + triangle inequality (random triples, unicode pool) ---
+var rng = random.Random(20260603)
+var pool = "abAB12 é😀世\t"
+var randstr = Function(maxlen):
+    var n = rng.randint(0, maxlen)
+    var s = ""
+    var i = 0
+    while i < n:
+        s = s + pool[rng.randint(0, len(pool) - 1)]
+        i = i + 1
+    return s
+var t = 0
+while t < 800:
+    var a = randstr(8)
+    var b = randstr(8)
+    var c = randstr(8)
+    var dab = a.levenshtein(b)
+    assert dab == b.levenshtein(a), "fuzz: symmetry"
+    assert dab >= 0, "fuzz: non-negative"
+    assert dab <= max([len(a), len(b)]), "fuzz: bounded by longer length"
+    assert (dab == 0) == (a == b), "fuzz: zero iff equal"
+    assert dab <= a.levenshtein(c) + c.levenshtein(b), "fuzz: triangle inequality"
+    t = t + 1
+
+# --- unicode is code-point based, not byte based ---
+assert "😀".levenshtein("😀") == 0, "same emoji = 0"
+assert "😀".levenshtein("🙂") == 1, "one emoji substitution = 1"
+assert "世界".levenshtein("世") == 1, "drop one CJK char = 1"
+assert "café".levenshtein("cafe") == 1, "accented vs plain = 1"
+assert "a".levenshtein("😀") == 1, "ascii vs emoji = 1 (code points, not bytes)"
+
+# --- the List form: one distance per candidate, in order ---
+assert "cat".levenshtein(["cat", "bat", "cot", "dog"]) == [0, 1, 1, 3], "List form distances"
+assert "x".levenshtein([]) == [], "List form of empty list is empty"
+
+# --- ADVERSARIAL: wrong argument types throw cleanly ---
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+assert throws(Function(): return "abc".levenshtein(5)), "Integer arg throws"
+assert throws(Function(): return "abc".levenshtein(None)), "None arg throws"
+assert throws(Function(): return "abc".levenshtein(["ok", 7, "no"])), "non-String in List throws"
+assert throws(Function(): return "abc".levenshtein({"a": 1})), "Dict arg throws"
+
+# --- string module fuzzy layer ---
+assert string.similarity("abc", "abc") == 1.0, "identical similarity 1.0"
+assert string.similarity("", "") == 1.0, "empty/empty similarity 1.0"
+assert string.similarity("abc", "xyz") == 0.0, "no overlap 0.0"
+assert string.similarity("kitten", "sitting") == 1.0 - 3.0 / 7, "ratio"
+# List form
+var sims = string.similarity("abc", ["abc", "abd", "xyz"])
+assert len(sims) == 3 and sims[0] == 1.0 and sims[2] == 0.0, "similarity List form"
+assert string.closest("swft", ["swift", "java", "ruby"]) == "swift", "closest typo-fix"
+assert string.closest("zzz", []) == None, "closest of empty is None"
+var fm = string.fuzzymatch("ruby", ["ruby", "rust", "ruler", "java"], cutoff = 0.5)
+assert fm[0][0] == "ruby" and fm[0][1] == 1.0, "fuzzymatch exact first, score 1.0"
+assert string.fuzzymatch("zzzzz", ["swift", "java"], cutoff = 0.9) == [], "high cutoff filters all"
+
+# --- large input does not blow up (long strings) ---
+var big1 = "a" * 300
+var big2 = "a" * 250 + "b" * 50
+assert big1.levenshtein(big2) == 50, "300 vs 250a+50b = 50 substitutions"
+
+io.print("OK levenshtein")

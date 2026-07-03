@@ -1,0 +1,2 @@
+# The ',' grouping flag is meaningless on a String; per docs, rejected.
+discard format("x", ",")

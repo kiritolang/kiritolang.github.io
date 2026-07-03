@@ -1,0 +1,3 @@
+# name resolution: undefined name inside an f-string expression
+var word = "world"
+discard f"hello {wrod}"

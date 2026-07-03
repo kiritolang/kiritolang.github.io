@@ -1,0 +1,4 @@
+# PARSER: a positional argument supplied after a keyword argument in a call
+var f = Function(a, b):
+    return a
+discard f(a = 1, 2)

@@ -1,0 +1,4 @@
+# Set.remove of a value not present
+var s = Set()
+s.add(1)
+discard s.remove(9)

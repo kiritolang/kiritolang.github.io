@@ -1,0 +1,183 @@
+# ============================================================================
+# random_generators.ki — behavioural coverage for the new `generator=` kwarg
+# on random.Random. Covers the API surface (default kind, kwarg forms, cross-
+# engine independence, serde round-trip preserves engine kind, unknown-name
+# error), and asserts every distribution / method works on BOTH engines.
+# The heavy statistical PRNG-quality tests live in random_prng_quality.ki.
+# ============================================================================
+var io = import("io")
+var random = import("random")
+var serialize = import("serialize")
+var dump = import("dump")
+
+var threw = Function(fn):
+    try:
+        fn()
+    catch as e:
+        return True
+    return False
+
+# ---------------------------------------------------------------------------
+# Default is xoshiro; the kwarg picks Mersenne Twister; aliases work.
+# ---------------------------------------------------------------------------
+assert random.Random(0).generator == "xoshiro", "default generator is xoshiro"
+assert random.Random(0, generator = "xoshiro").generator == "xoshiro", "kwarg xoshiro"
+assert random.Random(0, generator = "xoshiro256").generator == "xoshiro", "alias xoshiro256"
+assert random.Random(0, generator = "mersenne_twister").generator == "mersenne_twister", "kwarg mersenne_twister"
+assert random.Random(0, generator = "mt19937_64").generator == "mersenne_twister", "alias mt19937_64"
+# Positional seed + keyword generator (mixed form).
+var r = random.Random(42, generator = "mersenne_twister")
+assert r.generator == "mersenne_twister", "positional seed + kwarg generator"
+# All-keyword form.
+var r2 = random.Random(seed = 42, generator = "xoshiro")
+assert r2.generator == "xoshiro", "all-kwarg form"
+
+# ---------------------------------------------------------------------------
+# Same seed on same engine → identical stream (both engines are deterministic).
+# ---------------------------------------------------------------------------
+var xa = random.Random(12345)
+var xb = random.Random(12345)
+assert xa.random() == xb.random(), "xoshiro: same seed → same first draw"
+assert xa.randint(0, 1000000) == xb.randint(0, 1000000), "xoshiro: full stream aligned"
+
+var ma = random.Random(12345, generator = "mersenne_twister")
+var mb = random.Random(12345, generator = "mersenne_twister")
+assert ma.random() == mb.random(), "mt: same seed → same first draw"
+assert ma.randint(0, 1000000) == mb.randint(0, 1000000), "mt: full stream aligned"
+
+# ---------------------------------------------------------------------------
+# Different engine → different stream (a same-seed Random on the other engine
+# must NOT match). We test on `random()` — a stream match after 5 draws would
+# be astronomically unlikely (probability ~1e-80).
+# ---------------------------------------------------------------------------
+var x = random.Random(777)
+var m = random.Random(777, generator = "mersenne_twister")
+var xseries = []
+var mseries = []
+var i = 0
+while i < 5:
+    xseries.append(x.random())
+    mseries.append(m.random())
+    i = i + 1
+assert xseries != mseries, "xoshiro stream != mt stream (same seed)"
+
+# ---------------------------------------------------------------------------
+# Every distribution / method works on BOTH engines and produces a value of
+# the right type in the right range.
+# ---------------------------------------------------------------------------
+var check_engine = Function(gen):
+    var rng = random.Random(2024, generator = gen)
+    # scalar draws
+    var u = rng.random()
+    assert type(u) == "Float", gen + ": random -> Float"
+    assert 0.0 <= u and u < 1.0, gen + ": random in [0, 1)"
+    var uu = rng.uniform(10.0, 20.0)
+    assert 10.0 <= uu and uu < 20.0, gen + ": uniform in [a, b)"
+    var ri = rng.randint(1, 100)
+    assert type(ri) == "Integer" and 1 <= ri and ri <= 100, gen + ": randint in [a, b]"
+    var rr = rng.randrange(50)
+    assert 0 <= rr and rr < 50, gen + ": randrange stop"
+    var rr2 = rng.randrange(100, 200)
+    assert 100 <= rr2 and rr2 < 200, gen + ": randrange start,stop"
+    # normal / exponential
+    discard rng.gauss(0.0, 1.0)
+    discard rng.normalvariate(0.0, 1.0)
+    var ev = rng.expovariate(1.5)
+    assert ev >= 0.0, gen + ": expovariate non-negative"
+    # sequence draws
+    var pool = [10, 20, 30, 40, 50]
+    var one = rng.choice(pool)
+    assert one in pool, gen + ": choice returns pool element"
+    var many = rng.choices(pool, k = 20)
+    assert len(many) == 20, gen + ": choices returns k elements"
+    for e in many:
+        assert e in pool, gen + ": choices element in pool"
+    var sam = rng.sample(pool, 3)
+    assert len(sam) == 3, gen + ": sample size"
+    assert len(Set(sam)) == 3, gen + ": sample distinct"
+    for e in sam:
+        assert e in pool, gen + ": sample element in pool"
+    # shuffle
+    var lst = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    var before = lst.copy()
+    rng.shuffle(lst)
+    assert Set(lst) == Set(before), gen + ": shuffle preserves multiset"
+    assert len(lst) == len(before), gen + ": shuffle preserves length"
+    return True
+
+assert check_engine("xoshiro"), "xoshiro full API"
+assert check_engine("mersenne_twister"), "mt full API"
+
+# ---------------------------------------------------------------------------
+# Reseed keeps the same engine kind.
+# ---------------------------------------------------------------------------
+var rx = random.Random(1)
+rx.seed(9999)
+assert rx.generator == "xoshiro", "reseed does not switch engine kind"
+var rm = random.Random(1, generator = "mersenne_twister")
+rm.seed(9999)
+assert rm.generator == "mersenne_twister", "reseed does not switch engine kind"
+
+# ---------------------------------------------------------------------------
+# serialize + dump round-trips preserve the engine kind AND resume the exact
+# stream (a reproducible checkpoint on the SAME engine).
+# ---------------------------------------------------------------------------
+var check_serde = Function(gen):
+    var rng = random.Random(20260703, generator = gen)
+    # advance some
+    discard rng.randint(0, 1000)
+    discard rng.random()
+    discard rng.gauss(0.0, 1.0)
+    # capture next 10 values
+    var expected = []
+    var i2 = 0
+    while i2 < 10:
+        expected.append(rng.randint(0, 1000000000))
+        i2 = i2 + 1
+    # rebuild from the SAME checkpoint via serialize (text) and via dump (binary)
+    var rng_ser = random.Random(0)
+    rng_ser._setstate_(rng._getstate_())
+    assert rng_ser.generator == gen, gen + ": _setstate_ restores engine kind"
+    var rng_dump = dump.loads(dump.dumps(rng))
+    assert rng_dump.generator == gen, gen + ": dump.loads restores engine kind"
+    var rng_txt = serialize.loads(serialize.dumps(rng))
+    assert rng_txt.generator == gen, gen + ": serialize.loads restores engine kind"
+    # NOTE: we already exhausted `rng`; use a fresh checkpoint for a stream match
+    var src = random.Random(20260703, generator = gen)
+    discard src.randint(0, 1000)
+    discard src.random()
+    discard src.gauss(0.0, 1.0)
+    var snap = dump.dumps(src)
+    var got = []
+    var i3 = 0
+    while i3 < 10:
+        got.append(src.randint(0, 1000000000))
+        i3 = i3 + 1
+    var restored = dump.loads(snap)
+    var got2 = []
+    i3 = 0
+    while i3 < 10:
+        got2.append(restored.randint(0, 1000000000))
+        i3 = i3 + 1
+    assert got == got2, gen + ": restored generator resumes the exact stream"
+    return True
+
+assert check_serde("xoshiro"), "xoshiro serde"
+assert check_serde("mersenne_twister"), "mt serde"
+
+# ---------------------------------------------------------------------------
+# Errors and edge cases.
+# ---------------------------------------------------------------------------
+assert threw(Function(): return random.Random(0, generator = "no_such_engine")), "unknown generator throws"
+assert threw(Function(): return random.Random(0, generator = "XOSHIRO")), "case matters (upper 'XOSHIRO' rejected)"
+
+# The generator attribute is read-only — writing to it should not silently
+# succeed. (setAttr on a native class falls through to Object::setAttr, which
+# throws with a clear message.)
+var _try_write = Function():
+    var r_x = random.Random(0)
+    r_x.generator = "mersenne_twister"
+    return r_x.generator
+assert threw(_try_write), "cannot rewrite .generator"
+
+io.print("OK random-generators")

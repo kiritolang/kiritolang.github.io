@@ -1,0 +1,8 @@
+# The north-star program: read an integer, print it followed by its square.
+var io = import("io")
+
+var main = Function():
+    var n = Integer(io.input())
+    io.print(String(n) + String(n * n))
+
+main()

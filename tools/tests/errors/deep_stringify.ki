@@ -1,0 +1,6 @@
+var a = [1]
+var i = 0
+while i < 50000:
+    a = [a]
+    i = i + 1
+String(a)

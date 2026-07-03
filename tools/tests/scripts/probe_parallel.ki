@@ -1,0 +1,269 @@
+# Aggressive pure-Kirito probe of the `parallel` module: every method, argument, and error path of
+# spawn/Task/Queue/Lock/Event/Semaphore/Barrier/cpucount, plus adversarial inputs and cross-VM
+# integration. Deterministic single-VM behaviour is asserted exactly; cross-thread behaviour is
+# asserted on aggregates (never timing/order). Run through `ki` (which provides the dispatcher).
+var io = import("io")
+var parallel = import("parallel")
+
+# --- spawnable workers MUST be module-level (a worker re-evaluates this file with argmain False) ---
+var w_add = Function(a, b = 10):
+    return a + b
+var w_ident = Function(x):
+    return x
+var w_boom = Function():
+    throw "boom"
+var w_recurse = Function(n):
+    return w_recurse(n + 1)
+var w_produce = Function(q, n):
+    var i = 0
+    while i < n:
+        q.put(i)
+        i = i + 1
+    q.close()
+var w_sum_queue = Function(inq, outq):
+    var total = 0
+    var go = True
+    while go:
+        try:
+            total = total + inq.get()
+        catch as e:
+            go = False
+    outq.put(total)
+var w_event_wait = Function(ev, out, id):
+    discard ev.wait()
+    out.put(id)
+var w_barrier = Function(bar, out, id):
+    discard bar.wait()
+    out.put(id)
+
+if argmain:
+    # ===== spawn / join / done: args, kwargs, defaults, value graphs, every scalar type =====
+    assert parallel.spawn(w_add, 5).join() == 15                       # default b = 10
+    assert parallel.spawn(w_add, 5, 6).join() == 11
+    assert parallel.spawn(w_add, b = 1, a = 2).join() == 3             # keyword, any order
+    assert parallel.spawn(w_add, 7, b = 3).join() == 10               # mixed positional + keyword
+    assert parallel.spawn(w_ident, [1, [2, 3], {"k": 4}]).join()[2]["k"] == 4   # nested graph
+    assert parallel.spawn(w_ident, "héllo ✓").join() == "héllo ✓"      # unicode
+    assert parallel.spawn(w_ident, None).join() == None
+    assert parallel.spawn(w_ident, True).join() == True
+    assert parallel.spawn(w_ident, 3.5).join() == 3.5
+    assert parallel.spawn(w_ident, -42).join() == -42
+    assert parallel.spawn(w_ident, {1, 2, 3}).join() == {3, 2, 1}      # set round-trip
+    var t = parallel.spawn(w_ident, 1)
+    discard t.join()
+    assert t.done() == True
+
+    # ===== worker faults are isolated and surfaced by join; the host VM keeps working =====
+    var caught = False
+    try:
+        discard parallel.spawn(w_boom).join()
+    catch as e:
+        caught = True
+    assert caught
+    assert 2 + 2 == 4
+    caught = False
+    try:
+        discard parallel.spawn(w_recurse, 0).join()                   # recursion guard in worker
+    catch as e:
+        caught = True
+    assert caught
+
+    # ===== spawn argument validation =====
+    caught = False
+    try:
+        discard parallel.spawn(len, [1, 2])                           # a native fn is not spawnable
+    catch as e:
+        caught = True
+    assert caught
+    caught = False
+    try:
+        discard parallel.spawn(42)                                    # not a function at all
+    catch as e:
+        caught = True
+    assert caught
+
+    # ===== Queue mechanics, deterministic in one VM =====
+    var q = parallel.Queue()
+    assert q.empty() and q.qsize() == 0
+    q.put(1)
+    q.put("two")
+    q.put([3])
+    assert q.qsize() == 3 and not q.empty()
+    assert q.get() == 1                                                # FIFO order
+    assert q.get() == "two"
+    assert q.get()[0] == 3
+    assert q.empty()
+    caught = False
+    try:
+        discard q.getnowait()                                         # empty, nonblocking
+    catch as e:
+        caught = True
+    assert caught
+    caught = False
+    try:
+        discard q.get(True, 0.02)                                     # empty, timeout
+    catch as e:
+        caught = True
+    assert caught
+
+    var bq = parallel.Queue(2)                                        # bounded
+    bq.put(1)
+    bq.put(2)
+    assert bq.full()
+    caught = False
+    try:
+        bq.putnowait(3)                                              # full, nonblocking
+    catch as e:
+        caught = True
+    assert caught
+    assert bq.get() == 1
+    bq.put(3)
+    assert bq.get() == 2 and bq.get() == 3
+
+    var cq = parallel.Queue()                                         # close semantics
+    cq.put(9)
+    cq.close()
+    assert cq.get() == 9                                              # drains remaining
+    caught = False
+    try:
+        discard cq.get()                                            # closed + drained
+    catch as e:
+        caught = True
+    assert caught
+    caught = False
+    try:
+        cq.put(1)                                                   # put on closed
+    catch as e:
+        caught = True
+    assert caught
+
+    # ===== cross-VM Queue identity: a worker produces, main consumes; close ends the loop =====
+    var pq = parallel.Queue()
+    var pt = parallel.spawn(w_produce, pq, 10)
+    var got = []
+    var go = True
+    while go:
+        try:
+            got.append(pq.get())
+        catch as e:
+            go = False
+    discard pt.join()
+    got.sort()
+    assert got == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+    # a Queue passed THROUGH spawn references the same queue (request/response)
+    var inq = parallel.Queue()
+    var outq = parallel.Queue()
+    var st = parallel.spawn(w_sum_queue, inq, outq)
+    var k = 0
+    while k < 5:
+        inq.put(k * 2)
+        k = k + 1
+    inq.close()
+    assert outq.get() == 20                                           # 0+2+4+6+8
+    discard st.join()
+
+    # ===== non-serializable values are rejected at the queue boundary =====
+    var net = import("net")
+    var sock = net.Socket()
+    caught = False
+    try:
+        parallel.Queue().put(sock)
+    catch as e:
+        caught = True
+    assert caught
+    sock.close()
+
+    # ===== Lock: deterministic single-VM behaviour =====
+    var lock = parallel.Lock()
+    assert lock.locked() == False
+    assert lock.acquire() == True
+    assert lock.locked() == True
+    caught = False
+    try:
+        discard lock.acquire(False)                                   # same thread -> not reentrant
+    catch as e:
+        caught = True
+    assert caught
+    lock.release()
+    assert lock.locked() == False
+    caught = False
+    try:
+        lock.release()                                              # release of unlocked lock
+    catch as e:
+        caught = True
+    assert caught
+    with lock:                                                       # context manager
+        assert lock.locked() == True
+    assert lock.locked() == False
+
+    # ===== Event =====
+    var ev = parallel.Event()
+    assert ev.isset() == False
+    assert ev.wait(0.02) == False                                    # times out while unset
+    ev.set()
+    assert ev.isset() == True
+    assert ev.wait() == True
+    ev.clear()
+    assert ev.isset() == False
+    assert ev.wait(0.02) == False
+    # broadcast to workers (set is sticky, so no race)
+    var bev = parallel.Event()
+    var bout = parallel.Queue()
+    var e = 0
+    while e < 4:
+        discard parallel.spawn(w_event_wait, bev, bout, e)
+        e = e + 1
+    bev.set()
+    var ecount = 0
+    while ecount < 4:
+        discard bout.get()
+        ecount = ecount + 1
+    assert ecount == 4
+
+    # ===== Semaphore =====
+    var sem = parallel.Semaphore(2)
+    assert sem.acquire() == True
+    assert sem.acquire() == True
+    assert sem.acquire(False) == False                               # exhausted
+    sem.release()
+    assert sem.acquire() == True
+    var sem1 = parallel.Semaphore(1)                                  # context manager
+    with sem1:
+        assert sem1.acquire(False) == False
+    assert sem1.acquire(False) == True
+
+    # ===== Barrier =====
+    var b1 = parallel.Barrier(1)
+    assert b1.parties() == 1
+    assert b1.wait() == 0                                            # single party releases at once
+    var b2 = parallel.Barrier(3)
+    assert b2.parties() == 3 and b2.nwaiting() == 0
+    caught = False
+    try:
+        discard b2.wait(0.02)                                        # under-filled -> broken on timeout
+    catch as e:
+        caught = True
+    assert caught
+    var bar = parallel.Barrier(4)                                    # full rendezvous across workers
+    var brq = parallel.Queue()
+    var bi = 0
+    while bi < 4:
+        discard parallel.spawn(w_barrier, bar, brq, bi)
+        bi = bi + 1
+    var idxs = []
+    while len(idxs) < 4:
+        idxs.append(brq.get())
+    idxs.sort()
+    assert idxs == [0, 1, 2, 3]
+
+    # ===== cpucount + spawn churn (no leaks; correct results) =====
+    assert parallel.cpucount() >= 1
+    var total = 0
+    var c = 0
+    while c < 40:
+        total = total + parallel.spawn(w_add, c, 0).join()
+        c = c + 1
+    assert total == 780                                              # sum 0..39
+
+    io.print("OK parallel")

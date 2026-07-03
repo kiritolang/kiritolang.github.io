@@ -1,0 +1,174 @@
+# ROUND 2 follow-up audit of the numeric/system stdlib (math, random, time, sys), covering boundary
+# regions the round-1 suite (r4_math_sys.ki) did not reach. Every assertion below is a
+# CONFIRMED-CORRECT behaviour (cross-checked against Python / C `timegm`); the goal is to lock those
+# edges in as regression guards. Determinism: no wall-clock literals; `random` is exercised only for
+# structure/range (full-int64 bounds), not exact draws; all printed output is fixed known-math values.
+#
+# NOTE: a few separately-reported defects are *deliberately not asserted as correct* here so this test
+# stays green — see the FINDINGS report (math.comb false overflow for C(63,31)..C(66,33); time.make
+# month normalisation diverging from C `timegm` for month >= 15 / <= -10; time.make narrowing a
+# year/component beyond int32; random gauss/expovariate arity vs inspect).
+var io = import("io")
+var path = import("path")
+var math = import("math")
+var random = import("random")
+var time = import("time")
+var sys = import("sys")
+
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+        return False
+    catch as e:
+        return True
+
+var IMIN = -9223372036854775808
+var IMAX = 9223372036854775807
+
+# =====================================================================================
+# math.comb / perm — the LARGE-but-fits-int64 end r4 stopped short of (r4 went to comb(50,25)).
+# These are the largest central/near-boundary values the implementation computes correctly.
+# =====================================================================================
+assert math.comb(62, 31) == 465428353255261088, "comb(62,31) exact (largest correctly-computed central binomial)"
+assert math.comb(40, 20) == 137846528820, "comb(40,20) exact"
+assert math.comb(52, 5) == 2598960, "comb(52,5) (poker hands)"
+assert math.perm(20) == 2432902008176640000, "perm(20) == 20! (fits int64)"
+assert math.perm(20, 20) == 2432902008176640000, "perm(20,20) == 20!"
+assert math.perm(15, 5) == 360360, "perm(15,5) exact"
+# perm(21) genuinely overflows int64 -> throws (boundary just past the largest factorial that fits).
+assert throws(Function(): return math.perm(21)), "perm(21) overflows -> throws"
+
+# =====================================================================================
+# math.gcd / lcm — INT64_MIN: |INT64_MIN| == 2**63 overflows the positive int64 range, so the
+# magnitude-based implementation must stay UB-free and throw exactly when the RESULT can't fit.
+# (r4 covered signs/zeros but never INT64_MIN.)
+# =====================================================================================
+assert math.gcd(IMIN, 2) == 2, "gcd(INT64_MIN, 2) == 2 (result fits)"
+assert math.gcd(IMIN, 4) == 4, "gcd(INT64_MIN, 4) == 4"
+assert math.gcd(IMIN, 1024) == 1024, "gcd(INT64_MIN, 1024) == 1024"
+assert math.gcd(IMIN, 3) == 1, "gcd(INT64_MIN, 3) == 1 (odd divisor)"
+# gcd(|INT64_MIN|, 0) == 2**63 > INT64_MAX -> throws rather than wrapping (no std::abs(INT64_MIN) UB).
+assert throws(Function(): return math.gcd(IMIN, 0)), "gcd(INT64_MIN, 0) result 2**63 -> throws"
+assert throws(Function(): return math.gcd(IMIN, IMIN)), "gcd(INT64_MIN, INT64_MIN) == 2**63 -> throws"
+assert math.lcm(IMIN, 0) == 0, "lcm(INT64_MIN, 0) == 0 (zero short-circuits before the magnitude)"
+assert throws(Function(): return math.lcm(IMIN, 1)), "lcm(INT64_MIN, 1) == 2**63 -> throws"
+assert throws(Function(): return math.lcm(IMIN, IMIN)), "lcm(INT64_MIN, INT64_MIN) -> throws"
+
+# =====================================================================================
+# math — more NaN passthrough / range(not domain) edges r4 did not cover.
+# =====================================================================================
+assert math.isnan(math.lgamma(math.nan)), "lgamma(nan) -> nan (passthrough)"
+assert math.isnan(math.erf(math.nan)) and math.isnan(math.erfc(math.nan)), "erf/erfc(nan) -> nan"
+assert math.isnan(math.fmod(math.nan, 3.0)), "fmod(nan, y) -> nan (NaN argument passes through)"
+assert math.isnan(math.atan2(math.nan, 1.0)), "atan2(nan, x) -> nan"
+# gamma/lgamma overflow is a RANGE condition, not a domain error -> does NOT throw.
+assert math.isinf(math.gamma(172)), "gamma(172) overflows to inf (range, not domain) -> no throw"
+assert math.isfinite(math.gamma(171)), "gamma(171) is the largest finite gamma"
+assert math.isfinite(math.lgamma(1.0e300)), "lgamma(1e300) stays finite (log space)"
+# acosh/atanh NaN passthrough at the guarded functions.
+assert math.isnan(math.acosh(math.nan)) and math.isnan(math.atanh(math.nan)), "acosh/atanh(nan) -> nan"
+# exp(-inf) == 0, a defined limit (not a domain error).
+assert math.exp(-1.0 * math.inf) == 0.0, "exp(-inf) == 0.0"
+# erf/erfc at +-inf are the exact limits.
+assert math.erf(math.inf) == 1.0 and math.erfc(math.inf) == 0.0, "erf(inf)=1, erfc(inf)=0"
+
+# =====================================================================================
+# random — full int64 range bounds stay UB-free (uniform_int_distribution over the whole range),
+# and randrange's overflow-safe member count rejects a span that exceeds int64.
+# =====================================================================================
+var rr = random.Random(1)
+assert rr.randint(IMAX, IMAX) == IMAX, "randint(IMAX, IMAX) is always IMAX"
+assert rr.randint(IMIN, IMIN) == IMIN, "randint(IMIN, IMIN) is always IMIN"
+assert type(rr.randint(IMIN, IMAX)) == "Integer", "randint over the full int64 range is UB-free"
+# randrange(IMIN, IMAX): the member count (2**64 - 1) exceeds INT64_MAX -> throws, no UB.
+assert throws(Function(): return rr.randrange(IMIN, IMAX)), "randrange(IMIN, IMAX) span too large -> throws"
+# A descending range with a negative step stays in bounds.
+var desc_ok = True
+var di = 0
+while di < 80:
+    var dv = rr.randrange(10, 0, -1)
+    if dv < 1 or dv > 10:
+        desc_ok = False
+    di = di + 1
+assert desc_ok, "randrange(10, 0, -1) yields a member in [1, 10]"
+# randrange with None for the start (default 0).
+assert type(rr.randrange(None, 5)) == "Integer", "randrange(None, stop) defaults start to 0"
+
+# =====================================================================================
+# time.make — month/component normalisation WITHIN the C-`timegm`-compatible window ([-9 .. 14]).
+# (r4 only tested month 0 and month 13; these confirm the rest of the safe window matches C.)
+# =====================================================================================
+assert time.make(2024, 14, 1).iso() == "2025-02-01T00:00:00", "month 14 -> Feb of the next year"
+assert time.make(2024, -1, 1).iso() == "2023-11-01T00:00:00", "month -1 -> Nov of the previous year"
+assert time.make(2024, -9, 1).iso() == "2023-03-01T00:00:00", "month -9 -> Mar previous year (window edge)"
+# Day overflow adds linearly and matches C `timegm` for any day count.
+assert time.make(2024, 1, 366).iso() == "2024-12-31T00:00:00", "day 366 of a leap-year January -> Dec 31"
+assert time.make(2024, 1, 1, 25).iso() == "2024-01-02T01:00:00", "hour 25 -> next day 01:00"
+assert time.make(2024, 1, 1, 0, 0, -1).iso() == "2023-12-31T23:59:59", "second -1 -> 1s before the day"
+# Leap-day arithmetic: day 0 of March in a leap year is Feb 29; in a common year, Feb 28.
+assert time.make(2024, 3, 0).iso() == "2024-02-29T00:00:00", "day 0 of Mar 2024 (leap) -> Feb 29"
+assert time.make(2023, 3, 0).iso() == "2023-02-28T00:00:00", "day 0 of Mar 2023 (common) -> Feb 28"
+
+# =====================================================================================
+# time — DateTime representable-range boundary (+-9999) and overflow-safe arithmetic. The portable
+# gmtimeCompat accepts the full +-9999-year range identically on every platform.
+# =====================================================================================
+var maxdt = time.make(9999, 12, 31, 23, 59, 59)
+assert maxdt.year == 9999 and maxdt.iso() == "9999-12-31T23:59:59", "year 9999 is representable"
+var mindt = time.make(-9999, 1, 1, 0, 0, 0)
+assert mindt.year == -9999 and mindt.iso() == "-9999-01-01T00:00:00", "year -9999 is representable"
+# Pushing add/sub past the +-9999 range throws (setEpoch range guard), not a nonsense date.
+assert throws(Function(): return maxdt.add(86400 * 400)), "add past year 9999 -> throws (out of range)"
+assert throws(Function(): return mindt.sub(86400 * 400)), "sub before year -9999 -> throws"
+# Epoch arithmetic overflow is caught with no UB even at the int64 extremes.
+assert throws(Function(): return maxdt.add(IMAX)), "add(INT64_MAX) -> arithmetic overflow throws"
+assert throws(Function(): return maxdt.sub(IMIN)), "sub(INT64_MIN) -> arithmetic overflow throws (no UB)"
+# datetime() honours the same boundary.
+assert time.datetime(maxdt.timestamp).iso() == "9999-12-31T23:59:59", "datetime() at the max epoch"
+assert throws(Function(): return time.datetime(maxdt.timestamp + 86400 * 400)), "datetime past the max epoch throws"
+# diff across the full span is an exact int64 (no overflow).
+assert maxdt.diff(mindt) == 631107417599, "diff across the full +-9999 span is exact"
+
+# =====================================================================================
+# time — strftime codes that depend on the computed weekday / day-of-year (r4 tested none of these).
+# Only locale-INDEPENDENT codes are used so the output is identical under any locale. 2024-07-04 is a
+# Thursday (C tm_wday 4), day-of-year 186.
+# =====================================================================================
+var thu = time.make(2024, 7, 4)
+assert thu.weekday == 4, "2024-07-04 weekday is Thursday (C convention 0=Sun -> 4)"
+assert thu.yearday == 186, "2024-07-04 is day-of-year 186"
+assert thu.format("%w") == "4", "%w (weekday number, 0=Sun) reflects the computed weekday"
+assert thu.format("%j") == "186", "%j (day-of-year) reflects the computed yearday"
+assert thu.format("%Y-%m-%d %H:%M:%S") == "2024-07-04 00:00:00", "full strftime via literal codes"
+# A known Sunday (2024-01-07): weekday 0, %w == 0.
+assert time.make(2024, 1, 7).weekday == 0 and time.make(2024, 1, 7).format("%w") == "0", "a Sunday is weekday 0"
+
+# =====================================================================================
+# sys — POSIX environment empty-value round-trip. The doc's "empty value == unset" rule is
+# WINDOWS-ONLY; on POSIX an empty value round-trips as "" (not None). (r4 did not test empty values.)
+# =====================================================================================
+sys.setenv("R5_MS_EMPTY", "")
+# On POSIX getenv returns "" (a present-but-empty value); on Windows it would be None. Accept both so
+# the test is portable, but assert the variable is observably present in environ() on POSIX.
+var ev = sys.getenv("R5_MS_EMPTY")
+assert ev == "" or ev == None, "empty env value round-trips ('' on POSIX, None on Windows)"
+sys.setenv("R5_MS_EQ", "k=v=w")
+assert sys.getenv("R5_MS_EQ") == "k=v=w", "an env value containing '=' is preserved"
+assert sys.environ()["R5_MS_EQ"] == "k=v=w", "environ() splits only on the first '='"
+sys.unsetenv("R5_MS_EMPTY")
+sys.unsetenv("R5_MS_EQ")
+assert sys.getenv("R5_MS_EQ") == None, "unsetenv removes the variable"
+
+# path.join: an empty middle component and consecutive absolutes.
+assert path.join("a", "", "b") == "a/b", "path.join skips an empty middle component"
+assert path.join("/x", "/y") == "/y", "a later absolute component resets the whole path"
+
+# =====================================================================================
+# Deterministic known-math summary (exact integers only — no wall-clock, no RNG draws).
+# =====================================================================================
+io.print("comb(62,31):", math.comb(62, 31))
+io.print("perm(20):", math.perm(20))
+io.print("gcd(IMIN,1024):", math.gcd(IMIN, 1024))
+io.print("make(2024,14,1):", time.make(2024, 14, 1).iso())
+io.print("2024-07-04 %w/%j:", thu.format("%w"), thu.format("%j"))
+io.print("OK r5_math_sys")

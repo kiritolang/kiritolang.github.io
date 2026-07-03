@@ -1,0 +1,306 @@
+# tabular (dataframe-style) Series/DataFrame, exercised from Kirito: construction, CSV round-trip, label/position
+# indexing, boolean masking, element-wise ops, aggregations, group-by, sorting, joins, concat,
+# missing-data handling — plus randomized fuzz against oracles computed the long way in plain Kirito.
+var io = import("io")
+var pd = import("tabular")
+var random = import("random")
+
+# ----------------------------------------------------------------- Series basics
+var s = pd.Series([10, 20, 30, 40])
+assert len(s) == 4, "series len"
+assert s.tolist() == [10, 20, 30, 40], "series values"
+assert s.sum() == 100 and s.mean() == 25.0, "series sum/mean"
+assert s.min() == 10 and s.max() == 40, "series min/max"
+assert s.median() == 25.0, "series median (even)"
+assert pd.Series([3, 1, 2]).median() == 2, "series median (odd)"
+assert s.count() == 4, "series count"
+assert pd.Series(["a", None, "b", None]).count() == 2, "count is a non-null tally of any type"
+assert pd.Series([1, None, 3]).count() == 2, "count skips missing numerics"
+assert (s + 1).tolist() == [11, 21, 31, 41], "series scalar add"
+assert (s * 2).tolist() == [20, 40, 60, 80], "series scalar mul"
+assert (s / 10).tolist() == [1.0, 2.0, 3.0, 4.0], "series scalar div"
+var s2 = pd.Series([1, 2, 3, 4])
+assert (s + s2).tolist() == [11, 22, 33, 44], "series-series add"
+# comparisons -> boolean Series
+assert (s > 20).tolist() == [False, False, True, True], "series gt"
+assert (s.eq(20)).tolist() == [False, True, False, False], "series eq"
+assert s.isin([10, 30]).tolist() == [True, False, True, False], "series isin"
+# label vs position indexing
+var sl = pd.Series([100, 200, 300], index=["a", "b", "c"])
+assert sl["b"] == 200, "series label index"
+assert sl[0] == 100, "series positional index"
+# apply / unique / valuecounts / sortvalues
+assert pd.Series([1, 2, 3]).apply(Function(x): return x * x).tolist() == [1, 4, 9], "series apply"
+assert pd.Series([1, 1, 2, 3, 3, 3]).unique() == [1, 2, 3], "series unique"
+assert pd.Series([1, 1, 2, 3, 3, 3]).nunique() == 3, "series nunique"
+var vc = pd.Series(["a", "b", "a", "a", "b"]).valuecounts()
+assert vc.tolist() == [3, 2] and vc.index == ["a", "b"], "series valuecounts"
+assert pd.Series([3, 1, 2]).sortvalues().tolist() == [1, 2, 3], "series sortvalues asc"
+assert pd.Series([3, 1, 2]).sortvalues(ascending=False).tolist() == [3, 2, 1], "series sortvalues desc"
+# std / variance vs an oracle
+var sv = pd.Series([2, 4, 4, 4, 5, 5, 7, 9])
+assert sv.mean() == 5.0, "std-data mean"
+assert sv.variance() == 32.0 / 7, "sample variance"
+assert sv.std() == (32.0 / 7) ** 0.5, "sample std"
+# missing data
+var sm = pd.Series([1, None, 3, None, 5])
+assert sm.dropna().tolist() == [1, 3, 5], "series dropna"
+assert sm.fillna(0).tolist() == [1, 0, 3, 0, 5], "series fillna"
+assert sm.sum() == 9 and sm.count() == 3, "series agg skips missing"
+assert sm.mean() == 3.0, "series mean skips missing"
+
+# ----------------------------------------------------------------- DataFrame construction
+var df = pd.DataFrame([["Ada", 36, "math"], ["Alan", 41, "cs"], ["Grace", 85, "navy"], ["Edsger", 60, "cs"]], columns=["name", "age", "dept"])
+assert df.columns == ["name", "age", "dept"], "df columns ordered"
+assert df.shape() == [4, 3], "df shape"
+assert len(df) == 4, "df len"
+# from list of row-Dicts (column union)
+var dfd = pd.DataFrame([{"a": 1, "b": 2}, {"a": 3, "c": 4}])
+assert "a" in dfd.columns and "b" in dfd.columns and "c" in dfd.columns, "df from row dicts: column union"
+assert dfd["a"].tolist() == [1, 3] and dfd["c"].tolist() == [None, 4], "df from row dicts: missing filled"
+
+# ----------------------------------------------------------------- CSV round-trip + type inference
+var csvtext = "name,age,score\nAda,36,9.5\nAlan,41,8.0\nGrace,85,7.5"
+var dc = pd.readcsv(csvtext)
+assert dc.columns == ["name", "age", "score"], "readcsv columns"
+assert type(dc["age"][0]) == "Integer", "readcsv infers Integer"
+assert type(dc["score"][0]) == "Float", "readcsv infers Float"
+assert type(dc["name"][0]) == "String", "readcsv keeps String"
+# tocsv reproduces the header + rows
+var lines = dc.tocsv().split("\n")
+assert lines[0] == "name,age,score" and lines[1] == "Ada,36,9.5", "tocsv round-trip"
+
+# ----------------------------------------------------------------- selection / indexing
+assert df["age"].tolist() == [36, 41, 85, 60], "column selection -> Series"
+assert df[["name", "dept"]].columns == ["name", "dept"], "column subset -> DataFrame"
+assert df.iloc[1]["name"] == "Alan", "iloc row by position"
+assert df.iloc[[0, 2]]["name"].tolist() == ["Ada", "Grace"], "iloc rows by list"
+assert df.loc[2]["name"] == "Grace", "loc row by label"
+# boolean masking
+assert df[df["age"] > 50]["name"].tolist() == ["Grace", "Edsger"], "boolean mask"
+assert df[df["dept"].eq("cs")]["name"].tolist() == ["Alan", "Edsger"], "mask by equality"
+# new / derived column, assign, drop, rename
+df["senior"] = df["age"] > 50
+assert df["senior"].tolist() == [False, False, True, True], "derived boolean column"
+assert df.drop(["senior"]).columns == ["name", "age", "dept"], "drop column"
+assert df.rename({"age": "years"}).columns == ["name", "years", "dept", "senior"], "rename column"
+
+# ----------------------------------------------------------------- DataFrame aggregations
+assert df["age"].sum() == 222, "df column sum"
+var means = df.mean()                  # numeric columns only
+assert means["age"] == 55.5, "df.mean age"
+assert "name" not in means.index, "df.mean excludes non-numeric"
+var desc = df.describe()
+assert desc["age"].tolist()[0] == 4, "describe count"        # count is first stat
+assert desc.index == ["count", "mean", "std", "min", "median", "max"], "describe stat rows"
+
+# ----------------------------------------------------------------- sorting
+assert df.sortvalues("age")["name"].tolist() == ["Ada", "Alan", "Edsger", "Grace"], "sortvalues asc"
+assert df.sortvalues("age", ascending=False)["name"].tolist() == ["Grace", "Edsger", "Alan", "Ada"], "sortvalues desc"
+
+# ----------------------------------------------------------------- group-by
+var g = df.groupby("dept")
+var gs = g.sum()
+assert gs.index == ["math", "cs", "navy"], "group keys in first-seen order"
+assert gs["age"].tolist() == [36, 101, 85], "group sum age"
+assert "name" not in gs.columns, "group sum drops non-numeric column"
+assert g.mean()["age"].tolist() == [36.0, 50.5, 85.0], "group mean age"
+assert g.size().tolist() == [1, 2, 1], "group size"
+assert g.count()["age"].tolist() == [1, 2, 1], "group count"
+assert g.agg({"age": "max"})["age"].tolist() == [36, 60, 85], "group agg max"
+assert g.max()["age"].tolist() == [36, 60, 85], "group max"
+
+# ----------------------------------------------------------------- joins
+var left = pd.DataFrame([[1, "Ada"], [2, "Alan"], [3, "Grace"]], columns=["id", "name"])
+var right = pd.DataFrame([[1, "math"], [2, "cs"], [4, "navy"]], columns=["id", "dept"])
+var inner = pd.merge(left, right, on="id")
+assert inner.shape() == [2, 3] and inner["name"].tolist() == ["Ada", "Alan"], "inner merge"
+var lmerge = pd.merge(left, right, on="id", how="left")
+assert lmerge.shape() == [3, 3] and lmerge["dept"].tolist() == ["math", "cs", None], "left merge fills None"
+var omerge = pd.merge(left, right, on="id", how="outer")
+assert omerge.shape() == [4, 3], "outer merge keeps unmatched both sides"
+
+# ----------------------------------------------------------------- concat
+var ca = pd.DataFrame([[1, 2]], columns=["x", "y"])
+var cb = pd.DataFrame([[3, 4], [5, 6]], columns=["x", "y"])
+var cc = pd.concat([ca, cb])
+assert cc.shape() == [3, 2] and cc["x"].tolist() == [1, 3, 5], "concat stacks rows"
+
+# ----------------------------------------------------------------- missing data on a frame
+var dfn = pd.readcsv("a,b,c\n1,,3\n4,5,6\n,8,9")
+assert len(dfn.dropna()) == 1, "df dropna keeps complete rows"
+assert dfn.fillna(0)["a"].tolist() == [1, 4, 0], "df fillna"
+
+# ================================================================= FUZZ vs hand-computed oracles
+var rng = random.Random(424242)
+
+# fuzz #1: group-by sum/mean/count match a manual oracle over random (key, value) data
+var trial = 0
+while trial < 300:
+    var n = rng.randint(1, 30)
+    var keys = []
+    var vals = []
+    var i = 0
+    while i < n:
+        keys.append("k" + String(rng.randint(0, 3)))
+        vals.append(rng.randint(0, 100))
+        i = i + 1
+    var fdf = pd.DataFrame({"k": keys, "v": vals}, columns=["k", "v"])
+    var grp = fdf.groupby("k")
+    var gsum = grp.sum()
+    # oracle
+    var oracle = {}
+    var ocount = {}
+    i = 0
+    while i < n:
+        oracle[keys[i]] = oracle.get(keys[i], 0) + vals[i]
+        ocount[keys[i]] = ocount.get(keys[i], 0) + 1
+        i = i + 1
+    var ki = 0
+    while ki < len(gsum.index):
+        var key = gsum.index[ki]
+        assert gsum["v"][ki] == oracle[key], "fuzz groupby sum matches oracle"
+        ki = ki + 1
+    var gcount = grp.count()
+    ki = 0
+    while ki < len(gcount.index):
+        assert gcount["v"][ki] == ocount[gcount.index[ki]], "fuzz groupby count matches oracle"
+        ki = ki + 1
+    trial = trial + 1
+
+# fuzz #2: Series aggregations match the long-way computation
+trial = 0
+while trial < 300:
+    var m = rng.randint(1, 40)
+    var data = []
+    var j = 0
+    while j < m:
+        data.append(rng.randint(-50, 50))
+        j = j + 1
+    var ser = pd.Series(data)
+    var total = 0
+    var mn = data[0]
+    var mx = data[0]
+    for v in data:
+        total = total + v
+        if v < mn:
+            mn = v
+        if v > mx:
+            mx = v
+    assert ser.sum() == total, "fuzz series sum"
+    assert ser.min() == mn and ser.max() == mx, "fuzz series min/max"
+    assert ser.mean() == total / m, "fuzz series mean"
+    assert ser.sortvalues().tolist() == sorted(data), "fuzz series sortvalues == sorted"
+    trial = trial + 1
+
+# fuzz #3: boolean masking selects exactly the rows a manual filter would
+trial = 0
+while trial < 300:
+    var p = rng.randint(1, 25)
+    var ids = []
+    var ages = []
+    var k = 0
+    while k < p:
+        ids.append(k)
+        ages.append(rng.randint(0, 100))
+        k = k + 1
+    var mdf = pd.DataFrame({"id": ids, "age": ages}, columns=["id", "age"])
+    var threshold = rng.randint(0, 100)
+    var masked = mdf[mdf["age"] > threshold]["id"].tolist()
+    var expected = []
+    k = 0
+    while k < p:
+        if ages[k] > threshold:
+            expected.append(ids[k])
+        k = k + 1
+    assert masked == expected, "fuzz boolean mask matches manual filter"
+    trial = trial + 1
+
+# ================================================================= EDGE CASES
+# empty Series: aggregations degrade gracefully (sum 0, mean/min/max/median None, count 0)
+var empty = pd.Series([])
+assert len(empty) == 0 and empty.sum() == 0 and empty.count() == 0, "empty series len/sum/count"
+assert empty.mean() == None and empty.min() == None and empty.median() == None, "empty series None aggs"
+assert empty.dropna().tolist() == [] and empty.tolist() == [], "empty series dropna/tolist"
+# an all-missing column
+var allnull = pd.Series([None, None, None])
+assert allnull.count() == 0 and allnull.mean() == None, "all-missing count/mean"
+assert allnull.dropna().tolist() == [], "all-missing dropna empties"
+assert allnull.fillna(0).tolist() == [0, 0, 0], "all-missing fillna"
+# a single element
+assert pd.Series([42]).mean() == 42.0 and pd.Series([42]).median() == 42, "single element"
+assert pd.Series([7]).std() == None, "std needs >= 2 values"
+# head/tail beyond the bounds, and head(0)
+var d3 = pd.DataFrame({"a": [1, 2, 3]}, columns=["a"])
+assert d3.head(0).shape() == [0, 1], "head(0) keeps columns, no rows"
+assert d3.head(99).shape() == [3, 1] and d3.tail(99).shape() == [3, 1], "head/tail past the end clamp"
+# readcsv corner inputs
+assert pd.readcsv("").shape() == [0, 0], "readcsv of empty text"
+assert pd.readcsv("a,b,c").shape() == [0, 3], "readcsv header-only: columns, no rows"
+# concat with an empty frame, and a one-to-many / no-match merge
+var ce = pd.DataFrame({"a": []}, columns=["a"])
+var cf = pd.DataFrame({"a": [1, 2]}, columns=["a"])
+assert pd.concat([ce, cf])["a"].tolist() == [1, 2], "concat empty + non-empty"
+var lm = pd.DataFrame([[1, "a"], [2, "b"]], columns=["id", "x"])
+var rm = pd.DataFrame([[1, "p"], [1, "q"], [2, "r"]], columns=["id", "y"])
+assert len(pd.merge(lm, rm, on="id")) == 3, "one-to-many merge expands rows"
+assert len(pd.merge(lm, pd.DataFrame([[9, "z"]], columns=["id", "y"]), on="id")) == 0, "inner merge, no matches"
+# groupby where every key is distinct
+assert len(pd.DataFrame({"k": [1, 2, 3], "v": [9, 9, 9]}, columns=["k", "v"]).groupby("k").sum().index) == 3, "groupby all-distinct keys"
+# sortvalues is stable: equal keys keep their input order
+var stab = pd.DataFrame([[1, "a"], [1, "b"], [1, "c"]], columns=["k", "tag"])
+assert stab.sortvalues("k")["tag"].tolist() == ["a", "b", "c"], "sortvalues is stable on ties"
+
+# ================================================================= ADVERSARIAL (must throw)
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+assert throws(Function(): return pd.DataFrame({"a": [1]}, columns=["a"])["nope"]), "missing column throws"
+assert throws(Function(): return pd.Series([1, 2, 3]) + pd.Series([1, 2])), "Series length mismatch throws"
+assert throws(Function(): return pd.DataFrame({"a": [1]}, columns=["a"]).iloc[5]), "iloc out of range throws"
+assert throws(Function(): return pd.DataFrame({"a": [1]}, columns=["a"]).groupby("nope")), "groupby on missing column throws"
+assert throws(Function(): return pd.DataFrame({"k": ["x"], "v": [1]}, columns=["k", "v"]).groupby("k").agg({"v": "bogus"})), "agg with unknown reduction throws"
+assert throws(Function(): return pd.merge(lm, rm, on="missing")), "merge on a missing key throws"
+assert throws(Function(): return pd.DataFrame({"a": [1, 2], "b": [1]}, columns=["a", "b"])), "ragged columns throw"
+assert throws(Function(): return pd.Series([1, 2], index=["only_one"])), "index length mismatch throws"
+
+# ================================================================= FUZZ #4: merge vs a manual oracle
+var trial4 = 0
+while trial4 < 200:
+    var nL = rng.randint(1, 12)
+    var lids = []
+    var lval = []
+    var i4 = 0
+    while i4 < nL:
+        lids.append(rng.randint(0, 6))
+        lval.append(rng.randint(0, 100))
+        i4 = i4 + 1
+    var nR = rng.randint(1, 12)
+    var rids = []
+    var rval = []
+    i4 = 0
+    while i4 < nR:
+        rids.append(rng.randint(0, 6))
+        rval.append(rng.randint(0, 100))
+        i4 = i4 + 1
+    var lf = pd.DataFrame({"id": lids, "lv": lval}, columns=["id", "lv"])
+    var rf = pd.DataFrame({"id": rids, "rv": rval}, columns=["id", "rv"])
+    var inner = pd.merge(lf, rf, on="id")
+    # oracle: the inner join row count is sum over left rows of (count of right rows with same id)
+    var rcount = {}
+    var k4 = 0
+    while k4 < nR:
+        rcount[rids[k4]] = rcount.get(rids[k4], 0) + 1
+        k4 = k4 + 1
+    var expect = 0
+    k4 = 0
+    while k4 < nL:
+        expect = expect + rcount.get(lids[k4], 0)
+        k4 = k4 + 1
+    assert len(inner) == expect, "fuzz inner-merge row count matches oracle"
+    trial4 = trial4 + 1
+
+io.print("OK")

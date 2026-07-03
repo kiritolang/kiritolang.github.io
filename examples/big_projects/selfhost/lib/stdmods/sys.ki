@@ -1,0 +1,33 @@
+# The `sys` module in pure Kirito. Environment/clock facts come from the thin _os syscall module.
+# (Path/filesystem operations — join, executable, gettempdir, ... — live in the `path` module, not
+# here, matching the native split.)
+
+var _os = import("_os")
+
+var platform = _os.platform
+var arch = _os.arch
+var version = _os.version
+
+var getenv = Function(name, default = None):
+    return _os.getenv(name, default)
+
+var setenv = Function(name, value):
+    return _os.setenv(name, value)
+
+var unsetenv = Function(name):
+    return _os.unsetenv(name)
+
+var environ = Function():
+    return _os.environ()
+
+var exit = Function(code = 0):
+    return _os.exit(code)
+
+var traceback = Function():
+    return _os.traceback()
+
+var createprocess = Function(args: List, cwd = None, input = "", timeout = None) -> Dict:
+    return _os.createprocess(args, cwd, input, timeout)
+
+var shell = Function(command: String, cwd = None, input = "", timeout = None) -> Dict:
+    return _os.shell(command, cwd, input, timeout)

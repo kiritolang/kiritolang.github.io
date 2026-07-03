@@ -1,0 +1,70 @@
+# Exercise apply(fn) across EVERY container (List/Set/Dict/String/Bytes) plus tensor apply/item/tolist
+# (all "since regex" additions), on seeded-random data, asserting the mapped result and type. Plus
+# adversarial element-mapping errors that must surface cleanly.
+var io = import("io")
+var random = import("random")
+var T = import("tensor")
+
+if argmain:
+    var rng = random.Random(987654)
+
+    var t = 0
+    while t < 200:
+        var n = rng.randint(0, 12)
+        var lst = []
+        var i = 0
+        while i < n:
+            lst.append(rng.randint(-50, 50))
+            i = i + 1
+        # List.apply: new list, fn mapped over elements
+        var doubled = lst.apply(Function(x): return x * 2)
+        assert isinstance(doubled, "List") and len(doubled) == n, "list apply shape"
+        var j = 0
+        while j < n:
+            assert doubled[j] == lst[j] * 2, "list apply value"
+            j = j + 1
+        # Set.apply: over elements (dedups)
+        var s = Set(lst)
+        var sapp = s.apply(Function(x): return x * x)
+        assert isinstance(sapp, "Set"), "set apply type"
+        for v in s:
+            assert (v * v) in sapp, "set apply contains square"
+        # Dict.apply: over values, keys preserved
+        var d = {}
+        var k = 0
+        while k < n:
+            d["k" + String(k)] = k
+            k = k + 1
+        var dapp = d.apply(Function(v): return v + 100)
+        for key in d.keys():
+            assert dapp[key] == d[key] + 100, "dict apply over values"
+        t = t + 1
+
+    # String.apply over characters; Bytes.apply over bytes
+    assert "abc".apply(Function(c): return c.upper()) == "ABC", "string apply"
+    assert Bytes([1, 2, 3]).apply(Function(x): return x + 1) == Bytes([2, 3, 4]), "bytes apply"
+    assert "".apply(Function(c): return c) == "", "string apply empty"
+
+    # tensor: apply (element-wise map), item() (1-elem -> scalar), tolist() (-> nested List)
+    var tn = T.Tensor([[1.0, 2.0], [3.0, 4.0]])
+    var sq = tn.apply(Function(x): return x * x)
+    assert sq.tolist() == [[1.0, 4.0], [9.0, 16.0]], "tensor apply + tolist"
+    assert T.Tensor([42.0]).item() == 42.0, "tensor item"
+    assert T.zeros([2, 3]).tolist() == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], "tensor zeros tolist"
+
+    # adversarial: an element-mapping function that throws propagates cleanly
+    var caught = False
+    try:
+        discard [1, 2, 3].apply(Function(x): throw "boom")
+    catch as e:
+        caught = True
+    assert caught, "apply must propagate element fn errors"
+    # item() on a multi-element tensor must throw
+    caught = False
+    try:
+        discard T.Tensor([1.0, 2.0]).item()
+    catch as e:
+        caught = True
+    assert caught, "item() on multi-element tensor must throw"
+
+    io.print("OK apply fuzz")

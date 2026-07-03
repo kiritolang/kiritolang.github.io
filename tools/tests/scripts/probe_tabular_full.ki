@@ -1,0 +1,123 @@
+# ============================================ TABULAR: exhaustive coverage of every Series/DataFrame/GroupBy method
+var io = import("io")
+var pd = import("tabular")
+var close = Function(a, b) -> Bool:
+    return abs(a - b) < 0.0001
+
+# ===================== Series: arithmetic dunders (all) =====================
+var s = pd.Series([10, 20, 30])
+var t = pd.Series([1, 2, 3])
+assert (s + t).tolist() == [11, 22, 33], "_add_"
+assert (s - t).tolist() == [9, 18, 27], "_sub_"
+assert (s * t).tolist() == [10, 40, 90], "_mul_"
+assert (s / t).tolist() == [10.0, 10.0, 10.0], "_div_"
+assert (s // pd.Series([3, 3, 7])).tolist() == [3, 6, 4], "_floordiv_"
+assert (s % pd.Series([3, 7, 4])).tolist() == [1, 6, 2], "_mod_"
+
+# Series: comparison dunders (all) -> Series of Bool
+assert (s > 15).tolist() == [False, True, True], "_gt_"
+assert (s >= 20).tolist() == [False, True, True], "_ge_"
+assert (s < 20).tolist() == [True, False, False], "_lt_"
+assert (s <= 20).tolist() == [True, True, False], "_le_"
+assert s.eq(pd.Series([10, 99, 30])).tolist() == [True, False, True], "eq method"
+assert s.ne(pd.Series([10, 99, 30])).tolist() == [False, True, False], "ne method"
+assert s.isin([10, 30]).tolist() == [True, False, True], "isin"
+
+# Series: reductions
+assert pd.Series([1, 2, 3, 4]).prod() == 24, "prod"
+
+# Series: transforms
+assert pd.Series([1, 2, 3]).map(Function(x): return x + 100).tolist() == [101, 102, 103], "map"
+assert pd.Series(["1", "2", "3"]).astype("Integer").tolist() == [1, 2, 3], "astype Integer"
+assert pd.Series([1, 2, 3]).astype("Float").tolist() == [1.0, 2.0, 3.0], "astype Float"
+
+# Series: head/tail/copy/iat/resetindex/_setitem_
+assert pd.Series([1, 2, 3, 4, 5]).head(2).tolist() == [1, 2], "Series.head"
+assert pd.Series([1, 2, 3, 4, 5]).tail(2).tolist() == [4, 5], "Series.tail"
+var sc = pd.Series([1, 2, 3])
+var sc2 = sc.copy()
+sc2[0] = 99
+assert sc.tolist() == [1, 2, 3], "Series.copy is independent"
+assert sc2.tolist() == [99, 2, 3], "Series._setitem_ mutates the copy"
+var sidx = pd.Series([10, 20, 30], index = ["a", "b", "c"])
+assert sidx.iat(1) == 20, "Series.iat by position"
+assert sidx.resetindex().index == [0, 1, 2], "Series.resetindex"
+
+# ===================== DataFrame: construction + metadata =====================
+var df = pd.DataFrame([["Ada", 36, "math"], ["Alan", 41, "cs"], ["Grace", 85, "navy"]], columns = ["name", "age", "dept"])
+assert df.nrows() == 3, "DataFrame.nrows"
+assert df.shape() == [3, 3], "shape"
+assert df.column("name").tolist() == ["Ada", "Alan", "Grace"], "column accessor"
+assert df.at(0, "name") == "Ada", "at(label, col)"
+assert df.iat(1, 1) == 41, "iat(pos, col)"
+assert df.rowat(0)["name"] == "Ada", "rowat"
+assert len(df.rowsat([0, 2])) == 2, "rowsat"
+
+# DataFrame: slice / copy / head / tail
+assert df.slice(0, 2).nrows() == 2, "slice"
+var dcopy = df.copy()
+dcopy["age"] = pd.Series([0, 0, 0])
+assert df["age"].tolist() == [36, 41, 85], "copy is independent"
+assert df.head(1)["name"].tolist() == ["Ada"], "DataFrame.head"
+assert df.tail(1)["name"].tolist() == ["Grace"], "DataFrame.tail"
+
+# DataFrame: rename / drop / assign / setindex / resetindex
+assert df.rename({"name": "person"}).columns == ["person", "age", "dept"], "rename"
+assert df.drop(["dept"]).columns == ["name", "age"], "drop"
+var assigned = df.assign("senior", pd.Series([False, False, True]))
+assert assigned.columns[len(assigned.columns) - 1] == "senior", "assign adds a column"
+assert assigned["senior"].tolist() == [False, False, True], "assign values"
+var indexed = df.setindex("name")
+assert indexed.loc["Grace"]["age"] == 85, "setindex then loc by that key"
+assert indexed.resetindex().nrows() == 3, "resetindex"
+
+# DataFrame: numeric reductions (frame-level)
+var nums = pd.DataFrame([[1, 10], [2, 20], [3, 30]], columns = ["a", "b"])
+assert nums.sum()["a"] == 6 and nums.sum()["b"] == 60, "frame sum"
+assert close(nums.mean()["b"], 20.0), "frame mean"
+assert nums.min()["a"] == 1, "frame min"
+assert nums.max()["b"] == 30, "frame max"
+assert nums.std()["a"] > 0.0, "frame std"
+assert nums.count()["a"] == 3, "frame count"
+
+# DataFrame: apply (column-wise reduction over numeric columns) / iterrows / todict / torows / merge
+assert nums.apply(Function(col): return col.max()).tolist() == [3, 30], "apply reduces each numeric column"
+var rowcount = 0
+for pair in df.iterrows():
+    rowcount = rowcount + 1
+assert rowcount == 3, "iterrows yields each row"
+var dd = df.todict()
+assert dd["name"] == ["Ada", "Alan", "Grace"], "todict column-oriented"
+assert len(df.torows()) == 3, "torows row-oriented"
+var left = pd.DataFrame([[1, "Ada"], [2, "Alan"]], columns = ["id", "name"])
+var right = pd.DataFrame([[1, "math"], [2, "cs"]], columns = ["id", "dept"])
+assert left.merge(right, "id").shape() == [2, 3], "df.merge method form"
+
+# ===================== GroupBy: every reducer + agg branches =====================
+var g = pd.DataFrame([["x", 1], ["x", 3], ["y", 10], ["y", 20]], columns = ["k", "v"]).groupby("k")
+assert g.sum()["v"].tolist() == [4, 30], "group sum"
+assert g.mean()["v"].tolist() == [2.0, 15.0], "group mean"
+assert g.min()["v"].tolist() == [1, 10], "group min"
+assert g.max()["v"].tolist() == [3, 20], "group max"
+assert g.count()["v"].tolist() == [2, 2], "group count"
+assert g.std()["v"].tolist()[0] > 0.0, "group std"
+assert g.size().tolist() == [2, 2], "group size"
+# agg with each reducer
+var g2 = pd.DataFrame([["x", 2], ["x", 4], ["y", 6]], columns = ["k", "v"]).groupby("k")
+assert g2.agg({"v": "sum"})["v"].tolist() == [6, 6], "agg sum"
+assert g2.agg({"v": "mean"})["v"].tolist() == [3.0, 6.0], "agg mean"
+assert g2.agg({"v": "min"})["v"].tolist() == [2, 6], "agg min"
+assert g2.agg({"v": "max"})["v"].tolist() == [4, 6], "agg max"
+assert g2.agg({"v": "count"})["v"].tolist() == [2, 1], "agg count"
+assert g2.agg({"v": "median"})["v"].tolist() == [3.0, 6.0], "agg median (the undocumented-but-present reducer)"
+# group apply
+var gapplied = g.apply(Function(sub): return sub.nrows())
+assert gapplied.tolist() == [2, 2], "group apply"
+
+# ===================== readcsv: header= and infer= keyword branches =====================
+var noheader = pd.readcsv("1,2,3\n4,5,6", header = False)
+assert noheader.nrows() == 2, "readcsv header=False keeps all rows"
+var noinfer = pd.readcsv("a,b\n1,2", infer = False)
+assert type(noinfer["a"][0]) == "String", "readcsv infer=False keeps Strings"
+
+io.print("OK tabular-full")

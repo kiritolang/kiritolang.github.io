@@ -1,0 +1,717 @@
+# The `math` standard module — implemented in pure Kirito (no host math). Evaluated by the
+# self-hosted interpreter itself: trig/exp/log come from range-reduced Taylor/atanh series, roots
+# from Newton iteration, gamma from a Lanczos approximation. Accurate well within the suite's 1e-6
+# tolerance. Only scalar arithmetic and the float<->int conversion primitive are leaned on.
+
+# --- constants ------------------------------------------------------------------------------------
+var pi = 3.141592653589793
+var e = 2.718281828459045
+var tau = 6.283185307179586
+var _ln2 = 0.6931471805599453
+var _ln10 = 2.302585092994046
+var _sqrt2pi = 2.5066282746310002
+
+var inf = 1.0e308 * 1.0e308
+# Arithmetic NaN carries the sign bit ("-nan"); negate once for the canonical positive NaN.
+var nan = -(inf - inf)
+
+# --- classification -------------------------------------------------------------------------------
+# Float `==` here is relative-epsilon (so 1.0 == inf is true and inf == inf is false); detection uses
+# ordering comparisons, which are exact. A NaN is unordered (neither >=0 nor <0); an infinity sits
+# beyond the largest finite double.
+var _MAXD = 1.7976931348623157e308
+
+var isnan = Function(x):
+    return not (x >= 0.0 or x < 0.0)
+
+var isinf = Function(x):
+    return x > _MAXD or x < -_MAXD
+
+var isfinite = Function(x):
+    return x >= -_MAXD and x <= _MAXD
+
+var fabs = Function(x):
+    if x < 0.0:
+        return Float(-x)
+    if x == 0.0:
+        return 0.0                      # normalize -0.0 -> +0.0 (fabs always clears the sign bit)
+    return Float(x)
+
+# --- rounding (float<->int crossing is the one conversion primitive used here) --------------------
+var _TWO52 = 4503599627370496.0
+
+var _floorf = Function(x):
+    if x != x:
+        return x
+    if x >= _TWO52 or x <= -_TWO52:
+        return x
+    # The add-then-subtract-2^52 trick only forces round-to-nearest-integer when x+2^52 lands in
+    # [2^52, 2^53) (where a double's ULP is exactly 1): true whenever x >= 0, but a sufficiently
+    # negative x (e.g. -1.5) pulls the sum back under 2^52 into a finer-ULP bucket where it doesn't
+    # round at all. So round the non-negative magnitude and flip sign instead of feeding a negative
+    # x into the trick directly.
+    if x >= 0.0:
+        var r = (x + _TWO52) - _TWO52
+        if r > x:
+            r = r - 1.0
+        return r
+    var ax = -x
+    var ar = (ax + _TWO52) - _TWO52
+    if ar < ax:
+        ar = ar + 1.0
+    return -ar
+
+var _ceilf = Function(x):
+    return -_floorf(-x)
+
+var _truncf = Function(x):
+    if x < 0.0:
+        return _ceilf(x)
+    return _floorf(x)
+
+var floor = Function(x):
+    return Integer(_floorf(x))
+
+var ceil = Function(x):
+    return Integer(_ceilf(x))
+
+var trunc = Function(x):
+    return _truncf(x)
+
+var copysign = Function(x, y):
+    var negative = y < 0.0
+    if y == 0.0 and String(y).startswith("-"):    # distinguish -0.0 from +0.0 (sign bit, not value)
+        negative = True
+    if negative:
+        return -fabs(x)
+    return fabs(x)
+
+var fmod = Function(x, y):
+    if y == 0.0:
+        throw "fmod: math domain error (divisor is zero)"
+    return x - _truncf(x / y) * y
+
+# --- exp / log ------------------------------------------------------------------------------------
+var exp = Function(x):
+    if isnan(x):
+        return x
+    if isinf(x):                        # would otherwise halve inf forever below
+        if x > 0.0:
+            return x
+        return 0.0
+    var neg = False
+    var y = x
+    if y < 0.0:
+        neg = True
+        y = -y
+    var n = 0
+    while y > 0.5:
+        y = y / 2.0
+        n = n + 1
+    var term = 1.0
+    var sum = 1.0
+    var denom = 1.0
+    var i = 0
+    while i < 30:
+        term = term * y / denom
+        sum = sum + term
+        denom = denom + 1.0
+        i = i + 1
+    while n > 0:
+        sum = sum * sum
+        n = n - 1
+    if neg:
+        return 1.0 / sum
+    return sum
+
+var _ln = Function(x):
+    if x != x:
+        return x                            # NaN passes through unchanged
+    if x <= 0.0:
+        throw "log: math domain error (argument must be > 0)"
+    if isinf(x):
+        return x                            # would otherwise halve inf forever below
+    var k = 0
+    var y = x
+    while y > 1.3333333333333333:
+        y = y / 2.0
+        k = k + 1
+    while y < 0.6666666666666666:
+        y = y * 2.0
+        k = k - 1
+    var t = (y - 1.0) / (y + 1.0)
+    var t2 = t * t
+    var term = t
+    var denom = 1.0
+    var sum = 0.0
+    var i = 0
+    while i < 60:
+        sum = sum + term / denom
+        term = term * t2
+        denom = denom + 2.0
+        i = i + 1
+    return 2.0 * sum + Float(k) * _ln2
+
+var log = Function(x, base = None):
+    if base == None:
+        return _ln(x)
+    return _ln(x) / _ln(base)
+
+# Reduces x to a mantissa in [1, base) tracking the integer part k separately, rather than the
+# single division _ln(x)/_ln(base): for an exact power (log2(8), log10(1000), ...) the reduction
+# lands exactly on y==1.0 and returns the exact integer k, where a straight ratio of two
+# independently-rounded transcendentals almost never lands on an exact result.
+var log2 = Function(x):
+    if isnan(x):
+        return x
+    if x <= 0.0:
+        throw "log2: math domain error (got " + String(x) + ")"
+    if isinf(x):
+        return x
+    var k = 0
+    var y = x
+    while y >= 2.0:
+        y = y / 2.0
+        k = k + 1
+    while y < 1.0:
+        y = y * 2.0
+        k = k - 1
+    if y == 1.0:
+        return Float(k)
+    return _ln(y) / _ln2 + Float(k)
+
+var log10 = Function(x):
+    if isnan(x):
+        return x
+    if x <= 0.0:
+        throw "log10: math domain error (got " + String(x) + ")"
+    if isinf(x):
+        return x
+    var k = 0
+    var y = x
+    while y >= 10.0:
+        y = y / 10.0
+        k = k + 1
+    while y < 1.0:
+        y = y * 10.0
+        k = k - 1
+    if y == 1.0:
+        return Float(k)
+    return _ln(y) / _ln10 + Float(k)
+
+# exp(x)-1 / log(1+x) computed directly rather than via exp()/_ln() + a subtract, which cancels
+# almost all significant digits for small x (exp(1e-8)-1 keeps ~8 digits instead of ~16).
+var expm1 = Function(x):
+    if isnan(x):
+        return x
+    if fabs(x) < 1.0e-5:
+        var term = x
+        var sum = x
+        var i = 2
+        while i < 15:
+            term = term * x / Float(i)
+            sum = sum + term
+            i = i + 1
+        return sum
+    return exp(x) - 1.0
+
+var log1p = Function(x):
+    if isnan(x):
+        return x
+    if x <= -1.0:
+        throw "log1p: math domain error (got " + String(x) + ")"
+    var y = 1.0 + x
+    if y == 1.0:
+        return x
+    return _ln(y) * (x / (y - 1.0))     # Kahan's correction for the (1.0+x) rounding of tiny x
+
+# --- roots / powers -------------------------------------------------------------------------------
+var sqrt = Function(x) -> Float:
+    if x < 0.0:
+        throw "sqrt: math domain error (got " + String(x) + ")"
+    if x == 0.0:
+        return 0.0
+    if isinf(x):
+        return x
+    # Seed Newton's method from log/exp rather than x itself: for extreme magnitudes (1e100, 1e-100)
+    # a raw x-or-1.0 seed is many orders of magnitude from the root, and halving-style Newton
+    # convergence from there needs far more than 100 iterations to land within tolerance.
+    var g = exp(_ln(x) / 2.0)
+    var i = 0
+    while i < 100:
+        var ng = (g + x / g) / 2.0
+        if fabs(ng - g) <= 1.0e-15 * g:
+            return ng
+        g = ng
+        i = i + 1
+    return g
+
+# Newton-polished rather than exp(log(x)/3): two chained transcendentals rarely land on an exact
+# result even for a perfect cube (cbrt(-8) needs to be exactly -2.0, not -2.0000000000000004).
+var cbrt = Function(x):
+    if isnan(x) or x == 0.0:
+        return x
+    if isinf(x):
+        return x
+    var neg = x < 0.0
+    var ax = x
+    if neg:
+        ax = -x
+    var g = exp(_ln(ax) / 3.0)
+    var i = 0
+    while i < 60:
+        var ng = (2.0 * g + ax / (g * g)) / 3.0
+        if fabs(ng - g) <= 1.0e-15 * g:
+            g = ng
+            break
+        g = ng
+        i = i + 1
+    if neg:
+        return -g
+    return g
+
+var pow = Function(x, y):
+    # Small integer exponents (either sign) go through exact repeated multiplication rather than
+    # exp(y*log(x)): that transcendental round-trip rarely lands exactly (pow(2,-1) must be exactly
+    # 0.5, pow(2,10) exactly 1024.0).
+    if y == _truncf(y) and y > -1000.0 and y < 1000.0:
+        var n = Integer(y)
+        var neg = n < 0
+        if neg:
+            n = -n
+        var r = 1.0
+        var i = 0
+        while i < n:
+            r = r * x
+            i = i + 1
+        if neg:
+            if r == 0.0:
+                throw "pow: math domain error (zero to a negative power)"
+            return 1.0 / r
+        return r
+    if x < 0.0 and y != _truncf(y):         # a negative base needs an integer exponent (real result)
+        throw "pow: math domain error (a negative base requires an integer exponent)"
+    if x == 0.0 and y < 0.0:
+        throw "pow: math domain error (zero to a negative power)"
+    return exp(y * _ln(x))
+
+var hypot = Function(x, y):
+    if isinf(x) or isinf(y):            # IEEE: any infinite operand -> +inf, even if the other is NaN
+        return inf
+    if isnan(x) or isnan(y):
+        return nan
+    var ax = fabs(x)
+    var ay = fabs(y)
+    var mx = ax
+    var mn = ay
+    if ay > ax:
+        mx = ay
+        mn = ax
+    if mx == 0.0:
+        return 0.0
+    var r = mn / mx                     # scale to avoid intermediate x*x/y*y overflow
+    return mx * sqrt(1.0 + r * r)
+
+# --- trigonometry ---------------------------------------------------------------------------------
+var sin = Function(x):
+    var y = x - tau * _floorf(x / tau)
+    if y > pi:
+        y = y - tau
+    var term = y
+    var sum = y
+    var y2 = y * y
+    var d1 = 2.0
+    var i = 0
+    while i < 30:
+        term = -term * y2 / (d1 * (d1 + 1.0))
+        sum = sum + term
+        d1 = d1 + 2.0
+        i = i + 1
+    return sum
+
+var cos = Function(x):
+    var y = x - tau * _floorf(x / tau)
+    if y > pi:
+        y = y - tau
+    var term = 1.0
+    var sum = 1.0
+    var y2 = y * y
+    var d1 = 1.0
+    var i = 0
+    while i < 30:
+        term = -term * y2 / (d1 * (d1 + 1.0))
+        sum = sum + term
+        d1 = d1 + 2.0
+        i = i + 1
+    return sum
+
+var tan = Function(x):
+    return sin(x) / cos(x)
+
+var atan = Function(x):
+    if isinf(x):
+        if x > 0.0:
+            return pi / 2.0
+        return -pi / 2.0
+    var neg = False
+    var y = x
+    if y < 0.0:
+        neg = True
+        y = -y
+    # halving identity atan(y) = 2*atan(y/(1+sqrt(1+y^2))) shrinks y so the series converges fast
+    var k = 0
+    while y > 0.2:
+        y = y / (1.0 + sqrt(1.0 + y * y))
+        k = k + 1
+    var term = y
+    var sum = y
+    var y2 = y * y
+    var d = 3.0
+    var sign = -1.0
+    var i = 0
+    while i < 40:
+        term = term * y2
+        sum = sum + sign * term / d
+        sign = -sign
+        d = d + 2.0
+        i = i + 1
+    while k > 0:
+        sum = sum * 2.0
+        k = k - 1
+    if neg:
+        return -sum
+    return sum
+
+var asin = Function(x):
+    if x > 1.0 or x < -1.0:
+        throw "math domain error: asin out of range"
+    if x == 1.0:
+        return pi / 2.0
+    if x == -1.0:
+        return -pi / 2.0
+    return atan(x / sqrt(1.0 - x * x))
+
+var acos = Function(x):
+    return pi / 2.0 - asin(x)
+
+var atan2 = Function(y, x):
+    if isnan(x) or isnan(y):
+        return nan
+    if x > 0.0:
+        return atan(y / x)
+    if x < 0.0:
+        if y >= 0.0:
+            return atan(y / x) + pi
+        return atan(y / x) - pi
+    if y > 0.0:
+        return pi / 2.0
+    if y < 0.0:
+        return -pi / 2.0
+    return 0.0
+
+var sinh = Function(x):
+    return (exp(x) - exp(-x)) / 2.0
+
+var cosh = Function(x):
+    return (exp(x) + exp(-x)) / 2.0
+
+var tanh = Function(x):
+    var a = exp(x)
+    var b = exp(-x)
+    return (a - b) / (a + b)
+
+var degrees = Function(x):
+    return x * 180.0 / pi
+
+var radians = Function(x):
+    return x * pi / 180.0
+
+# --- gamma / erf ----------------------------------------------------------------------------------
+var _gc = [0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+           771.32342877765313, -176.61502916214059, 12.507343278686905,
+           -0.13857109526572012, 0.0000099843695780195716, 0.00000015056327351493116]
+
+var gamma = Function(x):
+    if x <= 0.0 and x == _truncf(x):        # poles at 0 and the negative integers; NaN passes through
+        throw "gamma: math domain error (got " + String(x) + ")"
+    if x >= 1.0 and x == _truncf(x):
+        # gamma(n) = (n-1)! exactly for a positive integer: computing it via direct products avoids
+        # the pow()/exp() Lanczos path, which both loses a few ULP (gamma(5) must be exactly 24.0)
+        # and overflows in its own intermediate pow() well before the true result reaches +-inf
+        # (gamma(171) must stay finite; gamma(172) must cleanly overflow to +inf, not NaN).
+        if x >= 172.0:
+            return inf
+        var p = 1.0
+        var i = 2.0
+        while i < x:
+            p = p * i
+            i = i + 1.0
+        return p
+    if x < 0.5:
+        return pi / (sin(pi * x) * gamma(1.0 - x))
+    var xx = x - 1.0
+    var a = _gc[0]
+    var t = xx + 7.5
+    var i = 1
+    var di = 1.0
+    while i < 9:
+        a = a + _gc[i] / (xx + di)
+        di = di + 1.0
+        i = i + 1
+    return _sqrt2pi * pow(t, xx + 0.5) * exp(-t) * a
+
+var erf = Function(x):
+    if isnan(x):
+        return x
+    # The Maclaurin series below needs ~x^2 terms to converge; beyond |x|=6 it hasn't even started
+    # to converge within 60 terms (and would blow up numerically), but erf saturates to +-1.0 to
+    # full double precision well before then (erfc(6) ~ 2e-17 < machine epsilon) — including +-inf.
+    if x > 6.0:
+        return 1.0
+    if x < -6.0:
+        return -1.0
+    var term = x
+    var sum = x
+    var x2 = x * x
+    var n = 1.0
+    var sign = -1.0
+    var i = 0
+    while i < 60:
+        term = term * x2 / n
+        sum = sum + sign * term / (2.0 * n + 1.0)
+        sign = -sign
+        n = n + 1.0
+        i = i + 1
+    return 1.1283791670955126 * sum
+
+# --- integer combinatorics ------------------------------------------------------------------------
+# --- gcd / lcm: unsigned-magnitude arithmetic (std::abs(INT64_MIN) is UB natively; here Integer
+# negation of INT64_MIN wraps back to itself, so INT64_MIN's true magnitude 2^63 is represented
+# specially as a (huge, val) pair instead of a plain Integer, which can't hold it).
+var _INT64_MIN = -9223372036854775808
+var _INT64_MAX = 9223372036854775807
+var _HALF63 = 4611686018427387904        # 2^62
+
+var _dmod2 = Function(r, d):             # (2*r) mod d, overflow-safe, 0 <= r < d
+    var diff = d - r
+    if r < diff:
+        return r + r
+    return r - diff
+
+var _hugeMod = Function(d):              # 2^63 mod d, for 1 <= d <= INT64_MAX
+    var r = _HALF63 % d
+    return _dmod2(r, d)
+
+var _toMag = Function(v):                # -> [huge, val]: true magnitude of Integer v
+    if v == _INT64_MIN:
+        return [True, 0]
+    if v < 0:
+        return [False, -v]
+    return [False, v]
+
+var _modMag = Function(nh, nv, dh, dv):  # magnitude(nh,nv) mod magnitude(dh,dv), divisor != 0
+    if dh:
+        if nh:
+            return [False, 0]            # 2^63 mod 2^63 = 0
+        return [False, nv]               # nv < 2^63 always
+    if nh:
+        return [False, _hugeMod(dv)]
+    return [False, nv % dv]
+
+var gcd = Function(a, b):
+    if type(a) != "Integer" or type(b) != "Integer":
+        throw "gcd expects Integers"
+    var ta = _toMag(a)
+    var tb = _toMag(b)
+    var xh = ta[0]
+    var xv = ta[1]
+    var yh = tb[0]
+    var yv = tb[1]
+    while yh or yv != 0:
+        var r = _modMag(xh, xv, yh, yv)
+        xh = yh
+        xv = yv
+        yh = r[0]
+        yv = r[1]
+    if xh:
+        throw "gcd result too large for Integer"
+    return xv
+
+var lcm = Function(a, b):
+    if type(a) != "Integer" or type(b) != "Integer":
+        throw "lcm expects Integers"
+    if a == 0 or b == 0:
+        return 0
+    if a == _INT64_MIN or b == _INT64_MIN:
+        # |INT64_MIN| = 2^63; any lcm involving it (with a nonzero other operand) exceeds INT64_MAX.
+        throw "lcm result too large for Integer"
+    var g = gcd(a, b)
+    var ax = a
+    if ax < 0:
+        ax = -ax
+    var bx = b
+    if bx < 0:
+        bx = -bx
+    var q = ax // g
+    if q != 0 and bx > _INT64_MAX // q:
+        throw "lcm result too large for Integer"
+    return q * bx
+
+var _mulOverflows = Function(a, b):      # would signed-int64 a*b overflow? (Kirito wraps, no UB)
+    if a == 0 or b == 0:
+        return False
+    if (a == _INT64_MIN and b == -1) or (b == _INT64_MIN and a == -1):
+        return True                      # |INT64_MIN| alone overflows; the reconstruction check below can't see it
+    var r = a * b
+    return r // b != a
+
+var factorial = Function(n):
+    if type(n) != "Integer":
+        throw "factorial expects an Integer"
+    if n < 0:
+        throw "factorial is not defined for negatives"
+    var p = 1
+    var i = 2
+    while i <= n:
+        if _mulOverflows(p, i):
+            throw "factorial result too large for Integer"
+        p = p * i
+        i = i + 1
+    return p
+
+# comb(n, k) via Legendre's formula (prime-power factorization of n!/(k!(n-k)!)): the running
+# product only ever accumulates exact divisors of the true result, so it never needs headroom
+# beyond the final (int64) answer — unlike a plain multiply-then-divide, which would need
+# unsigned-64 intermediate width for e.g. comb(62,31).
+var _primesUpTo = Function(n):
+    var out = []
+    var i = 2
+    while i <= n:
+        var isprime = True
+        var j = 2
+        while j * j <= i:
+            if i % j == 0:
+                isprime = False
+                break
+            j = j + 1
+        if isprime:
+            out.append(i)
+        i = i + 1
+    return out
+
+var _legendre = Function(n, p):          # exponent of prime p in n!
+    var count = 0
+    var pk = p
+    while pk <= n:
+        count = count + n // pk
+        if pk > n // p:
+            break
+        pk = pk * p
+    return count
+
+var comb = Function(n, k):
+    if type(n) != "Integer" or type(k) != "Integer":
+        throw "comb expects Integers"
+    if n < 0 or k < 0:
+        throw "comb/perm require non-negative Integers"
+    if k > n:
+        return 0
+    var result = 1
+    for p in _primesUpTo(n):
+        var e = _legendre(n, p) - _legendre(k, p) - _legendre(n - k, p)
+        var i = 0
+        while i < e:
+            if _mulOverflows(result, p):
+                throw "comb/perm result too large for Integer"
+            result = result * p
+            i = i + 1
+    return result
+
+var perm = Function(n, k = None):
+    if type(n) != "Integer":
+        throw "perm expects Integers"
+    var kk = k
+    if kk == None:
+        kk = n
+    if type(kk) != "Integer":
+        throw "perm expects Integers"
+    if n < 0 or kk < 0:
+        throw "comb/perm require non-negative Integers"
+    if kk > n:
+        return 0
+    var p = 1
+    var i = 0
+    while i < kk:
+        if _mulOverflows(p, n - i):
+            throw "comb/perm result too large for Integer"
+        p = p * (n - i)
+        i = i + 1
+    return p
+
+var prod = Function(iterable, start = 1):
+    if type(start) != "Integer" and type(start) != "Float":
+        throw "prod start must be a number"
+    var isFloatResult = type(start) == "Float"
+    var ip = 1
+    if type(start) == "Integer":
+        ip = start
+    var fp = Float(start)
+    var intOverflow = False
+    for v in iterable:
+        if type(v) != "Integer" and type(v) != "Float":
+            throw "prod expects numbers"
+        if type(v) == "Float":
+            isFloatResult = True
+        elif not intOverflow:
+            if _mulOverflows(ip, v):
+                intOverflow = True
+            else:
+                ip = ip * v
+        fp = fp * Float(v)
+    if isFloatResult:
+        return fp
+    if intOverflow:
+        throw "prod result too large for Integer"
+    return ip
+
+var asinh = Function(x):
+    return log(x + sqrt(x * x + 1.0))
+
+var acosh = Function(x):
+    if x < 1.0:                             # domain is [1, +inf); NaN (x<1 false) passes through
+        throw "acosh: math domain error (got " + String(x) + ")"
+    return log(x + sqrt(x * x - 1.0))
+
+var atanh = Function(x):
+    if x >= 1.0 or x <= -1.0:               # domain is (-1, 1); NaN passes through
+        throw "atanh: math domain error (got " + String(x) + ")"
+    return 0.5 * log((1.0 + x) / (1.0 - x))
+
+var erfc = Function(x):
+    return 1.0 - erf(x)
+
+# log(gamma(x)) computed directly from the Lanczos sum (log(t)/log(a), no pow()/exp() round-trip)
+# rather than as log(gamma(x)): gamma(x) itself computes pow(t, xx+0.5)*exp(-t), and taking log()
+# of that ratio afterwards compounds rounding error (e.g. lgamma(1) landed a few ULP off 0.0).
+var lgamma = Function(x):
+    if isnan(x):
+        return x
+    if x <= 0.0 and x == _truncf(x):
+        throw "lgamma: math domain error (got " + String(x) + ")"
+    if x == 1.0 or x == 2.0:            # gamma(1)=gamma(2)=1 exactly; the Lanczos sum is a few ULP off
+        return 0.0
+    if x < 0.5:
+        var s = sin(pi * x)
+        if s < 0.0:
+            s = -s
+        return log(pi / s) - lgamma(1.0 - x)
+    var xx = x - 1.0
+    var a = _gc[0]
+    var t = xx + 7.5
+    var i = 1
+    var di = 1.0
+    while i < 9:
+        a = a + _gc[i] / (xx + di)
+        di = di + 1.0
+        i = i + 1
+    return 0.9189385332046727 + (xx + 0.5) * log(t) - t + log(a)   # + 0.5*log(2*pi)

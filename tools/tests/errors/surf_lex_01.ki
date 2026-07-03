@@ -1,0 +1,2 @@
+# LEXER: a double-quoted string that runs to end-of-file with no closing quote
+var s = "this string never closes

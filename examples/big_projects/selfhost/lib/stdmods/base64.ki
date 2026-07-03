@@ -1,0 +1,72 @@
+var _alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+var _index = {}
+var _i = 0
+while _i < len(_alphabet):
+    _index[_alphabet[_i]] = _i
+    _i = _i + 1
+
+var encode = Function(data) -> String:
+    # data: a List of byte values (0..255), a Bytes, or a String (encoded as UTF-8 bytes).
+    # Returns the base64 String.
+    if type(data) == "String":
+        data = data.encode()
+    var out = ""
+    var i = 0
+    var n = len(data)
+    while i < n:
+        var b0 = data[i]
+        var b1 = 0
+        var b2 = 0
+        var have = 1
+        if i + 1 < n:
+            b1 = data[i + 1]
+            have = 2
+        if i + 2 < n:
+            b2 = data[i + 2]
+            have = 3
+        var triple = b0 * 65536 + b1 * 256 + b2
+        out = out + _alphabet[(triple // 262144) % 64]
+        out = out + _alphabet[(triple // 4096) % 64]
+        if have >= 2:
+            out = out + _alphabet[(triple // 64) % 64]
+        else:
+            out = out + "="
+        if have >= 3:
+            out = out + _alphabet[triple % 64]
+        else:
+            out = out + "="
+        i = i + 3
+    return out
+
+var decode = Function(s):
+    # Returns a List of byte values.
+    var out = []
+    var buffer = 0
+    var bits = 0
+    for ch in s:
+        if ch == "=":
+            break
+        if ch not in _index:
+            throw "invalid base64 character: '" + ch + "'"
+        buffer = buffer * 64 + _index[ch]
+        bits = bits + 6
+        if bits >= 8:
+            bits = bits - 8
+            out.append((buffer // (2 ** bits)) % 256)
+    # A canonical base64 stream leaves no usable bits over: 6 leftover bits means a lone trailing
+    # character (an invalid length), and any non-zero leftover bits mean a truncated/corrupted input.
+    # Reject both rather than silently dropping data. Padding-less but
+    # otherwise-valid input has zero leftover bits and still decodes.
+    if bits == 6:
+        throw "invalid base64: a lone trailing character (invalid length)"
+    if bits > 0 and buffer % (2 ** bits) != 0:
+        throw "invalid base64: truncated or corrupted input"
+    return out
+
+# URL-safe variant: '+' -> '-', '/' -> '_'. Encodes/decodes by translating to/from the standard form.
+var urlsafeencode = Function(data) -> String:
+    return encode(data).replace("+", "-").replace("/", "_")
+
+var urlsafedecode = Function(s):
+    return decode(s.replace("-", "+").replace("_", "/"))

@@ -1,0 +1,294 @@
+# A small, dependency-free XML parser/serializer in pure Kirito, in the spirit of
+# ElementTree. Parses elements, attributes, text, nested children, comments, the XML declaration,
+# CDATA sections, and the standard entities; serializes a tree back to XML. Tag/attribute access is
+# via an `Element` tree: `.tag`, `.attrib`, `.text`, `.children`, with `find`/`findall`/`get`.
+
+# --- entity (un)escaping ------------------------------------------------------------------------
+# Strict numeric-entity parsers: return -1 (not garbage, not an exception) on an empty or malformed
+# body, or one past the max code point — so a bad numeric entity can be kept verbatim (XML leniency).
+var _parsehex = Function(s):
+    if len(s) == 0:
+        return -1
+    var v = 0
+    for c in s:
+        var d = -1
+        if c >= "0" and c <= "9":
+            d = ord(c) - ord("0")
+        elif c >= "a" and c <= "f":
+            d = ord(c) - ord("a") + 10
+        elif c >= "A" and c <= "F":
+            d = ord(c) - ord("A") + 10
+        if d < 0:
+            return -1
+        v = v * 16 + d
+        if v > 1114111:
+            return -1
+    return v
+
+var _parsedec = Function(s):
+    if len(s) == 0:
+        return -1
+    var v = 0
+    for c in s:
+        if c < "0" or c > "9":
+            return -1
+        v = v * 10 + (ord(c) - ord("0"))
+        if v > 1114111:
+            return -1
+    return v
+
+var _decode = Function(s):
+    # &lt; &gt; &amp; &quot; &apos; and numeric &#dd; / &#xHH;
+    if "&" not in s:
+        return s
+    var out = ""
+    var i = 0
+    var n = len(s)
+    while i < n:
+        if s[i] == "&":
+            var semi = s.find(";", i)
+            if semi < 0:
+                out = out + "&"
+                i = i + 1
+                continue
+            var ent = s[i + 1:semi]
+            if ent == "lt":
+                out = out + "<"
+            elif ent == "gt":
+                out = out + ">"
+            elif ent == "amp":
+                out = out + "&"
+            elif ent == "quot":
+                out = out + "\""
+            elif ent == "apos":
+                out = out + "'"
+            elif len(ent) > 0 and ent[0] == "#":
+                var code = -1
+                if len(ent) > 1 and (ent[1] == "x" or ent[1] == "X"):
+                    code = _parsehex(ent[2:])
+                else:
+                    code = _parsedec(ent[1:])
+                if code >= 0:
+                    out = out + chr(code)
+                else:
+                    out = out + s[i:semi + 1]   # malformed numeric entity: keep verbatim (lenient)
+            else:
+                out = out + s[i:semi + 1]   # unknown entity: keep verbatim
+            i = semi + 1
+        else:
+            out = out + s[i]
+            i = i + 1
+    return out
+
+var _escape = Function(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+var _escape_attr = Function(s):
+    return _escape(s).replace("\"", "&quot;")
+
+var _isspace = Function(c) -> Bool:
+    return c == " " or c == "\t" or c == "\n" or c == "\r"
+
+# --- the Element tree ---------------------------------------------------------------------------
+class Element:
+    var _init_ = Function(self, tag, attrib = None):
+        self.tag = tag
+        self.attrib = attrib if attrib != None else {}
+        self.text = ""                 # character data before the first child
+        self.tail = ""                 # character data after this element's end tag (ElementTree-style)
+        self.children = []             # child Elements
+
+    var _iter_ = Function(self):
+        return self.children
+    var _len_ = Function(self) -> Integer:
+        return len(self.children)
+    var _getitem_ = Function(self, i):
+        return self.children[i]
+
+    var get = Function(self, key, default = None):
+        return self.attrib[key] if key in self.attrib else default
+
+    var find = Function(self, tag):
+        for c in self.children:
+            if c.tag == tag:
+                return c
+        return None
+
+    var findall = Function(self, tag):
+        var out = []
+        for c in self.children:
+            if c.tag == tag:
+                out.append(c)
+        return out
+
+    var findtext = Function(self, tag, default = ""):
+        var e = self.find(tag)
+        return e.text if e != None else default
+
+    var itertext = Function(self):
+        # all text in document order: this element's text, then each child's text + its tail.
+        # Iterative (no recursion): a work stack of ["text", s] / ["node", elem] items, expanded
+        # in reverse so the document order is preserved on pop.
+        var parts = []
+        var stack = [["node", self]]
+        while len(stack) > 0:
+            var item = stack.pop()
+            if item[0] == "text":
+                if item[1] != "":
+                    parts.append(item[1])
+            else:
+                var e = item[1]
+                var work = [["text", e.text]]
+                for c in e.children:
+                    work.append(["node", c])
+                    work.append(["text", c.tail])
+                var j = len(work) - 1
+                while j >= 0:
+                    stack.append(work[j])
+                    j = j - 1
+        return parts
+
+    var tostring = Function(self) -> String:
+        # Iterative serialization (no recursion): a work stack of ["str", s] fragments and
+        # ["open", elem] expansions, pushed in reverse so they concatenate in document order.
+        var out = ""
+        var stack = [["open", self]]
+        while len(stack) > 0:
+            var item = stack.pop()
+            if item[0] == "str":
+                out = out + item[1]
+            else:
+                var e = item[1]
+                var head = "<" + e.tag
+                for k in e.attrib.keys():
+                    head = head + " " + k + "=\"" + _escape_attr(String(e.attrib[k])) + "\""
+                if len(e.children) == 0 and e.text == "":
+                    out = out + head + " />"
+                else:
+                    var work = [["str", head + ">"], ["str", _escape(e.text)]]
+                    for c in e.children:
+                        work.append(["open", c])
+                        work.append(["str", _escape(c.tail)])
+                    work.append(["str", "</" + e.tag + ">"])
+                    var j = len(work) - 1
+                    while j >= 0:
+                        stack.append(work[j])
+                        j = j - 1
+        return out
+
+    var _str_ = Function(self) -> String:
+        return self.tostring()
+
+# --- the parser ---------------------------------------------------------------------------------
+# Parse one start/empty tag body (after '<', up to and including '>'): returns [name, attrib, selfclose, newpos].
+var _parse_tag = Function(s, i):
+    var n = len(s)
+    # tag name
+    var start = i
+    while i < n and not _isspace(s[i]) and s[i] != ">" and s[i] != "/":
+        i = i + 1
+    var name = s[start:i]
+    var attrib = {}
+    # attributes
+    while i < n:
+        while i < n and _isspace(s[i]):
+            i = i + 1
+        if i >= n:
+            break
+        if s[i] == "/" or s[i] == ">":
+            break
+        var astart = i
+        while i < n and s[i] != "=" and not _isspace(s[i]) and s[i] != ">" and s[i] != "/":
+            i = i + 1
+        var aname = s[astart:i]
+        while i < n and _isspace(s[i]):
+            i = i + 1
+        var aval = ""
+        if i < n and s[i] == "=":
+            i = i + 1
+            while i < n and _isspace(s[i]):
+                i = i + 1
+            if i < n and (s[i] == "\"" or s[i] == "'"):
+                var q = s[i]
+                i = i + 1
+                var vstart = i
+                while i < n and s[i] != q:
+                    i = i + 1
+                aval = _decode(s[vstart:i])
+                i = i + 1            # skip closing quote
+        attrib[aname] = aval
+    var selfclose = False
+    if i < n and s[i] == "/":
+        selfclose = True
+        i = i + 1
+    if i < n and s[i] == ">":
+        i = i + 1
+    return [name, attrib, selfclose, i]
+
+# Character data belongs to the open element's `text` before its first child, or to the most recent
+# child's `tail` afterwards — so mixed content keeps document order on round-trip.
+var _addtext = Function(elem, data):
+    if len(elem.children) > 0:
+        var last = elem.children[len(elem.children) - 1]
+        last.tail = last.tail + data
+    else:
+        elem.text = elem.text + data
+
+var parse = Function(text : String):
+    var n = len(text)
+    var i = 0
+    var root = None
+    var stack = []
+    while i < n:
+        if text[i] != "<":
+            # character data until the next '<'
+            var lt = text.find("<", i)
+            if lt < 0:
+                lt = n
+            if len(stack) > 0:
+                _addtext(stack[len(stack) - 1], _decode(text[i:lt]))
+            i = lt
+            continue
+        # we are at '<'
+        if text[i:i + 4] == "<!--":
+            var close = text.find("-->", i)
+            i = (close + 3) if close >= 0 else n
+            continue
+        if text[i:i + 9] == "<![CDATA[":
+            var close = text.find("]]>", i)
+            var endc = close if close >= 0 else n
+            if len(stack) > 0:
+                _addtext(stack[len(stack) - 1], text[i + 9:endc])   # CDATA: raw, no decoding
+            i = (endc + 3) if close >= 0 else n
+            continue
+        if text[i:i + 2] == "<?":
+            var close = text.find("?>", i)
+            i = (close + 2) if close >= 0 else n
+            continue
+        if text[i:i + 2] == "<!":
+            var close = text.find(">", i)
+            i = (close + 1) if close >= 0 else n
+            continue
+        if text[i:i + 2] == "</":
+            var close = text.find(">", i)
+            var endc = close if close >= 0 else n
+            if len(stack) > 0:
+                stack.pop()
+            i = (endc + 1) if close >= 0 else n
+            continue
+        # a start or empty-element tag
+        var parsed = _parse_tag(text, i + 1)
+        var elem = Element(parsed[0], parsed[1])
+        if len(stack) > 0:
+            stack[len(stack) - 1].children.append(elem)
+        else:
+            root = elem
+        if not parsed[2]:
+            stack.append(elem)
+        i = parsed[3]
+    return root
+
+# fromstring is an alias for parse (ElementTree naming); tostring serializes an element.
+var fromstring = parse
+var tostring = Function(element) -> String:
+    return element.tostring()

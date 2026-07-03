@@ -1,0 +1,199 @@
+# Robustness fuzzer: hurl thousands of random/hostile operations at the language and stdlib. Every
+# operation is wrapped in try/catch, so a normal failure (type error, out-of-range, bad value) is
+# caught and ignored. The ONLY way this test fails is if some operation crashes the interpreter
+# uncatchably (abort / UB / hang) — then "OK" never prints. Deterministic (fixed seed).
+var io = import("io")
+var rng = import("random").Random(0xC0FFEE)
+var math = import("math")
+var json = import("json")
+var zlib = import("zlib")
+
+var pick = Function(xs):
+    return xs[rng.randint(0, len(xs) - 1)]
+
+var randInt = Function():
+    var r = rng.randint(0, 12)
+    if r == 0:
+        return 9223372036854775807
+    if r == 1:
+        return -9223372036854775808
+    if r == 2:
+        return 0
+    if r == 3:
+        return rng.randint(-5, 5)
+    return rng.randint(-1000000, 1000000)
+
+var randStr = Function():
+    var n = rng.randint(0, 8)
+    var s = ""
+    var i = 0
+    while i < n:
+        s = s + pick(["a", "Z", "9", " ", "é", "\n", "/", "%", "\"", "{"])
+        i = i + 1
+    return s
+
+var randVal = Function(depth):
+    var k = rng.randint(0, 8)
+    if k == 0:
+        return randInt()
+    if k == 1:
+        return rng.uniform(-1000.0, 1000.0)
+    if k == 2:
+        return randStr()
+    if k == 3:
+        return pick([True, False])
+    if k == 4:
+        return None
+    if depth > 0 and k == 5:
+        var lst = []
+        var n = rng.randint(0, 4)
+        var i = 0
+        while i < n:
+            lst.append(randVal(depth - 1))
+            i = i + 1
+        return lst
+    if depth > 0 and k == 6:
+        var d = {}
+        var n = rng.randint(0, 3)
+        var i = 0
+        while i < n:
+            d[randStr()] = randVal(depth - 1)
+            i = i + 1
+        return d
+    if depth > 0 and k == 7:
+        var st = Set()
+        var n = rng.randint(0, 3)
+        var i = 0
+        while i < n:
+            try:
+                st.add(randInt())
+            catch as e:
+                pass
+            i = i + 1
+        return st
+    return randInt()
+
+# Apply one random operation to a/b. Anything ill-typed throws and is caught by the caller.
+var apply = Function(op, a, b):
+    switch op:
+        case 0:
+            return a + b
+        case 1:
+            return a - b
+        case 2:
+            return a * b
+        case 3:
+            return a / b
+        case 4:
+            return a // b
+        case 5:
+            return a % b
+        case 6:
+            return a ** b
+        case 7:
+            return a < b
+        case 8:
+            return a == b and a != b
+        case 9:
+            return a in b
+        case 10:
+            return a[b]
+        case 11:
+            return len(a)
+        case 12:
+            return abs(a)
+        case 13:
+            return -a
+        case 14:
+            return not a
+        case 15:
+            return String(a) + String(b)
+        case 16:
+            return Integer(a)
+        case 17:
+            return Float(a)
+        case 18:
+            return sorted(a)
+        case 19:
+            return List(reversed(a))
+        case 20:
+            return sum(a)
+        case 21:
+            return min(a)
+        case 22:
+            return max(a)
+        case 23:
+            return round(a, b)
+        case 24:
+            return divmod(a, b)
+        case 25:
+            return pow(a, b)
+        case 26:
+            return bitand(a, b)
+        case 27:
+            return shl(a, b)
+        case 28:
+            return bin(a)
+        case 29:
+            return hex(a)
+        case 30:
+            return ord(a)
+        case 31:
+            return chr(a)
+        case 32:
+            return range(a)
+        case 33:
+            return range(a, b)
+        case 34:
+            return math.sqrt(a)
+        case 35:
+            return math.factorial(a)
+        case 36:
+            return math.gcd(a, b)
+        case 37:
+            return json.dumps(a)
+        case 38:
+            return json.loads(a)
+        case 39:
+            return zlib.decompress(a)
+        case 40:
+            return a[0:b]
+        default:
+            return a[b:]
+
+var ran = 0
+var iters = 5000
+var i = 0
+while i < iters:
+    try:
+        var a = randVal(2)
+        var b = randVal(1)
+        var op = rng.randint(0, 41)
+        discard apply(op, a, b)
+    catch as e:
+        pass         # expected: ill-typed / out-of-range / bad value / too-deeply-nested
+    ran = ran + 1
+    i = i + 1
+
+assert ran == iters, "fuzzer completed every iteration without an uncatchable crash"
+
+# Targeted round-trip fuzzing. zlib operates on a String, so it must always round-trip exactly
+# (a positive check). The structured serializers (json/serialize/dump) are fed arbitrary random
+# values: they must never crash uncatchably, but a catchable error (unsupported value, too deeply
+# nested, ...) is acceptable, so they run inside try/catch.
+var ser = import("serialize")
+var dmp = import("dump")
+var j = 0
+while j < 500:
+    var v = randVal(3)
+    var s = randStr()
+    assert zlib.decompress(zlib.compress(s)) == s, "zlib round-trip"
+    try:
+        discard json.loads(json.dumps(v))
+        discard ser.loads(ser.dumps(v))
+        discard dmp.loads(dmp.dumps(v))
+    catch as e:
+        pass
+    j = j + 1
+
+io.print("OK")

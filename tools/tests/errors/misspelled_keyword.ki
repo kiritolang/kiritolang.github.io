@@ -1,0 +1,4 @@
+# "wihle" is a typo; the lexer treats it as a name and the parser cannot make a statement of it.
+var x = 1
+wihle x < 3:
+    x = x + 1

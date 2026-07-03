@@ -1,0 +1,222 @@
+# A full, reusable trie (prefix tree) in pure Kirito, as classes.
+#
+#   Trie         — the shared core: insert / contains / remove / keys / matching, char by char.
+#   TriePrefix   — a stored key matches `text` when it is a PREFIX of text (text.startswith(key)).
+#   TrieSuffix   — a stored key matches `text` when it is a SUFFIX of text (text.endswith(key)).
+#
+# The only difference between the two is the direction keys are walked: TrieSuffix stores (and
+# queries) the REVERSED string, so a suffix question becomes the same prefix walk. Everything else
+# — membership, deletion, enumeration, longest/all-match — is inherited unchanged.
+#
+# Each node is a Dict mapping a single character to a child node. The end of a stored key is marked
+# with the sentinel key SENT = "" (the empty string is never produced by iterating characters, so
+# it can never collide with a real edge), and it stores the ORIGINAL key there — so matching and
+# enumeration always hand back the strings you inserted, even in the reversed suffix trie.
+
+var SENT = ""   # terminal sentinel: can't collide with a single-character edge
+
+class Trie:
+    var _init_ = Function(self):
+        self._root = {}
+        self._size = 0
+
+    # How a key/query is turned into the sequence of characters the trie walks.
+    # Identity here; TrieSuffix overrides it to reverse.
+    var _seq = Function(self, s) -> String:
+        return s
+
+    # Walk an already-transformed sequence; return the node reached, or None if the path is absent.
+    var _find = Function(self, seq):
+        var node = self._root
+        for ch in seq:
+            if ch not in node:
+                return None
+            node = node[ch]
+        return node
+
+    # Depth-first collection of every original key in a subtree (sorted by the caller).
+    var _collect = Function(self, node, out):
+        if SENT in node:
+            out.append(node[SENT])
+        for ch in node:
+            if ch != SENT:
+                self._collect(node[ch], out)
+
+    # --- mutation -------------------------------------------------------------------------------
+    var insert = Function(self, key: String) -> Trie:
+        var node = self._root
+        for ch in self._seq(key):
+            if ch not in node:
+                node[ch] = {}
+            node = node[ch]
+        if SENT not in node:
+            self._size = self._size + 1
+        node[SENT] = key            # store the ORIGINAL key (not the reversed walk)
+        return self                 # chainable: t.insert("a").insert("b")
+
+    var remove = Function(self, key: String) -> Bool:
+        var path = []               # (parent node, edge char) along the way, to prune afterwards
+        var node = self._root
+        for ch in self._seq(key):
+            if ch not in node:
+                return False
+            path.append([node, ch])
+            node = node[ch]
+        if SENT not in node:
+            return False            # not a stored key (only a path to other keys)
+        node.remove(SENT)
+        self._size = self._size - 1
+        # prune now-empty nodes bottom-up so the structure stays minimal
+        var i = len(path) - 1
+        while i >= 0:
+            var parent = path[i][0]
+            var edge = path[i][1]
+            if len(parent[edge]) == 0:
+                parent.remove(edge)
+            else:
+                break
+            i = i - 1
+        return True
+
+    var clear = Function(self):
+        self._root = {}
+        self._size = 0
+
+    # --- exact membership -----------------------------------------------------------------------
+    var contains = Function(self, key: String) -> Bool:
+        var node = self._find(self._seq(key))
+        return node != None and SENT in node
+
+    # --- prefix / suffix matching (the point of the two subclasses) -----------------------------
+    # True iff some stored key is a prefix (TriePrefix) / suffix (TrieSuffix) of `text`.
+    var matches = Function(self, text: String) -> Bool:
+        return self.longestmatch(text) != None
+
+    # Every stored key that is a prefix/suffix of `text`, shortest first.
+    var matchall = Function(self, text: String) -> List:
+        var out = []
+        var node = self._root
+        if SENT in node:
+            out.append(node[SENT])                 # the empty key matches everything
+        for ch in self._seq(text):
+            if ch not in node:
+                break                               # no longer/other key can match — stop early
+            node = node[ch]
+            if SENT in node:
+                out.append(node[SENT])
+        return out
+
+    # The longest stored key that is a prefix/suffix of `text`, or None.
+    var longestmatch = Function(self, text: String):
+        var best = None
+        var node = self._root
+        if SENT in node:
+            best = node[SENT]
+        for ch in self._seq(text):
+            if ch not in node:
+                break
+            node = node[ch]
+            if SENT in node:
+                best = node[SENT]
+        return best
+
+    # --- enumeration ----------------------------------------------------------------------------
+    var keys = Function(self) -> List:
+        var out = []
+        self._collect(self._root, out)
+        out.sort()
+        return out
+
+    # --- operator protocol ----------------------------------------------------------------------
+    var _len_ = Function(self) -> Integer:
+        return self._size                           # len(trie)
+    var _contains_ = Function(self, key) -> Bool:
+        return self.contains(key)                   # key in trie  (exact membership)
+    var _iter_ = Function(self):
+        return self.keys()                          # for k in trie
+    var _str_ = Function(self) -> String:
+        return type(self) + "(" + String(self._size) + " keys)"
+
+
+class TriePrefix(Trie):
+    # matches(text) is True iff some stored key is a PREFIX of text (text starts with the key).
+    # Uses the inherited identity walk. Adds the classic prefix-tree autocomplete query.
+    var withprefix = Function(self, prefix: String) -> List:
+        var node = self._find(self._seq(prefix))
+        var out = []
+        if node != None:
+            self._collect(node, out)
+        out.sort()
+        return out                                  # every stored key that BEGINS WITH `prefix`
+
+
+class TrieSuffix(Trie):
+    # matches(text) is True iff some stored key is a SUFFIX of text (text ends with the key).
+    # The only change: walk strings reversed, so the suffix question is the same prefix walk.
+    var _seq = Function(self, s: String) -> String:
+        return s[::-1]
+    var withsuffix = Function(self, suffix: String) -> List:
+        var node = self._find(self._seq(suffix))
+        var out = []
+        if node != None:
+            self._collect(node, out)
+        out.sort()
+        return out                                  # every stored key that ENDS WITH `suffix`
+
+
+# ------------------------------------------------------------------------------------- self-test
+# Runs only when this file is executed directly (not when imported as a module).
+if argmain:
+    var io = import("io")
+
+    # ---- TriePrefix -----------------------------------------------------------------------------
+    var p = TriePrefix()
+    p.insert("app").insert("apple").insert("apply").insert("apt").insert("banana")
+    assert len(p) == 5, "size"
+    assert "apple" in p and "apt" in p, "exact membership via `in`"
+    assert not ("ap" in p), "a path that isn't a stored key is not a member"
+
+    # matching: is any stored key a prefix of the query?
+    assert p.matches("application"), "'app' is a prefix of 'application'"
+    assert p.longestmatch("application") == "app", "longest prefix match"
+    assert p.matchall("apple pie") == ["app", "apple"], "all prefixes, shortest first"
+    assert not p.matches("axe"), "no stored key prefixes 'axe'"
+
+    # autocomplete: stored keys beginning with a prefix
+    assert p.withprefix("app") == ["app", "apple", "apply"], "withprefix"
+    assert p.withprefix("z") == [], "withprefix with no hits"
+
+    # deletion + pruning
+    assert p.remove("apple"), "remove returns True for a present key"
+    assert not p.remove("apple"), "remove returns False the second time"
+    assert not ("apple" in p) and ("apply" in p), "removing one key keeps its siblings"
+    assert len(p) == 4, "size after remove"
+
+    io.print("TriePrefix:", String(p), "->", p.keys())
+
+    # ---- TrieSuffix -----------------------------------------------------------------------------
+    var s = TrieSuffix()
+    for ext in [".jpg", ".jpeg", ".png", ".tar.gz", ".gz"]:
+        discard s.insert(ext)
+    assert s.matches("holiday.png"), "'.png' is a suffix of 'holiday.png'"
+    assert s.longestmatch("archive.tar.gz") == ".tar.gz", "longest suffix wins over '.gz'"
+    assert s.matchall("archive.tar.gz") == [".gz", ".tar.gz"], "all suffixes, shortest first"
+    assert not s.matches("README"), "no stored suffix matches"
+    assert s.withsuffix(".gz") == [".gz", ".tar.gz"], "every key ending with '.gz'"
+    assert ".jpeg" in s and not (".bmp" in s), "exact membership"
+
+    io.print("TrieSuffix:", String(s), "->", s.keys())
+
+    # ---- a TrieSuffix at work: domain blacklist (label-boundary suffix) --------------------------
+    # Plain suffix matching would let "notexample.com" match "example.com". The standard fix is to
+    # store "." + domain and query "." + candidate, so a match can only land on a label boundary:
+    # "mail.example.com" and the apex "example.com" match "example.com", but "notexample.com" cannot.
+    var bl = TrieSuffix()
+    bl.insert(".example.com").insert(".test.org")
+    var blocked = Function(domain): return bl.matches("." + domain)
+    assert blocked("mail.example.com"), "subdomain matches"
+    assert blocked("example.com"), "the apex matches"
+    assert not blocked("notexample.com"), "no false match across a label boundary"
+    assert blocked("a.b.test.org") and not blocked("test.org.evil.com"), "deep subdomain, not a fake suffix"
+
+    io.print("OK trie")

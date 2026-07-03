@@ -1,0 +1,390 @@
+# ============================================================================
+# random_prng_quality.ki — statistical quality tests for both PRNG engines
+# exposed by random.Random. Every test runs against BOTH generators (xoshiro
+# and mersenne_twister) with a fixed seed so failures are reproducible.
+#
+# The tests are calibrated with generous pass thresholds (~5–6σ) so a healthy
+# generator passes essentially always (per-test flake ~ 1e-7) while a truly
+# broken one — one whose bits are biased, whose runs are non-random, whose
+# distribution is skewed, whose values are correlated — is caught.
+#
+# What is checked (per engine):
+#   1. Uniformity of the [0, 1) output — mean ≈ 0.5, variance ≈ 1/12.
+#   2. Uniformity across small integer bins — chi-square test.
+#   3. Monobit test on Bernoulli(0.5) — the low bit is balanced.
+#   4. Per-bit balance across the top 32 bits of the integer output.
+#   5. Byte-frequency chi-square across 256 buckets.
+#   6. Runs test — no long same-value streak of Bernoulli draws.
+#   7. Lag-1 serial correlation — no linear predictability between draws.
+#   8. Autocorrelation at lags 2, 7, 31 — no periodic predictability.
+#   9. Gauss(0,1) sanity — mean ≈ 0, variance ≈ 1, ~99.7% inside ±3σ.
+#  10. Expovariate mean ≈ 1/λ.
+#  11. Shuffle is unbiased — every element visits every position ~equally.
+#  12. Choice is uniform over the pool.
+#
+# All thresholds are documented alongside each test; increase N to tighten.
+# ============================================================================
+var io = import("io")
+var math = import("math")
+var random = import("random")
+
+var STATS_N = 100000        # sample count for the scalar-distribution tests
+var BINS_N = 10000          # sample count for chi-square across bins
+var BIT_N = 20000           # sample count for per-bit balance
+var SHUFFLE_N = 5000        # shuffles for the unbiased-shuffle test
+
+# ---------------------------------------------------------------------------
+# Statistical helpers.
+# ---------------------------------------------------------------------------
+var mean = Function(xs) -> Float:
+    var s = 0.0
+    for x in xs:
+        s = s + Float(x)
+    return s / Float(len(xs))
+
+var variance = Function(xs, mu) -> Float:
+    var s = 0.0
+    for x in xs:
+        var d = Float(x) - mu
+        s = s + d * d
+    return s / Float(len(xs))
+
+# Chi-square statistic for observed vs expected counts (goodness of fit).
+var chi_square = Function(observed, expected) -> Float:
+    var s = 0.0
+    var i = 0
+    while i < len(observed):
+        var e = Float(expected[i])
+        var d = Float(observed[i]) - e
+        s = s + d * d / e
+        i = i + 1
+    return s
+
+# ---------------------------------------------------------------------------
+# 1. Uniformity of random() — mean ~ 1/2, variance ~ 1/12.
+#    A biased generator would move the mean; a stuck-in-a-corner generator
+#    would depress the variance. With N = STATS_N the standard error of
+#    the mean is 1/sqrt(12N) ≈ 9e-4; 5σ is ≈ 4.5e-3 — the tolerance we use.
+# ---------------------------------------------------------------------------
+var test_uniform_stats = Function(gen):
+    var rng = random.Random(12345, generator = gen)
+    var xs = []
+    var i = 0
+    while i < STATS_N:
+        xs.append(rng.random())
+        i = i + 1
+    var mu = mean(xs)
+    var va = variance(xs, mu)
+    assert (mu - 0.5).compare(0.0, abs_tol = 0.005), gen + ": random() mean ~ 0.5 (got " + String(mu) + ")"
+    assert (va - (1.0 / 12.0)).compare(0.0, abs_tol = 0.002), gen + ": random() variance ~ 1/12"
+
+# ---------------------------------------------------------------------------
+# 2. Chi-square over 10 equal-width bins of random(). Expected count per bin
+#    is BINS_N/10 = 1000. A healthy generator has χ² ≈ df = 9 (mean of χ²_df).
+#    Critical value at α = 0.001 (df=9) ≈ 27.88 — we fail only well past that.
+# ---------------------------------------------------------------------------
+var test_chi_square_bins = Function(gen):
+    var rng = random.Random(54321, generator = gen)
+    var counts = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    var i = 0
+    while i < BINS_N:
+        var b = Integer(rng.random() * 10.0)
+        if b == 10:
+            b = 9
+        counts[b] = counts[b] + 1
+        i = i + 1
+    var expected = [1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000]
+    var chi = chi_square(counts, expected)
+    # α = 1e-4 critical for df=9 is ~ 33.7 — plenty of headroom for a healthy PRNG.
+    assert chi < 40.0, gen + ": chi-square 10-bin uniformity χ² = " + String(chi)
+
+# ---------------------------------------------------------------------------
+# 3. Monobit / Bernoulli(0.5): count 1s across N Bernoulli draws.
+#    Mean = N/2, standard deviation = sqrt(N)/2. For N = 20000, σ ≈ 70.7,
+#    so 6σ = 424. Anything outside ±500 is a smoking gun.
+# ---------------------------------------------------------------------------
+var test_bernoulli_balance = Function(gen):
+    var rng = random.Random(7, generator = gen)
+    var ones = 0
+    var n = 20000
+    var i = 0
+    while i < n:
+        # 50/50 via randint(0, 1)
+        if rng.randint(0, 1) == 1:
+            ones = ones + 1
+        i = i + 1
+    var half = n / 2
+    var diff = ones - half
+    if diff < 0:
+        diff = -diff
+    # 6-sigma window
+    assert diff < 500, gen + ": bernoulli imbalance ones=" + String(ones) + " (expected ~ " + String(half) + ")"
+
+# ---------------------------------------------------------------------------
+# 4. Per-bit balance: each of the top 32 bit positions of a uint64 draw
+#    should be 0/1 balanced across N draws. A bit that's stuck 0 or 1 —
+#    or heavily biased — is a red flag. Deviation window as above.
+# ---------------------------------------------------------------------------
+var test_bit_balance = Function(gen):
+    var rng = random.Random(2024, generator = gen)
+    # 32 counters — one per bit position.
+    var counts = []
+    var b = 0
+    while b < 32:
+        counts.append(0)
+        b = b + 1
+    var i = 0
+    while i < BIT_N:
+        # Full-uint32 range: randint(0, 2^31 - 1) picks the top 31 bits reliably.
+        # Use two 15-bit draws combined so we don't rely on huge randint ranges.
+        var lo = rng.randint(0, 65535)
+        var hi = rng.randint(0, 65535)
+        var v = bitor(shl(hi, 16), lo)
+        b = 0
+        while b < 32:
+            if bitand(shr(v, b), 1) == 1:
+                counts[b] = counts[b] + 1
+            b = b + 1
+        i = i + 1
+    var half = BIT_N / 2
+    b = 0
+    while b < 32:
+        var d = counts[b] - half
+        if d < 0:
+            d = -d
+        # 6-sigma window: σ = sqrt(N)/2 ≈ 70 for N = 20000; 6σ ≈ 425.
+        assert d < 500, gen + ": bit " + String(b) + " imbalance " + String(counts[b]) + "/" + String(BIT_N)
+        b = b + 1
+
+# ---------------------------------------------------------------------------
+# 5. Byte-frequency chi-square: 8-bit output should hit each of 256 values
+#    ~equally. df = 255, mean of χ²_df = 255, 6σ ≈ 255 + 6*sqrt(510) ≈ 390.
+# ---------------------------------------------------------------------------
+var test_byte_uniform = Function(gen):
+    var rng = random.Random(31415, generator = gen)
+    var N = 25600      # 100 draws per bucket in expectation
+    var counts = []
+    var i = 0
+    while i < 256:
+        counts.append(0)
+        i = i + 1
+    i = 0
+    while i < N:
+        var v = rng.randint(0, 255)
+        counts[v] = counts[v] + 1
+        i = i + 1
+    var expected = []
+    i = 0
+    while i < 256:
+        expected.append(100)
+        i = i + 1
+    var chi = chi_square(counts, expected)
+    # α = 1e-4 (df=255) ≈ 341 — pass threshold well above that.
+    assert chi < 400.0, gen + ": byte-frequency χ² = " + String(chi)
+
+# ---------------------------------------------------------------------------
+# 6. Runs test on Bernoulli(0.5): the longest 0-or-1 streak in N draws is
+#    Log2(N) ± O(1). For N = 5000, log2(N) ≈ 12.3, so a run longer than 24
+#    is astronomically unlikely for a well-mixed generator (p < 1e-4).
+# ---------------------------------------------------------------------------
+var test_runs = Function(gen):
+    var rng = random.Random(6180339, generator = gen)
+    var longest = 0
+    var current = 0
+    var prev = -1
+    var n = 5000
+    var i = 0
+    while i < n:
+        var b = rng.randint(0, 1)
+        if b == prev:
+            current = current + 1
+        else:
+            current = 1
+            prev = b
+        if current > longest:
+            longest = current
+        i = i + 1
+    assert longest < 24, gen + ": longest run of Bernoulli draws was " + String(longest)
+    # And the SHORTEST run: at least one transition must occur early — a
+    # generator stuck on one value forever fails here.
+    assert longest >= 2, gen + ": generator never transitioned"
+
+# ---------------------------------------------------------------------------
+# 7. Lag-1 serial correlation: consecutive random() values should be
+#    linearly independent. The Pearson correlation of (x[i], x[i+1]) has
+#    variance ≈ 1/N under the null, so 5σ = 5/sqrt(N) — for N = STATS_N,
+#    that's ~ 0.016. We use a loose 0.05 window.
+# ---------------------------------------------------------------------------
+var test_lag_correlation = Function(gen):
+    var rng = random.Random(2718281, generator = gen)
+    var xs = []
+    var i = 0
+    while i < STATS_N:
+        xs.append(rng.random())
+        i = i + 1
+    var mu = mean(xs)
+    # Cov(x[i], x[i+1]) / Var(x)
+    var num = 0.0
+    var denom = 0.0
+    i = 0
+    while i < len(xs) - 1:
+        num = num + (xs[i] - mu) * (xs[i + 1] - mu)
+        denom = denom + (xs[i] - mu) * (xs[i] - mu)
+        i = i + 1
+    var rho = num / denom
+    var abs_rho = rho if rho >= 0.0 else -rho
+    assert abs_rho < 0.05, gen + ": lag-1 correlation " + String(rho)
+
+# ---------------------------------------------------------------------------
+# 8. Autocorrelation at lags 2, 7, 31. Same threshold as above.
+# ---------------------------------------------------------------------------
+var test_autocorrelation_at = Function(gen, lag):
+    var rng = random.Random(1414213 + lag, generator = gen)
+    var xs = []
+    var i = 0
+    while i < STATS_N:
+        xs.append(rng.random())
+        i = i + 1
+    var mu = mean(xs)
+    var num = 0.0
+    var denom = 0.0
+    i = 0
+    while i < len(xs) - lag:
+        num = num + (xs[i] - mu) * (xs[i + lag] - mu)
+        denom = denom + (xs[i] - mu) * (xs[i] - mu)
+        i = i + 1
+    var rho = num / denom
+    var abs_rho = rho if rho >= 0.0 else -rho
+    assert abs_rho < 0.05, gen + ": lag-" + String(lag) + " correlation " + String(rho)
+
+# ---------------------------------------------------------------------------
+# 9. Gauss(0, 1) sanity — the machinery is `<random>`, so this mostly
+#    validates that the engine drives the standard normal distribution
+#    correctly. Mean ≈ 0 (SEM = 1/sqrt(N) ≈ 3e-3), var ≈ 1.
+# ---------------------------------------------------------------------------
+var test_gauss = Function(gen):
+    var rng = random.Random(577215, generator = gen)
+    var xs = []
+    var inside3 = 0
+    var i = 0
+    while i < STATS_N:
+        var g = rng.gauss(0.0, 1.0)
+        xs.append(g)
+        if g > -3.0 and g < 3.0:
+            inside3 = inside3 + 1
+        i = i + 1
+    var mu = mean(xs)
+    var va = variance(xs, mu)
+    assert (mu - 0.0).compare(0.0, abs_tol = 0.02), gen + ": gauss mean ~ 0 (got " + String(mu) + ")"
+    assert (va - 1.0).compare(0.0, abs_tol = 0.04), gen + ": gauss variance ~ 1 (got " + String(va) + ")"
+    # Empirical rule: ~99.73% of draws within ±3σ. Expect ~99730 out of 100000.
+    # 4σ tolerance is ~85 draws.
+    var pct = Float(inside3) / Float(STATS_N)
+    assert (pct - 0.9973).compare(0.0, abs_tol = 0.005), gen + ": gauss ±3σ coverage " + String(pct)
+
+# ---------------------------------------------------------------------------
+# 10. Expovariate(λ) mean is 1/λ.
+# ---------------------------------------------------------------------------
+var test_expovariate = Function(gen):
+    var rng = random.Random(202607, generator = gen)
+    var lambd = 1.5
+    var xs = []
+    var i = 0
+    while i < STATS_N:
+        xs.append(rng.expovariate(lambd))
+        i = i + 1
+    var mu = mean(xs)
+    var target = 1.0 / lambd
+    assert (mu - target).compare(0.0, abs_tol = 0.02), gen + ": expo mean ~ 1/λ (got " + String(mu) + ")"
+
+# ---------------------------------------------------------------------------
+# 11. Unbiased shuffle: after many shuffles of a length-K list, each element
+#     should visit each position roughly SHUFFLE_N / K times. For K = 5 and
+#     SHUFFLE_N = 5000, expected = 1000 per cell. σ = sqrt(N*p*(1-p)) ≈ 28.
+#     6σ ≈ 170; we use 250 (~8σ) for margin.
+# ---------------------------------------------------------------------------
+var test_shuffle_unbiased = Function(gen):
+    var rng = random.Random(28182818, generator = gen)
+    var K = 5
+    # position_counts[element][position]
+    var counts = []
+    var i = 0
+    while i < K:
+        var row = []
+        var j = 0
+        while j < K:
+            row.append(0)
+            j = j + 1
+        counts.append(row)
+        i = i + 1
+    var trial = 0
+    while trial < SHUFFLE_N:
+        var lst = [0, 1, 2, 3, 4]
+        rng.shuffle(lst)
+        var pos = 0
+        while pos < K:
+            counts[lst[pos]][pos] = counts[lst[pos]][pos] + 1
+            pos = pos + 1
+        trial = trial + 1
+    var expected = SHUFFLE_N / K
+    i = 0
+    while i < K:
+        var j2 = 0
+        while j2 < K:
+            var d = counts[i][j2] - expected
+            if d < 0:
+                d = -d
+            assert d < 250, gen + ": shuffle bias — element " + String(i) + " visits pos " + String(j2) + " " + String(counts[i][j2]) + " times (expected " + String(expected) + ")"
+            j2 = j2 + 1
+        i = i + 1
+
+# ---------------------------------------------------------------------------
+# 12. Choice uniformity: repeated .choice(pool) should hit each pool element
+#     ~equally. Same test as shuffle with a smaller K.
+# ---------------------------------------------------------------------------
+var test_choice_uniform = Function(gen):
+    var rng = random.Random(3141593, generator = gen)
+    var pool = ["a", "b", "c", "d"]
+    var counts = {"a": 0, "b": 0, "c": 0, "d": 0}
+    var N = 10000
+    var i = 0
+    while i < N:
+        var e = rng.choice(pool)
+        counts[e] = counts[e] + 1
+        i = i + 1
+    var expected = N / len(pool)
+    for k in counts.keys():
+        var d = counts[k] - expected
+        if d < 0:
+            d = -d
+        # σ ≈ sqrt(N*(1/4)*(3/4)) ≈ 43; 6σ ≈ 260
+        assert d < 260, gen + ": choice bias key=" + k + " count=" + String(counts[k])
+
+# ---------------------------------------------------------------------------
+# Run every test against both generators.
+# ---------------------------------------------------------------------------
+var run_all_for = Function(gen):
+    test_uniform_stats(gen)
+    test_chi_square_bins(gen)
+    test_bernoulli_balance(gen)
+    test_bit_balance(gen)
+    test_byte_uniform(gen)
+    test_runs(gen)
+    test_lag_correlation(gen)
+    test_autocorrelation_at(gen, 2)
+    test_autocorrelation_at(gen, 7)
+    test_autocorrelation_at(gen, 31)
+    test_gauss(gen)
+    test_expovariate(gen)
+    test_shuffle_unbiased(gen)
+    test_choice_uniform(gen)
+
+io.print("--- xoshiro ---")
+run_all_for("xoshiro")
+io.print("all quality tests passed for xoshiro")
+
+io.print("--- mersenne_twister ---")
+run_all_for("mersenne_twister")
+io.print("all quality tests passed for mersenne_twister")
+
+io.print("OK random-prng-quality")

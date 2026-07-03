@@ -1,0 +1,127 @@
+# cronki/parse.ki — cron-format schedule parser.
+#
+# Line grammar (# and blank lines ignored):
+#     MINUTE HOUR DAY-OF-MONTH MONTH DAY-OF-WEEK   COMMAND
+# or
+#     @<macro>                                     COMMAND
+#
+# Macros:  @yearly / @annually (0 0 1 1 *),  @monthly (0 0 1 * *),  @weekly (0 0 * * 0),
+#          @daily / @midnight (0 0 * * *),   @hourly  (0 * * * *)
+#
+# Each field is a comma-separated list of terms; each term is a literal number, a range `A-B`,
+# a range with step `A-B/K`, a plain wildcard `*`, or a wildcard with step `*/K`. Range bounds
+# are inclusive.
+#
+# The parsed schedule is a Dict:
+#   {"minute": Set, "hour": Set, "dom": Set, "month": Set, "dow": Set, "command": String, "raw": String}
+# The Set is the *materialised* set of allowed values for that field, so the matcher is O(1).
+
+var regex = import("regex")
+
+var _macros = {
+    "yearly":   [{"m": 0}, {"h": 0}, {"dom": 1}, {"mo": 1}, {"dow": "*"}],
+    "annually": [{"m": 0}, {"h": 0}, {"dom": 1}, {"mo": 1}, {"dow": "*"}],
+    "monthly":  [{"m": 0}, {"h": 0}, {"dom": 1}, {"mo": "*"}, {"dow": "*"}],
+    "weekly":   [{"m": 0}, {"h": 0}, {"dom": "*"}, {"mo": "*"}, {"dow": 0}],
+    "daily":    [{"m": 0}, {"h": 0}, {"dom": "*"}, {"mo": "*"}, {"dow": "*"}],
+    "midnight": [{"m": 0}, {"h": 0}, {"dom": "*"}, {"mo": "*"}, {"dow": "*"}],
+    "hourly":   [{"m": 0}, {"h": "*"}, {"dom": "*"}, {"mo": "*"}, {"dow": "*"}],
+}
+
+var _fieldRanges = [
+    [0, 59],   # minute
+    [0, 23],   # hour
+    [1, 31],   # day-of-month
+    [1, 12],   # month
+    [0, 6],    # day-of-week (0=Sun)
+]
+
+var _tokenRe = regex.compile("^(?:(\\*)|([0-9]+))(?:-([0-9]+))?(?:/([0-9]+))?$")
+
+# Expand ONE comma-piece into a set of integers. Throws on any malformed input.
+var _expandTerm = Function(term : String, lo : Integer, hi : Integer) -> Set:
+    var out = Set()
+    for piece in term.split(","):
+        piece = piece.strip()
+        var m = _tokenRe.match(piece)
+        if m == None:
+            throw "invalid cron field: " + term
+        var isStar = m.group(1) != None and m.group(1) == "*"
+        var startVal = lo
+        var endVal = hi
+        if not isStar:
+            startVal = Integer(m.group(2))
+            if m.group(3) != None:
+                endVal = Integer(m.group(3))
+            else:
+                endVal = startVal
+        else:
+            if m.group(3) != None:
+                throw "invalid cron field: * cannot have a -B endpoint"
+        var step = 1
+        if m.group(4) != None:
+            step = Integer(m.group(4))
+            if step <= 0:
+                throw "invalid cron field: step must be > 0"
+        if startVal < lo or endVal > hi or startVal > endVal:
+            throw "cron field '" + term + "' out of range [" + String(lo) + ".." + String(hi) + "]"
+        var v = startVal
+        while v <= endVal:
+            out.add(v)
+            v = v + step
+    return out
+
+var _lineRe    = regex.compile("^\\s*([^#]+?)\\s*(?:#.*)?$")
+var _macroRe   = regex.compile("^@([a-z]+)\\s+(.+)$")
+var _fieldsRe  = regex.compile("^(\\S+)\\s+(\\S+)\\s+(\\S+)\\s+(\\S+)\\s+(\\S+)\\s+(.+)$")
+
+# Parse a whole crontab-file string into a list of parsed job dicts.
+var parseString = Function(src : String, filename : String) -> List:
+    var jobs = []
+    var lines = src.split("\n")
+    var lineno = 0
+    for raw in lines:
+        lineno = lineno + 1
+        var trimmed = raw.strip()
+        if trimmed == "" or trimmed.startswith("#"):
+            continue
+        # a macro line? @daily <command>
+        var mm = _macroRe.match(trimmed)
+        var f = None
+        var cmd = None
+        if mm != None:
+            var mac = mm.group(1)
+            if mac not in _macros:
+                throw filename + ":" + String(lineno) + ": unknown macro @" + mac
+            cmd = mm.group(2)
+            # Expand the macro into the 5 field strings.
+            var expanded = _macros[mac]
+            f = [String(expanded[0]["m"]), String(expanded[1]["h"]), String(expanded[2]["dom"]), String(expanded[3]["mo"]), String(expanded[4]["dow"])]
+        else:
+            var fm = _fieldsRe.match(trimmed)
+            if fm == None:
+                throw filename + ":" + String(lineno) + ": expected `M H DoM Mo DoW CMD`, got: " + trimmed
+            f = [fm.group(1), fm.group(2), fm.group(3), fm.group(4), fm.group(5)]
+            cmd = fm.group(6)
+        try:
+            jobs.append({
+                "minute":  _expandTerm(f[0], _fieldRanges[0][0], _fieldRanges[0][1]),
+                "hour":    _expandTerm(f[1], _fieldRanges[1][0], _fieldRanges[1][1]),
+                "dom":     _expandTerm(f[2], _fieldRanges[2][0], _fieldRanges[2][1]),
+                "month":   _expandTerm(f[3], _fieldRanges[3][0], _fieldRanges[3][1]),
+                "dow":     _expandTerm(f[4], _fieldRanges[4][0], _fieldRanges[4][1]),
+                "command": cmd.strip(),
+                "raw":     trimmed,
+                "line":    lineno,
+            })
+        catch String as e:
+            throw filename + ":" + String(lineno) + ": " + e
+    return jobs
+
+# Convenience: read a file.
+var parseFile = Function(path : String) -> List:
+    var io = import("io")
+    var fh = io.open(path, "r")
+    var src = fh.read()
+    fh.close()
+    return parseString(src, path)

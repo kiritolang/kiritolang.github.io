@@ -1,0 +1,2 @@
+# PARSER: a var declaration with no '=' initializer
+var x

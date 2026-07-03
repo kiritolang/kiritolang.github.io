@@ -1,0 +1,119 @@
+# Kirito side of the cross-language benchmark. Same workloads, same LCG, same protocol as
+# compare_bench.cpp / .py:   ki compare_bench.ki <workload> <N> <reps>
+# Prints "<mean_ns> <stddev_ns>" on stdout.
+var io = import("io")
+var t = import("time")
+var math = import("math")
+
+var wl = arglist[0]
+var N = Integer(arglist[1])
+var reps = Integer(arglist[2])
+
+# Shared 31-bit LCG (matches the C++/Python baselines): stays in 31 bits so the int64 multiply
+# never overflows and the sequence is identical across languages.
+var lcg_state = 0
+var lcg_next = Function():
+    lcg_state = (lcg_state * 1103515245 + 12345) % 2147483648
+    return lcg_state
+
+var fib = Function(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+# --- inputs for the optimistic workloads, built once (outside the timed loop) ---
+var base = []
+var keys = []
+var text = ""
+if wl == "sort":
+    lcg_state = 12345
+    for i in range(N):
+        base.append(lcg_next() % 1000000)
+elif wl == "dict_ops":
+    lcg_state = 777
+    for i in range(N):
+        keys.append(lcg_next())
+elif wl == "string_ops":
+    lcg_state = 99
+    var parts = []
+    for i in range(N):
+        parts.append("w" + String(lcg_next() % 10000))
+    text = " ".join(parts)
+
+var run_sum_loop = Function():
+    var s = 0
+    for i in range(N):
+        s = s + i * 2 - i
+    return s
+
+var run_sieve = Function():
+    var sieve = []
+    for i in range(N + 1):
+        sieve.append(True)
+    var count = 0
+    var p = 2
+    while p <= N:
+        if sieve[p]:
+            count = count + 1
+            var m = p * p
+            while m <= N:
+                sieve[m] = False
+                m = m + p
+        p = p + 1
+    return count
+
+var run_sort = Function():
+    var a = base.copy()
+    a.sort()
+    return a[0] + a[len(a) - 1] + a[len(a) // 2]
+
+var run_dict_ops = Function():
+    var d = {}
+    for k in keys:
+        d[k] = k * k
+    var sum = 0
+    for k in keys:
+        sum = sum + d[k]
+    return sum
+
+var run_string_ops = Function():
+    var words = text.split(" ")
+    var joined = "-".join(words)
+    return len(joined) + len(words)
+
+var once = Function():
+    if wl == "sum_loop":
+        return run_sum_loop()
+    elif wl == "fib":
+        return fib(N)
+    elif wl == "sieve":
+        return run_sieve()
+    elif wl == "sort":
+        return run_sort()
+    elif wl == "dict_ops":
+        return run_dict_ops()
+    elif wl == "string_ops":
+        return run_string_ops()
+    io.write("unknown workload\n")
+    return 0
+
+var sink = once()  # warmup
+var samples = []
+var r = 0
+while r < reps:
+    var t0 = t.perfcounterns()
+    sink = sink + once()
+    var t1 = t.perfcounterns()
+    samples.append(t1 - t0)
+    r = r + 1
+
+var total = 0
+for v in samples:
+    total = total + v
+var mean = Float(total) / Float(len(samples))
+var sqsum = 0.0
+for v in samples:
+    var d = Float(v) - mean
+    sqsum = sqsum + d * d
+var stddev = math.sqrt(sqsum / Float(len(samples)))
+io.print(String(round(mean, 1)) + " " + String(round(stddev, 1)))

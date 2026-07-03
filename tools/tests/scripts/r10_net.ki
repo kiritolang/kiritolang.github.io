@@ -1,0 +1,228 @@
+# r10_net.ki — docs-vs-impl audit of the `net` module (URL helpers, Socket, HTTP client surface).
+# Every assertion mirrors real native behavior, cross-checked against docs/pages/10-stdlib.md (the
+# `net` section) and src/kirito/stdlib_net.hpp + net_compat.hpp. DETERMINISTIC + OFFLINE-SAFE: the
+# URL helpers are pure; sockets touch only 127.0.0.1 loopback (no DNS, no external hosts) via
+# refused-connection / bind-ephemeral / operate-before-connect paths that never block. One stdout
+# line, no stray stderr.
+var io = import("io")
+var dump = import("dump")
+var serialize = import("serialize")
+var net = import("net")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# ============================== module surface (hasattr) ===============================
+ok(hasattr(net, "Socket"), "net.Socket exists")
+ok(hasattr(net, "Session"), "net.Session exists")
+ok(hasattr(net, "fromfd"), "net.fromfd exists")
+ok(hasattr(net, "request"), "net.request exists")
+ok(hasattr(net, "get"), "net.get exists")
+ok(hasattr(net, "post"), "net.post exists")
+ok(hasattr(net, "put"), "net.put exists")
+ok(hasattr(net, "delete"), "net.delete exists")
+ok(hasattr(net, "patch"), "net.patch exists")
+ok(hasattr(net, "head"), "net.head exists")
+ok(hasattr(net, "options"), "net.options exists")
+ok(hasattr(net, "quote"), "net.quote exists")
+ok(hasattr(net, "unquote"), "net.unquote exists")
+ok(hasattr(net, "urlencode"), "net.urlencode exists")
+ok(hasattr(net, "parseqs"), "net.parseqs exists")
+ok(hasattr(net, "urlsplit"), "net.urlsplit exists")
+ok(hasattr(net, "no_such_fn") == False, "hasattr false on a missing member")
+
+# ============================== quote (percent-encode) =================================
+ok(net.quote("hello world") == "hello%20world", "quote encodes space as %20 (not +)")
+ok(net.quote(" ") == "%20", "quote lone space -> %20")
+ok(net.quote("-_.~") == "-_.~", "quote leaves RFC3986 unreserved unchanged")
+ok(net.quote("") == "", "quote empty -> empty")
+ok(net.quote("a+b") == "a%2Bb", "quote encodes literal +")
+ok(net.quote(":/?#[]@") == "%3A%2F%3F%23%5B%5D%40", "quote encodes reserved chars")
+ok(net.quote("café") == "caf%C3%A9", "quote is UTF-8 (é -> %C3%A9)")
+ok(net.quote("a\nb") == "a%0Ab", "quote encodes control chars")
+ok(type(net.quote("x")) == "String", "quote returns a String")
+
+# ============================== unquote (percent-decode) ===============================
+ok(net.unquote("hello%20world") == "hello world", "unquote decodes %20")
+ok(net.unquote("a%2Fb") == "a/b", "unquote decodes %2F")
+ok(net.unquote("a%2fb") == "a/b", "unquote accepts lowercase hex")
+ok(net.unquote("%41") == "A", "unquote decodes a leading escape")
+ok(net.unquote("z%41") == "zA", "unquote decodes a trailing escape (no off-by-one)")
+ok(net.unquote("a+b") == "a b", "unquote decodes + as space (query-string style)")
+ok(net.unquote("%2B") == "+", "unquote %2B -> literal +")
+ok(net.unquote("a%2") == "a%2", "unquote passes a truncated escape through literally")
+ok(net.unquote("a%ZZ") == "a%ZZ", "unquote passes a bad-hex escape through literally")
+ok(net.unquote("ab%") == "ab%", "unquote passes a trailing % through literally")
+ok(net.unquote("") == "", "unquote empty -> empty")
+ok(net.unquote(net.quote("café")) == "café", "quote/unquote UTF-8 round-trip")
+ok(net.unquote(net.quote(":/?#[]@ =&")) == ":/?#[]@ =&", "quote/unquote reserved round-trip")
+
+# ============================== urlencode ==============================================
+ok(net.urlencode({"a": "1"}) == "a=1", "urlencode single pair")
+ok(net.urlencode({}) == "", "urlencode empty Dict -> empty")
+ok(net.urlencode({"q": "hello world"}) == "q=hello%20world", "urlencode encodes values")
+ok(net.urlencode({"a b": "c d"}) == "a%20b=c%20d", "urlencode encodes BOTH keys and values")
+ok(net.urlencode({"a": "1", "b": "2", "c": "3"}) == "a=1&b=2&c=3", "urlencode preserves insertion order")
+ok(net.urlencode({"k": "a&b=c"}) == "k=a%26b%3Dc", "urlencode escapes & and = in a value")
+ok(net.urlencode({"a": ""}) == "a=", "urlencode empty value -> 'a='")
+ok(type(net.urlencode({})) == "String", "urlencode returns a String")
+
+# ============================== parseqs ================================================
+ok(net.parseqs("a=1&b=2") == {"a": "1", "b": "2"}, "parseqs basic k=v pairs")
+ok(net.parseqs("") == {}, "parseqs empty -> empty Dict")
+ok(net.parseqs("a") == {"a": ""}, "parseqs bare key -> empty value")
+ok(net.parseqs("a=") == {"a": ""}, "parseqs 'a=' -> empty value")
+ok(net.parseqs("q=hello+world") == {"q": "hello world"}, "parseqs decodes + as space")
+ok(net.parseqs("q=a%2Fb") == {"q": "a/b"}, "parseqs decodes %-escapes in values")
+ok(net.parseqs("a%20b=c%20d") == {"a b": "c d"}, "parseqs decodes keys too (docs say values)")
+ok(net.parseqs("a=1&") == {"a": "1"}, "parseqs tolerates a trailing &")
+ok(net.parseqs("&") == {}, "parseqs '&' -> empty Dict")
+ok(net.parseqs("=v") == {}, "parseqs drops an empty-key pair")
+ok(net.parseqs("a=1&a=2") == {"a": "2"}, "parseqs duplicate key -> last wins (Dict)")
+ok(type(net.parseqs("a=1")) == "Dict", "parseqs returns a Dict")
+ok(net.parseqs(net.urlencode({"x": "1", "y": "2"})) == {"x": "1", "y": "2"}, "urlencode/parseqs round-trip")
+
+# ============================== urlsplit ===============================================
+var u = net.urlsplit("http://user:pass@example.com:8080/path/to?x=1&y=2#frag")
+ok(type(u) == "Dict", "urlsplit returns a Dict")
+ok(u["scheme"] == "http", "urlsplit scheme")
+ok(u["host"] == "example.com", "urlsplit strips userinfo from host")
+ok(u["port"] == "8080", "urlsplit port is the textual digits")
+ok(u["path"] == "/path/to", "urlsplit path")
+ok(u["query"] == "x=1&y=2", "urlsplit query")
+ok(u["fragment"] == "frag", "urlsplit fragment")
+ok(type(u["port"]) == "String", "urlsplit port is a String")
+ok(net.urlsplit("http://example.com/p")["port"] == "", "urlsplit port empty when absent")
+var u6 = net.urlsplit("http://[::1]:8080/p")
+ok(u6["host"] == "[::1]", "urlsplit keeps IPv6 brackets in host")
+ok(u6["port"] == "8080", "urlsplit IPv6 port after ]:")
+ok(net.urlsplit("example.com/path")["scheme"] == "", "urlsplit no-scheme -> empty scheme")
+ok(net.urlsplit("example.com/path")["host"] == "example.com", "urlsplit no-scheme host")
+ok(net.urlsplit("https://host.com")["path"] == "", "urlsplit no-path -> empty path")
+var u0 = net.urlsplit("")
+ok(u0["scheme"] == "" and u0["host"] == "" and u0["path"] == "", "urlsplit empty URL -> all empty")
+
+# ============================== URL-helper type hardening ==============================
+ok(throws(Function(): return net.quote(123)), "quote(non-String) throws")
+ok(throws(Function(): return net.unquote(123)), "unquote(non-String) throws")
+ok(throws(Function(): return net.urlencode("nope")), "urlencode(non-Dict) throws")
+ok(throws(Function(): return net.parseqs(123)), "parseqs(non-String) throws")
+ok(throws(Function(): return net.urlsplit(123)), "urlsplit(non-String) throws")
+
+# ============================== Socket: construction + surface =========================
+var s = net.Socket()
+ok(type(s) == "Socket", "net.Socket() -> Socket")
+ok(s.settimeout(1.0) == None, "settimeout(Float) -> None")
+ok(s.settimeout(2) == None, "settimeout(Integer) -> None")
+ok(s.settimeout(0) == None, "settimeout(0) is a no-op -> None")
+ok(s.settimeout(-1) == None, "settimeout(negative) is a no-op -> None")
+ok(s.close() == None, "close() -> None")
+ok(s.close() == None, "close() is idempotent")
+
+# --- inspect describes the documented members ---
+var si = inspect(net.Socket())
+ok(("Socket" in si), "inspect names the Socket type")
+ok(("connect(host, port)" in si), "inspect lists connect")
+ok(("bind(host, port)" in si), "inspect lists bind")
+ok(("listen(backlog)" in si), "inspect lists listen")
+ok(("accept() -> Socket" in si), "inspect lists accept")
+ok(("send(data) -> Integer" in si), "inspect lists send")
+ok(("recv(n) -> Bytes" in si), "inspect lists recv")
+ok(("recvall() -> Bytes" in si), "inspect lists recvall")
+ok(("settimeout(seconds)" in si), "inspect lists settimeout")
+ok(("close()" in si), "inspect lists close")
+ok(("detach() -> Integer" in si), "inspect lists detach")
+
+# --- Socket as a with-context manager (enter/exit closes it) ---
+var ctxRan = False
+with net.Socket() as sk:
+    ctxRan = type(sk) == "Socket"
+ok(ctxRan, "Socket usable as a with-context manager")
+
+# ============================== Socket: server surface (loopback, non-blocking) ========
+# bind to an ephemeral loopback port + listen exercise the server surface offline and never block
+# (no accept, which would). No DNS: 127.0.0.1 is a numeric literal.
+var srv = net.Socket()
+ok(srv.bind("127.0.0.1", 0) == None, "bind(127.0.0.1, 0) ephemeral -> None")
+ok(srv.listen(5) == None, "listen(backlog) -> None")
+discard srv.close()
+var srv2 = net.Socket()
+discard srv2.bind("127.0.0.1", 0)
+ok(srv2.listen() == None, "listen() default backlog -> None")
+discard srv2.close()
+var srv3 = net.Socket()
+ok(srv3.bind("", 0) == None, "bind('', 0) all-interfaces idiom -> None")
+discard srv3.close()
+
+# ============================== Socket: error / hardening paths ========================
+# Operations that need no live peer, all fast + deterministic.
+ok(throws(Function(): return net.Socket().recv(10)), "recv before connect throws")
+ok(throws(Function(): return net.Socket().recvall()), "recvall before connect throws")
+ok(throws(Function(): return net.Socket().send("x")), "send(String) on unconnected socket throws")
+ok(throws(Function(): return net.Socket().send(Bytes([1, 2, 3]))), "send(Bytes) on unconnected socket throws")
+ok(throws(Function(): return net.Socket().send(123)), "send(non-String/Bytes) throws (type error)")
+ok(throws(Function(): return net.Socket().recv(-5)), "recv(negative) throws")
+ok(throws(Function(): return net.Socket().connect("127.0.0.1")), "connect() missing port arg throws")
+ok(throws(Function(): return net.Socket().connect("127.0.0.1", 99999)), "connect port > 65535 throws")
+ok(throws(Function(): return net.Socket().connect("127.0.0.1", -1)), "connect negative port throws")
+ok(throws(Function(): return net.Socket().bind("127.0.0.1")), "bind() missing port arg throws")
+ok(throws(Function(): return net.Socket().bind("127.0.0.1", 70000)), "bind port > 65535 throws")
+ok(throws(Function(): return net.Socket().settimeout()), "settimeout() missing arg throws")
+ok(throws(Function(): return net.Socket().settimeout("x")), "settimeout(non-number) throws")
+# connect to a definitely-closed loopback port refuses immediately (RST); short timeout set.
+var connectRefused = Function():
+    var cs = net.Socket()
+    discard cs.settimeout(2.0)
+    return cs.connect("127.0.0.1", 1)
+ok(throws(connectRefused), "connect to a closed loopback port (127.0.0.1:1) throws")
+
+# ============================== fromfd hardening =======================================
+ok(throws(Function(): return net.fromfd("x")), "fromfd(non-Integer) throws")
+
+# ============================== HTTP client hardening (no external network) ============
+# Pure URL-parse rejections (never touch a socket):
+ok(throws(Function(): return net.get("not-a-url")), "get(malformed URL) throws")
+ok(throws(Function(): return net.get("")), "get(empty URL) throws")
+ok(throws(Function(): return net.get("ftp://example.com")), "get(unsupported scheme) throws")
+ok(throws(Function(): return net.request("GET", "gopher://x")), "request(unsupported scheme) throws")
+ok(throws(Function(): return net.get("http://127.0.0.1:99999/")), "get(port > 65535 in URL) throws")
+ok(throws(Function(): return net.get("http://127.0.0.1:abc/")), "get(non-numeric port in URL) throws")
+# Connection to an unreachable local port refuses immediately (loopback, short timeout):
+ok(throws(Function(): return net.get("http://127.0.0.1:1/")), "get(refused loopback port) throws")
+ok(throws(Function(): return net.get("http://127.0.0.1:1/", {"timeout": 2})), "get(refused, timeout opt) throws")
+ok(throws(Function(): return net.request("GET", "http://127.0.0.1:1/")), "request(refused loopback port) throws")
+
+# ============================== Session surface + inspect ==============================
+var sess = net.Session()
+ok(type(sess) == "Session", "net.Session() -> Session")
+ok(type(sess.headers) == "Dict", "session.headers is a Dict")
+ok(type(sess.cookies) == "Dict", "session.cookies is a Dict")
+var sei = inspect(sess)
+ok(("Session" in sei), "inspect names the Session type")
+ok(("headers: Dict" in sei), "inspect lists session.headers")
+ok(("cookies: Dict" in sei), "inspect lists session.cookies")
+ok(("get(url, opts) -> Response" in sei), "inspect lists session.get")
+ok(("post(url, opts) -> Response" in sei), "inspect lists session.post")
+ok(("put(url, opts) -> Response" in sei), "inspect lists session.put")
+ok(("delete(url, opts) -> Response" in sei), "inspect lists session.delete")
+ok(("patch(url, opts) -> Response" in sei), "inspect lists session.patch")
+ok(("head(url, opts) -> Response" in sei), "inspect lists session.head")
+ok(("options(url, opts) -> Response" in sei), "inspect lists session.options")
+ok(("request(method, url, opts) -> Response" in sei), "inspect lists session.request")
+
+# ============================== serialization rejection (live-state natives) ===========
+ok(throws(Function(): return dump.dumps(net.Socket())), "dump.dumps(Socket) throws")
+ok(throws(Function(): return serialize.dumps(net.Socket())), "serialize.dumps(Socket) throws")
+ok(throws(Function(): return dump.dumps(net.Session())), "dump.dumps(Session) throws")
+ok(throws(Function(): return serialize.dumps(net.Session())), "serialize.dumps(Session) throws")
+
+# ============================== report =================================================
+io.print("r10_net: " + String(n) + " checks passed")

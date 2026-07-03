@@ -1,0 +1,203 @@
+# HTTP/1.1 message layer: a buffered connection reader, request parsing, and a Response builder.
+# Pure Kirito — it only needs sockets (for recv/send) and string handling. Kept deliberately small
+# but correct for the common case: request line + headers + optional Content-Length body.
+#
+# This is the keyword-argument edition of the web framework: every call site passes its arguments by
+# name (f(param = value)) — user functions, methods, constructors, built-in type methods, and stdlib
+# functions alike — as an end-to-end exercise of Kirito's uniform keyword-argument support.
+
+var io = import("io")
+
+# The number of *bytes* in a String's UTF-8 encoding (not code points). HTTP Content-Length is a
+# byte count, so a body with multibyte characters (é, …) needs this, not len(). BytesIO stores raw
+# bytes, so writing the string and asking its size gives the encoded length.
+var byte_len = Function(s):
+    var b = io.BytesIO()
+    discard b.write(data = s)
+    return b.size()
+
+# Buffered reader over a socket connection: recv in chunks, hand back one CRLF/LF-terminated line or
+# an exact number of bytes at a time. Reading byte-by-byte would be thousands of syscalls; this keeps
+# I/O proportional to the data.
+class Reader:
+    var _init_ = Function(self, conn):
+        self._conn = conn
+        self._buf = ""
+        self._eof = False
+
+    var _fill = Function(self):
+        # Pull one more chunk into the buffer; returns False at end of stream.
+        if self._eof:
+            return False
+        var chunk = self._conn.recv(n = 8192).decode(encoding = "latin-1")   # Bytes -> text
+        if len(x = chunk) == 0:
+            self._eof = True
+            return False
+        self._buf = self._buf + chunk
+        return True
+
+    var read_line = Function(self):
+        # One line without its trailing newline (a trailing '\r' is stripped). None at EOF.
+        while True:
+            var nl = self._buf.find(sub = "\n")
+            if nl >= 0:
+                var line = self._buf[0:nl]
+                self._buf = self._buf[nl + 1:]
+                if len(x = line) > 0 and line[len(x = line) - 1:] == "\r":
+                    line = line[0:len(x = line) - 1]
+                return line
+            if not self._fill():
+                if len(x = self._buf) == 0:
+                    return None
+                var rest = self._buf
+                self._buf = ""
+                return rest
+
+    var read_bytes = Function(self, n):
+        # Exactly n bytes (or fewer at EOF).
+        while len(x = self._buf) < n:
+            if not self._fill():
+                break
+        var take = n
+        if take > len(x = self._buf):
+            take = len(x = self._buf)
+        var out = self._buf[0:take]
+        self._buf = self._buf[take:]
+        return out
+
+# A parsed request. `params` is filled by the router for `:name` path segments.
+class Request:
+    var _init_ = Function(self, method, path, query, headers, body):
+        self.method = method
+        self.path = path
+        self.query = query        # Dict of decoded query params
+        self.headers = headers    # Dict, lower-cased keys
+        self.body = body          # String (possibly empty)
+        self.params = {}
+
+    var header = Function(self, name, default):
+        var k = name.lower()
+        if k in self.headers:
+            return self.headers[k]
+        return default
+
+# Percent-decode + '+'-as-space, then split "a=1&b=2" into a Dict. Manual (not relying on a module)
+# so the behaviour is explicit and self-contained.
+var decode = Function(s):
+    var net = import(name = "net")
+    return net.unquote(s = s.replace(old = "+", new = " "))
+
+var parse_query = Function(qs):
+    var out = {}
+    if len(x = qs) == 0:
+        return out
+    for pair in qs.split(sep = "&"):
+        if len(x = pair) == 0:
+            continue
+        var eq = pair.find(sub = "=")
+        if eq < 0:
+            out[decode(s = pair)] = ""
+        else:
+            out[decode(s = pair[0:eq])] = decode(s = pair[eq + 1:])
+    return out
+
+# Read and parse one HTTP request from a Reader. Returns a Request, or None at clean EOF. Throws a
+# String on a malformed request line (the server turns that into a 400).
+var parse_request = Function(reader : Reader):
+    var line = reader.read_line()
+    if line == None:
+        return None
+    # Tolerate leading blank lines (some clients send a stray CRLF before the request).
+    while line != None and len(x = line.strip()) == 0:
+        line = reader.read_line()
+    if line == None:
+        return None
+
+    var parts = line.split(sep = " ")
+    if len(x = parts) < 3:
+        throw "malformed request line: " + line
+    var method = parts[0]
+    var target = parts[1]
+
+    var path = target
+    var query = {}
+    var qmark = target.find(sub = "?")
+    if qmark >= 0:
+        path = target[0:qmark]
+        query = parse_query(qs = target[qmark + 1:])
+
+    # Headers until a blank line.
+    var headers = {}
+    while True:
+        var h = reader.read_line()
+        if h == None or len(x = h) == 0:
+            break
+        var colon = h.find(sub = ":")
+        if colon >= 0:
+            var key = h[0:colon].strip().lower()
+            var val = h[colon + 1:].strip()
+            headers[key] = val
+
+    # Body, if Content-Length says so.
+    var body = ""
+    if "content-length" in headers:
+        var n = 0
+        try:
+            n = Integer(x = headers["content-length"])
+        catch as e:
+            n = 0
+        if n > 0:
+            body = reader.read_bytes(n = n)
+
+    return Request(method = method, path = decode(s = path), query = query, headers = headers, body = body)
+
+# Standard reason phrases for the statuses this server emits.
+var REASON = {
+    200: "OK", 201: "Created", 204: "No Content",
+    301: "Moved Permanently", 302: "Found", 304: "Not Modified",
+    400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+    405: "Method Not Allowed", 413: "Payload Too Large", 500: "Internal Server Error"
+}
+
+# A response under construction. Build it, then `.write_to(conn)` serializes a complete HTTP/1.1
+# message (with Content-Length and Connection: close).
+class Response:
+    var _init_ = Function(self):
+        self.status = 200
+        self.headers = {}
+        self.body = ""
+
+    var set = Function(self, name, value):
+        self.headers[name] = value
+        return self
+
+    var text = Function(self, s, status):
+        self.status = status
+        self.body = s
+        self.headers["Content-Type"] = "text/plain; charset=utf-8"
+        return self
+
+    var html = Function(self, s, status):
+        self.status = status
+        self.body = s
+        self.headers["Content-Type"] = "text/html; charset=utf-8"
+        return self
+
+    var json = Function(self, value, status):
+        var j = import(name = "json")
+        self.status = status
+        self.body = j.dumps(value = value)
+        self.headers["Content-Type"] = "application/json"
+        return self
+
+    var write_to = Function(self, conn):
+        var reason = "OK"
+        if self.status in REASON:
+            reason = REASON[self.status]
+        var out = "HTTP/1.1 " + String(x = self.status) + " " + reason + "\r\n"
+        self.headers["Content-Length"] = String(x = byte_len(s = self.body))
+        self.headers["Connection"] = "close"
+        for k, v in self.headers.items():
+            out = out + k + ": " + String(x = v) + "\r\n"
+        out = out + "\r\n" + self.body
+        discard conn.send(data = out)

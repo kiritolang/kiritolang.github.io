@@ -1,0 +1,541 @@
+# r6_tensor.ki — round-6 audit of the `tensor` stdlib module. COMPLEMENTARY to r5_tensor.ki (which
+# focuses on autograd FD gradient-checks + structural-op grads): this file prioritizes BREADTH of
+# CORRECTNESS coverage, exercising every documented op/method/operator/factory from many angles —
+# construction, indexing/slicing/fancy/mask, broadcasting (incl. incompatible -> throw), all
+# arithmetic + comparisons + logic, every reduction (whole + per-axis), linear algebra, sorting/
+# search, complex tensors + dtype promotion, serialization, and the autograd surface (backward,
+# accumulation, zerograd, detach, nograd). Float results are checked with `.compare`/`.item().compare`
+# (tensor whole-`==` is bit-exact by design); structural/integer/Bool results use `==` and `tolist()`.
+# Non-differentiable ops on grad tensors are run under `with T.nograd():` so NO detach warning is ever
+# emitted (the suite must be warning-clean). Every assertion carries a message; a trailing counter
+# confirms none silently vanished. Deterministic; only confirmed-correct behavior is asserted.
+
+var io = import("io")
+var T = import("tensor")
+var C = import("complex")
+var math = import("math")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        return True
+    return False
+
+# tolerant whole-tensor compare against a literal nested list (abs tol; handles exact-zero targets).
+var teq = Function(t, lst) -> Bool:
+    return t.compare(T.Tensor(lst), abs_tol = 0.000000001)
+
+# =================================================================================================
+# 1. Construction + attributes (shape/ndim/size/dtype) across ranks 0..3
+# =================================================================================================
+var a2 = T.Tensor([[1, 2, 3], [4, 5, 6]])
+ok(a2.shape() == [2, 3], "2d shape")
+ok(a2.ndim() == 2, "2d ndim")
+ok(a2.size() == 6, "2d size")
+ok(a2.dtype() == "Float", "default dtype Float")
+ok(T.Tensor([1, 2, 3]).ndim() == 1, "1d ndim")
+ok(T.Tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]]).shape() == [2, 2, 2], "3d shape")
+ok(T.full([], 5.0).ndim() == 0, "0d ndim")
+ok(T.full([], 5.0).size() == 1, "0d size 1")
+ok(T.full([], 5.0).shape() == [], "0d shape empty")
+ok(T.full([], 5.0).item().compare(5.0), "0d item")
+# Integers stored as Floats (doc claim)
+ok(T.Tensor([1, 2, 3]).dtype() == "Float", "int literals -> Float")
+# str form (nested-bracket)
+ok(String(T.Tensor([[1, 2], [3, 4]])) == "[[1.0, 2.0], [3.0, 4.0]]", "str nested brackets")
+ok(String(T.full([], 3.0)) == "3.0", "str 0d scalar")
+
+# Factories
+ok(teq(T.zeros([2, 2]), [[0, 0], [0, 0]]), "zeros")
+ok(teq(T.ones([3]), [1, 1, 1]), "ones")
+ok(teq(T.full([2, 2], 9), [[9, 9], [9, 9]]), "full")
+ok(teq(T.eye(3), [[1, 0, 0], [0, 1, 0], [0, 0, 1]]), "eye")
+ok(teq(T.identity(2), [[1, 0], [0, 1]]), "identity alias of eye")
+ok(teq(T.arange(0, 6, 2), [0, 2, 4]), "arange start/stop/step")
+ok(teq(T.arange(4), [0, 1, 2, 3]), "arange stop-only")
+ok(teq(T.arange(5, 0, -1), [5, 4, 3, 2, 1]), "arange negative step")
+ok(teq(T.arange(stop = 3), [0, 1, 2]), "arange kw stop")
+ok(teq(T.arange(start = 1, stop = 4), [1, 2, 3]), "arange kw start/stop")
+ok(teq(T.linspace(0, 1, 5), [0, 0.25, 0.5, 0.75, 1.0]), "linspace 5")
+ok(teq(T.linspace(0, 1, 1), [0.0]), "linspace num=1 (start)")
+ok(T.linspace(0, 1, 0).size() == 0, "linspace num=0 empty")
+# *like + relative builders
+ok(teq(T.zeroslike(a2), [[0, 0, 0], [0, 0, 0]]), "zeroslike")
+ok(teq(T.oneslike(T.Tensor([1, 2])), [1, 1]), "oneslike")
+ok(teq(T.fulllike(T.Tensor([1, 2]), 7), [7, 7]), "fulllike")
+ok(teq(T.diag(T.Tensor([1, 2, 3])), [[1, 0, 0], [0, 2, 0], [0, 0, 3]]), "diag vector -> matrix")
+ok(teq(T.diag(T.Tensor([[1, 2], [3, 4]])), [1, 4]), "diag matrix -> diagonal")
+ok(teq(T.diag(T.Tensor([1, 2]), 1), [[0, 1, 0], [0, 0, 2], [0, 0, 0]]), "diag k=1 superdiagonal")
+ok(teq(T.tril(T.ones([3, 3])), [[1, 0, 0], [1, 1, 0], [1, 1, 1]]), "tril")
+ok(teq(T.triu(T.ones([3, 3])), [[1, 1, 1], [0, 1, 1], [0, 0, 1]]), "triu")
+
+# Construction errors
+ok(throws(Function(): return T.Tensor([[1, 2], [3]])), "ragged nested list throws")
+ok(throws(Function(): return T.zeros([-1])), "negative shape dim throws")
+ok(throws(Function(): return T.eye(-1)), "eye negative n throws")
+ok(throws(Function(): return T.Tensor([1, 2], dtype = "Banana")), "bad dtype throws")
+
+# =================================================================================================
+# 2. Indexing / slicing / selection
+# =================================================================================================
+var cube = T.Tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
+ok(cube[1, 0, 1].compare(6.0), "full index -> scalar")
+ok(teq(cube[0], [[1, 2], [3, 4]]), "partial index -> sub-tensor")
+ok(cube[-1, -1, -1].compare(8.0), "negative full index")
+ok(teq(cube[-1], [[5, 6], [7, 8]]), "negative partial index")
+# element assignment (the one in-place op)
+var mut = T.Tensor([[1, 2], [3, 4]])
+mut[0, 0] = 99
+ok(mut[0, 0].compare(99.0), "element assignment full index")
+mut[-1, -1] = 50
+ok(mut[-1, -1].compare(50.0), "element assignment negative index")
+# slicing (axis 0)
+var v = T.Tensor([10, 20, 30, 40, 50])
+ok(teq(v[1:4], [20, 30, 40]), "slice start:stop")
+ok(teq(v[:2], [10, 20]), "slice :stop")
+ok(teq(v[-2:], [40, 50]), "slice -2:")
+ok(teq(v[::2], [10, 30, 50]), "slice ::2")
+ok(teq(v[::-1], [50, 40, 30, 20, 10]), "slice ::-1 reverse")
+# fancy index (rows along axis 0)
+ok(teq(T.Tensor([[1, 2, 3], [4, 5, 6]])[[1, 0]], [[4, 5, 6], [1, 2, 3]]), "fancy index rows")
+# boolean mask -> flattened 1-D
+ok(teq(a2[a2.gt(3)], [4, 5, 6]), "boolean mask selection")
+# indexing errors
+ok(throws(Function(): return T.Tensor([1, 2, 3])[5]), "index oob throws")
+ok(throws(Function(): return T.Tensor([[1, 2]])[0, 0, 0]), "too many indices throws")
+ok(throws(Function(): return T.full([], 1.0)[0]), "0d index throws")
+ok(throws(Function(): return T.full([], 1.0)[0:1]), "0d slice throws")
+ok(throws(Function(): return T.Tensor([1.0, 2.0, 3.0])[T.Tensor([1.0, 0.0])]), "mask shape mismatch throws")
+
+# =================================================================================================
+# 3. Element-wise arithmetic + broadcasting + scalar ops
+# =================================================================================================
+ok(teq(a2 + a2, [[2, 4, 6], [8, 10, 12]]), "add")
+ok(teq(a2 - a2, [[0, 0, 0], [0, 0, 0]]), "sub")
+ok(teq(a2 * a2, [[1, 4, 9], [16, 25, 36]]), "mul (Hadamard)")
+ok(teq(a2 / T.full([2, 3], 2.0), [[0.5, 1.0, 1.5], [2.0, 2.5, 3.0]]), "div")
+ok(teq(a2 * 2, [[2, 4, 6], [8, 10, 12]]), "scalar mul")
+ok(teq(a2 + 10, [[11, 12, 13], [14, 15, 16]]), "scalar add")
+ok(teq(-a2, [[-1, -2, -3], [-4, -5, -6]]), "unary neg")
+# broadcasting (right-aligned; size-1 stretches)
+ok(teq(a2 + T.Tensor([[10, 20, 30]]), [[11, 22, 33], [14, 25, 36]]), "broadcast row")
+ok(teq(a2 + T.Tensor([[100], [200]]), [[101, 102, 103], [204, 205, 206]]), "broadcast column")
+ok(teq(T.Tensor([1, 2, 3]) + T.full([], 10.0), [11, 12, 13]), "broadcast 0-D scalar tensor")
+# ** % // operators (Float-only)
+ok(teq(T.Tensor([2, 3, 4]) ** 2, [4, 9, 16]), "** scalar")
+ok(teq(T.Tensor([5, 7, 9]) % 3, [2, 1, 0]), "% scalar")
+ok(teq(T.Tensor([5, 7, 9]) // 3, [1, 2, 3]), "// scalar")
+ok(teq(T.Tensor([2.0, 3.0]) ** T.Tensor([3.0, 2.0]), [8, 9]), "** tensor")
+ok(teq(T.Tensor([7.0, 8.0]) % T.Tensor([3.0, 5.0]), [1, 3]), "% tensor")
+# scalar-op zero divisor throws (/, //, %)
+ok(throws(Function(): return T.Tensor([1.0, 2.0]) / 0), "scalar /0 throws")
+ok(throws(Function(): return T.Tensor([1.0, 2.0]) // 0), "scalar //0 throws")
+ok(throws(Function(): return T.Tensor([1.0, 2.0]) % 0), "scalar %0 throws")
+# tensor zero divisor throws
+ok(throws(Function(): return T.Tensor([1.0, 2.0]) / T.Tensor([1.0, 0.0])), "tensor /0 throws")
+ok(throws(Function(): return T.Tensor([1.0, 2.0]) // T.Tensor([1.0, 0.0])), "tensor //0 throws")
+ok(throws(Function(): return T.Tensor([1.0, 2.0]) % T.Tensor([1.0, 0.0])), "tensor %0 throws")
+# incompatible broadcasting throws
+ok(throws(Function(): return T.Tensor([1.0, 2.0, 3.0]) + T.Tensor([1.0, 2.0])), "incompatible broadcast throws")
+ok(throws(Function(): return T.Tensor([[1, 2], [3, 4]]) * T.Tensor([1, 2, 3])), "incompatible mul throws")
+
+# =================================================================================================
+# 4. Whole-tensor == (bit-exact) vs elementwise masks vs logic
+# =================================================================================================
+ok((a2 == T.Tensor([[1, 2, 3], [4, 5, 6]])) == True, "whole == equal")
+ok((a2 == T.Tensor([[1, 2, 3], [4, 5, 7]])) == False, "whole == differ")
+ok((a2 == T.Tensor([1, 2, 3])) == False, "whole == shape mismatch -> False")
+ok((T.full([], 3.0) == T.full([], 3.0)) == True, "0d == 0d")
+ok((T.full([], 3.0) == T.Tensor([3.0])) == False, "0d != [1] shape mismatch")
+# bit-exact: 0.1+0.2 != 0.3 (whole ==), but .compare True
+ok((T.Tensor([0.1]) + T.Tensor([0.2]) == T.Tensor([0.3])) == False, "whole == is bit-exact (0.1+0.2 != 0.3)")
+ok((T.Tensor([0.1]) + T.Tensor([0.2])).compare(T.Tensor([0.3])) == True, ".compare is tolerant")
+# NaN never equal under whole == or .compare
+ok((T.Tensor([math.nan]) == T.Tensor([math.nan])) == False, "NaN whole == False")
+ok(T.Tensor([math.nan]).compare(T.Tensor([math.nan])) == False, "NaN .compare False")
+# cross-dtype whole == (zero imag matches real)
+ok((T.Tensor([1.0, 2.0]) == T.Tensor([1, 2], dtype = "Complex")) == True, "Float == Complex(zero imag)")
+ok((T.Tensor([1.0, 2.0]) == T.Tensor([C.of(1, 1), C.of(2, 0)], dtype = "Complex")) == False, "Float != Complex(nonzero imag)")
+# elementwise comparison masks (methods + operators)
+ok(teq(T.Tensor([1, 2, 3, 4]).gt(2), [0, 0, 1, 1]), "gt mask")
+ok(teq(T.Tensor([1, 2, 3, 4]) > 2, [0, 0, 1, 1]), "> operator mask")
+ok(teq(T.Tensor([1, 2, 3]) <= 2, [1, 1, 0]), "<= operator mask")
+ok(teq(T.Tensor([1, 2, 3]) < 2, [1, 0, 0]), "< operator mask")
+ok(teq(T.Tensor([1, 2, 3]) >= 2, [0, 1, 1]), ">= operator mask")
+ok(teq(T.Tensor([1, 2, 3]).eq(T.Tensor([1, 9, 3])), [1, 0, 1]), "eq mask")
+ok(teq(T.Tensor([1, 2, 3]).ne(T.Tensor([1, 9, 3])), [0, 1, 0]), "ne mask")
+ok(teq(T.Tensor([1, 2, 3]).le(T.Tensor([1, 1, 9])), [1, 0, 1]), "le mask")
+ok(teq(T.Tensor([1, 2, 3]).ge(T.Tensor([9, 1, 3])), [0, 1, 1]), "ge mask")
+# logic
+ok(teq(T.Tensor([1, 0, 1, 0]).logicaland(T.Tensor([1, 1, 0, 0])), [1, 0, 0, 0]), "logicaland")
+ok(teq(T.Tensor([1, 0, 1, 0]).logicalor(T.Tensor([1, 1, 0, 0])), [1, 1, 1, 0]), "logicalor")
+ok(teq(T.Tensor([1, 0, 1, 0]).logicalxor(T.Tensor([1, 1, 0, 0])), [0, 1, 1, 0]), "logicalxor")
+ok(teq(T.Tensor([0, 1, 2]).logicalnot(), [1, 0, 0]), "logicalnot")
+# ordering comparison on Complex throws
+ok(throws(Function(): return T.Tensor([1.0], dtype = "Complex") < T.Tensor([2.0], dtype = "Complex")), "complex ordering throws")
+
+# =================================================================================================
+# 5. where / clip / maximum / minimum (selection)
+# =================================================================================================
+var sel = T.Tensor([1, 2, 3, 4, 5])
+var mask = sel.gt(1).logicaland(sel.lt(5))
+ok(teq(mask, [0, 1, 1, 1, 0]), "combined mask")
+ok(teq(T.where(mask, sel, T.zeros([5])), [0, 2, 3, 4, 0]), "where select")
+ok(teq(sel.clip(2, 4), [2, 2, 3, 4, 4]), "clip clamp")
+ok(teq(sel.maximum(T.full([5], 3)), [3, 3, 3, 4, 5]), "maximum")
+ok(teq(sel.minimum(T.full([5], 3)), [1, 2, 3, 3, 3]), "minimum")
+# where broadcasts all three operands
+ok(teq(T.where(T.Tensor([[1, 0, 1]]), T.Tensor([[10], [20]]), T.Tensor([[0]])), [[10, 0, 10], [20, 0, 20]]), "where broadcast")
+# clip lo>hi throws
+ok(throws(Function(): return sel.clip(5, 1)), "clip lo>hi throws")
+
+# =================================================================================================
+# 6. Matrix products / dot / tensordot / contract / einsum
+# =================================================================================================
+ok(teq(T.Tensor([[1, 2], [3, 4]]).matmul(T.Tensor([[5, 6], [7, 8]])), [[19, 22], [43, 50]]), "matmul 2d")
+ok(T.Tensor([1, 2, 3]).dot(T.Tensor([4, 5, 6])).compare(32.0), "dot 1d -> Float")
+ok(type(T.Tensor([1.0, 2.0]).dot(T.Tensor([3.0, 4.0]))) == "Float", "dot returns plain Float")
+# batched matmul broadcasts leading dims
+ok(T.ones([2, 3, 4]).matmul(T.ones([2, 4, 5])).shape() == [2, 3, 5], "batched matmul shape")
+ok(T.ones([3, 4]).matmul(T.ones([2, 4, 5])).shape() == [2, 3, 5], "matmul broadcast batch")
+# tensordot
+ok(teq(T.tensordot(T.Tensor([[1, 2], [3, 4]]), T.eye(2), 1), [[1, 2], [3, 4]]), "tensordot N=1 == matmul")
+ok(T.tensordot(T.Tensor([[1, 2], [3, 4]]), T.Tensor([[5, 6], [7, 8]]), 2).item().compare(70.0), "tensordot N=2 full contraction")
+ok(type(T.tensordot(T.eye(2), T.eye(2), 2)) == "Tensor", "tensordot full -> 0-D Tensor")
+ok(T.tensordot(T.full([2, 3, 4], 1.0), T.full([4, 3, 5], 2.0), [[1, 2], [1, 0]]).shape() == [2, 5], "tensordot axis-pair")
+ok(T.tensordot(T.full([2, 3, 4], 1.0), T.full([4, 3, 5], 2.0), [[-1, -2], [0, 1]]).shape() == [2, 5], "tensordot negative axes")
+ok(T.contract(T.full([2, 3, 4], 1.0), T.full([4, 3, 5], 2.0), [1, 2], [1, 0]).shape() == [2, 5], "contract explicit axes")
+# tensordot/matmul errors
+ok(throws(Function(): return T.Tensor([1.0, 2.0]).matmul(T.Tensor([1.0, 2.0]))), "matmul 1d throws")
+ok(throws(Function(): return T.Tensor([[1, 2]]).matmul(T.Tensor([[1, 2]]))), "matmul inner mismatch throws")
+ok(throws(Function(): return T.Tensor([[1.0]]).dot(T.Tensor([[1.0]]))), "dot 2d throws")
+ok(throws(Function(): return T.tensordot(T.eye(2), T.eye(2), 5)), "tensordot axis count > rank throws")
+# einsum (valid specs)
+ok(teq(T.einsum("ij,jk->ik", T.Tensor([[1, 2], [3, 4]]), T.eye(2)), [[1, 2], [3, 4]]), "einsum matmul")
+ok(teq(T.einsum("ij->ji", T.Tensor([[1, 2], [3, 4]])), [[1, 3], [2, 4]]), "einsum transpose")
+ok(T.einsum("ii->", T.Tensor([[1, 2], [3, 4]])).item().compare(5.0), "einsum trace")
+ok(teq(T.einsum("ii->i", T.Tensor([[1, 2], [3, 4]])), [1, 4]), "einsum diagonal")
+ok(T.einsum("i,i->", T.Tensor([1, 2, 3]), T.Tensor([4, 5, 6])).item().compare(32.0), "einsum inner product")
+ok(T.einsum("ij,jk,kl->il", T.eye(2), T.eye(2), T.Tensor([[1, 2], [3, 4]])).compare(T.Tensor([[1, 2], [3, 4]])), "einsum 3 operands")
+# einsum errors (incl. repeated output label, already-fixed)
+ok(throws(Function(): return T.einsum("ii->ii", T.eye(2))), "einsum repeated output label throws")
+ok(throws(Function(): return T.einsum("i->ii", T.Tensor([1.0, 2.0]))), "einsum i->ii throws")
+ok(throws(Function(): return T.einsum("ij->ijk", T.eye(2))), "einsum unknown output label throws")
+ok(throws(Function(): return T.einsum("ij,ij->ij", T.zeros([2, 3]), T.zeros([3, 2]))), "einsum inconsistent dim throws")
+ok(throws(Function(): return T.einsum("ij->i", T.eye(2), T.eye(2))), "einsum operand count mismatch throws")
+
+# =================================================================================================
+# 7. Reductions (whole + per-axis), with negative axes
+# =================================================================================================
+var r = T.Tensor([[1, 2, 3], [4, 5, 6]])
+ok(r.sum().compare(21.0), "sum whole")
+ok(teq(r.sum(0), [5, 7, 9]), "sum axis 0")
+ok(teq(r.sum(1), [6, 15]), "sum axis 1")
+ok(teq(r.sum(-1), [6, 15]), "sum negative axis")
+ok(r.mean().compare(3.5), "mean whole")
+ok(teq(r.mean(0), [2.5, 3.5, 4.5]), "mean axis 0")
+ok(r.prod().compare(720.0), "prod whole")
+ok(teq(r.prod(1), [6, 120]), "prod axis 1")
+# min/max/argmin/argmax/ptp/median/std/var run under nograd-free (plain tensors -> no warn)
+ok(T.Tensor([3, 1, 2]).min().compare(1.0), "min whole")
+ok(T.Tensor([3, 1, 2]).max().compare(3.0), "max whole")
+ok(teq(T.Tensor([[1, 5], [4, 0]]).max(0), [4, 5]), "max axis 0")
+ok(teq(T.Tensor([[1, 5], [4, 0]]).min(1), [1, 0]), "min axis 1")
+ok(T.Tensor([3, 1, 2]).argmin() == 1, "argmin whole -> Integer")
+ok(T.Tensor([3, 1, 2]).argmax() == 0, "argmax whole -> Integer")
+ok(teq(T.Tensor([[1, 5, 2], [4, 0, 6]]).argmax(1), [1, 2]), "argmax axis 1")
+ok(teq(T.Tensor([[1, 5, 2], [4, 0, 6]]).argmin(1), [0, 1]), "argmin axis 1")
+ok(T.Tensor([1, 5, 3]).ptp().compare(4.0), "ptp whole")
+ok(teq(T.Tensor([[1, 5], [3, 3]]).ptp(0), [2, 2]), "ptp axis 0")
+ok(T.Tensor([1, 2, 3, 4]).median().compare(2.5), "median even")
+ok(T.Tensor([3, 1, 2]).median().compare(2.0), "median odd")
+ok(teq(T.Tensor([[1, 2, 3], [4, 5, 6]]).median(1), [2, 5]), "median axis 1")
+ok(T.Tensor([1, 2, 3, 4]).var().compare(1.25), "var ddof=0")
+ok(T.Tensor([1, 2, 3, 4]).var(ddof = 1).compare(1.6666666666666667), "var ddof=1")
+ok(T.Tensor([2, 4]).std().compare(1.0), "std ddof=0")
+# all/any (whole -> Bool, axis -> mask)
+ok(T.Tensor([1, 2, 3]).all() == True, "all whole True")
+ok(T.Tensor([1, 0, 3]).all() == False, "all whole False")
+ok(T.Tensor([0, 0, 3]).any() == True, "any whole True")
+ok(T.Tensor([0, 0, 0]).any() == False, "any whole False")
+ok(teq(T.Tensor([[1, 0], [1, 1]]).all(0), [1, 0]), "all axis 0")
+ok(teq(T.Tensor([[1, 0], [0, 0]]).any(1), [1, 0]), "any axis 1")
+# cumsum / cumprod
+ok(teq(T.Tensor([1, 2, 3, 4]).cumsum(), [1, 3, 6, 10]), "cumsum whole (flat)")
+ok(teq(T.Tensor([1, 2, 3, 4]).cumprod(), [1, 2, 6, 24]), "cumprod whole (flat)")
+ok(teq(T.Tensor([[1, 2], [3, 4]]).cumsum(0), [[1, 2], [4, 6]]), "cumsum axis 0")
+ok(teq(T.Tensor([[1, 2], [3, 4]]).cumprod(1), [[1, 2], [3, 12]]), "cumprod axis 1")
+# reduction axis errors
+ok(throws(Function(): return r.sum(5)), "sum axis oob throws")
+ok(throws(Function(): return r.argmax(5)), "argmax axis oob throws")
+ok(throws(Function(): return T.zeros([0]).min()), "min empty throws")
+ok(throws(Function(): return T.zeros([0]).argmin()), "argmin empty throws")
+ok(throws(Function(): return T.Tensor([1.0]).var(ddof = 1)), "var ddof too large throws")
+# empty-tensor totals (sum=0, prod=1 per the engine; NumPy-consistent)
+ok(T.zeros([0]).sum().compare(0.0), "empty sum 0")
+ok(T.zeros([0]).prod().compare(1.0), "empty prod 1")
+
+# =================================================================================================
+# 8. Reshaping / structural ops
+# =================================================================================================
+ok(teq(a2.transpose(), [[1, 4], [2, 5], [3, 6]]), "transpose")
+ok(teq(a2.reshape([3, 2]), [[1, 2], [3, 4], [5, 6]]), "reshape")
+ok(teq(a2.flatten(), [1, 2, 3, 4, 5, 6]), "flatten")
+ok(teq(a2.permute([1, 0]), [[1, 4], [2, 5], [3, 6]]), "permute")
+ok(teq(a2.swapaxes(0, 1), [[1, 4], [2, 5], [3, 6]]), "swapaxes")
+ok(teq(a2.flip(), [[6, 5, 4], [3, 2, 1]]), "flip all axes")
+ok(teq(a2.flip(0), [[4, 5, 6], [1, 2, 3]]), "flip axis 0")
+ok(teq(a2.flip(1), [[3, 2, 1], [6, 5, 4]]), "flip axis 1")
+ok(T.zeros([1, 3, 1]).squeeze().shape() == [3], "squeeze all size-1")
+ok(T.zeros([1, 3, 1]).squeeze(0).shape() == [3, 1], "squeeze one axis")
+ok(T.Tensor([1, 2]).expanddims(0).shape() == [1, 2], "expanddims front")
+ok(T.Tensor([1, 2]).expanddims(1).shape() == [2, 1], "expanddims back")
+ok(T.Tensor([1, 2]).expanddims(-1).shape() == [2, 1], "expanddims negative axis")
+ok(teq(T.Tensor([[1], [2]]).broadcastto([2, 3]), [[1, 1, 1], [2, 2, 2]]), "broadcastto")
+# repeat / tile (forward only)
+ok(teq(T.Tensor([1, 2]).repeat(2), [1, 1, 2, 2]), "repeat flat")
+ok(teq(T.Tensor([[1, 2], [3, 4]]).repeat(2, 0), [[1, 2], [1, 2], [3, 4], [3, 4]]), "repeat axis 0")
+ok(teq(T.Tensor([[1, 2], [3, 4]]).repeat(2, 1), [[1, 1, 2, 2], [3, 3, 4, 4]]), "repeat axis 1")
+ok(teq(T.Tensor([1, 2]).tile([2]), [1, 2, 1, 2]), "tile 1-D")
+ok(teq(T.Tensor([[1, 2]]).tile([2, 2]), [[1, 2, 1, 2], [1, 2, 1, 2]]), "tile 2-D reps")
+# join / split
+ok(T.concatenate([a2, a2], 0).shape() == [4, 3], "concatenate axis 0")
+ok(T.concatenate([a2, a2], 1).shape() == [2, 6], "concatenate axis 1")
+ok(teq(T.concat([T.Tensor([1, 2]), T.Tensor([3, 4])], 0), [1, 2, 3, 4]), "concat alias")
+ok(T.stack([T.Tensor([1, 2]), T.Tensor([3, 4])], 0).shape() == [2, 2], "stack new axis 0")
+ok(T.stack([T.Tensor([1, 2]), T.Tensor([3, 4])], 1).shape() == [2, 2], "stack new axis 1")
+ok(teq(T.stack([T.Tensor([1, 2]), T.Tensor([3, 4])], 0), [[1, 2], [3, 4]]), "stack values")
+ok(len(T.split(a2, 1, 0)) == 1, "split into 1")
+var sp = T.split(T.Tensor([1, 2, 3, 4]), 2, 0)
+ok(len(sp) == 2, "split equal count")
+ok(teq(sp[0], [1, 2]), "split equal piece 0")
+ok(teq(sp[1], [3, 4]), "split equal piece 1")
+var sp2 = T.split(T.Tensor([1, 2, 3, 4, 5]), [2, 3], 0)
+ok(teq(sp2[0], [1, 2]), "split sizes piece 0")
+ok(teq(sp2[1], [3, 4, 5]), "split sizes piece 1")
+# structural errors
+ok(throws(Function(): return a2.reshape([4, 2])), "reshape wrong total throws")
+ok(throws(Function(): return a2.reshape([-1, 2])), "reshape negative dim throws")
+ok(throws(Function(): return a2.permute([0, 0])), "permute non-permutation throws")
+ok(throws(Function(): return a2.squeeze(0)), "squeeze non-unit axis throws")
+ok(throws(Function(): return a2.swapaxes(0, 9)), "swapaxes oob throws")
+ok(throws(Function(): return T.Tensor([1.0, 2.0, 3.0]).broadcastto([2])), "broadcastto shrink throws")
+ok(throws(Function(): return T.split(a2, 5, 0)), "split indivisible throws")
+ok(throws(Function(): return T.split(a2, [1, 2], 0)), "split sizes mismatch throws")
+ok(throws(Function(): return T.concatenate([a2, T.Tensor([1, 2])], 0)), "concatenate rank mismatch throws")
+
+# =================================================================================================
+# 9. apply / astype / item / tolist
+# =================================================================================================
+ok(teq(T.Tensor([1, 4, 9]).apply(Function(x): return x ** 0.5), [1, 2, 3]), "apply sqrt map")
+ok(T.Tensor([1, 2]).astype("Complex").dtype() == "Complex", "astype Float->Complex")
+ok(T.Tensor([1, 2], dtype = "Complex").astype("Float").dtype() == "Float", "astype Complex->Float")
+ok(teq(T.Tensor([C.of(1, 5), C.of(2, 7)], dtype = "Complex").astype("Float"), [1, 2]), "astype C->F keeps real part")
+ok(T.Tensor([[1.5, 2.5]]).tolist() == [[1.5, 2.5]], "tolist nested")
+ok(T.full([], 7.0).tolist().compare(7.0), "tolist 0d -> scalar")
+ok(throws(Function(): return T.Tensor([1.0, 2.0]).item()), "item non-scalar throws")
+
+# =================================================================================================
+# 10. Linear algebra (module functions)
+# =================================================================================================
+var M = T.Tensor([[4, 3], [6, 3]])
+ok(T.det(M).compare(-6.0), "det")
+ok(T.trace(M).compare(7.0), "trace")
+ok(T.inv(M).matmul(M).compare(T.eye(2), abs_tol = 1e-9), "inv: M^-1 M == I")
+ok(T.solve(M, T.Tensor([[1], [1]])).compare(T.Tensor([[0.0], [0.3333333333333333]]), abs_tol = 1e-9), "solve")
+ok(T.norm(T.Tensor([3, 4])).compare(5.0), "norm default (2)")
+ok(T.norm(T.Tensor([3, -4]), 1).compare(7.0), "norm ord=1")
+ok(T.norm(T.Tensor([0, 3, 0, 4]), 0).compare(2.0), "norm ord=0 (count nonzero)")
+ok(T.norm(T.Tensor([3.0, -7.0, 2.0]), math.inf).compare(7.0), "norm inf (max abs)")
+ok(T.norm(T.Tensor([[3, 0], [0, 4]])).compare(5.0), "norm Frobenius (flattens)")
+ok(teq(T.outer(T.Tensor([1, 2]), T.Tensor([3, 4])), [[3, 4], [6, 8]]), "outer")
+ok(T.inner(T.Tensor([1, 2]), T.Tensor([3, 4])).item().compare(11.0), "inner")
+ok(teq(T.kron(T.eye(2), T.Tensor([[1, 2], [3, 4]])), [[1, 2, 0, 0], [3, 4, 0, 0], [0, 0, 1, 2], [0, 0, 3, 4]]), "kron")
+ok(teq(T.cross(T.Tensor([1, 0, 0]), T.Tensor([0, 1, 0])), [0, 0, 1]), "cross")
+# linalg errors
+ok(throws(Function(): return T.det(T.Tensor([[1, 2, 3]]))), "det non-square throws")
+ok(throws(Function(): return T.inv(T.Tensor([[1, 2], [2, 4]]))), "inv singular throws")
+ok(T.det(T.Tensor([[1, 2], [2, 4]])).compare(0.0), "det singular -> 0.0 (not throw)")
+ok(throws(Function(): return T.cross(T.Tensor([1, 0]), T.Tensor([0, 1]))), "cross non-3vector throws")
+
+# =================================================================================================
+# 11. Sorting / searching
+# =================================================================================================
+ok(teq(T.Tensor([3, 1, 2]).sort(), [1, 2, 3]), "sort")
+ok(teq(T.Tensor([[3, 1], [2, 4]]).sort(1), [[1, 3], [2, 4]]), "sort axis 1")
+ok(teq(T.Tensor([3, 1, 2]).argsort(), [1, 2, 0]), "argsort")
+ok(teq(T.unique(T.Tensor([3, 1, 3, 2, 1])), [1, 2, 3]), "unique sorted")
+ok(T.searchsorted(T.Tensor([1, 3, 5]), 4) == 2, "searchsorted scalar -> Integer")
+ok(teq(T.searchsorted(T.Tensor([1.0, 3.0, 5.0]), T.Tensor([0.0, 4.0, 6.0])), [0, 2, 3]), "searchsorted tensor v")
+var nz = T.nonzero(T.Tensor([0, 5, 0, 7]))
+ok(teq(nz[0], [1, 3]), "nonzero 1-D indices")
+var nz2 = T.nonzero(T.Tensor([[0, 5], [0, 7]]))
+ok(teq(nz2[0], [0, 1]), "nonzero 2-D axis-0 indices")
+ok(teq(nz2[1], [1, 1]), "nonzero 2-D axis-1 indices")
+# NaN sorts last
+ok(teq(T.Tensor([3.0, math.nan, 1.0, 2.0]).sort().slice(0, 3, 1, 0), [1, 2, 3]), "sort NaN goes last")
+ok(math.isnan(T.Tensor([3.0, math.nan, 1.0]).sort()[2]), "sort NaN at end")
+# searchsorted needs 1-D
+ok(throws(Function(): return T.searchsorted(T.Tensor([[1, 2]]), 1)), "searchsorted 2-D throws")
+
+# =================================================================================================
+# 12. Complex tensors (numeric container; promotion; complex-only restrictions)
+# =================================================================================================
+var z = T.Tensor([[1, 2], [3, 4]], dtype = "Complex")
+ok(z.dtype() == "Complex", "complex dtype")
+ok(String(z[0, 0]) == "1.0+0.0i", "complex element value")
+ok((z.matmul(z) == T.Tensor([[7, 10], [15, 22]], dtype = "Complex")) == True, "complex matmul")
+ok((z.conj() == T.Tensor([[1, 2], [3, 4]], dtype = "Complex")) == True, "complex conj (real input no-op)")
+var zc = T.Tensor([C.of(1, 2), C.of(3, -4)], dtype = "Complex")
+ok((zc.conj() == T.Tensor([C.of(1, -2), C.of(3, 4)], dtype = "Complex")) == True, "complex conjugate")
+ok(teq(zc.real(), [1, 3]), "complex real()")
+ok(teq(zc.imag(), [2, -4]), "complex imag()")
+ok((T.Tensor([1, 2]) + T.Tensor([1, 1], dtype = "Complex")).dtype() == "Complex", "Float+Complex promotes")
+ok((T.Tensor([2, 3]) * T.Tensor([1, 1], dtype = "Complex")).dtype() == "Complex", "Float*Complex promotes")
+# complex sum/prod/reductions work
+ok((zc.sum() == C.of(4, -2)) == True, "complex sum")
+# complex transpose/reshape
+ok((z.transpose() == T.Tensor([[1, 3], [2, 4]], dtype = "Complex")) == True, "complex transpose")
+# complex restrictions: min/max, requiresgrad, the diff math set
+ok(throws(Function(): return z.min()), "complex min throws (unordered)")
+ok(throws(Function(): return z.max()), "complex max throws (unordered)")
+ok(throws(Function(): return T.Tensor([1.0], dtype = "Complex", requiresgrad = True)), "complex requiresgrad ctor throws")
+ok(throws(Function(): return T.Tensor([1.0], dtype = "Complex").requiresgrad(True)), "complex requiresgrad method throws")
+ok(throws(Function(): return T.Tensor([1.0], dtype = "Complex").exp()), "complex diff-math throws")
+ok(throws(Function(): return T.Tensor([1.0], dtype = "Complex") ** 2), "complex ** throws")
+# real-tensor complex helpers
+ok(teq(T.Tensor([-1.0, 2.0]).imag(), [0, 0]), "real tensor imag() -> zeros")
+ok(teq(T.Tensor([-1.0, 2.0]).angle(), [math.pi, 0.0]), "real tensor angle() (pi for negatives)")
+
+# =================================================================================================
+# 13. Differentiable element-wise math — forward values (gradients FD-checked in r5)
+# =================================================================================================
+ok(teq(T.Tensor([0.0, 1.0]).exp(), [1.0, 2.718281828459045]), "exp forward")
+ok(teq(T.Tensor([1.0, 2.718281828459045]).log(), [0.0, 1.0]), "log forward")
+ok(teq(T.Tensor([1.0, 100.0]).log10(), [0.0, 2.0]), "log10 forward")
+ok(teq(T.Tensor([1.0, 8.0]).log2(), [0.0, 3.0]), "log2 forward")
+ok(teq(T.Tensor([4.0, 9.0]).sqrt(), [2.0, 3.0]), "sqrt forward")
+ok(teq(T.Tensor([8.0, 27.0]).cbrt(), [2.0, 3.0]), "cbrt forward")
+ok(teq(T.Tensor([2.0, 3.0]).square(), [4.0, 9.0]), "square forward")
+ok(teq(T.Tensor([2.0, 4.0]).reciprocal(), [0.5, 0.25]), "reciprocal forward")
+ok(teq(T.Tensor([2.0, 3.0]).pow(3.0), [8.0, 27.0]), "pow(p) forward")
+ok(teq(T.Tensor([-2.0, 3.0]).abs(), [2.0, 3.0]), "abs forward")
+ok(teq(T.Tensor([-3.0, 0.0, 5.0]).sign(), [-1.0, 0.0, 1.0]), "sign forward")
+ok(teq(T.Tensor([1.7, -1.2]).floor(), [1.0, -2.0]), "floor forward")
+ok(teq(T.Tensor([1.2, -1.7]).ceil(), [2.0, -1.0]), "ceil forward")
+ok(teq(T.Tensor([1.4, 2.6]).round(), [1.0, 3.0]), "round forward (away-from-half cases)")
+ok(teq(T.Tensor([1.7, -1.7]).trunc(), [1.0, -1.0]), "trunc forward")
+ok(T.Tensor([0.0]).sin().item().compare(0.0), "sin forward")
+ok(T.Tensor([0.0]).cos().item().compare(1.0), "cos forward")
+ok(T.Tensor([0.0]).tan().item().compare(0.0), "tan forward")
+ok(T.Tensor([0.0]).asin().item().compare(0.0), "asin forward")
+ok(T.Tensor([1.0]).acos().item().compare(0.0), "acos forward")
+ok(T.Tensor([0.0]).atan().item().compare(0.0), "atan forward")
+ok(T.Tensor([0.0]).sinh().item().compare(0.0), "sinh forward")
+ok(T.Tensor([0.0]).cosh().item().compare(1.0), "cosh forward")
+ok(T.Tensor([0.0]).tanh().item().compare(0.0), "tanh forward")
+ok(T.Tensor([0.0]).asinh().item().compare(0.0), "asinh forward")
+ok(T.Tensor([1.0]).acosh().item().compare(0.0), "acosh forward")
+ok(T.Tensor([0.0]).atanh().item().compare(0.0), "atanh forward")
+ok(teq(T.Tensor([-1.0, 2.0]).relu(), [0.0, 2.0]), "relu forward")
+ok(T.Tensor([0.0]).sigmoid().item().compare(0.5), "sigmoid forward")
+ok(T.Tensor([0.0]).softplus().item().compare(0.6931471805599453), "softplus forward")
+ok(T.Tensor([0.0]).erf().item().compare(0.0), "erf forward")
+# math domain errors -> throw (not silent NaN/inf)
+ok(throws(Function(): return T.Tensor([0.0]).log()), "log<=0 throws")
+ok(throws(Function(): return T.Tensor([-1.0]).log10()), "log10<=0 throws")
+ok(throws(Function(): return T.Tensor([-1.0]).sqrt()), "sqrt<0 throws")
+ok(throws(Function(): return T.Tensor([2.0]).asin()), "asin>1 throws")
+ok(throws(Function(): return T.Tensor([2.0]).acos()), "acos>1 throws")
+ok(throws(Function(): return T.Tensor([0.0]).acosh()), "acosh<1 throws")
+ok(throws(Function(): return T.Tensor([1.0]).atanh()), "atanh=1 throws")
+ok(throws(Function(): return T.Tensor([0.0]).reciprocal()), "reciprocal 0 throws")
+ok(throws(Function(): return T.Tensor([-2.0]).pow(0.5)), "pow neg base non-int exp throws")
+ok(throws(Function(): return T.Tensor([0.0]).pow(-1.0)), "pow 0 to negative throws")
+ok(throws(Function(): return T.Tensor([-2.0]) ** T.Tensor([0.5])), "tensor ** neg base non-int throws")
+# NaN passes through math (no throw) — confirm forward keeps NaN
+ok(math.isnan(T.Tensor([math.nan]).sqrt().item()), "NaN passes through sqrt")
+
+# =================================================================================================
+# 14. Autograd — opt-in, Float-only, accumulation, zerograd, detach, nograd
+# =================================================================================================
+# basic: y = sum(x^2) -> dy/dx = 2x
+var x = T.Tensor([1, 2, 3], requiresgrad = True)
+x.square().sum().backward()
+ok(x.grad.compare(T.Tensor([2, 4, 6])), "autograd square+sum grad = 2x")
+# grad is None before backward
+ok(T.Tensor([1.0, 2.0], requiresgrad = True).grad == None, "grad None before backward")
+# requiresgrad getter / setter
+ok(T.Tensor([1.0]).requiresgrad() == False, "requiresgrad default False")
+var rg = T.Tensor([1.0])
+discard rg.requiresgrad(True)
+ok(rg.requiresgrad() == True, "requiresgrad set True")
+discard rg.requiresgrad(False)
+ok(rg.requiresgrad() == False, "requiresgrad set False (detaches)")
+# non-scalar backward needs seed
+var xv = T.Tensor([2, 3], requiresgrad = True)
+var yv = xv * xv
+yv.backward(T.ones([2]))
+ok(xv.grad.compare(T.Tensor([4, 6])), "non-scalar backward with seed")
+var backwardNoSeed = Function():
+    var w2 = T.Tensor([1.0, 2.0], requiresgrad = True)
+    discard (w2 * w2).backward()
+ok(throws(backwardNoSeed), "non-scalar backward no seed throws")
+ok(throws(Function(): return T.Tensor([1.0, 2.0]).backward()), "backward on non-grad tensor throws")
+# accumulation across backward calls
+var acc = T.Tensor([1, 1], requiresgrad = True)
+acc.sum().backward()
+acc.sum().backward()
+ok(acc.grad.compare(T.Tensor([2, 2])), "grad accumulates across backward")
+discard acc.zerograd()
+ok(acc.grad == None, "zerograd clears grad")
+# detach: copy with no grad, shares value
+var dt = T.Tensor([1.0, 2.0], requiresgrad = True)
+ok(dt.detach().requiresgrad() == False, "detach tracks nothing")
+ok((dt.detach() == T.Tensor([1.0, 2.0])) == True, "detach preserves values")
+# nograd block disables tracking
+var w3 = T.Tensor([1.0, 2.0], requiresgrad = True)
+with T.nograd():
+    var probe = w3 * 2
+    ok(probe.requiresgrad() == False, "nograd: op not tracked")
+# outside the block, tracking resumes
+var probe2 = w3 * 2
+ok(probe2.requiresgrad() == True, "tracking resumes after nograd block")
+# grad flows through a chain (matmul + add + mean) — the doc training loop's gradient
+var gw = T.zeros([1, 1], requiresgrad = True)
+var gb = T.zeros([1, 1], requiresgrad = True)
+var gxs = T.Tensor([[0], [1], [2], [3]])
+var gys = T.Tensor([[1], [3], [5], [7]])
+var gloss = (gxs.matmul(gw) + gb - gys).square().mean()
+gloss.backward()
+ok(gw.grad != None and gw.grad.shape() == [1, 1], "chain grad fills w.grad with right shape")
+ok(gb.grad != None and gb.grad.shape() == [1, 1], "chain grad fills b.grad with right shape")
+# whole-tensor sum/mean on a grad tensor returns a 0-D Tensor (graph continues), Float otherwise
+ok(type(T.Tensor([1.0, 2.0]).sum()) == "Float", "non-grad sum -> Float")
+ok(type(T.Tensor([1.0, 2.0], requiresgrad = True).sum()) == "Tensor", "grad sum -> Tensor")
+ok(T.Tensor([1.0, 2.0], requiresgrad = True).sum().ndim() == 0, "grad sum is 0-D")
+ok(type(T.Tensor([1.0, 2.0], requiresgrad = True).mean()) == "Tensor", "grad mean -> Tensor")
+
+# =================================================================================================
+# 15. Serialization (gradient-free only)
+# =================================================================================================
+var ser = import("serialize")
+var dump = import("dump")
+var W = T.Tensor([[1.5, 2.5], [3.5, 4.5]])
+ok((ser.loads(ser.dumps(W)) == W) == True, "serialize text round-trip")
+ok((dump.loads(dump.dumps(W)) == W) == True, "dump binary round-trip")
+# complex tensor round-trips
+var ZW = T.Tensor([C.of(1, 2), C.of(3, 4)], dtype = "Complex")
+ok((ser.loads(ser.dumps(ZW)) == ZW) == True, "serialize complex round-trip")
+# grad tensor must be detached first
+ok(throws(Function(): return ser.dumps(T.Tensor([1.0], requiresgrad = True))), "serialize grad tensor throws")
+ok((ser.loads(ser.dumps(T.Tensor([1.0, 2.0], requiresgrad = True).detach())) == T.Tensor([1.0, 2.0])) == True, "serialize detached grad tensor")
+
+# -------------------------------------------------------------------------------------------------
+io.print("r6_tensor: " + String(n) + " checks passed")

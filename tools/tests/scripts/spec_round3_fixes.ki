@@ -1,0 +1,77 @@
+# Round-3 audit regression: docs-vs-impl + correctness/UB fixes. Each block prints `True` lines.
+var io = import("io")
+var c = import("complex")
+var t = import("tensor")
+var tm = import("time")
+var b64 = import("base64")
+var rx = import("regex")
+var js = import("json")
+var net = import("net")
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        return True
+    return False
+
+# --- format(): empty type formats by value kind (== String()); strict on bad specs ---
+io.print(format(3.14) == "3.14")                 # Float, no type -> general
+io.print(format(3.14, "10.4") == "      3.14")   # Float padded/right-aligned
+io.print(format(True) == "True")                 # Bool, no type -> "True"
+io.print(format(42) == "42" and format(255, "x") == "ff")
+io.print(throws(Function(): return format(255, ",x")))   # ',' with non-decimal base throws
+io.print(throws(Function(): return format(42, ".2d")))   # precision on integer throws
+
+# --- Integer ordering is exact beyond 2^53 (sort/min/max/List comparison) ---
+io.print(min(9007199254740993, 9007199254740992) == 9007199254740992)
+io.print(sorted([9007199254740993, 9007199254740992]) == [9007199254740992, 9007199254740993])
+io.print([9007199254740992] < [9007199254740993])
+
+# --- native methods: under-arity throws a clean error (no OOB span read) ---
+io.print(throws(Function(): return "abc".count()) and throws(Function(): return "abc".replace("a")))
+io.print(throws(Function(): return "a-b".partition()) and throws(Function(): return ",".join()))
+io.print("abc".count("b") == 1 and "a,b".split() == ["a,b"])   # valid (incl. 0-arg split)
+io.print(throws(Function(): return net.Socket().send()))       # socket send() no longer transmits garbage
+
+# --- time.datetime(float) guards against the out-of-range cast (was UB) ---
+io.print(throws(Function(): return tm.datetime(1e30)) and throws(Function(): return tm.datetime(0.0 / 0.0)))
+io.print(tm.datetime(1700000000.5).year == 2023)
+
+# --- complex 0 ** 0 == 1 (consistent with scalar); negatives still throw ---
+io.print(c.zero ** c.zero == c.one and c.pow(c.zero, c.zero) == c.one)
+io.print(throws(Function(): return c.zero ** c.of(0 - 1, 0)))
+
+# --- tensor negative indexing + negative slice axis (consistent with slicing/reductions) ---
+io.print(t.Tensor([10, 20, 30])[0 - 1] == 30.0)
+io.print(t.Tensor([[1, 2, 3], [4, 5, 6]]).slice(0, 2, 1, 0 - 1).tolist() == [[1.0, 2.0], [4.0, 5.0]])
+
+# --- base64.decode rejects truncated input; valid round-trips ---
+io.print(throws(Function(): return b64.decode("SGVsbG")))
+io.print(b64.decode("SGVsbG8=") == [72, 101, 108, 108, 111])
+
+# --- regex.sub throws on an out-of-range group reference ---
+io.print(throws(Function(): return rx.compile("(a)").sub("\\5", "a")))
+io.print(rx.compile("(a)(b)").sub("\\2\\1", "ab") == "ba")
+
+# --- json.dumps emits canonical true/false/null for Bool/None keys ---
+io.print(js.dumps({True: 1, None: 2}) == "{\"true\": 1, \"null\": 2}")
+
+# --- net.urlsplit strips userinfo (host/port no longer mangled) ---
+var u = net.urlsplit("https://user:pass@host.com:8443/p")
+io.print(u["host"] == "host.com" and u["port"] == "8443")
+
+# --- io seek validates whence; BytesIO.read rejects a non-Integer size ---
+var bio = io.BytesIO("hello world")
+io.print(throws(Function(): return bio.read(2.0)) and throws(Function(): return bio.seek(0, 9)))
+
+# --- Set algebra via operators: - (difference) and </<=/>/>= (subset/superset) ---
+io.print(({1, 2, 3} - {2}) == {1, 3})
+io.print({1, 2} <= {1, 2, 3} and {1, 2, 3} >= {1, 2})
+io.print(({1, 2} < {1, 2, 3}) and not ({1, 2} < {1, 2}))   # proper subset
+io.print(throws(Function(): return {1, 2} - [2]))          # RHS must be a Set
+
+# --- regex.split splits on empty matches, consistent with findall ---
+io.print(rx.split("x*", "abc") == ["", "a", "b", "c", ""])
+io.print(rx.split(",", "a,b,c") == ["a", "b", "c"])        # non-empty separator unchanged
+
+io.print("OK round3-fixes")

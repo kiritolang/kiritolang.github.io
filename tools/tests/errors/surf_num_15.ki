@@ -1,0 +1,3 @@
+# Element-wise tensor division by a zero element must throw.
+var t = import("tensor")
+discard t.Tensor([1.0]) / t.Tensor([0.0])

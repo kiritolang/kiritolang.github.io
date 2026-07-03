@@ -1,0 +1,3 @@
+# LEXER: a raw triple-quoted string opened but never closed
+var s = r"""raw triple opened here
+and never terminated

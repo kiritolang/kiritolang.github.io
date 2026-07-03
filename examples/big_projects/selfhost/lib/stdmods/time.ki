@@ -1,0 +1,238 @@
+# The `time` module in pure Kirito. Clocks come from the thin _os syscall module; the calendar math
+# (epoch <-> civil date via Howard Hinnant's algorithms), formatting and parsing are computed here.
+
+var _os = import("_os")
+
+var time = Function():
+    return _os.time()
+var timens = Function():
+    return _os.timens()
+var monotonic = Function():
+    return _os.monotonic()
+var perfcounterns = Function():
+    return _os.perfcounterns()
+var sleep = Function(seconds):
+    return _os.sleep(seconds)
+
+var _pad = Function(n, width):
+    var s = String(n)
+    while len(s) < width:
+        s = "0" + s
+    return s
+
+# days since 1970-01-01 for a civil date (proleptic Gregorian)
+var _daysFromCivil = Function(y, m, d):
+    var yy = y
+    if m <= 2:
+        yy = yy - 1
+    var era = yy // 400
+    var yoe = yy - era * 400
+    var mp = m + 9
+    if m > 2:
+        mp = m - 3
+    var doy = (153 * mp + 2) // 5 + d - 1
+    var doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+# inverse: civil date [y, m, d] from days since 1970-01-01
+var _civilFromDays = Function(z):
+    z = z + 719468
+    var era = z // 146097
+    var doe = z - era * 146097
+    var yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    var y = yoe + era * 400
+    var doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    var mp = (5 * doy + 2) // 153
+    var d = doy - (153 * mp + 2) // 5 + 1
+    var m = mp + 3
+    if mp >= 10:
+        m = mp - 9
+    if m <= 2:
+        y = y + 1
+    return [y, m, d]
+
+class DateTime:
+    var _init_ = Function(self, year, month, day, hour, minute, second):
+        self.year = year
+        self.month = month
+        self.day = day
+        self.hour = hour
+        self.minute = minute
+        self.second = second
+        # epoch seconds as an Integer attribute (matches the real DateTime.timestamp)
+        var d = _daysFromCivil(year, month, day)
+        self.timestamp = d * 86400 + hour * 3600 + minute * 60 + second
+        self.weekday = (d + 4) % 7                                  # 0 = Sunday (1970-01-01 was Thu)
+        self.yearday = d - _daysFromCivil(year, 1, 1) + 1          # 1-based day of year
+
+    var epoch = Function(self):
+        var days = _daysFromCivil(self.year, self.month, self.day)
+        return Float(days * 86400 + self.hour * 3600 + self.minute * 60 + self.second)
+
+    var diff = Function(self, other):
+        return self.epoch() - other.epoch()
+
+    var format = Function(self, fmt):
+        var out = ""
+        var i = 0
+        var n = len(fmt)
+        while i < n:
+            if fmt[i] == "%" and i + 1 < n:
+                var code = fmt[i + 1]
+                if code == "Y":
+                    out = out + _pad(self.year, 4)
+                elif code == "m":
+                    out = out + _pad(self.month, 2)
+                elif code == "d":
+                    out = out + _pad(self.day, 2)
+                elif code == "H":
+                    out = out + _pad(self.hour, 2)
+                elif code == "M":
+                    out = out + _pad(self.minute, 2)
+                elif code == "S":
+                    out = out + _pad(self.second, 2)
+                elif code == "w":
+                    out = out + String(self.weekday)
+                elif code == "j":
+                    out = out + _pad(self.yearday, 3)
+                elif code == "%":
+                    out = out + "%"
+                else:
+                    out = out + code
+                i = i + 2
+            else:
+                out = out + fmt[i]
+                i = i + 1
+        return out
+
+    var iso = Function(self):
+        return self.format("%Y-%m-%dT%H:%M:%S")
+
+    var isoformat = Function(self):
+        return self.iso()
+
+    var add = Function(self, seconds):
+        return _fromEpoch(self.timestamp + Integer(seconds))
+
+    var sub = Function(self, seconds):
+        return _fromEpoch(self.timestamp - Integer(seconds))
+
+    # value equality + hash by instant (epoch), mirroring the native DateTime
+    var _eq_ = Function(self, o):
+        if type(o) != "DateTime":
+            return False
+        return self.timestamp == o.timestamp
+    var _ne_ = Function(self, o):
+        return not self._eq_(o)
+    # _hashkey_ is the self-host's internal opt-in for a native-standing-in value type to be usable as
+    # a Dict/Set key (native DateTime hashes by instant). It is NOT a language dunder -- a plain user
+    # class does not get hashability by defining a method, matching native (see r7_language).
+    var _hashkey_ = Function(self):
+        return self.timestamp
+
+    var _str_ = Function(self):
+        return self.iso()
+
+var _fromEpoch = Function(secs):
+    var days = secs // 86400
+    var rem = secs - days * 86400
+    var ymd = _civilFromDays(days)
+    if ymd[0] < -9999 or ymd[0] > 9999:
+        throw "DateTime: epoch " + String(secs) + " is out of representable range"
+    return DateTime(ymd[0], ymd[1], ymd[2], rem // 3600, (rem % 3600) // 60, rem % 60)
+
+var make = Function(year, month, day, hour = 0, minute = 0, second = 0):
+    # Every component is an Integer (native declares each parameter Integer-typed); a Float/other
+    # throws rather than silently truncating.
+    for _comp in [year, month, day, hour, minute, second]:
+        if type(_comp) != "Integer":
+            throw "make: date components must be Integers"
+    # Like C mktime: out-of-range components normalize (month 13 -> Jan next year), so build from the
+    # civil-date epoch and re-derive the broken-down fields rather than storing the raw inputs.
+    var d = _daysFromCivil(year, month, day)
+    var secs = d * 86400 + hour * 3600 + minute * 60 + second
+    return _fromEpoch(secs)
+
+var now = Function():
+    var secs = Integer(_os.time())
+    var days = secs // 86400
+    var rem = secs % 86400
+    var ymd = _civilFromDays(days)
+    return DateTime(ymd[0], ymd[1], ymd[2], rem // 3600, (rem % 3600) // 60, rem % 60)
+
+# days in a (1-based) month of a proleptic-Gregorian year, for strptime field-range validation
+var _daysInMonth = Function(year, month):
+    if month < 1 or month > 12:
+        return 0
+    if month == 2:
+        var leap = (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
+        return 29 if leap else 28
+    var dim = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    return dim[month - 1]
+
+# Parse a small set of strptime codes (%Y %m %d %H %M %S), matching literal text between them. Like
+# the native strptime, malformed text fails to parse instead of silently normalizing to a garbage
+# date: an out-of-range field (month 99, day 32, hour 25), unconverted trailing input
+# ("2024-01-01XYZ"), or a literal/digit that does not match throws "text does not match format".
+var strptime = Function(text, format):
+    var s = text        # native's parameter names are text/format (keyword-callable); aliased so the
+    var fmt = format    # scanning body below reads naturally
+    var fields = {"Y": 1970, "m": 1, "d": 1, "H": 0, "M": 0, "S": 0}
+    var si = 0
+    var fi = 0
+    var nf = len(fmt)
+    var ns = len(s)
+    while fi < nf:
+        if fmt[fi] == "%":
+            if fi + 1 >= nf:
+                throw "strptime: text does not match format"          # lone trailing %
+            var code = fmt[fi + 1]
+            if code == "%":
+                if si >= ns or s[si] != "%":
+                    throw "strptime: text does not match format"
+                si = si + 1
+            elif code == "Y" or code == "m" or code == "d" or code == "H" or code == "M" or code == "S":
+                var width = 4 if code == "Y" else 2
+                var num = 0
+                var taken = 0
+                while taken < width and si < ns and s[si] >= "0" and s[si] <= "9":
+                    num = num * 10 + (ord(s[si]) - 48)
+                    si = si + 1
+                    taken = taken + 1
+                if taken == 0:
+                    throw "strptime: text does not match format"      # no digits where a number is required
+                fields[code] = num
+            else:
+                throw "strptime: text does not match format"          # unsupported directive
+            fi = fi + 2
+        else:
+            if si >= ns or s[si] != fmt[fi]:
+                throw "strptime: text does not match format"          # literal must match
+            si = si + 1
+            fi = fi + 1
+    if si != ns:
+        throw "strptime: text does not match format"                  # unconverted trailing input
+    var year = fields["Y"]
+    var month = fields["m"]
+    if month < 1 or month > 12:
+        throw "strptime: text does not match format"
+    if fields["d"] < 1 or fields["d"] > _daysInMonth(year, month):
+        throw "strptime: text does not match format"
+    if fields["H"] < 0 or fields["H"] > 23:
+        throw "strptime: text does not match format"
+    if fields["M"] < 0 or fields["M"] > 59:
+        throw "strptime: text does not match format"
+    if fields["S"] < 0 or fields["S"] > 59:
+        throw "strptime: text does not match format"
+    return DateTime(fields["Y"], fields["m"], fields["d"], fields["H"], fields["M"], fields["S"])
+
+# datetime(timestamp = None): None -> now; an epoch-seconds number -> the corresponding DateTime
+# (fractional seconds truncated). Guards NaN / out-of-range like the native (which would overflow the cast).
+var datetime = Function(timestamp = None):
+    if timestamp == None:
+        return now()
+    if timestamp != timestamp:
+        throw "datetime: timestamp is NaN"
+    if timestamp > 1e15 or timestamp < -1e15:
+        throw "datetime: timestamp out of range"
+    return _fromEpoch(Integer(timestamp))

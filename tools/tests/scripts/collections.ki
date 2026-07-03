@@ -1,0 +1,26 @@
+# Collections: List, Dict, Set and their operations.
+var io = import("io")
+
+var nums = [3, 1, 4, 1, 5, 9, 2, 6]
+io.print(len(nums))          # 8
+io.print(nums[0] + nums[-1]) # 9
+io.print(nums[2:5])          # [4, 1, 5]
+
+var sum = 0
+for n in nums:
+    sum = sum + n
+io.print(sum)                # 31
+
+var counts = {}
+for c in "banana":
+    if c in counts:
+        counts[c] = counts[c] + 1
+    else:
+        counts[c] = 1
+io.print(counts["a"])        # 3
+io.print(counts["n"])        # 2
+
+var unique = {1, 2, 2, 3, 3, 3}
+io.print(len(unique))        # 3
+io.print(unique.contains(2)) # True
+io.print(2 in unique)        # True

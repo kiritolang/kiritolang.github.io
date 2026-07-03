@@ -1,0 +1,92 @@
+# Project 9 — K-means clustering of the iris flowers, built directly on the tensor library (no neural
+# net, no labels during training). Three clusters are found by alternating nearest-centroid assignment
+# and centroid re-estimation; pairwise squared distances come from one matmul via the identity
+# ||x-c||^2 = ||x||^2 - 2 x.c + ||c||^2. K-means is run from several random starts (keeping the lowest-
+# inertia solution, as scikit-learn does) and the resulting cluster purity is measured against species.
+var io = import("io")
+var T = import("tensor")
+var data = import("data")
+var random = import("random")
+
+io.print("=== K-means clustering on iris (3 clusters, 6 restarts, tensor math) ===")
+
+var ds = data.load_iris()
+var Xlist = data.standardize(ds[0])
+var labels = ds[1]
+var X = T.Tensor(Xlist)
+var n = X.shape()[0]
+var k = 3
+
+# Row-wise squared norms of a matrix -> a (rows,) tensor.
+var sq_norms = Function(M):
+    return (M * M).sum(axis = 1)
+
+# Squared-distance matrix (n, k) between every point and every centroid, in one matmul.
+var dist2 = Function(centroids):
+    return sq_norms(X).reshape([n, 1]) - X.matmul(centroids.transpose()) * 2.0 + sq_norms(centroids).reshape([1, k])
+
+# One K-means run from a given seed. Returns [assignments, inertia].
+var run_once = Function(seed):
+    var rng = random.Random(seed)
+    var ids = []
+    var i = 0
+    while i < n:
+        ids.append(i)
+        i = i + 1
+    rng.shuffle(ids)
+    var centroids = T.Tensor(data.gather(Xlist, ids[0:k]))
+    var assign = []
+    var iter = 0
+    while iter < 30:
+        var dists = dist2(centroids)
+        var ai = dists.argmin(axis = 1)
+        assign = []
+        var j = 0
+        while j < n:
+            assign.append(Integer(ai[j]))
+            j = j + 1
+        var newrows = []
+        var c = 0
+        while c < k:
+            var members = []
+            j = 0
+            while j < n:
+                if assign[j] == c:
+                    members.append(Xlist[j])
+                j = j + 1
+            newrows.append(T.Tensor(members).mean(axis = 0).tolist() if len(members) > 0 else Xlist[ids[c]])
+            c = c + 1
+        centroids = T.Tensor(newrows)
+        iter = iter + 1
+    # inertia = total squared distance of each point to its centroid
+    var dmin = dist2(centroids).min(axis = 1)
+    return [assign, dmin.sum()]
+
+# Keep the lowest-inertia run across several random restarts.
+var best_assign = []
+var best_inertia = 1e30
+var r = 0
+while r < 6:
+    var res = run_once(r)
+    if res[1] < best_inertia:
+        best_inertia = res[1]
+        best_assign = res[0]
+    r = r + 1
+io.print(f"best inertia over 6 restarts: {best_inertia:.2f}")
+
+# Purity: label each cluster by its majority true species, then count correctly-grouped points.
+var correct = 0
+var c = 0
+while c < k:
+    var counts = [0, 0, 0]
+    var j = 0
+    while j < n:
+        if best_assign[j] == c:
+            counts[labels[j]] = counts[labels[j]] + 1
+        j = j + 1
+    correct = correct + max(counts)
+    c = c + 1
+var purity = correct / n
+io.print(f"cluster purity vs. true species: {purity:.3f}")
+assert purity > 0.8, "k-means on iris should recover the species with >80% purity"
+io.print("OK kmeans")

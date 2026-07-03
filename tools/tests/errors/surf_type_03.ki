@@ -1,0 +1,2 @@
+# type/operator: Dicts are unordered, '<' is rejected
+discard {1: 2} < {3: 4}

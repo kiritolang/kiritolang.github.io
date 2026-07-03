@@ -1,0 +1,52 @@
+# Project 5 — Binary classification: is a breast tumour malignant or benign? An MLP trained with
+# binary cross-entropy (from logits, via the numerically stable softplus form). Real data:
+# scikit-learn's Wisconsin breast-cancer set (569 samples, 30 features, 2 classes).
+var io = import("io")
+var T = import("tensor")
+var nn = import("nn")
+var data = import("data")
+
+io.print("=== Breast-cancer binary classification (MLP + BCE, 30 features) ===")
+
+var ds = data.load_breast_cancer()
+var X = data.standardize(ds[0])
+var split = data.train_test_split(X, ds[1], 0.8, 17)
+var Xtr = T.Tensor(split[0])
+var Xte = T.Tensor(split[2])
+var yte = split[3]
+# Targets as a (N, 1) column of 0/1 floats.
+var col = Function(vals):
+    var rows = []
+    for v in vals:
+        rows.append([Float(v)])
+    return T.Tensor(rows)
+var Ttr = col(split[1])
+io.print(f"train {len(split[0])} samples, test {len(split[2])} samples")
+
+nn.seed(5)
+var model = nn.Sequential([nn.Linear(30, 16), nn.ReLU(), nn.Linear(16, 1)])
+var opt = nn.Adam(model.parameters(), lr = 0.01)
+
+var epoch = 0
+while epoch < 80:
+    var loss = nn.bce_loss(model(Xtr), Ttr)         # logits in, BCE-with-logits
+    loss.backward()
+    opt.step()
+    if epoch % 20 == 0:
+        io.print(f"  epoch {epoch:2d}  BCE {loss.item():.4f}")
+    epoch = epoch + 1
+
+# Threshold the sigmoid of the logit at 0.5 to predict the class.
+with T.nograd():
+    var logits = model(Xte).flatten().tolist()
+var correct = 0
+var i = 0
+while i < len(yte):
+    var pred = 1 if logits[i] > 0.0 else 0           # sigmoid(z) > 0.5  <=>  z > 0
+    if pred == yte[i]:
+        correct = correct + 1
+    i = i + 1
+var acc = correct / len(yte)
+io.print(f"test accuracy {acc:.3f}")
+assert acc > 0.92, "breast-cancer classifier should reach >92% test accuracy"
+io.print("OK breast-cancer")

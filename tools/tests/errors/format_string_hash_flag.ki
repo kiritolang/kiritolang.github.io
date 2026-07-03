@@ -1,0 +1,3 @@
+# The '#' alternate-form flag is meaningless on a String presentation;
+# per docs it is rejected rather than silently ignored.
+discard format("x", "#6")

@@ -1,0 +1,17 @@
+# argmain/arglist consumed by if/elif/else statements. An imported module takes the "imported" arm
+# and the "empty" size class (its arglist is empty).
+var role = ""
+if argmain:
+    role = "direct"
+elif not argmain:
+    role = "imported"
+else:
+    role = "unknown"
+var sizeClass = ""
+if len(arglist) == 0:
+    sizeClass = "empty"
+elif len(arglist) == 1:
+    sizeClass = "single"
+else:
+    sizeClass = "many"
+var m = argmain

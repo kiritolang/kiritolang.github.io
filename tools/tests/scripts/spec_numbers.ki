@@ -1,0 +1,69 @@
+# Exhaustive + adversarial checks for Integer / Float / numeric builtins.
+# Prints exactly "OK" iff every assertion holds; any failure throws and aborts before "OK".
+var io = import("io")
+
+# --- integer literals: every base, case-insensitive, full-width wraparound ---
+assert 255 == 0xFF and 0xff == 0xFF and 0Xff == 255, "hex literal"
+assert 0o17 == 15 and 0O17 == 15, "octal literal"
+assert 0b1010 == 10 and 0B1100 == 12, "binary literal"
+assert 0x10 + 0b1 + 0o7 == 24, "mixed-base expression"
+assert 0xFFFFFFFFFFFFFFFF == -1, "full-width two's-complement wraparound"
+assert 0x8000000000000000 == -9223372036854775808, "sign bit"
+
+# --- arithmetic + true-division semantics ---
+assert 1 + 2 * 3 == 7, "precedence"
+assert 2 ** 3 ** 2 == 512, "** right-assoc"
+assert -2 ** 2 == -4, "unary vs pow"
+assert 7 / 2 == 3.5 and 4 / 2 == 2.0, "/ always Float"
+assert type(4 / 2) == "Float", "/ result type"
+assert 7 // 2 == 3 and -7 // 2 == -4, "// floors toward -inf"
+assert 7 % 3 == 1 and -7 % 3 == 2 and 7 % -3 == -2, "% sign of divisor"
+assert divmod(-7, 3) == [-3, 2], "divmod"
+assert divmod(17, 5) == [3, 2], "divmod positive"
+
+# --- overflow wraps (well-defined), never traps ---
+var mx = 9223372036854775807
+assert mx + 1 == -9223372036854775808, "max+1 wraps"
+assert mx * 2 == -2, "mul overflow wraps"
+
+# --- builtins on integers ---
+assert abs(-5) == 5 and abs(5) == 5, "abs int"
+assert min(3, 1, 2) == 1 and max(3, 1, 2) == 3, "min/max variadic"
+assert min([4, 2, 7]) == 2 and max([4, 2, 7]) == 7, "min/max iterable"
+assert sum([1, 2, 3, 4]) == 10 and sum([]) == 0, "sum"
+assert pow(2, 10) == 1024.0, "pow 2-arg is Float"
+assert pow(2, 10, 1000) == 24, "pow 3-arg modular"
+assert hex(255) == "0xff" and oct(8) == "0o10" and bin(5) == "0b101", "bin/oct/hex"
+assert hex(-255) == "-0xff", "hex negative"
+
+# --- bitwise builtins (Kirito has no &/|/^/~/<</>> operators) ---
+assert bitand(12, 10) == 8, "bitand"
+assert bitor(12, 10) == 14, "bitor"
+assert bitxor(12, 10) == 6, "bitxor"
+assert bitnot(0) == -1 and bitnot(5) == -6, "bitnot == -a-1"
+assert bitand(0xFF, 0x0F) == 15 and bitor(0x0F, 0xF0) == 0xFF, "bitand/or hex"
+assert shl(1, 8) == 256 and shl(1, 0) == 1, "shl"
+assert shr(256, 4) == 16 and shr(-8, 1) == -4, "shr arithmetic"
+assert shl(1, 64) == 0 and shr(1, 64) == 0 and shr(-1, 100) == -1, "shift past width"
+
+# --- floats ---
+assert 1.5e3 == 1500.0 and 2e-3 == 0.002 and 1E2 == 100.0, "scientific notation"
+assert not (0.1 + 0.2 == 0.3) and (0.1 + 0.2).compare(0.3), "float == is exact; .compare for tolerance"
+assert round(2.71828, 2) == 2.72 and round(2.5) == 3 and round(3.5) == 4, "round half away from zero"
+assert round(-2.5) == -3, "round negative half away"
+assert abs(-3.5) == 3.5, "abs float"
+assert Float(3) == 3.0 and type(Float(3)) == "Float", "Integer->Float"
+assert Integer(3.9) == 3 and Integer(-3.9) == -3, "Float->Integer truncates"
+assert Integer("42") == 42 and Integer("-7") == -7, "String->Integer"
+assert Float("2.5") == 2.5, "String->Float"
+
+# --- Bool is NOT an Integer (strong typing) ---
+assert True != 1 and False != 0, "Bool distinct from Integer"
+assert type(True) == "Bool", "type of True"
+assert Integer(True) == 1 and Integer(False) == 0, "explicit Bool->Integer"
+assert (1 < 2) == True and (2 < 1) == False, "comparison yields Bool"
+
+# --- comparisons / chains via and ---
+assert 1 < 2 and 2 <= 2 and 3 > 2 and 3 >= 3 and 1 == 1 and 1 != 2, "comparison ops"
+
+io.print("OK")

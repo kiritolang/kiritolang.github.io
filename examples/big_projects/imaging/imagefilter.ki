@@ -1,0 +1,205 @@
+# imagefilter.ki -- convolution and rank filters for `imaging`, in the spirit of Pillow's
+# ImageFilter. Each filter exposes `apply(tensor) -> tensor`; pass one to `img.filter(...)`.
+#
+# Convolution is expressed entirely with `tensor` ops: the image is edge-padded, then for each
+# kernel tap the whole shifted window is scaled and accumulated -- K*K vectorised tensor operations
+# instead of a per-pixel loop. Rank filters (min/max/median) stack the shifted windows and reduce.
+
+var T = import("tensor")
+
+# ---------------------------------------------------------------- shared convolution machinery
+# Replicate the border `p` pixels on every spatial side (edge / "clamp" padding).
+var _pad_edge = Function(d, p):
+    if p == 0:
+        return d
+    var sh = d.shape()
+    var H = sh[0]
+    var top = d.slice(0, 1, 1, 0)
+    var bot = d.slice(H - 1, H, 1, 0)
+    var parts = []
+    var i = 0
+    while i < p:
+        parts.append(top)
+        i = i + 1
+    parts.append(d)
+    i = 0
+    while i < p:
+        parts.append(bot)
+        i = i + 1
+    var v = T.concatenate(parts, 0)
+    var W = v.shape()[1]
+    var left = v.slice(0, 1, 1, 1)
+    var right = v.slice(W - 1, W, 1, 1)
+    parts = []
+    i = 0
+    while i < p:
+        parts.append(left)
+        i = i + 1
+    parts.append(v)
+    i = 0
+    while i < p:
+        parts.append(right)
+        i = i + 1
+    return T.concatenate(parts, 1)
+
+# The K*K shifted windows of `d` (row-major tap order), each the same shape as `d`.
+var _windows = Function(d, k):
+    var padded = _pad_edge(d, k // 2)
+    var sh = d.shape()
+    var H = sh[0]
+    var W = sh[1]
+    var out = []
+    var di = 0
+    while di < k:
+        var dj = 0
+        while dj < k:
+            out.append(padded.slice(di, di + H, 1, 0).slice(dj, dj + W, 1, 1))
+            dj = dj + 1
+        di = di + 1
+    return out
+
+var _clamp = Function(t):
+    return t.clip(0.0, 255.0).round()
+
+# Correlate `d` with a flat row-major `kernel` of length k*k, divide by `scale`, add `offset`, clamp.
+var _correlate = Function(d, k, kernel, scale, offset):
+    var win = _windows(d, k)
+    var acc = win[0] * Float(kernel[0])
+    var i = 1
+    while i < k * k:
+        if kernel[i] != 0:
+            acc = acc + win[i] * Float(kernel[i])
+        i = i + 1
+    return _clamp(acc * (1.0 / Float(scale)) + Float(offset))
+
+# ---------------------------------------------------------------- generic kernel filter
+# A fixed convolution kernel (Pillow's ImageFilter.Kernel). `kernel` is a flat row-major list whose
+# length is size*size (size is odd).
+class Kernel:
+    var _init_ = Function(self, size, kernel, scale = None, offset = 0):
+        if size * size != len(kernel):
+            throw "kernel length " + String(len(kernel)) + " != size*size for size " + String(size)
+        self.size = size
+        self.kernel = kernel
+        self.offset = offset
+        if scale == None:
+            # Pillow defaults scale to the sum of the kernel (or 1 if that sum is 0).
+            var s = 0
+            for v in kernel:
+                s = s + v
+            if s == 0:
+                s = 1
+            self.scale = s
+        else:
+            self.scale = scale
+
+    var _str_ = Function(self):
+        return "<Kernel size=" + String(self.size) + ">"
+
+    var apply = Function(self, d):
+        return _correlate(d, self.size, self.kernel, self.scale, self.offset)
+
+# ---------------------------------------------------------------- rank filters
+# Box blur: average over a (2r+1) square window.
+class BoxBlur:
+    var _init_ = Function(self, radius):
+        self.radius = radius
+
+    var _str_ = Function(self):
+        return "<BoxBlur radius=" + String(self.radius) + ">"
+
+    var apply = Function(self, d):
+        var k = self.radius * 2 + 1
+        var win = _windows(d, k)
+        var acc = win[0]
+        var i = 1
+        while i < len(win):
+            acc = acc + win[i]
+            i = i + 1
+        return _clamp(acc * (1.0 / Float(len(win))))
+
+# A true Gaussian blur (separable maths folded into one 2-D kernel). Pillow approximates this with
+# successive box blurs; we build the exact discrete Gaussian, which is visually equivalent.
+class GaussianBlur:
+    var _init_ = Function(self, radius):
+        self.radius = radius
+
+    var _str_ = Function(self):
+        return "<GaussianBlur radius=" + String(self.radius) + ">"
+
+    var apply = Function(self, d):
+        var math = import("math")
+        var r = self.radius
+        if r < 1:
+            r = 1
+        var sigma = Float(r)
+        var k = r * 2 + 1
+        # Build a normalised k*k Gaussian kernel (flat, row-major).
+        var kernel = []
+        var total = 0.0
+        var di = 0
+        while di < k:
+            var dj = 0
+            while dj < k:
+                var dy = Float(di - r)
+                var dx = Float(dj - r)
+                var w = math.exp(-(dx * dx + dy * dy) / (2.0 * sigma * sigma))
+                kernel.append(w)
+                total = total + w
+                dj = dj + 1
+            di = di + 1
+        var win = _windows(d, k)
+        var acc = win[0] * (kernel[0] / total)
+        var i = 1
+        while i < k * k:
+            acc = acc + win[i] * (kernel[i] / total)
+            i = i + 1
+        return _clamp(acc)
+
+# Min / Max / Median over a square window (Pillow's MinFilter/MaxFilter/MedianFilter).
+class MinFilter:
+    var _init_ = Function(self, size = 3):
+        self.size = size
+
+    var apply = Function(self, d):
+        var win = _windows(d, self.size)
+        var acc = win[0]
+        var i = 1
+        while i < len(win):
+            acc = acc.minimum(win[i])
+            i = i + 1
+        return acc
+
+class MaxFilter:
+    var _init_ = Function(self, size = 3):
+        self.size = size
+
+    var apply = Function(self, d):
+        var win = _windows(d, self.size)
+        var acc = win[0]
+        var i = 1
+        while i < len(win):
+            acc = acc.maximum(win[i])
+            i = i + 1
+        return acc
+
+class MedianFilter:
+    var _init_ = Function(self, size = 3):
+        self.size = size
+
+    var apply = Function(self, d):
+        var win = _windows(d, self.size)
+        return _clamp(T.stack(win, 0).median(0))
+
+# ---------------------------------------------------------------- Pillow's built-in kernels
+# Canonical ImageFilter constants. Construct once; they're immutable and reusable.
+var BLUR = Kernel(5, [1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1], 16, 0)
+var SHARPEN = Kernel(3, [-2, -2, -2, -2, 32, -2, -2, -2, -2], 16, 0)
+var SMOOTH = Kernel(3, [1, 1, 1, 1, 5, 1, 1, 1, 1], 13, 0)
+var SMOOTH_MORE = Kernel(5, [1, 1, 1, 1, 1, 1, 5, 5, 5, 1, 1, 5, 44, 5, 1, 1, 5, 5, 5, 1, 1, 1, 1, 1, 1], 100, 0)
+var DETAIL = Kernel(3, [0, -1, 0, -1, 10, -1, 0, -1, 0], 6, 0)
+var EDGE_ENHANCE = Kernel(3, [-1, -1, -1, -1, 10, -1, -1, -1, -1], 2, 0)
+var EDGE_ENHANCE_MORE = Kernel(3, [-1, -1, -1, -1, 9, -1, -1, -1, -1], 1, 0)
+var FIND_EDGES = Kernel(3, [-1, -1, -1, -1, 8, -1, -1, -1, -1], 1, 0)
+var EMBOSS = Kernel(3, [-1, 0, 0, 0, 1, 0, 0, 0, 0], 1, 128)
+var CONTOUR = Kernel(3, [-1, -1, -1, -1, 8, -1, -1, -1, -1], 1, 255)

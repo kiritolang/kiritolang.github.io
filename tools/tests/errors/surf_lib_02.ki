@@ -1,0 +1,3 @@
+# An unterminated JSON array must be a parse error.
+var j = import("json")
+discard j.loads("[1, 2, 3")

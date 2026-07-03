@@ -1,0 +1,3 @@
+# Integer() of a positive infinity must throw, not truncate to garbage.
+var m = import("math")
+discard Integer(m.inf)

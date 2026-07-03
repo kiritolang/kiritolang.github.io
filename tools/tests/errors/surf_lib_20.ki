@@ -1,0 +1,3 @@
+# statistics.mean of an empty data set must throw.
+var s = import("statistics")
+discard s.mean([])

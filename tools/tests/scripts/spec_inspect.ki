@@ -1,0 +1,65 @@
+# `inspect` describes the public surface of EVERY object — built-in module, native object, user
+# class, instance, and function. This spec focuses on native objects (Random/Matrix/BytesIO/DateTime/
+# regex/Bytes/Socket), which declare their members for introspection, plus the other value kinds.
+var io = import("io")
+var random = import("random")
+var matrix = import("matrix")
+var time = import("time")
+var regex = import("regex")
+var dump = import("dump")
+var net = import("net")
+
+# --- native objects list their methods/attributes (not just "<Type> value") ---
+var r = inspect(random.Random())
+assert "Random object:" in r, "Random inspect header"
+assert "gauss(mu, sigma) -> Float" in r, "Random shows gauss signature"
+assert "randint(a, b) -> Integer" in r and "shuffle(seq)" in r, "Random shows more methods"
+assert "value" != r, "Random no longer a bare 'value'"
+
+var m = inspect(matrix.identity(3))
+assert "Matrix object:" in m and "determinant() -> Float" in m and "transpose() -> Matrix" in m, "Matrix members"
+
+var b = inspect(io.BytesIO())
+assert "BytesIO object:" in b and "write(data) -> Integer" in b and "seek(offset, whence) -> Integer" in b, "BytesIO members"
+
+var d = inspect(time.now())
+assert "DateTime object:" in d and "year: Integer" in d and "iso() -> String" in d, "DateTime attributes + methods"
+
+var p = inspect(regex.compile("(.)"))
+assert "Regex object:" in p and "sub(repl, string, count) -> String" in p, "regex Pattern members"
+var mt = inspect(regex.compile("(.)").search("ab"))
+assert "Match object:" in mt and "group(index) -> String" in mt and "span(group) -> List" in mt, "regex Match members"
+
+var du = inspect(dump.dumps([1, 2, 3]))      # the binary blob is now Bytes
+assert "Bytes object:" in du and "decode(encoding) -> String" in du and "hex() -> String" in du, "Bytes blob members"
+
+var sk = inspect(net.Socket())
+assert "Socket object:" in sk and "connect(host, port)" in sk and "recv(n) -> Bytes" in sk, "Socket members"
+
+# --- a frozen-source (Kirito) module exposes its API, not the injected arglist/argmain env bindings ---
+var cins = inspect(import("copy"))
+assert "module copy:" in cins and "deepcopy" in cins, "frozen module lists its functions"
+assert "arglist" not in cins and "argmain" not in cins, "frozen module inspect hides arglist/argmain"
+
+# --- the other value kinds still describe correctly ---
+assert "module random:" in inspect(random), "module inspect"
+var _rand_mod_inspect = inspect(random)
+assert "Random(seed = None" in _rand_mod_inspect and "-> Random" in _rand_mod_inspect, "module lists its constructor with signature"
+assert "generator" in _rand_mod_inspect and "xoshiro" in _rand_mod_inspect, "constructor advertises generator kwarg"
+
+class Animal:
+    var _init_ = Function(self, name):
+        self.name = name
+    var speak = Function(self) -> String:
+        return "..."
+assert "class Animal:" in inspect(Animal), "class inspect header"
+assert "speak(self) -> String" in inspect(Animal), "class lists its methods"
+var a = Animal("Rex")
+var ai = inspect(a)
+assert "Animal instance:" in ai and "attr name: String" in ai and "speak(self) -> String" in ai, "instance shows attrs + methods"
+
+# a signatured builtin shows its parameters; a variadic one shows ...
+assert "round(" in inspect(round) and "ndigits" in inspect(round), "builtin signature"
+assert inspect(min) == "min(...)  [native]", "variadic builtin shows ..."
+
+io.print("OK")

@@ -1,0 +1,3 @@
+# name resolution: undefined name used as an index expression
+var xs = [10, 20, 30]
+discard xs[pos]

@@ -1,0 +1,2 @@
+# a switch with no body at all is rejected
+switch 1:

@@ -1,0 +1,3 @@
+# type/operator: a String is not callable
+var s = "hi"
+discard s()

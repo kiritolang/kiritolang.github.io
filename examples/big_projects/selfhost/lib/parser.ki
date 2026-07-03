@@ -1,0 +1,685 @@
+# Recursive-descent + precedence-climbing parser for Kirito-in-Kirito.
+# Consumes the token list from lexer.ki and produces an AST of Dicts, each tagged with "k".
+#
+# Expression nodes: int float str bool none fstr name list dict unary binary logical compare
+#                   call index slice member func tuple
+# Statement nodes:  exprstmt var assign if while for return break continue pass assert
+#                   func-as-stmt(via var) class try throw with del
+
+# --- parser state is a Dict {"toks", "i"} mutated in place ----------------------------------------
+var _peek = Function(P):
+    return P["toks"][P["i"]]
+
+var _ty = Function(P):
+    return P["toks"][P["i"]]["t"]
+
+var _adv = Function(P):
+    var t = P["toks"][P["i"]]
+    P["i"] = P["i"] + 1
+    return t
+
+var parseError = Function(tok, msg):
+    throw "ParseError:" + String(tok["line"]) + ":" + String(tok["col"]) + ": " + msg
+
+var _isOp = Function(P, v):
+    var t = P["toks"][P["i"]]
+    return t["t"] == "op" and t["v"] == v
+
+var _isKw = Function(P, v):
+    var t = P["toks"][P["i"]]
+    return t["t"] == "kw" and t["v"] == v
+
+var _eatOp = Function(P, v):
+    if _isOp(P, v):
+        P["i"] = P["i"] + 1
+        return True
+    return False
+
+var _eatKw = Function(P, v):
+    if _isKw(P, v):
+        P["i"] = P["i"] + 1
+        return True
+    return False
+
+var _expectOp = Function(P, v):
+    if not _isOp(P, v):
+        parseError(_peek(P), "expected '" + v + "'")
+    P["i"] = P["i"] + 1
+
+var _skipNewlines = Function(P):
+    while _ty(P) == "newline":
+        P["i"] = P["i"] + 1
+
+# --- blocks ---------------------------------------------------------------------------------------
+# After a ':' either an inline single statement (used by Function literals) or a NEWLINE+INDENT suite.
+var parseBlock = Function(P):
+    if _ty(P) == "newline":
+        P["i"] = P["i"] + 1
+        if _ty(P) != "indent":
+            parseError(_peek(P), "expected an indented block")
+        P["i"] = P["i"] + 1
+        var body = []
+        while _ty(P) != "dedent" and _ty(P) != "eof":
+            body.append(parseStatement(P))
+            _skipNewlines(P)
+        if _ty(P) == "dedent":
+            P["i"] = P["i"] + 1
+        return body
+    # inline single-statement body (e.g. Function(x): return x*x). A top-level comma here belongs to
+    # the enclosing call/expression, not to a packing return — so suppress packing while parsing it.
+    var prev = P["inlineBody"]
+    P["inlineBody"] = True
+    var stmt = parseStatement(P)
+    P["inlineBody"] = prev
+    return [stmt]
+
+# --- expressions: precedence climbing -------------------------------------------------------------
+var parseExpr = Function(P):
+    # Conditional expression `THEN if COND else ORELSE` — lowest precedence, right-associative when
+    # chained (the orelse parses a full expression, so `a if c else b if d else e` nests right).
+    var e = parseOr(P)
+    # A block-bodied Function ends with a dedent, so a following `if` is the NEXT statement, not a
+    # conditional-expression tail (the block-function-then-if case).
+    var blockFunc = e["k"] == "func" and ("block" in e) and e["block"]
+    if _isKw(P, "if") and not blockFunc:
+        P["i"] = P["i"] + 1
+        var cond = parseOr(P)
+        if not _eatKw(P, "else"):
+            parseError(_peek(P), "expected 'else' in conditional expression")
+        var orelse = parseExpr(P)
+        return {"k": "cond", "then": e, "cond": cond, "orelse": orelse}
+    return e
+
+var parseOr = Function(P):
+    var e = parseAnd(P)
+    while _isKw(P, "or"):
+        P["i"] = P["i"] + 1
+        var r = parseAnd(P)
+        e = {"k": "logical", "op": "or", "l": e, "r": r}
+    return e
+
+var parseAnd = Function(P):
+    var e = parseNot(P)
+    while _isKw(P, "and"):
+        P["i"] = P["i"] + 1
+        var r = parseNot(P)
+        e = {"k": "logical", "op": "and", "l": e, "r": r}
+    return e
+
+var parseNot = Function(P):
+    if _isKw(P, "not"):
+        P["i"] = P["i"] + 1
+        return {"k": "unary", "op": "not", "e": parseNot(P)}
+    return parseComparison(P)
+
+var COMPARE_OPS = Set(["==", "!=", "<", "<=", ">", ">="])
+
+# Comparison / membership / identity operators are ONE left-associative precedence level (native
+# folds `a < b == c` as `(a < b) == c`, not a Python-style chain), so loop and fold left rather than
+# parsing a single comparison. Logical not/and/or sit above this (parseNot/parseAnd/parseOr), so the
+# only continuations here are a compare op, `in`, `not in`, `is`, or `is not`.
+var parseComparison = Function(P):
+    var e = parseAdd(P)
+    var go = True
+    while go:
+        var t = _peek(P)
+        if t["t"] == "op" and (t["v"] in COMPARE_OPS):
+            P["i"] = P["i"] + 1
+            e = {"k": "compare", "op": t["v"], "l": e, "r": parseAdd(P)}
+        elif _isKw(P, "in"):
+            P["i"] = P["i"] + 1
+            e = {"k": "compare", "op": "in", "l": e, "r": parseAdd(P)}
+        elif _isKw(P, "not"):
+            # a `not` here is always `not in` (a prefix logical `not` is consumed by parseNot)
+            P["i"] = P["i"] + 1
+            if not _eatKw(P, "in"):
+                parseError(_peek(P), "expected 'in' after 'not'")
+            e = {"k": "compare", "op": "notin", "l": e, "r": parseAdd(P)}
+        elif _isKw(P, "is"):
+            P["i"] = P["i"] + 1
+            var neg = _eatKw(P, "not")
+            var r2 = parseAdd(P)
+            if neg:
+                e = {"k": "compare", "op": "isnot", "l": e, "r": r2}
+            else:
+                e = {"k": "compare", "op": "is", "l": e, "r": r2}
+        else:
+            go = False
+    return e
+
+var parseAdd = Function(P):
+    var e = parseMul(P)
+    while _isOp(P, "+") or _isOp(P, "-"):
+        var op = _adv(P)["v"]
+        e = {"k": "binary", "op": op, "l": e, "r": parseMul(P)}
+    return e
+
+var parseMul = Function(P):
+    var e = parseUnary(P)
+    while _isOp(P, "*") or _isOp(P, "/") or _isOp(P, "//") or _isOp(P, "%"):
+        var op = _adv(P)["v"]
+        e = {"k": "binary", "op": op, "l": e, "r": parseUnary(P)}
+    return e
+
+var parseUnary = Function(P):
+    if _isOp(P, "-"):
+        P["i"] = P["i"] + 1
+        return {"k": "unary", "op": "-", "e": parseUnary(P)}
+    if _isOp(P, "+"):
+        P["i"] = P["i"] + 1
+        return parseUnary(P)
+    return parsePower(P)
+
+var parsePower = Function(P):
+    var e = parsePostfix(P)
+    if _isOp(P, "**"):
+        P["i"] = P["i"] + 1
+        # right-associative: the exponent may itself be a unary/power expression
+        return {"k": "binary", "op": "**", "l": e, "r": parseUnary(P)}
+    return e
+
+# Parse the contents of a call argument list: positional args and `name = value` kwargs.
+var _parseCallArgs = Function(P):
+    var args = []
+    var kwargs = []
+    if _isOp(P, ")"):
+        P["i"] = P["i"] + 1
+        return [args, kwargs]
+    var more = True
+    while more:
+        # keyword argument?  name '=' expr   (lookahead two tokens)
+        if _ty(P) == "name" and P["toks"][P["i"] + 1]["t"] == "op" and P["toks"][P["i"] + 1]["v"] == "=":
+            var nm = _adv(P)["v"]
+            P["i"] = P["i"] + 1
+            kwargs.append([nm, parseExpr(P)])
+        else:
+            args.append(parseExpr(P))
+        more = _eatOp(P, ",")
+    _expectOp(P, ")")
+    return [args, kwargs]
+
+# index ([k]), variadic index ([i, j]), or slice ([lo:hi:step]) inside [ ... ]
+var _parseSubscript = Function(P, obj):
+    var lo = None
+    var hi = None
+    var step = None
+    var isSlice = False
+    if not _isOp(P, ":"):
+        lo = parseExpr(P)
+        # variadic subscript:  obj[i, j, ...]  -> keys list (drives _getitem_/_setitem_)
+        if _isOp(P, ","):
+            var keys = [lo]
+            while _eatOp(P, ","):
+                if _isOp(P, "]"):
+                    break
+                keys.append(parseExpr(P))
+            _expectOp(P, "]")
+            return {"k": "index", "obj": obj, "keys": keys}
+    if _isOp(P, ":"):
+        isSlice = True
+        P["i"] = P["i"] + 1
+        if not _isOp(P, ":") and not _isOp(P, "]"):
+            hi = parseExpr(P)
+        if _isOp(P, ":"):
+            P["i"] = P["i"] + 1
+            if not _isOp(P, "]"):
+                step = parseExpr(P)
+    _expectOp(P, "]")
+    if isSlice:
+        return {"k": "slice", "obj": obj, "lo": lo, "hi": hi, "step": step}
+    return {"k": "index", "obj": obj, "keys": [lo]}
+
+var parsePostfix = Function(P):
+    var e = parsePrimary(P)
+    var loop = True
+    while loop:
+        if _isOp(P, "("):
+            P["i"] = P["i"] + 1
+            var ak = _parseCallArgs(P)
+            e = {"k": "call", "fn": e, "args": ak[0], "kwargs": ak[1]}
+        elif _isOp(P, "["):
+            P["i"] = P["i"] + 1
+            e = _parseSubscript(P, e)
+        elif _isOp(P, "."):
+            P["i"] = P["i"] + 1
+            if _ty(P) != "name" and _ty(P) != "kw":
+                parseError(_peek(P), "expected a member name after '.'")
+            var nm = _adv(P)["v"]
+            e = {"k": "member", "obj": e, "name": nm}
+        else:
+            loop = False
+    return e
+
+# Function literal:  Function(params) [-> Type] : block
+var _parseFunc = Function(P):
+    _expectOp(P, "(")
+    var params = []
+    if not _isOp(P, ")"):
+        var more = True
+        var seenDefault = False
+        while more:
+            if _ty(P) != "name":
+                parseError(_peek(P), "expected a parameter name")
+            var pname = _adv(P)["v"]
+            # optional ': Type' annotation — captured as a type-name string and enforced at call time
+            var ann = None
+            if _isOp(P, ":"):
+                P["i"] = P["i"] + 1
+                ann = _annName(parsePostfix(P))
+            var default = None
+            var hasDefault = False
+            if _isOp(P, "="):
+                P["i"] = P["i"] + 1
+                default = parseExpr(P)
+                hasDefault = True
+            if hasDefault:
+                seenDefault = True
+            elif seenDefault:
+                parseError(_peek(P), "non-default parameter '" + pname + "' follows a default parameter")
+            params.append({"name": pname, "default": default, "has": hasDefault, "ann": ann})
+            more = _eatOp(P, ",")
+        _expectOp(P, ")")
+    else:
+        P["i"] = P["i"] + 1
+    # optional return annotation
+    var ret = None
+    if _isOp(P, "->"):
+        P["i"] = P["i"] + 1
+        ret = _annName(parsePostfix(P))
+    _expectOp(P, ":")
+    var isBlock = _ty(P) == "newline"   # a block (indented) body, vs an inline single-statement one
+    var body = parseBlock(P)
+    return {"k": "func", "params": params, "body": body, "ret": ret, "block": isBlock}
+
+# Reduce an annotation expression to a type-name string (only simple names are enforced; anything
+# more complex is treated as Any / unchecked).
+var _annName = Function(node):
+    if node["k"] == "name":
+        return node["v"]
+    return None
+
+var _parseListLiteral = Function(P):
+    var items = []
+    if _isOp(P, "]"):
+        P["i"] = P["i"] + 1
+        return {"k": "list", "items": items}
+    var more = True
+    while more:
+        items.append(parseExpr(P))
+        more = _eatOp(P, ",")
+        if more and _isOp(P, "]"):
+            more = False
+    _expectOp(P, "]")
+    return {"k": "list", "items": items}
+
+# { } may be an empty Dict, a Dict {k: v, ...}, or a Set {a, b, ...}.
+var _parseBraceLiteral = Function(P):
+    if _isOp(P, "}"):
+        P["i"] = P["i"] + 1
+        return {"k": "dict", "pairs": []}
+    var first = parseExpr(P)
+    if _isOp(P, ":"):
+        P["i"] = P["i"] + 1
+        var v0 = parseExpr(P)
+        var pairs = [[first, v0]]
+        while _eatOp(P, ","):
+            if _isOp(P, "}"):
+                break
+            var k = parseExpr(P)
+            _expectOp(P, ":")
+            pairs.append([k, parseExpr(P)])
+        _expectOp(P, "}")
+        return {"k": "dict", "pairs": pairs}
+    var elems = [first]
+    while _eatOp(P, ","):
+        if _isOp(P, "}"):
+            break
+        elems.append(parseExpr(P))
+    _expectOp(P, "}")
+    return {"k": "set", "items": elems}
+
+var parsePrimary = Function(P):
+    var t = _peek(P)
+    if t["t"] == "int":
+        P["i"] = P["i"] + 1
+        return {"k": "int", "v": t["v"]}
+    if t["t"] == "float":
+        P["i"] = P["i"] + 1
+        return {"k": "float", "v": t["v"]}
+    if t["t"] == "str":
+        P["i"] = P["i"] + 1
+        return {"k": "str", "v": t["v"]}
+    if t["t"] == "fstr":
+        P["i"] = P["i"] + 1
+        return _buildFstr(P, t["v"])
+    if t["t"] == "name":
+        P["i"] = P["i"] + 1
+        return {"k": "name", "v": t["v"]}
+    if t["t"] == "kw":
+        if t["v"] == "True":
+            P["i"] = P["i"] + 1
+            return {"k": "bool", "v": True}
+        if t["v"] == "False":
+            P["i"] = P["i"] + 1
+            return {"k": "bool", "v": False}
+        if t["v"] == "None":
+            P["i"] = P["i"] + 1
+            return {"k": "none"}
+        if t["v"] == "Function":
+            P["i"] = P["i"] + 1
+            return _parseFunc(P)
+        if t["v"] == "import":
+            P["i"] = P["i"] + 1
+            return {"k": "name", "v": "import"}
+        if t["v"] == "not":
+            return parseNot(P)
+    if t["t"] == "op":
+        if t["v"] == "(":
+            P["i"] = P["i"] + 1
+            var inner = parseExpr(P)
+            # parenthesised tuple: (a, b, ...)
+            if _isOp(P, ","):
+                var items = [inner]
+                while _eatOp(P, ","):
+                    if _isOp(P, ")"):
+                        break
+                    items.append(parseExpr(P))
+                _expectOp(P, ")")
+                return {"k": "tuple", "items": items}
+            _expectOp(P, ")")
+            return inner
+        if t["v"] == "[":
+            P["i"] = P["i"] + 1
+            return _parseListLiteral(P)
+        if t["v"] == "{":
+            P["i"] = P["i"] + 1
+            return _parseBraceLiteral(P)
+    parseError(t, "unexpected token '" + String(t["v"]) + "'")
+
+# Build an fstr node by re-lexing+parsing each hole's source as an expression.
+var _buildFstr = Function(P, parts):
+    var out = []
+    for part in parts:
+        if part["t"] == "lit":
+            out.append({"t": "lit", "v": part["v"]})
+        else:
+            var sub = parseExprString(part["v"])
+            out.append({"t": "hole", "e": sub, "spec": part["spec"]})
+    return {"k": "fstr", "parts": out}
+
+# --- statements -----------------------------------------------------------------------------------
+# An expression, or a starred unpack target (*name) when one leads the item.
+var _parseMaybeStar = Function(P):
+    if _isOp(P, "*"):
+        P["i"] = P["i"] + 1
+        if _ty(P) != "name":
+            parseError(_peek(P), "expected a name after '*'")
+        return {"k": "name", "v": "*" + _adv(P)["v"]}
+    return parseExpr(P)
+
+# A comma-separated series of expressions: a single expr, or a tuple (used for packing/unpacking).
+var _parseExprList = Function(P):
+    var first = _parseMaybeStar(P)
+    if P["inlineBody"]:
+        return first
+    if not _isOp(P, ","):
+        return first
+    var items = [first]
+    while _eatOp(P, ","):
+        if _ty(P) == "newline" or _isOp(P, "=") or _ty(P) == "eof":
+            break
+        items.append(_parseMaybeStar(P))
+    return {"k": "tuple", "items": items}
+
+var _parseVar = Function(P):
+    P["i"] = P["i"] + 1
+    var target = _parseExprList(P)
+    _checkTargetStars(P, target)
+    _expectOp(P, "=")
+    var value = _parseExprList(P)
+    return {"k": "var", "target": target, "e": value}
+
+var _parseReturn = Function(P):
+    var t = _adv(P)
+    if _ty(P) == "newline" or _ty(P) == "eof" or _ty(P) == "dedent":
+        return {"k": "return", "e": None, "line": t["line"]}
+    return {"k": "return", "e": _parseExprList(P), "line": t["line"]}
+
+var _parseIf = Function(P):
+    P["i"] = P["i"] + 1
+    var branches = []
+    var cond = parseExpr(P)
+    _expectOp(P, ":")
+    branches.append([cond, parseBlock(P)])
+    _skipNewlines(P)
+    while _isKw(P, "elif"):
+        P["i"] = P["i"] + 1
+        var c = parseExpr(P)
+        _expectOp(P, ":")
+        branches.append([c, parseBlock(P)])
+        _skipNewlines(P)
+    var elseBody = None
+    if _isKw(P, "else"):
+        P["i"] = P["i"] + 1
+        _expectOp(P, ":")
+        elseBody = parseBlock(P)
+    return {"k": "if", "branches": branches, "else": elseBody}
+
+var _parseWhile = Function(P):
+    P["i"] = P["i"] + 1
+    var cond = parseExpr(P)
+    _expectOp(P, ":")
+    return {"k": "while", "cond": cond, "body": parseBlock(P)}
+
+# A target list (loop / unpack targets): names, indices, members — parsed without treating
+# `in` as a comparison operator (which would otherwise swallow the for-loop's `in`).
+# One unpack-target item: a starred name (*rest, absorbing the surplus) or a plain postfix target
+# (name / a[i] / obj.attr).
+var _parseTargetItem = Function(P):
+    if _isOp(P, "*"):
+        P["i"] = P["i"] + 1
+        if _ty(P) != "name":
+            parseError(_peek(P), "expected a name after '*'")
+        return {"k": "name", "v": "*" + _adv(P)["v"]}
+    return parsePostfix(P)
+
+var _isStarTarget = Function(item):
+    return item["k"] == "name" and len(item["v"]) > 0 and item["v"][0] == "*"
+
+# A parsed target (a single item, or a {"k":"tuple","items":[...]}) may absorb the surplus with at
+# most one starred slot — used after parsing a `for`/`var`/plain-assign target, once we actually
+# know the parsed node IS a target (an expression list isn't checked, since e.g. a value list on
+# var's RHS or a return's expression list has no unpack-target meaning for a leading `*`).
+var _checkTargetStars = Function(P, node):
+    if node["k"] != "tuple":
+        return None
+    var starCount = 0
+    for item in node["items"]:
+        if _isStarTarget(item):
+            starCount = starCount + 1
+    if starCount > 1:
+        parseError(_peek(P), "two starred targets in assignment")
+    return None
+
+var _parseTargetList = Function(P):
+    var first = _parseTargetItem(P)
+    if not _isOp(P, ","):
+        return first
+    var items = [first]
+    while _eatOp(P, ","):
+        if _isKw(P, "in") or _isOp(P, "=") or _ty(P) == "newline":
+            break
+        items.append(_parseTargetItem(P))
+    var node = {"k": "tuple", "items": items}
+    _checkTargetStars(P, node)
+    return node
+
+var _parseFor = Function(P):
+    P["i"] = P["i"] + 1
+    var target = _parseTargetList(P)
+    if not _eatKw(P, "in"):
+        parseError(_peek(P), "expected 'in' in for-loop")
+    var iter = parseExpr(P)
+    _expectOp(P, ":")
+    return {"k": "for", "target": target, "iter": iter, "body": parseBlock(P)}
+
+var _parseAssert = Function(P):
+    var t = _adv(P)
+    var cond = parseExpr(P)
+    var msg = None
+    if _eatOp(P, ","):
+        msg = parseExpr(P)
+    return {"k": "assert", "cond": cond, "msg": msg, "line": t["line"]}
+
+var _parseThrow = Function(P):
+    var t = _adv(P)
+    return {"k": "throw", "e": parseExpr(P), "line": t["line"]}
+
+var _parseTry = Function(P):
+    P["i"] = P["i"] + 1
+    _expectOp(P, ":")
+    var body = parseBlock(P)
+    _skipNewlines(P)
+    var catches = []
+    while _isKw(P, "catch"):
+        P["i"] = P["i"] + 1
+        var typ = None
+        var name = None
+        if _ty(P) == "name":
+            typ = _adv(P)["v"]
+        if _eatKw(P, "as"):
+            name = _adv(P)["v"]
+        _expectOp(P, ":")
+        catches.append({"type": typ, "name": name, "body": parseBlock(P)})
+        _skipNewlines(P)
+    var finallyBody = None
+    if _isKw(P, "finally"):
+        P["i"] = P["i"] + 1
+        _expectOp(P, ":")
+        finallyBody = parseBlock(P)
+    return {"k": "try", "body": body, "catches": catches, "finally": finallyBody}
+
+var _parseClass = Function(P):
+    P["i"] = P["i"] + 1
+    if _ty(P) != "name":
+        parseError(_peek(P), "expected a class name")
+    var name = _adv(P)["v"]
+    var base = None
+    if _eatOp(P, "("):
+        if _ty(P) == "name":
+            base = _adv(P)["v"]
+        _expectOp(P, ")")
+    _expectOp(P, ":")
+    # class body is a suite of `var member = ...` declarations
+    var body = parseBlock(P)
+    return {"k": "class", "name": name, "base": base, "body": body}
+
+var _parseWith = Function(P):
+    P["i"] = P["i"] + 1
+    var ctx = parseExpr(P)
+    var name = None
+    if _eatKw(P, "as"):
+        name = _adv(P)["v"]
+    _expectOp(P, ":")
+    return {"k": "with", "ctx": ctx, "name": name, "body": parseBlock(P)}
+
+var _parseSwitch = Function(P):
+    P["i"] = P["i"] + 1
+    var subject = parseExpr(P)
+    _expectOp(P, ":")
+    if _ty(P) != "newline":
+        parseError(_peek(P), "expected a newline after switch")
+    P["i"] = P["i"] + 1
+    if _ty(P) != "indent":
+        parseError(_peek(P), "expected an indented switch body")
+    P["i"] = P["i"] + 1
+    var cases = []
+    var dflt = None
+    while _ty(P) != "dedent" and _ty(P) != "eof":
+        var t = _peek(P)
+        if t["t"] == "name" and t["v"] == "case":
+            P["i"] = P["i"] + 1
+            var values = [parseExpr(P)]
+            while _eatOp(P, ","):
+                values.append(parseExpr(P))
+            _expectOp(P, ":")
+            cases.append({"values": values, "body": parseBlock(P)})
+        elif t["t"] == "name" and t["v"] == "default":
+            P["i"] = P["i"] + 1
+            _expectOp(P, ":")
+            dflt = parseBlock(P)
+        else:
+            parseError(t, "expected 'case' or 'default' in switch body")
+        _skipNewlines(P)
+    if _ty(P) == "dedent":
+        P["i"] = P["i"] + 1
+    return {"k": "switch", "subject": subject, "cases": cases, "default": dflt}
+
+var parseStatement = Function(P):
+    var t = _peek(P)
+    if t["t"] == "kw":
+        if t["v"] == "var":
+            return _parseVar(P)
+        if t["v"] == "if":
+            return _parseIf(P)
+        if t["v"] == "while":
+            return _parseWhile(P)
+        if t["v"] == "for":
+            return _parseFor(P)
+        if t["v"] == "return":
+            return _parseReturn(P)
+        if t["v"] == "break":
+            P["i"] = P["i"] + 1
+            return {"k": "break"}
+        if t["v"] == "continue":
+            P["i"] = P["i"] + 1
+            return {"k": "continue"}
+        if t["v"] == "pass":
+            P["i"] = P["i"] + 1
+            return {"k": "pass"}
+        if t["v"] == "assert":
+            return _parseAssert(P)
+        if t["v"] == "throw":
+            return _parseThrow(P)
+        if t["v"] == "try":
+            return _parseTry(P)
+        if t["v"] == "class":
+            return _parseClass(P)
+        if t["v"] == "with":
+            return _parseWith(P)
+        if t["v"] == "del":
+            P["i"] = P["i"] + 1
+            return {"k": "del", "e": parsePostfix(P)}
+    # `discard EXPR` — evaluate and intentionally drop the value (a soft keyword)
+    if t["t"] == "name" and t["v"] == "discard":
+        P["i"] = P["i"] + 1
+        return {"k": "exprstmt", "e": _parseExprList(P)}
+    # `switch SUBJECT:` with `case`/`default` arms (all soft keywords)
+    if t["t"] == "name" and t["v"] == "switch":
+        return _parseSwitch(P)
+    # expression statement, or an assignment
+    var lhs = _parseExprList(P)
+    if _isOp(P, "="):
+        _checkTargetStars(P, lhs)
+        P["i"] = P["i"] + 1
+        var rhs = _parseExprList(P)
+        return {"k": "assign", "target": lhs, "e": rhs}
+    return {"k": "exprstmt", "e": lhs}
+
+# --- top-level entry points -----------------------------------------------------------------------
+var parseProgram = Function(toks):
+    var P = {"toks": toks, "i": 0, "inlineBody": False}
+    var stmts = []
+    _skipNewlines(P)
+    while _ty(P) != "eof":
+        stmts.append(parseStatement(P))
+        _skipNewlines(P)
+    return stmts
+
+# Parse a bare expression from a source string (used for f-string holes).
+var parseExprString = Function(s):
+    var lex = import("lexer")
+    var toks = lex.tokenize(s)
+    var P = {"toks": toks, "i": 0, "inlineBody": False}
+    _skipNewlines(P)
+    return parseExpr(P)

@@ -1,0 +1,10 @@
+# A class whose methods read argmain/arglist. An instance's methods report the defining module's
+# view regardless of where they are called from.
+class Probe:
+    var seeMain = Function(self):
+        return argmain
+    var seeArgs = Function(self):
+        return arglist
+var probe = Probe()
+var m = probe.seeMain()
+var n = len(probe.seeArgs())

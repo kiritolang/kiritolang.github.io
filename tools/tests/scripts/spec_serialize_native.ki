@@ -1,0 +1,86 @@
+# Native VALUE types (matrix/complex/datetime/random/tensor) round-trip through BOTH graph
+# serialization formats (serialize = text, dump = binary) via their _getstate_/_setstate_ protocol,
+# preserving exact content. Also covers DateTime value-equality + hashing (new behaviour).
+var io = import("io")
+var ser = import("serialize")
+var dmp = import("dump")
+var mat = import("matrix")
+var cpx = import("complex")
+var tm = import("time")
+var rnd = import("random")
+var tn = import("tensor")
+
+# round-trips a value through both graph formats and asserts equality both ways
+var rt = Function(label, v):
+    assert ser.loads(ser.dumps(v)) == v, label + " serialize round-trip mismatch"
+    assert dmp.loads(dmp.dumps(v)) == v, label + " dump round-trip mismatch"
+
+# --- Matrix / Vector: shape + every element preserved ---
+var m = mat.Matrix([[1.5, -2.0, 3.25], [4.0, 5.5, -6.75]])
+rt("Matrix", m)
+var m2 = dmp.loads(dmp.dumps(m))
+assert m2.rows() == 2 and m2.cols() == 3, "Matrix shape preserved"
+assert m2.get(1, 2) == -6.75, "Matrix element preserved"
+rt("Vector", mat.vector([0.0, 1.0, 2.0, 3.0]))
+rt("identity", mat.identity(4))
+
+# --- Complex / ComplexMatrix ---
+rt("Complex", cpx.of(1.25, -7.5))
+rt("Complex zero", cpx.zero)
+var cm = cpx.Matrix([[cpx.of(1.0, 2.0), cpx.of(0.0, -1.0)], [cpx.of(3.0, 0.0), cpx.of(-4.0, 5.0)]])
+rt("ComplexMatrix", cm)
+var cm2 = ser.loads(ser.dumps(cm))
+assert cm2.get(0, 1) == cpx.of(0.0, -1.0), "ComplexMatrix element preserved"
+
+# --- DateTime: round-trip + value equality + hashing as a Dict/Set key ---
+var dt = tm.make(2024, 2, 29, 12, 0, 1)   # leap day
+rt("DateTime", dt)
+var dt2 = dmp.loads(dmp.dumps(dt))
+assert dt2.year == 2024 and dt2.month == 2 and dt2.day == 29, "DateTime fields preserved"
+assert dt2.iso() == dt.iso(), "DateTime iso preserved"
+# value equality: two separately-built DateTimes at the same instant are equal and hash equal
+assert tm.make(2000, 1, 1) == tm.make(2000, 1, 1), "DateTime value equality"
+assert tm.make(2000, 1, 1) != tm.make(2000, 1, 2), "DateTime inequality"
+var seen = Set()
+seen.add(tm.make(2000, 1, 1))
+assert seen.contains(tm.make(2000, 1, 1)), "DateTime usable as a Set member (hashable)"
+var byday = {tm.make(2000, 1, 1): "newyear"}
+assert byday[tm.make(2000, 1, 1)] == "newyear", "DateTime usable as a Dict key"
+
+# --- Tensor (gradient-free) ---
+rt("Tensor", tn.Tensor([[1.0, 2.0], [3.0, 4.0]]))
+rt("Tensor 1-D", tn.arange(6.0))
+
+# --- Random: a restored generator continues the EXACT same stream (reproducible checkpoint) ---
+var r = rnd.Random(2024)
+discard r.random()
+discard r.randint(0, 100)
+var checkpoint = dmp.dumps(r)
+var streamA = [r.random(), r.randint(0, 1000000), r.gauss(0.0, 1.0)]
+var rB = dmp.loads(checkpoint)
+var streamB = [rB.random(), rB.randint(0, 1000000), rB.gauss(0.0, 1.0)]
+assert streamA == streamB, "Random restores the exact stream"
+# the text format works too
+var rC = ser.loads(ser.dumps(rnd.Random(7)))
+assert rC.randint(0, 1000) >= 0, "Random survives text serialize"
+
+# --- native values nested inside ordinary containers and user classes ---
+class Snapshot:
+    var _init_ = Function(self, grid, taken):
+        self.grid = grid
+        self.taken = taken
+    var _eq_ = Function(self, o) -> Bool:
+        return self.grid == o.grid and self.taken == o.taken
+var snap = Snapshot(mat.identity(2), tm.make(2030, 6, 1))
+assert dmp.loads(dmp.dumps(snap)) == snap, "native values inside a user class round-trip"
+var bundle = {"m": m, "z": cpx.of(2.0, 3.0), "when": dt, "list": [m, cm]}
+var bundle2 = ser.loads(ser.dumps(bundle))
+assert bundle2["m"] == m and bundle2["z"] == cpx.of(2.0, 3.0), "native values inside a Dict round-trip"
+assert bundle2["when"] == dt and bundle2["list"][1] == cm, "nested-list native values round-trip"
+
+# --- shared references to a native value are preserved (copied once) ---
+var shareM = mat.identity(3)
+var rshare = dmp.loads(dmp.dumps([shareM, shareM]))
+assert id(rshare[0]) == id(rshare[1]), "shared native value copied once"
+
+io.print("OK serialize-native")

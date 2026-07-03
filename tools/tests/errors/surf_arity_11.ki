@@ -1,0 +1,2 @@
+# native String method given wrong arity: startswith() with no argument
+discard "hello".startswith()

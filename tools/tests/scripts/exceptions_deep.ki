@@ -1,0 +1,546 @@
+# exceptions_deep.ki — pure-Kirito coverage for try/catch/finally + typed catches + throwing
+# every value kind, adversarial and fuzz. The C++/Kirito interplay is covered by the C++
+# integration test (test_exceptions_deep.cpp); this file is the intra-language behavior.
+#
+# Final line: "exceptions_deep: N checks passed" — matched byte-for-byte against
+# exceptions_deep.expected.
+
+var io = import("io")
+var math = import("math")
+var rnd = import("random")
+var hash = import("hash")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =============================================================================
+# Section 1: throwing every value kind — Kirito catches all of them
+# =============================================================================
+
+# throw + catch a String
+var r = "unset"
+try:
+    throw "hello"
+catch as e:
+    r = e
+ok(r == "hello", "throw String -> catch String")
+
+# throw + catch an Integer
+r = "unset"
+try:
+    throw 42
+catch as e:
+    r = String(e)
+ok(r == "42", "throw Integer -> catch Integer")
+
+# throw + catch a Float
+r = "unset"
+try:
+    throw 3.14
+catch as e:
+    r = String(e)
+ok(r == "3.14", "throw Float -> catch Float")
+
+# throw + catch a Bool
+try:
+    throw True
+catch as e:
+    r = String(e)
+ok(r == "True", "throw Bool -> catch Bool")
+
+# throw + catch None
+try:
+    throw None
+catch as e:
+    r = String(e)
+ok(r == "None", "throw None -> catch None")
+
+# throw + catch a List
+try:
+    throw [1, 2, 3]
+catch as e:
+    r = String(e)
+ok(r == "[1, 2, 3]", "throw List -> catch List")
+
+# throw + catch a Dict
+try:
+    throw {"k": "v"}
+catch as e:
+    r = String(e)
+ok(r == "{'k': 'v'}", "throw Dict -> catch Dict")
+
+# throw + catch a Set
+try:
+    throw {1, 2}
+catch as e:
+    r = String(e)
+ok("1" in r and "2" in r, "throw Set -> catch Set")
+
+# throw + catch a Bytes
+try:
+    throw Bytes([65, 66, 67])
+catch as e:
+    r = String(e)
+ok(r == "b'ABC'", "throw Bytes -> catch Bytes")
+
+# =============================================================================
+# Section 2: TYPED catch — routes on the value's type
+# =============================================================================
+class MyErr:
+    var _init_ = Function(self, code, msg):
+        self.code = code
+        self.msg = msg
+    var _str_ = Function(self) -> String:
+        return "MyErr(" + String(self.code) + ")"
+
+class OtherErr:
+    var _init_ = Function(self):
+        pass
+
+r = "unset"
+try:
+    throw MyErr(42, "boom")
+catch MyErr as e:
+    r = String(e.code)
+ok(r == "42", "typed catch MyErr routes")
+
+# a typed catch that does NOT match falls through (uncaught here -> asserts throws)
+var _wrongType = Function():
+    try:
+        throw OtherErr()
+    catch MyErr as e:
+        return "caught"
+ok(throws(_wrongType), "typed catch MyErr does NOT catch OtherErr")
+
+# subclass matches a base typed catch (typed catch is class-chain aware)
+class SubErr(MyErr):
+    var _init_ = Function(self, code):
+        self._super_()._init_(code, "sub")
+r = "unset"
+try:
+    throw SubErr(99)
+catch MyErr as e:
+    r = "caught " + String(e.code)
+ok(r == "caught 99", "typed catch is inheritance-aware (base catches subclass)")
+
+# typed catch String vs typed catch as (bare)
+r = "unset"
+try:
+    throw "text"
+catch String as e:
+    r = "s:" + e
+ok(r == "s:text", "typed catch String matches a String throw")
+
+r = "unset"
+try:
+    throw 5
+catch String as e:
+    r = "s:" + e
+catch as e:
+    r = "b:" + String(e)
+ok(r == "b:5", "typed catch String does NOT catch an Integer, bare catch does")
+
+# typed catch Integer / Float / Bool / None / List / Dict / Set
+try:
+    throw 7
+catch Integer as e:
+    r = "int:" + String(e)
+ok(r == "int:7", "typed catch Integer")
+
+try:
+    throw 2.5
+catch Float as e:
+    r = "fl:" + String(e)
+ok(r == "fl:2.5", "typed catch Float")
+
+try:
+    throw True
+catch Bool as e:
+    r = "b:" + String(e)
+ok(r == "b:True", "typed catch Bool")
+
+# =============================================================================
+# Section 3: catching C++/interpreter errors as a Kirito String
+# =============================================================================
+
+# division by zero -> catchable as a String
+r = "unset"
+try:
+    discard 1 / 0
+catch String as e:
+    r = e
+ok("division by zero" in r or "zero" in r, "catches div-by-zero as a String")
+
+# index out of range
+r = "unset"
+try:
+    var y = [1, 2, 3][99]
+catch String as e:
+    r = e
+ok("index" in r or "range" in r, "catches out-of-range as a String")
+
+# missing dict key
+try:
+    var d = {"a": 1}
+    var m = d["z"]
+catch String as e:
+    r = e
+ok("z" in r or "key" in r, "catches missing dict key")
+
+# type mismatch in an operator
+try:
+    var z = 1 + "x"
+catch String as e:
+    r = e
+ok("operator" in r or "type" in r, "catches type-mismatch operator error")
+
+# calling a non-callable
+try:
+    var q = 1
+    q()
+catch String as e:
+    r = e
+ok("callable" in r or "call" in r, "catches non-callable call")
+
+# =============================================================================
+# Section 4: finally
+# =============================================================================
+var log = []
+try:
+    log.append("try")
+finally:
+    log.append("fin")
+ok(log == ["try", "fin"], "finally runs on the normal path")
+
+log = []
+try:
+    log.append("try")
+    throw "e"
+catch as e:
+    log.append("catch")
+finally:
+    log.append("fin")
+ok(log == ["try", "catch", "fin"], "finally runs after a handled exception")
+
+# finally runs even on an UNHANDLED exception (assert we can observe it via re-throw)
+log = []
+var _finThenThrow = Function():
+    try:
+        log.append("try")
+        throw "e"
+    finally:
+        log.append("fin")
+ok(throws(_finThenThrow), "unhandled throw with finally still throws")
+ok(log == ["try", "fin"], "finally ran before the unhandled throw escaped")
+
+# finally runs on return-through-try
+var returnFromTry = Function() -> Integer:
+    try:
+        return 1
+    finally:
+        log.append("ret-fin")
+log = []
+ok(returnFromTry() == 1, "return through a try returns the right value")
+ok(log == ["ret-fin"], "finally runs on the return path")
+
+# =============================================================================
+# Section 5: re-raise (bare throw in a catch block)
+# =============================================================================
+# Re-raising in Kirito: throw takes an explicit value, so you re-raise by writing `throw e`.
+var _reThrow = Function():
+    try:
+        throw "level-1"
+    catch as e:
+        throw e                   # explicit re-raise
+ok(throws(_reThrow), "re-throw propagates")
+
+# re-raise across a nested try
+log = []
+var _reThrowNested = Function():
+    try:
+        try:
+            throw "inner"
+        catch as e:
+            log.append("caught-inner")
+            throw e               # re-throw
+    catch as e:
+        log.append("caught-outer")
+        throw e
+ok(throws(_reThrowNested), "re-throw across nested tries propagates")
+ok(log == ["caught-inner", "caught-outer"], "each nested catch saw the value once")
+
+# =============================================================================
+# Section 6: nested try/catch/finally
+# =============================================================================
+log = []
+try:
+    log.append("outer-try")
+    try:
+        log.append("inner-try")
+        throw "e"
+    catch as e:
+        log.append("inner-catch:" + e)
+    finally:
+        log.append("inner-fin")
+    log.append("outer-post")
+finally:
+    log.append("outer-fin")
+ok(log == ["outer-try", "inner-try", "inner-catch:e", "inner-fin", "outer-post", "outer-fin"],
+   "nested try/catch/finally runs in expected order")
+
+# try inside a catch handler (handler itself throws + handles)
+r = "unset"
+try:
+    throw "first"
+catch as e:
+    try:
+        throw "second"
+    catch as e2:
+        r = e + "|" + e2
+ok(r == "first|second", "try inside a catch handler works")
+
+# try inside a finally block
+log = []
+var _finallyThrow = Function():
+    try:
+        log.append("outer-try")
+    finally:
+        try:
+            log.append("fin-try")
+            throw "fin-throw"
+        catch as e:
+            log.append("fin-catch:" + e)
+        throw "outer-fin-throw"
+ok(throws(_finallyThrow), "throw from a finally propagates")
+
+# =============================================================================
+# Section 7: control flow inside try
+# =============================================================================
+# break through a try
+log = []
+for i in range(5):
+    try:
+        if i == 2:
+            break
+        log.append(i)
+    finally:
+        log.append("f" + String(i))
+ok(log == [0, "f0", 1, "f1", "f2"], "break through try still runs finally")
+
+# continue through a try
+log = []
+for i in range(4):
+    try:
+        if i % 2 == 0:
+            continue
+        log.append(i)
+    finally:
+        log.append("f" + String(i))
+ok(log == ["f0", 1, "f1", "f2", 3, "f3"], "continue through try runs finally")
+
+# =============================================================================
+# Section 8: DEEP nesting (stack safety)
+# =============================================================================
+var recurseThrow = Function(depth):
+    if depth == 0:
+        throw "hit bottom"
+    return recurseThrow(depth - 1)
+
+r = "unset"
+try:
+    discard recurseThrow(200)
+catch as e:
+    r = e
+ok(r == "hit bottom", "throw unwinds cleanly through 200 recursive frames")
+
+# a deeply-NESTED try/catch chain: many wrapper handlers
+var manyWrappers = Function(depth, thrower):
+    if depth == 0:
+        return thrower()
+    try:
+        return manyWrappers(depth - 1, thrower)
+    finally:
+        pass
+r = "unset"
+try:
+    discard manyWrappers(50, Function(): throw "escapes 50 finally blocks")
+catch as e:
+    r = e
+ok(r == "escapes 50 finally blocks", "throw escapes through 50 nested finally blocks")
+
+# =============================================================================
+# Section 9: adversarial
+# =============================================================================
+# self-referential List — Kirito's stringify has a cycle guard, so this must not blow the stack.
+var xs = []
+xs.append(xs)
+r = "unset"
+try:
+    throw xs
+catch as e:
+    r = String(e)
+ok("..." in r, "self-referential List value throws + stringifies with cycle elision")
+
+# throw from inside a _hash_ (called during Dict-key insertion)
+class BadHash:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self) -> Integer:
+        throw "hash boom"
+
+r = "unset"
+try:
+    var d = {}
+    d[BadHash()] = 1
+catch as e:
+    r = String(e)
+ok(r == "hash boom", "throw from inside _hash_ surfaces")
+
+# throw from inside _init_ (constructor)
+class BadInit:
+    var _init_ = Function(self):
+        throw "init boom"
+r = "unset"
+try:
+    var b = BadInit()
+catch as e:
+    r = String(e)
+ok(r == "init boom", "throw from inside _init_ surfaces")
+
+# throw from _str_ during String()  — value must be catchable
+class BadStr:
+    var _init_ = Function(self): pass
+    var _str_ = Function(self) -> String:
+        throw "str boom"
+r = "unset"
+try:
+    var s = String(BadStr())
+catch as e:
+    r = String(e)
+ok(r == "str boom", "throw from inside _str_ surfaces")
+
+# throw an INSTANCE from a chain of operator dispatches
+class ArithErr:
+    var _init_ = Function(self, why):
+        self.why = why
+    var _str_ = Function(self) -> String:
+        return "ArithErr:" + self.why
+
+class Q:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _add_ = Function(self, other):
+        throw ArithErr("add refused")
+
+r = "unset"
+try:
+    var q1 = Q(1)
+    var q2 = Q(2)
+    var q3 = q1 + q2
+catch ArithErr as e:
+    r = e.why
+ok(r == "add refused", "typed catch of an instance thrown from an operator")
+
+# a `throw` inside a catch handler propagates OUT
+var _replaceThrown = Function():
+    try:
+        try:
+            throw "level-1"
+        catch as e:
+            throw "level-2"        # new throw, replaces the current
+    catch as e:
+        if e == "level-2":
+            throw "level-3"
+ok(throws(_replaceThrown), "new throw inside a catch handler propagates (not the old value)")
+
+# =============================================================================
+# Section 10: fuzz — deterministic PRNG drives throw/catch pairs; every value round-trips
+# =============================================================================
+var r0 = rnd.Random(0xC0FFEE)
+var fuzzOk = 0
+var fuzzTotal = 500
+var i = 0
+while i < fuzzTotal:
+    var v = None
+    var kindn = r0.randint(0, 6)
+    if kindn == 0:
+        v = r0.randint(-1000, 1000)
+    elif kindn == 1:
+        v = r0.uniform(-100.0, 100.0)
+    elif kindn == 2:
+        v = r0.choice([True, False])
+    elif kindn == 3:
+        v = None
+    elif kindn == 4:
+        v = "s-" + String(r0.randint(0, 999999))
+    elif kindn == 5:
+        v = [r0.randint(0, 9), r0.randint(0, 9)]
+    elif kindn == 6:
+        v = {"k": r0.randint(0, 9)}
+    try:
+        throw v
+    catch as e:
+        # exact-equality round-trip on scalars; on collections, stringify equality
+        if type(v) == "Integer" or type(v) == "Float" or type(v) == "Bool" or type(v) == "None" or type(v) == "String":
+            if e == v:
+                fuzzOk = fuzzOk + 1
+        else:
+            if String(e) == String(v):
+                fuzzOk = fuzzOk + 1
+    i = i + 1
+ok(fuzzOk == fuzzTotal, "500 fuzzed throw/catch round-trips agree")
+
+# =============================================================================
+# Section 11: catch-order  (a first `catch` runs; a second doesn't for the same exception)
+# =============================================================================
+r = "unset"
+try:
+    throw "x"
+catch String as e:
+    r = "s:" + e
+catch as e:
+    r = "b:" + String(e)   # never runs — String matched
+ok(r == "s:x", "the first matching typed catch wins")
+
+r = "unset"
+try:
+    throw 5
+catch String as e:
+    r = "s:" + e
+catch Integer as e:
+    r = "i:" + String(e)
+catch as e:
+    r = "b:" + String(e)
+ok(r == "i:5", "typed catch Integer catches after typed catch String misses")
+
+r = "unset"
+try:
+    throw 3.5
+catch String as e:
+    r = "s"
+catch Integer as e:
+    r = "i"
+catch as e:
+    r = "b:" + String(e)
+ok(r == "b:3.5", "bare catch after two typed misses catches Float")
+
+# =============================================================================
+# Section 12: sys.traceback — the last exception's frame chain is queryable
+# =============================================================================
+var sys = import("sys")
+try:
+    var deep = Function(): throw "seen"
+    deep()
+catch as e:
+    var tb = sys.traceback()
+    ok(len(tb) > 0, "sys.traceback returns a non-empty chain after catching")
+
+io.print("exceptions_deep: " + String(n) + " checks passed")

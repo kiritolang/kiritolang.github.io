@@ -1,0 +1,1 @@
+discard import("functools").reduce(Function(a, b): return a + b, [])

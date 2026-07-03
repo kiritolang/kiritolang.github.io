@@ -1,0 +1,4 @@
+# call user Function with a required param missing
+var f = Function(a, b, c):
+    return a
+discard f(1)

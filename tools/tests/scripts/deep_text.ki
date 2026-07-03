@@ -1,0 +1,639 @@
+# deep_text.ki — adversarial audit of Kirito's TEXT stack:
+#   String + Bytes methods, the format() mini-spec + f-strings, and the regex engine.
+# Every assertion below reflects the interpreter's ACTUAL, current behaviour (v1.6.0); the file
+# runs green. Doc-vs-impl gaps that DON'T crash (e.g. format type 'c'/'E'/'F'/'G', silent
+# invalid-UTF-8 decode) are documented in the audit report, not asserted here.
+
+var io = import("io")
+var re = import("regex")
+
+# A tiny harness: print PASS/FAIL so a regression is visible in the .expected diff.
+var fails = 0
+var check = Function(label, got, want):
+    if got == want:
+        return None
+    fails = fails + 1
+    discard io.print("FAIL", label, "got", got, "want", want)
+
+# =====================================================================================
+# STRING — case (ASCII + Latin-1 + Latin-Extended-A; code points beyond pass through)
+# =====================================================================================
+check("upper-ascii", "Hello, World!".upper(), "HELLO, WORLD!")
+check("lower-ascii", "Hello, World!".lower(), "hello, world!")
+check("upper-latin1", "café".upper(), "CAFÉ")              # é -> É (Latin-1)
+check("lower-latin1", "CAFÉ".lower(), "café")
+check("upper-latinext", "łódź".upper(), "ŁÓDŹ")            # Latin Extended-A
+check("lower-latinext", "ŁÓDŹ".lower(), "łódź")
+check("upper-astral-passthrough", "😀a".upper(), "😀A")     # astral unchanged, ascii uppered
+check("lower-greek-passthrough", "Ω".lower(), "Ω")         # outside covered range -> unchanged
+
+# strip / lstrip / rstrip with and without chars
+check("strip-ws", "  hi  ".strip(), "hi")
+check("lstrip-ws", "  hi  ".lstrip(), "hi  ")
+check("rstrip-ws", "  hi  ".rstrip(), "  hi")
+check("strip-chars", "xxabcxx".strip("x"), "abc")
+check("lstrip-chars", "xyabcyx".lstrip("xy"), "abcyx")
+check("rstrip-chars", "abc-=-".rstrip("-="), "abc")
+check("strip-all", "aaa".strip("a"), "")
+
+# split: sep + maxsplit; whitespace runs by default; empty-sep throws
+check("split-ws", "  a  b   c ".split(), ["a", "b", "c"])
+check("split-sep", "a,b,c".split(","), ["a", "b", "c"])
+check("split-maxsplit", "a,b,c,d".split(",", 2), ["a", "b", "c,d"])
+check("split-ws-maxsplit", "a b c d".split(None, 1), ["a", "b c d"])
+check("split-trailing", "a,".split(","), ["a", ""])
+check("split-empty-str", "".split(), [])
+var sawEmptySep = False
+try:
+    discard "abc".split("")
+catch as e:
+    sawEmptySep = True
+check("split-empty-sep-throws", sawEmptySep, True)
+
+# join (incl. non-String element error)
+check("join", ", ".join(["a", "b", "c"]), "a, b, c")
+check("join-empty-sep", "".join(["x", "y"]), "xy")
+var joinBad = False
+try:
+    discard ",".join([1, 2])
+catch as e:
+    joinBad = True
+check("join-nonstring-throws", joinBad, True)
+
+# replace(old, new, count) — incl. empty-old interleave
+check("replace-all", "a.b.c".replace(".", "-"), "a-b-c")
+check("replace-count", "aaaa".replace("a", "b", 2), "bbaa")
+check("replace-count0", "aaaa".replace("a", "b", 0), "aaaa")
+check("replace-empty-old", "abc".replace("", "-"), "-a-b-c-")
+check("replace-empty-old-count", "abc".replace("", "-", 2), "-a-bc")
+check("replace-absent", "abc".replace("z", "Q"), "abc")
+
+# find / rfind / index / rindex / count with start/end windows (incl. negative + OOB)
+check("find", "abcabc".find("bc"), 1)
+check("find-start", "abcabc".find("bc", 2), 4)
+check("find-absent", "abc".find("z"), -1)
+check("find-window-miss", "abcabc".find("bc", 0, 2), -1)
+check("find-neg-start", "abcabc".find("c", -2), 5)
+check("find-oob-start", "abc".find("a", 99), -1)
+check("rfind", "abcabc".rfind("bc"), 4)
+check("rfind-absent", "abc".rfind("z"), -1)
+check("rfind-window", "abcabc".rfind("bc", 0, 4), 1)
+check("count", "aaaa".count("aa"), 2)            # non-overlapping
+check("count-window", "aaaa".count("a", 1, 3), 2)
+check("count-empty", "abc".count(""), 4)         # boundary count
+check("count-absent", "abc".count("z"), 0)
+var idxRaise = False
+try:
+    discard "abc".index("z")
+catch as e:
+    idxRaise = True
+check("index-absent-throws", idxRaise, True)
+check("index-found", "abcabc".index("bc"), 1)
+var ridxRaise = False
+try:
+    discard "abc".rindex("z")
+catch as e:
+    ridxRaise = True
+check("rindex-absent-throws", ridxRaise, True)
+check("rindex-found", "abcabc".rindex("bc"), 4)
+
+# startswith / endswith with start/end windows
+check("startswith", "abcdef".startswith("abc"), True)
+check("startswith-window", "abcdef".startswith("cd", 2), True)
+check("startswith-false", "abcdef".startswith("xyz"), False)
+check("endswith", "abcdef".endswith("def"), True)
+check("endswith-window", "abcdef".endswith("cd", 0, 4), True)
+check("endswith-false", "abcdef".endswith("abc"), False)
+
+# is* predicates on empty / mixed
+check("isdigit-true", "12345".isdigit(), True)
+check("isdigit-mixed", "12a45".isdigit(), False)
+check("isdigit-empty", "".isdigit(), False)
+check("isalpha-true", "abcDEF".isalpha(), True)
+check("isalpha-mixed", "abc1".isalpha(), False)
+check("isalpha-latin1", "café".isalpha(), True)        # non-ASCII letters count
+check("isalnum", "abc123".isalnum(), True)
+check("isalnum-space", "abc 123".isalnum(), False)
+check("isspace", "  \t\n".isspace(), True)
+check("isspace-empty", "".isspace(), False)
+check("islower", "hello".islower(), True)
+check("islower-mixed", "Hello".islower(), False)
+check("islower-nocase", "123".islower(), False)
+check("isupper", "HELLO".isupper(), True)
+check("isupper-mixed", "Hello".isupper(), False)
+
+# removeprefix / removesuffix
+check("removeprefix", "unhappy".removeprefix("un"), "happy")
+check("removeprefix-absent", "happy".removeprefix("un"), "happy")
+check("removesuffix", "happily".removesuffix("ly"), "happi")
+check("removesuffix-absent", "happy".removesuffix("ly"), "happy")
+check("removesuffix-empty", "abc".removesuffix(""), "abc")
+
+# ljust / rjust / center / zfill (width, fill)
+check("ljust", "x".ljust(4, "."), "x...")
+check("rjust", "ab".rjust(5), "   ab")
+check("center", "5".center(5, "*"), "**5**")
+check("center-odd", "ab".center(5, "-"), "-ab--")
+check("zfill", "42".zfill(5), "00042")
+check("zfill-sign", "-42".zfill(6), "-00042")
+check("zfill-noop", "12345".zfill(3), "12345")
+var fillBad = False
+try:
+    discard "x".ljust(4, "ab")
+catch as e:
+    fillBad = True
+check("ljust-multichar-fill-throws", fillBad, True)
+
+# partition / rpartition (present + absent)
+check("partition", "a=b=c".partition("="), ["a", "=", "b=c"])
+check("rpartition", "a=b=c".rpartition("="), ["a=b", "=", "c"])
+check("partition-absent", "abc".partition("="), ["abc", "", ""])
+check("rpartition-absent", "abc".rpartition("="), ["", "", "abc"])
+
+# levenshtein to a String and to a List of Strings
+check("levenshtein-str", "kitten".levenshtein("sitting"), 3)
+check("levenshtein-list", "cat".levenshtein(["bat", "cot", "dog"]), [1, 1, 3])
+check("levenshtein-unicode", "café".levenshtein("cafe"), 1)
+var levBad = False
+try:
+    discard "x".levenshtein([1, 2])
+catch as e:
+    levBad = True
+check("levenshtein-nonstring-list-throws", levBad, True)
+
+# apply(fn) — map over characters
+var up1 = Function(c): return c.upper()
+check("apply", "abc".apply(up1), "ABC")
+
+# str.format() — sequential {} and indexed {0}/{1}
+check("format-seq", "{} and {}".format("a", "b"), "a and b")
+check("format-idx", "{1}-{0}".format("a", "b"), "b-a")
+check("format-braces", "{{literal}}".format(), "{literal}")
+var fmtRaise = False
+try:
+    discard "{2}".format("a")
+catch as e:
+    fmtRaise = True
+check("format-index-oob-throws", fmtRaise, True)
+
+# =====================================================================================
+# STRING — indexing / slicing / repetition / `in`
+# =====================================================================================
+check("index-pos", "abcdef"[2], "c")
+check("index-neg", "abcdef"[-1], "f")
+check("slice", "abcdef"[1:4], "bcd")
+check("slice-step", "abcdef"[::2], "ace")
+check("slice-reverse", "abcdef"[::-1], "fedcba")
+check("slice-neg", "abcdef"[-3:-1], "de")
+check("repeat", "ab" * 3, "ababab")
+check("repeat-zero", "ab" * 0, "")
+check("repeat-neg", "ab" * -2, "")
+check("in-true", "bc" in "abcd", True)
+check("in-false", "xy" in "abcd", False)
+var idxOob = False
+try:
+    discard "abc"[10]
+catch as e:
+    idxOob = True
+check("index-oob-throws", idxOob, True)
+var repBig = False
+try:
+    discard "x" * 1000000000000
+catch as e:
+    repBig = True
+check("repeat-huge-guard-throws", repBig, True)
+
+# Astral / emoji code points
+check("astral-len", len("a😀b"), 3)
+check("astral-index", "a😀b"[1], "😀")
+check("astral-reverse", "a😀b"[::-1], "b😀a")
+check("ord-astral", ord("😀"), 128512)
+check("chr-astral", chr(128512), "😀")
+check("chr-ord-roundtrip", chr(ord("😀")), "😀")
+
+# =====================================================================================
+# encode / decode — utf-8 / latin-1 / ascii round-trips AND failures
+# =====================================================================================
+check("encode-utf8-len", len("héllo".encode("utf-8")), 6)     # é is 2 bytes
+check("encode-utf8-roundtrip", "héllo".encode("utf-8").decode("utf-8"), "héllo")
+check("encode-latin1", "café".encode("latin-1").decode("latin-1"), "café")
+check("encode-ascii", "abc".encode("ascii").decode("ascii"), "abc")
+check("encode-astral-roundtrip", "😀".encode("utf-8").decode("utf-8"), "😀")
+var encL1Fail = False
+try:
+    discard "€".encode("latin-1")          # U+20AC > 255
+catch as e:
+    encL1Fail = True
+check("encode-latin1-overflow-throws", encL1Fail, True)
+var encAsciiFail = False
+try:
+    discard "é".encode("ascii")            # > 127
+catch as e:
+    encAsciiFail = True
+check("encode-ascii-overflow-throws", encAsciiFail, True)
+var decAsciiFail = False
+try:
+    discard Bytes([200]).decode("ascii")   # byte > 127
+catch as e:
+    decAsciiFail = True
+check("decode-ascii-highbyte-throws", decAsciiFail, True)
+var encUnkFail = False
+try:
+    discard "x".encode("utf-16")
+catch as e:
+    encUnkFail = True
+check("encode-unknown-enc-throws", encUnkFail, True)
+var decUnkFail = False
+try:
+    discard Bytes([1]).decode("utf-16")
+catch as e:
+    decUnkFail = True
+check("decode-unknown-enc-throws", decUnkFail, True)
+# latin-1 is the lossless byte<->code-point bridge over the FULL byte range
+check("latin1-bridge", Bytes([0xff, 0x00, 0x80]).decode("latin-1").encode("latin-1"), Bytes([0xff, 0x00, 0x80]))
+# encoding-name normalisation: "UTF-8" / "utf_8" / "utf8" all accepted
+check("enc-name-norm", "hi".encode("UTF_8").decode("utf8"), "hi")
+# decode("utf-8") VALIDATES: malformed/truncated/surrogate/stray byte sequences throw (instead of
+# silently fabricating a corrupt String); valid multibyte still decodes.
+var badUtf8 = [Bytes([255, 254, 128]), Bytes([0xC3]), Bytes([0xED, 0xA0, 0x80]), Bytes([0x80])]
+var nBad = 0
+for b in badUtf8:
+    var thrown = False
+    try:
+        discard b.decode("utf-8")
+    catch as e:
+        thrown = True
+    if thrown:
+        nBad = nBad + 1
+check("utf8-decode-validates-invalid", nBad, len(badUtf8))
+check("utf8-decode-valid-multibyte", Bytes([104, 195, 169]).decode("utf-8"), "hé")
+
+# =====================================================================================
+# BYTES — construction, indexing, slicing, iteration, ops, hex, immutability
+# =====================================================================================
+check("bytes-from-list", Bytes([72, 105]).decode(), "Hi")
+check("bytes-from-int", len(Bytes(4)), 4)                 # n zero bytes
+check("bytes-from-int-content", Bytes(3) == Bytes([0, 0, 0]), True)
+check("bytes-from-string", Bytes("Hi").decode(), "Hi")
+check("bytes-from-bytes", Bytes(Bytes([1, 2])) == Bytes([1, 2]), True)
+check("bytes-empty", len(Bytes([])), 0)
+check("bytes-index-int", Bytes([72, 105])[0], 72)         # b[i] -> Integer
+check("bytes-index-neg", Bytes([72, 105])[-1], 105)
+check("bytes-slice", Bytes([72, 105, 33])[0:2] == Bytes([72, 105]), True)  # slice -> Bytes
+check("bytes-slice-step", Bytes([1, 2, 3, 4])[::2] == Bytes([1, 3]), True)
+check("bytes-concat", Bytes([1, 2]) + Bytes([3]) == Bytes([1, 2, 3]), True)
+check("bytes-repeat", Bytes([1, 2]) * 3 == Bytes([1, 2, 1, 2, 1, 2]), True)
+check("bytes-order-lt", Bytes([1, 2]) < Bytes([1, 3]), True)
+check("bytes-order-len", Bytes([1]) < Bytes([1, 0]), True)
+check("bytes-in-int", 105 in Bytes([72, 105]), True)
+check("bytes-in-int-false", 200 in Bytes([72, 105]), False)
+check("bytes-in-sub", Bytes([105]) in Bytes([72, 105]), True)
+check("bytes-hex", Bytes([72, 105]).hex(), "4869")
+check("bytes-fromhex", fromhex("48 69").decode(), "Hi")
+check("bytes-fromhex-nospace", fromhex("4869").decode(), "Hi")
+var hexOdd = False
+try:
+    discard fromhex("abc")
+catch as e:
+    hexOdd = True
+check("fromhex-odd-throws", hexOdd, True)
+var hexBad = False
+try:
+    discard fromhex("xy")
+catch as e:
+    hexBad = True
+check("fromhex-nonhex-throws", hexBad, True)
+# Bytes iteration -> Integers
+var byteSum = 0
+for v in Bytes([10, 20, 30]):
+    byteSum = byteSum + v
+check("bytes-iterate-ints", byteSum, 60)
+# apply(fn) over bytes (Integer -> Integer)
+var inc = Function(b): return b + 1
+check("bytes-apply", Bytes([1, 2, 3]).apply(inc) == Bytes([2, 3, 4]), True)
+# Bytes is hashable (Dict key)
+var bd = {Bytes([1]): "a", Bytes([2]): "b"}
+check("bytes-hashable", bd[Bytes([2])], "b")
+# immutability + out-of-range construction
+var bImmut = False
+try:
+    var bb = Bytes([1, 2])
+    bb[0] = 9
+catch as e:
+    bImmut = True
+check("bytes-immutable-throws", bImmut, True)
+var b256 = False
+try:
+    discard Bytes([256])
+catch as e:
+    b256 = True
+check("bytes-256-throws", b256, True)
+var bNeg = False
+try:
+    discard Bytes([-1])
+catch as e:
+    bNeg = True
+check("bytes-neg-throws", bNeg, True)
+var bIdxOob = False
+try:
+    discard Bytes([1, 2])[5]
+catch as e:
+    bIdxOob = True
+check("bytes-index-oob-throws", bIdxOob, True)
+var bRepBig = False
+try:
+    discard Bytes([1, 2]) * 1000000000000
+catch as e:
+    bRepBig = True
+check("bytes-repeat-huge-guard-throws", bRepBig, True)
+
+# =====================================================================================
+# format() MINI-SPEC — fill+align, sign, #, 0-pad, width, grouping, precision, types
+# =====================================================================================
+# alignment + custom fill
+check("fmt-left", format("hi", "<6"), "hi    ")
+check("fmt-right", format("hi", ">6"), "    hi")
+check("fmt-center", format("hi", "^6"), "  hi  ")
+check("fmt-fill", format("x", "*^7"), "***x***")
+check("fmt-fill-right", format("7", "0>5"), "00007")
+# sign
+check("fmt-sign-plus", format(42, "+d"), "+42")
+check("fmt-sign-space", format(42, " d"), " 42")
+check("fmt-sign-neg", format(-42, "+d"), "-42")
+check("fmt-sign-zeropad", format(-42, "+06d"), "-00042")
+# `=` align: pad between sign and digits (numeric)
+check("fmt-eq-align", format(-42, "=6"), "-   42")
+# alternate form # (base prefix)
+check("fmt-hash-x", format(255, "#x"), "0xff")
+check("fmt-hash-X", format(255, "#X"), "0XFF")
+check("fmt-hash-o", format(8, "#o"), "0o10")
+check("fmt-hash-b", format(5, "#b"), "0b101")
+check("fmt-hash-zeropad", format(255, "#08x"), "0x0000ff")
+# integer bases
+check("fmt-bin", format(5, "b"), "101")
+check("fmt-oct", format(64, "o"), "100")
+check("fmt-hex", format(255, "x"), "ff")
+check("fmt-hex-up", format(255, "X"), "FF")
+check("fmt-dec", format(42, "d"), "42")
+check("fmt-int-none", format(42, ""), "42")
+check("fmt-zeropad", format(42, "05d"), "00042")
+check("fmt-width", format(42, "5d"), "   42")
+# grouping comma (decimal)
+check("fmt-comma", format(1234567, ","), "1,234,567")
+check("fmt-comma-d", format(1000000, ",d"), "1,000,000")
+check("fmt-comma-float", format(1234567.5, ",.1f"), "1,234,567.5")
+# floats: f / e / g / %
+check("fmt-f", format(3.14159, ".2f"), "3.14")
+check("fmt-f-default", format(1.5, "f"), "1.500000")
+check("fmt-e", format(12345.678, ".2e"), "1.23e+04")
+check("fmt-g", format(0.0001, "g"), "0.0001")
+check("fmt-percent", format(0.25, ".1%"), "25.0%")
+check("fmt-f-width", format(3.14, "8.2f"), "    3.14")
+check("fmt-int-as-f", format(5, ".1f"), "5.0")           # Integer through a float type
+# string + precision (truncation)
+check("fmt-str-precision", format("abcdef", ".3"), "abc")
+check("fmt-str-default-left", format("hi", "6"), "hi    ")
+check("fmt-bool-d", format(True, "d"), "1")
+check("fmt-none-default", format(None, ""), "None")
+# type/value mismatches throw
+var fmtMis1 = False
+try:
+    discard format("abc", "d")          # string with integer type
+catch as e:
+    fmtMis1 = True
+check("fmt-str-as-int-throws", fmtMis1, True)
+var fmtMis2 = False
+try:
+    discard format(3.14, "d")           # float with integer type
+catch as e:
+    fmtMis2 = True
+check("fmt-float-as-int-throws", fmtMis2, True)
+var fmtMis3 = False
+try:
+    discard format(5, "Q")              # unknown type
+catch as e:
+    fmtMis3 = True
+check("fmt-unknown-type-throws", fmtMis3, True)
+var fmtMis4 = False
+try:
+    discard format(5, "5z9")            # malformed spec (trailing junk)
+catch as e:
+    fmtMis4 = True
+check("fmt-malformed-throws", fmtMis4, True)
+
+# =====================================================================================
+# f-strings — {expr}, :format-spec, nested quotes, whitespace, every quote flavour
+# =====================================================================================
+var fx = 42
+var fpi = 3.14159
+check("fstr-basic", f"x={fx}", "x=42")
+check("fstr-spec-int", f"{fx:05d}", "00042")
+check("fstr-spec-float", f"{fpi:.2f}", "3.14")
+check("fstr-expr", f"{fx * 2 + 1}", "85")
+check("fstr-ws", f"{ fx }", "42")                  # surrounding whitespace allowed
+var fd = {"k": 7}
+check("fstr-nested-quote", f"{fd['k']}", "7")      # single-quoted key inside f"..."
+check("fstr-single", f'val={fx}', "val=42")
+check("fstr-triple", f"""multi {fx} line""", "multi 42 line")
+check("fstr-raw", rf"\d={fx}", "\\d=42")           # rf combine: backslash literal
+check("fstr-fr", fr"{fx}\n", "42\\n")
+check("fstr-hash-spec", f"{255:#x}", "0xff")
+# inline anonymous function inside an f-string expression
+var sq = Function(x): return x * x
+check("fstr-call", f"{sq(5)}", "25")
+
+# =====================================================================================
+# REGEX — entry points, groups, quantifiers, classes, anchors, flags, sub/split
+# =====================================================================================
+check("re-search", re.search(r"\d+", "id 4821 x").group(), "4821")
+check("re-match-none", re.match(r"\d+", "id 4821") == None, True)
+check("re-match-hit", re.match("id", "id 4821").group(), "id")
+check("re-fullmatch", re.fullmatch(r"\d+", "4821").group(), "4821")
+check("re-fullmatch-none", re.fullmatch(r"\d+", "4821x") == None, True)
+check("re-dot", re.search("a.c", "xaqcy").group(), "aqc")
+check("re-class", re.search("[A-Z]+", "go LOUD now").group(), "LOUD")
+check("re-class-neg", re.search("[^0-9]+", "123abc").group(), "abc")
+check("re-shorthand-w", re.search(r"\w+", "  hi_there!").group(), "hi_there")
+check("re-shorthand-s", re.search(r"\s+", "a   b").group(), "   ")
+# quantifiers
+check("re-star", re.search("ab*c", "ac").group(), "ac")
+check("re-plus", re.search("ab+c", "abbbc").group(), "abbbc")
+check("re-quest", re.search("colou?r", "color").group(), "color")
+check("re-repeat-n", re.search(r"\d{3}-\d{4}", "call 555-0199 now").group(), "555-0199")
+check("re-repeat-range", re.findall("a{2,3}", "aaaa"), ["aaa"])
+check("re-repeat-exact0", re.search("a{0}b", "b").group(), "b")
+# greedy vs lazy
+check("re-greedy", re.search("<.*>", "<a><b>").group(), "<a><b>")
+check("re-lazy", re.search("<.*?>", "<a><b>").group(), "<a>")
+# anchors and boundaries
+check("re-anchor-start", re.search("^id", "id 99").group(), "id")
+check("re-anchor-end", re.search("99$", "id 99").group(), "99")
+check("re-dollar-before-nl", re.search("foo$", "foo\n").group(), "foo")
+check("re-word-boundary", re.findall(r"\bcat\b", "cat scatter cat"), ["cat", "cat"])
+check("re-notboundary", re.findall(r"\Bcat\B", "scatter"), ["cat"])
+# capturing groups
+var m1 = re.search(r"(\d{4})-(\d{2})-(\d{2})", "log 2024-06-07 ok")
+check("re-group0", m1.group(), "2024-06-07")
+check("re-group1", m1.group(1), "2024")
+check("re-groups", m1.groups(), ["2024", "06", "07"])
+check("re-span", m1.span(), [4, 14])
+check("re-start", m1.start(), 4)
+check("re-end", m1.end(), 14)
+check("re-start-g", m1.start(1), 4)
+check("re-string-attr", m1.string, "log 2024-06-07 ok")
+# optional group not participating -> None
+var m2 = re.search(r"(\d+)?-(\d+)", "-5")
+check("re-optgroup-none", m2.group(1) == None, True)
+check("re-optgroup-two", m2.group(2), "5")
+# capture inside repetition keeps the LAST iteration
+check("re-repeat-capture", re.search(r"(\d)+", "abc123").group(1), "3")
+# multi-key group(...) returns a List
+check("re-group-multi", m1.group(1, 2), ["2024", "06"])
+# named groups
+var m3 = re.search(r"(?P<user>\w+)@(?P<host>[\w.]+)", "write ada@kirito.dev today")
+check("re-named-user", m3.group("user"), "ada")
+check("re-named-host", m3.group("host"), "kirito.dev")
+check("re-groupdict", m3.groupdict(), {"user": "ada", "host": "kirito.dev"})
+check("re-named-alt-syntax", re.search(r"(?<word>\w+)", "hi").group("word"), "hi")
+var grpBad = False
+try:
+    discard m1.group(9)
+catch as e:
+    grpBad = True
+check("re-group-oob-throws", grpBad, True)
+# alternation
+check("re-alt", re.search("cat|dog|bird", "I have a dog").group(), "dog")
+check("re-alt-findall", re.findall("(jan|feb|mar)", "feb and mar"), ["feb", "mar"])
+# findall: 0 groups -> whole; >1 group -> tuples
+check("re-findall-whole", re.findall(r"\d+", "3 cats 12 dogs 1 fox"), ["3", "12", "1"])
+check("re-findall-tuples", re.findall(r"(\w+)=(\d+)", "x=1 y=22"), [["x", "1"], ["y", "22"]])
+# finditer
+var positions = []
+for hit in re.finditer(r"\d+", "a1 b22"):
+    positions.append(hit.start())
+check("re-finditer-positions", positions, [1, 4])
+# sub: template (with backrefs) + callable + count
+check("re-sub-template", re.sub(r"\s+", " ", "too   many    spaces"), "too many spaces")
+check("re-sub-backref", re.sub(r"(\w+)@(\w+)", r"\2.\1", "user@host"), "host.user")
+var redact = Function(m): return "*" * len(m.group())
+check("re-sub-callable", re.sub(r"\d+", redact, "card 1234 5678"), "card **** ****")
+check("re-sub-count", re.sub("a", "X", "aaaa", 2), "XXaa")
+check("re-sub-named-tmpl", re.sub(r"(?P<x>\d+)", r"[\g<x>]", "a5b"), "a[5]b")
+# split (with and without capturing separators)
+check("re-split", re.split(r",\s*", "a, b,c ,  d"), ["a", "b", "c ", "d"])
+check("re-split-capture", re.split(r"(\s+)", "one two"), ["one", " ", "two"])
+check("re-split-maxsplit", re.split(",", "a,b,c,d", 2), ["a", "b", "c,d"])
+# escape
+check("re-escape", re.escape("a.b*c"), "a\\.b\\*c")
+check("re-escape-match", re.search(re.escape("3.14"), "pi=3.14").group(), "3.14")
+# flags: IGNORECASE / MULTILINE / DOTALL (constants + combination + inline)
+check("re-ignorecase", re.findall("cat", "Cat CAT cat", re.IGNORECASE), ["Cat", "CAT", "cat"])
+check("re-multiline", re.findall(r"^\w+", "one\ntwo\nthree", re.MULTILINE), ["one", "two", "three"])
+check("re-dotall", re.search("a.b", "a\nb", re.DOTALL).group(), "a\nb")
+check("re-dot-no-dotall", re.search("a.b", "a\nb") == None, True)
+check("re-flag-combine", re.findall("^cat", "Cat\nCAT", re.I + re.M), ["Cat", "CAT"])
+check("re-inline-flag", re.search("(?i)hello", "HELLO there").group(), "HELLO")
+# Unicode in classes / boundaries
+check("re-unicode-class", re.search("[é]+", "café").group(), "é")
+check("re-unicode-dot", re.search("c.fé", "café").group(), "café")
+# compile: reuse + attributes
+var word = re.compile("[A-Za-z]+", re.IGNORECASE)
+check("re-compile-findall", word.findall("Hello, World!"), ["Hello", "World"])
+check("re-compile-pattern", word.pattern, "[A-Za-z]+")
+check("re-compile-groups", word.groups, 0)
+check("re-compile-groupcount", re.compile(r"(a)(b)(c)").groups, 3)
+# pos / endpos on a compiled pattern
+check("re-pos", re.compile(r"\d+").search("abc123", 4).group(), "23")
+check("re-endpos", re.compile(r"\d+$").search("12345", 0, 3).group(), "123")
+
+# =====================================================================================
+# REGEX — the linear-time guarantee + rejected features
+# =====================================================================================
+var tmod = import("time")
+var t0 = tmod.perfcounterns()
+var pathological = re.search("(a+)+b", "a" * 5000 + "c")   # classic catastrophic-backtracking bomb
+var elapsedMs = (tmod.perfcounterns() - t0) / 1000000.0
+check("re-pathological-none", pathological == None, True)
+check("re-pathological-fast", elapsedMs < 3000.0, True)    # MUST stay linear (Thompson NFA)
+# a second nested-quantifier bomb on a long run
+var t1 = tmod.perfcounterns()
+discard re.search("(x+x+)+y", "x" * 4000)
+var elapsed2 = (tmod.perfcounterns() - t1) / 1000000.0
+check("re-pathological2-fast", elapsed2 < 3000.0, True)
+
+# backreferences + lookaround MUST be rejected at compile
+var reBackref = False
+try:
+    discard re.compile(r"(a)\1")
+catch as e:
+    reBackref = True
+check("re-backref-rejected", reBackref, True)
+var reNamedBackref = False
+try:
+    discard re.compile(r"(?P<x>a)(?P=x)")
+catch as e:
+    reNamedBackref = True
+check("re-named-backref-rejected", reNamedBackref, True)
+var reLookahead = False
+try:
+    discard re.compile("foo(?=bar)")
+catch as e:
+    reLookahead = True
+check("re-lookahead-rejected", reLookahead, True)
+var reNegLookahead = False
+try:
+    discard re.compile("foo(?!bar)")
+catch as e:
+    reNegLookahead = True
+check("re-neglookahead-rejected", reNegLookahead, True)
+var reLookbehind = False
+try:
+    discard re.compile("(?<=foo)bar")
+catch as e:
+    reLookbehind = True
+check("re-lookbehind-rejected", reLookbehind, True)
+var reNegLookbehind = False
+try:
+    discard re.compile("(?<!foo)bar")
+catch as e:
+    reNegLookbehind = True
+check("re-neglookbehind-rejected", reNegLookbehind, True)
+# malformed patterns throw a clear error (not a crash)
+var reUnbalanced = False
+try:
+    discard re.compile("(abc")
+catch as e:
+    reUnbalanced = True
+check("re-unbalanced-rejected", reUnbalanced, True)
+var reBadClass = False
+try:
+    discard re.compile("[a-")
+catch as e:
+    reBadClass = True
+check("re-unterminated-class-rejected", reBadClass, True)
+var reNothing = False
+try:
+    discard re.compile("*abc")
+catch as e:
+    reNothing = True
+check("re-nothing-to-repeat-rejected", reNothing, True)
+var reBigRep = False
+try:
+    discard re.compile("a{5000}")
+catch as e:
+    reBigRep = True
+check("re-huge-repeat-rejected", reBigRep, True)
+# empty-pattern + empty-string match behaviours (no crash, no hang)
+check("re-empty-pattern", re.search("", "abc").group(), "")
+check("re-findall-empty", re.findall("", "ab"), ["", "", ""])
+check("re-sub-empty", re.sub("", "-", "ab"), "-a-b-")
+# no-match returns None (Match accessor on it would error — we only touch on success)
+check("re-no-match", re.search("zzz", "abc") == None, True)
+
+# =====================================================================================
+if fails == 0:
+    discard io.print("all", "checks", "passed")
+else:
+    discard io.print(fails, "checks", "FAILED")
+
+io.print("OK deep-text")

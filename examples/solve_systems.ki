@@ -1,0 +1,78 @@
+# Read complex linear systems from input files (written by gen_systems.ki), solve each, classify
+# the solution (unique / none / infinite), and validate. Exercises the io module (reading files),
+# the ComplexMatrix class, and the Gauss-Jordan solver — all idiomatic Kirito (for / range).
+#
+# Run:  ki --lib examples/lib examples/solve_systems.ki [file1 file2 ...]
+# With no arguments it reads the three files gen_systems.ki produces in /tmp.
+
+var io = import("io")
+var C = import("complex")
+var solver = import("linsolve")
+
+# Parse a "real imag real imag ..." line into a List of Complex numbers.
+var parseRow = Function(line):
+    var nums = []
+    for token in line.split(" "):
+        var t = token.strip()
+        if len(t) > 0:
+            nums.append(Float(t))
+    var out = []
+    for i in range(0, len(nums), 2):
+        out.append(C.of(nums[i], nums[i + 1]))
+    return out
+
+# Read a system file -> {"A": ComplexMatrix, "b": List of Complex}.
+var readSystem = Function(path):
+    var lines = []
+    with io.open(path, "r") as f:
+        for line in f:
+            if len(line.strip()) > 0:
+                lines.append(line)
+    var n = Integer(lines[0].strip())
+    var rows = []
+    var b = []
+    for i in range(n):
+        var values = parseRow(lines[i + 1])
+        # First n entries are coefficients, last is the RHS.
+        var coeffs = []
+        for j in range(n):
+            coeffs.append(values[j])
+        rows.append(coeffs)
+        b.append(values[n])
+    return {"A": C.Matrix(rows), "b": b}
+
+# Solve and report one system.
+var process = Function(path):
+    io.print("=== " + path + " ===")
+    var sys = readSystem(path)
+    var A = sys["A"]
+    var b = sys["b"]
+    io.print(f"system: {A.rows()} equations, {A.cols()} unknowns")
+    var result = solver.solve(A, b)
+    var kind = result["kind"]
+    io.print("result: " + kind + " (rank " + String(result["rank"]) + ")")
+    if kind == "none":
+        io.print("  no solution exists")
+    else:
+        var x = result["x"]
+        var parts = []
+        for v in x:
+            parts.append(String(v))
+        io.print("  x = [" + ", ".join(parts) + "]")
+        var ok = solver.verify(A, x, b)
+        io.print("  verified A*x == b: " + String(ok))
+        if kind == "infinite":
+            io.print("  (one particular solution; free variables set to 0)")
+
+# Determine which files to process.
+var files = []
+if len(arglist) > 0:
+    for a in arglist:
+        files.append(a)
+else:
+    files.append("/tmp/system_unique.txt")
+    files.append("/tmp/system_none.txt")
+    files.append("/tmp/system_infinite.txt")
+
+for path in files:
+    process(path)

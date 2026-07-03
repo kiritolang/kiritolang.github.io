@@ -1,0 +1,4 @@
+# same keyword passed twice
+var f = Function(a, b):
+    return a
+discard f(a = 1, a = 2)

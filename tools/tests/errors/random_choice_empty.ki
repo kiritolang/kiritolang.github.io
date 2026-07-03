@@ -1,0 +1,3 @@
+var random = import("random")
+var r = random.Random(1)
+discard r.choice([])

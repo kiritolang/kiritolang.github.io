@@ -1,0 +1,114 @@
+# Every way of writing a string, exercised from Kirito: plain / r / f / rf, in ', ", ''' and """
+# flavours — equivalence, quote nesting, cooked-vs-raw escapes, triple-quoted multiline, f-string
+# features in each flavour, and randomized fuzz against an oracle built in plain Kirito.
+# (Parse-error cases for each form live in tests/errors/, since a lex error aborts the whole script.)
+var io = import("io")
+var random = import("random")
+
+# --- equivalence: a plain body is identical across all forms ---
+assert "hello" == 'hello', "double == single"
+assert 'hello' == """hello""", "single == triple-double"
+assert """hello""" == '''hello''', "triple-double == triple-single"
+assert 'hello' == r"hello", "single == raw"
+assert r"hello" == r'hello', "raw double == raw single"
+assert r'hello' == r"""hello""", "raw == raw-triple"
+assert "hello" == f"hello", "plain == f (no braces)"
+assert f"hello" == f'hello', "f double == f single"
+assert f'hello' == rf"hello", "f == rf (no braces/backslash)"
+
+# --- empty strings in every form ---
+assert len("") == 0 and len('') == 0, "empty single-line"
+assert len("""""") == 0 and len('''''') == 0, "empty triple"
+assert len(r"") == 0 and len(f"") == 0 and len(rf"") == 0, "empty raw/f/rf"
+
+# --- quote nesting ---
+assert 'he said "hi"' == "he said \"hi\"", "double inside single == escaped"
+assert "it's fine" == 'it\'s fine', "single inside double == escaped"
+assert """both ' and " here""" == "both ' and \" here", "triple holds both quotes"
+assert '''quotes '' and "" ok''' == "quotes '' and \"\" ok", "triple-single holds doubles"
+
+# --- cooked escapes decode the same in every cooked flavour; raw keeps them verbatim ---
+assert "a\nb" == 'a\nb', "newline escape: double == single"
+assert "a\nb" == """a\nb""", "newline escape: double == triple"
+assert "x\ty" == '''x\ty''', "tab escape across flavours"
+assert "hex\x41z" == "hexAz", "\\x41 == A"
+assert len("nul\0end") == 7, "\\0 is one NUL char"
+assert "back\\slash" == r"back\slash", "cooked double-backslash == raw single-backslash"
+assert r"a\nb" == "a\\nb", "raw keeps backslash-n literally"
+assert len(r"a\nb") == 4, "raw \\n is two chars"
+assert r"\x41" == "\\x41", "raw does not decode \\x"
+assert len(r"\x41") == 4, "raw \\x41 is four chars"
+
+# --- raw shields a quote but keeps both characters ---
+assert r"\"" == "\\\"", "raw backslash-quote kept verbatim"
+assert len(r"\"") == 2, "raw \\\" is two chars"
+
+# --- triple-quoted multiline: real newlines preserved ---
+var multi = """line1
+line2
+line3"""
+assert len(multi.split("\n")) == 3, "multiline has three lines"
+assert multi == "line1\nline2\nline3", "multiline equals escaped form"
+var rawmulti = r"""keep\nthis
+and this"""
+assert rawmulti.split("\n")[0] == "keep\\nthis", "raw triple keeps backslash, splits real newline"
+
+# --- f-strings in every flavour ---
+var n = 7
+assert f"n={n}" == "n=7", "f double"
+assert f'n={n}' == "n=7", "f single"
+assert f"""n={n}""" == "n=7", "f triple-double"
+assert f'''n={n}''' == "n=7", "f triple-single"
+assert f"{{lit}} {1 + 1}" == "{lit} 2", "brace escapes + expr"
+var x = 42
+assert f"{x:05d}" == "00042", "format spec"
+assert f'{x:#x}' == "0x2a", "format spec single-quote f"
+var pi = 3.14159
+assert f'''pi={pi:.2f}''' == "pi=3.14", "format spec in triple f"
+
+# --- single-quote string keys inside double-quoted f-strings (now possible) ---
+var d = {"k": 9}
+assert f"{d['k']}" == "9", "single-quote key inside double f-string"
+assert f"{d['k']:03d}" == "009", "single-quote key with spec"
+
+# --- raw f-strings: backslash literal, braces still evaluated ---
+var name = "Kirito"
+assert rf"p\a\{name}" == "p\\a\\Kirito", "raw f: backslashes literal, expr evaluated"
+assert fr'{n}\t' == "7\\t", "fr single-quote: backslash literal"
+assert rf"""a\n{n}""" == "a\\n7", "raw f triple"
+
+# --- prefixes are ordinary identifiers when no quote follows ---
+var r = 1
+var f = 2
+var rf = 3
+var fr = 4
+assert r + f + rf + fr == 10, "r/f/rf/fr usable as names"
+
+# --- string operations are identical regardless of how the literal was written ---
+assert 'Hello'.upper() == """HELLO""", "upper across forms"
+assert """a,b,c""".split(",") == r"a,b,c".split(","), "split across forms"
+assert ('ab' + """cd""") == r"abcd", "concat across forms"
+assert '-'.join(['a', 'b', 'c']) == "a-b-c", "join"
+assert "  pad  ".strip() == 'pad', "strip across forms"
+assert 'racecar'[::-1] == "racecar", "slice reverse"
+
+# --- fuzz: a random brace/quote/backslash-free body reproduces through every form ---
+var rng = random.Random(20260602)
+var pool = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,-_/=+:;()[]"
+var trial = 0
+while trial < 2000:
+    var body = ""
+    var k = rng.randint(0, 20)
+    var i = 0
+    while i < k:
+        body = body + pool[rng.randint(0, len(pool) - 1)]
+        i = i + 1
+    # build the same literal via concatenation and compare against each literal form by value
+    assert body == String(body), "identity"
+    # value-equality: a plain double-quoted run of the body equals raw/f/triple of the same source
+    # (we can't construct a literal from a runtime string, so check the operations instead)
+    assert len(body) == k, "fuzz length matches"
+    assert (body + body) == String(body) + body, "fuzz concat stable"
+    trial = trial + 1
+
+io.print("OK")

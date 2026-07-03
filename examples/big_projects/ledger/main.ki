@@ -1,0 +1,109 @@
+# ledger/main.ki — CLI entry.
+#
+# Subcommands (the first positional):
+#   balances                 — every non-zero account balance
+#   income                   — income / expenses / net for the range
+#   register ACCOUNT         — every posting on ACCOUNT (chronological, running balance)
+#   top [N]                  — the N largest expense postings (default 10)
+#   stats                    — mean/median/min/max expense + category totals
+#   csv OUT                  — dump all postings as CSV to OUT
+#
+# Common options:
+#   -f, --file FILE          — the ledger file (required)
+#       --from ISO           — inclusive lower date bound
+#       --to   ISO           — inclusive upper date bound
+
+var io = import("io")
+var arg = import("arg")
+var csv = import("csv")
+var hash = import("hash")
+
+var parse  = import("parse")
+var book   = import("book")
+var report = import("report")
+var fmt    = import("fmt")
+
+# Read a file and print an error line if it fails; returns the tx list on success or None on failure.
+var _loadTxs = Function(file : String):
+    try:
+        return parse.parseFile(file)
+    catch String as e:
+        io.eprint("ledger: " + e)
+        return None
+
+var _main = Function():
+    var p = arg.Parser("plain-text double-entry accounting: balances/income/register/top/stats/csv")
+    p.positional("command", "one of: balances | income | register | top | stats | csv")
+    p.positional("target",  "for `register` the account; for `top` the N (default 10); for `csv` the output file; empty otherwise")
+    p.option("file", "", "ledger source file (required)")
+    p.option("from", "", "inclusive lower date bound (YYYY-MM-DD)")
+    p.option("to",   "", "inclusive upper date bound (YYYY-MM-DD)")
+    var opts = p.parse(arglist)
+    if opts == None:
+        return 0
+    if opts["file"] == "":
+        io.eprint("ledger: --file is required")
+        return 2
+    var txs = _loadTxs(opts["file"])
+    if txs == None:
+        return 1
+    # date-range filter (both bounds optional)
+    var fromIso = None
+    var toIso = None
+    if opts["from"] != "":
+        fromIso = opts["from"]
+    if opts["to"] != "":
+        toIso = opts["to"]
+    if fromIso != None or toIso != None:
+        txs = book.filterDateRange(txs, fromIso, toIso)
+    var cmd = opts["command"]
+    var target = opts["target"]
+    if cmd == "balances":
+        io.write(report.balances(txs))
+        return 0
+    if cmd == "income":
+        io.write(report.income(txs))
+        return 0
+    if cmd == "register":
+        if target == "":
+            io.eprint("ledger: register needs an account (second positional)")
+            return 2
+        io.write(report.register(txs, target))
+        return 0
+    if cmd == "top":
+        var n = 10
+        if target != "":
+            try:
+                n = Integer(target)
+            catch:
+                io.eprint("ledger: top: expected an integer count, got: " + target)
+                return 2
+        io.write(report.top(txs, n))
+        return 0
+    if cmd == "stats":
+        io.write(report.stats(txs))
+        # a stable hash of the current book so a CI job can watch for drift
+        var s = report.stats(txs)
+        io.print("digest: " + hash.sha256(s)[0:8])
+        return 0
+    if cmd == "csv":
+        if target == "":
+            io.eprint("ledger: csv needs an output file (second positional)")
+            return 2
+        var rows = [["date", "flag", "desc", "account", "amount"]]
+        for tx in txs:
+            for post in tx["postings"]:
+                rows.append([fmt.iso(tx["date"]), tx["flag"], tx["desc"], post["account"], format(post["amount"], ".2f")])
+        var payload = csv.format(rows)
+        var fh = io.open(target, "w")
+        fh.write(payload)
+        fh.close()
+        io.print("ledger: wrote " + String(len(rows) - 1) + " postings to " + target)
+        return 0
+    io.eprint("ledger: unknown command: " + cmd)
+    return 2
+
+if argmain:
+    var code = _main()
+    if code != 0:
+        import("sys").exit(code)

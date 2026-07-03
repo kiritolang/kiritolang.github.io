@@ -1,0 +1,8 @@
+# a context manager that has _enter_ but no _exit_ is an error
+class C:
+    var _init_ = Function(self):
+        self.x = 1
+    var _enter_ = Function(self):
+        return self
+with C() as c:
+    discard c

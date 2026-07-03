@@ -1,0 +1,231 @@
+# r5_language.ki — round-2 language-core audit: subtle control-flow / OOP semantics that the
+# r4 sweep did not pin down. Every behavior here was confirmed against the implementation and is
+# deterministic. Focus areas:
+#   - finally that itself transfers control (throw / return / break / continue) and how it
+#     interacts with an in-flight exception (override vs. swallow),
+#   - exception propagation order through nested try/finally and `with` _exit_,
+#   - `_super_` is a single-step proxy (no `_super_()._super_()`), and forwards only methods,
+#   - class objects expose nothing by name (no `ClassName.attr` / `ClassName.method`),
+#   - mutable class attributes: shared on mutation, copy-on-write on assignment,
+#   - `_str_` coerces a non-String return to its string form,
+#   - comparisons do NOT chain (`1 < 2 < 3` is `(1 < 2) < 3`, which throws — Bool isn't ordered).
+# Deterministic output: a count of passing checks, then "OK".
+var io = import("io")
+
+var passed = 0
+var ok = Function(cond, msg):
+    assert cond, msg
+    passed = passed + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+# =====================================================================================
+# 1. finally THAT TRANSFERS CONTROL while an exception is in flight
+# =====================================================================================
+# a throw in finally REPLACES the in-flight exception
+var throwInFinally = Function():
+    try:
+        try:
+            throw "original"
+        finally:
+            throw "from_finally"
+    catch as e:
+        return e
+ok(throwInFinally() == "from_finally", "throw in finally overrides the in-flight exception")
+
+# a return in finally SWALLOWS the in-flight exception and wins
+var returnInFinally = Function():
+    try:
+        throw "boom"
+    finally:
+        return "swallowed"
+ok(returnInFinally() == "swallowed", "return in finally swallows the in-flight exception")
+
+# a break in finally swallows the exception and exits the loop normally
+var breakInFinally = Function():
+    var i = 0
+    while i < 3:
+        try:
+            throw "x"
+        finally:
+            break
+    return "after_loop"
+ok(breakInFinally() == "after_loop", "break in finally swallows the exception and exits the loop")
+
+# a continue in finally swallows the exception and resumes the loop
+var continueInFinally = Function():
+    var out = []
+    var i = 0
+    while i < 3:
+        i = i + 1
+        try:
+            throw "x"
+        finally:
+            out.append(i)
+            continue
+    return out
+ok(continueInFinally() == [1, 2, 3], "continue in finally swallows the exception and resumes the loop")
+
+# a return in finally also overrides a return in the try body
+var returnOverridesReturn = Function():
+    try:
+        return "from_try"
+    finally:
+        return "from_finally"
+ok(returnOverridesReturn() == "from_finally", "return in finally overrides a return from try")
+
+# =====================================================================================
+# 2. EXCEPTION PROPAGATION ORDER (nested try/finally, throw-in-catch, with _exit_)
+# =====================================================================================
+# a throw inside a catch propagates; the SAME try's finally still runs first
+var fin2 = []
+var throwInCatch = Function():
+    try:
+        try:
+            throw "e1"
+        catch as e:
+            throw "e2"
+        finally:
+            fin2.append("fin")
+    catch as e:
+        return e
+ok(throwInCatch() == "e2" and fin2 == ["fin"], "throw in catch propagates; same-level finally runs first")
+
+# an inner finally-only try lets the exception reach the outer catch
+var prop = []
+var innerFinallyOnly = Function():
+    try:
+        try:
+            throw "deep"
+        finally:
+            prop.append("inner_fin")
+    catch as e:
+        prop.append("outer:" + e)
+    return prop
+ok(innerFinallyOnly() == ["inner_fin", "outer:deep"], "inner finally runs, then exception reaches outer catch")
+
+# in `with`, an _exit_ that throws REPLACES a body exception
+class ExitThrows:
+    var _enter_ = Function(self): return self
+    var _exit_ = Function(self): throw "exit_err"
+var exitReplacesBody = Function():
+    try:
+        with ExitThrows() as r:
+            throw "body_err"
+    catch as e:
+        return e
+ok(exitReplacesBody() == "exit_err", "with: an _exit_ that throws replaces the body exception")
+
+# nested `with` runs _exit_ in reverse (inner first) even on the exception path
+class Tagged:
+    var _init_ = Function(self, tag, log):
+        self.tag = tag
+        self.log = log
+    var _enter_ = Function(self): return self
+    var _exit_ = Function(self): self.log.append(self.tag)
+var nestlog = []
+var nestedWithExit = Function():
+    try:
+        with Tagged("outer", nestlog) as o:
+            with Tagged("inner", nestlog) as i:
+                throw "x"
+    catch as e:
+        return nestlog
+ok(nestedWithExit() == ["inner", "outer"], "nested with: _exit_ runs inner-then-outer on exception")
+
+# =====================================================================================
+# 3. `_super_` IS A SINGLE-STEP, METHOD-ONLY PROXY
+# =====================================================================================
+# you cannot chain _super_()._super_() on one view (the view has no _super_)
+class S0:
+    var f = Function(self): return "S0"
+class S1(S0):
+    var f = Function(self): return "S1"
+class S2(S1):
+    var doubleSuper = Function(self): return self._super_()._super_().f()
+ok(throws(Function(): return S2().doubleSuper()), "_super_()._super_() is not supported (single-step proxy)")
+
+# the documented pattern — each level calls _super_() once — DOES compose
+class L0:
+    var f = Function(self): return "L0"
+class L1(L0):
+    var f = Function(self): return "L1>" + self._super_().f()
+class L2(L1):
+    var f = Function(self): return "L2>" + self._super_().f()
+ok(L2().f() == "L2>L1>L0", "each-level-calls-super composes across the chain")
+
+# the super proxy forwards methods, not plain attributes
+class AttrBase:
+    var _init_ = Function(self): self.x = 10
+class AttrSub(AttrBase):
+    var _init_ = Function(self):
+        self._super_()._init_()
+        self.y = self._super_().x
+var superAttr = Function():
+    discard AttrSub()
+    return 1
+ok(throws(superAttr), "the super proxy forwards methods, not plain attribute reads")
+
+# =====================================================================================
+# 4. CLASS OBJECTS EXPOSE NOTHING BY NAME (no static access)
+# =====================================================================================
+class HasStuff:
+    var classVar = 42
+    var method = Function(self): return 1
+    var _init_ = Function(self): pass
+# a class attribute is reachable only THROUGH an instance, not via the class name
+ok(throws(Function(): return HasStuff.classVar), "a class attribute is not readable via the class name")
+ok(HasStuff().classVar == 42, "a class attribute IS readable through an instance")
+# a method is likewise not reachable via the class name (no unbound-method access)
+ok(throws(Function(): return HasStuff.method), "a method is not readable via the class name")
+# and a class attribute is not writable via the class name either (symmetric)
+var writeClassAttr = Function():
+    HasStuff.classVar = 99
+    return 1
+ok(throws(writeClassAttr), "a class attribute is not writable via the class name")
+
+# =====================================================================================
+# 5. MUTABLE CLASS ATTRIBUTES: shared on mutation, copy-on-write on assignment
+# =====================================================================================
+class Bag:
+    var items = [1]
+    var _init_ = Function(self): pass
+var bag1 = Bag()
+var bag2 = Bag()
+# mutating (not assigning) the shared list is visible through every instance + the class
+bag1.items.append(2)
+ok(bag1.items == [1, 2] and bag2.items == [1, 2], "mutating a class-attr list is shared across instances")
+# ASSIGNING a new value copies-on-write: only the assigning instance changes
+bag1.items = [99]
+ok(bag1.items == [99] and bag2.items == [1, 2], "assigning a class attr is copy-on-write (others unchanged)")
+
+# =====================================================================================
+# 6. `_str_` COERCES A NON-STRING RETURN TO ITS STRING FORM
+# =====================================================================================
+class StrInt:
+    var _str_ = Function(self): return 42
+ok(String(StrInt()) == "42", "_str_ returning an Integer is coerced to its string form")
+class StrList:
+    var _str_ = Function(self): return [1, 2]
+ok(String(StrList()) == "[1, 2]", "_str_ returning a List is coerced (repr form)")
+ok(f"{StrInt()}" == "42", "the coercion also applies inside an f-string")
+
+# =====================================================================================
+# 7. COMPARISONS DO NOT CHAIN
+# =====================================================================================
+# 1 < 2 < 3 parses as (1 < 2) < 3 == True < 3; Bool isn't ordered, so it RAISES
+ok(throws(Function(): return 1 < 2 < 3), "comparisons do not chain: (1 < 2) < 3 throws")
+ok(throws(Function(): return 3 > 2 > 1), "comparisons do not chain: (3 > 2) > 1 throws")
+# the explicit `and` form is the way to express a range test
+ok((1 < 2 and 2 < 3) == True, "a range test uses an explicit `and`")
+
+# =====================================================================================
+# DETERMINISTIC SUMMARY
+# =====================================================================================
+io.print("checks passed:", passed)
+io.print("OK")

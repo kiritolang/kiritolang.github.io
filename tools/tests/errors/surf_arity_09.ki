@@ -1,0 +1,6 @@
+# class instantiation missing a required _init_ argument
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+discard Point(1)

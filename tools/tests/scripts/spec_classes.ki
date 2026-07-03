@@ -1,0 +1,141 @@
+# Exhaustive + adversarial checks for classes: methods, inheritance, special methods, private, super.
+var io = import("io")
+
+# --- basic class: init, attributes, methods ---
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var dist2 = Function(self):
+        return self.x ** 2 + self.y ** 2
+var p = Point(3, 4)
+assert p.x == 3 and p.y == 4 and p.dist2() == 25, "init/attrs/method"
+assert type(p) == "Point", "type name"
+assert isinstance(p, Point), "isinstance own class"
+
+# --- full operator overloading ---
+class Vec:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _add_ = Function(self, o): return Vec(self.x + o.x, self.y + o.y)
+    var _sub_ = Function(self, o): return Vec(self.x - o.x, self.y - o.y)
+    var _mul_ = Function(self, k): return Vec(self.x * k, self.y * k)
+    var _neg_ = Function(self): return Vec(-self.x, -self.y)
+    var _eq_ = Function(self, o): return self.x == o.x and self.y == o.y
+    var _lt_ = Function(self, o): return (self.x ** 2 + self.y ** 2) < (o.x ** 2 + o.y ** 2)
+    var _getitem_ = Function(self, i):
+        if i == 0:
+            return self.x
+        return self.y
+    var _len_ = Function(self): return 2
+    var _str_ = Function(self): return f"Vec({self.x}, {self.y})"
+var a = Vec(1, 2)
+var b = Vec(3, 4)
+assert (a + b) == Vec(4, 6), "_add_ + _eq_"
+assert (b - a) == Vec(2, 2), "_sub_"
+assert (a * 3) == Vec(3, 6), "_mul_"
+assert (-a) == Vec(-1, -2), "_neg_"
+assert a == Vec(1, 2) and a != b, "_eq_ / _ne_ fallback"
+# _ne_ defaults to "not _eq_": two DISTINCT-but-value-equal instances (only _eq_ defined) must agree
+assert a == Vec(1, 2) and not (a != Vec(1, 2)), "_ne_ defaults to not _eq_ (distinct but equal)"
+assert a < b and not (b < a), "_lt_"
+assert b[0] == 3 and b[1] == 4 and len(b) == 2, "_getitem_ / _len_"
+assert String(a) == "Vec(1, 2)" and f"{a}" == "Vec(1, 2)", "_str_ in String() and f-string"
+# sorting uses _lt_
+var sorted_vecs = sorted([Vec(3, 4), Vec(0, 1), Vec(1, 1)])
+assert sorted_vecs[0] == Vec(0, 1), "_lt_ drives sorted"
+
+# --- _getitem_ / _setitem_ with multiple (variadic) keys ---
+class Grid:
+    var _init_ = Function(self):
+        self.cells = {}
+    var _getitem_ = Function(self, i, j):
+        return self.cells.get(String(i) + "," + String(j), 0)
+    var _setitem_ = Function(self, i, j, v):
+        self.cells[String(i) + "," + String(j)] = v
+var g = Grid()
+g[1, 2] = 99
+assert g[1, 2] == 99 and g[0, 0] == 0, "variadic _getitem_/_setitem_"
+
+# --- _contains_ / _iter_ / _call_ ---
+class Range3:
+    var _init_ = Function(self, n):
+        self.n = n
+    var _contains_ = Function(self, x): return x >= 0 and x < self.n
+    var _iter_ = Function(self):
+        var out = []
+        var i = 0
+        while i < self.n:
+            out.append(i)
+            i = i + 1
+        return out
+    var _call_ = Function(self, k): return k * self.n
+var r3 = Range3(3)
+assert 2 in r3 and 5 not in r3, "_contains_"
+var collected = []
+for v in r3:
+    collected.append(v)
+assert collected == [0, 1, 2], "_iter_"
+assert r3(4) == 12, "_call_ (instance is callable)"
+
+# --- inheritance + super (multi-level) ---
+class Animal:
+    var _init_ = Function(self, name):
+        self.name = name
+    var speak = Function(self): return "..."
+    var describe = Function(self): return self.name + " says " + self.speak()
+class Dog(Animal):
+    var speak = Function(self): return "woof"
+class Puppy(Dog):
+    var speak = Function(self): return self._super_().speak() + " (tiny)"
+var dog = Dog("Rex")
+assert dog.describe() == "Rex says woof", "inheritance: override used by base method"
+assert isinstance(dog, Animal) and isinstance(dog, Dog), "isinstance inheritance-aware"
+var pup = Puppy("Bit")
+assert pup.speak() == "woof (tiny)", "super climbs one level"
+assert pup.describe() == "Bit says woof (tiny)", "super within inherited method"
+
+# super in constructor (extend, not replace)
+class Counter:
+    var _init_ = Function(self):
+        self.count = 0
+class NamedCounter(Counter):
+    var _init_ = Function(self, name):
+        self._super_()._init_()
+        self.name = name
+var nc = NamedCounter("c")
+assert nc.count == 0 and nc.name == "c", "super constructor chaining"
+
+# --- private members (single leading underscore, no trailing) ---
+class Account:
+    var _init_ = Function(self, bal):
+        self._balance = bal
+    var deposit = Function(self, amt):
+        self._balance = self._balance + amt
+        return self._balance
+    var balance = Function(self):
+        return self._balance
+var acct = Account(100)
+assert acct.deposit(50) == 150 and acct.balance() == 150, "private accessible within methods"
+var privErr = False
+try:
+    discard acct._balance
+catch as e:
+    privErr = True
+assert privErr, "private rejected from outside"
+
+# --- default equality is by identity when no _eq_ is defined ---
+class Plain:
+    var _init_ = Function(self, v):
+        self.v = v
+var pa = Plain(1)
+var pb = Plain(1)
+assert pa == pa and pa != pb, "no _eq_ -> identity equality"
+
+# --- a subclass instance satisfies a base-class annotation ---
+var hear = Function(a : Animal) -> String:
+    return a.speak()
+assert hear(Dog("x")) == "woof" and hear(Puppy("y")) == "woof (tiny)", "annotation inheritance-aware"
+
+io.print("OK")

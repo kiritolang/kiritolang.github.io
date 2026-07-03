@@ -1,0 +1,2 @@
+# A byte >= 0x80 cannot be decoded as ascii.
+discard Bytes([0xFF]).decode("ascii")

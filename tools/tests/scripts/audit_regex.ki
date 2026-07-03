@@ -1,0 +1,174 @@
+var re = import("regex")
+var io = import("io")
+
+# ---- module-level shortcuts: compile / match / search / fullmatch / findall / finditer / sub / split / escape
+io.print(String(re.match("a", "abc").group()))
+io.print(String(re.match("b", "abc")))             # match anchors at start -> None
+io.print(re.search("b", "abc").group())             # search finds anywhere
+io.print(String(re.fullmatch("abc", "abc").group()))
+io.print(String(re.fullmatch("ab", "abc")))         # not whole-string
+io.print(re.findall("\\d+", "12 and 345"))
+io.print(re.split("\\s+", "a  b   c"))
+io.print(re.sub("\\s+", "_", "x  y"))
+
+# ---- escape() ----------------------------------------------------------------------------------
+io.print(re.escape("a.b*c+d?(e)"))                  # all meta -> backslashed
+io.print(re.escape("hello.世界"))                    # unicode beyond ASCII left alone
+
+# ---- compile() yields a Regex with attributes --------------------------------------------------
+var rx = re.compile("(?P<x>\\w+)=(\\d+)")
+io.print(rx.pattern)
+io.print(rx.groups)
+io.print(rx.groupindex)
+
+# ---- Regex methods (match/search/fullmatch with pos/endpos) ------------------------------------
+io.print(re.compile("b").match("ab", 1).group())   # match at pos=1
+var rxw = re.compile("\\w+$")
+var endposM = rxw.search("abc def", 0, 3)
+io.print(endposM.group() if endposM != None else "no")  # endpos=3 makes $ at position 3
+
+# ---- findall by group count: 0/1/2+ shapes -----------------------------------------------------
+io.print(re.compile("\\w+").findall("a b"))         # 0 groups -> List<String>
+io.print(re.compile("(\\w+)").findall("a b"))       # 1 group  -> List<String> of group 1
+io.print(re.compile("(\\w)(\\w)").findall("ab cd")) # 2+ groups -> List<List<String>>
+
+# ---- finditer returns List of Match ------------------------------------------------------------
+var rxf = re.compile("\\d+")
+var its = rxf.finditer("a 1 b 22")
+io.print(len(its))
+io.print(its[0].group())
+io.print(its[1].group())
+
+# ---- Match.group / groups / groupdict / start / end / span / string ----------------------------
+var m = re.search("(?P<u>\\w+)@(?P<h>[\\w.]+)", "ada@kirito.dev")
+io.print(m.group())                                  # whole match
+io.print(m.group(1))                                 # group 1
+io.print(m.group("u"))                               # by name
+io.print(m.group("u", "h"))                          # several -> List
+io.print(m.groups())
+io.print(m.groupdict())
+io.print(m.start())
+io.print(m.end())
+io.print(m.span())
+io.print(m.string)
+
+# Optional/non-participating group returns None and (-1, -1)
+var m2 = re.search("(a)(b)?", "a")
+io.print(String(m2.group(2)))
+io.print([m2.start(2), m2.end(2)])
+io.print(m2.groups("DEF"))
+io.print(m2.groupdict("DEF"))                        # nothing named, empty dict
+
+# Default for groups()/groupdict()
+var m3 = re.search("(?P<x>a)(?P<y>b)?", "a")
+io.print(m3.groupdict("MISSING"))
+io.print(m3.groups("MISSING"))
+
+# ---- split: maxsplit and captured-group interleaving ------------------------------------------
+io.print(re.split(",", "a,b,c,d", 2))               # maxsplit=2 -> 3 pieces (last is "c,d")
+io.print(re.compile("(\\s+)").split("a b  c"))      # captured group interleaved
+
+# ---- sub: template features (\1, \g<name>, \g<0>, \\) -----------------------------------------
+io.print(re.compile("(\\w+)=(\\d+)").sub("\\2:\\1", "a=1 b=2"))
+io.print(re.compile("(?P<k>\\w+)=(?P<v>\\d+)").sub("\\g<v>=\\g<k>", "a=1"))
+io.print(re.compile("\\d+").sub("[\\g<0>]", "x 12 y"))
+io.print(re.compile("a").sub("\\\\", "a"))            # literal backslash
+
+# sub with function replacement
+io.print(re.sub("\\d+", Function(m): return String(Integer(m.group()) * 2), "1 2 3"))
+# sub with count
+io.print(re.compile("a").sub("X", "aaa", 2))
+
+# ---- flag constants and aliases ----------------------------------------------------------------
+io.print(re.IGNORECASE == re.I)
+io.print(re.MULTILINE == re.M)
+io.print(re.DOTALL == re.S)
+io.print(re.search("CAT", "cat", re.I).group())
+io.print(re.search("(?i)CAT", "cat").group())        # inline (?i)
+io.print(re.search("a.b", "a\nb", re.S).group())
+io.print(re.search("(?s)a.b", "a\nb").group())       # inline (?s)
+io.print(re.search("(?m)^b", "a\nb").group())        # inline (?m)
+io.print(re.findall("(?m)^\\w+", "ab\ncd\nef"))      # multiline anchors
+
+# ---- quantifiers (greedy + lazy, {n}, {n,}, {n,m}) ---------------------------------------------
+io.print(re.search("a+", "aaab").group())
+io.print(re.search("a+?", "aaab").group())           # lazy
+io.print(re.search("a{3}", "aaaa").group())
+io.print(re.search("a{2,}", "aaaa").group())
+io.print(re.search("a{2,3}", "aaaa").group())
+
+# ---- char-class & shorthand --------------------------------------------------------------------
+io.print(re.search("[a-c]+", "xabcz").group())
+io.print(re.search("[^aeiou ]+", "hello world").group())
+io.print(re.search("\\d\\w\\s", "1a ").group())
+
+# ---- escape sequences inside patterns ----------------------------------------------------------
+io.print(re.search("\\n", "x\ny").group() == "\n")
+io.print(re.search("\\t", "x\ty").group() == "\t")
+io.print(re.search("\\x41", "A").group())            # hex
+io.print(re.search("\\u00FF", "X" + chr(255) + "Y").group())   # unicode
+io.print(ord(re.search("[\\b]", chr(8)).group()))    # \b inside class = backspace
+
+# ---- anchors -----------------------------------------------------------------------------------
+io.print(re.search("\\Aabc", "abcdef").group())
+io.print(re.search("def\\z", "abcdef").group())
+io.print(String(re.search("def\\z", "abcdef\n")))    # \z is strict end -> None on trailing newline
+io.print(String(re.search("def\\Z", "abcdef\n")))    # in Kirito \Z behaves like \z (also strict end)
+io.print(re.search("\\bword\\b", "a word here").group())
+
+# ---- ADVERSARIAL: lookaround + backref rejected -----------------------------------------------
+var caught = Function(fn):
+    try:
+        discard fn()
+        return "no-error"
+    catch as e:
+        return String(e)
+
+io.print("la:" if "lookahead" in caught(Function(): return re.compile("(?=a)")) else "BAD")
+io.print("lb:" if "lookbehind" in caught(Function(): return re.compile("(?<=a)b")) else "BAD")
+io.print("lne:" if "lookahead" in caught(Function(): return re.compile("(?!a)")) else "BAD")
+io.print("br:" if "backreferences" in caught(Function(): return re.compile("(a)\\1")) else "BAD")
+
+# ---- ADVERSARIAL: malformed patterns -----------------------------------------------------------
+io.print("ntr:" if "nothing to repeat" in caught(Function(): return re.compile("*")) else "BAD")
+io.print("ubr:" if "missing )" in caught(Function(): return re.compile("(a")) else "BAD")
+io.print("unb:" if "unbalanced" in caught(Function(): return re.compile("a)")) else "BAD")
+io.print("clc:" if "character class" in caught(Function(): return re.compile("[abc")) else "BAD")
+io.print("rng:" if "character range" in caught(Function(): return re.compile("[z-a]")) else "BAD")
+io.print("trb:" if "trailing backslash" in caught(Function(): return re.compile("\\")) else "BAD")
+io.print("bnd:" if "repetition bounds" in caught(Function(): return re.compile("a{3,2}")) else "BAD")
+
+# ---- ADVERSARIAL: linear-time guarantee (catastrophic in a backtracker, instant here) ----------
+# (a+)+b against a long all-'a' input with no 'b' must return None without exploding.
+var bomb = ""
+var k = 0
+while k < 40:
+    bomb = bomb + "a"
+    k = k + 1
+io.print(String(re.search("(a+)+b", bomb)))
+
+# ---- ADVERSARIAL: sub error paths --------------------------------------------------------------
+io.print("trbk:" if "trailing backslash" in caught(Function(): return re.compile("a").sub("\\", "a")) else "BAD")
+io.print("gln:" if "no group named" in caught(Function(): return re.compile("(a)").sub("\\g<missing>", "a")) else "BAD")
+io.print("gnm:" if "expected '<'" in caught(Function(): return re.compile("(a)").sub("\\gx", "a")) else "BAD")
+
+# function repl returning non-String must error
+io.print("nstr:" if "must return a String" in caught(Function(): return re.compile("a").sub(Function(m): return 1, "a")) else "BAD")
+# wrong repl type
+io.print("rtp:" if "String or a function" in caught(Function(): return re.compile("a").sub(42, "a")) else "BAD")
+
+# Bad group key on Match
+io.print("nsg:" if "no such group" in caught(Function(): return m.group(99)) else "BAD")
+io.print("ngn:" if "no such group" in caught(Function(): return m.group("nope")) else "BAD")
+
+# ---- empty pattern -----------------------------------------------------------------------------
+io.print(re.findall("", "abc"))                     # findall on empty pattern returns one empty per position
+io.print(re.split("", "abc"))                       # split on empty matches: ['', 'a', 'b', 'c', '']
+
+# ---- unicode handling: code-point indices ------------------------------------------------------
+var s = "café"                                      # 4 code points
+var mu = re.search("é", s)
+io.print(mu.start())
+io.print(mu.end())
+
+io.print("OK audit-regex")

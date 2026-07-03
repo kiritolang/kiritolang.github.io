@@ -1,0 +1,108 @@
+# ============================================================ TABULAR (pandas-like): edge + adversarial
+var io = import("io")
+var pd = import("tabular")
+var random = import("random")
+var close = Function(a, b) -> Bool:
+    return abs(a - b) < 0.000001
+
+# --- Series basics + aggregations ---
+var s = pd.Series([10, 20, 30, 40])
+assert s.sum() == 100 and s.mean() == 25.0, "series sum/mean"
+assert s.min() == 10 and s.max() == 40, "series min/max"
+assert close(s.median(), 25.0), "series median even"
+assert pd.Series([3, 1, 2]).median() == 2, "series median odd"
+assert pd.Series([]).sum() == 0, "empty series sum is 0"
+
+# --- count is a non-null tally; missing handling ---
+assert pd.Series(["a", None, "b", None]).count() == 2, "count non-null any type"
+assert pd.Series([1, None, 3]).count() == 2, "count skips None numerics"
+var sm = pd.Series([1, None, 3, None, 5])
+assert sm.dropna().tolist() == [1, 3, 5], "dropna drops missing"
+assert sm.fillna(0).tolist() == [1, 0, 3, 0, 5], "fillna fills"
+
+# --- element-wise arithmetic / comparison ---
+var a = pd.Series([1, 2, 3])
+assert (a + a).tolist() == [2, 4, 6], "elementwise add"
+assert (a * 10).tolist() == [10, 20, 30], "scalar mul"
+assert (a > 1).tolist() == [False, True, True], "elementwise comparison"
+
+# --- apply / unique / valuecounts / sortvalues ---
+assert pd.Series([1, 2, 3]).apply(Function(x): return x * x).tolist() == [1, 4, 9], "apply"
+assert pd.Series([1, 1, 2, 3, 3, 3]).unique() == [1, 2, 3], "unique"
+assert pd.Series([3, 1, 2]).sortvalues().tolist() == [1, 2, 3], "sortvalues asc"
+assert pd.Series([3, 1, 2]).sortvalues(ascending = False).tolist() == [3, 2, 1], "sortvalues desc"
+var vc = pd.Series(["a", "b", "a", "a", "b"]).valuecounts()
+assert vc.tolist() == [3, 2], "valuecounts counts"
+
+# --- DataFrame construction + selection ---
+var df = pd.DataFrame([["Ada", 36, "math"], ["Alan", 41, "cs"], ["Grace", 85, "navy"], ["Edsger", 60, "cs"]], columns = ["name", "age", "dept"])
+assert df.columns == ["name", "age", "dept"], "df columns"
+assert df.shape() == [4, 3], "df shape"
+assert df["age"].tolist() == [36, 41, 85, 60], "column select"
+assert df.iloc[1]["name"] == "Alan", "iloc by position"
+assert df.loc[2]["name"] == "Grace", "loc by label"
+assert df[["name", "dept"]].columns == ["name", "dept"], "multi-column subset"
+
+# --- boolean mask ---
+var adults = df[df["age"] > 50]
+assert adults["name"].tolist() == ["Grace", "Edsger"], "boolean mask filter"
+
+# --- groupby + agg ---
+var g = df.groupby("dept")
+var byMax = g.agg({"age": "max"})
+assert byMax["age"].tolist() == [36, 60, 85], "group agg max (sorted by group key)"
+
+# --- sortvalues on a frame ---
+assert df.sortvalues("age")["name"].tolist() == ["Ada", "Alan", "Edsger", "Grace"], "frame sortvalues"
+
+# --- merge (all join kinds) ---
+var left = pd.DataFrame([[1, "Ada"], [2, "Alan"], [3, "Grace"]], columns = ["id", "name"])
+var right = pd.DataFrame([[1, "math"], [2, "cs"], [4, "navy"]], columns = ["id", "dept"])
+assert pd.merge(left, right, on = "id").shape()[0] == 2, "inner join keeps matching keys"
+assert pd.merge(left, right, on = "id", how = "left").shape()[0] == 3, "left join keeps all left"
+assert pd.merge(left, right, on = "id", how = "outer").shape()[0] == 4, "outer join union"
+
+# --- readcsv with type inference ---
+var csvtext = "name,age,score\nAda,36,9.5\nAlan,41,8.0"
+var dc = pd.readcsv(csvtext)
+assert dc.columns == ["name", "age", "score"], "readcsv columns"
+assert type(dc["age"][0]) == "Integer", "readcsv infers Integer"
+assert type(dc["score"][0]) == "Float", "readcsv infers Float"
+assert type(dc["name"][0]) == "String", "readcsv keeps String"
+
+# --- describe ---
+var desc = df.describe()
+assert desc["age"].tolist()[0] == 4, "describe count first"
+
+# --- ADVERSARIAL / edge ---
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+assert throws(Function(): return df["nonexistent"]), "missing column throws"
+assert throws(Function(): return df.iloc[99]), "out-of-range iloc throws"
+assert pd.DataFrame([], columns = ["a", "b"]).shape() == [0, 2], "empty frame shape"
+assert pd.Series([42]).sum() == 42, "single-element series"
+
+# --- Bool treated as 0/1 in numeric reductions ---
+assert pd.Series([True, False, True, True]).sum() == 3, "bool sum as 0/1"
+
+# --- fuzz: round-trip frame -> csv -> frame preserves values ---
+var rng = random.Random(20260603)
+var t = 0
+while t < 80:
+    var rows = []
+    var nr = rng.randint(1, 6)
+    var r = 0
+    while r < nr:
+        rows.append([rng.randint(0, 999), "x" + String(rng.randint(0, 9))])
+        r = r + 1
+    var f1 = pd.DataFrame(rows, columns = ["num", "tag"])
+    var f2 = pd.readcsv(f1.tocsv())
+    assert f2["num"].tolist() == f1["num"].tolist(), "fuzz: csv round-trip preserves Integers"
+    assert f2["tag"].tolist() == f1["tag"].tolist(), "fuzz: csv round-trip preserves Strings"
+    t = t + 1
+
+io.print("OK tabular")

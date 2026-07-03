@@ -1,0 +1,4 @@
+while True:
+    var f = Function():
+        break
+    f()

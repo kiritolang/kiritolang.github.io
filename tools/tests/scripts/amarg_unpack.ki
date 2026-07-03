@@ -1,0 +1,5 @@
+# Starred unpacking over arglist (padded so there is always one element to bind the head). For an
+# import the head is the padding and the starred tail is empty.
+var padded = arglist + ["solo"]
+var head, *tail = padded
+var m = argmain

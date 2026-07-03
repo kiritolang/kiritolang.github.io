@@ -1,0 +1,8 @@
+# Helper for argmain_arglist.ki — imported, never run directly (no .expected file). Captures, at
+# module top level, the argmain/arglist an imported module sees: argmain must be False and arglist
+# must be the empty List (the program's arguments belong to the entry script, not its imports).
+var m = argmain
+var args = arglist
+var n = len(arglist)
+var t = type(arglist)
+var empty = arglist == []

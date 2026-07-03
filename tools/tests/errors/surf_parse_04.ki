@@ -1,0 +1,4 @@
+# PARSER: a switch header missing the ':' after its subject
+switch 1
+    case 1:
+        discard 1

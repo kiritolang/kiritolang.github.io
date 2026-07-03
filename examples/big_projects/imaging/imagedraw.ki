@@ -1,0 +1,234 @@
+# imagedraw.ki -- 2-D drawing primitives for `imaging`, in the spirit of Pillow's ImageDraw.
+#
+#     var draw = ImageDraw.Draw(img)
+#     draw.line([0, 0, 63, 63], [255, 0, 0])
+#     draw.rectangle([10, 10, 30, 30], None, [0, 255, 0])
+#     draw.ellipse([20, 20, 60, 40], [0, 0, 255])
+#
+# A Draw object mutates its target Image in place (pixel writes are the one in-place tensor op).
+
+# Normalise a colour to the target image's mode: an Integer for "L", an [r,g,b(,a)] list otherwise.
+var _norm_color = Function(img, color):
+    if img.mode == "L":
+        if type(color) == "List":
+            return color[0]
+        return color
+    if type(color) != "List":
+        return [color, color, color]
+    return color
+
+# Coerce a coordinate sequence to a list of [x, y] points. Accepts a flat [x0,y0,x1,y1,...] or an
+# already-nested [[x0,y0],[x1,y1],...].
+var _points = Function(xy):
+    if len(xy) == 0:
+        return []
+    if type(xy[0]) == "List":
+        return xy
+    var out = []
+    var i = 0
+    while i + 1 < len(xy):
+        out.append([xy[i], xy[i + 1]])
+        i = i + 2
+    return out
+
+class Draw:
+    var _init_ = Function(self, img):
+        self.img = img
+        self.width = img.width
+        self.height = img.height
+
+    var _str_ = Function(self):
+        return "<ImageDraw on " + String(self.img) + ">"
+
+    # Write one pixel if it is in bounds (no error off-canvas, matching common drawing semantics).
+    var _plot = Function(self, x, y, color):
+        if x >= 0 and x < self.width and y >= 0 and y < self.height:
+            self.img.putpixel([x, y], color)
+
+    # Stamp a `w`-by-`w` block centred on (x, y) -- used to give lines width.
+    var _stamp = Function(self, x, y, color, w):
+        if w <= 1:
+            self._plot(x, y, color)
+            return None
+        var half = w // 2
+        var dy = -half
+        while dy <= half:
+            var dx = -half
+            while dx <= half:
+                self._plot(x + dx, y + dy, color)
+                dx = dx + 1
+            dy = dy + 1
+        return None
+
+    var point = Function(self, xy, fill):
+        var color = _norm_color(self.img, fill)
+        for p in _points(xy):
+            self._plot(p[0], p[1], color)
+        return None
+
+    # Bresenham line(s) through the given points; `width` thickens via square stamps.
+    var line = Function(self, xy, fill, width = 1):
+        var color = _norm_color(self.img, fill)
+        var pts = _points(xy)
+        var i = 0
+        while i + 1 < len(pts):
+            self._line2(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], color, width)
+            i = i + 1
+        return None
+
+    var _line2 = Function(self, x0, y0, x1, y1, color, width):
+        var dx = abs(x1 - x0)
+        var dy = -abs(y1 - y0)
+        var sx = 1
+        if x0 > x1:
+            sx = -1
+        var sy = 1
+        if y0 > y1:
+            sy = -1
+        var err = dx + dy
+        var x = x0
+        var y = y0
+        var guard = 0
+        var limit = (self.width + self.height) * 4 + 8
+        while guard < limit:
+            self._stamp(x, y, color, width)
+            if x == x1 and y == y1:
+                guard = limit
+            else:
+                var e2 = err * 2
+                if e2 >= dy:
+                    err = err + dy
+                    x = x + sx
+                if e2 <= dx:
+                    err = err + dx
+                    y = y + sy
+                guard = guard + 1
+        return None
+
+    # Axis-aligned rectangle [x0, y0, x1, y1] (inclusive). `fill` paints the interior; `outline` the
+    # 1-px border.
+    var rectangle = Function(self, xy, fill = None, outline = None):
+        var x0 = min(xy[0], xy[2])
+        var y0 = min(xy[1], xy[3])
+        var x1 = max(xy[0], xy[2])
+        var y1 = max(xy[1], xy[3])
+        if fill != None:
+            var fc = _norm_color(self.img, fill)
+            var y = y0
+            while y <= y1:
+                var x = x0
+                while x <= x1:
+                    self._plot(x, y, fc)
+                    x = x + 1
+                y = y + 1
+        if outline != None:
+            var oc = _norm_color(self.img, outline)
+            var x = x0
+            while x <= x1:
+                self._plot(x, y0, oc)
+                self._plot(x, y1, oc)
+                x = x + 1
+            var y = y0
+            while y <= y1:
+                self._plot(x0, y, oc)
+                self._plot(x1, y, oc)
+                y = y + 1
+        return None
+
+    # Ellipse inscribed in the bounding box [x0, y0, x1, y1].
+    var ellipse = Function(self, xy, fill = None, outline = None):
+        var x0 = min(xy[0], xy[2])
+        var y0 = min(xy[1], xy[3])
+        var x1 = max(xy[0], xy[2])
+        var y1 = max(xy[1], xy[3])
+        var cx = Float(x0 + x1) / 2.0
+        var cy = Float(y0 + y1) / 2.0
+        var rx = Float(x1 - x0) / 2.0
+        var ry = Float(y1 - y0) / 2.0
+        if rx < 0.5:
+            rx = 0.5
+        if ry < 0.5:
+            ry = 0.5
+        var fc = None
+        var oc = None
+        if fill != None:
+            fc = _norm_color(self.img, fill)
+        if outline != None:
+            oc = _norm_color(self.img, outline)
+        var y = y0
+        while y <= y1:
+            var ny = (Float(y) - cy) / ry
+            var inside = 1.0 - ny * ny
+            if inside >= 0.0:
+                var span = rx * import("math").sqrt(inside)
+                var xa = Integer(round(cx - span))
+                var xb = Integer(round(cx + span))
+                if fc != None:
+                    var x = xa
+                    while x <= xb:
+                        self._plot(x, y, fc)
+                        x = x + 1
+                if oc != None:
+                    self._plot(xa, y, oc)
+                    self._plot(xb, y, oc)
+            y = y + 1
+        # Close the top/bottom of the outline by also scanning per column.
+        if oc != None:
+            var x = x0
+            while x <= x1:
+                var nx = (Float(x) - cx) / rx
+                var ins = 1.0 - nx * nx
+                if ins >= 0.0:
+                    var span = ry * import("math").sqrt(ins)
+                    self._plot(x, Integer(round(cy - span)), oc)
+                    self._plot(x, Integer(round(cy + span)), oc)
+                x = x + 1
+        return None
+
+    # Filled / outlined polygon through the given vertices (scanline fill).
+    var polygon = Function(self, xy, fill = None, outline = None):
+        var pts = _points(xy)
+        if len(pts) < 2:
+            return None
+        if fill != None:
+            var fc = _norm_color(self.img, fill)
+            var ymin = pts[0][1]
+            var ymax = pts[0][1]
+            for p in pts:
+                ymin = min(ymin, p[1])
+                ymax = max(ymax, p[1])
+            var y = ymin
+            while y <= ymax:
+                var xs = []
+                var i = 0
+                var m = len(pts)
+                while i < m:
+                    var a = pts[i]
+                    var b = pts[(i + 1) % m]
+                    var ay = a[1]
+                    var by = b[1]
+                    if (ay <= y and by > y) or (by <= y and ay > y):
+                        var t = Float(y - ay) / Float(by - ay)
+                        xs.append(a[0] + t * (b[0] - a[0]))
+                    i = i + 1
+                xs.sort()
+                var j = 0
+                while j + 1 < len(xs):
+                    var xa = Integer(round(xs[j]))
+                    var xb = Integer(round(xs[j + 1]))
+                    var x = xa
+                    while x <= xb:
+                        self._plot(x, y, fc)
+                        x = x + 1
+                    j = j + 2
+                y = y + 1
+        if outline != None:
+            var closed = []
+            for p in pts:
+                closed.append(p)
+            closed.append(pts[0])
+            self.line(closed, outline, 1)
+        return None
+
+# `import("imagedraw").Draw(img)` instantiates the class directly (calling a class invokes its
+# constructor), matching Pillow's ImageDraw.Draw(img) factory call.

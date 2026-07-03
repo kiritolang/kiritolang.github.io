@@ -1,0 +1,72 @@
+# Adversarial: native _getstate_/_setstate_ are reachable directly from Kirito, so malformed state
+# must throw a clean, catchable error — never crash the VM (no out-of-bounds reads, no overflow).
+var io = import("io")
+var mat = import("matrix")
+var cpx = import("complex")
+var tm = import("time")
+var rnd = import("random")
+var tn = import("tensor")
+var dmp = import("dump")
+var ser = import("serialize")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# A fresh native value of each kind whose _setstate_ we will feed garbage.
+var freshMatrix = Function(): return mat.identity(2)
+var freshCMatrix = Function(): return cpx.Matrix([[cpx.of(1.0, 1.0)]])
+var freshComplex = Function(): return cpx.of(1.0, 2.0)
+var freshDate = Function(): return tm.make(2000, 1, 1)
+var freshRandom = Function(): return rnd.Random(1)
+var freshTensor = Function(): return tn.Tensor([[1.0, 2.0]])
+var freshCTensor = Function(): return tn.Tensor([1.0, 2.0], dtype = "Complex")
+
+# --- malformed states: each must throw, not crash ---
+var bad = [
+    # Matrix: non-iterable, too short, wrong shape, bad element types, huge dims
+    Function(): return freshMatrix()._setstate_(5),
+    Function(): return freshMatrix()._setstate_([1]),
+    Function(): return freshMatrix()._setstate_([2, 2, [1.0]]),          # size mismatch
+    Function(): return freshMatrix()._setstate_([1, 1, ["x"]]),          # non-number element
+    Function(): return freshMatrix()._setstate_([100000000, 100000000, []]),  # huge -> guarded
+    # ComplexMatrix: empty inner pair (the OOB case), short pair, size mismatch
+    Function(): return freshCMatrix()._setstate_([1, 1, [[]]]),          # empty [re,im]
+    Function(): return freshCMatrix()._setstate_([1, 1, [[1.0]]]),       # one-element pair
+    Function(): return freshCMatrix()._setstate_([2, 2, [[1.0, 2.0]]]),  # size mismatch
+    Function(): return freshCMatrix()._setstate_("nope"),
+    # Complex: too short, non-number
+    Function(): return freshComplex()._setstate_([1.0]),
+    Function(): return freshComplex()._setstate_(["a", "b"]),
+    # DateTime: wrong type
+    Function(): return freshDate()._setstate_("not an int"),
+    Function(): return freshDate()._setstate_([1, 2, 3]),
+    # Random: wrong type, malformed engine string
+    Function(): return freshRandom()._setstate_(12345),
+    Function(): return freshRandom()._setstate_("garbage not an engine state"),
+    # Tensor: empty complex pair (OOB case), short pair, shape/data mismatch, bad dtype field
+    Function(): return freshCTensor()._setstate_(["Complex", [1], [[]]]),
+    Function(): return freshCTensor()._setstate_(["Complex", [1], [[1.0]]]),
+    Function(): return freshTensor()._setstate_(["Float", [2, 2], [1.0]]),
+    Function(): return freshTensor()._setstate_([5, 5, 5]),
+    Function(): return freshTensor()._setstate_("x")
+]
+var i = 0
+while i < len(bad):
+    assert throws(bad[i]), "malformed _setstate_ #" + String(i) + " must throw cleanly"
+    i = i + 1
+
+# After all that abuse the VM still works and the values still serialize correctly.
+assert ser.loads(ser.dumps(mat.identity(3))) == mat.identity(3), "VM healthy after abuse (matrix)"
+assert dmp.loads(dmp.dumps(cpx.of(3.0, 4.0))) == cpx.of(3.0, 4.0), "VM healthy after abuse (complex)"
+
+# --- feeding corrupt serialized blobs to the loaders throws cleanly too ---
+assert throws(Function(): return dmp.loads("not a real dump blob")), "dump.loads garbage"
+assert throws(Function(): return ser.loads("(((garbage")), "serialize.loads garbage"
+# a truncated/empty blob
+assert throws(Function(): return dmp.loads("")), "dump.loads empty"
+
+io.print("OK serde-adversarial")

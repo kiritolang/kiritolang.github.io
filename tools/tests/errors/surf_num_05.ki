@@ -1,0 +1,2 @@
+# Integer() of non-numeric text must throw a clear conversion error.
+discard Integer("not a number")

@@ -1,0 +1,4 @@
+# type/operator: complex numbers are unordered, '<' is rejected
+var complex = import("complex")
+var c = complex.of(1, 2)
+discard c < c

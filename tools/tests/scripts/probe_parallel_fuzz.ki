@@ -1,0 +1,115 @@
+# Fuzz the cross-VM transfer path of `parallel`: seeded-random value graphs (every serializable type,
+# nested, including Bytes/Set/Dict) round-tripped through a Queue and through spawn(ident).join(), with
+# random parallel map-reduces. Kirito's == is deep-structural (order-insensitive for Dict/Set), so a
+# faithful transfer means original == result. Seeded -> deterministic output for a golden test.
+var io = import("io")
+var parallel = import("parallel")
+var random = import("random")
+
+var ident = Function(x):
+    return x
+var part_sum = Function(xs):
+    var s = 0
+    for v in xs:
+        s = s + v
+    return s
+
+var genval = Function(rng, depth):
+    var pick = rng.randint(0, 6) if depth > 0 else rng.randint(0, 5)
+    if pick == 0:
+        return rng.randint(-1000000, 1000000)
+    elif pick == 1:
+        return rng.uniform(-1000.0, 1000.0)
+    elif pick == 2:
+        return rng.random() < 0.5
+    elif pick == 3:
+        return None
+    elif pick == 4:
+        var n = rng.randint(0, 8)
+        var s = ""
+        var i = 0
+        while i < n:
+            s = s + chr(rng.randint(97, 122))
+            i = i + 1
+        return s
+    elif pick == 5:
+        var n = rng.randint(0, 8)
+        var bs = []
+        var i = 0
+        while i < n:
+            bs.append(rng.randint(0, 255))
+            i = i + 1
+        return Bytes(bs)
+    else:
+        var kind = rng.randint(0, 2)
+        var n = rng.randint(0, 4)
+        if kind == 0:
+            var lst = []
+            var i = 0
+            while i < n:
+                lst.append(genval(rng, depth - 1))
+                i = i + 1
+            return lst
+        elif kind == 1:
+            var d = {}
+            var i = 0
+            while i < n:
+                d["k" + String(i)] = genval(rng, depth - 1)
+                i = i + 1
+            return d
+        else:
+            var items = []
+            var i = 0
+            while i < n:
+                items.append(rng.randint(0, 20))
+                i = i + 1
+            return Set(items)
+
+if argmain:
+    var rng = random.Random(20240615)
+
+    # --- 400 random graphs round-tripped through a Queue (serialize -> deserialize) ---
+    var q = parallel.Queue()
+    var t = 0
+    while t < 400:
+        var v = genval(rng, 4)
+        q.put(v)
+        assert v == q.get(), "queue round-trip mismatch at " + String(t)
+        t = t + 1
+
+    # --- random graphs round-tripped through a worker (spawn forwards + result rebuilt) ---
+    var s = 0
+    while s < 30:
+        var v = genval(rng, 3)
+        assert parallel.spawn(ident, v).join() == v, "spawn round-trip mismatch at " + String(s)
+        s = s + 1
+
+    # --- random parallel map-reduce: split a random vector across a random worker count ---
+    var r = 0
+    while r < 10:
+        var nitems = rng.randint(1, 60)
+        var data = []
+        var expect = 0
+        var i = 0
+        while i < nitems:
+            var x = rng.randint(-50, 50)
+            data.append(x)
+            expect = expect + x
+            i = i + 1
+        var k = rng.randint(1, 5)
+        var chunk = (nitems + k - 1) // k
+        var tasks = []
+        var lo = 0
+        while lo < nitems:
+            var hi = lo + chunk
+            if hi > nitems:
+                hi = nitems
+            tasks.append(parallel.spawn(part_sum, data[lo:hi]))
+            lo = lo + chunk
+        var total = 0
+        for task in tasks:
+            total = total + task.join()
+        assert total == expect, "map-reduce mismatch at round " + String(r)
+        r = r + 1
+
+    io.print("OK parallel fuzz")

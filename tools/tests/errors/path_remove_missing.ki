@@ -1,0 +1,2 @@
+var path = import("path")
+path.remove("/no/such/kirito/file/zzz.txt")

@@ -1,0 +1,2 @@
+# builtin len() given too many positional arguments
+discard len([1], [2])

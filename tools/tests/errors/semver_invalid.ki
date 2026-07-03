@@ -1,0 +1,2 @@
+var semver = import("semver")
+discard semver.parse("not-a-version")

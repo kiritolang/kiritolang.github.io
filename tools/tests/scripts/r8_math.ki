@@ -1,0 +1,246 @@
+# r8_math.ki — round-8 exhaustive, COMPLEMENTARY self-check of the `math` stdlib module.
+# r6_math covers typical values + the headline domain errors; r7_math covers NaN-through-2-arg,
+# the INT64_MIN(min,0) magnitude edge and the overflow guards. r8 takes FRESH angles and inputs
+# with NO duplicate identities/values:
+#   - NaN propagation through the FULL unary set + 2-arg matrix (every analytic fn passes NaN),
+#   - the symmetric INT64_MIN edge gcd/lcm(min,min) (the magnitude is 2^63 -> throws),
+#   - exact comb values on fresh n,k + the multiply-then-divide path that beats numerator overflow,
+#   - gamma poles at -3/-4 and the reflection identity at a fresh point, lgamma vs log|gamma|,
+#   - copysign sign-bit recovery, atan2 over fresh quadrant points, hypot 3-d-style chains,
+#   - prod rejecting Bool and mixed types, factorial/perm/comb fresh overflow points,
+#   - degrees/radians round-trip, fmod sign-of-x at fresh points, and the rest of the kwarg surface.
+# Computed floats use .compare; integer results use ==. Final: "r8_math: <n> checks passed".
+
+var math = import("math")
+var io = import("io")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+# ---------------------------------------------------------------- NaN through the FULL unary set
+# A NaN argument is never a domain error: it passes through every unary function untouched. r6
+# spot-checks four; here every analytic unary must yield NaN for a NaN input.
+var nan = math.nan
+ok(math.isnan(math.sqrt(nan)), "sqrt(nan)")
+ok(math.isnan(math.cbrt(nan)), "cbrt(nan)")
+ok(math.isnan(math.sin(nan)), "sin(nan)")
+ok(math.isnan(math.cos(nan)), "cos(nan)")
+ok(math.isnan(math.tan(nan)), "tan(nan)")
+ok(math.isnan(math.asin(nan)), "asin(nan)")
+ok(math.isnan(math.acos(nan)), "acos(nan)")
+ok(math.isnan(math.atan(nan)), "atan(nan)")
+ok(math.isnan(math.sinh(nan)), "sinh(nan)")
+ok(math.isnan(math.cosh(nan)), "cosh(nan)")
+ok(math.isnan(math.tanh(nan)), "tanh(nan)")
+ok(math.isnan(math.asinh(nan)), "asinh(nan)")
+ok(math.isnan(math.acosh(nan)), "acosh(nan)")
+ok(math.isnan(math.atanh(nan)), "atanh(nan)")
+ok(math.isnan(math.exp(nan)), "exp(nan)")
+ok(math.isnan(math.expm1(nan)), "expm1(nan)")
+ok(math.isnan(math.log1p(nan)), "log1p(nan)")
+ok(math.isnan(math.log2(nan)), "log2(nan)")
+ok(math.isnan(math.log10(nan)), "log10(nan)")
+ok(math.isnan(math.lgamma(nan)), "lgamma(nan)")
+ok(math.isnan(math.erf(nan)), "erf(nan)")
+ok(math.isnan(math.erfc(nan)), "erfc(nan)")
+ok(math.isnan(math.fabs(nan)), "fabs(nan) stays nan")
+ok(math.isnan(math.trunc(nan)), "trunc(nan) stays nan (Float)")
+# isnan/isinf/isfinite classify NaN correctly
+ok(not math.isinf(nan), "nan is not inf")
+ok(not math.isfinite(nan), "nan is not finite")
+
+# ---------------------------------------------------------------- NaN through 2-arg (fresh: copysign/log)
+# r7 covers atan2/hypot/fmod/pow; here copysign+log with a NaN operand.
+# copysign copies only the SIGN BIT: copysign(1.0, nan) keeps the finite magnitude 1.0 (NOT NaN),
+# while a NaN *magnitude* operand stays NaN.
+ok(not math.isnan(math.copysign(1.0, nan)), "copysign(1, nan) keeps finite magnitude (sign bit only)")
+ok(math.isnan(math.copysign(nan, 1.0)), "copysign(nan, y) -> nan (NaN magnitude)")
+ok(math.isnan(math.log(nan)), "log(nan) one-arg -> nan")
+ok(math.isnan(math.pow(nan, nan)), "pow(nan,nan) -> nan")
+ok(math.isnan(math.atan2(nan, nan)), "atan2(nan,nan) -> nan")
+
+# ---------------------------------------------------------------- signed-zero / copysign sign bit
+# copysign(1, x) extracts the sign bit; -0.0 vs +0.0 are distinguished (fresh from r7's via-copysign).
+ok(math.copysign(1.0, -0.0) == -1.0, "copysign(1,-0.0) = -1.0 (sign bit of -0.0)")
+ok(math.copysign(1.0, 0.0) == 1.0, "copysign(1,+0.0) = +1.0")
+ok(math.copysign(-7.0, 3.0) == 7.0, "copysign(-7,3) = 7 (take |x|, sign of y)")
+ok(math.copysign(math.inf, -1.0) == -math.inf, "copysign(inf,-1) = -inf")
+ok(type(math.copysign(3, 4)) == "Float", "copysign returns Float even for Integer args")
+
+# ---------------------------------------------------------------- INT64_MIN symmetric edge (FRESH)
+# r7 does gcd(min,0)/lcm(min,3); here BOTH operands are INT64_MIN. |min| = 2^63 exceeds INT64_MAX,
+# so the GCD (= 2^63) and the LCM (= 2^63) cannot be returned -> must throw, not wrap negative.
+ok(throws(Function(): return math.gcd(-9223372036854775808, -9223372036854775808)),
+   "gcd(INT64_MIN, INT64_MIN) = 2^63 overflows -> throws")
+ok(throws(Function(): return math.lcm(-9223372036854775808, -9223372036854775808)),
+   "lcm(INT64_MIN, INT64_MIN) overflows -> throws")
+# but gcd(min, min/2-ish) where the gcd fits is fine: gcd(min, 2^62) = 2^62 (fits)
+ok(math.gcd(-9223372036854775808, 4611686018427387904) == 4611686018427387904,
+   "gcd(INT64_MIN, 2^62) = 2^62 (fits, no UB)")
+# lcm just under the overflow line: lcm(2^62, 4) = 2^62 (x/g*y stays in range)
+ok(math.lcm(4611686018427387904, 4) == 4611686018427387904, "lcm(2^62, 4) = 2^62 (no overflow)")
+# gcd is commutative and sign-insensitive on fresh values
+ok(math.gcd(48, -36) == math.gcd(-36, 48), "gcd commutative + sign-insensitive")
+ok(math.gcd(-100, -75) == 25, "gcd(-100,-75) = 25")
+
+# ---------------------------------------------------------------- comb: fresh exact values + path
+# comb multiplies-then-divides; results that fit int64 must not overflow on the numerator.
+ok(math.comb(52, 5) == 2598960, "comb(52,5) = poker hands")
+ok(math.comb(49, 6) == 13983816, "comb(49,6) = lottery")
+ok(math.comb(60, 30) == 118264581564861424, "comb(60,30) huge-but-fits (no numerator overflow)")
+ok(math.comb(20, 10) == 184756, "comb(20,10)")
+ok(math.comb(1, 0) == 1, "comb(1,0)=1")
+ok(math.comb(7, 8) == 0, "comb(7,8)=0 (k>n)")
+# Pascal's rule: comb(n,k) = comb(n-1,k-1) + comb(n-1,k)
+ok(math.comb(30, 12) == math.comb(29, 11) + math.comb(29, 12), "Pascal's rule")
+# comb requires BOTH args (unlike perm); comb(n) alone is an error
+ok(throws(Function(): return math.comb(5)), "comb(n) with no k throws (k required)")
+ok(throws(Function(): return math.comb(70, 35)), "comb(70,35) overflows -> throws")
+
+# ---------------------------------------------------------------- perm: fresh + overflow boundary
+ok(math.perm(15, 3) == 2730, "perm(15,3) = 15*14*13")
+ok(math.perm(13) == math.factorial(13), "perm(13) = 13! (k omitted)")
+ok(math.perm(8, 8) == 40320, "perm(8,8) = 8!")
+ok(math.perm(1000, 1) == 1000, "perm(1000,1) = 1000")
+ok(math.perm(6, 9) == 0, "perm(6,9)=0 (k>n)")
+ok(throws(Function(): return math.perm(25, 20)), "perm(25,20) overflows -> throws")
+ok(throws(Function(): return math.perm(5, -2)), "perm negative k throws")
+
+# ---------------------------------------------------------------- factorial: fresh boundary
+ok(math.factorial(13) == 6227020800, "factorial(13)")
+ok(math.factorial(2) == 2, "factorial(2)=2")
+ok(throws(Function(): return math.factorial(22)), "factorial(22) overflows -> throws")
+ok(throws(Function(): return math.factorial(50)), "factorial(50) overflows -> throws")
+
+# ---------------------------------------------------------------- prod: Bool rejection + fresh types
+# A Bool is NOT a number to prod (only Integer/Float), so it throws (documents the boundary).
+ok(throws(Function(): return math.prod([True, 2])), "prod rejects a Bool element (not a number)")
+ok(throws(Function(): return math.prod([2], start = True)), "prod rejects a Bool start")
+ok(throws(Function(): return math.prod([1, None])), "prod rejects None element")
+ok(math.prod([11, 13]) == 143, "prod([11,13]) = 143")
+ok(math.prod([2, 4, 8, 16]) == 1024, "prod of powers of two")
+ok(math.prod([-1, -1, -1]) == -1, "prod of three -1 = -1")
+ok(math.prod([1.5, 4]).compare(6.0, 1e-12), "prod with Float in mix -> Float")
+ok(math.prod([100, 100], start = 3) == 30000, "prod with Integer start kwarg")
+ok(math.prod([5], start = 0) == 0, "prod start 0 zeroes the product")
+# an Integer overflow that a Float start does NOT make Float still throws (start Integer, all Integer)
+ok(throws(Function(): return math.prod([1000000000, 1000000000, 1000000000, 1000000000])),
+   "4-way 1e9 Integer prod overflows -> throws")
+
+# ---------------------------------------------------------------- gamma: poles + reflection (FRESH)
+# poles at every non-positive integer; r6 checks 0/-1/-2, here -3/-4/-10.
+ok(throws(Function(): return math.gamma(-3)), "gamma(-3) pole throws")
+ok(throws(Function(): return math.gamma(-4)), "gamma(-4) pole throws")
+ok(throws(Function(): return math.gamma(-10)), "gamma(-10) pole throws")
+ok(math.isfinite(math.gamma(-1.5)), "gamma(-1.5) finite (negative non-integer)")
+ok(math.isfinite(math.gamma(-2.5)), "gamma(-2.5) finite")
+# reflection at a FRESH point: gamma(x) gamma(1-x) = pi / sin(pi x), x = 0.25
+ok((math.gamma(0.25) * math.gamma(0.75)).compare(math.pi / math.sin(math.pi * 0.25), 1e-9),
+   "gamma reflection at x=0.25")
+# gamma(n+1) = n * gamma(n) recurrence at fresh n
+ok(math.gamma(6.0).compare(5.0 * math.gamma(5.0), 1e-9), "gamma recurrence gamma(6)=5*gamma(5)")
+# lgamma equals log|gamma| on the positive axis (fresh point)
+ok(math.lgamma(8.0).compare(math.log(math.gamma(8.0)), 1e-9), "lgamma(8) = log(gamma(8))")
+ok(math.lgamma(0.5).compare(math.log(math.sqrt(math.pi)), 1e-9), "lgamma(0.5) = log(sqrt(pi))")
+# lgamma poles too
+ok(throws(Function(): return math.lgamma(-3)), "lgamma(-3) pole throws")
+
+# ---------------------------------------------------------------- atan2 fresh quadrants + hypot
+ok(math.atan2(1, 1).compare(math.atan2(2, 2), 1e-12), "atan2 scale-invariant (slope only)")
+ok(math.atan2(-3, -3).compare(-3.0 * math.pi / 4, 1e-12), "atan2(-3,-3) third quadrant")
+ok(math.atan2(5, 0).compare(math.pi / 2, 1e-12), "atan2(+y, 0) = +pi/2")
+ok(math.atan2(-5, 0).compare(-math.pi / 2, 1e-12), "atan2(-y, 0) = -pi/2")
+# hypot chained: sqrt(hypot(a,b)^2 + c^2) builds a 3-d magnitude; (3,4,12) -> 13
+ok(math.hypot(math.hypot(3, 4), 12).compare(13.0, 1e-12), "hypot chain (3,4,12) = 13")
+ok(math.hypot(20, 21).compare(29.0, 1e-12), "hypot(20,21) = 29 (Pythagorean)")
+ok(math.hypot(0, 7).compare(7.0, 1e-12), "hypot(0,7) = 7")
+
+# ---------------------------------------------------------------- fmod sign-of-x (fresh) + identity
+ok(math.fmod(13, 4).compare(1.0, 1e-12), "fmod(13,4)=1")
+ok(math.fmod(-13, 4).compare(-1.0, 1e-12), "fmod(-13,4)=-1 (sign of x)")
+ok(math.fmod(13, -4).compare(1.0, 1e-12), "fmod(13,-4)=1 (sign of x, not y)")
+ok(math.fmod(-13, -4).compare(-1.0, 1e-12), "fmod(-13,-4)=-1")
+ok(math.fmod(9.5, 2.0).compare(1.5, 1e-12), "fmod(9.5,2.0)=1.5 (fractional)")
+# fmod(x, y) = x - n*y where n = trunc(x/y); recover x
+var fa = 17.3
+var fb = 5.0
+ok((math.fmod(fa, fb) + math.trunc(fa / fb) * fb).compare(fa, 1e-9), "fmod reconstructs x")
+
+# ---------------------------------------------------------------- degrees/radians fresh round trip
+ok(math.radians(math.degrees(2.345)).compare(2.345, 1e-12), "radians(degrees(x))=x")
+ok(math.degrees(math.pi / 6).compare(30.0, 1e-9), "degrees(pi/6)=30")
+ok(math.radians(45).compare(math.pi / 4, 1e-12), "radians(45)=pi/4")
+ok(math.degrees(0).compare(0.0, 1e-12), "degrees(0)=0")
+
+# ---------------------------------------------------------------- exp/log fresh identities
+# log(a*b) = log(a) + log(b)
+ok(math.log(6.0 * 35.0).compare(math.log(6.0) + math.log(35.0), 1e-12), "log(ab)=log a+log b")
+# log2/log10 cross-check via change of base
+ok(math.log2(100).compare(math.log10(100) / math.log10(2), 1e-9), "log2(100)=log10(100)/log10(2)")
+ok(math.log2(1024).compare(10.0, 1e-12), "log2(1024)=10")
+ok(math.log10(1e-7).compare(-7.0, 1e-9), "log10(1e-7)=-7")
+# exp(a+b) = exp(a)*exp(b)
+ok(math.exp(1.2 + 0.8).compare(math.exp(1.2) * math.exp(0.8), 1e-9), "exp(a+b)=exp a*exp b")
+# expm1 accurate near zero (fresh tiny arg): expm1(x) ~ x for tiny x (quadratic term is ~x^2/2)
+ok(math.expm1(2e-9).compare(2e-9, 1e-6), "expm1(2e-9) ~ 2e-9")
+
+# ---------------------------------------------------------------- erf/erfc fresh
+ok(math.erf(-0.5).compare(-math.erf(0.5), 1e-12), "erf odd at 0.5")
+ok((math.erf(1.7) + math.erfc(1.7)).compare(1.0, 1e-12), "erf+erfc=1 at 1.7")
+ok(math.erfc(0).compare(1.0, 1e-12), "erfc(0)=1")
+ok(math.erf(3).compare(0.999977909503001, 1e-9), "erf(3) value")
+
+# ---------------------------------------------------------------- floor/ceil/trunc fresh edges
+ok(math.floor(-2.0001) == -3, "floor(-2.0001)=-3")
+ok(math.ceil(2.0001) == 3, "ceil(2.0001)=3")
+ok(math.floor(1000000.5) == 1000000, "floor of a large half")
+ok(math.ceil(-1000000.5) == -1000000, "ceil of a large negative half")
+ok(math.trunc(-7.999).compare(-7.0, 1e-12), "trunc(-7.999)=-7 (toward zero)")
+# floor/ceil of a huge-but-finite value within int64 still works
+ok(math.floor(9.0e18) == 9000000000000000000, "floor(9e18) fits int64")
+# floor/ceil of a value beyond int64 throws (conversion guard)
+ok(throws(Function(): return math.floor(1e300)), "floor(1e300) beyond int64 throws")
+ok(throws(Function(): return math.ceil(-1e300)), "ceil(-1e300) beyond int64 throws")
+
+# ---------------------------------------------------------------- range (not domain): fresh overflow->inf
+ok(math.isinf(math.exp(710.0)), "exp(710) overflows to inf (range, no throw)")
+ok(math.isinf(math.gamma(180.0)), "gamma(180) overflows to inf (range)")
+ok(math.exp(-745.0).compare(0.0, 0.0, 1e-300), "exp(-745) underflows to ~0 (no throw)")
+ok(math.isinf(math.cosh(720.0)), "cosh(720) -> inf (range)")
+
+# ---------------------------------------------------------------- the rest of the kwarg surface (fresh)
+ok(math.log(x = 1000, base = 10).compare(3.0, 1e-12), "log(x=,base=) kwargs")
+ok(math.log(base = 2, x = 32).compare(5.0, 1e-12), "log out-of-order kwargs")
+ok(math.sqrt(x = 81).compare(9.0, 1e-12), "sqrt(x=) kwarg")
+ok(math.cbrt(x = 64).compare(4.0, 1e-12), "cbrt(x=) kwarg")
+ok(math.sin(x = 0).compare(0.0, 1e-12), "sin(x=) kwarg")
+ok(math.exp(x = 0).compare(1.0, 1e-12), "exp(x=) kwarg")
+ok(math.pow(x = 3, y = 4).compare(81.0, 1e-9), "pow(x=,y=) kwargs")
+ok(math.hypot(y = 24, x = 7).compare(25.0, 1e-12), "hypot out-of-order kwargs")
+ok(math.copysign(y = -1, x = 9).compare(-9.0, 1e-12), "copysign(y=,x=) kwargs")
+ok(math.atan2(x = 0, y = -2).compare(-math.pi / 2, 1e-12), "atan2 reorder kwargs")
+ok(math.gcd(b = 36, a = 48) == 12, "gcd reorder kwargs")
+ok(math.lcm(b = 9, a = 6) == 18, "lcm reorder kwargs")
+ok(math.comb(k = 3, n = 9) == 84, "comb reorder kwargs")
+ok(math.factorial(n = 7) == 5040, "factorial(n=) kwarg")
+ok(math.perm(k = 3, n = 7) == 210, "perm reorder kwargs")
+ok(math.prod(iterable = [6, 7], start = 2) == 84, "prod(iterable=, start=) kwargs")
+ok(math.fmod(y = 4, x = 18).compare(2.0, 1e-12), "fmod reorder kwargs")
+ok(math.isnan(x = math.nan), "isnan(x=) kwarg")
+ok(math.isinf(x = -math.inf), "isinf(x=) kwarg")
+ok(math.isfinite(x = 0.0), "isfinite(x=) kwarg")
+ok(math.lgamma(x = 1).compare(0.0, 1e-12), "lgamma(x=) kwarg")
+ok(math.erfc(x = 0).compare(1.0, 1e-12), "erfc(x=) kwarg")
+ok(math.degrees(x = math.tau).compare(360.0, 1e-9), "degrees(x=tau)=360")
+ok(math.radians(x = 90).compare(math.pi / 2, 1e-12), "radians(x=90) kwarg")
+
+io.print("r8_math: " + String(n) + " checks passed")

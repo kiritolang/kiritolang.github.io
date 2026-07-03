@@ -1,0 +1,4 @@
+# argmain/arglist interpolated into an f-string. For an imported module this renders the booleans
+# and the zero length as text.
+var label = f"main={argmain} argc={len(arglist)}"
+var m = argmain

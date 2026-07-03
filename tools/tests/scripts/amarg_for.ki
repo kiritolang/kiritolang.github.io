@@ -1,0 +1,7 @@
+# arglist driven through a for-in loop. An imported module's arglist is empty, so the body never
+# runs and the collected copy stays empty.
+var collected = []
+for a in arglist:
+    collected.append(a)
+var looped = len(collected)
+var m = argmain

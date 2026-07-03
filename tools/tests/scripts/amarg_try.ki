@@ -1,0 +1,9 @@
+# try/catch around indexing the (empty) arglist of an imported module: the out-of-range access
+# throws and is caught, so `caught` is True.
+var caught = False
+var m = argmain
+var n = len(arglist)
+try:
+    discard arglist[0]
+catch:
+    caught = True

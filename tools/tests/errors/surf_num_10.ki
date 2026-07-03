@@ -1,0 +1,3 @@
+# acos outside [-1, 1] is a math domain error.
+var m = import("math")
+discard m.acos(2)

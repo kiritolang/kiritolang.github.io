@@ -1,0 +1,8 @@
+# Functions that read their own module's argmain/arglist. Called from the importer, they must still
+# report this module's view (argmain False, empty arglist) — argmain/arglist resolve per file.
+var getMain = Function():
+    return argmain
+var getArgs = Function():
+    return arglist
+var m = getMain()
+var args = getArgs()

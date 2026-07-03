@@ -1,0 +1,10 @@
+# switch on len(arglist). An imported module has zero arguments, so the `case 0` arm runs.
+var label = ""
+switch len(arglist):
+    case 0:
+        label = "none"
+    case 1:
+        label = "one"
+    default:
+        label = "many"
+var m = argmain

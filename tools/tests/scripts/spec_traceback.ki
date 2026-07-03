@@ -1,0 +1,38 @@
+# sys.traceback(): the call chain of the most recent error this VM unwound.
+# We print only the stable parts (function label + line), not the machine-specific file path.
+var io = import("io")
+var sys = import("sys")
+
+var boom = Function():
+    throw "kaboom"
+var middle = Function():
+    return boom()
+var outer = Function():
+    return middle()
+
+# No error yet -> empty traceback.
+io.print("empty:", sys.traceback() == "")
+
+try:
+    discard outer()
+catch as e:
+    io.print("caught:", e)
+    var frames = []
+    for line in sys.traceback().split("\n"):
+        if ", in " in line:
+            # "  File "...", line N, in NAME"  ->  "NAME@N"
+            var name = line.split(", in ")[1]
+            var lineno = line.split(", line ")[1].split(",")[0]
+            frames.append(name + "@" + lineno)
+    # most-recent-call-last: <module> first, innermost (boom) last
+    io.print("frames:", frames)
+
+# A fresh error replaces the traceback (VM-local, last error wins).
+var divzero = Function():
+    return 1 // 0
+try:
+    discard divzero()
+catch as e2:
+    var last = sys.traceback().split("\n")
+    var innermost = last[len(last) - 2]   # last non-empty line is the innermost frame
+    io.print("innermost-fn:", innermost.split(", in ")[1])

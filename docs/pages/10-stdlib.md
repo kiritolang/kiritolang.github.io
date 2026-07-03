@@ -1,0 +1,1562 @@
+# Standard Library
+
+Import a module with `import("name")`; each module loads once per VM. Every entry below lists a
+signature (`name(args) → ReturnType`), what it takes, and what it does. Fixed-arity functions accept
+**keyword arguments** and **defaults**; `inspect(module)` prints the same signatures live.
+
+A leading `*args` denotes a variadic positional list; `[arg]` denotes an optional argument.
+
+---
+
+## arg
+
+A small command-line argument parser. Build a `Parser`, declare the arguments on it, then
+run `parse` against a list of strings **yourself** — typically the main file's `arglist` (recall
+`arglist` is empty in imported modules, so argument handling belongs in the program you run).
+
+- `Parser(description = "") → Parser` — create a parser.
+
+### Parser object
+
+The configuration lives on the instance; the declaration methods each return the parser, so they
+chain:
+
+- `p.positional(name, help = "") → Parser` — a required positional argument (consumed in order).
+- `p.option(name, default = None, help = "") → Parser` — a `--name VALUE` option. The value is
+  converted to the **type of `default`** — an Integer default parses the value as an Integer (a bad
+  value throws a clear error), a Float default as a Float, otherwise it stays a String.
+- `p.flag(name, help = "") → Parser` — a boolean `--name` flag (default `False`, `True` when present).
+- `p.usage() → String` — the generated usage/help text.
+- `p.parse(args) → Dict` — parse `args` into a Dict keyed by argument name. Returns **`None`** if
+  `-h`/`--help` is present (after printing `usage()`), so the program can stop. Accepts `--name value`,
+  `--name=value`, and short `-n value` / `-f` (matched by the name's first letter); extra positionals
+  are collected under the `"rest"` key. Throws a clear, catchable error on an unknown option, a
+  missing required positional, or a value that can't be converted.
+
+```kirito
+var io = import("io")
+var arg = import("arg")
+
+var p = arg.Parser("greet someone")
+p.positional("name")
+p.option("count", 1)        # --count N  (parsed as an Integer, because the default is one)
+p.flag("loud")              # --loud
+
+var opts = p.parse(["Ada", "--loud"])   # normally you pass `arglist` (the real CLI args)
+if opts != None:              # None means --help was shown
+    var greeting = f"Hello, {opts['name']}!"
+    if opts["loud"]:
+        greeting = greeting.upper()
+    var i = 0
+    while i < opts["count"]:
+        io.print(greeting)
+        i = i + 1
+```
+
+Run as `ki greet.ki Ada --count 2 --loud` → prints `HELLO, ADA!` twice.
+
+---
+
+## base64
+
+Operates on **byte values**: a `List` of Integers (0–255), a [`Bytes`](types.html#bytes), or a
+`String` (encoded as its UTF-8 bytes).
+
+- `encode(data: List | Bytes | String) → String` — Base64-encode the data.
+- `decode(s: String) → List` — decode Base64 text back to a list of byte values.
+- `urlsafeencode(data: List | Bytes | String) → String` — encode using the URL-safe alphabet (`-_`).
+- `urlsafedecode(s: String) → List` — decode using the URL-safe alphabet (`-_`).
+
+---
+
+## bisect
+
+Binary search / ordered insertion into a sorted List.
+
+- `bisectleft(a, x) → Integer` — the leftmost insertion index that keeps `a` sorted.
+- `bisectright(a, x) → Integer` — the rightmost insertion index that keeps `a` sorted.
+- `insortleft(a, x) → None` — insert `x` into the sorted List `a` at the leftmost valid position.
+- `insortright(a, x) → None` — insert `x` into the sorted List `a` at the rightmost valid position.
+- `bisect(a, x)` / `insort(a, x)` — aliases for the `*right` variants.
+
+---
+
+## collections
+
+- `deque([iterable]) → deque` — a double-ended queue.
+- `Counter([iterable]) → Counter` — a multiset that tallies its elements.
+- `defaultdict(factory) → defaultdict` — a Dict that fills a missing key by calling `factory()`.
+
+### deque object
+
+- `dq.append(x) → None` — add `x` to the right end.
+- `dq.appendleft(x) → None` — add `x` to the left end.
+- `dq.pop()` — remove and return the rightmost element.
+- `dq.popleft()` — remove and return the leftmost element.
+- `dq[i]` — the element at index `i`.
+- `len(dq) → Integer` — the number of elements.
+- iterable — a `for` loop yields the elements left to right.
+
+### Counter object
+
+- `c.add(x) → None` — increment the count for `x`.
+- `c.get(x) → Integer` — the count for `x` (`0` if unseen).
+- `c[x] → Integer` — index syntax for the count of `x`.
+- `c.items() → List` — `[value, count]` pairs.
+- `c.mostcommon([n: Integer]) → List` — `[value, count]` pairs, highest count first. The sort is
+  stable, but the underlying Dict is unordered, so the relative order of *tied* counts is
+  unspecified (don't rely on it). With `n`, only the top `n`; `n = 0` gives `[]`, and a **negative**
+  `n` returns all but the `|n|` least-common pairs (an end-slice — don't pass a negative `n` expecting
+  an empty list).
+
+### defaultdict object
+
+- `d[k]` — the value for `k`, inserting `factory()` if `k` is absent.
+- `d[k] = v` — set the value for `k`.
+- `k in d → Bool` — whether `k` is present.
+- `d.keys() → List` — all keys.
+- `d.values() → List` — all values.
+- `d.items() → List` — all `[key, value]` pairs.
+
+---
+
+## complex
+
+Complex numbers and complex matrices, implemented in C++ (`std::complex<double>`). Reals coerce to
+the real axis, so any function or operator below also accepts plain `Integer`/`Float` arguments.
+
+### Constructors and constants
+
+- `Complex(re: Number, im: Number = 0) → Complex` — build `re + im·i`.
+- `of(re: Number, im: Number) → Complex` — the two-argument constructor.
+- `real(re: Number) → Complex` — a real number on the complex plane (`re + 0i`).
+- `polar(r: Number, theta: Number) → Complex` — from polar form, `r·(cos θ + i·sin θ)`.
+- `i`, `zero`, `one` — the imaginary unit, `0`, and `1` as `Complex` values.
+- No `pi`/`e`/`tau` here: those are real-axis constants with a single source of truth in
+  `math.pi`/`math.e`/`math.tau`. Lift one to the complex plane with `real(math.pi)` if you need it as
+  a `Complex` value.
+
+### Complex object
+
+- `z.re → Float`, `z.im → Float` — the real and imaginary parts (also `z.real`/`z.imag`).
+- `z1 + z2`, `z1 - z2`, `z1 * z2`, `z1 / z2`, `z1 ** z2`, `-z` — arithmetic. A `Complex` must be the
+  left operand when mixing with a number (`z + 2`, not `2 + z`). Division by zero throws.
+- `z1 == z2 → Bool` — **exact** equality (real and imaginary parts bit-equal; `NaN` never equal); a
+  `Complex` with zero imaginary part also equals the matching real number (`Complex(2, 0) == 2`).
+- `z.compare(other, rel_tol = 1e-9, abs_tol = 0.0) → Bool` — tolerant comparison (relative/absolute tolerance on the
+  complex magnitude); use it for computed values, e.g. `(1+i)**2 ≈ 2i`.
+- Complex numbers are **unordered**: `<`, `<=`, `>`, `>=` throw.
+- `z.conjugate() → Complex` — the complex conjugate.
+- `z.modulus() → Float` — the magnitude `|z|` (also `z.magnitude()` / `z.abs()`).
+- `z.argument() → Float` — the phase angle in radians (also `z.arg()` / `z.phase()`).
+- `z.norm2() → Float` — the squared magnitude `|z|²` (no square root).
+- `z.is_zero() → Bool` — True when `z` is (numerically) zero: magnitude below `1e-10` (a tolerant
+  check, deliberately unlike the exact `==`).
+
+### Module functions
+
+Scalar reductions (one per line):
+
+- `modulus(z) → Float` — the magnitude `|z|` (alias `abs`).
+- `phase(z) → Float` — the phase angle, in radians (alias `argument`).
+- `norm2(z) → Float` — the squared magnitude `|z|²`.
+- `conjugate(z) → Complex` — the complex conjugate.
+
+The analytic math set — the complex extensions of the `math` functions — each take a `Complex` or a
+number and return a `Complex`. They are defined across the whole complex plane (so `sqrt(-1)` → `i`,
+`log(-1)` → `iπ`, `asin(2)`/`acosh(0)` are valid), but the true singularities throw a `math domain
+error` on the same out-of-domain inputs: `log(0)`/`log10(0)`, `atanh(±1)`, and `pow`/`**` of zero to
+a negative or non-real power (`zero ** -1`):
+
+- `exp(z)`
+- `log(z)` — natural logarithm (principal branch); throws on `0`.
+- `log10(z)` — throws on `0`.
+- `sqrt(z)` — principal square root.
+- `cbrt(z)` — principal cube root.
+- `pow(z, w)` — `z` raised to the power `w`.
+- `sin(z)`
+- `cos(z)`
+- `tan(z)`
+- `asin(z)`
+- `acos(z)`
+- `atan(z)`
+- `sinh(z)`
+- `cosh(z)`
+- `tanh(z)`
+- `asinh(z)`
+- `acosh(z)`
+- `atanh(z)`
+
+### Complex matrices
+
+- `Matrix(rows: List) → ComplexMatrix` — build from a nested list whose cells are `Complex` values
+  or numbers (rows must be equal length).
+- `zeros(rows, cols) → ComplexMatrix` — a zero matrix.
+- `ones(rows, cols) → ComplexMatrix` — a matrix of `1+0i`.
+- `identity(n) → ComplexMatrix` — the n×n identity.
+- `vector(values: List) → ComplexMatrix` — a 1×n complex row vector.
+
+Like real matrices, complex matrices are arbitrary-shape; `determinant`/`inverse`/`trace` need a
+square matrix and throw otherwise.
+
+#### ComplexMatrix object
+
+- `m[i, j] → Complex`, `m[i] → List`, `m[i, j] = v` — element / row access and assignment.
+- `m.get(i, j)`, `m.set(i, j, v)`, `m.row(i)`, `m.rows()`, `m.cols()`, `m.shape()`.
+- `m1 == m2 → Bool` — **exact** equality; `m.compare(other, rel_tol = 1e-9, abs_tol = 0.0) → Bool`
+  is the tolerant form for computed matrices.
+- `m + n`, `m - n`, `m * n` — addition/subtraction and matrix or scalar (`Complex`/number) multiply.
+- `m.transpose() → ComplexMatrix` — the transpose.
+- `m.conjugate() → ComplexMatrix` — element-wise complex conjugate.
+- `m.hermitian() → ComplexMatrix` — the conjugate transpose (also `m.conjugatetranspose()`).
+- `m.determinant() → Complex` — determinant via **Gaussian elimination** with partial pivoting.
+- `m.inverse() → ComplexMatrix` — inverse via **fast O(n³) Gauss-Jordan** elimination (throws if
+  singular).
+- `m.trace() → Complex` — sum of the diagonal.
+- `m.apply(fn) → ComplexMatrix` — a new matrix with `fn` applied to each element.
+
+**Vector operations** (a ComplexMatrix with one dimension equal to 1 is a vector):
+
+- `u.dot(v) → Complex` — the scalar (Hermitian inner) product of two equal-length vectors:
+  `Σ conj(uᵢ)·vᵢ`, so `u.dot(u) = Σ |uᵢ|²` is real and non-negative. (`*` is always matrix multiply.)
+- `u.cross(v) → ComplexMatrix` — the cross product of two 3-element vectors.
+- `m.norm() → Float` — the Euclidean 2-norm `sqrt(Σ |zᵢ|²)`.
+
+---
+
+## copy
+
+- `copy(obj)` — a shallow copy (a `List`/`Dict`/`Set` with the same elements; immutable scalars are
+  returned as-is).
+- `deepcopy(obj)` — a deep copy (handles shared references and cycles).
+- A **class instance** (or a native value object like `Matrix`/`Tensor`/`DateTime`) is copied via the
+  `serialize` graph codec — both `copy` and `deepcopy` return an independent (deep) instance, since
+  Kirito has no per-instance attribute introspection. A value that can't be serialized (a live
+  socket/file) is returned unchanged (best effort).
+
+---
+
+## csv
+
+Low-level CSV parsing/formatting (RFC-4180-style quoting). For tabular data analysis, see
+[`tabular`](#tabular), which builds on this.
+
+- `parse(text)` — parse CSV text into a List of rows (each a List of fields).
+- `parserow(line)` — parse one CSV line into a List of fields.
+- `format(rows) → String` — serialize a List of rows to CSV text.
+- `formatrow(fields) → String` — serialize one row.
+
+---
+
+## dump
+
+Compact **binary** serialization (the binary counterpart of `serialize`), preserving references and
+cycles. `dumps` returns the blob as [`Bytes`](types.html#bytes); `loads` reconstructs from it.
+
+- `dumps(value) → Bytes` — serialize to a compact binary blob.
+- `loads(data)` — reconstruct the value graph; pass the **`Bytes`** returned by `dumps` directly (do
+  **not** wrap it in `String(...)` — the blob is raw binary, and a String round-trip corrupts it).
+- `save(value, path) → None` — serialize `value` straight to a file.
+- `load(path)` — reconstruct a value from a file written by `save`.
+
+Persist a blob yourself with binary file I/O, e.g. `io.open(path, "wb").write(dump.dumps(x))`. To
+round-trip in memory: `dump.loads(dump.dumps(x))`.
+
+---
+
+## enum
+
+- `Enum(names: List) → Enum` — build an enumeration mapping each name to its index.
+
+### Enum object
+
+- `e.get(name) → Integer` — the value (index) of a member; throws on an unknown name.
+- `e[name] → Integer` — index syntax for the same lookup as `e.get(name)`.
+- `e.nameof(value) → String` — the name for a value.
+- `e.names() → List` — all member names.
+- `e.values() → List` — all member values.
+- `name in e` — membership test.
+
+---
+
+## functools
+
+- `reduce(func, iterable[, initial])` — fold the two-argument `func` over the iterable left-to-right.
+- `partial(func, bound: List) → Function` — pre-bind a list of leading arguments. The result takes a **list** of the remaining arguments and calls `func` with the combined argument list (`func` should accept a single list of arguments).
+- `cache(func) → Function` — memoize a single-argument function on its argument.
+
+---
+
+## gzip
+
+The gzip container format (RFC 1952) — `.gz` files and HTTP `Content-Encoding: gzip`. A DEFLATE
+stream wrapped with a header and a CRC-32 trailer; distinct from the bare zlib stream above, so it is
+its own module. Each function takes a **String or a [`Bytes`](types.html#bytes)** and returns the
+same type as its input.
+
+- `compress(data) → data` (alias `gzip`) — wrap the DEFLATE body in the gzip container (RFC 1952). A
+  valid `.gz` stream interoperable with `gzip(1)`/`gunzip` (OS = unknown, MTIME = 0, so not byte-identical to gzip(1)).
+- `decompress(data) → data` (alias `gunzip`) — validate the header, skip the optional filename/extra
+  fields, INFLATE, and verify the CRC-32 trailer (throws on a corrupt stream).
+
+Pair with `net.get(url).content` (raw `Bytes`) to fetch and unpack a `.gz` resource:
+
+<!--norun (requires network access and an HTTPS/TLS build)-->
+```kirito
+var net = import("net")
+var gzip = import("gzip")
+var resp = net.get("https://example.com/data.csv.gz")
+var csv = gzip.decompress(resp.content).decode("utf-8")   # raw bytes -> text
+```
+
+---
+
+## hash
+
+Digests and checksums of byte data, plus a generic hasher for `Dict`/`Set`-compatible values. The
+byte-data functions each take a **String or a [`Bytes`](types.html#bytes)**, so binary data hashes
+correctly; `hash(value)` accepts any hashable value.
+
+- `md5(data) → String` — MD5 lowercase-hex digest.
+- `sha1(data) → String` — SHA-1 lowercase-hex digest.
+- `sha256(data) → String` — SHA-256 lowercase-hex digest.
+- `adler32(data) → Integer` — Adler-32 checksum (as zlib uses).
+- `crc32(data) → Integer` — CRC-32 (IEEE) checksum (as gzip/PNG use).
+- `crc64(data) → Integer` — CRC-64/XZ checksum, returned as a signed Integer (the top bit makes large
+  values negative, since Kirito integers are 64-bit signed).
+- `hash(value) → Integer` — the same hash `Dict`/`Set` bucket their keys by, exposed to Kirito. Works
+  on every hashable value: `Integer` (identity), `Float`, `Bool`, `None`, `String` and `Bytes`
+  (content-based), and a user-class instance whose class defines
+  [`_hash_`](types.html#hashability-set-dict-keys). An unhashable input throws `unhashable type
+  '<name>'` — the same message a `Dict[key]` assignment would produce. Compose this inside a
+  class's own `_hash_` to fold nested attributes (`return hash.hash(self.email)`).
+
+---
+
+## heapq
+
+A min-heap maintained inside an ordinary List.
+
+- `heapify(items) → List` — return a **new** heap-ordered List from `items` (does not modify `items`).
+- `heappush(heap, item) → None` — push onto `heap` in place, keeping the heap invariant.
+- `heappop(heap)` — pop and return the smallest element.
+- `heapreplace(heap, item)` — pop the smallest, then push `item` (one pass).
+- `merge(lists) → List` — merge already-sorted inputs (a List of Lists) into one sorted List.
+- `nlargest(n, items) → List` — the `n` largest elements.
+- `nsmallest(n, items) → List` — the `n` smallest elements.
+
+---
+
+## io
+
+Console I/O, files, and in-memory buffers — actual I/O only. Path and filesystem operations live in
+the dedicated [`path`](#path) module.
+
+### Console (interchangeable streams)
+
+`io.print`/`write`/`input`/`read` act on whatever is bound to `io.stdout` / `io.stderr` / `io.stdin`
+— rebindable stream objects that accept any `File`, `BytesIO`, other stream, or object exposing
+`write`/`readline`/`read`. The originals live at `io.__stdout__` / `io.__stderr__` / `io.__stdin__`.
+Each call also takes an optional `stream=` keyword to redirect that single call without rebinding.
+
+- `print(*args, stream = io.stdout) → None` — write the arguments space-separated, newline-terminated and flushed.
+- `eprint(*args, stream = io.stderr) → None` — like `print`, but defaulting to `stderr`.
+- `write(*args, stream = io.stdout) → None` — write the arguments with no separator and no trailing newline.
+- `input([prompt], stream = io.stdin) → String` — write `prompt` (if given) to `stdout`, then read and return one line from `stream` (without the newline).
+- `read([n], stream = io.stdin) → String` — read `n` characters from `stream`, or everything until EOF if `n` is omitted.
+- `stdout` / `stderr` / `stdin` — the current standard streams (rebindable); `__stdout__` / `__stderr__` / `__stdin__` hold the originals.
+
+### Files and buffers
+
+- `open(path: String, mode: String = "r") → File` — open a file. Modes: `"r"` read, `"w"` truncate-write, `"a"` append, `"r+"` read/write. Append a `"b"` (`"rb"`/`"wb"`/`"ab"`/`"r+b"`) for **binary** mode: `read`/`readline`/iteration then yield [`Bytes`](types.html#bytes) and `write`/`writelines` accept Bytes (the right mode for non-text files — images, gzip, `dump` blobs). Throws if it can't be opened. Usable as a `with` context manager.
+- `BytesIO([initial: String]) → BytesIO` — an in-memory read/write byte buffer, usable anywhere a file or stream is expected.
+
+### File object
+
+Returned by `io.open`. Iterating a file yields its remaining lines.
+
+- `f.read([n]) → String` — read `n` characters, or the whole rest of the file if omitted. (In binary mode, returns [`Bytes`](types.html#bytes); `n` counts bytes.)
+- `f.readline() → String` — read one line (without the trailing newline). (Bytes in binary mode.)
+- `f.readlines() → List` — read all remaining lines into a List.
+- `f.write(s: String | Bytes) → None` — write `s` at the current position. Throws on a closed file
+  or one opened read-only — a write is never silently dropped.
+- `f.writelines(lines) → None` — write each String/Bytes in an iterable (same throwing rules).
+- `f.seek(offset: Integer, whence: Integer = 0) → Integer` — move the read/write cursor and return the
+  new position. `whence` is `0` (from the start, the default), `1` (relative to the current position),
+  or `2` (from the end).
+- `f.tell() → Integer` — the current byte position.
+- `f.flush() → None` — flush buffered output.
+- `f.close() → None` — close the file (also done automatically on `with` exit / collection).
+  Reading, writing, or seeking a **closed** file throws a catchable error; reading a write-only
+  (`"w"`/`"a"`) file or writing a read-only (`"r"`) one likewise throws.
+
+### BytesIO object
+
+- `b.write(s: String) → Integer` — write bytes at the cursor (overwriting/extending); returns the count written.
+- `b.read([n]) → String` — read `n` bytes from the cursor, or the rest if omitted (an explicit
+  `read(None)` also reads the rest, unlike `File.read` which requires an Integer).
+- `b.readline() → String` — read up to and including the next newline (returned without it).
+- `b.getvalue() → String` — the entire buffer contents.
+- `b.tell() → Integer` — the current cursor position.
+- `b.seek(off[, whence]) → Integer` — move the cursor (whence 0=start, 1=cur, 2=end). A resulting
+  position before the start clamps to 0 (whereas `File.seek` to a negative position throws).
+- `b.size() → Integer` — total buffer length in bytes (`len(b)` also works).
+- `b.truncate() → Integer` — drop everything after the cursor.
+- `b.flush() → None` — a no-op (the buffer is always in sync); present for the common stream protocol.
+- `b.close() → None` — close the buffer (also via a `with` block); part of the stream protocol.
+
+---
+
+## itertools
+
+- `count(start = 0, step = 1, stop = None) → List` — integers from `start` by `step`; supply `stop` since the result is eager. (Parameter order is `start, step, stop` — `step` comes before `stop`, unlike `range(start, stop, step)`.)
+- `repeat(value, times) → List` — `value` repeated `times` times.
+- `cycle(iterable, times) → List` — the iterable repeated `times` times.
+- `chain(lists) → List` — concatenate the iterables in a list-of-iterables (`chain([[1,2],[3,4]])`).
+- `islice(iterable, start, stop[, step]) → List` — a slice of an iterable.
+- `accumulate(iterable[, func]) → List` — running totals (or running `func` reductions).
+- `product(lists) → List` — Cartesian product of a list-of-iterables (`product([[1,2],[3,4]])`).
+- `permutations(items[, r]) → List` — r-length orderings.
+- `combinations(items, r) → List` — r-length combinations.
+- `takewhile(pred, iterable) → List` — the leading run of elements while `pred` holds.
+- `dropwhile(pred, iterable) → List` — the rest, after that leading run.
+- `filterfalse(pred, iterable) → List` — elements where `pred` is falsy.
+- `compress(data, selectors) → List` — `data` elements where the matching selector is truthy.
+- `starmap(func, argtuples) → List` — call `func` once per tuple, passing the whole tuple as a single
+  List argument (Kirito has no `*args` spread): `func(t)` where `t` is `[a, b, …]`.
+- `pairwise(iterable) → List` — consecutive overlapping pairs.
+- `ziplongest(lists, fillvalue = None) → List` — zip a list-of-iterables, padding short ones with `fillvalue`.
+- `groupby(iterable[, key]) → List` — group consecutive elements sharing a key.
+
+---
+
+## json
+
+JSON parsing and serialization (flat data interchange — for reference/cycle-preserving snapshots see
+`serialize` / `dump` below). `loads` and `dumps` are aliases of `parse` and `stringify`.
+
+- `parse(text: String)` — parse JSON text into Kirito values (objects → Dict, arrays → List, decodes `\u` escapes and surrogate pairs). Throws a clear error on malformed input. Alias `loads`.
+- `stringify(value, indent: Integer = 0) → String` — serialize a value to JSON; compact by default, pretty-printed when the indent width is greater than zero. Alias `dumps`.
+
+Floats **round-trip exactly**: `loads(dumps(x))` recovers the identical double for any Float `x`
+(`dumps` emits enough digits, e.g. `0.1 + 0.2` → `"0.30000000000000004"`).
+
+---
+
+## math
+
+Constants and the usual numeric functions. Both type **and domain** errors throw a clear `math domain
+error` rather than silently returning `nan`/`inf` rubbish — `sqrt(-1)`, `log(0)`, `log(-1)`, `asin(2)`,
+`acos(2)`, `acosh(0)`, `atanh(1)`, `log2(0)`, `log10(0)`, `log1p(-1)`, `gamma(0)`/`gamma(-1)`,
+`lgamma(0)`, `pow(-2, 0.5)` (negative base, non-integer exponent), `pow(0, -1)` (zero to a negative
+power), `fmod(x, 0)`, and a `log` base `≤ 0` or `== 1` all throw. A NaN argument passes through
+unchanged (`sqrt(nan) → nan`), and a genuine *range* condition — overflow to infinity such
+as `exp(1000) → inf` — is not a domain error and does not throw. Results are `Float` unless noted.
+
+- Constants: `pi`, `e`, `tau`, `inf`, `nan` (all `Float`).
+- `sqrt(x: Number) → Float` — square root.
+- `cbrt(x: Number) → Float` — cube root.
+- `sin(x: Number) → Float` — sine (radians).
+- `cos(x: Number) → Float` — cosine (radians).
+- `tan(x: Number) → Float` — tangent (radians).
+- `asin(x: Number) → Float` — arcsine.
+- `acos(x: Number) → Float` — arccosine.
+- `atan(x: Number) → Float` — arctangent.
+- `sinh(x: Number) → Float` — hyperbolic sine.
+- `cosh(x: Number) → Float` — hyperbolic cosine.
+- `tanh(x: Number) → Float` — hyperbolic tangent.
+- `asinh(x: Number) → Float` — inverse hyperbolic sine.
+- `acosh(x: Number) → Float` — inverse hyperbolic cosine.
+- `atanh(x: Number) → Float` — inverse hyperbolic tangent.
+- `atan2(y: Number, x: Number) → Float` — arctangent of `y/x` using the signs of both for the quadrant.
+- `hypot(x: Number, y: Number) → Float` — `sqrt(x² + y²)` without overflow.
+- `exp(x: Number) → Float` — `e ** x`.
+- `expm1(x: Number) → Float` — `exp(x) - 1`, accurate for small `x`.
+- `log1p(x: Number) → Float` — `log(1 + x)`, accurate for small `x`.
+- `log2(x: Number) → Float` — base-2 logarithm.
+- `log10(x: Number) → Float` — base-10 logarithm.
+- `log(x: Number, base = None) → Float` — natural log, or log base `base` when given.
+- `pow(x: Number, y: Number) → Float` — `x ** y` as a Float (the builtin `pow` does Integer/modular).
+- `gamma(x: Number) → Float` — the gamma function.
+- `lgamma(x: Number) → Float` — the natural log of the absolute value of gamma.
+- `erf(x: Number) → Float` — the error function.
+- `erfc(x: Number) → Float` — the complementary error function (`1 - erf(x)`, accurate for large `x`).
+- `floor(x: Number) → Integer` — round down to an Integer.
+- `ceil(x: Number) → Integer` — round up to an Integer.
+- `trunc(x: Number) → Float` — truncate toward zero.
+- `fabs(x: Number) → Float` — absolute value as a Float.
+- `copysign(x: Number, y: Number) → Float` — `|x|` with the sign of `y`.
+- `fmod(x: Number, y: Number) → Float` — floating-point remainder of `x/y` (the result has the sign of `x`).
+- `degrees(x: Number) → Float` — convert radians to degrees.
+- `radians(x: Number) → Float` — convert degrees to radians.
+- `isnan(x: Number) → Bool` — whether `x` is NaN.
+- `isinf(x: Number) → Bool` — whether `x` is infinite.
+- `isfinite(x: Number) → Bool` — whether `x` is finite (neither NaN nor infinite).
+- `gcd(a: Integer, b: Integer) → Integer` — greatest common divisor.
+- `lcm(a: Integer, b: Integer) → Integer` — least common multiple.
+- `factorial(n: Integer) → Integer` — `n!` (throws on negatives / Integer overflow).
+- `comb(n: Integer, k: Integer) → Integer` — combinations “n choose k”.
+- `perm(n: Integer, k = None) → Integer` — permutations of `n` taken `k` at a time; with `k` omitted
+  (or `None`) it returns `n!`.
+- `prod(iterable, start = 1) → Number` — product of the elements times `start` (Integer if all Integer,
+  else Float). Like `factorial`/`comb`/`perm`/`lcm`, an all-Integer product throws on Integer overflow
+  rather than silently wrapping; a Float anywhere in the mix makes the result a Float (no overflow).
+
+---
+
+## matrix
+
+Dense real matrices — a 2-D `tensor` of doubles, with the familiar matrix API and the
+`*`-means-matrix-multiply convention. For complex-valued numbers and matrices, see the `complex`
+module below; for arbitrary-rank arrays, see `tensor`.
+
+- `Matrix(rows: List) → Matrix` — build from a nested list of numbers (rows must be equal length).
+- `Matrix(rows: Integer, cols: Integer) → Matrix` — a zero matrix of the given shape.
+- `zeros(rows: Integer, cols: Integer) → Matrix` — a matrix filled with `0`.
+- `ones(rows: Integer, cols: Integer) → Matrix` — a matrix filled with `1`.
+- `identity(n: Integer) → Matrix` — the n×n identity.
+- `vector(values: List) → Matrix` — a 1×n row vector from a flat list of numbers.
+
+Matrices are arbitrary-shape (any rows × cols). Shape-specific operations (`determinant`, `inverse`,
+`trace`) require a square matrix and throw otherwise; `*` requires conformable inner dimensions.
+
+### Matrix object
+
+- `m[i, j] → Float` — element access.
+- `m[i] → List` — the whole row `i` as a List of Floats.
+- `m[i, j] = v` — element assignment.
+- `m1 == m2 → Bool` — **exact** equality (same shape, every element bit-equal; `NaN` never equal). For
+  computed matrices use the tolerant `.compare` below.
+- `m.compare(other, rel_tol = 1e-9, abs_tol = 0.0) → Bool` — tolerant comparison (relative/absolute tolerance per
+  element). When the target has **exact zeros** (e.g. an identity's off-diagonals) pass an `abs_tol`,
+  since `rel_tol` alone can't match a near-zero element: `(A * A.inverse()).compare(matrix.identity(2), abs_tol = 1e-9)`.
+- `m.get(i, j) → Float` — explicit element access (the method form of `m[i, j]`).
+- `m.set(i, j, v) → None` — explicit element assignment (the method form of `m[i, j] = v`).
+- `m.rows() → Integer` — the number of rows.
+- `m.cols() → Integer` — the number of columns.
+- `m.shape() → List` — `[rows, cols]`.
+- `m.row(i) → List` — the `i`-th row as a List of its elements.
+- `m + n`, `m - n`, `m * n` — matrix addition/subtraction, and matrix or scalar multiplication. A
+  scalar must be the **right** operand (`A * 2`, not `2 * A`).
+- `m.transpose() → Matrix` — the transpose.
+- `m.determinant() → Float` — determinant (square matrices). A matrix whose elimination produces a
+  pivot below ~`1e-15` is treated as singular and the determinant is reported as `0.0` (a conservative
+  guard against an ill-conditioned, near-garbage value).
+- `m.inverse() → Matrix` — inverse. **Throws** `"singular"` if the matrix is singular (pivot below the
+  threshold above) — unlike `determinant`, which returns `0.0`.
+- `m.trace() → Float` — sum of the diagonal.
+- `m.sum() → Float` — sum of every element.
+- `m.apply(fn) → Matrix` — a new matrix with `fn` applied to each element.
+
+**Vector operations** (a Matrix with one dimension equal to 1 is a vector):
+
+- `u.dot(v) → Float` — the scalar (dot) product of two equal-length vectors (any orientation).
+  (`*` is always matrix multiply, never a dot product.)
+- `u.cross(v) → Matrix` — the cross product of two 3-element vectors (result keeps `u`'s orientation).
+- `m.norm() → Float` — the Euclidean (Frobenius) 2-norm `sqrt(Σ xᵢ²)` — the length of a vector.
+
+---
+
+## net
+
+TCP sockets, a full-fledged HTTP/1.1 client, and URL helpers.
+
+### HTTP client
+
+- `request(method: String, url: String, options: Dict = None) → Response` — perform any HTTP request.
+- `get(url: String, options: Dict = None) → Response` — a `GET` request.
+- `post(url: String, options: Dict = None) → Response` — a `POST` request.
+- `put(url: String, options: Dict = None) → Response` — a `PUT` request.
+- `delete(url: String, options: Dict = None) → Response` — a `DELETE` request.
+- `patch(url: String, options: Dict = None) → Response` — a `PATCH` request.
+- `head(url: String, options: Dict = None) → Response` — a `HEAD` request.
+- `options(url: String, options: Dict = None) → Response` — an `OPTIONS` request.
+- `Session() → Session` — a session that persists a cookie jar (`.cookies`) and default headers
+  (`.headers`) across requests; has the same `request(method, url[, options])` and verb methods
+  (`s.get(url[, options])`, …).
+
+The `options` Dict may contain: `headers` (Dict), `params` (Dict → query string), `data` (String or
+form-Dict), `json` (any value → JSON body + `application/json`), `files` (Dict → `multipart/form-data`
+upload; value is content or `[filename, content]`), `auth` (`[user, pass]` → HTTP Basic), `timeout`
+(seconds), `allowredirects` (Bool, default `True`) / `maxredirects` (Integer, default 10), `verify`
+(Bool, default `True` — TLS certificate verification; trust roots come from the OS — OpenSSL's default
+paths or the `SSL_CERT_FILE` env var on Unix, the Windows system certificate store on Windows — and a
+verify failure reports the specific reason; pass `verify = False` to skip), and `cookies` (Dict). Redirects are followed,
+chunked transfer-encoding is decoded, and `gzip`/`deflate` responses are decompressed automatically.
+
+### Response object
+
+- `r.status` (`Integer`, alias `r.statuscode`), `r.reason` (`String`), `r.ok` (`Bool`, true for a 1xx–3xx status, i.e. `100 ≤ status < 400`).
+- `r.url` — the final URL (after any redirects).
+- `r.text` — the decoded response body (`String`); `r.body` is an alias.
+- `r.content` — the response body as [`Bytes`](types.html#bytes), after any HTTP `Content-Encoding`/
+  `Transfer-Encoding` is decoded (gzip/deflate/chunked).
+  For a genuine binary download — an image, or a `.gz` file served *without* `Content-Encoding: gzip` —
+  this is the raw bytes, so `gzip.decompress(net.get(url).content)` unpacks a fetched `.gz`. (If the
+  server sets `Content-Encoding: gzip`, the body is already decompressed here.)
+- `r.headers` — a Dict of response headers; `r.header(name[, default])` looks one up
+  **case-insensitively** (returning `default`, or `None`, when absent).
+- `r.cookies` — a Dict of cookies set by the server.
+- `r.json()` — parse the body as JSON.
+- `r.raiseforstatus()` — throw if the status is ≥ 400, else return the response.
+
+### URL helpers (`urllib.parse` style)
+
+- `quote(s: String) → String` — percent-encode a String (UTF-8); a space becomes `%20` and a
+  literal `+` becomes `%2B`.
+- `unquote(s: String) → String` — percent-decode a String (UTF-8). Like `urllib.parse.unquote_plus`,
+  a `+` decodes to a space (so it round-trips query strings; `quote` never emits a bare `+`).
+- `urlencode(params: Dict) → String` — build a `k=v&...` query string (keys and values encoded).
+- `parseqs(query: String) → Dict` — parse `k=v&...` into a Dict (keys and values decoded). Duplicate
+  keys are last-wins and a pair with an empty key is dropped.
+- `urlsplit(url: String) → Dict` — split a URL into `scheme`/`host`/`port`/`path`/`query`/`fragment`
+  (all `String`; `port` is the textual digits, empty when absent — use `Integer(d["port"])` if you need
+  it numeric). A bracketed IPv6 literal is preserved in `host` with its brackets, and the optional
+  port follows after `]:` — `urlsplit("http://[::1]:8080/p")` -> `host = "[::1]", port = "8080"`.
+
+### Socket object
+
+- `Socket() → Socket` — a new TCP socket.
+- `fromfd(fd: Integer) → Socket` — adopt an existing raw socket file descriptor (e.g. one handed over
+  by `s.detach()`). Valid only within the same OS process — the basis for handing an accepted
+  connection to a worker VM under `parallel` (see [`parallel`](#parallel)).
+- `s.connect(host: String, port: Integer) → None` — connect to a server.
+- `s.bind(host: String, port: Integer) → None` — bind a server socket (sets `SO_REUSEADDR`).
+- `s.listen([backlog: Integer]) → None` — start listening.
+- `s.accept() → Socket` — accept the next connection (a new Socket).
+- `s.send(data: String | Bytes) → Integer` — send all of `data` (text or binary); returns the byte count.
+- `s.recv([n: Integer]) → Bytes` — receive up to `n` bytes (default 4096). A socket carries raw bytes,
+  so this returns `Bytes`; for a text protocol call `.decode()` on the result
+  (e.g. `s.recv(4096).decode("utf-8")`).
+- `s.recvall() → Bytes` — receive until the peer closes (raw `Bytes`; `.decode()` for text).
+- `s.settimeout(seconds) → None` — bound subsequent send/recv with a timeout.
+- `s.close() → None` — close the socket.
+- `s.detach() → Integer` — surrender the raw fd to the caller and stop owning it (the socket's
+  destructor will no longer close it). Pair with `net.fromfd` to hand a connection to a worker VM.
+
+A Socket is also usable as a `with` context manager — it is closed automatically on block exit
+(`with net.Socket() as s: ...`). A `Response` additionally supports Dict-style indexing as a
+convenience: `r["status"]`, `r["body"]`, `r["headers"]`, etc. map to the same fields as the attributes.
+
+---
+
+## parallel
+
+True parallelism by **multiprocessing**: many fully-isolated `KiritoVM`s, each on its own OS thread,
+that share **nothing** and communicate only by passing serialized values through thread-safe
+primitives. (Kirito values live in a per-VM, unsynchronized arena, so they can't be shared across
+threads directly — instead a value is serialized out of one VM and rebuilt in another, exactly like
+`dump`.) This module is provided by the `ki` interpreter, which runs every VM under a coordinator (a
+`KiritoDispatcher`); a bare embedded `KiritoVM` has no `parallel` module.
+
+- `cpucount() → Integer` — the number of hardware threads available (at least 1).
+- `spawn(fn, *args, **kwargs) → Task` — run `fn(*args, **kwargs)` in a **fresh worker VM** on another
+  thread. `fn` must be a Kirito function defined in a **loadable `.ki` file** (the worker re-reads that
+  file and locates `fn` by source position); `args`/`kwargs` and the eventual return value must be
+  **serializable** (the same value types `dump` supports, including class instances with
+  `_getstate_`/`_setstate_`). A non-serializable **argument** is caught synchronously at `spawn` (it
+  throws there); a non-serializable **return value** surfaces later, at `join`.
+
+> **Share-nothing rule.** A worker sees its parameters, the defining file's **module-level** names, and
+> its `import`s — but **not** local variables captured from an enclosing function (the closure does not
+> cross). Keep side-effecting startup under `if argmain:` so a worker, which re-evaluates the file with
+> `argmain` False, only defines functions instead of re-running the program.
+
+### Task
+
+- `t.join() → value` — block until the worker finishes and return its result (rebuilt in the caller's
+  VM). If the worker threw, `join` re-throws it here. `join` is **idempotent**: a second call returns
+  the same value (or re-throws the same error) from the cached result. Enforced type annotations on
+  the spawned function are checked inside the worker, so an annotation violation surfaces here at `join`.
+- `t.done() → Bool` — whether the worker has finished (non-blocking). True once the worker has
+  finished **whether it returned or threw** — pair it with `join` to retrieve the value or error.
+
+### Queue
+
+The central transfer primitive: a thread-safe FIFO that carries serialized values between VMs. Passing
+a Queue into `spawn` (or through another Queue) references the **same** underlying queue.
+
+- `Queue(maxsize: Integer = 0) → Queue` — a new queue; `maxsize = 0` is unbounded, otherwise bounded
+  (a full `put` blocks for back-pressure). A negative `maxsize` throws.
+- `q.put(item, block: Bool = True, timeout = None) → None` — enqueue `item` (serialized). On a full
+  bounded queue: blocks, or throws if `block = False` / the `timeout` elapses.
+- `q.get(block: Bool = True, timeout = None) → value` — dequeue the next value. On an empty queue:
+  blocks, or throws if `block = False` / the `timeout` elapses.
+- `q.putnowait(item)` / `q.getnowait()` — non-blocking `put` / `get`.
+- `q.qsize() → Integer`, `q.empty() → Bool`, `q.full() → Bool`.
+- `q.close() → None` — mark the queue closed. Pending and subsequent `put`s throw; `get` drains the
+  remaining items and then throws — the idiom a consumer loop uses to stop (here `q` is a `Queue` and
+  `handle` a function from the surrounding program):
+
+<!--norun (consumer-loop idiom fragment; q/handle come from the surrounding program)-->
+```kirito
+var running = True
+while running:
+    try:
+        handle(q.get())
+    catch as e:        # thrown when the queue is closed and drained
+        running = False
+```
+
+### Lock, Event, Semaphore, Barrier
+
+Coordination primitives, all cross-VM by identity (pass them into `spawn` / through a Queue) and all
+woken by interpreter shutdown.
+
+- `Lock() → Lock` — a non-reentrant mutex. `l.acquire(block = True, timeout = None) → Bool` (True if
+  acquired, False on timeout), `l.release()`, `l.locked() → Bool`. Best used as a context manager,
+  which always releases: `with l: ...`. Non-reentrant means a worker that already holds the lock and
+  acquires it again **throws** (rather than self-deadlocking); releasing an unheld lock also throws.
+- `Event() → Event` — a resettable flag. `e.set()`, `e.clear()`, `e.isset() → Bool`,
+  `e.wait(timeout = None) → Bool` (True once set, False on timeout).
+- `Semaphore(value: Integer = 1) → Semaphore` — a permit counter for bounded concurrency (an initial
+  `value` below 0 throws). `s.acquire(block = True, timeout = None) → Bool`, `s.release()`; also a
+  context manager (`with s:`).
+- `Barrier(parties: Integer) → Barrier` — an N-party rendezvous (`parties` must be at least 1, else it
+  throws). `b.wait(timeout = None) → Integer`
+  (returns the arrival index 0..parties-1; the last arrival releases all), `b.parties() → Integer`,
+  `b.nwaiting() → Integer`, `b.reset()`, `b.abort()`. Unlike the others, `b.wait` on **timeout throws**
+  (it breaks the barrier) rather than returning a sentinel. `reset()` breaks only the currently-waiting
+  parties and keeps the barrier reusable; `abort()` is **permanent** — every later `wait` throws.
+
+These primitives cross VM boundaries **by identity** (passing one into `spawn`, or returning one from a
+worker, shares the same underlying object), but they define no `==`/hash: two handles to the same object
+compare `==` as `False`, and a primitive cannot be used as a Dict/Set key (it is unhashable).
+
+### Avoiding deadlock
+
+The runtime is deadlock-safe by construction: every blocking call honors a `timeout`, and interpreter
+shutdown aborts every blocked primitive (a blocked op then throws "operation aborted"). For
+application-level safety:
+
+- prefer `with lock:` / `with sem:` so a primitive is always released, even on an exception;
+- pass a `timeout =` to any blocking call that might never be satisfied;
+- if a worker acquires several `Lock`s, acquire them in a consistent order across all workers;
+- `close()` a Queue when production ends so consumers stop instead of blocking forever.
+
+---
+
+## path
+
+Kirito's `os.path` **and** `os` filesystem surface: the **single home for path and filesystem
+operations**, so you never have to remember whether a helper lives in `io` or `sys`. It covers pure
+path-string manipulation, read-only filesystem queries (including the system temp directory and the
+running interpreter's own path), *and* filesystem mutation (create / delete / rename / chmod / list).
+[`io`](#io) keeps only actual I/O (open/print/read/write, streams, `BytesIO`).
+
+Path strings use `/` on **every platform** (results are identical cross-platform, unlike the native
+`\` on Windows). The splitting helpers still accept a `\` as a separator, so native Windows paths
+(from `path.getcwd`/`path.listdir`) split correctly.
+
+```kirito
+var path = import("path")
+var io = import("io")
+var full = path.join(path.getcwd(), "data", "report.csv")   # os.path.join semantics
+if path.exists(full) and path.isfile(full):
+    io.print(path.basename(full))                          # => report.csv
+    io.print(path.splitext(full)[1])                       # => .csv
+```
+
+### Path strings
+
+- `join(*parts) → String` — join path components with `/`. A later component that is **absolute**
+  (starts with `/`) resets the result; a trailing slash is not doubled; empty parts contribute
+  nothing. Like `os.path.join` it needs at least one component — `join()` with no parts **throws**. A
+  leading `\` is **not** treated as absolute (only `/` resets).
+- `dirname(path: String) → String` — the directory part of `path` (the root is kept: `dirname("/a")`
+  is `"/"`).
+- `basename(path: String) → String` — the final component of `path` (empty for a trailing-slash path).
+- `splitext(path: String) → List` — `[root, ext]`, splitting off the **last** extension. A leading run
+  of dots is protected, so `.bashrc`/`..`/`...x` have no extension (matching `os.path.splitext`).
+- `dirname`/`basename`/`splitext` split on either `/` or `\` and return literal substrings of the
+  input — they do not rewrite separators, so only `basename` (the final component) is guaranteed free
+  of a backslash; a `\` inside a retained prefix is preserved. A non-String argument **throws**.
+
+### Filesystem queries
+
+- `exists(path: String) → Bool` — whether `path` exists (tolerant: a missing/inaccessible path is
+  simply `False`, never a throw).
+- `isfile(path: String) → Bool` — whether `path` is a regular file (tolerant).
+- `isdir(path: String) → Bool` — whether `path` is a directory (tolerant).
+- `getsize(path: String) → Integer` — the file size in bytes. Unlike the tolerant predicates,
+  `getsize` **throws** on a missing or non-regular path (there is no sensible size to return).
+- `listdir(path: String) → List` — the entry names directly under `path` (tolerant: a missing dir
+  lists as `[]`).
+- `walk(dir: String) → List` — every file path under `dir`, recursively (flattened; tolerant).
+- `getcwd() → String` — the current working directory.
+- `gettempdir() → String` — the system temp directory (honors `TMPDIR`/`TMP`/`TEMP`, falls back to
+  `/tmp`) — a stable scratch location to build temp file paths with `path.join`.
+- `executable` — the absolute path of the running `ki` interpreter binary (a `String`, `""` if it
+  can't be determined). A filesystem location, so it lives here in `path`; used e.g. by `kpm` to
+  locate the binary it self-replaces.
+
+### Filesystem mutation
+
+The mutating ops are **strict by default** — they throw rather than silently no-op — with opt-in
+leniency. `mkdir`/`remove`/`rmtree` return a `Bool` (`True` = it did the work, `False` = the opt-in
+lenient no-op); `rename` returns `None`; `chmod` returns a `Bool` success flag.
+
+- `mkdir(path: String, exist_ok = False) → Bool` — create the directory (and any missing parents).
+  Returns `True` when it creates it; **throws** if `path` already exists. Pass `exist_ok = True` to
+  make an existing directory a no-op (returns `False`, nothing created).
+- `remove(path: String, missing_ok = False) → Bool` — delete a file (or an *empty* directory).
+  Returns `True` when it removes something; **throws** if `path` does not exist. Pass
+  `missing_ok = True` to make a missing path a no-op (returns `False`). A non-empty directory throws —
+  use `rmtree`.
+- `rmtree(path: String, missing_ok = False) → Bool` — **recursively** delete a directory and
+  everything under it (or a single file) — the recursive counterpart to `remove` (`rm -rf` /
+  `shutil.rmtree`). Same strict/`missing_ok` contract as `remove`.
+- `rename(src: String, dst: String) → None` — rename/move a path (throws on failure).
+- `chmod(path: String, mode: Integer) → Bool` — set permission bits from a POSIX-style octal (e.g.
+  `0o755`); lenient (a missing file returns `False`, no throw). On Windows only the owner read/write
+  bits are meaningful.
+
+```kirito
+var path = import("path")
+var io = import("io")
+var d = path.join(path.getcwd(), "scratch")
+path.mkdir(d, exist_ok = True)              # idempotent setup
+with io.open(path.join(d, "note.txt"), "w") as f:
+    f.write("hi")
+io.print(path.getsize(path.join(d, "note.txt")))   # => 2
+path.rmtree(d)                            # recursively remove the whole tree
+```
+
+---
+
+## random
+
+Object-based RNG — no global state; create a generator and call methods on it.
+
+- `Random(seed: Integer = None, generator: String = "xoshiro") → Random` — a new generator. With
+  no seed (or `None`) it is seeded from the OS; with a seed it is reproducible. `generator` selects
+  the underlying engine — `"xoshiro"` (the default, xoshiro256++: 256-bit state, ~1.5–1.75× faster
+  than Mersenne Twister on raw `next()` and every `<random>` distribution) or `"mersenne_twister"`
+  (`std::mt19937_64`: 19937-bit state, longer period, kept for anyone who wants the historical
+  engine or has an existing on-disk checkpoint pinned to it). The underlying engine names
+  `"xoshiro256"` / `"mt19937_64"` also work. An unknown generator throws.
+
+### Random object
+
+- `r.generator → String` — the engine name (`"xoshiro"` or `"mersenne_twister"`), read-only.
+- `r.seed(a: Integer) → None` — reseed the current engine (does not switch generator kind).
+- `r.random() → Float` — uniform in `[0.0, 1.0)`.
+- `r.uniform(a, b) → Float` — uniform in `[a, b)` (the upper bound `b` is excluded).
+- `r.randint(a, b) → Integer` — uniform integer in `[a, b]` (inclusive).
+- `r.randrange(stop)` / `r.randrange(start, stop[, step]) → Integer` — like `range`, a random member.
+- `r.choice(seq)` — a random element of a non-empty sequence (a single scalar).
+- `r.choices(population, k = 1) → List` — a List of `k` elements sampled **with replacement** (elements
+  can repeat), so `k` may exceed `len(population)`. `choice(seq)` is the `k = 1` case of this same draw,
+  unwrapped to the single element. `k = 0` gives `[]`; a negative or enormous `k`, or an empty
+  population, throws. (Contrast `sample`, which is **without** replacement.)
+- `r.shuffle(seq) → None` — shuffle a List in place.
+- `r.sample(population, k) → List` — `k` distinct elements chosen at random (without replacement).
+- `r.gauss(mu, sigma) → Float` — a sample from a normal distribution (alias `normalvariate`).
+- `r.expovariate(lambd) → Float` — exponential distribution.
+
+---
+
+## regex
+
+Regular expressions with a **guaranteed linear-time** match. The engine compiles the pattern to a
+bytecode program and simulates a Thompson NFA (Pike's algorithm, tracking capture positions), so
+matching is O(text × pattern) with **no catastrophic backtracking** — a pattern like `(a+)+b` against
+a long input is instant, not exponential. The cost of that guarantee (the same trade-off RE2 makes)
+is that two backtracking-only constructs are deliberately **not supported** and throw a clear error:
+**backreferences** (`\1`) and **lookaround** (`(?=…)`, `(?!…)`, `(?<=…)`, `(?<!…)`).
+
+All positions and spans are **code-point indices** (consistent with
+Kirito's String indexing). Flags combine with `+`: `re.IGNORECASE` (alias `re.I`), `re.MULTILINE`
+(`re.M`), `re.DOTALL` (`re.S`).
+
+### Supported syntax
+
+Literals and `.` (any char except newline; `\n` too under DOTALL); character classes `[...]`,
+`[^...]`, ranges `a-z`; shorthands `\d \D \w \W \s \S` (ASCII); anchors `^ $`, `\b \B`, `\A \z \Z`;
+groups `(...)`, non-capturing `(?:...)`, named `(?P<name>...)` or `(?<name>...)`; alternation `|`;
+quantifiers `* + ?`, `{n}`, `{n,}`, `{n,m}`, each greedy or **lazy** with a trailing `?`; escapes
+`\n \t \r \f \v \a \xHH \uHHHH`, octal `\0NN` (a leading-zero octal escape; `\b` is a backspace
+*inside* a class), and any escaped metacharacter; inline flags `(?i)` / `(?m)` / `(?s)`. A bare
+`\1`–`\9` is **rejected** (it reads as a backreference, which is unsupported) — write an octal
+character as `\0NN`.
+
+The engine is validated against a large, classic regular-expression test corpus (run through
+Kirito in `tools/tests/scripts/spec_regex_corpus.ki`): zero false positives/negatives, and every
+unsupported-feature or invalid pattern is rejected with a clean error rather than crashing.
+
+### Module functions
+
+- `compile(pattern: String, flags: Integer = 0) → Regex` — compile once, reuse many times.
+- `match(pattern: String, string: String, flags: Integer = 0)` — match anchored at the start, or `None`.
+- `search(pattern: String, string: String, flags: Integer = 0)` — first match anywhere, or `None`.
+- `fullmatch(pattern: String, string: String, flags: Integer = 0)` — match that covers the whole string, or `None`.
+- `findall(pattern: String, string: String, flags: Integer = 0) → List` — all matches (see Regex.findall for the shape).
+- `finditer(pattern: String, string: String, flags: Integer = 0) → List` — a List of `Match` objects.
+- `sub(pattern: String, repl, string: String, count: Integer = 0) → String` — substitute matches.
+- `split(pattern: String, string: String, maxsplit: Integer = 0) → List` — split on matches.
+- `escape(s: String) → String` — backslash-escape regex metacharacters so `s` matches literally.
+
+### Regex object
+
+Returned by `compile`. The search methods take the subject `string` plus an optional start `pos`
+(default 0) and end `endpos` (default the string length); `endpos` makes the subject look exactly
+that many code points long, so `$`/`\b` anchor there. Attributes: `r.pattern`, `r.groups` (group
+count), `r.groupindex` (name → group number).
+
+- `r.match(string[, pos[, endpos]]) → Match` — anchored match at `pos`, or `None`.
+- `r.search(string[, pos[, endpos]]) → Match` — first match at/after `pos`, or `None`.
+- `r.fullmatch(string[, pos[, endpos]]) → Match` — whole-(sub)string match, or `None`.
+- `r.findall(string[, pos[, endpos]]) → List` — with **0** groups: a List of the matched Strings; with **1** group: a List of that group's Strings; with **2+** groups: a List of per-match group Lists.
+- `r.finditer(string) → List` — a List of `Match` objects, one per non-overlapping match.
+- `r.sub(repl, string[, count]) → String` — replace matches. `repl` is either a template String (`\1`, `\g<name>`, `\g<0>`, `\\`) or a **function** taking a `Match` and returning a String. `count = 0` replaces all.
+- `r.split(string[, maxsplit]) → List` — split around matches; any captured groups are interleaved into the result.
+- `r.pattern` — the source pattern String.
+- `r.groups` — the number of capturing groups.
+- `r.groupindex` — a Dict mapping each named group to its number.
+
+### Match object
+
+Returned by a successful `match`/`search`/`fullmatch` (and by `finditer`):
+
+- `m.group([key]) → String` — the whole match (no arg or `0`), or group `key` (a number or a name); `None` if that group didn't participate. Several keys return a List.
+- `m.groups([default]) → List` — all capturing groups (1..n); non-participating groups are `default` (default `None`).
+- `m.groupdict([default]) → Dict` — named groups by name.
+- `m.start([key]) → Integer` / `m.end([key]) → Integer` — code-point start/end of the whole match or a group (`-1` if absent).
+- `m.span([key]) → List` — `[start, end]`.
+- `m.string` — the subject the match was found in.
+
+```kirito
+var io = import("io")
+var re = import("regex")
+var m = re.search("(?P<user>\\w+)@(?P<host>[\\w.]+)", "contact ada@kirito.dev now")
+io.print(m.group())            # => ada@kirito.dev
+io.print(m.group("user"))      # => ada
+io.print(m.groupdict())        # => {'user': 'ada', 'host': 'kirito.dev'}  (order may vary)
+
+io.print(re.findall("\\d+", "12 and 345"))               # => ['12', '345']
+io.print(re.sub("\\s+", "_", "a   b  c"))                 # => a_b_c
+var rx = re.compile("cat|dog", re.IGNORECASE)
+io.print(rx.findall("Cat dog CAT"))                        # => ['Cat', 'dog', 'CAT']
+```
+
+---
+
+## semver
+
+Semantic versioning — parse, compare, and range-match version strings, following [semver.org](https://semver.org)
+precedence and the [node-semver](https://github.com/npm/node-semver) range grammar. This is the
+versioning core `kpm` uses to resolve `owner/repo@<constraint>` against a repository's git tags (see
+[Packages & kpm](packages.html)). A version is `MAJOR.MINOR.PATCH` with an optional `-prerelease`
+and `+build` (a leading `v`/`=` is tolerated, e.g. `v1.2.3`).
+
+- `clean(s: String) → String` — strip a leading `v`/`=` and surrounding whitespace.
+- `parse(s: String) → Dict` — `{major, minor, patch, prerelease, build, raw}` (`prerelease`/`build`
+  are Lists of dot-separated identifier Strings). Throws on an invalid version.
+- `valid(s: String) → String` — the cleaned version string if valid, else `None`.
+- `major(s) / minor(s) / patch(s) → Integer` — a single component.
+- `prerelease(s) → List` — the prerelease identifiers, or `None` if there are none.
+- `compare(a, b) → Integer` — `-1` / `0` / `1` by precedence (build metadata is ignored; a
+  prerelease sorts **before** its release; numeric prerelease identifiers sort before alphanumeric).
+- `eq / neq / lt / lte / gt / gte(a, b) → Bool` — comparison shortcuts.
+- `diff(a, b) → String` — the kind of change: `"major"` / `"minor"` / `"patch"` / `"prerelease"`,
+  or `None` if equal.
+- `inc(s, release: String) → String` — bump by `"major"` / `"minor"` / `"patch"` (drops prerelease/build).
+- `satisfies(version, rng) → Bool` — does `version` match the range `rng`? Supports caret (`^1.2.3`),
+  tilde (`~1.2`), comparators (`>=1.0.0 <2.0.0`), x-ranges (`1.2.x`, `1.x`, `*`), hyphen ranges
+  (`1.0.0 - 2.0.0`), AND (space) and OR (`||`). Prereleases are excluded unless a comparator in the
+  matched set pins the same `major.minor.patch` (node-semver's default).
+- `validrange(rng: String) → Bool` — is `rng` a parseable range? (`kpm` uses this to tell a
+  semver constraint from a literal git ref like `main`.)
+- `sort(versions: List) / rsort(versions) → List` — sort by precedence, ascending / descending
+  (invalid versions are dropped).
+- `maxsatisfying(versions, rng) / minsatisfying(versions, rng)` — the highest / lowest version
+  in the list that satisfies the range, returned as its **original** string (so a `v`-prefixed tag
+  comes back unchanged, usable directly as a git ref), or `None`.
+
+```kirito
+var s = import("semver")
+
+s.satisfies("1.4.0", "^1.2.0")          # True  (>=1.2.0 <2.0.0)
+s.satisfies("2.0.0", "^1.2.0")          # False
+s.maxsatisfying(["v1.0.0", "v1.4.2", "v2.0.0"], "^1.0.0")   # "v1.4.2"
+s.sort(["1.10.0", "1.2.0", "1.1.0"])    # ["1.1.0", "1.2.0", "1.10.0"]
+s.gt("1.0.10", "1.0.9")                 # True  (numeric, not lexical)
+```
+
+---
+
+## serialize
+
+`serialize` and `dump` are **two formats of the same thing** — full object-graph serialization that
+preserves shared references and cycles (a full object snapshot, unlike `json` which is flat data
+interchange with no aliasing). They share one graph walk and reconstruction core and differ only in
+output: **`serialize` is human-readable text**, **`dump` is compact binary**. Supported value types:
+`None`/`Bool`/`Integer`/`Float`/`String`/[`Bytes`](types.html#bytes)/`List`/`Dict`/`Set`, **plus user
+`class` instances**.
+
+A class instance is serialized **by its attributes** by default and reconstructed by looking the
+class up by name in the loading VM (so the class must be defined there; `_init_` is *not* re-run). A
+class can override this with the **`_getstate_`/`_setstate_` protocol**: `_getstate_(self)` returns
+the serializable state to store, and `_setstate_(self, state)` restores it — useful to drop transient
+fields (recomputing them on load) or to reduce a value to plain serializable data. A native (C++)
+type participates the same way: define `_getstate_`/`_setstate_` and register a reconstructor with
+`vm.registerDeserializer(typeName, factory)`. (`json` has no object notion, so it can't serialize
+instances.)
+
+The native **value** types opt in and round-trip through both `serialize` and `dump`: **`Matrix`**
+and **`Vector`** (`matrix`), **`Complex`** and **`ComplexMatrix`** (`complex`), **`DateTime`**
+(`time`), **`Random`** (`random`, restoring the generator's exact stream — a reproducible
+checkpoint), and gradient-free **`Tensor`** (`tensor`; a Tensor that requires grad must be
+`detach()`-ed first). They can be stored standalone or nested inside Lists/Dicts/Sets/instances, with
+shared references preserved. Resource-like natives that wrap live state — `Socket`/`Session` (`net`),
+open files/`BytesIO`/streams (`io`), a compiled `Regex`/`Match` (`regex`) — are **not** serializable
+and throw a clear, catchable error instead.
+
+Human-readable **text** serialization → a `String`.
+
+- `dumps(value) → String` — serialize to a text blob.
+- `loads(text: String)` — reconstruct the value graph from a `dumps` blob.
+- `save(value, path: String) → None` — `dumps` to a file.
+- `load(path: String)` — `loads` from a file.
+
+---
+
+## statistics
+
+- `mean(data) → Float` — arithmetic mean.
+- `median(data) → Float` — middle value.
+- `mode(data)` — the single most common value.
+- `multimode(data) → List` — all values tied for most common.
+- `variance(data) → Float` — the sample variance.
+- `stdev(data) → Float` — the sample standard deviation.
+- `pvariance(data) → Float` — the population variance.
+- `pstdev(data) → Float` — the population standard deviation.
+- `quantiles(data[, n]) → List` — cut points dividing `data` into `n` equal groups (`n ≥ 1`, default
+  `4`); throws on fewer than two data points or `n < 1`.
+
+---
+
+## string
+
+- Constants: `ascii_letters`, `ascii_lowercase`, `ascii_uppercase`, `digits`, `hexdigits`, `octdigits`, `punctuation`, `whitespace` (all `String`).
+- `capwords(s) → String` — capitalize each **space-separated** word (splits on single spaces; does not
+  collapse whitespace runs or treat tabs/newlines as separators).
+
+Fuzzy comparison, built on the native `String.levenshtein` edit distance:
+
+- `similarity(a, b) → Float | List` — a `0.0`–`1.0` ratio, `1 - editdistance / longerlength` (two empty strings are `1.0`). `b` may be a single String (returns one `Float`) **or a List of candidate Strings** (returns one score per candidate, computed in a single native call).
+- `closest(query, candidates) → String` — the candidate with the smallest edit distance (ties to the earliest), or `None` for an empty list. One native call computes every distance at once.
+- `fuzzymatch(query, candidates, cutoff = 0.6) → List` — every `[candidate, score]` pair whose similarity is at least `cutoff`, sorted by score descending.
+
+```kirito
+var string = import("string")
+string.closest("aple", ["apple", "grape", "mango"])   # "apple"   (typo correction)
+string.similarity("kitten", "sitting")                  # ~0.571
+string.similarity("abc", ["abc", "abd", "xyz"])         # [1.0, 0.667, 0.0]  (List form)
+```
+
+---
+
+## sys
+
+Process environment and platform.
+
+- `platform` — `"linux"` / `"darwin"` / `"windows"` (a `String`).
+- `arch` — the CPU architecture, normalized to the names used in release-asset filenames:
+  `"x64"` / `"arm64"` / `"x86"` / `"unknown"` (a `String`).
+- `version` — the Kirito interpreter version, a semantic-version `String` (e.g. `"1.9.5"`); the same
+  value `ki --version` prints. `kpm` compares it against the latest GitHub release to self-upgrade.
+  (The running binary's own path is [`path.executable`](#path), and the temp dir is
+  [`path.gettempdir`](#path) — filesystem locations live in `path`.)
+- `getenv(name: String, default = None)` — an environment variable, or `default` if unset.
+- `setenv(name: String, value: String) → None` — set a variable.
+- `unsetenv(name: String) → None` — remove a variable.
+- `environ() → Dict` — all environment variables.
+- `traceback() → String` — the call chain of the most recent error this VM unwound (empty until one
+  is thrown); useful for logging inside a `catch`.
+
+> **Encoding & empty values.** Names and values are byte-for-byte round-tripped on POSIX. On
+> Windows they go through the narrow (ANSI code-page) environment API, so a non-ASCII value isn't
+> guaranteed to survive a `setenv`→`getenv` round-trip (keep env values ASCII for portability), and
+> setting a variable to the **empty string** is treated as *unset* — `getenv` then returns `None`.
+- `exit(code: Integer = 0)` — terminate the process with the given exit code. The code is taken mod
+  256 (POSIX 8-bit wrap: `exit(256)` → `0`, `exit(-1)` → `255`). A non-Integer, non-`None` argument is
+  printed to stderr and the process exits `1` (so `sys.exit("error message")` reports a failure rather
+  than masking it as a success).
+
+### Running external programs
+
+Run another program (e.g. `ffmpeg`, `git`) and collect its result. Both functions block until the
+child finishes, capture its output, and return a `Dict` `{"code", "stdout", "stderr"}` — the exit
+code as an `Integer`, stdout and stderr as Strings. stdout and stderr are drained concurrently, so a
+child that produces a lot on either stream can't deadlock. **This is for external programs, not the
+`parallel` worker-VM model** (which runs Kirito functions, not other executables). The Kirito API is
+identical on Linux, macOS and Windows.
+
+- `createprocess(args: List, cwd = None, input = "", timeout = None) → Dict` — run a program
+  **directly** by its argument vector. `args[0]` is the program (looked up on `PATH`); the remaining
+  items are passed to it **verbatim** — there is no shell, so no quoting, globbing or injection.
+  - `cwd` — working directory for the child (`None` = inherit the parent's).
+  - `input` — a String written to the child's stdin (then closed); `""` sends nothing.
+  - `timeout` — seconds (a number); if the child is still running when it elapses, it is killed and a
+    catchable error is thrown. `None` waits indefinitely.
+  - A program that can't be started (not found, etc.) throws a clear catchable error.
+
+  ```kirito
+  var r = sys.createprocess(["ffmpeg", "-i", "in.mov", "out.mp4"], timeout = 60)
+  if r["code"] != 0:
+      io.eprint(r["stderr"])
+  ```
+
+- `shell(command: String, cwd = None, input = "", timeout = None) → Dict` — run `command` through the
+  **system shell** (`/bin/sh -c` on POSIX, `cmd.exe /c` on Windows), so pipes, redirection, globbing
+  and shell scripts work. Same `cwd`/`input`/`timeout` options. Capture the output with:
+
+  ```kirito
+  var head = sys.shell("git rev-parse HEAD")["stdout"].strip()
+  ```
+
+  > Prefer `createprocess` (an argv list) when the arguments come from untrusted input — `shell`
+  > passes the whole string to the shell, so it is subject to the usual shell-injection caveats.
+
+  The exit code follows the platform convention; on POSIX a child terminated by a signal reports
+  `128 + signal`. Output is captured as a byte-transparent `String` (decode/parse it as needed).
+
+---
+
+## tabular
+
+A dataframe-style data-analysis library: a labelled 1-D **`Series`** and 2-D **`DataFrame`**, with CSV
+I/O, label/position indexing, boolean masking, element-wise arithmetic (on `Series` —
+a `DataFrame` is operated on per-column), aggregations, group-by, joins, and missing-data handling.
+`Series`-to-`Series` arithmetic and comparison require **equal length** (a mismatch throws consistently
+in either order — no silent truncation); a `Series`-to-scalar op broadcasts the scalar.
+Public names follow Kirito's lowercase-no-underscore convention (`readcsv`, `sortvalues`,
+`valuecounts`, `resetindex`, ...).
+
+> **Column order from a dict.** Kirito dicts are not insertion-ordered, so
+> `DataFrame({"a": ..., "b": ...})` does not guarantee column order. Pass `columns=[...]` (or use
+> `readcsv`, whose header row is an ordered List) when order matters.
+
+### Module functions
+
+- `Series(values, index = None, name = None)` — a 1-D labelled column.
+- `DataFrame(data = None, columns = None, index = None)` — `data` is a Dict of `column → values`, a
+  List of row-Lists (pair with `columns`), or a List of row-Dicts (columns are the key union).
+- `readcsv(source, header = True, infer = True)` — build a DataFrame from CSV text (or a filename).
+  With `infer`, each cell becomes Integer/Float/Bool/None/String; a short row's missing trailing cells
+  are `None`, but a row with **more** fields than the header throws (no silent data loss, like pandas).
+- `merge(left, right, on, how = "inner")` — join two DataFrames on a key column; `how` is
+  `"inner"`/`"left"`/`"right"`/`"outer"`. A non-key column present in **both** frames is disambiguated
+  pandas-style: the left copy becomes `<name>_x` and the right `<name>_y`.
+- `concat(frames)` — stack DataFrames vertically (column union, missing filled with `None`).
+
+### Series
+
+Indexing: `s[label]` (by index label, falling back to position), `s.iat(pos)`. Element-wise `+ - *
+/ // %` and comparisons `> >= < <=` against a scalar or another Series (the comparisons return a
+**boolean Series** for masking); `s.eq(x)`/`s.ne(x)`/`s.isin(values)`.
+
+- Aggregations (skip missing; Bool counts as 0/1): `sum`, `mean`, `min`, `max`, `median`, `variance`,
+  `std`, `prod`, `count`.
+- `unique()`, `nunique()`, `valuecounts()` (a Series of counts, descending). `unique`/`nunique`
+  treat a missing value (`None`) as one distinct value; `valuecounts` skips missing values.
+- `apply(fn)`/`map(fn)`, `astype("Integer"|"Float"|"Bool"|"String")`.
+- `fillna(value)`, `dropna()`, `head(n=5)`, `tail(n=5)`, `sortvalues(ascending=True)`, `resetindex()`,
+  `tolist()`, `copy()`.
+
+### DataFrame
+
+- Selection: `df["col"]` → Series; `df[["a", "b"]]` → DataFrame; `df[boolean_series]` → masked rows;
+  `df.iloc[i]`/`df.iloc[[i, j]]` (by position), `df.loc[label]`/`df.loc[[l1, l2]]` (by label);
+  `df.column(name)`, `df.at(label, col)`, `df.iat(pos, col)`.
+- `df["new"] = series_or_list_or_scalar` adds/replaces a column; `assign(name, value)` returns a copy
+  with the column added.
+- Shape/views: `shape()` → `[rows, cols]`, `columns`, `index`, `len(df)`, `head`/`tail`/`slice`,
+  `rename(columns)`, `drop(columns)`, `setindex(col)`, `resetindex()`, `copy()`, `todict()`,
+  `torows()`, `iterrows()`, `tocsv()`.
+- Aggregations over **numeric** columns → a Series indexed by column: `sum`, `mean`, `min`, `max`,
+  `std`. `count` is the exception — it tallies non-null values for **every** column (any dtype).
+  `describe()` → a DataFrame of count/mean/std/min/median/max.
+- `sortvalues(by, ascending = True)`, `groupby(col)`, `merge(other, on, how)`, `dropna()`,
+  `fillna(value)`.
+
+### GroupBy
+
+`df.groupby(col)` returns a grouping with numeric-column reductions `sum`/`mean`/`min`/`max`/`std`/
+`count`, `size()` (a Series of group sizes), `agg({col: reducer})` where `reducer` is one of
+`"sum"`/`"mean"`/`"min"`/`"max"`/`"std"`/`"count"`/`"median"`, and `apply(fn)` (fn receives each
+group's sub-DataFrame).
+
+```kirito
+var io = import("io")
+var tb = import("tabular")
+
+var df = tb.readcsv("name,dept,salary\nAda,eng,120\nAlan,eng,110\nGrace,ops,95\nEdsger,ops,130")
+io.print(df[df["salary"] > 100]["name"].tolist())     # ['Ada', 'Alan', 'Edsger']
+io.print(df.groupby("dept").mean()["salary"].tolist()) # [115.0, 112.5]
+io.print(df.sortvalues("salary", ascending=False)["name"].tolist())
+```
+
+---
+
+## tee
+
+Fan-out streams: clone what you write to a stream into one or more extra streams (for example, mirror
+stdout into a log file). A `Tee` implements the `write`/`writelines`/`flush` stream protocol, so it
+can be assigned to `io.stdout`/`io.stderr`, and it is a context manager (it flushes on exit).
+
+- `Tee(primary, copies = None) → Tee` — a stream that writes each chunk to every *copy* first, then to
+  `primary`. `copies` is a single stream or a List; `primary` may be `None` for a pure fan-out sink.
+- `t.write(data) → Integer` — write `data` to every stream (copies first, then primary).
+- `t.writelines(lines) → None` — write each String in an iterable to every stream.
+- `t.flush() → None` — flush every underlying stream.
+- `t.close() → None` — close the Tee (flushes; does not close the copy streams you supplied).
+- `t.streams() → List` — the underlying streams in write order (copies, then primary).
+- `tee_stdout(copies)` — a context manager that makes `io.stdout` also write to `copies` inside the
+  block, restoring the original on exit (the copy streams are never closed — you own them).
+- `tee_stderr(copies)` — the same for `io.stderr`.
+
+```kirito
+var io = import("io")
+var tee = import("tee")
+with io.open("session.log", "w") as f:
+    with tee.tee_stdout(f):
+        io.print("appears on the console and in session.log")
+# stdout is restored here
+```
+
+---
+
+## tensor
+
+Dense **N-dimensional** arrays — the generalization of a matrix to any rank. The element type
+(**dtype**) is chosen at construction: `"Float"` (double, the default) or `"Complex"`. The numeric
+engine is shared C++ (`src/kirito/tensor.hpp`) and is what the `matrix` and `complex` matrix types are
+themselves built on; a 2-D tensor *is* a matrix. It is CPU-only but carries a **reverse-mode autograd**
+(see below) and a GPU-forward-compatible single-buffer design.
+
+Tensor **arithmetic is pure**: every operation returns a *new* tensor and never mutates its operands,
+which is what makes the autograd graph well-defined. The only in-place operation is element assignment
+(`t[i, j] = v`). A consequence is that a gradient-descent step **rebinds** the parameter
+(`w = w - w.grad*lr`, re-marked `requiresgrad(True)`) — a functional update, like JAX/Optax — rather
+than mutating it in place as PyTorch does; the [tensors lesson](bonus-05-tensors.html#why-the-update-rebinds-tensors-are-immutable)
+walks through this.
+
+### Constructors and factories
+
+Each constructor/factory takes an optional **`requiresgrad`** keyword (default `False`) that marks the
+result as a differentiable leaf (Float only — see [Autograd](#autograd)).
+
+- `Tensor(data: List, dtype = "Float", requiresgrad = False) → Tensor` — build from a (rectangular)
+  nested list; the nesting depth sets the rank. `tensor` is an alias of `Tensor`. Passing a bare
+  `Number` instead of a list builds a **rank-0** (scalar) tensor — `shape() == []`, `ndim() == 0`,
+  `size() == 1` — the same 0-D tensor a full contraction or whole-tensor reduction yields; use
+  `item()` to extract the scalar back.
+- `zeros(shape: List, dtype = "Float", requiresgrad = False) → Tensor` — a tensor of zeros.
+- `ones(shape: List, dtype = "Float", requiresgrad = False) → Tensor` — a tensor of ones.
+- `full(shape: List, value: Number, dtype = "Float", requiresgrad = False) → Tensor` — filled with `value`.
+- `eye(n: Integer, dtype = "Float", requiresgrad = False) → Tensor` — the n×n identity matrix.
+- `arange(stop)` / `arange(start, stop[, step]) → Tensor` — a 1-D ramp of Floats from `start` up to
+  (but excluding) `stop`, stepping by `step`.
+
+### Tensor object
+
+- `t.shape() → List`, `t.ndim() → Integer`, `t.size() → Integer`, `t.dtype() → String`.
+- `t[i, j, ...] → Number` — a **full** index (one per dimension) returns the scalar element.
+- `t[i] → Tensor` — a **partial** index returns the sub-tensor of the remaining axes.
+- `t[i, j, ...] = v` — assign an element (full index).
+- `a + b`, `a - b`, `a * b`, `a / b` — **element-wise** with **broadcasting** (axes align from
+  the right; each must be equal or 1). `*` is element-wise (Hadamard), **not** matrix multiply.
+  Mixing a `Float` and a `Complex` tensor promotes the result to `Complex`. A scalar operand applies
+  element-wise (`t * 2`).
+- `-t` — element-wise negation.
+- `a == b → Bool` — equal shape and **exact** element-wise equality (`NaN` never equal); distinct
+  from the elementwise `.eq()` mask. Use `a.compare(other, rel_tol = 1e-9, abs_tol = 0.0) → Bool` for
+  a tolerant whole-tensor check (a `solve`/`inv` result vs its literal) — pass an `abs_tol` when the
+  target contains exact zeros (`rel_tol` alone can't match a near-zero element).
+- `t.matmul(other) → Tensor` — matrix product (2-D), or **batched** over the leading dimensions for
+  rank ≥ 2.
+- `t.dot(other) → Number` — the dot product of two 1-D tensors.
+- `t.transpose() → Tensor` — reverse all axes (the matrix transpose when 2-D).
+- `t.permute(axes: List) → Tensor` — reorder axes by the given permutation.
+- `t.reshape(shape: List) → Tensor` — same elements, new shape.
+- `t.flatten() → Tensor` — a 1-D copy.
+- `t.apply(fn) → Tensor` — a new tensor with `fn` mapped over every element (the element-wise map).
+- `t.astype(dtype: String) → Tensor` — convert dtype (`Float → Complex`, or `Complex → Float` keeping
+  the real part).
+- `t.sum(axis = None)`, `t.mean(axis = None)`, `t.prod(axis = None)` — reduce the whole tensor to a
+  scalar, or one `axis` to a lower-rank tensor. A **negative axis** counts from the end NumPy-style
+  (`-1` is the last axis); an out-of-range axis throws. (Applies to every axis-taking reduction below.)
+- `t.min(axis = None)`, `t.max(axis = None)` — extremes (whole-tensor or along an axis; throw for a
+  `Complex` tensor, which is unordered).
+
+### Indexing & slicing
+
+- `t[i, j, ...]` — integer index (full → element, partial → sub-tensor); `t[i, j] = v` assigns.
+  Negative indices count from the end of each axis (`t[-1]` is the last row), like NumPy/slicing.
+- `t[start:stop:step]` — slice the **first** axis (negative bounds count from the end; returns a detached copy).
+- `t[mask]` — boolean selection where `mask` is a same-shape 0/1 tensor (→ 1-D).
+- `t[[i, j, k]]` — fancy index: gather those rows along axis 0. Indices may be negative (counted from
+  the end, like scalar indexing).
+- `t.slice(start, stop, step, axis = 0) → Tensor` and `t.take(indices, axis = 0) → Tensor` — the
+  **autograd-aware** forms of slicing / row-gather (the gradient scatters back); `take` indices may be
+  negative.
+
+### Comparisons, logic, selection
+
+- `t.eq/ne/lt/le/gt/ge(other) → Tensor` — element-wise comparisons returning a 0/1 mask (the
+  `< <= > >=` operators do the same; `==`/`!=` stay whole-tensor `Bool`). Float only.
+- `t.logicaland/logicalor/logicalxor(other)`, `t.logicalnot()` — element-wise logic on 0/1 masks.
+- `where(cond, a, b) → Tensor` — element-wise select (`cond` non-zero → `a` else `b`); differentiable.
+- `t.clip(lo, hi)`, `t.maximum(other)`, `t.minimum(other)` — clamp / element-wise max / min;
+  differentiable.
+
+### More reductions
+
+- `t.argmin(axis = None)`, `t.argmax(axis = None)` — index of the extreme.
+- `t.std(axis = None, ddof = 0)`, `t.var(axis = None, ddof = 0)` — standard deviation / variance.
+- `t.all(axis = None)`, `t.any(axis = None)` — truth reductions.
+- `t.ptp(axis = None)` — max − min; `t.median(axis = None)`.
+- `t.cumsum(axis = None)` (differentiable) / `t.cumprod(axis = None)` — cumulative scans
+  (`axis = None` flattens first).
+
+### Structural ops
+
+- `t.squeeze(axis = None)`, `t.expanddims(axis)`, `t.swapaxes(a1, a2)`, `t.flip(axis = None)`,
+  `t.broadcastto(shape)`, `t.repeat(count, axis = None)`, `t.tile(reps)` — all differentiable except
+  `repeat`/`tile`.
+- `concatenate(tensors, axis = 0)` (alias `concat`), `stack(tensors, axis = 0)`,
+  `split(t, sections, axis = 0)` — join / split a List of tensors (differentiable). `sections` is an
+  Integer (equal parts) or a List of sizes.
+
+### Creation helpers
+
+- `linspace(start, stop, num = 50)`, `zeroslike(t)`, `oneslike(t)`, `fulllike(t, value)`,
+  `identity(n)` (alias of `eye`), `diag(t, k = 0)` (1-D → diagonal matrix, 2-D → its diagonal),
+  `tril(t, k = 0)` / `triu(t, k = 0)` (lower / upper triangle).
+
+### Linear algebra (module functions, 2-D)
+
+- `det(t)`, `inv(t)`, `solve(a, b)`, `trace(t)`, `norm(t, ord = 2)`, `outer(a, b)`, `inner(a, b)`,
+  `kron(a, b)`, `cross(a, b)` (3-vectors), and `einsum(spec, *tensors)` — a general Einstein-summation
+  (transpose / diagonal / trace / contraction / outer, any subscript string). Work on both dtypes
+  where it makes sense (forward only; the differentiable linear algebra is `matmul`/`tensordot`).
+  `inner`/`tensordot`/`contract`/`einsum` return a **Tensor** (0-D for a full contraction — call
+  `.item()` for a Float scalar); only `dot` and the scalar reductions (no `axis`) return a plain Float.
+  A repeated *output* label in `einsum` (e.g. `"ii->ii"`) is rejected. `outer` flattens operands of any
+  rank, but `kron` requires both operands to be **2-D** (throws otherwise). `det` can underflow to `0.0`
+  for an extreme-but-well-conditioned matrix (e.g. `diag(1e-200)`, true det `1e-400`) even though `inv`
+  and `solve` still succeed — the singularity test is scale-relative, so `det == 0.0` does not by itself
+  mean singular at extreme scales.
+
+### Sorting & search
+
+- `t.sort(axis = None)`, `t.argsort(axis = None)` (default last axis), `unique(t)` (sorted unique 1-D),
+  `nonzero(t)` (a List of per-axis index tensors), `searchsorted(a, v)` (insertion indices into a
+  sorted 1-D `a`).
+
+### Complex helpers
+
+- `t.real()`, `t.imag()`, `t.angle()` → Float tensors; `t.conj()` / `t.conjugate()` → the conjugate (Complex; no-op on Float tensors). On a **Float** tensor `angle()` returns the phase of each element treated as a real number: `pi` for negative elements, `0` otherwise.
+
+### Differentiable element-wise math
+
+Every one of these returns a new tensor with the function applied element-wise, and each is
+**differentiable** under autograd (Float only):
+
+- exponential / log: `exp`, `log`, `log10`, `log2`, `softplus`, `erf`
+- powers / roots: `sqrt`, `cbrt`, `square`, `reciprocal`, `pow(p)`
+- sign / magnitude / rounding: `abs`, `sign`, `floor`, `ceil`, `round`, `trunc` (gradient zero)
+- trigonometric: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`
+- hyperbolic: `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`
+- neural-net: `relu`, `sigmoid`
+
+Like the scalar `math` module — and like the tensor engine's own division-by-zero guard — these throw a
+clear `tensor … : math domain error` on an out-of-domain **element** instead of silently emitting
+`NaN`/`inf` into the result (and poisoning gradients): `log`/`log10`/`log2` of `≤ 0`, `sqrt` of a
+negative, `asin`/`acos` outside `[-1, 1]`, `acosh` below `1`, `atanh` at/outside `±1`, `reciprocal` of
+`0`, and `pow` of a negative base to a non-integer exponent (or zero to a negative power). A `NaN`
+element passes through; genuine overflow to `inf` is not a domain error.
+
+### tensordot / contract
+
+General tensor contraction over chosen axes (built from `permute`/`reshape`/`matmul`, so it is
+differentiable):
+
+- `tensordot(a: Tensor, b: Tensor, axes = 2) → Tensor` — `axes` is an **Integer** `N` (contract the
+  last `N` axes of `a` with the first `N` of `b` — `N = 0` is the outer product, `N = 1` is matrix
+  multiply, `N = 2` is the Frobenius double-contraction to a scalar) or a **`[a-axes, b-axes]`** pair
+  (each an Integer or a List of Integers) naming the axes to pair up.
+- `contract(a: Tensor, b: Tensor, aaxes, baxes) → Tensor` — `tensordot` with the two axis lists given
+  explicitly.
+
+### Autograd
+
+Reverse-mode automatic differentiation, opt-in and **Float-only**. Tensors **do not** track gradients
+by default; mark a leaf with `requiresgrad = True` (constructor keyword) or `t.requiresgrad(True)`
+post-creation. Differentiable operations then record a computational graph; `backward()` walks it and
+accumulates each tensor's gradient. The graph records *operations*, not where the data lives, so the
+design carries forward to a future GPU backend.
+
+Autograd applies to the **Float** dtype only: a **Complex tensor has no gradients** — marking one with
+`requiresgrad = True` (constructor keyword or method) throws, and the differentiable element-wise math
+methods are Float-only as well. Complex tensors remain a full numeric container (arithmetic, `matmul`,
+`tensordot`, reshaping, reductions); use the `complex` module for complex analytic functions.
+
+- `t.requiresgrad() → Bool` — whether `t` tracks gradients; `t.requiresgrad(flag)` sets it (Float
+  only; turning it off detaches `t` from the graph).
+- `t.grad → Tensor` — the accumulated gradient (same shape as `t`), or `None` before `backward()`.
+- `t.backward(seed = None) → None` — propagate gradients back from `t`. With no `seed`, `t` must be a
+  scalar (a 0-D or single-element tensor) and the seed is `1`; otherwise pass a seed tensor of `t`'s
+  shape. Gradients **accumulate** into `.grad` (call `zerograd()` between steps).
+- `t.zerograd() → None` — clear `t.grad`.
+- `t.detach() → Tensor` — a copy that shares the data but tracks no gradient (stops gradient flow).
+- `nograd()` — a context manager: inside `with tensor.nograd():` no operation tracks gradients (for
+  inference or for in-place parameter updates).
+
+**Differentiable ops:** `+ - * /` (with broadcasting), `matmul`, `tensordot`/`contract`, `sum`/`mean`
+(whole-tensor or per-axis), `transpose`/`permute`/`reshape`/`flatten`, `squeeze`/`expanddims`/
+`swapaxes`/`flip`/`broadcastto`, `concatenate`/`stack`/`split`, `where`/`clip`/`maximum`/`minimum`,
+`cumsum`, the grad-aware `slice`/`take`, unary `-`, and the differentiable math set above.
+Non-differentiable ops — `apply` (an arbitrary function), `min`/`max`, `prod`, `ptp`, `cumprod`,
+`dot`, `unique`/`nonzero`/`searchsorted`, `sort`/`argsort`, `einsum`, and plain indexing — detach
+(stop the gradient; using one on a grad-tracking tensor emits a one-time detach warning). On a
+grad-tracking tensor, a whole-tensor `sum`/`mean` returns a 0-D tensor (so the graph continues)
+rather than a plain `Float`.
+
+```kirito
+var io = import("io")
+var T = import("tensor")
+
+# fit y = 2x + 1 by gradient descent
+var xs = T.Tensor([[0], [1], [2], [3]])
+var ys = T.Tensor([[1], [3], [5], [7]])
+var w = T.zeros([1, 1], requiresgrad = True)
+var b = T.zeros([1, 1], requiresgrad = True)
+var step = 0
+while step < 500:
+    var loss = (xs.matmul(w) + b - ys).square().mean()
+    w.zerograd()
+    b.zerograd()
+    loss.backward()
+    with T.nograd():
+        w = w - w.grad * 0.05
+        b = b - b.grad * 0.05
+    w.requiresgrad(True)
+    b.requiresgrad(True)
+    step = step + 1
+io.print(w[0, 0], b[0, 0])      # ~ 2.0  ~ 1.0
+```
+
+---
+
+## textwrap
+
+- `wrap(text[, width]) → List` — wrap into a list of lines.
+- `fill(text[, width]) → String` — wrap into a single newline-joined String.
+- `indent(text, prefix) → String` — prefix each line.
+- `dedent(text) → String` — remove the common leading whitespace.
+
+---
+
+## time
+
+Clocks and calendar time.
+
+- `time() → Float` — seconds since the Unix epoch (wall clock).
+- `timens() → Integer` — nanoseconds since the epoch.
+- `monotonic() → Float` — seconds from a steady clock (for measuring intervals).
+- `perfcounterns() → Integer` — nanoseconds from the highest-resolution clock.
+- `sleep(seconds: Number) → None` — pause execution.
+- `now() → DateTime` — current UTC time.
+- `datetime([timestamp: Number]) → DateTime` — a `DateTime` from epoch seconds (current time if omitted).
+- `make(year, month, day, hour = 0, minute = 0, second = 0) → DateTime` — build from UTC components.
+  Out-of-range components **normalize** (C `mktime`-style: month 13 → January of the next year,
+  day 32 → the 1st of the next month), rather than throwing.
+- `strptime(text: String, format: String) → DateTime` — parse a time string against a format of
+  `%`-codes (`%Y-%m-%d %H:%M:%S`, …). Unlike `make`, parsing is strict: a literal/format mismatch,
+  an **out-of-range** field (`2024-99-99`, hour `25`), or **unconverted trailing input**
+  (`"2024-01-01XYZ"`) all throw rather than silently producing a garbage date.
+
+### DateTime object
+
+The UTC fields and epoch seconds are Integer **attributes** (no parentheses):
+
+- `dt.year` — the year.
+- `dt.month` — the month (1–12).
+- `dt.day` — the day of the month.
+- `dt.hour` — the hour (0–23).
+- `dt.minute` — the minute (0–59).
+- `dt.second` — the second (0–59).
+- `dt.weekday` — the day of the week, **0 = Sunday … 6 = Saturday** (C convention; Sunday-based, not Monday-based).
+- `dt.yearday` — the day of the year.
+- `dt.timestamp` — epoch seconds.
+
+Its methods:
+
+- `dt.iso() → String` — ISO-8601 text; `dt.isoformat()` is an alias.
+- `dt.format(fmt: String) → String` — format with `%`-codes (`%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, …).
+- `dt.add(seconds) → DateTime` — a new DateTime shifted forward by `seconds`.
+- `dt.sub(seconds) → DateTime` — a new DateTime shifted back by `seconds`.
+- `dt.diff(other) → Integer` — difference (`self - other`) in seconds.
+
+---
+
+## xml
+
+A small, dependency-free XML parser/serializer. It parses
+elements, attributes, text, nested children, comments, the `<?xml?>` declaration, `<!DOCTYPE>`,
+`<![CDATA[…]]>` sections, and the standard entities (`&lt; &gt; &amp; &quot; &apos;` and numeric
+`&#65;` / `&#x41;`); it serializes a tree back to XML. The parser is **lenient** — malformed markup
+is tolerated rather than throwing.
+
+### Module functions
+
+- `parse(text: String) → Element` — parse a document and return its root `Element` (or `None` if the
+  text contains no element). `fromstring` is an alias. Given malformed input with several top-level
+  siblings, the **last** one becomes the root.
+- `tostring(element) → String` — serialize an element (and its subtree) back to XML.
+- `Element(tag, attrib = None) → Element` — construct an element directly (for building a tree).
+
+### Element
+
+An element exposes `.tag` (String), `.attrib` (a Dict of attribute → value), `.text` (character data
+before the first child), `.tail` (character data after this element's end tag),
+and `.children` (a List of child `Element`s). It is iterable (yields its children), supports `len`
+and indexing (`elem[0]`).
+
+- `get(key, default = None)` — an attribute value, or `default` if absent.
+- `find(tag)` — the first child with that tag, or `None`.
+- `findall(tag)` — a List of all children with that tag.
+- `findtext(tag, default = "")` — the text of the first matching child, or `default`.
+- `itertext()` — a List of all text in document order (this element's text, then each descendant's
+  text and tail, walking the whole subtree).
+- `tostring()` — serialize this element (also its `_str_`).
+
+```kirito
+var io = import("io")
+var xml = import("xml")
+
+var root = xml.parse("<books><book id='1'><title>The Hobbit</title></book>" +
+                     "<book id='2'><title>SICP</title></book></books>")
+for book in root.findall("book"):
+    io.print(book.get("id") + ": " + book.findtext("title"))
+# 1: The Hobbit
+# 2: SICP
+io.print(xml.tostring(root.find("book")))   # <book id="1"><title>The Hobbit</title></book>
+```
+
+---
+
+## zlib
+
+DEFLATE compression (interoperable with standard zlib), self-contained. Every function takes a
+**String or a [`Bytes`](types.html#bytes)** and returns the **same type as its input**, so binary
+data (downloads, files) stays byte-correct as Bytes while text round-trips as a String. The gzip
+*container* is its own [`gzip`](#gzip) module.
+
+- `compress(data) → data` — zlib-format (RFC 1950) compress.
+- `decompress(data) → data` — zlib-format decompress (throws on bad data).
+- `deflate(data) → data` — raw DEFLATE compression (no zlib header).
+- `inflate(data) → data` — raw DEFLATE decompression (no zlib header).

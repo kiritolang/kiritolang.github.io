@@ -1,0 +1,320 @@
+# r7_matrix_random.ki — hardened, COMPLEMENTARY self-check of `matrix` + `random`.
+# Where r6_matrix / r6_random cover the basics, r7 leans on the harder edges:
+#   matrix:  serialization round-trips (serialize + dump), 3x3/4x4 det & inverse identities
+#            (det(AB)=det A det B, (AB)^T = B^T A^T, det of a triangular matrix, inverse of a
+#            diagonal), non-finite (inf/NaN) handling, apply orientation, Frobenius-norm properties,
+#            the resource (too-large) guard, and the scalar-on-the-left rule.
+#   random:  large-range / None-argument / type-error cases for randrange & friends, choice & sample
+#            over Strings/Sets, gauss() defaults, the serialize+dump stream-continuation round-trip,
+#            and the full error surface.
+# Computed floats use .compare; random tests assert invariants (never a hard-coded sample). Final
+# line: "r7_matrix_random: <n> checks passed".
+
+var io = import("io")
+var m = import("matrix")
+var r = import("random")
+var mathmod = import("math")
+var dump = import("dump")
+var serialize = import("serialize")
+
+var n = 0
+var ok = Function(c, msg):
+    assert c, msg
+    n = n + 1
+
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+# ================================================================ matrix: harder edges
+
+# ---------------------------------------------------------------- serialization round-trips
+var A = m.Matrix([[1, 2], [3, 4]])
+ok(dump.loads(dump.dumps(A)) == A, "Matrix dump round-trip (exact)")
+ok(serialize.loads(serialize.dumps(A)) == A, "Matrix serialize round-trip (exact)")
+# a non-square matrix and fractional values survive too
+var R = m.Matrix([[0.25, -1.5, 2.0], [3.125, 0.0, -4.75]])
+ok(dump.loads(dump.dumps(R)) == R, "non-square Matrix dump round-trip")
+ok(serialize.loads(serialize.dumps(R)) == R, "non-square Matrix serialize round-trip")
+ok(dump.loads(dump.dumps(m.Matrix([]))) == m.Matrix([]), "empty Matrix dump round-trip")
+
+# ---------------------------------------------------------------- 3x3 determinant & inverse identities
+var T = m.Matrix([[2, 1, 0], [0, 3, 1], [0, 0, 4]])     # upper triangular
+ok(T.determinant().compare(24.0), "det of an upper-triangular matrix = product of the diagonal")
+var D = m.Matrix([[2, 0, 0], [0, 5, 0], [0, 0, 10]])    # diagonal
+ok((D.inverse()).compare(m.Matrix([[0.5, 0, 0], [0, 0.2, 0], [0, 0, 0.1]]), abs_tol = 1e-12),
+   "inverse of a diagonal matrix")
+ok((D * D.inverse()).compare(m.identity(3), abs_tol = 1e-9), "D * D^-1 = I (3x3)")
+# det(A*B) = det(A) * det(B)
+var B = m.Matrix([[1, 0, 2], [-1, 3, 1], [0, 2, 1]])
+var C3 = m.Matrix([[2, 1, 1], [0, 1, 3], [1, 0, 1]])
+ok((B * C3).determinant().compare(B.determinant() * C3.determinant(), 1e-6),
+   "det(AB) = det(A) det(B)")
+# (A*B)^T = B^T * A^T
+ok((B * C3).transpose().compare(C3.transpose() * B.transpose(), 1e-9), "(AB)^T = B^T A^T")
+# inverse of an inverse is the original
+ok((B.inverse()).inverse().compare(B, 1e-6), "(A^-1)^-1 = A")
+# determinant of the transpose equals the determinant
+ok(B.transpose().determinant().compare(B.determinant(), 1e-9), "det(A^T) = det(A)")
+# 4x4 inverse round trip
+var F = m.Matrix([[1, 2, 0, 0], [0, 1, 0, 0], [0, 0, 2, 1], [0, 0, 0, 1]])
+ok((F * F.inverse()).compare(m.identity(4), abs_tol = 1e-9), "4x4 inverse")
+
+# ---------------------------------------------------------------- non-finite (inf / NaN) handling
+ok(throws(Function(): return m.Matrix([[1.0 / 0.0, 0], [0, 1]])), "literal 1.0/0.0 throws before matrix")
+# build a matrix holding inf via .set, then det/inverse must throw (non-finite), not return garbage
+var Inf = m.zeros(2, 2)
+Inf.set(0, 0, mathmod.inf)
+Inf.set(1, 1, 1.0)
+ok(throws(Function(): return Inf.determinant()), "determinant of a matrix with inf throws")
+ok(throws(Function(): return Inf.inverse()), "inverse of a matrix with inf throws")
+var Nan = m.zeros(2, 2)
+Nan.set(0, 0, mathmod.nan)
+Nan.set(1, 1, 1.0)
+ok(throws(Function(): return Nan.inverse()), "inverse of a matrix with NaN throws")
+
+# --------------------------------------------------- scale-relative singularity (well-conditioned!)
+# diag(1e-16) has condition number 1, so its determinant is the exact 1e-32 — the singularity test is
+# scale-relative, NOT a fixed 1e-15 absolute that would falsely floor it to 0.0.
+ok(m.Matrix([[1e-16, 0], [0, 1e-16]]).determinant().compare(1e-32), "tiny-magnitude det computed, not falsely zeroed")
+ok(m.Matrix([[1e-16, 0], [0, 1e-16]]).inverse().get(0, 0).compare(1e16), "tiny-magnitude matrix is invertible")
+# a well-conditioned tiny-but-nonzero determinant is NOT forced to zero
+ok(m.Matrix([[0.001, 0], [0, 0.001]]).determinant().compare(1e-6, 1e-12), "small but valid det preserved")
+# a STRUCTURALLY singular matrix (rank-deficient) still reports det 0.0 and throws on inverse
+ok(m.Matrix([[1.0, 2.0], [2.0, 4.0]]).determinant() == 0.0, "structurally singular det is 0.0")
+ok(throws(Function(): return m.Matrix([[1.0, 2.0], [2.0, 4.0]]).inverse()), "structurally singular inverse throws")
+
+# ---------------------------------------------------------------- apply: orientation + chaining
+var P = m.Matrix([[1, 2, 3]])               # 1x3 row
+ok(P.apply(Function(x): return x * x).shape() == [1, 3], "apply keeps a row shape")
+var Pc = m.Matrix([[1], [2], [3]])          # 3x1 column
+ok(Pc.apply(Function(x): return x + 1).shape() == [3, 1], "apply keeps a column shape")
+ok(A.apply(Function(x): return x * 0).compare(m.zeros(2, 2)), "apply x*0 = zeros")
+# apply twice composes
+ok(A.apply(Function(x): return x + 1).apply(Function(x): return x * 2).compare(m.Matrix([[4, 6], [8, 10]])),
+   "chained apply")
+
+# ---------------------------------------------------------------- Frobenius norm properties
+ok(m.zeros(3, 3).norm().compare(0.0, 1e-12), "norm of zeros is 0")
+ok(m.identity(4).norm().compare(2.0, 1e-12), "norm(I_4) = sqrt(4) = 2")
+# ||cA|| = |c| ||A||
+ok((A * 3).norm().compare(3.0 * A.norm(), 1e-9), "||3A|| = 3 ||A||")
+ok((A * -2).norm().compare(2.0 * A.norm(), 1e-9), "||-2A|| = 2 ||A||")
+# norm is the same as sqrt(sum of squares) of a row vector
+ok(m.vector([3, 4, 12]).norm().compare(13.0, 1e-12), "vector norm sqrt(9+16+144)=13")
+
+# ---------------------------------------------------------------- scalar mul (Float) + the left rule
+ok((A * 0.5).compare(m.Matrix([[0.5, 1], [1.5, 2]])), "scalar multiply by a Float")
+ok((A * 0).compare(m.zeros(2, 2)), "scalar multiply by 0")
+ok(throws(Function(): return 2 * A), "scalar on the left throws (number doesn't know Matrix)")
+ok(throws(Function(): return 2.0 * A), "Float scalar on the left throws")
+
+# ---------------------------------------------------------------- resource guard (too-large)
+ok(throws(Function(): return m.zeros(100000, 100000)), "absurd dimensions throw (resource guard)")
+ok(throws(Function(): return m.ones(50000, 50000)), "absurd ones throw (resource guard)")
+
+# ---------------------------------------------------------------- get/set/row keyword forms (deeper)
+var G = m.Matrix([[1, 2], [3, 4]])
+ok(G.get(row = 1, col = 0) == 3.0, "get(row=,col=) out of source order")
+G.set(value = 9.0, row = 0, col = 1)
+ok(G.get(0, 1) == 9.0, "set with keywords in any order")
+ok(G.row(i = 1) == [3.0, 4.0], "row(i=) keyword")
+ok(A.apply(fn = Function(x): return x + 1).compare(m.Matrix([[2, 3], [4, 5]])), "apply(fn=) keyword")
+
+# ================================================================ random: harder edges
+
+# ---------------------------------------------------------------- randrange: None args + forms
+var g = r.Random(2025)
+# explicit None start / step (the optional-arg paths)
+var nStartOk = True
+var i = 0
+while i < 500:
+    var z = g.randrange(None, 10)              # start defaults to 0
+    if z < 0 or z >= 10:
+        nStartOk = False
+    i = i + 1
+ok(nStartOk, "randrange(None, stop) treats None start as 0")
+var nStepOk = True
+i = 0
+while i < 500:
+    var z2 = g.randrange(2, 12, None)          # step defaults to 1
+    if z2 < 2 or z2 >= 12:
+        nStepOk = False
+    i = i + 1
+ok(nStepOk, "randrange(start, stop, None) treats None step as 1")
+# single-element range randrange(n, n+1) always yields n
+var oneOk = True
+i = 0
+while i < 50:
+    if g.randrange(7, 8) != 7:
+        oneOk = False
+    i = i + 1
+ok(oneOk, "randrange(7, 8) is always 7")
+
+# ---------------------------------------------------------------- randrange: wide span (overflow-safe count)
+# A signed span this wide (here 2^62) would overflow a naive stop-start subtraction; the member-count
+# arithmetic works in unsigned wraparound so it must stay correct and in range.
+var wideOk = True
+i = 0
+while i < 200:
+    var z3 = g.randrange(-2305843009213693952, 2305843009213693952)   # span = 2^62 members
+    if z3 < -2305843009213693952 or z3 >= 2305843009213693952:
+        wideOk = False
+    i = i + 1
+ok(wideOk, "randrange over a 2^62-wide span stays in range (overflow-safe)")
+# a span whose member count exceeds int64 (here ~2^64) throws rather than misbehaving
+ok(throws(Function(): return r.Random(1).randrange(-9223372036854775807, 9223372036854775807)),
+   "randrange too-large to sample throws")
+
+# ---------------------------------------------------------------- randint: full-width + a==b
+var fullOk = True
+i = 0
+while i < 500:
+    var z4 = g.randint(-1000000000000, 1000000000000)
+    if z4 < -1000000000000 or z4 > 1000000000000:
+        fullOk = False
+    i = i + 1
+ok(fullOk, "randint over a wide signed range")
+ok(g.randint(-5, -5) == -5, "randint(-5,-5) = -5")
+
+# ---------------------------------------------------------------- uniform: reversed bounds, type
+# std::uniform_real_distribution(a, b) with a > b is implementation-defined-ish but must not crash and
+# must return a Float; we only assert it returns a Float (no range guarantee for reversed bounds).
+ok(type(g.uniform(5.0, 2.0)) == "Float", "uniform with reversed bounds returns a Float (no crash)")
+ok(type(g.uniform(-3, 3)) == "Float", "uniform accepts Integer bounds")
+# uniform(a, a) is exactly a
+ok(g.uniform(4.0, 4.0).compare(4.0, 1e-12), "uniform(a, a) = a")
+
+# ---------------------------------------------------------------- choice / sample over String & Set
+var s = "abcdef"
+var chOk = True
+i = 0
+while i < 300:
+    if not (g.choice(s) in s):
+        chOk = False
+    i = i + 1
+ok(chOk, "choice over a String returns a character of it")
+# sample from a Set: distinct, correct count, all members of the set
+var setpool = Set([10, 20, 30, 40, 50])
+var sset = g.sample(setpool, 3)
+ok(len(sset) == 3, "sample from a Set returns k elements")
+ok(len(Set(sset)) == 3, "sample from a Set is distinct")
+var setSubOk = True
+for el in sset:
+    if not (el in setpool):
+        setSubOk = False
+ok(setSubOk, "sample from a Set draws members of the set")
+# sample k == len is a full permutation; k == 0 is empty
+ok(len(Set(g.sample([1, 2, 3, 4, 5], 5))) == 5, "sample k=len is a full permutation")
+ok(g.sample([1, 2, 3], 0) == [], "sample k=0 is empty")
+
+# ---------------------------------------------------------------- shuffle: empty / singleton / non-list
+var empty = []
+g.shuffle(empty)
+ok(empty == [], "shuffle of an empty list is fine")
+var single = [42]
+g.shuffle(single)
+ok(single == [42], "shuffle of a singleton is unchanged")
+# shuffle is a true permutation that preserves multiplicity (with duplicates)
+var dups = [1, 1, 2, 2, 3, 3]
+g.shuffle(dups)
+var sorted_dups = sorted(dups)
+ok(sorted_dups == [1, 1, 2, 2, 3, 3], "shuffle preserves element multiplicity")
+ok(throws(Function(): return r.Random(1).shuffle(Set([1, 2, 3]))), "shuffle of a non-List throws")
+ok(throws(Function(): return r.Random(1).shuffle("abc")), "shuffle of a String throws")
+
+# ---------------------------------------------------------------- gauss defaults + expovariate range
+# gauss()/normalvariate() with no args default to mu=0, sigma=1
+ok(type(g.gauss()) == "Float", "gauss() with no args (mu=0,sigma=1)")
+ok(type(g.normalvariate()) == "Float", "normalvariate() with no args")
+# sigma=0 collapses to mu exactly
+var sig0Ok = True
+i = 0
+while i < 20:
+    if g.gauss(3.0, 0.0) != 3.0:
+        sig0Ok = False
+    i = i + 1
+ok(sig0Ok, "gauss(mu, 0) is exactly mu")
+# expovariate is non-negative across many draws
+var expOk = True
+i = 0
+while i < 500:
+    if g.expovariate(2.0) < 0.0:
+        expOk = False
+    i = i + 1
+ok(expOk, "expovariate stays non-negative")
+
+# ---------------------------------------------------------------- determinism: deeper streams
+# Two same-seed generators agree across a MIX of method calls (engine consumed in lock-step).
+var mixStream = Function(seed):
+    var gg = r.Random(seed)
+    var out = []
+    out.append(gg.randint(0, 100))
+    out.append(gg.random())
+    out.append(gg.uniform(0.0, 1.0))
+    out.append(gg.randrange(0, 1000))
+    out.append(gg.choice([1, 2, 3, 4, 5]))
+    return out
+ok(mixStream(77) == mixStream(77), "same seed -> identical mixed stream")
+ok(mixStream(77) != mixStream(78), "different seeds -> different mixed stream")
+# shuffle is deterministic under a fixed seed
+var sh1 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+var sh2 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+r.Random(5).shuffle(sh1)
+r.Random(5).shuffle(sh2)
+ok(sh1 == sh2, "shuffle is deterministic under a fixed seed")
+# sample is deterministic under a fixed seed
+ok(r.Random(9).sample([1, 2, 3, 4, 5, 6, 7, 8], 4) == r.Random(9).sample([1, 2, 3, 4, 5, 6, 7, 8], 4),
+   "sample is deterministic under a fixed seed")
+
+# ---------------------------------------------------------------- serialize + dump: stream continuation
+var advance = Function(gg, k):
+    var out = []
+    var j = 0
+    while j < k:
+        out.append(gg.random())
+        j = j + 1
+    return out
+# dump: a restored generator continues the EXACT same stream
+var gd = r.Random(4242)
+discard advance(gd, 7)
+var gd2 = dump.loads(dump.dumps(gd))
+ok(advance(gd, 12) == advance(gd2, 12), "dump round-trip continues the same stream")
+# serialize: same property
+var gt = r.Random(4242)
+discard advance(gt, 7)
+var gt2 = serialize.loads(serialize.dumps(gt))
+ok(advance(gt, 12) == advance(gt2, 12), "serialize round-trip continues the same stream")
+# a fresh deserialized Random (no restored state) is still usable
+ok(type(dump.loads(dump.dumps(r.Random(1)))) == "Random", "round-tripped Random is a Random")
+
+# ---------------------------------------------------------------- Random construction + seed kwarg
+ok(type(r.Random()) == "Random", "Random() with no seed (OS-seeded)")
+ok(type(r.Random(None)) == "Random", "Random(None) is OS-seeded")
+ok(type(r.Random(seed = 123)) == "Random", "Random(seed=) keyword")
+ok(r.Random(seed = 9).random() == r.Random(seed = 9).random(), "seed= keyword is reproducible")
+# seed() reseeds in place to reproduce a stream
+var gr = r.Random(0)
+gr.seed(321)
+var head = advance(gr, 5)
+gr.seed(321)
+ok(advance(gr, 5) == head, "seed() reproduces the stream")
+ok(r.Random(1).seed(7) == None, "seed() returns None")
+
+# ---------------------------------------------------------------- error surface (must throw)
+ok(throws(Function(): return r.Random(1).randint(5, 1)), "randint a > b throws")
+ok(throws(Function(): return r.Random(1).randint(1.5, 3)), "randint of a non-Integer throws")
+ok(throws(Function(): return r.Random(1).randrange(5, 5)), "randrange empty range throws")
+ok(throws(Function(): return r.Random(1).randrange(0, 10, 0)), "randrange step=0 throws")
+ok(throws(Function(): return r.Random(1).randrange(0, 10, 1.5)), "randrange of a non-Integer step throws")
+ok(throws(Function(): return r.Random(1).choice([])), "choice from empty throws")
+ok(throws(Function(): return r.Random(1).sample([1, 2, 3], 4)), "sample k > len throws")
+ok(throws(Function(): return r.Random(1).sample([1, 2, 3], -1)), "sample k < 0 throws")
+ok(throws(Function(): return r.Random(1).expovariate(0.0)), "expovariate lambda = 0 throws")
+ok(throws(Function(): return r.Random(1).expovariate(-2.0)), "expovariate lambda < 0 throws")
+ok(throws(Function(): return r.Random(1).uniform(1.0)), "uniform with one argument throws")
+
+io.print("r7_matrix_random: " + String(n) + " checks passed")

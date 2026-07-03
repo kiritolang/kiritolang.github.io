@@ -1,0 +1,96 @@
+# ============================================================ XML: parse/serialize, malformed, fuzz
+var io = import("io")
+var xml = import("xml")
+var random = import("random")
+
+# --- parse + navigate ---
+var doc = "<library name='central'><book id='1'><title>Hob</title><author>T</author></book><book id='2'><title>SICP</title><author>A &amp; S</author></book></library>"
+var root = xml.parse(doc)
+assert root.tag == "library", "root tag"
+assert root.get("name") == "central", "attribute"
+assert root.get("missing") == None and root.get("missing", "d") == "d", "absent attr / default"
+assert len(root.findall("book")) == 2, "findall"
+assert root.find("book").get("id") == "1", "find first"
+assert root.find("nope") == None, "find absent -> None"
+assert root.findall("book")[1].find("author").text == "A & S", "&amp; decoded"
+
+# --- entities: named, decimal, hex ---
+var ent = xml.parse("<e>&lt;&gt;&amp;&quot;&apos;&#65;&#x42;</e>")
+assert ent.text == "<>&\"'AB", "all entity kinds decode"
+assert xml.parse("<e>a&unknown;b</e>").text == "a&unknown;b", "unknown entity verbatim"
+
+# --- attributes: single + double quotes, empty element ---
+assert xml.parse("<e a='1' b=\"2\"/>").get("a") == "1", "single-quoted attr"
+assert xml.parse("<e a='1' b=\"2\"/>").get("b") == "2", "double-quoted attr"
+var emp = xml.parse("<e></e>")
+assert len(emp) == 0 and emp.text == "", "empty element"
+
+# --- children indexing/iteration ---
+var lst = xml.parse("<r><a>1</a><b>2</b><c>3</c></r>")
+assert len(lst) == 3 and lst[0].tag == "a" and lst[2].text == "3", "len/index children"
+
+# --- mixed content text order (itertext) ---
+assert "".join(xml.parse("<r>x<a>y</a>z</r>").itertext()) == "xyz", "itertext document order"
+
+# --- serialize round-trips and re-escapes ---
+var ser = xml.tostring(xml.parse("<r k=\"a&amp;b\">x &lt; y</r>"))
+assert ser == "<r k=\"a&amp;b\">x &lt; y</r>", "tostring re-escapes"
+# round-trip: parse(tostring(parse(x))) stable
+var x1 = "<doc><a id='1'>hi</a><b/><c>x &amp; y</c></doc>"
+assert xml.tostring(xml.parse(xml.tostring(xml.parse(x1)))) == xml.tostring(xml.parse(x1)), "double round-trip stable"
+
+# --- comments, CDATA, declaration tolerated ---
+var withDecl = xml.parse("<?xml version='1.0'?><root><!-- c --><x>1</x></root>")
+assert withDecl.find("x").text == "1", "declaration + comment skipped"
+
+# --- DEEP tree: iterative tostring/itertext must not overflow ---
+var deep = ""
+var depth = 3000
+var i = 0
+while i < depth:
+    deep = "<n>" + deep
+    i = i + 1
+deep = deep + "LEAF"
+i = 0
+while i < depth:
+    deep = deep + "</n>"
+    i = i + 1
+var dr = xml.fromstring(deep)
+assert "LEAF" in xml.tostring(dr), "deep tree serializes (iterative)"
+assert "LEAF" in dr.itertext(), "deep tree itertext (iterative)"
+
+# --- MALFORMED inputs: lenient parser must not crash (either parse or throw cleanly) ---
+var safe = Function(fn):
+    try:
+        return fn()
+    catch as e:
+        return "ERR"
+discard safe(Function(): return xml.parse(""))
+discard safe(Function(): return xml.parse("<unclosed>"))
+discard safe(Function(): return xml.parse("<a></b>"))
+discard safe(Function(): return xml.parse("<<>>"))
+discard safe(Function(): return xml.parse("plain text no tags"))
+discard safe(Function(): return xml.parse("<a attr=unquoted>x</a>"))
+discard safe(Function(): return xml.parse("<a>&#xZZZ;</a>"))
+assert True, "malformed inputs never crashed the interpreter"
+
+# --- FUZZ: build a random valid tree, serialize, re-parse, compare structure ---
+var rng = random.Random(20260603)
+var t = 0
+while t < 200:
+    var n = rng.randint(1, 5)
+    var parts = ["<root>"]
+    var k = 0
+    while k < n:
+        var tag = "t" + String(rng.randint(0, 4))
+        var val = String(rng.randint(0, 999))
+        parts.append("<" + tag + ">" + val + "</" + tag + ">")
+        k = k + 1
+    parts.append("</root>")
+    var src = "".join(parts)
+    var tree = xml.parse(src)
+    assert len(tree) == n, "fuzz: child count preserved"
+    assert xml.tostring(xml.parse(xml.tostring(tree))) == xml.tostring(tree), "fuzz: round-trip stable"
+    t = t + 1
+
+io.print("OK xml")

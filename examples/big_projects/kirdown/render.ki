@@ -1,0 +1,65 @@
+# kirdown/lib/render.ki — walks the block AST and produces an HTML document body. Inline
+# formatting (bold/italic/code/links) is delegated to `inline.render` on each block's TEXT — code
+# fences and image alts/URLs are already handled specially.
+#
+# API:
+#   render.toHtml(blocks : List) -> String                 # the <body> content
+#   render.fullPage(title : String, body : String) -> String   # a valid tiny HTML5 shell
+
+var inline = import("inline")
+
+# Escape a fragment for direct insertion (mirrors inline.escapeHtml, kept here so this file has
+# no back-dependency other than `inline.render`).
+var _esc = Function(s : String) -> String:
+    var out = ""
+    for ch in s:
+        if ch == "&":
+            out = out + "&amp;"
+        elif ch == "<":
+            out = out + "&lt;"
+        elif ch == ">":
+            out = out + "&gt;"
+        elif ch == "\"":
+            out = out + "&quot;"
+        elif ch == "'":
+            out = out + "&#39;"
+        else:
+            out = out + ch
+    return out
+
+var _renderBlock = Function(b : Dict) -> String:
+    var k = b["kind"]
+    if k == "heading":
+        return "<h" + String(b["level"]) + ">" + inline.render(b["text"]) + "</h" + String(b["level"]) + ">"
+    if k == "paragraph":
+        return "<p>" + inline.render(b["text"]) + "</p>"
+    if k == "code_fence":
+        var openTag = "<pre><code"
+        var lang = b["lang"]
+        if len(lang) > 0:
+            openTag = openTag + " class=\"language-" + _esc(lang) + "\""
+        openTag = openTag + ">"
+        return openTag + _esc(b["code"]) + "</code></pre>"
+    if k == "list":
+        var tag = "ol" if b["ordered"] else "ul"
+        var out = "<" + tag + ">"
+        for it in b["items"]:
+            out = out + "<li>" + inline.render(it) + "</li>"
+        out = out + "</" + tag + ">"
+        return out
+    if k == "blockquote":
+        # Split paragraphs on blank lines inside the quote for slightly nicer output; the block
+        # parser already stopped at a blank, so a blockquote is one paragraph here.
+        return "<blockquote><p>" + inline.render(b["text"]) + "</p></blockquote>"
+    if k == "hr":
+        return "<hr/>"
+    return ""
+
+var toHtml = Function(blocks : List) -> String:
+    var parts = []
+    for b in blocks:
+        parts.append(_renderBlock(b))
+    return "\n".join(parts) + "\n"
+
+var fullPage = Function(title : String, body : String) -> String:
+    return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\"/>\n<title>" + _esc(title) + "</title>\n</head>\n<body>\n" + body + "</body>\n</html>\n"

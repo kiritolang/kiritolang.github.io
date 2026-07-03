@@ -1,0 +1,1 @@
+discard import("math").gcd(1.5, 2)

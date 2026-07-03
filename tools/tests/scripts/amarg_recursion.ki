@@ -1,0 +1,5 @@
+# A recursive function reads argmain at its base case. Recursion does not change which module's
+# argmain is seen.
+var countdown = Function(k):
+    return argmain if k <= 0 else countdown(k - 1)
+var m = countdown(4)

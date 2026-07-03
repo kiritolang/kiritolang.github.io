@@ -1,0 +1,136 @@
+# test_ledger.ki — self-test for the ledger accounting tool. Uses ok(cond, msg) + counter idiom;
+# final line prints "ledger: N checks passed" (matched byte-for-byte against test_ledger.expected).
+
+var io   = import("io")
+var path = import("path")
+
+var parse  = import("parse")
+var book   = import("book")
+var report = import("report")
+var fmt    = import("fmt")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =============================================================================
+# parse: minimal happy path
+# =============================================================================
+var src1 = "2024-01-05 * Opening balances\n    Assets:Checking      5000.00 USD\n    Equity:Opening      -5000.00 USD\n"
+var t1 = parse.parseString(src1, "in.ledger")
+ok(len(t1) == 1, "single transaction parsed")
+ok(t1[0]["date"]["y"] == 2024 and t1[0]["date"]["m"] == 1 and t1[0]["date"]["d"] == 5, "date fields parsed correctly")
+ok(t1[0]["desc"] == "Opening balances", "description carried through unchanged")
+ok(t1[0]["flag"] == "*", "flag captured")
+ok(len(t1[0]["postings"]) == 2, "both postings captured")
+ok(t1[0]["postings"][0]["account"] == "Assets:Checking", "account name (with colon) preserved")
+ok(t1[0]["postings"][0]["amount"] == 5000.0, "amount is Float")
+ok(t1[0]["postings"][1]["amount"] == -5000.0, "negative amount")
+
+# multiple transactions separated by blanks
+var src2 = "2024-01-05 * A\n    Assets:X 10.00\n    Assets:Y -10.00\n\n2024-01-06 ! B\n    Assets:X -3.00\n    Assets:Y  3.00\n"
+var t2 = parse.parseString(src2, "in.ledger")
+ok(len(t2) == 2 and t2[1]["flag"] == "!", "! is a valid transaction flag")
+
+# comments (line and posting-level)
+var src3 = "; a leading comment\n# another comment\n2024-01-05 * A\n    ; posting comment before postings\n    Assets:X 10.00\n    Assets:Y -10.00 ; trailing posting comment\n"
+var t3 = parse.parseString(src3, "in.ledger")
+ok(len(t3) == 1 and len(t3[0]["postings"]) == 2, "comments (top-level + in-tx) are ignored")
+
+# a trailing `USD` suffix is optional
+var src4 = "2024-01-05 * A\n    Assets:X 10.00\n    Assets:Y -10.00\n"
+var t4 = parse.parseString(src4, "in.ledger")
+ok(t4[0]["postings"][0]["amount"] == 10.0, "amount without a USD suffix parses fine")
+
+# ...and works with USD too
+var t5 = parse.parseString("2024-01-05 * A\n    Assets:X 10.00 USD\n    Assets:Y -10.00 USD\n", "in.ledger")
+ok(t5[0]["postings"][0]["amount"] == 10.0, "USD suffix accepted")
+
+# =============================================================================
+# parse: adversarial / error paths
+# =============================================================================
+# imbalanced transaction throws with a clear message
+ok(throws(Function(): return parse.parseString("2024-01-05 * bad\n    Assets:X 10.00\n    Assets:Y -5.00\n", "in.ledger")), "imbalanced transaction throws")
+
+# a bad date throws
+ok(throws(Function(): return parse.parseString("2024-02-30 * bad\n    A:x 1.0\n    B:x -1.0\n", "in.ledger")), "invalid calendar date throws")
+
+# malformed header (missing flag)
+ok(throws(Function(): return parse.parseString("2024-01-05 no flag\n    A:x 1.0\n    B:x -1.0\n", "in.ledger")), "missing tx flag throws")
+
+# malformed posting line
+ok(throws(Function(): return parse.parseString("2024-01-05 * A\n    junk\n", "in.ledger")), "malformed posting throws")
+
+# a transaction with no postings throws
+ok(throws(Function(): return parse.parseString("2024-01-05 * empty\n", "in.ledger")), "empty transaction throws")
+
+# =============================================================================
+# book: aggregation + filtering
+# =============================================================================
+var demoSrc = "2024-01-05 * open\n    Assets:Checking     100.00\n    Equity:Opening     -100.00\n\n2024-01-08 * food\n    Expenses:Food        10.00\n    Assets:Checking     -10.00\n\n2024-02-14 * salary\n    Assets:Checking     500.00\n    Income:Salary      -500.00\n"
+var demo = parse.parseString(demoSrc, "demo")
+var bals = book.accountBalances(demo)
+ok(bals["Assets:Checking"] == 590.0, "sum of Checking postings correct")
+ok(bals["Expenses:Food"] == 10.0, "sum of Food postings correct")
+ok(bals["Income:Salary"] == -500.0, "sum of Salary postings correct")
+
+# category classification
+ok(book.categoryOf("Assets:Checking") == book.Category["Assets"], "categoryOf recognizes Assets")
+ok(book.categoryOf("Expenses:Food") == book.Category["Expenses"], "categoryOf recognizes Expenses")
+ok(book.categoryOf("Income:Salary") == book.Category["Income"], "categoryOf recognizes Income")
+ok(book.categoryOf("Equity:Opening") == book.Category["Equity"], "categoryOf recognizes Equity")
+ok(book.categoryOf("Liabilities:CardX") == book.Category["Liabilities"], "categoryOf recognizes Liabilities")
+ok(throws(Function(): return book.categoryOf("Bogus:Sub")), "unknown top-level category throws")
+
+# date-range filter: inclusive on both sides
+var jan = book.filterDateRange(demo, "2024-01-01", "2024-01-31")
+ok(len(jan) == 2, "filter keeps only Jan transactions")
+var feb = book.filterDateRange(demo, "2024-02-01", None)
+ok(len(feb) == 1 and feb[0]["desc"] == "salary", "unbounded upper filter keeps Feb+")
+
+# account prefix matching: Expenses matches Expenses:Food but NOT ExpensesOther
+var demo2 = parse.parseString(demoSrc + "\n2024-02-20 * odd\n    ExpensesOther:X  1.00\n    Assets:Checking -1.00\n", "demo")
+var ep = book.accountPostings(demo2, "Expenses")
+ok(len(ep) == 1 and ep[0]["account"] == "Expenses:Food", "'Expenses' does NOT match 'ExpensesOther' (colon-boundary)")
+
+# =============================================================================
+# report smoke tests
+# =============================================================================
+ok("Assets:Checking" in report.balances(demo), "balances report mentions each account")
+ok("Net:" in report.income(demo), "income report labels Net")
+ok("food" in report.register(demo, "Expenses:Food"), "register on Expenses:Food shows the transaction desc")
+ok("top " in report.top(demo, 5), "top report labels itself")
+ok("Expenses summary" in report.stats(demo), "stats report emits summary block")
+ok("(no transactions)" in report.balances([]), "empty book message")
+ok("(no postings on '" in report.register(demo, "Nowhere:X"), "register on an unknown account explains")
+ok("(no Expenses postings)" in report.top([], 5), "top on an empty book explains")
+
+# =============================================================================
+# fmt: money + iso
+# =============================================================================
+ok(fmt.money(1234.5) == "1,234.50", "money format with thousands separator")
+ok(fmt.money(-5.0) == "-5.00", "money format keeps the negative sign")
+ok(fmt.money(0.0) == "0.00", "money format for zero")
+ok(fmt.iso({"y": 2024, "m": 1, "d": 5}) == "2024-01-05", "iso date pads month/day")
+ok(fmt.iso({"y": 2024, "m": 12, "d": 31}) == "2024-12-31", "iso date at year end")
+
+# =============================================================================
+# end-to-end: read a real file, run a report
+# =============================================================================
+var demoFile = path.gettempdir() + "/ledger_selftest.ledger"
+var fh = io.open(demoFile, "w")
+fh.write(demoSrc)
+fh.close()
+var loaded = parse.parseFile(demoFile)
+ok(len(loaded) == 3, "parseFile round-trips through a real file")
+discard path.remove(demoFile, missing_ok = True)
+
+io.print("ledger: " + String(n) + " checks passed")

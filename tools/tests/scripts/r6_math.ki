@@ -1,0 +1,264 @@
+# r6_math.ki — exhaustive self-check of the `math` stdlib module.
+# Every constant/function from every angle: typical values, identities, edge inputs,
+# and every documented domain error (must throw). Floats use .compare (never == on a
+# computed float). Final line: "r6_math: <n> checks passed".
+
+var math = import("math")
+var io = import("io")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# Returns True iff the thunk throws (used to assert documented domain errors).
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+# ---------------------------------------------------------------- constants
+ok(math.pi.compare(3.141592653589793, 1e-12), "pi")
+ok(math.e.compare(2.718281828459045, 1e-12), "e")
+ok(math.tau.compare(6.283185307179586, 1e-12), "tau")
+ok(math.tau.compare(2.0 * math.pi, 1e-12), "tau == 2*pi")
+ok(math.isinf(math.inf), "inf is inf")
+ok(math.inf > 1e300, "inf is large")
+ok(math.isnan(math.nan), "nan is nan")
+ok(type(math.pi) == "Float", "pi is Float")
+ok(type(math.inf) == "Float", "inf is Float")
+
+# ---------------------------------------------------------------- sqrt / cbrt
+ok(math.sqrt(4).compare(2.0, 1e-12), "sqrt(4)")
+ok(math.sqrt(2).compare(1.4142135623730951, 1e-12), "sqrt(2)")
+ok(math.sqrt(0).compare(0.0, 1e-12), "sqrt(0)")
+ok(math.sqrt(1e100).compare(1e50, 1e-9), "sqrt(1e100)")
+ok(math.cbrt(27).compare(3.0, 1e-12), "cbrt(27)")
+ok(math.cbrt(-8).compare(-2.0, 1e-12), "cbrt(-8) (defined for negatives)")
+ok(math.cbrt(0).compare(0.0, 1e-12), "cbrt(0)")
+
+# ---------------------------------------------------------------- trig + identities
+ok(math.sin(0).compare(0.0, 1e-12), "sin(0)")
+ok(math.sin(math.pi / 2).compare(1.0, 1e-12), "sin(pi/2)")
+ok(math.cos(0).compare(1.0, 1e-12), "cos(0)")
+ok(math.cos(math.pi).compare(-1.0, 1e-12), "cos(pi)")
+ok(math.tan(0).compare(0.0, 1e-12), "tan(0)")
+ok(math.tan(math.pi / 4).compare(1.0, 1e-9), "tan(pi/4)")
+# sin^2 + cos^2 == 1
+var th = 0.7
+ok((math.sin(th) ** 2 + math.cos(th) ** 2).compare(1.0, 1e-12), "sin^2+cos^2=1")
+ok((math.sin(2.3) ** 2 + math.cos(2.3) ** 2).compare(1.0, 1e-12), "sin^2+cos^2=1 (b)")
+# tan == sin/cos
+ok(math.tan(1.1).compare(math.sin(1.1) / math.cos(1.1), 1e-12), "tan=sin/cos")
+
+# ---------------------------------------------------------------- inverse trig + round trip
+ok(math.asin(1).compare(math.pi / 2, 1e-12), "asin(1)")
+ok(math.asin(0).compare(0.0, 1e-12), "asin(0)")
+ok(math.acos(1).compare(0.0, 1e-12), "acos(1)")
+ok(math.acos(0).compare(math.pi / 2, 1e-12), "acos(0)")
+ok(math.atan(1).compare(math.pi / 4, 1e-12), "atan(1)")
+ok(math.asin(math.sin(0.5)).compare(0.5, 1e-12), "asin(sin(x))=x")
+ok(math.acos(math.cos(0.5)).compare(0.5, 1e-12), "acos(cos(x))=x")
+ok(math.atan(math.tan(0.5)).compare(0.5, 1e-12), "atan(tan(x))=x")
+# atan2: quadrant aware
+ok(math.atan2(1, 1).compare(math.pi / 4, 1e-12), "atan2(1,1)")
+ok(math.atan2(1, -1).compare(3.0 * math.pi / 4, 1e-12), "atan2(1,-1)")
+ok(math.atan2(0, -1).compare(math.pi, 1e-12), "atan2(0,-1)")
+ok(math.atan2(-1, -1).compare(-3.0 * math.pi / 4, 1e-12), "atan2(-1,-1)")
+
+# ---------------------------------------------------------------- hyperbolic + identities
+ok(math.sinh(0).compare(0.0, 1e-12), "sinh(0)")
+ok(math.cosh(0).compare(1.0, 1e-12), "cosh(0)")
+ok(math.tanh(0).compare(0.0, 1e-12), "tanh(0)")
+# cosh^2 - sinh^2 == 1
+ok((math.cosh(1.3) ** 2 - math.sinh(1.3) ** 2).compare(1.0, 1e-9), "cosh^2-sinh^2=1")
+ok(math.tanh(2.0).compare(math.sinh(2.0) / math.cosh(2.0), 1e-12), "tanh=sinh/cosh")
+# inverse hyperbolic round trips
+ok(math.asinh(math.sinh(0.9)).compare(0.9, 1e-12), "asinh(sinh(x))=x")
+ok(math.acosh(math.cosh(0.9)).compare(0.9, 1e-12), "acosh(cosh(x))=x")
+ok(math.atanh(math.tanh(0.9)).compare(0.9, 1e-12), "atanh(tanh(x))=x")
+ok(math.asinh(0).compare(0.0, 1e-12), "asinh(0)")
+ok(math.acosh(1).compare(0.0, 1e-12), "acosh(1)")
+ok(math.atanh(0).compare(0.0, 1e-12), "atanh(0)")
+
+# ---------------------------------------------------------------- hypot
+ok(math.hypot(3, 4).compare(5.0, 1e-12), "hypot(3,4)")
+ok(math.hypot(0, 0).compare(0.0, 1e-12), "hypot(0,0)")
+ok(math.hypot(5, 12).compare(13.0, 1e-12), "hypot(5,12)")
+# no overflow on huge legs
+ok(math.isfinite(math.hypot(1e200, 1e200)), "hypot huge no overflow")
+
+# ---------------------------------------------------------------- exp / log family + identities
+ok(math.exp(0).compare(1.0, 1e-12), "exp(0)")
+ok(math.exp(1).compare(math.e, 1e-12), "exp(1)=e")
+ok(math.log(math.e).compare(1.0, 1e-12), "log(e)=1")
+ok(math.log(1).compare(0.0, 1e-12), "log(1)=0")
+ok(math.exp(math.log(7.0)).compare(7.0, 1e-12), "exp(log(x))=x")
+ok(math.log(math.exp(2.5)).compare(2.5, 1e-12), "log(exp(x))=x")
+ok(math.log(8, 2).compare(3.0, 1e-12), "log(8,2)=3")
+ok(math.log(1000, 10).compare(3.0, 1e-12), "log(1000,10)=3")
+ok(math.log(5, None).compare(math.log(5), 1e-12), "log(x,None)=log(x)")
+ok(math.log2(8).compare(3.0, 1e-12), "log2(8)=3")
+ok(math.log2(1).compare(0.0, 1e-12), "log2(1)=0")
+ok(math.log10(1000).compare(3.0, 1e-12), "log10(1000)=3")
+ok(math.log10(1).compare(0.0, 1e-12), "log10(1)=0")
+# expm1 / log1p accurate for small x
+ok(math.expm1(0).compare(0.0, 1e-12), "expm1(0)=0")
+ok(math.expm1(1).compare(math.e - 1.0, 1e-12), "expm1(1)=e-1")
+ok(math.log1p(0).compare(0.0, 1e-12), "log1p(0)=0")
+ok(math.log1p(math.e - 1.0).compare(1.0, 1e-12), "log1p(e-1)=1")
+ok(math.log1p(math.expm1(1e-8)).compare(1e-8, 1e-15), "log1p(expm1(x))=x small")
+# overflow to inf is NOT a domain error (no throw), result is inf
+ok(math.isinf(math.exp(1000)), "exp(1000)->inf (range, not domain)")
+
+# ---------------------------------------------------------------- pow (math.pow)
+ok(math.pow(2, 10).compare(1024.0, 1e-9), "pow(2,10)")
+ok(math.pow(2, 0).compare(1.0, 1e-12), "pow(2,0)=1")
+ok(math.pow(2, -1).compare(0.5, 1e-12), "pow(2,-1)")
+ok(math.pow(0, 0).compare(1.0, 1e-12), "pow(0,0)=1")
+ok(math.pow(-2, 3).compare(-8.0, 1e-12), "pow(-2,3) integer exp ok")
+ok(math.pow(-2, 2).compare(4.0, 1e-12), "pow(-2,2) integer exp ok")
+ok(math.pow(9, 0.5).compare(3.0, 1e-12), "pow(9,0.5)")
+ok(type(math.pow(2, 3)) == "Float", "math.pow returns Float")
+
+# ---------------------------------------------------------------- gamma / lgamma / erf
+ok(math.gamma(5).compare(24.0, 1e-9), "gamma(5)=4!")
+ok(math.gamma(1).compare(1.0, 1e-12), "gamma(1)=1")
+ok(math.gamma(6).compare(120.0, 1e-9), "gamma(6)=5!")
+# gamma(n) == (n-1)!
+ok(math.gamma(7).compare(math.factorial(6), 1e-6), "gamma(7)=6!")
+ok(math.gamma(0.5).compare(math.sqrt(math.pi), 1e-12), "gamma(1/2)=sqrt(pi)")
+# defined for negative non-integers
+ok(math.isfinite(math.gamma(-0.5)), "gamma(-0.5) finite (negative non-int)")
+ok(math.lgamma(1).compare(0.0, 1e-12), "lgamma(1)=0")
+ok(math.lgamma(5).compare(math.log(24.0), 1e-9), "lgamma(5)=log(24)")
+# erf/erfc
+ok(math.erf(0).compare(0.0, 1e-12), "erf(0)=0")
+ok((math.erf(1) + math.erfc(1)).compare(1.0, 1e-12), "erf+erfc=1")
+ok(math.erfc(0).compare(1.0, 1e-12), "erfc(0)=1")
+ok(math.erf(100).compare(1.0, 1e-12), "erf(large)->1")
+
+# ---------------------------------------------------------------- rounding family
+ok(math.floor(3.7) == 3, "floor(3.7)=3")
+ok(math.floor(-3.2) == -4, "floor(-3.2)=-4")
+ok(math.ceil(3.2) == 4, "ceil(3.2)=4")
+ok(math.ceil(-3.7) == -3, "ceil(-3.7)=-3")
+ok(type(math.floor(3.7)) == "Integer", "floor returns Integer")
+ok(type(math.ceil(3.2)) == "Integer", "ceil returns Integer")
+ok(math.trunc(3.7).compare(3.0, 1e-12), "trunc(3.7)=3")
+ok(math.trunc(-3.7).compare(-3.0, 1e-12), "trunc(-3.7)=-3 (toward zero)")
+ok(type(math.trunc(3.7)) == "Float", "trunc returns Float")
+
+# ---------------------------------------------------------------- fabs / copysign / fmod
+ok(math.fabs(-5).compare(5.0, 1e-12), "fabs(-5)=5")
+ok(math.fabs(5).compare(5.0, 1e-12), "fabs(5)=5")
+ok(type(math.fabs(-5)) == "Float", "fabs returns Float")
+ok(math.copysign(3, -1).compare(-3.0, 1e-12), "copysign(3,-1)=-3")
+ok(math.copysign(-3, 1).compare(3.0, 1e-12), "copysign(-3,1)=3")
+ok(math.fmod(7, 3).compare(1.0, 1e-12), "fmod(7,3)=1")
+ok(math.fmod(-7, 3).compare(-1.0, 1e-12), "fmod(-7,3)=-1 (sign of x)")
+ok(math.fmod(7, -3).compare(1.0, 1e-12), "fmod(7,-3)=1")
+
+# ---------------------------------------------------------------- degrees / radians
+ok(math.degrees(math.pi).compare(180.0, 1e-12), "degrees(pi)=180")
+ok(math.radians(180).compare(math.pi, 1e-12), "radians(180)=pi")
+ok(math.degrees(math.radians(57.0)).compare(57.0, 1e-9), "degrees(radians(x))=x")
+
+# ---------------------------------------------------------------- isnan / isinf / isfinite
+ok(math.isnan(math.nan), "isnan(nan)")
+ok(not math.isnan(1.0), "not isnan(1.0)")
+ok(math.isinf(math.inf), "isinf(inf)")
+ok(math.isinf(-math.inf), "isinf(-inf)")
+ok(not math.isinf(1.0), "not isinf(1.0)")
+ok(math.isfinite(1.0), "isfinite(1.0)")
+ok(not math.isfinite(math.inf), "not isfinite(inf)")
+ok(not math.isfinite(math.nan), "not isfinite(nan)")
+# NaN passes through every unary fn unchanged (not a domain error)
+ok(math.isnan(math.sqrt(math.nan)), "sqrt(nan)=nan")
+ok(math.isnan(math.asin(math.nan)), "asin(nan)=nan (NaN passes through)")
+ok(math.isnan(math.log(math.nan)), "log(nan)=nan")
+ok(math.isnan(math.gamma(math.nan)), "gamma(nan)=nan")
+
+# ---------------------------------------------------------------- gcd / lcm
+ok(math.gcd(12, 18) == 6, "gcd(12,18)=6")
+ok(math.gcd(0, 5) == 5, "gcd(0,5)=5")
+ok(math.gcd(0, 0) == 0, "gcd(0,0)=0")
+ok(math.gcd(-12, 18) == 6, "gcd(-12,18)=6 (magnitudes)")
+ok(math.gcd(17, 5) == 1, "gcd(17,5)=1 (coprime)")
+ok(math.lcm(4, 6) == 12, "lcm(4,6)=12")
+ok(math.lcm(0, 5) == 0, "lcm(0,5)=0")
+ok(math.lcm(-4, 6) == 12, "lcm(-4,6)=12")
+ok(math.lcm(7, 13) == 91, "lcm(7,13)=91")
+ok(type(math.gcd(12, 18)) == "Integer", "gcd returns Integer")
+
+# ---------------------------------------------------------------- factorial / comb / perm / prod
+ok(math.factorial(0) == 1, "factorial(0)=1")
+ok(math.factorial(1) == 1, "factorial(1)=1")
+ok(math.factorial(5) == 120, "factorial(5)=120")
+ok(math.factorial(10) == 3628800, "factorial(10)")
+ok(math.comb(5, 2) == 10, "comb(5,2)=10")
+ok(math.comb(5, 0) == 1, "comb(5,0)=1")
+ok(math.comb(5, 5) == 1, "comb(5,5)=1")
+ok(math.comb(3, 5) == 0, "comb(3,5)=0 (k>n)")
+ok(math.comb(30, 15) == 155117520, "comb(30,15)")
+ok(math.comb(10, 3) == math.comb(10, 7), "comb symmetry")
+ok(math.perm(5, 2) == 20, "perm(5,2)=20")
+ok(math.perm(5) == 120, "perm(5)=5! (k omitted)")
+ok(math.perm(5, None) == 120, "perm(5,None)=5!")
+ok(math.perm(5, 0) == 1, "perm(5,0)=1")
+ok(math.perm(3, 5) == 0, "perm(3,5)=0 (k>n)")
+ok(math.prod([1, 2, 3, 4]) == 24, "prod([1,2,3,4])=24")
+ok(math.prod([]) == 1, "prod([])=1 (empty)")
+ok(math.prod([1, 2, 3], 2) == 12, "prod with start=2")
+ok(math.prod([1.5, 2]).compare(3.0, 1e-12), "prod with a float -> float")
+ok(type(math.prod([2, 3])) == "Integer", "all-int prod is Integer")
+ok(type(math.prod([2, 3.0])) == "Float", "float-in-mix prod is Float")
+
+# ---------------------------------------------------------------- kwargs (signatured natives)
+ok(math.sqrt(x = 16).compare(4.0, 1e-12), "sqrt(x=16) kwarg")
+ok(math.pow(x = 2, y = 5).compare(32.0, 1e-9), "pow(x=,y=) kwargs")
+ok(math.pow(y = 5, x = 2).compare(32.0, 1e-9), "pow out-of-order kwargs")
+ok(math.log(x = 8, base = 2).compare(3.0, 1e-12), "log(x=,base=) kwargs")
+ok(math.comb(n = 5, k = 2) == 10, "comb(n=,k=) kwargs")
+ok(math.hypot(x = 3, y = 4).compare(5.0, 1e-12), "hypot kwargs")
+
+# ---------------------------------------------------------------- DOMAIN ERRORS (must throw)
+ok(throws(Function(): return math.sqrt(-1)), "sqrt(-1) throws")
+ok(throws(Function(): return math.log(0)), "log(0) throws")
+ok(throws(Function(): return math.log(-1)), "log(-1) throws")
+ok(throws(Function(): return math.asin(2)), "asin(2) throws")
+ok(throws(Function(): return math.asin(-2)), "asin(-2) throws")
+ok(throws(Function(): return math.acos(2)), "acos(2) throws")
+ok(throws(Function(): return math.acosh(0)), "acosh(0) throws")
+ok(throws(Function(): return math.acosh(0.5)), "acosh(0.5) throws")
+ok(throws(Function(): return math.atanh(1)), "atanh(1) throws")
+ok(throws(Function(): return math.atanh(-1)), "atanh(-1) throws")
+ok(throws(Function(): return math.atanh(2)), "atanh(2) throws")
+ok(throws(Function(): return math.log2(0)), "log2(0) throws")
+ok(throws(Function(): return math.log2(-1)), "log2(-1) throws")
+ok(throws(Function(): return math.log10(0)), "log10(0) throws")
+ok(throws(Function(): return math.log1p(-1)), "log1p(-1) throws")
+ok(throws(Function(): return math.log1p(-2)), "log1p(-2) throws")
+ok(throws(Function(): return math.gamma(0)), "gamma(0) throws")
+ok(throws(Function(): return math.gamma(-1)), "gamma(-1) throws")
+ok(throws(Function(): return math.gamma(-2)), "gamma(-2) throws")
+ok(throws(Function(): return math.lgamma(0)), "lgamma(0) throws")
+ok(throws(Function(): return math.lgamma(-1)), "lgamma(-1) throws")
+ok(throws(Function(): return math.pow(-2, 0.5)), "pow(-2,0.5) throws (neg base, frac exp)")
+ok(throws(Function(): return math.pow(0, -1)), "pow(0,-1) throws (zero to neg power)")
+ok(throws(Function(): return math.fmod(5, 0)), "fmod(x,0) throws")
+ok(throws(Function(): return math.log(5, 1)), "log base 1 throws")
+ok(throws(Function(): return math.log(5, -2)), "log base <=0 throws")
+ok(throws(Function(): return math.log(5, 0)), "log base 0 throws")
+# integer-conversion guards (floor/ceil of nan/inf must throw, not UB)
+ok(throws(Function(): return math.floor(math.nan)), "floor(nan) throws")
+ok(throws(Function(): return math.floor(math.inf)), "floor(inf) throws")
+ok(throws(Function(): return math.ceil(math.inf)), "ceil(inf) throws")
+# overflow guards
+ok(throws(Function(): return math.factorial(25)), "factorial(25) overflow throws")
+ok(throws(Function(): return math.factorial(-1)), "factorial(-1) throws")
+ok(throws(Function(): return math.factorial(100)), "factorial(100) overflow throws")
+
+io.print("r6_math: " + String(n) + " checks passed")

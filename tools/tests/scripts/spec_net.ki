@@ -1,0 +1,95 @@
+# Thorough checks for the net module's URL helpers (no sockets / no network here).
+var io = import("io")
+var net = import("net")
+
+# --- percent-encoding ---
+assert net.quote("hello world") == "hello%20world", "quote space"
+assert net.quote("a/b?c=d&e") == "a%2Fb%3Fc%3Dd%26e", "quote reserved chars"
+assert net.quote("safe-._~") == "safe-._~", "quote leaves unreserved"
+assert net.unquote("hello%20world") == "hello world", "unquote"
+assert net.unquote("a%2Fb") == "a/b", "unquote reserved"
+# round-trip
+var samples = ["plain", "with spaces", "sym/bo?ls=&#", "unicode café"]
+for s in samples:
+    assert net.unquote(net.quote(s)) == s, "quote/unquote round-trip"
+
+# --- urlencode (Dict -> query string) and parseqs (query -> Dict) ---
+var qs = net.urlencode({"a": "1", "b": "two words"})
+assert "a=1" in qs and "b=two%20words" in qs and "&" in qs, "urlencode pairs"
+var parsed = net.parseqs("x=1&y=2&z=hello%20world")
+assert parsed["x"] == "1" and parsed["y"] == "2" and parsed["z"] == "hello world", "parseqs decodes"
+# round-trip through parseqs
+var rt = net.parseqs(net.urlencode({"k": "v v", "n": "42"}))
+assert rt["k"] == "v v" and rt["n"] == "42", "urlencode/parseqs round-trip"
+assert net.parseqs("") == {}, "parseqs empty"
+
+# --- urlsplit ---
+var u = net.urlsplit("http://example.com:8080/path/to?query=1#frag")
+assert u["scheme"] == "http", "urlsplit scheme"
+assert u["host"] == "example.com", "urlsplit host"
+assert u["port"] == "8080", "urlsplit port (String)"
+assert u["path"] == "/path/to", "urlsplit path"
+var u2 = net.urlsplit("https://host/just/path")
+assert u2["scheme"] == "https" and u2["host"] == "host" and u2["path"] == "/just/path", "urlsplit no port"
+
+# --- adversarial: bad types throw, never crash ---
+var thrown = 0
+for thunk in [Function(): return net.urlencode("not a dict"), Function(): return net.quote(42)]:
+    try:
+        discard thunk()
+    catch as e:
+        thrown = thrown + 1
+assert thrown == 2, "net helpers reject bad argument types"
+
+# --- fuzz: thousands of random round-trips through the URL codec (deterministic seed) ---
+var rng = import("random").Random(0x5151)
+
+# quote/unquote must round-trip ANY string (incl. reserved chars, spaces, and Unicode code points,
+# which are percent-encoded byte-by-byte over UTF-8).
+var i = 0
+while i < 1500:
+    var n = rng.randint(0, 24)
+    var s = ""
+    var j = 0
+    while j < n:
+        var pick = rng.randint(0, 9)
+        if pick < 6:
+            s = s + chr(rng.randint(33, 126))          # printable ASCII (incl. reserved)
+        elif pick < 8:
+            s = s + chr(rng.randint(160, 0x2fff))       # Latin-1 / BMP code points (multi-byte UTF-8)
+        else:
+            s = s + " "                                  # spaces (encode as %20)
+        j = j + 1
+    assert net.unquote(net.quote(s)) == s, "quote/unquote round-trip"
+    i = i + 1
+
+# urlencode/parseqs must round-trip a Dict of random keys -> random values.
+var k = 0
+while k < 500:
+    var m = rng.randint(1, 5)
+    var d = {}
+    var c = 0
+    while c < m:
+        var key = "k" + String(c)                        # unique, simple keys
+        var vlen = rng.randint(0, 16)
+        var v = ""
+        var t = 0
+        while t < vlen:
+            v = v + chr(rng.randint(33, 126))
+            t = t + 1
+        d[key] = v
+        c = c + 1
+    assert net.parseqs(net.urlencode(d)) == d, "urlencode/parseqs round-trip"
+    k = k + 1
+
+# --- edge cases ---
+assert net.quote("") == "" and net.unquote("") == "", "empty round-trips"
+assert net.quote("safe-._~ABCabc012") == "safe-._~ABCabc012", "unreserved set untouched"
+assert net.parseqs("") == {}, "empty query is an empty Dict"
+assert net.parseqs("flag") == {"flag": ""}, "valueless key parses to empty value"
+var u3 = net.urlsplit("https://user.example.com:8443/a/b?x=1&y=2#frag")
+assert u3["scheme"] == "https" and u3["port"] == "8443" and u3["path"] == "/a/b", "urlsplit components"
+assert u3["query"] == "x=1&y=2" and u3["fragment"] == "frag", "urlsplit query/fragment"
+assert net.urlsplit("/just/a/path")["path"] == "/just/a/path", "urlsplit bare path"
+
+io.print("OK")

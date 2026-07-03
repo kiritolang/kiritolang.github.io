@@ -1,0 +1,328 @@
+# r9_tabular.ki — edge-case and error-hardening for the tabular module.
+# Key API notes:
+#   Series: values/index are ATTRIBUTES (not methods); arithmetic is element-wise;
+#           isin/apply/head/tail/sortvalues/unique/nunique/valuecounts/dropna/fillna/astype;
+#   DataFrame: columns/data/index are attributes; [col] returns Series;
+#              iloc/loc are _Iloc/_Loc accessor objects (use iloc[n] / loc[label]);
+#              rowat(pos)/torows()/iterrows()/at(label,col)/iat(pos,col_int)/shape()/nrows();
+#              assign/drop/rename/merge/concat/groupby/sortvalues/describe/copy/todict/tocsv;
+#   GroupBy: sum/mean/min/max/count/size/agg;
+#   readcsv(csv_string) -> DataFrame.
+
+var io = import("io")
+var tab = import("tabular")
+var sys = import("sys")
+var path = import("path")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== Series creation
+var s = tab.Series([10, 20, 30], ["a", "b", "c"])
+ok(type(s) == "Series", "Series type")
+ok(len(s) == 3, "Series len")
+ok(s.values == [10, 20, 30], "Series.values attr")
+ok(s.index == ["a", "b", "c"], "Series.index attr")
+ok(s.name == None, "Series.name default None")
+
+# Named series
+var sn = tab.Series([1, 2, 3], name="score")
+ok(sn.name == "score", "Series named via name=")
+
+# Auto index when not provided
+var sauto = tab.Series([5, 6, 7])
+ok(sauto.index == [0, 1, 2], "Series auto index is 0..n-1")
+
+# =========================================================== Series indexing
+ok(s["a"] == 10, "Series[label]")
+ok(s["c"] == 30, "Series[last label]")
+
+# =========================================================== Series aggregations
+ok(s.sum() == 60, "Series.sum()")
+ok(s.mean() == 20.0, "Series.mean()")
+ok(s.min() == 10, "Series.min()")
+ok(s.max() == 30, "Series.max()")
+ok(s.prod() == 6000, "Series.prod()")
+ok(s.count() == 3, "Series.count()")
+ok(s.median() == 20, "Series.median()")
+
+# =========================================================== Series element-wise arithmetic
+var s2 = tab.Series([1, 2, 3], ["a", "b", "c"])
+var s_add = s + s2
+ok(s_add.values == [11, 22, 33], "Series + Series element-wise")
+var s_sub = s - s2
+ok(s_sub.values == [9, 18, 27], "Series - Series element-wise")
+var s_mul = s * s2
+ok(s_mul.values == [10, 40, 90], "Series * Series element-wise")
+
+# =========================================================== Series comparison operators
+var scmp = tab.Series([10, 20, 30], ["a", "b", "c"])
+var gt_mask = scmp > 15
+ok(gt_mask.values == [False, True, True], "Series > scalar -> bool Series")
+var lt_mask = scmp < 25
+ok(lt_mask.values == [True, True, False], "Series < scalar -> bool Series")
+var eq_mask = scmp == 20
+ok(eq_mask.values == [False, True, False], "Series == scalar -> bool Series")
+
+# =========================================================== Series methods
+var smethods = tab.Series([10, 20, 30, 20, 10], ["a", "b", "c", "d", "e"])
+ok(smethods.nunique() == 3, "Series.nunique()")
+var uniq = smethods.unique()
+ok(type(uniq) == "List", "Series.unique() returns List")
+ok(len(uniq) == 3, "Series.unique() has 3 distinct values")
+
+# head / tail
+ok(smethods.head(2).values == [10, 20], "Series.head(2)")
+ok(smethods.tail(2).values == [20, 10], "Series.tail(2)")
+
+# sortvalues
+var ss = smethods.sortvalues()
+ok(ss.values[0] == 10, "Series.sortvalues asc first")
+ok(ss.values[-1] == 30, "Series.sortvalues asc last")
+var ss_desc = smethods.sortvalues(ascending=False)
+ok(ss_desc.values[0] == 30, "Series.sortvalues desc first")
+
+# isin
+var isin_mask = smethods.isin([10, 30])
+ok(isin_mask.values == [True, False, True, False, True], "Series.isin()")
+
+# apply
+var sa = smethods.apply(Function(x): return x * 2)
+ok(sa.values == [20, 40, 60, 40, 20], "Series.apply() element-wise map")
+
+# map (alias for apply)
+var sm = smethods.map(Function(x): return x + 1)
+ok(sm.values == [11, 21, 31, 21, 11], "Series.map() element-wise map")
+
+# valuecounts
+var vc = smethods.valuecounts()
+ok(type(vc) == "Series", "Series.valuecounts() returns Series")
+
+# dropna
+var s_na = tab.Series([1, None, 3, None, 5])
+var s_dropped = s_na.dropna()
+ok(len(s_dropped) == 3, "Series.dropna() removes None")
+ok(None not in s_dropped.values, "Series.dropna() no None in values")
+
+# fillna
+var s_filled = s_na.fillna(0)
+ok(len(s_filled) == 5, "Series.fillna() keeps length")
+ok(s_filled.values == [1, 0, 3, 0, 5], "Series.fillna(0) replaces None with 0")
+
+# astype
+var si = tab.Series([1, 2, 3])
+var sf = si.astype("Float")
+ok(type(sf.values[0]) == "Float", "Series.astype Float")
+
+# resetindex
+var sr = s.resetindex()
+ok(sr.index == [0, 1, 2], "Series.resetindex() -> integer index")
+
+# copy
+var sc = s.copy()
+ok(sc.values == s.values, "Series.copy() same values")
+ok(id(sc) != id(s), "Series.copy() different object")
+
+# std/variance
+var svar = tab.Series([2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0])
+ok(svar.std() > 0, "Series.std() returns positive Float")
+ok(type(svar.std()) == "Float", "Series.std() type is Float")
+ok(svar.variance() > 0, "Series.variance() returns positive Float")
+ok(type(svar.variance()) == "Float", "Series.variance() type is Float")
+
+# =========================================================== DataFrame creation
+var df = tab.DataFrame({"name": ["Alice", "Bob", "Carol"], "age": [30, 25, 35], "score": [95.0, 87.5, 92.0]})
+ok(type(df) == "DataFrame", "DataFrame type")
+ok(len(df) == 3, "DataFrame len == nrows")
+ok(df.nrows() == 3, "DataFrame.nrows()")
+ok(df.columns == ["name", "age", "score"], "DataFrame.columns attr")
+ok(df.shape() == [3, 3], "DataFrame.shape()")
+
+# =========================================================== DataFrame column access
+var ages = df["age"]
+ok(type(ages) == "Series", "DataFrame[col] returns Series")
+ok(ages.values == [30, 25, 35], "DataFrame[col].values")
+
+# =========================================================== DataFrame indexing
+var r0 = df.iloc[0]
+ok(type(r0) == "Series", "DataFrame.iloc[0] returns Series")
+ok(r0["name"] == "Alice", "DataFrame.iloc[0]['name']")
+ok(r0["age"] == 30, "DataFrame.iloc[0]['age']")
+
+# rowat(pos) is equivalent
+var rr0 = df.rowat(0)
+ok(rr0["name"] == "Alice", "DataFrame.rowat(0) name")
+
+# at(label, col) — integer label for default index
+ok(df.at(0, "name") == "Alice", "DataFrame.at(0, col)")
+ok(df.at(2, "score") == 92.0, "DataFrame.at(2, score)")
+
+# iat(pos, col_int) — purely positional
+ok(df.iat(0, 0) == "Alice", "DataFrame.iat(0, 0)")
+ok(df.iat(1, 1) == 25, "DataFrame.iat(1, 1)")
+
+# torows() → List of Dicts
+var rows = df.torows()
+ok(type(rows) == "List", "DataFrame.torows() returns List")
+ok(len(rows) == 3, "DataFrame.torows() length")
+ok(rows[0]["name"] == "Alice", "DataFrame.torows()[0]")
+
+# iterrows()
+var iter_count = 0
+for row in df.iterrows():
+    iter_count = iter_count + 1
+ok(iter_count == 3, "DataFrame.iterrows() yields 3 rows")
+
+# =========================================================== DataFrame head/tail/slice
+ok(len(df.head(2)) == 2, "DataFrame.head(2)")
+ok(len(df.tail(1)) == 1, "DataFrame.tail(1)")
+var sl = df.slice(0, 2)
+ok(len(sl) == 2, "DataFrame.slice(0, 2)")
+
+# =========================================================== DataFrame filtering
+var mask = df["age"] > 28
+ok(type(mask) == "Series", "boolean mask is Series")
+ok(mask.values == [True, False, True], "boolean mask values")
+var filtered = df[mask]
+ok(len(filtered) == 2, "filtered DataFrame length")
+ok(filtered["name"].values == ["Alice", "Carol"], "filtered names")
+
+# =========================================================== DataFrame sort
+var sorted_df = df.sortvalues("age")
+ok(sorted_df["age"].values == [25, 30, 35], "sortvalues ascending")
+var sorted_desc = df.sortvalues("age", ascending=False)
+ok(sorted_desc["age"].values == [35, 30, 25], "sortvalues descending")
+
+# =========================================================== DataFrame aggregations
+ok(df["age"].sum() == 90, "DataFrame col sum")
+ok(df["score"].mean() == 91.5, "DataFrame col mean")
+ok(df["age"].min() == 25, "DataFrame col min")
+ok(df["age"].max() == 35, "DataFrame col max")
+
+# =========================================================== DataFrame structural ops
+# assign — add a new column
+var df_assigned = df.assign("bonus", tab.Series([100.0, 200.0, 150.0]))
+ok("bonus" in df_assigned.columns, "assign adds column")
+ok(df_assigned["bonus"].values == [100.0, 200.0, 150.0], "assign values")
+ok(len(df_assigned.columns) == 4, "assign total columns")
+
+# drop — remove columns
+var df_dropped = df.drop(["score"])
+ok("score" not in df_dropped.columns, "drop removes column")
+ok(len(df_dropped.columns) == 2, "drop remaining columns")
+
+# rename
+var df_renamed = df.rename({"name": "person", "age": "years"})
+ok("person" in df_renamed.columns, "rename person")
+ok("years" in df_renamed.columns, "rename years")
+ok("name" not in df_renamed.columns, "rename removes old name key")
+
+# copy
+var df_copy = df.copy()
+ok(type(df_copy) == "DataFrame", "copy type")
+ok(len(df_copy) == len(df), "copy same length")
+
+# todict
+var td = df.todict()
+ok(type(td) == "Dict", "todict returns Dict")
+ok("name" in td, "todict has name key")
+ok(td["age"] == [30, 25, 35], "todict age values")
+
+# setindex
+var df_indexed = df.setindex("name")
+ok("Alice" in df_indexed.index, "setindex uses name values")
+ok("Bob" in df_indexed.index, "setindex Bob in index")
+
+# resetindex
+var df_reset = df_indexed.resetindex()
+ok(0 in df_reset.index, "resetindex back to 0-based")
+
+# =========================================================== merge
+var df2 = tab.DataFrame({"name": ["Alice", "Bob"], "dept": ["HR", "Eng"]})
+var merged = df.merge(df2, on="name")
+ok(len(merged) == 2, "merge inner join length")
+ok("dept" in merged.columns, "merge adds dept column")
+ok("Alice" in merged["name"].values, "merge has Alice")
+
+# left join
+var merged_left = df.merge(df2, on="name", how="left")
+ok(len(merged_left) == 3, "merge left join all left rows")
+
+# =========================================================== concat
+var df3 = tab.DataFrame({"name": ["Dave"], "age": [40], "score": [88.0]})
+var concatted = tab.concat([df, df3])
+ok(len(concatted) == 4, "concat length")
+ok(concatted["name"].values[-1] == "Dave", "concat last row")
+
+# =========================================================== groupby
+var dfg = tab.DataFrame({"dept": ["HR", "Eng", "HR", "Eng", "HR"], "salary": [50.0, 80.0, 60.0, 90.0, 55.0]})
+var gb = dfg.groupby("dept")
+ok(type(gb) == "GroupBy", "groupby type")
+
+# size
+var gb_size = gb.size()
+ok(type(gb_size) == "Series", "groupby.size() returns Series")
+
+# sum
+var gb_sum = gb.sum()
+ok(type(gb_sum) == "DataFrame", "groupby.sum() returns DataFrame")
+
+# mean
+var gb_mean = gb.mean()
+ok(type(gb_mean) == "DataFrame", "groupby.mean() returns DataFrame")
+
+# agg with dict spec
+var gb_agg = gb.agg({"salary": "mean"})
+ok(type(gb_agg) == "DataFrame", "groupby.agg() returns DataFrame")
+
+# =========================================================== readcsv / tocsv
+var csv_out = df.tocsv()
+ok(type(csv_out) == "String", "tocsv() returns String")
+ok("Alice" in csv_out, "tocsv contains Alice")
+ok("name" in csv_out, "tocsv contains column header")
+
+var df_from_csv = tab.readcsv(csv_out)
+ok(len(df_from_csv) == 3, "readcsv row count")
+ok(df_from_csv.columns == ["name", "age", "score"], "readcsv columns")
+
+# readcsv from plain string
+var raw_csv = "city,pop\nNYC,8000000\nLA,4000000\n"
+var city_df = tab.readcsv(raw_csv)
+ok(len(city_df) == 2, "readcsv plain string rows")
+ok("city" in city_df.columns, "readcsv plain string columns")
+
+# =========================================================== describe
+var desc = dfg.describe()
+ok(type(desc) == "DataFrame", "describe() returns DataFrame")
+
+# =========================================================== dropna / fillna on DataFrame
+var df_na = tab.DataFrame({"a": [1, None, 3], "b": [4, 5, None]})
+var df_drop = df_na.dropna()
+ok(len(df_drop) == 1, "DataFrame.dropna() removes rows with any None")
+var df_fill = df_na.fillna(0)
+ok(len(df_fill) == 3, "DataFrame.fillna() keeps all rows")
+ok(df_fill["a"].values == [1, 0, 3], "DataFrame.fillna() fills None in column a")
+
+# =========================================================== readcsv from a FILE (regression guard)
+# readcsv(source) treats a newline-free source that names an existing file as a path and reads it
+# (via path.exists + io.open). This branch is otherwise untested — string CSV inputs skip it — and it
+# regressed silently when the path helpers moved out of io. Write a temp CSV, read it back by NAME.
+var csvfile = path.join(path.gettempdir(), "r9_tabular_probe.csv")
+with io.open(csvfile, "w") as cf:
+    cf.write("city,pop\nNYC,8000000\nLA,4000000\n")
+var df_file = tab.readcsv(csvfile)
+ok(len(df_file) == 2, "readcsv(filename) reads rows from a real file")
+ok(df_file.columns == ["city", "pop"], "readcsv(filename) parses the header")
+ok("NYC" in df_file["city"].values, "readcsv(filename) parses cell values")
+discard path.remove(csvfile, missing_ok = True)
+
+io.print("r9_tabular: " + String(n) + " checks passed")

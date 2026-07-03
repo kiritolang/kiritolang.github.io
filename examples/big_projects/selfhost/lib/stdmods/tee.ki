@@ -1,0 +1,111 @@
+# tee — fan-out streams. A Tee writes every chunk to one or more "copy" streams (e.g. a log file)
+# *before* passing it to the primary stream (e.g. the original stdout) — so output is saved before
+# being handed on. It implements the stream `write`/`writelines`/`flush` protocol, so it can be
+# assigned to io.stdout / io.stderr, and it works as a context manager (flushes on exit).
+#
+# The convenience context managers `tee_stdout` / `tee_stderr` hook the std streams for you:
+#
+#   var io = import("io")
+#   var tee = import("tee")
+#   with io.open("session.log", "w") as f:
+#       with tee.tee_stdout(f):
+#           io.print("appears on the console AND in session.log")
+#   # stdout is restored here
+
+var _io = import("io")
+
+# Flush a stream if it supports it (files / BytesIO / std streams do); ignore if it doesn't.
+var _maybeFlush = Function(s):
+    if s == None:
+        return None
+    try:
+        s.flush()
+    catch as e:
+        pass
+    return None
+
+class Tee:
+    # Tee(primary, copies=None): writes go to each copy first, then to `primary`. `copies` may be a
+    # single stream or a List of streams. `primary` may be None to make a pure fan-out sink.
+    var _init_ = Function(self, primary, copies = None):
+        self.primary = primary
+        var cs = []
+        if copies != None:
+            if isinstance(copies, "List"):
+                for s in copies:
+                    cs.append(s)
+            else:
+                cs.append(copies)
+        self.copies = cs
+
+    # All underlying streams, in write order (copies first, then the primary).
+    var streams = Function(self):
+        var all = []
+        for s in self.copies:
+            all.append(s)
+        if self.primary != None:
+            all.append(self.primary)
+        return all
+
+    var write = Function(self, data):
+        for s in self.copies:
+            s.write(data)
+        if self.primary != None:
+            self.primary.write(data)
+        return len(data)
+
+    var writelines = Function(self, lines):
+        for line in lines:
+            self.write(line)
+        return None
+
+    var flush = Function(self):
+        for s in self.copies:
+            _maybeFlush(s)
+        _maybeFlush(self.primary)
+        return None
+
+    var close = Function(self):
+        self.flush()
+        return None
+
+    var _enter_ = Function(self):
+        return self
+
+    var _exit_ = Function(self):
+        self.flush()
+        return None
+
+# Context manager: within the block, io.stdout also writes to `copies` (a stream or List). The
+# original stdout is saved on enter and restored on exit (the copy streams are never closed —
+# the caller owns them).
+class tee_stdout:
+    var _init_ = Function(self, copies):
+        self._copies = copies
+        self._saved = None
+
+    var _enter_ = Function(self):
+        self._saved = _io.stdout
+        _io.stdout = Tee(self._saved, self._copies)
+        return _io.stdout
+
+    var _exit_ = Function(self):
+        _io.stdout.flush()
+        _io.stdout = self._saved
+        return None
+
+# Same, for io.stderr.
+class tee_stderr:
+    var _init_ = Function(self, copies):
+        self._copies = copies
+        self._saved = None
+
+    var _enter_ = Function(self):
+        self._saved = _io.stderr
+        _io.stderr = Tee(self._saved, self._copies)
+        return _io.stderr
+
+    var _exit_ = Function(self):
+        _io.stderr.flush()
+        _io.stderr = self._saved
+        return None

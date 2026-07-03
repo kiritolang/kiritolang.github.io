@@ -1,0 +1,56 @@
+[1, 2, 3]
+[1, 2, 3]
+[1, 2, 3]
+[1, 2, 3]
+True
+False
+None
+0
+0
+1500.0
+-1.25
+a
+b
+"\
+a	b
+a/b
+ÿ
+😀
+[]
+{}
+{'': 0}
+{'a': [1, {'b': True, 'c': None}]}
+[1, 2]
+null
+true
+false
+42
+"hi"
+"a\u0001b"
+"tab\there"
+[
+  1,
+  2
+]
+{
+    "a": 1
+}
+{"1": "v"}
+trailing:
+trail-comma:
+plus:
+unterm:
+badesc:
+badu:
+nocolon:
+intkey:
+badlow:
+ws:
+inv:
+deep:
+cyc:
+set:
+fn:
+1e+24
+True
+OK audit-json

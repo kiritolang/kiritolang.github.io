@@ -1,0 +1,115 @@
+# snip/db.ki — the in-memory database of snippets, with dump-based persistence.
+#
+# A snippet is a dict:
+#   {"id":    String      — a 12-char sha256 prefix of the body (stable, opaque)
+#    "title": String      — one-line description
+#    "lang":  String      — language hint (used for syntax detection / grouping)
+#    "tags":  [String]    — user tags
+#    "body":  String      — the actual code
+#    "created": Integer   — unix epoch seconds
+#    "modified": Integer  — unix epoch seconds
+#   }
+# The DB itself is a dict {"snippets": {id: snippet}}. Persisted with `dump` (binary, preserves
+# shared references) so a snippet's body isn't duplicated across two indices.
+
+var io   = import("io")
+var path = import("path")
+var dump = import("dump")
+var hash = import("hash")
+var time = import("time")
+var json = import("json")
+
+var _empty = Function() -> Dict:
+    return {"snippets": {}}
+
+# Compute a snippet id from its body — collision-resistant + short + stable across syncs.
+var snippetId = Function(body : String) -> String:
+    return hash.sha256(body)[0:12]
+
+# Load from a `dump` blob. Returns an empty DB if the file is missing.
+var load = Function(dbFile : String) -> Dict:
+    if not path.isfile(dbFile):
+        return _empty()
+    var fh = io.open(dbFile, "rb")
+    var blob = fh.read()
+    fh.close()
+    return dump.loads(blob)
+
+var save = Function(dbFile : String, db : Dict):
+    var dir = path.dirname(dbFile)
+    if len(dir) > 0 and not path.isdir(dir):
+        discard path.mkdir(dir, exist_ok = True)
+    var blob = dump.dumps(db)
+    var fh = io.open(dbFile, "wb")
+    fh.write(blob)
+    fh.close()
+
+# Insert or update a snippet by its (body-derived) id. On conflict, only the metadata is refreshed
+# so a user can retag / rename without changing the body's identity. Returns the snippet dict.
+var upsert = Function(db : Dict, title : String, lang : String, tags : List, body : String) -> Dict:
+    var id = snippetId(body)
+    var now = time.now().timestamp
+    if id in db["snippets"]:
+        var s = db["snippets"][id]
+        s["title"]    = title
+        s["lang"]     = lang
+        s["tags"]     = tags.copy()
+        s["modified"] = now
+        return s
+    var snip = {
+        "id":       id,
+        "title":    title,
+        "lang":     lang,
+        "tags":     tags.copy(),
+        "body":     body,
+        "created":  now,
+        "modified": now,
+    }
+    db["snippets"][id] = snip
+    return snip
+
+var remove = Function(db : Dict, id : String) -> Bool:
+    if id not in db["snippets"]:
+        return False
+    db["snippets"].pop(id)
+    return True
+
+# All snippets as a flat sorted-by-modified list (most recent first).
+var listAll = Function(db : Dict) -> List:
+    var out = []
+    for id in db["snippets"]:
+        out.append(db["snippets"][id])
+    return sorted(out, key = Function(s): return -s["modified"])
+
+# Lookup by full id or by shortest unique prefix. Returns the snippet dict, or None if no match /
+# multiple matches (i.e. the prefix is ambiguous).
+var find = Function(db : Dict, idOrPrefix : String):
+    if idOrPrefix in db["snippets"]:
+        return db["snippets"][idOrPrefix]
+    var matches = []
+    for id in db["snippets"]:
+        if id.startswith(idOrPrefix):
+            matches.append(db["snippets"][id])
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+# --- JSON portability: export + import for a human-editable / diff-able round-trip ---
+# The on-disk primary format is `dump` (compact + reference-preserving), but a JSON dump is nice
+# for grepping, code review, or shipping snippets alongside a repo.
+var exportJson = Function(db : Dict) -> String:
+    var arr = []
+    for id in db["snippets"]:
+        arr.append(db["snippets"][id])
+    return json.dumps({"version": 1, "snippets": arr}, indent = 2)
+
+var importJson = Function(db : Dict, blob : String) -> Integer:
+    var doc = json.loads(blob)
+    if doc.get("version") != 1:
+        throw "unsupported snippet dump version: " + String(doc.get("version"))
+    var added = 0
+    for s in doc["snippets"]:
+        if s["id"] not in db["snippets"]:
+            db["snippets"][s["id"]] = s
+            added = added + 1
+    return added

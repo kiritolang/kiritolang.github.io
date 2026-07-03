@@ -1,0 +1,322 @@
+# ============================================================================
+# r11_docinvariants.ki — targeted docs-vs-impl checks for the nuanced
+# invariants scattered in prose across docs/pages/{05-builtins,06-types}.md.
+# These are the "gotchas" the docs explicitly call out — behaviours users would
+# assume work like Python but do not, or documented error paths that would be
+# a silent bug if the impl regressed. Each block is one paragraph of docs
+# translated into an assertion.
+# ============================================================================
+var io = import("io")
+var math = import("math")
+
+var threw = Function(fn):
+    try:
+        fn()
+    catch as e:
+        return True
+    return False
+
+# ---------------------------------------------------------------------------
+# Bool is a distinct type, not an Integer (docs/pages/09-types.md, `Bool`).
+# ---------------------------------------------------------------------------
+assert isinstance(True, Integer) == False, "isinstance(True, Integer) is False"
+assert isinstance(1, Bool) == False, "isinstance(1, Bool) is False"
+assert True != 1, "True != 1 (strong typing)"
+assert False != 0, "False != 0 (strong typing)"
+# Bool + Integer is a type error (Bool is not numeric)
+assert threw(Function(): return True + 1), "True + 1 is a type error"
+assert threw(Function(): return False * 3), "False * 3 is a type error"
+# But Integer(Bool) is an explicit conversion
+assert Integer(True) == 1, "Integer(True) == 1 (explicit conversion)"
+assert Integer(False) == 0, "Integer(False) == 0"
+
+# ---------------------------------------------------------------------------
+# hasattr special cases (docs/pages/08-builtins.md, `hasattr`).
+# On a class value → always False; on a plain function → False.
+# ---------------------------------------------------------------------------
+class HasA:
+    var a = 1
+    var m = Function(self): return self.a
+
+assert hasattr(HasA, "a") == False, "hasattr(class value, 'a') is False"
+assert hasattr(HasA, "m") == False, "hasattr(class value, 'm') is False"
+var f = Function(): return 1
+assert hasattr(f, "call") == False, "hasattr(plain function, anything) is False"
+# Instance side works
+var ia = HasA()
+assert hasattr(ia, "a") == True, "hasattr(instance, 'a') is True"
+assert hasattr(ia, "m") == True, "hasattr(instance, 'm') is True"
+# An attribute set to None still exists
+class HasNone:
+    var _init_ = Function(self):
+        self.x = None
+var hn = HasNone()
+assert hasattr(hn, "x") == True, "hasattr on None-valued attr is True (existence, not truthiness)"
+# hasattr on modules works
+assert hasattr(math, "sqrt") == True, "hasattr(module, existing)"
+assert hasattr(math, "no_such_name_zzz") == False, "hasattr(module, missing)"
+# hasattr on built-in types & values
+assert hasattr("x", "upper") == True, "hasattr(String, 'upper')"
+assert hasattr([1], "append") == True, "hasattr(List, 'append')"
+assert hasattr(5, "compare") == True, "hasattr(Integer, 'compare')"
+# Non-String name throws
+assert threw(Function(): return hasattr(ia, 42)), "hasattr non-String name throws"
+
+# ---------------------------------------------------------------------------
+# isinstance pseudo-types (docs/pages/08-builtins.md).
+# ---------------------------------------------------------------------------
+assert isinstance(3, "Number") == True, "'Number' matches Integer"
+assert isinstance(3.14, "Number") == True, "'Number' matches Float"
+assert isinstance("x", "Number") == False, "'Number' rejects String"
+assert isinstance(42, "Any") == True, "'Any' always True"
+assert isinstance("x", "Any") == True, "'Any' matches String too"
+assert isinstance(None, "Any") == True, "'Any' matches None"
+assert isinstance(f, "Function") == True, "'Function' matches a function"
+assert isinstance(math, "Module") == True, "'Module' matches a module"
+assert isinstance(None, "None") == True, "'None' pseudo-type works"
+
+# ---------------------------------------------------------------------------
+# Slice syntax does NOT reach _getitem_ (docs/pages/09-types.md, limitations).
+# ---------------------------------------------------------------------------
+class SliceEater:
+    var _getitem_ = Function(self, key):
+        return "got:" + String(key)
+var se = SliceEater()
+assert se[5] == "got:5", "scalar key goes through _getitem_"
+# Slice syntax x[a:b] uses a native path that a user class cannot intercept.
+# There is no _slice_ special method — see docs limitations.
+var slice_threw = False
+try:
+    discard se[1:3]
+catch as e:
+    slice_threw = True
+assert slice_threw, "slice x[a:b] does NOT reach _getitem_ — throws (no _slice_)"
+
+# Variadic keys: _getitem_(self, i, j) receives them as separate args
+class Grid:
+    var _getitem_ = Function(self, i, j):
+        return i * 10 + j
+var g = Grid()
+assert g[3, 4] == 34, "variadic key: _getitem_ takes multiple positional args"
+
+# ---------------------------------------------------------------------------
+# Instances are always truthy (no _bool_ method).
+# _len_ does NOT affect truthiness (docs/pages/09-types.md, limitations).
+# ---------------------------------------------------------------------------
+class ZeroLen:
+    var _len_ = Function(self): return 0
+var zl = ZeroLen()
+assert Bool(zl) == True, "Instance with _len_ = 0 is still truthy"
+var _hit = False
+if zl:
+    _hit = True
+assert _hit, "if-branch: instance always truthy"
+
+# ---------------------------------------------------------------------------
+# _ne_ falls back to not _eq_; ordering ops do NOT derive from each other.
+# ---------------------------------------------------------------------------
+class OnlyEq:
+    var _init_ = Function(self, v): self.v = v
+    var _eq_ = Function(self, o): return self.v == o.v
+var oe1 = OnlyEq(5)
+var oe2 = OnlyEq(5)
+var oe3 = OnlyEq(6)
+assert (oe1 == oe2) == True, "_eq_ defined works"
+assert (oe1 != oe3) == True, "_ne_ falls back to not _eq_"
+assert (oe1 != oe2) == False, "_ne_ derives from _eq_"
+
+class OnlyLt:
+    var _init_ = Function(self, v): self.v = v
+    var _lt_ = Function(self, o): return self.v < o.v
+var ol1 = OnlyLt(1)
+var ol2 = OnlyLt(2)
+# _lt_ works
+assert (ol1 < ol2) == True, "_lt_ works"
+# _le_/_gt_/_ge_ do NOT auto-derive
+assert threw(Function(): return ol1 <= ol2), "_le_ does not auto-derive from _lt_"
+assert threw(Function(): return ol2 > ol1), "_gt_ does not auto-derive from _lt_"
+
+# ---------------------------------------------------------------------------
+# Left operand only — no reflected operators (docs/pages/09-types.md).
+# 3 * v throws even if v defines _mul_. But _eq_/_ne_ ARE symmetric.
+# ---------------------------------------------------------------------------
+class Vec:
+    var _init_ = Function(self, v): self.v = v
+    var _mul_ = Function(self, k): return Vec(self.v * k)
+    var _eq_ = Function(self, o): return isinstance(o, Vec) and self.v == o.v
+var v = Vec(5)
+assert (v * 3).v == 15, "instance * Integer via _mul_"
+assert threw(Function(): return 3 * v), "Integer * instance throws (no reflected)"
+# _eq_ symmetric — either side works
+assert (Vec(5) == v) == True, "_eq_ symmetric (left)"
+assert (v == Vec(5)) == True, "_eq_ symmetric (right)"
+
+# ---------------------------------------------------------------------------
+# _exit_ ignored return, cannot suppress exception (docs/pages/09-types.md).
+# ---------------------------------------------------------------------------
+class Ctx:
+    var _init_ = Function(self, log): self.log = log
+    var _enter_ = Function(self):
+        self.log.append("enter")
+        return self
+    var _exit_ = Function(self):
+        self.log.append("exit")
+        return True  # ignored — cannot suppress
+var log = []
+var propagated = False
+try:
+    with Ctx(log) as c:
+        c.log.append("body")
+        throw "boom"
+catch as e:
+    propagated = "boom" in e
+assert propagated, "_exit_ cannot suppress the propagating exception"
+assert log == ["enter", "body", "exit"], "_enter_ and _exit_ still ran in order"
+
+# ---------------------------------------------------------------------------
+# _hash_ without _eq_ → Set/Dict key BY IDENTITY (docs/pages/09-types.md).
+# ---------------------------------------------------------------------------
+class HashNoEq:
+    var _init_ = Function(self, v): self.v = v
+    var _hash_ = Function(self) -> Integer: return 42
+var h1 = HashNoEq(1)
+var h2 = HashNoEq(1)
+var s = {h1, h2}
+assert len(s) == 2, "_hash_ without _eq_ → identity-keyed → distinct"
+# With _eq_ they collapse
+class HashEq:
+    var _init_ = Function(self, v): self.v = v
+    var _hash_ = Function(self) -> Integer: return self.v
+    var _eq_ = Function(self, o): return isinstance(o, HashEq) and self.v == o.v
+var s2 = {HashEq(1), HashEq(1), HashEq(2)}
+assert len(s2) == 2, "_hash_+_eq_ → value-based Set"
+
+# Instances without _hash_ are unhashable
+class NoHash:
+    var _init_ = Function(self, v): self.v = v
+var _mkset_nohash = Function():
+    var t = {NoHash(1)}
+    return t
+assert threw(_mkset_nohash), "unhashable instance in Set throws"
+var _mkdict_nohash = Function():
+    var d = {NoHash(1): 2}
+    return d
+assert threw(_mkdict_nohash), "unhashable instance as Dict key throws"
+
+# _hash_ must return an Integer
+class BadHash:
+    var _hash_ = Function(self): return "not-int"
+var _mkset_bad = Function():
+    var t = {BadHash()}
+    return t
+assert threw(_mkset_bad), "_hash_ returning non-Integer throws"
+
+# ---------------------------------------------------------------------------
+# Float equality is EXACT IEEE-754 (docs/pages/09-types.md, Float).
+# ---------------------------------------------------------------------------
+assert (0.1 + 0.2 == 0.3) == False, "0.1+0.2 != 0.3 (bit-exact)"
+assert (0.3 == 0.3) == True, "0.3 == 0.3"
+assert (math.nan == math.nan) == False, "nan != nan"
+assert (math.nan != math.nan) == True, "nan != nan (!= is True)"
+assert (math.inf == math.inf) == True, "inf == inf"
+assert (0.0 == -0.0) == True, "0.0 == -0.0"
+# But .compare is tolerant
+assert (0.1 + 0.2).compare(0.3) == True, ".compare tolerates rounding"
+assert (1.0).compare(1.5) == False, ".compare rejects big diff"
+assert (1.0).compare(1.5, abs_tol = 1.0) == True, ".compare abs_tol widens"
+
+# ---------------------------------------------------------------------------
+# Format: numeric-only flags on String presentation are REJECTED (recent fix).
+# ---------------------------------------------------------------------------
+assert threw(Function(): return format("x", "+5")), "format String with + throws"
+assert threw(Function(): return format("x", "#6")), "format String with # throws"
+assert threw(Function(): return format("x", ",")), "format String with , throws"
+# Fill/align/width DO still work on Strings
+assert format("x", ">5") == "    x", "String > alignment ok"
+assert format("x", "<5") == "x    ", "String < alignment ok"
+assert format("x", "^5") == "  x  ", "String ^ alignment ok"
+assert format("x", "*^5") == "**x**", "String custom fill ok"
+# format(Int, .2f) converts to Float
+assert format(42, ".2f") == "42.00", "int .2f = 42.00"
+
+# ---------------------------------------------------------------------------
+# Set algebra: operators require Set on right; methods accept any iterable.
+# ---------------------------------------------------------------------------
+var a = {1, 2, 3}
+# Methods accept iterables
+assert a.union([2, 3, 4]) == {1, 2, 3, 4}, "union accepts List"
+assert a.intersection([2, 3]) == {2, 3}, "intersection accepts List"
+assert a.difference([2]) == {1, 3}, "difference accepts List"
+assert a.union("abc") == {1, 2, 3, "a", "b", "c"}, "union accepts String"
+# Operators require Set on rhs
+assert threw(Function(): return a - [1, 2]), "Set - List operator throws"
+assert threw(Function(): return a < [1, 2, 3, 4]), "Set < List operator throws"
+
+# ---------------------------------------------------------------------------
+# List lexicographic ordering (element-by-element, then by length).
+# ---------------------------------------------------------------------------
+assert ([1, 2] < [1, 3]) == True, "list < by element"
+assert ([1, 2] < [1, 2, 3]) == True, "list < by length (prefix)"
+assert ([1, 2, 3] > [1, 2]) == True, "list > longer"
+assert ([1, 2] == [1, 2]) == True, "list =="
+# Sort by list-returning key = multi-key
+var records = [["Bob", 30], ["Alice", 25], ["Bob", 25]]
+var sk = Function(r): return [r[0], r[1]]
+assert sorted(records, key = sk) == [["Alice", 25], ["Bob", 25], ["Bob", 30]], "multi-key sort via list key"
+
+# ---------------------------------------------------------------------------
+# Bytes: iterating yields Integers, b[i] is Integer, slice is Bytes
+# ---------------------------------------------------------------------------
+var b = Bytes("Hi")
+assert b[0] == 72, "Bytes[i] is Integer"
+assert type(b[0]) == "Integer", "type of Bytes[0]"
+assert b[0:1] == Bytes([72]), "Bytes slice is Bytes"
+assert type(b[0:1]) == "Bytes", "type of Bytes slice"
+var seen = []
+for x in b:
+    seen.append(x)
+assert seen == [72, 105], "iterate Bytes → Integers"
+# decode/encode roundtrip via latin-1 (lossless)
+var raw = Bytes([0, 128, 255, 127])
+assert raw.decode("latin-1").encode("latin-1") == raw, "latin-1 round-trips any Bytes"
+# UTF-8 error on invalid bytes
+assert threw(Function(): return Bytes([0xC3]).decode("utf-8")), "truncated UTF-8 throws"
+assert threw(Function(): return Bytes([0xFF]).decode("ascii")), "byte >= 0x80 throws for ascii"
+
+# ---------------------------------------------------------------------------
+# String repr-vs-str: bare String prints raw; nested prints quoted.
+# ---------------------------------------------------------------------------
+assert String("hi") == "hi", "String bare is unquoted"
+assert String(["a"]) == "['a']", "String in list is quoted"
+assert String({"k": "v"}) == "{'k': 'v'}", "String in dict is quoted"
+assert String([""]) == "['']", "empty String in list shows ''"
+assert String([]) == "[]", "empty list"
+
+# ---------------------------------------------------------------------------
+# `s.format` supports {} and {0} but NOT {name} or :spec.
+# ---------------------------------------------------------------------------
+assert "{} {}".format("a", "b") == "a b", "positional {}"
+assert "{0} {0}".format("x") == "x x", "indexed {0}"
+assert "{1} {0}".format("a", "b") == "b a", "indexed reordering"
+assert threw(Function(): return "{x}".format(1)), "{name} field NOT supported in s.format"
+# The doc says :format-spec like {:05d} is not supported here
+# Actually verify — it might throw or may leave the literal
+var res = ""
+var supported = True
+try:
+    res = "{:05d}".format(42)
+catch as e:
+    supported = False
+# Either way, the important claim is documented — record which it is
+# (Test passes if either behaviour matches doc — spec says NOT supported)
+assert not supported or res == "{:05d}", "s.format has no :spec (spec text warns)"
+
+io.print("OK r11-docinvariants")
+
+# ---------------------------------------------------------------------------
+# Small helpers below (kept at end so we don't clutter the reading order).
+# ---------------------------------------------------------------------------
+var _bool_helper_placeholder = True
+
+# Function used above must be defined before its call site — restructure by
+# putting a bare Function assign at the top and referring to it later.

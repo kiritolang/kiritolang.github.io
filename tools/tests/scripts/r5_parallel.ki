@@ -1,0 +1,274 @@
+# ROUND 5 deterministic deep-probe of `parallel` — the concurrency edge cases NOT covered by
+# r4_net_parallel / probe_parallel_adversarial: Semaphore over-release & bounded-concurrency gating,
+# Barrier over-fill / abort / reset+reuse, cross-thread Lock release, nested spawn, a worker-CREATED
+# primitive crossing back by identity, and close() waking blocked producers/consumers. Every
+# cross-thread step is gated by a Queue/Event handshake or join, every blocking call carries a SHORT
+# timeout, and EVERY assertion is on an invariant/aggregate (never on timing or arrival order), so the
+# output is fully deterministic. Run through `ki` (which installs the dispatcher behind `parallel`).
+
+var parallel = import("parallel")
+var io = import("io")
+
+# ---- module-level workers (a worker re-evaluates this file with argmain False) ----
+var w_leaf = Function(x):
+    return x + 1
+var w_nested = Function(x):                 # a worker that spawns + joins its own sub-worker
+    var t = parallel.spawn(w_leaf, x)
+    return t.join() * 10
+var w_make_queue = Function():              # a worker creates a Queue, fills it, returns it
+    var q = parallel.Queue()
+    q.put(11)
+    q.put(22)
+    q.put(33)
+    return q
+var w_barrier = Function(bar, out, id):     # records "ok"/"broken" instead of the volatile index
+    try:
+        discard bar.wait(5.0)
+        out.put("ok")
+    catch as e:
+        out.put("broken")
+var w_lock_acq = Function(lk, ev1, ev2, out):   # acquire, hand off, observe release by another thread
+    discard lk.acquire(True, 5.0)
+    ev1.set()
+    discard ev2.wait(5.0)
+    out.put(lk.locked())                    # False: the OTHER worker released it
+var w_lock_rel = Function(lk, ev1, ev2):
+    discard ev1.wait(5.0)
+    lk.release()                            # release a lock acquired by a DIFFERENT worker
+    ev2.set()
+var w_producer = Function(q, lo, hi):
+    var i = lo
+    while i < hi:
+        q.put(i, True, 5.0)                 # blocks on back-pressure (bounded queue)
+        i = i + 1
+var w_consumer = Function(q, resq):
+    var s = 0
+    var running = True
+    while running:
+        var v = q.get(True, 5.0)
+        if v == -1:
+            running = False
+        else:
+            s = s + v
+    resq.put(s)
+var w_blocked_put = Function(q, out):
+    try:
+        q.put(99, True, 5.0)                # full queue -> blocks -> woken by close -> throws
+        out.put(False)
+    catch as e:
+        out.put(True)
+var w_blocked_get = Function(q, out):
+    try:
+        discard q.get(True, 5.0)            # empty -> blocks -> woken by close -> throws
+        out.put(False)
+    catch as e:
+        out.put(True)
+
+# the bounded-concurrency-gate actors (module level so they are spawnable)
+var w_gate_owner = Function(rq):
+    var active = 0
+    var maxseen = 0
+    var running = True
+    while running:
+        var m = rq.get(True, 10.0)
+        if m[0] == "inc":
+            active = active + 1
+            if active > maxseen:
+                maxseen = active
+            m[1].put(0)
+        elif m[0] == "dec":
+            active = active - 1
+        elif m[0] == "max":
+            m[1].put(maxseen)
+        elif m[0] == "stop":
+            running = False
+var w_gated = Function(sm, rq, dn):
+    discard sm.acquire(True, 10.0)
+    var reply = parallel.Queue()
+    rq.put(["inc", reply])
+    discard reply.get(True, 10.0)
+    var s = 0
+    var t = 0
+    while t < 3000:                         # widen the contention window a little
+        s = s + t
+        t = t + 1
+    rq.put(["dec"])
+    sm.release()
+    dn.put(1)
+
+var checks = 0
+var ck = Function(cond, msg):
+    assert cond, msg
+    checks = checks + 1
+
+# a crude cross-thread "let the workers reach their blocking point" pause (a never-set Event wait)
+var pause = Function(seconds):
+    var ev = parallel.Event()
+    discard ev.wait(seconds)
+
+if argmain:
+    # =====================================================================================
+    # spawn — nested spawn (a worker VM has its own dispatcher), worker-created primitive identity.
+    # =====================================================================================
+    ck(parallel.spawn(w_nested, 5).join() == 60, "nested spawn: a worker can spawn + join a sub-worker")
+
+    var wq = parallel.spawn(w_make_queue).join()     # a worker creates a Queue and returns it
+    ck(type(wq) == "Queue", "a worker-created Queue crosses back by identity")
+    ck(wq.get(True, 2.0) == 11 and wq.get(True, 2.0) == 22 and wq.get(True, 2.0) == 33,
+       "the worker-created Queue still holds the items the worker put")
+
+    # =====================================================================================
+    # Semaphore — over-release grows the permit count; bounded-concurrency gate is honored.
+    # =====================================================================================
+    var sem = parallel.Semaphore(1)
+    var i = 0
+    while i < 4:
+        sem.release()                       # over-release: 4 extra permits
+        i = i + 1
+    var got = 0
+    var j = 0
+    while j < 5:                            # 1 + 4 == 5 permits now available
+        if sem.acquire(False):
+            got = got + 1
+        j = j + 1
+    ck(got == 5, "Semaphore over-release grows the permit count (1+4)")
+    ck(sem.acquire(False) == False, "Semaphore exhausted after draining over-released permits")
+
+    var K = 2
+    var N = 8
+    var gate = parallel.Semaphore(K)
+    var reqq = parallel.Queue()             # an actor owns the active/max counters (no shared mutation)
+    var donez = parallel.Queue()
+    discard parallel.spawn(w_gate_owner, reqq)
+    var gi = 0
+    while gi < N:
+        discard parallel.spawn(w_gated, gate, reqq, donez)
+        gi = gi + 1
+    var fin = 0
+    while fin < N:
+        discard donez.get(True, 10.0)
+        fin = fin + 1
+    var maxq = parallel.Queue()
+    reqq.put(["max", maxq])
+    var maxactive = maxq.get(True, 10.0)
+    reqq.put(["stop"])
+    ck(fin == N, "Semaphore gate: every gated worker completed")
+    ck(maxactive >= 1 and maxactive <= K, "Semaphore gate: peak concurrency never exceeds K permits")
+
+    # =====================================================================================
+    # Barrier — over-fill (2*parties -> two full generations), abort, reset+reuse.
+    # =====================================================================================
+    var bar = parallel.Barrier(2)
+    var bq = parallel.Queue()
+    var bi = 0
+    while bi < 4:                           # 4 workers, parties=2 -> 2 generations both release
+        discard parallel.spawn(w_barrier, bar, bq, bi)
+        bi = bi + 1
+    var bok = 0
+    var bn = 0
+    while bn < 4:
+        if bq.get(True, 5.0) == "ok":
+            bok = bok + 1
+        bn = bn + 1
+    ck(bok == 4, "Barrier over-fill: all four parties release across two generations")
+
+    var abar = parallel.Barrier(10)         # abort() while an under-filled set waits
+    var aq = parallel.Queue()
+    var ai = 0
+    while ai < 3:
+        discard parallel.spawn(w_barrier, abar, aq, ai)
+        ai = ai + 1
+    pause(0.15)
+    abar.abort()
+    var abroken = 0
+    var an = 0
+    while an < 3:
+        if aq.get(True, 5.0) == "broken":
+            abroken = abroken + 1
+        an = an + 1
+    ck(abroken == 3, "Barrier abort() breaks all current waiters")
+
+    var rbar = parallel.Barrier(5)          # reset() breaks waiters, then the barrier is reusable
+    var rq = parallel.Queue()
+    var ri = 0
+    while ri < 2:                           # 2 wait (stuck: needs 5)
+        discard parallel.spawn(w_barrier, rbar, rq, ri)
+        ri = ri + 1
+    pause(0.15)
+    rbar.reset()
+    var rbroken = 0
+    var rn = 0
+    while rn < 2:
+        if rq.get(True, 5.0) == "broken":
+            rbroken = rbroken + 1
+        rn = rn + 1
+    ck(rbroken == 2, "Barrier reset() breaks the stuck waiters")
+    var si = 0
+    while si < 5:                           # full rendezvous of 5 on the SAME barrier -> all ok
+        discard parallel.spawn(w_barrier, rbar, rq, 100 + si)
+        si = si + 1
+    var rok = 0
+    var sn = 0
+    while sn < 5:
+        if rq.get(True, 5.0) == "ok":
+            rok = rok + 1
+        sn = sn + 1
+    ck(rok == 5, "Barrier is reusable after reset(): a full rendezvous releases all five")
+
+    # =====================================================================================
+    # Lock — cross-thread release: worker A acquires, worker B releases it (Python-compatible).
+    # =====================================================================================
+    var lk = parallel.Lock()
+    var ev1 = parallel.Event()
+    var ev2 = parallel.Event()
+    var lout = parallel.Queue()
+    discard parallel.spawn(w_lock_acq, lk, ev1, ev2, lout)
+    discard parallel.spawn(w_lock_rel, lk, ev1, ev2)
+    ck(lout.get(True, 5.0) == False, "Lock released by a different worker than acquired it")
+    ck(lk.locked() == False, "Lock is free after the cross-thread release")
+
+    # =====================================================================================
+    # Queue — MPMC bounded back-pressure (sum invariant), close() wakes a blocked put / get.
+    # =====================================================================================
+    var q = parallel.Queue(8)               # small bound -> heavy back-pressure
+    var resq = parallel.Queue()
+    var P = 4
+    var C = 4
+    var ptasks = []
+    var pi = 0
+    while pi < P:
+        ptasks.append(parallel.spawn(w_producer, q, pi * 50, pi * 50 + 50))
+        pi = pi + 1
+    var ci = 0
+    while ci < C:
+        discard parallel.spawn(w_consumer, q, resq)
+        ci = ci + 1
+    for pt in ptasks:
+        discard pt.join()
+    var sk = 0
+    while sk < C:                           # one sentinel per consumer to stop them
+        q.put(-1, True, 5.0)
+        sk = sk + 1
+    var total = 0
+    var rk = 0
+    while rk < C:
+        total = total + resq.get(True, 5.0)
+        rk = rk + 1
+    ck(total == 19900, "MPMC bounded queue: every item delivered exactly once (sum 0..199)")
+
+    var fq = parallel.Queue(1)              # close() wakes a producer blocked on a full queue
+    fq.put(0)
+    var fout = parallel.Queue()
+    discard parallel.spawn(w_blocked_put, fq, fout)
+    pause(0.15)
+    fq.close()
+    ck(fout.get(True, 5.0) == True, "close() wakes a put() blocked on a full queue (it throws)")
+
+    var emq = parallel.Queue()              # close() wakes a consumer blocked on an empty queue
+    var eout = parallel.Queue()
+    discard parallel.spawn(w_blocked_get, emq, eout)
+    pause(0.15)
+    emq.close()
+    ck(eout.get(True, 5.0) == True, "close() wakes a get() blocked on an empty queue (it throws)")
+
+    io.print("r5 parallel: all " + String(checks) + " checks passed")

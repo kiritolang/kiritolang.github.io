@@ -1,0 +1,198 @@
+# imageops.ki -- whole-image operations for `imaging`, in the spirit of Pillow's ImageOps.
+# Each function takes an Image and returns a new Image. Channel maths is vectorised through the
+# `tensor` backend; histogram-driven ops (autocontrast, equalize) build a per-channel lookup table.
+
+var imaging = import("imaging")
+var T = import("tensor")
+
+# Split colour channels from an optional trailing alpha so colour-only ops leave alpha untouched.
+var _color_alpha = Function(img):
+    if img.mode == "RGBA":
+        return [img.tensor().slice(0, 3, 1, 2), img.tensor().slice(3, 4, 1, 2)]
+    return [img.tensor(), None]
+
+var _rejoin = Function(color, alpha, mode):
+    if alpha == None:
+        return imaging.fromtensor(color, mode)
+    return imaging.fromtensor(T.concatenate([color, alpha], 2), mode)
+
+# Invert the colour channels (Pillow throws on RGBA; we invert RGB and keep alpha).
+var invert = Function(img):
+    var parts = _color_alpha(img)
+    var inv = parts[0] * -1.0 + 255.0
+    return _rejoin(inv, parts[1], img.mode)
+
+# Convert to single-channel greyscale ("L").
+var grayscale = Function(img):
+    return img.convert("L")
+
+var greyscale = grayscale
+
+# Flip left-to-right / top-to-bottom.
+var mirror = Function(img):
+    return img.transpose(imaging.FLIP_LEFT_RIGHT)
+
+var flip = Function(img):
+    return img.transpose(imaging.FLIP_TOP_BOTTOM)
+
+# Reduce each channel to `bits` bits (mask off the low 8-bits). floor(v/step)*step == v & ~(step-1).
+var posterize = Function(img, bits):
+    if bits < 1 or bits > 8:
+        throw "posterize bits must be in 1..8, got " + String(bits)
+    var step = 1
+    var i = 0
+    while i < 8 - bits:
+        step = step * 2
+        i = i + 1
+    var parts = _color_alpha(img)
+    var q = (parts[0] * (1.0 / Float(step))).floor() * Float(step)
+    return _rejoin(q, parts[1], img.mode)
+
+# Invert all pixel values at or above `threshold`.
+var solarize = Function(img, threshold = 128):
+    var parts = _color_alpha(img)
+    var d = parts[0]
+    var inv = d * -1.0 + 255.0
+    var mask = d.ge(Float(threshold))
+    return _rejoin(T.where(mask, inv, d), parts[1], img.mode)
+
+# Build a 256-bin histogram from a flat list of byte values.
+var _hist256 = Function(flat):
+    var h = []
+    var i = 0
+    while i < 256:
+        h.append(0)
+        i = i + 1
+    for v in flat:
+        h[v] = h[v] + 1
+    return h
+
+# Flatten a single-channel (H,W,1) tensor to a list of Integer byte values.
+var _chan_flat = Function(chan):
+    var out = []
+    var px = chan.clip(0.0, 255.0).round().tolist()
+    for row in px:
+        for p in row:
+            out.append(Integer(p[0]))
+    return out
+
+# Stretch each colour channel so its darkest/brightest (after trimming `cutoff` percent off each end)
+# map to 0 and 255.
+var autocontrast = Function(img, cutoff = 0):
+    var parts = _color_alpha(img)
+    var color = parts[0]
+    var C = color.shape()[2]
+    var n = img.width * img.height
+    var planes = []
+    var c = 0
+    while c < C:
+        var chan = color.slice(c, c + 1, 1, 2)
+        var hist = _hist256(_chan_flat(chan))
+        var trim = n * cutoff // 100
+        var lo = 0
+        var acc = 0
+        while lo < 255 and acc + hist[lo] <= trim:
+            acc = acc + hist[lo]
+            lo = lo + 1
+        var hi = 255
+        acc = 0
+        while hi > 0 and acc + hist[hi] <= trim:
+            acc = acc + hist[hi]
+            hi = hi - 1
+        if hi <= lo:
+            planes.append(chan)
+        else:
+            var scale = 255.0 / Float(hi - lo)
+            planes.append(((chan + Float(-lo)) * scale).clip(0.0, 255.0).round())
+        c = c + 1
+    var out = planes[0]
+    if C > 1:
+        out = T.concatenate(planes, 2)
+    return _rejoin(out, parts[1], img.mode)
+
+# Histogram-equalise each colour channel (spreads the intensity distribution).
+var equalize = Function(img):
+    var parts = _color_alpha(img)
+    var color = parts[0]
+    var C = color.shape()[2]
+    var planes = []
+    var c = 0
+    while c < C:
+        var chan = color.slice(c, c + 1, 1, 2)
+        var flat = _chan_flat(chan)
+        var hist = _hist256(flat)
+        # Build the equalisation LUT from the cumulative distribution.
+        var cdf = []
+        var run = 0
+        var i = 0
+        while i < 256:
+            run = run + hist[i]
+            cdf.append(run)
+            i = i + 1
+        var cdfmin = 0
+        i = 0
+        while i < 256:
+            if cdf[i] > 0:
+                cdfmin = cdf[i]
+                i = 256
+            else:
+                i = i + 1
+        var total = len(flat)
+        var lut = []
+        i = 0
+        while i < 256:
+            if total <= cdfmin:
+                lut.append(i)
+            else:
+                lut.append(Integer(round(Float(cdf[i] - cdfmin) / Float(total - cdfmin) * 255.0)))
+            i = i + 1
+        # Remap this channel through the LUT.
+        var remapped = []
+        for v in flat:
+            remapped.append(lut[v])
+        planes.append(T.Tensor(remapped).reshape([img.height, img.width, 1]))
+        c = c + 1
+    var out = planes[0]
+    if C > 1:
+        out = T.concatenate(planes, 2)
+    return _rejoin(out, parts[1], img.mode)
+
+# Add a `border`-pixel frame of colour `fill` around the image.
+var expand = Function(img, border, fill = 0):
+    var nw = img.width + border * 2
+    var nh = img.height + border * 2
+    var canvas = imaging.new(img.mode, [nw, nh], fill)
+    canvas.paste(img, [border, border])
+    return canvas
+
+# Map a greyscale image onto a gradient between colours `black` and `white` (each [r,g,b]).
+var colorize = Function(img, black, white):
+    var l = img
+    if img.mode != "L":
+        l = img.convert("L")
+    var d = l.tensor()                              # (H,W,1) in 0..255
+    var t = d * (1.0 / 255.0)                       # 0..1 ramp
+    var planes = []
+    var c = 0
+    while c < 3:
+        planes.append(t * Float(white[c] - black[c]) + Float(black[c]))
+        c = c + 1
+    return imaging.fromtensor(T.concatenate(planes, 2).clip(0.0, 255.0).round(), "RGB")
+
+# Resize by a scalar factor (bilinear).
+var scale = Function(img, factor):
+    var nw = max(1, Integer(round(img.width * factor)))
+    var nh = max(1, Integer(round(img.height * factor)))
+    return img.resize([nw, nh], imaging.BILINEAR)
+
+# Resize-and-crop so the result exactly fills `size` (centre crop after cover-resize).
+var fit = Function(img, size):
+    var tw = size[0]
+    var th = size[1]
+    var scalef = max(Float(tw) / Float(img.width), Float(th) / Float(img.height))
+    var rw = max(tw, Integer(round(img.width * scalef)))
+    var rh = max(th, Integer(round(img.height * scalef)))
+    var resized = img.resize([rw, rh], imaging.BILINEAR)
+    var left = (rw - tw) // 2
+    var upper = (rh - th) // 2
+    return resized.crop([left, upper, left + tw, upper + th])

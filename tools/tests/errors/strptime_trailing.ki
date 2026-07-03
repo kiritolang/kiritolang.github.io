@@ -1,0 +1,2 @@
+var time = import("time")
+discard time.strptime("2024-01-01XYZ", "%Y-%m-%d")

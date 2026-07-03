@@ -1,0 +1,2 @@
+# a starred unpack still needs enough values for the fixed targets
+var a, b, *c, d, e = [1, 2]

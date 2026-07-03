@@ -1,0 +1,63 @@
+# Generate input files describing complex linear systems, for the solver to read back.
+#
+# File format (plain text, read by solve_systems.ki):
+#   line 1:   n                      # number of equations = number of unknowns
+#   next n:   a_i0_re a_i0_im  a_i1_re a_i1_im  ...  a_i(n-1)_re a_i(n-1)_im  b_i_re b_i_im
+# i.e. each row is the coefficients of one equation followed by the right-hand side, every number
+# written as a "real imag" pair separated by spaces.
+#
+# Run:  ki examples/gen_systems.ki
+# Writes three files into /tmp: a unique-solution 6x6, an inconsistent (no-solution) system, and an
+# underdetermined (infinitely-many-solutions) system.
+
+var io = import("io")
+
+# Write one system: `matrix` is a List of rows; each row is a List of n+1 [re, im] pairs.
+var writeSystem = Function(path, n, matrix):
+    with io.open(path, "w") as f:
+        f.write(String(n) + "\n")
+        for row in matrix:
+            var parts = []
+            for pair in row:
+                parts.append(String(pair[0]) + " " + String(pair[1]))
+            f.write(" ".join(parts) + "\n")
+    io.print("wrote " + path)
+
+# --- System 1: a 6x6 system with a UNIQUE solution -------------------------------------------
+# We pick A = identity-ish diagonal-dominant integer matrix and a known x, then set b = A x so the
+# answer is exact. Here we just hand-write a well-conditioned integer system; all imaginary parts 0
+# except a couple, to exercise complex arithmetic.
+var sys1 = [
+    [[2, 0], [1, 0], [0, 1], [0, 0], [0, 0], [0, 0], [5, 1]],
+    [[0, 0], [3, 0], [1, 0], [0, 0], [1, 0], [0, 0], [9, 0]],
+    [[1, 0], [0, 0], [4, 0], [1, 0], [0, 0], [0, 0], [8, 0]],
+    [[0, 0], [0, 1], [0, 0], [5, 0], [1, 0], [0, 0], [7, 2]],
+    [[0, 0], [0, 0], [1, 0], [0, 0], [6, 0], [1, 0], [12, 0]],
+    [[1, 0], [0, 0], [0, 0], [0, 0], [1, 0], [7, 0], [15, 0]]
+]
+writeSystem("/tmp/system_unique.txt", 6, sys1)
+
+# --- System 2: an inconsistent system with NO solution ---------------------------------------
+# Rows 1 and 2 are proportional in their coefficients but inconsistent in the RHS:
+#   x + y = 1
+#   x + y = 2   -> contradiction
+var sys2 = [
+    [[1, 0], [1, 0], [0, 0], [1, 0]],
+    [[1, 0], [1, 0], [0, 0], [2, 0]],
+    [[0, 0], [0, 0], [1, 0], [5, 0]]
+]
+writeSystem("/tmp/system_none.txt", 3, sys2)
+
+# --- System 3: an underdetermined system with INFINITELY many solutions ----------------------
+# Two independent equations, three unknowns -> a free variable.
+#   x + y + z = 6
+#   x - y     = 0
+#   (third equation is a linear combination -> no new info)
+var sys3 = [
+    [[1, 0], [1, 0], [1, 0], [6, 0]],
+    [[1, 0], [-1, 0], [0, 0], [0, 0]],
+    [[2, 0], [0, 0], [1, 0], [6, 0]]
+]
+writeSystem("/tmp/system_infinite.txt", 3, sys3)
+
+io.print("done")

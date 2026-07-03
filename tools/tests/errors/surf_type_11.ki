@@ -1,0 +1,3 @@
+# type/operator: an unhashable Dict cannot be a Set element
+var st = {{1: 2}, 3}
+discard st

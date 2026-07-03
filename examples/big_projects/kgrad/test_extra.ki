@@ -1,0 +1,137 @@
+# Extra tests: BatchNorm, custom layer, Conv2d (gradient-checked), and edge/adversarial cases.
+var io = import("io")
+var nd = import("ndarray")
+var ag = import("autograd")
+var nn = import("nn")
+var conv = import("conv")
+var optim = import("optim")
+
+var pass_n = [0]
+var fail_n = [0]
+var check = Function(name, cond):
+    if cond:
+        pass_n[0] = pass_n[0] + 1
+        io.print("PASS", name)
+    else:
+        fail_n[0] = fail_n[0] + 1
+        io.print("FAIL", name)
+var probe = Function(fn):
+    try:
+        discard fn()
+        return "no-error"
+    catch as e:
+        return String(e)
+
+# ---- BatchNorm1d: train normalizes to ~0 mean / ~1 var per feature; eval uses running stats ----
+var bn = nn.BatchNorm1d(2, 0.1, 0.00001)
+var x = ag.tensor([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0], [4.0, 40.0]], False)
+var y = bn(x).data
+# column means should be ~0
+var col0mean = (y.to_nested()[0][0] + y.to_nested()[1][0] + y.to_nested()[2][0] + y.to_nested()[3][0]) / 4.0
+check("batchnorm train zero-mean", abs(col0mean) < 0.0001)
+check("batchnorm updates running buffers", bn.buffers_["running_mean"].to_nested()[0] != 0.0)
+discard bn.eval()
+var ye = bn(x)
+check("batchnorm eval runs", ye.shape()[0] == 4)
+
+# batchnorm gradients flow to gamma/beta
+discard bn.train()
+var bnx = ag.tensor([[1.0, 2.0], [3.0, 4.0]], True)
+var bout = bn(bnx)
+ag.sum_all(bout).backward()
+check("batchnorm grad to gamma", bn.gamma.grad != None)
+check("batchnorm grad to input", bnx.grad != None)
+
+# ---- custom layer trains (y=(a*x+b)^2 fit to a target) ----
+nn.manual_seed(5)
+var custom = nn.AffineSquare(1)
+var copt = optim.adam(custom.parameters(), 0.1)
+var cx = ag.tensor([[1.0], [2.0], [3.0]], False)
+var ct = ag.tensor([[4.0], [9.0], [16.0]], False)   # target (x+1)^2
+var cfirst = 0.0
+var clast = 0.0
+var e = 0
+while e < 200:
+    var p = custom(cx)
+    var l = nn.mse_loss(p, ct)
+    copt.zero_grad()
+    l.backward()
+    copt.step()
+    if e == 0:
+        cfirst = l.item()
+    clast = l.item()
+    e = e + 1
+io.print("  custom layer loss:", cfirst, "->", clast)
+check("custom layer learns", clast < cfirst * 0.1)
+
+# ---- Conv2d gradient check (tiny: 1x1x4x4, 2x1x2x2) ----
+var gc = Function(name, build):
+    # build(x_tensor) -> scalar tensor. x data fixed below.
+    var xdata = [[[[1.0, 2.0, 0.5, 1.0], [0.0, 1.0, 2.0, 1.0], [1.0, 0.5, 0.0, 2.0], [2.0, 1.0, 1.0, 0.0]]]]
+    var xt = ag.tensor(xdata, True)
+    var loss = build(xt)
+    loss.backward()
+    var ana = xt.grad.contiguous().buf
+    var flat = nd.array(xdata).contiguous().buf
+    var shape = nd.array(xdata).shape
+    var eps = 0.0001
+    var maxerr = 0.0
+    var i = 0
+    while i < len(flat):
+        var bp = flat.copy()
+        bp[i] = bp[i] + eps
+        var lp = build(ag.from_nd(nd.from_flat(bp.copy(), shape), False)).item()
+        bp[i] = flat[i] - eps
+        var lm = build(ag.from_nd(nd.from_flat(bp.copy(), shape), False)).item()
+        var num = (lp - lm) / (2.0 * eps)
+        var er = abs(ana[i] - num)
+        if er > maxerr:
+            maxerr = er
+        i = i + 1
+    check(name + " (maxerr=" + String(maxerr) + ")", maxerr < 0.001)
+
+var cw = ag.tensor([[[[1.0, 0.0], [0.0, -1.0]]], [[[0.5, 0.5], [0.5, 0.5]]]], False)
+var cb = ag.tensor([0.1, -0.2], False)
+var conv_loss = Function(xt):
+    return ag.sum_all(conv.conv2d(xt, cw, cb, 1, 0))
+gc("conv2d grad wrt input", conv_loss)
+
+# conv2d forward shape: (1,1,4,4) k2 s1 p0 -> (1,2,3,3)
+var co = conv.conv2d(ag.tensor([[[[1.0,2.0,3.0,4.0],[5.0,6.0,7.0,8.0],[9.0,10.0,11.0,12.0],[13.0,14.0,15.0,16.0]]]], False), cw, cb, 1, 0)
+check("conv2d output shape (1,2,3,3)", String(co.shape()) == "[1, 2, 3, 3]")
+# conv with padding=1, stride=2 shape
+var co2 = conv.conv2d(ag.tensor([[[[1.0,2.0,3.0,4.0],[5.0,6.0,7.0,8.0],[9.0,10.0,11.0,12.0],[13.0,14.0,15.0,16.0]]]], False), cw, cb, 2, 1)
+check("conv2d pad1 stride2 shape (1,2,3,3)", String(co2.shape()) == "[1, 2, 3, 3]")
+
+# ---- edge cases ----
+check("scalar tensor sum", ag.tensor([[5.0]], False).sum().item() == 5.0)
+check("empty-ish 1x1 matmul", nd.matmul(nd.array([[2.0]]), nd.array([[3.0]])).item() == 6.0)
+check("reshape -1 infers", nd.array([[1.0,2.0,3.0,4.0]]).reshape([2, -1]).shape == [2, 2])
+check("broadcast scalar add", nd.add(nd.array([[1.0,2.0]]), nd.array([10.0])).to_nested() == [[11.0, 12.0]])
+# single-element backward (grad of x^3 at 2 is 12)
+var sx = ag.tensor([[2.0]], True)
+ag.mul(ag.mul(sx, sx), sx).backward()
+check("d(x^3)/dx at 2 = 12", abs(sx.grad.item() - 12.0) < 0.0001)
+# zero_grad then backward gives fresh grad (no accumulation)
+sx.zero_grad()
+ag.mul(sx, sx).backward()
+check("zero_grad resets", abs(sx.grad.item() - 4.0) < 0.0001)
+
+# ---- adversarial: bad shapes throw cleanly (no crash) ----
+var badmm = Function():
+    return nd.matmul(nd.array([[1.0, 2.0]]), nd.array([[1.0, 2.0]]))   # (1,2)@(1,2) inner mismatch
+check("matmul shape mismatch throws", probe(badmm) != "no-error")
+var badbc = Function():
+    return nd.add(nd.array([[1.0, 2.0, 3.0]]), nd.array([[1.0, 2.0]]))  # 3 vs 2
+check("broadcast mismatch throws", probe(badbc) != "no-error")
+var badreshape = Function():
+    return nd.array([[1.0, 2.0, 3.0]]).reshape([2, 2])
+check("reshape size mismatch throws", probe(badreshape) != "no-error")
+# backward through a graph that mixes requires_grad and constants
+var mixa = ag.tensor([[1.0, 2.0]], True)
+var mixc = ag.tensor([[3.0, 4.0]], False)
+ag.sum_all(ag.mul(mixa, mixc)).backward()
+check("grad only to requires_grad leaf", mixa.grad != None and mixc.grad == None)
+
+io.print("")
+io.print(String(pass_n[0]) + " passed, " + String(fail_n[0]) + " failed")

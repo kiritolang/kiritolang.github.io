@@ -1,0 +1,81 @@
+# sys.createprocess / sys.shell — cross-platform process execution. To stay portable (this runs on
+# the Linux CI matrix AND the maintainer's Windows build), the child we spawn is the `ki` interpreter
+# itself (path.executable) running a tiny generated helper — never platform-specific external commands.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+var KI = path.executable
+var DIR = path.gettempdir()
+var helper = path.join(DIR, "sysproc_helper_k.ki")
+
+# A parameterized child program: arglist[0] selects the behavior.
+var src = r"""var io = import("io")
+var sys = import("sys")
+var path = import("path")
+var mode = arglist[0] if len(arglist) >= 1 else ""
+if mode == "out":
+    io.print("child-stdout-line")
+    io.eprint("child-stderr-line")
+elif mode == "exit3":
+    sys.exit(3)
+elif mode == "echo":
+    io.write(io.read())
+elif mode == "cwd":
+    io.write(path.getcwd())
+elif mode == "sleep":
+    import("time").sleep(5)
+"""
+var fh = io.open(helper, "w")
+discard fh.write(src)
+fh.close()
+
+# --- createprocess: argv, stdout/stderr capture, exit code ---
+var o = sys.createprocess([KI, helper, "out"])
+ok(o["code"] == 0, "exit code 0")
+ok("child-stdout-line" in o["stdout"], "stdout captured")
+ok("child-stderr-line" in o["stderr"], "stderr captured (separate stream)")
+ok(not ("child-stderr-line" in o["stdout"]), "stderr is not mixed into stdout")
+
+# --- non-zero exit code is reported ---
+ok(sys.createprocess([KI, helper, "exit3"])["code"] == 3, "non-zero exit code reported")
+
+# --- stdin is fed to the child ---
+ok(sys.createprocess([KI, helper, "echo"], input = "ping-123")["stdout"] == "ping-123", "stdin fed + echoed back")
+
+# --- cwd changes the child's working directory ---
+var defc = sys.createprocess([KI, helper, "cwd"])["stdout"].strip()
+var setc = sys.createprocess([KI, helper, "cwd"], cwd = DIR)["stdout"].strip()
+ok(len(setc) > 0 and setc != defc, "cwd argument changes the child working directory")
+
+# --- a missing program throws a clean, catchable error (not a crash) ---
+ok(throws(Function(): return sys.createprocess(["no_such_program_zzz_kirito"])), "missing program throws")
+
+# --- empty argv throws ---
+ok(throws(Function(): return sys.createprocess([])), "empty args throws")
+
+# --- timeout kills the child and throws ---
+ok(throws(Function(): return sys.createprocess([KI, helper, "sleep"], timeout = 0.5)), "timeout throws")
+
+# --- sys.shell: runs through the shell; `echo` exists in both /bin/sh and cmd.exe ---
+ok("kirito-shell-marker" in sys.shell("echo kirito-shell-marker")["stdout"], "shell echo output captured")
+ok(sys.shell("exit 7")["code"] == 7, "shell exit code reported")
+
+# --- result shape is a Dict with the three documented keys ---
+var r = sys.shell("echo k")
+ok("code" in r and "stdout" in r and "stderr" in r, "result has code/stdout/stderr")
+
+discard path.remove(helper, missing_ok = True)
+ok(path.exists(helper) == False, "helper cleaned up")
+io.print("sys_proc: " + String(n) + " checks passed")

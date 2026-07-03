@@ -1,0 +1,56 @@
+a
+x
+<a><b>1</b><b>2</b></a>
+custom
+r
+{'x': '1', 'y': '2'}
+pre
+1
+c=inner
+post
+1
+None
+DEF
+c
+None
+1
+inner
+default-text
+['a', 'B', 'c', 'D', 'E', 'x', 'e']
+2
+2
+b
+<rec id="42">hello</rec>
+{}
+<>&"'
+A
+O
+☃
+&unknown;
+2
+e f 1
+a < b && c > d
+<not-a-tag>
+1
+b
+hi
+html
+{'x': 'one', 'y': 'two'}
+&<A
+None
+None
+None
+a
+txt
+a
+x
+<r>pre<a>A</a>mid<b>B</b>post</r>
+<a x="has &quot;quote&quot;" />
+has "quote"
+n
+29
+50
+0/49
+a text='' children=0
+<a />
+OK audit-xml

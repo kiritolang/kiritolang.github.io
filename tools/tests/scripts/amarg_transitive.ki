@@ -1,0 +1,6 @@
+# A transitive (chained) import: this module imports amarg_basic, so the entry script reaching this
+# also reaches amarg_basic one level deeper. The deep module's argmain is still False.
+var basic = import("amarg_basic")
+var m = argmain
+var deepMain = basic.m
+var deepArgs = basic.args

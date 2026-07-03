@@ -1,0 +1,3 @@
+# Opening a nonexistent file for reading must throw.
+var io = import("io")
+discard io.open("/nonexistent/path/file_xyz_abc.txt", "r")

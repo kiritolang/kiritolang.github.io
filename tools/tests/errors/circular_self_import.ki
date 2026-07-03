@@ -1,0 +1,1 @@
+var me = import("circular_self_import")

@@ -1,0 +1,81 @@
+# Immutable scalars can be shared safely; copying them is a no-op.
+var _IMMUTABLE = Set(["None", "Bool", "Integer", "Float", "String", "Bytes"])
+
+# Pure Kirito has no generic way to enumerate/set an instance's attributes, so a class instance (or a
+# native value object like Matrix/Tensor/DateTime) is copied via the serialize graph codec, which
+# copies by attributes / the _getstate_/_setstate_ protocol and preserves shared refs + cycles. This
+# is necessarily a DEEP, independent copy. A value that can't be serialized (e.g. a live socket/file)
+# falls back to itself — best effort, matching the old behaviour for those.
+var _copyViaSerde = Function(obj):
+    var serialize = import("serialize")
+    try:
+        return serialize.loads(serialize.dumps(obj))
+    catch as e:
+        return obj
+
+var copy = Function(obj):
+    var t = type(obj)
+    if t == "List":
+        return obj.copy()
+    if t == "Dict":
+        return obj.copy()
+    if t == "Set":
+        return obj.copy()
+    if t in _IMMUTABLE:
+        return obj
+    return _copyViaSerde(obj)        # user instance / native value object: independent (deep) copy
+
+var deepcopy = Function(obj):
+    var t = type(obj)
+    if t in _IMMUTABLE:
+        return obj
+    if t != "List" and t != "Dict" and t != "Set":
+        return _copyViaSerde(obj)    # instance / native value object — serde handles refs + cycles
+    # Iterative + cycle-safe (recursion would overflow / loop on deep or self-referential data):
+    # 1) discover every reachable container and give it an empty shell, keyed by id(original);
+    # 2) fill the shells, mapping each child to its shell (or itself for scalars). Shared references
+    #    and cycles are preserved because each original maps to exactly one shell.
+    var memo = {}
+    var order = []
+    var stack = [obj]
+    while len(stack) > 0:
+        var cur = stack.pop()
+        var cid = id(cur)
+        if cid in memo:
+            continue
+        var ct = type(cur)
+        if ct == "List":
+            memo[cid] = []
+        elif ct == "Dict":
+            memo[cid] = {}
+        elif ct == "Set":
+            memo[cid] = Set()
+        elif ct in _IMMUTABLE:
+            continue                      # scalar: mapped() returns it unchanged
+        else:
+            memo[cid] = _copyViaSerde(cur)  # user instance / native value: independent deep copy
+            continue                      # serde copied it whole — no shell to fill, don't descend
+        order.append(cur)
+        if ct == "Dict":
+            for pair in cur.items():
+                stack.append(pair[0])
+                stack.append(pair[1])
+        else:
+            for x in cur:
+                stack.append(x)
+    var mapped = Function(x):
+        var xid = id(x)
+        return memo[xid] if xid in memo else x
+    for cur in order:
+        var ct = type(cur)
+        var shell = memo[id(cur)]
+        if ct == "List":
+            for x in cur:
+                shell.append(mapped(x))
+        elif ct == "Set":
+            for x in cur:
+                shell.add(mapped(x))
+        else:
+            for pair in cur.items():
+                shell[mapped(pair[0])] = mapped(pair[1])
+    return memo[id(obj)]

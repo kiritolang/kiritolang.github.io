@@ -1,0 +1,3 @@
+# type/operator: an Integer is not callable
+var n = 5
+discard n()

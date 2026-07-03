@@ -1,0 +1,2 @@
+# Float division by zero must throw, not yield inf.
+discard 1.0 / 0.0

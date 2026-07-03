@@ -1,0 +1,108 @@
+# kirdown/lib/block.ki — block-level parser. Turns the RAW LINES of a Markdown document into a
+# sequence of block nodes, each one of:
+#   {"kind": "heading",    "level": Int 1..6, "text": String}
+#   {"kind": "paragraph",  "text": String}                       # inline formatting applied later
+#   {"kind": "code_fence", "lang": String,    "code": String}    # verbatim, no inline formatting
+#   {"kind": "list",       "ordered": Bool,   "items": [String]} # each item's text (inline later)
+#   {"kind": "blockquote", "text": String}                       # inline formatting applied later
+#   {"kind": "hr"}
+#
+# The grammar is line-oriented and greedy. A blank line separates blocks; a paragraph absorbs
+# consecutive non-blank lines that don't start a different block. Setext headings ("=====" / "-----"
+# under a line) are NOT supported — ATX only. Nested lists are NOT supported — this is a solid
+# subset, not full CommonMark.
+
+var regex = import("regex")
+
+# --- pre-compiled patterns (linear-time, so re-using them is cheap but the intent is clear) ---
+var _atxRe    = regex.compile("^(#{1,6})\\s+(.+?)\\s*#*\\s*$")
+var _fenceRe  = regex.compile("^```([A-Za-z0-9_+.-]*)\\s*$")
+var _closeFenceRe = regex.compile("^```\\s*$")
+var _hrRe     = regex.compile("^(?:-{3,}|_{3,}|\\*{3,})\\s*$")
+var _ulRe     = regex.compile("^[-*+]\\s+(.+)$")
+var _olRe     = regex.compile("^(?:[0-9]+)[.)]\\s+(.+)$")
+var _bqRe     = regex.compile("^>\\s?(.*)$")
+
+var isBlank = Function(line : String) -> Bool:
+    return line.strip() == ""
+
+# Parse the sequence of lines and return the block AST. Consumes the whole array once.
+var parse = Function(lines : List) -> List:
+    var blocks = []
+    var i = 0
+    var n = len(lines)
+    while i < n:
+        var line = lines[i]
+        # skip blank lines between blocks
+        if isBlank(line):
+            i = i + 1
+            continue
+        # code fence: ```lang\n ... \n```
+        var fm = _fenceRe.match(line)
+        if fm != None:
+            var lang = fm.group(1)
+            var buf = []
+            var j = i + 1
+            var closed = False
+            while j < n:
+                if _closeFenceRe.match(lines[j]) != None:
+                    closed = True
+                    j = j + 1
+                    break
+                buf.append(lines[j])
+                j = j + 1
+            blocks.append({"kind": "code_fence", "lang": lang, "code": "\n".join(buf)})
+            i = j
+            continue
+        # ATX heading: # ... ######
+        var hm = _atxRe.match(line)
+        if hm != None:
+            blocks.append({"kind": "heading", "level": len(hm.group(1)), "text": hm.group(2).strip()})
+            i = i + 1
+            continue
+        # horizontal rule: --- *** ___
+        if _hrRe.match(line) != None:
+            blocks.append({"kind": "hr"})
+            i = i + 1
+            continue
+        # unordered list: bullet + spaces + rest
+        if _ulRe.match(line) != None:
+            var items = []
+            while i < n and not isBlank(lines[i]):
+                var m = _ulRe.match(lines[i])
+                if m == None:
+                    break
+                items.append(m.group(1))
+                i = i + 1
+            blocks.append({"kind": "list", "ordered": False, "items": items})
+            continue
+        # ordered list
+        if _olRe.match(line) != None:
+            var items = []
+            while i < n and not isBlank(lines[i]):
+                var m = _olRe.match(lines[i])
+                if m == None:
+                    break
+                items.append(m.group(1))
+                i = i + 1
+            blocks.append({"kind": "list", "ordered": True, "items": items})
+            continue
+        # blockquote: > ...
+        if _bqRe.match(line) != None:
+            var bqLines = []
+            while i < n and not isBlank(lines[i]):
+                var m = _bqRe.match(lines[i])
+                if m == None:
+                    break
+                bqLines.append(m.group(1))
+                i = i + 1
+            blocks.append({"kind": "blockquote", "text": "\n".join(bqLines)})
+            continue
+        # paragraph: consecutive non-blank lines that don't open a new block
+        var paraLines = [line]
+        i = i + 1
+        while i < n and not isBlank(lines[i]) and _atxRe.match(lines[i]) == None and _fenceRe.match(lines[i]) == None and _hrRe.match(lines[i]) == None and _ulRe.match(lines[i]) == None and _olRe.match(lines[i]) == None and _bqRe.match(lines[i]) == None:
+            paraLines.append(lines[i])
+            i = i + 1
+        blocks.append({"kind": "paragraph", "text": "\n".join(paraLines)})
+    return blocks

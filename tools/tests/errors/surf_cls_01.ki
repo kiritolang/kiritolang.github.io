@@ -1,0 +1,6 @@
+# accessing a private member (_balance) from outside the class is an error
+class Account:
+    var _init_ = Function(self):
+        self._balance = 100
+var a = Account()
+discard a._balance

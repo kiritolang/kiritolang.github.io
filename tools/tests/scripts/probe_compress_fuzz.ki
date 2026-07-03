@@ -1,0 +1,87 @@
+# Fuzz + adversarial sweep of the compression/hash stack (all changes around binary I/O since regex):
+# zlib (compress/deflate), gzip, and hash digests over seeded-random String and Bytes data, asserting
+# round-trip fidelity + type preservation, cross-codec interop, hash determinism, and clean rejection
+# of garbage. Seeded -> deterministic.
+var io = import("io")
+var zlib = import("zlib")
+var gzip = import("gzip")
+var hash = import("hash")
+var random = import("random")
+
+var randstr = Function(rng, n):
+    var s = ""
+    var i = 0
+    while i < n:
+        s = s + chr(rng.randint(97, 122))
+        i = i + 1
+    return s
+var randbytes = Function(rng, n):
+    var bs = []
+    var i = 0
+    while i < n:
+        bs.append(rng.randint(0, 255))
+        i = i + 1
+    return Bytes(bs)
+
+if argmain:
+    var rng = random.Random(31337)
+
+    # --- zlib + gzip round-trips on random data, both String and Bytes, type preserved ---
+    var t = 0
+    while t < 150:
+        var n = rng.randint(0, 400)
+        var s = randstr(rng, n)
+        # zlib compress/decompress (String in -> String out)
+        var zc = zlib.compress(s)
+        assert zlib.decompress(zc) == s, "zlib string round-trip"
+        # raw deflate/inflate
+        assert zlib.inflate(zlib.deflate(s)) == s, "deflate/inflate string round-trip"
+        # gzip + alias
+        assert gzip.decompress(gzip.compress(s)) == s, "gzip string round-trip"
+        assert gzip.gunzip(gzip.gzip(s)) == s, "gzip alias round-trip"
+        # Bytes path: type preserved
+        var b = randbytes(rng, n)
+        var bc = zlib.compress(b)
+        assert isinstance(bc, "Bytes"), "zlib(Bytes) returns Bytes"
+        assert zlib.decompress(bc) == b, "zlib bytes round-trip"
+        assert gzip.decompress(gzip.compress(b)) == b, "gzip bytes round-trip"
+        t = t + 1
+
+    # --- empty + highly-repetitive (best-case) + incompressible (random) edge inputs ---
+    assert zlib.decompress(zlib.compress("")) == "", "zlib empty"
+    assert gzip.decompress(gzip.compress("")) == "", "gzip empty"
+    var rep = "ab" * 5000
+    assert zlib.decompress(zlib.compress(rep)) == rep, "zlib repetitive"
+    assert len(zlib.compress(rep)) < len(rep), "repetitive data should shrink"
+
+    # --- gzip output is interoperable / has the gzip magic header (0x1f 0x8b) ---
+    var gz = gzip.compress(randbytes(rng, 64))
+    assert gz[0] == 31 and gz[1] == 139, "gzip magic header"
+
+    # --- hash digests: determinism + String/Bytes agreement + known vectors ---
+    assert hash.md5("abc") == "900150983cd24fb0d6963f7d28e17f72", "md5(abc)"
+    assert hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256(abc)"
+    var h = 0
+    while h < 100:
+        var s = randstr(rng, rng.randint(0, 200))
+        assert hash.md5(s) == hash.md5(s), "md5 deterministic"
+        assert hash.sha256(s) == hash.sha256(s.encode()), "sha256 String==Bytes (same bytes)"
+        assert hash.crc32(s) == hash.crc32(s.encode()), "crc32 String==Bytes"
+        assert hash.adler32(s) >= 0, "adler32 non-negative"
+        h = h + 1
+
+    # --- adversarial: decompressing garbage throws (never crashes / hangs) ---
+    var caught = False
+    try:
+        discard zlib.decompress(Bytes([1, 2, 3, 4, 5, 6]))
+    catch as e:
+        caught = True
+    assert caught, "zlib garbage must throw"
+    caught = False
+    try:
+        discard gzip.decompress(Bytes([0, 1, 2, 3]))   # bad magic
+    catch as e:
+        caught = True
+    assert caught, "gzip bad-magic must throw"
+
+    io.print("OK compress fuzz")

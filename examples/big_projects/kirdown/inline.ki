@@ -1,0 +1,208 @@
+# kirdown/lib/inline.ki — inline-formatting pass. Turns a plain-text line into an HTML fragment
+# with <strong>/<em>/<code>/<a>/<img> markup, honoring code-span protection (nothing inside a
+# backtick span is re-interpreted) and standard HTML escaping.
+#
+# API:
+#   inline.render(text: String) -> String
+#
+# Grammar (rendered eagerly, left-to-right):
+#   code span:   `...`      → <code>...</code>            (escape only, no nested markup)
+#   image:       ![alt](url)→ <img src="url" alt="alt"/>
+#   link:        [text](url)→ <a href="url">text</a>       (text may contain nested inline markup)
+#   auto-link:   <http://…> → <a href="http://…">http://…</a>
+#   strong:      **...**    → <strong>...</strong>         (or __...__)
+#   emph:        *...*      → <em>...</em>                 (or _..._)
+#   line break:  '  \n' at end of line handled at the block level
+#
+# Ambiguity is resolved by scanning left-to-right and preferring the longer marker (** over *).
+
+var regex = import("regex")
+
+# HTML-escape a raw fragment (< > & " ') for insertion into element bodies or attributes.
+var escapeHtml = Function(s : String) -> String:
+    var out = ""
+    for ch in s:
+        if ch == "&":
+            out = out + "&amp;"
+        elif ch == "<":
+            out = out + "&lt;"
+        elif ch == ">":
+            out = out + "&gt;"
+        elif ch == "\"":
+            out = out + "&quot;"
+        elif ch == "'":
+            out = out + "&#39;"
+        else:
+            out = out + ch
+    return out
+
+# A URL rendered inside an href/src is escaped for HTML but not URL-encoded — Markdown authors
+# provide the URL already-encoded.
+var escapeAttr = Function(s : String) -> String:
+    return escapeHtml(s)
+
+# Match `code`, `` code `` (and n-tick variants). Returns [inner, end_index] or None.
+var _matchCodeSpan = Function(s : String, i : Integer):
+    var n = len(s)
+    var start = i
+    while start < n and s[start] == "`":
+        start = start + 1
+    var runlen = start - i
+    var j = start
+    while j < n:
+        if s[j] == "`":
+            var k = j
+            while k < n and s[k] == "`":
+                k = k + 1
+            if k - j == runlen:
+                return [s[start:j], k]
+            j = k
+        else:
+            j = j + 1
+    return None
+
+# Find `[...]` matched, handling nested `[]` and escaped `\[` inside; returns [inner_end_exclusive]
+# or None if unbalanced.
+var _findMatchedBracket = Function(s : String, i : Integer):
+    var n = len(s)
+    var j = i + 1
+    var depth = 1
+    while j < n:
+        var c = s[j]
+        if c == "\\" and j + 1 < n:
+            j = j + 2
+        elif c == "[":
+            depth = depth + 1
+            j = j + 1
+        elif c == "]":
+            depth = depth - 1
+            if depth == 0:
+                return j
+            j = j + 1
+        else:
+            j = j + 1
+    return None
+
+# After a matched `]`, expect `(URL)` — parses the paren-URL respecting a single balanced pair.
+# Returns [url, index_after_close_paren] or None.
+var _parseParenUrl = Function(s : String, i : Integer):
+    var n = len(s)
+    if i >= n or s[i] != "(":
+        return None
+    var j = i + 1
+    var depth = 1
+    var buf = ""
+    while j < n:
+        var c = s[j]
+        if c == "\\" and j + 1 < n:
+            buf = buf + s[j + 1]
+            j = j + 2
+        elif c == "(":
+            depth = depth + 1
+            buf = buf + c
+            j = j + 1
+        elif c == ")":
+            depth = depth - 1
+            if depth == 0:
+                return [buf.strip(), j + 1]
+            buf = buf + c
+            j = j + 1
+        else:
+            buf = buf + c
+            j = j + 1
+    return None
+
+var _autolinkPattern = regex.compile("^<((?:https?|ftp|mailto):[^\\s>]+)>")
+
+# The main inline pass. Right-recursive on link text so bold/italic inside a link work. `depth`
+# guards against pathological input (a solid run of ***... would otherwise unwind via successive
+# unmatched strong-open + inner-render).
+var _MAX_DEPTH = 24
+var _renderD = Function(s : String, depth : Integer) -> String:
+    if depth > _MAX_DEPTH:
+        return escapeHtml(s)
+    var out = ""
+    var i = 0
+    var n = len(s)
+    while i < n:
+        var c = s[i]
+        # backslash escape: `\*` is a literal '*'
+        if c == "\\" and i + 1 < n:
+            out = out + escapeHtml(s[i + 1])
+            i = i + 2
+            continue
+        # code span (highest precedence — its body is escaped literally, no nested markup)
+        if c == "`":
+            var m = _matchCodeSpan(s, i)
+            if m != None:
+                out = out + "<code>" + escapeHtml(m[0]) + "</code>"
+                i = m[1]
+                continue
+        # image: ![alt](url)
+        if c == "!" and i + 1 < n and s[i + 1] == "[":
+            var closeB = _findMatchedBracket(s, i + 1)
+            if closeB != None:
+                var pu = _parseParenUrl(s, closeB + 1)
+                if pu != None:
+                    var alt = s[i + 2:closeB]
+                    out = out + "<img src=\"" + escapeAttr(pu[0]) + "\" alt=\"" + escapeAttr(alt) + "\"/>"
+                    i = pu[1]
+                    continue
+        # link: [text](url)
+        if c == "[":
+            var closeB = _findMatchedBracket(s, i)
+            if closeB != None:
+                var pu = _parseParenUrl(s, closeB + 1)
+                if pu != None:
+                    var text = s[i + 1:closeB]
+                    out = out + "<a href=\"" + escapeAttr(pu[0]) + "\">" + _renderD(text, depth + 1) + "</a>"
+                    i = pu[1]
+                    continue
+        # auto-link: <http://...>
+        if c == "<":
+            var mm = _autolinkPattern.match(s[i:])
+            if mm != None:
+                var url = mm.group(1)
+                out = out + "<a href=\"" + escapeAttr(url) + "\">" + escapeHtml(url) + "</a>"
+                i = i + len(mm.group(0))
+                continue
+        # strong: ** or __. When the found close `**` is itself followed by another `*` (so we're
+        # sitting on a `***` run), the LAST two markers close the outer strong and the leading `*`
+        # belongs to inner emphasis — skip and keep scanning.
+        if (c == "*" or c == "_") and i + 1 < n and s[i + 1] == c:
+            var j = i + 2
+            var closed = False
+            while j + 1 < n:
+                if s[j] == c and s[j + 1] == c:
+                    if j + 2 < n and s[j + 2] == c:
+                        j = j + 1
+                        continue
+                    var inner = s[i + 2:j]
+                    out = out + "<strong>" + _renderD(inner, depth + 1) + "</strong>"
+                    i = j + 2
+                    closed = True
+                    break
+                j = j + 1
+            if closed:
+                continue
+        # emph: * or _
+        if c == "*" or c == "_":
+            var j = i + 1
+            while j < n:
+                if s[j] == c:
+                    var inner = s[i + 1:j]
+                    if len(inner) > 0:
+                        out = out + "<em>" + _renderD(inner, depth + 1) + "</em>"
+                        i = j + 1
+                        break
+                j = j + 1
+            if j < n:
+                continue
+        # fall-through: escape the character
+        out = out + escapeHtml(c)
+        i = i + 1
+    return out
+
+# Public entry: depth = 0.
+var render = Function(s : String) -> String:
+    return _renderD(s, 0)

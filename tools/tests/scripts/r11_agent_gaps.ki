@@ -1,0 +1,427 @@
+# ============================================================================
+# r11_agent_gaps.ki — the concrete gaps identified from a doc-vs-existing-tests
+# sweep against docs/pages/05..07. Every assert covers a specific documented
+# claim with no other test I could find, or completes a partially-covered set.
+# ============================================================================
+var io = import("io")
+
+var threw = Function(fn):
+    try:
+        fn()
+    catch as e:
+        return True
+    return False
+
+# ---------------------------------------------------------------------------
+# format: "=" and "," on Strings both throw (completing the 4-flag set)
+# ---------------------------------------------------------------------------
+assert threw(Function(): return format("x", "=6")), "= sign-align rejected on String"
+assert threw(Function(): return format("x", ",")), ", rejected on String"
+
+# ---------------------------------------------------------------------------
+# isinstance("<NativeTypeName>") — one name per native type
+# ---------------------------------------------------------------------------
+var random = import("random")
+var time = import("time")
+var re = import("regex")
+var net = import("net")
+var complexm = import("complex")
+var matrix = import("matrix")
+var tensor = import("tensor")
+
+var rng = random.Random(1)
+assert isinstance(rng, "Random") == True, "isinstance native Random"
+
+var dt = time.now()
+assert isinstance(dt, "DateTime") == True, "isinstance native DateTime"
+
+var bio = io.BytesIO()
+assert isinstance(bio, "BytesIO") == True, "isinstance native BytesIO"
+
+var pat = re.compile("a")
+assert isinstance(pat, "Pattern") == True or isinstance(pat, "Regex") == True, "isinstance native Regex/Pattern"
+var m = re.search("a", "abc")
+assert isinstance(m, "Match") == True, "isinstance native Match"
+
+var sock = net.Socket()
+assert isinstance(sock, "Socket") == True, "isinstance native Socket"
+sock.close()
+
+var z = complexm.Complex(1, 2)
+assert isinstance(z, "Complex") == True, "isinstance native Complex"
+
+var mm = matrix.identity(2)
+assert isinstance(mm, "Matrix") == True, "isinstance native Matrix"
+
+var cm = complexm.identity(2)
+assert isinstance(cm, "ComplexMatrix") == True or isinstance(cm, "Matrix") == True, "isinstance native ComplexMatrix"
+
+var tt = tensor.zeros([2, 2])
+assert isinstance(tt, "Tensor") == True, "isinstance native Tensor"
+
+# ---------------------------------------------------------------------------
+# Integer("+ 5") throws — space after sign
+# Integer("0X"/"0O"/"0B" uppercase) all work
+# ---------------------------------------------------------------------------
+assert threw(Function(): return Integer("+ 5")), "Integer('+ 5') space after sign throws"
+assert Integer("0XFF") == 255, "hex uppercase 0X"
+assert Integer("0O17") == 15, "octal uppercase 0O"
+assert Integer("0B1010") == 10, "binary uppercase 0B"
+
+# Float("infinity") sign-prefixable
+var math = import("math")
+assert Float("-infinity") == -math.inf, "Float('-infinity')"
+assert Float("+inf") == math.inf, "Float('+inf')"
+assert Float("+INF") == math.inf, "Float('+INF') case-insensitive"
+
+# ---------------------------------------------------------------------------
+# String: startswith 3-arg form (matches endswith which is already tested)
+# ---------------------------------------------------------------------------
+assert "abcdef".startswith("cd", 2) == True, "startswith 2-arg"
+assert "abcdef".startswith("cd", 2, 4) == True, "startswith 3-arg (window matches)"
+assert "abcdef".startswith("cd", 2, 3) == False, "startswith 3-arg (window too small)"
+assert "abcdef".startswith("de", 3, 6) == True, "startswith 3-arg (window)"
+
+# ---------------------------------------------------------------------------
+# String: replace(old, new, count = N) keyword form
+# ---------------------------------------------------------------------------
+assert "aaa".replace("a", "b", count = 2) == "bba", "replace count= kwarg"
+assert "aaaaa".replace("a", "b", 3) == "bbbaa", "replace count positional"
+assert "aaaaa".replace(old = "a", new = "b") == "bbbbb", "replace old/new kwarg"
+
+# ---------------------------------------------------------------------------
+# String.apply returning "" drops the character (flat-map)
+# ---------------------------------------------------------------------------
+var drop_vowels = Function(c):
+    if c == "a" or c == "e" or c == "i" or c == "o" or c == "u":
+        return ""
+    return c
+assert "hello".apply(drop_vowels) == "hll", "apply-drop via ''"
+assert "aaa".apply(drop_vowels) == "", "apply drops every char"
+
+# ---------------------------------------------------------------------------
+# String: isdigit rejects non-ASCII digits per doc
+# ---------------------------------------------------------------------------
+assert "0123".isdigit() == True, "ASCII digits are digits"
+assert "²".isdigit() == False, "superscript 2 not a digit"
+assert "½".isdigit() == False, "vulgar fraction not a digit"
+# Arabic-Indic digit
+assert "٠".isdigit() == False, "Arabic-Indic zero not a digit"
+# Fullwidth digit
+assert "０".isdigit() == False, "fullwidth zero not a digit"
+
+# ---------------------------------------------------------------------------
+# String: isspace only recognizes the six ASCII whitespace chars
+# ---------------------------------------------------------------------------
+assert " ".isspace() == True, "space is space"
+assert "\t".isspace() == True, "tab is space"
+assert "\n".isspace() == True, "newline is space"
+assert "\r".isspace() == True, "cr is space"
+# NBSP (U+00A0) is NOT space
+assert " ".isspace() == False, "NBSP is not space (ASCII-only)"
+
+# ---------------------------------------------------------------------------
+# Bytes.decode("ascii") throws on byte >= 0x80
+# ---------------------------------------------------------------------------
+assert threw(Function(): return Bytes([0xC3]).decode("ascii")), "ascii decode byte 0xC3 throws"
+assert threw(Function(): return Bytes([0xFF]).decode("ascii")), "ascii decode byte 0xFF throws"
+
+# ---------------------------------------------------------------------------
+# Dict.remove(key) — distinct from pop
+# ---------------------------------------------------------------------------
+var d = {"a": 1, "b": 2}
+d.remove("a")
+assert "a" not in d, "dict.remove drops key"
+assert d == {"b": 2}, "dict.remove leaves the rest"
+assert threw(Function(): return {"x": 1}.remove("y")), "dict.remove absent throws"
+
+# ---------------------------------------------------------------------------
+# Set operator forms for subset/superset
+# ---------------------------------------------------------------------------
+var s1 = {1, 2}
+var s2 = {1, 2, 3}
+assert (s1 < s2) == True, "proper subset operator"
+assert (s1 <= s2) == True, "subset operator"
+assert (s1 <= s1) == True, "subset reflexive"
+assert (s1 < s1) == False, "proper subset not reflexive"
+assert (s2 > s1) == True, "proper superset"
+assert (s2 >= s1) == True, "superset"
+assert (s2 >= s2) == True, "superset reflexive"
+# Non-Set on RHS throws
+assert threw(Function(): return {1, 2} - [1]), "Set - List throws"
+assert threw(Function(): return {1, 2} < [1, 2, 3]), "Set < List throws"
+
+# ---------------------------------------------------------------------------
+# semver: parse, diff, rsort, eq/neq/lt/lte/gte, major/minor/patch, prerelease, minsatisfying
+# ---------------------------------------------------------------------------
+var sv = import("semver")
+var p = sv.parse("1.2.3-beta.1+build.5")
+assert p["major"] == 1 and p["minor"] == 2 and p["patch"] == 3, "parse fields"
+assert p["prerelease"] == ["beta", "1"], "parse prerelease"
+assert p["build"] == ["build", "5"], "parse build"
+# diff
+assert sv.diff("1.2.3", "2.0.0") == "major", "diff major"
+assert sv.diff("1.2.3", "1.3.0") == "minor", "diff minor"
+assert sv.diff("1.2.3", "1.2.4") == "patch", "diff patch"
+assert sv.diff("1.2.3-alpha", "1.2.3-beta") == "prerelease", "diff prerelease"
+assert sv.diff("1.2.3", "1.2.3") == None, "diff none"
+# rsort
+assert sv.rsort(["1.1.0", "1.10.0", "1.2.0"]) == ["1.10.0", "1.2.0", "1.1.0"], "rsort"
+# comparison shortcuts
+assert sv.eq("1.0.0", "1.0.0") == True, "sv.eq"
+assert sv.eq("1.0.0", "1.0.1") == False, "sv.eq neg"
+assert sv.neq("1.0.0", "1.0.1") == True, "sv.neq"
+assert sv.neq("1.0.0", "1.0.0") == False, "sv.neq neg"
+assert sv.lt("1.0.0", "2.0.0") == True, "sv.lt"
+assert sv.lt("2.0.0", "1.0.0") == False, "sv.lt neg"
+assert sv.lte("1.0.0", "1.0.0") == True, "sv.lte reflexive"
+assert sv.lte("1.0.0", "0.9.0") == False, "sv.lte neg"
+assert sv.gte("2.0.0", "1.0.0") == True, "sv.gte"
+assert sv.gte("1.0.0", "1.0.0") == True, "sv.gte reflexive"
+# component extractors
+assert sv.major("1.2.3") == 1, "major"
+assert sv.minor("1.2.3") == 2, "minor"
+assert sv.patch("1.2.3") == 3, "patch"
+# prerelease extractor
+assert sv.prerelease("1.2.3-alpha.1") == ["alpha", "1"], "prerelease list"
+assert sv.prerelease("1.2.3") == None, "prerelease None"
+# minsatisfying
+assert sv.minsatisfying(["v1.0.0", "v1.4.2", "v2.0.0"], "^1.0.0") == "v1.0.0", "minsatisfying"
+assert sv.minsatisfying(["v3.0.0"], "^1.0.0") == None, "minsatisfying no match"
+
+# ---------------------------------------------------------------------------
+# complex — cbrt, is_zero, hermitian/conjugatetranspose, constants
+# ---------------------------------------------------------------------------
+# Constants
+assert complexm.zero == complexm.Complex(0, 0), "complex.zero constant"
+assert complexm.one == complexm.Complex(1, 0), "complex.one constant"
+assert complexm.i == complexm.Complex(0, 1), "complex.i constant"
+
+# cbrt (documented but no test)
+var c8 = complexm.Complex(8, 0)
+var croot = complexm.cbrt(c8)
+assert croot.compare(complexm.Complex(2, 0), abs_tol = 1e-9), "cbrt(8) ≈ 2"
+
+# is_zero — tolerant zero (magnitude < 1e-10)
+assert complexm.zero.is_zero() == True, "zero.is_zero True"
+assert complexm.one.is_zero() == False, "one.is_zero False"
+var tiny = complexm.Complex(1e-15, 0)
+assert tiny.is_zero() == True, "tiny.is_zero tolerant"
+
+# hermitian / conjugatetranspose
+var H = complexm.Matrix([[complexm.Complex(1, 2), complexm.Complex(3, 4)]])
+var H2 = H.hermitian()
+# H is 1x2 -> H2 is 2x1
+assert H2.rows() == 2 and H2.cols() == 1, "hermitian transposes shape"
+# element check: H[0,0] = 1+2i -> H2[0,0] = 1-2i
+assert H2.get(0, 0).re == 1.0 and H2.get(0, 0).im == -2.0, "hermitian conjugates"
+
+var Halt = H.conjugatetranspose()
+assert Halt.rows() == H2.rows() and Halt.cols() == H2.cols(), "conjugatetranspose alias"
+
+# Analytic functions on Complex
+var czero = complexm.zero
+assert complexm.sinh(czero) == complexm.zero, "sinh(0) = 0"
+assert complexm.cosh(czero) == complexm.one, "cosh(0) = 1"
+# asinh(0) = 0
+assert complexm.asinh(czero) == complexm.zero, "asinh(0) = 0"
+# acosh(1) = 0
+assert complexm.acosh(complexm.one).compare(complexm.zero, abs_tol = 1e-9), "acosh(1) = 0"
+# atanh(0) = 0
+assert complexm.atanh(czero) == complexm.zero, "atanh(0) = 0"
+
+# ---------------------------------------------------------------------------
+# tensor: zeroslike / oneslike / fulllike, searchsorted, contract
+# ---------------------------------------------------------------------------
+var T = tensor
+var base = T.Tensor([[1.0, 2.0], [3.0, 4.0]])
+var zlk = T.zeroslike(base)
+assert zlk.shape() == [2, 2], "zeroslike shape"
+assert zlk.sum() == 0.0, "zeroslike all zeros"
+var olk = T.oneslike(base)
+assert olk.sum() == 4.0, "oneslike all ones"
+var flk = T.fulllike(base, 5.0)
+assert flk.sum() == 20.0, "fulllike"
+
+# searchsorted
+var sarr = T.Tensor([1.0, 3.0, 5.0, 7.0, 9.0])
+var v = T.Tensor([0.0, 4.0, 8.0, 10.0])
+var idx = T.searchsorted(sarr, v)
+# idx: [0, 2, 4, 5]
+assert idx.tolist() == [0, 2, 4, 5], "searchsorted"
+
+# contract — matrix mult via contract
+var A = T.Tensor([[1.0, 2.0], [3.0, 4.0]])
+var B = T.Tensor([[5.0, 6.0], [7.0, 8.0]])
+var C = T.contract(A, B, [1], [0])  # A @ B
+assert C.tolist() == [[19.0, 22.0], [43.0, 50.0]], "contract = matmul via axis 1 vs 0"
+
+# ---------------------------------------------------------------------------
+# tabular.merge suffixes + describe + how = outer
+# ---------------------------------------------------------------------------
+var tb = import("tabular")
+var left = tb.DataFrame({"key": ["a", "b", "c"], "v": [1, 2, 3]}, columns = ["key", "v"])
+var right = tb.DataFrame({"key": ["a", "b", "d"], "v": [10, 20, 40]}, columns = ["key", "v"])
+# 'v' is in BOTH; per docs disambiguated to v_x and v_y
+var merged = tb.merge(left, right, on = "key", how = "inner")
+var cols = merged.columns
+assert "v_x" in cols or "v_y" in cols, "merge disambiguates v_x/v_y"
+# outer join
+var outer = tb.merge(left, right, on = "key", how = "outer")
+assert len(outer) == 4, "outer merge picks up all keys (a, b, c, d)"
+# describe
+var df = tb.DataFrame({"x": [1.0, 2.0, 3.0, 4.0], "y": [10.0, 20.0, 30.0, 40.0]})
+var desc = df.describe()
+assert desc != None, "describe returns something"
+# describe should include some standard rows
+var descidx = desc.index
+var count_present = False
+for lbl in descidx:
+    if lbl == "count":
+        count_present = True
+assert count_present, "describe includes count row"
+
+# iat/at position-only access
+var s = tb.Series([10, 20, 30])
+assert s.iat(0) == 10, "Series.iat(0)"
+assert s.iat(2) == 30, "Series.iat(2)"
+assert df.iat(0, 0) == 1.0, "DataFrame.iat(row, col by position)"
+
+# ---------------------------------------------------------------------------
+# io: stream= kwarg on print/eprint/write to redirect one call
+# ---------------------------------------------------------------------------
+var buf = io.BytesIO()
+io.print("hello world", stream = buf)
+assert buf.getvalue() == "hello world\n", "print stream= writes to BytesIO with newline"
+var buf2 = io.BytesIO()
+io.write("no-newline", stream = buf2)
+assert buf2.getvalue() == "no-newline", "write stream= no newline"
+var buf3 = io.BytesIO()
+io.eprint("err out", stream = buf3)
+assert "err out" in buf3.getvalue(), "eprint stream="
+
+# ---------------------------------------------------------------------------
+# BytesIO.truncate() and size()
+# ---------------------------------------------------------------------------
+var tb_bio = io.BytesIO()
+discard tb_bio.write("hello world")
+discard tb_bio.seek(5)
+discard tb_bio.truncate()
+assert tb_bio.getvalue() == "hello", "truncate drops from cursor"
+assert tb_bio.size() == 5, "size == 5"
+assert len(tb_bio) == 5, "len == size"
+
+# ---------------------------------------------------------------------------
+# File.readlines()
+# ---------------------------------------------------------------------------
+var path = import("path")
+var tmp = path.gettempdir()
+var fp = path.join(tmp, "kirit_r11_readlines.txt")
+if path.exists(fp):
+    path.remove(fp)
+with io.open(fp, "w") as f:
+    f.write("a\nb\nc\n")
+with io.open(fp, "r") as f:
+    var all_lines = f.readlines()
+    assert len(all_lines) == 3, "readlines gives 3 lines"
+path.remove(fp)
+
+# ---------------------------------------------------------------------------
+# net verbs head/options/patch exist as functions
+# ---------------------------------------------------------------------------
+assert type(net.head) == "Function", "net.head is a Function"
+assert type(net.options) == "Function", "net.options is a Function"
+assert type(net.patch) == "Function", "net.patch is a Function"
+# Session
+var sess = net.Session()
+assert hasattr(sess, "get"), "Session has .get"
+assert hasattr(sess, "cookies"), "Session has .cookies"
+assert hasattr(sess, "headers"), "Session has .headers"
+
+# ---------------------------------------------------------------------------
+# time.perfcounterns / dt.isoformat / dt.format
+# ---------------------------------------------------------------------------
+var t_ns = time.perfcounterns()
+assert type(t_ns) == "Integer", "perfcounterns is Integer"
+var dt2 = time.make(2024, 3, 15, 12, 30, 45)
+assert dt2.iso() == dt2.isoformat(), "iso == isoformat alias"
+assert dt2.format("%Y-%m-%d") == "2024-03-15", "dt.format %Y-%m-%d"
+assert dt2.format("%H:%M:%S") == "12:30:45", "dt.format time"
+
+# ---------------------------------------------------------------------------
+# xml.Element direct construction + tail
+# ---------------------------------------------------------------------------
+var xml = import("xml")
+var root = xml.Element("root", {"id": "1"})
+assert root.tag == "root", "Element ctor tag"
+assert root.get("id") == "1", "Element ctor attrib"
+
+# Parse & check .tail
+var r_with_tail = xml.parse("<r><a>hi</a>tail-text</r>")
+var achild = r_with_tail.find("a")
+assert achild.tail == "tail-text", ".tail after end tag"
+
+# Serialize round-trip
+var serialized = xml.tostring(root)
+assert "root" in serialized, "tostring includes tag"
+
+# ---------------------------------------------------------------------------
+# regex: escape, named-group templates, inline flags
+# ---------------------------------------------------------------------------
+assert re.escape("a.b*c") == "a\\.b\\*c", "re.escape metacharacters"
+assert re.escape("hello") == "hello", "re.escape leaves plain unchanged"
+
+# \g<name> template in sub
+var subbed = re.sub("(?P<who>\\w+)", "hi \\g<who>", "ada")
+assert subbed == "hi ada", "\\g<name> template"
+
+# \g<0> template = full match
+var s0 = re.sub("\\w+", "[\\g<0>]", "hello")
+assert s0 == "[hello]", "\\g<0> template = full match"
+
+# Inline flags
+var mi = re.search("(?i)hello", "HELLO WORLD")
+assert mi != None, "inline (?i) works"
+var mm2 = re.search("(?m)^b", "a\nb\nc")
+assert mm2 != None, "inline (?m) multiline"
+var ms = re.search("(?s)a.b", "a\nb")
+assert ms != None, "inline (?s) dotall"
+
+# split with maxsplit and interleaved captured groups
+var parts = re.split("(,)", "a,b,c")
+# per doc: captured groups interleaved
+assert "," in parts, "split with capture interleaves separator"
+
+# ---------------------------------------------------------------------------
+# functools.partial — takes a list of leading args
+# ---------------------------------------------------------------------------
+var ft = import("functools")
+var addlist = Function(args):
+    var s = 0
+    for x in args:
+        s = s + x
+    return s
+var add_prefix = ft.partial(addlist, [1, 2])
+# per doc: result takes a LIST of remaining args, calls fn with combined list
+assert add_prefix([3, 4]) == 10, "partial([1,2]) + [3,4] = 10"
+
+# ---------------------------------------------------------------------------
+# hash.crc64 — signed Integer per docs
+# ---------------------------------------------------------------------------
+var hash = import("hash")
+assert type(hash.crc64("hello")) == "Integer", "crc64 returns Integer"
+# Deterministic
+assert hash.crc64("hello") == hash.crc64("hello"), "crc64 deterministic"
+assert hash.crc64("hello") == hash.crc64(Bytes("hello")), "crc64 String == Bytes"
+
+# ---------------------------------------------------------------------------
+# copy: cycle-safe deepcopy
+# ---------------------------------------------------------------------------
+var copy = import("copy")
+var lst = [1, 2, 3]
+lst.append(lst)  # cycle!
+var cp = copy.deepcopy(lst)
+assert cp[0] == 1 and cp[3][0] == 1, "deepcopy handles a cycle"
+assert id(cp) != id(lst), "deepcopy returns new object"
+
+io.print("OK r11-agent-gaps")

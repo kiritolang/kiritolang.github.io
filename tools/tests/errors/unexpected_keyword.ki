@@ -1,0 +1,3 @@
+var f = Function(a):
+    return a
+f(z = 1)

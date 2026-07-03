@@ -1,0 +1,458 @@
+# r8_language.ki — round-8 exhaustive re-audit of Kirito's CORE LANGUAGE semantics against
+# docs/pages/02-language-guide.md (and the course). r4/r5/r6/r7 + the spec_* suites already cover
+# the broad surface; r8 deliberately attacks GAPS and harder/fresh angles those rounds did not pin:
+#   - numeric LITERAL lexing edges: 007 (decimal, not octal), uppercase 0X/0B/0O prefixes,
+#     0xFFFF…FF == -1, 0x8000…00 == INT64_MIN, `1E3`/`2e-3`; `5.`/`.5` and digit-separator REJECTION,
+#   - INT64 two's-complement wraparound on MULTIPLY/floordiv/mod at the INT64_MIN boundary,
+#   - full 4-sign matrix for `//` and `%` (int + float); `**` right-assoc + the float/int domain throws,
+#   - return-type annotation: implicit-None fall-off under `-> Integer` RAISES; `-> None` accepts
+#     explicit/bare/implicit None,
+#   - mutable-default freshness across RECURSION; defaults re-read an outer name at call time,
+#   - `not` looser than `in`/`==` but tighter than the ternary (fresh operator-precedence combos),
+#   - deeply-nested right-assoc ternary classify; ternary condition uses `and`/`or` unparenthesized;
+#     ternary after a block-bodied Function is NOT swallowed,
+#   - switch: -0.0 matches `case 0.0` (exact IEEE), empty-string case, return-from-switch,
+#   - unpack: a starred bare-name target in a non-`var` statement must already be bound; mixed
+#     name/index/member-with-star; precise count-mismatch messages,
+#   - closures capturing a loop var (late binding) via accumulation; closure state independent in recursion,
+#   - try/catch/finally: typed-catch fall-through to bare catch, rethrow-in-catch, depth-guard
+#     catchable + state recovered,
+#   - String literals: \xHH high byte, \0 repr inside a container, triple-quoted embedded quotes,
+#     rf/fr both orders, bad-escape / unterminated / raw-trailing-backslash rejections,
+#   - f-strings: literal `{{`/`}}`, format specs (+05d, #x/#b/#o, thousands `,`, ^/</> align, .Nf,
+#     width, space-sign), single-quoted key, empty `{}` rejection,
+#   - resolver: undefined name is a COMPILE error (surfaces on import, NOT runtime-catchable),
+#   - fixed-seed fuzz: the floor-div/mod identity `a == (a//b)*b + a%b` with sign-of-divisor remainder,
+#     and a ternary/switch classification oracle.
+# Self-checking: every assertion bumps a counter; the final line reports the total.
+
+var io = import("io")
+var path = import("path")
+var random = import("random")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(thunk) -> True iff calling thunk() throws (probes runtime-catchable errors).
+var throws = Function(thunk):
+    var threw = False
+    try:
+        discard thunk()
+    catch as e:
+        discard e
+        threw = True
+    return threw
+
+# importErr(src, sub) -> True iff importing a module holding `src` throws and (if sub != "") sub is in
+# the message. Lex/parse/compile/resolver errors surface on import, never in THIS file's own compile,
+# so this is how we probe them without aborting the suite. Unique path per call: the cache never aliases.
+var impCounter = 0
+var importErr = Function(src, sub):
+    impCounter = impCounter + 1
+    var fp = "/tmp/r8_lang_" + String(impCounter)
+    var fh = io.open(fp + ".ki", "w")
+    fh.write(src)
+    fh.close()
+    var threw = False
+    try:
+        discard import(fp)
+    catch as e:
+        threw = sub == "" or sub in e
+    path.remove(fp + ".ki", missing_ok = True)
+    return threw
+
+# ============================================================================
+# Numeric literal lexing — fresh edges (gaps vs spec_numbers / r6)
+# ============================================================================
+# A leading-zero decimal literal is DECIMAL, not octal: 007 == 7.
+ok(007 == 7 and 0042 == 42, "leading-zero decimal literal is decimal (not octal)")
+# Base prefixes are case-insensitive (0X / 0B / 0O as well as lowercase).
+ok(0XfF == 255 and 0B1111 == 15 and 0O777 == 511, "uppercase base prefixes 0X/0B/0O")
+# Full-width two's-complement: all-ones hex is -1; the top bit set is INT64_MIN.
+ok(0xFFFFFFFFFFFFFFFF == -1, "all-ones hex literal is -1 (two's-complement)")
+ok(0x8000000000000000 == -9223372036854775808, "top-bit hex literal is INT64_MIN")
+# Scientific notation in either exponent case, with optional sign, yields a Float.
+ok(1E3 == 1000.0 and type(1E3) == "Float", "uppercase-E scientific notation -> Float")
+ok(2e-3 == 0.002 and 1.5e3 == 1500.0, "signed and fractional scientific notation")
+# A bare-dot float form is rejected: `5.` (no fractional digit) and `.5` (no integer digit).
+ok(importErr("var x = 5.\n", ""), "`5.` (trailing dot, no fraction) is a lex/parse error")
+ok(importErr("var x = .5\n", ""), "`.5` (leading dot, no integer part) is a parse error")
+# Digit separators are NOT supported (CLAUDE.md hedges "if any"; the guide doesn't promise them).
+ok(importErr("var x = 1_000\n", ""), "digit-separator underscore in a literal is rejected")
+# A base prefix with no following base digit is a clear error.
+ok(importErr("var x = 0x\n", "numeric"), "a base prefix with no digits is rejected")
+
+# ============================================================================
+# Integer wraparound at the INT64 boundary — multiply / floordiv / mod
+# ============================================================================
+var i64min = -9223372036854775808
+var i64max = 9223372036854775807
+# Multiply that overflows wraps (well-defined): INT64_MIN * -1 stays INT64_MIN.
+ok(i64min * -1 == i64min, "INT64_MIN * -1 wraps back to INT64_MIN (no UB)")
+ok(i64max * 2 == -2, "INT64_MAX * 2 wraps to -2")
+# Floor-div / mod at the INT64_MIN / -1 corner are defined (the naive op would be UB).
+ok(i64min // -1 == i64min, "INT64_MIN // -1 wraps to INT64_MIN")
+ok(i64min % -1 == 0, "INT64_MIN % -1 is 0")
+# Subtraction/addition wrap too.
+ok(i64max + 1 == i64min and i64min - 1 == i64max, "add/sub wrap across the INT64 boundary")
+
+# ============================================================================
+# Floor division and modulo — full 4-sign matrix (int and float)
+# ============================================================================
+# // floors toward negative infinity; % takes the sign of the DIVISOR.
+ok(7 // 2 == 3 and -7 // 2 == -4 and 7 // -2 == -4 and -7 // -2 == 3, "// 4-sign matrix (toward -inf)")
+ok(7 % 3 == 1 and -7 % 3 == 2 and 7 % -3 == -2 and -7 % -3 == -1, "% 4-sign matrix (sign of divisor)")
+# Float floor-div / mod follow the same rule.
+ok((7.0 // 2.0).compare(3.0) and (-7.0 // 2.0).compare(-4.0), "float // floors toward -inf")
+ok((7.0 % 3.0).compare(1.0) and (-7.0 % 3.0).compare(2.0), "float % takes the divisor's sign")
+# Division by zero throws for every flavour.
+ok(throws(Function(): return 1 // 0), "// by zero throws")
+ok(throws(Function(): return 1 % 0), "% by zero throws")
+ok(throws(Function(): return 1.0 // 0.0), "float // by zero throws")
+ok(throws(Function(): return 1.0 % 0.0), "float % by zero throws")
+ok(throws(Function(): return 1 / 0), "/ by zero throws")
+
+# ============================================================================
+# Exponentiation — right-associativity and the domain policy
+# ============================================================================
+ok(2 ** 3 ** 2 == 512, "** is right-associative (2**(3**2) == 512)")
+ok(-2 ** 2 == -4, "** binds tighter than unary minus")
+ok(2 ** -1 == 0.5 and type(2 ** -1) == "Float", "integer ** negative -> Float")
+ok(0 ** 0 == 1 and (0.0 ** 0.0).compare(1.0), "0**0 == 1 (int and float)")
+# Domain throws: 0 ** negative and a negative base ** fractional power.
+ok(throws(Function(): return 0 ** -1), "0 ** negative throws (int)")
+ok(throws(Function(): return 0.0 ** -1.0), "0.0 ** negative throws (float)")
+ok(throws(Function(): return (-2.0) ** 0.5), "negative base ** fractional power throws")
+ok((-2.0) ** 3.0 == -8.0, "negative base ** integral-valued float is fine")
+# A NaN operand passes through (does NOT throw) — the documented exception to the domain policy.
+var math = import("math")
+var nan = math.nan
+ok(throws(Function(): return nan == nan) == False, "comparing NaN does not throw")
+var nanPow = nan ** 2.0
+ok(nanPow != nanPow, "NaN ** 2 passes through as NaN (no domain throw)")
+
+# ============================================================================
+# Return-type annotation — implicit None vs `-> None` vs `-> T`
+# ============================================================================
+# `-> None` accepts an explicit `return None`, a bare `return`, and falling off the end.
+var retNoneExplicit = Function() -> None: return None
+var retNoneBare = Function() -> None:
+    return
+var retNoneFall = Function() -> None:
+    discard 1
+ok(retNoneExplicit() == None and retNoneBare() == None and retNoneFall() == None, "-> None accepts None three ways")
+# A non-None return annotation type-checks even the IMPLICIT None of falling off the end: it RAISES.
+ok(importErr("var f = Function(x) -> Integer:\n    if x > 0:\n        return x\nvar r = f(-1)\n", "must return"),
+   "implicit None (fall-off) under `-> Integer` throws 'must return'")
+# A wrong explicit return type throws; the right one passes.
+ok(importErr("var f = Function() -> Integer:\n    return \"s\"\nvar r = f()\n", "must return"),
+   "a wrong explicit return type throws")
+var retOk = Function(x) -> Integer:
+    return x + 1
+ok(retOk(4) == 5, "a matching return type is fine")
+
+# ============================================================================
+# Mutable defaults — fresh per call AND across recursion; outer re-read at call time
+# ============================================================================
+# A mutable default is a FRESH value each call, even when the function recurses into itself.
+var recAcc = Function(k, acc = []):
+    acc.append(k)
+    if k <= 0:
+        return acc
+    return recAcc(k - 1, acc)
+ok(recAcc(3) == [3, 2, 1, 0], "recursive call threads one default-built accumulator")
+ok(recAcc(2) == [2, 1, 0], "the next top-level call gets a FRESH default (not the prior accumulator)")
+# A default that reads an outer name re-reads it on each call.
+var outerDef = 10
+var readsOuter = Function(a = outerDef): return a
+ok(readsOuter() == 10, "default reads the outer name (call-time)")
+outerDef = 20
+ok(readsOuter() == 20, "default re-reads the outer name on the next call")
+
+# ============================================================================
+# Operator precedence — `not` vs `in`/`==`, and the conditional expression
+# ============================================================================
+# `not` is LOOSER than `in`: `not 1 in xs` parses as `not (1 in xs)`.
+ok((not 1 in [2, 3]) == True and (not 2 in [2, 3]) == False, "not is looser than in")
+# `not` is looser than ==: `not 1 == 2` is `not (1 == 2)` -> True.
+ok((not 1 == 2) == True and (not 1 == 1) == False, "not is looser than ==")
+# But `not` is TIGHTER than the conditional expression: `not X if C else Y` is `(not X) if C else Y`.
+ok((not True if False else "E") == "E", "not binds tighter than the ternary (else taken)")
+ok((not False if True else 99) == True, "not binds tighter than the ternary (then is `not X`)")
+# The ternary condition may use and/or unparenthesized (cond is parsed as an or-expression).
+ok(("y" if 1 > 0 and 2 > 1 else "n") == "y", "ternary condition uses `and` unparenthesized")
+ok(("y" if 0 > 1 or 1 > 0 else "n") == "y", "ternary condition uses `or` unparenthesized")
+# Deeply-nested right-assoc ternary as a classifier.
+var classify = Function(x):
+    return "neg" if x < 0 else "zero" if x == 0 else "small" if x < 10 else "big"
+ok(classify(-5) == "neg" and classify(0) == "zero" and classify(7) == "small" and classify(99) == "big",
+   "4-way right-assoc ternary chain classifies correctly")
+# A ternary right after a block-bodied Function literal is NOT swallowed into the function value.
+var blkFn = Function():
+    return 1
+var afterBlk = "T" if blkFn() == 1 else "F"
+ok(afterBlk == "T", "a ternary after a block-bodied Function is a new statement, not a continuation")
+
+# ============================================================================
+# switch — exact float equality (-0.0), empty-string label, return from a switch
+# ============================================================================
+# 0.0 == -0.0 exactly, so a `-0.0` subject matches `case 0.0`.
+var swZero = Function(v):
+    switch v:
+        case 0.0:
+            return "zero"
+        default:
+            return "other"
+ok(swZero(0.0) == "zero" and swZero(-0.0) == "zero", "switch: -0.0 matches case 0.0 (exact IEEE equal)")
+# An empty-String label is a valid scalar case.
+var swEmpty = Function(s):
+    switch s:
+        case "":
+            return "empty"
+        case "x":
+            return "x"
+        default:
+            return "d"
+ok(swEmpty("") == "empty" and swEmpty("x") == "x" and swEmpty("y") == "d", "switch matches an empty-String case")
+# 1.0 does NOT match case 1, and 1 does NOT match case True (exact type+value).
+var swType = Function(v):
+    switch v:
+        case 1:
+            return "int1"
+        case 1.0:
+            return "float1"
+        case True:
+            return "true"
+        default:
+            return "d"
+ok(swType(1) == "int1" and swType(1.0) == "float1" and swType(True) == "true", "switch distinguishes 1 / 1.0 / True")
+# return inside a switch arm returns from the enclosing function.
+var swReturn = Function(v):
+    switch v:
+        case 1:
+            return "one"
+        default:
+            return "def"
+    return "unreached"
+ok(swReturn(1) == "one" and swReturn(9) == "def", "return inside a switch arm returns from the function")
+# A duplicate case value throws (catchable) only when the switch is actually reached.
+var swDup = Function():
+    switch 1:
+        case 7:
+            return "a"
+        case 7:
+            return "b"
+ok(throws(swDup), "a duplicate case value throws when the switch is reached")
+
+# ============================================================================
+# Packing / unpacking — fresh boundary + resolver interactions
+# ============================================================================
+# A starred BARE-NAME target in a non-`var` assignment must already be bound (rebind, not declare).
+ok(importErr("var arr = [0]\narr[0], *rest = [1, 2, 3]\n", "not defined"),
+   "a starred bare-name target with no prior binding is a compile error in a non-var assignment")
+# With the name pre-declared, the same mixed name/index + star works.
+var pre = []
+var mixArr = [0]
+mixArr[0], *pre = [1, 2, 3]
+ok(mixArr[0] == 1 and pre == [2, 3], "mixed index + starred-tail unpack (target pre-declared)")
+# A starred middle into a member target works.
+class Holder:
+    var _init_ = Function(self):
+        self.head = 0
+        self.tail = 0
+var hold = Holder()
+var midList = []
+hold.head, *midList, hold.tail = [1, 2, 3, 4, 5]
+ok(hold.head == 1 and midList == [2, 3, 4] and hold.tail == 5, "starred middle with member head/tail targets")
+# Precise count-mismatch diagnostics.
+ok(importErr("var a, b, c = [1, 2]\n", "expected 3 values to unpack, got 2"), "too-few unpack message")
+ok(importErr("var a, b = [1, 2, 3]\n", "expected 2 values to unpack, got 3"), "too-many unpack message")
+ok(importErr("var a, b, *r = [1]\n", "expected at least 2 values to unpack, got 1"), "starred shortfall message")
+ok(importErr("var a, *b, *c = [1, 2, 3]\n", "two starred"), "two starred targets rejected")
+# A swap with no prior bindings (no `var`) is a compile error (RHS names unbound).
+ok(importErr("a, b = b, a\n", "not defined"), "bare swap of undeclared names is a compile error")
+# Bare-comma pack inside a return packs a List; a single starred target gathers everything (incl. empty).
+var *whole = range(3)
+ok(whole == [0, 1, 2], "a lone starred target gathers a whole iterable")
+var *none0 = []
+ok(none0 == [], "a lone starred target over an empty iterable is []")
+
+# ============================================================================
+# Closures — late binding of a loop variable, independent state in recursion
+# ============================================================================
+# Closures created in a loop share ONE binding; they all observe its final value (late binding).
+var makers = []
+for li in [10, 20, 30]:
+    makers.append(Function(): return li)
+ok(makers[0]() == 30 and makers[1]() == 30 and makers[2]() == 30, "loop closures share one late-bound variable")
+# Capturing the per-iteration value requires a fresh scope (a factory call) — confirm that works.
+var bind = Function(v):
+    return Function(): return v
+var bound = []
+for bi in [1, 2, 3]:
+    bound.append(bind(bi))
+ok(bound[0]() == 1 and bound[1]() == 2 and bound[2]() == 3, "a factory call freezes the per-iteration value")
+# Each recursive descent that builds a counter closure gets independent captured state.
+var makeCounter = Function():
+    var c = 0
+    return Function():
+        c = c + 1
+        return c
+var cx = makeCounter()
+var cy = makeCounter()
+ok(cx() == 1 and cx() == 2 and cy() == 1 and cx() == 3, "two counters have independent captured state")
+
+# ============================================================================
+# try / catch / finally — fresh interactions
+# ============================================================================
+# A typed catch that doesn't match falls through to an enclosing bare catch.
+var fellThrough = "?"
+try:
+    try:
+        throw "a string"
+    catch Integer as e:
+        discard e
+        fellThrough = "wrong"
+catch as e:
+    fellThrough = "bare:" + e
+ok(fellThrough == "bare:a string", "an unmatched typed catch falls through to the bare catch")
+# A throw inside a catch propagates outward; the same-level finally still runs first.
+var rethrowLog = []
+var rethrow = Function():
+    try:
+        try:
+            throw "first"
+        catch as e:
+            discard e
+            throw "second"
+        finally:
+            rethrowLog.append("fin")
+    catch as e2:
+        return e2
+ok(rethrow() == "second" and rethrowLog == ["fin"], "rethrow in catch propagates; same-level finally runs first")
+# The recursion-depth guard is catchable, and state is recovered afterward.
+var runaway = Function(d): return runaway(d + 1)
+var depthMsg = "?"
+try:
+    discard runaway(0)
+catch as e:
+    depthMsg = e
+ok(depthMsg == "maximum recursion depth exceeded", "the depth guard throws a catchable, specific message")
+var fib = Function(k):
+    if k < 2:
+        return k
+    return fib(k - 1) + fib(k - 2)
+ok(fib(10) == 55, "after catching a depth error, bounded recursion still works")
+
+# ============================================================================
+# String literals — escapes, repr-in-container, triple-quoted, prefixes, rejections
+# ============================================================================
+# \xHH covers the full byte range (here a high byte); len counts it as one code point.
+ok(len("\xff") == 1 and "\x41\x42" == "AB", "\\xHH hex escape (incl. a high byte)")
+# A \0 NUL is a real character: it has length 1 and survives indexing.
+var withNul = "a\x00b"
+ok(len(withNul) == 3 and withNul[1] == "\x00", "a \\0 NUL is a real one-char code point")
+# A String nested in a container shows in repr form (escapes shown), distinguishing tricky contents.
+ok(String(["a\tb"]) == "['a\\tb']", "tab shown escaped in a container's repr")
+ok(String(["x\ny"]) == "['x\\ny']", "newline shown escaped in a container's repr")
+ok(String(["q\"r"]) == "['q\"r']", "a double-quote inside a single-quoted repr stays unescaped")
+# Triple-quoted strings span newlines and hold lone quotes.
+var tq = """a "quote" and
+a newline"""
+ok(tq == "a \"quote\" and\na newline", "triple-quoted multiline string with embedded quotes")
+# rf and fr are equivalent (raw + interpolation, either order).
+var who = "K"
+ok(rf"\n{who}" == "\\nK" and fr"\n{who}" == "\\nK", "rf and fr both combine raw + interpolation")
+# Single quotes equal double quotes; each can embed the other unescaped.
+ok('it\'s' == "it's" and "say \"hi\"" == 'say "hi"', "quote styles interchangeable, embed the other unescaped")
+# Lexer rejections (each surfaces on import).
+ok(importErr("var s = \"\\q\"\n", ""), "a bad backslash escape is a lex error")
+ok(importErr("var s = \"open\n", ""), "an unterminated single-line string is a lex error")
+ok(importErr("var s = r\"\\\"\n", ""), "a raw string ending in a lone backslash is a lex error")
+ok(importErr("var s = \"\\x4\"\n", ""), "a short \\x escape (one hex digit) is a lex error")
+
+# ============================================================================
+# f-strings — literal braces, format specs, single-quoted key, empty-expr rejection
+# ============================================================================
+var fv = 42
+ok(f"{{literal}} {fv}" == "{literal} 42", "doubled braces are literal { } around an interpolation")
+ok(f"{fv:+05d}" == "+0042", "sign + zero-fill + width format spec")
+ok(f"{255:#x}" == "0xff" and f"{255:#b}" == "0b11111111" and f"{8:#o}" == "0o10", "alternate-form base prefixes")
+ok(f"{1000000:,}" == "1,000,000", "thousands separator")
+ok(f"{fv:>6}" == "    42" and f"{fv:<6}|" == "42    |" and f"{fv:^6}|" == "  42  |", "align right/left/center")
+ok(f"{3.14159:.2f}" == "3.14" and f"{3.0:.0f}" == "3", "float precision spec")
+ok(f"{-42:+}" == "-42" and f"{42: }" == " 42", "explicit + sign and space sign")
+ok(f"{'hi':*^8}" == "***hi***", "fill char + center align")
+# An f-string can hold a single-quoted dict key (because '...' strings exist).
+var dkey = {"k": "v"}
+ok(f"{dkey['k']}" == "v" and f"{dkey['k']:>5}" == "    v", "f-string holds a single-quoted key, with a spec")
+# Whitespace around the inner expression is allowed.
+ok(f"{ fv }" == "42", "whitespace inside the braces is allowed")
+# An empty `{}` is a clear error.
+ok(importErr("var s = f\"{}\"\n", "single expression"), "an empty f-string `{}` is rejected")
+ok(importErr("var s = f\"{x\"\n", ""), "an unmatched '{' in an f-string is rejected")
+
+# ============================================================================
+# Resolver — an undefined name is a COMPILE error (not catchable at run time)
+# ============================================================================
+# Surfaces on import (before execution), so a try/catch around the use can't intercept it.
+ok(importErr("var io2 = import(\"io\")\nio2.print(nope)\n", "name 'nope' is not defined"),
+   "an undefined name is reported at compile time")
+# Even inside a function body / guarded by a never-taken branch, it's still a compile error.
+ok(importErr("var f = Function():\n    if False:\n        return alsoUndefined\n    return 1\n", "not defined"),
+   "an undefined name in a dead branch is still a compile error")
+# A try/catch CANNOT catch it (the error is at compile, before the try runs) — confirm via subprocess
+# semantics: importing the module throws, and the message is the resolver's, not a runtime one.
+ok(importErr("try:\n    var x = stillUndefined\ncatch as e:\n    discard e\n", "not defined"),
+   "an undefined name inside a try body is a compile error, not caught at run time")
+# A bare `=` to an undefined name is the same compile error (rebind of a nonexistent binding).
+ok(importErr("rebindUndefined = 5\n", "not defined"), "bare = to an undefined name is a compile error")
+
+# ============================================================================
+# Fixed-seed FUZZ — floor-div/mod identity + a ternary/switch classification oracle
+# ============================================================================
+var rng = random.Random(80808)
+var fuzzFails = 0
+for fi in range(400):
+    var a = rng.randint(-100000, 100000)
+    var b = rng.randint(1, 97)
+    if rng.randint(0, 1) == 1:
+        b = -b
+    var q = a // b
+    var r = a % b
+    # The division identity must hold exactly for fixed-width int64 in this range.
+    if (q * b + r) != a:
+        fuzzFails = fuzzFails + 1
+    # The remainder takes the sign of the divisor (or is 0).
+    if r != 0 and ((r < 0) != (b < 0)):
+        fuzzFails = fuzzFails + 1
+    # |r| < |b| always.
+    if abs(r) >= abs(b):
+        fuzzFails = fuzzFails + 1
+ok(fuzzFails == 0, "fuzz: a == (a//b)*b + a%b, remainder-sign and magnitude invariants hold (400 cases)")
+
+# A ternary classifier must agree with the equivalent switch-on-bucket over random inputs.
+var classifyTernary = Function(x):
+    return 0 if x < 0 else 1 if x == 0 else 2 if x < 100 else 3
+var classifySwitch = Function(x):
+    var bucket = 0 if x < 0 else 1 if x == 0 else 2 if x < 100 else 3
+    switch bucket:
+        case 0:
+            return "neg"
+        case 1:
+            return "zero"
+        case 2:
+            return "small"
+        default:
+            return "big"
+var names = ["neg", "zero", "small", "big"]
+var oracleFails = 0
+for oi in range(400):
+    var x = rng.randint(-200, 300)
+    if names[classifyTernary(x)] != classifySwitch(x):
+        oracleFails = oracleFails + 1
+ok(oracleFails == 0, "fuzz: ternary-bucket and switch-on-bucket classifications agree (400 cases)")
+
+io.print("r8_language: " + String(n) + " checks passed")

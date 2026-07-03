@@ -1,0 +1,145 @@
+# The native `String.levenshtein` (Unicode edit distance) and the `string` module's fuzzy comparison
+# built on it. Typical cases, edge cases, Unicode, adversarial inputs, metric-property checks, and a
+# randomized fuzz against an independent edit-distance oracle written in pure Kirito.
+var io = import("io")
+var string = import("string")
+var random = import("random")
+
+# ================================================================= TYPICAL
+assert "kitten".levenshtein("sitting") == 3, "classic kitten/sitting"
+assert "saturday".levenshtein("sunday") == 3, "saturday/sunday"
+assert "flaw".levenshtein("lawn") == 2, "flaw/lawn"
+assert "book".levenshtein("back") == 2, "book/back"
+assert "abc".levenshtein("abc") == 0, "identical strings -> 0"
+assert "a".levenshtein("b") == 1, "single substitution"
+# against a List of candidates -> a List of distances (source decoded once)
+assert "kitten".levenshtein(["sitting", "kitten", "mitten", "kit"]) == [3, 0, 1, 3], "distance to a List"
+# keyword form
+assert "cat".levenshtein(other = "cut") == 1, "keyword argument"
+
+# ================================================================= EDGE CASES
+assert "".levenshtein("") == 0, "both empty -> 0"
+assert "".levenshtein("abc") == 3, "empty vs non-empty -> length"
+assert "abc".levenshtein("") == 3, "non-empty vs empty -> length"
+assert "x".levenshtein("") == 1, "single char vs empty"
+assert "abcdef".levenshtein("abcdef") == 0, "longer identical"
+# pure insertions / deletions
+assert "abc".levenshtein("abcdef") == 3, "pure insertion"
+assert "abcdef".levenshtein("abc") == 3, "pure deletion"
+# distances to an empty List
+assert "abc".levenshtein([]) == [], "distance to empty List is empty List"
+
+# ================================================================= UNICODE (by code point, not byte)
+assert "café".levenshtein("cafe") == 1, "accented char counts as one edit"
+assert "café".levenshtein("café") == 0, "identical accented"
+assert "a😀b".levenshtein("a😀c") == 1, "emoji preserved, one trailing edit"
+assert "😀😁".levenshtein("😀😂") == 1, "multi-byte substitution counts as one"
+assert "世界".levenshtein("世间") == 1, "CJK substitution counts as one"
+assert "naïve".levenshtein("naive") == 1, "diaeresis edit"
+assert "Σ".levenshtein("σ") == 1, "Greek upper/lower differ by one code point"
+# byte length differs from edit distance: 😀 is 4 bytes but a single code point
+assert "😀".levenshtein("") == 1, "a 4-byte emoji is one code point"
+
+# ================================================================= FUZZY COMPARISON (string module)
+assert string.similarity("abc", "abc") == 1.0, "identical similarity is 1.0"
+assert string.similarity("", "") == 1.0, "two empties are identical"
+assert string.similarity("abc", "xyz") == 0.0, "no overlap -> 0.0"
+assert string.similarity("kitten", "sitting") == 1.0 - 3.0 / 7, "similarity ratio"
+# similarity also accepts a List as `b`, returning one score per candidate (single native call)
+var sims = string.similarity("abc", ["abc", "abd", "xyz", ""])
+assert sims == [1.0, 1.0 - 1.0 / 3, 0.0, 0.0], "similarity against a List -> per-candidate scores"
+assert string.similarity("", []) == [], "similarity against an empty List is empty"
+var langs = ["swift", "javascript", "ruby", "rust", "kotlin"]
+assert string.closest("swft", langs) == "swift", "closest fixes a typo"
+assert string.closest("rist", langs) == "rust", "closest picks nearest"
+assert string.closest("x", []) == None, "closest of empty candidates is None"
+# fuzzymatch returns [candidate, score] pairs, score-descending, filtered by cutoff
+var fm = string.fuzzymatch("ruby", ["ruby", "rust", "ruler", "java"], cutoff = 0.5)
+assert fm[0][0] == "ruby" and fm[0][1] == 1.0, "exact match scores 1.0 and sorts first"
+assert string.fuzzymatch("zzzzz", langs, cutoff = 0.9) == [], "nothing clears a high cutoff"
+
+# ================================================================= ADVERSARIAL (clean errors)
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+assert throws(Function(): return "abc".levenshtein(5)), "non-String/List argument throws"
+assert throws(Function(): return "abc".levenshtein(["ok", 7])), "a non-String in the List throws"
+assert throws(Function(): return "abc".levenshtein(None)), "None argument throws"
+
+# ================================================================= METRIC PROPERTIES (random triples)
+var rng = random.Random(20260603)
+var pool = "abcab😀é世xyz "
+var randstr = Function(maxlen):
+    var k = rng.randint(0, maxlen)
+    var s = ""
+    var i = 0
+    while i < k:
+        s = s + pool[rng.randint(0, len(pool) - 1)]
+        i = i + 1
+    return s
+
+var trial = 0
+while trial < 400:
+    var a = randstr(8)
+    var b = randstr(8)
+    var c = randstr(8)
+    var dab = a.levenshtein(b)
+    assert a.levenshtein(a) == 0, "identity of indiscernibles"
+    assert dab == b.levenshtein(a), "symmetry"
+    assert dab >= 0, "non-negative"
+    var diff = len(a) - len(b)
+    if diff < 0:
+        diff = 0 - diff
+    assert dab >= diff, "at least the length difference"
+    var longer = len(a) if len(a) >= len(b) else len(b)
+    assert dab <= longer, "at most the longer length"
+    # triangle inequality
+    assert dab <= a.levenshtein(c) + c.levenshtein(b), "triangle inequality"
+    trial = trial + 1
+
+# ================================================================= FUZZ vs a pure-Kirito DP oracle
+var oracle = Function(a, b):
+    var m = len(a)
+    var n = len(b)
+    var prev = []
+    var j = 0
+    while j <= n:
+        prev.append(j)
+        j = j + 1
+    var i = 1
+    while i <= m:
+        var cur = [i]
+        j = 1
+        while j <= n:
+            var cost = 0 if a[i - 1] == b[j - 1] else 1
+            var best = prev[j] + 1
+            var del = cur[j - 1] + 1
+            if del < best:
+                best = del
+            var sub = prev[j - 1] + cost
+            if sub < best:
+                best = sub
+            cur.append(best)
+            j = j + 1
+        prev = cur
+        i = i + 1
+    return prev[n]
+
+trial = 0
+while trial < 1500:
+    var a = randstr(10)
+    var b = randstr(10)
+    assert a.levenshtein(b) == oracle(a, b), "native matches the pure-Kirito oracle"
+    # the List form agrees element-by-element with the scalar form
+    var bs = [randstr(6), randstr(6), randstr(6)]
+    var batch = a.levenshtein(bs)
+    var k = 0
+    while k < len(bs):
+        assert batch[k] == a.levenshtein(bs[k]), "List form matches scalar form"
+        k = k + 1
+    trial = trial + 1
+
+io.print("OK")

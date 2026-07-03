@@ -1,0 +1,113 @@
+# r8_regressions.ki — regressions for bugs found in the round-8 (R8) audit.
+#   P0  an empty subscript `obj[]` built an IndexExpr with a NULL index, which the resolver/analyzer/
+#       compiler then dereferenced -> a hard SEGFAULT of the interpreter on a one-line program. Now a
+#       clean parse error. (The parse-error message itself is checked by tools/tests/errors/
+#       empty_subscript.{ki,experr}; here we prove, via a child process, that it does NOT crash.)
+#   P2  String.join(non_iterable) called iterate() then unconditionally .value(); a non-iterable user
+#       instance returns nullopt, so it thrown the mislabeled, span-less "bad optional access" instead
+#       of a clean error. Now throws "join expects an iterable".
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var T = import("tensor")
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# ---- P2: join of a non-iterable throws a CLEAN, catchable error (not bad_optional_access) ----
+class NoIter:
+    var v = 1
+var jmsg = ""
+try:
+    discard ",".join(NoIter())
+catch as e:
+    jmsg = String(e)
+ok(jmsg != "", "join of a non-iterable throws")
+ok("iterable" in jmsg, "join non-iterable -> clean 'expects an iterable' message")
+ok(not ("bad optional" in jmsg), "join non-iterable -> NOT 'bad optional access'")
+# join still works over real iterables (regression guard the fix didn't break the normal path)
+ok(",".join(["a", "b", "c"]) == "a,b,c", "join over a List still works")
+ok("-".join({1: "x", 2: "y"}.keys().apply(Function(k): return String(k))) != "", "join over Dict keys works")
+
+# ---- P0: an empty subscript fails cleanly in a child `ki`, with NO segfault ----
+# Run a generated one-liner through a child process; a SEGFAULT would show up as a signal-derived
+# exit code with no diagnostic, whereas the fix yields a normal parse-error exit + message.
+var probe = Function(src):
+    var ppath = path.join(path.gettempdir(), "r8_emptysub_probe.ki")
+    var fh = io.open(ppath, "w")
+    discard fh.write(src)
+    fh.close()
+    var r = sys.createprocess([path.executable, ppath])
+    discard path.remove(ppath, missing_ok = True)
+    return r
+var r1 = probe("var xs = [1, 2, 3]\ndiscard xs[]\n")
+ok(r1["code"] != 0, "empty subscript `xs[]` fails (does not run)")
+ok("index expression inside" in r1["stderr"], "empty subscript reports a clean parse error (no crash)")
+var r2 = probe("var xs = [1, 2, 3]\nxs[] = 9\n")
+ok("index expression inside" in r2["stderr"], "empty subscript on an assignment target reports a clean parse error")
+var r3 = probe("var d = {1: 2}\ndiscard d[1][]\n")
+ok("index expression inside" in r3["stderr"], "chained empty subscript reports a clean parse error")
+# a real index and a slice still parse + run fine (the fix only rejects the EMPTY non-slice form)
+ok([10, 20, 30][1] == 20, "a normal index still works")
+ok([10, 20, 30][:][0] == 10, "an empty SLICE [:] still works (not rejected)")
+ok("abcde"[1:4] == "bcd", "a normal slice still works")
+
+# ---- P1: grad-aware tensor `take` with a NEGATIVE index no longer corrupts the heap on backward ----
+# The forward takeAxis0 normalized negatives but the backward scatter used the raw index, so a -1 cast
+# to a huge size_t and wrote far out of bounds (SIGABRT). Now normalized; the gradient is correct.
+var gt = T.Tensor([1.0, 2.0, 3.0], requiresgrad = True)
+discard gt.take([0 - 1]).sum().backward()
+ok(gt.grad.tolist() == [0.0, 0.0, 1.0], "grad take([-1]) backward scatters to the last row (no OOB)")
+var gt2 = T.Tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], requiresgrad = True)
+discard gt2.take([0 - 1, 0 - 3]).sum().backward()
+ok(gt2.grad.tolist() == [[1.0, 1.0], [0.0, 0.0], [1.0, 1.0]], "grad take([-1,-3]) backward scatters to the right rows")
+
+# ---- P0: diag/tril/triu with an extreme k no longer trigger signed-overflow UB ----
+var BIG = 9223372036854775807          # INT64_MAX
+var MIN = 0 - 9223372036854775807 - 1  # INT64_MIN
+ok(throws(Function(): return T.diag(T.Tensor([1.0, 2.0]), k = BIG)), "diag with k=INT64_MAX throws 'Tensor too large' (no UB)")
+ok(throws(Function(): return T.diag(T.Tensor([1.0]), k = MIN)), "diag with k=INT64_MIN throws (no negate-INT64_MIN UB)")
+var sq = T.Tensor([[1.0, 2.0], [3.0, 4.0]])
+ok(T.triu(sq, k = BIG).tolist() == [[0.0, 0.0], [0.0, 0.0]], "triu k=INT64_MAX zeroes everything (band off the matrix)")
+ok(T.tril(sq, k = BIG).tolist() == [[1.0, 2.0], [3.0, 4.0]], "tril k=INT64_MAX keeps everything")
+ok(T.triu(sq, k = MIN).tolist() == [[1.0, 2.0], [3.0, 4.0]], "triu k=INT64_MIN keeps everything")
+ok(T.tril(sq, k = MIN).tolist() == [[0.0, 0.0], [0.0, 0.0]], "tril k=INT64_MIN zeroes everything")
+
+# ---- P2: determinant/inverse of a matrix with a non-finite element RAISES (was a silent 0.0) ----
+var inf = import("math").inf
+var mtx = import("matrix")
+ok(throws(Function(): return mtx.Matrix([[1.0, 2.0], [3.0, inf]]).determinant()), "matrix.determinant with inf throws (not a silent 0.0)")
+ok(throws(Function(): return T.det(T.Tensor([[1.0, inf], [3.0, 4.0]]))), "tensor.det with an inf in the first pivot column throws")
+ok(throws(Function(): return T.inv(T.Tensor([[inf, 0.0], [0.0, 1.0]]))), "tensor.inv with inf throws (non-finite, not 'singular')")
+ok(T.det(T.Tensor([[1.0, 2.0], [3.0, 4.0]])).compare(0 - 2.0), "a finite determinant is unaffected by the guard")
+
+# ---- P0: time.make component arithmetic no longer overflows `int` (signed-overflow UB) ----
+var time = import("time")
+ok(throws(Function(): return time.make(0 - 2147483648, 1, 1)), "make(INT32_MIN year) throws (no int-overflow UB)")
+ok(throws(Function(): return time.make(2000, 1, 1, 2147483647)), "make(huge hour) throws (no overflow; out of epoch range)")
+ok(time.make(2024, 3, 15, 12, 30, 45) == time.make(2024, 3, 15, 12, 30, 45), "a normal make() builds a DateTime that compares equal by instant")
+
+# ---- P0: seek base+off no longer overflows int64 (the negative guard ran AFTER the overflowing add) ----
+var bio = io.BytesIO("abcde")
+ok(throws(Function(): return bio.seek(9223372036854775807, 2)), "BytesIO.seek(huge, end) overflow throws (no UB)")
+discard bio.seek(2)
+ok(bio.read() == "cde", "a normal BytesIO seek still works")
+var sp = path.join(path.gettempdir(), "r8_seek_probe.txt")
+var sfh = io.open(sp, "w")
+discard sfh.write("hello")
+sfh.close()
+var srf = io.open(sp, "r")
+ok(throws(Function(): return srf.seek(9223372036854775807, 2)), "File.seek(huge, end) overflow throws (no UB)")
+discard srf.seek(1)
+ok(srf.read(2) == "el", "a normal File seek still works")
+srf.close()
+discard path.remove(sp, missing_ok = True)
+
+io.print("r8_regressions: " + String(n) + " checks passed")

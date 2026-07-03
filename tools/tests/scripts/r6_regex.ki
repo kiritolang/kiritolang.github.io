@@ -1,0 +1,199 @@
+# r6_regex.ki — audit of the `regex` stdlib module against docs/pages/10-stdlib.md +
+# docs/pages/26-bonus-01-regex.md. Every documented module function, Regex method, and Match
+# method, plus flags, group kinds, quantifiers, anchors, classes, Unicode, the linear-time
+# guarantee, and the deliberate rejection of backreferences/lookaround. Deterministic, no network.
+var io = import("io")
+var re = import("regex")
+var t = import("time")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(fn) -> Bool: True iff calling fn() throws (a catchable error).
+var throws = Function(fn):
+    var threw = False
+    try:
+        discard fn()
+    catch as e:
+        threw = True
+    return threw
+
+# ---- module entry points: search / match / fullmatch ----
+ok(re.search(r"\d+", "id 4821 x").group() == "4821", "search finds anywhere")
+ok(re.match(r"\d+", "id 4821 x") == None, "match must start at 0")
+ok(re.match("id", "id 4821 x").group() == "id", "match at start")
+ok(re.fullmatch(r"\d+", "4821").group() == "4821", "fullmatch whole string")
+ok(re.fullmatch(r"\d+", "4821x") == None, "fullmatch rejects partial")
+ok(re.search("z+", "no match here") == None, "search miss -> None")
+
+# ---- literals, dot, classes ----
+ok(re.search("a.c", "xaqcy").group() == "aqc", "dot matches one char")
+ok(re.search("a.c", "a\nc") == None, "dot excludes newline by default")
+ok(re.search("[aeiou]", "rhythm and").group() == "a", "char class")
+ok(re.search("[A-Z]+", "go LOUD now").group() == "LOUD", "class range")
+ok(re.search("[^0-9]+", "123abc").group() == "abc", "negated class")
+ok(re.search(r"\w+", "  hi_there!").group() == "hi_there", "\\w shorthand")
+ok(re.search(r"\s+", "a   b").group() == "   ", "\\s shorthand")
+ok(re.search(r"\d\D", "1a").group() == "1a", "\\D negated digit")
+ok(re.search(r"\S+", "  word").group() == "word", "\\S non-space")
+ok(re.search(r"[\d.]+", "v3.14!").group() == "3.14", "shorthand inside class")
+
+# ---- quantifiers: greedy vs lazy, {n}, {n,m}, {n,} ----
+ok(re.search("ab*c", "ac").group() == "ac", "* allows zero")
+ok(re.search("ab+c", "abbbc").group() == "abbbc", "+ one or more")
+ok(re.search("colou?r", "color").group() == "color", "? optional")
+ok(re.search("<.*>", "<a><b>").group() == "<a><b>", "greedy grabs max")
+ok(re.search("<.*?>", "<a><b>").group() == "<a>", "lazy grabs min")
+ok(re.search(r"\d{3}", "12345").group() == "123", "{n} exact")
+ok(re.search(r"\d{2,3}", "12345").group() == "123", "{n,m} greedy upper")
+ok(re.search(r"\d{2,3}?", "12345").group() == "12", "{n,m} lazy lower")
+ok(re.search(r"\d{2,}", "12345").group() == "12345", "{n,} unbounded")
+
+# ---- anchors and boundaries ----
+ok(re.search("^id", "id 99").group() == "id", "^ start")
+ok(re.search("99$", "id 99").group() == "99", "$ end")
+ok(re.findall(r"\bcat\b", "cat scatter cat") == ["cat", "cat"], "\\b word boundary")
+ok(re.search(r"\Bcat\B", "scatter").group() == "cat", "\\B non-boundary")
+ok(re.search(r"\Aabc", "abcdef").group() == "abc", "\\A absolute start")
+ok(re.search(r"xyz\z", "wwxyz").group() == "xyz", "\\z absolute end")
+ok(re.search(r"xyz\Z", "wwxyz").group() == "xyz", "\\Z absolute end")
+
+# ---- groups: capturing, optional, non-capturing, named ----
+var md = re.search(r"(\d{4})-(\d{2})-(\d{2})", "log 2024-06-07 ok")
+ok(md.group() == "2024-06-07", "group 0 is whole match")
+ok(md.group(1) == "2024", "group 1")
+ok(md.group(2) == "06", "group 2")
+ok(md.groups() == ["2024", "06", "07"], "groups() all")
+ok(md.span() == [4, 14], "span() of whole match")
+ok(md.start(1) == 4, "start(group)")
+ok(md.end(1) == 8, "end(group)")
+ok(md.span(2) == [9, 11], "span(group)")
+ok(md.string == "log 2024-06-07 ok", "match.string attribute")
+
+var partial = re.search(r"(\d+)?-(\d+)", "-5")
+ok(partial.group(1) == None, "non-participating group -> None")
+ok(partial.group(2) == "5", "participating group")
+ok(partial.groups() == [None, "5"], "groups() default None")
+ok(partial.groups("X") == ["X", "5"], "groups(default)")
+ok(partial.start(1) == -1, "absent group start -> -1")
+ok(partial.end(1) == -1, "absent group end -> -1")
+
+ok(re.findall("(?:ab)+", "ababab xx abab") == ["ababab", "abab"], "non-capturing group")
+
+var who = re.search(r"(?P<user>\w+)@(?P<host>[\w.]+)", "ada@kirito.dev")
+ok(who.group("user") == "ada", "named group by name (?P<>)")
+ok(who.group("host") == "kirito.dev", "named group 2")
+ok(who.groupdict() == {"user": "ada", "host": "kirito.dev"}, "groupdict()")
+var who2 = re.search(r"(?<user>\w+)@(?<host>\w+)", "bob@host")
+ok(who2.group("user") == "bob", "named group (?<>) syntax")
+ok(re.search(r"(?P<x>\d+)", "n12").group(1) == "12", "named group also numbered")
+
+# group() with several keys -> a List
+var mk = re.search(r"(\w+)-(\w+)", "aa-bb")
+ok(mk.group(1, 2) == ["aa", "bb"], "group(multiple keys) -> List")
+
+# ---- alternation ----
+ok(re.search("cat|dog|bird", "I have a dog").group() == "dog", "alternation")
+ok(re.findall("(jan|feb|mar)", "feb and mar") == ["feb", "mar"], "grouped alternation")
+
+# ---- findall shapes (0 / 1 / 2+ groups) ----
+ok(re.findall(r"\d+", "12 and 345") == ["12", "345"], "findall 0 groups -> strings")
+ok(re.findall(r"(\w)(\w)", "abcd") == [["a", "b"], ["c", "d"]], "findall 2+ groups -> lists")
+var rx1 = re.compile(r"(\d+)")
+ok(rx1.findall("a1 b22") == ["1", "22"], "findall 1 group -> that group")
+
+# ---- finditer ----
+var spans = []
+for hit in re.finditer(r"\d+", "a1 b22"):
+    spans = spans + [[hit.group(), hit.start()]]
+ok(spans == [["1", 1], ["22", 4]], "finditer yields Match objects")
+
+# ---- sub: template + callable + count ----
+ok(re.sub(r"\s+", "_", "a   b  c") == "a_b_c", "sub template")
+ok(re.sub(r"(\w+)@(\w+)", r"\2.\1", "user@host") == "host.user", "sub backref template")
+ok(re.sub("a", "X", "aaaa", 2) == "XXaa", "sub count limit")
+ok(re.sub(r"(?P<n>\d+)", r"[\g<n>]", "x12y") == "x[12]y", "sub \\g<name>")
+ok(re.sub(r"\d+", r"<\g<0>>", "x12y") == "x<12>y", "sub \\g<0> whole match")
+var redact = Function(mm):
+    return "*" * len(mm.group())
+ok(re.sub(r"\d+", redact, "card 1234 5678") == "card **** ****", "sub callable")
+
+# ---- split with captures ----
+ok(re.split(r",\s*", "a, b,c ,  d") == ["a", "b", "c ", "d"], "split on matches")
+ok(re.split(r"(\s+)", "one two") == ["one", " ", "two"], "split keeps captured separators")
+ok(re.split(r"\d", "a1b2c", 1) == ["a", "b2c"], "split maxsplit")
+
+# ---- escape ----
+ok(re.escape("a.b*c") == "a\\.b\\*c", "escape metacharacters")
+ok(re.search(re.escape("3.14"), "pi=3.14").group() == "3.14", "escaped literal dot")
+
+# ---- flags (constants + aliases) ----
+ok(re.I == re.IGNORECASE, "re.I alias")
+ok(re.M == re.MULTILINE, "re.M alias")
+ok(re.S == re.DOTALL, "re.S alias")
+ok(re.findall("cat", "Cat CAT cat", re.IGNORECASE) == ["Cat", "CAT", "cat"], "IGNORECASE")
+ok(re.findall(r"^\w+", "one\ntwo\nthree", re.MULTILINE) == ["one", "two", "three"], "MULTILINE ^")
+ok(re.search("a.b", "a\nb", re.DOTALL).group() == "a\nb", "DOTALL dot matches newline")
+ok(re.search("a.b", "a\nb") == None, "without DOTALL dot excludes newline")
+ok(re.findall("^cat", "Cat\ncat", re.IGNORECASE + re.MULTILINE) == ["Cat", "cat"], "combined flags with +")
+ok(re.search("(?i)hello", "HELLO there").group() == "HELLO", "inline (?i) flag")
+
+# ---- escapes: octal \0NN, \xHH, named whitespace ----
+ok(re.search(r"\060", "x0y").group() == "0", "octal \\0NN escape")
+ok(re.search(r"\x41", "xAy").group() == "A", "\\xHH escape")
+ok(re.search(r"a\tb", "a\tb").group() == "a\tb", "\\t in pattern")
+
+# ---- compile object attributes ----
+var word = re.compile("[A-Za-z]+", re.IGNORECASE)
+ok(word.findall("Hello, World!") == ["Hello", "World"], "compiled findall")
+ok(word.pattern == "[A-Za-z]+", "Regex.pattern")
+ok(word.groups == 0, "Regex.groups count")
+var named = re.compile(r"(?P<a>x)(?P<b>y)")
+ok(named.groups == 2, "Regex.groups counts groups")
+ok(named.groupindex == {"a": 1, "b": 2}, "Regex.groupindex name->number")
+
+# ---- pos / endpos on the Regex methods ----
+var rxd = re.compile(r"\d+")
+ok(rxd.search("ab12cd", 2).group() == "12", "search with pos")
+ok(rxd.match("ab12", 2).group() == "12", "match anchored at pos")
+ok(rxd.search("1234", 0, 2).group() == "12", "endpos truncates the subject")
+var rxe = re.compile("b$")
+ok(rxe.search("abc", 0, 2).group() == "b", "$ anchors at endpos")
+
+# ---- Unicode: code-point indexing; \w is ASCII-only (documented) ----
+ok(re.search(r"\w+", "héllo").group() == "h", "\\w is ASCII-only (stops at accent)")
+ok(re.search(".", "λ").group() == "λ", "dot matches a multi-byte code point")
+ok(re.search("[é]", "café").group() == "é", "Unicode literal in a class")
+var ud = re.search("b", "λλb")
+ok(ud.start() == 2, "code-point (not byte) start index")
+ok(ud.span() == [2, 3], "code-point span across multi-byte chars")
+
+# ---- linear-time guarantee: a backtracking-killer pattern must be fast, not exponential ----
+var t0 = t.monotonic()
+ok(re.search("(a+)+b", "a" * 4000 + "c") == None, "pathological pattern: no match")
+ok(t.monotonic() - t0 < 2.0, "pathological pattern runs in linear time (fast)")
+
+# ---- deliberately unsupported: backreferences and lookaround MUST throw ----
+ok(throws(Function(): return re.compile(r"(a)\1")), "backreference \\1 rejected")
+ok(throws(Function(): return re.compile(r"\1")), "bare backreference rejected")
+ok(throws(Function(): return re.compile("a(?=b)")), "lookahead (?=) rejected")
+ok(throws(Function(): return re.compile("a(?!b)")), "negative lookahead (?!) rejected")
+ok(throws(Function(): return re.compile("(?<=a)b")), "lookbehind (?<=) rejected")
+ok(throws(Function(): return re.compile("(?<!a)b")), "negative lookbehind (?<!) rejected")
+ok(throws(Function(): return re.compile("(?P<x>a)(?P=x)")), "named backreference (?P=) rejected")
+
+# ---- malformed patterns throw a clean error (no crash) ----
+ok(throws(Function(): return re.compile("(unbalanced")), "missing ) rejected")
+ok(throws(Function(): return re.compile("a)")), "unbalanced ) rejected")
+ok(throws(Function(): return re.compile("[unterminated")), "unterminated class rejected")
+ok(throws(Function(): return re.compile("*nothing")), "nothing-to-repeat rejected")
+ok(throws(Function(): return re.compile(r"\x4")), "incomplete \\x escape rejected")
+
+# ---- bad group keys / template references throw ----
+ok(throws(Function(): return re.search("(a)", "a").group(5)), "group(out-of-range) rejected")
+ok(throws(Function(): return re.search("(a)", "a").group("nope")), "group(bad name) rejected")
+ok(throws(Function(): return re.sub("(a)", r"\5", "a")), "sub bad group reference rejected")
+
+io.print("r6_regex: " + String(n) + " checks passed")

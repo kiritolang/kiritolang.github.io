@@ -1,0 +1,2 @@
+# Float modulo by a zero divisor must throw.
+discard 7.5 % 0.0

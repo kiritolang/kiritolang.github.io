@@ -1,0 +1,258 @@
+# r9_stdlib_b.ki — edge-case and error-hardening for itertools, functools,
+# collections, and statistics modules. Note Kirito-specific API differences:
+# chain/product/ziplongest take a single list-of-lists arg; cycle(iterable, times)
+# takes a times bound; islice(iterable, start, stop, step=1) needs start+stop;
+# count(start, step, stop) needs a stop bound (no lazy generators);
+# starmap func receives a single LIST argument.
+
+var io = import("io")
+var itr = import("itertools")
+var ft = import("functools")
+var col = import("collections")
+var stat = import("statistics")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== itertools
+
+# chain(list_of_iterables) -> flat List
+ok(itr.chain([[1,2],[3,4],[5]]) == [1,2,3,4,5], "chain merges sub-lists")
+ok(itr.chain([[], [1], [2,3]]) == [1,2,3], "chain with empty sub-list")
+ok(itr.chain([]) == [], "chain with empty input")
+
+# repeat(x, n)
+ok(itr.repeat(5, 3) == [5,5,5], "repeat(5, 3)")
+ok(itr.repeat("x", 0) == [], "repeat n=0 is empty")
+
+# cycle(iterable, times)
+ok(itr.cycle([1,2,3], 2) == [1,2,3,1,2,3], "cycle 2 times")
+ok(itr.cycle([1], 5) == [1,1,1,1,1], "cycle single-element 5 times")
+ok(itr.cycle([1,2], 0) == [], "cycle 0 times is empty")
+
+# islice(iterable, start, stop, step=1)
+ok(itr.islice(range(10), 0, 3) == [0,1,2], "islice first 3")
+ok(itr.islice(range(10), 2, 5) == [2,3,4], "islice middle slice")
+ok(itr.islice(range(10), 0, 10, 2) == [0,2,4,6,8], "islice with step=2")
+ok(itr.islice(range(10), 5, 5) == [], "islice empty range")
+
+# accumulate(iterable, func=None) -> running totals
+ok(itr.accumulate([1,2,3,4]) == [1,3,6,10], "accumulate (running sum)")
+ok(itr.accumulate([1,2,3,4], Function(a,b): return a*b) == [1,2,6,24], "accumulate with mul")
+ok(itr.accumulate([]) == [], "accumulate empty")
+ok(itr.accumulate([7]) == [7], "accumulate single element")
+
+# product(list_of_lists) -> cartesian product as List of Lists
+ok(itr.product([[1,2],[3,4]]) == [[1,3],[1,4],[2,3],[2,4]], "product 2x2")
+ok(itr.product([[1,2],[3]]) == [[1,3],[2,3]], "product 2x1")
+ok(itr.product([[]]) == [], "product with empty factor")
+
+# permutations(items, r)
+ok(len(itr.permutations([1,2,3], 2)) == 6, "permutations(3, 2) = 6")
+ok(itr.permutations([1,2], 1) == [[1],[2]], "permutations r=1")
+ok(itr.permutations([], 0) == [[]], "permutations of empty with r=0")
+ok(itr.permutations([1,2], 0) == [[]], "permutations r=0 is [empty-tuple]")
+
+# combinations(items, r)
+ok(itr.combinations([1,2,3], 2) == [[1,2],[1,3],[2,3]], "combinations(3, 2)")
+ok(itr.combinations([1,2,3,4], 3) == [[1,2,3],[1,2,4],[1,3,4],[2,3,4]], "combinations(4, 3)")
+ok(itr.combinations([1], 1) == [[1]], "combinations single element")
+ok(itr.combinations([1,2], 3) == [], "combinations r > n is empty")
+
+# takewhile / dropwhile
+ok(itr.takewhile(Function(x): return x < 3, [1,2,3,4]) == [1,2], "takewhile < 3")
+ok(itr.takewhile(Function(x): return x > 10, [1,2,3]) == [], "takewhile never true")
+ok(itr.dropwhile(Function(x): return x < 3, [1,2,3,4,1]) == [3,4,1], "dropwhile < 3")
+ok(itr.dropwhile(Function(x): return x > 10, [1,2,3]) == [1,2,3], "dropwhile never satisfied")
+
+# pairwise
+ok(itr.pairwise([1,2,3,4]) == [[1,2],[2,3],[3,4]], "pairwise")
+ok(itr.pairwise([1]) == [], "pairwise single-element is empty")
+ok(itr.pairwise([]) == [], "pairwise empty")
+
+# filterfalse
+ok(itr.filterfalse(Function(x): return x % 2 == 0, [1,2,3,4,5]) == [1,3,5], "filterfalse odd only")
+ok(itr.filterfalse(Function(x): return True, [1,2,3]) == [], "filterfalse always true → empty")
+
+# count(start, step, stop)
+ok(itr.count(0, 1, 5) == [0,1,2,3,4], "count(0, 1, 5)")
+ok(itr.count(2, 2, 10) == [2,4,6,8], "count(2, 2, 10) even numbers")
+ok(itr.count(0, 1, 0) == [], "count zero-range")
+ok(throws(Function(): return itr.count(0, 0, 5)), "count step=0 throws")
+
+# starmap(func, argtuples) - func receives single LIST argument
+ok(itr.starmap(Function(args): return args[0]+args[1], [[1,2],[3,4]]) == [3,7], "starmap add")
+ok(itr.starmap(Function(args): return args[0]*args[1], [[2,3],[4,5]]) == [6,20], "starmap mul")
+ok(itr.starmap(Function(args): return args[0], []) == [], "starmap empty")
+
+# ziplongest(list_of_lists, fillvalue=None)
+ok(itr.ziplongest([[1,2,3],[4,5]], fillvalue=0) == [[1,4],[2,5],[3,0]], "ziplongest with fill=0")
+ok(itr.ziplongest([[1,2],[3,4,5]], fillvalue=-1) == [[1,3],[2,4],[-1,5]], "ziplongest second longer")
+ok(itr.ziplongest([[], []], fillvalue=0) == [], "ziplongest all empty")
+
+# compress(data, selectors)
+ok(itr.compress([1,2,3,4], [True, False, True, False]) == [1,3], "compress alternating")
+ok(itr.compress([1,2,3], [True, True, True]) == [1,2,3], "compress all selected")
+ok(itr.compress([1,2,3], [False, False, False]) == [], "compress none selected")
+
+# groupby(iterable, key=None) -> list of [key, [members]]
+var grp = itr.groupby([1,1,2,2,3])
+ok(len(grp) == 3, "groupby 3 consecutive groups")
+ok(grp[0][0] == 1 and grp[0][1] == [1,1], "groupby first group key=1")
+ok(grp[2][0] == 3 and grp[2][1] == [3], "groupby last group key=3")
+
+# groupby with key function
+var grpk = itr.groupby([1,3,2,4,5], key=Function(x): return x % 2)
+ok(len(grpk) >= 1, "groupby with key function")
+
+# =========================================================== functools
+
+# reduce(func, iterable, initial=None)
+var add2 = Function(a, b): return a + b
+ok(ft.reduce(add2, [1,2,3,4]) == 10, "reduce sum")
+ok(ft.reduce(add2, [1,2,3,4], 100) == 110, "reduce sum with initial")
+ok(ft.reduce(add2, ["a","b","c"]) == "abc", "reduce string concat")
+ok(ft.reduce(add2, [], "") == "", "reduce empty list with initial")
+ok(throws(Function(): return ft.reduce(add2, [])), "reduce empty list no initial throws")
+
+# Non-commutative reduce
+ok(ft.reduce(Function(a,b): return a-b, [10,1,2,3]) == 4, "reduce subtraction left-folds")
+ok(ft.reduce(Function(a,b): return a-b, [1,2,3,4], 100) == 90, "reduce subtraction with initial")
+
+# partial(func, bound_list): bound is prepended, rest is passed as list
+var ident = Function(args): return args
+var p1 = ft.partial(ident, [1,2])
+ok(p1([3]) == [1,2,3], "partial prepends bound args")
+ok(p1([9]) == [1,2,9], "partial works for multiple calls")
+
+# Snapshot: mutation of original list doesn't affect partial
+var orig = [1, 2]
+var pfn = ft.partial(ident, orig)
+orig[0] = 99
+ok(pfn([3]) == [1,2,3], "partial snapshot: index mutation doesn't leak")
+
+# Nested partials
+var inner = ft.partial(Function(args): return args[0] + args[1] + args[2], [1])
+var outer = ft.partial(Function(args): return inner(args), [2])
+ok(outer([3]) == 6, "nested partials compose: 1+2+3")
+
+# cache(func) - single-argument memoization
+var calls = [0]
+var fib = Function(n):
+    calls[0] = calls[0] + 1
+    return n * n
+
+var cfib = ft.cache(fib)
+ok(cfib(5) == 25, "cache: first call")
+ok(cfib(5) == 25, "cache: second call returns same")
+ok(calls[0] == 1, "cache: body called only once for same arg")
+ok(cfib(6) == 36, "cache: different arg calls body")
+ok(calls[0] == 2, "cache: body called for new arg")
+
+# cache: 1==1.0 same key
+var keyCalls = [0]
+var keyFn = Function(x):
+    keyCalls[0] = keyCalls[0] + 1
+    return x
+var ckeyFn = ft.cache(keyFn)
+discard ckeyFn(1)
+discard ckeyFn(1.0)
+ok(keyCalls[0] == 1, "cache: 1 and 1.0 are the same key")
+
+# =========================================================== collections
+
+# deque
+var d = col.deque([1,2,3])
+d.append(4)
+d.appendleft(0)
+ok(List(d) == [0,1,2,3,4], "deque append/appendleft")
+ok(len(d) == 5, "deque len")
+ok(d.pop() == 4, "deque pop right")
+ok(d.popleft() == 0, "deque popleft")
+ok(List(d) == [1,2,3], "deque after pop/popleft")
+ok(d[0] == 1, "deque index access")
+
+# deque iteration
+var items = []
+for x in d:
+    items.append(x)
+ok(items == [1,2,3], "deque iteration")
+
+# Counter
+var cnt = col.Counter([1,2,2,3,3,3])
+ok(cnt[1] == 1, "Counter single count")
+ok(cnt[2] == 2, "Counter double count")
+ok(cnt[3] == 3, "Counter triple count")
+ok(cnt[99] == 0, "Counter missing element returns 0")
+
+var mc = cnt.mostcommon(2)
+ok(len(mc) == 2, "mostcommon(2) returns 2 entries")
+ok(mc[0][0] == 3, "mostcommon first is element 3")
+ok(mc[0][1] == 3, "mostcommon first has count 3")
+
+# Counter from string
+var sc = col.Counter("aabbc")
+ok(sc["a"] == 2, "Counter from string")
+ok(sc["c"] == 1, "Counter from string single")
+
+# defaultdict
+var dd = col.defaultdict(Function(): return [])
+dd["x"].append(1)
+dd["x"].append(2)
+ok(dd["x"] == [1,2], "defaultdict list accumulation")
+ok(dd["new"] == [], "defaultdict creates fresh default for new key")
+ok("x" in dd, "defaultdict contains existing key")
+ok("missing" not in dd, "defaultdict does not contain key before access")
+
+# defaultdict with integer default
+var id2 = col.defaultdict(Function(): return 0)
+id2["a"] = id2["a"] + 1
+id2["a"] = id2["a"] + 1
+ok(id2["a"] == 2, "defaultdict integer counter")
+ok(id2["new"] == 0, "defaultdict new key has default 0")
+
+# =========================================================== statistics
+
+# mean
+ok(stat.mean([1,2,3,4,5]) == 3.0, "mean of 1..5")
+ok(stat.mean([1]) == 1.0, "mean of single element")
+ok(stat.mean([1.5, 2.5]) == 2.0, "mean of floats")
+
+# median
+ok(stat.median([1,2,3,4,5]) == 3, "median odd count")
+ok(stat.median([1,2,3,4]) == 2.5, "median even count averages middle two")
+ok(stat.median([7]) == 7, "median single element")
+
+# mode
+ok(stat.mode([1,2,2,3]) == 2, "mode of [1,2,2,3]")
+ok(stat.mode([3,3,3,1,2]) == 3, "mode is most frequent")
+ok(stat.mode(["a","b","b"]) == "b", "mode works on strings")
+
+# variance and stdev
+var v = stat.variance([1,2,3,4,5])
+ok(v.compare(2.5, abs_tol=1e-10), "variance of 1..5 = 2.5")
+var s = stat.stdev([1,2,3,4,5])
+ok(s.compare(1.5811388, rel_tol=1e-5), "stdev of 1..5 ≈ 1.5811")
+
+# quantiles
+var q = stat.quantiles([1,2,3,4,5,6,7,8,9,10])
+ok(type(q) == "List", "quantiles returns List")
+ok(len(q) == 3, "quantiles default 4-quantiles gives 3 cut points")
+
+# Error cases
+ok(throws(Function(): return stat.mean([])), "mean([]) throws")
+ok(throws(Function(): return stat.variance([1])), "variance single element throws")
+ok(throws(Function(): return stat.stdev([1])), "stdev single element throws")
+ok(throws(Function(): return stat.median([])), "median([]) throws")
+ok(throws(Function(): return stat.quantiles([])), "quantiles([]) throws")
+
+io.print("r9_stdlib_b: " + String(n) + " checks passed")

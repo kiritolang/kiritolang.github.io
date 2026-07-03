@@ -1,0 +1,520 @@
+# class_hash.ki — exhaustive tests for user-class `_hash_` / `_eq_` opt-in and the `hash.hash(x)`
+# built-in. Covers the happy path (compound hashes, delegated hashes), the interaction with `_eq_`
+# for value-based Dict/Set lookup, inheritance + override, adversarial input, fuzz over random
+# instances, and the full error surface (unhashable types, wrong _hash_ return type, throwing
+# _hash_, mutating an instance in-flight).
+#
+# Final line: "class_hash: N checks passed" — matched against class_hash.expected.
+
+var io   = import("io")
+var hash = import("hash")
+var math = import("math")
+var rnd  = import("random")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+var throwsMsg = Function(f, needle):
+    try:
+        discard f()
+        return False
+    catch String as e:
+        return needle in e
+
+# =============================================================================
+# hash.hash on built-in types — identity, consistency, equal-content collision
+# =============================================================================
+
+# Integer identity: `hash(n) == n` for Kirito Integers.
+ok(hash.hash(0) == 0, "hash(0) == 0")
+ok(hash.hash(1) == 1, "hash(1) == 1")
+ok(hash.hash(-1) == -1, "hash(-1) == -1")
+ok(hash.hash(42) == 42, "hash(42) == 42")
+ok(hash.hash(9223372036854775807) == 9223372036854775807, "hash(INT64_MAX) == INT64_MAX")
+ok(hash.hash(-9223372036854775808) == -9223372036854775808, "hash(INT64_MIN) == INT64_MIN")
+
+# Determinism: hash(x) called twice yields the same value.
+for i in range(10):
+    ok(hash.hash(i) == hash.hash(i), "Integer hash is deterministic (call " + String(i) + ")")
+
+# Bool: True/False are hashable (True hashes as 1).
+ok(hash.hash(True) == 1, "hash(True) == 1")
+ok(hash.hash(False) == 0, "hash(False) == 0")
+
+# None: hashable, always the same bucket.
+ok(hash.hash(None) == 0, "hash(None) == 0")
+ok(hash.hash(None) == hash.hash(None), "hash(None) is deterministic")
+
+# Float: NaN is hashable (Kirito uses exact IEEE for ==, so NaN != NaN but still hashable).
+ok(hash.hash(1.0) == hash.hash(1.0), "hash(Float) is deterministic")
+ok(hash.hash(math.nan) == hash.hash(math.nan), "hash(nan) is deterministic")
+ok(hash.hash(math.inf) == hash.hash(math.inf), "hash(inf) is deterministic")
+ok(hash.hash(0.0 - math.inf) == hash.hash(0.0 - math.inf), "hash(-inf) is deterministic")
+# IEEE says 0.0 == -0.0, so their hashes must match too (else Dict/Set would collide-fail on ==).
+ok(hash.hash(0.0) == hash.hash(0.0 - 0.0), "hash(0.0) == hash(-0.0) so IEEE 0.0==-0.0 stays consistent")
+
+# String: content-based; equal-content Strings hash the same regardless of construction path.
+ok(hash.hash("") == hash.hash(""), "hash(empty String) is deterministic")
+ok(hash.hash("abc") == hash.hash("abc"), "hash(String literal) is deterministic")
+ok(hash.hash("abc") == hash.hash("ab" + "c"), "content-equal Strings hash the same across construction paths")
+ok(hash.hash("kirito") == hash.hash("kirito"), "long String literal hash is deterministic")
+ok(hash.hash("kirito") != hash.hash("kirit "), "different content -> different hash (small change)")
+ok(hash.hash("kirito") != hash.hash("otirik"), "different content -> different hash (permutation)")
+# Unicode strings hash correctly (code-point based).
+ok(hash.hash("café") == hash.hash("café"), "Unicode String hash is deterministic")
+ok(hash.hash("😀") == hash.hash("😀"), "astral emoji String hash is deterministic")
+
+# Bytes: content-based.
+ok(hash.hash(Bytes([])) == hash.hash(Bytes([])), "hash(empty Bytes) is deterministic")
+ok(hash.hash(Bytes([1, 2, 3])) == hash.hash(Bytes([1, 2, 3])), "hash(Bytes) is content-based")
+ok(hash.hash(Bytes([1, 2, 3])) != hash.hash(Bytes([1, 2, 4])), "different Bytes -> different hash")
+
+# =============================================================================
+# hash.hash on unhashable built-ins — must throw with the standard message
+# =============================================================================
+ok(throwsMsg(Function(): return hash.hash([1, 2, 3]), "unhashable"), "hash(List) throws 'unhashable type'")
+ok(throwsMsg(Function(): return hash.hash({}), "unhashable"), "hash(Dict) throws 'unhashable type'")
+ok(throwsMsg(Function(): return hash.hash({1, 2}), "unhashable"), "hash(Set) throws 'unhashable type'")
+ok(throwsMsg(Function(): return hash.hash(Function(): return 0), "unhashable"), "hash(Function) throws 'unhashable type'")
+ok(throwsMsg(Function(): return hash.hash(io), "unhashable"), "hash(Module) throws 'unhashable type'")
+
+# =============================================================================
+# _hash_ opt-in on a user class — the compound-hash pattern
+# =============================================================================
+class Point:
+    var _init_ = Function(self, x : Integer, y : Integer):
+        self.x = x
+        self.y = y
+    var _hash_ = Function(self) -> Integer:
+        return self.x * 73856093 + self.y * 19349663
+    var _eq_ = Function(self, other) -> Bool:
+        return isinstance(other, Point) and self.x == other.x and self.y == other.y
+
+var p0 = Point(0, 0)
+var p1 = Point(3, 4)
+var p1b = Point(3, 4)
+var p2 = Point(7, 1)
+
+ok(hash.hash(p0) == 0, "Point(0,0) hash matches the polynomial")
+ok(hash.hash(p1) == 3 * 73856093 + 4 * 19349663, "Point(3,4) hash matches the polynomial")
+ok(hash.hash(p1) == hash.hash(p1b), "two Points with equal coords hash the same")
+ok(hash.hash(p1) != hash.hash(p2), "different coords -> different hash")
+ok(hash.hash(p1) == hash.hash(p1), "same instance -> same hash on repeated call")
+
+# Point as a Dict key: same-coords lookup finds the value (value semantics via _eq_)
+var d = {}
+d[Point(1, 2)] = "a"
+d[Point(1, 2)] = "b"                          # overwrites — same key
+d[Point(3, 4)] = "c"
+ok(len(d) == 2, "same-coord upsert overwrites (one bucket)")
+ok(d[Point(1, 2)] == "b", "d[key] uses value semantics on lookup")
+ok(d[Point(3, 4)] == "c", "second key looks up independently")
+
+# Point as a Set element
+var s = {Point(1, 2), Point(1, 2), Point(3, 4), Point(1, 2)}
+ok(len(s) == 2, "Set collapses equal-coord Points")
+ok(Point(1, 2) in s, "Set membership uses value semantics")
+ok(Point(9, 9) not in s, "Set membership: non-member")
+
+# =============================================================================
+# _hash_ opt-in — the delegated / content-hash pattern (serialization-stable)
+# =============================================================================
+class User:
+    var _init_ = Function(self, email : String, name : String):
+        self.email = email
+        self.name  = name
+    var _hash_ = Function(self) -> Integer:
+        # crc32 of the identifying attribute — deterministic, byte-based, survives dump/loads.
+        return hash.crc32(self.email)
+    var _eq_ = Function(self, other) -> Bool:
+        return isinstance(other, User) and self.email == other.email
+
+var u1 = User("ada@example.com", "Ada")
+var u2 = User("ada@example.com", "A. Lovelace")
+var u3 = User("linus@example.com", "Linus")
+
+ok(hash.hash(u1) == hash.hash(u2), "delegated hash: same email -> same hash regardless of name")
+ok(hash.hash(u1) != hash.hash(u3), "delegated hash: different email -> different hash")
+ok(u1 == u2, "delegated eq: same email -> == True")
+ok(u1 != u3, "delegated eq: different email -> == False")
+
+var perms = {}
+perms[u1] = "admin"
+ok(perms[u2] == "admin", "lookup by u2 finds u1's entry (same email)")
+ok(u3 not in perms, "u3 not in perms")
+
+# =============================================================================
+# _hash_ without _eq_ — instance is hashable but keyed by IDENTITY
+# =============================================================================
+class Fixed:
+    var _init_ = Function(self, tag):
+        self.tag = tag
+    var _hash_ = Function(self) -> Integer:
+        return 42                                # everyone shares one bucket, but identity separates them
+var f1 = Fixed("a")
+var f2 = Fixed("a")
+
+ok(hash.hash(f1) == 42 and hash.hash(f2) == 42, "constant _hash_ works")
+var fSet = {f1, f2, f1}
+ok(len(fSet) == 2, "no _eq_ -> identity semantics: f1 and f2 are distinct")
+
+var fDict = {}
+fDict[f1] = "one"
+fDict[f2] = "two"
+ok(len(fDict) == 2, "no _eq_ -> both fixed-hash keys coexist by identity")
+ok(fDict[f1] == "one" and fDict[f2] == "two", "distinct keys retrieved by identity")
+
+# =============================================================================
+# _eq_ without _hash_ — `==` works but instance is UNHASHABLE
+# =============================================================================
+class EqOnly:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _eq_ = Function(self, other) -> Bool:
+        return isinstance(other, EqOnly) and self.v == other.v
+ok(EqOnly(3) == EqOnly(3), "_eq_ alone makes == structural")
+ok(throwsMsg(Function(): return hash.hash(EqOnly(1)), "unhashable"), "_eq_ alone does NOT make instance hashable")
+var _eqOnlyIntoDict = Function():
+    var dd = {}
+    dd[EqOnly(1)] = "x"
+    return dd
+ok(throwsMsg(_eqOnlyIntoDict, "unhashable"), "using an _eq_-only instance as a Dict key throws")
+
+# =============================================================================
+# Class with neither dunder — unhashable, == is identity
+# =============================================================================
+class Bare:
+    var _init_ = Function(self):
+        self.n = 1
+var b1 = Bare()
+var b2 = Bare()
+ok(not (b1 == b2), "bare class == is identity")
+ok(b1 == b1, "bare class == self is True")
+ok(throwsMsg(Function(): return hash.hash(b1), "unhashable"), "bare class instance is unhashable")
+
+# =============================================================================
+# Inheritance — _hash_ inherited from a base class
+# =============================================================================
+class Vec3:
+    var _init_ = Function(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z
+    var _hash_ = Function(self) -> Integer:
+        return self.x * 73856093 + self.y * 19349663 + self.z * 83492791
+    var _eq_ = Function(self, other) -> Bool:
+        return isinstance(other, Vec3) and self.x == other.x and self.y == other.y and self.z == other.z
+
+class UnitVec(Vec3):
+    var _init_ = Function(self, x, y, z):
+        self._super_()._init_(x, y, z)
+    var isUnit = Function(self) -> Bool:
+        return self.x * self.x + self.y * self.y + self.z * self.z == 1
+
+var v = Vec3(1, 2, 3)
+var uv = UnitVec(1, 2, 3)
+ok(hash.hash(v) == hash.hash(uv), "subclass inherits base's _hash_")
+ok(v == uv, "subclass inherits base's _eq_ (both directions symmetric-ish)")
+
+# A subclass can OVERRIDE _hash_
+class Vec3Neg(Vec3):
+    var _init_ = Function(self, x, y, z):
+        self._super_()._init_(x, y, z)
+    var _hash_ = Function(self) -> Integer:
+        return 0 - (self.x * 73856093 + self.y * 19349663 + self.z * 83492791)
+
+var vn = Vec3Neg(1, 2, 3)
+ok(hash.hash(vn) == 0 - hash.hash(v), "override: subclass gets its own _hash_")
+
+# =============================================================================
+# Return-type validation on _hash_
+# =============================================================================
+class BadReturnStr:
+    var _init_ = Function(self): self.v = 1
+    var _hash_ = Function(self) -> String:
+        return "not an integer"                    # annotation lies, but at run time it's a String
+
+class BadReturnFloat:
+    var _init_ = Function(self): self.v = 1
+    var _hash_ = Function(self):
+        return 3.14                                # a Float — not accepted
+
+class BadReturnNone:
+    var _init_ = Function(self): self.v = 1
+    var _hash_ = Function(self):
+        return None
+
+class BadReturnList:
+    var _init_ = Function(self): self.v = 1
+    var _hash_ = Function(self):
+        return [1, 2, 3]
+
+ok(throwsMsg(Function(): return hash.hash(BadReturnStr()), "must return an Integer"), "String return type throws with a clear message")
+ok(throwsMsg(Function(): return hash.hash(BadReturnFloat()), "must return an Integer"), "Float return type throws")
+ok(throwsMsg(Function(): return hash.hash(BadReturnNone()), "must return an Integer"), "None return type throws")
+ok(throwsMsg(Function(): return hash.hash(BadReturnList()), "must return an Integer"), "List return type throws")
+
+# =============================================================================
+# Throwing _hash_ — surface the throw at the point of insertion / lookup
+# =============================================================================
+class ThrowingHash:
+    var _init_ = Function(self): self.v = 1
+    var _hash_ = Function(self) -> Integer:
+        throw "kaboom"
+ok(throwsMsg(Function(): return hash.hash(ThrowingHash()), "kaboom"), "user _hash_ that throws surfaces the message")
+var _throwingIntoDict = Function():
+    var dd = {}
+    dd[ThrowingHash()] = 1
+    return dd
+ok(throwsMsg(_throwingIntoDict, "kaboom"), "throwing _hash_ throws at Dict insert")
+var _throwingIntoSet = Function(): return {ThrowingHash()}
+ok(throwsMsg(_throwingIntoSet, "kaboom"), "throwing _hash_ throws at Set construction")
+
+# =============================================================================
+# _hash_ returning boundary Integers — INT64_MIN / INT64_MAX / negatives / 0
+# =============================================================================
+class Boundary:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _hash_ = Function(self) -> Integer:
+        return self.v
+
+var bZero = Boundary(0)
+var bOne  = Boundary(1)
+var bNeg  = Boundary(-1)
+var bMax  = Boundary(9223372036854775807)
+var bMin  = Boundary(-9223372036854775808)
+
+ok(hash.hash(bZero) == 0, "_hash_ returning 0 is fine")
+ok(hash.hash(bOne) == 1, "_hash_ returning 1 is fine")
+ok(hash.hash(bNeg) == -1, "_hash_ returning -1 is fine")
+ok(hash.hash(bMax) == 9223372036854775807, "_hash_ returning INT64_MAX is fine")
+ok(hash.hash(bMin) == -9223372036854775808, "_hash_ returning INT64_MIN is fine")
+
+# All five in a Set — they should coexist by identity (no _eq_) and their hashes are all distinct.
+var bSet = {bZero, bOne, bNeg, bMax, bMin}
+ok(len(bSet) == 5, "boundary hash values coexist in a Set")
+
+# =============================================================================
+# Dict/Set operations across the API — set / get / pop / remove / contains / update / iter
+# =============================================================================
+var pDict = {}
+pDict[Point(0, 0)] = "origin"
+pDict[Point(1, 0)] = "right"
+pDict[Point(0, 1)] = "up"
+ok(len(pDict) == 3, "three entries")
+ok(pDict.get(Point(1, 0)) == "right", "Dict.get with a hashed key")
+ok(pDict.get(Point(9, 9), "MISS") == "MISS", "Dict.get default on absent hashed key")
+ok(Point(0, 0) in pDict, "Point key in Dict")
+ok(Point(9, 9) not in pDict, "unknown Point key not in Dict")
+
+var popped = pDict.pop(Point(1, 0))
+ok(popped == "right", "Dict.pop returns the removed value")
+ok(len(pDict) == 2, "Dict.pop shrinks the count")
+ok(Point(1, 0) not in pDict, "popped key gone")
+
+# iteration
+var keySum = 0
+for k in pDict:
+    keySum = keySum + k.x + k.y
+ok(keySum == 1, "iteration over Point-keyed Dict works ((0,0)+(0,1)=1)")
+
+# Set operations
+var s1 = {Point(1, 1), Point(2, 2), Point(3, 3)}
+var s2 = {Point(2, 2), Point(3, 3), Point(4, 4)}
+var uni = s1.union(s2)
+ok(len(uni) == 4, "Set union with hashed elements")
+ok(Point(1, 1) in uni and Point(4, 4) in uni, "union contains all four")
+var inter = s1.intersection(s2)
+ok(len(inter) == 2, "Set intersection with hashed elements")
+ok(Point(2, 2) in inter and Point(3, 3) in inter, "intersection contains the shared pair")
+var diff = s1.difference(s2)
+ok(len(diff) == 1 and Point(1, 1) in diff, "Set difference")
+
+# clear / discard / add
+var sc = {Point(1, 1)}
+sc.add(Point(2, 2))
+sc.add(Point(1, 1))                                 # duplicate no-op
+ok(len(sc) == 2, "Set.add duplicate is a no-op")
+sc.discard(Point(2, 2))
+ok(len(sc) == 1, "Set.discard removes")
+sc.discard(Point(9, 9))                             # missing is a silent no-op
+ok(len(sc) == 1, "Set.discard on absent key is silent")
+
+# =============================================================================
+# Adversarial: recursive / mutating / mid-flight _hash_
+# =============================================================================
+
+# A _hash_ that computes over its OWN attribute must not recurse if the attribute is the instance
+class SelfRef:
+    var _init_ = Function(self):
+        self.me = None
+    var _hash_ = Function(self) -> Integer:
+        # would blow the stack if we called hash.hash(self.me) on a self-reference
+        return 1
+var sr = SelfRef()
+sr.me = sr
+ok(hash.hash(sr) == 1, "cycle-in-attribute is fine when _hash_ doesn't traverse")
+var srSet = {sr}
+ok(sr in srSet, "self-referencing instance can go in a Set")
+
+# A _hash_ that mutates the instance: the hash returned still counts, but mutation is user error.
+class Mutating:
+    var _init_ = Function(self):
+        self.n = 0
+    var _hash_ = Function(self) -> Integer:
+        self.n = self.n + 1
+        return self.n
+var mv = Mutating()
+var h1 = hash.hash(mv)
+var h2 = hash.hash(mv)
+ok(h1 != h2, "a mutating _hash_ produces different values on repeated calls (documented user error)")
+
+# A _hash_ that INDIRECTLY invokes a lookup — put self in a dict inside _hash_ — must be caught by
+# the depth-guard OR fail cleanly; the important thing is no crash.
+class Reentrant:
+    var _init_ = Function(self):
+        self.v = 7
+    var _hash_ = Function(self) -> Integer:
+        # putting the instance into a temp Dict inside its own _hash_ would recurse; guard against
+        # infinite recursion by using a simple int (the correct pattern)
+        return self.v
+var rSet = {Reentrant(), Reentrant()}
+ok(len(rSet) == 2, "identity semantics on Reentrant (no _eq_)")
+
+# Adversarial: _eq_ but _hash_ that DOESN'T match _eq_'s equivalence classes.
+# This is the classic hash-invariant violation — Dict/Set behave "as if" (fall into the wrong
+# bucket). Kirito doesn't detect this; it's user error. We assert only that the language DOESN'T
+# crash and that a same-hash-and-same-eq case DOES collide.
+class BrokenPair:
+    var _init_ = Function(self, k):
+        self.k = k
+    var _hash_ = Function(self) -> Integer:
+        return id(self)                              # per-instance identity, NOT per-k
+    var _eq_ = Function(self, other) -> Bool:
+        return isinstance(other, BrokenPair) and self.k == other.k
+
+var bp1 = BrokenPair(1)
+var bp2 = BrokenPair(1)
+ok(bp1 == bp2, "_eq_ says the two are equal by k")
+ok(hash.hash(bp1) != hash.hash(bp2), "but the broken _hash_ says they aren't")
+# Dict behaves per its hash (they land in different buckets), which is why the invariant matters.
+var bpDict = {}
+bpDict[bp1] = "a"
+bpDict[bp2] = "b"
+ok(len(bpDict) == 2, "broken hash+eq: same-k keys coexist (documented user error, no crash)")
+
+# =============================================================================
+# Deterministic fuzz — insert N random Points, then verify:
+#   1) every key is retrievable
+#   2) Set collapses duplicates
+#   3) counts add up
+# =============================================================================
+var r = rnd.Random(20240115)
+var pointList = []
+var totalInserts = 300
+var i = 0
+while i < totalInserts:
+    var x = r.randint(0, 20)
+    var y = r.randint(0, 20)
+    pointList.append(Point(x, y))
+    i = i + 1
+
+var byPoint = {}
+i = 0
+for p in pointList:
+    byPoint[p] = "v" + String(i)                       # last write per (x,y) wins
+    i = i + 1
+
+var distinctPairs = Set()
+for p in pointList:
+    distinctPairs.add(String(p.x) + "," + String(p.y))
+ok(len(byPoint) == len(distinctPairs), "fuzz: Dict size == number of distinct (x,y) pairs")
+
+# Every original point still finds ITS latest value
+var lookupOk = 0
+i = 0
+for p in pointList:
+    if byPoint[p] == byPoint[Point(p.x, p.y)]:         # a fresh Point with same coords finds same slot
+        lookupOk = lookupOk + 1
+    i = i + 1
+ok(lookupOk == totalInserts, "fuzz: every fresh Point(x,y) finds its slot")
+
+# Set-collapse
+var pSet = Set()
+for p in pointList:
+    pSet.add(p)
+ok(len(pSet) == len(distinctPairs), "fuzz: Set size == number of distinct pairs")
+
+# =============================================================================
+# hash.hash + _hash_ interoperability
+# =============================================================================
+# A user class's _hash_ can call hash.hash on its attributes — the composable case.
+class Composed:
+    var _init_ = Function(self, a : String, b : Integer):
+        self.a = a
+        self.b = b
+    var _hash_ = Function(self) -> Integer:
+        return hash.hash(self.a) * 31 + hash.hash(self.b)
+    var _eq_ = Function(self, other) -> Bool:
+        return isinstance(other, Composed) and self.a == other.a and self.b == other.b
+
+var c1 = Composed("kirito", 42)
+var c2 = Composed("kirito", 42)
+var c3 = Composed("kirito", 43)
+ok(hash.hash(c1) == hash.hash(c2), "composed hash: same attrs -> same hash")
+ok(hash.hash(c1) != hash.hash(c3), "composed hash: different attrs -> different hash")
+
+# hash.hash on a hashable-instance is idempotent: same result on repeated calls.
+for i in range(5):
+    ok(hash.hash(c1) == hash.hash(c1), "hash.hash(instance) is deterministic (call " + String(i) + ")")
+
+# =============================================================================
+# Method call surface — the class methods are still callable, hashable or not
+# =============================================================================
+class Combo:
+    var _init_ = Function(self, x):
+        self.x = x
+    var _hash_ = Function(self) -> Integer:
+        return self.x
+    var _eq_ = Function(self, other) -> Bool:
+        return isinstance(other, Combo) and self.x == other.x
+    var double = Function(self) -> Integer:
+        return self.x * 2
+var co = Combo(21)
+ok(co.double() == 42, "ordinary method still works on a hashable class")
+ok(hash.hash(co) == 21, "and _hash_ still fires as an op")
+
+# =============================================================================
+# Cache invariant: adding an attribute AFTER construction doesn't turn on _hash_
+# (the flag is cached at construction, based on the class's method table, not attrs).
+# =============================================================================
+class NoHash:
+    var _init_ = Function(self, v):
+        self.v = v
+var nh = NoHash(1)
+nh._hash_ = Function(): return 5                       # attaching an attr called _hash_ — not a method
+ok(throwsMsg(Function(): return hash.hash(nh), "unhashable"), "attaching a `_hash_` ATTR after construction does not make instance hashable")
+
+# =============================================================================
+# The unhashable-in-container error path uses the same message
+# =============================================================================
+var _bareIntoDict = Function():
+    var dd = {}
+    dd[Bare()] = 1
+    return dd
+ok(throwsMsg(_bareIntoDict, "unhashable"), "unhashable instance in Dict throws 'unhashable'")
+
+var _bareIntoSet = Function(): return {Bare()}
+ok(throwsMsg(_bareIntoSet, "unhashable"), "unhashable instance in Set throws 'unhashable'")
+
+io.print("class_hash: " + String(n) + " checks passed")

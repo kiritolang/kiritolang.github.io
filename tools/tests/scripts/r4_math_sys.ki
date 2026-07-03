@@ -1,0 +1,716 @@
+# Exhaustive audit of the numeric/system stdlib region: math, random, time, sys. Every documented
+# function/constant is probed from every angle — typical, boundary (domain edges, NaN/inf, 0,
+# negatives, overflow), wrong-type/malformed (must RAISE), and keyword-argument forms. Domain errors
+# MUST throw (never return NaN/inf rubbish); a NaN argument passes through; overflow-to-inf is a range,
+# not a domain, condition and does not throw.
+#
+# Determinism: `random` is exercised with a FIXED seed (std::mt19937_64 is portable, so seeded values
+# are byte-stable across runs and platforms) and a few seeded values are printed. `time` asserts
+# STRUCTURE and RELATIONS only (no wall-clock literals), so the output is fully deterministic.
+var io = import("io")
+var path = import("path")
+var math = import("math")
+var random = import("random")
+var time = import("time")
+var sys = import("sys")
+var dump = import("dump")
+var serialize = import("serialize")
+
+# Did calling a zero-arg thunk throw? (Anonymous functions are single-line only.)
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+        return False
+    catch as e:
+        return True
+
+var checks = 0
+var note = Function(): checks = checks + 1
+
+# =====================================================================================
+# math — constants
+# =====================================================================================
+assert math.pi > 3.14159 and math.pi < 3.14160, "pi"
+note()
+assert math.e > 2.71828 and math.e < 2.71829, "e"
+note()
+assert math.tau == 2.0 * math.pi, "tau == 2*pi"
+note()
+assert math.isinf(math.inf) and math.inf > 0, "inf is +infinity"
+note()
+assert math.isnan(math.nan), "nan is NaN"
+note()
+assert type(math.pi) == "Float" and type(math.inf) == "Float", "constants are Float"
+note()
+
+# =====================================================================================
+# math — unary functions: typical values + return type
+# =====================================================================================
+assert math.sqrt(0) == 0.0 and math.sqrt(4) == 2.0, "sqrt typical"
+note()
+# cbrt(27) is 3 + 4.4e-16 (std::cbrt rounding) — Float == is EXACT IEEE-754, so use the tolerant
+# .compare for a transcendental result; cbrt(-8) == -2 happens to be exact.
+assert math.cbrt(27).compare(3.0) and math.cbrt(-8) == -2.0, "cbrt typical (negatives ok)"
+note()
+assert math.sin(0) == 0.0 and math.cos(0) == 1.0, "sin/cos at 0"
+note()
+assert math.tan(0) == 0.0, "tan at 0"
+note()
+assert math.asin(0) == 0.0 and math.acos(1) == 0.0 and math.atan(0) == 0.0, "inverse trig at boundary"
+note()
+assert math.sinh(0) == 0.0 and math.cosh(0) == 1.0 and math.tanh(0) == 0.0, "hyperbolic at 0"
+note()
+assert math.asinh(0) == 0.0 and math.acosh(1) == 0.0 and math.atanh(0) == 0.0, "inverse hyperbolic at boundary"
+note()
+assert math.exp(0) == 1.0, "exp(0)"
+note()
+assert math.expm1(0) == 0.0 and math.log1p(0) == 0.0, "expm1/log1p at 0"
+note()
+assert math.log2(8) == 3.0 and math.log10(1000) == 3.0, "log2/log10 typical"
+note()
+assert math.trunc(3.7) == 3.0 and math.trunc(-3.7) == -3.0, "trunc toward zero"
+note()
+assert type(math.trunc(3.7)) == "Float", "trunc returns Float (per doc)"
+note()
+assert math.gamma(5) == 24.0, "gamma(5) == 4!"
+note()
+assert math.lgamma(1) == 0.0, "lgamma(1) == log(1) == 0"
+note()
+assert math.erf(0) == 0.0 and math.erfc(0) == 1.0, "erf(0)/erfc(0)"
+note()
+assert math.fabs(-5) == 5.0 and type(math.fabs(-5)) == "Float", "fabs returns Float"
+note()
+
+# floor/ceil return Integer; trunc returns Float
+assert math.floor(3.7) == 4 - 1 and type(math.floor(3.7)) == "Integer", "floor returns Integer"
+note()
+assert math.ceil(3.2) == 4 and type(math.ceil(3.2)) == "Integer", "ceil returns Integer"
+note()
+assert math.floor(-3.2) == -4 and math.ceil(-3.2) == -3, "floor/ceil of negatives"
+note()
+# floor/ceil of a non-finite value cannot become an Integer -> must throw (no UB cast)
+assert throws(Function(): return math.floor(math.inf)), "floor(inf) throws (cannot convert)"
+note()
+assert throws(Function(): return math.ceil(math.nan)), "ceil(nan) throws (cannot convert)"
+note()
+
+# =====================================================================================
+# math — two-argument functions
+# =====================================================================================
+assert math.atan2(0, 1) == 0.0, "atan2(0,1)"
+note()
+assert math.hypot(3, 4) == 5.0, "hypot(3,4) == 5"
+note()
+assert math.copysign(3, -1) == -3.0 and math.copysign(-3, 1) == 3.0, "copysign"
+note()
+assert math.fmod(7, 3) == 1.0 and math.fmod(-7, 3) == -1.0, "fmod takes sign of x"
+note()
+assert math.degrees(math.pi) == 180.0 and math.radians(180) == math.pi, "degrees/radians round-trip"
+note()
+assert math.pow(2, 10) == 1024.0 and type(math.pow(2, 10)) == "Float", "math.pow returns Float"
+note()
+assert math.pow(2, -1) == 0.5 and math.pow(0, 0) == 1.0, "math.pow negative/zero exponents"
+note()
+assert math.log(math.e) == 1.0, "log natural"
+note()
+# log(8, 2) == 3 is exact; log(1000, 10) goes through log(x)/log(b) and rounds (vs the direct
+# log10(1000), which is exact) — so .compare the change-of-base result.
+assert math.log(8, 2) == 3.0 and math.log(1000, 10).compare(3.0), "log with base"
+note()
+assert math.log(8, None) == math.log(8), "log base None is the natural log"
+note()
+
+# =====================================================================================
+# math — DOMAIN ERRORS must RAISE (never silent NaN/inf)
+# =====================================================================================
+assert throws(Function(): return math.sqrt(-1)), "sqrt(-1) throws"
+note()
+assert throws(Function(): return math.log(0)) and throws(Function(): return math.log(-1)), "log(0)/log(-1) throw"
+note()
+assert throws(Function(): return math.log2(0)) and throws(Function(): return math.log10(0)), "log2(0)/log10(0) throw"
+note()
+assert throws(Function(): return math.log1p(-1)) and throws(Function(): return math.log1p(-2)), "log1p(<=-1) throws"
+note()
+assert throws(Function(): return math.log(8, 1)), "log base 1 throws"
+note()
+assert throws(Function(): return math.log(8, 0)) and throws(Function(): return math.log(8, -2)), "log base <=0 throws"
+note()
+assert throws(Function(): return math.asin(2)) and throws(Function(): return math.asin(-2)), "asin out of [-1,1] throws"
+note()
+assert throws(Function(): return math.acos(2)) and throws(Function(): return math.acos(-2)), "acos out of [-1,1] throws"
+note()
+assert throws(Function(): return math.acosh(0)) and throws(Function(): return math.acosh(0.5)), "acosh(<1) throws"
+note()
+assert throws(Function(): return math.atanh(1)) and throws(Function(): return math.atanh(-1)), "atanh(+-1) throws"
+note()
+assert throws(Function(): return math.atanh(2)), "atanh(>1) throws"
+note()
+assert throws(Function(): return math.gamma(0)) and throws(Function(): return math.gamma(-2)), "gamma at poles 0/-2 throws"
+note()
+assert throws(Function(): return math.lgamma(0)) and throws(Function(): return math.lgamma(-1)), "lgamma at poles throws"
+note()
+assert throws(Function(): return math.pow(-2, 0.5)), "pow negative base + fractional exp throws"
+note()
+assert throws(Function(): return math.pow(0, -1)), "pow zero to negative power throws"
+note()
+assert throws(Function(): return math.fmod(1, 0)), "fmod by zero throws"
+note()
+
+# =====================================================================================
+# math — NaN passthrough; overflow-to-inf is NOT a domain error
+# =====================================================================================
+assert math.isnan(math.sqrt(math.nan)), "sqrt(nan) -> nan (passthrough)"
+note()
+assert math.isnan(math.asin(math.nan)) and math.isnan(math.acos(math.nan)), "asin/acos(nan) -> nan"
+note()
+assert math.isnan(math.gamma(math.nan)) and math.isnan(math.log(math.nan)), "gamma/log(nan) -> nan"
+note()
+assert math.isnan(math.pow(math.nan, 2)) and math.isnan(math.pow(2, math.nan)), "pow with NaN -> nan"
+note()
+assert math.isinf(math.exp(1000)), "exp(1000) -> inf (range, not domain)"
+note()
+assert math.isfinite(1.0) and not math.isfinite(math.inf) and not math.isfinite(math.nan), "isfinite"
+note()
+assert math.isinf(math.inf) and not math.isinf(1.0), "isinf"
+note()
+assert math.isnan(math.nan) and not math.isnan(1.0), "isnan"
+note()
+
+# =====================================================================================
+# math — integer functions: gcd/lcm with signs and zeros
+# =====================================================================================
+assert math.gcd(12, 8) == 4 and math.gcd(8, 12) == 4, "gcd typical"
+note()
+assert math.gcd(-12, 8) == 4 and math.gcd(12, -8) == 4 and math.gcd(-12, -8) == 4, "gcd ignores sign (always >= 0)"
+note()
+assert math.gcd(0, 0) == 0 and math.gcd(0, 5) == 5 and math.gcd(5, 0) == 5, "gcd with zero"
+note()
+assert math.lcm(4, 6) == 12 and math.lcm(6, 4) == 12, "lcm typical"
+note()
+assert math.lcm(-4, 6) == 12 and math.lcm(-4, -6) == 12, "lcm ignores sign (always >= 0)"
+note()
+assert math.lcm(0, 5) == 0 and math.lcm(5, 0) == 0, "lcm with zero is zero"
+note()
+assert throws(Function(): return math.lcm(9223372036854775807, 2)), "lcm overflow throws"
+note()
+assert type(math.gcd(4, 6)) == "Integer" and type(math.lcm(4, 6)) == "Integer", "gcd/lcm return Integer"
+note()
+
+# =====================================================================================
+# math — factorial / comb / perm: typical, boundary, overflow, negative
+# =====================================================================================
+assert math.factorial(0) == 1 and math.factorial(5) == 120, "factorial typical"
+note()
+assert math.factorial(20) == 2432902008176640000, "factorial(20) fits int64"
+note()
+assert throws(Function(): return math.factorial(21)), "factorial(21) overflows -> throws"
+note()
+assert throws(Function(): return math.factorial(-1)), "factorial of a negative throws"
+note()
+assert throws(Function(): return math.factorial(2.5)), "factorial of a non-Integer throws"
+note()
+assert math.comb(5, 2) == 10 and math.comb(5, 0) == 1 and math.comb(5, 5) == 1, "comb typical/boundary"
+note()
+assert math.comb(5, 7) == 0, "comb with k > n is 0"
+note()
+assert math.comb(30, 15) == 155117520, "comb(30,15) exact (step-wise, no overflow)"
+note()
+assert math.comb(50, 25) == 126410606437752, "comb(50,25) large but fits"
+note()
+assert throws(Function(): return math.comb(-1, 2)) and throws(Function(): return math.comb(5, -1)), "comb negatives throw"
+note()
+assert math.perm(5, 2) == 20 and math.perm(5, 0) == 1, "perm typical"
+note()
+assert math.perm(5) == 120 and math.perm(5, None) == 120, "perm(n) and perm(n, None) == n!"
+note()
+assert math.perm(5, 7) == 0, "perm with k > n is 0"
+note()
+assert throws(Function(): return math.perm(100, 50)), "perm overflow throws"
+note()
+assert throws(Function(): return math.perm(-1)), "perm of a negative throws"
+note()
+
+# =====================================================================================
+# math — prod: int vs float result, start, overflow, empty, wrong type
+# =====================================================================================
+assert math.prod([1, 2, 3, 4]) == 24 and type(math.prod([2, 3])) == "Integer", "prod all-Integer -> Integer"
+note()
+assert math.prod([]) == 1 and math.prod([], 5) == 5, "prod of empty is start (default 1)"
+note()
+assert math.prod([2, 3], 10) == 60, "prod with start"
+note()
+assert math.prod([1.5, 2.0]) == 3.0 and type(math.prod([1.5, 2.0])) == "Float", "a Float makes prod Float"
+note()
+assert type(math.prod([2, 3], 1.0)) == "Float", "a Float start makes prod Float"
+note()
+assert throws(Function(): return math.prod([9223372036854775807, 2])), "prod Integer overflow throws"
+note()
+assert throws(Function(): return math.prod(["a"])), "prod of non-numbers throws"
+note()
+
+# =====================================================================================
+# math — wrong-type arguments throw (Bool is NOT a Number)
+# =====================================================================================
+assert throws(Function(): return math.sqrt("x")), "sqrt of a String throws"
+note()
+assert throws(Function(): return math.sqrt(True)), "sqrt(True) throws (Bool is not a Number)"
+note()
+assert throws(Function(): return math.gcd(1.5, 2)), "gcd of a Float throws (needs Integer)"
+note()
+assert throws(Function(): return math.comb(5.0, 2)), "comb of a Float throws (needs Integer)"
+note()
+
+# =====================================================================================
+# math — keyword arguments
+# =====================================================================================
+assert math.sqrt(x=16) == 4.0, "sqrt kwarg"
+note()
+assert math.pow(x=2, y=3) == 8.0, "pow kwargs"
+note()
+assert math.log(x=8, base=2) == 3.0, "log kwargs"
+note()
+assert math.comb(n=5, k=2) == 10, "comb kwargs"
+note()
+assert math.prod([2, 3], start=10) == 60, "prod start kwarg"
+note()
+
+# =====================================================================================
+# random — determinism by seed (the heart of the contract)
+# =====================================================================================
+# Two generators with the same seed yield identical sequences.
+var ra = random.Random(42)
+var rb = random.Random(42)
+var sa = []
+var sb = []
+var ri = 0
+while ri < 8:
+    sa.append(ra.randint(1, 1000000))
+    sb.append(rb.randint(1, 1000000))
+    ri = ri + 1
+assert sa == sb, "two RNGs with the same seed agree"
+note()
+
+# Fixed seed -> byte-stable printed values. Pin the Mersenne-Twister engine so the
+# expected values stay stable regardless of what the default generator is.
+var rd = random.Random(12345, generator = "mersenne_twister")
+io.print("seeded randint:", rd.randint(1, 1000000), rd.randint(1, 1000000), rd.randint(1, 1000000))
+var rrange = random.Random(12345, generator = "mersenne_twister")
+io.print("seeded randrange:", rrange.randrange(0, 100), rrange.randrange(0, 100, 2))
+io.print("seeded choice:", random.Random(777, generator = "mersenne_twister").choice([10, 20, 30, 40, 50]))
+var shuf = [1, 2, 3, 4, 5, 6, 7, 8]
+random.Random(999, generator = "mersenne_twister").shuffle(shuf)
+io.print("seeded shuffle:", shuf)
+io.print("seeded sample:", random.Random(555, generator = "mersenne_twister").sample([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 4))
+
+# seed() reseeds an existing generator to reproduce a stream.
+var rseed = random.Random(1)
+rseed.seed(99)
+var first = rseed.randint(1, 1000000)
+var rseed2 = random.Random(1)
+rseed2.seed(99)
+assert first == rseed2.randint(1, 1000000), "seed() makes the stream reproducible"
+note()
+
+# =====================================================================================
+# random — distributions stay within their documented ranges (property, not exact value)
+# =====================================================================================
+var rprop = random.Random(7)
+var ok_random = True
+var ok_uniform = True
+var ok_randint = True
+var pp = 0
+while pp < 200:
+    var u01 = rprop.random()
+    if u01 < 0.0 or u01 >= 1.0:
+        ok_random = False
+    var uab = rprop.uniform(10.0, 20.0)
+    if uab < 10.0 or uab > 20.0:
+        ok_uniform = False
+    var ri2 = rprop.randint(5, 9)
+    if ri2 < 5 or ri2 > 9:
+        ok_randint = False
+    pp = pp + 1
+assert ok_random, "random() always in [0.0, 1.0)"
+note()
+assert ok_uniform, "uniform(a, b) always in [a, b]"
+note()
+assert ok_randint, "randint(a, b) always in [a, b]"
+note()
+assert random.Random(3).randint(5, 5) == 5, "randint(5, 5) is always 5"
+note()
+
+# randrange members
+var rr = random.Random(3)
+var ok_rr = True
+var qq = 0
+while qq < 100:
+    var rv = rr.randrange(0, 10, 2)
+    if rv < 0 or rv >= 10 or rv % 2 != 0:
+        ok_rr = False
+    qq = qq + 1
+assert ok_rr, "randrange(0, 10, 2) yields an even member in [0, 10)"
+note()
+assert random.Random(1).randrange(1) == 0, "randrange(1) is always 0"
+note()
+
+# =====================================================================================
+# random — edge cases and wrong types must RAISE
+# =====================================================================================
+assert throws(Function(): return random.Random(1).randint(5, 3)), "randint with lo > hi throws"
+note()
+assert throws(Function(): return random.Random(1).randrange(0)), "randrange empty range throws"
+note()
+assert throws(Function(): return random.Random(1).randrange(5, 5)), "randrange(5, 5) is empty -> throws"
+note()
+assert throws(Function(): return random.Random(1).randrange(0, 10, 0)), "randrange step 0 throws"
+note()
+assert throws(Function(): return random.Random(1).randrange()), "randrange with no args throws"
+note()
+assert throws(Function(): return random.Random(1).choice([])), "choice from empty throws"
+note()
+assert random.Random(1).choice([42]) == 42, "choice of a singleton"
+note()
+assert throws(Function(): return random.Random(1).shuffle("abc")), "shuffle of a non-List throws"
+note()
+assert throws(Function(): return random.Random(1).sample([1, 2], 5)), "sample k > n throws"
+note()
+assert throws(Function(): return random.Random(1).sample([1, 2], -1)), "sample k < 0 throws"
+note()
+assert random.Random(1).sample([1, 2, 3], 0) == [], "sample k = 0 is empty"
+note()
+# sample produces k distinct elements drawn from the population
+var smp = random.Random(8).sample([1, 2, 3, 4, 5], 3)
+assert len(smp) == 3 and len(Set(smp)) == 3, "sample yields k distinct elements"
+note()
+var pop = Set([1, 2, 3, 4, 5])
+var all_in = True
+for x in smp:
+    if not (x in pop):
+        all_in = False
+assert all_in, "every sampled element comes from the population"
+note()
+assert throws(Function(): return random.Random(1).expovariate(0.0)), "expovariate lambda 0 throws"
+note()
+assert throws(Function(): return random.Random(1).expovariate(-1.0)), "expovariate lambda < 0 throws"
+note()
+assert throws(Function(): return random.Random(1).randint("a", 5)), "randint of a non-Integer throws"
+note()
+assert throws(Function(): return random.Random(1.5)), "Random with a Float seed throws"
+note()
+
+# shuffle preserves the multiset of elements
+var sh = [1, 2, 3, 4, 5]
+random.Random(5).shuffle(sh)
+assert sorted(sh) == [1, 2, 3, 4, 5], "shuffle is a permutation (preserves elements)"
+note()
+
+# distribution methods return Floats (gauss/normalvariate are aliases; both accept 0 args via defaults)
+assert type(random.Random(1).gauss(0.0, 1.0)) == "Float", "gauss returns Float"
+note()
+assert type(random.Random(1).normalvariate(0.0, 1.0)) == "Float", "normalvariate returns Float"
+note()
+assert type(random.Random(1).expovariate(1.0)) == "Float", "expovariate returns Float"
+note()
+
+# keyword arguments on Random methods
+assert random.Random(7).randint(a=1, b=1) == 1, "randint kwargs"
+note()
+assert random.Random(7).uniform(a=5.0, b=5.0) == 5.0, "uniform kwargs"
+note()
+# Random([seed]) accepts the seed keyword; same seed -> same first value
+assert random.Random(seed=314).randint(1, 1000000) == random.Random(314).randint(1, 1000000), "Random seed kwarg"
+note()
+
+# =====================================================================================
+# random — serialization continues the EXACT same stream (reproducible checkpoint)
+# =====================================================================================
+var rser = random.Random(2024)
+discard rser.randint(1, 1000000)
+discard rser.randint(1, 1000000)
+var blob = dump.dumps(rser)
+assert type(blob) == "Bytes", "dump.dumps yields Bytes"
+note()
+var rrestored = dump.loads(blob)
+assert rser.randint(1, 1000000) == rrestored.randint(1, 1000000), "dump round-trip continues the stream"
+note()
+var rser2 = random.Random(2024)
+discard rser2.randint(1, 1000000)
+var txt = serialize.dumps(rser2)
+var rrestored2 = serialize.loads(txt)
+assert rser2.randint(1, 1000000) == rrestored2.randint(1, 1000000), "serialize round-trip continues the stream"
+note()
+
+# =====================================================================================
+# time — clocks: types and monotonicity (no wall-clock literals -> deterministic)
+# =====================================================================================
+assert type(time.time()) == "Float", "time() is a Float"
+note()
+assert type(time.timens()) == "Integer", "timens() is an Integer"
+note()
+assert type(time.monotonic()) == "Float", "monotonic() is a Float"
+note()
+assert type(time.perfcounterns()) == "Integer", "perfcounterns() is an Integer"
+note()
+
+var mono_ok = True
+var mprev = time.monotonic()
+var mi = 0
+while mi < 300:
+    var mcur = time.monotonic()
+    if mcur < mprev:
+        mono_ok = False
+    mprev = mcur
+    mi = mi + 1
+assert mono_ok, "monotonic() never goes backwards"
+note()
+
+var perf_ok = True
+var pprev = time.perfcounterns()
+var pi2 = 0
+while pi2 < 300:
+    var pcur = time.perfcounterns()
+    if pcur < pprev:
+        perf_ok = False
+    pprev = pcur
+    pi2 = pi2 + 1
+assert perf_ok, "perfcounterns() never goes backwards"
+note()
+
+# timens is on a nanosecond scale (loose ordering, never an exact literal)
+assert time.timens() > 1000000000 * 1000000000, "timens() is a recent epoch in ns"
+note()
+# sleep advances (or holds) the clock; sleep(0) and a negative duration are safe no-ops
+var s0 = time.monotonic()
+time.sleep(0.002)
+assert time.monotonic() - s0 >= 0.0, "sleep does not move the clock backwards"
+note()
+time.sleep(0)
+time.sleep(-1)
+assert throws(Function(): return time.sleep("x")), "sleep of a non-number throws"
+note()
+
+# =====================================================================================
+# time — make / DateTime fields
+# =====================================================================================
+var dt = time.make(2024, 1, 15, 10, 30, 45)
+assert dt.year == 2024 and dt.month == 1 and dt.day == 15, "make: date fields"
+note()
+assert dt.hour == 10 and dt.minute == 30 and dt.second == 45, "make: time fields"
+note()
+assert dt.weekday >= 0 and dt.weekday <= 6, "weekday in 0..6 (0 = Sunday)"
+note()
+assert dt.yearday == 15, "yearday for Jan 15"
+note()
+assert type(dt.timestamp) == "Integer", "timestamp is an Integer attribute"
+note()
+assert time.make(2024, 6, 15).iso() == "2024-06-15T00:00:00", "make 3-arg defaults time to 00:00:00"
+note()
+assert time.make(2020, 1, 1, 0, 0, 0).timestamp == 1577836800, "known epoch (2020-01-01)"
+note()
+assert time.make(1970, 1, 1, 0, 0, 0).timestamp == 0, "epoch zero"
+note()
+assert time.make(1969, 12, 31, 23, 59, 59).timestamp == -1, "one second before the epoch"
+note()
+
+# C mktime-style normalization (over- AND under-range roll over; make never throws on rollover)
+assert time.make(2024, 13, 1).year == 2025 and time.make(2024, 13, 1).month == 1, "month 13 -> Jan next year"
+note()
+assert time.make(2024, 1, 32).month == 2 and time.make(2024, 1, 32).day == 1, "day 32 -> Feb 1"
+note()
+assert time.make(2024, 0, 1).year == 2023 and time.make(2024, 0, 1).month == 12, "month 0 -> Dec prev year"
+note()
+assert time.make(2024, 1, 0).month == 12 and time.make(2024, 1, 0).day == 31, "day 0 -> last day of prev month"
+note()
+assert time.make(2024, 1, 1, -1).hour == 23, "hour -1 -> 23:00 the previous day"
+note()
+# an epoch far outside the +-9999-year representable range throws
+assert throws(Function(): return time.make(99999, 1, 1)), "make of a far-future year throws (out of range)"
+note()
+assert throws(Function(): return time.make("x", 1, 1)), "make of a non-Integer component throws"
+note()
+
+# =====================================================================================
+# time — iso / isoformat / format
+# =====================================================================================
+assert dt.iso() == "2024-01-15T10:30:45", "iso shape"
+note()
+assert dt.isoformat() == dt.iso(), "isoformat is an alias of iso"
+note()
+assert dt.format("%Y-%m-%d") == "2024-01-15", "format %Y-%m-%d"
+note()
+assert dt.format("%H:%M:%S") == "10:30:45", "format %H:%M:%S"
+note()
+assert dt.format("literal text") == "literal text", "format passes literal text through"
+note()
+# a long format string is not truncated (the strftime buffer grows as needed)
+var bigfmt = "z" * 400
+assert dt.format(bigfmt) == bigfmt, "a long literal format string round-trips in full"
+note()
+assert throws(Function(): return dt.format(5)), "format of a non-String throws"
+note()
+
+# =====================================================================================
+# time — add / sub / diff (seconds)
+# =====================================================================================
+var base = time.make(2024, 1, 1, 0, 0, 0)
+assert base.add(86400).day == 2, "add(86400) advances one day"
+note()
+assert base.add(86400).diff(base) == 86400, "diff is +86400 s"
+note()
+assert base.sub(60).diff(base) == -60, "sub(60) leaves a -60 s diff"
+note()
+assert base.add(0).diff(base) == 0, "add(0) is a no-op"
+note()
+assert base.add(3600.5).hour == 1, "a Float delta truncates toward the second"
+note()
+assert throws(Function(): return dt.diff(5)), "diff with a non-DateTime throws"
+note()
+assert throws(Function(): return dt.add("x")), "add of a non-number throws"
+note()
+
+# =====================================================================================
+# time — strptime (strict parsing)
+# =====================================================================================
+var sp = time.strptime("2024-06-01 13:30:45", "%Y-%m-%d %H:%M:%S")
+assert sp.year == 2024 and sp.month == 6 and sp.day == 1 and sp.hour == 13, "strptime fields"
+note()
+assert time.strptime("2030", "%Y").month == 1 and time.strptime("2030", "%Y").day == 1, "strptime fills sensible date defaults"
+note()
+assert time.strptime("2024%06", "%Y%%%m").month == 6, "strptime %% matches a literal percent"
+note()
+assert time.strptime(dt.iso(), "%Y-%m-%dT%H:%M:%S").timestamp == dt.timestamp, "iso -> strptime round-trip"
+note()
+assert throws(Function(): return time.strptime("2024-99-99", "%Y-%m-%d")), "strptime out-of-range fields throw"
+note()
+assert throws(Function(): return time.strptime("2024-01-01 25:00:00", "%Y-%m-%d %H:%M:%S")), "strptime hour 25 throws"
+note()
+assert throws(Function(): return time.strptime("2024-01-01XYZ", "%Y-%m-%d")), "strptime trailing input throws"
+note()
+assert throws(Function(): return time.strptime("nope", "%Y-%m-%d")), "strptime non-matching text throws"
+note()
+assert throws(Function(): return time.strptime("2024/01", "%Y-%m")), "strptime literal mismatch throws"
+note()
+assert throws(Function(): return time.strptime("2024", "%Z")), "strptime unsupported directive throws"
+note()
+
+# =====================================================================================
+# time — datetime() and equality + hashing by instant
+# =====================================================================================
+assert time.datetime(0).year == 1970, "datetime(0) is the epoch start"
+note()
+assert time.datetime(1577836800).year == 2020, "datetime(int) is exact"
+note()
+assert time.datetime(86400.9).day == 2, "datetime(float) truncates toward the second"
+note()
+assert time.datetime().year >= 2024 and time.datetime(None).year >= 2024, "datetime()/datetime(None) default to now"
+note()
+assert throws(Function(): return time.datetime(math.nan)), "datetime(NaN) throws"
+note()
+assert throws(Function(): return time.datetime(999999999999999)), "datetime of an out-of-range epoch throws"
+note()
+var pre = time.datetime(-86400)
+assert pre.year == 1969 and pre.month == 12 and pre.day == 31, "datetime(-1 day) is pre-epoch"
+note()
+
+var dEq1 = time.make(2024, 1, 1, 0, 0, 0)
+var dEq2 = time.make(2024, 1, 1, 0, 0, 0)
+var dDiff = time.make(2024, 1, 1, 0, 0, 1)
+assert dEq1 == dEq2, "DateTimes equal at the same instant"
+note()
+assert dEq1 != dDiff, "DateTimes differ by instant"
+note()
+assert len({dEq1, dEq2, dDiff}) == 2, "DateTime hashable in a Set (two distinct instants)"
+note()
+var dmap = {}
+dmap[dEq1] = "A"
+assert dmap[dEq2] == "A", "an equal DateTime hits the same Dict key"
+note()
+
+# DateTime serialization preserves the instant (text + binary)
+assert dump.loads(dump.dumps(dt)) == dt, "DateTime round-trips through dump (binary)"
+note()
+assert serialize.loads(serialize.dumps(dt)) == dt, "DateTime round-trips through serialize (text)"
+note()
+
+# time keyword arguments
+assert time.make(year=2024, month=6, day=15, hour=10).hour == 10, "make kwargs"
+note()
+assert time.strptime(text="2024-06-15", format="%Y-%m-%d").month == 6, "strptime kwargs"
+note()
+assert time.datetime(timestamp=0).year == 1970, "datetime timestamp kwarg"
+note()
+
+# =====================================================================================
+# sys — platform / arch / version / executable
+# =====================================================================================
+assert sys.platform == "linux" or sys.platform == "darwin" or sys.platform == "windows", "platform is a known value"
+note()
+assert sys.arch == "x64" or sys.arch == "arm64" or sys.arch == "x86" or sys.arch == "unknown", "arch is a known value"
+note()
+assert type(sys.version) == "String" and sys.version.count(".") >= 2, "version is a semver String"
+note()
+# every dotted component before any pre-release tag is numeric (major.minor.patch)
+var vparts = sys.version.split("-")[0].split(".")
+assert len(vparts) >= 3 and vparts[0].isdigit() and vparts[1].isdigit(), "version is major.minor.patch"
+note()
+assert type(path.executable) == "String" and path.executable != "", "executable is set under ki"
+note()
+
+# =====================================================================================
+# sys — getenv / setenv / unsetenv / environ
+# =====================================================================================
+sys.setenv("R4_MATH_SYS", "alpha")
+assert sys.getenv("R4_MATH_SYS") == "alpha", "setenv then getenv"
+note()
+sys.setenv("R4_MATH_SYS", "beta")
+assert sys.getenv("R4_MATH_SYS") == "beta", "setenv overwrites"
+note()
+var snap = sys.environ()
+assert type(snap) == "Dict" and snap["R4_MATH_SYS"] == "beta", "environ() reflects current state"
+note()
+sys.unsetenv("R4_MATH_SYS")
+assert sys.getenv("R4_MATH_SYS") == None, "unsetenv removes (getenv -> None)"
+note()
+assert sys.getenv("R4_MATH_SYS", "fallback") == "fallback", "getenv default when unset"
+note()
+assert snap["R4_MATH_SYS"] == "beta", "environ() is a frozen snapshot"
+note()
+assert sys.getenv(name="R4_NONEXISTENT_XYZ", default="dflt") == "dflt", "getenv kwargs (name/default)"
+note()
+assert throws(Function(): return sys.getenv(1)), "getenv of a non-String name throws"
+note()
+assert throws(Function(): return sys.setenv("k", 1)), "setenv of a non-String value throws"
+note()
+assert throws(Function(): return sys.unsetenv(5)), "unsetenv of a non-String name throws"
+note()
+
+# =====================================================================================
+# sys — gettempdir / path.join
+# =====================================================================================
+assert type(path.gettempdir()) == "String" and path.gettempdir() != "", "gettempdir is non-empty"
+note()
+assert path.join("a", "b", "c") == "a/b/c", "path.join joins with '/'"
+note()
+assert path.join("a/", "b") == "a/b", "path.join: a trailing slash does not double up"
+note()
+assert path.join("a", "/b", "c") == "/b/c", "path.join: a later absolute component resets"
+note()
+assert path.join("", "x") == "x", "path.join: an empty first component stays relative"
+note()
+assert path.join("/only") == "/only", "path.join: a single absolute part"
+note()
+assert throws(Function(): return path.join()), "path.join() with no parts throws"
+note()
+assert throws(Function(): return path.join("a", 5)), "path.join rejects a non-String part"
+note()
+
+# sys.traceback() exists and is a String ("" before any error). NOTE: this function is functional
+# and inspectable but is NOT documented in docs/pages/10-stdlib.md (see the FINDINGS report).
+assert type(sys.traceback()) == "String", "sys.traceback() returns a String"
+note()
+
+# =====================================================================================
+# Deterministic summary
+# =====================================================================================
+io.print("checks:", checks)
+io.print("OK r4_math_sys")

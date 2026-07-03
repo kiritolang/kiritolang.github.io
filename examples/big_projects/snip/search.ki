@@ -1,0 +1,69 @@
+# snip/search.ki — search + filter over the snippet collection.
+#
+# Composable filters. Every filter takes a snippet list and returns a snippet list. The `main.ki`
+# command chains them in the order tags → lang → regex, which matches the user's mental model.
+
+var regex = import("regex")
+
+# Match ALL of the given tags (AND). An empty `tags` returns the input unchanged.
+var byTags = Function(items : List, tags : List) -> List:
+    if len(tags) == 0:
+        return items
+    var want = Set()
+    for t in tags:
+        want.add(t)
+    var out = []
+    for s in items:
+        var have = Set()
+        for tt in s["tags"]:
+            have.add(tt)
+        var all = True
+        for t in tags:
+            if t not in have:
+                all = False
+                break
+        if all:
+            out.append(s)
+    return out
+
+# Filter by language (exact match). An empty `lang` returns the input unchanged.
+var byLang = Function(items : List, lang : String) -> List:
+    if lang == "":
+        return items
+    var out = []
+    for s in items:
+        if s["lang"] == lang:
+            out.append(s)
+    return out
+
+# Filter by regex matched against title OR body (case-insensitive).
+var byRegex = Function(items : List, pattern : String) -> List:
+    if pattern == "":
+        return items
+    var rx = regex.compile(pattern, regex.IGNORECASE)
+    var out = []
+    for s in items:
+        if rx.search(s["title"]) != None or rx.search(s["body"]) != None:
+            out.append(s)
+    return out
+
+# Top-N tag counts: [{"tag": T, "count": N}], most-used first.
+var topTags = Function(items : List, topN : Integer) -> List:
+    var counts = {}
+    for s in items:
+        for t in s["tags"]:
+            counts[t] = counts.get(t, 0) + 1
+    var flat = []
+    for t in counts:
+        flat.append({"tag": t, "count": counts[t]})
+    var srt = sorted(flat, key = Function(x): return -x["count"])
+    if len(srt) <= topN:
+        return srt
+    return srt[0:topN]
+
+# Every distinct language present in the collection, alphabetically.
+var languages = Function(items : List) -> List:
+    var seen = Set()
+    for s in items:
+        seen.add(s["lang"])
+    return sorted(List(seen))

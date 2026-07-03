@@ -1,0 +1,22 @@
+# A Barrier rendezvous: N workers all wait, then each reports its id through a shared Queue.
+var parallel = import("parallel")
+var io = import("io")
+
+var worker = Function(bar, out, id):
+    discard bar.wait()
+    out.put(id)
+
+if argmain:
+    var n = 4
+    var bar = parallel.Barrier(n)
+    var q = parallel.Queue()
+    var i = 0
+    while i < n:
+        discard parallel.spawn(worker, bar, q, i)
+        i = i + 1
+    var got = []
+    while len(got) < n:
+        got.append(q.get())
+    got.sort()
+    io.print(got)
+    io.print(bar.parties())

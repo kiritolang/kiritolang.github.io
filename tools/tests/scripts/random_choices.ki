@@ -1,0 +1,88 @@
+# random_choices.ki — audit of Random.choices(population, k) and its relationship to choice.
+#
+# choices(population, k = 1) -> a List of k elements sampled WITH replacement (Python random.choices);
+# choice(seq) is the same "draw one with replacement" primitive, unwrapped to a single scalar element
+# (the k = 1 case). So choice stays a scalar and, under the same seed, equals choices(seq, 1)[0].
+#
+# Final golden line: "random_choices: <n> checks passed".
+var io = import("io")
+var random = import("random")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+# =========================================================== shape and membership
+var r = random.Random(12345)
+var pop = [10, 20, 30, 40]
+var xs = r.choices(pop, 5)
+ok(type(xs) == "List", "choices returns a List")
+ok(len(xs) == 5, "choices returns exactly k elements")
+var allin = True
+for x in xs:
+    if not (x in pop):
+        allin = False
+ok(allin, "every choices element comes from the population")
+
+# =========================================================== k defaults to 1; k = 0 and k = 1
+ok(len(r.choices(pop)) == 1, "choices with no k defaults to a 1-element List")
+ok(r.choices(pop, 0) == [], "choices(pop, 0) is the empty List")
+ok(len(r.choices(pop, 1)) == 1, "choices(pop, 1) is a 1-element List")
+
+# =========================================================== WITH replacement (repeats possible)
+# 30 draws from a 2-element population must, by pigeonhole, repeat — the defining difference from
+# sample() (which is WITHOUT replacement and would throw for k > len).
+var many = r.choices([0, 1], 30)
+ok(len(many) == 30, "choices can draw more than len(population) (with replacement)")
+var uniq = Set(many)
+ok(len(uniq) < len(many), "choices produces repeats (sampling is WITH replacement)")
+ok(throws(Function(): return r.sample([0, 1], 30)), "contrast: sample (without replacement) throws for k > len")
+
+# =========================================================== keyword arguments
+ok(r.choices(population = [7], k = 3) == [7, 7, 7], "choices(population=, k=) keyword form, singleton repeats")
+ok(len(r.choices(pop, k = 4)) == 4, "choices with a keyword k")
+
+# =========================================================== other iterables
+var chars = random.Random(9).choices("abc", 6)
+ok(len(chars) == 6, "choices over a String draws 6 characters")
+var okchars = True
+for c in chars:
+    if not (c in ["a", "b", "c"]):
+        okchars = False
+ok(okchars, "choices over a String yields its characters")
+ok(len(random.Random(9).choices(Set([1, 2, 3]), 4)) == 4, "choices accepts a Set population")
+
+# =========================================================== determinism (seed reproducibility)
+ok(random.Random(77).choices(pop, 8) == random.Random(77).choices(pop, 8), "same seed -> identical choices")
+
+# =========================================================== choice is choices-with-k=1 (shared stream)
+# Under the SAME seed, choice(seq) draws exactly one element the same way choices(seq, 1) does.
+ok(random.Random(555).choice(pop) == random.Random(555).choices(pop, 1)[0], "choice(seq) == choices(seq, 1)[0] under one seed")
+# choice stays a SCALAR (not a 1-element list) — the existing contract.
+var one = random.Random(1).choice([42])
+ok(one == 42, "choice returns the scalar element, not a List")
+ok(type(one) != "List", "choice's result is not a List")
+ok(random.Random(1).choice(seq = [99]) == 99, "choice(seq=) keyword form still returns a scalar")
+
+# =========================================================== error hardening
+ok(throws(Function(): return random.Random(1).choices([])), "choices from an empty population throws")
+ok(throws(Function(): return random.Random(1).choices([1, 2], -1)), "choices with negative k throws")
+ok(throws(Function(): return random.Random(1).choices([1, 2], 10000000000000)), "choices with an enormous k throws (resource guard)")
+ok(throws(Function(): return random.Random(1).choices(5, 2)), "choices over a non-iterable throws")
+ok(throws(Function(): return random.Random(1).choices()), "choices with no population throws")
+# choice's own error surface is unchanged
+ok(throws(Function(): return random.Random(1).choice([])), "choice from an empty sequence still throws")
+
+# =========================================================== inspect advertises choices
+var desc = inspect(random.Random(1))
+ok("choices(population" in desc, "inspect(Random) lists choices with its signature")
+ok("choice(seq)" in desc, "inspect(Random) still lists choice")
+
+io.print("random_choices: " + String(n) + " checks passed")

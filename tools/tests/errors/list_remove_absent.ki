@@ -1,0 +1,1 @@
+discard [1, 2].remove(9)

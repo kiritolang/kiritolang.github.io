@@ -1,0 +1,251 @@
+# r7_complex.ki — hardened, COMPLEMENTARY self-check of the `complex` stdlib module.
+# Where r6_complex covers the basic constructors/operators/analytic set, r7 leans on the harder
+# edges: stringification ("a+bi" with -0.0 normalized), NaN/inf in == and .compare, the
+# exact-vs-tolerant boundary, deeper analytic identities (De Moivre, log branch, double-angle over
+# the plane), serialization round-trips (serialize + dump), and the structural matrix/vector edges
+# (empty/1x1/non-square hermitian, both operand orders). Computed values use .compare. Final line:
+# "r7_complex: <n> checks passed".
+
+var complex = import("complex")
+var math = import("math")
+var io = import("io")
+var dump = import("dump")
+var serialize = import("serialize")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+var C = complex.Complex
+var cmp = Function(z, expected): return z.compare(expected, 1e-9, 1e-12)
+
+# ---------------------------------------------------------------- stringification ("a+bi")
+ok(String(C(3, 4)) == "3.0+4.0i", "str 3+4i")
+ok(String(C(3, -4)) == "3.0-4.0i", "str 3-4i (minus sign)")
+ok(String(C(5, 0)) == "5.0+0.0i", "str real -> 5.0+0.0i")
+ok(String(C(0, 1)) == "0.0+1.0i", "str of i")
+ok(String(C(-2, -3)) == "-2.0-3.0i", "str both negative")
+# the -0.0 imaginary part is normalized so we never print '+-0.0i'
+ok(String(C(1, -0.0)) == "1.0+0.0i", "str normalizes -0.0 imag to +0.0")
+# nested in a container uses the same complexToString
+ok(String([C(1, 2)]) == "[1.0+2.0i]", "Complex inside a List")
+
+# ---------------------------------------------------------------- truthy (nonzero == true)
+ok((C(1, 0) and True) == True, "Complex(1,0) is truthy")
+ok((C(0, 1) and True) == True, "Complex(0,1) is truthy (nonzero imag)")
+ok((C(0, 0) or "z") == "z", "Complex(0,0) is falsey")
+
+# ---------------------------------------------------------------- NaN / inf in == and .compare
+ok(not (C(math.nan, 0) == C(math.nan, 0)), "NaN complex != itself (==)")
+ok(C(math.nan, 0) != C(math.nan, 0), "NaN complex != itself (!=)")
+ok(not (C(0, math.nan) == C(0, math.nan)), "NaN in imag part is never equal")
+ok(C(math.inf, 0) == C(math.inf, 0), "identical inf are == (exact)")
+# .compare: NaN never close; identical inf is close (the a==b exact shortcut)
+ok(not C(math.nan, 0).compare(C(math.nan, 0)), "compare: NaN is never close")
+ok(C(math.inf, 0).compare(C(math.inf, 0)), "compare: identical inf is close")
+ok(not C(math.inf, 0).compare(C(1.0, 0)), "compare: inf vs finite is not close")
+
+# ---------------------------------------------------------------- exact == vs tolerant .compare
+ok(not (C(0.1, 0.1) + C(0.2, 0.2) == C(0.3, 0.3)), "== is exact (fp error makes it unequal)")
+ok((C(0.1, 0.1) + C(0.2, 0.2)).compare(C(0.3, 0.3), 1e-9), "compare absorbs the fp error")
+ok(C(2, 0) == 2, "Complex(2,0) == Integer 2")
+ok(C(2, 0) == 2.0, "Complex(2,0) == Float 2.0")
+ok(2 == C(2, 0), "Integer == Complex (symmetric)")
+ok(not (C(2, 1e-15) == 2), "tiny nonzero imag breaks exact == with a real")
+
+# ---------------------------------------------------------------- conjugate/modulus identities
+# z * conj(z) = |z|^2  (real)
+var z = C(3, -4)
+ok(cmp(z * z.conjugate(), C(z.norm2(), 0)), "z*conj(z) = |z|^2 (real)")
+ok(z.modulus().compare(5.0, 1e-12), "|3-4i| = 5")
+ok(z.norm2().compare(25.0, 1e-12), "norm2 = 25 (no sqrt)")
+ok(z.conjugate().conjugate() == z, "conj(conj(z)) = z (exact)")
+# argument over the four quadrants
+ok(C(1, 1).argument().compare(math.pi / 4, 1e-12), "arg(1+i)=pi/4")
+ok(C(-1, 1).argument().compare(3.0 * math.pi / 4, 1e-12), "arg(-1+i)=3pi/4")
+ok(C(-1, -1).argument().compare(-3.0 * math.pi / 4, 1e-12), "arg(-1-i)=-3pi/4")
+ok(C(1, -1).argument().compare(-math.pi / 4, 1e-12), "arg(1-i)=-pi/4")
+
+# ---------------------------------------------------------------- polar <-> rectangular round trip
+ok(cmp(complex.polar(z.modulus(), z.argument()), z), "polar(|z|, arg z) = z")
+ok(cmp(complex.polar(2, math.pi / 3), C(2.0 * math.cos(math.pi / 3), 2.0 * math.sin(math.pi / 3))),
+   "polar formula r(cos+isin)")
+
+# ---------------------------------------------------------------- is_zero threshold (magnitude < 1e-10)
+ok(C(0, 0).is_zero(), "is_zero(0)")
+ok(C(9e-11, 0).is_zero(), "is_zero just below 1e-10")
+ok(C(0, 9e-11).is_zero(), "is_zero tiny imag")
+ok(not C(2e-10, 0).is_zero(), "not is_zero above 1e-10")
+ok(not C(0, 1).is_zero(), "not is_zero(i)")
+
+# ---------------------------------------------------------------- analytic: deeper identities
+# De Moivre: (cos t + i sin t)^k = cos(kt) + i sin(kt)
+var t = 0.6
+ok(cmp(complex.pow(C(math.cos(t), math.sin(t)), C(5, 0)), C(math.cos(5.0 * t), math.sin(5.0 * t))),
+   "De Moivre power")
+# exp(z) over a general complex z: exp(a+bi) = e^a (cos b + i sin b)
+ok(cmp(complex.exp(C(0.5, 0.7)),
+       C(math.exp(0.5) * math.cos(0.7), math.exp(0.5) * math.sin(0.7))), "exp(a+bi) formula")
+# log is the inverse of exp on the principal strip
+ok(cmp(complex.log(complex.exp(C(0.4, 0.9))), C(0.4, 0.9)), "log(exp(z)) = z (principal)")
+# log10(z) = log(z)/log(10)
+ok(cmp(complex.log10(C(2, 3)), complex.log(C(2, 3)) / C(math.log(10.0), 0)), "log10 = log/log(10)")
+# double angle over the plane: sin(2z) = 2 sin z cos z
+var w = C(0.3, 0.4)
+ok(cmp(complex.sin(w * C(2, 0)), complex.sin(w) * complex.cos(w) * C(2, 0)), "sin(2z)=2 sin z cos z")
+# tan = sin/cos
+ok(cmp(complex.tan(w), complex.sin(w) / complex.cos(w)), "tan = sin/cos (complex)")
+# sqrt principal branch: sqrt(z)^2 = z, real part of sqrt is >= 0
+ok(cmp(complex.sqrt(C(-3, 4)) ** C(2, 0), C(-3, 4)), "sqrt(z)^2 = z")
+ok(complex.sqrt(C(-3, 4)).re >= 0.0, "sqrt principal branch has re >= 0")
+# cbrt principal: cbrt(z)^3 = z (and NOT the real cube root for a negative real)
+ok(cmp(complex.cbrt(C(-8, 0)) ** C(3, 0), C(-8, 0)), "cbrt(z)^3 = z")
+ok(not complex.cbrt(C(-8, 0)).compare(C(-2, 0), 1e-9), "complex cbrt(-8) is principal, not -2")
+# i^i = e^(-pi/2), a real value
+ok(complex.pow(complex.i, complex.i).re.compare(math.exp(-math.pi / 2), 1e-12), "i^i = e^(-pi/2)")
+ok(complex.pow(complex.i, complex.i).im.compare(0.0, 1e-12), "i^i is real")
+
+# ---------------------------------------------------------------- analytic accept reals (coerce)
+ok(cmp(complex.sin(0), C(0, 0)), "complex.sin(real 0)")
+ok(cmp(complex.exp(1), C(math.e, 0)), "complex.exp(real 1) = e")
+ok(cmp(complex.sqrt(9), C(3, 0)), "complex.sqrt(real 9) = 3")
+ok(cmp(complex.log(1), C(0, 0)), "complex.log(real 1) = 0")
+# asin/acos/acosh of out-of-real-domain values are VALID for complex (must NOT throw)
+ok(not throws(Function(): return complex.asin(2)), "complex.asin(2) is valid")
+ok(not throws(Function(): return complex.acosh(0)), "complex.acosh(0) is valid")
+ok(complex.acosh(0).im.compare(math.pi / 2, 1e-9) or complex.acosh(0).im.compare(-math.pi / 2, 1e-9),
+   "acosh(0) lands on the imaginary axis (+-pi/2)")
+
+# ---------------------------------------------------------------- analytic DOMAIN errors (the only ones)
+ok(throws(Function(): return complex.log(complex.zero)), "complex log(0) throws")
+ok(throws(Function(): return complex.log10(complex.zero)), "complex log10(0) throws")
+ok(throws(Function(): return complex.atanh(C(1, 0))), "complex atanh(1) throws")
+ok(throws(Function(): return complex.atanh(C(-1, 0))), "complex atanh(-1) throws")
+ok(throws(Function(): return complex.pow(complex.zero, C(-1, 0))), "pow(0, -1) throws")
+ok(throws(Function(): return complex.pow(complex.zero, complex.i)), "pow(0, i) throws (non-real exp)")
+ok(throws(Function(): return complex.zero ** complex.i), "0 ** i throws (operator)")
+# atanh is fine just inside the unit interval
+ok(not throws(Function(): return complex.atanh(C(0.999, 0))), "atanh(0.999) is fine")
+# 0 ** 0 == 1, and 0 ** (positive) == 0
+ok(cmp(complex.zero ** complex.zero, C(1, 0)), "0**0 = 1")
+ok(cmp(complex.zero ** C(2, 0), C(0, 0)), "0**2 = 0")
+
+# ---------------------------------------------------------------- operator order: real-on-left throws
+ok(throws(Function(): return 2 + C(1, 1)), "Integer + Complex throws (real on left)")
+ok(throws(Function(): return 2.0 - C(1, 1)), "Float - Complex throws")
+ok(throws(Function(): return 3 * C(1, 1)), "Integer * Complex throws")
+ok(throws(Function(): return 1 / C(0, 1)), "Integer / Complex throws")
+# division by zero throws (both real-zero and Complex-zero divisors)
+ok(throws(Function(): return C(1, 1) / 0), "Complex / 0 throws")
+ok(throws(Function(): return C(1, 1) / C(0, 0)), "Complex / Complex(0,0) throws")
+
+# ---------------------------------------------------------------- serialization round trips
+ok(dump.loads(dump.dumps(C(3, -4))) == C(3, -4), "Complex dump round-trip (exact)")
+ok(serialize.loads(serialize.dumps(C(3, -4))) == C(3, -4), "Complex serialize round-trip")
+ok(dump.loads(dump.dumps(C(0.25, 0.5))) == C(0.25, 0.5), "Complex dump preserves fractions")
+
+# ================================================================ complex matrices: harder edges
+# empty 0x0
+var E = complex.Matrix([])
+ok(E.shape() == [0, 0], "empty cmatrix shape")
+ok(cmp(E.determinant(), C(1, 0)), "0x0 determinant is 1 (empty product)")
+ok(cmp(E.trace(), C(0, 0)), "0x0 trace is 0")
+ok(E.norm().compare(0.0, 1e-12), "0x0 norm is 0")
+# 1x1
+var O = complex.Matrix([[C(2, 3)]])
+ok(cmp(O.determinant(), C(2, 3)), "1x1 determinant is the lone element")
+ok(cmp(O.trace(), C(2, 3)), "1x1 trace is the lone element")
+ok((O.inverse() * O).compare(complex.identity(1), 0.0, 1e-9), "1x1 inverse")
+
+# non-square hermitian / transpose / conjugate shapes
+var R = complex.Matrix([[C(1, 1), C(2, 2), C(3, 3)]])    # 1x3
+ok(R.transpose().shape() == [3, 1], "transpose of 1x3 is 3x1")
+ok(R.hermitian().shape() == [3, 1], "hermitian of 1x3 is 3x1")
+ok(cmp(R.hermitian()[0, 0], C(1, -1)), "hermitian conjugates the elements")
+ok(cmp(R.conjugate()[0, 1], C(2, -2)), "conjugate negates imag, keeps shape")
+ok(R.conjugate().shape() == [1, 3], "conjugate keeps shape")
+
+# hermitian property: (A.hermitian()).hermitian() = A
+var A = complex.Matrix([[C(1, 1), C(2, 0)], [C(0, 1), C(3, -2)]])
+ok(A.hermitian().hermitian().compare(A), "(A^H)^H = A")
+# (AB)^H = B^H A^H  on 2x2
+var B = complex.Matrix([[C(0, 1), C(1, 1)], [C(2, 0), C(0, -1)]])
+ok((A * B).hermitian().compare(B.hermitian() * A.hermitian()), "(AB)^H = B^H A^H")
+
+# scalar mul by a Float and by a Complex; A*I = A; (A+B) distributes
+ok((A * 2.0).compare(A + A), "A*2.0 = A+A (Float scalar)")
+ok((A * C(0, 1)).compare(complex.Matrix([[C(-1, 1), C(0, 2)], [C(-1, 0), C(2, 3)]])), "A * i (Complex scalar)")
+ok((A * complex.identity(2)).compare(A), "A * I = A")
+ok((complex.identity(2) * A).compare(A), "I * A = A")
+
+# determinant: det(AB) = det(A) det(B)
+ok(cmp(complex.Matrix([[C(1, 1), C(2, 0)], [C(3, 0), C(4, 1)]]).determinant() * B.determinant(),
+       (complex.Matrix([[C(1, 1), C(2, 0)], [C(3, 0), C(4, 1)]]) * B).determinant()),
+   "det(AB) = det(A)det(B)")
+
+# serialization of a complex matrix
+ok(dump.loads(dump.dumps(A)) == A, "ComplexMatrix dump round-trip (exact)")
+ok(serialize.loads(serialize.dumps(A)) == A, "ComplexMatrix serialize round-trip")
+
+# square-only ops on a non-square throw; singular inverse throws
+ok(throws(Function(): return R.determinant()), "det of non-square throws")
+ok(throws(Function(): return R.inverse()), "inverse of non-square throws")
+ok(throws(Function(): return R.trace()), "trace of non-square throws")
+ok(throws(Function(): return complex.Matrix([[C(1, 0), C(2, 0)], [C(2, 0), C(4, 0)]]).inverse()),
+   "singular cmatrix inverse throws")
+# shape / negative-dim / ragged guards
+ok(throws(Function(): return A + complex.zeros(3, 3)), "+ shape mismatch throws")
+ok(throws(Function(): return A * complex.zeros(3, 3)), "* inner-dim mismatch throws")
+ok(throws(Function(): return complex.zeros(-1, 2)), "complex.zeros negative dim throws")
+ok(throws(Function(): return complex.ones(2, -1)), "complex.ones negative dim throws")
+ok(throws(Function(): return complex.identity(-2)), "complex.identity negative dim throws")
+ok(throws(Function(): return complex.Matrix([[C(1, 0)], [C(2, 0), C(3, 0)]])), "ragged cmatrix throws")
+ok(throws(Function(): return A[2, 0]), "row index out of range throws")
+ok(throws(Function(): return A[0, 2]), "col index out of range throws")
+ok(throws(Function(): return A[-1, 0]), "negative index throws")
+# scalar on the LEFT throws (number doesn't know ComplexMatrix)
+ok(throws(Function(): return 2 * A), "scalar on the left throws")
+
+# get/set/row keyword forms
+var Z = complex.zeros(2, 2)
+Z.set(row = 0, col = 1, value = C(5, 5))
+ok(cmp(Z.get(row = 0, col = 1), C(5, 5)), "cmatrix set/get keyword forms")
+ok(Z.row(i = 0) == [C(0, 0), C(5, 5)], "cmatrix row(i=) keyword")
+ok(A.apply(fn = Function(x): return x * C(2, 0)).compare(A * 2), "cmatrix apply(fn=) keyword")
+
+# ================================================================ complex vectors: harder edges
+var u = complex.vector([C(1, 1), C(2, -1), C(0, 2)])
+var v = complex.vector([C(1, 0), C(0, 1), C(2, 0)])
+# Hermitian inner product: conj-linear in the FIRST argument, so dot(u,v) != dot(v,u) in general
+ok(not u.dot(v).compare(v.dot(u), 1e-9), "Hermitian dot is conjugate-asymmetric")
+# but dot(u,v) = conj(dot(v,u))
+ok(cmp(u.dot(v), v.dot(u).conjugate()), "dot(u,v) = conj(dot(v,u))")
+# dot(u,u) = sum |u_i|^2: real, nonneg, equals norm^2
+ok(u.dot(u).im.compare(0.0, 1e-12), "u.dot(u) is real")
+ok(u.dot(u).re.compare(u.norm() ** 2, 1e-9), "u.dot(u) = norm^2")
+ok(u.norm().compare(math.sqrt(2.0 + 5.0 + 4.0), 1e-12), "vector norm = sqrt(sum|z_i|^2)")
+ok(type(u.norm()) == "Float", "norm returns Float")
+# column vector works too (dot across orientation by element)
+var ucol = complex.Matrix([[C(1, 1)], [C(2, -1)], [C(0, 2)]])
+ok(cmp(ucol.dot(ucol), u.dot(u)), "column vector dot matches row vector")
+# cross of two 3-vectors; e1 x e2 = e3
+var e1 = complex.vector([C(1, 0), C(0, 0), C(0, 0)])
+var e2 = complex.vector([C(0, 0), C(1, 0), C(0, 0)])
+ok(e1.cross(e2).compare(complex.vector([C(0, 0), C(0, 0), C(1, 0)])), "e1 x e2 = e3")
+# cross keeps this vector's orientation (column in, column out)
+ok(ucol.cross(complex.Matrix([[C(1, 0)], [C(0, 0)], [C(0, 0)]])).shape()[1] == 1, "cross keeps column orientation")
+# errors: dot length mismatch, cross non-3, dot on a non-vector matrix
+ok(throws(Function(): return u.dot(complex.vector([C(1, 0)]))), "dot length mismatch throws")
+ok(throws(Function(): return u.cross(complex.vector([C(1, 0), C(2, 0)]))), "cross on a 2-vector throws")
+ok(throws(Function(): return complex.Matrix([[C(1, 0), C(2, 0)], [C(3, 0), C(4, 0)]]).dot(u)),
+   "dot on a 2x2 (non-vector) throws")
+
+io.print("r7_complex: " + String(n) + " checks passed")

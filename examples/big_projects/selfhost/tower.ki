@@ -1,0 +1,28 @@
+# Three-level self-hosting demo: run <program.ki> on a self-host that is ITSELF running on a
+# self-host — Kirito hosted on Kirito hosted on Kirito (C++ Kirito -> self-host #2 -> self-host #1).
+#
+#   ki --lib examples/big_projects/selfhost/lib examples/big_projects/selfhost/tower.ki program.ki
+#
+# (run from the repo root, so the lib paths resolve). Whatever the inner program prints at level 3
+# is forwarded all the way up to this process's stdout.
+#
+# How it works: this script (level 1, on C++ Kirito) interprets a small DRIVER program through the
+# self-host (so the driver runs at level 2). The driver, in turn, imports the self-host again and
+# runs the target program through it — so the target runs at level 3, two interpreters deep.
+
+var io = import("io")
+var interp = import("interp")
+var sys = import("sys")
+
+if len(arglist) < 1:
+    io.eprint("usage: tower.ki <program.ki>")
+    sys.exit(2)
+
+var LIB = "examples/big_projects/selfhost/lib"
+var STD = LIB + "/stdmods"
+var leafPath = arglist[0]
+
+# The driver, interpreted at level 2, re-runs the target through another self-host (level 3).
+var driver = "var io = import(\"io\")\n" + "var interp = import(\"interp\")\n" + "var fh = io.open(\"" + leafPath + "\", \"r\")\n" + "var src = fh.read()\n" + "fh.close()\n" + "io.write(interp.run4(src, \"\", [\"" + LIB + "\", \"" + STD + "\"]))\n"
+
+io.write(interp.run4(driver, "", [LIB, STD]))

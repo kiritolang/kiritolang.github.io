@@ -1,0 +1,3 @@
+# time.strptime of text that does not match the format must throw.
+var t = import("time")
+discard t.strptime("not a date", "%Y-%m-%d")

@@ -1,0 +1,43 @@
+# cronki/runner.ki — actually execute a job via sys.shell, recording exit code, stdout, stderr,
+# start/end timestamps, and a stable digest of the outputs. Used by `main.ki run` and by tests.
+
+var sys  = import("sys")
+var time = import("time")
+var hash = import("hash")
+
+# Runs `job["command"]` through /bin/sh -c (POSIX) or cmd /c (Windows). Returns a dict:
+#   {"raw": job's raw line, "command": command, "start": iso, "end": iso, "elapsed_ms": Integer,
+#    "code": Integer, "stdout": String, "stderr": String, "digest": String}
+# A `timeout` argument (seconds; None for no cap) is forwarded to sys.shell as documented.
+var runJob = Function(job : Dict, timeout) -> Dict:
+    var t0 = time.now()
+    var res = None
+    try:
+        res = sys.shell(job["command"], timeout = timeout)
+    catch String as e:
+        # timeout / spawn failure surfaces here — record as a synthetic non-zero exit
+        var t1 = time.now()
+        return {
+            "raw":        job["raw"],
+            "command":    job["command"],
+            "start":      t0.iso(),
+            "end":        t1.iso(),
+            "elapsed_ms": Integer((t1.timestamp - t0.timestamp) * 1000),
+            "code":       -1,
+            "stdout":     "",
+            "stderr":     e,
+            "digest":     hash.sha256(e)[0:12],
+        }
+    var t1 = time.now()
+    var combined = res["stdout"] + "\n" + res["stderr"]
+    return {
+        "raw":        job["raw"],
+        "command":    job["command"],
+        "start":      t0.iso(),
+        "end":        t1.iso(),
+        "elapsed_ms": Integer((t1.timestamp - t0.timestamp) * 1000),
+        "code":       res["code"],
+        "stdout":     res["stdout"],
+        "stderr":     res["stderr"],
+        "digest":     hash.sha256(combined)[0:12],
+    }

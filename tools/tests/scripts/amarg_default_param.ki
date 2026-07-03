@@ -1,0 +1,8 @@
+# A parameter default that reads len(arglist). Defaults evaluate at call time in the function's
+# defining (closure) scope, so even when this f is called from the entry script the default sees
+# THIS module's empty arglist -> 0.
+var f = Function(x = len(arglist)):
+    return x
+var atImport = f()
+var explicit = f(99)
+var m = argmain

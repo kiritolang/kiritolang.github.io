@@ -1,0 +1,566 @@
+var io = import("io")
+var path = import("path")
+
+# r6_kimods_b — independent audit of the Kirito-authored frozen-source modules, GROUP 2:
+# string, textwrap, base64, csv, tabular, xml, tee, arg, semver.
+# Self-checking: every assertion increments a counter; the final line reports the total.
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(fn) -> True iff calling fn() throws (catchable error).
+var throws = Function(fn):
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# ============================================================ base64
+var b64 = import("base64")
+
+ok(b64.encode("hello") == "aGVsbG8=", "b64 encode hello")
+ok(b64.encode("") == "", "b64 encode empty")
+ok(b64.encode("M") == "TQ==", "b64 encode 1 byte (two pads)")
+ok(b64.encode("Ma") == "TWE=", "b64 encode 2 bytes (one pad)")
+ok(b64.encode("Man") == "TWFu", "b64 encode 3 bytes (no pad)")
+ok(b64.decode("aGVsbG8=") == [104, 101, 108, 108, 111], "b64 decode hello")
+ok(b64.decode("") == [], "b64 decode empty")
+# round-trip a String through encode/decode (decode yields byte values; rebuild via Bytes)
+ok(Bytes(b64.decode(b64.encode("Kirito!"))).decode() == "Kirito!", "b64 string round-trip")
+# binary bytes round-trip (every byte 0..255 preserved)
+var allbytes = []
+var bi = 0
+while bi < 256:
+    allbytes.append(bi)
+    bi = bi + 1
+ok(b64.decode(b64.encode(allbytes)) == allbytes, "b64 binary round-trip 0..255")
+# encode of a Bytes input
+ok(b64.encode(Bytes([255, 0, 128])) == b64.encode([255, 0, 128]), "b64 Bytes == List input")
+# url-safe uses -_ instead of +/
+ok(b64.urlsafeencode([255, 254]) == "__4=", "b64 urlsafe alphabet")
+ok("+" not in b64.urlsafeencode([251, 255, 191]), "b64 urlsafe has no +")
+ok("/" not in b64.urlsafeencode([251, 255, 191]), "b64 urlsafe has no /")
+ok(b64.urlsafedecode(b64.urlsafeencode([255, 254, 253])) == [255, 254, 253], "b64 urlsafe round-trip")
+# malformed: a character outside the alphabet throws
+ok(throws(Function(): return b64.decode("###")), "b64 decode bad char throws")
+ok(throws(Function(): return b64.decode("@@@@")), "b64 decode bad char2 throws")
+# a single leftover character (6 bits) is an invalid length -> throws
+ok(throws(Function(): return b64.decode("aaaaa")), "b64 decode lone trailing char throws")
+
+# ============================================================ csv
+var csv = import("csv")
+
+ok(csv.parserow("a,b,c") == ["a", "b", "c"], "csv parserow simple")
+ok(csv.parserow("p,\"q,r\",s") == ["p", "q,r", "s"], "csv parserow embedded comma")
+ok(csv.parserow("\"he said \"\"hi\"\"\"") == ["he said \"hi\""], "csv parserow embedded quotes")
+ok(csv.parserow("") == [""], "csv parserow empty line -> one empty field")
+ok(csv.formatrow(["a", "b", "c"]) == "a,b,c", "csv formatrow simple")
+ok(csv.formatrow(["a", "b,c", "d"]) == "a,\"b,c\",d", "csv formatrow quotes comma field")
+ok(csv.formatrow(["d\"e"]) == "\"d\"\"e\"", "csv formatrow doubles embedded quote")
+ok(csv.formatrow(["x\ny"]) == "\"x\ny\"", "csv formatrow quotes newline field")
+# multi-row parse, quoted field spanning a newline stays one field/row
+var crows = csv.parse("a,\"b,c\",d\n\"line1\nline2\",x")
+ok(crows == [["a", "b,c", "d"], ["line1\nline2", "x"]], "csv parse embedded newline in quotes")
+# CRLF: \r is dropped, CRLF acts as LF
+ok(csv.parse("a,b\r\nc,d") == [["a", "b"], ["c", "d"]], "csv parse CRLF")
+ok(csv.format([["a", "b"], ["c", "d"]]) == "a,b\nc,d", "csv format two rows")
+# full round-trip incl tricky fields
+var rtrows = [["x\ny", "z,w"], ["he\"llo", "plain"]]
+ok(csv.parse(csv.format(rtrows)) == rtrows, "csv format->parse round-trip")
+
+# ============================================================ textwrap
+var tw = import("textwrap")
+
+ok(tw.wrap("the quick brown fox jumps", 10) == ["the quick", "brown fox", "jumps"], "textwrap wrap width 10")
+ok(tw.fill("the quick brown fox", 10) == "the quick\nbrown fox", "textwrap fill width 10")
+ok(tw.indent("a\nb\n\nc", "> ") == "> a\n> b\n\n> c", "textwrap indent (blank line not prefixed)")
+ok(tw.dedent("    a\n    b\n      c") == "a\nb\n  c", "textwrap dedent common 4")
+ok(tw.dedent("  x\n    y") == "x\n  y", "textwrap dedent uneven")
+ok(tw.dedent("no indent\nhere") == "no indent\nhere", "textwrap dedent zero is identity")
+# a word longer than width still gets its own line (no infinite loop / no split)
+ok(tw.wrap("supercalifragilistic", 5) == ["supercalifragilistic"], "textwrap wrap oversize word")
+ok(tw.wrap("", 10) == [], "textwrap wrap empty -> no lines")
+
+# ============================================================ string
+var st = import("string")
+
+ok(st.ascii_lowercase == "abcdefghijklmnopqrstuvwxyz", "string ascii_lowercase")
+ok(st.ascii_uppercase == "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "string ascii_uppercase")
+ok(st.ascii_letters == st.ascii_lowercase + st.ascii_uppercase, "string ascii_letters")
+ok(st.digits == "0123456789", "string digits")
+ok(st.hexdigits == "0123456789abcdefABCDEF", "string hexdigits")
+ok(st.octdigits == "01234567", "string octdigits")
+ok("!" in st.punctuation and "~" in st.punctuation, "string punctuation contents")
+ok(" " in st.whitespace and "\t" in st.whitespace, "string whitespace contents")
+ok(st.capwords("hello world foo") == "Hello World Foo", "string capwords")
+ok(st.capwords("a  b") == "A  B", "string capwords keeps double space (no collapse)")
+ok(st.capwords("") == "", "string capwords empty")
+# similarity: 1 - dist/longer; kitten/sitting edit distance 3, longer 7 -> 4/7
+ok(st.similarity("kitten", "sitting").compare(0.5714285714, rel_tol = 1e-6), "string similarity scalar")
+ok(st.similarity("abc", "abc") == 1.0, "string similarity identical")
+ok(st.similarity("", "") == 1.0, "string similarity both empty -> 1.0")
+# List form returns one score per candidate
+var sims = st.similarity("abc", ["abc", "abd", "xyz"])
+ok(sims[0] == 1.0, "string similarity list[0]")
+ok(sims[1].compare(0.6666666667, rel_tol = 1e-6), "string similarity list[1]")
+ok(sims[2] == 0.0, "string similarity list[2]")
+ok(st.closest("aple", ["apple", "grape", "mango"]) == "apple", "string closest")
+ok(st.closest("x", []) == None, "string closest empty -> None")
+# fuzzymatch: [candidate, score] pairs >= cutoff, sorted by score desc
+var fm = st.fuzzymatch("aple", ["apple", "grape", "mango", "ape"])
+ok(fm[0][0] == "apple", "string fuzzymatch best is apple")
+ok(fm[0][1] >= fm[len(fm) - 1][1], "string fuzzymatch sorted desc")
+ok(len(st.fuzzymatch("zzz", ["apple"], cutoff = 0.6)) == 0, "string fuzzymatch cutoff excludes")
+
+# ============================================================ semver
+var sv = import("semver")
+
+var pv = sv.parse("v1.2.3-alpha.1+build.7")
+ok(pv["major"] == 1 and pv["minor"] == 2 and pv["patch"] == 3, "semver parse core")
+ok(pv["prerelease"] == ["alpha", "1"], "semver parse prerelease list")
+ok(pv["build"] == ["build", "7"], "semver parse build list")
+ok(sv.parse("1.0.0")["raw"] == "1.0.0", "semver parse raw")
+ok(throws(Function(): return sv.parse("1.2")), "semver parse incomplete throws")
+ok(throws(Function(): return sv.parse("notaversion")), "semver parse garbage throws")
+ok(throws(Function(): return sv.parse("1.x.0")), "semver parse non-numeric core throws")
+ok(sv.valid("v1.2.3") == "1.2.3", "semver valid cleaned")
+ok(sv.valid("1.2") == None, "semver valid bad -> None")
+ok(sv.clean("  =v1.2.3  ") == "1.2.3", "semver clean strips v/=/space")
+ok(sv.major("2.3.4") == 2 and sv.minor("2.3.4") == 3 and sv.patch("2.3.4") == 4, "semver major/minor/patch")
+ok(sv.prerelease("1.2.3-a.b") == ["a", "b"], "semver prerelease list")
+ok(sv.prerelease("1.2.3") == None, "semver prerelease none -> None")
+# precedence comparisons (numeric, not lexical)
+ok(sv.compare("1.0.10", "1.0.9") == 1, "semver compare numeric 1.0.10>1.0.9")
+ok(sv.gt("1.0.10", "1.0.9"), "semver gt numeric")
+ok(sv.lt("1.0.0-alpha", "1.0.0"), "semver prerelease < release")
+ok(sv.compare("1.0.0", "1.0.0+meta") == 0, "semver build metadata ignored")
+ok(sv.eq("1.2.3", "1.2.3"), "semver eq")
+ok(sv.neq("1.2.3", "1.2.4"), "semver neq")
+ok(sv.lte("1.0.0", "1.0.0") and sv.gte("1.0.0", "1.0.0"), "semver lte/gte equal")
+ok(sv.compare("1.0.0-alpha", "1.0.0-alpha.1") == -1, "semver prerelease shorter < longer")
+ok(sv.compare("1.0.0-1", "1.0.0-alpha") == -1, "semver numeric pre id < alphanumeric")
+# diff / inc
+ok(sv.diff("1.2.3", "2.0.0") == "major", "semver diff major")
+ok(sv.diff("1.2.3", "1.3.0") == "minor", "semver diff minor")
+ok(sv.diff("1.2.3", "1.2.4") == "patch", "semver diff patch")
+ok(sv.diff("1.0.0-a", "1.0.0-b") == "prerelease", "semver diff prerelease")
+ok(sv.diff("1.2.3", "1.2.3") == None, "semver diff equal -> None")
+ok(sv.inc("1.2.3", "major") == "2.0.0", "semver inc major")
+ok(sv.inc("1.2.3", "minor") == "1.3.0", "semver inc minor")
+ok(sv.inc("1.2.3", "patch") == "1.2.4", "semver inc patch")
+ok(sv.inc("1.2.3-rc.1", "minor") == "1.3.0", "semver inc drops prerelease")
+ok(throws(Function(): return sv.inc("1.2.3", "bogus")), "semver inc bad release throws")
+# range grammar — caret
+ok(sv.satisfies("1.4.0", "^1.2.0"), "semver ^1.2.0 allows 1.4.0")
+ok(not sv.satisfies("2.0.0", "^1.2.0"), "semver ^1.2.0 excludes 2.0.0")
+ok(not sv.satisfies("1.1.0", "^1.2.0"), "semver ^1.2.0 excludes 1.1.0")
+ok(sv.satisfies("0.2.5", "^0.2.3"), "semver ^0.2.3 allows 0.2.5")
+ok(not sv.satisfies("0.3.0", "^0.2.3"), "semver ^0.2.3 excludes 0.3.0 (caret 0.x)")
+# tilde
+ok(sv.satisfies("1.2.9", "~1.2"), "semver ~1.2 allows 1.2.9")
+ok(not sv.satisfies("1.3.0", "~1.2"), "semver ~1.2 excludes 1.3.0")
+ok(sv.satisfies("1.2.5", "~1.2.3"), "semver ~1.2.3 allows 1.2.5")
+ok(not sv.satisfies("1.2.2", "~1.2.3"), "semver ~1.2.3 excludes 1.2.2")
+# x-ranges
+ok(sv.satisfies("1.2.5", "1.2.x"), "semver 1.2.x allows 1.2.5")
+ok(not sv.satisfies("1.3.0", "1.2.x"), "semver 1.2.x excludes 1.3.0")
+ok(sv.satisfies("1.9.9", "1.x"), "semver 1.x allows 1.9.9")
+ok(not sv.satisfies("2.0.0", "1.x"), "semver 1.x excludes 2.0.0")
+ok(sv.satisfies("9.9.9", "*"), "semver * allows anything")
+# comparators / AND
+ok(sv.satisfies("1.5.0", ">=1.0.0 <2.0.0"), "semver AND comparators allow 1.5.0")
+ok(not sv.satisfies("2.0.0", ">=1.0.0 <2.0.0"), "semver AND comparators exclude 2.0.0")
+ok(sv.satisfies("1.0.0", ">=1.0.0"), "semver >= boundary inclusive")
+ok(not sv.satisfies("0.9.9", ">1.0.0"), "semver > strict")
+# hyphen range
+ok(sv.satisfies("1.5.0", "1.0.0 - 2.0.0"), "semver hyphen range includes middle")
+ok(sv.satisfies("2.0.0", "1.0.0 - 2.0.0"), "semver hyphen range inclusive upper")
+ok(not sv.satisfies("2.0.1", "1.0.0 - 2.0.0"), "semver hyphen range excludes above")
+# OR
+ok(sv.satisfies("3.1.0", "1.x || 3.x"), "semver OR matches second")
+ok(sv.satisfies("1.5.0", "1.x || 3.x"), "semver OR matches first")
+ok(not sv.satisfies("2.0.0", "1.x || 3.x"), "semver OR matches neither")
+# prerelease gating: excluded unless a comparator pins same M.m.p with a prerelease
+ok(not sv.satisfies("1.2.4-alpha", "^1.2.3"), "semver prerelease excluded by plain caret")
+ok(sv.satisfies("1.2.3-beta", ">=1.2.3-alpha <2.0.0"), "semver prerelease allowed when pinned")
+# maxsatisfying / minsatisfying return the ORIGINAL string
+ok(sv.maxsatisfying(["v1.0.0", "v1.4.2", "v2.0.0"], "^1.0.0") == "v1.4.2", "semver maxsatisfying keeps v-prefix")
+ok(sv.minsatisfying(["1.0.0", "1.4.2", "1.2.0"], "^1.0.0") == "1.0.0", "semver minsatisfying")
+ok(sv.maxsatisfying(["1.0.0", "2.0.0"], "^3.0.0") == None, "semver maxsatisfying no match -> None")
+# sort / rsort (invalid dropped)
+ok(sv.sort(["1.10.0", "1.2.0", "1.1.0"]) == ["1.1.0", "1.2.0", "1.10.0"], "semver sort numeric")
+ok(sv.rsort(["1.1.0", "1.10.0", "1.2.0"]) == ["1.10.0", "1.2.0", "1.1.0"], "semver rsort")
+ok(sv.sort(["1.0.0", "garbage", "2.0.0"]) == ["1.0.0", "2.0.0"], "semver sort drops invalid")
+# validrange tells a range from a git ref
+ok(sv.validrange("^1.2"), "semver validrange caret")
+ok(sv.validrange("*"), "semver validrange star")
+ok(sv.validrange(">=1.0.0 <2.0.0"), "semver validrange comparators")
+ok(not sv.validrange("main"), "semver validrange rejects git ref")
+ok(not sv.validrange("1.2.3.4"), "semver validrange rejects 4-component")
+
+# ============================================================ arg
+var arg = import("arg")
+
+var p = arg.Parser("greet someone")
+ok(p.positional("name") == p, "arg positional chains (returns self)")
+ok(p.option("count", 1) == p, "arg option chains")
+ok(p.flag("loud") == p, "arg flag chains")
+# basic parse: positional + option + flag
+var o1 = p.parse(["Ada", "--count", "3", "--loud"])
+ok(o1["name"] == "Ada", "arg parse positional")
+ok(o1["count"] == 3 and type(o1["count"]) == "Integer", "arg option type-coerced to Integer default")
+ok(o1["loud"] == True, "arg flag present -> True")
+ok(o1["rest"] == [], "arg rest empty")
+# --name=value inline form, short -f flag
+var o2 = p.parse(["Bob", "--count=5", "-l"])
+ok(o2["count"] == 5, "arg --name=value inline")
+ok(o2["loud"] == True, "arg short flag -l")
+# defaults when omitted
+var o3 = p.parse(["Cy"])
+ok(o3["count"] == 1, "arg option default")
+ok(o3["loud"] == False, "arg flag default False")
+# extra positionals collected under rest
+var o4 = p.parse(["X", "e1", "e2"])
+ok(o4["rest"] == ["e1", "e2"], "arg extra positionals -> rest")
+# short option with value (-c N matches count)
+var o5 = p.parse(["X", "-c", "7"])
+ok(o5["count"] == 7, "arg short option -c with value")
+# Float option coerces to Float
+var pf = arg.Parser()
+discard pf.option("rate", 1.5)
+var of = pf.parse(["--rate", "2.5"])
+ok(of["rate"] == 2.5 and type(of["rate"]) == "Float", "arg Float option coercion")
+# errors
+ok(throws(Function(): return p.parse(["X", "--bad"])), "arg unknown option throws")
+ok(throws(Function(): return p.parse([])), "arg missing required positional throws")
+ok(throws(Function(): return p.parse(["X", "--count", "abc"])), "arg bad integer throws")
+ok(throws(Function(): return pf.parse(["--rate", "xx"])), "arg bad float throws")
+ok(throws(Function(): return p.parse(["X", "--count"])), "arg option needing value throws")
+# usage text + help short-circuits to None (suppress the usage print via a temporary stdout sink)
+ok("usage" in p.usage() and "name" in p.usage(), "arg usage text mentions usage+name")
+var _io = import("io")
+var _sink = _io.BytesIO()
+var _saved_out = _io.stdout
+_io.stdout = _sink
+var _help_h = p.parse(["-h"])
+var _help_long = p.parse(["--help"])
+_io.stdout = _saved_out
+ok(_help_h == None, "arg -h returns None")
+ok(_help_long == None, "arg --help returns None")
+
+# ============================================================ xml
+var xml = import("xml")
+
+var root = xml.parse("<books><book id='1'><title>The Hobbit</title></book>" +
+                     "<book id='2'><title>SICP</title></book></books>")
+ok(root.tag == "books", "xml root tag")
+ok(len(root.findall("book")) == 2, "xml findall count")
+ok(root.find("book").get("id") == "1", "xml get attribute")
+ok(root.find("book").findtext("title") == "The Hobbit", "xml findtext")
+ok(root.find("nope") == None, "xml find missing -> None")
+ok(root.findtext("nope", "dflt") == "dflt", "xml findtext default")
+ok(root.get("nope") == None, "xml get missing -> None")
+ok(root.get("nope", "X") == "X", "xml get missing default")
+ok(len(root) == 2, "xml len (children)")
+ok(root[0].tag == "book", "xml index child")
+# attributes (multiple) + .attrib dict
+var am = xml.parse("<x a='1' b='2' c='3'/>")
+ok(len(am.attrib) == 3 and am.attrib["b"] == "2", "xml multiple attributes")
+# entities (named + numeric dec + numeric hex)
+var ent = xml.parse("<a>&lt;hi&gt; &amp; &#65; &#x42;</a>")
+ok(ent.text == "<hi> & A B", "xml entity decoding")
+# CDATA: raw, undecoded
+var cd = xml.parse("<a><![CDATA[<raw> & stuff]]></a>")
+ok(cd.text == "<raw> & stuff", "xml CDATA raw")
+# comment skipped, sibling element kept
+var cm = xml.parse("<a><!-- comment --><b>x</b></a>")
+ok(len(cm.children) == 1 and cm.children[0].tag == "b", "xml comment skipped")
+# XML declaration + DOCTYPE tolerated
+ok(xml.parse("<?xml version='1.0'?><r>hi</r>").text == "hi", "xml declaration skipped")
+ok(xml.parse("<!DOCTYPE html><html>x</html>").tag == "html", "xml doctype skipped")
+# itertext walks the subtree in document order
+ok(xml.parse("<a>1<b>2</b>3<c>4</c>5</a>").itertext() == ["1", "2", "3", "4", "5"], "xml itertext")
+# tail (text after an end tag) captured
+var tl = xml.parse("<r><a>x</a>tail1<a>y</a></r>")
+ok(tl.children[0].tail == "tail1", "xml tail captured")
+# fromstring is an alias for parse
+ok(xml.fromstring("<z/>").tag == "z", "xml fromstring alias")
+# Element construction + tostring (module Element class)
+var el = xml.Element("foo", {"k": "v"})
+el.text = "hi"
+ok(el.tostring() == "<foo k=\"v\">hi</foo>", "xml Element + tostring")
+ok(String(el) == el.tostring(), "xml Element _str_ == tostring")
+# self-closing for empty element
+ok(xml.Element("empty").tostring() == "<empty />", "xml empty element self-closes")
+# tostring module function
+ok(xml.tostring(root.find("book")) == "<book id=\"1\"><title>The Hobbit</title></book>", "xml tostring module fn")
+# attribute value with a double quote is escaped
+ok(xml.Element("x", {"q": "a\"b"}).tostring() == "<x q=\"a&quot;b\" />", "xml attr quote escaped")
+# escaping on round-trip: < > & in text
+var esc = xml.parse("<a>x &lt; y &amp; z</a>")
+ok(xml.tostring(esc) == "<a>x &lt; y &amp; z</a>", "xml text escape round-trip")
+# full structural round-trip
+var orig = "<root a=\"1\"><child>text</child><empty /></root>"
+ok(xml.tostring(xml.parse(orig)) == orig, "xml structural round-trip")
+# malformed / lenient: unclosed tag does NOT throw, still yields a tree
+ok(xml.parse("<a><b>oops").tag == "a", "xml malformed unclosed is lenient")
+ok(xml.parse("   ") == None, "xml no element -> None")
+# malformed numeric entity kept verbatim (lenient)
+ok(xml.parse("<a>&#xZZ;</a>").text == "&#xZZ;", "xml bad numeric entity verbatim")
+ok(xml.parse("<a>&unknown;</a>").text == "&unknown;", "xml unknown entity verbatim")
+
+# ============================================================ tee
+var tee = import("tee")
+var io2 = import("io")
+
+# write to a Tee with one copy: both primary and copy receive the data
+var primary = io2.BytesIO()
+var copy1 = io2.BytesIO()
+var t = tee.Tee(primary, copy1)
+var wrote = t.write("hello")
+ok(wrote == 5, "tee write returns byte count")
+t.write(" world")
+discard primary.seek(0)
+discard copy1.seek(0)
+ok(primary.read() == "hello world", "tee primary received all")
+discard copy1.seek(0)
+ok(copy1.read() == "hello world", "tee copy received all")
+ok(len(t.streams()) == 2, "tee streams() count (copy + primary)")
+# multiple copies (List)
+var pa = io2.BytesIO()
+var ca = io2.BytesIO()
+var cb = io2.BytesIO()
+var t2 = tee.Tee(pa, [ca, cb])
+t2.write("dup")
+discard pa.seek(0)
+discard ca.seek(0)
+discard cb.seek(0)
+ok(pa.read() == "dup", "tee multi primary")
+discard ca.seek(0)
+ok(ca.read() == "dup", "tee multi copy a")
+discard cb.seek(0)
+ok(cb.read() == "dup", "tee multi copy b")
+ok(len(t2.streams()) == 3, "tee streams() multi count")
+# pure fan-out sink: primary None, copies only
+var fc = io2.BytesIO()
+var t3 = tee.Tee(None, [fc])
+t3.write("x")
+discard fc.seek(0)
+ok(fc.read() == "x", "tee pure fan-out (None primary)")
+ok(len(t3.streams()) == 1, "tee fan-out streams count")
+# writelines fans out each line
+var wl = io2.BytesIO()
+var t4 = tee.Tee(wl, None)
+t4.writelines(["a", "b", "c"])
+discard wl.seek(0)
+ok(wl.read() == "abc", "tee writelines")
+# flush / close don't error (BytesIO supports flush)
+t4.flush()
+t4.close()
+ok(True, "tee flush/close no error")
+# tee_stdout context manager mirrors io.stdout into the copy. Redirect the real stdout to a sink
+# first so the teed line lands in the sink (primary) + log (copy), not the test's own output.
+var log = io2.BytesIO()
+var teesink = io2.BytesIO()
+var _out_before = io2.stdout
+io2.stdout = teesink
+var _out_inside_was_tee = False
+with tee.tee_stdout(log):
+    io2.print("teed line")
+    _out_inside_was_tee = isinstance(io2.stdout, "Tee")
+io2.stdout = _out_before
+discard log.seek(0)
+ok(log.read().rstrip() == "teed line", "tee_stdout duplicates print into copy")
+discard teesink.seek(0)
+ok(teesink.read().rstrip() == "teed line", "tee_stdout still writes through to primary")
+ok(_out_inside_was_tee, "tee_stdout installs a Tee inside the block")
+
+# ============================================================ tabular: Series
+var tb = import("tabular")
+
+var s = tb.Series([10, 20, 30], ["a", "b", "c"], "vals")
+ok(len(s) == 3, "tabular Series len")
+ok(s["b"] == 20, "tabular Series label index")
+ok(s.iat(0) == 10, "tabular Series iat positional")
+ok(s.tolist() == [10, 20, 30], "tabular Series tolist")
+ok(s.sum() == 60, "tabular Series sum")
+ok(s.mean() == 20.0, "tabular Series mean")
+ok(s.min() == 10 and s.max() == 30, "tabular Series min/max")
+ok(s.median() == 20, "tabular Series median odd")
+ok(tb.Series([1, 2, 3, 4]).median() == 2.5, "tabular Series median even")
+ok(s.count() == 3, "tabular Series count")
+ok(tb.Series([1, 2, 3, 4]).prod() == 24, "tabular Series prod")
+ok(tb.Series([2, 4, 6]).variance() == 4.0, "tabular Series variance")
+ok(tb.Series([2, 4, 6]).std().compare(2.0, rel_tol = 1e-9), "tabular Series std")
+# arithmetic broadcasts a scalar
+ok((s + 5).tolist() == [15, 25, 35], "tabular Series + scalar")
+ok((s * 2).tolist() == [20, 40, 60], "tabular Series * scalar")
+ok((tb.Series([10, 20]) - tb.Series([1, 2])).tolist() == [9, 18], "tabular Series - Series")
+ok((tb.Series([6, 8]) / tb.Series([2, 4])).tolist() == [3.0, 2.0], "tabular Series / Series")
+ok((tb.Series([7, 8]) // tb.Series([2, 3])).tolist() == [3, 2], "tabular Series // Series")
+ok((tb.Series([7, 8]) % tb.Series([2, 3])).tolist() == [1, 2], "tabular Series % Series")
+# comparison -> boolean Series
+ok((tb.Series([1, 5, 3, 8]) > 3).tolist() == [False, True, False, True], "tabular Series > scalar mask")
+ok((tb.Series([1, 2, 3]) <= 2).tolist() == [True, True, False], "tabular Series <= scalar")
+ok(tb.Series([1, 2, 3]).eq(2).tolist() == [False, True, False], "tabular Series eq")
+ok(tb.Series([1, 2, 3]).ne(2).tolist() == [True, False, True], "tabular Series ne")
+ok((tb.Series([1, 2, 3]) == 2).tolist() == [False, True, False], "tabular Series == operator (elementwise)")
+ok(tb.Series([1, 2, 3]).isin([2, 3]).tolist() == [False, True, True], "tabular Series isin")
+# Bool counts as 0/1 in numeric reductions
+ok(tb.Series([True, False, True, True]).sum() == 3, "tabular Series Bool-as-1 sum")
+ok(tb.Series([True, False]).mean() == 0.5, "tabular Series Bool-as-1 mean")
+# missing skipped in aggregations
+ok(tb.Series([1, None, 3]).sum() == 4, "tabular Series sum skips None")
+ok(tb.Series([1, None, 3]).mean() == 2.0, "tabular Series mean skips None")
+ok(tb.Series([None]).mean() == None, "tabular Series mean all-missing -> None")
+# unique / nunique / valuecounts
+ok(tb.Series([1, 1, 2, 3, 3, 3]).unique() == [1, 2, 3], "tabular Series unique (first-seen order)")
+ok(tb.Series([1, 1, 2, 3, 3, 3]).nunique() == 3, "tabular Series nunique")
+ok(tb.Series([1, 1, 2, 3, 3, 3]).valuecounts().tolist() == [3, 2, 1], "tabular Series valuecounts desc")
+# apply / map / astype
+ok(tb.Series([1, 2, 3]).apply(Function(x): return x * x).tolist() == [1, 4, 9], "tabular Series apply")
+ok(tb.Series([1, 2]).map(Function(x): return x + 1).tolist() == [2, 3], "tabular Series map")
+ok(tb.Series(["1", "2"]).astype("Integer").tolist() == [1, 2], "tabular Series astype Integer")
+ok(tb.Series([0, 1, 2]).astype("Bool").tolist() == [False, True, True], "tabular Series astype Bool")
+# fillna / dropna
+ok(tb.Series([1, None, 3]).fillna(0).tolist() == [1, 0, 3], "tabular Series fillna")
+ok(tb.Series([1, None, 3]).dropna().tolist() == [1, 3], "tabular Series dropna")
+# head / tail / sortvalues / resetindex / copy
+ok(tb.Series([1, 2, 3, 4, 5, 6]).head(2).tolist() == [1, 2], "tabular Series head")
+ok(tb.Series([1, 2, 3, 4, 5, 6]).tail(2).tolist() == [5, 6], "tabular Series tail")
+ok(tb.Series([3, 1, 2]).sortvalues().tolist() == [1, 2, 3], "tabular Series sortvalues asc")
+ok(tb.Series([3, 1, 2]).sortvalues(ascending = False).tolist() == [3, 2, 1], "tabular Series sortvalues desc")
+ok(tb.Series([1, 2], ["x", "y"]).resetindex().index == [0, 1], "tabular Series resetindex")
+ok(tb.Series([1, 2]).copy().tolist() == [1, 2], "tabular Series copy")
+# length-mismatch arithmetic throws (both orders)
+ok(throws(Function(): return tb.Series([1, 2]) + tb.Series([1, 2, 3])), "tabular Series len mismatch throws")
+ok(throws(Function(): return tb.Series([1, 2, 3]) + tb.Series([1, 2])), "tabular Series len mismatch throws (other order)")
+ok(throws(Function(): return tb.Series([1, 2, 3], ["a", "b"])), "tabular Series index/values mismatch throws")
+
+# ============================================================ tabular: DataFrame
+var df = tb.readcsv("name,dept,salary\nAda,eng,120\nAlan,eng,110\nGrace,ops,95\nEdsger,ops,130")
+ok(df.shape() == [4, 3], "tabular DataFrame shape")
+ok(df.columns == ["name", "dept", "salary"], "tabular DataFrame ordered columns from header")
+ok(len(df) == 4, "tabular DataFrame len")
+# type inference on readcsv
+ok(type(df["salary"].iat(0)) == "Integer", "tabular readcsv infers Integer")
+ok(type(df["name"].iat(0)) == "String", "tabular readcsv keeps String")
+# column / subset / mask selection
+ok(df["name"].tolist() == ["Ada", "Alan", "Grace", "Edsger"], "tabular DataFrame column select")
+ok(df.column("dept").tolist() == ["eng", "eng", "ops", "ops"], "tabular DataFrame column() method")
+ok(df[["name", "salary"]].columns == ["name", "salary"], "tabular DataFrame subset")
+ok(df[df["salary"] > 100]["name"].tolist() == ["Ada", "Alan", "Edsger"], "tabular DataFrame boolean mask")
+ok(df[df["dept"] == "ops"]["name"].tolist() == ["Grace", "Edsger"], "tabular DataFrame == mask")
+# loc / iloc / at / iat
+ok(df.iloc[0].tolist() == ["Ada", "eng", 120], "tabular DataFrame iloc row")
+ok(df.iloc[[0, 2]].nrows() == 2, "tabular DataFrame iloc list")
+ok(df.loc[0].tolist() == ["Ada", "eng", 120], "tabular DataFrame loc row")
+ok(df.loc[[0, 2]]["name"].tolist() == ["Ada", "Grace"], "tabular DataFrame loc list")
+ok(df.at(0, "name") == "Ada", "tabular DataFrame at(label,col)")
+ok(df.iat(1, 0) == "Alan", "tabular DataFrame iat(pos,col)")
+# numeric aggregations -> a Series indexed by numeric column
+ok(df.sum().index == ["salary"], "tabular DataFrame sum picks numeric col only")
+ok(df.sum().tolist() == [455], "tabular DataFrame sum value")
+ok(df.mean().tolist() == [113.75], "tabular DataFrame mean")
+ok(df.min().tolist() == [95] and df.max().tolist() == [130], "tabular DataFrame min/max")
+ok(df.std()[0].compare(14.93039405, rel_tol = 1e-6), "tabular DataFrame std")
+# count is over every column (non-null tally, any dtype — pandas semantics)
+ok(df.count().index == ["name", "dept", "salary"], "tabular DataFrame count over all columns")
+ok(df.count().tolist() == [4, 4, 4], "tabular DataFrame count values")
+# describe
+var desc = df.describe()
+ok(desc.columns == ["salary"], "tabular describe numeric columns")
+ok(desc.index == ["count", "mean", "std", "min", "median", "max"], "tabular describe stat index")
+ok(desc["salary"].iat(0) == 4, "tabular describe count row")
+ok(desc["salary"].iat(1) == 113.75, "tabular describe mean row")
+# sortvalues
+ok(df.sortvalues("salary")["name"].tolist() == ["Grace", "Alan", "Ada", "Edsger"], "tabular DataFrame sortvalues asc")
+ok(df.sortvalues("salary", ascending = False)["name"].tolist() == ["Edsger", "Ada", "Alan", "Grace"], "tabular DataFrame sortvalues desc")
+# groupby + reductions + agg + size + count + apply
+var g = df.groupby("dept")
+ok(g.mean()["salary"].tolist() == [115.0, 112.5], "tabular groupby mean")
+ok(g.sum()["salary"].tolist() == [230, 225], "tabular groupby sum")
+ok(g.max()["salary"].tolist() == [120, 130], "tabular groupby max")
+ok(g.min()["salary"].tolist() == [110, 95], "tabular groupby min")
+ok(g.size().tolist() == [2, 2], "tabular groupby size")
+ok(g.count()["salary"].tolist() == [2, 2], "tabular groupby count")
+ok(g.agg({"salary": "max"})["salary"].tolist() == [120, 130], "tabular groupby agg max")
+ok(g.agg({"salary": "median"})["salary"].tolist() == [115.0, 112.5], "tabular groupby agg median")
+ok(df.groupby("dept").apply(Function(sub): return sub.nrows()).tolist() == [2, 2], "tabular groupby apply")
+# new column assignment + assign + drop + rename
+var dc = df.copy()
+dc["bonus"] = [1, 2, 3, 4]
+ok("bonus" in dc.columns, "tabular DataFrame add column")
+ok(dc["bonus"].tolist() == [1, 2, 3, 4], "tabular DataFrame added column values")
+ok(df.assign("z", 0)["z"].tolist() == [0, 0, 0, 0], "tabular DataFrame assign scalar broadcast")
+ok(df.drop(["dept"]).columns == ["name", "salary"], "tabular DataFrame drop")
+ok(df.rename({"name": "n"}).columns == ["n", "dept", "salary"], "tabular DataFrame rename")
+var _badcol = Function():
+    var d2 = df.copy()
+    d2["bad"] = [1, 2]
+    return None
+ok(throws(_badcol), "tabular DataFrame wrong-length column throws")
+# setindex / resetindex
+var si = df.setindex("name")
+ok(si.index == ["Ada", "Alan", "Grace", "Edsger"], "tabular DataFrame setindex")
+ok("name" not in si.columns, "tabular DataFrame setindex removes column")
+ok(si.resetindex().index == [0, 1, 2, 3], "tabular DataFrame resetindex")
+# head / tail / slice
+ok(df.head(2).nrows() == 2 and df.tail(2).nrows() == 2, "tabular DataFrame head/tail")
+ok(df.slice(1, 3)["name"].tolist() == ["Alan", "Grace"], "tabular DataFrame slice")
+# todict / torows / iterrows / tocsv
+ok(len(df.todict()) == 3, "tabular DataFrame todict")
+ok(df.torows()[0]["name"] == "Ada", "tabular DataFrame torows")
+ok(len(df.iterrows()) == 4, "tabular DataFrame iterrows")
+ok(df.tocsv().split("\n")[0] == "name,dept,salary", "tabular DataFrame tocsv header")
+# construction from rows (list of lists) and rows (list of dicts)
+ok(tb.DataFrame([[1, 2], [3, 4]], ["x", "y"]).torows() == [{"x": 1, "y": 2}, {"x": 3, "y": 4}], "tabular DataFrame from rows-of-lists")
+var dd = tb.DataFrame([{"a": 1, "b": 2}, {"a": 3}])
+ok(dd.torows() == [{"a": 1, "b": 2}, {"a": 3, "b": None}], "tabular DataFrame from rows-of-dicts (key union)")
+# readcsv: short row padded, surplus-field row throws
+ok(tb.readcsv("a,b\n1")["b"].iat(0) == None, "tabular readcsv short row padded with None")
+ok(throws(Function(): return tb.readcsv("a,b\n1,2,3")), "tabular readcsv surplus fields throws")
+# readcsv without inference keeps strings
+ok(tb.readcsv("a\n1", infer = False)["a"].iat(0) == "1", "tabular readcsv infer=False keeps String")
+# wrong-length boolean mask throws
+ok(throws(Function(): return df[[True, False]]), "tabular DataFrame wrong-length mask throws")
+# DataFrame from a dict requires equal column lengths
+ok(throws(Function(): return tb.DataFrame({"a": [1, 2], "b": [1]}, ["a", "b"])), "tabular DataFrame uneven dict columns throw")
+
+# ============================================================ tabular: merge / concat / missing
+var L = tb.DataFrame({"k": [1, 2, 3], "lv": ["a", "b", "c"]}, ["k", "lv"])
+var R = tb.DataFrame({"k": [2, 3, 4], "rv": ["x", "y", "z"]}, ["k", "rv"])
+ok(L.merge(R, "k", "inner").torows() == [{"k": 2, "lv": "b", "rv": "x"}, {"k": 3, "lv": "c", "rv": "y"}], "tabular merge inner")
+ok(L.merge(R, "k", "left").torows() == [{"k": 1, "lv": "a", "rv": None}, {"k": 2, "lv": "b", "rv": "x"}, {"k": 3, "lv": "c", "rv": "y"}], "tabular merge left")
+ok(L.merge(R, "k", "right").nrows() == 3, "tabular merge right rows")
+ok(L.merge(R, "k", "right").torows()[2] == {"k": 4, "lv": None, "rv": "z"}, "tabular merge right unmatched")
+ok(L.merge(R, "k", "outer").nrows() == 4, "tabular merge outer rows")
+# module-level merge validates how
+ok(throws(Function(): return tb.merge(L, R, "k", "cross")), "tabular module merge bad how throws")
+# overlapping non-key columns suffixed _x/_y
+var La = tb.DataFrame({"k": [1], "v": ["l"]}, ["k", "v"])
+var Ra = tb.DataFrame({"k": [1], "v": ["r"]}, ["k", "v"])
+var merged = La.merge(Ra, "k", "inner")
+ok("v_x" in merged.columns and "v_y" in merged.columns, "tabular merge collides -> _x/_y suffix")
+# concat (column union, missing -> None)
+var cc = tb.concat([tb.DataFrame({"a": [1]}, ["a"]), tb.DataFrame({"a": [2], "b": [3]}, ["a", "b"])])
+ok(cc.torows() == [{"a": 1, "b": None}, {"a": 2, "b": 3}], "tabular concat union with None fill")
+# frame dropna / fillna
+var dn = tb.DataFrame({"a": [1, None, 3], "b": [4, 5, None]}, ["a", "b"])
+ok(dn.dropna().torows() == [{"a": 1, "b": 4}], "tabular DataFrame dropna")
+ok(dn.fillna(0).torows() == [{"a": 1, "b": 4}, {"a": 0, "b": 5}, {"a": 3, "b": 0}], "tabular DataFrame fillna")
+
+# ============================================================ tabular: CSV file round-trip
+var iox = import("io")
+var tmp = path.join(import("path").gettempdir(), "r6_tab.csv")   # portable temp path
+with iox.open(tmp, "w") as fh:
+    discard fh.write("city,pop\nA,100\nB,200\n")
+var dfromfile = tb.readcsv(tmp)
+ok(dfromfile.shape() == [2, 2], "tabular readcsv from file shape")
+ok(dfromfile["pop"].sum() == 300, "tabular readcsv from file values")
+discard path.remove(tmp, missing_ok = True)
+
+io.print("r6_kimods_b: " + String(n) + " checks passed")

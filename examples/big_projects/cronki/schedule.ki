@@ -1,0 +1,77 @@
+# cronki/schedule.ki — the matcher + the "when does this next fire?" computation.
+#
+# Uses standard cron semantics: a job fires at time T iff every field matches, where the DAY match
+# uses the OR of day-of-month and day-of-week when BOTH are restricted, else AND with the wildcard.
+
+var time = import("time")
+
+# Standard POSIX rule: when DOM and DOW are BOTH restricted (i.e. not wildcards), the job fires when
+# EITHER matches. When only one is restricted, that field decides.
+var _dayMatches = Function(dt, job : Dict) -> Bool:
+    var domFull = len(job["dom"]) == 31
+    var dowFull = len(job["dow"]) == 7
+    var domHit = dt.day in job["dom"]
+    var dowHit = dt.weekday in job["dow"]
+    if not domFull and not dowFull:
+        return domHit or dowHit
+    return domHit and dowHit
+
+var matches = Function(dt, job : Dict) -> Bool:
+    if dt.minute not in job["minute"]:
+        return False
+    if dt.hour not in job["hour"]:
+        return False
+    if dt.month not in job["month"]:
+        return False
+    return _dayMatches(dt, job)
+
+# Return the next DateTime AT OR AFTER `start` whose components match `job`. We advance one minute
+# at a time, but skip whole days / whole hours when their components fail — bounded well under a
+# year even for restrictive jobs. `maxIter` is a defensive cap; on an impossible job (e.g. Feb 31)
+# it throws so a caller never spins forever.
+var nextRun = Function(start, job : Dict):
+    # round UP to the next minute boundary (drop seconds, add 60)
+    var t = time.make(start.year, start.month, start.day, start.hour, start.minute, 0).add(60)
+    var maxIter = 366 * 24 * 60
+    var iter = 0
+    while iter < maxIter:
+        # month mismatch: jump to first day of next matching month (much cheaper than +1 minute)
+        if t.month not in job["month"]:
+            var y = t.year
+            var mo = t.month + 1
+            if mo > 12:
+                mo = 1
+                y = y + 1
+            t = time.make(y, mo, 1, 0, 0, 0)
+            iter = iter + 1
+            continue
+        # day mismatch (either DOM/DOW rule fails): jump to the next day at 00:00
+        if not _dayMatches(t, job):
+            t = time.make(t.year, t.month, t.day, 0, 0, 0).add(24 * 60 * 60)
+            iter = iter + 1
+            continue
+        # hour mismatch: jump to next hour at :00
+        if t.hour not in job["hour"]:
+            t = time.make(t.year, t.month, t.day, t.hour, 0, 0).add(60 * 60)
+            iter = iter + 1
+            continue
+        # minute mismatch: one-minute step is fine
+        if t.minute not in job["minute"]:
+            t = t.add(60)
+            iter = iter + 1
+            continue
+        # everything matches — done.
+        return t
+    throw "next fire more than a year away — schedule is likely impossible: " + job["raw"]
+
+# List the next `count` fire times for a job, starting AT OR AFTER `start`.
+var nextRuns = Function(start, job : Dict, count : Integer) -> List:
+    var out = []
+    var t = start
+    var i = 0
+    while i < count:
+        var n = nextRun(t, job)
+        out.append(n)
+        t = n
+        i = i + 1
+    return out

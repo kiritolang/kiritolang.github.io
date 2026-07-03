@@ -1,0 +1,76 @@
+# Thorough checks for the matrix module: construction, element access, arithmetic, linear algebra.
+var io = import("io")
+var matrix = import("matrix")
+var close = Function(a, b) -> Bool:
+    return abs(a - b) < 0.000001
+
+# --- factories ---
+var z = matrix.zeros(2, 3)
+assert z[0, 0] == 0.0 and z[1, 2] == 0.0, "zeros"
+var o = matrix.ones(2, 2)
+assert o[0, 0] == 1.0 and o[1, 1] == 1.0, "ones"
+var idn = matrix.identity(3)
+assert idn[0, 0] == 1.0 and idn[0, 1] == 0.0 and idn[2, 2] == 1.0, "identity"
+
+# --- build from nested list, element access + assignment ---
+var a = matrix.Matrix([[1, 2], [3, 4]])
+assert a[0, 0] == 1.0 and a[0, 1] == 2.0 and a[1, 0] == 3.0 and a[1, 1] == 4.0, "Matrix from nested list"
+a[0, 0] = 10.0
+assert a[0, 0] == 10.0, "element assignment"
+a[0, 0] = 1.0
+
+# --- arithmetic: + - and scalar / matrix * ---
+var b = matrix.Matrix([[5, 6], [7, 8]])
+var sum = a + b
+assert sum[0, 0] == 6.0 and sum[1, 1] == 12.0, "matrix +"
+var diff = b - a
+assert diff[0, 0] == 4.0 and diff[1, 1] == 4.0, "matrix -"
+var scaled = a * 2
+assert scaled[0, 0] == 2.0 and scaled[1, 1] == 8.0, "scalar *"
+# matrix product: [[1,2],[3,4]] * [[5,6],[7,8]] = [[19,22],[43,50]]
+var prod = a * b
+assert prod[0, 0] == 19.0 and prod[0, 1] == 22.0 and prod[1, 0] == 43.0 and prod[1, 1] == 50.0, "matrix *"
+
+# --- transpose ---
+var t = matrix.Matrix([[1, 2, 3], [4, 5, 6]]).transpose()
+assert t[0, 0] == 1.0 and t[2, 0] == 3.0 and t[1, 1] == 5.0, "transpose"
+
+# --- determinant / trace ---
+assert close(matrix.Matrix([[1, 2], [3, 4]]).determinant(), -2.0), "determinant 2x2"
+assert close(matrix.Matrix([[2, 0], [0, 3]]).determinant(), 6.0), "determinant diagonal"
+assert close(matrix.Matrix([[1, 2], [3, 4]]).trace(), 5.0), "trace"
+assert close(matrix.identity(4).determinant(), 1.0), "identity determinant == 1"
+
+# --- inverse: A * A^-1 == I ---
+var inv = matrix.Matrix([[4, 7], [2, 6]]).inverse()
+var check = matrix.Matrix([[4, 7], [2, 6]]) * inv
+assert close(check[0, 0], 1.0) and close(check[1, 1], 1.0) and close(check[0, 1], 0.0), "A * A^-1 == I"
+
+# --- adversarial: out-of-range index and bad shapes throw, never crash ---
+var thrown = 0
+for thunk in [Function(): return matrix.zeros(2, 2)[5, 5], Function(): return matrix.Matrix([[1, 2], [3]]), Function(): return matrix.Matrix([[1, 2]]).inverse()]:
+    try:
+        discard thunk()
+    catch as e:
+        thrown = thrown + 1
+assert thrown == 3, "every matrix misuse (out-of-range index, ragged rows, non-square inverse) throws"
+
+# --- vectors (a Matrix with one dimension == 1) ---
+var v1 = matrix.vector([1, 2, 3])
+var v2 = matrix.vector([4, 5, 6])
+assert v1.rows() == 1 and v1.cols() == 3, "vector() builds a 1xn row vector"
+assert v1.dot(v2) == 32.0, "dot product (method): 1*4 + 2*5 + 3*6 = 32"
+assert v1.cross(v2) == matrix.Matrix([[-3, 6, -3]]), "cross product of two 3-vectors"
+assert matrix.vector([3, 4]).norm() == 5.0, "vector 2-norm (length)"
+assert matrix.Matrix([[1], [2], [3]]).dot(matrix.Matrix([[4], [5], [6]])) == 32.0, "column-vector dot"
+assert matrix.Matrix([[1, 0], [0, 1]]) * matrix.Matrix([[5], [6]]) == matrix.Matrix([[5], [6]]), "matrix times vector stays matrix multiply"
+# `*` is ONLY matrix multiply — two same-shape (row) vectors have incompatible inner dimensions
+var vraised = 0
+for thunk in [Function(): return matrix.vector([1, 2]).dot(matrix.vector([1, 2, 3])), Function(): return matrix.vector([1, 2]).cross(matrix.vector([1, 2])), Function(): return v1 * v2]:
+    try:
+        discard thunk()
+    catch as e:
+        vraised = vraised + 1
+assert vraised == 3, "mismatched-length dot, non-3-element cross, and row*row (* is matrix multiply only) all throw"
+
+io.print("OK")

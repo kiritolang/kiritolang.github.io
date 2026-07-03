@@ -1,0 +1,63 @@
+# Real-world data is messy: missing cells, mixed types, values that need normalizing. This demo
+# loads a small survey dataset (with blanks) straight from inline CSV text and cleans it up with the
+# dataframe-style `tabular` library — dropna / fillna / apply / astype / value_counts / groupby — all in pure
+# Kirito.
+#
+# Run:  ki examples/tabular_survey.ki
+
+var io = import("io")
+var tb = import("tabular")
+
+# An inline CSV — note the blank cells (missing data) in `age` and `score`.
+var csv = ("name,city,age,score,plan\n" +
+           "Ada,London,36,9.5,pro\n" +
+           "Bjarne,Aarhus,,8.0,free\n" +
+           "Grace,New York,85,,pro\n" +
+           "Linus,Helsinki,54,7.5,free\n" +
+           "Edsger,Rotterdam,,9.0,pro\n" +
+           "Ken,Murray Hill,79,6.5,free\n" +
+           "Margaret,Lancaster,80,,pro\n")
+
+var df = tb.readcsv(csv)
+io.print("=== raw survey (blanks are None) ===")
+io.print(df)
+io.print("shape: " + String(df.shape()))
+io.print("")
+
+# --- how much is missing? ---
+io.print("non-null counts per column:")
+io.print(df.count())
+io.print("")
+
+# --- drop rows with ANY missing value ---
+var complete = df.dropna()
+io.print("rows with no missing data: " + String(len(complete)) + " of " + String(len(df)))
+io.print("")
+
+# --- fill missing ages with the mean age, missing scores with 0 ---
+var mean_age = df["age"].mean()
+io.print("mean known age: " + String(round(mean_age, 1)))
+df["age"] = df["age"].fillna(round(mean_age, 0))
+df["score"] = df["score"].fillna(0.0)
+io.print("after fillna:")
+io.print(df)
+io.print("")
+
+# --- normalize a categorical column + derive a flag via apply ---
+io.print("plan distribution: " + String(df["plan"].valuecounts().tolist()) +
+        " for " + String(df["plan"].valuecounts().index))
+df["is_pro"] = df["plan"].apply(Function(p): return p == "pro")
+io.print("")
+
+# --- group the (now clean) data: mean score by plan ---
+io.print("mean score by plan:")
+io.print(df.groupby("plan").agg({"score": "mean", "age": "mean"}))
+io.print("")
+
+# --- astype + a computed column ---
+df["age"] = df["age"].astype("Integer")
+df["decade"] = df["age"].apply(Function(a): return (a // 10) * 10)
+io.print("age decade counts: " + String(df["decade"].valuecounts().tolist()) +
+        " for " + String(df["decade"].valuecounts().index))
+io.print("")
+io.print("done.")

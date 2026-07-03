@@ -1,0 +1,2 @@
+# type/operator: None is unordered, '<' is rejected
+discard None < None

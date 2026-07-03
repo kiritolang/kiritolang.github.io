@@ -1,0 +1,55 @@
+# Pure-Kirito test of tensor.item() and tensor.tolist() (scalar extraction + nested-List conversion),
+# including the grad/non-grad return-type interplay and complex tensors.
+var io = import("io")
+var T = import("tensor")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# --- item(): one-element tensor -> a plain Float ----------------------------------------------
+assert T.Tensor([42.0]).item() == 42.0, "1-element vector -> Float"
+assert type(T.Tensor([42.0]).item()) == "Float", "item is a Float"
+assert T.Tensor([[7.0]]).item() == 7.0, "1x1 matrix -> Float"
+assert T.zeros([1, 1, 1]).item() == 0.0, "1x1x1 -> Float"
+assert throws(Function(): return T.Tensor([1.0, 2.0]).item()), "multi-element item() rejected"
+assert throws(Function(): return T.zeros([0]).item()), "empty item() rejected"
+# item() on a grad-tracked scalar result (sum/mean return a scalar TENSOR under grad)
+var g = T.Tensor([3.0, 4.0], requiresgrad = True)
+var s = (g * g).sum()                            # scalar tensor (grad-tracked)
+assert s.item() == 25.0, "item() extracts a grad scalar tensor's value"
+var m = T.Tensor([[1.0, 2.0], [3.0, 4.0]], requiresgrad = True).mean()
+assert m.item() == 2.5, "item() of a mean"
+# complex one-element -> a Complex
+var ct = T.Tensor([5.0], dtype = "Complex")
+assert type(ct.item()) == "Complex", "complex item -> Complex"
+assert ct.item().re == 5.0 and ct.item().im == 0.0, "complex item value"
+
+# --- tolist(): tensor -> nested Kirito List ---------------------------------------------------
+assert T.Tensor([1.0, 2.0, 3.0]).tolist() == [1.0, 2.0, 3.0], "1-D tolist"
+assert type(T.Tensor([1.0]).tolist()) == "List", "tolist -> List"
+assert T.Tensor([[1.0, 2.0], [3.0, 4.0]]).tolist() == [[1.0, 2.0], [3.0, 4.0]], "2-D tolist nested"
+assert T.zeros([2, 1, 3]).tolist() == [[[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0]]], "3-D tolist"
+# round-trip: Tensor(tolist()) == original
+var orig = T.arange(24.0).reshape([2, 3, 4])
+assert T.Tensor(orig.tolist()) == orig, "Tensor(t.tolist()) round-trips"
+# tolist after a differentiable op (detaches values, fine)
+var arr = T.Tensor([[1.0, 2.0], [3.0, 4.0]], requiresgrad = True)
+var flat = (arr * 2.0).tolist()
+assert flat == [[2.0, 4.0], [6.0, 8.0]], "tolist of a grad result"
+# complex tolist
+var cm = T.Tensor([[1.0, 2.0]], dtype = "Complex")
+var cl = cm.tolist()
+assert type(cl[0][0]) == "Complex" and cl[0][0].re == 1.0 and cl[0][1].re == 2.0, "complex tolist nests Complex"
+
+# --- the two compose: build, compute, read a scalar back --------------------------------------
+var xs = T.Tensor([[0.0], [1.0], [2.0], [3.0]])
+var w = T.Tensor([[2.0]])
+var pred = xs.matmul(w).flatten()
+assert pred.tolist() == [0.0, 2.0, 4.0, 6.0], "matmul then tolist"
+assert pred.sum() == 12.0, "non-grad sum is a Float directly (no item needed)"
+
+io.print("OK tensor-item")

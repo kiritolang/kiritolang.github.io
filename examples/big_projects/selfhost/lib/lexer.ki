@@ -1,0 +1,412 @@
+# Lexer for Kirito-in-Kirito: turns source text into a flat list of tokens, including the
+# layout tokens NEWLINE / INDENT / DEDENT that drive significant indentation.
+#
+# A token is a Dict: {"t": <type>, "v": <value>, "line": <n>, "col": <n>}.
+# Types: "int" "float" "str" "fstr" "name" "kw" "op" "newline" "indent" "dedent" "eof".
+# An "fstr" value is a list of parts: {"t":"lit","v":s} or {"t":"hole","v":src,"spec":s}.
+
+var KEYWORDS = Set(["var", "Function", "if", "elif", "else", "while", "for", "in",
+                    "return", "break", "continue", "pass", "and", "or", "not",
+                    "True", "False", "None", "import", "assert", "class", "try",
+                    "catch", "throw", "finally", "with", "as"])
+
+# Operators, longest first so maximal munch works with a simple prefix test.
+var OPS3 = Set(["**=", "//=", "..."])
+var OPS2 = Set(["**", "//", "==", "!=", "<=", ">=", "->", "+=", "-=", "*=", "/=", "%="])
+var OPS1 = Set(["+", "-", "*", "/", "%", "<", ">", "=", "(", ")", "[", "]",
+                "{", "}", ":", ",", ".", "|", "&"])
+
+var _isDigit = Function(c):
+    return c >= "0" and c <= "9"
+
+var _isHex = Function(c):
+    return _isDigit(c) or (c >= "a" and c <= "f") or (c >= "A" and c <= "F")
+
+var _isAlpha = Function(c):
+    return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_"
+
+var _isAlnum = Function(c):
+    return _isAlpha(c) or _isDigit(c)
+
+# Parse a string of digits in the given base (2/8/16) into an Integer; the builtin Integer()
+# only accepts base-10, so non-decimal literals are folded by hand (with wraparound, like int64).
+var _digitVal = Function(c):
+    if c >= "0" and c <= "9":
+        return ord(c) - ord("0")
+    if c >= "a" and c <= "f":
+        return ord(c) - ord("a") + 10
+    return ord(c) - ord("A") + 10
+
+var _isHexDigit = Function(c):
+    return (c >= "0" and c <= "9") or (c >= "a" and c <= "f") or (c >= "A" and c <= "F")
+
+var _parseRadix = Function(digits, base):
+    var val = 0
+    for c in digits:
+        val = val * base + _digitVal(c)
+    return val
+
+# A small error carrier with line/col so the runner can report it like the real interpreter.
+var lexError = Function(line, col, msg):
+    throw "LexError:" + String(line) + ":" + String(col) + ": " + msg
+
+# Read a (possibly prefixed) numeric literal starting at i; returns [token, nextIndex].
+var _readNumber = Function(src, n, i, line, col):
+    var start = i
+    var isFloat = False
+    if src[i] == "0" and i + 1 < n and (src[i + 1] == "x" or src[i + 1] == "X" or src[i + 1] == "o" or src[i + 1] == "O" or src[i + 1] == "b" or src[i + 1] == "B"):
+        var base = src[i + 1]
+        i = i + 2
+        var digits = ""
+        while i < n and (_isAlnum(src[i])):
+            digits = digits + src[i]
+            i = i + 1
+        if len(digits) == 0:
+            lexError(line, col, "numeric literal: base prefix '0" + base + "' with no digits")
+        var val = 0
+        if base == "x" or base == "X":
+            val = _parseRadix(digits, 16)
+        elif base == "o" or base == "O":
+            val = _parseRadix(digits, 8)
+        else:
+            val = _parseRadix(digits, 2)
+        return [{"t": "int", "v": val, "line": line, "col": col}, i]
+    while i < n and _isDigit(src[i]):
+        i = i + 1
+    if i < n and src[i] == "." and i + 1 < n and _isDigit(src[i + 1]):
+        isFloat = True
+        i = i + 1
+        while i < n and _isDigit(src[i]):
+            i = i + 1
+    if i < n and (src[i] == "e" or src[i] == "E"):
+        isFloat = True
+        i = i + 1
+        if i < n and (src[i] == "+" or src[i] == "-"):
+            i = i + 1
+        while i < n and _isDigit(src[i]):
+            i = i + 1
+    var text = src[start:i]
+    if isFloat:
+        return [{"t": "float", "v": Float(text), "line": line, "col": col}, i]
+    # decimal via the radix folder so out-of-range literals wrap (two's complement) like the real
+    # lexer, instead of the host Integer() throwing on values past INT64_MAX.
+    return [{"t": "int", "v": _parseRadix(text, 10), "line": line, "col": col}, i]
+
+# Decode the body of a string literal (no surrounding quotes) honouring escape sequences.
+var _decodeEscapes = Function(raw, line, col):
+    var out = ""
+    var i = 0
+    var n = len(raw)
+    while i < n:
+        var c = raw[i]
+        if c == "\\":
+            i = i + 1
+            if i >= n:
+                lexError(line, col, "dangling escape")
+            var e = raw[i]
+            if e == "n":
+                out = out + "\n"
+            elif e == "t":
+                out = out + "\t"
+            elif e == "r":
+                out = out + "\r"
+            elif e == "0":
+                out = out + chr(0)
+            elif e == "\\":
+                out = out + "\\"
+            elif e == "\"":
+                out = out + "\""
+            elif e == "'":
+                out = out + "'"
+            elif e == "x":
+                if i + 2 >= n or not _isHexDigit(raw[i + 1]) or not _isHexDigit(raw[i + 2]):
+                    lexError(line, col, "invalid \\x escape (expected hex digit)")
+                var hx = raw[i + 1:i + 3]
+                out = out + chr(_parseRadix(hx, 16))
+                i = i + 2
+            else:
+                lexError(line, col, "invalid escape '\\" + e + "'")
+            i = i + 1
+        else:
+            out = out + c
+            i = i + 1
+    return out
+
+# Read a "..." string starting at the opening quote; returns [rawBody, nextIndex].
+var _readQuoted = Function(src, n, i, line, col):
+    var q = src[i]
+    i = i + 1
+    var raw = ""
+    while i < n and src[i] != q:
+        if src[i] == "\\":
+            raw = raw + src[i]
+            i = i + 1
+            if i < n:
+                raw = raw + src[i]
+                i = i + 1
+        else:
+            raw = raw + src[i]
+            i = i + 1
+    if i >= n:
+        lexError(line, col, "unterminated string literal")
+    return [raw, i + 1]
+
+# Detect a (possibly prefixed) string literal at index i. Up to two of r/f prefixes (any order/case)
+# followed by a ' or " quote. Returns [raw_bool, f_bool, quoteIndex] or None (so an identifier like
+# `front` or `red` that merely starts with f/r still lexes as a name).
+var _stringStart = Function(src, n, i):
+    var raw = False
+    var f = False
+    var j = i
+    var k = 0
+    while k < 2 and j < n and (src[j] == "r" or src[j] == "f" or src[j] == "R" or src[j] == "F"):
+        if src[j] == "r" or src[j] == "R":
+            raw = True
+        else:
+            f = True
+        j = j + 1
+        k = k + 1
+    if j < n and (src[j] == "\"" or src[j] == "'"):
+        return [raw, f, j]
+    return None
+
+# Read a string body starting at the opening quote `qi` (single or triple, ' or "). Keeps backslash
+# escape pairs verbatim so a \" / \' doesn't end the string; the caller decodes (unless raw). A
+# single-line form may not cross a newline; a triple form may. Returns [rawBody, nextIndex].
+var _readStr = Function(src, n, qi, line, col):
+    var q = src[qi]
+    var triple = qi + 2 < n and src[qi + 1] == q and src[qi + 2] == q
+    var i = (qi + 3) if triple else (qi + 1)
+    var raw = ""
+    while i < n:
+        if triple:
+            if src[i] == q and i + 2 < n and src[i + 1] == q and src[i + 2] == q:
+                return [raw, i + 3]
+        else:
+            if src[i] == q:
+                return [raw, i + 1]
+            if src[i] == "\n":
+                lexError(line, col, "unterminated string literal")
+        if src[i] == "\\":
+            raw = raw + src[i]
+            i = i + 1
+            if i < n:
+                raw = raw + src[i]
+                i = i + 1
+        else:
+            raw = raw + src[i]
+            i = i + 1
+    lexError(line, col, "unterminated string literal")
+
+# Index of the format-spec ':' in an f-string hole — the first colon at bracket depth 0, so a
+# colon inside a slice (xs[1:]) or call is not mistaken for the spec separator. -1 if none.
+var _topLevelColon = Function(expr):
+    var depth = 0
+    var i = 0
+    var n = len(expr)
+    while i < n:
+        var c = expr[i]
+        if c == "[" or c == "(" or c == "{":
+            depth = depth + 1
+        elif c == "]" or c == ")" or c == "}":
+            depth = depth - 1
+        elif c == ":" and depth == 0:
+            return i
+        i = i + 1
+    return -1
+
+# Parse an f-string body into parts (literal text vs {hole[:spec]}); braces escape as {{ }}.
+# `isRaw` (rf"..."): literal segments keep backslashes verbatim (no escape decoding).
+var _parseFstring = Function(raw, line, col, isRaw):
+    var parts = []
+    var i = 0
+    var n = len(raw)
+    var lit = ""
+    while i < n:
+        var c = raw[i]
+        if c == "{":
+            if i + 1 < n and raw[i + 1] == "{":
+                lit = lit + "{"
+                i = i + 2
+            else:
+                if lit != "":
+                    parts.append({"t": "lit", "v": lit})
+                    lit = ""
+                i = i + 1
+                var depth = 1
+                var expr = ""
+                while i < n and depth > 0:
+                    if raw[i] == "{":
+                        depth = depth + 1
+                    elif raw[i] == "}":
+                        depth = depth - 1
+                        if depth == 0:
+                            break
+                    expr = expr + raw[i]
+                    i = i + 1
+                if depth != 0:
+                    lexError(line, col, "unmatched '{' in f-string")
+                i = i + 1
+                var spec = ""
+                var colonAt = _topLevelColon(expr)
+                if colonAt >= 0:
+                    spec = expr[colonAt + 1:]
+                    expr = expr[0:colonAt]
+                var trimmedExpr = expr.strip()
+                if trimmedExpr == "":
+                    lexError(line, col, "f-string '{...}' must contain a single expression")
+                parts.append({"t": "hole", "v": trimmedExpr, "spec": spec})
+        elif c == "}":
+            if i + 1 < n and raw[i + 1] == "}":
+                lit = lit + "}"
+                i = i + 2
+            else:
+                lexError(line, col, "single '}' in f-string")
+        else:
+            lit = lit + c
+            i = i + 1
+    if lit != "":
+        parts.append({"t": "lit", "v": lit})
+    # decode escape sequences (\n, \t, ...) in the literal text segments (not inside holes)
+    for p in parts:
+        if p["t"] == "lit" and not isRaw:
+            p["v"] = _decodeEscapes(p["v"], line, col)
+    return parts
+
+# The main entry point: source -> list of tokens.
+var tokenize = Function(src):
+    var n = len(src)
+    var i = 0
+    var line = 1
+    var lineStartIdx = 0
+    var toks = []
+    var indents = [0]
+    var parens = 0
+    var atLineStart = True
+    var pendingContent = False     # did this logical line emit any real token?
+
+    while i < n:
+        if atLineStart and parens == 0:
+            # Measure indentation (tabs expand to the next multiple of 8).
+            var col = 0
+            var j = i
+            while j < n and (src[j] == " " or src[j] == "\t"):
+                if src[j] == " ":
+                    col = col + 1
+                else:
+                    col = col + 8 - (col % 8)
+                j = j + 1
+            # Blank or comment-only lines do not affect indentation.
+            if j >= n or src[j] == "\n" or src[j] == "#":
+                while j < n and src[j] != "\n":
+                    j = j + 1
+                if j < n:
+                    j = j + 1
+                    line = line + 1
+                i = j
+                continue
+            i = j
+            atLineStart = False
+            pendingContent = False
+            var top = indents[len(indents) - 1]
+            if col > top:
+                indents.append(col)
+                toks.append({"t": "indent", "v": col, "line": line, "col": col})
+            else:
+                while col < indents[len(indents) - 1]:
+                    indents.pop()
+                    toks.append({"t": "dedent", "v": col, "line": line, "col": col})
+                if col != indents[len(indents) - 1]:
+                    lexError(line, col, "inconsistent dedent")
+            continue
+
+        var c = src[i]
+        var colNow = i - lineStartIdx + 1
+        if c == "\n":
+            line = line + 1
+            lineStartIdx = i + 1
+            if parens > 0:
+                i = i + 1
+                continue
+            if pendingContent:
+                toks.append({"t": "newline", "v": "", "line": line - 1, "col": colNow})
+                pendingContent = False
+            atLineStart = True
+            i = i + 1
+            continue
+        if c == " " or c == "\t":
+            i = i + 1
+            continue
+        if c == "#":
+            while i < n and src[i] != "\n":
+                i = i + 1
+            continue
+        pendingContent = True
+        # string literal: any of '/"/'''/""", with optional r (raw) and/or f (f-string) prefixes.
+        var ss = _stringStart(src, n, i)
+        if ss != None:
+            var isRaw = ss[0]
+            var isF = ss[1]
+            var qi = ss[2]
+            var rs = _readStr(src, n, qi, line, colNow)
+            var body = rs[0]
+            var nextI = rs[1]
+            if isF:
+                var parts = _parseFstring(body, line, colNow, isRaw)
+                toks.append({"t": "fstr", "v": parts, "line": line, "col": colNow})
+            else:
+                var text = body if isRaw else _decodeEscapes(body, line, colNow)
+                toks.append({"t": "str", "v": text, "line": line, "col": colNow})
+            # account for any newlines a triple-quoted string consumed, so later tokens stay located
+            var p = i
+            while p < nextI:
+                if src[p] == "\n":
+                    line = line + 1
+                    lineStartIdx = p + 1
+                p = p + 1
+            i = nextI
+            continue
+        if _isDigit(c):
+            var rn = _readNumber(src, n, i, line, colNow)
+            toks.append(rn[0])
+            i = rn[1]
+            continue
+        if _isAlpha(c):
+            var start = i
+            while i < n and _isAlnum(src[i]):
+                i = i + 1
+            var word = src[start:i]
+            if word in KEYWORDS:
+                toks.append({"t": "kw", "v": word, "line": line, "col": colNow})
+            else:
+                toks.append({"t": "name", "v": word, "line": line, "col": colNow})
+            continue
+        # operators: maximal munch over 3,2,1 char tables
+        if c == "(" or c == "[" or c == "{":
+            parens = parens + 1
+        if c == ")" or c == "]" or c == "}":
+            if parens > 0:
+                parens = parens - 1
+        var three = src[i:i + 3]
+        var two = src[i:i + 2]
+        if three in OPS3:
+            toks.append({"t": "op", "v": three, "line": line, "col": colNow})
+            i = i + 3
+            continue
+        if two in OPS2:
+            toks.append({"t": "op", "v": two, "line": line, "col": colNow})
+            i = i + 2
+            continue
+        if c in OPS1:
+            toks.append({"t": "op", "v": c, "line": line, "col": colNow})
+            i = i + 1
+            continue
+        lexError(line, colNow, "unexpected character '" + c + "'")
+
+    if pendingContent:
+        toks.append({"t": "newline", "v": "", "line": line, "col": 1})
+    while len(indents) > 1:
+        indents.pop()
+        toks.append({"t": "dedent", "v": 0, "line": line, "col": 1})
+    toks.append({"t": "eof", "v": "", "line": line, "col": 1})
+    return toks

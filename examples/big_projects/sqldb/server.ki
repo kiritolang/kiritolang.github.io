@@ -1,0 +1,160 @@
+# A networked SQL server in pure Kirito, now CONCURRENT via the `parallel` module. It speaks the same
+# tiny newline-framed text protocol as before:
+#   - the client sends one request line: a JSON object {"sql": "..."} terminated by '\n'
+#   - the server replies with one JSON object line:
+#       {"ok": true, "type": "...", ...}   on success
+#       {"ok": false, "error": "..."}      on any SQL/parse/lex error
+#
+# Concurrency model — the actor pattern. The Database is mutable shared state, so it lives on ONE
+# owner VM (`db_owner`); every connection's SQL is forwarded to it through a Queue and the result
+# comes back on a per-connection reply Queue. A pool of `conn_worker`s (one per CPU) accepts the
+# socket I/O in parallel; the acceptor hands each connection's fd to the pool via `workq`. Because
+# all DB access is serialized through the single owner, connections still see each other's writes.
+#
+# Run:  ki --lib lib server.ki [host] [port]
+#   default host 127.0.0.1, port 5433. Prints "LISTENING <host> <port>" once ready (the test harness
+#   waits for that line), then serves until it receives {"sql": "__shutdown__"}.
+#
+# Functions that workers run are defined at module level (a spawned worker re-evaluates this file with
+# argmain False, so it defines them and skips the driver under `if argmain:`).
+
+var net = import("net")
+var io = import("io")
+var json = import("json")
+var parallel = import("parallel")
+var eng = import("sql_engine")
+
+# A buffered line reader over a connection: recv in chunks and hand back one '\n'-terminated line at a
+# time (leftover bytes retained for the next call). Returns None at EOF.
+class LineReader:
+    var _init_ = Function(self, conn):
+        self._conn = conn
+        self._buf = ""
+    var read_line = Function(self):
+        while True:
+            var nl = self._buf.find("\n")
+            if nl >= 0:
+                var line = self._buf[0:nl]
+                self._buf = self._buf[nl + 1:]
+                return line
+            var chunk = self._conn.recv(8192).decode("latin-1")   # socket gives Bytes; decode for text
+            if len(chunk) == 0:
+                if len(self._buf) == 0:
+                    return None
+                var rest = self._buf
+                self._buf = ""
+                return rest
+            self._buf = self._buf + chunk
+
+# Run one SQL statement against `db`, returning a JSON-serializable result Dict (errors included).
+var handle_sql = Function(db, sql : String):
+    try:
+        return db.run(sql)
+    catch as e:
+        return {"ok": False, "error": String(e)}
+
+# The single owner of the Database: it is the only VM that touches `db`. It serves [sql, replyq]
+# messages from `reqq`, posting each result back on that connection's `replyq`. Exits when reqq closes.
+var db_owner = Function(reqq):
+    var db = eng.Database()
+    var running = True
+    while running:
+        var msg = None
+        try:
+            msg = reqq.get()
+        catch as e:
+            running = False
+        if msg != None:
+            msg[1].put(handle_sql(db, msg[0]))
+
+# One of N connection workers. Pulls a handed-off fd from `workq`, serves that connection (forwarding
+# each SQL to the owner via `reqq` and awaiting the reply on its own `replyq`). On a shutdown request
+# it flags `stop` and wakes the acceptor with a throwaway connection.
+var conn_worker = Function(workq, reqq, host, port, stop):
+    var replyq = parallel.Queue()
+    var serving = True
+    while serving:
+        var fd = None
+        try:
+            fd = workq.get()
+        catch as e:
+            serving = False
+        if fd != None:
+            var conn = net.fromfd(fd)
+            var reader = LineReader(conn)
+            var open = True
+            while open:
+                var line = reader.read_line()
+                if line == None:
+                    open = False
+                else:
+                    var reply = None
+                    var stripped = line.strip()
+                    if len(stripped) == 0:
+                        reply = {"ok": False, "error": "empty request"}
+                    else:
+                        var req = None
+                        var bad = False
+                        try:
+                            req = json.parse(stripped)
+                        catch as e:
+                            bad = True
+                            reply = {"ok": False, "error": "bad request JSON: " + String(e)}
+                        if not bad:
+                            if type(req) != "Dict" or "sql" not in req:
+                                reply = {"ok": False, "error": "request must be a JSON object with a 'sql' field"}
+                            elif req["sql"] == "__shutdown__":
+                                reply = {"ok": True, "type": "shutdown"}
+                                open = False
+                                stop.set()
+                            else:
+                                reqq.put([req["sql"], replyq])
+                                reply = replyq.get(True, 30)
+                    discard conn.send(json.dumps(reply) + "\n")
+            conn.close()
+            if stop.isset():
+                # The acceptor is blocked in accept(); a throwaway connection wakes it to notice `stop`.
+                var waker = net.Socket()
+                try:
+                    waker.connect(host, port)
+                catch as e:
+                    pass
+                waker.close()
+                serving = False
+
+if argmain:
+    var host = "127.0.0.1"
+    var port = 5433
+    if len(arglist) >= 1:
+        host = arglist[0]
+    if len(arglist) >= 2:
+        port = Integer(arglist[1])
+
+    var reqq = parallel.Queue()
+    var workq = parallel.Queue()
+    var stop = parallel.Event()
+    discard parallel.spawn(db_owner, reqq)
+    var nworkers = parallel.cpucount()
+    var w = 0
+    while w < nworkers:
+        discard parallel.spawn(conn_worker, workq, reqq, host, port, stop)
+        w = w + 1
+
+    var srv = net.Socket()
+    srv.bind(host, port)
+    srv.listen(16)
+    io.print("LISTENING " + host + " " + String(port))
+
+    var running = True
+    while running:
+        var conn = srv.accept()
+        if stop.isset():
+            conn.close()
+            running = False
+        else:
+            workq.put(conn.detach())
+
+    workq.close()   # idle connection workers drain + exit
+    reqq.close()    # the db owner exits
+    srv.close()
+    io.print("STOPPED")

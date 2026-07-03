@@ -1,0 +1,205 @@
+# r9_json_serde.ki — edge-case and error-hardening tests for json, serialize, and dump:
+# json.dumps/loads with all value types + indent + error cases;
+# serialize round-trips, shared-reference preservation, cycle support, save/load;
+# dump binary round-trips, save/load, bad-bytes rejection;
+# _getstate_/_setstate_ protocol with serialize and dump.
+
+var io = import("io")
+var json = import("json")
+var serialize = import("serialize")
+var dump = import("dump")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =========================================================== json.dumps
+ok(json.dumps(42) == "42", "json.dumps Integer")
+ok(json.dumps(3.14) == "3.14", "json.dumps Float")
+ok(json.dumps(True) == "true", "json.dumps True → lowercase")
+ok(json.dumps(False) == "false", "json.dumps False → lowercase")
+ok(json.dumps(None) == "null", "json.dumps None → null")
+ok(json.dumps("hello") == '"hello"', "json.dumps String adds quotes")
+ok(json.dumps("a\nb") == '"a\\nb"', "json.dumps escapes newline")
+ok(json.dumps([1, 2, 3]) == "[1, 2, 3]", "json.dumps List")
+ok(json.dumps([]) == "[]", "json.dumps empty List")
+ok(json.dumps({}) == "{}", "json.dumps empty Dict")
+ok(json.dumps({"a": 1}) == '{"a": 1}', "json.dumps Dict")
+
+# indent
+var pretty = json.dumps({"x": 1}, indent=2)
+ok("\"x\": 1" in pretty, "json.dumps indent contains key-value")
+ok("\n" in pretty, "json.dumps indent adds newlines")
+
+# nested
+var nested = json.dumps([1, {"k": [2, 3]}, None, True, False])
+ok("[1, {" in nested, "json.dumps nested structure")
+ok("null" in nested, "json.dumps null in nested")
+
+# =========================================================== json.loads
+var obj = json.loads('{"name": "Alice", "age": 30}')
+ok(obj["name"] == "Alice", "json.loads Dict String value")
+ok(obj["age"] == 30, "json.loads Dict Integer value")
+
+var arr = json.loads("[1, 2.5, true, false, null]")
+ok(arr[0] == 1, "json.loads Integer in array")
+ok(arr[1] == 2.5, "json.loads Float in array")
+ok(arr[2] == True, "json.loads true → Bool")
+ok(arr[3] == False, "json.loads false → Bool")
+ok(arr[4] == None, "json.loads null → None")
+
+var str_val = json.loads('"hello\\nworld"')
+ok(str_val == "hello\nworld", "json.loads unescapes \\n in string")
+
+# Nested parse
+var deep = json.loads('{"a": {"b": [1, 2, 3]}}')
+ok(deep["a"]["b"][1] == 2, "json.loads deeply nested")
+
+# Unicode escape
+var uc = json.loads('"\\u0041"')
+ok(uc == "A", "json.loads \\u escape")
+
+# =========================================================== json.loads errors
+ok(throws(Function(): return json.loads("{invalid}")), "json.loads invalid JSON throws")
+ok(throws(Function(): return json.loads("")), "json.loads empty string throws")
+ok(throws(Function(): return json.loads("undefined")), "json.loads 'undefined' throws")
+ok(throws(Function(): return json.loads("{1: 2}")), "json.loads non-string key throws")
+
+# =========================================================== json aliases
+ok(json.parse('{"x": 1}')["x"] == 1, "json.parse is alias for json.loads")
+ok(json.stringify({"x": 1}) == '{"x": 1}', "json.stringify is alias for json.dumps")
+
+# =========================================================== serialize round-trips
+ok(serialize.loads(serialize.dumps(42)) == 42, "serialize Integer round-trip")
+ok(serialize.loads(serialize.dumps(3.14)) == 3.14, "serialize Float round-trip")
+ok(serialize.loads(serialize.dumps("hello")) == "hello", "serialize String round-trip")
+ok(serialize.loads(serialize.dumps(True)) == True, "serialize Bool round-trip")
+ok(serialize.loads(serialize.dumps(None)) == None, "serialize None round-trip")
+ok(serialize.loads(serialize.dumps([1, 2, 3])) == [1, 2, 3], "serialize List round-trip")
+ok(serialize.loads(serialize.dumps({"a": 1})) == {"a": 1}, "serialize Dict round-trip")
+
+var sb = Bytes([1, 2, 3])
+ok(serialize.loads(serialize.dumps(sb)) == sb, "serialize Bytes round-trip")
+
+# Shared reference preservation
+var shared = [1, 2, 3]
+var sr = [shared, shared]
+var sr_copy = serialize.loads(serialize.dumps(sr))
+ok(id(sr_copy[0]) == id(sr_copy[1]), "serialize preserves shared references")
+
+# Cycle support
+var cyc = [1, 2]
+cyc.append(cyc)
+var cyc_copy = serialize.loads(serialize.dumps(cyc))
+ok(cyc_copy[0] == 1 and cyc_copy[1] == 2, "serialize handles cycle: scalar elements correct")
+ok(id(cyc_copy[2]) == id(cyc_copy), "serialize handles cycle: self-reference correct")
+
+# serialize.dumps returns String
+ok(type(serialize.dumps(42)) == "String", "serialize.dumps returns String")
+
+# serialize save/load
+var tmppath = "/tmp/r9_serde_test.dat"
+serialize.save([1, 2, 3], tmppath)
+var loaded = serialize.load(tmppath)
+ok(loaded == [1, 2, 3], "serialize save/load round-trip")
+
+# =========================================================== dump binary round-trips
+ok(dump.loads(dump.dumps(42)) == 42, "dump Integer round-trip")
+ok(dump.loads(dump.dumps(3.14)) == 3.14, "dump Float round-trip")
+ok(dump.loads(dump.dumps("hello")) == "hello", "dump String round-trip")
+ok(dump.loads(dump.dumps(True)) == True, "dump Bool round-trip")
+ok(dump.loads(dump.dumps(None)) == None, "dump None round-trip")
+ok(dump.loads(dump.dumps([1, 2, 3])) == [1, 2, 3], "dump List round-trip")
+ok(dump.loads(dump.dumps({"a": 1})) == {"a": 1}, "dump Dict round-trip")
+
+var db = Bytes([10, 20, 30])
+ok(dump.loads(dump.dumps(db)) == db, "dump Bytes round-trip")
+
+# dump.dumps returns Bytes
+ok(type(dump.dumps(42)) == "Bytes", "dump.dumps returns Bytes")
+
+# Shared reference preservation in dump
+var dshared = [1, 2, 3]
+var dsr = [dshared, dshared]
+var dsr_copy = dump.loads(dump.dumps(dsr))
+ok(id(dsr_copy[0]) == id(dsr_copy[1]), "dump preserves shared references")
+
+# Cycle in dump
+var dcyc = [1, 2]
+dcyc.append(dcyc)
+var dcyc_copy = dump.loads(dump.dumps(dcyc))
+ok(dcyc_copy[0] == 1, "dump handles cycle: first element")
+ok(id(dcyc_copy[2]) == id(dcyc_copy), "dump handles cycle: self-reference")
+
+# dump save/load
+var dumppath = "/tmp/r9_dump_test.dat"
+dump.save([10, 20], dumppath)
+var dloaded = dump.load(dumppath)
+ok(dloaded == [10, 20], "dump save/load round-trip")
+
+# dump.loads error on bad bytes
+ok(throws(Function(): return dump.loads(Bytes([0xFF, 0xFE]))),
+   "dump.loads throws on corrupt bytes")
+
+# =========================================================== _getstate_ / _setstate_ protocol
+class Config:
+    var _init_ = Function(self, host, port):
+        self.host = host
+        self.port = port
+        self._secret = "internal"
+    var getSecret = Function(self):
+        return self._secret
+    var _getstate_ = Function(self):
+        return {"host": self.host, "port": self.port}
+    var _setstate_ = Function(self, state):
+        self.host = state["host"]
+        self.port = state["port"]
+        self._secret = "restored"
+
+# With serialize
+var cfg = Config("localhost", 8080)
+var sc = serialize.loads(serialize.dumps(cfg))
+ok(sc.host == "localhost", "serialize _getstate_: host restored")
+ok(sc.port == 8080, "serialize _getstate_: port restored")
+ok(sc.getSecret() == "restored", "serialize _setstate_: private member set via method")
+ok(id(sc) != id(cfg), "serialize produces a distinct object")
+
+# With dump
+var dc = dump.loads(dump.dumps(cfg))
+ok(dc.host == "localhost", "dump _getstate_: host restored")
+ok(dc.port == 8080, "dump _getstate_: port restored")
+ok(dc.getSecret() == "restored", "dump _setstate_: private member set via method")
+
+# Class without _getstate_/_setstate_ — serialized by attributes
+class Simple:
+    var _init_ = Function(self, x):
+        self.x = x
+        self.y = x * 2
+
+var ss = Simple(5)
+var ssc = serialize.loads(serialize.dumps(ss))
+ok(ssc.x == 5, "serialize class without _getstate_: x restored")
+ok(ssc.y == 10, "serialize class without _getstate_: y restored")
+
+# =========================================================== Set round-trip via serialize
+var origSet = Set([1, 2, 3])
+var scSet = serialize.loads(serialize.dumps(origSet))
+ok(scSet == origSet, "serialize Set round-trip")
+
+# =========================================================== json can't serialize a class
+class NotJsonable:
+    var _init_ = Function(self):
+        self.x = 1
+
+ok(throws(Function(): return json.dumps(NotJsonable())),
+   "json.dumps user class throws (not JSON-serializable)")
+
+io.print("r9_json_serde: " + String(n) + " checks passed")

@@ -1,0 +1,157 @@
+# ============================================ ADVERSARIAL II: error paths, guards, boundaries, fuzz
+# A second, harder adversarial sweep: every error path throws a CATCHABLE error (never crashes), the
+# VM stays usable afterward, resource/recursion guards fire, numeric/unicode boundaries hold, and a
+# randomized operation fuzzer never escapes a try.
+var io = import("io")
+var random = import("random")
+var math = import("math")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# --- every wrong-type / bad-arg builtin call throws, and the VM survives each ---
+var bad = [
+    Function(): return 1 + "x",
+    Function(): return "a" - "b",
+    Function(): return [1] + 2,
+    Function(): return len(5),
+    Function(): return abs("x"),
+    Function(): return ord("ab"),
+    Function(): return chr(-1),
+    Function(): return [1, 2][5],
+    Function(): return {"a": 1}["z"],
+    Function(): return "abc"[99],
+    Function(): return Integer("notnum"),
+    Function(): return Float("xyz"),
+    Function(): return 1 / 0,
+    Function(): return 1 // 0,
+    Function(): return 1 % 0,
+    Function(): return sorted(5),
+    Function(): return max([]),
+    Function(): return [1, 2].remove(99),
+    Function(): return Set([1]).remove(99),
+    Function(): return import("nonexistent_module_xyz")
+]
+var survived = 0
+for fn in bad:
+    assert throws(fn), "bad op must throw"
+    survived = survived + 1
+assert survived == len(bad), "all bad ops thrown"
+assert 1 + 1 == 2, "VM still works after a barrage of caught errors"
+
+# --- resource guards: huge allocations throw instead of OOMing ---
+assert throws(Function(): return range(0, 1000000000000)), "huge range guarded"
+assert throws(Function(): return "ab" * 1000000000000), "huge string repeat guarded"
+assert throws(Function(): return [0] * 1000000000000), "huge list repeat guarded"
+assert "x" * (-1) == "" and [0] * (-2) == [], "negative repeat yields empty (no throw)"
+
+# --- recursion guard: unbounded recursion throws (no native stack overflow) ---
+var rec = Function(n):
+    return rec(n + 1)
+assert throws(Function(): return rec(0)), "infinite recursion caught by depth guard"
+# mutual recursion too
+var ping = None
+var pong = None
+ping = Function(n):
+    return pong(n + 1)
+pong = Function(n):
+    return ping(n + 1)
+assert throws(Function(): return ping(0)), "mutual infinite recursion caught"
+assert 2 + 2 == 4, "VM usable after recursion-guard trips"
+
+# --- numeric boundaries ---
+assert 9223372036854775807 + 1 == -9223372036854775808, "int64 max wraps to min"
+assert -9223372036854775808 - 1 == 9223372036854775807, "int64 min wraps to max"
+assert 0 ** 0 == 1, "0**0 == 1"
+assert 2 ** 0 == 1 and (-2) ** 3 == -8, "power signs"
+assert -7 // 2 == -4 and -7 % 2 == 1, "floor div / modulo sign"
+assert 7 // -2 == -4 and 7 % -2 == -1, "negative divisor sign"
+assert 0xFF == 255 and 0o777 == 511 and 0b1111 == 15, "base literals"
+assert math.isnan(math.nan) and math.isinf(math.inf), "math nan/inf predicates"
+assert 1e308 * 10 == math.inf or math.isinf(1e308 * 10), "float overflow -> inf"
+assert type(2 ** 63) == "Integer", "big integer stays Integer (wraps)"
+
+# --- unicode + slicing boundaries ---
+var u = "a😀b世c"
+assert len(u) == 5, "code-point length"
+assert u[-1] == "c" and u[-5] == "a", "negative indexing"
+assert u[10:20] == "" and u[-100:2] == "a😀", "out-of-range slices clamp"
+assert u[::-1] == "c世b😀a", "reverse slice with multibyte"
+assert u[::2] == "ab c" or u[::2] == "ab" + "c" or len(u[::2]) == 3, "step slice"
+assert "" [0:0] == "" if False else "abc"[1:1] == "", "empty slice"
+assert throws(Function(): return u[100]), "index past end throws"
+
+# --- exceptions: typed matching, finally ordering, native-boundary throws ---
+class AppErr:
+    var _init_ = Function(self, m):
+        self.m = m
+class IOErr(AppErr):
+    var _init_ = Function(self, m):
+        self._super_()._init_(m)
+var caught = ""
+try:
+    throw IOErr("disk")
+catch AppErr as e:
+    caught = "base:" + e.m
+assert caught == "base:disk", "subclass caught by base type"
+var order = []
+try:
+    try:
+        throw "boom"
+    finally:
+        order.append("finally")
+catch as e:
+    order.append("catch:" + e)
+assert order == ["finally", "catch:boom"], "finally runs before outer catch"
+# a native module that throws is catchable
+assert throws(Function(): return import("json").loads("{bad json")), "native throw catchable"
+# VM survives all of it
+assert "ok" + "!" == "ok!", "VM usable after exception storm"
+
+# --- context manager: exit runs even when the body throws ---
+var log = []
+class Ctx:
+    var _enter_ = Function(self):
+        log.append("enter")
+        return self
+    var _exit_ = Function(self):
+        log.append("exit")
+var ctxBoom = Function():
+    with Ctx() as c:
+        log.append("body")
+        throw "in-body"
+assert throws(ctxBoom), "exception propagates out of a with block"
+assert log == ["enter", "body", "exit"], "context _exit_ runs on exception"
+
+# --- FUZZ: random sequences of operations on a value, each wrapped so nothing escapes ---
+var rng = random.Random(424242)
+var f = 0
+var ops = 0
+while f < 1500:
+    var v = rng.randint(0, 6)
+    var r = None
+    if v == 0:
+        r = throws(Function(): return [1, 2, 3][rng.randint(-10, 10)])
+    elif v == 1:
+        r = throws(Function(): return Integer(String(rng.randint(0, 99))) + 1)
+    elif v == 2:
+        r = throws(Function(): return "abcdef"[rng.randint(-10, 10)])
+    elif v == 3:
+        r = throws(Function(): return range(rng.randint(0, 5)))
+    elif v == 4:
+        r = throws(Function(): return {"k": rng.randint(0, 9)}[rng.choice(["k", "missing"])])
+    elif v == 5:
+        r = throws(Function(): return [rng.randint(0, 9)] * rng.randint(0, 3))
+    else:
+        r = throws(Function(): return sorted([rng.randint(0, 9), rng.randint(0, 9)]))
+    discard r
+    ops = ops + 1
+    f = f + 1
+assert ops == 1500, "1500 fuzz ops completed without crashing the VM"
+assert 3 * 7 == 21, "VM still alive after the fuzz storm"
+
+io.print("OK adversarial2")

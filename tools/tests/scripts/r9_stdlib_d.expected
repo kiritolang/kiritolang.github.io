@@ -1,0 +1,12 @@
+usage: <x>
+
+arguments:
+  <x>  
+  -h, --help  show this help and stop
+usage: <x>
+
+arguments:
+  <x>  
+  -h, --help  show this help and stop
+captured
+r9_stdlib_d: 119 checks passed

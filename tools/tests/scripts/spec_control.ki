@@ -1,0 +1,173 @@
+# Exhaustive + adversarial checks for control flow: if/elif/else, while, for, switch, logical ops.
+var io = import("io")
+
+# --- if / elif / else ---
+var grade = Function(n):
+    if n >= 90:
+        return "A"
+    elif n >= 80:
+        return "B"
+    elif n >= 70:
+        return "C"
+    else:
+        return "F"
+assert grade(95) == "A" and grade(85) == "B" and grade(72) == "C" and grade(50) == "F", "if/elif/else"
+
+# --- while + break + continue ---
+var total = 0
+var i = 0
+while i < 10:
+    i = i + 1
+    if i == 3:
+        continue
+    if i == 7:
+        break
+    total = total + i
+assert total == 1 + 2 + 4 + 5 + 6, "while/break/continue"
+
+# while with else-free early exit
+var found = -1
+var j = 0
+while j < 5:
+    if j * j == 9:
+        found = j
+        break
+    j = j + 1
+assert found == 3, "while search"
+
+# --- for over various iterables ---
+var s = 0
+for x in [1, 2, 3, 4]:
+    s = s + x
+assert s == 10, "for over list"
+
+var r = []
+for k in range(3):
+    r.append(k)
+assert r == [0, 1, 2], "for over range"
+
+# range forms
+assert range(5) == [0, 1, 2, 3, 4], "range(stop)"
+assert range(2, 5) == [2, 3, 4], "range(start,stop)"
+assert range(0, 10, 3) == [0, 3, 6, 9], "range step"
+assert range(5, 0, -1) == [5, 4, 3, 2, 1], "range negative step"
+assert range(0) == [] and range(5, 5) == [] and range(5, 0) == [], "empty ranges"
+
+# for with enumerate / zip / reversed
+var idxs = []
+for pair in enumerate(["a", "b", "c"]):
+    idxs.append(pair)
+assert idxs == [[0, "a"], [1, "b"], [2, "c"]], "enumerate"
+var zipped = []
+for pair in zip([1, 2, 3], ["a", "b"]):
+    zipped.append(pair)
+assert zipped == [[1, "a"], [2, "b"]], "zip stops at shortest"
+var rev = []
+for v in reversed([1, 2, 3]):
+    rev.append(v)
+assert rev == [3, 2, 1], "reversed"
+
+# nested loops + break only inner
+var grid = []
+for a in range(3):
+    for b in range(3):
+        if b == 2:
+            break
+        grid.append([a, b])
+assert len(grid) == 6, "nested loops, inner break"
+
+# for over dict iterates keys (unordered)
+var d = {"x": 1, "y": 2}
+var ks = []
+for key in d:
+    ks.append(key)
+ks.sort()
+assert ks == ["x", "y"], "for over dict yields keys"
+
+# for over string
+var cs = []
+for ch in "abc":
+    cs.append(ch)
+assert cs == ["a", "b", "c"], "for over string"
+
+# --- switch: no fallthrough, multi-value arms, mixed types, default, no-match no-op ---
+var classify = Function(v):
+    var out = "?"
+    switch v:
+        case 0:
+            out = "zero"
+        case 1, 2, 3:
+            out = "small"
+        case "hi", "yo":
+            out = "greeting"
+        case True:
+            out = "yes"
+        default:
+            out = "other"
+    return out
+assert classify(0) == "zero", "switch single"
+assert classify(2) == "small", "switch multi-value arm"
+assert classify("hi") == "greeting" and classify("yo") == "greeting", "switch string arm"
+assert classify(True) == "yes", "switch Bool exact"
+assert classify(99) == "other" and classify([1]) == "other", "switch default + non-scalar"
+# type-exact matching: 1 != 1.0
+var tm = Function(v):
+    switch v:
+        case 1:
+            return "int"
+        case 1.0:
+            return "float"
+        default:
+            return "no"
+assert tm(1) == "int" and tm(1.0) == "float", "switch type-exact (1 != 1.0)"
+# switch with no matching case and no default is a no-op
+var noop = "unchanged"
+switch 42:
+    case 1:
+        noop = "changed"
+assert noop == "unchanged", "switch no-match no default is no-op"
+
+# --- logical operators: short-circuit, operand return ---
+assert (5 or 0) == 5 and (0 or 7) == 7 and (0 or "") == "", "or returns first truthy / last"
+assert (5 and 3) == 3 and (0 and 3) == 0, "and returns first falsy / last"
+assert not True == False and not 0 == True and not [] == True, "not"
+# short-circuit avoids evaluating the second operand
+var calls = [0]
+var bump = Function():
+    calls[0] = calls[0] + 1
+    return True
+discard (False and bump())
+assert calls[0] == 0, "and short-circuits"
+discard (True or bump())
+assert calls[0] == 0, "or short-circuits"
+discard (True and bump())
+assert calls[0] == 1, "and evaluates second when first truthy"
+
+# --- assert with and without message ---
+var caught = False
+try:
+    assert 1 == 2, "deliberate"
+catch as e:
+    caught = True
+assert caught, "assert throws catchable error"
+
+# --- conditional expression: then if cond else orelse ---
+assert ("yes" if 1 < 2 else "no") == "yes", "conditional picks the then-branch"
+assert ("yes" if 1 > 2 else "no") == "no", "conditional picks the else-branch"
+var n = 5
+var parity = "even" if n % 2 == 0 else "odd"
+assert parity == "odd", "conditional in a var binding"
+# right-associative chaining
+var bucket = "low" if n < 3 else "mid" if n < 8 else "high"
+assert bucket == "mid", "right-associative conditional chain"
+# short-circuit: the untaken branch is never evaluated (1 // 0 would throw if it were)
+assert (42 if True else 1 // 0) == 42, "untaken branch is not evaluated"
+# nests inside collections and calls
+assert [1 if True else 0, 9 if False else 2] == [1, 2], "conditional inside a list"
+assert abs(-4 if n > 0 else 4) == 4, "conditional as a call argument"
+# usable in an f-string (parenthesized) and as a return value
+var sign_label = Function(x):
+    return "positive" if x > 0 else "non-positive"
+assert sign_label(3) == "positive" and sign_label(-1) == "non-positive", "conditional as a return"
+
+io.print("OK")

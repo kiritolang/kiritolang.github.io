@@ -1,0 +1,234 @@
+# R8 exhaustive re-audit of the `tabular` stdlib module (Series + DataFrame + GroupBy).
+# COMPLEMENTS audit_tabular.ki / deep_tabular.ki / r7_tabular.ki / spec_tabular.ki with FRESH data
+# and FRESH angles those four do not cover:
+#   * prod() aggregation: Bool->0/1, None-skipping, empty multiplicative identity, frame has none
+#   * a TRIPLE merge collision (right's _y-suffixed name already exists on the left) -> throws
+#   * None as a GROUP KEY in groupby (a valid, first-seen-ordered key) and as a MERGE KEY (matches)
+#   * valuecounts / unique on a Bool Series (True/False index) + a Series indexed by a None label
+#   * agg with a NON-count reducer on a string by-column -> None (the _numeric filter strips strings)
+#   * GroupBy.apply hands fn a real sub-DataFrame whose own methods (col Series .sum/.mean) work
+#   * df.slice with an out-of-range stop -> throws (rowsat indexes positions blindly)
+#   * _infer() octal-looking / hex / scientific / leading-zero / mixed-case-bool specifics
+#   * kwargs UNIFORMITY: Series(values=,name=), DataFrame(data=,columns=), apply(fn=),
+#     astype(typename=), merge(...,"id","outer") positional `how`, sortvalues(by=,ascending=)
+#   * GroupBy multi-column agg ({x:sum, y:max}) one pass
+#   * describe of a single-row frame: exact values (count is Integer 1, std is None)
+#   * concat of a mixed-dtype column (Integer then String coexist), 2-frame index reset
+#   * inspect: the module lists the GroupBy class; the GroupBy instance lists its reducers
+#   * iloc list-OOB / loc missing-label / df.column missing / df.at missing-label -> clean throw
+#   * setindex then label access via .loc, and resetindex carrying the Series name
+#
+# Every numeric aggregation is checked with `.compare(...)` (Float `==` is exact). All data is inline
+# for determinism; no external files are read.
+
+var io = import("io")
+var tb = import("tabular")
+var math = import("math")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+var NAN = math.nan
+
+# Order-independent multiset compare for tie-fragile results (Dict iteration order is not guaranteed).
+var bag = Function(xs):
+    var d = {}
+    for x in xs:
+        d[x] = d.get(x, 0) + 1
+    return d
+
+# ============================================================ prod() aggregation (Series-only)
+ok(tb.Series([2, 3, 4]).prod() == 24, "Series.prod multiplies the values")
+ok(tb.Series([]).prod() == 1, "Series.prod of empty is 1 (multiplicative identity)")
+ok(tb.Series([2, None, 3]).prod() == 6, "Series.prod skips a None operand")
+ok(tb.Series([2, NAN, 5]).prod() == 10, "Series.prod skips a NaN operand")
+ok(tb.Series([True, True, False, True]).prod() == 0, "Series.prod treats Bool as 0/1 (a False zeros it)")
+ok(tb.Series([True, True, True]).prod() == 1, "Series.prod of all-True Bool is 1")
+ok(tb.Series(["a", "b"]).prod() == 1, "Series.prod of all-strings is 1 (no numerics)")
+ok(tb.Series([2.0, 0.5, 4.0]).prod().compare(4.0), "Series.prod of Floats is exact-comparable")
+# prod is Series-only: a DataFrame has no prod (pin so a future change is noticed)
+ok(throws(Function(): return tb.DataFrame({"a": [1, 2]}, columns=["a"]).prod()), "DataFrame has no prod() (Series-only)")
+
+# ============================================================ TRIPLE merge collision -> throws
+# left = [id, a, a_y]; right = [id, a]. The merge renames right's `a` to `a_y` (it collides with
+# left's `a`), but `a_y` ALREADY exists on the left -> the output column list has a duplicate `a_y`,
+# the backing Dict can't hold both, and DataFrame construction throws a length error. Pin this edge.
+var TL = tb.DataFrame([[1, "LA", "LAY"]], columns=["id", "a", "a_y"])
+var TR = tb.DataFrame([[1, "RA"]], columns=["id", "a"])
+ok(throws(Function(): return tb.merge(TL, TR, on="id")), "merge throws when the _y suffix collides with an existing left column")
+# the ordinary 2-way collision still works (left `a` -> a_x, right `a` -> a_y)
+var CL = tb.DataFrame([[1, "LA"]], columns=["id", "a"])
+var CR = tb.DataFrame([[1, "RA"]], columns=["id", "a"])
+var cm = tb.merge(CL, CR, on="id")
+ok(cm.columns == ["id", "a_x", "a_y"], "ordinary 2-way collision -> a_x / a_y")
+ok(cm["a_x"].tolist() == ["LA"] and cm["a_y"].tolist() == ["RA"], "collision keeps left in _x, right in _y")
+
+# ============================================================ None as a GROUP KEY
+var GN = tb.DataFrame({"k": ["a", None, "a", None, "b"], "v": [1, 2, 3, 4, 5]}, columns=["k", "v"])
+var gg = GN.groupby("k")
+ok(gg.keys == ["a", None, "b"], "groupby keeps None as a first-seen group key")
+ok(gg.sum()["v"].tolist() == [4, 6, 5], "groupby sums the None group like any other")
+ok(gg.size().tolist() == [2, 2, 1], "groupby sizes the None group")
+ok(gg.count()["v"].tolist() == [2, 2, 1], "groupby count of the None group")
+
+# ============================================================ None as a MERGE KEY (matches)
+var ML = tb.DataFrame({"id": [None, 1, 2], "x": ["a", "b", "c"]}, columns=["id", "x"])
+var MR = tb.DataFrame({"id": [None, 1, 9], "y": ["p", "q", "r"]}, columns=["id", "y"])
+var mn = tb.merge(ML, MR, on="id")
+ok(mn.shape() == [2, 3], "merge matches None-to-None and 1-to-1 (inner -> 2 rows)")
+ok(mn["x"].tolist() == ["a", "b"] and mn["y"].tolist() == ["p", "q"], "merge aligns the None-keyed rows")
+ok(tb.merge(ML, MR, on="id", how="outer").shape() == [4, 3], "outer merge with a None key keeps unmatched 2 and 9")
+
+# ============================================================ valuecounts / unique on Bool + None-labelled
+var vb = tb.Series([True, False, True, True, False, True]).valuecounts()
+ok(vb.index == [True, False] and vb.tolist() == [4, 2], "valuecounts on a Bool Series (True x4, False x2)")
+ok(tb.Series([True, False, True]).unique() == [True, False], "unique on a Bool Series keeps first-seen order")
+ok(tb.Series([True, False, True]).nunique() == 2, "nunique on a Bool Series")
+# a Series whose index literally contains None -> indexing by None resolves the label
+var sNlab = tb.Series([10, 20, 30], index=["a", None, "c"])
+ok(sNlab[None] == 20, "a None index label resolves by label (at its position)")
+ok(sNlab["c"] == 30, "a non-None label still resolves alongside the None label")
+
+# ============================================================ agg NON-count reducer on a string by-col
+# agg can target the by-column itself; `count` tallies group size, but `min`/`max`/`sum` first strip
+# non-numeric values via _numeric -> a string column reduces to None (an easy footgun to pin).
+var GK = tb.DataFrame({"k": ["b", "a", "b", "a"], "v": [1, 2, 3, 4]}, columns=["k", "v"])
+var gk = GK.groupby("k")
+ok(gk.agg({"k": "count"})["k"].tolist() == [2, 2], "agg count on the string by-column -> group sizes")
+ok(gk.agg({"k": "min"})["k"].tolist() == [None, None], "agg min on a string by-column -> None (numeric-only reduction)")
+ok(gk.agg({"k": "sum"})["k"].tolist() == [0, 0], "agg sum on a string by-column -> 0 (no numerics)")
+# the value column reduces normally in the same call
+ok(gk.agg({"v": "sum"})["v"].tolist() == [4, 6], "agg sum on the numeric value column")
+
+# ============================================================ GroupBy multi-column agg, one pass
+var GM = tb.DataFrame({"k": ["a", "a", "b"], "x": [1, 2, 3], "y": [10, 20, 30]}, columns=["k", "x", "y"])
+var ag = GM.groupby("k").agg({"x": "sum", "y": "max"})
+ok(bag(ag.columns) == bag(["x", "y"]), "multi-column agg yields both columns")
+ok(ag["x"].tolist() == [3, 3] and ag["y"].tolist() == [20, 30], "multi-column agg applies a different reducer per column")
+# agg with std on a 2-element group is exact-comparable
+ok(GM.groupby("k").agg({"x": "std"})["x"][0].compare(2.0 ** 0.5 / 2.0), "agg std of group {1,2} = sqrt(0.5)")
+
+# ============================================================ GroupBy.apply receives a real sub-DataFrame
+var GA = tb.DataFrame({"k": ["a", "a", "b"], "v": [10, 20, 30], "w": [1, 2, 3]}, columns=["k", "v", "w"])
+var gasum = GA.groupby("k").apply(Function(sub): return sub["v"].sum())
+ok(gasum.tolist() == [30, 30] and gasum.index == ["a", "b"], "group apply: fn(sub) can sum a sub-column")
+var gamean = GA.groupby("k").apply(Function(sub): return sub["v"].mean())
+ok(gamean[0].compare(15.0) and gamean[1].compare(30.0), "group apply: fn(sub) can take a sub-column mean")
+var gashape = GA.groupby("k").apply(Function(sub): return sub.shape()[1])
+ok(gashape.tolist() == [3, 3], "group apply: the sub is a full DataFrame (shape sees every column)")
+
+# ============================================================ slice with OOB stop -> throws
+var SL = tb.DataFrame({"a": [1, 2, 3]}, columns=["a"])
+ok(SL.slice(0, 2)["a"].tolist() == [1, 2], "slice in-range")
+ok(SL.slice(1, 3)["a"].tolist() == [2, 3], "slice to the exact end")
+ok(throws(Function(): return SL.slice(1, 9)), "slice with a stop past the end throws (positional, not clamped)")
+ok(SL.slice(2, 2)["a"].tolist() == [], "slice with start==stop is empty")
+
+# ============================================================ _infer specifics (readcsv type inference)
+var inf = tb.readcsv("v\n1e3\n-5\n0x1F\n0o17\n0b101\n007\n3.0\nTRUE\ntrue\nFalse")
+ok(type(inf["v"][0]) == "Float" and inf["v"][0].compare(1000.0), "infer 1e3 -> Float (scientific)")
+ok(type(inf["v"][1]) == "Integer" and inf["v"][1] == -5, "infer -5 -> negative Integer")
+ok(type(inf["v"][2]) == "Integer" and inf["v"][2] == 31, "infer 0x1F -> Integer 31 (hex)")
+ok(type(inf["v"][3]) == "Integer" and inf["v"][3] == 15, "infer 0o17 -> Integer 15 (octal)")
+ok(type(inf["v"][4]) == "Integer" and inf["v"][4] == 5, "infer 0b101 -> Integer 5 (binary)")
+ok(type(inf["v"][5]) == "Integer" and inf["v"][5] == 7, "infer 007 -> Integer 7 (leading zeros)")
+ok(type(inf["v"][6]) == "Float" and inf["v"][6].compare(3.0), "infer 3.0 -> Float (has a dot)")
+ok(type(inf["v"][7]) == "String" and inf["v"][7] == "TRUE", "infer TRUE (uppercase) stays String")
+ok(inf["v"][8] == True and inf["v"][9] == False, "infer true/False (recognized spellings) -> Bool")
+
+# ============================================================ kwargs uniformity (fresh forms)
+ok(tb.Series(values=[1, 2, 3], name="z").name == "z", "Series(values=, name=) kwargs")
+ok(tb.Series([5, 6], index=["p", "q"])["q"] == 6, "Series(index=) kwarg")
+ok(tb.DataFrame(data={"a": [1, 2]}, columns=["a"]).columns == ["a"], "DataFrame(data=, columns=) kwargs")
+ok(tb.Series([1, 2]).apply(fn=Function(x): return x * 10).tolist() == [10, 20], "Series.apply(fn=) kwarg")
+ok(tb.Series(["1", "2"]).astype(typename="Integer").tolist() == [1, 2], "Series.astype(typename=) kwarg")
+ok(tb.merge(tb.DataFrame([[1, "a"]], columns=["id", "x"]), tb.DataFrame([[2, "b"]], columns=["id", "y"]), "id", "outer").shape() == [2, 3], "merge positional on/how")
+var DSV = tb.DataFrame({"k": ["a", "b", "c"], "v": [3, 1, 2]}, columns=["k", "v"])
+ok(DSV.sortvalues(by="v", ascending=True)["v"].tolist() == [1, 2, 3], "DataFrame.sortvalues(by=, ascending=) kwargs")
+ok(tb.DataFrame({"a": [None, 2, None]}, columns=["a"]).fillna(value=7)["a"].tolist() == [7, 2, 7], "DataFrame.fillna(value=) kwarg")
+ok(tb.Series([None, 4]).fillna(value=0).tolist() == [0, 4], "Series.fillna(value=) kwarg")
+
+# ============================================================ describe of a single-row frame (exact)
+var D1 = tb.DataFrame({"v": [42], "w": [7.5]}, columns=["v", "w"]).describe()
+ok(D1.index == ["count", "mean", "std", "min", "median", "max"], "single-row describe has the full stat index")
+ok(D1["v"][0] == 1, "single-row describe count is 1")
+ok(D1["v"][1].compare(42.0), "single-row describe mean is the value")
+ok(D1["v"][2] == None, "single-row describe std is None (variance needs >= 2)")
+ok(D1["v"][3] == 42 and D1["v"][5] == 42, "single-row describe min == max == the value")
+ok(D1["v"][4] == 42, "single-row describe median is the value")
+ok(D1["w"][1].compare(7.5), "single-row describe second column preserved & ordered")
+
+# ============================================================ concat: mixed-dtype column + index reset
+var X1 = tb.DataFrame({"a": [1, 2]}, columns=["a"])
+var X2 = tb.DataFrame({"a": ["x"]}, columns=["a"])
+var xc = tb.concat([X1, X2])
+ok(xc["a"].tolist() == [1, 2, "x"], "concat coexists Integer and String in one column")
+ok(xc.index == [0, 1, 2], "concat resets the index to 0..n")
+ok(xc.shape() == [3, 1], "concat stacks the rows")
+# concat with one empty + one non-empty frame keeps the non-empty rows
+var emptyf = tb.DataFrame({"a": []}, columns=["a"])
+ok(tb.concat([emptyf, X1])["a"].tolist() == [1, 2], "concat of empty + non-empty keeps the rows")
+
+# ============================================================ inspect: GroupBy in module + as instance
+var im = inspect(tb)
+ok("GroupBy: GroupBy" in im, "inspect module lists the GroupBy class")
+ok("Series: Series" in im and "DataFrame: DataFrame" in im, "inspect module lists Series & DataFrame")
+ok("merge(left, right, on, how = ...)" in im, "inspect module shows merge signature")
+var ig = inspect(tb.DataFrame({"k": ["a"], "v": [1]}, columns=["k", "v"]).groupby("k"))
+ok("agg(self, spec)" in ig and "size(self)" in ig, "inspect GroupBy shows agg & size")
+ok("sum(self)" in ig and "mean(self)" in ig and "apply(self, fn)" in ig, "inspect GroupBy shows reducers & apply")
+ok("attr keys: List" in ig and "attr groups: Dict" in ig, "inspect GroupBy shows its keys/groups attributes")
+ok("_reduce" not in ig and "_valuecols" not in ig, "inspect hides the private GroupBy helpers")
+var iser = inspect(tb.Series([1]))
+ok("prod(self)" in iser and "variance(self)" in iser, "inspect Series shows prod & variance")
+
+# ============================================================ clean throws on bad access
+var DA = tb.DataFrame({"a": [1, 2, 3]}, columns=["a"], index=["x", "y", "z"])
+ok(throws(Function(): return DA.iloc[[0, 5]]), "iloc with an out-of-range position list throws")
+ok(throws(Function(): return DA.loc["nope"]), "loc with a missing label throws")
+ok(throws(Function(): return DA.loc[["x", "nope"]]), "loc list with a missing label throws")
+ok(throws(Function(): return DA.column("missing")), "df.column(missing) throws")
+ok(throws(Function(): return DA.at("nope", "a")), "df.at(missing-label) throws")
+ok(throws(Function(): return DA.iat(9, 0)), "df.iat with an out-of-range position throws")
+ok(throws(Function(): return tb.DataFrame({"a": [1, 2, 3]}, columns=["a"]).__setitem__("b", tb.Series([1, 2]))), "assigning a wrong-length Series column throws")
+
+# ============================================================ setindex round-trip + loc by new label
+var SI = tb.DataFrame({"k": ["w", "x", "y"], "v": [100, 200, 300]}, columns=["k", "v"]).setindex("k")
+ok(SI.index == ["w", "x", "y"] and SI.columns == ["v"], "setindex moves the column into the index")
+ok(SI.loc["x"]["v"] == 200, "loc by the new index label after setindex")
+ok(SI.at("y", "v") == 300, "at by the new index label after setindex")
+ok(SI.resetindex().index == [0, 1, 2], "resetindex after setindex relabels 0..n")
+# Series.resetindex carries the name along
+ok(tb.Series([1, 2], index=["p", "q"], name="nm").resetindex().name == "nm", "Series.resetindex preserves the name")
+
+# ============================================================ a small CSV round-trip (fresh dataset)
+var RT = tb.DataFrame({"id": [-1, 0, 7], "ratio": [0.5, 1.25, -3.0], "ok": [True, False, True], "tag": ["lo", "mid", "hi"]}, columns=["id", "ratio", "ok", "tag"])
+var rt = tb.readcsv(RT.tocsv())
+ok(rt.columns == ["id", "ratio", "ok", "tag"], "CSV round-trip preserves column order")
+ok(rt["id"].tolist() == [-1, 0, 7] and type(rt["id"][0]) == "Integer", "CSV round-trip re-infers (negative) Integers")
+ok(type(rt["ratio"][0]) == "Float" and rt["ratio"][2].compare(-3.0), "CSV round-trip re-infers Floats")
+ok(rt["ok"].tolist() == [True, False, True], "CSV round-trip re-infers Bool")
+ok(rt["tag"].tolist() == ["lo", "mid", "hi"], "CSV round-trip keeps Strings")
+
+# ============================================================ degenerate frames (single row / single col / all-NA)
+ok(tb.DataFrame({"a": [5]}, columns=["a"]).shape() == [1, 1], "single-cell frame shape")
+ok(tb.DataFrame({"a": [5]}, columns=["a"]).sum()["a"] == 5, "single-cell frame sum")
+var oneCol = tb.DataFrame({"a": [1, 2, 3, 4]}, columns=["a"])
+ok(oneCol.sortvalues("a", ascending=False)["a"].tolist() == [4, 3, 2, 1], "single-column frame sort desc")
+# an all-None column: sum is 0, mean None, count 0, but it is NOT a numeric column for describe
+var allNA = tb.DataFrame({"a": [None, None, None], "b": [1, 2, 3]}, columns=["a", "b"])
+ok(allNA.count()["a"] == 0, "all-None column count is 0")
+ok(allNA.count()["b"] == 3, "the sibling numeric column still counts")
+ok("a" not in allNA.sum().index, "an all-None column is excluded from numeric sum (no non-missing numerics)")
+ok(allNA.describe().columns == ["b"], "an all-None column is excluded from describe")
+ok(allNA.dropna().shape() == [0, 2], "dropna over an all-None column drops every row")
+
+io.print("r8_tabular: " + String(n) + " checks passed")

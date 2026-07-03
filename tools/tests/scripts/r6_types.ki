@@ -1,0 +1,630 @@
+# r6_types.ki — exhaustive self-check of the built-in types reference (docs/pages/09-types.md).
+# Covers None, Bool, Integer, Float, String, Bytes, List, Set, Dict, and special methods /
+# operator overloading. Every check increments a counter; the final line is asserted by
+# r6_types.expected. Run: build-release/ki tools/tests/scripts/r6_types.ki
+var io = import("io")
+var math = import("math")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(thunk) -> True iff calling thunk() throws (a bare `catch` traps any error).
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch:
+        return True
+
+# ---------------------------------------------------------------------------------------------
+# None
+# ---------------------------------------------------------------------------------------------
+ok(None == None, "None equals itself")
+ok(not (None == 0), "None is not 0")
+ok(Bool(None) == False, "None is falsy")
+ok(String(None) == "None", "None stringifies as None")
+ok(type(None) == "None", "type(None)")
+ok(isinstance(None, "None"), "isinstance None")
+
+# ---------------------------------------------------------------------------------------------
+# Bool
+# ---------------------------------------------------------------------------------------------
+ok(True != False, "True != False")
+ok(Bool(0) == False and Bool(1) == True, "Bool of 0/1")
+ok(Bool("") == False and Bool("x") == True, "Bool of strings")
+ok(Bool([]) == False and Bool([1]) == True, "Bool of lists")
+ok(Bool({}) == False and Bool(0.0) == False, "Bool empty dict / 0.0")
+ok(String(True) == "True" and String(False) == "False", "Bool stringifies")
+# Strong typing: Bool is NOT an Integer.
+ok(True != 1, "True != 1 (Bool is distinct)")
+ok(False != 0, "False != 0")
+ok(throws(Function(): return True + 1), "True + 1 is a type error")
+ok(Integer(True) == 1 and Integer(False) == 0, "Integer(flag) converts")
+# Bool hashable and a distinct key from the matching Integer.
+var boolkeys = {}
+boolkeys[True] = "b"
+boolkeys[1] = "i"
+ok(len(boolkeys) == 2, "True and 1 are distinct dict keys")
+ok(len({True, False, 1, 0}) == 4, "Bool/Integer distinct set elements")
+
+# ---------------------------------------------------------------------------------------------
+# Integer
+# ---------------------------------------------------------------------------------------------
+ok(42 == 42 and -7 == -7, "decimal literals")
+ok(0xFF == 255 and 0xff == 255, "hex literal (case-insensitive)")
+ok(0o17 == 15 and 0O17 == 15, "octal literal")
+ok(0b1010 == 10 and 0B1010 == 10, "binary literal")
+# Two's-complement wraparound (well-defined, no UB).
+ok(9223372036854775807 + 1 == -9223372036854775808, "int64 overflow wraps")
+ok(-9223372036854775808 - 1 == 9223372036854775807, "int64 underflow wraps")
+# Division forms.
+ok(7 / 2 == 3.5, "true division yields Float")
+ok(4 / 2 == 2.0, "true division of even operands is Float")
+ok(type(4 / 2) == "Float", "/ result is always Float")
+ok(7 // 2 == 3 and -7 // 2 == -4, "floor division toward -inf")
+ok(7 % 3 == 1 and -7 % 3 == 2, "modulo takes sign of divisor")
+ok(divmod(-7, 3) == [-3, 2], "divmod floors toward -inf")
+ok(divmod(7, 3) == [2, 1], "divmod positive")
+ok(2 ** 10 == 1024, "exponentiation")
+ok(2 ** 3 ** 2 == 512, "** is right-associative")
+ok(throws(Function(): return 1 // 0), "integer // by zero throws")
+ok(throws(Function(): return 1 % 0), "integer % by zero throws")
+# bin/oct/hex render.
+ok(hex(255) == "0xff", "hex()")
+ok(bin(5) == "0b101", "bin()")
+ok(oct(8) == "0o10", "oct()")
+# bitwise builtins (no operators).
+ok(bitand(0xFF, 0x0F) == 15, "bitand")
+ok(bitor(0x10, 0x01) == 17, "bitor")
+ok(bitxor(0xFF, 0x0F) == 240, "bitxor")
+ok(shl(1, 8) == 256, "shl")
+ok(shr(256, 4) == 16, "shr")
+ok(bitnot(0) == -1, "bitnot")
+# Integer.compare(other, rel_tol, abs_tol).
+ok((3).compare(3.0), "Integer.compare equal across Float")
+ok(not (1).compare(2), "Integer.compare far apart")
+ok((100).compare(100, rel_tol = 0.0), "Integer.compare keyword")
+ok(type(0xFF) == "Integer", "type(Integer)")
+ok(isinstance(1, Integer), "isinstance with Integer constructor")
+
+# ---------------------------------------------------------------------------------------------
+# Float
+# ---------------------------------------------------------------------------------------------
+ok(1e10 == 10000000000.0, "scientific 1e10")
+ok(1.5e3 == 1500.0, "scientific 1.5e3")
+ok(2e-3 == 0.002, "scientific 2e-3")
+ok(0.5 == 0.5 and 1.0 == 1.0, "decimal literals need digit both sides")
+ok(throws(Function(): return Float("1_000")), "digit separators not supported")
+# EXACT IEEE-754 == / != .
+ok((0.1 + 0.2) != 0.3, "0.1 + 0.2 != 0.3 (exact)")
+ok(0.3 == 0.3, "0.3 == 0.3 (bit-identical)")
+ok(math.nan != math.nan, "NaN != NaN")
+ok(not (math.nan == math.nan), "NaN == NaN is False")
+ok(math.inf == math.inf, "inf == inf")
+ok(0.0 == -0.0, "0.0 == -0.0")
+# == agrees with hashing: 1.0 and 1 are the same key.
+var fk = {}
+fk[1.0] = "x"
+ok(fk[1] == "x", "1.0 and 1 hash as one key")
+# distinct-but-close floats are distinct keys.
+var fk2 = {}
+fk2[0.1 + 0.2] = "a"
+fk2[0.3] = "b"
+ok(len(fk2) == 2, "0.1+0.2 and 0.3 are distinct keys")
+# .compare tolerances.
+ok((0.1 + 0.2).compare(0.3), "Float.compare close enough")
+ok(not (1.0).compare(1.5), "Float.compare too far")
+ok((1.0).compare(1.5, abs_tol = 1.0), "Float.compare widened abs_tol")
+ok((1.0).compare(other = 1.0), "Float.compare keyword arg")
+ok(throws(Function(): return (1.0).compare("x")), "compare non-number throws")
+# Mixing Integer and Float promotes.
+ok(type(1 + 2.0) == "Float", "Integer + Float promotes")
+ok(1 == 1.0, "1 == 1.0 across types")
+ok(abs(-5.5) == 5.5, "abs Float")
+ok(round(3.14159, 2) == 3.14, "round ndigits")
+ok(type(math.nan) == "Float", "NaN is a Float")
+# Negative base, fractional exponent -> RAISES (matches math.pow's domain policy); a NaN exp passes through.
+ok(throws(Function(): return (-2.0) ** 0.5), "neg base ** fractional throws")
+ok((-2.0) ** math.nan != (-2.0) ** math.nan, "neg base ** NaN passes through")
+
+# ---------------------------------------------------------------------------------------------
+# String — indexing / slicing / iteration (by code point)
+# ---------------------------------------------------------------------------------------------
+var cafe = "café"
+ok(len(cafe) == 4, "len counts code points")
+ok(cafe[3] == "é", "index by code point")
+ok(cafe[-1] == "é", "negative index")
+ok(cafe[::-1] == "éfac", "reverse slice")
+ok(cafe[1:3] == "af", "slice")
+ok(cafe[10:20] == "", "out-of-range slice is empty")
+ok("abcde"[::2] == "ace", "step slice")
+ok(throws(Function(): return "ab"[5]), "string index out of range")
+ok(throws(Function(): return "ab"[-5]), "string negative index out of range")
+ok(throws(Function(): return "ab"[::0]), "string slice step 0 throws")
+# Combining sequence: a + U+0301 is two code points.
+ok(len("á") == 2, "combining char is two code points")
+# concat / repeat / in / iteration.
+ok("ab" + "cd" == "abcd", "concat")
+ok("ab" * 3 == "ababab", "repeat")
+ok("ab" * 0 == "" and "ab" * -1 == "", "repeat <= 0 is empty")
+ok(throws(Function(): return 1 + "x"), "String + non-String errors")
+ok(throws(Function(): return "ab" * "c"), "String * non-Integer errors")
+ok("bc" in "abc", "substring in")
+ok(throws(Function(): return 1 in "abc"), "in <String> requires String")
+ok(throws(Function(): return "x" * 10000000000), "huge string repeat throws (not OOM)")
+var siter = []
+for ch in "abc":
+    siter.append(ch)
+ok(siter == ["a", "b", "c"], "iteration yields characters")
+ok(", ".join(["a", "b", "c"]) == "a, b, c", "join")
+# hashable.
+ok({"a", "a"} == {"a"}, "String hashable in set")
+
+# ---------------------------------------------------------------------------------------------
+# String — methods
+# ---------------------------------------------------------------------------------------------
+ok("Hello".upper() == "HELLO", "upper")
+ok("Hello".lower() == "hello", "lower")
+ok("café".upper() == "CAFÉ", "upper Unicode (Latin-1)")
+ok("  hi  ".strip() == "hi", "strip whitespace")
+ok("xxhixx".strip("x") == "hi", "strip chars")
+ok("  hi  ".lstrip() == "hi  ", "lstrip")
+ok("  hi  ".rstrip() == "  hi", "rstrip")
+ok("a,b,c".split(",") == ["a", "b", "c"], "split sep")
+ok("a,b,c,d".split(",", 2) == ["a", "b", "c,d"], "split maxsplit")
+ok("  a  b  ".split() == ["a", "b"], "split whitespace runs")
+ok("a b c d".split(None, 2) == ["a", "b", "c d"], "split None maxsplit")
+ok("a,b,,c".split(",") == ["a", "b", "", "c"], "split keeps empty fields")
+ok(throws(Function(): return "abc".split("")), "split empty separator throws")
+ok("aaa".replace("a", "b") == "bbb", "replace all")
+ok("aaa".replace("a", "b", 2) == "bba", "replace count")
+ok("abc".replace("", "-") == "-a-b-c-", "replace empty pattern interleaves")
+ok("hello".startswith("he"), "startswith")
+ok("hello".startswith("ell", 1), "startswith with start")
+ok(not "hello".startswith("he", 1), "startswith respects start")
+ok("hello".endswith("lo"), "endswith")
+ok("hello".endswith("ell", 0, 4), "endswith with window")
+ok("abcabc".find("bc") == 1, "find first")
+ok("abcabc".find("bc", 2) == 4, "find with start")
+ok("abcabc".find("bc", 2, 3) == -1, "find with end window")
+ok("abc".find("z") == -1, "find absent is -1")
+ok("abcabc".rfind("bc") == 4, "rfind last")
+ok("abc".rfind("z") == -1, "rfind absent is -1")
+ok("abcabc".index("bc") == 1, "index")
+ok(throws(Function(): return "abc".index("z")), "index absent throws")
+ok("abcabc".rindex("bc") == 4, "rindex")
+ok(throws(Function(): return "abc".rindex("z")), "rindex absent throws")
+ok("aaa".count("a") == 3, "count")
+ok("aaa".count("a", 1) == 2, "count with start")
+ok("abc".count("") == 4, "count empty matches at every boundary")
+ok("{} {}".format("a", "b") == "a b", "format sequential")
+ok("{1} {0}".format("a", "b") == "b a", "format indexed")
+ok("{{}}".format() == "{}", "format escaped braces")
+ok(throws(Function(): return "{x}".format()), "format named field not supported")
+ok(throws(Function(): return "{:05d}".format(3)), "format spec not supported in method")
+ok("123".isdigit() and not "12a".isdigit(), "isdigit")
+ok("".isdigit() == False, "isdigit empty is False")
+ok("abc".isalpha() and not "ab1".isalpha(), "isalpha")
+ok("café".isalpha(), "isalpha non-ASCII letters")
+ok("ab1".isalnum() and not "a b".isalnum(), "isalnum")
+ok("  \t".isspace() and not "a ".isspace(), "isspace")
+ok("".isspace() == False, "isspace empty is False")
+ok("abc".islower() and not "Abc".islower(), "islower")
+ok("ABC".isupper() and not "Abc".isupper(), "isupper")
+ok("123".islower() == False, "islower needs a cased char")
+ok("foobar".removeprefix("foo") == "bar", "removeprefix")
+ok("foobar".removeprefix("xxx") == "foobar", "removeprefix absent")
+ok("foobar".removesuffix("bar") == "foo", "removesuffix")
+ok("foobar".removesuffix("xxx") == "foobar", "removesuffix absent")
+ok("hi".ljust(5) == "hi   ", "ljust")
+ok("hi".ljust(5, ".") == "hi...", "ljust fill")
+ok("hi".rjust(5, ".") == "...hi", "rjust fill")
+ok("hi".center(6, "-") == "--hi--", "center fill")
+ok("hi".ljust(1) == "hi", "ljust width <= len is identity")
+ok(throws(Function(): return "hi".ljust(5, "xx")), "ljust multi-char fill throws")
+ok("42".zfill(5) == "00042", "zfill")
+ok("-42".zfill(5) == "-0042", "zfill keeps sign")
+ok("12345".zfill(3) == "12345", "zfill width <= len is identity")
+ok("a=b=c".partition("=") == ["a", "=", "b=c"], "partition first")
+ok("a=b=c".rpartition("=") == ["a=b", "=", "c"], "rpartition last")
+ok("abc".partition("=") == ["abc", "", ""], "partition absent")
+ok("abc".rpartition("=") == ["", "", "abc"], "rpartition absent")
+ok(throws(Function(): return "abc".partition("")), "partition empty sep throws")
+ok("kitten".levenshtein("sitting") == 3, "levenshtein distance")
+ok("abc".levenshtein(["abc", "abd", "xyz"]) == [0, 1, 3], "levenshtein over a List")
+ok(throws(Function(): return "a".levenshtein(123)), "levenshtein bad arg throws")
+ok("abc".apply(Function(c): return c.upper()) == "ABC", "apply over characters")
+# Methods the docs do NOT claim exist must be absent (guard against false promises).
+ok(throws(Function(): return "x".capitalize()), "capitalize is absent")
+ok(throws(Function(): return "x".title()), "title is absent")
+ok(throws(Function(): return "x".swapcase()), "swapcase is absent")
+ok(throws(Function(): return "a\tb".expandtabs()), "expandtabs is absent")
+
+# String literal flavours.
+ok(r"\n" == "\\n", "raw string keeps backslashes")
+ok(len(r"\n") == 2, "raw string is two chars")
+var fx = 5
+ok(f"val={fx}" == "val=5", "f-string interpolates")
+ok(f"{fx:03d}" == "005", "f-string format spec")
+ok('single' == "single", "single and double quotes equivalent")
+ok("""multi
+line""" == "multi\nline", "triple-quoted multiline")
+ok('he said "hi"' == "he said \"hi\"", "single quotes embed double")
+
+# ---------------------------------------------------------------------------------------------
+# Bytes
+# ---------------------------------------------------------------------------------------------
+var hi = Bytes([72, 105])
+ok(String(hi) == "b'Hi'", "Bytes repr")
+ok(hi[0] == 72, "Bytes index is Integer")
+ok(type(hi[0]) == "Integer", "Bytes element type")
+ok(hi[-1] == 105, "Bytes negative index")
+ok(String(hi[0:1]) == "b'H'", "Bytes slice is Bytes")
+ok(len(hi) == 2, "len(Bytes)")
+ok(throws(Function(): return Bytes([1])[5]), "Bytes index out of range throws")
+ok(throws(Function(): return Bytes([1])["x"]), "Bytes non-Integer index throws")
+# Construction.
+ok(Bytes([72, 105]) == hi, "Bytes from List of Integers")
+ok(Bytes("Hi") == hi, "Bytes from String (utf-8 default)")
+ok(Bytes(hi) == hi, "Bytes copy")
+ok(len(Bytes(3)) == 3, "Bytes(n) is n zero bytes")
+ok(Bytes(3) == Bytes([0, 0, 0]), "Bytes(n) zeroed")
+ok(throws(Function(): return Bytes([256])), "Bytes element > 255 throws")
+ok(throws(Function(): return Bytes([-1])), "Bytes element < 0 throws")
+ok(throws(Function(): return Bytes(-1)), "Bytes negative count throws")
+# encode / decode.
+ok("Hi".encode() == hi, "encode default utf-8")
+ok(String("héllo".encode("utf-8")) == "b'h\\xc3\\xa9llo'", "encode utf-8 multibyte")
+ok(Bytes([0xc3, 0xa9]).decode("utf-8") == "é", "decode utf-8")
+ok(Bytes([72, 105]).decode("ascii") == "Hi", "decode ascii")
+ok(throws(Function(): return "é".encode("ascii")), "encode ascii out of range throws")
+ok(throws(Function(): return Bytes([255]).decode("ascii")), "decode ascii high byte throws")
+ok(throws(Function(): return Bytes([255]).decode("utf-8")), "decode invalid utf-8 throws")
+ok(throws(Function(): return Bytes([0xc3, 0xa9]).decode("ascii")), "decode multibyte as ascii throws")
+ok(throws(Function(): return "x".encode("bogus")), "unknown encoding throws")
+# latin-1 lossless round-trip.
+var raw = Bytes([0, 1, 127, 128, 255])
+ok(raw.decode("latin-1").encode("latin-1") == raw, "latin-1 round-trips any byte")
+# hex / fromhex.
+ok(hi.hex() == "4869", "hex")
+ok(fromhex("48 69") == hi, "fromhex ignores whitespace")
+ok(fromhex("4869") == hi, "fromhex no spaces")
+ok(throws(Function(): return fromhex("abc")), "fromhex odd length throws")
+ok(throws(Function(): return fromhex("xy")), "fromhex non-hex throws")
+# apply.
+ok(Bytes([1, 2, 3]).apply(Function(x): return x + 1) == Bytes([2, 3, 4]), "Bytes.apply")
+ok(throws(Function(): return Bytes([1]).apply(Function(x): return 300)), "Bytes.apply out-of-range result throws")
+# operators / ordering / membership / hashable.
+ok(Bytes([1, 2]) + Bytes([3]) == Bytes([1, 2, 3]), "Bytes concat")
+ok(throws(Function(): return Bytes([1]) + "x"), "Bytes + non-Bytes throws")
+ok(Bytes([1, 2]) * 2 == Bytes([1, 2, 1, 2]), "Bytes repeat")
+ok(Bytes([1]) * 0 == Bytes([]), "Bytes repeat 0 is empty")
+ok(Bytes([1, 2]) < Bytes([1, 3]), "Bytes lexicographic <")
+ok(Bytes([1]) < Bytes([1, 0]), "Bytes shorter prefix is less")
+ok(72 in hi, "Integer byte in Bytes")
+ok(Bytes([105]) in hi, "Bytes subsequence in Bytes")
+ok(not (300 in hi), "out-of-range Integer not in Bytes")
+ok(throws(Function(): return "x" in hi), "in <Bytes> requires Integer or Bytes")
+var bk = {}
+bk[hi] = "v"
+ok(bk[Bytes([72, 105])] == "v", "Bytes hashable as dict key")
+var biter = []
+for byte in hi:
+    biter.append(byte)
+ok(biter == [72, 105], "Bytes iteration yields Integers")
+ok(throws(Function(): return Bytes([1]) * 10000000000), "huge Bytes repeat throws")
+
+# ---------------------------------------------------------------------------------------------
+# List
+# ---------------------------------------------------------------------------------------------
+var xs = [3, 1, 2]
+ok(xs[0] == 3 and xs[-1] == 2, "List index / negative")
+ok([0, 1, 2, 3, 4][1:3] == [1, 2], "List slice")
+ok([0, 1, 2, 3, 4][::-1] == [4, 3, 2, 1, 0], "List reverse slice")
+ok([0, 1, 2, 3, 4][::2] == [0, 2, 4], "List step slice")
+ok([0, 1, 2][10:20] == [], "List out-of-range slice empty")
+ok(throws(Function(): return [1, 2][5]), "List index out of range throws")
+ok(throws(Function(): return [1, 2][::0]), "List slice step 0 throws")
+ok([1, 2] + [3, 4] == [1, 2, 3, 4], "List concat")
+ok(throws(Function(): return [1] + 2), "List + non-List throws")
+ok([0] * 3 == [0, 0, 0], "List repeat")
+ok([0] * 0 == [], "List repeat 0 empty")
+ok(2 in [1, 2, 3] and not (9 in [1, 2, 3]), "List membership")
+ok([1, 2] < [1, 2, 3], "List lexicographic prefix")
+ok([1, 3] > [1, 2, 9], "List lexicographic element compare")
+ok([1, 2] <= [1, 2] and [1, 2] >= [1, 2], "List <= / >=")
+ok(throws(Function(): return [1] < 2), "List ordering needs a List")
+ok(len([1, 2, 3]) == 3, "len(List)")
+# methods.
+var la = [1, 2, 3]
+la.append(4)
+ok(la == [1, 2, 3, 4], "append")
+ok(la.pop() == 4 and la == [1, 2, 3], "pop last")
+ok(la.pop(0) == 1 and la == [2, 3], "pop index")
+ok([1, 2, 3].pop(-1) == 3, "pop negative index")
+ok(throws(Function(): return [].pop()), "pop empty throws")
+ok(throws(Function(): return [1].pop(5)), "pop index out of range throws")
+var lb = [1, 2, 3]
+lb.insert(1, 99)
+ok(lb == [1, 99, 2, 3], "insert")
+lb.insert(-1, 88)
+ok(lb == [1, 99, 2, 88, 3], "insert negative index")
+var lc = [1, 2, 2, 3]
+lc.remove(2)
+ok(lc == [1, 2, 3], "remove first match")
+ok(throws(Function(): return [1].remove(9)), "remove absent throws")
+ok([10, 20, 10].index(10) == 0, "index")
+ok([10, 20, 10].index(10, 1) == 2, "index with start")
+ok(throws(Function(): return [1].index(9)), "index absent throws")
+ok([1, 2, 2, 2].count(2) == 3, "count")
+var ld = [1, 2, 3]
+ld.reverse()
+ok(ld == [3, 2, 1], "reverse in place")
+var le = [3, 1, 2]
+le.sort()
+ok(le == [1, 2, 3], "sort in place")
+var lf = [3, 1, 2]
+lf.sort(reverse = True)
+ok(lf == [3, 2, 1], "sort reverse")
+var lg = ["bb", "a", "ccc"]
+lg.sort(key = len)
+ok(lg == ["a", "bb", "ccc"], "sort key")
+# stable sort: equal keys keep input order.
+var lh = [[1, "b"], [2, "a"], [1, "a"]]
+lh.sort(key = Function(p): return p[0])
+ok(lh == [[1, "b"], [1, "a"], [2, "a"]], "sort is stable")
+ok(sorted([3, 1, 2]) == [1, 2, 3], "sorted builtin")
+var li = [1, 2]
+li.extend([3, 4])
+ok(li == [1, 2, 3, 4], "extend")
+li.extend("ab")
+ok(li == [1, 2, 3, 4, "a", "b"], "extend any iterable")
+ok([1, 2, 3].apply(Function(x): return x * x) == [1, 4, 9], "apply")
+var lj = [1, 2, 3]
+var ljc = lj.copy()
+ljc.append(4)
+ok(lj == [1, 2, 3] and ljc == [1, 2, 3, 4], "copy is shallow & independent")
+var lk = [1, 2, 3]
+lk.clear()
+ok(lk == [], "clear")
+# multi-key sort via list-returning key.
+var people = [["b", 2], ["a", 2], ["a", 1]]
+people.sort(key = Function(p): return [p[1], p[0]])
+ok(people == [["a", 1], ["a", 2], ["b", 2]], "multi-key sort via list key")
+
+# ---------------------------------------------------------------------------------------------
+# Set
+# ---------------------------------------------------------------------------------------------
+ok({1, 2, 3} == {3, 2, 1}, "Set equality by membership")
+ok({1, 2} != {1, 2, 3}, "Set inequality")
+ok(2 in {1, 2, 3} and not (9 in {1, 2, 3}), "Set membership")
+ok(len({1, 1, 2}) == 2, "Set dedupes")
+ok(throws(Function(): return {[1, 2]}), "unhashable Set element throws")
+# operators: - is difference, comparisons are subset/superset.
+ok(({1, 2, 3} - {2}) == {1, 3}, "Set difference operator")
+ok({1, 2} < {1, 2, 3}, "proper subset <")
+ok({1, 2} <= {1, 2}, "subset <=")
+ok({1, 2, 3} > {1, 2}, "proper superset >")
+ok({1, 2, 3} >= {1, 2, 3}, "superset >=")
+ok(not ({1, 2} < {1, 2}), "< is proper (not equal)")
+# methods.
+var sa = {1, 2, 3}
+sa.add(4)
+ok(sa == {1, 2, 3, 4}, "add")
+sa.add(4)
+ok(len(sa) == 4, "add duplicate no-op")
+sa.discard(99)
+ok(len(sa) == 4, "discard absent no error")
+sa.discard(4)
+ok(sa == {1, 2, 3}, "discard present")
+var sb = {1, 2, 3}
+sb.remove(2)
+ok(sb == {1, 3}, "remove present")
+ok(throws(Function(): return {1}.remove(2)), "remove absent throws")
+ok({1, 2, 3}.contains(2) and not {1, 2, 3}.contains(9), "contains")
+var sc = {1}
+var popped = sc.pop()
+ok(popped == 1 and len(sc) == 0, "pop returns the element")
+var emptyset = {1}
+emptyset.remove(1)
+ok(throws(Function(): return emptyset.pop()), "pop from empty Set throws")
+ok({1, 2, 3}.union({3, 4}) == {1, 2, 3, 4}, "union")
+ok({1, 2, 3}.intersection({2, 3, 4}) == {2, 3}, "intersection")
+ok({1, 2, 3}.difference({2}) == {1, 3}, "difference method")
+ok({1, 2, 3}.symmetricdifference({2, 3, 4}) == {1, 4}, "symmetricdifference")
+ok({1, 2}.issubset({1, 2, 3}), "issubset")
+ok({1, 2, 3}.issuperset({1, 2}), "issuperset")
+ok({1, 2}.isdisjoint({3, 4}) and not {1, 2}.isdisjoint({2, 3}), "isdisjoint")
+ok({1, 2, 3}.apply(Function(x): return x * 0) == {0}, "apply collisions collapse")
+var sd = {1, 2, 3}
+var sdc = sd.copy()
+sdc.add(4)
+ok(sd == {1, 2, 3} and sdc == {1, 2, 3, 4}, "copy is independent")
+var se = {1, 2, 3}
+se.clear()
+ok(len(se) == 0, "clear")
+
+# ---------------------------------------------------------------------------------------------
+# Dict
+# ---------------------------------------------------------------------------------------------
+var d = {"a": 1, "b": 2}
+ok(d["a"] == 1, "Dict get by key")
+d["c"] = 3
+ok(d["c"] == 3, "Dict set by key")
+ok(throws(Function(): return {"a": 1}["z"]), "missing key throws")
+ok("a" in d and not ("z" in d), "in tests keys")
+ok(len(d) == 3, "len(Dict)")
+ok({"a": 1} == {"a": 1}, "Dict equality")
+ok({"a": 1} != {"a": 2}, "Dict inequality")
+ok(throws(Function(): return {[1]: 2}), "unhashable Dict key throws")
+# iteration over keys.
+var dkeys = []
+for k in {"a": 1, "b": 2}:
+    dkeys.append(k)
+ok(len(dkeys) == 2, "iteration yields keys")
+# methods.
+ok(len({"a": 1, "b": 2}.keys()) == 2, "keys")
+ok(len({"a": 1, "b": 2}.values()) == 2, "values")
+var items = {"a": 1}.items()
+ok(items == [["a", 1]], "items as [key, value] pairs")
+ok({"a": 1}.get("a") == 1, "get present")
+ok({"a": 1}.get("z") == None, "get missing is None")
+ok({"a": 1}.get("z", 0) == 0, "get missing default")
+var dp = {"a": 1, "b": 2}
+ok(dp.pop("a") == 1 and not ("a" in dp), "pop removes & returns")
+ok({"a": 1}.pop("z", 99) == 99, "pop missing default")
+ok(throws(Function(): return {"a": 1}.pop("z")), "pop missing no default throws")
+var dr = {"a": 1}
+dr.remove("a")
+ok(not ("a" in dr), "remove deletes key")
+ok(throws(Function(): return {"a": 1}.remove("z")), "remove missing throws")
+ok({"x": 5}.setdefault("x", 9) == 5, "setdefault present returns existing")
+var ds = {}
+ok(ds.setdefault("y", 9) == 9 and ds["y"] == 9, "setdefault inserts default")
+var dpi = {"only": 1}
+ok(dpi.popitem() == ["only", 1] and len(dpi) == 0, "popitem")
+ok(throws(Function(): return {}.popitem()), "popitem empty throws")
+var du = {"a": 1}
+du.update({"b": 2})
+ok(du == {"a": 1, "b": 2}, "update with Dict")
+var du2 = {"a": 1}
+du2.update([["b", 2], ["c", 3]])
+ok(len(du2) == 3, "update with pairs")
+ok(throws(Function(): return {"a": 1}.update([[1]])), "update bad pair throws")
+ok({"a": 1, "b": 2}.apply(Function(v): return v + 10) == {"a": 11, "b": 12}, "apply over values")
+var dc = {"a": 1}
+var dcc = dc.copy()
+dcc["b"] = 2
+ok(dc == {"a": 1} and dcc == {"a": 1, "b": 2}, "copy is independent")
+var dcl = {"a": 1}
+dcl.clear()
+ok(len(dcl) == 0, "clear")
+
+# ---------------------------------------------------------------------------------------------
+# Container repr: a nested String shows quoted; bare String is unquoted.
+# ---------------------------------------------------------------------------------------------
+ok(String([""]) == "['']", "empty String element is visible in repr")
+ok(String([]) == "[]", "empty List repr distinct from ['']")
+ok(String(["a", "b"]) == "['a', 'b']", "List String elements quoted")
+ok(String({"k": "v"}) == "{'k': 'v'}", "Dict String values quoted")
+ok(String("hi") == "hi", "bare String unquoted")
+ok(String([1, [2, "x"]]) == "[1, [2, 'x']]", "nested quoting is consistent")
+
+# ---------------------------------------------------------------------------------------------
+# Special methods / operator overloading (the documented worked example + the full protocol)
+# ---------------------------------------------------------------------------------------------
+class Vec:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _add_ = Function(self, o):
+        return Vec(self.x + o.x, self.y + o.y)
+    var _sub_ = Function(self, o):
+        return Vec(self.x - o.x, self.y - o.y)
+    var _mul_ = Function(self, k):
+        return Vec(self.x * k, self.y * k)
+    var _eq_ = Function(self, o):
+        return self.x == o.x and self.y == o.y
+    var _lt_ = Function(self, o):
+        return self.x ** 2 + self.y ** 2 < o.x ** 2 + o.y ** 2
+    var _getitem_ = Function(self, i):
+        if i == 0:
+            return self.x
+        return self.y
+    var _len_ = Function(self):
+        return 2
+    var _str_ = Function(self):
+        return f"Vec({self.x}, {self.y})"
+
+var va = Vec(1, 2)
+var vb = Vec(3, 4)
+ok(String(va + vb) == "Vec(4, 6)", "_add_ + _str_")
+ok(String(va - vb) == "Vec(-2, -2)", "_sub_")
+ok(String(va * 3) == "Vec(3, 6)", "_mul_ scalar")
+ok(va == Vec(1, 2), "_eq_")
+ok(va != vb, "_ne_ falls back to not _eq_")
+ok(not (va != Vec(1, 2)), "_ne_ fallback returns False when equal")
+ok(vb[0] == 3 and len(vb) == 2, "_getitem_ and _len_")
+ok(String(sorted([vb, va])[0]) == "Vec(1, 2)", "_lt_ drives sorted")
+ok(String([va, vb]) == "[Vec(1, 2), Vec(3, 4)]", "_str_ used nested in a container")
+
+# Remaining arithmetic/comparison/unary dunders.
+class Num:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _div_ = Function(self, o): return self.v / o.v
+    var _floordiv_ = Function(self, o): return self.v // o.v
+    var _mod_ = Function(self, o): return self.v % o.v
+    var _pow_ = Function(self, o): return self.v ** o.v
+    var _le_ = Function(self, o): return self.v <= o.v
+    var _gt_ = Function(self, o): return self.v > o.v
+    var _ge_ = Function(self, o): return self.v >= o.v
+    var _neg_ = Function(self): return Num(-self.v)
+    var _not_ = Function(self): return self.v == 0
+
+ok(Num(7) / Num(2) == 3.5, "_div_")
+ok(Num(7) // Num(2) == 3, "_floordiv_")
+ok(Num(7) % Num(3) == 1, "_mod_")
+ok(Num(2) ** Num(3) == 8, "_pow_")
+ok(Num(2) <= Num(3) and Num(3) <= Num(3), "_le_")
+ok(Num(3) > Num(2), "_gt_")
+ok(Num(3) >= Num(3), "_ge_")
+ok((-Num(5)).v == -5, "_neg_")
+ok((not Num(0)) == True and (not Num(5)) == False, "_not_")
+
+# Container protocol: _contains_, _iter_, _call_.
+class Bag:
+    var _init_ = Function(self, items):
+        self.items = items
+    var _contains_ = Function(self, x):
+        return x in self.items
+    var _iter_ = Function(self):
+        return self.items
+    var _call_ = Function(self, k):
+        return k * 2
+
+var bag = Bag([10, 20, 30])
+ok(20 in bag and not (99 in bag), "_contains_")
+ok(99 not in bag, "_contains_ via not in")
+var bagsum = 0
+for v in bag:
+    bagsum = bagsum + v
+ok(bagsum == 60, "_iter_")
+ok(bag(21) == 42, "_call_")
+
+# Variadic _getitem_ / _setitem_ (m[i, j]).
+class Grid:
+    var _getitem_ = Function(self, i, j):
+        return [i, j]
+    var _setitem_ = Function(self, i, j, val):
+        self.last = [i, j, val]
+
+var grid = Grid()
+ok(grid[2, 3] == [2, 3], "variadic _getitem_")
+grid[4, 5] = 99
+ok(grid.last == [4, 5, 99], "variadic _setitem_")
+
+# Context-manager protocol: _enter_ / _exit_.
+class Ctx:
+    var _init_ = Function(self):
+        self.exited = False
+    var _enter_ = Function(self):
+        return 7
+    var _exit_ = Function(self):
+        self.exited = True
+
+var ctx = Ctx()
+with ctx as cv:
+    ok(cv == 7, "_enter_ binds the as-value")
+ok(ctx.exited, "_exit_ ran on block exit")
+
+# An undefined operator throws a clear error (no silent fallback).
+class Bare:
+    var _init_ = Function(self):
+        self.v = 1
+ok(throws(Function(): return Bare() + Bare()), "missing _add_ throws")
+ok(throws(Function(): return Bare()[0]), "missing _getitem_ throws")
+
+io.print("r6_types: " + String(n) + " checks passed")

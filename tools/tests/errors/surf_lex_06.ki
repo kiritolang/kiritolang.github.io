@@ -1,0 +1,2 @@
+# LEXER: a \x escape whose digits are not hex characters
+var s = "byte \xZZ"

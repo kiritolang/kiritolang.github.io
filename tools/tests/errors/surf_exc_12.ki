@@ -1,0 +1,2 @@
+# repeating a List by a huge count is guarded (throws, not OOM)
+discard [1] * 100000000000

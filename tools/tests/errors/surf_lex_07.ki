@@ -1,0 +1,2 @@
+# LEXER: an unknown backslash escape (\q is not a recognized escape)
+var s = "say \quack now"

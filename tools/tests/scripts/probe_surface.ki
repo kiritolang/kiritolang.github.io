@@ -1,0 +1,102 @@
+# ============================================ SURFACE COMPLETENESS: inspect every module/object/class
+# This walks the WHOLE public surface via inspect() and asserts each member line is well-formed —
+# every function advertises a parameter list (named params => kwargs-capable, or `...` for variadic),
+# every attribute advertises a type. A bare/empty/malformed description fails the test.
+var io = import("io")
+var path = import("path")
+
+var memberLines = Function(text):
+    # drop the header (first line), keep indented member lines
+    var lines = text.split("\n")
+    var out = []
+    var i = 1
+    while i < len(lines):
+        var ln = lines[i].strip()
+        if ln != "":
+            out.append(ln)
+        i = i + 1
+    return out
+
+var wellFormed = Function(line) -> Bool:
+    # a function member has "(" ... ")" ; an attribute member has "name: Type" with no "("
+    if "(" in line:
+        if ")" not in line:
+            return False
+        var name = line.split("(")[0].strip()
+        return len(name) > 0
+    # attribute: "name: Type"
+    return ":" in line
+
+var checkModule = Function(name):
+    var m = import(name)
+    var s = inspect(m)
+    assert s.startswith("module " + name + ":"), "module header for " + name
+    var members = memberLines(s)
+    assert len(members) >= 1, "module " + name + " lists members"
+    for ln in members:
+        assert wellFormed(ln), "well-formed member in " + name + ": [" + ln + "]"
+    return len(members)
+
+# --- every importable module: native + frozen-Kirito ---
+var modules = ["io", "path", "math", "random", "matrix", "json", "serialize", "dump", "net", "sys",
+               "time", "zlib", "hash", "regex", "parallel",
+               "itertools", "functools", "collections", "statistics", "string", "textwrap",
+               "base64", "csv", "heapq", "bisect", "copy", "enum", "tee", "arg", "tabular", "xml"]
+var totalMembers = 0
+for mod in modules:
+    totalMembers = totalMembers + checkModule(mod)
+assert totalMembers > 200, "the whole module surface lists hundreds of members"
+io.print("modules inspected:", len(modules), " total members:", totalMembers)
+
+# --- every native OBJECT type: build one, inspect, assert header + members + well-formed lines ---
+var checkObject = Function(label, obj):
+    var s = inspect(obj)
+    assert "object:" in s, label + " inspect names its type"
+    var members = memberLines(s)
+    assert len(members) >= 1, label + " lists members"
+    for ln in members:
+        assert wellFormed(ln), label + " well-formed member: [" + ln + "]"
+
+checkObject("Random", import("random").Random())
+checkObject("Matrix", import("matrix").identity(3))
+checkObject("BytesIO", import("io").BytesIO())
+checkObject("DateTime", import("time").now())
+checkObject("Regex", import("regex").compile("(.)"))
+checkObject("Match", import("regex").compile("(.)").search("ab"))
+checkObject("Dump", import("dump").dumps([1, 2]))
+checkObject("Socket", import("net").Socket())
+checkObject("Session", import("net").Session())
+
+# --- a File object (open a temp file) ---
+var sys = import("sys")
+var tmp = path.gettempdir() + "/ki_surface_probe.txt"
+var fh = io.open(tmp, "w")
+checkObject("File", fh)
+fh.close()
+path.remove(tmp, missing_ok = True)
+
+# --- classes + instances describe correctly ---
+class Widget:
+    var _init_ = Function(self, w, h = 1):
+        self.w = w
+        self.h = h
+    var area = Function(self) -> Integer:
+        return self.w * self.h
+var cls = inspect(Widget)
+assert cls.startswith("class Widget:"), "class header"
+assert "area(self) -> Integer" in cls, "class method listed"
+var inst = inspect(Widget(4, 5))
+assert "Widget instance:" in inst, "instance header"
+assert "attr w:" in inst and "attr h:" in inst, "instance attributes listed"
+assert "area(self) -> Integer" in inst, "instance method listed"
+
+# --- every builtin is introspectable (signature OR variadic ...) ---
+var builtins = [range, sum, min, max, abs, round, sorted, enumerate, zip, map, filter, len, type,
+                inspect, all, any, reversed, divmod, isinstance, ord, chr, bin, oct, hex, pow,
+                bitand, bitor, bitxor, bitnot, shl, shr, format, id,
+                Integer, Float, String, Bool, List, Set, Dict]
+for b in builtins:
+    var bs = inspect(b)
+    assert "(" in bs and ")" in bs, "builtin introspectable: " + bs
+
+io.print("OK surface")

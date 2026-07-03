@@ -1,0 +1,3 @@
+# Lookbehind would break the linear-time guarantee and is rejected.
+var r = import("regex")
+discard r.compile("(?<=abc)")

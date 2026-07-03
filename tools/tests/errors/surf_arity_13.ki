@@ -1,0 +1,5 @@
+# class instantiation with an unexpected keyword argument
+class P:
+    var _init_ = Function(self, x):
+        self.x = x
+discard P(z = 1)

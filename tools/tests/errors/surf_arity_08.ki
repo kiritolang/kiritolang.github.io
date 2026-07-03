@@ -1,0 +1,2 @@
+# sorted() given a bad keyword argument
+discard sorted([3, 1, 2], bad = 1)

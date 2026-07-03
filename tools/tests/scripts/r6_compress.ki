@@ -1,0 +1,109 @@
+# r6_compress.ki — audit of the `zlib` and `gzip` stdlib modules against docs/pages/10-stdlib.md.
+# Round-trips String AND Bytes through zlib compress/decompress, raw deflate/inflate, and gzip
+# compress/decompress at sizes 0/1/small/large; asserts type-preservation (Bytes in -> Bytes out,
+# String in -> String out), that decompressing garbage throws, and interoperability with real
+# gzip(1) / zlib via hardcoded known-good blobs. Deterministic, no network.
+var io = import("io")
+var zlib = import("zlib")
+var gzip = import("gzip")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(fn):
+    var threw = False
+    try:
+        discard fn()
+    catch as e:
+        threw = True
+    return threw
+
+# A round-trips-and-preserves-type check for a codec pair.
+var roundtripStr = Function(comp, decomp, s, label):
+    var c = comp(s)
+    ok(type(c) == "String", label + ": String in -> String out")
+    ok(decomp(c) == s, label + ": String round-trips")
+    ok(type(decomp(c)) == "String", label + ": decompress(String) -> String")
+
+var roundtripBytes = Function(comp, decomp, b, label):
+    var c = comp(b)
+    ok(type(c) == "Bytes", label + ": Bytes in -> Bytes out")
+    ok(decomp(c) == b, label + ": Bytes round-trips")
+    ok(type(decomp(c)) == "Bytes", label + ": decompress(Bytes) -> Bytes")
+
+# ---- size matrix: 0 / 1 / small / large ----
+var empty = ""
+var one = "x"
+var small = "hello world hello world hello world"
+var large = "The quick brown fox jumps over the lazy dog. " * 5000
+
+# zlib.compress / decompress (RFC 1950)
+roundtripStr(zlib.compress, zlib.decompress, empty, "zlib empty")
+roundtripStr(zlib.compress, zlib.decompress, one, "zlib one")
+roundtripStr(zlib.compress, zlib.decompress, small, "zlib small")
+roundtripStr(zlib.compress, zlib.decompress, large, "zlib large")
+ok(len(zlib.compress(large)) < len(large), "zlib actually compresses large input")
+
+# zlib.deflate / inflate (raw, no header)
+roundtripStr(zlib.deflate, zlib.inflate, empty, "deflate empty")
+roundtripStr(zlib.deflate, zlib.inflate, one, "deflate one")
+roundtripStr(zlib.deflate, zlib.inflate, small, "deflate small")
+roundtripStr(zlib.deflate, zlib.inflate, large, "deflate large")
+
+# gzip.compress / decompress (RFC 1952)
+roundtripStr(gzip.compress, gzip.decompress, empty, "gzip empty")
+roundtripStr(gzip.compress, gzip.decompress, one, "gzip one")
+roundtripStr(gzip.compress, gzip.decompress, small, "gzip small")
+roundtripStr(gzip.compress, gzip.decompress, large, "gzip large")
+ok(len(gzip.compress(large)) < len(large), "gzip actually compresses large input")
+
+# gzip aliases gzip/gunzip == compress/decompress
+ok(gzip.gunzip(gzip.gzip(small)) == small, "gzip/gunzip aliases round-trip")
+ok(gzip.gzip(small) == gzip.compress(small), "gzip alias == compress")
+ok(gzip.gunzip(gzip.compress(small)) == small, "gunzip alias == decompress")
+
+# ---- Bytes type preservation (binary, full 0..255 range) ----
+var rawBytes = Bytes([0, 1, 2, 3, 127, 128, 200, 254, 255, 0, 10, 13, 9])
+roundtripBytes(zlib.compress, zlib.decompress, rawBytes, "zlib Bytes")
+roundtripBytes(zlib.deflate, zlib.inflate, rawBytes, "deflate Bytes")
+roundtripBytes(gzip.compress, gzip.decompress, rawBytes, "gzip Bytes")
+# a 256-byte all-values buffer
+var allvals = Bytes(256)
+ok(len(zlib.decompress(zlib.compress(allvals))) == 256, "zlib preserves 256-byte buffer length")
+ok(gzip.decompress(gzip.compress(allvals)) == allvals, "gzip round-trips all byte values")
+
+# ---- gzip container structure (interoperable) ----
+var g = gzip.compress("interop")
+ok(ord(g[0]) == 31, "gzip magic byte 0 = 0x1f")
+ok(ord(g[1]) == 139, "gzip magic byte 1 = 0x8b")
+ok(ord(g[2]) == 8, "gzip CM = 8 (deflate)")
+
+# ---- cross-tool interoperability via hardcoded known-good blobs ----
+# Produced by `printf 'hello gzip interop' | gzip -c -n` (real gzip(1), OS=Unix, MTIME=0).
+var gzBlob = Bytes([31, 139, 8, 0, 0, 0, 0, 0, 0, 3, 203, 72, 205, 201, 201, 87, 72, 175, 202, 44, 80, 200, 204, 43, 73, 45, 202, 47, 0, 0, 112, 77, 90, 77, 18, 0, 0, 0])
+ok(gzip.decompress(gzBlob).decode("utf-8") == "hello gzip interop", "decompresses a real gzip(1) blob")
+# Produced by Python's zlib.compress(b'hello zlib interop') (RFC 1950 stream).
+var zBlob = Bytes([120, 156, 203, 72, 205, 201, 201, 87, 168, 202, 201, 76, 82, 200, 204, 43, 73, 45, 202, 47, 0, 0, 65, 180, 7, 7])
+ok(zlib.decompress(zBlob).decode("utf-8") == "hello zlib interop", "decompresses a real zlib blob")
+
+# ---- decompressing garbage throws (never silently wrong) ----
+ok(throws(Function(): return zlib.decompress("not a zlib stream at all")), "zlib.decompress garbage throws")
+ok(throws(Function(): return gzip.decompress("not a gzip stream")), "gzip.decompress garbage throws")
+ok(throws(Function(): return gzip.decompress(Bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]))), "gzip bad magic throws")
+ok(throws(Function(): return zlib.inflate(Bytes([255, 255, 255, 255, 255, 255]))), "zlib.inflate garbage throws")
+# a gzip blob truncated past its header should fail the CRC/ISIZE check
+ok(throws(Function(): return gzip.decompress(gzBlob[0:20])), "truncated gzip stream throws")
+# a zlib stream with a corrupted trailer should fail
+var corruptZ = zlib.compress("payload")
+ok(throws(Function(): return gzip.decompress(corruptZ)), "zlib stream is not a valid gzip stream")
+
+# ---- cross-format: a deflate (raw) body is not a valid zlib stream ----
+ok(throws(Function(): return zlib.decompress(zlib.deflate("abc"))), "raw deflate is not a zlib stream")
+
+# ---- keyword argument support (every fixed-arity native declares a signature) ----
+ok(zlib.decompress(data = zlib.compress(data = "kw")) == "kw", "zlib kwargs (data=)")
+ok(gzip.decompress(data = gzip.compress(data = "kw")) == "kw", "gzip kwargs (data=)")
+
+io.print("r6_compress: " + String(n) + " checks passed")

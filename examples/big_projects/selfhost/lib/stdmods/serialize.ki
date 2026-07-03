@@ -1,0 +1,128 @@
+# The `serialize` module in pure Kirito: a text graph format that preserves shared references and
+# survives cycles. Containers (List/Dict/Set) and user-class instances are flattened into a node
+# table addressed by index; an object's first visit (detected via id()) records its node, later
+# visits become references. The node table is encoded as JSON text for transport. Reconstruction
+# builds empty shells first, then fills them, so cyclic and shared structure is restored exactly.
+# Instances serialize by attributes (reconstructed via the class name) or via _getstate_/_setstate_.
+
+var json = import("json")
+var io = import("io")
+
+var _trackable = Function(v):
+    var t = type(v)
+    return t == "List" or t == "Dict" or t == "Set" or __instattrs__(v) != None
+
+# encode v -> a small tagged form; trackable values register into `reg` (id->idx) / `nodes`
+var _encode = Function(v, reg, nodes):
+    if _trackable(v):
+        var key = id(v)
+        if key in reg:
+            return ["ref", reg[key]]
+        var idx = len(nodes)
+        reg[key] = idx
+        nodes.append(None)
+        var t = type(v)
+        if t == "List":
+            var items = []
+            for x in v:
+                items.append(_encode(x, reg, nodes))
+            nodes[idx] = ["list", items]
+        elif t == "Set":
+            var sitems = []
+            for x in v:
+                sitems.append(_encode(x, reg, nodes))
+            nodes[idx] = ["set", sitems]
+        elif __instattrs__(v) != None:
+            var clsname = __instname__(v)
+            if __hasmethod__(v, "_getstate_"):
+                nodes[idx] = ["state", clsname, _encode(v._getstate_(), reg, nodes)]
+            else:
+                var attrs = __instattrs__(v)
+                var ap = []
+                for ak in attrs:
+                    ap.append([ak, _encode(attrs[ak], reg, nodes)])
+                nodes[idx] = ["obj", clsname, ap]
+        else:
+            var pairs = []
+            for k in v:
+                pairs.append([_encode(k, reg, nodes), _encode(v[k], reg, nodes)])
+            nodes[idx] = ["dict", pairs]
+        return ["ref", idx]
+    # Bytes is an immutable leaf (like a scalar); carry it through JSON as a hex string.
+    if type(v) == "Bytes":
+        return ["bytesval", v.hex()]
+    # Float must round-trip BIT-EXACTLY, but JSON formats/parses numbers with only ~15 significant
+    # digits (lossy for IEEE-754 doubles). Carry it as a 17-significant-digit string (the shortest
+    # width that is guaranteed round-trip-exact); inf/-inf/nan format and re-parse as themselves.
+    if type(v) == "Float":
+        return ["floatval", format(v, ".17g")]
+    return ["val", v]
+
+var dumps = Function(value):
+    var reg = {}
+    var nodes = []
+    var root = _encode(value, reg, nodes)
+    return json.dumps({"root": root, "nodes": nodes})
+
+var _resolve = Function(enc, shells):
+    if enc[0] == "ref":
+        return shells[enc[1]]
+    if enc[0] == "bytesval":
+        return fromhex(enc[1])
+    if enc[0] == "floatval":
+        return Float(enc[1])
+    return enc[1]
+
+var loads = Function(text):
+    var top = json.loads(text)
+    var nodes = top["nodes"]
+    # create empty shells so references (incl. cycles) can point at them before they are filled
+    var shells = []
+    for node in nodes:
+        if node[0] == "list":
+            shells.append([])
+        elif node[0] == "set":
+            shells.append(Set())
+        elif node[0] == "obj" or node[0] == "state":
+            shells.append(__instnew__(node[1], {}))
+        else:
+            shells.append({})
+    # Phase 1: fill containers and instance attributes in place (refs/cycles resolve to live shells).
+    # _setstate_ is deferred to phase 2 because it COPIES from its argument, which must be fully built
+    # first (a plain shell mutated in place doesn't need this, but a _setstate_ snapshot does).
+    var states = []
+    var i = 0
+    while i < len(nodes):
+        var node = nodes[i]
+        var shell = shells[i]
+        if node[0] == "list":
+            for child in node[1]:
+                shell.append(_resolve(child, shells))
+        elif node[0] == "set":
+            for child in node[1]:
+                shell.add(_resolve(child, shells))
+        elif node[0] == "obj":
+            var live = __instattrs__(shell)
+            for pair in node[2]:
+                live[pair[0]] = _resolve(pair[1], shells)
+        elif node[0] == "state":
+            states.append(i)
+        else:
+            for pair in node[1]:
+                shell[_resolve(pair[0], shells)] = _resolve(pair[1], shells)
+        i = i + 1
+    # Phase 2: now every referenced value exists, restore _getstate_/_setstate_ instances.
+    for si in states:
+        shells[si]._setstate_(_resolve(nodes[si][2], shells))
+    return _resolve(top["root"], shells)
+
+var save = Function(value, path):
+    var fh = io.open(path, "w")
+    fh.write(dumps(value))
+    fh.close()
+
+var load = Function(path):
+    var fh = io.open(path, "r")
+    var data = fh.read()
+    fh.close()
+    return loads(data)

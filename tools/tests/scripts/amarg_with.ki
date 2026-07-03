@@ -1,0 +1,8 @@
+# argmain read inside a `with` context-manager block (an in-memory BytesIO). Captured while the
+# context is active.
+var io = import("io")
+var captured = None
+with io.BytesIO() as buf:
+    discard buf.write("x")
+    captured = argmain
+var m = argmain

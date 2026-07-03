@@ -1,0 +1,5 @@
+# PARSER: an empty switch-case arm body (a case with no indented statements)
+switch 1:
+    case 1:
+    default:
+        discard 2

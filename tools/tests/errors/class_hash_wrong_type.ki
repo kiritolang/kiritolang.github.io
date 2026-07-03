@@ -1,0 +1,4 @@
+class Bad:
+    var _hash_ = Function(self):
+        return "not-an-integer"
+var s = {Bad()}

@@ -1,0 +1,147 @@
+var io = import("io")
+var math = import("math")
+
+# ---- constants ---------------------------------------------------------------------------------
+io.print(math.pi > 3.14 and math.pi < 3.15)
+io.print(math.e > 2.71 and math.e < 2.72)
+io.print(math.tau > 6.28 and math.tau < 6.29)
+io.print(math.isinf(math.inf))
+io.print(math.isnan(math.nan))
+
+# ---- domain errors RAISE (no silent NaN/inf rubbish) ------------------------------------------
+var domain_thunks = [Function(): return math.sqrt(-1), Function(): return math.log(0),
+                     Function(): return math.log(-1), Function(): return math.acos(2),
+                     Function(): return math.asin(2), Function(): return math.atanh(2),
+                     Function(): return math.acosh(0), Function(): return math.log2(0),
+                     Function(): return math.log10(0), Function(): return math.log1p(-1),
+                     Function(): return math.gamma(0), Function(): return math.gamma(-1),
+                     Function(): return math.lgamma(0), Function(): return math.pow(-2, 0.5),
+                     Function(): return math.pow(0, -1), Function(): return math.fmod(1, 0),
+                     Function(): return math.log(8, 1), Function(): return math.log(8, -2)]
+var draised = 0
+for thunk in domain_thunks:
+    try:
+        discard thunk()
+    catch as e:
+        draised = draised + 1
+io.print(draised == 18)                                  # every domain error thrown
+# NaN passes through unchanged, and overflow-to-inf is a range (not domain) condition: neither throws.
+io.print(math.isnan(math.sqrt(math.nan)))
+io.print(math.isnan(math.log(math.nan)))
+io.print(math.isinf(math.log(math.inf)))                 # log(inf) = inf (inf > 0, in domain)
+io.print(math.isinf(math.exp(1000)))                     # overflow to +inf does not throw
+
+# ---- log with base -----------------------------------------------------------------------------
+io.print(math.log(100, 10))      # 2
+io.print(math.log(8, 2))          # 3
+io.print(math.log(math.e))        # 1 (natural)
+io.print(math.log10(100))         # 2
+io.print(math.log2(16))           # 4
+
+# ---- log1p / expm1 accurate for small x ---------------------------------------------------------
+io.print(math.log1p(0) == 0)
+io.print(math.expm1(0) == 0)
+
+# ---- floor / ceil / trunc: floor and ceil return Integer, trunc returns Float -------------------
+io.print(type(math.floor(1.5)))    # Integer
+io.print(type(math.ceil(1.5)))     # Integer
+io.print(type(math.trunc(1.5)))    # Float
+io.print(math.floor(-1.5))         # -2
+io.print(math.ceil(-1.5))          # -1
+io.print(math.trunc(-1.7))         # -1.0 (toward zero)
+io.print(math.trunc(1.7))          # 1.0
+
+# floor/ceil of NaN/inf must throw (cannot fit in Integer)
+var thrown = 0
+for thunk in [Function(): return math.floor(math.nan), Function(): return math.ceil(math.inf), Function(): return math.floor(1e30)]:
+    try:
+        discard thunk()
+    catch as e:
+        thrown = thrown + 1
+io.print(thrown == 3)
+
+# ---- fmod sign (sign of dividend) ---------------------------------------------------------------
+io.print(math.fmod(7, 3))       # 1
+io.print(math.fmod(-7, 3))      # -1 (sign of x)
+io.print(math.fmod(7, -3))      # 1
+io.print(math.fmod(-7, -3))     # -1
+
+# ---- copysign ----------------------------------------------------------------------------------
+io.print(math.copysign(1, -2))   # -1
+io.print(math.copysign(-3, 5))   # 3
+
+# ---- atan2 + hypot -----------------------------------------------------------------------------
+io.print(math.atan2(0, 1))       # 0
+io.print(math.atan2(1, 0) > 1.57 and math.atan2(1, 0) < 1.58)   # pi/2
+io.print(math.hypot(3, 4))       # 5
+io.print(math.hypot(0, 0))       # 0
+
+# ---- degrees / radians ------------------------------------------------------------------------
+io.print(math.degrees(math.pi) > 179.99 and math.degrees(math.pi) < 180.01)
+io.print(math.radians(180) > 3.14 and math.radians(180) < 3.15)
+
+# ---- gcd / lcm -------------------------------------------------------------------------------
+io.print(math.gcd(12, 8))       # 4
+io.print(math.gcd(-12, 8))      # 4 (magnitude)
+io.print(math.gcd(0, 5))         # 5
+io.print(math.gcd(0, 0))         # 0
+io.print(math.lcm(4, 6))         # 12
+io.print(math.lcm(0, 5))         # 0
+io.print(math.lcm(-4, 6))        # 12
+
+# ---- factorial ------------------------------------------------------------------------------
+io.print(math.factorial(0))      # 1
+io.print(math.factorial(1))      # 1
+io.print(math.factorial(20))      # 2432902008176640000 (largest fitting)
+
+var fraised = 0
+for f in [Function(): return math.factorial(-1), Function(): return math.factorial(21)]:
+    try:
+        discard f()
+    catch as e:
+        fraised = fraised + 1
+io.print(fraised == 2)
+
+# ---- comb / perm ----------------------------------------------------------------------------
+io.print(math.comb(5, 2))        # 10
+io.print(math.comb(5, 10))       # 0 (k>n)
+io.print(math.comb(10, 0))       # 1
+io.print(math.comb(30, 15))      # 155117520
+io.print(math.perm(5, 2))        # 20
+io.print(math.perm(5, 0))        # 1
+io.print(math.perm(5, 10))       # 0
+io.print(math.perm(10, 5))       # 30240
+
+# negatives throw
+var craised = 0
+for f in [Function(): return math.comb(-1, 2), Function(): return math.perm(-1, 2), Function(): return math.comb(5, -1)]:
+    try:
+        discard f()
+    catch as e:
+        craised = craised + 1
+io.print(craised == 3)
+
+# ---- prod ------------------------------------------------------------------------------------
+io.print(math.prod([1, 2, 3, 4]))           # 24 (Integer)
+io.print(math.prod([1.0, 2.0, 3.0]))        # 6.0 (Float)
+io.print(math.prod([]))                      # 1 (start default)
+io.print(math.prod([2, 3], 5))               # 30 (start=5)
+io.print(math.prod([1, 2, 3.0]))             # 6.0 (mixed -> Float)
+
+# ---- abs / round / pow / etc. via math.pow --------------------------------------------------
+io.print(math.pow(2, 10))        # 1024.0 as Float
+io.print(type(math.pow(2, 10)))  # Float
+
+# ---- gamma / erf / lgamma ------------------------------------------------------------------
+io.print(math.gamma(5))           # 24.0 (4!)
+io.print(math.gamma(1))           # 1.0
+io.print(math.erf(0))             # 0
+io.print(math.erfc(0))            # 1
+io.print(math.lgamma(1))          # 0
+
+# ---- isfinite ------------------------------------------------------------------------------
+io.print(math.isfinite(1.5))
+io.print(math.isfinite(math.nan))      # False
+io.print(math.isfinite(math.inf))      # False
+
+io.print("OK audit-math")

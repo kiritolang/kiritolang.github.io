@@ -1,0 +1,253 @@
+# The storage + execution engine. A Database holds named Tables; a Table holds a column schema and
+# a List of row Dicts. execute() runs a parsed statement and returns a result Dict:
+#   {"ok": True, "type": "...", ...}  or throws SqlError with a message.
+# Exercises Kirito broadly: classes, Dicts/Lists/Sets, sorting with key functions, closures,
+# exceptions, string formatting, integer/text typing.
+
+var parser = import(name = "sql_parser")
+
+class SqlError:
+    var _init_ = Function(self, msg : String):
+        self.msg = msg
+    var _str_ = Function(self) -> String:
+        return "SqlError: " + self.msg
+
+class Table:
+    var _init_ = Function(self, name : String, columns : List):
+        self.name = name
+        self.columns = columns          # list of {"name","type","pk"}
+        self.rows = []                  # list of row Dicts
+        # col_names / pk are part of Table's public interface to the engine (different class), so
+        # they are not private (no leading underscore): private members are class-local in Kirito.
+        self.col_names = []
+        self.pk = None
+        self._col_type = {}
+        for c in columns:
+            self.col_names.append(item = c["name"])
+            self._col_type[c["name"]] = c["type"]
+            if c["pk"]:
+                if self.pk != None:
+                    throw SqlError(msg = "table '" + name + "' has more than one PRIMARY KEY")
+                self.pk = c["name"]
+
+    var has_column = Function(self, col : String) -> Bool:
+        return col in self._col_type
+
+    var column_type = Function(self, col : String) -> String:
+        return self._col_type[col]
+
+    # Coerce/validate a parsed literal {"vtype","value"} against the declared column type.
+    var coerce = Function(self, col : String, lit):
+        var want = self._col_type[col]
+        if lit["vtype"] == "null":
+            return None
+        if want == "integer":
+            if lit["vtype"] != "int":
+                throw SqlError(msg = "column '" + col + "' is INTEGER but got a TEXT value")
+            return lit["value"]
+        # want == "text"
+        if lit["vtype"] == "int":
+            return String(x = lit["value"])    # ints accepted into TEXT, stringified
+        return lit["value"]
+
+    # Enforce the PRIMARY KEY uniqueness invariant for a candidate row.
+    var check_pk = Function(self, row):
+        if self.pk == None:
+            return None
+        var v = row[self.pk]
+        if v == None:
+            throw SqlError(msg = "PRIMARY KEY '" + self.pk + "' cannot be NULL")
+        for existing in self.rows:
+            if existing[self.pk] == v:
+                throw SqlError(msg = "duplicate PRIMARY KEY value: " + String(x = v))
+
+class Database:
+    var _init_ = Function(self):
+        self._tables = {}
+
+    var _get_table = Function(self, name : String):
+        if name not in self._tables:
+            throw SqlError(msg = "no such table: " + name)
+        return self._tables[name]
+
+    var execute = Function(self, stmt):
+        var kind = stmt["kind"]
+        switch kind:
+            case "create":
+                return self._exec_create(stmt = stmt)
+            case "drop":
+                return self._exec_drop(stmt = stmt)
+            case "insert":
+                return self._exec_insert(stmt = stmt)
+            case "select":
+                return self._exec_select(stmt = stmt)
+            case "update":
+                return self._exec_update(stmt = stmt)
+            case "delete":
+                return self._exec_delete(stmt = stmt)
+            default:
+                throw SqlError(msg = "unknown statement kind: " + kind)
+
+    var run = Function(self, sql : String):
+        return self.execute(stmt = parser.parse(sql = sql))
+
+    var _exec_create = Function(self, stmt):
+        var name = stmt["table"]
+        if name in self._tables:
+            throw SqlError(msg = "table already exists: " + name)
+        self._tables[name] = Table(name = name, columns = stmt["columns"])
+        return {"ok": True, "type": "create", "table": name}
+
+    var _exec_drop = Function(self, stmt):
+        var name = stmt["table"]
+        if name not in self._tables:
+            if stmt["if_exists"]:
+                return {"ok": True, "type": "drop", "table": name, "existed": False}
+            throw SqlError(msg = "no such table: " + name)
+        discard self._tables.pop(key = name)
+        return {"ok": True, "type": "drop", "table": name, "existed": True}
+
+    var _exec_insert = Function(self, stmt):
+        var tbl = self._get_table(name = stmt["table"])
+        var cols = stmt["columns"]
+        if cols == None:
+            cols = tbl.col_names
+        # validate column names
+        for c in cols:
+            if not tbl.has_column(col = c):
+                throw SqlError(msg = "no such column '" + c + "' in table '" + tbl.name + "'")
+        var inserted = 0
+        for vals in stmt["rows"]:
+            if len(x = vals) != len(x = cols):
+                throw SqlError(msg = "INSERT has " + String(x = len(x = vals)) + " values but " + String(x = len(x = cols)) + " columns")
+            var row = {}
+            # default every column to NULL, then fill provided ones
+            for cn in tbl.col_names:
+                row[cn] = None
+            for c, v in zip(cols, vals):
+                row[c] = tbl.coerce(col = c, lit = v)
+            tbl.check_pk(row)
+            tbl.rows.append(item = row)
+            inserted = inserted + 1
+        return {"ok": True, "type": "insert", "table": tbl.name, "count": inserted}
+
+    var _exec_select = Function(self, stmt):
+        var tbl = self._get_table(name = stmt["table"])
+        var matched = []
+        for row in tbl.rows:
+            if stmt["where"] == None or self._eval_where(node = stmt["where"], row = row, tbl = tbl):
+                matched.append(item = row)
+        # ORDER BY
+        if stmt["order"] != None:
+            var oc = stmt["order"]["column"]
+            if not tbl.has_column(col = oc):
+                throw SqlError(msg = "no such column '" + oc + "' in ORDER BY")
+            var keyfn = Function(r):
+                var v = r[oc]
+                # NULLs sort first; pair (is_not_null, value) so None groups together
+                if v == None:
+                    return [0, 0]
+                return [1, v]
+            matched = sorted(iterable = matched, key = keyfn, reverse = stmt["order"]["dir"] == "desc")
+        # LIMIT
+        if stmt["limit"] != None:
+            var lim = stmt["limit"]
+            if lim < 0:
+                throw SqlError(msg = "LIMIT cannot be negative")
+            matched = matched[0:lim]
+        # COUNT(*)
+        if stmt["count"]:
+            return {"ok": True, "type": "count", "table": tbl.name, "count": len(x = matched)}
+        # projection
+        var out_cols = tbl.col_names
+        if stmt["projection"] != "star" and stmt["projection"] != None:
+            for c in stmt["projection"]:
+                if not tbl.has_column(col = c):
+                    throw SqlError(msg = "no such column '" + c + "' in SELECT")
+            out_cols = stmt["projection"]
+        var out_rows = []
+        for row in matched:
+            var r = {}
+            for c in out_cols:
+                r[c] = row[c]
+            out_rows.append(item = r)
+        return {"ok": True, "type": "select", "columns": out_cols, "rows": out_rows}
+
+    var _exec_update = Function(self, stmt):
+        var tbl = self._get_table(name = stmt["table"])
+        for a in stmt["assigns"]:
+            if not tbl.has_column(col = a["column"]):
+                throw SqlError(msg = "no such column '" + a["column"] + "' in UPDATE")
+        var changed = 0
+        for row in tbl.rows:
+            if stmt["where"] == None or self._eval_where(node = stmt["where"], row = row, tbl = tbl):
+                for a in stmt["assigns"]:
+                    var newval = tbl.coerce(col = a["column"], lit = a["value"])
+                    # if updating the PK, re-check uniqueness against other rows
+                    if tbl.pk == a["column"] and newval != row[a["column"]]:
+                        for other in tbl.rows:
+                            if other != row and other[tbl.pk] == newval:
+                                throw SqlError(msg = "duplicate PRIMARY KEY value: " + String(x = newval))
+                    row[a["column"]] = newval
+                changed = changed + 1
+        return {"ok": True, "type": "update", "table": tbl.name, "count": changed}
+
+    var _exec_delete = Function(self, stmt):
+        var tbl = self._get_table(name = stmt["table"])
+        var kept = []
+        var removed = 0
+        for row in tbl.rows:
+            if stmt["where"] != None and not self._eval_where(node = stmt["where"], row = row, tbl = tbl):
+                kept.append(item = row)
+            else:
+                removed = removed + 1
+        tbl.rows = kept
+        return {"ok": True, "type": "delete", "table": tbl.name, "count": removed}
+
+    # --- WHERE evaluation: returns a Bool. SQL three-valued logic is simplified to two-valued
+    #     (NULL comparisons are False), which is enough for the test surface. ---
+    var _eval_where = Function(self, node, row, tbl) -> Bool:
+        var op = node["op"]
+        switch op:
+            case "and":
+                return self._eval_where(node = node["left"], row = row, tbl = tbl) and self._eval_where(node = node["right"], row = row, tbl = tbl)
+            case "or":
+                return self._eval_where(node = node["left"], row = row, tbl = tbl) or self._eval_where(node = node["right"], row = row, tbl = tbl)
+            case "not":
+                return not self._eval_where(node = node["child"], row = row, tbl = tbl)
+            case "isnull":
+                self._require_col(col = node["column"], tbl = tbl)
+                return row[node["column"]] == None
+            case "isnotnull":
+                self._require_col(col = node["column"], tbl = tbl)
+                return row[node["column"]] != None
+            case "cmp":
+                self._require_col(col = node["column"], tbl = tbl)
+                var lhs = row[node["column"]]
+                var rhs = node["value"]["value"]
+                if lhs == None or node["value"]["vtype"] == "null":
+                    return False    # comparisons with NULL are never true
+                return self._compare(lhs = lhs, rhs = rhs, opv = node["cmp"])
+            default:
+                throw SqlError(msg = "unknown WHERE operator: " + op)
+
+    var _require_col = Function(self, col, tbl):
+        if not tbl.has_column(col = col):
+            throw SqlError(msg = "no such column '" + col + "' in WHERE")
+
+    var _compare = Function(self, lhs, rhs, opv) -> Bool:
+        switch opv:
+            case "=":
+                return lhs == rhs
+            case "!=", "<>":
+                return lhs != rhs
+            case "<":
+                return lhs < rhs
+            case "<=":
+                return lhs <= rhs
+            case ">":
+                return lhs > rhs
+            case ">=":
+                return lhs >= rhs
+            default:
+                throw SqlError(msg = "unknown comparison operator: " + opv)

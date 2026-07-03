@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Kirito Journal</title>
+    <link>https://example.com/kirito</link>
+    <description>Announcements &amp; tutorials for the Kirito language.</description>
+    <item>
+      <title>Kirito 2.0 released</title>
+      <link>https://example.com/kirito/2-0</link>
+      <description>The next major release adds &lt;strong&gt;tail calls&lt;/strong&gt;.</description>
+      <pubDate>Mon, 15 Jan 2024 09:00:00 +0000</pubDate>
+      <guid>https://example.com/kirito/2-0</guid>
+    </item>
+    <item>
+      <title>Beginner guide: functions</title>
+      <link>https://example.com/kirito/guide-functions</link>
+      <description>A gentle introduction to first-class functions.</description>
+      <pubDate>Fri, 05 Jan 2024 14:30:00 +0000</pubDate>
+      <guid>guide-functions</guid>
+    </item>
+    <item>
+      <title>Pattern matching in the works</title>
+      <link>https://example.com/kirito/rfc/patterns</link>
+      <description>Proposal for a `switch` extension.</description>
+      <pubDate>Tue, 02 Jan 2024 08:00:00 +0000</pubDate>
+      <guid>rfc-patterns</guid>
+    </item>
+  </channel>
+</rss>

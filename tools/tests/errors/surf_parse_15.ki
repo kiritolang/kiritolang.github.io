@@ -1,0 +1,3 @@
+# PARSER: 'case' used as a statement outside any switch (soft keyword -> bare name, then a stray literal)
+case 5:
+    discard 1

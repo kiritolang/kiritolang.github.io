@@ -1,0 +1,3 @@
+var enum = import("enum")
+var E = enum.Enum(["A", "B"])
+discard E.get("C")

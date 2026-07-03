@@ -1,0 +1,144 @@
+# cronki/main.ki — CLI entry.
+#
+# Subcommands:
+#   list                             — every job in the file, one per line
+#   next COUNT                       — next COUNT fire times per job (default 5)
+#   due                              — jobs due AT the current minute (or --at ISO)
+#   run                              — run all due jobs (against --at), append to --log
+#   history [COUNT]                  — show the last COUNT lines of --log (default 20)
+#
+# Common options:
+#   -f, --file FILE         — the crontab file (required)
+#       --at ISO            — reference wall time (default: now); accepts YYYY-MM-DDTHH:MM
+#       --log FILE          — history log file (default: <tempdir>/cronki.log)
+#       --timeout SECONDS   — per-job timeout for `run` (default: 60)
+
+var io   = import("io")
+var arg  = import("arg")
+var time = import("time")
+var path = import("path")
+
+var parse    = import("parse")
+var schedule = import("schedule")
+var runner   = import("runner")
+var history  = import("history")
+
+var _loadJobs = Function(file : String):
+    try:
+        return parse.parseFile(file)
+    catch String as e:
+        io.eprint("cronki: " + e)
+        return None
+
+var _referenceTime = Function(iso : String):
+    if iso == "":
+        return time.now()
+    # Accept `YYYY-MM-DDTHH:MM[:SS]`. `time.strptime` handles both.
+    var fmts = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"]
+    for f in fmts:
+        try:
+            return time.strptime(iso, f)
+        catch:
+            continue
+    throw "unrecognized --at time: " + iso
+
+var cmdList = Function(jobs : List):
+    for j in jobs:
+        io.print("  L" + String(j["line"]) + ": " + j["raw"])
+
+var cmdNext = Function(jobs : List, at, count : Integer):
+    for j in jobs:
+        io.print("  " + j["command"] + " (line " + String(j["line"]) + "):")
+        for t in schedule.nextRuns(at, j, count):
+            io.print("    " + t.iso())
+
+var cmdDue = Function(jobs : List, at):
+    var due = []
+    for j in jobs:
+        if schedule.matches(at, j):
+            due.append(j)
+    if len(due) == 0:
+        io.print("  (no jobs due at " + at.iso() + ")")
+    else:
+        for j in due:
+            io.print("  L" + String(j["line"]) + ": " + j["command"])
+    return due
+
+var cmdRun = Function(jobs : List, at, logfile : String, timeout):
+    var due = cmdDue(jobs, at)
+    var ok = 0
+    var fail = 0
+    for j in due:
+        var result = runner.runJob(j, timeout)
+        history.append(logfile, result)
+        if result["code"] == 0:
+            ok = ok + 1
+            io.print("  ok  L" + String(j["line"]) + " [" + String(result["elapsed_ms"]) + "ms] " + j["command"])
+        else:
+            fail = fail + 1
+            io.print("  err L" + String(j["line"]) + " code=" + String(result["code"]) + " " + j["command"])
+    io.print("cronki: " + String(ok) + " ok, " + String(fail) + " failed")
+
+var cmdHistory = Function(logfile : String, count : Integer):
+    var entries = history.tail(logfile, count)
+    if len(entries) == 0:
+        io.print("  (empty history)")
+        return
+    for e in entries:
+        var status = "ok"
+        if e["code"] != 0:
+            status = "err(" + String(e["code"]) + ")"
+        io.print("  " + e["start"] + "  [" + status + "] " + String(e["elapsed_ms"]) + "ms  " + e["command"])
+
+var _main = Function():
+    var p = arg.Parser("cron-like scheduler + one-shot batch runner")
+    p.positional("command", "list | next | due | run | history")
+    p.positional("target",  "for `next` and `history` the COUNT; empty otherwise")
+    p.option("file",    "", "crontab file (required for list/next/due/run)")
+    p.option("at",      "", "reference wall time in ISO; default: now")
+    p.option("log",     path.join(path.gettempdir(), "cronki.log"), "history log file (default under tempdir)")
+    p.option("timeout", 60, "per-job timeout in seconds for `run`")
+    var opts = p.parse(arglist)
+    if opts == None:
+        return 0
+    var cmd = opts["command"]
+    if cmd == "history":
+        var count = 20
+        if opts["target"] != "":
+            count = Integer(opts["target"])
+        cmdHistory(opts["log"], count)
+        return 0
+    if opts["file"] == "":
+        io.eprint("cronki: --file is required for " + cmd)
+        return 2
+    var jobs = _loadJobs(opts["file"])
+    if jobs == None:
+        return 1
+    var at = None
+    try:
+        at = _referenceTime(opts["at"])
+    catch String as e:
+        io.eprint("cronki: " + e)
+        return 2
+    if cmd == "list":
+        cmdList(jobs)
+        return 0
+    if cmd == "next":
+        var count = 5
+        if opts["target"] != "":
+            count = Integer(opts["target"])
+        cmdNext(jobs, at, count)
+        return 0
+    if cmd == "due":
+        discard cmdDue(jobs, at)
+        return 0
+    if cmd == "run":
+        cmdRun(jobs, at, opts["log"], opts["timeout"])
+        return 0
+    io.eprint("cronki: unknown command: " + cmd)
+    return 2
+
+if argmain:
+    var code = _main()
+    if code != 0:
+        import("sys").exit(code)

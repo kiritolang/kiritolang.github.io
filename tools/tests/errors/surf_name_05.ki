@@ -1,0 +1,2 @@
+# name resolution: a typo'd builtin is an undefined name
+discard lenght([1, 2, 3])

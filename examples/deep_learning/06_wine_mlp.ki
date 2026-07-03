@@ -1,0 +1,36 @@
+# Project 6 — Multi-class classification of wine cultivars from 13 chemical measurements. A small MLP
+# with softmax cross-entropy over 3 classes. Real data: scikit-learn's wine set (178 samples).
+var io = import("io")
+var T = import("tensor")
+var nn = import("nn")
+var data = import("data")
+
+io.print("=== Wine cultivar classification (MLP, 13 features -> 3 classes) ===")
+
+var ds = data.load_wine()
+var X = data.standardize(ds[0])
+var split = data.train_test_split(X, ds[1], 0.8, 23)
+var Xtr = T.Tensor(split[0])
+var ytr = split[1]
+var Xte = T.Tensor(split[2])
+var yte = split[3]
+io.print(f"train {len(split[0])} samples, test {len(split[2])} samples")
+
+nn.seed(6)
+var model = nn.Sequential([nn.Linear(13, 24), nn.ReLU(), nn.Linear(24, 3)])
+var opt = nn.Adam(model.parameters(), lr = 0.02)
+
+var epoch = 0
+while epoch < 100:
+    var loss = nn.cross_entropy(model(Xtr), ytr, 3)
+    loss.backward()
+    opt.step()
+    if epoch % 25 == 0:
+        io.print(f"  epoch {epoch:3d}  loss {loss.item():.4f}")
+    epoch = epoch + 1
+
+with T.nograd():
+    var test_acc = nn.accuracy(nn.argmax_rows(model(Xte)), yte)
+io.print(f"test accuracy {test_acc:.3f}")
+assert test_acc > 0.9, "wine classifier should reach >90% test accuracy"
+io.print("OK wine")

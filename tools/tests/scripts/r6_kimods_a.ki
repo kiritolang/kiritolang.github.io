@@ -1,0 +1,343 @@
+# r6_kimods_a — audit of Kirito-authored frozen-source modules, GROUP 1:
+# itertools, functools, collections, statistics, heapq, bisect, copy, enum.
+# Self-checking: every assertion bumps `n`; the final line reports the count.
+var io = import("io")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# Returns True iff calling `thunk` throws.
+var throws = Function(thunk):
+    try:
+        discard thunk()
+        return False
+    catch as e:
+        return True
+
+# Float closeness helper (computed floats; never exact ==).
+var close = Function(a, b):
+    return a.compare(b, 1e-9, 1e-12)
+
+# ============================ itertools ============================
+var it = import("itertools")
+
+# count: bounded, ascending / descending / keyword order (start, step, stop).
+ok(it.count(0, 1, 5) == [0, 1, 2, 3, 4], "count asc")
+ok(it.count(10, 2, 20) == [10, 12, 14, 16, 18], "count step")
+ok(it.count(5, -1, 0) == [5, 4, 3, 2, 1], "count descending")
+ok(it.count(stop = 3) == [0, 1, 2], "count stop kwarg")
+ok(it.count(start = 1, step = 2, stop = 8) == [1, 3, 5, 7], "count kwargs")
+ok(it.count(0, 1, 0) == [], "count empty range")
+ok(throws(Function(): return it.count(0, 1)), "count needs stop")
+ok(throws(Function(): return it.count(0, 0, 5)), "count zero step throws")
+
+# repeat / cycle / chain.
+ok(it.repeat("x", 3) == ["x", "x", "x"], "repeat")
+ok(it.repeat("x", 0) == [], "repeat 0")
+ok(it.cycle([1, 2], 3) == [1, 2, 1, 2, 1, 2], "cycle")
+ok(it.cycle([1, 2], 0) == [], "cycle 0")
+ok(it.chain([[1, 2], [3, 4]]) == [1, 2, 3, 4], "chain")
+ok(it.chain([]) == [], "chain empty")
+ok(it.chain([[], [1], []]) == [1], "chain with empties")
+
+# islice: 3-arg, 4-arg with step, bounds beyond length, empty window.
+ok(it.islice([0, 1, 2, 3, 4, 5], 1, 4) == [1, 2, 3], "islice 3-arg")
+ok(it.islice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 2, 8, 2) == [2, 4, 6], "islice step")
+ok(it.islice([1, 2, 3], 0, 100) == [1, 2, 3], "islice stop beyond len")
+ok(it.islice([1, 2, 3], 0, 0) == [], "islice empty window")
+ok(it.islice([1, 2, 3], 5, 9) == [], "islice start beyond len")
+
+# accumulate: default sum, custom func, single element, empty, leading-None folds.
+ok(it.accumulate([1, 2, 3, 4]) == [1, 3, 6, 10], "accumulate sum")
+ok(it.accumulate([1, 2, 3, 4], Function(a, b): return a * b) == [1, 2, 6, 24], "accumulate product")
+ok(it.accumulate([7]) == [7], "accumulate single")
+ok(it.accumulate([]) == [], "accumulate empty")
+ok(it.accumulate([None]) == [None], "accumulate leading None")
+
+# product: counts and a known value.
+ok(it.product([[1, 2], [3, 4]]) == [[1, 3], [1, 4], [2, 3], [2, 4]], "product")
+ok(len(it.product([[1, 2, 3], [4, 5]])) == 6, "product count")
+ok(it.product([]) == [[]], "product of nothing is one empty tuple")
+
+# permutations: full, r-length, r=0, r>n.
+ok(len(it.permutations([1, 2, 3])) == 6, "permutations full count")
+ok(it.permutations([1, 2, 3])[0] == [1, 2, 3], "permutations first")
+ok(len(it.permutations([1, 2, 3, 4], 2)) == 12, "permutations r=2 count")
+ok(it.permutations([1, 2, 3], 0) == [[]], "permutations r=0")
+ok(it.permutations([1, 2], 5) == [], "permutations r>n")
+
+# combinations: counts, r=0, r>n, a known value.
+ok(it.combinations([1, 2, 3, 4], 2) == [[1, 2], [1, 3], [1, 4], [2, 3], [2, 4], [3, 4]], "combinations")
+ok(len(it.combinations([1, 2, 3, 4, 5], 3)) == 10, "combinations count")
+ok(it.combinations([1, 2, 3], 0) == [[]], "combinations r=0")
+ok(it.combinations([1, 2, 3], 5) == [], "combinations r>n")
+
+# takewhile / dropwhile / filterfalse / compress / starmap.
+ok(it.takewhile(Function(x): return x < 3, [1, 2, 3, 4, 1]) == [1, 2], "takewhile")
+ok(it.takewhile(Function(x): return x < 0, [1, 2]) == [], "takewhile none")
+ok(it.dropwhile(Function(x): return x < 3, [1, 2, 3, 4, 1]) == [3, 4, 1], "dropwhile")
+ok(it.dropwhile(Function(x): return x < 100, [1, 2]) == [], "dropwhile all")
+ok(it.filterfalse(Function(x): return x % 2 == 0, [1, 2, 3, 4, 5]) == [1, 3, 5], "filterfalse")
+ok(it.compress([1, 2, 3, 4], [True, False, True, False]) == [1, 3], "compress")
+ok(it.compress([1, 2, 3], [True]) == [1], "compress short selectors")
+ok(it.starmap(Function(t): return t[0] + t[1], [[1, 2], [3, 4]]) == [3, 7], "starmap")
+ok(it.starmap(Function(t): return t[0], []) == [], "starmap empty")
+
+# pairwise / ziplongest / groupby.
+ok(it.pairwise([1, 2, 3, 4]) == [[1, 2], [2, 3], [3, 4]], "pairwise")
+ok(it.pairwise([1]) == [], "pairwise single")
+ok(it.pairwise([]) == [], "pairwise empty")
+ok(it.ziplongest([[1, 2, 3], [4, 5]], 0) == [[1, 4], [2, 5], [3, 0]], "ziplongest fill")
+ok(it.ziplongest([[1], [2]]) == [[1, 2]], "ziplongest equal")
+ok(it.groupby([1, 1, 2, 2, 2, 3, 1]) == [[1, [1, 1]], [2, [2, 2, 2]], [3, [3]], [1, [1]]], "groupby consecutive")
+ok(it.groupby([]) == [], "groupby empty")
+ok(it.groupby(["ax", "ay", "bz"], Function(s): return s[0]) == [["a", ["ax", "ay"]], ["b", ["bz"]]], "groupby key")
+
+# ============================ functools ============================
+var ft = import("functools")
+
+ok(ft.reduce(Function(a, b): return a + b, [1, 2, 3, 4]) == 10, "reduce no initial")
+ok(ft.reduce(Function(a, b): return a + b, [1, 2, 3, 4], 100) == 110, "reduce with initial")
+ok(ft.reduce(Function(a, b): return a + b, [], 0) == 0, "reduce empty with initial")
+ok(ft.reduce(Function(a, b): return a + b, [42]) == 42, "reduce single no initial")
+ok(throws(Function(): return ft.reduce(Function(a, b): return a + b, [])), "reduce empty no initial throws")
+
+# partial: pre-bind leading args; result takes a list of the rest.
+var add3 = ft.partial(Function(args): return args[0] + args[1] + args[2], [1, 2])
+ok(add3([3]) == 6, "partial binds leading args")
+var addNone = ft.partial(Function(args): return args[0] + args[1], [])
+ok(addNone([4, 5]) == 9, "partial empty bound")
+
+# cache: memoizes, computes once per distinct arg.
+var cacheCalls = [0]
+var slow = Function(x):
+    cacheCalls[0] = cacheCalls[0] + 1
+    return x * x
+var cached = ft.cache(slow)
+ok(cached(4) == 16, "cache first call")
+ok(cached(4) == 16, "cache hit")
+ok(cached(5) == 25, "cache new arg")
+ok(cacheCalls[0] == 2, "cache computed once per distinct arg")
+var cachedStr = ft.cache(Function(s): return s.upper())
+ok(cachedStr("hi") == "HI", "cache string key")
+ok(cachedStr("hi") == "HI", "cache string key hit")
+
+# ============================ collections ============================
+var co = import("collections")
+
+# deque: append/appendleft/pop/popleft/index/len/iterate/empty-init.
+var dq = co.deque([1, 2, 3])
+dq.append(4)
+dq.appendleft(0)
+ok(len(dq) == 5, "deque len")
+ok(dq[0] == 0, "deque getitem front")
+ok(dq[4] == 4, "deque getitem back")
+ok(dq.pop() == 4, "deque pop right")
+ok(dq.popleft() == 0, "deque popleft")
+ok(len(dq) == 3, "deque len after pops")
+var dqSeen = []
+for x in dq:
+    dqSeen.append(x)
+ok(dqSeen == [1, 2, 3], "deque iterate order")
+var dqEmpty = co.deque()
+ok(len(dqEmpty) == 0, "deque empty init")
+ok(String(co.deque([1, 2])) == "deque([1, 2])", "deque str")
+
+# Counter: get/index/items/mostcommon (default, top-n, n=0, negative n)/add.
+var c = co.Counter(["a", "b", "a", "c", "a", "b"])
+ok(c.get("a") == 3, "counter get")
+ok(c.get("z") == 0, "counter get missing is 0")
+ok(c["a"] == 3, "counter index")
+ok(c["z"] == 0, "counter index missing is 0")
+ok(len(c.items()) == 3, "counter items count")
+ok(c.mostcommon()[0] == ["a", 3], "counter mostcommon top")
+ok(c.mostcommon(2) == [["a", 3], ["b", 2]], "counter mostcommon n")
+ok(c.mostcommon(0) == [], "counter mostcommon 0")
+ok(c.mostcommon(-1) == [["a", 3], ["b", 2]], "counter mostcommon negative is end-slice")
+c.add("z")
+ok(c.get("z") == 1, "counter add")
+var cEmpty = co.Counter()
+ok(cEmpty.mostcommon() == [], "counter empty mostcommon")
+
+# defaultdict: missing key fills via factory; set/contains/keys/values/items.
+var dd = co.defaultdict(Function(): return [])
+dd["x"].append(1)
+dd["x"].append(2)
+dd["y"].append(3)
+ok(dd["x"] == [1, 2], "defaultdict accumulates")
+ok(dd["y"] == [3], "defaultdict second key")
+ok(("x" in dd) == True, "defaultdict contains true")
+ok(("nope" in dd) == False, "defaultdict contains false")
+ok(len(dd.keys()) == 2, "defaultdict keys")
+ok(len(dd.values()) == 2, "defaultdict values")
+ok(len(dd.items()) == 2, "defaultdict items")
+var ddCount = co.defaultdict(Function(): return 0)
+ddCount["a"] = ddCount["a"] + 1
+ddCount["a"] = ddCount["a"] + 1
+ok(ddCount["a"] == 2, "defaultdict int factory")
+dd["z"] = [9]
+ok(dd["z"] == [9], "defaultdict explicit set")
+
+# ============================ statistics ============================
+var st = import("statistics")
+
+ok(close(st.mean([1, 2, 3]), 2.0), "mean odd")
+ok(close(st.mean([1, 2, 3, 4]), 2.5), "mean even")
+ok(close(st.mean([5]), 5.0), "mean single")
+ok(close(st.median([1, 3, 2]), 2.0), "median odd (sorts)")
+ok(close(st.median([1, 2, 3, 4]), 2.5), "median even")
+ok(close(st.median([5]), 5.0), "median single")
+ok(st.mode([1, 1, 2, 3, 3, 3]) == 3, "mode")
+ok(st.mode([7]) == 7, "mode single")
+ok(st.multimode([1, 1, 2, 2, 3]) == [1, 2], "multimode ties first-seen order")
+ok(st.multimode([5]) == [5], "multimode single")
+# Known dataset: sample var = 32/7, pop var = 4.0.
+ok(close(st.variance([2, 4, 4, 4, 5, 5, 7, 9]), 32.0 / 7.0), "variance (sample)")
+ok(close(st.pvariance([2, 4, 4, 4, 5, 5, 7, 9]), 4.0), "pvariance (population)")
+ok(close(st.stdev([2, 4, 4, 4, 5, 5, 7, 9]), (32.0 / 7.0) ** 0.5), "stdev (sample)")
+ok(close(st.pstdev([2, 4, 4, 4, 5, 5, 7, 9]), 2.0), "pstdev (population)")
+ok(close(st.pvariance([5]), 0.0), "pvariance single is 0")
+# quantiles: default n=4, explicit n.
+ok(len(st.quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])) == 3, "quantiles default n=4 -> 3 cuts")
+ok(close(st.quantiles([1, 2, 3, 4], 2)[0], 2.5), "quantiles n=2 median cut")
+# statistics edge cases (all must throw).
+ok(throws(Function(): return st.mean([])), "mean empty throws")
+ok(throws(Function(): return st.median([])), "median empty throws")
+ok(throws(Function(): return st.mode([])), "mode empty throws")
+ok(throws(Function(): return st.variance([5])), "variance <2 throws")
+ok(throws(Function(): return st.pvariance([])), "pvariance empty throws")
+ok(throws(Function(): return st.quantiles([5])), "quantiles <2 throws")
+ok(throws(Function(): return st.quantiles([1, 2, 3], 0)), "quantiles n<1 throws")
+
+# ============================ heapq ============================
+var hq = import("heapq")
+
+# heapify returns a NEW list (original unchanged) with the min at index 0.
+var hdata = [5, 3, 8, 1, 9, 2, 7]
+var heap = hq.heapify(hdata)
+ok(hdata == [5, 3, 8, 1, 9, 2, 7], "heapify does not mutate input")
+ok(heap[0] == 1, "heapify min at root")
+# Popping yields ascending order (heap invariant).
+var popped = []
+while len(heap) > 0:
+    popped.append(hq.heappop(heap))
+ok(popped == [1, 2, 3, 5, 7, 8, 9], "heappop ascending")
+# heappush keeps the invariant.
+var h2 = []
+hq.heappush(h2, 5)
+hq.heappush(h2, 1)
+hq.heappush(h2, 3)
+ok(h2[0] == 1, "heappush min at root")
+# heapreplace: returns old min, installs new item.
+ok(hq.heapreplace(h2, 0) == 1, "heapreplace returns old min")
+ok(h2[0] == 0, "heapreplace installs new")
+# nlargest / nsmallest, including n beyond length and n<=0.
+ok(hq.nlargest(3, [5, 3, 8, 1, 9, 2, 7]) == [9, 8, 7], "nlargest")
+ok(hq.nsmallest(3, [5, 3, 8, 1, 9, 2, 7]) == [1, 2, 3], "nsmallest")
+ok(hq.nlargest(0, [1, 2, 3]) == [], "nlargest 0")
+ok(hq.nlargest(-1, [1, 2, 3]) == [], "nlargest negative")
+ok(hq.nsmallest(0, [1, 2, 3]) == [], "nsmallest 0")
+ok(hq.nlargest(10, [1, 2, 3]) == [3, 2, 1], "nlargest beyond len descending")
+ok(hq.nsmallest(10, [3, 1, 2]) == [1, 2, 3], "nsmallest beyond len ascending")
+# merge of sorted inputs.
+ok(hq.merge([[1, 4, 7], [2, 5, 8], [3, 6, 9]]) == [1, 2, 3, 4, 5, 6, 7, 8, 9], "merge sorted")
+ok(hq.merge([]) == [], "merge nothing")
+ok(hq.merge([[], [1], []]) == [1], "merge with empties")
+# heapq edge cases.
+ok(throws(Function(): return hq.heappop([])), "heappop empty throws")
+ok(throws(Function(): return hq.heapreplace([], 5)), "heapreplace empty throws")
+
+# ============================ bisect ============================
+var bi = import("bisect")
+
+var ba = [1, 3, 3, 3, 5, 7]
+ok(bi.bisectleft(ba, 3) == 1, "bisectleft into run")
+ok(bi.bisectright(ba, 3) == 4, "bisectright past run")
+ok(bi.bisect(ba, 3) == 4, "bisect alias = right")
+ok(bi.bisectleft(ba, 0) == 0, "bisectleft below all")
+ok(bi.bisectleft(ba, 8) == 6, "bisectleft above all")
+ok(bi.bisectright(ba, 4) == 4, "bisectright of absent value")
+ok(bi.bisectleft([], 5) == 0, "bisectleft empty")
+# insort variants insert in place at the correct spot.
+var bL = [1, 3, 5]
+bi.insortleft(bL, 4)
+ok(bL == [1, 3, 4, 5], "insortleft")
+var bR = [1, 3, 3, 5]
+bi.insortright(bR, 3)
+ok(bR == [1, 3, 3, 3, 5], "insortright keeps order")
+var bD = [1, 2, 3]
+bi.insort(bD, 2)
+ok(bD == [1, 2, 2, 3], "insort alias")
+
+# ============================ copy ============================
+var cp = import("copy")
+
+# Shallow copy: top-level independent, nested shared.
+var sOrig = [[1, 2], [3, 4]]
+var sCopy = cp.copy(sOrig)
+sCopy.append([5, 6])
+ok(len(sOrig) == 2, "shallow copy top-level independent")
+sCopy[0].append(99)
+ok(sOrig[0] == [1, 2, 99], "shallow copy shares nested")
+# Immutable scalars returned as-is.
+ok(cp.copy(5) == 5, "copy int")
+ok(cp.copy("hi") == "hi", "copy string")
+# Deep copy: fully independent.
+var dOrig = [[1, 2], [3, 4]]
+var dCopy = cp.deepcopy(dOrig)
+dCopy[0].append(99)
+ok(dOrig[0] == [1, 2], "deepcopy nested independent")
+ok(dCopy[0] == [1, 2, 99], "deepcopy carries data")
+# Deep copy of a Dict / Set.
+var dDict = {"a": [1, 2], "b": [3, 4]}
+var dDictCopy = cp.deepcopy(dDict)
+dDictCopy["a"].append(9)
+ok(dDict["a"] == [1, 2], "deepcopy dict independent")
+var dSet = Set([1, 2, 3])
+var dSetCopy = cp.deepcopy(dSet)
+ok(dSetCopy == Set([1, 2, 3]), "deepcopy set equal")
+# Deep copy is cycle-safe.
+var cyc = [1, 2]
+cyc.append(cyc)
+var cycCopy = cp.deepcopy(cyc)
+ok(len(cycCopy) == 3, "deepcopy cyclic list")
+ok(id(cycCopy[2]) == id(cycCopy), "deepcopy preserves the self-cycle")
+ok(id(cycCopy) != id(cyc), "deepcopy is a new object")
+# Shared reference preserved (both children point at the same shell).
+var shared = [1]
+var holder = [shared, shared]
+var holderCopy = cp.deepcopy(holder)
+ok(id(holderCopy[0]) == id(holderCopy[1]), "deepcopy preserves shared refs")
+ok(id(holderCopy[0]) != id(shared), "deepcopy shared ref is new")
+# Class instance copy is independent (via serde).
+class Box:
+    var _init_ = Function(self, v):
+        self.v = v
+var box = Box([1, 2])
+var boxCopy = cp.copy(box)
+boxCopy.v.append(99)
+ok(box.v == [1, 2], "instance copy independent")
+ok(boxCopy.v == [1, 2, 99], "instance copy carries attribute")
+
+# ============================ enum ============================
+var en = import("enum")
+
+var Color = en.Enum(["RED", "GREEN", "BLUE"])
+ok(Color.get("RED") == 0, "enum get RED")
+ok(Color.get("BLUE") == 2, "enum get BLUE")
+ok(Color["GREEN"] == 1, "enum index")
+ok(Color.nameof(0) == "RED", "enum nameof")
+ok(Color.nameof(2) == "BLUE", "enum nameof last")
+ok(Color.names() == ["RED", "GREEN", "BLUE"], "enum names in definition order")
+ok(Color.values() == [0, 1, 2], "enum values")
+ok(("RED" in Color) == True, "enum contains true")
+ok(("PURPLE" in Color) == False, "enum contains false")
+ok(throws(Function(): return Color.get("PURPLE")), "enum get unknown throws")
+# names() returns a copy (mutating it must not affect the enum).
+var nm = Color.names()
+nm.append("X")
+ok(Color.names() == ["RED", "GREEN", "BLUE"], "enum names() returns a copy")
+
+io.print("r6_kimods_a: " + String(n) + " checks passed")

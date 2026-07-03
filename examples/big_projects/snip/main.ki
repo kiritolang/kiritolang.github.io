@@ -1,0 +1,190 @@
+# snip/main.ki — CLI entry.
+#
+# Subcommands:
+#   add BODY                     — add a snippet whose body is BODY; --title/--lang/--tags apply
+#   addfile PATH                 — add a snippet from a file (auto-detects lang from extension)
+#   list                         — every snippet, most-recent first; --tag/--lang/--regex filter
+#   show ID                      — full body of snippet whose id starts with ID
+#   remove ID                    — drop a snippet
+#   stats                        — total + top-tag summary + language list
+#   export PATH                  — write a portable JSON snapshot to PATH
+#   import PATH                  — merge a JSON snapshot into the store
+#
+# Common options:
+#   -d, --db FILE           — snippet database file (default: <tempdir>/snip.dump)
+#       --title TEXT        — title for `add`/`addfile` (default: first line of body)
+#       --lang STR          — language for `add`/`addfile` (default: guessed for addfile, "" for add)
+#       --tags T,U,V        — comma-separated tags for `add`/`addfile` and for filtering
+#       --regex PATTERN     — regex filter for `list`
+#       --top N             — for `stats`, how many tags to show (default 10)
+
+var io    = import("io")
+var arg   = import("arg")
+var path  = import("path")
+
+var db     = import("db")
+var search = import("search")
+var fmt    = import("fmt")
+
+# Extract a first-line title from a body if the user didn't supply one.
+var _autoTitle = Function(body : String) -> String:
+    for line in body.split("\n"):
+        var s = line.strip()
+        if s != "":
+            if len(s) > 80:
+                return s[0:79] + "…"
+            return s
+    return "untitled"
+
+# Guess a language from a file extension.
+var _guessLang = Function(pth : String) -> String:
+    var ext = path.splitext(pth)[1]
+    if ext == ".ki":
+        return "kirito"
+    if ext == ".py":
+        return "python"
+    if ext == ".js" or ext == ".jsx":
+        return "javascript"
+    if ext == ".ts" or ext == ".tsx":
+        return "typescript"
+    if ext == ".rs":
+        return "rust"
+    if ext == ".go":
+        return "go"
+    if ext == ".c" or ext == ".h":
+        return "c"
+    if ext == ".cc" or ext == ".cpp" or ext == ".hpp":
+        return "cpp"
+    if ext == ".sh" or ext == ".bash":
+        return "bash"
+    if ext == ".md":
+        return "markdown"
+    if ext == ".sql":
+        return "sql"
+    return ""
+
+var _parseTags = Function(s : String) -> List:
+    var out = []
+    if s == "":
+        return out
+    for t in s.split(","):
+        var trimmed = t.strip()
+        if trimmed != "":
+            out.append(trimmed)
+    return out
+
+var _main = Function():
+    var p = arg.Parser("code snippet manager")
+    p.positional("command", "add | addfile | list | show | remove | stats | export | import")
+    p.positional("target",  "the BODY / PATH / ID (or '' for `list`/`stats`)")
+    p.option("db",    "", "database file (default: <tempdir>/snip.dump)")
+    p.option("title", "", "snippet title (default: first non-blank line of the body)")
+    p.option("lang",  "", "language tag (default: guessed for addfile, empty for add)")
+    p.option("tags",  "", "comma-separated tags")
+    p.option("regex", "", "regex filter for `list`")
+    p.option("top",   10, "for `stats`, how many tags to show")
+    var opts = p.parse(arglist)
+    if opts == None:
+        return 0
+    var dbFile = opts["db"]
+    if dbFile == "":
+        dbFile = path.join(path.gettempdir(), "snip.dump")
+    var state = db.load(dbFile)
+    var cmd = opts["command"]
+    var target = opts["target"]
+    if cmd == "add":
+        if target == "":
+            io.eprint("snip: add needs a BODY")
+            return 2
+        var body = target
+        var title = opts["title"]
+        if title == "":
+            title = _autoTitle(body)
+        var s = db.upsert(state, title, opts["lang"], _parseTags(opts["tags"]), body)
+        db.save(dbFile, state)
+        io.print("snip: added " + s["id"] + " '" + s["title"] + "'")
+        return 0
+    if cmd == "addfile":
+        if target == "":
+            io.eprint("snip: addfile needs a PATH")
+            return 2
+        try:
+            var fh = io.open(target, "r")
+            var body = fh.read()
+            fh.close()
+            var title = opts["title"]
+            if title == "":
+                title = path.basename(target)
+            var lang = opts["lang"]
+            if lang == "":
+                lang = _guessLang(target)
+            var s = db.upsert(state, title, lang, _parseTags(opts["tags"]), body)
+            db.save(dbFile, state)
+            io.print("snip: added " + s["id"] + " '" + s["title"] + "' (" + s["lang"] + ")")
+        catch String as e:
+            io.eprint("snip: " + e)
+            return 1
+        return 0
+    if cmd == "list":
+        var items = db.listAll(state)
+        items = search.byTags(items, _parseTags(opts["tags"]))
+        items = search.byLang(items, opts["lang"])
+        items = search.byRegex(items, opts["regex"])
+        io.write(fmt.list(items))
+        return 0
+    if cmd == "show":
+        if target == "":
+            io.eprint("snip: show needs an ID (or a unique prefix)")
+            return 2
+        var s = db.find(state, target)
+        if s == None:
+            io.eprint("snip: no snippet with id (or unique prefix) '" + target + "'")
+            return 1
+        io.write(fmt.show(s))
+        return 0
+    if cmd == "remove":
+        if target == "":
+            io.eprint("snip: remove needs an ID (or a unique prefix)")
+            return 2
+        var s = db.find(state, target)
+        if s == None:
+            io.eprint("snip: no snippet with id (or unique prefix) '" + target + "'")
+            return 1
+        discard db.remove(state, s["id"])
+        db.save(dbFile, state)
+        io.print("snip: removed " + s["id"])
+        return 0
+    if cmd == "stats":
+        var items = db.listAll(state)
+        var top = search.topTags(items, opts["top"])
+        var langs = search.languages(items)
+        io.write(fmt.stats(items, top, langs))
+        return 0
+    if cmd == "export":
+        if target == "":
+            io.eprint("snip: export needs an output PATH")
+            return 2
+        var blob = db.exportJson(state)
+        var fh = io.open(target, "w")
+        fh.write(blob)
+        fh.close()
+        io.print("snip: exported " + String(len(state["snippets"])) + " snippet(s) -> " + target)
+        return 0
+    if cmd == "import":
+        if target == "":
+            io.eprint("snip: import needs an input PATH")
+            return 2
+        var fh = io.open(target, "r")
+        var blob = fh.read()
+        fh.close()
+        var added = db.importJson(state, blob)
+        db.save(dbFile, state)
+        io.print("snip: imported " + String(added) + " new snippet(s) from " + target)
+        return 0
+    io.eprint("snip: unknown command: " + cmd)
+    return 2
+
+if argmain:
+    var code = _main()
+    if code != 0:
+        import("sys").exit(code)

@@ -1,0 +1,149 @@
+# `pass` and `todo` — no-op statements. `todo` additionally emits an analysis warning at its location
+# (the warning text + line:col is asserted in the C++ test_warnings suite, since analyzer warnings go
+# to the process's stderr, not through Kirito's io). Here we exhaustively check the *runtime* no-op
+# behaviour across every position and block kind. Warnings go to stderr, so this stdout is just "OK".
+var io = import("io")
+
+# --- typical: as the sole body of each block kind ---
+if True:
+    pass
+if False:
+    pass
+else:
+    todo "else branch"
+var w = 0
+while w < 2:
+    pass
+    w = w + 1
+assert w == 2, "pass is a no-op inside while"
+var seen = 0
+for i in range(3):
+    todo
+    seen = seen + 1
+assert seen == 3, "todo is a no-op inside for (loop still iterates)"
+
+# --- inline (single-line) function bodies ---
+var fp = Function(): pass
+var ft = Function(): todo "inline stub"
+assert fp() == None and ft() == None, "inline pass/todo return None"
+
+# --- a function whose entire body is a single no-op returns None ---
+var onlyPass = Function():
+    pass
+var onlyTodo = Function():
+    todo "implement later"
+assert onlyPass() == None and onlyTodo() == None, "no-op-only function returns None"
+
+# --- multiple consecutive no-ops do not affect the result ---
+var f = Function(x):
+    pass
+    todo "step a"
+    pass
+    todo "step b"
+    return x * 2
+assert f(21) == 42, "consecutive no-ops are transparent"
+
+# --- inside a class: _init_, methods ---
+class Stub:
+    var _init_ = Function(self):
+        pass
+    var run = Function(self):
+        todo "method body not done"
+        return "ran"
+assert Stub().run() == "ran", "todo/pass inside a class method"
+
+# --- inside switch arms (a case body of just a no-op is allowed) ---
+var classify = Function(n):
+    var out = "default"
+    switch n:
+        case 0:
+            todo "zero handling"
+        case 1:
+            out = "one"
+        default:
+            pass
+    return out
+assert classify(1) == "one", "switch arm with real code"
+assert classify(0) == "default", "switch arm that is only todo leaves the prior value"
+assert classify(9) == "default", "switch default that is only pass"
+
+# --- inside try / catch / finally ---
+var tf = Function():
+    var order = []
+    try:
+        pass
+    catch as e:
+        todo "unreached handler"
+    finally:
+        pass
+    order.append("done")
+    return order
+assert tf() == ["done"], "pass in try/catch/finally"
+var caught = Function():
+    var hit = False
+    try:
+        throw "boom"
+    catch as e:
+        todo "handle this properly"
+        hit = True
+    return hit
+assert caught(), "todo inside a catch still runs the rest of the handler"
+
+# --- inside a with body ---
+class Ctx:
+    var _enter_ = Function(self):
+        return 7
+    var _exit_ = Function(self):
+        pass
+var captured = 0
+with Ctx() as v:
+    todo "use the resource"
+    captured = v
+assert captured == 7, "todo inside a with body"
+
+# --- edge: todo message variations (the message is arbitrary text; runtime is unaffected) ---
+var em = Function():
+    todo ""
+    return 1
+assert em() == 1, "empty todo message"
+var um = Function():
+    todo "unicode + escapes: cafe -- shi-xian -- \t\n"
+    return 2
+assert um() == 2, "todo message with escape sequences"
+
+# --- adversarial: deeply nested no-ops ---
+var deep = Function():
+    if True:
+        for j in range(1):
+            while True:
+                todo "deep"
+                pass
+                break
+            pass
+    return "deep ok"
+assert deep() == "deep ok", "deeply nested pass/todo"
+
+# --- adversarial: no-ops after a return are unreachable but harmless ---
+var early = Function():
+    return "first"
+    todo "never reached"
+    pass
+assert early() == "first", "code after return is unreachable but does not break parsing/execution"
+
+# --- adversarial: no-ops interleaved between real statements ---
+var seq = Function():
+    var a = 1
+    pass
+    todo "mid"
+    var b = 2
+    return a + b
+assert seq() == 3, "no-ops between statements"
+
+# --- adversarial: a loop body that is only a no-op must terminate, not spin ---
+var n = 0
+while n < 1000:
+    n = n + 1
+    todo
+assert n == 1000, "todo never stalls a loop"
+
+io.print("OK")

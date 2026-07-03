@@ -1,0 +1,59 @@
+# Serialization round-trip + USE: dump a value graph, load it back, and keep computing with the
+# result — proving the reconstructed state is fully functional, not just present. Runs every shape
+# through BOTH codecs (dump = binary, serialize = text). The cross-VM "fresh VM" variant lives in the
+# C++ test_vm_serialization (two KiritoVMs); this golden pins the in-VM round-trip + behaviour.
+var io = import("io")
+var dump = import("dump")
+var serialize = import("serialize")
+var M = import("matrix")
+var C = import("complex")
+var T = import("tensor")
+
+# roundtrip through both codecs; assert the loaded copy satisfies `check(loaded)`
+var both = Function(value, check, label):
+    assert check(dump.loads(dump.dumps(value))), "dump: " + label
+    assert check(serialize.loads(serialize.dumps(value))), "serialize: " + label
+
+# scalars & strings (NUL + Unicode, byte-exact)
+both(42, Function(x): return x == 42, "int")
+both(0.1 + 0.2, Function(x): return x == 0.1 + 0.2, "float exact")
+both("zażółć\x00gęślą", Function(x): return len(x) == 12, "string NUL+unicode")
+
+# nested containers
+both([1, [2, {"k": [3, 4]}]], Function(x): return x[1][1]["k"][1] == 4, "nested")
+both({"s": {1, 2, 3}}, Function(x): return x["s"].contains(2) and len(x["s"]) == 3, "set-in-dict")
+
+# shared reference (DAG): one object reached twice stays one after load
+var shared = [10]
+both([shared, shared], Function(x): return id(x[0]) == id(x[1]), "shared ref identity")
+
+# cycle: self-referential structure stays cyclic
+var cyc = [1]
+cyc.append(cyc)
+both(cyc, Function(x): return id(x[1]) == id(x) and x[1][1][1][0] == 1, "cycle")
+
+# user class: load then CALL a method on the reconstructed instance
+class Vec:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var dot = Function(self, o):
+        return self.x * o.x + self.y * o.y
+both(Vec(3, 4), Function(v): return v.dot(Vec(2, 1)) == 10, "class method on loaded instance")
+
+# native value types
+both(M.Matrix([[1, 2], [3, 4]]), Function(m): return m[1, 1] == 4.0 and m.determinant() == -2.0, "matrix")
+both(C.of(2, -3), Function(z): return z.re == 2.0 and z.im == -3.0, "complex")
+both(T.Tensor([[1.0, 2.0], [3.0, 4.0]]), Function(t): return t[1, 1] == 4.0 and t.shape() == [2, 2], "tensor")
+both(Bytes([0, 255, 7]), Function(b): return b[1] == 255 and len(b) == 3, "bytes")
+
+# a saved random generator reproduces its exact stream
+var rnd = import("random")
+var r = rnd.Random(7)
+discard r.randint(0, 1000000)
+var loaded = dump.loads(dump.dumps(r))
+var fresh = rnd.Random(7)
+discard fresh.randint(0, 1000000)
+assert loaded.randint(0, 1000000) == fresh.randint(0, 1000000), "random stream checkpoint"
+
+io.print("OK")

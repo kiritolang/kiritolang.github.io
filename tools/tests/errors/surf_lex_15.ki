@@ -1,0 +1,3 @@
+# LEXER: a single-line double-quoted string that hits a newline before its closing quote
+var s = "first line
+var t = 2

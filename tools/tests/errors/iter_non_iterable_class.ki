@@ -1,0 +1,5 @@
+class C:
+    var _init_ = Function(self):
+        self.x = 1
+for v in C():
+    discard v

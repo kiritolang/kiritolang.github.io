@@ -1,0 +1,8 @@
+# serializing a too-deeply-nested structure throws instead of overflowing
+var serialize = import("serialize")
+var a = [1]
+var i = 0
+while i < 40000:
+    a = [a]
+    i = i + 1
+discard serialize.dumps(a)

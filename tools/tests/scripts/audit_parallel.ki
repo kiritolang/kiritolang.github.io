@@ -1,0 +1,238 @@
+# Adversarial audit of the `parallel` module: spawn + Task.join, Queue FIFO + close-drain, Lock
+# mutual exclusion under contention, Event broadcast, Semaphore counting, Barrier rendezvous, and
+# cpucount. Kept fast: ~3 workers per primitive, no work loops that scale with cpucount.
+
+var io = import("io")
+var parallel = import("parallel")
+
+# Spawnable workers MUST live at module level — a worker re-evaluates this file with argmain False,
+# defines these, and skips the driver block at the bottom.
+var w_square = Function(x):
+    return x * x
+
+var w_lock_holder = Function(lock, q, id):
+    with lock:
+        q.put(id)
+
+var w_event_waiter = Function(ev, out, id):
+    discard ev.wait()
+    out.put(id)
+
+var w_barrier_party = Function(bar, out, id):
+    discard bar.wait()
+    out.put(id)
+
+var w_producer = Function(out, n):
+    var i = 0
+    while i < n:
+        out.put(i)
+        i = i + 1
+    out.close()
+
+if argmain:
+    # --- cpucount ---
+    assert parallel.cpucount() >= 1, "cpucount >= 1"
+    assert type(parallel.cpucount()) == "Integer", "cpucount type"
+
+    # --- spawn + Task.join: a single worker, value comes back ---
+    var t = parallel.spawn(w_square, 9)
+    assert t.join() == 81, "spawn(square, 9) -> 81"
+    assert t.done() == True, "done() True after join"
+
+    # --- Queue FIFO ordering, qsize, empty, full ---
+    var q = parallel.Queue()
+    assert q.empty() == True, "fresh queue is empty"
+    q.put(10)
+    q.put(20)
+    q.put(30)
+    assert q.qsize() == 3, "qsize after 3 puts"
+    assert q.empty() == False, "non-empty after puts"
+    assert q.get() == 10, "FIFO get 1"
+    assert q.get() == 20, "FIFO get 2"
+    assert q.get() == 30, "FIFO get 3"
+    assert q.empty() == True, "drained -> empty"
+
+    # bounded Queue + full()
+    var bq = parallel.Queue(2)
+    bq.put("a")
+    bq.put("b")
+    assert bq.full() == True, "bounded queue full"
+    var thrown = False
+    try:
+        bq.putnowait("c")
+    catch as e:
+        thrown = True
+    assert thrown, "putnowait on full throws"
+    assert bq.get() == "a", "drain bounded"
+    bq.put("c")
+    assert bq.get() == "b" and bq.get() == "c", "bounded retains FIFO"
+
+    # closed Queue: drains remaining, then throws
+    var cq = parallel.Queue()
+    cq.put(1)
+    cq.put(2)
+    cq.close()
+    assert cq.get() == 1, "closed queue drains in order"
+    assert cq.get() == 2, "closed queue drains second item"
+    thrown = False
+    try:
+        discard cq.get()
+    catch as e:
+        thrown = True
+    assert thrown, "closed and drained -> get throws"
+    thrown = False
+    try:
+        cq.put(3)
+    catch as e:
+        thrown = True
+    assert thrown, "put on closed throws"
+
+    # --- Lock: timeout returns False, non-reentrant throws, release of unlocked throws ---
+    var l = parallel.Lock()
+    assert l.locked() == False, "fresh lock unlocked"
+    assert l.acquire() == True, "acquire returns True"
+    assert l.locked() == True, "now locked"
+    # Non-reentrant: same worker trying to grab the lock again must NOT silently deadlock; the impl
+    # throws (per doc, "throws rather than self-deadlocking").
+    thrown = False
+    try:
+        discard l.acquire(False)
+    catch as e:
+        thrown = True
+    assert thrown, "non-reentrant lock acquire throws"
+    l.release()
+    assert l.locked() == False, "released"
+    thrown = False
+    try:
+        l.release()
+    catch as e:
+        thrown = True
+    assert thrown, "release of unlocked lock throws"
+    # context manager
+    with l:
+        assert l.locked() == True, "context manager acquires"
+    assert l.locked() == False, "context manager releases on exit"
+
+    # --- Lock mutual exclusion under contention: 3 workers race; the lock serializes them ---
+    var lk = parallel.Lock()
+    var lq = parallel.Queue()
+    var lt = []
+    var i = 0
+    while i < 3:
+        lt.append(parallel.spawn(w_lock_holder, lk, lq, i))
+        i = i + 1
+    var ids = []
+    while len(ids) < 3:
+        ids.append(lq.get())
+    var j = 0
+    while j < len(lt):
+        discard lt[j].join()
+        j = j + 1
+    ids.sort()
+    assert ids == [0, 1, 2], "lock-protected workers all reported their id"
+
+    # --- Event: timeout returns False, set then wait returns True, broadcast to N waiters ---
+    var ev = parallel.Event()
+    assert ev.isset() == False, "fresh Event"
+    assert ev.wait(0.02) == False, "wait on unset times out -> False"
+    ev.set()
+    assert ev.isset() == True, "set sticks"
+    assert ev.wait() == True, "set Event returns True from wait()"
+    ev.clear()
+    assert ev.isset() == False, "clear resets"
+    # broadcast: 3 workers all wait, one set() releases them all
+    var bev = parallel.Event()
+    var bq2 = parallel.Queue()
+    var bt = []
+    var k = 0
+    while k < 3:
+        bt.append(parallel.spawn(w_event_waiter, bev, bq2, k))
+        k = k + 1
+    bev.set()
+    var collected = []
+    while len(collected) < 3:
+        collected.append(bq2.get())
+    var jj = 0
+    while jj < len(bt):
+        discard bt[jj].join()
+        jj = jj + 1
+    collected.sort()
+    assert collected == [0, 1, 2], "Event broadcast released all waiters"
+
+    # --- Semaphore: counts permits ---
+    var sem = parallel.Semaphore(2)
+    assert sem.acquire(False) == True, "permit 1"
+    assert sem.acquire(False) == True, "permit 2"
+    assert sem.acquire(False) == False, "no permits left -> False (non-blocking)"
+    sem.release()
+    assert sem.acquire(False) == True, "release restores a permit"
+    sem.release()
+    sem.release()
+    # context manager
+    var sem1 = parallel.Semaphore(1)
+    with sem1:
+        assert sem1.acquire(False) == False, "ctx mgr holds the only permit"
+    assert sem1.acquire(False) == True, "permit restored after with-block"
+
+    # --- Barrier: parties()/nwaiting()/wait() rendezvous + reset()/abort() ---
+    var b1 = parallel.Barrier(1)
+    assert b1.parties() == 1, "Barrier parties()"
+    assert b1.nwaiting() == 0, "fresh barrier has 0 waiters"
+    assert b1.wait() == 0, "single-party barrier returns immediately"
+    # 3-party barrier across workers + main thread (= 3 parties total -> we use 3 workers and let
+    # the LAST arrival release everyone)
+    var bar = parallel.Barrier(3)
+    var bq3 = parallel.Queue()
+    var bts = []
+    var bi = 0
+    while bi < 3:
+        bts.append(parallel.spawn(w_barrier_party, bar, bq3, bi))
+        bi = bi + 1
+    var idxs = []
+    while len(idxs) < 3:
+        idxs.append(bq3.get())
+    var bj = 0
+    while bj < len(bts):
+        discard bts[bj].join()
+        bj = bj + 1
+    idxs.sort()
+    assert idxs == [0, 1, 2], "all parties arrived at the barrier"
+
+    # broken-barrier: an under-filled 3-party wait times out -> throws
+    var bbar = parallel.Barrier(3)
+    thrown = False
+    try:
+        discard bbar.wait(0.02)
+    catch as e:
+        thrown = True
+    assert thrown, "under-filled barrier wait throws on timeout"
+
+    # --- spawn argument validation ---
+    thrown = False
+    try:
+        discard parallel.spawn(len, [1, 2])     # a native fn isn't spawnable
+    catch as e:
+        thrown = True
+    assert thrown, "spawn rejects a native function"
+    thrown = False
+    try:
+        discard parallel.spawn(42)               # not a function
+    catch as e:
+        thrown = True
+    assert thrown, "spawn rejects a non-function"
+
+    # --- cross-VM Queue: a worker produces, main consumes; close ends the loop ---
+    var pq = parallel.Queue()
+    var pt = parallel.spawn(w_producer, pq, 4)
+    var got = []
+    var go = True
+    while go:
+        try:
+            got.append(pq.get())
+        catch as e:
+            go = False
+    discard pt.join()
+    got.sort()
+    assert got == [0, 1, 2, 3], "cross-VM producer/consumer"
+
+    io.print("OK audit-parallel")

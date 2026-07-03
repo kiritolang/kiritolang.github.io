@@ -1,0 +1,698 @@
+# kpm — the Kirito package manager, written in Kirito itself.
+#
+# It installs packages (collections of `.ki` modules) straight from git hosting repositories. There is
+# no central index: you name a repository. GitHub is the default, but any GitLab repo (gitlab.com or a
+# self-hosted instance) works too. Run it as `kpm <command>` (the installer drops a launcher on your
+# PATH) or directly with `ki kpm/kpm.ki <command>`.
+#
+# A <repo> may be written as:
+#   owner/repo                       GitHub (the default — unchanged)
+#   github.com/owner/repo            GitHub, explicit
+#   gitlab.com/owner/repo            GitLab.com   (also gitlab:owner/repo)
+#   https://gitlab.com/owner/repo    any full http(s) URL; the host type is auto-detected
+#   gitlab+https://git.acme.com/o/r  force the host TYPE for a self-hosted GitLab (or github+… for GHE)
+# A nested GitLab group path (group/subgroup/repo) is supported. A trailing .git is ignored.
+#
+#   kpm install <repo>[@<ref|constraint>] ...        download + install a package (and dependencies)
+#   kpm remove  <name> ...                           uninstall a package
+#   kpm list                                         list installed packages
+#   kpm update  <name>... | --all                    re-resolve + reinstall (honours the constraint)
+#   kpm outdated                                     show which installed packages have a newer version
+#   kpm where                                        print the packages directory
+#   kpm version                                      print the kpm + ki versions
+#   kpm update-kpm  [--force]                        update kpm.ki itself from GitHub
+#   kpm update-ki   [--force]                        update the `ki` interpreter binary itself
+#   kpm help
+#
+# Versioning: an `@<ref>` is either a literal git ref (branch / tag / commit, e.g. `@main`) OR a
+# semantic-version constraint resolved against the repo's tags (the `semver` module): `@1.2.3`
+# (exact), `@^1.2.0`, `@~1.2`, `@1.x`, `@">=1.0.0 <2.0.0"` (quote ranges with spaces), `@*`. When a
+# constraint is given, kpm picks the highest tag that satisfies it. The chosen constraint is recorded
+# so `update`/`outdated` can re-resolve against newly-published tags.
+#
+# A package repository carries a `kirito.json` manifest at its root:
+#
+#   {
+#     "name": "mypkg",
+#     "version": "1.0.0",
+#     "modules": ["mypkg.ki", "extra/util.ki"],
+#     "dependencies": ["someone/dep@^1.0.0"]
+#   }
+#
+# `modules` are repo-relative `.ki` paths. They install under `<packages>/<name>/` and become
+# importable as `import("mypkg")` — `ki` puts the packages directory and every package sub-directory
+# on the module import path automatically (see KIRITO_PATH / ~/.kirito/packages).
+#
+# Environment: $GITHUB_TOKEN (or $KPM_GITHUB_TOKEN) is sent as a GitHub bearer token, and $GITLAB_TOKEN
+# (or $KPM_GITLAB_TOKEN) as a GitLab PRIVATE-TOKEN — lifting each host's anonymous rate limit and
+# reaching private repos. $KPM_GITHUB_API / $KPM_GITHUB_RAW override the GitHub endpoints (for GitHub
+# Enterprise, or testing). $KPM_SELF / $KPM_KI_PATH (set by the launcher) point update-kpm / update-ki
+# at the files to replace.
+
+var io = import("io")
+var net = import("net")
+var json = import("json")
+var sys = import("sys")
+var semver = import("semver")
+var path = import("path")
+
+var KPM_VERSION = "1.3.3"
+
+# Self-maintenance (update-kpm / update-ki) always targets the Kirito project on github.com; these are
+# fixed and never redirected. The PACKAGE install path uses the host-aware adapters further down (so a
+# package can come from GitHub or GitLab, github.com or a self-hosted instance).
+var RAW = "https://raw.githubusercontent.com"
+var API = "https://api.github.com"
+var GH = "https://github.com"
+# The Kirito project's own repository — the source for `update-kpm` and `update-ki`.
+var KIRITO_REPO = "AzethMeron/KiritoLang"
+
+# GitHub package endpoints, overridable via env so tests (and GitHub Enterprise) can redirect them.
+# KPM_GITHUB_API / KPM_GITHUB_RAW take precedence over the public defaults.
+var envOr = Function(name, dflt) -> String:
+    var v = sys.getenv(name)
+    return dflt if (v == None or v == "") else v
+var ghApiBase = Function() -> String:
+    return envOr("KPM_GITHUB_API", "https://api.github.com")
+var ghRawBase = Function() -> String:
+    return envOr("KPM_GITHUB_RAW", "https://raw.githubusercontent.com")
+
+# ---------------------------------------------------------------- locations
+var homeDir = Function() -> String:
+    var h = sys.getenv("HOME")
+    if h == None or h == "":
+        h = sys.getenv("USERPROFILE")
+    if h == None or h == "":
+        throw "cannot locate your home directory (set HOME)"
+    return h
+
+var packagesDir = Function() -> String:
+    return path.join(path.join(homeDir(), ".kirito"), "packages")
+
+# ---------------------------------------------------------------- helpers
+var fail = Function(msg):
+    io.eprint("kpm: " + msg)
+    sys.exit(1)
+
+var hasFlag = Function(args, flag) -> Bool:
+    for a in args:
+        if a == flag:
+            return True
+    return False
+
+# An env token by name list, or None. Sending it lifts a host's anonymous rate limit and reaches
+# private repos.
+var envToken = Function(names):
+    for n in names:
+        var t = sys.getenv(n)
+        if t != None and t != "":
+            return t
+    return None
+
+# A GitHub token ($GITHUB_TOKEN / $KPM_GITHUB_TOKEN) or None.
+var ghToken = Function():
+    return envToken(["GITHUB_TOKEN", "KPM_GITHUB_TOKEN"])
+
+# Request headers for GitHub: the JSON API accept header plus a bearer token when one is configured.
+var ghHeaders = Function():
+    var h = {"Accept": "application/vnd.github+json"}
+    var t = ghToken()
+    if t != None:
+        h["Authorization"] = "Bearer " + t
+    return h
+
+# Request headers for a parsed source (host-aware auth): GitHub uses a bearer token, GitLab the
+# PRIVATE-TOKEN header ($GITLAB_TOKEN / $KPM_GITLAB_TOKEN).
+var srcHeaders = Function(src):
+    if src["kind"] == "gitlab":
+        var h = {"Accept": "application/json"}
+        var t = envToken(["GITLAB_TOKEN", "KPM_GITLAB_TOKEN"])
+        if t != None:
+            h["PRIVATE-TOKEN"] = t
+        return h
+    return ghHeaders()
+
+# GET a URL and return its body text; throws a clear message on a network error or non-2xx status.
+# `headers` defaults to GitHub's (used by the self-maintenance commands); the install path passes
+# host-aware headers.
+var fetch = Function(url, headers = None) -> String:
+    var hdr = ghHeaders() if headers == None else headers
+    var r = None
+    try:
+        r = net.get(url, {"headers": hdr})
+    catch as e:
+        throw "network error fetching " + url + ": " + String(e)
+    if not r.ok:
+        throw "GET " + url + " -> HTTP " + String(r.statuscode)
+    return r.text
+
+# GET a URL and return its raw body as Bytes (for binary downloads, e.g. a release binary).
+var fetchBytes = Function(url, headers = None):
+    var hdr = ghHeaders() if headers == None else headers
+    var r = None
+    try:
+        r = net.get(url, {"headers": hdr})
+    catch as e:
+        throw "network error fetching " + url + ": " + String(e)
+    if not r.ok:
+        throw "GET " + url + " -> HTTP " + String(r.statuscode)
+    return r.content
+
+# True iff `p` is a safe package-relative path: not empty, not absolute, no drive letter, and no `.`/
+# `..`/empty component — so a manifest can never make kpm write outside the package directory (path
+# traversal) or read an absolute file. Used to vet the package name and every module path.
+var safeRelPath = Function(p) -> Bool:
+    if p == None or type(p) != "String" or p == "":
+        return False
+    if p.startswith("/") or p.startswith("\\"):
+        return False
+    if len(p) >= 2 and p[1] == ":":            # Windows drive, e.g. C:\
+        return False
+    var norm = p.replace("\\", "/")
+    for part in norm.split("/"):
+        if part == "" or part == "." or part == "..":
+            return False
+    return True
+
+# Validate a parsed manifest, throwing a clear error on anything malformed/unsafe. `where` names the
+# source for the message. Returns [name, version, modules, dependencies].
+var validateManifest = Function(manifest, where):
+    if type(manifest) != "Dict":
+        throw "kirito.json in " + where + " is not a JSON object"
+    if "name" not in manifest or type(manifest["name"]) != "String" or manifest["name"] == "":
+        throw "kirito.json in " + where + " is missing a non-empty string \"name\""
+    var name = manifest["name"]
+    if "/" in name or "\\" in name or not safeRelPath(name):
+        throw "invalid package name '" + name + "' in " + where + " (no path separators or .. allowed)"
+    if "modules" not in manifest or type(manifest["modules"]) != "List":
+        throw "kirito.json in " + where + " is missing a \"modules\" list"
+    if len(manifest["modules"]) == 0:
+        throw "package '" + name + "' in " + where + " lists no modules"
+    for m in manifest["modules"]:
+        if not safeRelPath(m):
+            throw "unsafe or invalid module path '" + String(m) + "' in package '" + name + "' (" + where + ")"
+    var version = "0.0.0"
+    if "version" in manifest:
+        if type(manifest["version"]) != "String":
+            throw "\"version\" must be a string in " + where
+        version = manifest["version"]
+    var deps = []
+    if "dependencies" in manifest:
+        if type(manifest["dependencies"]) != "List":
+            throw "\"dependencies\" must be a list in " + where
+        deps = manifest["dependencies"]
+        for d in deps:
+            if type(d) != "String" or d == "":
+                throw "each dependency must be a non-empty string in " + where
+    return [name, version, manifest["modules"], deps]
+
+# Percent-encode a path for a GitLab API id (slashes -> %2F), encoding each component.
+var glEnc = Function(s) -> String:
+    var parts = []
+    for c in s.split("/"):
+        parts.append(net.quote(c))
+    return "%2F".join(parts)
+
+# Parse a package spec into a source Dict: {kind, host, scheme, path, ref, apibase, display}.
+# Accepted forms (defaults to GitHub):
+#   owner/repo                         github.com
+#   github.com/owner/repo              github.com
+#   gitlab.com/owner/repo              gitlab.com
+#   host.tld/owner/repo                host.tld (must be a recognizable github/gitlab, else error)
+#   https://host/owner/repo            any of the above, explicit scheme
+#   github:owner/repo  gitlab:owner/repo               shorthands for the public hosts
+#   github+<url>  gitlab+<url>                          force the host TYPE (self-hosted GHE / GitLab)
+# A trailing @ref (after the last '/') is the version/ref; a trailing ".git" is stripped.
+var parseSource = Function(spec):
+    if spec == None or spec == "":
+        throw "empty package spec"
+    var ref = None
+    var body = spec
+    # The ref-separating '@' comes after the repo path. For a URL, start the search past the authority
+    # so a "user@host" userinfo '@' is not mistaken for it; the ref itself may contain '/' (a branch
+    # like "feature/x"), so take everything after the first '@' from there.
+    var searchFrom = 0
+    var sa = spec.find("://")
+    if sa >= 0:
+        var slashAfterAuth = spec.find("/", sa + 3)
+        searchFrom = slashAfterAuth if slashAfterAuth >= 0 else (sa + 3)
+    var atIdx = spec.find("@", searchFrom)
+    if atIdx >= 0:
+        ref = spec[atIdx + 1:]
+        body = spec[0:atIdx]
+        if ref == "":
+            throw "empty @ref in '" + spec + "'"
+    var forcedKind = None
+    for k in ["github", "gitlab"]:
+        if body.startswith(k + "+"):            # github+https://...  gitlab+https://...
+            forcedKind = k
+            body = body[len(k) + 1:]
+    for k in ["github", "gitlab"]:
+        if body.startswith(k + ":") and not body.startswith(k + "://"):   # github:owner/repo shorthand
+            forcedKind = k
+            body = body[len(k) + 1:]
+    var scheme = "https"
+    var host = None
+    var path = body
+    var schemeAt = body.find("://")
+    if schemeAt >= 0:
+        scheme = body[0:schemeAt]
+        var afterScheme = body[schemeAt + 3:]
+        var hs = afterScheme.find("/")
+        if hs < 0:
+            throw "invalid repository URL (no path after host): '" + spec + "'"
+        host = afterScheme[0:hs]
+        path = afterScheme[hs + 1:]
+        var uat = host.find("@")                # drop any user[:pass]@ from the host
+        if uat >= 0:
+            host = host[uat + 1:]
+    elif path.find("/") >= 0 and ("." in path[0:path.find("/")]):
+        # a leading component containing a dot is a bare host: "gitlab.com/owner/repo"
+        host = path[0:path.find("/")]
+        path = path[path.find("/") + 1:]
+    if path.endswith(".git"):
+        path = path[0:len(path) - 4]
+    while path.endswith("/"):
+        path = path[0:len(path) - 1]
+    while path.startswith("/"):
+        path = path[1:]
+    var kind = forcedKind
+    if kind == None:
+        if host == None or host == "github.com" or "github" in host:
+            kind = "github"
+        elif "gitlab" in host:
+            kind = "gitlab"
+        else:
+            throw "unrecognized git host '" + host + "' — prefix with 'gitlab+' or 'github+' to pick the host type (e.g. gitlab+" + scheme + "://" + host + "/" + path + ")"
+    if host == None:
+        host = "github.com" if kind == "github" else "gitlab.com"
+    if path == "" or path.find("/") < 0:
+        throw "expected <owner>/<repo>, got '" + spec + "'"
+    var apibase = None
+    if kind == "github":
+        apibase = ghApiBase() if host == "github.com" else scheme + "://" + host + "/api/v3"
+    else:
+        apibase = scheme + "://" + host + "/api/v4"
+    var display = path if (kind == "github" and host == "github.com") else host + "/" + path
+    return {"kind": kind, "host": host, "scheme": scheme, "path": path, "ref": ref,
+            "apibase": apibase, "display": display}
+
+# The repo's default branch (one API call), used when no @ref is supplied.
+var srcDefaultBranch = Function(src) -> String:
+    if src["kind"] == "gitlab":
+        var d = json.loads(fetch(src["apibase"] + "/projects/" + glEnc(src["path"]), srcHeaders(src)))
+        return d["default_branch"]
+    var data = json.loads(fetch(src["apibase"] + "/repos/" + src["path"], srcHeaders(src)))
+    return data["default_branch"]
+
+# Every tag name in the repo (up to 100), as a List of Strings — the candidate versions a semver
+# constraint resolves against.
+var srcTags = Function(src):
+    var url = None
+    if src["kind"] == "gitlab":
+        url = src["apibase"] + "/projects/" + glEnc(src["path"]) + "/repository/tags?per_page=100"
+    else:
+        url = src["apibase"] + "/repos/" + src["path"] + "/tags?per_page=100"
+    var data = json.loads(fetch(url, srcHeaders(src)))
+    var names = []
+    for t in data:
+        names.append(t["name"])
+    return names
+
+# The URL for one raw repo file at a concrete ref.
+var srcRawUrl = Function(src, ref, relpath) -> String:
+    if src["kind"] == "gitlab":
+        return src["apibase"] + "/projects/" + glEnc(src["path"]) + "/repository/files/" + glEnc(relpath) + "/raw?ref=" + net.quote(ref)
+    var rawbase = ghRawBase() if src["host"] == "github.com" else src["scheme"] + "://" + src["host"] + "/raw"
+    return rawbase + "/" + src["path"] + "/" + ref + "/" + relpath
+
+# Turn a user `@ref` into a concrete git ref. None -> the default branch. A valid semver range ->
+# the highest matching tag (kept as its original tag string, so it works whether tags carry a `v`).
+# Anything else (a branch name, a commit sha) is used literally.
+var resolveRef = Function(src, ref) -> String:
+    if ref == None:
+        return srcDefaultBranch(src)
+    if semver.validrange(ref):
+        var tags = srcTags(src)
+        var best = semver.maxsatisfying(tags, ref)
+        if best == None:
+            throw "no tag in " + src["display"] + " satisfies '" + ref + "' (tags: " + String(tags) + ")"
+        return best
+    return ref
+
+# Write `text` to <dir>/<relpath>, creating any parent directories first.
+var writeFile = Function(dir, relpath, text):
+    var full = path.join(dir, relpath)
+    var parent = path.dirname(full)
+    if len(parent) > 0:
+        discard path.mkdir(parent, exist_ok = True)
+    var f = io.open(full, "w")
+    f.write(text)
+    f.close()
+
+# Install one package, recursing into its dependencies. `seen` is a Dict of name -> install info for
+# packages already handled this run (cycle/dup guard + version-conflict detection). Returns the name.
+var installOne = Function(spec, seen) -> String:
+    var src = parseSource(spec)
+    var constraint = src["ref"]
+    var ref = resolveRef(src, constraint)
+
+    # Fetch + parse + validate the manifest, with a distinct message for each failure mode.
+    var manifestText = None
+    try:
+        manifestText = fetch(srcRawUrl(src, ref, "kirito.json"), srcHeaders(src))
+    catch as e:
+        throw "no kirito.json manifest in " + src["display"] + "@" + ref + " (" + String(e) + ")"
+    var manifest = None
+    try:
+        manifest = json.loads(manifestText)
+    catch as e:
+        throw "kirito.json in " + src["display"] + "@" + ref + " is not valid JSON: " + String(e)
+    var parts = validateManifest(manifest, src["display"] + "@" + ref)
+    var name = parts[0]
+    var version = parts[1]
+    var modules = parts[2]
+    var deps = parts[3]
+
+    if name in seen:
+        var prev = seen[name]
+        # Version-conflict warning: a semver constraint that the already-installed copy doesn't satisfy.
+        if constraint != None and semver.validrange(constraint) and semver.valid(prev["version"]) != None:
+            if not semver.satisfies(prev["version"], constraint):
+                io.eprint("kpm: version conflict: '" + name + "' already at " + prev["version"] +
+                          " (from " + prev["display"] + ") but " + src["display"] + " requires '" +
+                          constraint + "' — keeping " + prev["version"])
+        return name
+
+    # A canonical, re-parseable source string for the install record (so update/outdated re-resolve).
+    var canonical = src["path"]
+    if not (src["kind"] == "github" and src["host"] == "github.com"):
+        if src["host"] == "gitlab.com" or src["host"] == "github.com":
+            canonical = src["host"] + "/" + src["path"]
+        else:
+            canonical = src["kind"] + "+" + src["scheme"] + "://" + src["host"] + "/" + src["path"]
+    seen[name] = {"version": version, "display": src["display"]}
+    io.print("installing " + name + " " + version + " (" + src["display"] + "@" + ref + ")")
+
+    for d in deps:
+        discard installOne(d, seen)
+
+    var dest = path.join(packagesDir(), name)
+    var installed = []
+    for mod in modules:
+        var text = None
+        try:
+            text = fetch(srcRawUrl(src, ref, mod), srcHeaders(src))
+        catch as e:
+            throw "package '" + name + "': module '" + mod + "' not found at " + src["display"] + "@" + ref + " (" + String(e) + ")"
+        writeFile(dest, mod, text)
+        installed.append(mod)
+        io.print("  + " + mod)
+
+    var record = {"name": name, "version": version, "source": canonical,
+                  "constraint": constraint, "ref": ref, "modules": installed}
+    writeFile(dest, ".kpm.json", json.dumps(record, indent = 2))
+    return name
+
+# Read the install record of one package, or None if it isn't installed.
+var readRecord = Function(name):
+    var rec = path.join(path.join(packagesDir(), name), ".kpm.json")
+    if not path.exists(rec):
+        return None
+    var f = io.open(rec, "r")
+    var data = json.loads(f.read())
+    f.close()
+    return data
+
+# Read the install records of every installed package.
+var listInstalled = Function():
+    var root = packagesDir()
+    var out = []
+    if not path.exists(root):
+        return out
+    for entry in path.listdir(root):
+        var data = readRecord(entry)
+        if data != None:
+            out.append(data)
+    return out
+
+# The latest published GitHub release of a repo, as the parsed API object (has "tag_name", "assets").
+var latestRelease = Function(repo):
+    return json.loads(fetch(API + "/repos/" + repo + "/releases/latest"))
+
+# The release-asset filename for the running platform (ki-<os>-<arch>[.exe]). Only the platforms we
+# publish binaries for are mapped; anything else throws (build from source instead).
+var kiAssetName = Function() -> String:
+    var os = sys.platform
+    var arch = sys.arch
+    if os == "linux" and arch == "x64":
+        return "ki-linux-x64"
+    if os == "windows" and arch == "x64":
+        return "ki-windows-x64.exe"
+    throw "no prebuilt ki binary for " + os + "/" + arch + " — build from source (install.sh --from-source)"
+
+# Extract `KPM_VERSION = "x.y.z"` from kpm.ki source text, or None. The assignment near the top of the
+# file precedes the marker's own occurrence in this function, so `find` lands on the real value.
+var extractKpmVersion = Function(text):
+    var marker = "KPM_VERSION = \""
+    var at = text.find(marker)
+    if at < 0:
+        return None
+    var start = at + len(marker)
+    var endq = text.find("\"", start)
+    if endq < 0:
+        return None
+    return text[start:endq]
+
+# Atomically replace `target` with the file at `tmp`. POSIX rename swaps the inode under a running
+# process; Windows can't overwrite a running .exe, so the old file is moved aside first.
+var replaceFile = Function(tmp, target):
+    discard path.remove(target + ".old", missing_ok = True)
+    if sys.platform == "windows":
+        if path.exists(target):
+            path.rename(target, target + ".old")
+        path.rename(tmp, target)
+    else:
+        path.rename(tmp, target)
+
+# ---------------------------------------------------------------- commands
+var cmdInstall = Function(specs):
+    if len(specs) == 0:
+        fail("install needs at least one <owner/repo>")
+    var seen = {}
+    for spec in specs:
+        try:
+            discard installOne(spec, seen)
+        catch as e:
+            fail(String(e))
+    io.print("done — " + String(len(seen)) + " package(s) in " + packagesDir())
+
+var cmdRemove = Function(names):
+    if len(names) == 0:
+        fail("remove needs a package name")
+    for name in names:
+        var dir = path.join(packagesDir(), name)
+        if not path.exists(dir):
+            io.eprint("kpm: not installed: " + name)
+        else:
+            discard path.rmtree(dir, missing_ok = True)   # recursive rm -rf
+            io.print("removed " + name)
+
+var cmdList = Function():
+    var pkgs = listInstalled()
+    if len(pkgs) == 0:
+        io.print("no packages installed")
+        return None
+    for p in pkgs:
+        var at = p["ref"]
+        if "constraint" in p and p["constraint"] != None:
+            at = String(p["constraint"]) + " -> " + p["ref"]
+        io.print(p["name"] + " " + p["version"] + "  (" + p["source"] + "@" + at + ")")
+
+# Reinstall the given packages (or all of them), re-resolving the recorded constraint so a semver
+# range picks up newly-published tags.
+var cmdUpdate = Function(args):
+    var targets = []
+    if len(args) == 1 and args[0] == "--all":
+        targets = listInstalled()
+    else:
+        for name in args:
+            var rec = readRecord(name)
+            if rec == None:
+                fail("not installed: " + name)
+            targets.append(rec)
+    if len(targets) == 0:
+        fail("update needs a package name or --all")
+    var seen = {}
+    for p in targets:
+        var spec = p["source"]
+        if "constraint" in p and p["constraint"] != None:
+            spec = spec + "@" + String(p["constraint"])
+        try:
+            discard installOne(spec, seen)
+            io.print("updated " + p["name"])
+        catch as e:
+            io.eprint("kpm: " + String(e))
+
+# Resolve the newest version available to a package under its recorded constraint (or the manifest
+# version on its ref), or None if it can't be determined.
+var latestFor = Function(p):
+    var src = parseSource(p["source"])
+    if "constraint" in p and p["constraint"] != None and semver.validrange(p["constraint"]):
+        var best = semver.maxsatisfying(srcTags(src), p["constraint"])
+        if best != None:
+            return semver.clean(best)
+    var m = json.loads(fetch(srcRawUrl(src, p["ref"], "kirito.json"), srcHeaders(src)))
+    if "version" in m:
+        return m["version"]
+    return None
+
+var cmdOutdated = Function():
+    var pkgs = listInstalled()
+    if len(pkgs) == 0:
+        io.print("no packages installed")
+        return None
+    var stale = 0
+    for p in pkgs:
+        var have = p["version"]
+        var latest = None
+        try:
+            latest = latestFor(p)
+        catch as e:
+            latest = None
+        if latest == None:
+            io.print("  " + p["name"] + " " + have + " -> ? (could not determine latest)")
+        elif semver.valid(have) != None and semver.valid(latest) != None and semver.gt(latest, have):
+            io.print("  " + p["name"] + " " + have + " -> " + latest + "  (" + p["source"] + ")")
+            stale = stale + 1
+    if stale == 0:
+        io.print("all packages are up to date")
+    else:
+        io.print(String(stale) + " package(s) can be updated — run `kpm update --all`")
+
+var cmdVersion = Function():
+    io.print("kpm " + KPM_VERSION)
+    io.print("ki  " + sys.version + "  (" + sys.platform + "/" + sys.arch + ")")
+    if path.executable != None and path.executable != "":
+        io.print("    " + path.executable)
+
+# Update kpm.ki itself from GitHub. Replaces the file named by $KPM_SELF (set by the launcher),
+# falling back to ~/.kirito/kpm.ki.
+var cmdSelfUpdate = Function(args):
+    var force = hasFlag(args, "--force") or hasFlag(args, "-f")
+    var target = sys.getenv("KPM_SELF")
+    if target == None or target == "":
+        target = path.join(path.join(homeDir(), ".kirito"), "kpm.ki")
+    var url = RAW + "/" + KIRITO_REPO + "/main/kpm/kpm.ki"
+    var text = None
+    try:
+        text = fetch(url)
+    catch as e:
+        fail("could not fetch kpm.ki: " + String(e))
+    var remote = extractKpmVersion(text)
+    io.print("current kpm: " + KPM_VERSION + "   latest: " + (remote if remote != None else "?"))
+    if not force and remote != None and semver.valid(remote) != None and not semver.gt(remote, KPM_VERSION):
+        io.print("kpm is up to date (" + KPM_VERSION + ")")
+        return None
+    var parent = path.dirname(target)
+    if len(parent) > 0:
+        discard path.mkdir(parent, exist_ok = True)
+    var f = io.open(target, "w")
+    f.write(text)
+    f.close()
+    io.print("updated kpm -> " + (remote if remote != None else "latest") + "  (" + target + ")")
+
+# Update the `ki` interpreter binary itself: download the latest release asset for this platform and
+# atomically swap it in over the running executable (located via path.executable, or $KPM_KI_PATH).
+var cmdUpgradeKi = Function(args):
+    var force = hasFlag(args, "--force") or hasFlag(args, "-f")
+    var current = sys.version
+    var rel = None
+    try:
+        rel = latestRelease(KIRITO_REPO)
+    catch as e:
+        fail("could not query the latest release: " + String(e))
+    var tag = rel["tag_name"]
+    var latest = semver.clean(tag)
+    io.print("current ki: " + current + "   latest: " + tag)
+    if not force and semver.valid(latest) != None and not semver.gt(latest, current):
+        io.print("ki is up to date (" + current + ")")
+        return None
+
+    var target = sys.getenv("KPM_KI_PATH")
+    if target == None or target == "":
+        target = path.executable
+    if target == None or target == "":
+        fail("cannot locate the ki executable to replace (set KPM_KI_PATH)")
+
+    var asset = None
+    try:
+        asset = kiAssetName()
+    catch as e:
+        fail(String(e))
+    var url = GH + "/" + KIRITO_REPO + "/releases/download/" + tag + "/" + asset
+    io.print("downloading " + asset + " ...")
+    var blob = None
+    try:
+        blob = fetchBytes(url)
+    catch as e:
+        fail("download failed: " + String(e))
+
+    var tmp = target + ".new"
+    var f = io.open(tmp, "wb")
+    f.write(blob)
+    f.close()
+    discard path.chmod(tmp, 0o755)
+    replaceFile(tmp, target)
+    io.print("upgraded ki -> " + tag + "  (" + target + ")")
+
+var usage = Function():
+    io.print("kpm — the Kirito package manager (GitHub by default, or any GitLab/GitHub repo; no index)")
+    io.print("usage:")
+    io.print("  kpm install <repo>[@<ref|constraint>] ...        install package(s) + dependencies")
+    io.print("       <repo> is owner/repo (GitHub), gitlab.com/owner/repo, a full https URL, or")
+    io.print("       gitlab:owner/repo / github+<url> / gitlab+<url> for self-hosted instances")
+    io.print("  kpm remove  <name> ...                           uninstall")
+    io.print("  kpm list                                         list installed packages")
+    io.print("  kpm update  <name>... | --all                    re-resolve + reinstall")
+    io.print("  kpm outdated                                     show packages with a newer version")
+    io.print("  kpm where                                        print the packages directory")
+    io.print("  kpm version                                      print the kpm + ki versions")
+    io.print("  kpm update-kpm  [--force]                        update kpm itself")
+    io.print("  kpm update-ki   [--force]                        update the ki interpreter")
+    io.print("  kpm help")
+    io.print("")
+    io.print("an @constraint is a git ref (@main) or a semver range (@^1.2.0, @1.x, @\">=1 <2\")")
+
+# ---------------------------------------------------------------- dispatch
+if argmain:
+    if len(arglist) == 0:
+        usage()
+    else:
+        var cmd = arglist[0]
+        var rest = arglist[1:]
+        switch cmd:
+            case "install", "i", "add":
+                cmdInstall(rest)
+            case "remove", "rm", "uninstall":
+                cmdRemove(rest)
+            case "list", "ls":
+                cmdList()
+            case "update", "upgrade":
+                cmdUpdate(rest)
+            case "outdated":
+                cmdOutdated()
+            case "where":
+                io.print(packagesDir())
+            case "version", "--version", "-v":
+                cmdVersion()
+            case "update-kpm", "self-update", "selfupdate":
+                cmdSelfUpdate(rest)
+            case "update-ki", "upgrade-ki", "upgrade-kirito", "self-upgrade":
+                cmdUpgradeKi(rest)
+            case "help", "-h", "--help":
+                usage()
+            default:
+                io.eprint("kpm: unknown command '" + cmd + "'")
+                usage()
+                sys.exit(2)

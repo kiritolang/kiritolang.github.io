@@ -1,0 +1,5 @@
+# name resolution: undefined name referenced in a class method body
+class C:
+    var run = Function(self):
+        return missing
+discard C().run()

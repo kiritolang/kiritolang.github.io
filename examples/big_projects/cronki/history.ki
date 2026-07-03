@@ -1,0 +1,37 @@
+# cronki/history.ki — a small JSON-lines log of every runJob result. Each result is one line;
+# tail(n) reads the last N (a `tabular`/`dump`-heavy alternative would over-engineer this).
+
+var io   = import("io")
+var json = import("json")
+var path = import("path")
+
+# Append a single run-result dict as one JSON line.
+var append = Function(logfile : String, result : Dict):
+    var dir = path.dirname(logfile)
+    if len(dir) > 0 and not path.isdir(dir):
+        discard path.mkdir(dir, exist_ok = True)
+    var fh = io.open(logfile, "a")
+    fh.write(json.dumps(result) + "\n")
+    fh.close()
+
+# Read the whole log, returning a List of dicts (one per non-empty line).
+var readAll = Function(logfile : String) -> List:
+    if not path.isfile(logfile):
+        return []
+    var fh = io.open(logfile, "r")
+    var txt = fh.read()
+    fh.close()
+    var out = []
+    for line in txt.split("\n"):
+        var s = line.strip()
+        if s == "":
+            continue
+        out.append(json.loads(s))
+    return out
+
+# Return only the last `n` entries.
+var tail = Function(logfile : String, n : Integer) -> List:
+    var all = readAll(logfile)
+    if len(all) <= n:
+        return all
+    return all[len(all) - n:]

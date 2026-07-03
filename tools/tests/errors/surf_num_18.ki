@@ -1,0 +1,3 @@
+# Complex numbers are unordered; comparing with < must throw.
+var c = import("complex")
+discard c.of(1, 1) < c.of(2, 2)

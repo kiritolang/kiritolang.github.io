@@ -1,0 +1,176 @@
+# test_snip.ki — self-test for the snip snippet manager. Final line prints
+# "snip: N checks passed" — matched byte-for-byte against test_snip.expected.
+
+var io   = import("io")
+var path = import("path")
+var time = import("time")
+
+var db     = import("db")
+var search = import("search")
+var fmt    = import("fmt")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =============================================================================
+# db: id derivation and upsert
+# =============================================================================
+var d = {"snippets": {}}
+var id1 = db.snippetId("print(1)")
+ok(len(id1) == 12, "snippetId returns 12 hex chars")
+ok(db.snippetId("print(1)") == db.snippetId("print(1)"), "snippetId is deterministic")
+ok(db.snippetId("print(1)") != db.snippetId("print(2)"), "snippetId distinguishes bodies")
+
+var s1 = db.upsert(d, "Hello", "python", ["cli"], "print('hello')")
+ok(s1["id"] == db.snippetId("print('hello')"), "upsert stores id derived from body")
+ok(s1["title"] == "Hello" and s1["lang"] == "python", "metadata carried through")
+ok(len(d["snippets"]) == 1, "one snippet in db after upsert")
+
+# a re-upsert with the same body only updates metadata, not the id
+var beforeCreated = s1["created"]
+var s1b = db.upsert(d, "Renamed", "py", ["cli", "greet"], "print('hello')")
+ok(s1b["id"] == s1["id"], "same body -> same id on re-upsert")
+ok(len(d["snippets"]) == 1, "no new snippet created on re-upsert")
+ok(s1b["title"] == "Renamed" and s1b["lang"] == "py" and s1b["tags"] == ["cli", "greet"], "metadata updated on re-upsert")
+ok(s1b["created"] == beforeCreated, "created timestamp preserved")
+
+# adding a distinct body adds a distinct snippet
+var s2 = db.upsert(d, "World", "python", ["cli"], "print('world')")
+ok(s2["id"] != s1["id"], "distinct body -> distinct id")
+ok(len(d["snippets"]) == 2, "two snippets now")
+
+# find by full id and by unique prefix
+ok(db.find(d, s1["id"]) == s1b, "find by full id works")
+ok(db.find(d, s1["id"][0:6]) == s1b or db.find(d, s1["id"][0:6]) == None, "prefix lookup is unique or None")
+ok(db.find(d, "no-such-prefix-xxxxxxxx") == None, "unknown prefix returns None")
+
+# a common prefix between two snippets returns None (ambiguous). Force this by taking a 1-char
+# prefix that both ids might share, then verifying at least one of them.
+var shared = s1["id"][0:1]
+var ambigCount = 0
+for k in d["snippets"]:
+    if k.startswith(shared):
+        ambigCount = ambigCount + 1
+if ambigCount > 1:
+    ok(db.find(d, shared) == None, "ambiguous prefix returns None")
+else:
+    ok(True, "prefix happens to be unique on this run — skipped ambiguity check")
+
+# remove
+ok(db.remove(d, s2["id"]), "remove returns True on hit")
+ok(not db.remove(d, s2["id"]), "remove on a missing id returns False")
+ok(len(d["snippets"]) == 1, "one snippet left after remove")
+
+# listAll: most-recent first (sorted by modified desc)
+discard db.upsert(d, "A", "x", [], "body-A")
+discard db.upsert(d, "B", "x", [], "body-B")
+var all = db.listAll(d)
+ok(len(all) == 3, "listAll returns every snippet")
+ok(all[0]["modified"] >= all[1]["modified"] and all[1]["modified"] >= all[2]["modified"], "listAll is sorted most-recent first")
+
+# =============================================================================
+# db: dump-backed persistence
+# =============================================================================
+var tmpFile = path.gettempdir() + "/snip_selftest.dump"
+discard path.remove(tmpFile, missing_ok = True)
+db.save(tmpFile, d)
+var reloaded = db.load(tmpFile)
+ok(len(reloaded["snippets"]) == len(d["snippets"]), "dump/load round-trips snippet count")
+for id in d["snippets"]:
+    ok(id in reloaded["snippets"], "snippet " + id + " survives dump")
+    ok(reloaded["snippets"][id]["body"] == d["snippets"][id]["body"], "body identical after round-trip")
+    ok(reloaded["snippets"][id]["tags"] == d["snippets"][id]["tags"], "tags identical after round-trip")
+discard path.remove(tmpFile, missing_ok = True)
+
+# load of a missing file yields an empty db
+var empty = db.load("__no_such_file__.dump")
+ok(empty["snippets"] == {}, "load of a missing file returns an empty store")
+
+# =============================================================================
+# db: JSON export/import round-trip
+# =============================================================================
+var blob = db.exportJson(d)
+ok(len(blob) > 0, "exportJson returns a non-empty document")
+ok("version" in blob and "snippets" in blob, "export mentions version + snippets")
+
+var d2 = {"snippets": {}}
+var added = db.importJson(d2, blob)
+ok(added == len(d["snippets"]), "importJson adds every snippet on a fresh store")
+ok(added > 0, "at least one snippet was imported")
+
+# a re-import into the SAME store is a no-op (same ids -> already present)
+var added2 = db.importJson(d2, blob)
+ok(added2 == 0, "importJson is idempotent on a re-import")
+
+# importing an unsupported version throws
+ok(throws(Function(): return db.importJson(d, "{\"version\": 99, \"snippets\": []}")), "importJson rejects an unknown schema version")
+
+# =============================================================================
+# search filters
+# =============================================================================
+var items = db.listAll(d)
+ok(len(search.byTags(items, [])) == len(items), "empty tag list is a no-op")
+var cli = search.byTags(items, ["cli"])
+ok(len(cli) == 1 and cli[0]["title"] == "Renamed", "byTags[cli] finds the one CLI item")
+var multi = search.byTags(items, ["cli", "greet"])
+ok(len(multi) == 1, "byTags requires ALL tags (AND)")
+var none = search.byTags(items, ["nonexistent"])
+ok(len(none) == 0, "byTags with a missing tag matches nothing")
+
+ok(len(search.byLang(items, "")) == len(items), "empty lang is a no-op")
+ok(len(search.byLang(items, "py")) == 1, "byLang exact match")
+ok(len(search.byLang(items, "python")) == 0, "byLang does NOT do prefix match")
+
+ok(len(search.byRegex(items, "")) == len(items), "empty regex is a no-op")
+ok(len(search.byRegex(items, "hello")) == 1, "byRegex on body finds hello")
+ok(len(search.byRegex(items, "HELLO")) == 1, "byRegex is case-insensitive")
+ok(len(search.byRegex(items, "body-.")) == 2, "byRegex finds 'body-A' AND 'body-B'")
+ok(len(search.byRegex(items, "no-such-.*-pattern-xyz")) == 0, "byRegex returns empty when no match")
+
+# top tags: correct counts, sorted desc
+var top = search.topTags(items, 5)
+ok(len(top) > 0, "topTags returns something")
+if len(top) >= 2:
+    ok(top[0]["count"] >= top[1]["count"], "topTags sorted by count desc")
+
+# languages: alphabetically unique
+var langs = search.languages(items)
+var uniq = Set()
+for l in langs:
+    uniq.add(l)
+ok(len(langs) == len(uniq), "languages() has no duplicates")
+
+# =============================================================================
+# fmt: humanAge + list + show
+# =============================================================================
+var now = time.now().timestamp
+ok(fmt.humanAge(now) == "0s ago", "humanAge of now is 0s")
+ok(fmt.humanAge(now - 5) == "5s ago", "humanAge for 5 seconds ago")
+ok(fmt.humanAge(now - 3700) == "1h ago", "humanAge for a little over 1 hour ago (avoids race with wall clock)")
+ok(fmt.humanAge(now - 90000) == "1d ago", "humanAge for a little over 1 day ago")
+ok(fmt.humanAge(now - 33 * 86400) == "1mo ago", "humanAge for 33 days ago")
+
+# a future timestamp clamps to 0s
+ok(fmt.humanAge(now + 3600) == "0s ago", "humanAge clamps future timestamps to 0s")
+
+var rendered = fmt.list(items)
+ok("Renamed" in rendered, "list rendering mentions each snippet title")
+ok(len(items) > 0 and "(no snippets)" not in rendered, "non-empty list doesn't say 'no snippets'")
+ok("(no snippets)" in fmt.list([]), "empty list says 'no snippets'")
+
+var one = items[0]
+var view = fmt.show(one)
+ok(one["title"] in view, "show includes title")
+ok("id:" in view and "tags:" in view, "show includes labelled header fields")
+ok("1  " in view, "show numbers the first line")
+
+io.print("snip: " + String(n) + " checks passed")

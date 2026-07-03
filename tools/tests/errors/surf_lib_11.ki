@@ -1,0 +1,3 @@
+# An unterminated character class is invalid.
+var r = import("regex")
+discard r.compile("[abc")

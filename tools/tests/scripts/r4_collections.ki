@@ -1,0 +1,499 @@
+# ============================================================================================
+# r4_collections.ki — exhaustive audit of Bytes / List / Set / Dict: every method, operator,
+# slice form, keyword-argument form, apply, inspect, and error path, probed from typical, edge
+# (empty / single / nested / cyclic-via-reference / boundary-slice / huge / unhashable), and
+# malformed/wrong-type angles. Only CONFIRMED-correct behavior is asserted here; anything that
+# misbehaves lives in the audit report, not in this test.
+#
+# Set/Dict iteration order is unspecified, so every Set/Dict content check sorts first (via
+# sorted(...) over keys/items) to stay deterministic. The final line is a fixed summary.
+# ============================================================================================
+var io = import("io")
+
+# True iff calling `thunk` throws — for pinning the documented error paths.
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        return True
+    return False
+
+var checks = 0
+var check = Function(cond, msg):
+    assert cond, msg
+    checks = checks + 1
+
+# Sort a Dict's items as a [key, value] List-of-Lists, for order-independent comparison.
+var ditems = Function(d):
+    return sorted(d.items())
+
+# Named thunks for the error paths whose body needs >1 statement (an inline multi-line
+# Function() in argument position does not parse; a named thunk does the same job).
+var thunkSortKeyError = Function():
+    var l = [1, 2]
+    l.sort(key=Function(x): return x[0])
+    return l
+var thunkSetAddUnhashable = Function():
+    var s = Set([1])
+    s.add([1])
+    return s
+var thunkDictUnhashableKey = Function():
+    var m = {}
+    m[[1]] = 1
+    return m
+var thunkDictRemoveAbsent = Function():
+    var m = {}
+    m.remove("z")
+var thunkDictUpdateBadPair = Function():
+    var m = {}
+    m.update([[1, 2, 3]])
+var thunkDictUpdateNonIter = Function():
+    var m = {}
+    m.update(5)
+
+# ============================================================================================
+# BYTES
+# ============================================================================================
+
+# --- constructor forms: List of ints, Integer n, String (+enc), Bytes ---
+check(Bytes([72, 105]) == fromhex("4869"), "Bytes(List) == fromhex")
+check(Bytes(3) == Bytes([0, 0, 0]), "Bytes(n) is n zero bytes")
+check(Bytes("Hi") == Bytes([72, 105]), "Bytes(String) utf-8 default")
+check(Bytes(Bytes([1, 2])) == Bytes([1, 2]), "Bytes(Bytes) copies")
+check(Bytes("") == Bytes([]) and len(Bytes("")) == 0, "Bytes of empty")
+check(Bytes("café") == Bytes([99, 97, 102, 195, 169]), "Bytes(String) utf-8 encodes multibyte")
+check(Bytes("café", "latin-1") == Bytes([99, 97, 102, 233]), "Bytes(String, latin-1) one byte per cp")
+check(Bytes([255]) == fromhex("ff") and Bytes([0]) == fromhex("00"), "Bytes byte boundaries 0 and 255")
+
+# --- fromhex: whitespace ignored, case-insensitive ---
+check(fromhex("48 69") == Bytes([72, 105]), "fromhex ignores spaces")
+check(fromhex("aAbB") == fromhex("AABB") and fromhex("") == Bytes([]), "fromhex case-insensitive / empty")
+
+# --- indexing: Integer byte, negatives, OOB throw ---
+var bb = Bytes([10, 20, 30, 40])
+check(bb[0] == 10 and bb[-1] == 40 and bb[-4] == 10, "Bytes index + negatives")
+check(type(bb[0]) == "Integer", "Bytes[i] is an Integer")
+check(throws(Function(): return bb[4]), "Bytes index OOB throws")
+check(throws(Function(): return bb[-5]), "Bytes negative OOB throws")
+check(throws(Function(): return bb["x"]), "Bytes non-Integer index throws")
+
+# --- slicing: returns Bytes, clamps, steps, empties ---
+check(bb[1:3] == Bytes([20, 30]), "Bytes slice")
+check(bb[::-1] == Bytes([40, 30, 20, 10]), "Bytes reverse slice")
+check(bb[::2] == Bytes([10, 30]), "Bytes step slice")
+check(bb[-100:100] == bb and bb[100:] == Bytes([]) and bb[2:1] == Bytes([]), "Bytes slice clamp/empty")
+check(throws(Function(): return bb[::0]), "Bytes zero step throws")
+check(throws(Function(): return bb[1.0:]), "Bytes float slice index throws")
+check(type(bb[0:1]) == "Bytes", "Bytes slice stays Bytes")
+
+# --- iteration yields Integers ---
+var biter = []
+for byte in Bytes([1, 2, 3]):
+    biter.append(byte)
+check(biter == [1, 2, 3], "Bytes iteration yields Integers")
+
+# --- in: Integer byte, Bytes subsequence, wrong type throws ---
+check(72 in Bytes([72, 105]) and 105 in Bytes([72, 105]), "Bytes contains Integer byte")
+check(not (999 in Bytes([1])) and not (-1 in Bytes([1])), "Bytes contains out-of-range Integer is False")
+check(Bytes([105]) in Bytes([72, 105]) and not (Bytes([200]) in Bytes([72, 105])), "Bytes contains subsequence")
+check(throws(Function(): return "x" in Bytes([1])), "Bytes 'in' with String throws")
+
+# --- operators: + concat, * repeat (guarded), lexicographic ordering ---
+check(Bytes([1]) + Bytes([2]) == Bytes([1, 2]), "Bytes + concatenates")
+check(Bytes([1, 2]) * 2 == Bytes([1, 2, 1, 2]), "Bytes * repeats")
+check(Bytes([1]) * 0 == Bytes([]) and Bytes([1]) * -3 == Bytes([]), "Bytes * non-positive is empty")
+check(Bytes([1]) < Bytes([2]) and Bytes([1]) < Bytes([1, 0]), "Bytes lexicographic <")
+check(Bytes([2]) > Bytes([1]) and Bytes([1, 0]) >= Bytes([1, 0]), "Bytes ordering > >=")
+check(throws(Function(): return Bytes([1]) + "x"), "Bytes + non-Bytes throws")
+check(throws(Function(): return Bytes([1]) * "x"), "Bytes * non-Integer throws")
+check(throws(Function(): return Bytes([1]) * 100000000000), "huge Bytes repeat throws")
+check(throws(Function(): return Bytes(100000000000)), "huge Bytes(n) throws")
+
+# --- encode/decode round-trips across utf-8 / latin-1 / ascii ---
+check("héllo".encode("utf-8") == Bytes([104, 195, 169, 108, 108, 111]), "encode utf-8 multibyte")
+check(Bytes([195, 169]).decode("utf-8") == "é", "decode utf-8 multibyte")
+check("abc".encode().decode() == "abc", "encode/decode default utf-8 round-trip")
+check("abc".encode("ascii").decode("ascii") == "abc", "ascii round-trip")
+var rawb = Bytes([0, 127, 200, 255])
+check(rawb.decode("latin-1").encode("latin-1") == rawb, "latin-1 is the lossless byte<->cp bridge")
+check(Bytes([233]).decode("latin-1") == "é", "latin-1 byte -> code point")
+# decode/encode error paths
+check(throws(Function(): return Bytes([0xc3]).decode("utf-8")), "truncated utf-8 decode throws")
+check(throws(Function(): return Bytes([0xff, 0xff]).decode("utf-8")), "invalid utf-8 lead decode throws")
+check(throws(Function(): return Bytes([200]).decode("ascii")), "byte >=0x80 decode ascii throws")
+check(throws(Function(): return "é".encode("ascii")), "encode non-ascii cp as ascii throws")
+check(throws(Function(): return Bytes([1]).decode("bogus")), "unknown decode encoding throws")
+check(throws(Function(): return "x".encode("bogus")), "unknown encode encoding throws")
+
+# --- hex ---
+check(Bytes([0x48, 0x69]).hex() == "4869" and Bytes([]).hex() == "", "Bytes.hex lowercase / empty")
+check(Bytes([255, 0]).hex() == "ff00", "Bytes.hex byte boundaries")
+
+# --- apply: Integer -> Integer, range-checked ---
+check(Bytes([1, 2, 3]).apply(Function(x): return x + 1) == Bytes([2, 3, 4]), "Bytes.apply maps bytes")
+check(Bytes([]).apply(Function(x): return x) == Bytes([]), "Bytes.apply on empty")
+check(throws(Function(): return Bytes([1]).apply(Function(x): return 999)), "Bytes.apply result >255 throws")
+check(throws(Function(): return Bytes([1]).apply(Function(x): return -1)), "Bytes.apply result <0 throws")
+
+# --- constructor error paths ---
+check(throws(Function(): return Bytes([256])), "Bytes element >255 throws")
+check(throws(Function(): return Bytes([-1])), "Bytes element <0 throws")
+check(throws(Function(): return Bytes(["x"])), "Bytes non-Integer element throws")
+check(throws(Function(): return Bytes(-1)), "Bytes negative count throws")
+check(throws(Function(): return fromhex("xyz")), "fromhex non-hex digit throws")
+check(throws(Function(): return fromhex("abc")), "fromhex odd length throws")
+
+# --- Bytes is hashable: a Dict/Set key ---
+var bkey = {}
+bkey[Bytes([1, 2])] = "a"
+bkey[Bytes([3])] = "b"
+check(bkey[Bytes([1, 2])] == "a" and len(bkey) == 2, "Bytes as Dict key")
+check(len(Set([Bytes([1]), Bytes([1]), Bytes([2])])) == 2, "Bytes as Set element (dedup)")
+
+# --- repr inside a container is the b'...' form ---
+check(String([Bytes([65])]) == "[b'A']", "Bytes repr nested in List")
+
+# ============================================================================================
+# LIST
+# ============================================================================================
+
+# --- indexing / negatives / OOB / slicing ---
+var xs = [1, 2, 3, 4, 5]
+check(xs[0] == 1 and xs[-1] == 5 and xs[-5] == 1, "List index + negatives")
+check(throws(Function(): return xs[5]) and throws(Function(): return xs[-6]), "List index OOB throws")
+check(throws(Function(): return xs[1.5]), "List float index throws")
+check(xs[1:4] == [2, 3, 4] and xs[::-1] == [5, 4, 3, 2, 1] and xs[::2] == [1, 3, 5], "List slices")
+check(xs[10:20] == [] and xs[-2:] == [4, 5] and xs[:-2] == [1, 2, 3] and xs[3:1] == [], "List slice edges")
+check(throws(Function(): return xs[::0]), "List zero step throws")
+check(type(xs[0:2]) == "List", "List slice stays List")
+
+# --- index assignment + negatives ---
+var ia = [0, 0, 0]
+ia[0] = 9
+ia[-1] = 7
+check(ia == [9, 0, 7], "List index assignment + negative")
+
+# --- append / pop ---
+var stk = []
+stk.append(10)
+stk.append(20)
+check(stk == [10, 20], "List append")
+check(stk.pop() == 20 and stk == [10], "List pop() last")
+var pp = [10, 20, 30]
+check(pp.pop(0) == 10 and pp == [20, 30], "List pop(i)")
+check([10, 20, 30].pop(-1) == 30 and [10, 20, 30].pop(-3) == 10, "List pop negative index")
+check(throws(Function(): return [].pop()), "pop from empty List throws")
+check(throws(Function(): return [1].pop(5)), "List pop OOB throws")
+check(throws(Function(): return [1].pop("x")), "List pop non-Integer throws")
+
+# --- insert (clamps both directions) ---
+var ins = [1, 2, 3]
+ins.insert(1, 99)
+check(ins == [1, 99, 2, 3], "List insert at index")
+var ins2 = [1, 2, 3]
+ins2.insert(-100, 0)
+ins2.insert(100, 9)
+check(ins2 == [0, 1, 2, 3, 9], "List insert clamps huge negative/positive index")
+check(throws(Function(): return [1].insert("x", 9)), "List insert non-Integer index throws")
+check(throws(Function(): return [1].insert(0)), "List insert missing item throws")
+
+# --- remove / index / count (value equality) ---
+var rm = [1, 2, 3, 2]
+rm.remove(2)
+check(rm == [1, 3, 2], "List remove first match")
+check(throws(Function(): return [1, 2].remove(9)), "List remove absent throws")
+check([1, 2, 3, 2].index(2) == 1, "List index first match")
+check([1, 2, 3, 2].index(2, 2) == 3, "List index with start")
+check([1, 2, 3, 2].index(2, 0, 4) == 1, "List index with start/end window")
+check(throws(Function(): return [1, 2, 3, 2].index(2, 2, 3)), "List index value outside window throws")
+check(throws(Function(): return [1, 2].index(9)), "List index absent throws")
+check([1, 1, 2, 1].count(1) == 3 and [1, 2].count(9) == 0, "List count")
+check([[1], [1], [2]].count([1]) == 2, "List count uses structural equality")
+
+# --- reverse / sort (stable, key, reverse) ---
+var rv = [1, 2, 3]
+rv.reverse()
+check(rv == [3, 2, 1], "List reverse in place")
+var so = [3, 1, 2]
+so.sort()
+check(so == [1, 2, 3], "List sort ascending")
+var sr = [3, 1, 2]
+sr.sort(reverse=True)
+check(sr == [3, 2, 1], "List sort reverse")
+var sk = ["bbb", "a", "cc"]
+sk.sort(key=len)
+check(sk == ["a", "cc", "bbb"], "List sort by key")
+var skr = ["bbb", "a", "cc"]
+skr.sort(key=len, reverse=True)
+check(skr == ["bbb", "cc", "a"], "List sort key + reverse")
+# stability: equal keys keep original order
+var pairs = [[1, "a"], [1, "b"], [0, "c"], [1, "d"]]
+pairs.sort(key=Function(p): return p[0])
+check(pairs == [[0, "c"], [1, "a"], [1, "b"], [1, "d"]], "List sort is stable")
+# multi-key via list-returning key
+var mk = [[2, 1], [1, 2], [1, 1], [2, 0]]
+mk.sort()
+check(mk == [[1, 1], [1, 2], [2, 0], [2, 1]], "List lexicographic sort (multi-key)")
+check(throws(Function(): return [1, "a"].sort()), "sort of unorderable types throws")
+check(throws(thunkSortKeyError), "sort key error propagates")
+
+# --- extend / copy / clear ---
+var ex = [1, 2]
+ex.extend([3, 4])
+ex.extend(Bytes([5]))
+ex.extend(Set([6]))
+check(ex == [1, 2, 3, 4, 5, 6], "List extend over List/Bytes/Set")
+check(throws(Function(): return [1].extend(5)), "List extend non-iterable throws")
+var orig = [[1, 2], [3]]
+var cp = orig.copy()
+cp.append([9])
+cp[0].append(99)
+check(orig == [[1, 2, 99], [3]] and len(cp) == 3, "List copy is shallow (nested shared, top independent)")
+var cl = [1, 2, 3]
+cl.clear()
+check(cl == [] and len(cl) == 0, "List clear")
+
+# --- operators: + concat, * repeat (shared handles, guarded), ordering ---
+check([1, 2] + [3, 4] == [1, 2, 3, 4] and [] + [] == [], "List + concat")
+check([0] * 3 == [0, 0, 0] and [1, 2] * 0 == [] and [1] * -1 == [], "List * repeat / non-positive")
+check([1, 2, 3] > [1, 2] and [1, 2] < [1, 2, 0] and [1, 2] <= [1, 2], "List lexicographic ordering")
+check(throws(Function(): return [1] + "x"), "List + non-List throws")
+check(throws(Function(): return [1] * "x"), "List * non-Integer throws")
+check(throws(Function(): return [0] * 100000000000), "huge List repeat throws")
+check(throws(Function(): return [1] < "x"), "List ordering vs non-List throws")
+
+# --- apply ---
+check([1, 2, 3].apply(Function(x): return x * x) == [1, 4, 9], "List.apply maps")
+check([].apply(Function(x): return x) == [], "List.apply on empty")
+check(throws(Function(): return [1].apply()), "List.apply without fn throws")
+
+# --- _eq_-driven membership/index/count/remove on instances ---
+class Pt:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _eq_ = Function(self, o):
+        return self.v == o.v
+var inst = [Pt(1), Pt(2), Pt(3)]
+check(inst.count(Pt(2)) == 1 and inst.index(Pt(3)) == 2 and (Pt(2) in inst), "List ops honor _eq_")
+inst.remove(Pt(2))
+check(len(inst) == 2, "List remove honors _eq_")
+
+# --- single-element + empty ---
+check([42][0] == 42 and len([42]) == 1, "single-element List")
+check(len([]) == 0 and not [] and [] == [], "empty List")
+
+# ============================================================================================
+# SET
+# ============================================================================================
+
+# --- construction, dedup, literal, empty ---
+check(len({1, 2, 3}) == 3 and len(Set([1, 1, 1])) == 1 and len(Set()) == 0, "Set dedup / literal / empty")
+check(sorted(List(Set([3, 1, 2, 1]))) == [1, 2, 3], "Set membership unique")
+check(throws(Function(): return Set([[1], [2]])), "Set of unhashable throws at construction")
+
+# --- add / discard / remove / contains / pop / clear ---
+var s = Set([1, 2, 3])
+s.add(4)
+s.add(2)
+check(len(s) == 4 and (4 in s), "Set add (idempotent on existing)")
+check(s.add(5) == None, "Set.add returns None")
+var sd = Set([1, 2, 3])
+sd.discard(2)
+sd.discard(99)
+check(len(sd) == 2 and not (2 in sd), "Set discard present/absent (no error)")
+check(sd.discard(1) == None, "Set.discard returns None")
+var sr2 = Set([1, 2, 3])
+sr2.remove(2)
+check(not (2 in sr2), "Set remove present")
+check(throws(Function(): return Set([1]).remove(9)), "Set remove absent throws")
+check(throws(Function(): return Set([1]).remove([9])), "Set remove unhashable throws")
+check(Set([1, 2, 3]).contains(2) and not Set([1]).contains(9), "Set.contains")
+check((2 in Set([1, 2])) and not (9 in Set([1, 2])), "Set 'in'")
+var sp = Set([42])
+check(sp.pop() == 42 and len(sp) == 0, "Set pop returns the element")
+check(throws(Function(): return Set().pop()), "Set pop from empty throws")
+var sc2 = Set([1, 2, 3])
+sc2.clear()
+check(len(sc2) == 0, "Set clear")
+check(throws(thunkSetAddUnhashable), "Set add unhashable throws")
+
+# --- copy is shallow ---
+var sco = Set([1, 2, 3])
+var scc = sco.copy()
+scc.add(4)
+check(len(sco) == 3 and len(scc) == 4, "Set copy is independent")
+
+# --- algebra methods accept any iterable; results order-independent ---
+check(sorted(List(Set([1, 2, 3]).union([3, 4]))) == [1, 2, 3, 4], "Set union (iterable arg)")
+check(sorted(List(Set([1, 2, 3]).intersection([2, 3, 4]))) == [2, 3], "Set intersection")
+check(sorted(List(Set([1, 2, 3]).difference([2]))) == [1, 3], "Set difference")
+check(sorted(List(Set([1, 2, 3]).symmetricdifference([2, 3, 4]))) == [1, 4], "Set symmetricdifference")
+check(Set([1, 2]).issubset([1, 2, 3]) and not Set([1, 4]).issubset([1, 2, 3]), "Set issubset")
+check(Set([1, 2, 3]).issuperset([1, 2]) and not Set([1]).issuperset([1, 2]), "Set issuperset")
+check(Set([1, 2]).isdisjoint([3, 4]) and not Set([1, 2]).isdisjoint([2, 3]), "Set isdisjoint")
+# edge: empty operands
+check(len(Set().union([])) == 0 and Set().issubset([1]) and Set([1]).issuperset([]), "Set algebra with empties")
+
+# --- algebra via operators (Set rhs required) ---
+check(sorted(List(Set([1, 2, 3]) - Set([2]))) == [1, 3], "Set - difference operator")
+check((Set([1, 2]) < Set([1, 2, 3])) and not (Set([1, 2]) < Set([1, 2])), "Set < proper subset")
+check((Set([1, 2]) <= Set([1, 2])) and (Set([1]) <= Set([1, 2])), "Set <= subset")
+check((Set([1, 2, 3]) > Set([1])) and not (Set([1, 2]) > Set([1, 2])), "Set > proper superset")
+check((Set([1, 2]) >= Set([1, 2])) and (Set([1, 2]) >= Set([1])), "Set >= superset")
+check(len(Set([1]) - Set([1])) == 0, "Set self-difference is empty")
+check(throws(Function(): return Set([1]) - [1]), "Set - non-Set throws")
+check(throws(Function(): return Set([1]) < [1]), "Set < non-Set throws")
+
+# --- apply (collisions collapse) ---
+check(sorted(List(Set([1, 2, 3]).apply(Function(x): return x * x))) == [1, 4, 9], "Set.apply maps")
+check(len(Set([1, -1, 2, -2]).apply(Function(x): return abs(x))) == 2, "Set.apply collisions collapse")
+
+# --- equality by membership ---
+check(Set([1, 2, 3]) == Set([3, 2, 1]) and Set([1]) != Set([1, 2]), "Set equality is membership-based")
+
+# ============================================================================================
+# DICT
+# ============================================================================================
+
+# --- get/set/in/len + missing-key throw ---
+var d = {"a": 1, "b": 2}
+d["c"] = 3
+d["a"] = 10
+check(d["a"] == 10 and d["c"] == 3 and len(d) == 3, "Dict set/get/update entry")
+check(("a" in d) and not ("z" in d) and not (1 in d), "Dict 'in' tests keys not values")
+check(throws(Function(): return {}["x"]), "Dict missing key throws")
+check(throws(thunkDictUnhashableKey), "Dict unhashable key throws")
+
+# --- distinct-type keys (strong typing): 0 vs False, 1.0 vs 1 ---
+var tk = {}
+tk[0] = "zero"
+tk[False] = "false"
+check(tk[0] == "zero" and tk[False] == "false" and len(tk) == 2, "0 and False are distinct Dict keys")
+
+# --- keys / values / items (order-independent) ---
+var kv = {"x": 1, "y": 2, "z": 3}
+check(sorted(kv.keys()) == ["x", "y", "z"], "Dict.keys")
+check(sorted(kv.values()) == [1, 2, 3], "Dict.values")
+check(ditems(kv) == [["x", 1], ["y", 2], ["z", 3]], "Dict.items pairs")
+
+# --- get / pop / setdefault with and without defaults + kwargs ---
+check({"a": 1}.get("a") == 1 and {"a": 1}.get("z") == None and {"a": 1}.get("z", 0) == 0, "Dict.get default")
+var dp = {"a": 1, "b": 2}
+check(dp.pop("a") == 1 and not ("a" in dp), "Dict.pop removes & returns")
+check({"a": 1}.pop("z", -1) == -1, "Dict.pop default for missing")
+check(throws(Function(): return {}.pop("z")), "Dict.pop missing without default throws")
+var dsd = {"a": 1}
+check(dsd.setdefault("a", 99) == 1 and dsd["a"] == 1, "setdefault keeps existing")
+check(dsd.setdefault("n", 7) == 7 and dsd["n"] == 7, "setdefault inserts default")
+check({}.setdefault("k") == None, "setdefault default-None inserts None")
+
+# --- remove (throws if absent), popitem ---
+var drm = {"a": 1, "b": 2}
+drm.remove("a")
+check(not ("a" in drm) and len(drm) == 1, "Dict.remove deletes")
+check(throws(thunkDictRemoveAbsent), "Dict.remove absent throws")
+var dpi = {"only": 5}
+var pi = dpi.popitem()
+check(pi == ["only", 5] and len(dpi) == 0, "Dict.popitem returns [k, v] and removes")
+check(throws(Function(): return {}.popitem()), "Dict.popitem on empty throws")
+
+# --- update: from Dict, from pairs, entries override ---
+var du = {"a": 1}
+du.update({"b": 2, "a": 9})
+check(ditems(du) == [["a", 9], ["b", 2]], "Dict.update from Dict overrides")
+var du2 = {"a": 1}
+du2.update([["b", 2], ["c", 3]])
+check(ditems(du2) == [["a", 1], ["b", 2], ["c", 3]], "Dict.update from pairs")
+check(throws(thunkDictUpdateBadPair), "Dict.update bad pair length throws")
+check(throws(thunkDictUpdateNonIter), "Dict.update non-iterable throws")
+
+# --- copy is shallow ---
+var dco = {"a": [1], "b": 2}
+var dcc = dco.copy()
+dcc["c"] = 3
+dcc["a"].append(2)
+check(dco["a"] == [1, 2] and not ("c" in dco) and len(dcc) == 3, "Dict copy is shallow")
+
+# --- clear ---
+var dcl = {"a": 1, "b": 2}
+dcl.clear()
+check(len(dcl) == 0, "Dict clear")
+
+# --- apply (over values, keys kept) ---
+var da = {"a": 1, "b": 2}.apply(Function(v): return v + 10)
+check(ditems(da) == [["a", 11], ["b", 12]], "Dict.apply maps values, keeps keys")
+check(ditems({"a": [1, 2], "b": [3]}.apply(Function(v): return len(v))) == [["a", 2], ["b", 1]], "Dict.apply over container values")
+check(len({}.apply(Function(v): return v)) == 0, "Dict.apply on empty")
+
+# --- equality (key/value sets, order-independent) ---
+check({"a": 1, "b": 2} == {"b": 2, "a": 1} and {"a": 1} != {"a": 2}, "Dict equality")
+
+# ============================================================================================
+# CROSS-CUTTING: repr-in-container, cyclic stringify, kwargs middle-skip, nesting
+# ============================================================================================
+
+# --- repr (quoted) for String elements nested in containers vs bare ---
+check(String(["a", "b"]) == "['a', 'b']", "List of Strings uses repr")
+check(String({"k": "v"}) == "{'k': 'v'}", "Dict String value uses repr")
+check(String([""]) == "['']", "empty-String element visible via repr")
+check(String([]) == "[]" and String({}) == "{}" and String(Set()) == "{}", "empty containers stringify")
+check(String(Set(["x"])) == "{'x'}", "Set of String uses repr")
+check(String([[], {}, Set()]) == "[[], {}, {}]", "nested empties stringify")
+
+# --- cyclic structures stringify with the ... guard (no infinite loop / overflow) ---
+var cyc = [1, 2]
+cyc.append(cyc)
+check(String(cyc) == "[1, 2, [...]]", "cyclic List stringifies with [...] guard")
+var dcyc = {}
+dcyc["self"] = dcyc
+check(String(dcyc) == "{'self': {...}}", "cyclic Dict stringifies with {...} guard")
+# very deep (acyclic) structures throw instead of overflowing the native stack
+var deep = Function(n):
+    var x = []
+    var i = 0
+    while i < n:
+        x = [x]
+        i = i + 1
+    return x
+check(throws(Function(): return String(deep(3000))), "very deeply nested structure throws on stringify")
+
+# --- keyword arguments: out-of-order, middle-skip via None hole-fill ---
+check([1, 2, 3, 2, 1].index(value=2, end=4) == 1, "List.index keyword + middle-skip (start defaults)")
+check([1, 2, 3, 2, 1].index(2, start=2) == 3, "List.index keyword start")
+check({"a": 1}.get(default=0, key="z") == 0, "Dict.get keywords out of order")
+var pk = [10, 20, 30]
+check(pk.pop(index=0) == 10 and pk == [20, 30], "List.pop keyword index")
+var ik = [1, 3]
+ik.insert(item=2, index=1)
+check(ik == [1, 2, 3], "List.insert keywords out of order")
+check([1, 1, 2].count(value=1) == 2, "List.count keyword")
+check(Bytes([1, 2]).apply(fn=Function(x): return x + 1) == Bytes([2, 3]), "Bytes.apply keyword")
+# unknown / duplicate keyword throw
+check(throws(Function(): return [1].append(item=1, bogus=2)), "unknown keyword throws")
+check(throws(Function(): return [1, 2, 3].index(2, value=2)), "duplicate positional+keyword throws")
+
+# --- inspect lists the documented members for each container type ---
+var hasAll = Function(text, names):
+    for nm in names:
+        if not (nm in text):
+            return False
+    return True
+check(hasAll(inspect([1]), ["append", "pop", "insert", "remove", "index", "count", "extend",
+    "reverse", "sort", "apply", "copy", "clear"]), "inspect(List) lists every method")
+check(hasAll(inspect(Set([1])), ["add", "discard", "remove", "contains", "pop", "union",
+    "intersection", "difference", "symmetricdifference", "issubset", "issuperset", "isdisjoint",
+    "apply", "copy", "clear"]), "inspect(Set) lists every method")
+check(hasAll(inspect({"a": 1}), ["keys", "values", "items", "get", "pop", "remove", "setdefault",
+    "update", "popitem", "apply", "copy", "clear"]), "inspect(Dict) lists every method")
+check(hasAll(inspect(Bytes([1])), ["decode", "hex", "apply"]), "inspect(Bytes) lists every method")
+
+# --- nested mutation through shared references is visible (reference semantics) ---
+var shared = [1, 2]
+var alias = shared
+alias.append(3)
+check(shared == [1, 2, 3], "List aliasing: mutation through one name visible in the other")
+var nestset = {"k": Set([1])}
+nestset["k"].add(2)
+check(len(nestset["k"]) == 2, "nested Set mutation through Dict value visible")
+
+io.print("r4_collections: all", checks, "checks passed")

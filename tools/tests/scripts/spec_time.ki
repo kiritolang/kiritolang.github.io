@@ -1,0 +1,44 @@
+# Thorough checks for the time module (deterministic / monotonic parts only — no exact wall time).
+var io = import("io")
+var time = import("time")
+
+# --- clocks return numbers and advance monotonically ---
+assert type(time.time()) == "Float" and time.time() > 1000000000.0, "time() is a Float epoch"
+assert type(time.timens()) == "Integer", "timens is an Integer"
+assert type(time.monotonic()) == "Float", "monotonic is a Float"
+assert type(time.perfcounterns()) == "Integer", "perfcounterns is an Integer"
+var t0 = time.monotonic()
+var spin = 0
+while spin < 100000:
+    spin = spin + 1
+var t1 = time.monotonic()
+assert t1 >= t0, "monotonic never goes backwards"
+assert time.perfcounterns() >= 0, "perfcounterns non-negative"
+
+# --- DateTime construction + fields ---
+var dt = time.make(2024, 6, 1, 13, 30, 45)
+assert dt.year == 2024 and dt.month == 6 and dt.day == 1, "make: date fields"
+assert dt.hour == 13 and dt.minute == 30 and dt.second == 45, "make: time fields"
+# timestamp is an Integer ATTRIBUTE (no parentheses), like the other UTC fields
+assert type(dt.timestamp) == "Integer", "timestamp is an attribute, not a method"
+assert time.make(2020, 1, 1, 0, 0, 0).timestamp == 1577836800, "timestamp = epoch seconds (UTC)"
+
+# --- formatting / iso ---
+var s = dt.format("%Y-%m-%d")
+assert s == "2024-06-01", "DateTime.format"
+assert dt.iso() != "", "DateTime.iso is non-empty"
+
+# --- strptime round-trips with format ---
+var parsed = time.strptime("2024-06-01 13:30:45", "%Y-%m-%d %H:%M:%S")
+assert parsed.year == 2024 and parsed.month == 6 and parsed.day == 1 and parsed.hour == 13, "strptime parses fields"
+
+# --- arithmetic: add/sub/diff (in seconds) ---
+var a = time.make(2024, 1, 1, 0, 0, 0)
+var b = time.make(2024, 1, 2, 0, 0, 0)
+assert b.diff(a) == 86400.0 or abs(b.diff(a) - 86400.0) < 1.0, "diff is one day in seconds"
+
+# --- now() returns a DateTime with a plausible year ---
+var n = time.now()
+assert n.year >= 2024, "now() year is plausible"
+
+io.print("OK")

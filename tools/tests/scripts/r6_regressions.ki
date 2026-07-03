@@ -1,0 +1,136 @@
+# r6_regressions.ki — regressions for bugs found in the round-3 (R6) audit sweep.
+#   P1 Integer<->Float ==/!=/<,<=,>,>= was LOSSY past 2^53 (routed the int64 through (double)int),
+#      so 2^53+1 == the float 2^53, INT64_MAX == 2^63.0, and worst of all `==` disagreed with hashing
+#      (a == b was True but `b in {a}` was False). Now compared EXACTLY; == agrees with order + hash.
+#   P1 tensor autograd backward() used recursive DFS -> native-stack overflow (segfault) on a deep graph.
+#   P2 complex.zeros/ones/identity cast negative dims to a huge size_t (no guard, unlike real matrix).
+#   P2 tensor.repeat/tile could size_t-overflow -> std::bad_alloc instead of a clean "Tensor too large".
+#   P3 tensor a**b backward gave NaN for the exponent grad at a zero base (0 * -inf); now 0.
+#   P3 tensor.unique kept duplicate NaNs (std::unique can't fold NaN); now collapsed to one.
+#   P1 makeMethod positional fast path forwards args verbatim, so zero-arg calls to BytesIO.write /
+#      DateTime.format / DateTime._setstate_ read a[0] OUT OF BOUNDS (garbage/dangling); now guarded.
+#   P2 regex \U hex escape accumulated into int32 (signed-overflow UB) and accepted out-of-range
+#      code points; now unsigned + rejects > U+10FFFF. regex \g<huge> leaked an opaque "stoi".
+var io = import("io")
+var math = import("math")
+var T = import("tensor")
+var C = import("complex")
+var time = import("time")
+var re = import("regex")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# --- small integers still equal their float form, both directions, and share one hash slot ---
+ok(1 == 1.0 and 1.0 == 1, "1 == 1.0 both directions")
+ok(0 == 0.0 and 0.0 == 0 and 0 == -0.0 and -0.0 == 0, "every zero compares equal")
+ok(-5 == -5.0 and -5.0 == -5, "negative int == its float")
+ok(1.0 in Set([1]) and 1 in Set([1.0]), "Set membership agrees with == both ways")
+var d = {}
+d[1] = "a"
+ok(d[1.0] == "a", "Dict: an Integer key is found by the equal Float")
+var d2 = {}
+d2[2.0] = "b"
+ok(d2[2] == "b", "Dict: a Float key is found by the equal Integer")
+var d3 = {}
+d3[3] = "x"
+d3[3.0] = "y"
+ok(len(d3) == 1 and d3[3] == "y", "1 and 1.0 collapse to ONE Dict key")
+
+# --- non-integral floats never equal an integer; ordering still holds ---
+ok(not (1 == 1.5) and not (1.5 == 1), "1 != 1.5 (fractional)")
+ok(1 < 1.5 and 1.5 > 1 and 2 > 1.5 and 1.5 < 2, "ordering across the fraction")
+
+# --- EXACTNESS past 2^53: the whole point of the fix ---
+ok(not (9007199254740993 == 9007199254740992.0), "2^53+1 (int) != the float 2^53")
+ok(9007199254740992 == 9007199254740992.0, "2^53 == the float 2^53 exactly")
+ok(not (9223372036854775807 == 9223372036854775808.0), "INT64_MAX != the float 2^63")
+ok(-9223372036854775808 == -9223372036854775808.0, "INT64_MIN == its exact float")
+# the hash/eq contract: membership MUST agree with == (this was the smoking-gun bug)
+var big = 9223372036854775807
+var bigf = 9223372036854775808.0
+ok((big == bigf) == (bigf in Set([big])), "== agrees with Set membership at the 2^63 boundary")
+# ordering past 2^53 is exact, not collapsed through double
+ok(9223372036854775806 < 9223372036854775807.0, "int 2^63-2 < float that rounds up to 2^63")
+
+# --- NaN is unordered; inf orders against every int ---
+var nan = math.nan
+ok(not (1 == nan) and not (nan == 1), "int != NaN (never equal)")
+ok(not (1 < nan) and not (1 > nan) and not (1 <= nan) and not (1 >= nan), "int vs NaN: all four false")
+var inf = math.inf
+ok(1 < inf and inf > 9223372036854775807 and -1 > -inf, "int orders against +/-inf")
+
+# --- sort / min / max use the exact order on a mixed large list ---
+var s = sorted([9007199254740993, 9007199254740992.0, 9007199254740994])
+ok(s[0] == 9007199254740992.0 and s[1] == 9007199254740993 and s[2] == 9007199254740994, "sorted mixed large exact")
+ok(min(9007199254740993, 9007199254740992.0) == 9007199254740992.0, "min mixed large exact")
+ok(max(9007199254740993, 9007199254740992.0) == 9007199254740993, "max mixed large exact")
+
+# --- tensor autograd: a deep graph backprops without overflowing the native stack (iterative DFS) ---
+var deepGrad = Function():
+    var x = T.Tensor([1.0], requiresgrad = True)
+    var y = x
+    var i = 0
+    while i < 20000:
+        y = y + x
+        i = i + 1
+    discard y.sum().backward()
+    return x.grad.tolist()[0]
+ok(deepGrad() == 20001.0, "deep autograd graph backprops (no stack overflow)")
+
+# --- complex matrix factories reject negative dimensions (mirrors the real matrix guard) ---
+ok(throws(Function(): return C.zeros(0, -1)), "complex.zeros(0,-1) throws")
+ok(throws(Function(): return C.zeros(-1, 3)), "complex.zeros(-1,3) throws")
+ok(throws(Function(): return C.ones(-1, 2)), "complex.ones negative throws")
+ok(throws(Function(): return C.identity(-2)), "complex.identity negative throws")
+ok(not throws(Function(): return C.zeros(0, 0)), "complex.zeros(0,0) ok")
+
+# --- tensor repeat/tile throw a clean catchable error on a size_t-overflowing count (not bad_alloc) ---
+ok(throws(Function(): return T.Tensor([1.0, 2.0, 3.0]).repeat(1000000000000)), "tensor.repeat huge count throws")
+ok(throws(Function(): return T.Tensor([1.0, 2.0]).tile([4000000000, 4000000000])), "tensor.tile huge reps throws")
+ok(T.Tensor([1.0, 2.0]).repeat(2).tolist()[0] == 1.0, "tensor.repeat small still works")
+ok(len(T.Tensor([1.0, 2.0]).tile([3]).tolist()) == 6, "tensor.tile small still works")
+
+# --- a**b backward: exponent grad at a zero base is finite (was 0 * -inf = NaN) ---
+var powGrad = Function():
+    var x = T.Tensor([0.0, 2.0], requiresgrad = True)
+    var y = T.Tensor([2.0, 3.0], requiresgrad = True)
+    discard (x ** y).sum().backward()
+    return y.grad.tolist()
+var pg = powGrad()
+ok(pg[0] == pg[0] and pg[0] == 0.0, "pow backward: zero-base exponent grad is 0 (not NaN)")
+ok(pg[1] == pg[1], "pow backward: positive-base exponent grad is finite")
+
+# --- tensor.unique collapses duplicate NaNs to a single trailing NaN ---
+var uq = T.unique(T.Tensor([math.nan, 1.0, math.nan, 1.0])).tolist()
+ok(len(uq) == 2 and uq[0] == 1.0 and uq[1] != uq[1], "unique folds duplicate NaNs to one")
+
+# --- makeMethod positional fast path: zero-arg calls guard arity instead of reading a[0] OOB ---
+ok(throws(Function(): return io.BytesIO().write()), "BytesIO.write() no-arg throws (was OOB read)")
+var dt = time.make(2024, 6, 15)
+ok(throws(Function(): return dt.format()), "DateTime.format() no-arg throws (was OOB read)")
+ok(throws(Function(): return dt._setstate_()), "DateTime._setstate_() no-arg throws (was OOB read)")
+ok(io.BytesIO().write("hi") == 2 and dt.format("%Y") == "2024", "those methods still work with an arg")
+
+# --- regex hex escapes: out-of-range / overflowing code points throw cleanly (no signed-overflow UB) ---
+ok(throws(Function(): return re.findall("\\UFFFFFFFF", "x")), "regex \\UFFFFFFFF throws (no int32 overflow)")
+ok(throws(Function(): return re.compile("\\U00110000")), "regex \\U above U+10FFFF throws")
+ok(len(re.findall("\\u0041", "ABC")) == 1, "regex \\u0041 (valid) still matches")
+var gerr = Function():
+    try:
+        discard re.sub("(a)", "\\g<999999999999>", "a")
+        return ""
+    catch as e:
+        return String(e)
+ok("invalid group reference" in gerr(), "regex \\g<huge> gives a clear error (not 'stoi')")
+ok(re.sub("(a)(b)", "\\g<2>\\g<1>", "ab") == "ba", "regex \\g<N> (valid) still works")
+
+io.print("r6_regressions: " + String(n) + " checks passed")

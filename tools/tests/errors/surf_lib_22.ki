@@ -1,0 +1,3 @@
+# serialize.loads of text that is not a valid graph dump must throw.
+var s = import("serialize")
+discard s.loads("this is not a valid graph dump @@@")

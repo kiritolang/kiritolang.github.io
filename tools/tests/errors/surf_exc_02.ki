@@ -1,0 +1,2 @@
+# a failing assert with no message reports 'assertion failed'
+assert 1 == 2

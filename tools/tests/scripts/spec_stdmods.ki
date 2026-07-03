@@ -1,0 +1,155 @@
+# Thorough checks for the Kirito-authored stdlib modules (eager itertools, functools, collections,
+# statistics, string, textwrap, base64, csv, heapq, bisect, copy, enum).
+var io = import("io")
+var close = Function(a, b) -> Bool:
+    return abs(a - b) < 0.000001
+
+# ===== itertools =====
+var it = import("itertools")
+assert it.chain([[1, 2], [3], [4, 5]]) == [1, 2, 3, 4, 5], "chain"
+assert it.repeat("x", 3) == ["x", "x", "x"], "repeat"
+assert it.islice([0, 1, 2, 3, 4, 5], 1, 4) == [1, 2, 3], "islice"
+assert it.accumulate([1, 2, 3, 4]) == [1, 3, 6, 10], "accumulate (sum)"
+assert it.pairwise([1, 2, 3, 4]) == [[1, 2], [2, 3], [3, 4]], "pairwise"
+assert it.product([[1, 2], ["a", "b"]]) == [[1, "a"], [1, "b"], [2, "a"], [2, "b"]], "product"
+assert it.permutations([1, 2, 3], 2) == [[1, 2], [1, 3], [2, 1], [2, 3], [3, 1], [3, 2]], "permutations r=2"
+assert it.combinations([1, 2, 3], 2) == [[1, 2], [1, 3], [2, 3]], "combinations r=2"
+assert it.compress(["a", "b", "c", "d"], [1, 0, 1, 0]) == ["a", "c"], "compress"
+assert it.takewhile(Function(x): return x < 3, [1, 2, 3, 1]) == [1, 2], "takewhile"
+assert it.dropwhile(Function(x): return x < 3, [1, 2, 3, 1]) == [3, 1], "dropwhile"
+assert it.filterfalse(Function(x): return x % 2 == 0, [1, 2, 3, 4]) == [1, 3], "filterfalse"
+assert it.starmap(Function(t): return t[0] + t[1], [[1, 2], [3, 4]]) == [3, 7], "starmap (func receives the tuple)"
+assert it.ziplongest([[1, 2, 3], [4, 5]], 0) == [[1, 4], [2, 5], [3, 0]], "ziplongest with fillvalue"
+
+# ===== functools =====
+var ft = import("functools")
+assert ft.reduce(Function(a, b): return a + b, [1, 2, 3, 4]) == 10, "reduce no initial"
+assert ft.reduce(Function(a, b): return a + b, [1, 2, 3], 100) == 106, "reduce with initial"
+assert ft.reduce(Function(a, b): return a * b, [1, 2, 3, 4, 5], 1) == 120, "reduce product"
+# partial: `bound` is a list of leading args; the wrapped fn gets the combined list (no spread).
+var addArgs = ft.partial(Function(args): return args[0] + args[1], [10])
+assert addArgs([5]) == 15, "partial prepends bound args"
+# cache memoizes a single-argument function
+var calls = [0]
+var sqfn = Function(x):
+    calls[0] = calls[0] + 1
+    return x * x
+var squared = ft.cache(sqfn)
+discard squared(5)
+discard squared(5)
+assert squared(5) == 25 and calls[0] == 1, "cache evaluates once per argument"
+
+# ===== collections =====
+var col = import("collections")
+var counter = col.Counter(["a", "b", "a", "c", "a", "b"])
+assert counter["a"] == 3 and counter["b"] == 2 and counter["c"] == 1 and counter["z"] == 0, "Counter counts (missing == 0)"
+assert counter.mostcommon()[0] == ["a", 3], "Counter.mostcommon"
+var dd = col.defaultdict(Function(): return [])
+dd["k"].append(1)
+dd["k"].append(2)
+assert dd["k"] == [1, 2], "defaultdict default factory"
+var dq = col.deque([1, 2, 3])
+dq.append(4)
+dq.appendleft(0)
+assert dq.pop() == 4 and dq.popleft() == 0, "deque append/pop both ends"
+
+# ===== statistics =====
+var st = import("statistics")
+assert close(st.mean([1, 2, 3, 4]), 2.5), "mean"
+assert close(st.median([1, 3, 2]), 2.0) and close(st.median([1, 2, 3, 4]), 2.5), "median"
+assert st.mode([1, 1, 2, 3]) == 1, "mode"
+assert close(st.variance([2, 4, 4, 4, 5, 5, 7, 9]), 4.571428571428571), "variance"
+assert st.stdev([2, 4, 4, 4, 5, 5, 7, 9]) > 0.0, "stdev"
+assert close(st.pvariance([1, 2, 3, 4, 5]), 2.0), "pvariance"
+
+# ===== string constants + capwords =====
+var strmod = import("string")
+assert strmod.ascii_lowercase == "abcdefghijklmnopqrstuvwxyz", "ascii_lowercase"
+assert strmod.ascii_uppercase == "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ascii_uppercase"
+assert strmod.digits == "0123456789", "digits"
+assert strmod.capwords("hello world foo") == "Hello World Foo", "capwords"
+
+# ===== textwrap =====
+var tw = import("textwrap")
+assert tw.wrap("a b c d e", 3) == ["a b", "c d", "e"], "wrap"
+assert tw.fill("a b c d", 3) == "a b\nc d", "fill"
+assert tw.indent("a\nb", "> ") == "> a\n> b", "indent"
+assert tw.dedent("    a\n    b") == "a\nb", "dedent"
+
+# ===== base64 (operates on Lists of byte values 0..255) =====
+var b64 = import("base64")
+assert b64.encode([104, 101, 108, 108, 111]) == "aGVsbG8=", "base64 encode (byte list)"
+assert b64.decode("aGVsbG8=") == [104, 101, 108, 108, 111], "base64 decode -> byte list"
+for bytes in [[], [0], [255], [1, 2, 3], [104, 105, 33, 250]]:
+    assert b64.decode(b64.encode(bytes)) == bytes, "base64 round-trip"
+assert b64.urlsafedecode(b64.urlsafeencode([250, 251, 252])) == [250, 251, 252], "urlsafe round-trip"
+
+# ===== csv =====
+var csv = import("csv")
+assert csv.formatrow(["a", "b", "c"]) == "a,b,c", "csv formatrow"
+assert csv.parserow("a,b,c") == ["a", "b", "c"], "csv parserow"
+assert csv.parserow("\"a,b\",c") == ["a,b", "c"], "csv parserow quoted"
+var roundtrip = csv.parse(csv.format([["x", "y"], ["1", "2"]]))
+assert roundtrip == [["x", "y"], ["1", "2"]], "csv format/parse round-trip"
+
+# ===== heapq =====
+var heapq = import("heapq")
+var heap = heapq.heapify([5, 3, 8, 1, 9, 2])   # heapify returns a new heap
+assert heap[0] == 1, "heapify -> min at root"
+heapq.heappush(heap, 0)                         # push/pop mutate in place
+assert heap[0] == 0, "heappush keeps min at root"
+assert heapq.heappop(heap) == 0, "heappop returns min"
+assert heap[0] == 1, "heappop removed the min"
+assert heapq.nlargest(3, [5, 1, 8, 3, 9, 2]) == [9, 8, 5], "nlargest"
+assert heapq.nsmallest(3, [5, 1, 8, 3, 9, 2]) == [1, 2, 3], "nsmallest"
+
+# ===== bisect =====
+var bisect = import("bisect")
+assert bisect.bisectleft([1, 3, 5, 7], 5) == 2, "bisectleft"
+assert bisect.bisectright([1, 3, 5, 7], 5) == 3, "bisectright"
+var arr = [1, 3, 5]
+bisect.insortleft(arr, 4)
+assert arr == [1, 3, 4, 5], "insort keeps sorted"
+
+# ===== copy =====
+var copy = import("copy")
+var orig = [[1, 2], [3, 4]]
+var shallow = copy.copy(orig)
+shallow[0].append(99)
+assert orig[0] == [1, 2, 99], "copy.copy is shallow"
+var deep = copy.deepcopy([[1, 2], [3, 4]])
+deep[0].append(99)
+assert deep[0] == [1, 2, 99], "deepcopy independent at all levels"
+var orig2 = [[1]]
+var d2 = copy.deepcopy(orig2)
+d2[0].append(2)
+assert orig2[0] == [1], "deepcopy does not touch the original's nested objects"
+# deepcopy is iterative + cycle-safe (the recursive version would loop/overflow on these). Compare by
+# identity, not ==, since structural equality on a cyclic value isn't cycle-aware.
+var cyc = [1]
+cyc.append(cyc)
+var dcyc = copy.deepcopy(cyc)
+assert dcyc[0] == 1, "deepcopy cycle: scalar element preserved"
+assert id(dcyc[1]) == id(dcyc), "deepcopy cycle: the self-reference is recreated"
+assert id(dcyc) != id(cyc), "deepcopy produced a fresh object"
+var sh = [0]
+var dsh = copy.deepcopy([sh, sh])
+assert id(dsh[0]) == id(dsh[1]), "deepcopy preserves a shared reference (copied once)"
+var deepN = [0]
+var dn = 0
+while dn < 20000:
+    deepN = [deepN]
+    dn = dn + 1
+discard copy.deepcopy(deepN)         # 20000 deep: must not overflow the native stack
+assert True, "deepcopy of a very deep structure does not recurse"
+
+# ===== enum =====
+var enum = import("enum")
+var Color = enum.Enum(["RED", "GREEN", "BLUE"])
+assert Color.get("RED") == 0 and Color.get("BLUE") == 2, "enum.get -> ordinal"
+assert Color["GREEN"] == 1, "enum [] indexing"
+assert Color.nameof(1) == "GREEN", "enum nameof (value -> name)"
+assert "RED" in Color and "PURPLE" not in Color, "enum membership"
+assert sorted(Color.names()) == ["BLUE", "GREEN", "RED"], "enum names"
+
+io.print("OK")

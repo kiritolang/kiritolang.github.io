@@ -1,0 +1,67 @@
+# Checks for standard-library modules (deterministic, platform-independent parts only).
+var io = import("io")
+var path = import("path")
+
+# --- math ---
+var m = import("math")
+assert m.floor(3.7) == 3 and m.ceil(3.2) == 4 and m.trunc(-3.7) == -3.0, "floor/ceil/trunc"
+assert m.sqrt(16.0) == 4.0 and m.cbrt(27.0).compare(3.0), "sqrt/cbrt"
+assert abs(m.pow(2.0, 10.0) - 1024.0) < 0.0001, "math.pow"
+assert m.gcd(12, 8) == 4 and m.lcm(4, 6) == 12, "gcd/lcm"
+assert m.factorial(5) == 120, "factorial"
+assert m.comb(5, 2) == 10 and m.perm(5, 2) == 20, "comb/perm"
+assert abs(m.log2(8.0) - 3.0) < 1e-9 and abs(m.log10(1000.0) - 3.0) < 1e-9, "log2/log10"
+assert abs(m.log(8.0, 2.0) - 3.0) < 1e-9, "log base"
+assert abs(m.exp(0.0) - 1.0) < 1e-9, "exp"
+assert abs(m.sin(0.0)) < 1e-9 and abs(m.cos(0.0) - 1.0) < 1e-9, "trig"
+assert m.isnan(m.nan) and m.isinf(m.inf) and not m.isnan(1.0), "nan/inf classification"
+assert m.prod([1, 2, 3, 4]) == 24, "prod"
+assert abs(m.hypot(3.0, 4.0) - 5.0) < 1e-9, "hypot"
+
+# --- sys ---
+var sys = import("sys")
+assert len(sys.platform) > 0, "platform name"
+assert path.join("a", "b", "c") == "a/b/c", "path.join"
+assert path.join("/usr", "local") == "/usr/local", "path.join absolute"
+assert path.join("a", "/abs") == "/abs", "path.join absolute resets"
+assert path.isdir(path.gettempdir()), "gettempdir is a real directory"
+assert sys.getenv("KIRITO_DEFINITELY_UNSET_XYZ", "fallback") == "fallback", "getenv default"
+
+# --- json (round-trip; compare via re-parse since dict order is unspecified) ---
+var json = import("json")
+assert json.loads("[1, 2.5, true, false, null, \"x\"]") == [1, 2.5, True, False, None, "x"], "json parse scalars/array"
+var obj = json.loads("{\"a\": 1, \"b\": [2, 3]}")
+assert obj["a"] == 1 and obj["b"] == [2, 3], "json parse object"
+var roundtrip = json.loads(json.dumps({"n": 42, "list": [1, 2], "nested": {"x": True}}))
+assert roundtrip["n"] == 42 and roundtrip["list"] == [1, 2] and roundtrip["nested"]["x"] == True, "json round-trip"
+assert json.dumps([1, 2], indent=2) != json.dumps([1, 2]), "json indent changes output"
+
+# --- itertools (eager) ---
+var it = import("itertools")
+assert it.chain([[1, 2], [3, 4]]) == [1, 2, 3, 4], "itertools.chain"
+assert it.repeat(7, 3) == [7, 7, 7], "itertools.repeat"
+assert it.islice([0, 1, 2, 3, 4, 5], 1, 4) == [1, 2, 3], "itertools.islice"
+assert it.accumulate([1, 2, 3, 4]) == [1, 3, 6, 10], "itertools.accumulate"
+assert it.product([[1, 2], ["a", "b"]]) == [[1, "a"], [1, "b"], [2, "a"], [2, "b"]], "itertools.product"
+assert it.pairwise([1, 2, 3, 4]) == [[1, 2], [2, 3], [3, 4]], "itertools.pairwise"
+
+# --- functools ---
+var ft = import("functools")
+assert ft.reduce(Function(a, b): return a + b, [1, 2, 3, 4], 0) == 10, "functools.reduce"
+
+# --- collections ---
+var col = import("collections")
+var counter = col.Counter(["a", "b", "a", "c", "a", "b"])
+assert counter["a"] == 3 and counter["b"] == 2 and counter["c"] == 1, "Counter counts"
+
+# --- hash (known digests) ---
+var h = import("hash")
+assert h.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256(abc)"
+assert h.md5("") == "d41d8cd98f00b204e9800998ecf8427e", "md5 empty"
+
+# --- zlib round-trip ---
+var z = import("zlib")
+var payload = "the quick brown fox " * 20
+assert z.decompress(z.compress(payload)) == payload, "zlib round-trip"
+
+io.print("OK")

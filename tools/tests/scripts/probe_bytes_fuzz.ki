@@ -1,0 +1,111 @@
+# Fuzz + adversarial sweep of the Bytes type and String<->Bytes encoding (a core "since regex"
+# feature): construction, indexing/slicing/iteration, +/*/ordering/hashing, hex round-trips, and
+# encode/decode across utf-8/latin-1/ascii, plus malformed inputs that must throw. Seeded.
+var io = import("io")
+var random = import("random")
+
+var randbytelist = Function(rng, n):
+    var bs = []
+    var i = 0
+    while i < n:
+        bs.append(rng.randint(0, 255))
+        i = i + 1
+    return bs
+
+if argmain:
+    var rng = random.Random(0xB17E5)
+
+    var t = 0
+    while t < 300:
+        var n = rng.randint(0, 24)
+        var lst = randbytelist(rng, n)
+        var b = Bytes(lst)
+        assert len(b) == n, "len"
+        # indexing yields Integer bytes; iteration yields the same sequence
+        var collected = []
+        for x in b:
+            collected.append(x)
+        assert collected == lst, "iteration == source list"
+        var i = 0
+        while i < n:
+            assert b[i] == lst[i], "index"
+            assert b[i] >= 0 and b[i] <= 255, "byte range"
+            i = i + 1
+        # slicing yields Bytes
+        if n >= 2:
+            var sl = b[1:n - 1]
+            assert isinstance(sl, "Bytes"), "slice is Bytes"
+            assert len(sl) == n - 2, "slice len"
+        # hex round-trip (free fn + method)
+        var hx = b.hex()
+        assert fromhex(hx) == b, "hex/fromhex round-trip"
+        assert Bytes(lst).hex() == hx, "hex deterministic"
+        # concat + repeat
+        assert (b + Bytes([])) == b, "concat empty"
+        assert len(b + b) == 2 * n, "concat len"
+        assert len(b * 3) == 3 * n, "repeat len"
+        # equality + hashing (usable as a Set member / Dict key)
+        var st = Set([b, Bytes(lst)])
+        assert len(st) == 1, "equal Bytes hash equal"
+        t = t + 1
+
+    # --- encode/decode round-trips across encodings ---
+    var u = 0
+    while u < 100:
+        var n = rng.randint(0, 16)
+        var s = ""
+        var i = 0
+        while i < n:
+            s = s + chr(rng.randint(97, 122))      # ASCII-safe text
+            i = i + 1
+        assert s.encode("utf-8").decode("utf-8") == s, "utf-8 round-trip"
+        assert s.encode("latin-1").decode("latin-1") == s, "latin-1 round-trip"
+        assert s.encode("ascii").decode("ascii") == s, "ascii round-trip"
+        # latin-1 is a lossless byte<->codepoint map for 0..255
+        var rb = Bytes(randbytelist(rng, n))
+        assert rb.decode("latin-1").encode("latin-1") == rb, "latin-1 byte-exact"
+        u = u + 1
+
+    # --- unicode: a multi-byte char encodes to >1 byte and round-trips ---
+    var uni = "héllo→世界"
+    assert uni.encode("utf-8").decode("utf-8") == uni, "unicode utf-8 round-trip"
+    assert len(uni.encode("utf-8")) > len(uni), "utf-8 multibyte expands"
+
+    # --- Bytes constructors ---
+    assert len(Bytes(5)) == 5, "Bytes(n) is n zero bytes"
+    assert Bytes("Hi") == Bytes([72, 105]), "Bytes(String) utf-8"
+    assert Bytes([]) == Bytes(0), "empty forms equal"
+
+    # --- adversarial: malformed inputs must throw, not crash ---
+    var caught = False
+    try:
+        discard Bytes([256])                  # out of byte range
+    catch as e:
+        caught = True
+    assert caught, "Bytes([256]) must throw"
+    caught = False
+    try:
+        discard Bytes([-1])
+    catch as e:
+        caught = True
+    assert caught, "Bytes([-1]) must throw"
+    caught = False
+    try:
+        discard fromhex("zz")                 # bad hex digits
+    catch as e:
+        caught = True
+    assert caught, "bad hex must throw"
+    caught = False
+    try:
+        discard fromhex("abc")                # odd length
+    catch as e:
+        caught = True
+    assert caught, "odd-length hex must throw"
+    caught = False
+    try:
+        discard "→".encode("ascii")           # non-ASCII to ascii
+    catch as e:
+        caught = True
+    assert caught, "non-ascii encode('ascii') must throw"
+
+    io.print("OK bytes fuzz")

@@ -1,0 +1,8 @@
+# calling an instance method with too few arguments fails
+class C:
+    var _init_ = Function(self):
+        self.x = 1
+    var go = Function(self, a, b):
+        return a + b
+var c = C()
+discard c.go(1)

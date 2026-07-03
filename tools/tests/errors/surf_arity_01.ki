@@ -1,0 +1,4 @@
+# call user Function with too many positional args
+var f = Function(a):
+    return a
+discard f(1, 2)

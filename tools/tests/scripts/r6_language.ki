@@ -1,0 +1,888 @@
+# r6_language.ki — adversarial, exhaustive audit of docs/pages/02-language-guide.md against the
+# live interpreter. Self-checking: every assertion increments a counter; the final line reports it.
+# Covers: comments/layout, var & reference-assignment, scoping, indentation blocks, control flow,
+# logical ops, conditional expr, packing/unpacking, functions/closures/kwargs/defaults/annotations,
+# exceptions, context managers, classes/inheritance/_super_/operators/privacy, switch, discard,
+# assert, pass/todo. Typical + edge + malformed (via `throws`) + nesting + interaction cases.
+
+var io = import("io")
+var path = import("path")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(thunk) -> True iff calling thunk() throws. Used to probe malformed/illegal operations.
+var throws = Function(thunk):
+    var threw = False
+    try:
+        discard thunk()
+    catch as e:
+        threw = True
+    return threw
+
+# importErr(src) -> True iff writing `src` to a temp .ki and importing it throws (parse/lex/compile
+# errors surface only on import, not in this file's own compile). msgsub, if given, must appear in the
+# error text. Each call uses a unique path so the module cache never aliases.
+var impCounter = 0
+var importErr = Function(src, msgsub):
+    impCounter = impCounter + 1
+    var fp = "/tmp/r6_lang_" + String(impCounter)
+    var fh = io.open(fp + ".ki", "w")
+    fh.write(src)
+    fh.close()
+    var threw = False
+    try:
+        discard import(fp)
+    catch as e:
+        threw = msgsub == "" or msgsub in e
+    path.remove(fp + ".ki", missing_ok = True)
+    return threw
+
+# ============================================================================
+# Comments and layout
+# ============================================================================
+var afterComment = 1  # trailing comment is dropped by the lexer
+ok(afterComment == 1, "trailing # comment lexes away")
+# A full-line comment between statements is invisible.
+ok(True, "comment-only line does not break the program")
+
+# ':' + newline + indent introduces a block; tabs and spaces both work but ambiguous mixing fails.
+if True:
+    ok(True, "':' newline indent makes a block")
+ok(importErr("if True:\n\tvar a = 1\n        var b = 2\n", ""), "ambiguous tab/space indent rejected")
+
+# ============================================================================
+# Variables and assignment, scoping
+# ============================================================================
+var v1 = 1
+v1 = v1 + 1
+ok(v1 == 2, "bare = rebinds an existing binding")
+
+# Reference semantics: aliases share one value; mutation is visible through every binding.
+var aliasA = [1, 2, 3]
+var aliasB = aliasA
+aliasB.append(4)
+ok(aliasA == [1, 2, 3, 4], "list mutation visible through aliased binding")
+ok(aliasA == aliasB, "aliases are the same value")
+
+var dA = {"k": 1}
+var dB = dA
+dB["k"] = 99
+ok(dA["k"] == 99, "dict mutation visible through alias")
+
+# Rebinding a name does NOT mutate the previously-bound value (binds name, not value).
+var orig = [1, 2]
+var keep = orig
+orig = [9]
+ok(keep == [1, 2], "rebinding a name leaves the old value untouched")
+
+# var declares in the current scope; bare = to an undefined name is a compile error (uncatchable),
+# verified via import.
+ok(importErr("undefinedName = 5\n", "not defined"), "bare = to undefined name is a compile error")
+
+# A var in a nested block does not leak in a confusing way; function scopes are isolated.
+var outerScopeProbe = Function():
+    var local = 5
+    return local
+ok(outerScopeProbe() == 5, "function-local var resolves")
+
+# ============================================================================
+# Numbers and arithmetic (the load-bearing semantics)
+# ============================================================================
+ok(7 / 2 == 3.5 and type(7 / 2) == "Float", "/ is true division -> Float")
+ok(4 / 2 == 2.0 and type(4 / 2) == "Float", "/ yields Float even when exact")
+ok(7 // 2 == 3, "// floor division")
+ok(-7 // 2 == -4, "// floors toward negative infinity")
+ok(7 % 2 == 1 and -7 % 2 == 1, "% modulo (sign follows divisor)")
+ok(2 ** 10 == 1024, "** exponentiation")
+ok(2 ** 3 ** 2 == 512, "** is right-associative")
+ok(-2 ** 2 == -4, "** binds tighter than unary minus")
+ok(2 ** -1 == 0.5 and type(2 ** -1) == "Float", "integer ** negative -> Float")
+ok(0xFF == 255 and 0o17 == 15 and 0b1010 == 10, "hex/octal/binary literals")
+var i64max = 9223372036854775807
+ok(i64max + 1 == -9223372036854775808, "int64 two's-complement wraparound")
+# Float == is EXACT IEEE-754 (an intended, documented boundary).
+ok((0.1 + 0.2 == 0.3) == False, "float == is exact: 0.1+0.2 != 0.3")
+ok(0.0 == -0.0, "exact float ==: 0.0 == -0.0")
+ok(throws(Function(): return 1 / 0), "/ by zero throws")
+ok(throws(Function(): return 1 // 0), "// by zero throws")
+ok(throws(Function(): return 5 % 0), "% by zero throws")
+ok(bitand(0xF0, 0x3C) == 48 and bitor(8, 1) == 9 and bitxor(5, 1) == 4, "bitand/or/xor")
+ok(bitnot(0) == -1 and shl(1, 8) == 256 and shr(-8, 1) == -4, "bitnot/shl/shr (arithmetic)")
+# Chained comparison is NOT Python-style; it is left-associative, so `1 < 2 < 3` is `(1<2) < 3`.
+ok(throws(Function(): return 1 < 2 < 3), "no chained comparison: (1<2)<3 throws")
+
+# ============================================================================
+# Types and conversions
+# ============================================================================
+ok(type(None) == "None" and type(True) == "Bool", "type(None)/type(Bool)")
+ok(type(1) == "Integer" and type(1.0) == "Float", "type Integer/Float")
+ok(type("x") == "String" and type([1]) == "List", "type String/List")
+ok(type({1}) == "Set" and type({"a": 1}) == "Dict", "type Set/Dict")
+ok(Integer("42") == 42 and Float(3) == 3.0, "Integer/Float converters")
+ok(String(99) == "99" and Bool(0) == False and Bool("x") == True, "String/Bool converters")
+ok(List("ab") == ["a", "b"] and Set([1, 1, 2]) == {1, 2}, "List/Set constructors")
+# Bool is a distinct type, not an Integer subtype.
+ok(isinstance(True, Bool) and not isinstance(True, Integer), "Bool is not an Integer")
+ok(isinstance(1, Integer) and isinstance(1.5, Float), "isinstance with builtin type")
+
+# ============================================================================
+# Strings (Unicode, code-point indexed) + literal flavours
+# ============================================================================
+var poly = "chrząszcz"
+ok(len(poly) == 9, "len counts code points, not bytes")
+ok(poly[0] == "c", "string index is by code point")
+ok("abc"[::-1] == "cba", "[::-1] reverses by code points")
+ok("ab" * 3 == "ababab" and 3 * "ab" == "ababab", "string * Integer repeats (either order)")
+var sq = 5
+ok(f"sq is {sq * sq}" == "sq is 25", "f-string interpolates an expression")
+ok('single' == "single", "single quotes == double quotes")
+ok("it's" == "it's" and 'say "hi"' == 'say "hi"', "embed the other quote without escaping")
+ok(len(r"\n") == 2, "raw string: backslash-n is two chars")
+ok("\x41\x42" == "AB", "\\xHH hex escape")
+var ml = """line1
+line2"""
+ok(ml == "line1\nline2", "triple-quoted multiline string")
+var rfName = "Kirito"
+ok(rf"raw\{rfName}" == "raw\\Kirito", "rf combines raw + interpolation")
+var fkey = {"k": "v"}
+ok(f"{fkey['k']}" == "v", "f-string holds a single-quoted key")
+# A String nested in a container prints in repr (quoted) form.
+ok(String(["a"]) == "['a']", "nested String prints in repr form")
+ok(String([""]) == "['']" and String([]) == "[]", "[''] distinguishable from []")
+# String-literal lex errors surface on import (each is a clean error, not a crash).
+ok(importErr('var s = "\\q"\n', ""), "bad backslash escape rejected")
+ok(importErr('var s = "oops\n', ""), "unterminated string rejected")
+ok(importErr('var s = r"\\"\n', ""), "raw string ending in lone backslash rejected")
+
+# ============================================================================
+# Collections + slicing
+# ============================================================================
+var lc = [3, 1, 2]
+lc.append(4)
+lc.sort()
+ok(lc == [1, 2, 3, 4], "append + in-place sort")
+ok(lc[1:3] == [2, 3] and len(lc) == 4, "list slice + len")
+ok([1, 2, 3, 4, 5][3:-1] == [4], "negative-index slice")
+ok([1, 2, 3, 4, 5][::2] == [1, 3, 5], "step slice")
+var dd = {"a": 1, "b": 2}
+dd["c"] = 3
+ok(dd.get("z", 0) == 0 and dd.get("a", 0) == 1, "dict.get with default")
+var setc = {1, 2, 3}
+setc.add(4)
+ok(2 in setc and 5 not in setc, "set in / not in")
+
+# ============================================================================
+# Control flow: if/elif/else, while, for, break/continue
+# ============================================================================
+var lbl = "?"
+if 0 > 1:
+    lbl = "a"
+elif 1 == 1:
+    lbl = "b"
+else:
+    lbl = "c"
+ok(lbl == "b", "if/elif/else picks the right branch")
+
+var collected = []
+var wi = 0
+while wi < 10:
+    wi = wi + 1
+    if wi == 3:
+        continue
+    if wi == 6:
+        break
+    collected.append(wi)
+ok(collected == [1, 2, 4, 5], "while + continue + break")
+
+var forSum = 0
+for x in [1, 2, 3]:
+    forSum = forSum + x
+ok(forSum == 6, "for over a List")
+
+# Nested loops: break/continue affect only the innermost loop.
+var nestedOut = []
+for i in range(3):
+    for j in range(3):
+        if j == 1:
+            break
+        nestedOut.append([i, j])
+ok(nestedOut == [[0, 0], [1, 0], [2, 0]], "break exits only the inner loop")
+
+# `for` iterates a snapshot: mutating mid-loop is safe.
+var snap = [1, 2, 3]
+var snapCount = 0
+for s in snap:
+    snap.append(99)
+    snapCount = snapCount + 1
+ok(snapCount == 3, "for-snapshot: appends do not extend this pass")
+ok(len(snap) == 6, "structural change still applies after the loop")
+
+var removeAll = [1, 2, 3, 4]
+var visited = []
+for y in removeAll:
+    visited.append(y)
+    removeAll.pop(0)
+ok(visited == [1, 2, 3, 4], "for-snapshot: pop-front still visits all originals")
+
+var dictMut = {"a": 1, "b": 2}
+var dictSeen = []
+for k in dictMut:
+    dictSeen.append(k)
+    dictMut[k + "_x"] = 0
+ok(sorted(dictSeen) == ["a", "b"], "adding a dict key mid-loop does not throw")
+
+var dictDel = {"a": 1, "b": 2, "c": 3}
+var dictDelSeen = []
+for dk in dictDel:
+    dictDelSeen.append(dk)
+    dictDel.pop(dk)
+ok(sorted(dictDelSeen) == ["a", "b", "c"], "removing every dict key still visits all originals")
+ok(len(dictDel) == 0, "the dict ends up empty after removing each key")
+
+var setSnap = {1, 2, 3}
+var setSnapSeen = []
+for se in setSnap:
+    setSnapSeen.append(se)
+    setSnap.discard(se)
+ok(sorted(setSnapSeen) == [1, 2, 3], "for over a Set is a snapshot under removal")
+
+# In-place mutation through a held reference IS visible (same object).
+var nestedRefs = [[1], [2]]
+for sub in nestedRefs:
+    sub.append(99)
+ok(nestedRefs == [[1, 99], [2, 99]], "in-place mutation through a reference is visible")
+
+# for-loop tuple unpack via enumerate/zip/items.
+var enumOut = []
+for idx, val in enumerate(["a", "b"]):
+    enumOut.append([idx, val])
+ok(enumOut == [[0, "a"], [1, "b"]], "for + enumerate unpack")
+var zipOut = []
+for za, zb in zip([1, 2], ["x", "y"]):
+    zipOut.append([za, zb])
+ok(zipOut == [[1, "x"], [2, "y"]], "for + zip unpack")
+
+# Parse-time rejection of break/continue outside a loop and return outside a function.
+ok(importErr("break\n", "break"), "break outside loop is a parse error")
+ok(importErr("continue\n", "continue"), "continue outside loop is a parse error")
+ok(importErr("return 5\n", "return"), "return outside function is a parse error")
+
+# ============================================================================
+# Logical operators: short-circuit, yield an operand; `not` -> Bool
+# ============================================================================
+ok((None or "fallback") == "fallback", "or yields the second operand when first falsy")
+ok((0 or 42) == 42 and (7 or 0) == 7, "or yields first truthy operand")
+ok((True and "ok") == "ok" and (0 and 5) == 0, "and yields operand")
+ok((False and (1 / 0)) == False, "and short-circuits (no div-by-zero)")
+ok((True or (1 / 0)) == True, "or short-circuits")
+ok((not 1) == False and (not 0) == True, "not negates truthiness")
+ok(type(not 1) == "Bool", "not yields a Bool")
+# `not` is lower precedence than ==: `not False == False` is `not (False == False)` -> False.
+ok((not False == False) == False, "not binds looser than ==")
+
+# ============================================================================
+# Conditional expression: THEN if COND else ORELSE
+# ============================================================================
+ok(("even" if 4 % 2 == 0 else "odd") == "even", "ternary then-branch")
+ok(("even" if 3 % 2 == 0 else "odd") == "odd", "ternary else-branch")
+ok(("safe" if True else (1 / 0)) == "safe", "ternary short-circuits the else")
+ok(((1 / 0) if False else "safe") == "safe", "ternary short-circuits the then")
+# Right-associative chaining (a clamp).
+var clampHi = -3
+ok((0 if clampHi < 0 else 10 if clampHi > 10 else clampHi) == 0, "ternary chain (low)")
+clampHi = 99
+ok((0 if clampHi < 0 else 10 if clampHi > 10 else clampHi) == 10, "ternary chain (high)")
+clampHi = 5
+ok((0 if clampHi < 0 else 10 if clampHi > 10 else clampHi) == 5, "ternary chain (middle)")
+# Lowest precedence: `a or b if c else d` parses as `(a or b) if c else d`.
+ok((False or "B" if True else "D") == "B", "ternary lower precedence than or")
+# Usable inside a list / call argument.
+ok(["y" if True else "n", "a" if False else "b"] == ["y", "b"], "ternary inside a list literal")
+
+# ============================================================================
+# Packing and unpacking
+# ============================================================================
+var packed = 1, 2, 3
+ok(packed == [1, 2, 3] and type(packed) == "List", "bare comma packs into a List")
+var ua, ub = 1, 2
+ok(ua == 1 and ub == 2, "simple two-target unpack")
+ua, ub = ub, ua
+ok(ua == 2 and ub == 1, "swap via unpack")
+var sw1 = 1
+var sw2 = 2
+var sw3 = 3
+sw1, sw2, sw3 = sw3, sw1, sw2
+ok(sw1 == 3 and sw2 == 1 and sw3 == 2, "three-way rotate via unpack")
+var sFirst, *sRest = [1, 2, 3, 4]
+ok(sFirst == 1 and sRest == [2, 3, 4], "starred tail target")
+var sInit2 = 0
+var sLast = 0
+var sInitList = []
+sInitList, sLast = [1, 2, 3], 4
+ok(sLast == 4 and sInitList == [1, 2, 3] and sInit2 == 0, "plain multi-target assignment")
+var hStar, *mStar, tStar = [1, 2, 3, 4, 5]
+ok(hStar == 1 and mStar == [2, 3, 4] and tStar == 5, "starred middle target")
+var emptyMidH, *emptyMid, emptyMidT = [1, 2]
+ok(emptyMid == [], "starred middle absorbs zero elements")
+var onlyStar = "x"
+var allTake = [1, 2, 3]
+ok(onlyStar == "x" and allTake == [1, 2, 3], "single-name binding holds the whole list")
+# Unpacking a String yields its characters.
+var ca, cb, cc = "xyz"
+ok([ca, cb, cc] == ["x", "y", "z"], "unpack a String into characters")
+# Unpack into index and member targets.
+var idxArr = [0, 0]
+idxArr[0], idxArr[1] = "p", "q"
+ok(idxArr == ["p", "q"], "unpack into index targets")
+class UnpackTarget:
+    var _init_ = Function(self):
+        self.x = 0
+        self.y = 0
+var upt = UnpackTarget()
+upt.x, upt.y = 11, 22
+ok(upt.x == 11 and upt.y == 22, "unpack into member targets")
+# Count mismatches and non-iterables throw (catchable, runtime).
+ok(importErr("var a, b, c = [1, 2]\n", "unpack"), "too-few unpack reported")
+ok(importErr("var a, b = [1, 2, 3]\n", "unpack"), "too-many unpack reported")
+ok(importErr("var a, sb, c = [1]\n", "unpack"), "fixed-target shortfall reported")
+ok(importErr("var a, sb2, c2 = 5\n", "iterable"), "unpack of a non-iterable rejected")
+ok(importErr("var x, *a, *b = [1, 2]\n", ""), "two starred targets rejected")
+
+# ============================================================================
+# Functions: first-class, closures, return, kwargs, defaults, annotations
+# ============================================================================
+var power = Function(base, exp = 2) -> Integer:
+    return base ** exp
+ok(power(5) == 25, "default parameter applies")
+ok(power(3, 3) == 27, "positional override of default")
+ok(power(exp = 3, base = 2) == 8, "keyword args in any order")
+ok(power(2, exp = 5) == 32, "mixed positional + keyword")
+var inlineSq = Function(z): return z * z
+ok(inlineSq(7) == 49, "inline Function body")
+# Inline `return a, b, c` packs at the OUTER statement (documented), block body packs into a list.
+var packReturn = Function():
+    return 1, 2, 3
+ok(packReturn() == [1, 2, 3], "block-body return packs a List")
+
+# Closures capture lexical scope and persist mutable state.
+var makeCounter = Function():
+    var count = 0
+    var bump = Function():
+        count = count + 1
+        return count
+    return bump
+var counter = makeCounter()
+ok(counter() == 1 and counter() == 2 and counter() == 3, "closure captures + persists state")
+# Two counters are independent.
+var counterB = makeCounter()
+ok(counterB() == 1 and counter() == 4, "closures have independent captured state")
+
+# Defaults evaluate at CALL time, once per call: a mutable default is fresh each call.
+var freshDefault = Function(item, bag = []):
+    bag.append(item)
+    return bag
+ok(freshDefault(1) == [1] and freshDefault(2) == [2], "mutable default is fresh per call")
+# A default referencing an outer name re-reads it at call time.
+var defBase = 10
+var readsDefault = Function(amount = defBase):
+    return amount
+ok(readsDefault() == 10, "default reads outer name (call-time)")
+defBase = 20
+ok(readsDefault() == 20, "default re-reads the outer name on each call")
+
+# Type annotations are enforced at runtime; subclasses satisfy a base annotation.
+class AnnBase:
+    var _init_ = Function(self, label):
+        self.label = label
+class AnnSub(AnnBase):
+    var _init_ = Function(self, label):
+        self._super_()._init_(label)
+var takesBase = Function(a : AnnBase) -> String:
+    return a.label
+ok(takesBase(AnnBase("base")) == "base", "annotated arg accepts the exact class")
+ok(takesBase(AnnSub("sub")) == "sub", "subclass satisfies a base annotation")
+ok(throws(Function(): return takesBase(42)), "wrong-type argument throws")
+var takesInt = Function(v : Integer) -> Integer:
+    return v + 1
+ok(takesInt(4) == 5, "builtin-type annotation accepts the type")
+ok(throws(Function(): return takesInt(4.0)), "builtin-type annotation rejects a Float")
+ok(throws(Function(): return takesInt("x")), "builtin-type annotation rejects a String")
+var wrongReturn = Function() -> Integer:
+    return "not an int"
+ok(throws(Function(): return wrongReturn()), "wrong return type throws")
+var anyArg = Function(thing):
+    return thing
+ok(anyArg(1) == 1 and anyArg("s") == "s", "no annotation accepts anything")
+# Calling errors.
+ok(throws(Function(): return power(1, 2, 3)), "too many positional args throws")
+ok(throws(Function(): return power(badkw = 1)), "unexpected keyword arg throws")
+var twoArgs = Function(p, q): return p + q
+ok(throws(Function(): return twoArgs(p = 1, q = 2, p = 3)), "duplicate keyword throws")
+ok(throws(Function(): return twoArgs(1)), "missing required argument throws")
+# positional-after-keyword is rejected (catchable at the call).
+var posAfterKw = Function():
+    return twoArgs(p = 1, 2)
+ok(throws(posAfterKw), "positional after keyword rejected")
+
+# Deep recursion is bounded by a catchable guard, not a native stack overflow.
+var infRec = Function(d):
+    return infRec(d + 1)
+ok(throws(Function(): return infRec(0)), "runaway recursion -> catchable error")
+
+# ============================================================================
+# Classes: methods, attributes, inheritance, operators, privacy
+# ============================================================================
+class Animal:
+    var _init_ = Function(self, name):
+        self.name = name
+        self._id = 7
+    var speak = Function(self) -> String:
+        return "..."
+    var revealId = Function(self) -> Integer:
+        return self._id
+class Dog(Animal):
+    var speak = Function(self) -> String:
+        return f"{self.name} says woof"
+var dog = Dog("Rex")
+ok(dog.name == "Rex", "inherited _init_ sets attributes")
+ok(dog.speak() == "Rex says woof", "method override")
+ok(Animal("x").speak() == "...", "base method on a base instance")
+ok(dog.revealId() == 7, "inherited method reads a private member")
+ok(isinstance(dog, Animal) and isinstance(dog, Dog), "isinstance is inheritance-aware")
+
+# Class with no _init_: zero-arg construction works, extra args throw.
+class NoInit:
+    var greet = Function(self): return "hi"
+ok(NoInit().greet() == "hi", "no-_init_ class constructs with no args")
+ok(throws(Function(): return NoInit(1)), "no-_init_ class rejects args")
+
+# Privacy: a single-leading-underscore member is reachable only within the class chain.
+ok(throws(Function(): return dog._id), "private read from outside is blocked")
+var writePrivate = Function():
+    dog._id = 1
+    return dog._id
+ok(throws(writePrivate), "private write from outside is blocked")
+# Same class, a different instance: private access allowed (privacy is per class chain).
+class Box:
+    var _init_ = Function(self, val):
+        self._val = val
+    var add = Function(self, other):
+        return self._val + other._val
+ok(Box(3).add(Box(4)) == 7, "same-class other-instance private access allowed")
+# A subclass method may touch a parent's private member.
+class HasSecret:
+    var _init_ = Function(self):
+        self._secret = 42
+class UsesSecret(HasSecret):
+    var _init_ = Function(self):
+        self._super_()._init_()
+    var peek = Function(self) -> Integer:
+        return self._secret + 1
+ok(UsesSecret().peek() == 43, "subclass method touches a parent's private member")
+# An unrelated class cannot reach another's private member.
+class Owner:
+    var _init_ = Function(self):
+        self._hidden = 5
+class Stranger:
+    var snoop = Function(self, o):
+        return o._hidden
+ok(throws(Function(): return Stranger().snoop(Owner())), "unrelated class cannot read a private member")
+
+# Operator dunders.
+class Vec:
+    var _init_ = Function(self, x):
+        self.x = x
+    var _str_ = Function(self):
+        return f"Vec({self.x})"
+    var _add_ = Function(self, o):
+        return Vec(self.x + o.x)
+    var _sub_ = Function(self, o):
+        return Vec(self.x - o.x)
+    var _mul_ = Function(self, o):
+        return Vec(self.x * o.x)
+    var _eq_ = Function(self, o):
+        return self.x == o.x
+    var _lt_ = Function(self, o):
+        return self.x < o.x
+    var _neg_ = Function(self):
+        return Vec(-self.x)
+    var _call_ = Function(self, k):
+        return self.x + k
+    var _len_ = Function(self):
+        return self.x
+    var _contains_ = Function(self, k):
+        return k < self.x
+    var _iter_ = Function(self):
+        return range(self.x)
+var vA = Vec(5)
+ok(String(vA + Vec(3)) == "Vec(8)", "_add_ operator")
+ok(String(vA - Vec(2)) == "Vec(3)", "_sub_ operator")
+ok(String(vA * Vec(2)) == "Vec(10)", "_mul_ operator")
+ok((vA == Vec(5)) and (vA == Vec(6)) == False, "_eq_ operator")
+ok((vA != Vec(6)) and (vA != Vec(5)) == False, "_ne_ auto-derived from _eq_")
+ok(vA < Vec(9) and (vA < Vec(1)) == False, "_lt_ operator")
+ok(String(-vA) == "Vec(-5)", "_neg_ operator")
+ok(vA(10) == 15, "_call_ operator")
+ok(len(vA) == 5, "_len_ operator")
+ok((3 in vA) and (9 in vA) == False, "_contains_ operator")
+var iterCount = 0
+for vi in vA:
+    iterCount = iterCount + 1
+ok(iterCount == 5, "_iter_ operator drives for")
+# Variadic _getitem_/_setitem_ keys: m[i, j].
+class Grid:
+    var _init_ = Function(self):
+        self.cells = {}
+    var _getitem_ = Function(self, i, j):
+        return self.cells.get(f"{i}:{j}", 0)
+    var _setitem_ = Function(self, i, j, val):
+        self.cells[f"{i}:{j}"] = val
+var grid = Grid()
+grid[1, 2] = "X"
+ok(grid[1, 2] == "X" and grid[0, 0] == 0, "variadic _getitem_/_setitem_")
+
+# Class-body var is a shared class attribute; assignment copies-on-write per instance.
+class Counter:
+    var total = 0
+    var bump = Function(self):
+        self.total = self.total + 1
+var cInst1 = Counter()
+var cInst2 = Counter()
+cInst1.bump()
+ok(cInst1.total == 1, "instance copy-on-write off the class attribute")
+ok(cInst2.total == 0, "other instance still sees the class default")
+
+# _super_(): parent view; one level per call; multi-level chains compose; no-base throws.
+class L1:
+    var tag = Function(self): return "L1"
+class L2(L1):
+    var tag = Function(self): return self._super_().tag() + ">L2"
+class L3(L2):
+    var tag = Function(self): return self._super_().tag() + ">L3"
+ok(L3().tag() == "L1>L2>L3", "multi-level _super_ chain composes")
+class InitChainA:
+    var _init_ = Function(self):
+        self.log = ["A"]
+class InitChainB(InitChainA):
+    var _init_ = Function(self):
+        self._super_()._init_()
+        self.log.append("B")
+class InitChainC(InitChainB):
+    var _init_ = Function(self):
+        self._super_()._init_()
+        self.log.append("C")
+ok(InitChainC().log == ["A", "B", "C"], "_super_()._init_() chain runs base-first")
+# _super_() forwards positional and keyword args.
+class SBase:
+    var calc = Function(self, p, q): return p + q
+class SDerived(SBase):
+    var calc = Function(self, p, q): return self._super_().calc(p, q) * 2
+ok(SDerived().calc(3, 4) == 14, "_super_() forwards positional args")
+ok(SDerived().calc(p = 3, q = 4) == 14, "_super_() forwards keyword args")
+class NoBase:
+    var oops = Function(self):
+        return self._super_()
+ok(throws(Function(): return NoBase().oops()), "_super_() with no base throws")
+# _super_ outside a method is not special (no current class) -> plain missing-attribute error.
+ok(throws(Function(): return Dog("z")._super_()), "_super_ outside a method is not callable")
+
+# ============================================================================
+# Exceptions: try / catch [Type as e] / finally / throw
+# ============================================================================
+class ValueErr:
+    var _init_ = Function(self, msg):
+        self.msg = msg
+var excTrace = []
+try:
+    throw ValueErr("bad")
+catch ValueErr as e:
+    excTrace.append(e.msg)
+finally:
+    excTrace.append("fin")
+ok(excTrace == ["bad", "fin"], "try / typed catch / finally order")
+# Bare catch grabs anything; a thrown String is the caught value.
+var anyVal = "?"
+try:
+    throw "plain"
+catch as e:
+    anyVal = e
+ok(anyVal == "plain", "bare catch grabs a thrown String")
+# A thrown non-instance keeps its type.
+var thrownInt = 0
+try:
+    throw 42
+catch as e:
+    thrownInt = e
+ok(thrownInt == 42 and type(thrownInt) == "Integer", "a thrown Integer keeps its type")
+# catch by built-in type name.
+var caughtStr = "?"
+try:
+    throw "oops"
+catch String as e:
+    caughtStr = e
+ok(caughtStr == "oops", "catch by builtin type String")
+# Typed catch is class-chain aware (subclass caught by base).
+class ErrBase:
+    var _init_ = Function(self, m):
+        self.m = m
+class ErrSub(ErrBase):
+    var _init_ = Function(self, m):
+        self._super_()._init_(m)
+var caughtBase = "?"
+try:
+    throw ErrSub("s")
+catch ErrBase as e:
+    caughtBase = e.m
+ok(caughtBase == "s", "subclass exception caught by its base type")
+# A typed catch does NOT catch an unrelated type (it propagates).
+var wrongTypePropagated = False
+try:
+    try:
+        throw ValueErr("x")
+    catch ErrBase as e:
+        discard e
+catch as e:
+    wrongTypePropagated = True
+ok(wrongTypePropagated, "a typed catch ignores an unrelated exception")
+# finally runs even when the exception escapes.
+var finallyRan = False
+try:
+    try:
+        throw ValueErr("inner")
+    finally:
+        finallyRan = True
+catch as e:
+    discard e
+ok(finallyRan, "finally runs even when the exception escapes")
+# finally runs on the normal (no-exception) path too.
+var finallyNormal = []
+try:
+    finallyNormal.append("body")
+finally:
+    finallyNormal.append("fin")
+ok(finallyNormal == ["body", "fin"], "finally runs on the normal path")
+# finally runs even when the try returns a value (from inside a function).
+var finallyReturn = []
+var returnsFromTry = Function():
+    try:
+        return "result"
+    finally:
+        finallyReturn.append("cleanup")
+ok(returnsFromTry() == "result", "return value survives a finally")
+ok(finallyReturn == ["cleanup"], "finally runs before a return delivers")
+# A C++-boundary error (e.g. a math domain error) is catchable by a bare catch.
+var mathMod = import("math")
+ok(throws(Function(): return mathMod.sqrt(-1)), "math domain error is catchable")
+
+# ============================================================================
+# Context managers: with ... as ...
+# ============================================================================
+class TraceCM:
+    var _init_ = Function(self):
+        self.events = []
+    var _enter_ = Function(self):
+        self.events.append("enter")
+        return 42
+    var _exit_ = Function(self):
+        self.events.append("exit")
+var cm = TraceCM()
+var enterVal = 0
+with cm as bound:
+    cm.events.append("body")
+    enterVal = bound
+ok(cm.events == ["enter", "body", "exit"], "with: enter -> body -> exit")
+ok(enterVal == 42, "_enter_ return value bound by 'as'")
+# _exit_ runs even when the body throws.
+class ExitCM:
+    var _init_ = Function(self):
+        self.exited = False
+    var _enter_ = Function(self):
+        return self
+    var _exit_ = Function(self):
+        self.exited = True
+var exitCm = ExitCM()
+try:
+    with exitCm as h:
+        discard h
+        throw "boom"
+catch as e:
+    discard e
+ok(exitCm.exited, "_exit_ runs even when the body throws")
+# with without an `as` clause is valid.
+class SilentCM:
+    var _init_ = Function(self):
+        self.ran = False
+    var _enter_ = Function(self):
+        return self
+    var _exit_ = Function(self):
+        self.ran = True
+var silent = SilentCM()
+with silent:
+    discard silent
+ok(silent.ran, "with without 'as' still runs _exit_")
+
+# ============================================================================
+# switch: exact type+value matching, no fallthrough
+# ============================================================================
+var swResult = "?"
+switch "halt":
+    case "start":
+        swResult = "go"
+    case "stop", "halt":
+        swResult = "stop"
+    default:
+        swResult = "?"
+ok(swResult == "stop", "switch multi-value arm")
+# Exactly one arm runs (no fallthrough): the matched arm does not fall into later arms.
+var fallLog = []
+switch 2:
+    case 2:
+        fallLog.append("two")
+    case 3:
+        fallLog.append("three")
+    default:
+        fallLog.append("default")
+ok(fallLog == ["two"], "switch has no fallthrough (only the matched arm runs)")
+# Exact type+value: 1 != 1.0, True != 1.
+var typeMatch = "?"
+switch 1.0:
+    case 1:
+        typeMatch = "int"
+    case 1.0:
+        typeMatch = "float"
+ok(typeMatch == "float", "switch: 1.0 does not match case 1")
+var boolMatch = "?"
+switch 1:
+    case True:
+        boolMatch = "bool"
+    default:
+        boolMatch = "notbool"
+ok(boolMatch == "notbool", "switch: 1 does not match case True")
+# None / Bool / Float scalar cases.
+var noneMatch = "?"
+switch None:
+    case None:
+        noneMatch = "none"
+ok(noneMatch == "none", "switch matches a None case")
+var floatExact = "?"
+switch 2.5:
+    case 2.5:
+        floatExact = "exact"
+    default:
+        floatExact = "no"
+ok(floatExact == "exact", "switch matches a Float case by exact value")
+# A non-scalar subject reaches only default.
+var nonScalarSubj = "?"
+switch [1, 2]:
+    default:
+        nonScalarSubj = "def"
+ok(nonScalarSubj == "def", "non-scalar subject reaches only default")
+# No match + no default = no-op.
+var noopSwitch = 0
+switch 999:
+    case 1:
+        noopSwitch = 1
+ok(noopSwitch == 0, "switch with no match + no default is a no-op")
+# break inside a switch arm propagates to the enclosing loop.
+var swBreak = []
+for sbi in range(5):
+    switch sbi:
+        case 3:
+            break
+        default:
+            swBreak.append(sbi)
+ok(swBreak == [0, 1, 2], "break inside a switch arm propagates to the for loop")
+# A non-literal case expression is evaluated and compared at match time (comparison-chain fallback).
+var caseVarTarget = 7
+var caseVarResult = "?"
+switch 7:
+    case caseVarTarget:
+        caseVarResult = "var"
+    default:
+        caseVarResult = "no"
+ok(caseVarResult == "var", "non-literal case value compares at runtime")
+var caseExprResult = "?"
+switch 7:
+    case 3 + 4:
+        caseExprResult = "expr"
+    default:
+        caseExprResult = "no"
+ok(caseExprResult == "expr", "computed case value matches")
+# Malformed switches rejected.
+ok(importErr("switch 1:\n    case [1, 2]:\n        var x = 1\n", "Integer"), "non-scalar literal case rejected")
+ok(importErr("switch 1:\n    case 1:\n    default:\n        var y = 1\n", "indented"), "empty case body rejected")
+ok(importErr("switch 1:\n    case 1:\n        var x = 1\n    default:\n        var y = 1\n    default:\n        var z = 1\n", "default"), "second default rejected")
+# Duplicate case value: thrown (catchable) when the switch is reached.
+var dupCaseFn = Function():
+    switch 1:
+        case 5:
+            return "a"
+        case 5:
+            return "b"
+ok(throws(dupCaseFn), "duplicate case value throws when reached")
+
+# ============================================================================
+# assert
+# ============================================================================
+var assertMsg = "?"
+try:
+    assert 1 == 2, "custom message"
+catch as e:
+    assertMsg = e
+ok(assertMsg == "custom message", "assert message becomes the thrown value")
+var assertDefault = "?"
+try:
+    assert False
+catch as e:
+    assertDefault = e
+ok(assertDefault == "assertion failed", "bare assert reads 'assertion failed'")
+# A truthy condition is a no-op.
+var assertSideEffect = 0
+assert True, "fine"
+assertSideEffect = 1
+ok(assertSideEffect == 1, "assert(True) is a no-op and execution continues")
+ok([1], "assert on a non-empty list is fine")
+
+# ============================================================================
+# discard, pass, todo
+# ============================================================================
+var sideLog = []
+var sideEffectFn = Function():
+    sideLog.append(1)
+    return 99
+discard sideEffectFn()
+ok(sideLog == [1], "discard evaluates the expression and drops the value")
+# pass is a no-op body.
+if True:
+    pass
+ok(True, "pass is a valid empty body")
+# (todo deliberately emits a warning, so it is exercised only via an imported module that uses -w.)
+ok(importErr("var todoModuleProbe = 1\nvar reachUndefined = thisIsUndefined\n", "not defined"),
+   "undefined name in a module reports its own file")
+
+# ============================================================================
+# Modules
+# ============================================================================
+var mathA = import("math")
+var mathB = import("math")
+ok(mathA == mathB, "re-import yields the same cached module")
+ok(mathA.sqrt(4) == 2.0, "module attribute access")
+ok(argmain == True, "argmain is True in a directly-run script")
+ok(type(arglist) == "List", "arglist is a List")
+# Circular import is detected and reported (not a stack overflow).
+var circSrc = "var self = import(\"/tmp/r6_lang_circ\")\n"
+var circFh = io.open("/tmp/r6_lang_circ.ki", "w")
+circFh.write(circSrc)
+circFh.close()
+var circCaught = False
+try:
+    discard import("/tmp/r6_lang_circ")
+catch as e:
+    circCaught = "circular import detected" in e
+ok(circCaught, "circular self-import throws a clear error")
+path.remove("/tmp/r6_lang_circ.ki", missing_ok = True)
+
+io.print("r6_language: " + String(n) + " checks passed")

@@ -1,0 +1,114 @@
+var io = import("io")
+var random = import("random")
+
+# ---- seeded determinism: same seed -> identical stream -----------------------------------------
+var r1 = random.Random(42)
+var r2 = random.Random(42)
+io.print(r1.random() == r2.random())
+io.print(r1.randint(1, 1000000) == r2.randint(1, 1000000))
+io.print(r1.uniform(0, 1) == r2.uniform(0, 1))
+
+# reseeding restarts the stream from the same point
+var r = random.Random(7)
+var x = r.randint(0, 1000000000)
+r.seed(7)
+var y = r.randint(0, 1000000000)
+io.print(x == y)
+
+# ---- r.random() in [0, 1) ---------------------------------------------------------------------
+var rg = random.Random(123)
+var lo = True
+var hi = True
+for i in range(200):
+    var v = rg.random()
+    if v < 0.0:
+        lo = False
+    if v >= 1.0:
+        hi = False
+io.print(lo and hi)
+
+# ---- r.randint inclusive bounds [a, b] --------------------------------------------------------
+var r3 = random.Random(99)
+var in_range = True
+for i in range(300):
+    var v = r3.randint(5, 10)
+    if v < 5 or v > 10:
+        in_range = False
+io.print(in_range)
+
+# randint(a, a) is just a (single-element range)
+io.print(random.Random(1).randint(7, 7))
+
+# ---- r.uniform bounds inclusive [a, b] -------------------------------------------------------
+var ru = random.Random(5)
+var ok = True
+for i in range(100):
+    var v = ru.uniform(10, 20)
+    if v < 10 or v > 20:
+        ok = False
+io.print(ok)
+
+# ---- r.randrange ----------------------------------------------------------------------------
+io.print(random.Random(1).randrange(5) >= 0 and random.Random(1).randrange(5) < 5)
+io.print(random.Random(1).randrange(10, 20) >= 10 and random.Random(1).randrange(10, 20) < 20)
+var rs = random.Random(2)
+var step_ok = True
+for i in range(50):
+    var v = rs.randrange(0, 20, 5)
+    if v < 0 or v >= 20 or v % 5 != 0:
+        step_ok = False
+io.print(step_ok)
+
+# ---- r.choice on non-empty sequence -----------------------------------------------------------
+var rc = random.Random(11)
+io.print(rc.choice([1, 2, 3]) in [1, 2, 3])
+io.print(rc.choice("abc") in ["a", "b", "c"])
+
+# ---- r.shuffle is in-place on a List ----------------------------------------------------------
+var L = [1, 2, 3, 4, 5]
+random.Random(0).shuffle(L)
+io.print(len(L) == 5)                        # length unchanged (in-place)
+io.print(Set(L) == Set([1, 2, 3, 4, 5]))   # same elements after shuffle
+
+# ---- r.sample distinct, k elements ------------------------------------------------------------
+var sm = random.Random(0).sample([1, 2, 3, 4, 5], 3)
+io.print(len(sm) == 3)
+io.print(len(Set(sm)) == 3)
+io.print(Set(sm).issubset(Set([1, 2, 3, 4, 5])))
+
+# sample k=0 -> empty
+io.print(random.Random(0).sample([1, 2, 3], 0) == [])
+
+# ---- r.gauss / normalvariate (alias) ---------------------------------------------------------
+var rn = random.Random(42)
+io.print(type(rn.gauss(0, 1)))      # Float
+# normalvariate is an alias of gauss: same seed -> same value via either method name
+var rg1 = random.Random(0)
+var rg2 = random.Random(0)
+io.print(rg1.gauss(0, 1) == rg2.normalvariate(0, 1))
+io.print(type(random.Random(1).normalvariate(0, 1)))   # Float
+
+# ---- r.expovariate -----------------------------------------------------------------------
+io.print(random.Random(0).expovariate(1.0) > 0)        # always positive
+
+# ---- errors ---------------------------------------------------------------------------------
+var thrown = 0
+for f in [Function(): return random.Random(1).choice([]), Function(): return random.Random(1).randrange(0), Function(): return random.Random(1).randrange(5, 5), Function(): return random.Random(1).randint(5, 3), Function(): return random.Random(1).sample([1, 2], 10), Function(): return random.Random(1).sample([1, 2], -1), Function(): return random.Random(1).shuffle("abc"), Function(): return random.Random(1).expovariate(0), Function(): return random.Random(1).expovariate(-1), Function(): return random.Random(1).randrange(0, 10, 0)]:
+    try:
+        discard f()
+    catch as e:
+        thrown = thrown + 1
+io.print(thrown == 10)
+
+# ---- serialization restores the exact stream (reproducible checkpoint) --------------------
+var dump = import("dump")
+var rs2 = random.Random(31337)
+discard rs2.random()
+discard rs2.random()
+var snap = dump.dumps(rs2)
+var next_a = rs2.randint(0, 1000000)
+var restored = dump.loads(snap)
+var next_b = restored.randint(0, 1000000)
+io.print(next_a == next_b)
+
+io.print("OK audit-random")

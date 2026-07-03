@@ -1,0 +1,66 @@
+# A self-contained sales-analytics demo for Kirito's dataframe-style `tabular` library: it *generates* a random
+# orders dataset, joins it against a product catalog, engineers a revenue column, and answers a few
+# business questions with group-by / aggregation / sorting — the kind of thing you'd reach for pandas
+# to do. No external files; everything is pure Kirito.
+#
+# Run:  ki examples/tabular_sales.ki
+
+var io = import("io")
+var tb = import("tabular")
+var random = import("random")
+
+# --- a small product catalog (product_id -> name, unit price) ---
+var products = tb.DataFrame(
+    [[1, "Keyboard", 49.99], [2, "Mouse", 24.50], [3, "Monitor", 199.00],
+     [4, "Webcam", 79.95], [5, "Desk Lamp", 34.25]],
+    columns=["product_id", "name", "price"])
+io.print("=== product catalog ===")
+io.print(products)
+io.print("")
+
+# --- generate 400 random orders across 4 regions ---
+var rng = random.Random(2026)
+var regions = ["North", "South", "East", "West"]
+var oid = []
+var pid = []
+var qty = []
+var region = []
+var i = 0
+while i < 400:
+    oid.append(1000 + i)
+    pid.append(rng.randint(1, 5))
+    qty.append(rng.randint(1, 8))
+    region.append(regions[rng.randint(0, 3)])
+    i = i + 1
+var orders = tb.DataFrame({"order_id": oid, "product_id": pid, "qty": qty, "region": region},
+                          columns=["order_id", "product_id", "qty", "region"])
+io.print("generated " + String(len(orders)) + " orders; first 5:")
+io.print(orders.head(5))
+io.print("")
+
+# --- join orders to the catalog, then engineer a revenue column ---
+var joined = tb.merge(orders, products, on="product_id", how="left")
+joined["revenue"] = joined["qty"] * joined["price"]
+io.print("joined orders+catalog, first 5 (order_id, name, qty, revenue):")
+io.print(joined[["order_id", "name", "qty", "revenue"]].head(5))
+io.print("")
+
+# --- revenue and units by region ---
+io.print("revenue & units sold by region:")
+io.print(joined.groupby("region").agg({"revenue": "sum", "qty": "sum"}))
+io.print("")
+
+# --- best-selling products by total revenue ---
+io.print("products ranked by total revenue:")
+var by_product = joined.groupby("name").agg({"revenue": "sum", "qty": "sum"})
+# attach the name (the group key) as a column so we can sort + display it together
+by_product["product"] = by_product.index
+io.print(by_product.sortvalues("revenue", ascending=False)[["product", "qty", "revenue"]])
+io.print("")
+
+# --- a quick KPI summary ---
+io.print("total revenue:   " + String(round(joined["revenue"].sum(), 2)))
+io.print("mean order value: " + String(round(joined["revenue"].mean(), 2)))
+io.print("largest order:   " + String(round(joined["revenue"].max(), 2)))
+io.print("")
+io.print("done.")

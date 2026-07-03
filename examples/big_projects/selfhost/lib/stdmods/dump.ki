@@ -1,0 +1,20 @@
+# The `dump` module in pure Kirito: reference/cycle-preserving serialization to a Bytes blob. It
+# reuses serialize's graph encoding (a JSON text) and carries it as Bytes (utf-8), mirroring the real
+# interpreter's binary `dump` whose `dumps(value)` returns Bytes and `loads` accepts Bytes (or a
+# String of the same bytes), so a pipeline can compress/hash/store the blob and reconstruct it later.
+
+var serialize = import("serialize")
+
+var dumps = Function(value):
+    return serialize.dumps(value).encode()
+
+var loads = Function(data):
+    if type(data) == "String":
+        return serialize.loads(data)
+    return serialize.loads(data.decode())
+
+var save = Function(value, path):
+    serialize.save(value, path)
+
+var load = Function(path):
+    return serialize.load(path)

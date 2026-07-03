@@ -1,0 +1,2 @@
+var b = import("circular_import_b")
+var x = 1

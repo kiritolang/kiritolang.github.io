@@ -1,0 +1,60 @@
+# ============================================================ INSPECT across every object kind
+var io = import("io")
+
+# --- native objects list members, not a bare "<Type> value" ---
+var checks = [
+    [inspect(import("random").Random()), "Random object:", "gauss(mu, sigma) -> Float"],
+    [inspect(import("matrix").identity(2)), "Matrix object:", "determinant() -> Float"],
+    [inspect(import("io").BytesIO()), "BytesIO object:", "write(data) -> Integer"],
+    [inspect(import("time").now()), "DateTime object:", "year: Integer"],
+    [inspect(import("regex").compile("(.)")), "Regex object:", "sub(repl, string, count) -> String"],
+    [inspect(import("regex").compile("(.)").search("ab")), "Match object:", "group(index) -> String"],
+    [inspect(import("dump").dumps([1])), "Bytes object:", "decode(encoding) -> String"],
+    [inspect(import("net").Socket()), "Socket object:", "connect(host, port)"]
+]
+for c in checks:
+    assert c[1] in c[0], "header present: " + c[1]
+    assert c[2] in c[0], "member present: " + c[2]
+
+# --- DateTime.timestamp is an ATTRIBUTE in inspect (no parens) ---
+var dt = inspect(import("time").now())
+assert "timestamp: Integer" in dt, "timestamp listed as attribute"
+assert "timestamp()" not in dt, "timestamp NOT listed as a method"
+
+# --- modules describe their functions, hide arglist/argmain ---
+var ci = inspect(import("copy"))
+assert "module copy:" in ci and "deepcopy" in ci, "frozen module lists functions"
+assert "arglist" not in ci and "argmain" not in ci, "module hides injected env"
+assert "module random:" in inspect(import("random")), "native module header"
+var _rand_inspect = inspect(import("random"))
+assert "Random(seed = None" in _rand_inspect and "-> Random" in _rand_inspect, "native module constructor signature"
+assert "generator" in _rand_inspect and "xoshiro" in _rand_inspect, "Random constructor advertises generator kwarg"
+
+# --- classes + instances ---
+class Animal:
+    var _init_ = Function(self, name):
+        self.name = name
+    var speak = Function(self) -> String:
+        return "..."
+assert "class Animal:" in inspect(Animal), "class header"
+assert "speak(self) -> String" in inspect(Animal), "class method listed"
+var ai = inspect(Animal("Rex"))
+assert "Animal instance:" in ai and "attr name: String" in ai and "speak(self) -> String" in ai, "instance attrs + methods"
+
+# --- builtins: signatured show params, variadic show ... ---
+assert "round(" in inspect(round) and "ndigits" in inspect(round), "signatured builtin shows params"
+assert inspect(min) == "min(...)  [native]", "variadic builtin shows ..."
+assert "sum(iterable" in inspect(sum), "sum is signatured (not variadic)"
+assert inspect(zip) == "zip(...)  [native]", "zip is variadic"
+assert "range(" in inspect(range), "range shows up"
+
+# --- every native object type produced a non-empty, multi-line description ---
+var objs = [import("random").Random(), import("matrix").identity(2), import("io").BytesIO(),
+            import("time").now(), import("net").Socket(), import("net").Session(),
+            import("regex").compile("a"), import("dump").dumps([1])]
+for o in objs:
+    var s = inspect(o)
+    assert "object:" in s, "native object names its type"
+    assert len(s.split("\n")) >= 2, "native object lists at least one member"
+
+io.print("OK inspect")

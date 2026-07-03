@@ -1,0 +1,2 @@
+var pd = import("tabular")
+var df = pd.DataFrame({"a": [1, 2, 3], "b": [1, 2]}, columns=["a", "b"])

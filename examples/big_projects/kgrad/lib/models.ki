@@ -1,0 +1,83 @@
+# Classic ML helpers built on the tensor/nn layers.
+
+var nd = import("ndarray")
+var ag = import("autograd")
+var nn = import("nn")
+var math = import("math")
+
+# ---- PCA (via covariance + power iteration with deflation) ---------------------------------------
+
+var _norm = Function(v):
+    var s = 0.0
+    for x in v.contiguous().buf:
+        s = s + x * x
+    return math.sqrt(s)
+
+var _power_iteration = Function(cov, d, iters):
+    var v = nd.full([d, 1], 1.0 / math.sqrt(Float(d)))
+    for it in range(iters):
+        var w = nd.matmul(cov, v)             # (d,1)
+        var nrm = _norm(w)
+        if nrm < 0.000000001:
+            return v
+        v = nd.mul_scalar(w, 1.0 / nrm)
+    return v
+
+class PCA:
+    var _init_ = Function(self, n_components):
+        self.k = n_components
+        self.mean = None
+        self.components = None      # (k, d)
+        self.explained_variance = []
+
+    var fit = Function(self, X):
+        var Xa = nd.array(X)
+        var n = Xa.shape[0]
+        var d = Xa.shape[1]
+        var mean = nd.mean_axis(Xa, 0)               # (d,)
+        self.mean = mean.reshape([1, d])
+        var centered = nd.sub(Xa, self.mean.broadcast_to([n, d]).contiguous())
+        var cov = nd.mul_scalar(nd.matmul(centered.transpose(0, 1), centered), 1.0 / Float(n - 1))
+        var comps = []
+        var eig = []
+        var c = cov
+        for ci in range(self.k):
+            var v = _power_iteration(c, d, 100)      # (d,1) unit eigenvector
+            var cv = nd.matmul(c, v)                 # (d,1)
+            var lam = 0.0
+            for a, b in zip(v.contiguous().buf, cv.contiguous().buf):
+                lam = lam + a * b
+            comps.append(v.reshape([d]).to_nested())
+            eig.append(lam)
+            var vv = nd.matmul(v, v.transpose(0, 1)) # (d,d)
+            c = nd.sub(c, nd.mul_scalar(vv, lam))
+        self.components = nd.array(comps)            # (k, d)
+        self.explained_variance = eig
+        return self
+
+    var transform = Function(self, X):
+        var Xa = nd.array(X)
+        var n = Xa.shape[0]
+        var d = Xa.shape[1]
+        var centered = nd.sub(Xa, self.mean.broadcast_to([n, d]).contiguous())
+        return nd.matmul(centered, self.components.transpose(0, 1)).to_nested()
+
+# ---- Logistic regression (a Module producing logits) ---------------------------------------------
+
+class LogisticRegression(nn.Module):
+    var _init_ = Function(self, in_features):
+        discard self._super_()._init_()
+        self.linear = self.register_module("linear", nn.Linear(in_features, 1))
+    var forward = Function(self, x):
+        return self.linear(x)                        # logits (n, 1)
+    var predict_proba = Function(self, x):
+        return ag.sigmoid(self.forward(x))
+    var predict = Function(self, x):
+        var p = self.predict_proba(x).data.contiguous().buf
+        var out = []
+        for v in p:
+            if v >= 0.5:
+                out.append(1)
+            else:
+                out.append(0)
+        return out

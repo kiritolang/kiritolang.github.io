@@ -1,0 +1,26 @@
+# arglist / argmain at the Kirito level. The test harness runs this file directly with no CLI args.
+var io = import("io")
+
+# --- this file is the program ---
+assert argmain == True, "a directly-run file has argmain == True"
+assert type(arglist) == "List", "arglist is a List"
+assert arglist == [], "a test run passes no arguments, so arglist is empty"
+
+# --- an imported module is NOT main and sees an empty arglist ---
+var helper = import("argmain_helper")
+assert helper.wasMain == False, "an imported module has argmain == False"
+assert helper.argsSeen == [], "an imported module sees an empty arglist (args belong to the program)"
+assert type(helper.argsSeen) == "List", "imported arglist is a List"
+
+# --- argmain resolves per-file through the scope chain, even inside functions ---
+var amIMain = Function():
+    return argmain
+assert amIMain() == True, "a function defined in the main file sees argmain True"
+assert helper.amImain() == False, "a function defined in an imported module sees argmain False"
+
+# --- arglist is the same shared list for the whole (main) program ---
+var readArgs = Function():
+    return arglist
+assert readArgs() == arglist, "functions in the main file see the program's arglist"
+
+io.print("OK")

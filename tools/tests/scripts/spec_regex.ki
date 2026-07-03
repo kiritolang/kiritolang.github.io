@@ -1,0 +1,147 @@
+# The `regex` module from Kirito: a full, linear-time regular-expression library (Thompson NFA /
+# Pike VM — no catastrophic backtracking). Edge cases, every API surface, short-circuit/adversarial
+# robustness, and a randomized fuzz checked against an oracle written in plain Kirito.
+var io = import("io")
+var re = import("regex")
+var random = import("random")
+
+# --- search / match / fullmatch ---
+assert re.search("\\d+", "abc123def").group() == "123", "search finds the first run"
+assert re.match("\\d+", "abc123") == None, "match is anchored at the start"
+assert re.match("abc", "abcdef").group() == "abc", "match at start"
+assert re.fullmatch("\\d+", "12345").group() == "12345", "fullmatch whole string"
+assert re.fullmatch("\\d+", "123a") == None, "fullmatch must cover everything"
+assert re.fullmatch("a*?", "aaa").group() == "aaa", "fullmatch forces a lazy quantifier to consume all"
+
+# --- groups, spans, named groups, optional groups ---
+var m = re.search("(\\d+)-(\\d+)", "id 12-345 x")
+assert m.group(1) == "12" and m.group(2) == "345", "numbered groups"
+assert m.groups() == ["12", "345"], "groups() list"
+assert m.span() == [3, 9] and m.span(2) == [6, 9], "spans are code-point indices"
+assert m.start(1) == 3 and m.end(1) == 5, "start/end"
+assert re.search("(?P<y>\\d{4})-(?P<mo>\\d{2})", "2024-06").group("y") == "2024", "named group by name"
+assert re.search("(?<y>\\d{4})", "2024").group("y") == "2024", "(?<name>) form"
+var opt = re.search("a(b)?c", "ac")
+assert opt.group(1) == None and opt.start(1) == -1, "non-participating optional group -> None / -1"
+
+# --- quantifiers, greedy vs lazy, alternation priority ---
+assert re.search("<.*>", "<a><b>").group() == "<a><b>", "greedy .*"
+assert re.search("<.*?>", "<a><b>").group() == "<a>", "lazy .*?"
+assert re.search("a{2,3}", "aaaa").group() == "aaa", "greedy bounded"
+assert re.search("a{2,3}?", "aaaa").group() == "aa", "lazy bounded"
+assert re.search("a|ab", "abc").group() == "a", "leftmost-first alternation"
+assert re.search("colou?r", "colour").group() == "colour", "optional"
+
+# --- classes, anchors, boundaries, flags ---
+assert re.search("[^0-9]+", "123abc456").group() == "abc", "negated class"
+assert re.findall("\\bword\\b", "word words word") == ["word", "word"], "word boundary"
+assert re.search("^abc$", "abc").group() == "abc", "anchors"
+assert re.search("^abc$", "xabc") == None, "anchors reject"
+assert re.search(".", "\n") == None, "dot excludes newline"
+assert re.search("(?s).", "\n").group() == "\n", "DOTALL"
+assert re.search("hello", "HELLO", re.IGNORECASE).group() == "HELLO", "IGNORECASE flag"
+assert re.search("(?i)abc", "ABC").group() == "ABC", "inline (?i) flag"
+assert re.findall("(?m)^\\w+", "one\ntwo\nthree") == ["one", "two", "three"], "MULTILINE ^"
+
+# --- findall variants (result shape per group count) ---
+assert re.findall("\\w+", "a bb ccc") == ["a", "bb", "ccc"], "0 groups -> whole matches"
+assert re.findall("(\\w)\\w*", "foo bar") == ["f", "b"], "1 group -> that group"
+assert re.findall("(\\w+)=(\\d+)", "a=1 b=22") == [["a", "1"], ["b", "22"]], ">1 groups -> tuples"
+assert len(re.finditer("\\d+", "1 22 333")) == 3, "finditer count"
+
+# --- sub (string template + callable) and split ---
+assert re.sub("\\d+", "#", "a1b22c333") == "a#b#c#", "sub literal"
+assert re.sub("(\\w+)@(\\w+)", "\\2.\\1", "user@host") == "host.user", "sub backref template"
+assert re.sub("(?P<n>\\d+)", "[\\g<n>]", "x9y") == "x[9]y", "sub \\g<name>"
+assert re.sub("a", "X", "aaaa", 2) == "XXaa", "sub count limit"
+var doubler = Function(mm):
+    return mm.group() + mm.group()
+assert re.sub("\\d", doubler, "a1b2") == "a11b22", "sub with a callable replacement"
+assert re.split(",\\s*", "a, b,c ,  d") == ["a", "b", "c ", "d"], "split"
+assert re.split("(\\s+)", "a b") == ["a", " ", "b"], "split keeps captured separators"
+assert re.split("x", "axbxc", 1) == ["a", "bxc"], "split maxsplit"
+
+# --- escape + compile reuse ---
+assert re.escape("a.b*c") == "a\\.b\\*c", "escape metacharacters"
+assert re.search(re.escape("a.b"), "xa.byz").group() == "a.b", "escaped pattern is literal"
+var hexrx = re.compile("[0-9a-f]+", re.I)
+assert hexrx.findall("0F xy AB") == ["0F", "AB"], "compiled regex reused"
+assert hexrx.pattern == "[0-9a-f]+" and hexrx.groups == 0, "Regex attributes"
+
+# --- unicode (code-point semantics) ---
+assert re.search("café", "a café b").group() == "café", "unicode literal"
+assert re.search(".", "é").group() == "é", "dot matches one code point"
+
+# --- adversarial: rejected constructs throw (caught here) ---
+var rejected = Function(pattern):
+    try:
+        discard re.compile(pattern)
+        return False
+    catch as e:
+        return True
+assert rejected("(a)\\1"), "backreferences rejected"
+assert rejected("(?=a)"), "lookahead rejected"
+assert rejected("(?<=a)"), "lookbehind rejected"
+assert rejected("(abc"), "unbalanced paren rejected"
+assert rejected("[z-a]"), "bad range rejected"
+assert rejected("a{5000}"), "oversized repeat rejected"
+
+# --- adversarial / linear time: catastrophic-backtracking pattern is instant ---
+assert re.search("(a+)+b", "a" * 5000 + "c") == None, "no catastrophic backtracking"
+
+# --- fuzz: random two-way pick of literal patterns vs an oracle ---
+var rng = random.Random(20240607)
+var alphabet = ["a", "b", "c", "d"]
+var trial = 0
+while trial < 2000:
+    # build a random literal needle of length 1..3 and a random haystack
+    var needle = ""
+    var nlen = rng.randint(1, 3)
+    var k = 0
+    while k < nlen:
+        needle = needle + alphabet[rng.randint(0, 3)]
+        k = k + 1
+    var hay = ""
+    var hlen = rng.randint(0, 10)
+    var j = 0
+    while j < hlen:
+        hay = hay + alphabet[rng.randint(0, 3)]
+        j = j + 1
+    # oracle: does `needle` occur in `hay`?  (String membership, independent of the regex engine)
+    var found = re.search(re.escape(needle), hay)
+    assert (found != None) == (needle in hay), "fuzz: literal search agrees with substring test"
+    # when found, the matched text equals the needle and the span is consistent
+    if found != None:
+        assert found.group() == needle, "fuzz: matched text equals the needle"
+        assert hay[found.start():found.end()] == needle, "fuzz: span slices to the needle"
+    trial = trial + 1
+
+# --- fuzz: \d+ extraction agrees with a hand-written digit scan ---
+var trial2 = 0
+while trial2 < 2000:
+    var s = ""
+    var len2 = rng.randint(0, 12)
+    var p = 0
+    while p < len2:
+        var pickn = rng.randint(0, 9)
+        if rng.randint(0, 1) == 0:
+            s = s + String(pickn)
+        else:
+            s = s + alphabet[rng.randint(0, 3)]
+        p = p + 1
+    # oracle: split into maximal digit runs by hand
+    var runs = []
+    var cur = ""
+    for ch in s:
+        if ch.isdigit():
+            cur = cur + ch
+        else:
+            if len(cur) > 0:
+                runs.append(cur)
+            cur = ""
+    if len(cur) > 0:
+        runs.append(cur)
+    assert re.findall("\\d+", s) == runs, "fuzz: \\d+ findall matches the manual digit scan"
+    trial2 = trial2 + 1
+
+io.print("OK")

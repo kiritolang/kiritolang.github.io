@@ -1,0 +1,118 @@
+#ifndef KIRITO_COMMON_HPP
+#define KIRITO_COMMON_HPP
+
+#include <algorithm>
+#include <cerrno>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// AddressSanitizer/ThreadSanitizer detection (GCC defines __SANITIZE_ADDRESS__; Clang exposes
+// __has_feature). Sanitizer builds use much larger native frames (redzones + shadow), so recursive
+// descents (the parser, the compiler) overflow the stack at a far shallower depth — the depth guards
+// below pick a lower bound under a sanitizer so they throw a clean error instead of crashing. Defined
+// here, in the first-included header, so every translation unit (parser, vm, ...) sees it.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)  // GCC: asan / tsan
+#  define KIRITO_SANITIZER_BUILD 1
+#elif defined(__has_feature)                                       // Clang
+#  if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#    define KIRITO_SANITIZER_BUILD 1
+#  endif
+#endif
+
+namespace kirito {
+
+// Position of a token / node in source, for diagnostics. 1-based line/col.
+struct SourceSpan {
+    uint32_t line = 0;
+    uint32_t col = 0;
+    uint32_t length = 0;
+};
+
+// Shared operator vocabulary used by the AST, the value protocol, and the evaluator alike, so
+// none of them needs to know the others' enums.
+enum class BinOp { Add, Sub, Mul, Div, FloorDiv, Mod, Pow, Eq, Ne, Lt, Le, Gt, Ge, In, NotIn };
+enum class UnOp { Neg, Not };
+
+// One frame of an error's call-stack traceback — the function, source file, and line that were
+// executing. Accumulated as an error unwinds (each escaped VM frame appends itself, innermost first),
+// so a "Traceback (most recent call last)" can be reconstructed. VM-local: lives only on
+// the in-flight exception and the VM's last-traceback snapshot.
+struct TraceFrame {
+    std::string function;  // the function's name, "<function>" (anonymous), or "<module>" (top level)
+    std::string file;      // source chunk the frame was running in
+    uint32_t line = 0;     // line being executed (the call site for outer frames, the error site innermost)
+};
+
+// Render a traceback as a "most recent call last" block: the accumulated frames are
+// innermost-first, so print them in reverse (outermost frame first, the error site last). Empty for
+// an empty traceback. Shared by `sys.traceback()` and the CLI's uncaught-error reporter.
+inline std::string formatTraceback(const std::vector<TraceFrame>& tb) {
+    if (tb.empty()) return "";
+    std::string out = "Traceback (most recent call last):\n";
+    for (std::size_t i = tb.size(); i-- > 0;) {
+        const TraceFrame& f = tb[i];
+        out += "  File \"" + (f.file.empty() ? std::string("<main>") : f.file) + "\", line " +
+               std::to_string(f.line) + ", in " +
+               (f.function.empty() ? std::string("<function>") : f.function) + "\n";
+    }
+    return out;
+}
+
+// KiritoError + KiritoThrow live in exceptions.hpp so their inheritance relationship (both derive
+// from a common std::exception base, so an embedder can `catch (const std::exception&)` and get
+// either) is defined next to the source of truth for the C++/Kirito exception protocol.
+// Re-exported here at the bottom of the file so the ~40 sites that just include common.hpp still
+// see the classes. Do NOT move it above — SourceSpan / TraceFrame are used by these classes and
+// need to be defined by the time exceptions.hpp reaches its class bodies.
+
+// Parse a double from `s` without std::stod's underflow trap: std::stod throws std::out_of_range
+// when a value underflows to a subnormal/zero (errno==ERANGE), which would crash the lexer and the
+// serializers on a perfectly representable tiny literal like `5e-324`. std::strtod instead RETURNS
+// the (subnormal/zero) value and merely sets errno, so we accept underflow and only reject a
+// genuine non-parse (no digits consumed) or a true overflow to ±inf. `consumed`, if non-null,
+// receives the number of characters parsed (like std::stod's `pos`), for trailing-garbage checks.
+inline double parseDouble(const std::string& s, std::size_t* consumed = nullptr) {
+    const char* begin = s.c_str();
+    char* end = nullptr;
+    errno = 0;
+    double v = std::strtod(begin, &end);
+    if (end == begin) throw std::invalid_argument("parseDouble: no conversion");
+    if (errno == ERANGE && (v == HUGE_VAL || v == -HUGE_VAL))
+        throw std::out_of_range("parseDouble: overflow");   // ±inf — genuine out-of-range
+    if (consumed) *consumed = static_cast<std::size_t>(end - begin);
+    return v;   // underflow (subnormal/zero) is accepted, not thrown
+}
+
+// The numeric value of a hex digit (0–15), or -1 if `d` is not a hex digit. The single source of
+// truth for hex parsing — reused by the lexer's `\xHH` escape, the parser's f-string escapes, and the
+// JSON `\uXXXX` decoder, which each used to hand-roll the same three-range check.
+inline int hexDigitValue(char d) {
+    if (d >= '0' && d <= '9') return d - '0';
+    if (d >= 'a' && d <= 'f') return d - 'a' + 10;
+    if (d >= 'A' && d <= 'F') return d - 'A' + 10;
+    return -1;
+}
+
+// Approximate float comparison: |a-b| <= max(relTol*max(|a|,|b|), absTol). NaN is never close; equal
+// infinities are close. The single source of truth for the numeric `.compare()` tolerance, shared by
+// the runtime's Integer/Float compare and the matrix/complex/tensor modules (defined here, in the
+// first-included header, so the stdlib modules — compiled before runtime.hpp — can all reach it).
+inline bool floatClose(double a, double b, double relTol, double absTol) {
+    if (a == b) return true;                              // exact (covers inf == inf)
+    if (std::isnan(a) || std::isnan(b) || std::isinf(a) || std::isinf(b)) return false;
+    double diff = std::fabs(a - b);
+    return diff <= std::max(relTol * std::max(std::fabs(a), std::fabs(b)), absTol);
+}
+
+}  // namespace kirito
+
+// KiritoError and KiritoThrow — see the note above their placeholder-comment. Included at the
+// end so SourceSpan / TraceFrame are already defined, and so the 40+ files that only include
+// common.hpp still get both classes through the chain.
+#include "exceptions.hpp"    // NOLINT(build/include_order): must follow SourceSpan / TraceFrame
+
+#endif

@@ -1,0 +1,540 @@
+# r4_strings.ki — exhaustive audit of Kirito's String region: every String method (and its optional
+# args / kwargs), string literals + escapes, f-strings (every quote flavour, raw, :format-spec,
+# nested quotes), and the format() builtin + mini-format-spec (fill/align/sign/#/0/width/,/precision/
+# type). Every assertion reflects the interpreter's ACTUAL, current behaviour and runs green.
+# Doc-vs-impl gaps and Python-deviating corners that DON'T crash are reported in the audit, not here.
+
+var io = import("io")
+var math = import("math")
+
+var passed = 0
+var ck = Function(cond, label):
+    assert cond, label
+    passed = passed + 1
+
+# True iff calling `thunk` throws — for asserting wrong-type / domain / boundary errors.
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        return True
+    return False
+
+# =====================================================================================
+# CASE — upper / lower (ASCII + Latin-1 + Latin Extended-A; code points beyond pass through)
+# =====================================================================================
+ck("Hello, World!".upper() == "HELLO, WORLD!", "upper-ascii")
+ck("Hello, World!".lower() == "hello, world!", "lower-ascii")
+ck("café".upper() == "CAFÉ", "upper-latin1")
+ck("CAFÉ".lower() == "café", "lower-latin1")
+ck("łódź".upper() == "ŁÓDŹ", "upper-latinext")
+ck("ŁÓDŹ".lower() == "łódź", "lower-latinext")
+ck(("😀a").upper() == "😀A", "upper-astral-passthrough")
+ck(("Ω").lower() == "Ω", "lower-greek-passthrough")          # outside covered range -> unchanged
+ck("".upper() == "" and "".lower() == "", "case-empty")
+ck("123!?".upper() == "123!?", "upper-noncased-unchanged")
+ck("Łódź".lower().upper() == "ŁÓDŹ", "case-roundtrip-latinext")
+ck("HeLLo".upper() == "HeLLo".upper().upper(), "upper-idempotent")
+
+# =====================================================================================
+# strip / lstrip / rstrip — whitespace default, optional chars (code-point matched)
+# =====================================================================================
+ck("  hi  ".strip() == "hi", "strip-ws")
+ck("  hi  ".lstrip() == "hi  ", "lstrip-ws")
+ck("  hi  ".rstrip() == "  hi", "rstrip-ws")
+ck(("\t\n hi \r" + chr(0x0B) + chr(0x0C)).strip() == "hi", "strip-all-ws-kinds")  # incl. \v \f
+ck("xxabcxx".strip("x") == "abc", "strip-chars")
+ck("xyabcyx".lstrip("xy") == "abcyx", "lstrip-chars")
+ck("abc-=-".rstrip("-=") == "abc", "rstrip-chars")
+ck("aaa".strip("a") == "", "strip-all")
+ck("ééhellóó".strip("éó") == "hell", "strip-chars-multibyte")
+ck("abc".strip("xyz") == "abc", "strip-chars-absent")
+ck("".strip() == "", "strip-empty")
+ck("  ".strip() == "", "strip-only-ws")
+ck("abc".strip("") == "abc", "strip-empty-chars-noop")       # empty chars -> trims nothing
+ck("xxhixx".strip(chars = "x") == "hi", "strip-kw")
+
+# =====================================================================================
+# split — sep + maxsplit; whitespace runs by default; empty-sep throws
+# =====================================================================================
+ck("  a  b   c ".split() == ["a", "b", "c"], "split-ws")
+ck("a,b,c".split(",") == ["a", "b", "c"], "split-sep")
+ck("a,b,c,d".split(",", 2) == ["a", "b", "c,d"], "split-maxsplit")
+ck("a b c d".split(None, 1) == ["a", "b c d"], "split-ws-maxsplit")
+ck("a,".split(",") == ["a", ""], "split-trailing-sep")
+ck(",a,b".split(",") == ["", "a", "b"], "split-leading-sep")
+ck("a,,b".split(",") == ["a", "", "b"], "split-consecutive-sep")
+ck("".split() == [], "split-empty-ws")
+ck("".split(",") == [""], "split-empty-explicit-sep")
+ck("a,b,c".split(",", 0) == ["a,b,c"], "split-maxsplit-zero")
+ck("a b c".split(None, 0) == ["a b c"], "split-ws-maxsplit-zero")
+ck("a,b,c".split(",", -1) == ["a", "b", "c"], "split-neg-maxsplit-unlimited")
+ck("héllo wörld".split() == ["héllo", "wörld"], "split-ws-multibyte")
+ck("a,b,c".split(sep = ",", maxsplit = 1) == ["a", "b,c"], "split-kw")
+ck(throws(Function(): return "abc".split("")), "split-empty-sep-throws")
+ck(throws(Function(): return "abc".split(1)), "split-nonstring-sep-throws")
+
+# =====================================================================================
+# join — separator + iterable; non-String element throws
+# =====================================================================================
+ck(", ".join(["a", "b", "c"]) == "a, b, c", "join")
+ck("".join(["x", "y"]) == "xy", "join-empty-sep")
+ck(",".join([]) == "", "join-empty-iterable")
+ck("-".join(["solo"]) == "solo", "join-single")
+ck("|".join("abc") == "a|b|c", "join-over-string-chars")    # a String is iterable of chars
+ck(",".join(iterable = ["p", "q"]) == "p,q", "join-kw")
+ck(throws(Function(): return ",".join([1, 2])), "join-nonstring-throws")
+ck(throws(Function(): return ",".join([1])), "join-nonstring-single-throws")
+
+# =====================================================================================
+# replace — old, new, count; empty-old interleave
+# =====================================================================================
+ck("a.b.c".replace(".", "-") == "a-b-c", "replace-all")
+ck("aaaa".replace("a", "b", 2) == "bbaa", "replace-count")
+ck("aaaa".replace("a", "b", 0) == "aaaa", "replace-count-zero")
+ck("aaaa".replace("a", "b", -1) == "bbbb", "replace-neg-count-all")
+ck("aaa".replace("aa", "b") == "ba", "replace-nonoverlapping")
+ck("abc".replace("", "-") == "-a-b-c-", "replace-empty-old")
+ck("abc".replace("", "-", 2) == "-a-bc", "replace-empty-old-count")
+ck("".replace("", "-") == "-", "replace-empty-old-on-empty")
+ck("abc".replace("z", "Q") == "abc", "replace-absent")
+ck("aaa".replace("a", "") == "", "replace-with-empty")
+ck("héllo".replace("é", "e") == "hello", "replace-multibyte")
+ck("aaaa".replace(old = "a", new = "b", count = 2) == "bbaa", "replace-kw")
+ck(throws(Function(): return "abc".replace(1, "x")), "replace-nonstring-old-throws")
+ck(throws(Function(): return "abc".replace()), "replace-missing-args-throws")
+
+# =====================================================================================
+# find / rfind / index / rindex — start/end windows (code-point), negatives, OOB
+# =====================================================================================
+ck("abcabc".find("bc") == 1, "find")
+ck("abcabc".find("bc", 2) == 4, "find-start")
+ck("abc".find("z") == -1, "find-absent")
+ck("abcabc".find("bc", 0, 2) == -1, "find-window-miss")
+ck("abcabc".find("c", -2) == 5, "find-neg-start")
+ck("abc".find("a", 99) == -1, "find-oob-start")
+ck("abc".find("a", -100) == 0, "find-neg-clamps")
+ck("abcabc".find("c", 4, 2) == -1, "find-start-past-end")
+ck("café x".find("x") == 5, "find-multibyte-position")        # 4 cps + space, x at cp 5
+ck("aébc".find("b") == 2, "find-multibyte-position2")
+ck("".find("") == 0, "find-empty-in-empty")
+ck("abc".find("") == 0, "find-empty-needle")
+ck("abcabc".find(sub = "bc", start = 2) == 4, "find-kw")
+
+ck("abcabc".rfind("bc") == 4, "rfind")
+ck("abc".rfind("z") == -1, "rfind-absent")
+ck("abcabc".rfind("bc", 0, 4) == 1, "rfind-window")
+ck("aéaé".rfind("é") == 3, "rfind-multibyte-position")
+ck("abc".rfind("") == 3, "rfind-empty-needle")
+
+ck("abcabc".index("bc") == 1, "index-found")
+ck("aébéc".index("b") == 2, "index-multibyte-position")
+ck(throws(Function(): return "abc".index("z")), "index-absent-throws")
+ck(throws(Function(): return "abcabc".index("bc", 0, 2)), "index-window-miss-throws")
+
+ck("abcabc".rindex("bc") == 4, "rindex-found")
+ck(throws(Function(): return "abc".rindex("z")), "rindex-absent-throws")
+
+# =====================================================================================
+# count — non-overlapping, start/end windows, empty needle boundary
+# =====================================================================================
+ck("aaaa".count("aa") == 2, "count-nonoverlapping")
+ck("aaaa".count("a", 1, 3) == 2, "count-window")
+ck("abc".count("") == 4, "count-empty-needle")               # at every boundary + after last
+ck("".count("") == 1, "count-empty-in-empty")
+ck("abc".count("z") == 0, "count-absent")
+ck("ééé".count("é", 1, 3) == 2, "count-multibyte-window")
+ck("abababab".count("ab") == 4, "count-repeated")
+ck("aaaa".count(sub = "aa") == 2, "count-kw")
+
+# =====================================================================================
+# startswith / endswith — start/end windows (code-point), negatives
+# =====================================================================================
+ck("abcdef".startswith("abc") == True, "startswith")
+ck("abcdef".startswith("cd", 2) == True, "startswith-window")
+ck("abcdef".startswith("xyz") == False, "startswith-false")
+ck("abcdef".startswith("ef", -2) == True, "startswith-neg-window")
+ck("abc".startswith("") == True, "startswith-empty")
+ck("café".startswith("caf") == True, "startswith-multibyte")
+ck("abcdef".startswith(prefix = "cd", start = 2) == True, "startswith-kw")
+ck(throws(Function(): return "abc".startswith(1)), "startswith-nonstring-throws")
+
+ck("abcdef".endswith("def") == True, "endswith")
+ck("abcdef".endswith("cd", 0, 4) == True, "endswith-window")
+ck("abcdef".endswith("abc") == False, "endswith-false")
+ck("abcdef".endswith("ab", 0, 2) == True, "endswith-window2")
+ck("abc".endswith("") == True, "endswith-empty")
+ck("café".endswith("fé") == True, "endswith-multibyte")
+ck(throws(Function(): return "abc".endswith(1)), "endswith-nonstring-throws")
+
+# =====================================================================================
+# is* predicates — empty (False), mixed, ASCII semantics
+# =====================================================================================
+ck("12345".isdigit() == True, "isdigit-true")
+ck("12a45".isdigit() == False, "isdigit-mixed")
+ck("".isdigit() == False, "isdigit-empty")
+ck("abcDEF".isalpha() == True, "isalpha-true")
+ck("abc1".isalpha() == False, "isalpha-mixed")
+ck("café".isalpha() == True, "isalpha-latin1")               # non-ASCII letters count
+ck("".isalpha() == False, "isalpha-empty")
+ck("abc123".isalnum() == True, "isalnum-true")
+ck("abc 123".isalnum() == False, "isalnum-space")
+ck("café9".isalnum() == True, "isalnum-multibyte")
+ck("".isalnum() == False, "isalnum-empty")
+ck("  \t\n".isspace() == True, "isspace-true")
+ck("a b".isspace() == False, "isspace-mixed")
+ck("".isspace() == False, "isspace-empty")
+ck("hello".islower() == True, "islower-true")
+ck("Hello".islower() == False, "islower-mixed")
+ck("123".islower() == False, "islower-nocase")               # needs >=1 cased char
+ck("hello!".islower() == True, "islower-with-symbol")
+ck("łódź".islower() == True, "islower-latinext")
+ck("HELLO".isupper() == True, "isupper-true")
+ck("Hello".isupper() == False, "isupper-mixed")
+ck("123".isupper() == False, "isupper-nocase")
+ck("ŁÓDŹ".isupper() == True, "isupper-latinext")
+
+# =====================================================================================
+# removeprefix / removesuffix
+# =====================================================================================
+ck("unhappy".removeprefix("un") == "happy", "removeprefix")
+ck("happy".removeprefix("un") == "happy", "removeprefix-absent")
+ck("abc".removeprefix("") == "abc", "removeprefix-empty")
+ck("café-x".removeprefix("café") == "-x", "removeprefix-multibyte")
+ck("happily".removesuffix("ly") == "happi", "removesuffix")
+ck("happy".removesuffix("ly") == "happy", "removesuffix-absent")
+ck("abc".removesuffix("") == "abc", "removesuffix-empty")
+ck("x-café".removesuffix("café") == "x-", "removesuffix-multibyte")
+ck("unhi".removeprefix(prefix = "un") == "hi", "removeprefix-kw")
+
+# =====================================================================================
+# ljust / rjust / center / zfill — width (code-point), fill, sign-aware zfill
+# =====================================================================================
+ck("x".ljust(4, ".") == "x...", "ljust")
+ck("x".ljust(4) == "x   ", "ljust-default-fill")
+ck("ab".rjust(5) == "   ab", "rjust")
+ck("ab".rjust(5, "0") == "000ab", "rjust-fill")
+ck("5".center(5, "*") == "**5**", "center")
+ck("ab".center(5, "-") == "-ab--", "center-odd")             # extra pad on the right
+ck("abc".center(2) == "abc", "center-width-le-len")          # no truncation
+ck("café".ljust(6) == "café  ", "ljust-multibyte-width")     # width counts code points
+ck(len("café".ljust(6)) == 6, "ljust-multibyte-len")
+ck("café".center(8, "*") == "**café**", "center-multibyte")
+ck("x".ljust(width = 4, fillchar = ".") == "x...", "ljust-kw")
+ck("x".center(width = 5, fillchar = "*") == "**x**", "center-kw")
+ck("42".zfill(5) == "00042", "zfill")
+ck("-42".zfill(6) == "-00042", "zfill-sign-neg")
+ck("+42".zfill(6) == "+00042", "zfill-sign-plus")
+ck("12345".zfill(3) == "12345", "zfill-noop")
+ck("42".zfill(-5) == "42", "zfill-neg-width")
+ck("".zfill(3) == "000", "zfill-empty")
+ck("42".zfill(width = 5) == "00042", "zfill-kw")
+ck(throws(Function(): return "x".ljust(4, "ab")), "ljust-multichar-fill-throws")
+ck(throws(Function(): return "x".center(4, "")), "center-empty-fill-throws")
+
+# =====================================================================================
+# partition / rpartition — present and absent
+# =====================================================================================
+ck("a=b=c".partition("=") == ["a", "=", "b=c"], "partition")
+ck("a=b=c".rpartition("=") == ["a=b", "=", "c"], "rpartition")
+ck("abc".partition("=") == ["abc", "", ""], "partition-absent")
+ck("abc".rpartition("=") == ["", "", "abc"], "rpartition-absent")
+ck("k=v".partition("=") == ["k", "=", "v"], "partition-once")
+ck("café=x".partition("=") == ["café", "=", "x"], "partition-multibyte")
+ck("a=b".partition(sep = "=") == ["a", "=", "b"], "partition-kw")
+ck(throws(Function(): return "abc".partition("")), "partition-empty-sep-throws")
+ck(throws(Function(): return "abc".rpartition("")), "rpartition-empty-sep-throws")
+
+# =====================================================================================
+# levenshtein — to a String, or to a List of Strings; code-point distance
+# =====================================================================================
+ck("kitten".levenshtein("sitting") == 3, "levenshtein-str")
+ck("cat".levenshtein(["bat", "cot", "dog"]) == [1, 1, 3], "levenshtein-list")
+ck("café".levenshtein("cafe") == 1, "levenshtein-multibyte")
+ck("".levenshtein("abc") == 3, "levenshtein-from-empty")
+ck("abc".levenshtein("") == 3, "levenshtein-to-empty")
+ck("same".levenshtein("same") == 0, "levenshtein-identical")
+ck("cat".levenshtein([]) == [], "levenshtein-empty-list")
+ck("cat".levenshtein(other = "bat") == 1, "levenshtein-kw")
+ck(throws(Function(): return "x".levenshtein([1, 2])), "levenshtein-nonstring-list-throws")
+ck(throws(Function(): return "x".levenshtein(1)), "levenshtein-nonstring-throws")
+
+# =====================================================================================
+# apply — map a String->String fn over each character
+# =====================================================================================
+var upChar = Function(c): return c.upper()
+ck("abc".apply(upChar) == "ABC", "apply")
+ck("".apply(upChar) == "", "apply-empty")
+ck("café".apply(upChar) == "CAFÉ", "apply-multibyte")
+var doubleChar = Function(c): return c + c
+ck("ab".apply(doubleChar) == "aabb", "apply-expand")
+ck("abc".apply(fn = upChar) == "ABC", "apply-kw")
+var badApply = Function(c): return 1
+ck(throws(Function(): return "ab".apply(badApply)), "apply-nonstring-result-throws")
+ck(throws(Function(): return "ab".apply()), "apply-missing-fn-throws")
+
+# =====================================================================================
+# encode / decode — utf-8 / latin-1 / ascii round-trips and failures
+# =====================================================================================
+ck(len("héllo".encode("utf-8")) == 6, "encode-utf8-len")     # é is 2 bytes
+ck("héllo".encode("utf-8").decode("utf-8") == "héllo", "encode-utf8-roundtrip")
+ck("café".encode("latin-1").decode("latin-1") == "café", "encode-latin1-roundtrip")
+ck("abc".encode("ascii").decode("ascii") == "abc", "encode-ascii-roundtrip")
+ck("😀".encode("utf-8").decode("utf-8") == "😀", "encode-astral-roundtrip")
+ck(len("abc".encode()) == 3, "encode-default-utf8")           # default encoding
+ck("hi".encode(encoding = "ascii").decode() == "hi", "encode-kw")
+ck(throws(Function(): return "€".encode("latin-1")), "encode-latin1-overflow-throws")
+ck(throws(Function(): return "é".encode("ascii")), "encode-ascii-overflow-throws")
+ck(throws(Function(): return "x".encode("utf-16")), "encode-unknown-enc-throws")
+
+# =====================================================================================
+# indexing / slicing / repetition / in / len — code-point semantics
+# =====================================================================================
+ck("abcdef"[2] == "c", "index-pos")
+ck("abcdef"[-1] == "f", "index-neg")
+ck("abcdef"[0] == "a", "index-first")
+ck("abcdef"[1:4] == "bcd", "slice")
+ck("abcdef"[::2] == "ace", "slice-step")
+ck("abcdef"[::-1] == "fedcba", "slice-reverse")
+ck("abcdef"[-3:-1] == "de", "slice-neg")
+ck("abcdef"[3:] == "def", "slice-open-end")
+ck("abcdef"[:3] == "abc", "slice-open-start")
+ck("abc"[10:20] == "", "slice-oob-empty")
+ck(""[0:0] == "", "slice-empty")
+ck("ab" * 3 == "ababab", "repeat")
+ck("ab" * 0 == "", "repeat-zero")
+ck("ab" * -2 == "", "repeat-negative")
+ck("" * 5 == "", "repeat-empty")
+ck("bc" in "abcd", "in-true")
+ck(("xy" in "abcd") == False, "in-false")
+ck("" in "abc", "in-empty-needle")
+ck(len("hello") == 5, "len-ascii")
+ck(len("") == 0, "len-empty")
+ck(len("café") == 4, "len-multibyte")                        # 4 code points, 5 bytes
+ck(throws(Function(): return "abc"[10]), "index-oob-throws")
+ck(throws(Function(): return "abc"[-10]), "index-neg-oob-throws")
+ck(throws(Function(): return "abc"[1.0]), "index-float-throws")
+ck(throws(Function(): return "abc"[::0]), "slice-zero-step-throws")
+ck(throws(Function(): return "x" * 1000000000000), "repeat-huge-guard-throws")
+ck(throws(Function(): return "x" * 2.0), "repeat-float-throws")
+ck(throws(Function(): return "x" + 1), "concat-nonstring-throws")
+ck(throws(Function(): return 1 in "abc"), "in-nonstring-throws")
+
+# =====================================================================================
+# Astral / emoji / combining code points
+# =====================================================================================
+ck(len("a😀b") == 3, "astral-len")
+ck("a😀b"[1] == "😀", "astral-index")
+ck("a😀b"[::-1] == "b😀a", "astral-reverse")
+ck(ord("😀") == 128512, "ord-astral")
+ck(chr(128512) == "😀", "chr-astral")
+ck(chr(ord("😀")) == "😀", "chr-ord-roundtrip")
+ck(ord("a") == 97, "ord-ascii")
+ck(chr(0) == chr(0), "chr-zero")
+var combining = "e" + chr(0x0301)                             # e + combining acute = 2 code points
+ck(len(combining) == 2, "combining-len")
+ck(combining[0] == "e", "combining-index")
+ck(len(combining.encode()) == 3, "combining-bytes")
+ck(throws(Function(): return ord("ab")), "ord-multichar-throws")
+ck(throws(Function(): return ord("")), "ord-empty-throws")
+ck(throws(Function(): return chr(0x110000)), "chr-too-big-throws")
+ck(throws(Function(): return chr(-1)), "chr-negative-throws")
+
+# =====================================================================================
+# Very long string — guards and correctness under scale
+# =====================================================================================
+var long = "ab" * 100000
+ck(len(long) == 200000, "long-len")
+ck(long[-1] == "b", "long-last")
+ck(long[0] == "a", "long-first")
+ck(long.count("ab") == 100000, "long-count")
+ck(long.find("ab") == 0, "long-find")
+
+# =====================================================================================
+# str.format() — sequential {} and indexed {0}/{1}; {{ }} literals; NO :spec / named fields
+# =====================================================================================
+ck("{} and {}".format("a", "b") == "a and b", "format-seq")
+ck("{1}-{0}".format("a", "b") == "b-a", "format-idx")
+ck("{0}{0}".format("x") == "xx", "format-idx-reuse")
+ck("{{literal}}".format() == "{literal}", "format-braces-escape")
+ck("{}{}{}".format("a", "b", "c") == "abc", "format-three")
+ck("no fields".format() == "no fields", "format-no-fields")
+ck("{}".format([1, "two"]) == "[1, 'two']", "format-nested-repr")  # nested String -> quoted repr
+ck("{}".format(3.0) == "3.0", "format-float")
+ck("{}".format(None) == "None", "format-none")
+ck("{}".format(True) == "True", "format-bool")
+ck("pre {{x}} {}".format("v") == "pre {x} v", "format-mixed-escape")
+ck(throws(Function(): return "{2}".format("a")), "format-index-oob-throws")
+ck(throws(Function(): return "{} {}".format("a")), "format-too-few-throws")
+ck(throws(Function(): return "{x}".format()), "format-named-field-throws")     # named not supported
+ck(throws(Function(): return "{:05d}".format(42)), "format-spec-field-throws") # :spec not supported
+ck(throws(Function(): return "a { b".format()), "format-unmatched-open-throws")
+
+# =====================================================================================
+# format() builtin + MINI-SPEC — fill/align/sign/#/0/width/,/precision/type
+# =====================================================================================
+# alignment + custom fill
+ck(format("hi", "<6") == "hi    ", "fmt-left")
+ck(format("hi", ">6") == "    hi", "fmt-right")
+ck(format("hi", "^6") == "  hi  ", "fmt-center")
+ck(format("x", "*^7") == "***x***", "fmt-fill-center")
+ck(format("7", "0>5") == "00007", "fmt-fill-right")
+ck(format("hi", "^") == "hi", "fmt-align-no-width")           # align with no width -> no pad
+ck(format("café", "<6") == "café  ", "fmt-str-multibyte-width")
+ck(len(format("café", "^8")) == 8, "fmt-multibyte-width-counts-cp")
+# sign
+ck(format(42, "+d") == "+42", "fmt-sign-plus")
+ck(format(42, " d") == " 42", "fmt-sign-space")
+ck(format(-42, "+d") == "-42", "fmt-sign-neg")
+ck(format(-42, "+06d") == "-00042", "fmt-sign-zeropad")
+ck(format(5, "+6d") == "    +5", "fmt-sign-rightalign-default")
+# `=` align: pad between sign and digits
+ck(format(-42, "=6") == "-   42", "fmt-eq-align")
+ck(format(-5, "=6d") == "-    5", "fmt-eq-align-d")
+ck(format(-5, "*=6d") == "-****5", "fmt-eq-align-fill")
+# zero-pad implies sign-aware '=' align
+ck(format(-42, "06d") == "-00042", "fmt-zero-implies-eq")
+ck(format(7, ">06d") == "000007", "fmt-zero-explicit-align")
+# alternate form # (base prefix)
+ck(format(255, "#x") == "0xff", "fmt-hash-x")
+ck(format(255, "#X") == "0XFF", "fmt-hash-X")
+ck(format(8, "#o") == "0o10", "fmt-hash-o")
+ck(format(5, "#b") == "0b101", "fmt-hash-b")
+ck(format(255, "#08x") == "0x0000ff", "fmt-hash-zeropad")
+ck(format(42, "#d") == "42", "fmt-hash-decimal-noop")
+# integer bases
+ck(format(5, "b") == "101", "fmt-bin")
+ck(format(64, "o") == "100", "fmt-oct")
+ck(format(255, "x") == "ff", "fmt-hex")
+ck(format(255, "X") == "FF", "fmt-hex-upper")
+ck(format(42, "d") == "42", "fmt-dec")
+ck(format(42, "") == "42", "fmt-int-empty-spec")
+ck(format(0, "d") == "0", "fmt-zero-value")
+ck(format(-255, "x") == "-ff", "fmt-hex-negative")
+ck(format(42, "05d") == "00042", "fmt-zeropad")
+ck(format(42, "5d") == "   42", "fmt-width")
+# grouping comma
+ck(format(1234567, ",") == "1,234,567", "fmt-comma")
+ck(format(1000000, ",d") == "1,000,000", "fmt-comma-d")
+ck(format(1234567.5, ",.1f") == "1,234,567.5", "fmt-comma-float")
+ck(format(-1234567, ",") == "-1,234,567", "fmt-comma-negative")
+ck(format(100, ",") == "100", "fmt-comma-small")
+# floats: f / e / g / %
+ck(format(3.14159, ".2f") == "3.14", "fmt-f")
+ck(format(1.5, "f") == "1.500000", "fmt-f-default-precision")
+ck(format(3.7, ".0f") == "4", "fmt-f-precision-zero")
+ck(format(12345.678, ".2e") == "1.23e+04", "fmt-e")
+ck(format(0.0001, "g") == "0.0001", "fmt-g")
+ck(format(0.25, ".1%") == "25.0%", "fmt-percent")
+ck(format(2, ".0%") == "200%", "fmt-percent-int")
+ck(format(3.14, "8.2f") == "    3.14", "fmt-f-width")
+ck(format(5, ".1f") == "5.0", "fmt-int-as-float")
+ck(len(format(1.0, ".50f")) == 52, "fmt-high-precision")      # 1 + '.' + 50 digits, no truncation
+# non-finite floats
+ck(format(math.nan, "f") == "nan", "fmt-nan")
+ck(format(math.inf, ".2f") == "inf", "fmt-inf")
+ck(format(-math.inf, "f") == "-inf", "fmt-neg-inf")
+ck(format(math.nan, "+f") == "+nan", "fmt-nan-signed")
+# strings + precision (truncation)
+ck(format("abcdef", ".3") == "abc", "fmt-str-precision")
+ck(format("café-x", ".4") == "café", "fmt-str-precision-multibyte")  # truncate by code point
+ck(format("hi", "6") == "hi    ", "fmt-str-default-left")
+ck(format("hi", "") == "hi", "fmt-str-empty-spec")
+# Bool / None default
+ck(format(True, "d") == "1", "fmt-bool-d")
+ck(format(False, "d") == "0", "fmt-bool-d-false")
+ck(format(None, "") == "None", "fmt-none-default")
+ck(format(True, "") == "True", "fmt-bool-empty-spec")
+ck(format(3.14, "") == "3.14", "fmt-float-empty-spec")        # empty type on Float -> general 'g'
+# kwargs
+ck(format(value = 42, spec = "05d") == "00042", "fmt-kw")
+ck(format(42, spec = "x") == "2a", "fmt-kw-spec-only")
+ck(format(42) == "42", "fmt-no-spec")
+# type / value mismatches and malformed specs throw
+ck(throws(Function(): return format("abc", "d")), "fmt-str-as-int-throws")
+ck(throws(Function(): return format(3.14, "d")), "fmt-float-as-int-throws")
+ck(throws(Function(): return format(5, "Q")), "fmt-unknown-type-throws")
+ck(throws(Function(): return format(5, "5z9")), "fmt-malformed-trailing-throws")
+ck(throws(Function(): return format(42, ".2d")), "fmt-precision-on-int-throws")
+ck(throws(Function(): return format(255, ",x")), "fmt-comma-with-hex-throws")
+ck(throws(Function(): return format(5, "c")), "fmt-type-c-unsupported-throws")
+ck(throws(Function(): return format(5, "n")), "fmt-type-n-unsupported-throws")
+ck(throws(Function(): return format(3.14, "E")), "fmt-type-E-unsupported-throws")
+ck(throws(Function(): return format(3.14, "F")), "fmt-type-F-unsupported-throws")
+ck(throws(Function(): return format(3.14, "G")), "fmt-type-G-unsupported-throws")
+ck(throws(Function(): return format(1, "100000000000000d")), "fmt-huge-width-throws")
+
+# =====================================================================================
+# String literals — quote styles, escapes, raw, triple-quoted
+# =====================================================================================
+ck('single quotes' == "single quotes", "lit-single-eq-double")
+ck("it's" == "it" + "'" + "s", "lit-apostrophe-in-double")
+ck('say "hi"' == "say " + chr(34) + "hi" + chr(34), "lit-dquote-in-single")
+ck("a\tb" == "a" + chr(9) + "b", "esc-tab")
+ck("a\nb" == "a" + chr(10) + "b", "esc-newline")
+ck("a\rb" == "a" + chr(13) + "b", "esc-cr")
+ck(len("a\0b") == 3, "esc-null")
+ck("a\\b" == "a" + chr(92) + "b", "esc-backslash")
+ck("a\"b" == "a" + chr(34) + "b", "esc-dquote")
+ck("\x41\x42" == "AB", "esc-hex")
+ck("\x00" == chr(0), "esc-hex-zero")
+ck(len("\xff") == 1, "esc-hex-highbyte-one-byte")             # \xff is one raw byte (latin-1 byte)
+ck(r"\n" == chr(92) + "n", "raw-backslash-n")
+ck(r"C:\path" == "C:" + chr(92) + "path", "raw-path")
+ck(len(r"\n\t") == 4, "raw-len")                             # 4 literal chars
+var triple = """line1
+line2"""
+ck(triple == "line1" + chr(10) + "line2", "triple-multiline")
+var tripleSingle = '''a'b"c'''
+ck(tripleSingle == "a'b" + chr(34) + "c", "triple-single-holds-quotes")
+ck("""one line""" == "one line", "triple-one-line")
+
+# =====================================================================================
+# f-strings — {expr}, :format-spec, nested quotes, whitespace, every quote flavour
+# =====================================================================================
+var fx = 42
+var fpi = 3.14159
+ck(f"x={fx}" == "x=42", "fstr-basic")
+ck(f"{fx:05d}" == "00042", "fstr-spec-int")
+ck(f"{fpi:.2f}" == "3.14", "fstr-spec-float")
+ck(f"{fx * 2 + 1}" == "85", "fstr-expr")
+ck(f"{ fx }" == "42", "fstr-surrounding-ws")
+ck(f"{fx}{fx}" == "4242", "fstr-adjacent")
+ck(f"no expr" == "no expr", "fstr-no-expr")
+ck(f"{{literal}}" == "{literal}", "fstr-literal-braces")
+ck(f"{{{fx}}}" == "{42}", "fstr-braces-around-expr")
+var fd = {"k": 7}
+ck(f"{fd['k']}" == "7", "fstr-nested-single-quote")           # single-quoted key inside f"..."
+ck(f"{[1, 2]}" == "[1, 2]", "fstr-list-repr")
+ck(f"{None}" == "None" and f"{True}" == "True", "fstr-none-bool")
+ck(f"{3.0}" == "3.0", "fstr-float-repr")
+ck(f'val={fx}' == "val=42", "fstr-single-quote-flavour")
+ck(f"""multi {fx} line""" == "multi 42 line", "fstr-triple")
+ck(f'''{fx}''' == "42", "fstr-triple-single")
+ck(rf"\d={fx}" == chr(92) + "d=42", "fstr-raw-rf")            # rf: backslash literal
+ck(fr"{fx}\n" == "42" + chr(92) + "n", "fstr-raw-fr")
+ck(f"{255:#x}" == "0xff", "fstr-hash-spec")
+ck(f"{len([1,2,3]):03d}" == "003", "fstr-expr-with-spec")
+ck(f"{fx:>6}" == "    42", "fstr-align-spec")
+ck(f"a\tb={fx}" == "a" + chr(9) + "b=42", "fstr-escape-in-literal")
+var sq = Function(x): return x * x
+ck(f"{sq(5)}" == "25", "fstr-inline-call")
+var fs = "world"
+ck(f"hello {fs}!" == "hello world!", "fstr-string-interp")
+ck(f"{fs:>8}" == "   world", "fstr-string-spec")
+
+# =====================================================================================
+# inspect — String advertises its full method set with signatures
+# =====================================================================================
+var info = inspect("hi")
+ck("upper() -> String" in info, "inspect-upper")
+ck("split(sep, maxsplit) -> List" in info, "inspect-split")
+ck("replace(old, new, count) -> String" in info, "inspect-replace")
+ck("find(sub, start, end) -> Integer" in info, "inspect-find")
+ck("encode(encoding) -> Bytes" in info, "inspect-encode")
+ck("levenshtein(other) -> Integer" in info, "inspect-levenshtein")
+ck("format(...) -> String" in info, "inspect-format")
+ck("apply(fn) -> String" in info, "inspect-apply")
+
+# =====================================================================================
+io.print("r4_strings: all", passed, "assertions passed")

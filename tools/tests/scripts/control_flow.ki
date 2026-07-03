@@ -1,0 +1,32 @@
+# Control flow: if/elif/else, while, for, break, continue.
+var io = import("io")
+
+var grade = Function(score):
+    if score >= 90:
+        return "A"
+    elif score >= 80:
+        return "B"
+    elif score >= 70:
+        return "C"
+    else:
+        return "F"
+
+io.print(grade(95))
+io.print(grade(83))
+io.print(grade(60))
+
+var total = 0
+var i = 1
+while i <= 10:
+    total = total + i
+    i = i + 1
+io.print(total)              # 55
+
+var evens = []
+for n in [1, 2, 3, 4, 5, 6, 7, 8]:
+    if n % 2 == 1:
+        continue
+    if n > 6:
+        break
+    evens.append(n)
+io.print(evens)              # [2, 4, 6]

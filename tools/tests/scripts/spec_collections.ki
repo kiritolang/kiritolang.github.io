@@ -1,0 +1,114 @@
+# Exhaustive + adversarial checks for List / Set / Dict and packing/unpacking.
+# Dict iteration order is UNSPECIFIED, so dict contents are checked via lookup or sorted().
+var io = import("io")
+
+# ===== List =====
+var xs = [3, 1, 2]
+assert xs[0] == 3 and xs[-1] == 2, "index/negative"
+assert xs[1:] == [1, 2] and xs[::-1] == [2, 1, 3], "slice/reverse"
+assert len(xs) == 3 and 1 in xs and 9 not in xs, "len/membership"
+assert [1, 2] + [3, 4] == [1, 2, 3, 4], "concat"
+assert [0] * 3 == [0, 0, 0] and [1, 2] * 0 == [], "repeat"
+assert [1, 2] < [1, 3] and [1, 2] < [1, 2, 3] and [2] > [1, 9], "lexicographic ordering"
+assert [1, 2, 3] == [1, 2, 3] and [1, 2] != [1, 2, 3], "equality"
+
+# mutating methods
+var m = [1, 2, 3]
+m.append(4)
+assert m == [1, 2, 3, 4], "append"
+assert m.pop() == 4 and m == [1, 2, 3], "pop last"
+assert m.pop(0) == 1 and m == [2, 3], "pop index"
+m.insert(0, 9)
+assert m == [9, 2, 3], "insert"
+m.remove(2)
+assert m == [9, 3], "remove"
+m.extend([7, 8])
+assert m == [9, 3, 7, 8], "extend"
+m.reverse()
+assert m == [8, 7, 3, 9], "reverse in place"
+assert [1, 2, 2, 3].index(2) == 1 and [1, 2, 2].count(2) == 2, "index/count"
+var c = m.copy()
+c.append(0)
+assert m == [8, 7, 3, 9] and c == [8, 7, 3, 9, 0], "copy independent"
+m.clear()
+assert m == [] and len(m) == 0, "clear"
+
+# sort: stable, key, reverse, multi-key via list keys
+var srt = [5, 2, 8, 1]
+srt.sort()
+assert srt == [1, 2, 5, 8], "sort ascending"
+srt.sort(None, True)
+assert srt == [8, 5, 2, 1], "sort reverse"
+assert sorted([3, 1, 2]) == [1, 2, 3], "sorted builtin"
+assert sorted(["bb", "a", "ccc"], key=Function(w): return len(w)) == ["a", "bb", "ccc"], "sorted key"
+# stability: equal keys keep input order
+var pairs = [[1, "a"], [1, "b"], [0, "c"]]
+assert sorted(pairs, key=Function(p): return p[0]) == [[0, "c"], [1, "a"], [1, "b"]], "stable sort"
+
+# ===== Set =====
+var a = {1, 2, 3}
+var b = {3, 4, 5}
+assert len(a) == 3 and 2 in a and 9 not in a, "set len/membership"
+assert {1, 1, 2, 2, 3} == {1, 2, 3}, "set dedup"
+assert sorted(a.union(b)) == [1, 2, 3, 4, 5], "union"
+assert sorted(a.intersection(b)) == [3], "intersection"
+assert sorted(a.difference(b)) == [1, 2], "difference"
+assert sorted(a.symmetricdifference(b)) == [1, 2, 4, 5], "symmetricdifference"
+assert {1, 2}.issubset({1, 2, 3}) and {1, 2, 3}.issuperset({1, 2}), "subset/superset"
+assert {1, 2}.isdisjoint({3, 4}) and not {1, 2}.isdisjoint({2, 3}), "isdisjoint"
+var sm = {1, 2}
+sm.add(3)
+assert sorted(sm) == [1, 2, 3], "add"
+sm.discard(1)
+sm.discard(99)
+assert sorted(sm) == [2, 3], "discard (no error if absent)"
+
+# ===== Dict (UNORDERED) =====
+var d = {"a": 1, "b": 2, "c": 3}
+assert d["a"] == 1 and len(d) == 3, "dict get/len"
+assert "a" in d and "z" not in d, "dict key membership"
+d["d"] = 4
+assert d["d"] == 4 and len(d) == 4, "dict set"
+assert sorted(d.keys()) == ["a", "b", "c", "d"], "keys (order-independent)"
+assert sorted(d.values()) == [1, 2, 3, 4], "values"
+assert d.get("a") == 1 and d.get("z", -1) == -1 and d.get("z") == None, "get + default"
+assert d.pop("d") == 4 and "d" not in d, "pop"
+d.setdefault("e", 5)
+d.setdefault("a", 99)
+assert d["e"] == 5 and d["a"] == 1, "setdefault only inserts if absent"
+d.update({"f": 6, "a": 10})
+assert d["f"] == 6 and d["a"] == 10, "update merges/overwrites"
+# items() round-trips (sorted for determinism)
+var d2 = {1: "x", 2: "y"}
+var items = d2.items()
+items.sort()
+assert items == [[1, "x"], [2, "y"]], "items"
+# dict equality is order-independent
+assert {"a": 1, "b": 2} == {"b": 2, "a": 1}, "dict equality order-independent"
+
+# ===== packing / unpacking =====
+var t = 1, 2, 3
+assert t == [1, 2, 3], "bare comma packs into List"
+var p, q = 10, 20
+assert p == 10 and q == 20, "tuple unpack"
+p, q = q, p
+assert p == 20 and q == 10, "swap"
+var first, *rest = [1, 2, 3, 4]
+assert first == 1 and rest == [2, 3, 4], "starred tail"
+var *init, last = [1, 2, 3, 4]
+assert init == [1, 2, 3] and last == 4, "starred head"
+var lo, *mid, hi = [1, 2, 3, 4, 5]
+assert lo == 1 and mid == [2, 3, 4] and hi == 5, "starred middle"
+# unpack into index/member targets
+var arr = [0, 0]
+arr[0], arr[1] = 7, 8
+assert arr == [7, 8], "unpack into indices"
+
+# nested structures + cycle-safe stringify
+var nested = [[1, [2, [3]]], {"k": [4, 5]}]
+assert nested[0][1][1][0] == 3 and nested[1]["k"][1] == 5, "nested indexing"
+var cyc = [1, 2]
+cyc.append(cyc)
+assert String(cyc) == "[1, 2, [...]]", "cyclic list stringify"
+
+io.print("OK")

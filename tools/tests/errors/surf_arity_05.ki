@@ -1,0 +1,4 @@
+# param type annotation violated: Float param given a Bool
+var f = Function(x : Float):
+    return x
+discard f(True)

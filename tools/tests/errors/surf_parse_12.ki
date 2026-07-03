@@ -1,0 +1,3 @@
+# PARSER: a member access where '.' is followed by a numeric literal, not a name
+var x = "abc"
+discard x.5

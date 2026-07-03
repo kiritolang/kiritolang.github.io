@@ -1,0 +1,93 @@
+# Boundary / edge-case checks across the language: empty things, single elements, limits, slicing
+# extremes, mixed-type comparisons, conversions at the boundary.
+var io = import("io")
+
+# --- empty collections ---
+assert len([]) == 0 and len("") == 0 and len({}) == 0 and len(Set()) == 0, "empty lengths"
+assert not [] and not "" and not {} and not Set() and not None and not 0 and not 0.0, "empties/zero are falsy"
+assert [] == [] and "" == "" and {} == {} and Set() == Set(), "empty equality"
+assert [] + [] == [] and "" + "" == "" and [] * 5 == [] and "" * 5 == "", "empty concat/repeat"
+assert sum([]) == 0, "sum of empty"
+assert sorted([]) == [] and List(reversed([])) == [], "sort/reverse empty"
+var emptyIter = 0
+for x in []:
+    emptyIter = emptyIter + 1
+for ch in "":
+    emptyIter = emptyIter + 1
+assert emptyIter == 0, "iterating empty yields nothing"
+
+# --- single element ---
+assert [42][0] == 42 and len([42]) == 1, "single-element list"
+assert "x"[0] == "x" and "x"[-1] == "x", "single-char string"
+assert sorted([7]) == [7] and List(reversed([7])) == [7], "sort/reverse singleton"
+assert min([5]) == 5 and max([5]) == 5 and sum([5]) == 5, "reductions over singleton"
+
+# --- slicing extremes (clamping, empties, steps) ---
+var s = "abcde"
+assert s[0:0] == "" and s[5:5] == "" and s[3:1] == "", "empty slices"
+assert s[:] == "abcde" and s[0:100] == "abcde" and s[-100:100] == "abcde", "full / over-wide slices clamp"
+assert s[-1:] == "e" and s[:-1] == "abcd", "negative endpoints"
+assert s[::1] == "abcde" and s[::-1] == "edcba", "step 1 / -1"
+assert s[1:4:2] == "bd" and s[4:0:-1] == "edcb", "stepped slices"
+assert s[100:] == "" and s[:-100] == "", "out-of-range start/stop -> empty"
+var xs = [1, 2, 3, 4, 5]
+assert xs[10:20] == [] and xs[::-2] == [5, 3, 1], "list slice edges"
+
+# --- integer / float boundaries ---
+var imax = 9223372036854775807
+var imin = -9223372036854775808
+assert imax + 1 == imin and imin - 1 == imax, "int64 wraparound both ways"
+assert imax // 1 == imax and imin // 1 == imin, "identity floor-div at bounds"
+assert abs(imin) == imin, "abs(INT64_MIN) overflows to itself (two's complement)"
+assert -imin == imin, "negating INT64_MIN wraps to itself"
+assert 0 ** 0 == 1 and 0 ** 5 == 0, "zero powers"
+assert 1 / imax > 0.0 and 1 / imax < 1.0, "tiny float quotient"
+assert 0.0 == -0.0, "signed zero equality"
+
+# --- comparisons / mixed types ---
+assert None == None and not (None == 0) and not (None == False) and not (None == ""), "None only equals None"
+assert (1 == 1.0) and (2 == 2.0) and not (1 == 2.0), "Integer and Float compare numerically"
+assert True != 1 and False != 0, "Bool is NOT numeric (distinct from Integer)"
+assert not (1 == "1") and not ([1] == "1") and not ({} == []), "cross-type equality is False, not an error"
+assert [1, 2, 3] > [1, 2] and [1, 2] < [1, 2, 0], "prefix list ordering"
+assert "" < "a" and "a" < "ab" and "ab" < "b", "string lexicographic ordering"
+
+# --- conversions at the edge ---
+assert Integer("0") == 0 and Integer("-0") == 0 and Integer("  42  ".strip()) == 42, "Integer() parsing"
+assert Float("0.0") == 0.0 and Float("1e3") == 1000.0, "Float() parsing"
+assert String("") == "" and String([]) == "[]" and String({}) == "{}" and String(Set()) == "{}", "String() of empties (empty Set and Dict both render as {})"
+assert Bool([]) == False and Bool([0]) == True and Bool("0") == True, "Bool() of containers / non-empty string"
+assert List("") == [] and List([]) == [] and Set([]) == Set(), "empty conversions"
+
+# --- dict edge cases ---
+var d = {}
+d[0] = "zero"
+d[False] = "false"
+assert d[0] == "zero" and d[False] == "false", "0 and False are distinct dict keys (strong typing)"
+assert len(d) == 2, "0 and False do not collide as keys"
+d[1] = "a"
+d[1] = "b"
+assert d[1] == "b" and len(d) == 3, "re-assigning a key replaces, no new entry"
+
+# --- nested empties + stringify ---
+assert String([[], {}, Set()]) == "[[], {}, {}]", "stringify nested empties (empty Set/Dict both render as {})"
+assert [[[[]]]][0][0][0] == [], "deeply nested empty list navigation"
+
+# --- range / loop boundaries ---
+assert range(1) == [0] and range(-5) == [] and range(0, 0) == [], "range tiny / empty"
+assert range(1000)[999] == 999 and len(range(1000)) == 1000, "range large"
+var cnt = 0
+for x in range(0):
+    cnt = cnt + 1
+assert cnt == 0, "for over range(0)"
+
+# --- string method edges ---
+assert "".upper() == "" and "".split() == [] and "".strip() == "", "empty string methods"
+assert "a".split(",") == ["a"], "split with no separator present"
+assert ",".split(",") == ["", ""], "split on lone separator"
+assert "aaa".replace("a", "") == "", "replace to empty"
+assert "abc".find("") == 0 and "abc".count("") == 4, "empty-needle search (count: one per boundary)"
+assert "aaa".replace("", "-") == "-a-a-a-", "empty-pattern replace interleaves"
+assert "hello".startswith("") and "hello".endswith(""), "empty prefix/suffix"
+
+io.print("OK")

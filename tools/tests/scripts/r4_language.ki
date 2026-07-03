@@ -1,0 +1,948 @@
+# r4_language.ki — exhaustive probe of the language core: classes/OOP, every special method,
+# inheritance + super (multi-level), private members (per class-chain), control flow
+# (if/while/for/switch/conditional-expr/and-or-not), exceptions (try/catch/finally/throw, typed),
+# context managers (with), packing/unpacking (starred/swap), closures, keyword args, call-time
+# defaults, and runtime-checked type annotations. Only CONFIRMED-correct behavior is asserted.
+# Deterministic output: a count of passing checks, then "OK".
+var io = import("io")
+
+var passed = 0
+var ok = Function(cond, msg):
+    assert cond, msg
+    passed = passed + 1
+
+# throws(f) — True iff calling f() throws (the house `throws` helper).
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+# =====================================================================================
+# 1. BASIC CLASSES: _init_, instance attributes, methods, self
+# =====================================================================================
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var dist2 = Function(self):
+        return self.x ** 2 + self.y ** 2
+    var moved = Function(self, dx, dy):
+        return Point(self.x + dx, self.y + dy)
+var p = Point(3, 4)
+ok(p.x == 3 and p.y == 4, "init sets attributes")
+ok(p.dist2() == 25, "method reads self attributes")
+ok(p.moved(1, 1).x == 4, "method returns new instance")
+ok(type(p) == "Point", "type() reports class name")
+ok(isinstance(p, Point), "isinstance own class")
+
+# attribute set after construction
+p.z = 99
+ok(p.z == 99, "attribute settable post-construction")
+
+# empty class (only `pass`) is instantiable
+class Empty:
+    pass
+ok(type(Empty()) == "Empty", "empty class instantiable")
+
+# a class with no _init_ rejects positional args
+class NoInit:
+    var v = 1
+ok(throws(Function(): return NoInit(1, 2)), "no-_init_ class rejects args")
+
+# =====================================================================================
+# 2. CLASS ATTRIBUTES: shared read-through, copy-on-write on assignment
+# =====================================================================================
+class WithClassAttr:
+    var kind = "default"
+    var _init_ = Function(self): pass
+var ca1 = WithClassAttr()
+var ca2 = WithClassAttr()
+ok(ca1.kind == "default" and ca2.kind == "default", "class attr read-through")
+ca1.kind = "changed"
+ok(ca1.kind == "changed" and ca2.kind == "default", "class attr copy-on-write (others unaffected)")
+
+# =====================================================================================
+# 3. EVERY SPECIAL / DUNDER METHOD
+# =====================================================================================
+# --- arithmetic: _add_ _sub_ _mul_ _div_ _floordiv_ _mod_ _pow_ ---
+class Num:
+    var _init_ = Function(self, v): self.v = v
+    var _add_ = Function(self, o): return Num(self.v + o.v)
+    var _sub_ = Function(self, o): return Num(self.v - o.v)
+    var _mul_ = Function(self, o): return Num(self.v * o.v)
+    var _div_ = Function(self, o): return Num(self.v / o.v)
+    var _floordiv_ = Function(self, o): return Num(self.v // o.v)
+    var _mod_ = Function(self, o): return Num(self.v % o.v)
+    var _pow_ = Function(self, o): return Num(self.v ** o.v)
+    var _neg_ = Function(self): return Num(-self.v)
+    var _eq_ = Function(self, o): return self.v == o.v
+ok((Num(3) + Num(4)).v == 7, "_add_")
+ok((Num(10) - Num(3)).v == 7, "_sub_")
+ok((Num(3) * Num(4)).v == 12, "_mul_")
+ok((Num(7) / Num(2)).v == 3.5, "_div_ (true division)")
+ok((Num(7) // Num(2)).v == 3, "_floordiv_")
+ok((Num(7) % Num(3)).v == 1, "_mod_")
+ok((Num(2) ** Num(10)).v == 1024, "_pow_")
+ok((-Num(5)).v == -5, "_neg_ (unary)")
+
+# --- comparisons: _eq_ _ne_ _lt_ _le_ _gt_ _ge_ ---
+class Cmp:
+    var _init_ = Function(self, v): self.v = v
+    var _eq_ = Function(self, o): return self.v == o.v
+    var _lt_ = Function(self, o): return self.v < o.v
+    var _le_ = Function(self, o): return self.v <= o.v
+    var _gt_ = Function(self, o): return self.v > o.v
+    var _ge_ = Function(self, o): return self.v >= o.v
+ok(Cmp(1) == Cmp(1), "_eq_")
+ok(Cmp(1) < Cmp(2) and not (Cmp(2) < Cmp(1)), "_lt_")
+ok(Cmp(1) <= Cmp(1) and Cmp(1) <= Cmp(2), "_le_")
+ok(Cmp(2) > Cmp(1), "_gt_")
+ok(Cmp(2) >= Cmp(2) and Cmp(3) >= Cmp(2), "_ge_")
+
+# _ne_ DEFAULTS to "not _eq_" when only _eq_ is defined (distinct-but-equal instances)
+ok(not (Cmp(1) != Cmp(1)), "_ne_ defaults to not _eq_ (equal)")
+ok(Cmp(1) != Cmp(2), "_ne_ defaults to not _eq_ (unequal)")
+
+# an explicit _ne_ overrides the fallback
+class Always:
+    var _init_ = Function(self, v): self.v = v
+    var _eq_ = Function(self, o): return self.v == o.v
+    var _ne_ = Function(self, o): return True
+ok(Always(1) != Always(1), "explicit _ne_ overrides fallback")
+ok(Always(1) == Always(1), "explicit _ne_ does not affect _eq_")
+
+# _eq_ is symmetric: works whether the instance is the LEFT or RIGHT operand
+class EqInt:
+    var _init_ = Function(self, v): self.v = v
+    var _eq_ = Function(self, o): return self.v == o
+ok(EqInt(5) == 5, "_eq_ with instance on left")
+ok(5 == EqInt(5), "_eq_ symmetric: instance on right")
+ok(6 != EqInt(5), "_ne_ symmetric: instance on right")
+
+# --- _not_ unary ---
+class Flag:
+    var _init_ = Function(self, b): self.b = b
+    var _not_ = Function(self): return not self.b
+ok((not Flag(True)) == False and (not Flag(False)) == True, "_not_")
+
+# --- _str_ : bare vs nested-in-container ---
+class Labeled:
+    var _init_ = Function(self, n): self.n = n
+    var _str_ = Function(self): return "L(" + String(self.n) + ")"
+ok(String(Labeled(3)) == "L(3)", "_str_ via String()")
+ok(f"{Labeled(7)}" == "L(7)", "_str_ in f-string")
+ok(String([Labeled(1), Labeled(2)]) == "[L(1), L(2)]", "_str_ used (unquoted) inside a container")
+
+# --- _getitem_ / _setitem_ / _len_ / _contains_ / _iter_ / _call_ ---
+class Vec:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _getitem_ = Function(self, i):
+        if i == 0:
+            return self.x
+        return self.y
+    var _len_ = Function(self): return 2
+    var _contains_ = Function(self, v): return v == self.x or v == self.y
+    var _iter_ = Function(self): return [self.x, self.y]
+    var _call_ = Function(self, k): return Vec(self.x * k, self.y * k)
+    var _eq_ = Function(self, o): return self.x == o.x and self.y == o.y
+var v = Vec(10, 20)
+ok(v[0] == 10 and v[1] == 20, "_getitem_ single key")
+ok(len(v) == 2, "_len_")
+ok(10 in v and 99 not in v, "_contains_ drives in / not in")
+var collected = []
+for e in v:
+    collected.append(e)
+ok(collected == [10, 20], "_iter_ drives for")
+ok(v(3) == Vec(30, 60), "_call_ makes instance callable")
+
+# _call_ with keyword arguments + defaults
+class CallKw:
+    var _init_ = Function(self, base): self.base = base
+    var _call_ = Function(self, x, y = 0): return self.base + x + y
+var ck = CallKw(100)
+ok(ck(5) == 105, "_call_ positional")
+ok(ck(x = 5, y = 10) == 115, "_call_ keyword args")
+ok(ck(1) == 101, "_call_ default value")
+
+# --- variadic _getitem_ / _setitem_ (m[i, j], m[i, j, k]) ---
+class Grid:
+    var _init_ = Function(self): self.cells = {}
+    var _getitem_ = Function(self, i, j):
+        return self.cells.get(String(i) + "," + String(j), 0)
+    var _setitem_ = Function(self, i, j, val):
+        self.cells[String(i) + "," + String(j)] = val
+var g = Grid()
+g[1, 2] = 99
+ok(g[1, 2] == 99 and g[0, 0] == 0, "variadic _getitem_/_setitem_ (2 keys)")
+
+class Cube:
+    var _init_ = Function(self): self.d = {}
+    var _getitem_ = Function(self, i, j, k):
+        return self.d.get(String(i) + String(j) + String(k), -1)
+    var _setitem_ = Function(self, i, j, k, val):
+        self.d[String(i) + String(j) + String(k)] = val
+var cube = Cube()
+cube[1, 2, 3] = 77
+ok(cube[1, 2, 3] == 77 and cube[0, 0, 0] == -1, "variadic _getitem_/_setitem_ (3 keys)")
+
+# --- error slots: missing operator / non-callable / non-iterable / bad _len_ ---
+class Bare:
+    var v = 1
+ok(throws(Function(): return Bare() + Bare()), "missing _add_ throws")
+ok(throws(Function(): return Bare()(1)), "non-callable instance throws")
+ok(throws(Function(): return 1 in Bare()), "missing _contains_ throws")
+class BadLen:
+    var _len_ = Function(self): return "x"
+ok(throws(Function(): return len(BadLen())), "_len_ must return Integer")
+
+# instances are NOT hashable by default (no _hash_ dunder) -> cannot be dict/set keys
+class Unhashable:
+    var _init_ = Function(self, v): self.v = v
+var dictKey = Function():
+    var d = {}
+    d[Unhashable(1)] = "x"
+    return d
+ok(throws(dictKey), "instance unhashable by default (no _hash_)")
+
+# =====================================================================================
+# 4. _eq_ / _lt_ DRIVE BUILTINS (sorted, in, index)
+# =====================================================================================
+class Item:
+    var _init_ = Function(self, id): self.id = id
+    var _eq_ = Function(self, o): return self.id == o.id
+    var _lt_ = Function(self, o): return self.id < o.id
+var items = [Item(3), Item(1), Item(2)]
+var srt = sorted(items)
+ok(srt[0] == Item(1) and srt[2] == Item(3), "_lt_ drives sorted")
+ok(Item(2) in items and Item(9) not in items, "_eq_ drives 'in' on a list")
+ok(items.index(Item(2)) == 2, "_eq_ drives list.index")
+
+# default equality is by IDENTITY when no _eq_ is defined
+class Plain:
+    var _init_ = Function(self, v): self.v = v
+var pa = Plain(1)
+var pb = Plain(1)
+ok(pa == pa and pa != pb, "no _eq_ -> identity equality")
+
+# =====================================================================================
+# 5. INHERITANCE + super (multi-level)
+# =====================================================================================
+class Animal:
+    var _init_ = Function(self, name): self.name = name
+    var speak = Function(self): return "..."
+    var describe = Function(self): return self.name + " says " + self.speak()
+class Dog(Animal):
+    var speak = Function(self): return "woof"
+class Puppy(Dog):
+    var speak = Function(self): return self._super_().speak() + " (tiny)"
+var dog = Dog("Rex")
+ok(dog.describe() == "Rex says woof", "inherited method uses overridden method (dynamic dispatch)")
+ok(isinstance(dog, Animal) and isinstance(dog, Dog), "isinstance is inheritance-aware")
+var pup = Puppy("Bit")
+ok(pup.speak() == "woof (tiny)", "super climbs exactly one level")
+ok(pup.describe() == "Bit says woof (tiny)", "super inside an inherited method")
+
+# 3-level super chain composes (each climbs one level)
+class T0:
+    var who = Function(self): return "T0"
+class T1(T0):
+    var who = Function(self): return "T1>" + self._super_().who()
+class T2(T1):
+    var who = Function(self): return "T2>" + self._super_().who()
+ok(T2().who() == "T2>T1>T0", "3-level super chain composes")
+
+# super resolves THROUGH a non-overriding middle class
+class M0:
+    var greet = Function(self): return "M0"
+class M1(M0):
+    pass
+class M2(M1):
+    var greet = Function(self): return "M2>" + self._super_().greet()
+ok(M2().greet() == "M2>M0", "super skips a non-overriding middle class")
+
+# super in the constructor (extend, not replace) — multi-level
+class C0:
+    var _init_ = Function(self): self.tag = "C0"
+class C1(C0):
+    var _init_ = Function(self):
+        self._super_()._init_()
+        self.tag = self.tag + "+C1"
+class C2(C1):
+    var _init_ = Function(self):
+        self._super_()._init_()
+        self.tag = self.tag + "+C2"
+ok(C2().tag == "C0+C1+C2", "super constructor chaining (multi-level)")
+
+# super preserves dynamic dispatch: a base method invoked via super calling self.X()
+# still hits the most-derived override
+class TplBase:
+    var template = Function(self): return "base:" + self.step()
+    var step = Function(self): return "B"
+class TplDerived(TplBase):
+    var step = Function(self): return "D"
+    var template = Function(self): return self._super_().template()
+ok(TplDerived().template() == "base:D", "super preserves dynamic dispatch of self.step()")
+
+# super forwards positional + keyword args to the inherited method
+class KwBase:
+    var f = Function(self, x, y = 10): return x + y
+class KwSub(KwBase):
+    var f = Function(self, x, y = 10): return self._super_().f(x, y = 100)
+ok(KwSub().f(1) == 101, "super forwards keyword args")
+
+# super in a baseless class throws
+class Solo:
+    var f = Function(self): return self._super_()
+ok(throws(Function(): return Solo().f()), "super in baseless class throws")
+
+# a non-class base is rejected
+ok(not throws(Function(): return import("dump")), "sanity import works")  # keep import path warm
+
+# =====================================================================================
+# 6. PRIVATE MEMBERS (single leading underscore; per class-CHAIN)
+# =====================================================================================
+class Account:
+    var _init_ = Function(self, bal): self._balance = bal
+    var deposit = Function(self, amt):
+        self._balance = self._balance + amt
+        return self._balance
+    var balance = Function(self): return self._balance
+var acct = Account(100)
+ok(acct.deposit(50) == 150 and acct.balance() == 150, "private accessible within own methods")
+ok(throws(Function(): return acct._balance), "private rejected from outside (read)")
+var privWrite = Function():
+    acct._balance = 0
+    return 1
+ok(throws(privWrite), "private rejected from outside (write)")
+
+# a subclass method may touch a base class's private (privacy is per class-chain)
+class Base6:
+    var _init_ = Function(self): self._secret = 42
+    var reveal = Function(self): return self._secret
+class Sub6(Base6):
+    var subreveal = Function(self): return self._secret
+ok(Sub6().subreveal() == 42, "subclass method reads base private (per chain)")
+
+# a base method sees a private set on a subclass instance
+class P6:
+    var getx = Function(self): return self._x
+class Q6(P6):
+    var _init_ = Function(self): self._x = 7
+ok(Q6().getx() == 7, "base method reads private of a subclass instance")
+
+# an unrelated class cannot reach another's private
+class Secret6:
+    var _init_ = Function(self): self._k = 1
+class Outsider6:
+    var peek = Function(self, s): return s._k
+ok(throws(Function(): return Outsider6().peek(Secret6())), "unrelated class cannot read private")
+
+# a dunder (_name_) is NOT private — accessible from outside
+class HasDunder:
+    var _init_ = Function(self, v): self.v = v
+    var _str_ = Function(self): return "d"
+ok(String(HasDunder(1)) == "d", "dunder _str_ is not private")
+
+# =====================================================================================
+# 7. CONTROL FLOW: if/elif/else, while, for, break, continue, pass, todo
+# =====================================================================================
+var classify = Function(n):
+    if n < 0:
+        return "neg"
+    elif n == 0:
+        return "zero"
+    else:
+        return "pos"
+ok(classify(-1) == "neg" and classify(0) == "zero" and classify(5) == "pos", "if/elif/else")
+
+var sumTo = Function(n):
+    var total = 0
+    var i = 1
+    while i <= n:
+        total = total + i
+        i = i + 1
+    return total
+ok(sumTo(5) == 15, "while loop")
+
+var collectFor = []
+for x in [1, 2, 3]:
+    collectFor.append(x * 10)
+ok(collectFor == [10, 20, 30], "for-in over a list")
+
+# break / continue
+var firstEven = Function(xs):
+    for x in xs:
+        if x % 2 != 0:
+            continue
+        return x
+    return -1
+ok(firstEven([1, 3, 4, 6]) == 4, "continue + early return in for")
+var countUntil = Function():
+    var c = 0
+    while True:
+        c = c + 1
+        if c == 5:
+            break
+    return c
+ok(countUntil() == 5, "break exits while True")
+
+# for over a list captures a SNAPSHOT at loop start (appending mid-loop is not visited)
+var snapSrc = [1, 2, 3]
+var snapSeen = []
+for e in snapSrc:
+    snapSeen.append(e)
+    if e == 1:
+        snapSrc.append(99)
+ok(snapSeen == [1, 2, 3], "for iterates a snapshot (mutation not visited this pass)")
+ok(snapSrc == [1, 2, 3, 99], "for snapshot: the mutation still applies to the collection")
+
+# for over a dict iterates keys
+var dseen = []
+for k in {"a": 1, "b": 2}:
+    dseen.append(k)
+ok("a" in dseen and "b" in dseen and len(dseen) == 2, "for over a dict iterates keys")
+
+# pass is a no-op
+var withPass = Function():
+    pass
+    return 1
+ok(withPass() == 1, "pass is a no-op")
+
+# =====================================================================================
+# 8. and / or / not (short-circuit, yield an operand)
+# =====================================================================================
+ok((0 and 5) == 0, "and short-circuits to falsy operand")
+ok((3 and 7) == 7, "and yields the second operand when first is truthy")
+ok((0 or 5) == 5, "or yields the second operand when first is falsy")
+ok((3 or 7) == 3, "or short-circuits to the truthy operand")
+ok((not 0) == True and (not 5) == False, "not yields a Bool")
+# short-circuit avoids evaluating the second operand
+var sideAnd = []
+var recordFalse = Function():
+    sideAnd.append("x")
+    return True
+discard (False and recordFalse())
+ok(sideAnd == [], "and short-circuit skips RHS")
+
+# =====================================================================================
+# 9. CONDITIONAL EXPRESSION: THEN if COND else ORELSE
+# =====================================================================================
+ok((1 if True else 2) == 1, "conditional expr true branch")
+ok((1 if False else 2) == 2, "conditional expr false branch")
+# lowest precedence: arithmetic binds tighter than `if`
+ok((1 + 2 if False else 10 + 20) == 30, "conditional expr is lowest precedence")
+# right-associative chaining (clamp idiom)
+var clamp = Function(x, lo, hi):
+    return lo if x < lo else hi if x > hi else x
+ok(clamp(-5, 0, 10) == 0 and clamp(50, 0, 10) == 10 and clamp(5, 0, 10) == 5, "conditional expr chains (right-assoc)")
+# short-circuits: only the selected branch is evaluated
+var condCalls = []
+var sidef = Function(tag):
+    condCalls.append(tag)
+    return tag
+discard (sidef("a") if True else sidef("b"))
+ok(condCalls == ["a"], "conditional expr short-circuits")
+# usable inside a list literal
+ok([1 if True else 2, 3 if False else 4] == [1, 4], "conditional expr inside a list")
+
+# =====================================================================================
+# 10. switch / case / default
+# =====================================================================================
+var sw = Function(v):
+    switch v:
+        case 1, 2:
+            return "low"
+        case "x":
+            return "str"
+        default:
+            return "other"
+ok(sw(1) == "low" and sw(2) == "low", "switch multi-value case")
+ok(sw("x") == "str", "switch string case")
+ok(sw(99) == "other", "switch default")
+
+# exact type+value matching: case 1 differs from case 1.0
+var swType = Function(v):
+    switch v:
+        case 1:
+            return "int"
+        case 1.0:
+            return "float"
+        default:
+            return "none"
+ok(swType(1) == "int" and swType(1.0) == "float", "switch matches type+value exactly")
+
+# float cases match by EXACT value (agrees with ==), -0.0 == 0.0
+var swFloat = Function(v):
+    switch v:
+        case 0.0:
+            return "zero"
+        default:
+            return "d"
+ok(swFloat(-0.0) == "zero", "switch -0.0 matches case 0.0")
+
+# a non-scalar subject only ever reaches default
+var swNonScalar = Function(v):
+    switch v:
+        case 1:
+            return "one"
+        default:
+            return "def"
+ok(swNonScalar([1, 2]) == "def", "switch non-scalar subject -> default")
+
+# a switch with no match and no default is a no-op (falls through)
+var swNoMatch = Function(v):
+    var hit = "before"
+    switch v:
+        case 1:
+            hit = "one"
+    return hit
+ok(swNoMatch(99) == "before", "switch with no match and no default is a no-op")
+
+# case / default are soft keywords (usable as ordinary names)
+var default = 5
+var case = 10
+ok(default + case == 15, "case/default are soft keywords (usable as names)")
+
+# =====================================================================================
+# 11. EXCEPTIONS: throw / catch / finally (typed via class chain)
+# =====================================================================================
+var caught = None
+try:
+    throw "boom"
+catch as e:
+    caught = e
+ok(caught == "boom", "throw/catch a String")
+
+# finally always runs (no-throw and throw paths)
+var log11 = []
+var runTryFinally = Function(doThrow):
+    try:
+        log11.append("try")
+        if doThrow:
+            throw "x"
+    catch as e:
+        log11.append("catch")
+    finally:
+        log11.append("finally")
+runTryFinally(False)
+ok(log11 == ["try", "finally"], "finally runs on no-throw path")
+log11 = []
+runTryFinally(True)
+ok(log11 == ["try", "catch", "finally"], "finally runs on throw path")
+
+# finally runs on return inside try
+var finallyOnReturn = Function():
+    var marks = []
+    var inner = Function():
+        try:
+            return 1
+        finally:
+            marks.append("fin")
+    var rv = inner()
+    return [rv, marks]
+ok(finallyOnReturn() == [1, ["fin"]], "finally runs on return in try")
+
+# finally runs on break and continue inside a loop
+var finBreak = []
+var finallyOnBreak = Function():
+    var i = 0
+    while i < 3:
+        try:
+            if i == 1:
+                break
+            finBreak.append(i)
+        finally:
+            finBreak.append("f" + String(i))
+        i = i + 1
+finallyOnBreak()
+ok(finBreak == [0, "f0", "f1"], "finally runs on break")
+
+var finCont = []
+var finallyOnContinue = Function():
+    var i = 0
+    while i < 3:
+        i = i + 1
+        try:
+            if i == 2:
+                continue
+            finCont.append(i)
+        finally:
+            finCont.append("c" + String(i))
+finallyOnContinue()
+ok(finCont == [1, "c1", "c2", 3, "c3"], "finally runs on continue")
+
+# typed catch via the class chain
+class AppError:
+    var _init_ = Function(self, msg): self.msg = msg
+class NotFound(AppError):
+    var _init_ = Function(self, msg): self._super_()._init_(msg)
+var r1 = "none"
+try:
+    throw NotFound("missing")
+catch NotFound as e:
+    r1 = "notfound:" + e.msg
+ok(r1 == "notfound:missing", "typed catch exact match")
+
+# a base-type catch catches a subclass
+var r2 = "none"
+try:
+    throw NotFound("gone")
+catch AppError as e:
+    r2 = "app:" + e.msg
+ok(r2 == "app:gone", "base-type catch catches subclass")
+
+# a non-matching typed catch falls through (finally still runs)
+var r3 = "none"
+try:
+    try:
+        throw AppError("oops")
+    catch NotFound as e:
+        r3 = "wrong"
+    finally:
+        r3 = r3 + "+fin"
+catch AppError as e:
+    r3 = r3 + "+outer"
+ok(r3 == "none+fin+outer", "non-matching typed catch falls through, finally runs")
+
+# multiple handlers: specific then general
+var fetch = Function(kind):
+    try:
+        if kind == "nf":
+            throw NotFound("x")
+        throw AppError("y")
+    catch NotFound as e:
+        return "specific"
+    catch AppError as e:
+        return "general"
+ok(fetch("nf") == "specific" and fetch("ae") == "general", "multiple handlers: specific before general")
+
+# re-throw from a catch
+var rethrown = "none"
+try:
+    try:
+        throw "deep"
+    catch as e:
+        throw "wrapped:" + e
+catch as e:
+    rethrown = e
+ok(rethrown == "wrapped:deep", "re-throw from a catch")
+
+# a bare catch also catches errors crossing from native code
+ok(throws(Function(): return 1 / 0), "bare catch catches a native runtime error (div by zero)")
+var typeErrCaught = False
+try:
+    discard (1 + "s")
+catch as e:
+    typeErrCaught = True
+ok(typeErrCaught, "catch a type error")
+var idxCaught = False
+try:
+    discard [1, 2][10]
+catch as e:
+    idxCaught = True
+ok(idxCaught, "catch an index error")
+
+# catch a built-in type
+var strCaught = False
+try:
+    throw "plain"
+catch String as e:
+    strCaught = True
+ok(strCaught, "typed catch with a built-in type (String)")
+
+# nested try: inner handles, outer continues
+var seq11 = []
+try:
+    seq11.append(1)
+    try:
+        throw "inner"
+    catch as e:
+        seq11.append(2)
+    seq11.append(3)
+catch as e:
+    seq11.append(99)
+ok(seq11 == [1, 2, 3], "inner catch lets outer continue")
+
+# nested finally order: inner finally runs before outer catch
+var order11 = []
+try:
+    try:
+        order11.append("it")
+        throw "e"
+    finally:
+        order11.append("if")
+catch as e:
+    order11.append("oc")
+ok(order11 == ["it", "if", "oc"], "inner finally runs before outer catch")
+
+# =====================================================================================
+# 12. CONTEXT MANAGERS: with / _enter_ / _exit_
+# =====================================================================================
+class Resource:
+    var _init_ = Function(self, log): self.log = log
+    var _enter_ = Function(self):
+        self.log.append("enter")
+        return self
+    var _exit_ = Function(self):
+        self.log.append("exit")
+    var use = Function(self): self.log.append("use")
+var wl = []
+with Resource(wl) as res:
+    res.use()
+ok(wl == ["enter", "use", "exit"], "with: enter/body/exit")
+
+# _exit_ runs even when the body throws
+var wl2 = []
+var threw = False
+try:
+    with Resource(wl2) as res2:
+        res2.use()
+        throw "fail"
+catch as e:
+    threw = True
+ok(threw and wl2 == ["enter", "use", "exit"], "with: _exit_ runs on exception")
+
+# _exit_ runs on return inside the with body
+class Tracer:
+    var _init_ = Function(self, log): self.log = log
+    var _enter_ = Function(self): return self
+    var _exit_ = Function(self): self.log.append("exit")
+var tl = []
+var retInWith = Function():
+    with Tracer(tl) as t:
+        return "early"
+ok(retInWith() == "early" and tl == ["exit"], "with: _exit_ runs on return in body")
+
+# _enter_'s return value is what `as NAME` binds
+class Wrapper:
+    var _enter_ = Function(self): return 42
+    var _exit_ = Function(self): pass
+var boundVal = None
+with Wrapper() as bv:
+    boundVal = bv
+ok(boundVal == 42, "with: _enter_ return value is bound by `as`")
+
+# nested with: exits in reverse order
+class Named:
+    var _init_ = Function(self, n, log):
+        self.n = n
+        self.log = log
+    var _enter_ = Function(self):
+        self.log.append("e" + self.n)
+        return self
+    var _exit_ = Function(self): self.log.append("x" + self.n)
+var nl = []
+with Named("A", nl) as na:
+    with Named("B", nl) as nb:
+        nl.append("body")
+ok(nl == ["eA", "eB", "body", "xB", "xA"], "nested with: exits in reverse (LIFO) order")
+
+# with on an object lacking the protocol throws
+class NoCtx:
+    var x = 1
+var noCtxFn = Function():
+    with NoCtx() as r:
+        return 1
+ok(throws(noCtxFn), "with on object lacking _enter_/_exit_ throws")
+
+# a throw inside _enter_ propagates
+class FailEnter:
+    var _enter_ = Function(self): throw "enter failed"
+    var _exit_ = Function(self): pass
+var failEnterFn = Function():
+    with FailEnter() as r:
+        return 1
+ok(throws(failEnterFn), "throw inside _enter_ propagates")
+
+# =====================================================================================
+# 13. PACKING / UNPACKING (starred targets, swap, for k,v)
+# =====================================================================================
+# a bare comma sequence packs into a List
+var packed = 1, 2, 3
+ok(packed == [1, 2, 3], "bare comma packs into a List")
+
+# basic unpack
+var ua, ub = [10, 20]
+ok(ua == 10 and ub == 20, "basic unpack")
+
+# swap
+var sa = 1
+var sb = 2
+sa, sb = sb, sa
+ok(sa == 2 and sb == 1, "swap via unpack")
+
+# starred target: tail, head, middle
+var sfirst, *srest = [1, 2, 3, 4]
+ok(sfirst == 1 and srest == [2, 3, 4], "starred target absorbs the tail")
+var *sinit, slast = [1, 2, 3, 4]
+ok(sinit == [1, 2, 3] and slast == 4, "starred target absorbs the head")
+var hd, *mid, tl = [1, 2, 3, 4, 5]
+ok(hd == 1 and mid == [2, 3, 4] and tl == 5, "starred target in the middle")
+# a starred target absorbs zero surplus
+var only, *none_ = [10]
+ok(only == 10 and none_ == [], "starred target absorbs zero surplus")
+
+# count mismatch throws (no star)
+var unpackMismatch = Function():
+    var x, y = [1, 2, 3]
+    return x
+ok(throws(unpackMismatch), "unpack count mismatch throws")
+var tooFew = Function():
+    var x, y, z = [1, 2]
+    return x
+ok(throws(tooFew), "unpack too few values throws")
+
+# unpack into index / member targets
+var idxList = [0, 0]
+idxList[0], idxList[1] = 9, 8
+ok(idxList == [9, 8], "unpack into index targets")
+
+# for k, v in d.items()
+var pairs = {"a": 1, "b": 2}
+var ksum = ""
+var vsum = 0
+for k, val in pairs.items():
+    ksum = ksum + k
+    vsum = vsum + val
+ok(len(ksum) == 2 and vsum == 3, "for k, v in d.items() unpacks each pair")
+
+# return packs multiple values into a list
+var returnPair = Function():
+    return 1, 2
+ok(returnPair() == [1, 2], "return a, b packs into a list")
+
+# =====================================================================================
+# 14. CLOSURES + KEYWORD ARGS + CALL-TIME DEFAULTS
+# =====================================================================================
+# closure captures and remembers an enclosing binding
+var makeAdder = Function(n):
+    return Function(x): return x + n
+var addTen = makeAdder(10)
+ok(addTen(5) == 15, "closure captures enclosing variable")
+
+# closures over the same maker get independent state
+var makeCounter = Function():
+    var count = 0
+    return Function():
+        count = count + 1
+        return count
+var tick = makeCounter()
+var other = makeCounter()
+ok(tick() == 1 and tick() == 2 and tick() == 3, "closure rebinds its captured variable")
+ok(other() == 1, "each closure has independent captured state")
+
+# keyword args in any order, with defaults
+var label = Function(text, width = 6, fill = "-"):
+    var pad = (width - len(text)) // 2
+    return fill * pad + text + fill * pad
+ok(label("hi") == "--hi--", "default values for omitted args")
+ok(label(width = 8, text = "hi", fill = "*") == "***hi***", "keyword args in any order")
+
+# unexpected keyword + duplicate-binding errors
+var strictFn = Function(a, b): return a + b
+ok(throws(Function(): return strictFn(a = 1, c = 2)), "unexpected keyword argument throws")
+ok(throws(Function(): return strictFn(1, a = 2)), "multiple values for one argument throws")
+ok(throws(Function(): return strictFn(1)), "missing required argument throws")
+ok(throws(Function(): return strictFn(1, 2, 3)), "too many positional arguments throws")
+
+# default values are evaluated AT CALL TIME, once per call — a mutable default is FRESH each call
+var freshDefault = Function(xs = []):
+    xs.append(1)
+    return xs
+ok(freshDefault() == [1], "mutable default: first call")
+ok(freshDefault() == [1], "mutable default is fresh each call (not shared)")
+
+# defaults evaluate in the call scope each time (an observable side effect re-runs)
+var defaultCounter = 0
+var bump = Function():
+    defaultCounter = defaultCounter + 1
+    return defaultCounter
+var usesDefault = Function(v = bump()): return v
+ok(usesDefault() == 1 and usesDefault() == 2, "default expression re-evaluated each call")
+ok(usesDefault(99) == 99, "explicit arg skips default evaluation")
+
+# functions are first-class values
+var double = Function(x): return x * 2
+var triple = Function(x): return x * 3
+var applied = []
+for op in [double, triple]:
+    applied.append(op(10))
+ok(applied == [20, 30], "functions as first-class values in a list")
+
+# a function with no return yields None
+var noReturn = Function(): pass
+ok(noReturn() == None, "function with no return yields None")
+
+# =====================================================================================
+# 15. TYPE ANNOTATIONS (runtime-checked, inheritance-aware, Integer != Float)
+# =====================================================================================
+var typed = Function(d : Dict) -> Integer:
+    return len(d)
+ok(typed({"a": 1, "b": 2}) == 2, "annotated function accepts a matching argument")
+ok(throws(Function(): return typed([1, 2])), "wrong-type argument RAISES")
+
+# return type is enforced
+var badReturn = Function() -> Integer:
+    return "not an int"
+ok(throws(Function(): return badReturn()), "return type violation RAISES")
+
+# Integer does NOT satisfy a Float annotation (no implicit widening at the boundary)
+var needsFloat = Function(x : Float) -> Float:
+    return x
+ok(throws(Function(): return needsFloat(3)), "Integer does not satisfy a Float annotation")
+ok(needsFloat(3.0) == 3.0, "Float satisfies a Float annotation")
+ok(needsFloat(Float(3)) == 3.0, "an explicit Float conversion satisfies the annotation")
+
+# a subclass instance satisfies a base-class annotation (inheritance-aware)
+var hear = Function(a : Animal) -> String:
+    return a.speak()
+ok(hear(Dog("x")) == "woof", "subclass satisfies base-class annotation (Dog)")
+ok(hear(Puppy("y")) == "woof (tiny)", "subclass satisfies base-class annotation (Puppy)")
+
+# Any / no annotation accepts anything
+var anyArg = Function(x : Any): return x
+var noAnno = Function(x): return x
+ok(anyArg(1) == 1 and anyArg("s") == "s", "Any annotation accepts any value")
+ok(noAnno([1]) == [1] and noAnno(None) == None, "no annotation accepts any value")
+
+# =====================================================================================
+# 16. assert / discard
+# =====================================================================================
+# assert with a custom message, thrown value is the message
+var assertMsg = "none"
+try:
+    assert 1 == 2, "custom message"
+catch as e:
+    assertMsg = e
+ok(assertMsg == "custom message", "assert throws with the custom message")
+
+# assert default message
+var assertDefault = "none"
+try:
+    assert False
+catch as e:
+    assertDefault = e
+ok(assertDefault == "assertion failed", "assert default message is 'assertion failed'")
+
+# a true assert does nothing
+var passedAssert = True
+assert True, "should not throw"
+ok(passedAssert, "true assert does not throw")
+
+# discard evaluates and drops a value (suppressing the unused-result warning)
+var discardSide = []
+var withSideEffect = Function():
+    discardSide.append("ran")
+    return 42
+discard withSideEffect()
+ok(discardSide == ["ran"], "discard evaluates its expression")
+
+# =====================================================================================
+# DETERMINISTIC SUMMARY
+# =====================================================================================
+io.print("checks passed:", passed)
+io.print("OK")

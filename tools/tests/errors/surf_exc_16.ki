@@ -1,0 +1,2 @@
+# a range with a huge span is guarded (throws, not OOM)
+discard range(0, 10000000000)

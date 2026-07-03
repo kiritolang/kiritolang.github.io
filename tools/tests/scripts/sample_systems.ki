@@ -1,0 +1,84 @@
+# End-to-end: generate system input files (io write), then read them back (io read) and solve.
+var io = import("io")
+var path = import("path")
+var C = import("complex")
+var solver = import("linsolve")
+
+var dir = import("path").gettempdir() + "/kirito_systems_test"
+path.mkdir(dir, exist_ok = True)
+
+# --- generator: write a system to a file as "re im" pairs per row ---
+var writeSystem = Function(path, n, matrix):
+    with io.open(path, "w") as f:
+        f.write(String(n) + "\n")
+        for row in matrix:
+            var parts = []
+            for pair in row:
+                parts.append(String(pair[0]) + " " + String(pair[1]))
+            f.write(" ".join(parts) + "\n")
+
+# --- reader: parse a system file into a ComplexMatrix + rhs ---
+var parseRow = Function(line):
+    var nums = []
+    for token in line.split(" "):
+        var t = token.strip()
+        if len(t) > 0:
+            nums.append(Float(t))
+    var out = []
+    for i in range(0, len(nums), 2):
+        out.append(C.of(nums[i], nums[i + 1]))
+    return out
+
+var readSystem = Function(path):
+    var lines = []
+    with io.open(path, "r") as f:
+        for line in f:
+            if len(line.strip()) > 0:
+                lines.append(line)
+    var n = Integer(lines[0].strip())
+    var rows = []
+    var b = []
+    for i in range(n):
+        var values = parseRow(lines[i + 1])
+        var coeffs = []
+        for j in range(n):
+            coeffs.append(values[j])
+        rows.append(coeffs)
+        b.append(values[n])
+    return {"A": C.Matrix(rows), "b": b}
+
+var solveFile = Function(fpath):
+    var sys = readSystem(fpath)
+    var result = solver.solve(sys["A"], sys["b"])
+    io.print(path.basename(fpath) + ": " + result["kind"] + " (rank " + String(result["rank"]) + ")")
+    if result["kind"] != "none":
+        io.print("  verified: " + String(solver.verify(sys["A"], result["x"], sys["b"])))
+
+# A 6x6 unique-solution system (diagonal-dominant, a couple of complex entries).
+var sys6 = [
+    [[2, 0], [1, 0], [0, 1], [0, 0], [0, 0], [0, 0], [5, 1]],
+    [[0, 0], [3, 0], [1, 0], [0, 0], [1, 0], [0, 0], [9, 0]],
+    [[1, 0], [0, 0], [4, 0], [1, 0], [0, 0], [0, 0], [8, 0]],
+    [[0, 0], [0, 1], [0, 0], [5, 0], [1, 0], [0, 0], [7, 2]],
+    [[0, 0], [0, 0], [1, 0], [0, 0], [6, 0], [1, 0], [12, 0]],
+    [[1, 0], [0, 0], [0, 0], [0, 0], [1, 0], [7, 0], [15, 0]]
+]
+writeSystem(dir + "/unique.txt", 6, sys6)
+
+var sysNone = [
+    [[1, 0], [1, 0], [0, 0], [1, 0]],
+    [[1, 0], [1, 0], [0, 0], [2, 0]],
+    [[0, 0], [0, 0], [1, 0], [5, 0]]
+]
+writeSystem(dir + "/none.txt", 3, sysNone)
+
+var sysInf = [
+    [[1, 0], [1, 0], [1, 0], [6, 0]],
+    [[1, 0], [-1, 0], [0, 0], [0, 0]],
+    [[2, 0], [0, 0], [1, 0], [6, 0]]
+]
+writeSystem(dir + "/infinite.txt", 3, sysInf)
+
+solveFile(dir + "/unique.txt")
+solveFile(dir + "/none.txt")
+solveFile(dir + "/infinite.txt")

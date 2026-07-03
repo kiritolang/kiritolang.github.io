@@ -1,0 +1,104 @@
+# Thorough checks for the random module (object-based RNG; deterministic with a fixed seed).
+var io = import("io")
+var random = import("random")
+
+# --- same seed -> identical sequence; different seed -> (almost surely) different ---
+var r1 = random.Random(42)
+var r2 = random.Random(42)
+var seq1 = []
+var seq2 = []
+for i in range(20):
+    seq1.append(r1.random())
+    seq2.append(r2.random())
+assert seq1 == seq2, "same seed reproduces the sequence"
+var r3 = random.Random(99)
+var seq3 = []
+for i in range(20):
+    seq3.append(r3.random())
+assert seq1 != seq3, "different seed gives a different sequence"
+
+# --- random() in [0, 1) ---
+var rr = random.Random(1)
+var i = 0
+while i < 1000:
+    var x = rr.random()
+    assert x >= 0.0 and x < 1.0, "random() in [0,1)"
+    i = i + 1
+
+# --- uniform(a, b) within bounds ---
+var j = 0
+while j < 500:
+    var u = rr.uniform(5.0, 10.0)
+    assert u >= 5.0 and u <= 10.0, "uniform in range"
+    j = j + 1
+
+# --- randint(a, b) inclusive integers ---
+var counts = {}
+var k = 0
+while k < 2000:
+    var n = rr.randint(1, 6)
+    assert n >= 1 and n <= 6, "randint in [1,6]"
+    counts[n] = counts.get(n, 0) + 1
+    k = k + 1
+assert len(counts) == 6, "randint covers all 6 faces over many rolls"
+
+# --- randrange (stop | start,stop | start,stop,step, like range) ---
+var z = 0
+var seenA = Set()
+var seenB = Set()
+while z < 500:
+    var rv = rr.randrange(10)
+    assert rv >= 0 and rv < 10, "randrange(10) in [0,10)"
+    var rw = rr.randrange(5, 10)
+    assert rw >= 5 and rw < 10, "randrange(5,10) in [5,10)"
+    seenA.add(rw)
+    seenB.add(rr.randrange(0, 10, 2))      # only even members
+    z = z + 1
+assert seenA == Set([5, 6, 7, 8, 9]), "randrange(5,10) covers exactly its members"
+assert seenB == Set([0, 2, 4, 6, 8]), "randrange(start,stop,step) honors step"
+assert rr.randrange(stop = 4) < 4, "randrange(stop=) keyword"
+assert rr.randrange(start = 2, stop = 3) == 2, "randrange(start=,stop=) single member"
+var rrthrew = False
+try:
+    discard rr.randrange(5, 5)
+catch as e:
+    rrthrew = "empty range" in e
+assert rrthrew, "randrange of an empty range throws"
+
+# --- choice picks an element of the sequence ---
+var pool = ["a", "b", "c", "d"]
+var c = 0
+while c < 200:
+    assert rr.choice(pool) in pool, "choice returns a member"
+    c = c + 1
+
+# --- shuffle is a permutation (same multiset) ---
+var lst = [1, 2, 3, 4, 5, 6, 7, 8]
+var before = lst.copy()
+rr.shuffle(lst)
+assert len(lst) == len(before), "shuffle preserves length"
+before.sort()
+var after = lst.copy()
+after.sort()
+assert after == before, "shuffle is a permutation"
+
+# --- sample: k distinct elements from the pool ---
+var samp = rr.sample([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 4)
+assert len(samp) == 4, "sample size"
+var uniq = Set(samp)
+assert len(uniq) == 4, "sample elements are distinct"
+for v in samp:
+    assert v >= 1 and v <= 10, "sample drawn from pool"
+
+# --- gauss returns a Float ---
+assert type(rr.gauss(0.0, 1.0)) == "Float", "gauss returns Float"
+
+# --- adversarial: empty/invalid inputs throw, never crash ---
+var thrown = False
+try:
+    discard rr.choice([])
+catch as e:
+    thrown = True
+assert thrown, "choice on empty sequence throws"
+
+io.print("OK")

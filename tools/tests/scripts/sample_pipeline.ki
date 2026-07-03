@@ -1,0 +1,26 @@
+# End-to-end data pipeline combining the new libraries: build -> dump (binary) -> zlib compress
+# -> sha256 -> BytesIO -> read back -> verify hash -> decompress -> deserialize -> compare.
+var io = import("io")
+var zlib = import("zlib")
+var hash = import("hash")
+var dump = import("dump")
+
+var data = {"users": [], "meta": {"version": 1}}
+for i in range(100):
+    data["users"].append({"id": i, "name": "user" + String(i), "score": i * i})
+
+var blob = dump.dumps(data)              # Bytes
+var compressed = zlib.compress(blob)     # Bytes in -> Bytes out
+var digest = hash.sha256(compressed)
+
+var buf = io.BytesIO()
+buf.write(compressed)
+buf.seek(0)
+var readback = buf.read()
+
+io.print("hash matches: " + String(hash.sha256(readback) == digest))
+var restored = dump.loads(zlib.decompress(readback))
+io.print("restored users: " + String(len(restored["users"])))
+io.print("user 50 score: " + String(restored["users"][50]["score"]))
+io.print("roundtrip equal: " + String(restored == data))
+io.print("compressed smaller: " + String(len(compressed) < len(blob)))

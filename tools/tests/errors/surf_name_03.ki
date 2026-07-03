@@ -1,0 +1,6 @@
+# name resolution: an inner function's local is invisible to the outer scope
+var outer = Function():
+    var inner = 5
+    return inner
+outer()
+discard inner

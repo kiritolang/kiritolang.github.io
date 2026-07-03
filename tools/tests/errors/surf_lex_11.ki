@@ -1,0 +1,2 @@
+# LEXER: a stray '@' character that is not part of any token
+var x = 1 @ 2

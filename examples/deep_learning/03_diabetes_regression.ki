@@ -1,0 +1,79 @@
+# Project 3 — Regression: predict diabetes disease progression from 10 clinical features.
+# A continuous-target task trained with mean-squared-error. The target is standardised for training
+# and the error is reported back in the original units (plus the R-squared coefficient). Real data:
+# scikit-learn's diabetes set (442 patients).
+var io = import("io")
+var T = import("tensor")
+var nn = import("nn")
+var data = import("data")
+var math = import("math")
+
+io.print("=== Diabetes progression regression (linear, 10 features -> 1 value) ===")
+
+var ds = data.load_diabetes()
+var X = data.standardize(ds[0])
+var yraw = ds[1]
+
+# Standardise the target so the loss is well-scaled; keep mean/std to de-normalise the error.
+var n = len(yraw)
+var ymean = 0.0
+for v in yraw:
+    ymean = ymean + v
+ymean = ymean / n
+var yvar = 0.0
+for v in yraw:
+    yvar = yvar + (v - ymean) * (v - ymean)
+var ystd = math.sqrt(yvar / n)
+var ynorm = []
+for v in yraw:
+    ynorm.append((v - ymean) / ystd)
+
+var split = data.train_test_split(X, ynorm, 0.8, 5)
+# Targets as (N, 1) column tensors.
+var col = Function(vals):
+    var rows = []
+    for v in vals:
+        rows.append([v])
+    return T.Tensor(rows)
+var Xtr = T.Tensor(split[0])
+var Ttr = col(split[1])
+var Xte = T.Tensor(split[2])
+var yte = split[3]
+io.print(f"train {len(split[0])} patients, test {len(split[2])} patients")
+
+# Diabetes is close to linear, so a single linear layer (least-squares regression) generalises best;
+# a deeper net just overfits this small, noisy set.
+nn.seed(3)
+var model = nn.Linear(10, 1)
+var opt = nn.Adam(model.parameters(), lr = 0.03)
+
+var epoch = 0
+while epoch < 250:
+    var loss = nn.mse_loss(model(Xtr), Ttr)
+    loss.backward()
+    opt.step()
+    if epoch % 50 == 0:
+        io.print(f"  epoch {epoch:3d}  train MSE {loss.item():.4f}")
+    epoch = epoch + 1
+
+# Predict the test set, de-normalise, and report RMSE (original units) and R^2.
+with T.nograd():
+    var preds = model(Xte).flatten().tolist()
+var ss_res = 0.0
+var ymean_te = 0.0
+for v in yte:
+    ymean_te = ymean_te + (v * ystd + ymean)
+ymean_te = ymean_te / len(yte)
+var ss_tot = 0.0
+var i = 0
+while i < len(yte):
+    var true_v = yte[i] * ystd + ymean             # de-normalise truth
+    var pred_v = preds[i] * ystd + ymean           # de-normalise prediction
+    ss_res = ss_res + (true_v - pred_v) * (true_v - pred_v)
+    ss_tot = ss_tot + (true_v - ymean_te) * (true_v - ymean_te)
+    i = i + 1
+var rmse = math.sqrt(ss_res / len(yte))
+var r2 = 1.0 - ss_res / ss_tot
+io.print(f"test RMSE {rmse:.2f} (target range ~25..346)   R^2 {r2:.3f}")
+assert r2 > 0.35, "diabetes regression should explain >30% of variance"
+io.print("OK diabetes-regression")

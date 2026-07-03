@@ -1,0 +1,13 @@
+# Container apply(fn): a new same-type container with fn mapped over the elements (like tensor.apply).
+var io = import("io")
+io.print([1, 2, 3, 4].apply(Function(x): return x * x))           # List -> List
+io.print({10, 20, 30}.apply(Function(x): return x // 10))         # Set -> Set
+io.print({"a": 1, "b": 2}.apply(Function(v): return v + 100))     # Dict -> Dict (values)
+io.print(Bytes([1, 2, 3]).apply(Function(b): return b + 1))       # Bytes -> Bytes
+io.print("hello".apply(Function(c): return c.upper()))            # String -> String (chars)
+# returns a new container; the source is untouched
+var xs = [1, 2, 3]
+discard xs.apply(Function(x): return x * 99)
+io.print(xs)
+# chaining
+io.print([1, 2, 3].apply(Function(x): return x + 1).apply(Function(x): return x * 10))

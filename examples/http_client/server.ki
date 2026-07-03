@@ -1,0 +1,108 @@
+# A small HTTP/1.1 server (raw sockets) used to exercise the net HTTP client. One request per
+# connection (Connection: close). Endpoints cover text, JSON, echo, redirect, cookies, basic auth,
+# query params, and a /shutdown that stops the loop. Prints "LISTENING <port>" once ready.
+var net = import("net")
+var io = import("io")
+var json = import("json")
+
+var port = 8088
+if len(arglist) >= 1:
+    port = Integer(arglist[0])
+
+# Read a full request: headers up to the blank line, then any Content-Length body.
+var readRequest = Function(conn):
+    var buf = ""
+    while buf.find("\r\n\r\n") < 0:
+        var chunk = conn.recv(4096).decode("latin-1")   # socket gives Bytes; decode for text
+        if len(chunk) == 0:
+            return [buf, ""]
+        buf = buf + chunk
+    var he = buf.find("\r\n\r\n")
+    var head = buf[0:he]
+    var body = buf[he + 4:]
+    var clen = 0
+    for line in head.split("\r\n"):
+        if line.lower().startswith("content-length:"):
+            clen = Integer(line[15:].strip())
+    while len(body) < clen:
+        var more = conn.recv(4096).decode("latin-1")
+        if len(more) == 0:
+            break
+        body = body + more
+    return [head, body]
+
+var parseHeaders = Function(head):
+    var headers = {}
+    var lines = head.split("\r\n")
+    var i = 1
+    while i < len(lines):
+        var ci = lines[i].find(":")
+        if ci >= 0:
+            headers[lines[i][0:ci].lower().strip()] = lines[i][ci + 1:].strip()
+        i = i + 1
+    return headers
+
+var respond = Function(conn, status, ctype, body, extra):
+    var msg = "HTTP/1.1 " + String(status) + " S\r\n"
+    msg = msg + "Content-Type: " + ctype + "\r\n"
+    msg = msg + "Content-Length: " + String(len(body)) + "\r\n"
+    msg = msg + "Connection: close\r\n" + extra + "\r\n" + body
+    conn.send(msg)
+    conn.close()
+
+var srv = net.Socket()
+srv.bind("127.0.0.1", port)
+srv.listen(16)
+io.print("LISTENING " + String(port))
+
+var running = True
+while running:
+    var conn = srv.accept()
+    try:
+        var req = readRequest(conn)
+        var headers = parseHeaders(req[0])
+        var body = req[1]
+        var reqline = req[0].split("\r\n")[0]
+        var parts = reqline.split(" ")
+        var method = parts[0]
+        var fullpath = parts[1]
+        var qi = fullpath.find("?")
+        var path = fullpath
+        var query = ""
+        if qi >= 0:
+            path = fullpath[0:qi]
+            query = fullpath[qi + 1:]
+
+        switch path:
+            case "/hello":
+                respond(conn, 200, "text/plain", "hello world", "")
+            case "/json":
+                respond(conn, 200, "application/json", json.stringify({"name": "kirito", "items": [1, 2, 3], "ok": True}), "")
+            case "/echo":
+                respond(conn, 200, "application/json", body, "")
+            case "/redirect":
+                respond(conn, 302, "text/plain", "", "Location: /target\r\n")
+            case "/target":
+                respond(conn, 200, "text/plain", "redirected ok", "")
+            case "/login":
+                respond(conn, 200, "text/plain", "logged in", "Set-Cookie: sid=SECRET123; Path=/\r\n")
+            case "/me":
+                respond(conn, 200, "text/plain", "cookie:" + headers.get("cookie", ""), "")
+            case "/protected":
+                if "authorization" in headers:
+                    respond(conn, 200, "text/plain", "secret data", "")
+                else:
+                    respond(conn, 401, "text/plain", "unauthorized", "")
+            case "/params":
+                respond(conn, 200, "text/plain", "query=" + query, "")
+            case "/shutdown":
+                respond(conn, 200, "text/plain", "bye", "")
+                running = False
+            default:
+                respond(conn, 404, "text/plain", "not found", "")
+    catch as e:
+        io.eprint("server error: " + String(e))
+        conn.close()
+
+srv.close()
+io.print("STOPPED")

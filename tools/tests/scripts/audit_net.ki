@@ -1,0 +1,102 @@
+# Adversarial audit of the `net` module's URL helpers. NO sockets/network here — only quote/unquote/
+# urlencode/parseqs/urlsplit, hit with weird inputs (Unicode, percent escapes, empty strings, etc.).
+var io = import("io")
+var net = import("net")
+
+# --- quote: RFC 3986 unreserved untouched; everything else percent-encoded over UTF-8 bytes ---
+assert net.quote("") == "", "quote empty"
+assert net.quote("safe-._~ABCabc012") == "safe-._~ABCabc012", "quote leaves the unreserved set"
+assert net.quote("hello world") == "hello%20world", "quote space"
+assert net.quote("a/b?c=d&e") == "a%2Fb%3Fc%3Dd%26e", "quote reserved chars"
+assert net.quote("café") == "caf%C3%A9", "quote multi-byte UTF-8 byte-by-byte"
+# A two-byte character (é = 0xC3 0xA9) yields two percent escapes
+assert net.quote("\n") == "%0A", "quote control char"
+assert net.quote("+") == "%2B", "quote literal +"
+
+# --- unquote: percent-decode, '+' -> ' ', malformed escapes pass through literally ---
+assert net.unquote("") == "", "unquote empty"
+assert net.unquote("hello%20world") == "hello world", "unquote %20"
+assert net.unquote("a%2Fb") == "a/b", "unquote escape"
+assert net.unquote("hello+world") == "hello world", "unquote + -> space (query-string style)"
+assert net.unquote("%G0") == "%G0", "malformed escape passes through"
+assert net.unquote("%2") == "%2", "truncated escape passes through"
+assert net.unquote("caf%C3%A9") == "café", "unquote multi-byte UTF-8"
+
+# round-trip ANY string
+var samples = ["plain", "with spaces", "sym/bo?ls=&#", "café", "漢字 — naïve", "", "/", "?=&"]
+for s in samples:
+    assert net.unquote(net.quote(s)) == s, "quote/unquote round-trip"
+
+# --- urlencode: Dict -> 'k=v&...' (keys and values both percent-encoded) ---
+assert net.urlencode({}) == "", "urlencode empty Dict"
+assert net.urlencode({"a": "1"}) == "a=1", "single pair"
+var qs = net.urlencode({"a": "1", "b": "two words"})
+# Dict iteration order is unspecified, so check both pieces are present
+assert "a=1" in qs and "b=two%20words" in qs and "&" in qs, "urlencode key/value pairs"
+# special chars in both key and value
+var qs2 = net.urlencode({"k=k": "v&v"})
+assert "k%3Dk=v%26v" == qs2, "urlencode escapes both key and value"
+
+# --- parseqs: 'k=v&...' -> Dict (values percent-decoded) ---
+assert net.parseqs("") == {}, "empty query is empty Dict"
+assert net.parseqs("flag") == {"flag": ""}, "valueless key parses to empty value"
+assert net.parseqs("a=1&b=2") == {"a": "1", "b": "2"}, "two pairs"
+assert net.parseqs("k=hello%20world") == {"k": "hello world"}, "parseqs decodes value"
+assert net.parseqs("a=&b=2") == {"a": "", "b": "2"}, "empty value handled"
+# extra ampersands are silently skipped (the impl skips empty-key segments)
+var dq = net.parseqs("&&a=1&&")
+assert dq == {"a": "1"}, "extra ampersands ignored"
+# duplicate keys: later wins (Dict overwrite)
+assert net.parseqs("a=1&a=2")["a"] == "2", "duplicate key: later wins"
+# = inside a value is preserved (only the FIRST = splits k=v)
+assert net.parseqs("a=b=c")["a"] == "b=c", "extra '=' goes into the value"
+
+# --- urlencode/parseqs round-trip ---
+var rt = net.parseqs(net.urlencode({"k": "v v", "n": "42"}))
+assert rt["k"] == "v v" and rt["n"] == "42", "urlencode/parseqs round-trip"
+
+# --- urlsplit: scheme/host/port/path/query/fragment ---
+var u = net.urlsplit("http://example.com:8080/path/to?query=1#frag")
+assert u["scheme"] == "http", "urlsplit scheme"
+assert u["host"] == "example.com", "urlsplit host"
+assert u["port"] == "8080", "urlsplit port (as a String!)"
+assert u["path"] == "/path/to", "urlsplit path"
+assert u["query"] == "query=1", "urlsplit query"
+assert u["fragment"] == "frag", "urlsplit fragment"
+# no port
+var u2 = net.urlsplit("https://host/just/path")
+assert u2["scheme"] == "https" and u2["host"] == "host" and u2["port"] == "", "urlsplit no port -> empty"
+# no scheme (bare path)
+var u3 = net.urlsplit("/just/a/path")
+assert u3["scheme"] == "" and u3["path"] == "/just/a/path", "urlsplit bare path"
+# only a fragment
+var u4 = net.urlsplit("http://h#x")
+assert u4["fragment"] == "x" and u4["path"] == "", "urlsplit no path, only fragment"
+# multiple ? in URL: first one splits, the rest is part of the query
+var u5 = net.urlsplit("http://h/p?q1?q2")
+assert u5["query"] == "q1?q2", "second '?' stays in query"
+# empty input
+var u6 = net.urlsplit("")
+assert u6["scheme"] == "" and u6["host"] == "" and u6["path"] == "", "urlsplit empty"
+# file scheme has empty host
+var u7 = net.urlsplit("file:///etc/hosts")
+assert u7["scheme"] == "file" and u7["host"] == "" and u7["path"] == "/etc/hosts", "urlsplit file:///"
+
+# --- type errors throw ---
+var thrown = 0
+for thunk in [Function(): return net.quote(42),
+              Function(): return net.unquote([1, 2]),
+              Function(): return net.urlencode("not a dict"),
+              Function(): return net.parseqs(42),
+              Function(): return net.urlsplit({})]:
+    try:
+        discard thunk()
+    catch as e:
+        thrown = thrown + 1
+assert thrown == 5, "all URL helpers reject bad argument types"
+
+# --- Socket() factory works without touching the network (just allocates) ---
+var s = net.Socket()
+s.close()
+
+io.print("OK audit-net")

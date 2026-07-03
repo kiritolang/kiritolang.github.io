@@ -1,0 +1,162 @@
+# test_feedreader.ki — self-test for the RSS/Atom feed reader. Uses only local sample files under
+# samples/ so there is no external network dependency. Final line prints "feedreader: N checks
+# passed" — matched byte-for-byte against test_feedreader.expected.
+
+var io   = import("io")
+var path = import("path")
+
+var feed  = import("feed")
+var store = import("store")
+var ui    = import("ui")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# --- locate the samples ---
+# When CTest runs us it sets cwd to this package directory (WORKING_DIRECTORY), so `samples/` is
+# right there. When invoked from the repo root, the cwd is the repo, so `examples/big_projects/
+# feedreader/samples/` is the well-known layout. Try both.
+var _candidates = ["samples", "examples/big_projects/feedreader/samples"]
+var _sampleDir = None
+for c in _candidates:
+    if path.isdir(c):
+        _sampleDir = c
+        break
+if _sampleDir == None:
+    throw "cannot locate feedreader/samples/ (tried " + String(_candidates) + " from cwd=" + path.getcwd() + ")"
+var rssPath  = _sampleDir + "/sample_rss.xml"
+var atomPath = _sampleDir + "/sample_atom.xml"
+
+# =============================================================================
+# feed: RSS parsing
+# =============================================================================
+var rss = feed.fetch(rssPath)
+ok(rss["kind"] == "rss", "detected as rss")
+ok(rss["title"] == "Kirito Journal", "channel title parsed")
+ok(rss["link"] == "https://example.com/kirito", "channel link parsed")
+ok(len(rss["items"]) == 3, "three items in the sample rss")
+ok(rss["items"][0]["title"] == "Kirito 2.0 released", "first item title")
+ok(rss["items"][0]["link"] == "https://example.com/kirito/2-0", "first item link")
+ok(rss["items"][0]["id"] == "https://example.com/kirito/2-0", "guid falls back through <link>")
+ok(rss["items"][1]["id"] == "guide-functions", "second item guid preserved literally")
+ok("tail calls" in rss["items"][0]["summary"] or "&lt;strong&gt;" in rss["items"][0]["summary"], "description body carried through")
+
+# =============================================================================
+# feed: Atom parsing
+# =============================================================================
+var at = feed.fetch(atomPath)
+ok(at["kind"] == "atom", "detected as atom")
+ok(at["title"] == "C++20 Digest", "atom feed title parsed")
+ok(at["link"] == "https://example.com/cpp20", "atom feed link takes href")
+ok(len(at["items"]) == 2, "two entries in the sample atom")
+ok(at["items"][0]["title"] == "Coroutines in production", "first entry title")
+ok(at["items"][0]["link"] == "https://example.com/cpp20/coroutines", "first entry link from atom href")
+ok(at["items"][0]["id"].startswith("tag:example.com"), "atom entry id preserved")
+
+# =============================================================================
+# feed: adversarial
+# =============================================================================
+ok(throws(Function(): return feed.parseString("<html><body>not a feed</body></html>")), "an HTML document throws")
+ok(throws(Function(): return feed.parseString("<rss/>")), "rss without a channel throws")
+
+# =============================================================================
+# store: add / remove + read/unread bookkeeping
+# =============================================================================
+var st = store.load("__nonexistent__")
+ok(st["feeds"] == {}, "load of a missing file returns an empty store")
+ok(st["read"] == [], "the read list is empty on init")
+
+store.addFeed(st, rssPath, ["kirito"])
+ok(rssPath in st["feeds"], "addFeed subscribes")
+ok(st["feeds"][rssPath]["tags"] == ["kirito"], "tags are recorded on the feed")
+
+# mergeFeed brings items in on first sync and is idempotent on second sync
+var added1 = store.mergeFeed(st, rssPath, rss)
+ok(added1 == 3, "first merge adds all 3 items")
+var added2 = store.mergeFeed(st, rssPath, rss)
+ok(added2 == 0, "second merge is idempotent (no new items)")
+
+# allItems flattens across every feed
+store.addFeed(st, atomPath, ["cpp"])
+discard store.mergeFeed(st, atomPath, at)
+var flat = store.allItems(st)
+ok(len(flat) == 5, "allItems flattens to 5")
+
+# tag filter
+var kOnly = store.filterByTag(st, flat, ["kirito"])
+ok(len(kOnly) == 3, "tag filter for 'kirito' keeps only the 3 kirito items")
+var multi = store.filterByTag(st, flat, ["cpp"])
+ok(len(multi) == 2, "tag filter for 'cpp' keeps only the 2 cpp items")
+var noFilter = store.filterByTag(st, flat, [])
+ok(len(noFilter) == 5, "empty tag list returns everything")
+
+# read/unread
+var oneKey = flat[0]["key"]
+ok(not store.isRead(st, oneKey), "an item starts unread")
+store.markRead(st, oneKey)
+ok(store.isRead(st, oneKey), "after markRead it is read")
+store.markUnread(st, oneKey)
+ok(not store.isRead(st, oneKey), "markUnread reverts")
+# duplicate markRead is a no-op
+store.markRead(st, oneKey)
+store.markRead(st, oneKey)
+ok(len(st["read"]) == 1, "markRead is idempotent")
+
+# removeFeed drops the feed AND its read-markers
+store.markRead(st, oneKey)
+var beforeReadCount = len(st["read"])
+ok(store.removeFeed(st, flat[0]["feed_url"]), "removeFeed returns True on success")
+ok(flat[0]["feed_url"] not in st["feeds"], "the feed is gone from the store")
+ok(len(st["read"]) < beforeReadCount, "read markers for its items were dropped")
+ok(not store.removeFeed(st, "no-such-feed"), "removeFeed returns False on an unknown url")
+
+# =============================================================================
+# store: JSON round-trip
+# =============================================================================
+var tmpFile = path.gettempdir() + "/feedreader_selftest.json"
+discard path.remove(tmpFile, missing_ok = True)
+store.save(tmpFile, st)
+var loaded = store.load(tmpFile)
+ok(loaded["feeds"] == st["feeds"], "feeds survive save/load")
+ok(len(loaded["read"]) == len(st["read"]), "read markers survive save/load")
+discard path.remove(tmpFile, missing_ok = True)
+
+# item-key stability: same (feed, id) -> same key always
+ok(store.itemKey("u", "i") == store.itemKey("u", "i"), "itemKey is deterministic")
+ok(store.itemKey("u", "i") != store.itemKey("u", "j"), "itemKey distinguishes different ids")
+ok(len(store.itemKey("u", "i")) == 16, "itemKey is 16 hex chars")
+
+# =============================================================================
+# ui: pretty-printers + stripHtml
+# =============================================================================
+ok(ui.stripHtml("<p>hello <em>world</em></p>") == "hello world", "stripHtml drops tags and folds whitespace")
+ok(ui.stripHtml("a &amp; b &lt; c &gt; d &quot;e&quot; &#39;f&#39;") == "a & b < c > d \"e\" 'f'", "stripHtml decodes named entities")
+ok(ui.stripHtml("  <p>  hi   </p>  ") == "hi", "stripHtml strips + collapses whitespace")
+ok(ui.stripHtml("<a href=\"x\">click</a>") == "click", "stripHtml keeps link text but drops the anchor")
+
+# listItems prints "R" for read items and " " for unread
+var st2 = store.load("__none__")
+store.addFeed(st2, rssPath, [])
+discard store.mergeFeed(st2, rssPath, rss)
+var flat2 = store.allItems(st2)
+store.markRead(st2, flat2[0]["key"])
+var listing = ui.listItems(flat2, Function(k): return store.isRead(st2, k))
+ok("[R]" in listing and "[ ]" in listing, "listItems shows the read/unread flag")
+ok(len(listing) > 0, "listItems produced a non-empty rendering")
+
+# detail wraps a summary line to the given width
+var det = ui.detail(flat2[0], 78)
+ok(flat2[0]["title"] in det, "detail includes the title")
+ok(flat2[0]["link"] in det, "detail includes the link")
+ok("---" in det, "detail separator is present")
+
+io.print("feedreader: " + String(n) + " checks passed")

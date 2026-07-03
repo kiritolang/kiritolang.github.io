@@ -1,0 +1,8 @@
+argmain= True
+len= 5
+type= List
+0 -> arg1
+1 -> --foo
+2 -> bar
+3 -> --
+4 -> last

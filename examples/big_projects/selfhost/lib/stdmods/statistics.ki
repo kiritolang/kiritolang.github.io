@@ -1,0 +1,96 @@
+var _math = import("math")
+
+var mean = Function(data) -> Float:
+    if len(data) == 0:
+        throw "mean requires at least one data point"
+    return Float(sum(data)) / Float(len(data))
+
+var median = Function(data) -> Float:
+    var s = sorted(data)
+    var n = len(s)
+    if n == 0:
+        throw "median requires at least one data point"
+    if n % 2 == 1:
+        return Float(s[n // 2])
+    return (Float(s[n // 2 - 1]) + Float(s[n // 2])) / 2.0
+
+var mode = Function(data):
+    if len(data) == 0:
+        throw "no mode for empty data"
+    var counts = {}
+    var best = None
+    var bestCount = 0
+    for x in data:
+        var c = counts.get(x, 0) + 1
+        counts[x] = c
+        if c > bestCount:
+            bestCount = c
+            best = x
+    return best
+
+var variance = Function(data) -> Float:
+    var n = len(data)
+    if n < 2:
+        throw "variance requires at least two data points"
+    var m = mean(data)
+    var total = 0.0
+    for x in data:
+        total = total + (Float(x) - m) * (Float(x) - m)
+    return total / Float(n - 1)
+
+var pvariance = Function(data) -> Float:
+    var n = len(data)
+    if n < 1:
+        throw "pvariance requires at least one data point"
+    var m = mean(data)
+    var total = 0.0
+    for x in data:
+        total = total + (Float(x) - m) * (Float(x) - m)
+    return total / Float(n)
+
+var stdev = Function(data) -> Float:
+    return _math.sqrt(variance(data))
+
+var pstdev = Function(data) -> Float:
+    return _math.sqrt(pvariance(data))
+
+var multimode = Function(data):
+    # All values tied for the highest count, in first-seen order.
+    var counts = {}
+    var order = []
+    var best = 0
+    for x in data:
+        if x not in counts:
+            order.append(x)
+        var c = counts.get(x, 0) + 1
+        counts[x] = c
+        if c > best:
+            best = c
+    var out = []
+    for x in order:
+        if counts[x] == best:
+            out.append(x)
+    return out
+
+var quantiles = Function(data, n = 4):
+    # Cut points dividing sorted data into n equal groups (exclusive method, the default).
+    var s = sorted(data)
+    var ld = len(s)
+    if ld < 2:
+        throw "quantiles requires at least two data points"
+    if n < 1:
+        throw "quantiles: n must be at least 1"
+    var out = []
+    var i = 1
+    while i < n:
+        var pos = Float(i) * Float(ld + 1) / Float(n)
+        var lo = Integer(pos)
+        if lo < 1:
+            out.append(Float(s[0]))
+        elif lo >= ld:
+            out.append(Float(s[ld - 1]))
+        else:
+            var frac = pos - Float(lo)
+            out.append(Float(s[lo - 1]) + frac * (Float(s[lo]) - Float(s[lo - 1])))
+        i = i + 1
+    return out

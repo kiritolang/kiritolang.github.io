@@ -1,0 +1,29 @@
+class Enum:
+    # Enum(["RED", "GREEN", "BLUE"]) -> members accessible as e.get("RED") -> 0, with names()/values().
+    var _init_ = Function(self, names):
+        self._byName = {}
+        self._byValue = {}
+        self._order = []                 # definition order (a Dict's keys() is unordered)
+        var i = 0
+        for name in names:
+            self._byName[name] = i
+            self._byValue[i] = name
+            self._order.append(name)
+            i = i + 1
+    var get = Function(self, name):
+        if name not in self._byName:
+            throw "no such enum member: " + name
+        return self._byName[name]
+    var nameof = Function(self, value):
+        return self._byValue[value]
+    var names = Function(self):
+        return self._order.copy()        # in definition order, not hash order
+    var values = Function(self):
+        var out = []
+        for name in self._order:
+            out.append(self._byName[name])
+        return out
+    var _getitem_ = Function(self, name):
+        return self.get(name)
+    var _contains_ = Function(self, name):
+        return name in self._byName

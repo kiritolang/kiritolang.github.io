@@ -1,0 +1,2 @@
+# PARSER: an unmatched '[' - the list bracket is never closed
+var xs = [1, 2, 3

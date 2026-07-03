@@ -1,0 +1,2 @@
+# LEXER: a raw single-quoted string ending in a lone backslash escapes its own closing quote
+var s = r'C:\path\'

@@ -1,0 +1,166 @@
+# feedreader/main.ki — CLI entry.
+#
+# Subcommands:
+#   add URL                     — subscribe to a feed (URL may be http[s] or a local .xml path)
+#   remove URL                  — unsubscribe (drops the read markers for its items too)
+#   list                        — show every subscribed feed with per-feed unread counts
+#   sync                        — fetch every feed and merge new items into the store
+#   items [--tag T,U ...]       — list every item across every (matching) feed
+#   read KEY [KEY ...]          — mark items read (KEY is the 16-char hash shown by `items`)
+#   unread KEY [KEY ...]        — mark items unread
+#   search REGEX                — items whose title or summary matches
+#   show KEY                    — full detail view of a single item
+#
+# Common options:
+#   -s, --store FILE            — the JSON state file (default: <tempdir>/feedreader.json)
+#       --tag  TAGS             — comma-separated tag filter for `add`, `items`
+#       --width N               — text wrap width for `show` (default 78)
+
+var io   = import("io")
+var arg  = import("arg")
+var regex = import("regex")
+
+var feed  = import("feed")
+var store = import("store")
+var ui    = import("ui")
+
+var _main = Function():
+    var p = arg.Parser("small RSS/Atom feed reader")
+    p.positional("command", "add | remove | list | sync | items | read | unread | search | show")
+    p.positional("target",  "URL / KEY / REGEX depending on the command; empty otherwise")
+    p.option("store",  "", "state file (default: <tempdir>/feedreader.json)")
+    p.option("tag",    "", "comma-separated tag filter (or tag to assign for `add`)")
+    p.option("width",  78,  "wrap width for `show`")
+    var opts = p.parse(arglist)
+    if opts == None:
+        return 0
+    var storeFile = opts["store"]
+    if storeFile == "":
+        var path = import("path")
+        storeFile = path.join(path.gettempdir(), "feedreader.json")
+    var state = store.load(storeFile)
+    var isReadClosure = Function(k):
+        return store.isRead(state, k)
+    var tags = []
+    if opts["tag"] != "":
+        for t in opts["tag"].split(","):
+            var s = t.strip()
+            if s != "":
+                tags.append(s)
+    var cmd = opts["command"]
+    var target = opts["target"]
+    if cmd == "add":
+        if target == "":
+            io.eprint("feedreader: add needs a URL / file path")
+            return 2
+        store.addFeed(state, target, tags)
+        try:
+            var content = feed.fetch(target)
+            var added = store.mergeFeed(state, target, content)
+            io.print("feedreader: added feed '" + content["title"] + "' with " + String(added) + " items")
+        catch String as e:
+            io.eprint("feedreader: could not sync new feed (kept subscribed): " + e)
+        store.save(storeFile, state)
+        return 0
+    if cmd == "remove":
+        if target == "":
+            io.eprint("feedreader: remove needs a URL")
+            return 2
+        if store.removeFeed(state, target):
+            store.save(storeFile, state)
+            io.print("feedreader: removed " + target)
+        else:
+            io.print("feedreader: no such feed: " + target)
+        return 0
+    if cmd == "list":
+        io.write(ui.listFeeds(state, isReadClosure))
+        return 0
+    if cmd == "sync":
+        var ok = 0
+        var newItems = 0
+        var fail = 0
+        for url in state["feeds"]:
+            try:
+                var content = feed.fetch(url)
+                var added = store.mergeFeed(state, url, content)
+                ok = ok + 1
+                newItems = newItems + added
+                io.print("  " + url + ": +" + String(added))
+            catch String as e:
+                fail = fail + 1
+                io.eprint("  " + url + ": " + e)
+        store.save(storeFile, state)
+        io.print("feedreader: " + String(ok) + " ok, " + String(fail) + " failed, " + String(newItems) + " new items")
+        return 0
+    if cmd == "items":
+        var items = store.allItems(state)
+        items = store.filterByTag(state, items, tags)
+        io.write(ui.listItems(items, isReadClosure))
+        return 0
+    if cmd == "search":
+        if target == "":
+            io.eprint("feedreader: search needs a regex")
+            return 2
+        var rx = regex.compile(target, regex.IGNORECASE)
+        var hit = []
+        for it in store.allItems(state):
+            if rx.search(it["title"]) != None or rx.search(it["summary"]) != None:
+                hit.append(it)
+        io.write(ui.listItems(hit, isReadClosure))
+        return 0
+    if cmd == "read" or cmd == "unread":
+        # accept the target positional AND every remaining arglist element (arg.Parser stops at the
+        # last declared positional, so a `read K1 K2 K3` needs the first key via `target` and any
+        # extra keys via the leftover argv — we already have those in arglist).
+        var keys = []
+        if target != "":
+            keys.append(target)
+        # find and take any remaining bare positionals from arglist after the recognised ones
+        var seen = 0
+        var i = 0
+        while i < len(arglist):
+            var tok = arglist[i]
+            if tok.startswith("-"):
+                if tok == "-s" or tok == "-t" or tok == "-w" or tok.startswith("--store") or tok.startswith("--tag") or tok.startswith("--width"):
+                    if not "=" in tok:
+                        i = i + 1
+                i = i + 1
+                continue
+            seen = seen + 1
+            if seen >= 3:
+                keys.append(tok)
+            i = i + 1
+        var changed = 0
+        for k in keys:
+            if cmd == "read":
+                if not store.isRead(state, k):
+                    store.markRead(state, k)
+                    changed = changed + 1
+            else:
+                if store.isRead(state, k):
+                    store.markUnread(state, k)
+                    changed = changed + 1
+        store.save(storeFile, state)
+        io.print("feedreader: " + cmd + " -> " + String(changed) + " item(s)")
+        return 0
+    if cmd == "show":
+        if target == "":
+            io.eprint("feedreader: show needs an item KEY")
+            return 2
+        var found = None
+        for it in store.allItems(state):
+            if it["key"] == target:
+                found = it
+                break
+        if found == None:
+            io.eprint("feedreader: no item with key " + target)
+            return 1
+        io.write(ui.detail(found, opts["width"]))
+        return 0
+    io.eprint("feedreader: unknown command: " + cmd)
+    return 2
+
+if argmain:
+    var code = _main()
+    if code != 0:
+        import("sys").exit(code)

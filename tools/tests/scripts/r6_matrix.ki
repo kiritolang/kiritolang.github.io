@@ -1,0 +1,139 @@
+# r6_matrix.ki — self-checking audit of the `matrix` stdlib module.
+# Computed float results use `.compare` (matrix `==` is bit-exact); shapes/exact
+# constructions use `==`. Error cases are asserted to throw.
+var io = import("io")
+var m = import("matrix")
+
+var n = 0
+var ok = Function(c, msg):
+    assert c, msg
+    n = n + 1
+
+# Asserts that calling `f` throws (any error).
+var throws = Function(f, msg):
+    var threw = False
+    try:
+        discard f()
+    catch:
+        threw = True
+    assert threw, msg
+    n = n + 1
+
+# --- construction & factories ---
+var A = m.Matrix([[1, 2], [3, 4]])
+ok(A.shape() == [2, 2], "Matrix nested-list shape")
+ok(A[0, 1] == 2.0, "element access m[i,j]")
+ok(A[0] == [1.0, 2.0], "row access m[i] -> List")
+ok(A.row(1) == [3.0, 4.0], "row(i) method")
+ok(A.rows() == 2 and A.cols() == 2, "rows()/cols()")
+ok(m.Matrix(2, 3).shape() == [2, 3], "Matrix(rows, cols) zero matrix")
+ok(m.Matrix(2, 3) == m.zeros(2, 3), "Matrix(r,c) == zeros(r,c)")
+ok(m.zeros(2, 2) == m.Matrix([[0, 0], [0, 0]]), "zeros fills 0")
+ok(m.ones(2, 2) == m.Matrix([[1, 1], [1, 1]]), "ones fills 1")
+ok(m.identity(3) == m.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), "identity n*n")
+ok(m.vector([1, 2, 3]).shape() == [1, 3], "vector is 1*n row vector")
+
+# elements are Floats
+ok(type(A[0, 0]) == "Float", "elements are Float")
+
+# --- get / set (and their keyword forms) ---
+ok(A.get(0, 1) == 2.0, "get(row, col)")
+ok(A.get(row = 0, col = 1) == 2.0, "get keyword args")
+var Aset = m.Matrix([[1, 2], [3, 4]])
+Aset.set(0, 0, 99.0)
+ok(Aset.get(0, 0) == 99.0, "set(row, col, value)")
+Aset[1, 1] = 7.0
+ok(Aset[1, 1] == 7.0, "m[i,j] = v assignment")
+
+# --- keyword args on factories / constructor (documented in bonus-04) ---
+ok(m.zeros(rows = 2, cols = 3).shape() == [2, 3], "zeros keyword args")
+ok(m.ones(rows = 1, cols = 4).shape() == [1, 4], "ones keyword args")
+ok(m.identity(n = 2).shape() == [2, 2], "identity keyword arg")
+ok(m.Matrix(rows = 2, cols = 2).shape() == [2, 2], "Matrix(rows=,cols=) keyword")
+ok(m.vector(values = [1, 2]).shape() == [1, 2], "vector keyword arg")
+
+# --- arithmetic ---
+var B = m.Matrix([[5, 6], [7, 8]])
+ok(A + B == m.Matrix([[6, 8], [10, 12]]), "matrix addition")
+ok(B - A == m.Matrix([[4, 4], [4, 4]]), "matrix subtraction")
+ok(A * B == m.Matrix([[19, 22], [43, 50]]), "matrix multiply")
+ok(A * 2 == m.Matrix([[2, 4], [6, 8]]), "scalar multiply (scalar on right)")
+# non-square matmul with conformable inner dims
+var P = m.Matrix([[1, 2, 3]])          # 1x3
+var Q = m.Matrix([[1], [2], [3]])      # 3x1
+ok((P * Q).shape() == [1, 1], "non-square conformable matmul shape")
+ok((P * Q)[0, 0] == 14.0, "non-square matmul value")
+
+# --- transpose / determinant / trace / sum ---
+ok(A.transpose() == m.Matrix([[1, 3], [2, 4]]), "transpose")
+ok(A.determinant().compare(-2.0), "determinant")
+ok(A.trace().compare(5.0), "trace")
+ok(A.sum().compare(10.0), "sum of all elements")
+
+# determinant of a SINGULAR matrix is 0.0 (documented: not a throw)
+ok(m.Matrix([[1, 2], [2, 4]]).determinant() == 0.0, "singular determinant is 0.0")
+
+# --- inverse: A * inv(A) ~ identity (use .compare with abs_tol for the exact zeros) ---
+var I2 = m.identity(2)
+ok((A * A.inverse()).compare(I2, abs_tol = 1e-9), "A * A.inverse() ~ identity")
+ok((A.inverse() * A).compare(I2, abs_tol = 1e-9), "A.inverse() * A ~ identity")
+# exact `==` after inversion is False due to roundoff (documented)
+ok((A * A.inverse() == I2) == False, "== is exact: inverse roundoff != identity")
+
+# --- exact equality semantics ---
+ok(A == m.Matrix([[1, 2], [3, 4]]), "exact equality (equal)")
+ok((A == m.Matrix([[1, 2], [3, 5]])) == False, "exact equality (different element)")
+ok((A == m.Matrix([[1, 2, 0], [3, 4, 0]])) == False, "exact equality (different shape)")
+
+# --- compare (tolerant) ---
+ok(A.compare(m.Matrix([[1, 2], [3, 4]])), "compare equal")
+ok(A.compare(m.Matrix([[1.0, 2.0], [3.0, 4.0000000001]]), rel_tol = 1e-9), "compare within rel_tol")
+ok(A.compare(m.Matrix([[1, 2]])) == False, "compare different shape is False")
+ok(A.compare(m.Matrix([[1, 2], [3, 9]])) == False, "compare beyond tolerance is False")
+
+# --- apply ---
+ok(A.apply(Function(x): return x * x) == m.Matrix([[1, 4], [9, 16]]), "apply squares each element")
+ok(A.apply(Function(x): return x + 10) == m.Matrix([[11, 12], [13, 14]]), "apply adds")
+
+# --- vectors: dot / cross / norm ---
+var u = m.vector([1, 2, 3])
+var v = m.vector([4, 5, 6])
+ok(u.dot(v).compare(32.0), "vector dot product")
+ok(u.cross(v) == m.vector([-3, 6, -3]), "vector cross product (3-vectors)")
+ok(m.vector([3, 4]).norm().compare(5.0), "vector Euclidean norm")
+# dot works across orientations (row . column)
+ok(m.Matrix([[1], [2], [3]]).dot(u).compare(14.0), "dot mixed orientation")
+# norm is the Frobenius norm of a whole matrix too
+ok(m.Matrix([[3, 0], [0, 4]]).norm().compare(5.0), "Frobenius norm")
+
+# --- error cases (must throw) ---
+throws(Function(): return 2 * A, "scalar on the left throws")
+throws(Function(): return A + m.Matrix([[1, 2, 3]]), "+ shape mismatch throws")
+throws(Function(): return A - m.Matrix([[1, 2, 3]]), "- shape mismatch throws")
+throws(Function(): return m.Matrix([[1, 2]]) * m.Matrix([[1, 2]]), "matmul inner-dim mismatch throws")
+throws(Function(): return m.Matrix([[1, 2, 3]]).determinant(), "determinant of non-square throws")
+throws(Function(): return m.Matrix([[1, 2, 3]]).trace(), "trace of non-square throws")
+throws(Function(): return m.Matrix([[1, 2, 3]]).inverse(), "inverse of non-square throws")
+throws(Function(): return m.Matrix([[1, 2], [2, 4]]).inverse(), "inverse of singular throws")
+throws(Function(): return m.vector([1, 2]).cross(m.vector([3, 4])), "cross of non-3-vectors throws")
+throws(Function(): return u.dot(m.vector([1, 2])), "dot of unequal-length vectors throws")
+throws(Function(): return A.dot(A), "dot on non-vector (2x2) throws")
+throws(Function(): return m.zeros(-1, 2), "zeros with negative dim throws")
+throws(Function(): return m.ones(2, -1), "ones with negative dim throws")
+throws(Function(): return m.identity(-3), "identity with negative dim throws")
+throws(Function(): return m.Matrix(-1, 2), "Matrix(rows,cols) with negative dim throws")
+throws(Function(): return m.Matrix([[1, 2], [3]]), "ragged nested list throws")
+throws(Function(): return A[5, 0], "row index out of range throws")
+throws(Function(): return A[0, 5], "col index out of range throws")
+throws(Function(): return A[-1, 0], "negative index throws")
+
+# --- empty matrix edge cases (no crash; well-defined) ---
+var E = m.Matrix([])
+ok(E.shape() == [0, 0], "empty matrix shape")
+ok(E.determinant() == 1.0, "0x0 determinant is 1 (empty product)")
+ok(E.trace() == 0.0, "0x0 trace is 0")
+ok(E.sum() == 0.0, "0x0 sum is 0")
+ok(E.norm() == 0.0, "0x0 norm is 0")
+ok(E.inverse() == E, "0x0 inverse is itself")
+
+io.print("r6_matrix: " + String(n) + " checks passed")

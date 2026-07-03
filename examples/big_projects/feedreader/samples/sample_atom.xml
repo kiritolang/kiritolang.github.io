@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>C++20 Digest</title>
+  <link href="https://example.com/cpp20"/>
+  <updated>2024-02-01T12:00:00Z</updated>
+  <id>tag:example.com,2024:cpp20-feed</id>
+  <entry>
+    <title>Coroutines in production</title>
+    <link href="https://example.com/cpp20/coroutines"/>
+    <id>tag:example.com,2024:coroutines-in-production</id>
+    <updated>2024-02-01T12:00:00Z</updated>
+    <summary>A case study.</summary>
+  </entry>
+  <entry>
+    <title>Modules explained</title>
+    <link href="https://example.com/cpp20/modules"/>
+    <id>tag:example.com,2024:modules-explained</id>
+    <updated>2024-01-25T10:00:00Z</updated>
+    <summary>Build times measured across three code bases.</summary>
+  </entry>
+</feed>

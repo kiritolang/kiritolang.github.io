@@ -1,0 +1,3 @@
+# An empty string is not valid JSON.
+var j = import("json")
+discard j.loads("")

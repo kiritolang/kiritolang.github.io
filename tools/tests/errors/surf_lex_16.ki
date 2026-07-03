@@ -1,0 +1,4 @@
+# LEXER: indentation that mixes a leading space-run with a tab in an ambiguous way
+if 1 < 2:
+        var a = 1
+	var b = 2

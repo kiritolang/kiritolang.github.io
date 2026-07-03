@@ -1,0 +1,213 @@
+var count = Function(start = 0, step = 1, stop = None):
+    # Bounded count: requires stop (unbounded would never return a List). Returns [start, start+step, ...).
+    if stop == None:
+        throw "itertools.count needs a stop bound (no lazy generators)"
+    if step == 0:
+        throw "itertools.count step must not be zero"
+    var out = []
+    var x = start
+    while x < stop if step > 0 else x > stop:
+        out.append(x)
+        x = x + step
+    return out
+
+var repeat = Function(value, times):
+    var out = []
+    for i in range(times):
+        out.append(value)
+    return out
+
+var cycle = Function(iterable, times):
+    var out = []
+    for i in range(times):
+        for x in iterable:
+            out.append(x)
+    return out
+
+var chain = Function(lists):
+    var out = []
+    for lst in lists:
+        for x in lst:
+            out.append(x)
+    return out
+
+var islice = Function(iterable, start, stop, step = 1):
+    var out = []
+    var i = 0
+    for x in iterable:
+        if i >= stop:
+            break
+        if i >= start and (i - start) % step == 0:
+            out.append(x)
+        i = i + 1
+    return out
+
+var accumulate = Function(iterable, func = None):
+    # `first` (not `total == None`) marks the leading element, so accumulate([None, 1, 2]) folds the
+    # leading None instead of treating it as "not started yet".
+    var out = []
+    var first = True
+    var total = None
+    for x in iterable:
+        if first:
+            total = x
+            first = False
+        elif func == None:
+            total = total + x
+        else:
+            total = func(total, x)
+        out.append(total)
+    return out
+
+var product = Function(lists):
+    # Cartesian product of a list of lists -> list of lists.
+    var out = [[]]
+    for pool in lists:
+        var nxt = []
+        for prefix in out:
+            for item in pool:
+                var combo = prefix.copy()
+                combo.append(item)
+                nxt.append(combo)
+        out = nxt
+    return out
+
+var permutations = Function(items, r = None):
+    var n = len(items)
+    var k = r
+    if k == None:
+        k = n
+    var result = []
+    if k > n or k < 0:
+        return result
+    # Iterative DFS (recursion is discouraged in Kirito): each frame is a list of chosen indices.
+    # Pushing candidate indices in descending order makes the smallest pop first, so the emission
+    # order matches the classic recursive enumeration exactly.
+    var stack = [[]]
+    while len(stack) > 0:
+        var chosen = stack.pop()
+        if len(chosen) == k:
+            var perm = []
+            for idx in chosen:
+                perm.append(items[idx])
+            result.append(perm)
+            continue
+        var i = n - 1
+        while i >= 0:
+            if i not in chosen:
+                stack.append(chosen + [i])
+            i = i - 1
+    return result
+
+var combinations = Function(items, r):
+    var n = len(items)
+    var result = []
+    if r > n or r < 0:
+        return result
+    # Iterative DFS (no recursion): each frame is [chosen indices, next-start]. Pushing the next
+    # candidate indices in descending order keeps emission in ascending lexicographic order.
+    var stack = [[[], 0]]
+    while len(stack) > 0:
+        var frame = stack.pop()
+        var chosen = frame[0]
+        var start = frame[1]
+        if len(chosen) == r:
+            var comb = []
+            for idx in chosen:
+                comb.append(items[idx])
+            result.append(comb)
+            continue
+        var i = n - 1
+        while i >= start:
+            stack.append([chosen + [i], i + 1])
+            i = i - 1
+    return result
+
+var takewhile = Function(pred, iterable):
+    var out = []
+    for x in iterable:
+        if not pred(x):
+            break
+        out.append(x)
+    return out
+
+var dropwhile = Function(pred, iterable):
+    var out = []
+    var dropping = True
+    for x in iterable:
+        if dropping and pred(x):
+            continue
+        dropping = False
+        out.append(x)
+    return out
+
+var filterfalse = Function(pred, iterable):
+    var out = []
+    for x in iterable:
+        if not pred(x):
+            out.append(x)
+    return out
+
+var compress = Function(data, selectors):
+    var out = []
+    var i = 0
+    for x in data:
+        if i < len(selectors) and selectors[i]:
+            out.append(x)
+        i = i + 1
+    return out
+
+var starmap = Function(func, argtuples):
+    var out = []
+    for args in argtuples:
+        out.append(func(args))
+    return out
+
+var pairwise = Function(iterable):
+    var out = []
+    var prev = None
+    var first = True
+    for x in iterable:
+        if not first:
+            out.append([prev, x])
+        prev = x
+        first = False
+    return out
+
+var ziplongest = Function(lists, fillvalue = None):
+    var longest = 0
+    for lst in lists:
+        if len(lst) > longest:
+            longest = len(lst)
+    var out = []
+    for i in range(longest):
+        var row = []
+        for lst in lists:
+            if i < len(lst):
+                row.append(lst[i])
+            else:
+                row.append(fillvalue)
+        out.append(row)
+    return out
+
+var groupby = Function(iterable, key = None):
+    # Group CONSECUTIVE elements sharing a key -> list of [key, [members...]].
+    var out = []
+    var haveCur = False
+    var curKey = None
+    var curGroup = []
+    for x in iterable:
+        var k = x
+        if key != None:
+            k = key(x)
+        if haveCur and k == curKey:
+            curGroup.append(x)
+        else:
+            if haveCur:
+                out.append([curKey, curGroup])
+            curKey = k
+            curGroup = [x]
+            haveCur = True
+    if haveCur:
+        out.append([curKey, curGroup])
+    return out

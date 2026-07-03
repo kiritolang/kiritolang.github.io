@@ -1,0 +1,9 @@
+# privacy is per class-chain: a sibling class cannot read another's _hidden
+class Base:
+    var _init_ = Function(self):
+        self._hidden = 1
+class Derived:
+    var _init_ = Function(self):
+        self._hidden = 2
+var d = Derived()
+discard d._hidden

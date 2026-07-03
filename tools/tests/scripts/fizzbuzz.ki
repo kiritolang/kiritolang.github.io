@@ -1,0 +1,14 @@
+# Classic FizzBuzz, 1..15.
+var io = import("io")
+
+var i = 1
+while i <= 15:
+    if i % 15 == 0:
+        io.print("FizzBuzz")
+    elif i % 3 == 0:
+        io.print("Fizz")
+    elif i % 5 == 0:
+        io.print("Buzz")
+    else:
+        io.print(String(i))
+    i = i + 1

@@ -1,0 +1,3 @@
+# gamma at a non-positive integer pole is a math domain error.
+var m = import("math")
+discard m.gamma(0)

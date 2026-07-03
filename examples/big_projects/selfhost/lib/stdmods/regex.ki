@@ -1,0 +1,900 @@
+# A from-scratch regular-expression engine in pure Kirito with a guaranteed LINEAR-TIME match: it
+# compiles the pattern to NFA bytecode and runs it with a Thompson/Pike VM (a set of threads carrying
+# capture positions, each program counter considered at most once per input position). No
+# backtracking, so `(a+)+b`-style patterns can't blow up. Backreferences and lookaround are rejected
+# (they'd break the linear-time guarantee), matching the real interpreter's `regex` module.
+#
+# Flags: IGNORECASE (1), MULTILINE (2), DOTALL (4) — also as I / M / S.
+
+var IGNORECASE = 1
+var MULTILINE = 2
+var DOTALL = 4
+var I = 1
+var M = 2
+var S = 4
+
+# ------------------------------------------------------------- character-class range helpers
+var _digitR = Function():
+    return [[48, 57]]
+var _wordR = Function():
+    return [[48, 57], [65, 90], [95, 95], [97, 122]]
+var _spaceR = Function():
+    return [[9, 13], [32, 32]]
+
+# complement of a sorted-or-unsorted range set over the code-point space [0, 0x10FFFF]
+var _complement = Function(rs):
+    var sorted2 = []
+    for r in rs:
+        sorted2.append(r)
+    sorted2.sort(Function(a): return a[0])
+    var out = []
+    var nextlo = 0
+    for r in sorted2:
+        if r[0] > nextlo:
+            out.append([nextlo, r[0] - 1])
+        if r[1] + 1 > nextlo:
+            nextlo = r[1] + 1
+    if nextlo <= 1114111:
+        out.append([nextlo, 1114111])
+    return out
+
+# ------------------------------------------------------------- parser (recursive descent -> AST)
+# Parser state P: s (pattern String), pos, flags, classes, names, namemap, ngroups, depth.
+var _peek = Function(P):
+    if P["pos"] < len(P["s"]):
+        return P["s"][P["pos"]]
+    return ""
+var _peek2 = Function(P):
+    if P["pos"] + 1 < len(P["s"]):
+        return P["s"][P["pos"] + 1]
+    return ""
+var _nextc = Function(P):
+    var c = P["s"][P["pos"]]
+    P["pos"] = P["pos"] + 1
+    return c
+var _eat = Function(P, ch):
+    if _peek(P) == ch:
+        P["pos"] = P["pos"] + 1
+        return True
+    return False
+var _isdig = Function(ch):
+    return ch >= "0" and ch <= "9"
+
+var _addClass = Function(P, ranges, negated):
+    var idx = len(P["classes"])
+    P["classes"].append({"ranges": ranges, "negated": negated})
+    return {"kind": "class", "klass": idx}
+
+var _readHex = Function(P, count):
+    var v = 0
+    var i = 0
+    while i < count:
+        var h = _peek(P)
+        var d = -1
+        if h >= "0" and h <= "9":
+            d = ord(h) - 48
+        elif h >= "a" and h <= "f":
+            d = ord(h) - 87
+        elif h >= "A" and h <= "F":
+            d = ord(h) - 70
+        else:
+            throw "RegexError: incomplete \\x/\\u escape"
+        v = v * 16 + d
+        P["pos"] = P["pos"] + 1
+        i = i + 1
+    return v
+
+var _readOctalAfter = Function(P, firstVal):
+    var v = firstVal
+    var i = 0
+    while i < 2:
+        var d = _peek(P)
+        if d < "0" or d > "7":
+            break
+        v = v * 8 + (ord(d) - 48)
+        P["pos"] = P["pos"] + 1
+        i = i + 1
+    return v
+
+# decode a single escaped character to a code point
+var _decodeEscapeChar = Function(P, c):
+    if c == "n":
+        return 10
+    if c == "t":
+        return 9
+    if c == "r":
+        return 13
+    if c == "f":
+        return 12
+    if c == "v":
+        return 11
+    if c == "a":
+        return 7
+    if c == "0":
+        return _readOctalAfter(P, 0)
+    if c == "x":
+        return _readHex(P, 2)
+    if c == "u":
+        return _readHex(P, 4)
+    if c == "U":
+        return _readHex(P, 8)
+    return ord(c)
+
+# parseEscape (outside a class): \d \w \s + negations, anchors, escaped chars
+var _parseEscape = Function(P):
+    P["pos"] = P["pos"] + 1                       # consume backslash
+    if P["pos"] >= len(P["s"]):
+        throw "RegexError: trailing backslash in pattern"
+    var c = _nextc(P)
+    if c == "d":
+        return _addClass(P, _digitR(), False)
+    if c == "D":
+        return _addClass(P, _digitR(), True)
+    if c == "w":
+        return _addClass(P, _wordR(), False)
+    if c == "W":
+        return _addClass(P, _wordR(), True)
+    if c == "s":
+        return _addClass(P, _spaceR(), False)
+    if c == "S":
+        return _addClass(P, _spaceR(), True)
+    if c == "b":
+        return {"kind": "anchor", "anchor": "wordb"}
+    if c == "B":
+        return {"kind": "anchor", "anchor": "nwordb"}
+    if c == "A":
+        return {"kind": "anchor", "anchor": "begintext"}
+    if c == "Z" or c == "z":
+        return {"kind": "anchor", "anchor": "endtext"}
+    if c >= "1" and c <= "9":
+        throw "RegexError: backreferences are not supported (they would break the linear-time guarantee)"
+    return {"kind": "lit", "cp": _decodeEscapeChar(P, c)}
+
+var _classSingleEscape = Function(P, e):
+    if e == "b":
+        return 8
+    if e >= "0" and e <= "7":
+        return _readOctalAfter(P, ord(e) - 48)
+    return _decodeEscapeChar(P, e)
+
+var _parseClass = Function(P):
+    P["pos"] = P["pos"] + 1                       # consume '['
+    var ranges = []
+    var negated = False
+    if _eat(P, "^"):
+        negated = True
+    var first = True
+    while True:
+        if P["pos"] >= len(P["s"]):
+            throw "RegexError: unterminated character class"
+        var c = _peek(P)
+        if c == "]" and not first:
+            P["pos"] = P["pos"] + 1
+            break
+        first = False
+        var cp = 0
+        if c == "\\":
+            P["pos"] = P["pos"] + 1
+            if P["pos"] >= len(P["s"]):
+                throw "RegexError: trailing backslash in character class"
+            var e = _nextc(P)
+            if e == "d":
+                for r in _digitR():
+                    ranges.append(r)
+                continue
+            if e == "w":
+                for r in _wordR():
+                    ranges.append(r)
+                continue
+            if e == "s":
+                for r in _spaceR():
+                    ranges.append(r)
+                continue
+            if e == "D":
+                for r in _complement(_digitR()):
+                    ranges.append(r)
+                continue
+            if e == "W":
+                for r in _complement(_wordR()):
+                    ranges.append(r)
+                continue
+            if e == "S":
+                for r in _complement(_spaceR()):
+                    ranges.append(r)
+                continue
+            cp = _classSingleEscape(P, e)
+        else:
+            cp = ord(c)
+            P["pos"] = P["pos"] + 1
+        # a range a-b (a trailing '-' before ']' is a literal '-')
+        if _peek(P) == "-" and P["pos"] + 1 < len(P["s"]) and _peek2(P) != "]":
+            P["pos"] = P["pos"] + 1               # consume '-'
+            var hi = 0
+            if _peek(P) == "\\":
+                P["pos"] = P["pos"] + 1
+                hi = _classSingleEscape(P, _nextc(P))
+            else:
+                hi = ord(_nextc(P))
+            if hi < cp:
+                throw "RegexError: bad character range in class"
+            ranges.append([cp, hi])
+        else:
+            ranges.append([cp, cp])
+    return _addClass(P, ranges, negated)
+
+var _parseGroupName = Function(P, close):
+    var out = ""
+    while P["pos"] < len(P["s"]) and _peek(P) != close:
+        out = out + _nextc(P)
+    if not _eat(P, close):
+        throw "RegexError: malformed group name"
+    if out == "":
+        throw "RegexError: empty group name"
+    # A group name must be an identifier: a letter or '_' then letters/digits/'_'.
+    var i = 0
+    while i < len(out):
+        var ch = out[i]
+        var isLetter = (ch >= "A" and ch <= "Z") or (ch >= "a" and ch <= "z") or ch == "_"
+        var isDigit = ch >= "0" and ch <= "9"
+        if i == 0 and not isLetter:
+            throw "RegexError: bad group name '" + out + "'"
+        if not isLetter and not isDigit:
+            throw "RegexError: bad group name '" + out + "'"
+        i = i + 1
+    return out
+
+var _parseAlternation = None   # forward (mutually recursive)
+
+var _parseGroup = Function(P):
+    P["pos"] = P["pos"] + 1                       # consume '('
+    var capture = -1
+    var name = ""
+    if _eat(P, "?"):
+        var k = _peek(P)
+        if k == ":":
+            P["pos"] = P["pos"] + 1
+        elif k == "=" or k == "!":
+            throw "RegexError: lookahead (?= / ?!) is not supported (it would break the linear-time guarantee)"
+        elif k == "P":
+            P["pos"] = P["pos"] + 1
+            if _eat(P, "="):
+                throw "RegexError: named backreferences are not supported"
+            if not _eat(P, "<"):
+                throw "RegexError: malformed named group (expected '<')"
+            name = _parseGroupName(P, ">")
+            P["ngroups"] = P["ngroups"] + 1
+            capture = P["ngroups"]
+        elif k == "<":
+            P["pos"] = P["pos"] + 1
+            if _peek(P) == "=" or _peek(P) == "!":
+                throw "RegexError: lookbehind is not supported (it would break the linear-time guarantee)"
+            name = _parseGroupName(P, ">")
+            P["ngroups"] = P["ngroups"] + 1
+            capture = P["ngroups"]
+        else:
+            var any = False
+            while True:
+                var f = _peek(P)
+                if f == "i":
+                    P["flags"] = bitor(P["flags"], IGNORECASE)
+                    P["pos"] = P["pos"] + 1
+                    any = True
+                elif f == "m":
+                    P["flags"] = bitor(P["flags"], MULTILINE)
+                    P["pos"] = P["pos"] + 1
+                    any = True
+                elif f == "s":
+                    P["flags"] = bitor(P["flags"], DOTALL)
+                    P["pos"] = P["pos"] + 1
+                    any = True
+                else:
+                    break
+            if not any or not _eat(P, ")"):
+                throw "RegexError: unsupported (?...) group"
+            return {"kind": "empty"}
+    else:
+        P["ngroups"] = P["ngroups"] + 1
+        capture = P["ngroups"]
+    var inner = _parseAlternation(P)
+    if not _eat(P, ")"):
+        throw "RegexError: missing ) in pattern"
+    if capture >= 1:
+        while len(P["names"]) <= capture:
+            P["names"].append("")
+        P["names"][capture] = name
+        if name != "":
+            if name in P["namemap"]:
+                throw "RegexError: duplicate group name '" + name + "'"
+            P["namemap"][name] = capture
+    return {"kind": "group", "group": capture, "kid": inner}
+
+var _parseAtom = Function(P):
+    P["depth"] = P["depth"] + 1
+    if P["depth"] > 400:
+        throw "RegexError: pattern too deeply nested"
+    var c = _peek(P)
+    var r = None
+    if c == "(":
+        r = _parseGroup(P)
+    elif c == "[":
+        r = _parseClass(P)
+    elif c == ")":
+        throw "RegexError: unbalanced ')' in pattern"
+    elif c == "*" or c == "+" or c == "?":
+        throw "RegexError: nothing to repeat"
+    elif c == ".":
+        P["pos"] = P["pos"] + 1
+        r = {"kind": "any"}
+    elif c == "^":
+        P["pos"] = P["pos"] + 1
+        r = {"kind": "anchor", "anchor": "beginline"}
+    elif c == "$":
+        P["pos"] = P["pos"] + 1
+        r = {"kind": "anchor", "anchor": "endline"}
+    elif c == "\\":
+        r = _parseEscape(P)
+    else:
+        P["pos"] = P["pos"] + 1
+        r = {"kind": "lit", "cp": ord(c)}
+    P["depth"] = P["depth"] - 1
+    return r
+
+var _parseQuantified = Function(P):
+    var atom = _parseAtom(P)
+    var c = _peek(P)
+    var zeroWidth = atom["kind"] == "anchor" or atom["kind"] == "empty"
+    if zeroWidth and (c == "*" or c == "+" or c == "?"):
+        throw "RegexError: nothing to repeat"
+    if c == "*" or c == "+" or c == "?":
+        P["pos"] = P["pos"] + 1
+        var greedy = not _eat(P, "?")
+        var kind = "star"
+        if c == "+":
+            kind = "plus"
+        elif c == "?":
+            kind = "quest"
+        return {"kind": kind, "greedy": greedy, "kid": atom}
+    if c == "{":
+        var save = P["pos"]
+        P["pos"] = P["pos"] + 1
+        var lo = 0
+        var hi = 0
+        var ok = True
+        var hasLo = False
+        while _isdig(_peek(P)):
+            lo = lo * 10 + (ord(_nextc(P)) - 48)
+            hasLo = True
+        if not hasLo:
+            ok = False
+        if ok and _eat(P, ","):
+            if _peek(P) == "}":
+                hi = -1
+            else:
+                var hasHi = False
+                while _isdig(_peek(P)):
+                    hi = hi * 10 + (ord(_nextc(P)) - 48)
+                    hasHi = True
+                if not hasHi:
+                    ok = False
+        elif ok:
+            hi = lo
+        if ok and _eat(P, "}"):
+            if zeroWidth:
+                throw "RegexError: nothing to repeat"
+            if hi != -1 and hi < lo:
+                throw "RegexError: bad repetition bounds"
+            if lo > 1000 or hi > 1000:
+                throw "RegexError: repetition count too large (max 1000)"
+            var greedy2 = not _eat(P, "?")
+            return {"kind": "repeat", "rmin": lo, "rmax": hi, "greedy": greedy2, "kid": atom}
+        P["pos"] = save                            # not a valid {..}: '{' is a literal
+    return atom
+
+var _parseConcat = Function(P):
+    var parts = []
+    var c = _peek(P)
+    while c != "" and c != "|" and c != ")":
+        parts.append(_parseQuantified(P))
+        c = _peek(P)
+    if len(parts) == 0:
+        return {"kind": "empty"}
+    if len(parts) == 1:
+        return parts[0]
+    return {"kind": "concat", "kids": parts}
+
+_parseAlternation = Function(P):
+    var alts = [_parseConcat(P)]
+    while _eat(P, "|"):
+        alts.append(_parseConcat(P))
+    if len(alts) == 1:
+        return alts[0]
+    return {"kind": "alt", "kids": alts}
+
+# ------------------------------------------------------------- compiler (AST -> bytecode)
+var _emit = Function(prog, inst):
+    prog["insts"].append(inst)
+    return len(prog["insts"]) - 1
+var _here = Function(prog):
+    return len(prog["insts"])
+
+var _compile = None   # forward
+
+var _compileAlt = Function(prog, alts):
+    var jmps = []
+    var i = 0
+    while i + 1 < len(alts):
+        var sp = _emit(prog, {"op": "split", "x": 0, "y": 0})
+        prog["insts"][sp]["x"] = _here(prog)
+        _compile(prog, alts[i])
+        jmps.append(_emit(prog, {"op": "jmp", "x": 0}))
+        prog["insts"][sp]["y"] = _here(prog)
+        i = i + 1
+    _compile(prog, alts[len(alts) - 1])
+    for j in jmps:
+        prog["insts"][j]["x"] = _here(prog)
+
+var _compileStar = Function(prog, body, greedy):
+    var sp = _emit(prog, {"op": "split", "x": 0, "y": 0})
+    var bodyStart = _here(prog)
+    _compile(prog, body)
+    _emit(prog, {"op": "jmp", "x": sp})
+    var end = _here(prog)
+    if greedy:
+        prog["insts"][sp]["x"] = bodyStart
+        prog["insts"][sp]["y"] = end
+    else:
+        prog["insts"][sp]["x"] = end
+        prog["insts"][sp]["y"] = bodyStart
+
+var _compilePlus = Function(prog, body, greedy):
+    var bodyStart = _here(prog)
+    _compile(prog, body)
+    var sp = _emit(prog, {"op": "split", "x": 0, "y": 0})
+    var end = _here(prog)
+    if greedy:
+        prog["insts"][sp]["x"] = bodyStart
+        prog["insts"][sp]["y"] = end
+    else:
+        prog["insts"][sp]["x"] = end
+        prog["insts"][sp]["y"] = bodyStart
+
+var _compileQuest = Function(prog, body, greedy):
+    var sp = _emit(prog, {"op": "split", "x": 0, "y": 0})
+    var bodyStart = _here(prog)
+    _compile(prog, body)
+    var end = _here(prog)
+    if greedy:
+        prog["insts"][sp]["x"] = bodyStart
+        prog["insts"][sp]["y"] = end
+    else:
+        prog["insts"][sp]["x"] = end
+        prog["insts"][sp]["y"] = bodyStart
+
+_compile = Function(prog, n):
+    var k = n["kind"]
+    if k == "empty":
+        return None
+    if k == "lit":
+        _emit(prog, {"op": "char", "cp": n["cp"]})
+    elif k == "any":
+        _emit(prog, {"op": "any"})
+    elif k == "class":
+        _emit(prog, {"op": "class", "klass": n["klass"]})
+    elif k == "anchor":
+        _emit(prog, {"op": "assert", "ak": n["anchor"]})
+    elif k == "concat":
+        for kid in n["kids"]:
+            _compile(prog, kid)
+    elif k == "alt":
+        _compileAlt(prog, n["kids"])
+    elif k == "star":
+        _compileStar(prog, n["kid"], n["greedy"])
+    elif k == "plus":
+        _compilePlus(prog, n["kid"], n["greedy"])
+    elif k == "quest":
+        _compileQuest(prog, n["kid"], n["greedy"])
+    elif k == "repeat":
+        var i = 0
+        while i < n["rmin"]:
+            _compile(prog, n["kid"])
+            i = i + 1
+        if n["rmax"] == -1:
+            _compileStar(prog, n["kid"], n["greedy"])
+        else:
+            var j = n["rmin"]
+            while j < n["rmax"]:
+                _compileQuest(prog, n["kid"], n["greedy"])
+                j = j + 1
+    elif k == "group":
+        if n["group"] >= 1:
+            _emit(prog, {"op": "save", "slot": 2 * n["group"]})
+            _compile(prog, n["kid"])
+            _emit(prog, {"op": "save", "slot": 2 * n["group"] + 1})
+        else:
+            _compile(prog, n["kid"])
+
+# Compile a pattern String into a program.
+var compile = Function(pattern, flags = 0):
+    var P = {"s": pattern, "pos": 0, "flags": flags, "classes": [], "names": [""], "namemap": {}, "ngroups": 0, "depth": 0}
+    var root = _parseAlternation(P)
+    if P["pos"] < len(P["s"]):
+        throw "RegexError: unexpected '" + _peek(P) + "' in pattern"
+    var prog = {"insts": [], "classes": P["classes"], "flags": P["flags"], "ngroups": P["ngroups"], "names": P["names"], "namemap": P["namemap"]}
+    while len(prog["names"]) <= prog["ngroups"]:
+        prog["names"].append("")
+    _emit(prog, {"op": "save", "slot": 0})
+    _compile(prog, root)
+    _emit(prog, {"op": "save", "slot": 1})
+    _emit(prog, {"op": "match"})
+    return Regex(prog, pattern)
+
+# ------------------------------------------------------------- the Pike VM
+var _hasFlag = Function(prog, f):
+    return bitand(prog["flags"], f) != 0
+
+var _charEqI = Function(a, b, ic):
+    if a == b:
+        return True
+    if not ic:
+        return False
+    return a.lower() == b.lower()
+
+var _classMatches = Function(cc, ch, ic):
+    var cp = ord(ch)
+    var raw = Function(x):
+        for r in cc["ranges"]:
+            if x >= r[0] and x <= r[1]:
+                return True
+        return False
+    var inside = raw(cp)
+    if not inside and ic:
+        inside = raw(ord(ch.lower())) or raw(ord(ch.upper()))
+    if cc["negated"]:
+        return not inside
+    return inside
+
+var _isWordCp = Function(cp):
+    return (cp >= 48 and cp <= 57) or (cp >= 65 and cp <= 90) or (cp >= 97 and cp <= 122) or cp == 95
+
+var _assertHolds = Function(kind, text, sp, flags):
+    var n = len(text)
+    var ml = bitand(flags, MULTILINE) != 0
+    if kind == "begintext":
+        return sp == 0
+    if kind == "endtext":
+        return sp == n
+    if kind == "beginline":
+        if ml:
+            return sp == 0 or text[sp - 1] == "\n"
+        return sp == 0
+    if kind == "endline":
+        if ml:
+            return sp == n or text[sp] == "\n"
+        return sp == n or (sp == n - 1 and text[sp] == "\n")
+    if kind == "wordb" or kind == "nwordb":
+        var a = sp > 0 and _isWordCp(ord(text[sp - 1]))
+        var b = sp < n and _isWordCp(ord(text[sp]))
+        if kind == "wordb":
+            return a != b
+        return a == b
+    return False
+
+# Epsilon-closure from pc0; append consuming/Match threads to `list` in priority order.
+var _addThread = Function(prog, text, sp, list, visited, gen, pc0, caps0):
+    var stack = [[pc0, caps0]]
+    while len(stack) > 0:
+        var fr = stack.pop()
+        var pc = fr[0]
+        var caps = fr[1]
+        if visited[pc] == gen:
+            continue
+        visited[pc] = gen
+        var inst = prog["insts"][pc]
+        var op = inst["op"]
+        if op == "jmp":
+            stack.append([inst["x"], caps])
+        elif op == "split":
+            stack.append([inst["y"], caps])
+            stack.append([inst["x"], caps])
+        elif op == "save":
+            var c = caps.copy()
+            if inst["slot"] >= 0 and inst["slot"] < len(c):
+                c[inst["slot"]] = sp
+            stack.append([pc + 1, c])
+        elif op == "assert":
+            if _assertHolds(inst["ak"], text, sp, prog["flags"]):
+                stack.append([pc + 1, caps])
+        else:
+            list.append([pc, caps])
+
+# Run the program over the subject String. Returns [matched, slots].
+var _run = Function(prog, text, startPos, anchored, requireEnd):
+    var n = len(text)
+    var m = len(prog["insts"])
+    var visited = []
+    var vi = 0
+    while vi < m:
+        visited.append(-1)
+        vi = vi + 1
+    var capN = 2 * (prog["ngroups"] + 1)
+    var init = []
+    var ci = 0
+    while ci < capN:
+        init.append(-1)
+        ci = ci + 1
+    var gen = 1
+    var clist = []
+    _addThread(prog, text, startPos, clist, visited, gen, 0, init)
+    var bestMatched = False
+    var bestSlots = []
+    var ic = bitand(prog["flags"], IGNORECASE) != 0
+    var dotall = bitand(prog["flags"], DOTALL) != 0
+    var sp = startPos
+    while True:
+        if len(clist) == 0 and (bestMatched or anchored):
+            break
+        gen = gen + 1
+        var nextGen = gen
+        var nlist = []
+        var cut = False
+        var ti = 0
+        while ti < len(clist) and not cut:
+            var t = clist[ti]
+            var inst = prog["insts"][t[0]]
+            var op = inst["op"]
+            if op == "char":
+                if sp < n and _charEqI(text[sp], chr(inst["cp"]), ic):
+                    _addThread(prog, text, sp + 1, nlist, visited, nextGen, t[0] + 1, t[1])
+            elif op == "any":
+                if sp < n and (dotall or text[sp] != "\n"):
+                    _addThread(prog, text, sp + 1, nlist, visited, nextGen, t[0] + 1, t[1])
+            elif op == "class":
+                if sp < n and _classMatches(prog["classes"][inst["klass"]], text[sp], ic):
+                    _addThread(prog, text, sp + 1, nlist, visited, nextGen, t[0] + 1, t[1])
+            elif op == "match":
+                if not requireEnd or sp == n:
+                    bestMatched = True
+                    bestSlots = t[1]
+                    cut = True
+            ti = ti + 1
+        clist = nlist
+        if sp >= n:
+            break
+        if not anchored and not bestMatched:
+            _addThread(prog, text, sp + 1, clist, visited, nextGen, 0, init)
+        sp = sp + 1
+    return [bestMatched, bestSlots]
+
+# ------------------------------------------------------------- Match object
+class Match:
+    var _init_ = Function(self, prog, subject, slots):
+        self._prog = prog
+        self.string = subject
+        self._slots = slots
+    # A Match wraps a live compiled-program reference like the real native MatchVal; resource-like
+    # natives are intentionally not serializable (matches Pattern/Socket/BytesIO's rejection).
+    var _getstate_ = Function(self):
+        throw "Match is not serializable"
+    var _groupNum = Function(self, key):
+        if isinstance(key, "Integer"):
+            if key < 0 or key > self._prog["ngroups"]:
+                throw "no such group: " + String(key)
+            return key
+        if key in self._prog["namemap"]:
+            return self._prog["namemap"][key]
+        throw "no such group: '" + String(key) + "'"
+    var _gstr = Function(self, g):
+        if self._slots[2 * g] < 0:
+            return None
+        return self.string[self._slots[2 * g]:self._slots[2 * g + 1]]
+    var group = Function(self, index = 0):
+        return self._gstr(self._groupNum(index))
+    var groups = Function(self, default = None):
+        var out = []
+        var g = 1
+        while g <= self._prog["ngroups"]:
+            if self._slots[2 * g] < 0:
+                out.append(default)
+            else:
+                out.append(self._gstr(g))
+            g = g + 1
+        return out
+    var groupdict = Function(self, default = None):
+        var out = {}
+        var g = 1
+        while g <= self._prog["ngroups"]:
+            var nm = self._prog["names"][g]
+            if nm != "":
+                if self._slots[2 * g] < 0:
+                    out[nm] = default
+                else:
+                    out[nm] = self._gstr(g)
+            g = g + 1
+        return out
+    var start = Function(self, group = 0):
+        return self._slots[2 * self._groupNum(group)]
+    var end = Function(self, group = 0):
+        return self._slots[2 * self._groupNum(group) + 1]
+    var span = Function(self, group = 0):
+        var g = self._groupNum(group)
+        return [self._slots[2 * g], self._slots[2 * g + 1]]
+    var _str_ = Function(self) -> String:
+        return "<Match span=(" + String(self._slots[0]) + ", " + String(self._slots[1]) + ")>"
+
+# ------------------------------------------------------------- Regex object
+var _mkMatch = Function(prog, subject, res):
+    if not res[0]:
+        return None
+    return Match(prog, subject, res[1])
+
+# expand a string replacement template (\1..\9, \g<n>, \g<name>, \\, \n \t \r)
+var _expandTemplate = Function(tmpl, m):
+    var out = ""
+    var i = 0
+    var n = len(tmpl)
+    while i < n:
+        var c = tmpl[i]
+        if c == "\\" and i + 1 < n:
+            var d = tmpl[i + 1]
+            if d >= "1" and d <= "9":
+                var g = m.group(ord(d) - 48)
+                out = out + (g if g != None else "")
+                i = i + 2
+            elif d == "n":
+                out = out + "\n"
+                i = i + 2
+            elif d == "t":
+                out = out + "\t"
+                i = i + 2
+            elif d == "r":
+                out = out + "\r"
+                i = i + 2
+            elif d == "\\":
+                out = out + "\\"
+                i = i + 2
+            elif d == "g" and i + 2 < n and tmpl[i + 2] == "<":
+                var j = i + 3
+                var nm = ""
+                while j < n and tmpl[j] != ">":
+                    nm = nm + tmpl[j]
+                    j = j + 1
+                var key = nm
+                if len(nm) > 0 and nm[0] >= "0" and nm[0] <= "9":
+                    key = Integer(nm)
+                var gv = m.group(key)
+                out = out + (gv if gv != None else "")
+                i = j + 1
+            else:
+                out = out + c
+                i = i + 1
+        else:
+            out = out + c
+            i = i + 1
+    return out
+
+class Regex:
+    var _init_ = Function(self, prog, pattern):
+        self._prog = prog
+        self.pattern = pattern
+        self.groups = prog["ngroups"]
+        self.groupindex = prog["namemap"]
+    # Same rationale as Match._getstate_: a compiled program is a live resource, not plain data.
+    var _getstate_ = Function(self):
+        throw "Regex is not serializable"
+    var _clamp = Function(self, text, pos, endpos):
+        # returns the searched substring honoring pos/endpos (endpos truncates so $ anchors there)
+        var hi = len(text)
+        if endpos != None and endpos < hi:
+            hi = endpos
+        return text[0:hi]
+    var match = Function(self, string, pos = 0, endpos = None):
+        var t = self._clamp(string, pos, endpos)
+        return _mkMatch(self._prog, string, _run(self._prog, t, pos, True, False))
+    var fullmatch = Function(self, string, pos = 0, endpos = None):
+        var t = self._clamp(string, pos, endpos)
+        return _mkMatch(self._prog, string, _run(self._prog, t, pos, True, True))
+    var search = Function(self, string, pos = 0, endpos = None):
+        var t = self._clamp(string, pos, endpos)
+        return _mkMatch(self._prog, string, _run(self._prog, t, pos, False, False))
+    var _allMatches = Function(self, text, startPos):
+        var out = []
+        var pos = startPos
+        var n = len(text)
+        while pos <= n:
+            var res = _run(self._prog, text, pos, False, False)
+            if not res[0]:
+                break
+            out.append(res[1])
+            var a = res[1][0]
+            var b = res[1][1]
+            if b > a:
+                pos = b
+            else:
+                pos = a + 1
+        return out
+    var finditer = Function(self, string, pos = 0, endpos = None):
+        var out = []
+        for slots in self._allMatches(self._clamp(string, pos, endpos), pos):
+            out.append(Match(self._prog, string, slots))
+        return out
+    var findall = Function(self, string, pos = 0, endpos = None):
+        var out = []
+        for slots in self._allMatches(self._clamp(string, pos, endpos), pos):
+            var mt = Match(self._prog, string, slots)
+            if self._prog["ngroups"] == 0:
+                out.append(string[slots[0]:slots[1]])
+            elif self._prog["ngroups"] == 1:
+                var g1 = mt.group(1)
+                out.append(g1 if g1 != None else "")
+            else:
+                var tup = []
+                var g = 1
+                while g <= self._prog["ngroups"]:
+                    var gv = mt.group(g)
+                    tup.append(gv if gv != None else "")
+                    g = g + 1
+                out.append(tup)
+        return out
+    var sub = Function(self, repl, string, count = 0):
+        var out = ""
+        var last = 0
+        var done = 0
+        for slots in self._allMatches(string, 0):
+            if count > 0 and done >= count:
+                break
+            out = out + string[last:slots[0]]
+            var mt = Match(self._prog, string, slots)
+            if isinstance(repl, "String"):
+                out = out + _expandTemplate(repl, mt)
+            else:
+                out = out + repl(mt)
+            last = slots[1]
+            done = done + 1
+        out = out + string[last:]
+        return out
+    var split = Function(self, string, maxsplit = 0):
+        var out = []
+        var last = 0
+        var done = 0
+        for slots in self._allMatches(string, 0):
+            if maxsplit > 0 and done >= maxsplit:
+                break
+            # Split on empty matches too, so an empty-capable pattern yields the leading/inter-character
+            # ''s — consistent with findall over the same matches (native parity).
+            out.append(string[last:slots[0]])
+            # captured groups are kept in the result, between the split pieces.
+            var mt = Match(self._prog, string, slots)
+            var g = 1
+            while g <= self._prog["ngroups"]:
+                out.append(mt.group(g))
+                g = g + 1
+            last = slots[1]
+            done = done + 1
+        out.append(string[last:])
+        return out
+
+# ------------------------------------------------------------- module-level convenience functions
+var match = Function(pattern, string, flags = 0):
+    return compile(pattern, flags).match(string)
+var fullmatch = Function(pattern, string, flags = 0):
+    return compile(pattern, flags).fullmatch(string)
+var search = Function(pattern, string, flags = 0):
+    return compile(pattern, flags).search(string)
+var findall = Function(pattern, string, flags = 0):
+    return compile(pattern, flags).findall(string)
+var finditer = Function(pattern, string, flags = 0):
+    return compile(pattern, flags).finditer(string)
+var sub = Function(pattern, repl, string, count = 0):
+    return compile(pattern, 0).sub(repl, string, count)
+var split = Function(pattern, string, maxsplit = 0):
+    return compile(pattern, 0).split(string, maxsplit)
+
+var escape = Function(s):
+    var out = ""
+    var special = ".^$*+?()[]{}|\\"
+    for ch in s:
+        if ch in special:
+            out = out + "\\" + ch
+        else:
+            out = out + ch
+    return out

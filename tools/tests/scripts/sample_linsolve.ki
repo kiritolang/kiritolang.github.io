@@ -1,0 +1,56 @@
+# Solve complex linear systems A x = b using the ComplexMatrix class and Gauss-Jordan solver,
+# demonstrating all three outcomes (unique / none / infinite). Idiomatic Kirito: for/range, the
+# ComplexMatrix class with operator overloads, and the linsolve library.
+#
+# Run:  ki --lib examples/lib examples/complex_linsolve.ki
+
+var io = import("io")
+var C = import("complex")
+var solver = import("linsolve")
+
+var report = Function(title, A, b):
+    io.print("=== " + title + " ===")
+    var result = solver.solve(A, b)
+    io.print("kind: " + result["kind"] + " (rank " + String(result["rank"]) + ")")
+    if result["kind"] != "none":
+        var parts = []
+        for v in result["x"]:
+            parts.append(String(v))
+        io.print("x = [" + ", ".join(parts) + "]")
+        io.print("verified: " + String(solver.verify(A, result["x"], b)))
+
+# --- A 2x2 complex system with a unique solution ---------------------------------------------
+#   (1+i) x0 + 2 x1 = 3+i
+#   (i)   x0 + (1-i) x1 = 2
+var A1 = C.Matrix([
+    [C.of(1, 1), C.of(2, 0)],
+    [C.of(0, 1), C.of(1, -1)]
+])
+var b1 = [C.of(3, 1), C.of(2, 0)]
+report("2x2 complex (unique)", A1, b1)
+
+# --- A 3x3 real-valued system with a unique solution -----------------------------------------
+var A2 = C.Matrix([
+    [C.real(2), C.real(1), C.real(-1)],
+    [C.real(-3), C.real(-1), C.real(2)],
+    [C.real(-2), C.real(1), C.real(2)]
+])
+var b2 = [C.real(8), C.real(-11), C.real(-3)]
+report("3x3 real (unique)", A2, b2)
+
+# --- An inconsistent system (no solution) ----------------------------------------------------
+var A3 = C.Matrix([
+    [C.real(1), C.real(1)],
+    [C.real(1), C.real(1)]
+])
+var b3 = [C.real(1), C.real(2)]
+report("2x2 inconsistent (none)", A3, b3)
+
+# --- An underdetermined system (infinitely many solutions) -----------------------------------
+var A4 = C.Matrix([
+    [C.real(1), C.real(1), C.real(1)],
+    [C.real(1), C.real(-1), C.real(0)],
+    [C.real(2), C.real(0), C.real(1)]
+])
+var b4 = [C.real(6), C.real(0), C.real(6)]
+report("3x3 underdetermined (infinite)", A4, b4)
