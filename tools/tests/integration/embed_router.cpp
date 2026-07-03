@@ -28,14 +28,14 @@ struct Msg {
 // (possibly transformed) event Dict.
 static Handle eventToDict(KiritoVM& vm, const Msg& e) {
     Dict d(vm);
-    d.set("type",     val(vm, e.type));
-    d.set("payload",  val(vm, e.payload));
-    d.set("priority", val(vm, e.priority));
+    d.set("type",     Value(vm, e.type));
+    d.set("payload",  Value(vm, e.payload));
+    d.set("priority", Value(vm, e.priority));
     return d.build().handle();
 }
 static Msg dictToEvent(Value d) {
-    return { d.get("type").asString("type"),
-             d.get("payload").asString("payload"),
+    return { d.get("type").asStringRef("type"),
+             d.get("payload").asStringRef("payload"),
              d.get("priority").asInt("priority") };
 }
 
@@ -56,14 +56,14 @@ public:
                 throw KiritoError("router: rule must return a List, got '" + result.typeName() + "'");
             for (Value item : result.items()) {
                 if (item.isString()) {
-                    const std::string& topic = item.asString("topic");
+                    const std::string& topic = item.asStringRef("topic");
                     if (topic == "reject") return;
                     topics_[topic].push_back(current);
                 } else if (item.isDict()) {
                     // {"topic": String, "event": Dict} — transform the event AND route it.
                     // Copy the topic String out of the temporary before it dies (Value::get
                     // returns by value, so the bound `asString` reference is dangling otherwise).
-                    std::string topic = item.get("topic").asString("routed topic");
+                    std::string topic = item.get("topic").asStringRef("routed topic");
                     Value evtView = item.get("event");
                     Msg transformed = dictToEvent(evtView);
                     topics_[topic].push_back(transformed);

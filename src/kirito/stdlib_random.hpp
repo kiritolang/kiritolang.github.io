@@ -324,7 +324,7 @@ public:
              "Random",
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                  Args args(vm, a, "Random");
-                 bool useXoshiro = RandomState::parseGenerator(args[1].asString("generator"));
+                 bool useXoshiro = RandomState::parseGenerator(args[1].asStringRef("generator"));
                  uint64_t seed = args[0].isNone()
                                      ? RandomState::systemSeed()
                                      : static_cast<uint64_t>(args[0].asInt("Random seed"));

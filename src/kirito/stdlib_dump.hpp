@@ -184,20 +184,20 @@ public:
             Value v = Args(vm, a, "loads")[0];
             const Object& o = vm.arena().deref(v.handle());
             if (const auto* b = dynamic_cast<const BytesVal*>(&o)) return dumpfmt::read(vm, b->data);
-            if (v.isString()) return dumpfmt::read(vm, v.asString());
+            if (v.isString()) return dumpfmt::read(vm, v.asStringRef());
             throw KiritoError("loads expects a Bytes (or String) of dump data");
         });
         m.fn("save", {{"value"}, {"path", "String"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             // save(value, path): serialize `value` straight to a file (dumps + write in one step).
             Args args(vm, a, "save");
             std::string bytes = dumpfmt::write(vm, args[0]);
-            std::ofstream f(args[1].asString("save path"), std::ios::binary);
+            std::ofstream f(args[1].asStringRef("save path"), std::ios::binary);
             if (!f) throw KiritoError("could not open file for saving");
             f << bytes;
             return vm.none();
         });
         m.fn("load", {{"path", "String"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            std::ifstream f(Args(vm, a, "load")[0].asString("load path"), std::ios::binary);
+            std::ifstream f(Args(vm, a, "load")[0].asStringRef("load path"), std::ios::binary);
             if (!f) throw KiritoError("could not open file for loading");
             std::stringstream ss;
             ss << f.rdbuf();

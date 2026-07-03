@@ -27,7 +27,7 @@ struct StatsModule : NativeModule {
             int64_t n = 0;
             for (Value x : args.at(0).items()) { sum += x.asFloat("mean element"); ++n; }
             if (n == 0) throw KiritoError("mean of empty list");
-            return val(vm, sum / static_cast<double>(n));
+            return Value(vm, sum / static_cast<double>(n));
         });
 
         // clamp(x, lo, hi) -> Integer — three typed args; callable with keywords thanks to the sig.
@@ -35,10 +35,10 @@ struct StatsModule : NativeModule {
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                  Args args(vm, a, "clamp");
                  int64_t x = args.at(0).asInt("x"), lo = args.at(1).asInt("lo"), hi = args.at(2).asInt("hi");
-                 return val(vm, std::max(lo, std::min(x, hi)));
+                 return Value(vm, std::max(lo, std::min(x, hi)));
              });
 
-        m.value("VERSION", val(m.vm(), "1.0"));  // a plain constant member
+        m.value("VERSION", Value(m.vm(), "1.0"));  // a plain constant member
     }
 };
 
@@ -58,15 +58,15 @@ struct Vec2 : NativeClass<Vec2> {
     // Attribute reads (v.x, v.y) return values directly; method names return a NativeFunction with
     // `self` bound, so `v.length()` / `v.dot(o)` arrive with the receiver already in hand.
     Handle getAttr(KiritoVM& vm, Handle self, std::string_view name) override {
-        if (name == "x") return val(vm, x);
-        if (name == "y") return val(vm, y);
+        if (name == "x") return Value(vm, x);
+        if (name == "y") return Value(vm, y);
         // makeMethod wraps a positional impl so the method ALSO accepts keyword arguments (here
         // `v.dot(other = ...)`); the named slots are declared as its `params`.
         if (name == "length")
             return makeMethod(vm, "length", {},
                 [self](KiritoVM& mv, std::span<const Handle>) -> Handle {
                     auto& v = static_cast<Vec2&>(mv.arena().deref(self));
-                    return val(mv, std::sqrt(v.x * v.x + v.y * v.y));
+                    return Value(mv, std::sqrt(v.x * v.x + v.y * v.y));
                 }, std::vector<Handle>{self});
         if (name == "dot")
             return makeMethod(vm, "dot", {"other"},
@@ -75,7 +75,7 @@ struct Vec2 : NativeClass<Vec2> {
                     auto& v = static_cast<Vec2&>(mv.arena().deref(self));
                     auto* o = dynamic_cast<const Vec2*>(&mv.arena().deref(args.at(0)));
                     if (!o) throw KiritoError("dot expects a Vec2");
-                    return val(mv, v.x * o->x + v.y * o->y);
+                    return Value(mv, v.x * o->x + v.y * o->y);
                 }, std::vector<Handle>{self});
         return Object::getAttr(vm, self, name);  // anything else -> a clear "no attribute" error
     }

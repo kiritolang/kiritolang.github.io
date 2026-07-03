@@ -42,11 +42,11 @@ public:
 
     void setup(ModuleBuilder& m) override {
         KiritoVM& vm = m.vm();
-        m.value("pi", val(vm, std::numbers::pi));
-        m.value("e", val(vm, std::numbers::e));
-        m.value("tau", val(vm, 2.0 * std::numbers::pi));
-        m.value("inf", val(vm, HUGE_VAL));
-        m.value("nan", val(vm, std::nan("")));
+        m.value("pi", Value(vm, std::numbers::pi));
+        m.value("e", Value(vm, std::numbers::e));
+        m.value("tau", Value(vm, 2.0 * std::numbers::pi));
+        m.value("inf", Value(vm, HUGE_VAL));
+        m.value("nan", Value(vm, std::nan("")));
 
         // `ok` is an optional domain predicate: if the (non-NaN) argument is outside the function's
         // mathematical domain, throw a clear "math domain error" instead of returning NaN/inf rubbish.
@@ -58,7 +58,7 @@ public:
                 double x = mathNum(vm, a[0]);
                 if (ok && !std::isnan(x) && !ok(x))
                     throw KiritoError(std::string(nm) + ": math domain error (got " + floatToString(x) + ")");
-                return val(vm, f(x));
+                return Value(vm, f(x));
             });
         };
         unary("sqrt", std::sqrt, [](double x) { return x >= 0.0; });
@@ -87,21 +87,21 @@ public:
         unary("erfc", std::erfc);
 
         m.fn("isnan", {{"x", "Number"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, std::isnan(mathNum(vm, a[0])));
+            return Value(vm, std::isnan(mathNum(vm, a[0])));
         });
         m.fn("isinf", {{"x", "Number"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, std::isinf(mathNum(vm, a[0])));
+            return Value(vm, std::isinf(mathNum(vm, a[0])));
         });
         m.fn("isfinite", {{"x", "Number"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, std::isfinite(mathNum(vm, a[0])));
+            return Value(vm, std::isfinite(mathNum(vm, a[0])));
         });
         m.fn("copysign", {{"x", "Number"}, {"y", "Number"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, std::copysign(mathNum(vm, a[0]), mathNum(vm, a[1])));
+            return Value(vm, std::copysign(mathNum(vm, a[0]), mathNum(vm, a[1])));
         });
         m.fn("fmod", {{"x", "Number"}, {"y", "Number"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             double x = mathNum(vm, a[0]), y = mathNum(vm, a[1]);
             if (!std::isnan(y) && y == 0.0) throw KiritoError("fmod: math domain error (divisor is zero)");
-            return val(vm, std::fmod(x, y));
+            return Value(vm, std::fmod(x, y));
         });
         m.fn("lcm", {{"a", "Integer"}, {"b", "Integer"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             auto get = [&](Handle h) {
@@ -114,13 +114,13 @@ public:
                 return v < 0 ? 0ull - static_cast<uint64_t>(v) : static_cast<uint64_t>(v);
             };
             uint64_t x = mag(get(a[0])), y = mag(get(a[1]));
-            if (x == 0 || y == 0) return val(vm, 0);
+            if (x == 0 || y == 0) return Value(vm, 0);
             uint64_t g = x, h2 = y;
             while (h2) { uint64_t t = g % h2; g = h2; h2 = t; }
             uint64_t prod;
             if (__builtin_mul_overflow(x / g, y, &prod) || prod > static_cast<uint64_t>(INT64_MAX))
                 throw KiritoError("lcm result too large for Integer");
-            return val(vm, static_cast<int64_t>(prod));
+            return Value(vm, static_cast<int64_t>(prod));
         });
 
         m.fn("log", {{"x", "Number"}, {"base", "", vm.none()}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -129,10 +129,10 @@ public:
             double x = mathNum(vm, a[0]);
             if (!std::isnan(x) && x <= 0.0) throw KiritoError("log: math domain error (argument must be > 0)");
             if (a.size() < 2 || vm.arena().deref(a[1]).kind() == ValueKind::None)
-                return val(vm, std::log(x));
+                return Value(vm, std::log(x));
             double b = mathNum(vm, a[1]);
             if (!std::isnan(b) && (b <= 0.0 || b == 1.0)) throw KiritoError("log: math domain error (base must be > 0 and != 1)");
-            return val(vm, std::log(x) / std::log(b));
+            return Value(vm, std::log(x) / std::log(b));
         });
         m.fn("pow", {{"x", "Number"}, {"y", "Number"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.size() != 2) throw KiritoError("pow expected 2 arguments");
@@ -143,30 +143,30 @@ public:
                 if (x == 0.0 && y < 0.0)
                     throw KiritoError("pow: math domain error (zero to a negative power)");
             }
-            return val(vm, std::pow(x, y));
+            return Value(vm, std::pow(x, y));
         });
         m.fn("atan2", {{"y", "Number"}, {"x", "Number"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.size() != 2) throw KiritoError("atan2 expected 2 arguments");
-            return val(vm, std::atan2(mathNum(vm, a[0]), mathNum(vm, a[1])));
+            return Value(vm, std::atan2(mathNum(vm, a[0]), mathNum(vm, a[1])));
         });
         m.fn("hypot", {{"x", "Number"}, {"y", "Number"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.size() != 2) throw KiritoError("hypot expected 2 arguments");
-            return val(vm, std::hypot(mathNum(vm, a[0]), mathNum(vm, a[1])));
+            return Value(vm, std::hypot(mathNum(vm, a[0]), mathNum(vm, a[1])));
         });
         m.fn("fabs", {{"x", "Number"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, std::fabs(mathNum(vm, a[0])));
+            return Value(vm, std::fabs(mathNum(vm, a[0])));
         });
         m.fn("degrees", {{"x", "Number"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, mathNum(vm, a[0]) * 180.0 / std::numbers::pi);
+            return Value(vm, mathNum(vm, a[0]) * 180.0 / std::numbers::pi);
         });
         m.fn("radians", {{"x", "Number"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, mathNum(vm, a[0]) * std::numbers::pi / 180.0);
+            return Value(vm, mathNum(vm, a[0]) * std::numbers::pi / 180.0);
         });
         m.fn("floor", {{"x", "Number"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, toInt64Checked(std::floor(mathNum(vm, a[0])), "floor"));
+            return Value(vm, toInt64Checked(std::floor(mathNum(vm, a[0])), "floor"));
         });
         m.fn("ceil", {{"x", "Number"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, toInt64Checked(std::ceil(mathNum(vm, a[0])), "ceil"));
+            return Value(vm, toInt64Checked(std::ceil(mathNum(vm, a[0])), "ceil"));
         });
         m.fn("factorial", {{"n", "Integer"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             const Object& o = vm.arena().deref(a[0]);
@@ -177,7 +177,7 @@ public:
             for (int64_t i = 2; i <= n; ++i)
                 if (__builtin_mul_overflow(r, i, &r))  // 21! already exceeds int64
                     throw KiritoError("factorial result too large for Integer");
-            return val(vm, r);
+            return Value(vm, r);
         });
         m.fn("gcd", {{"a", "Integer"}, {"b", "Integer"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             auto get = [&](Handle h) {
@@ -192,7 +192,7 @@ public:
             while (y) { uint64_t t = x % y; x = y; y = t; }
             if (x > static_cast<uint64_t>(INT64_MAX))
                 throw KiritoError("gcd result too large for Integer");
-            return val(vm, static_cast<int64_t>(x));
+            return Value(vm, static_cast<int64_t>(x));
         });
         // prod(iterable[, start]): product of the elements (Integer if all Integer, else Float).
         m.fn("prod", {{"iterable"}, {"start", "", vm.makeInt(1)}}, "Number", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -221,7 +221,7 @@ public:
             // Like its siblings (factorial/comb/perm/lcm), an Integer prod throws on overflow rather
             // than silently wrapping. A Float in the mix makes the result Float (no overflow concept).
             if (!isFloat && intOverflow) throw KiritoError("prod result too large for Integer");
-            return isFloat ? val(vm, f) : val(vm, n);
+            return isFloat ? Value(vm, f) : Value(vm, n);
         });
         // comb(n, k) / perm(n, k): combinations / partial permutations, computed without overflow
         // for the common small cases (throws if the exact result exceeds int64).
@@ -236,7 +236,7 @@ public:
             bool haveK = a.size() > 1 && vm.arena().deref(a[1]).kind() != ValueKind::None;
             int64_t k = haveK ? geti(a[1], comb ? "comb" : "perm") : n;
             if (n < 0 || k < 0) throw KiritoError("comb/perm require non-negative Integers");
-            if (k > n) return val(vm, 0);
+            if (k > n) return Value(vm, 0);
             if (comb && k > n - k) k = n - k;  // symmetry: fewer multiplications
             if (!comb) {
                 // perm: n * (n-1) * ... * (n-k+1), with overflow checking.
@@ -246,7 +246,7 @@ public:
                         throw KiritoError("comb/perm result too large for Integer");
                 if (r > static_cast<unsigned long long>(INT64_MAX))
                     throw KiritoError("comb/perm result too large for Integer");
-                return val(vm, static_cast<int64_t>(r));
+                return Value(vm, static_cast<int64_t>(r));
             }
             // comb: multiply then divide step-by-step so the running value stays the EXACT partial
             // binomial coefficient (always an integer) — avoids overflowing on the full numerator
@@ -259,7 +259,7 @@ public:
             }
             if (r > static_cast<unsigned long long>(INT64_MAX))
                 throw KiritoError("comb/perm result too large for Integer");
-            return val(vm, static_cast<int64_t>(r));
+            return Value(vm, static_cast<int64_t>(r));
         };
         m.fn("comb", {{"n", "Integer"}, {"k", "Integer"}}, "Integer", [combPerm](KiritoVM& vm, std::span<const Handle> a) { return combPerm(vm, a, true); });
         m.fn("perm", {{"n", "Integer"}, {"k", "", vm.none()}}, "Integer", [combPerm](KiritoVM& vm, std::span<const Handle> a) { return combPerm(vm, a, false); });  // k optional: perm(n)=n!

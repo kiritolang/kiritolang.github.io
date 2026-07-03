@@ -359,7 +359,7 @@ public:
         KiritoVM& vm = m.vm();
         m.fn("parse", {{"text", "String"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             RootScope roots(vm);
-            json::Parser p(vm, Args(vm, a, "json.parse")[0].asString("json.parse"), roots);
+            json::Parser p(vm, Args(vm, a, "json.parse")[0].asStringRef("json.parse"), roots);
             return p.parse();
         });
         m.fn("stringify", {{"value"}, {"indent", "Integer", vm.makeInt(0)}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -370,7 +370,7 @@ public:
             int indent = args.size() > 1 ? static_cast<int>(args[1].asInt("json.stringify indent")) : 0;
             if (indent > 0) json::writeIndented(vm, args[0], out, active, indent, 0);
             else json::write(vm, args[0], out, active);
-            return val(vm, std::move(out));
+            return Value(vm, std::move(out));
         });
         // Convenience aliases.
         m.alias("loads", "parse");

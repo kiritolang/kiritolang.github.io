@@ -32,8 +32,8 @@ namespace kirito {
 // shell). A spawn failure or timeout becomes a clean catchable KiritoError.
 inline Handle runExternalProcess(KiritoVM& vm, const std::vector<std::string>& argv,
                                  Value cwdV, Value inputV, Value timeoutV) {
-    std::string cwd = cwdV.isNone() ? std::string() : cwdV.asString("cwd");
-    std::string input = inputV.isNone() ? std::string() : inputV.asString("input");
+    std::string cwd = cwdV.isNone() ? std::string() : cwdV.asStringRef("cwd");
+    std::string input = inputV.isNone() ? std::string() : inputV.asStringRef("input");
     double timeout = timeoutV.isNone() ? 0.0 : timeoutV.asFloat("timeout");
     proccompat::ProcResult r;
     try {
@@ -43,8 +43,8 @@ inline Handle runExternalProcess(KiritoVM& vm, const std::vector<std::string>& a
     }
     Dict d(vm);
     d.set("code", vm.makeInt(r.code));
-    d.set("stdout", val(vm, r.out));
-    d.set("stderr", val(vm, r.err));
+    d.set("stdout", Value(vm, r.out));
+    d.set("stderr", Value(vm, r.err));
     return d.build();
 }
 
@@ -92,15 +92,15 @@ public:
         m.fn("getenv", {{"name", "String"}, {"default", "", vm.none()}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             // getenv(name[, default]) -> String, or default/None if unset.
             Args args(vm, a, "getenv");
-            const char* v = std::getenv(args[0].asString("getenv").c_str());
-            if (v) return val(vm, v);
-            return args.opt(1, none(vm));
+            const char* v = std::getenv(args[0].asStringRef("getenv").c_str());
+            if (v) return Value(vm, v);
+            return args.opt(1, Value::None(vm));
         });
 
         m.fn("setenv", {{"name", "String"}, {"value", "String"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "setenv");
-            std::string name = args[0].asString("setenv");
-            std::string value = args[1].asString("setenv");
+            std::string name = args[0].asStringRef("setenv");
+            std::string value = args[1].asStringRef("setenv");
 #if defined(_WIN32)
             bool ok = ::SetEnvironmentVariableA(name.c_str(), value.c_str()) != 0;
             ::_putenv_s(name.c_str(), value.c_str());  // keep the CRT view (getenv) consistent too
@@ -108,18 +108,18 @@ public:
             bool ok = ::setenv(name.c_str(), value.c_str(), 1) == 0;
 #endif
             if (!ok) throw KiritoError("setenv failed for '" + name + "'");
-            return none(vm);
+            return Value::None(vm);
         });
 
         m.fn("unsetenv", {{"name", "String"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            std::string name = Args(vm, a, "unsetenv")[0].asString("unsetenv");
+            std::string name = Args(vm, a, "unsetenv")[0].asStringRef("unsetenv");
 #if defined(_WIN32)
             ::SetEnvironmentVariableA(name.c_str(), nullptr);
             ::_putenv_s(name.c_str(), "");
 #else
             ::unsetenv(name.c_str());
 #endif
-            return none(vm);
+            return Value::None(vm);
         });
 
         // environ() -> Dict of all environment variables.
@@ -131,7 +131,7 @@ public:
                 for (LPCH p = block; *p; p += std::strlen(p) + 1) {
                     std::string entry(p);
                     std::size_t eq = entry.find('=');
-                    if (eq != std::string::npos && eq > 0) d.set(entry.substr(0, eq), val(vm, entry.substr(eq + 1)));
+                    if (eq != std::string::npos && eq > 0) d.set(entry.substr(0, eq), Value(vm, entry.substr(eq + 1)));
                 }
                 ::FreeEnvironmentStringsA(block);
             }
@@ -140,7 +140,7 @@ public:
                 for (char** e = environ; *e; ++e) {
                     std::string entry(*e);
                     std::size_t eq = entry.find('=');
-                    if (eq != std::string::npos) d.set(entry.substr(0, eq), val(vm, entry.substr(eq + 1)));
+                    if (eq != std::string::npos) d.set(entry.substr(0, eq), Value(vm, entry.substr(eq + 1)));
                 }
             }
 #endif
@@ -157,7 +157,7 @@ public:
             if (o.kind() == ValueKind::Integer) std::exit(static_cast<int>(static_cast<const IntVal&>(o).value()));
             std::fprintf(stderr, "%s\n", vm.stringify(a[0]).c_str());
             std::exit(1);
-            return none(vm);  // unreachable
+            return Value::None(vm);  // unreachable
         });
 
         // traceback() -> the call chain of the MOST RECENT error this VM unwound, as a
@@ -165,7 +165,7 @@ public:
         // file / function / line, innermost last). The traceback is VM-local — it reflects only errors
         // thrown in this VM, and is replaced by each new caught error.
         m.fn("traceback", {}, "String", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            return val(vm, formatTraceback(vm.lastTraceback()));
+            return Value(vm, formatTraceback(vm.lastTraceback()));
         });
 
         // --- running external programs (NOT the `parallel` worker-VM model) -----------------------
@@ -180,9 +180,9 @@ public:
             if (!args[0].isList())
                 throw KiritoError("createprocess: args must be a List of Strings (the program and its arguments)");
             std::vector<std::string> argv;
-            for (Value e : args[0].items()) argv.push_back(e.asString("createprocess: each argument must be a String"));
+            for (Value e : args[0].items()) argv.push_back(e.asStringRef("createprocess: each argument must be a String"));
             if (argv.empty()) throw KiritoError("createprocess: args must be a non-empty List (the program and its arguments)");
-            return runExternalProcess(vm, argv, args.opt(1, none(vm)), args.opt(2, val(vm, "")), args.opt(3, none(vm)));
+            return runExternalProcess(vm, argv, args.opt(1, Value::None(vm)), args.opt(2, Value(vm, "")), args.opt(3, Value::None(vm)));
         });
 
         // shell(command, cwd=None, input="", timeout=None) -> {code, stdout, stderr}. Runs `command`
@@ -192,14 +192,14 @@ public:
              {{"command", "String"}, {"cwd", "", vm.none()}, {"input", "", vm.makeString("")}, {"timeout", "", vm.none()}},
              "Dict", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "shell");
-            std::string cmd = args[0].asString("shell");
+            std::string cmd = args[0].asStringRef("shell");
             std::vector<std::string> argv;
 #if defined(_WIN32)
             argv = {"cmd.exe", "/c", cmd};
 #else
             argv = {"/bin/sh", "-c", cmd};
 #endif
-            return runExternalProcess(vm, argv, args.opt(1, none(vm)), args.opt(2, val(vm, "")), args.opt(3, none(vm)));
+            return runExternalProcess(vm, argv, args.opt(1, Value::None(vm)), args.opt(2, Value(vm, "")), args.opt(3, Value::None(vm)));
         });
     }
 };

@@ -131,14 +131,14 @@ int main() {
         (void)empty;  // constructed without UB; we never deref it.
 
         // handle()/vm() accessors round-trip a constructed Value.
-        Value v = val(vm, 5);
+        Value v = Value(vm, 5);
         CHECK(v.handle() == static_cast<Handle>(v));   // handle() == the implicit-Handle conversion
         CHECK(&v.vm() == &vm);                          // vm() names the owning VM
 
         // val() integer overloads: int, int64_t, std::size_t all build an Integer.
-        CHECK(val(vm, 3).asInt() == 3);                          // int
-        CHECK(val(vm, static_cast<int64_t>(8)).asInt() == 8);    // int64_t
-        CHECK(val(vm, static_cast<std::size_t>(12)).asInt() == 12);  // size_t
+        CHECK(Value(vm, 3).asInt() == 3);                          // int
+        CHECK(Value(vm, static_cast<int64_t>(8)).asInt() == 8);    // int64_t
+        CHECK(Value(vm, static_cast<std::size_t>(12)).asInt() == 12);  // size_t
 
         // builders report a growing size() before build(), and the std::vector overload also works.
         List lb(vm);
@@ -149,9 +149,9 @@ int main() {
         CHECK(built.len() == 2);
 
         // makeList(initializer_list) and makeList(vector) agree.
-        Value il = makeList(vm, {vm.makeInt(1), vm.makeInt(2), vm.makeInt(3)});
+        Value il = List(vm, {vm.makeInt(1), vm.makeInt(2), vm.makeInt(3)});
         std::vector<Handle> hs{vm.makeInt(1), vm.makeInt(2), vm.makeInt(3)};
-        Value vl = makeList(vm, hs);
+        Value vl = List(vm, hs);
         CHECK(il.len() == 3 && vl.len() == 3);
 
         // Args: operator[] is the unchecked read (valid after a size() test); at()/opt() are bounds-aware.
@@ -159,7 +159,7 @@ int main() {
             "probe", [](KiritoVM& kv, std::span<const Handle> raw) -> Handle {
                 Args a(kv, raw, "probe");
                 int64_t first = a.empty() ? -1 : a[0].asInt("first");          // a[0] unchecked, guarded by empty()
-                int64_t second = a.opt(1, val(kv, 100)).asInt("second");       // opt() default
+                int64_t second = a.opt(1, Value(kv, 100)).asInt("second");       // opt() default
                 return kv.makeInt(first * 1000 + second);
             })));
         CHECK(ev(vm, "probe(7)") == "7100");           // a[0]=7, opt default 100
@@ -173,26 +173,26 @@ int main() {
     {
         KiritoVM vm;
         // scalar typed-read mismatches
-        CHECK_THROWS(val(vm, std::string("x")).asInt("n"));
-        CHECK_THROWS(val(vm, 1).asString("s"));
-        CHECK_THROWS(val(vm, std::string("x")).asBool("b"));
-        CHECK_THROWS(val(vm, std::string("x")).asFloat("f"));
-        CHECK_THROWS(none(vm).asInt("n"));
+        CHECK_THROWS(Value(vm, std::string("x")).asInt("n"));
+        CHECK_THROWS(Value(vm, 1).asStringRef("s"));
+        CHECK_THROWS(Value(vm, std::string("x")).asBool("b"));
+        CHECK_THROWS(Value(vm, std::string("x")).asFloat("f"));
+        CHECK_THROWS(Value::None(vm).asInt("n"));
         // collection accessors on a non-collection
-        CHECK_THROWS(val(vm, 5).len());                 // Integer has no length
-        CHECK_THROWS(val(vm, 5).items());               // Integer not iterable
-        CHECK_THROWS(val(vm, 5).at(0));                 // Integer not indexable
+        CHECK_THROWS(Value(vm, 5).len());                 // Integer has no length
+        CHECK_THROWS(Value(vm, 5).items());               // Integer not iterable
+        CHECK_THROWS(Value(vm, 5).at(0));                 // Integer not indexable
         // Dict accessors on a non-Dict
-        CHECK_THROWS(val(vm, 5).has("k"));
-        CHECK_THROWS(val(vm, 5).get("k"));
-        CHECK_THROWS(val(vm, 5).pairs());
+        CHECK_THROWS(Value(vm, 5).has("k"));
+        CHECK_THROWS(Value(vm, 5).get("k"));
+        CHECK_THROWS(Value(vm, 5).pairs());
         // get on a real Dict with an absent key (no default) throws; with a default does not.
         Value d = Dict(vm).set("a", 1).build();
         CHECK_THROWS(d.get("absent"));
-        CHECK(d.get("absent", val(vm, -1)).asInt() == -1);
+        CHECK(d.get("absent", Value(vm, -1)).asInt() == -1);
         // The error message is actionable (names the expected type), not a generic crash.
         bool informative = false;
-        try { val(vm, std::string("x")).asInt("count"); }
+        try { Value(vm, std::string("x")).asInt("count"); }
         catch (const KiritoError& e) {
             std::string m = e.what();
             informative = m.find("count") != std::string::npos && m.find("Integer") != std::string::npos;

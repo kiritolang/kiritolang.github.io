@@ -35,16 +35,16 @@ struct MathyMod : NativeModule {
                  int64_t base = args.at(0).asInt("base"), exp = args.at(1).asInt("exp");
                  int64_t r = 1;
                  for (int64_t i = 0; i < exp; ++i) r *= base;
-                 return val(vm, r);
+                 return Value(vm, r);
              });
         // sumlist(xs) -> Integer — iterate any iterable through the Value facade.
         m.fn("sumlist", {{"xs", "List"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "sumlist");
             int64_t s = 0;
             for (Value x : args.at(0).items()) s += x.asInt("element");
-            return val(vm, s);
+            return Value(vm, s);
         });
-        m.value("E3", val(m.vm(), 1000));
+        m.value("E3", Value(m.vm(), 1000));
     }
 };
 
@@ -145,27 +145,27 @@ int main() {
         KiritoVM vm;
 
         // val() round-trips every primitive; reads are typed.
-        CHECK(val(vm, 9).asInt() == 9);
-        CHECK(val(vm, 2.5).asFloat() == 2.5);
-        CHECK(val(vm, 7).asFloat() == 7.0);          // asFloat accepts an Integer
-        CHECK(val(vm, std::string("hi")).asString() == "hi");
-        CHECK(val(vm, true).asBool() == true);
-        CHECK(none(vm).isNone());
+        CHECK(Value(vm, 9).asInt() == 9);
+        CHECK(Value(vm, 2.5).asFloat() == 2.5);
+        CHECK(Value(vm, 7).asFloat() == 7.0);          // asFloat accepts an Integer
+        CHECK(Value(vm, std::string("hi")).asStringRef() == "hi");
+        CHECK(Value(vm, true).asBool() == true);
+        CHECK(Value::None(vm).isNone());
 
         // a typed-read mismatch is a clear, catchable KiritoError (not a crash).
-        CHECK_THROWS(val(vm, "x").asInt("n"));
-        CHECK_THROWS(val(vm, 1).asString("s"));
+        CHECK_THROWS(Value(vm, "x").asInt("n"));
+        CHECK_THROWS(Value(vm, 1).asStringRef("s"));
 
         // builders + facade reads (List/Dict/Set), and stringify of a nested String (repr form).
         Value lst = List(vm).add(1).add(2).add("three").build();
         CHECK(lst.isList() && lst.len() == 3);
-        CHECK(lst.at(0).asInt() == 1 && lst.at(-1).asString() == "three");
+        CHECK(lst.at(0).asInt() == 1 && lst.at(-1).asStringRef() == "three");
         CHECK(vm.stringify(lst) == "[1, 2, 'three']");
 
         Value d = Dict(vm).set("k", 5).set("name", "Ada").build();
-        CHECK(d.isDict() && d.get("k").asInt() == 5 && d.get("name").asString() == "Ada");
+        CHECK(d.isDict() && d.get("k").asInt() == 5 && d.get("name").asStringRef() == "Ada");
         CHECK(d.has("k") && !d.has("absent"));
-        CHECK(d.get("absent", val(vm, -1)).asInt() == -1);
+        CHECK(d.get("absent", Value(vm, -1)).asInt() == -1);
 
         Value s = Set(vm).add(1).add(1).add(2).build();
         CHECK(s.isSet() && s.len() == 2);
@@ -175,8 +175,8 @@ int main() {
             "addmul", [](KiritoVM& kv, std::span<const Handle> raw) -> Handle {
                 Args a(kv, raw, "addmul");
                 int64_t x = a.at(0).asInt("x");
-                int64_t y = a.opt(1, val(kv, 1)).asInt("y");   // y defaults to 1 when absent
-                return val(kv, (x + y) * 2);
+                int64_t y = a.opt(1, Value(kv, 1)).asInt("y");   // y defaults to 1 when absent
+                return Value(kv, (x + y) * 2);
             })));
         CHECK(ev(vm, "addmul(3, 4)") == "14");
         CHECK(ev(vm, "addmul(3)") == "8");                 // opt() default used

@@ -96,7 +96,7 @@ struct DagModule : NativeModule {
         m.fn("trace", {{"label", "String"}, {"value"}}, "None",
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                  Args args(vm, a, "trace");
-                 (void)args.at(0).asString("label");
+                 (void)args.at(0).asStringRef("label");
                  (void)args.at(1);
                  return vm.none();
              });
@@ -134,7 +134,7 @@ Function(deps):
 
     // Build the graph. A is a constant input; B/C/D/E/F are Kirito-computed.
     std::vector<Node> nodes;
-    nodes.push_back({"A", {},              Handle{}, val(vm, int64_t{42}).handle()});
+    nodes.push_back({"A", {},              Handle{}, Value(vm, int64_t{42}).handle()});
     nodes.push_back({"B", {"A"},           fParse,  Handle{}});
     nodes.push_back({"C", {"A"},           fDouble, Handle{}});
     nodes.push_back({"D", {"C"},           fDouble, Handle{}});
@@ -148,11 +148,11 @@ Function(deps):
         throw std::runtime_error("node not found");
     };
     CHECK(by("A").asInt("A") == 42);
-    CHECK(by("B").asString("B") == "42");
+    CHECK(by("B").asStringRef("B") == "42");
     CHECK(by("C").asInt("C") == 84);
     CHECK(by("D").asInt("D") == 168);
     CHECK(by("E").asInt("E") == 42 + 84 + 168);    // "42" is skipped by the type check
-    CHECK(by("F").asString("F") == "294");
+    CHECK(by("F").asStringRef("F") == "294");
 
     // ---- adversarial: a cycle throws cleanly before any node runs ----
     {
@@ -174,7 +174,7 @@ Function(deps):
     {
         Handle boom = compile("Function(deps): throw \"boom\"\n");
         std::vector<Node> g;
-        g.push_back({"S", {}, Handle{}, val(vm, int64_t{1}).handle()});
+        g.push_back({"S", {}, Handle{}, Value(vm, int64_t{1}).handle()});
         g.push_back({"T", {"S"}, boom, Handle{}});
         CHECK_THROWS(runGraph(vm, g));
         // Typed catch: peek at the value that was thrown.
@@ -192,8 +192,8 @@ Function(deps):
     {
         Handle add = compile("Function(deps): return deps[0] + deps[1]");
         std::vector<Node> g;
-        g.push_back({"X", {},      Handle{}, val(vm, int64_t{10}).handle()});
-        g.push_back({"Y", {},      Handle{}, val(vm, int64_t{20}).handle()});
+        g.push_back({"X", {},      Handle{}, Value(vm, int64_t{10}).handle()});
+        g.push_back({"Y", {},      Handle{}, Value(vm, int64_t{20}).handle()});
         g.push_back({"Z", {"X","Y"}, add,   Handle{}});
         runGraph(vm, g);
         for (auto& n : g) if (n.name == "Z") { CHECK(Value(vm, n.value).asInt("Z") == 30); }
@@ -206,7 +206,7 @@ Function(deps):
         runGraph(vm, a);
         for (auto& n : a)
             if (n.name == "F")
-                CHECK(Value(vm, n.value).asString("replay F") == "294");
+                CHECK(Value(vm, n.value).asStringRef("replay F") == "294");
     }
     return RUN_TESTS();
 }

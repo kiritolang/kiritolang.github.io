@@ -43,8 +43,8 @@ static Handle buildKb(KiritoVM& vm, const std::vector<Fact>& facts) {
         List row(vm);
         for (const Fact* f : list) {
             List pair(vm);
-            pair.add(val(vm, f->a));
-            pair.add(val(vm, f->b));
+            pair.add(Value(vm, f->a));
+            pair.add(Value(vm, f->b));
             row.add(pair.build());
         }
         d.set(pred, row.build());
@@ -61,8 +61,8 @@ static int64_t assertNew(std::vector<Fact>& facts, std::unordered_set<Fact, Fact
         auto parts = item.items();
         if (parts.size() < 2 || parts.size() > 3)
             throw KiritoError("rule fire must yield [pred, a] or [pred, a, b] triples");
-        Fact f{parts[0].asString("pred"), parts[1].asString("a"),
-               parts.size() == 3 ? parts[2].asString("b") : std::string{}};
+        Fact f{parts[0].asStringRef("pred"), parts[1].asStringRef("a"),
+               parts.size() == 3 ? parts[2].asStringRef("b") : std::string{}};
         if (seen.insert(f).second) {
             facts.push_back(f);
             ++added;

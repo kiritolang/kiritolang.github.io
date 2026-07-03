@@ -81,7 +81,7 @@ public:
 
     void setup(ModuleBuilder& m) override {
         KiritoVM& vm = m.vm();
-        auto pathArg = [](KiritoVM& vm, Handle h) -> std::string { return Value(vm, h).asString("path"); };
+        auto pathArg = [](KiritoVM& vm, Handle h) -> std::string { return Value(vm, h).asStringRef("path"); };
 
         // join(parts...) -> the parts joined with '/'. A later component that is absolute (starts
         // with '/') resets the result. Like os.path.join it needs at least one component (throws
@@ -89,14 +89,14 @@ public:
         m.fn("join", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "join");
             if (args.empty()) throw KiritoError("join expected at least one path component");
-            std::string out = args[0].asString("join");
+            std::string out = args[0].asStringRef("join");
             for (std::size_t i = 1; i < a.size(); ++i) {
-                std::string part = args[i].asString("join");
+                std::string part = args[i].asStringRef("join");
                 if (!part.empty() && part[0] == '/') out = part;            // absolute resets
                 else if (out.empty() || out.back() == '/') out += part;     // no double separator
                 else out += "/" + part;
             }
-            return val(vm, out);
+            return Value(vm, out);
         });
 
         // dirname/basename/splitext are plain '/'- or '\'-based string ops (NOT std::filesystem,
@@ -106,17 +106,17 @@ public:
         m.fn("dirname", {{"path", "String"}}, "String", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::string p = pathArg(vm, a[0]);
             std::size_t s = p.find_last_of("/\\");
-            if (s == std::string::npos) return val(vm, std::string());
+            if (s == std::string::npos) return Value(vm, std::string());
             std::size_t end = s;   // strip the separator run back to the parent (os.path.dirname)
             while (end > 0 && (p[end - 1] == '/' || p[end - 1] == '\\')) --end;
             // an all-separator prefix is the root: keep one separator (dirname("/a") -> "/") rather
             // than dropping it to "".
-            return val(vm, end == 0 ? p.substr(0, s + 1) : p.substr(0, end));
+            return Value(vm, end == 0 ? p.substr(0, s + 1) : p.substr(0, end));
         });
         m.fn("basename", {{"path", "String"}}, "String", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::string p = pathArg(vm, a[0]);
             std::size_t s = p.find_last_of("/\\");
-            return val(vm, s == std::string::npos ? p : p.substr(s + 1));
+            return Value(vm, s == std::string::npos ? p : p.substr(s + 1));
         });
         m.fn("splitext", {{"path", "String"}}, "List", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::string path = pathArg(vm, a[0]);
@@ -129,8 +129,8 @@ public:
             while (scan < path.size() && path[scan] == '.') ++scan;
             std::size_t dot = path.find_last_of('.');
             if (dot == std::string::npos || dot < scan)
-                return List(vm).add(val(vm, path)).add(val(vm, std::string())).build();
-            return List(vm).add(val(vm, path.substr(0, dot))).add(val(vm, path.substr(dot))).build();
+                return List(vm).add(Value(vm, path)).add(Value(vm, std::string())).build();
+            return List(vm).add(Value(vm, path.substr(0, dot))).add(Value(vm, path.substr(dot))).build();
         });
 
         // Filesystem queries. exists/isfile/isdir are tolerant (a missing/inaccessible path is simply
@@ -138,21 +138,21 @@ public:
         // size to return).
         m.fn("exists", {{"path", "String"}}, "Bool", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::error_code ec;
-            return val(vm, std::filesystem::exists(pathArg(vm, a[0]), ec));
+            return Value(vm, std::filesystem::exists(pathArg(vm, a[0]), ec));
         });
         m.fn("isfile", {{"path", "String"}}, "Bool", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::error_code ec;
-            return val(vm, std::filesystem::is_regular_file(pathArg(vm, a[0]), ec));
+            return Value(vm, std::filesystem::is_regular_file(pathArg(vm, a[0]), ec));
         });
         m.fn("isdir", {{"path", "String"}}, "Bool", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::error_code ec;
-            return val(vm, std::filesystem::is_directory(pathArg(vm, a[0]), ec));
+            return Value(vm, std::filesystem::is_directory(pathArg(vm, a[0]), ec));
         });
         m.fn("getsize", {{"path", "String"}}, "Integer", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::error_code ec;
             auto sz = std::filesystem::file_size(pathArg(vm, a[0]), ec);
             if (ec) throw KiritoError("getsize: " + ec.message());
-            return val(vm, static_cast<int64_t>(sz));
+            return Value(vm, static_cast<int64_t>(sz));
         });
 
         // listing (read-only, tolerant: a missing/inaccessible dir lists as []).
@@ -160,7 +160,7 @@ public:
             List out(vm);
             std::error_code ec;
             for (const auto& entry : std::filesystem::directory_iterator(pathArg(vm, a[0]), ec))
-                out.add(val(vm, entry.path().filename().string()));
+                out.add(Value(vm, entry.path().filename().string()));
             return out.build();
         });
         // walk(dir) -> every file path under dir, recursively (flattened; tolerant like listdir).
@@ -168,12 +168,12 @@ public:
             List out(vm);
             std::error_code ec;
             for (const auto& entry : std::filesystem::recursive_directory_iterator(pathArg(vm, a[0]), ec))
-                if (entry.is_regular_file()) out.add(val(vm, entry.path().string()));
+                if (entry.is_regular_file()) out.add(Value(vm, entry.path().string()));
             return out.build();
         });
         m.fn("getcwd", {}, "String", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
             std::error_code ec;
-            return val(vm, std::filesystem::current_path(ec).string());
+            return Value(vm, std::filesystem::current_path(ec).string());
         });
         // gettempdir() -> the system temp directory (honors TMPDIR/TMP/TEMP, falls back to /tmp) — a
         // stable scratch location to build temp file paths with path.join. A filesystem location, so
@@ -181,7 +181,7 @@ public:
         m.fn("gettempdir", {}, "String", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
             std::error_code ec;
             auto p = std::filesystem::temp_directory_path(ec);
-            return val(vm, ec ? std::string("/tmp") : p.string());
+            return Value(vm, ec ? std::string("/tmp") : p.string());
         });
         // executable: absolute path of the running `ki` binary ("" if undeterminable) — a filesystem
         // location, used e.g. by kpm for self-replacement.
@@ -197,12 +197,12 @@ public:
             bool exist_ok = Value(vm, a[1]).asBool("exist_ok");
             std::error_code ec;
             if (std::filesystem::exists(p, ec)) {
-                if (exist_ok) return val(vm, false);   // already existed — nothing created
+                if (exist_ok) return Value(vm, false);   // already existed — nothing created
                 throw KiritoError("mkdir: '" + p + "' already exists (pass exist_ok = True to ignore)");
             }
             std::filesystem::create_directories(p, ec);
             if (ec) throw KiritoError("mkdir: " + ec.message());
-            return val(vm, true);
+            return Value(vm, true);
         });
         // remove(path, missing_ok=False) -> Bool: delete a file (or an EMPTY directory). By default
         // RAISES if the path does not exist; missing_ok=True instead returns False. Returns True when
@@ -216,7 +216,7 @@ public:
             if (ec) throw KiritoError("remove: " + ec.message());
             if (!removed && !missing_ok)
                 throw KiritoError("remove: '" + p + "' does not exist (pass missing_ok = True to ignore)");
-            return val(vm, removed);
+            return Value(vm, removed);
         });
         // rmtree(path, missing_ok=False) -> Bool: recursively delete a directory and everything under
         // it (or a single file) — the recursive counterpart to remove (like rm -rf / shutil.rmtree). By
@@ -231,13 +231,13 @@ public:
             if (ec) throw KiritoError("rmtree: " + ec.message());
             if (count == 0 && !missing_ok)
                 throw KiritoError("rmtree: '" + p + "' does not exist (pass missing_ok = True to ignore)");
-            return val(vm, count > 0);
+            return Value(vm, count > 0);
         });
         m.fn("rename", {{"src", "String"}, {"dst", "String"}}, "", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::error_code ec;
             std::filesystem::rename(pathArg(vm, a[0]), pathArg(vm, a[1]), ec);
             if (ec) throw KiritoError("rename failed: " + ec.message());
-            return none(vm);
+            return Value::None(vm);
         });
         // chmod(path, mode): set permission bits from a POSIX-style octal Integer (e.g. 0o755). The low
         // 12 bits map onto std::filesystem::perms (POSIX on Unix; on Windows only the owner read/write
@@ -248,7 +248,7 @@ public:
             std::error_code ec;
             std::filesystem::permissions(pathArg(vm, a[0]), std::filesystem::perms(mode),
                                          std::filesystem::perm_options::replace, ec);
-            return val(vm, !ec);
+            return Value(vm, !ec);
         });
     }
 };

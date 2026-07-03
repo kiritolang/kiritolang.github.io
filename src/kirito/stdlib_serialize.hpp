@@ -188,20 +188,20 @@ public:
     std::string name() const override { return "serialize"; }
     void setup(ModuleBuilder& m) override {
         m.fn("dumps", {{"value"}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, serial::dumps(vm, Args(vm, a, "dumps")[0]));
+            return Value(vm, serial::dumps(vm, Args(vm, a, "dumps")[0]));
         });
         m.fn("loads", {{"text", "String"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return serial::loads(vm, Args(vm, a, "loads")[0].asString("loads"));
+            return serial::loads(vm, Args(vm, a, "loads")[0].asStringRef("loads"));
         });
         m.fn("save", {{"value"}, {"path", "String"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "save");
-            std::ofstream f(args[1].asString("save path"), std::ios::binary);
+            std::ofstream f(args[1].asStringRef("save path"), std::ios::binary);
             if (!f) throw KiritoError("could not open file for saving");
             f << serial::dumps(vm, args[0]);
-            return none(vm);
+            return Value::None(vm);
         });
         m.fn("load", {{"path", "String"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            std::ifstream f(Args(vm, a, "load")[0].asString("load path"), std::ios::binary);
+            std::ifstream f(Args(vm, a, "load")[0].asStringRef("load path"), std::ios::binary);
             if (!f) throw KiritoError("could not open file for loading");
             std::stringstream ss;
             ss << f.rdbuf();

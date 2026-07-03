@@ -159,7 +159,7 @@ public:
     // would just work (if we ever added them).
     Handle eval(const Ast* a) {
         switch (a->k) {
-            case Ast::N: return val(vm_, a->n).handle();
+            case Ast::N: return Value(vm_, a->n).handle();
             case Ast::Bin: {
                 Handle l = eval(a->lhs.get());
                 Handle r = eval(a->rhs.get());
