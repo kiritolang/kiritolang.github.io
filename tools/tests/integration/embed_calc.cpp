@@ -54,9 +54,9 @@ public:
                 // through the low-level ListVal::elems vector (the arena hands us a mutable ref).
                 auto& lst = static_cast<ListVal&>(vm_.arena().deref(stackR));
                 Handle vH = std::string(".").compare(&tok[tok.find_first_of(".eE")]) == 0
-                                ? val(vm_, std::stod(tok)).handle()
-                                : (isFloatToken(tok) ? val(vm_, std::stod(tok)).handle()
-                                                     : val(vm_, static_cast<int64_t>(std::stoll(tok))).handle());
+                                ? Value(vm_, std::stod(tok)).handle()
+                                : (isFloatToken(tok) ? Value(vm_, std::stod(tok)).handle()
+                                                     : Value(vm_, static_cast<int64_t>(std::stoll(tok))).handle());
                 lst.elems.push_back(vH);
                 continue;
             }

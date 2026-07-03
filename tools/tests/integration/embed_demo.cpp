@@ -38,7 +38,7 @@ struct StatsModule : NativeModule {
                  return Value(vm, std::max(lo, std::min(x, hi)));
              });
 
-        m.value("VERSION", val(m.vm(), "1.0"));  // a plain constant member
+        m.value("VERSION", Value(m.vm(), "1.0"));  // a plain constant member
     }
 };
 
