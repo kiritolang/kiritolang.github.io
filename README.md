@@ -163,11 +163,11 @@ build Kirito values, turning a bad argument into a clear error instead of a cras
 vm.registerGlobal("repeat", vm.alloc(std::make_unique<NativeFunction>(
     "repeat", [](KiritoVM& vm, std::span<const Handle> raw) -> Handle {
         Args a(vm, raw, "repeat");
-        std::string s = a.at(0).asString("s");
+        std::string s = a.at(0).asStringRef("s");
         int64_t n     = a.at(1).asInt("n");
         std::string out;
         for (int64_t i = 0; i < n; ++i) out += s;
-        return val(vm, out);
+        return Value(vm, out);
     })));
 // Kirito:  repeat("ab", 3)   ->   "ababab"
 ```

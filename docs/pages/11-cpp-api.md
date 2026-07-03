@@ -424,9 +424,18 @@ the value's real type).
 
 ## 5. Working with values — the `Value` API
 
-The ergonomic layer. **Read** through `Value`; **construct** through `val()` / `none()` and the
-`List` / `Dict` / `Set` builders. Everything converts implicitly to and from `Handle`, so this API
-interoperates with the raw protocol without conversions.
+The ergonomic layer. Every Kirito builtin has a matching C++ wrapper — `Bool`, `Integer`, `Float`,
+`String`, `Bytes`, `List`, `Dict`, `Set` — all derived from a polymorphic `Value` base. The two
+core habits:
+
+- **Peek then wrap**, zero-alloc: `arg.isDict()` then `Dict d = arg.asDict()` gives you a thin
+  `(vm, handle)` view over the same object — no copy of the data.
+- **Construct through constructors**, no dangling helpers: `Value(vm, 42)`, `String(vm, "hi")`,
+  `List(vm, {1, "a", 3.14})`, `Dict(vm, {{"k", 1}, {"n", "s"}})`, `Set(vm, {1, 2, 3})`,
+  `Value::None(vm)`.
+
+Every wrapper converts implicitly to `Handle` (via `operator Handle()`), so this API interoperates
+with the raw protocol without conversions.
 
 ### Kirito's built-in types are first-class C++ values too
 
@@ -440,13 +449,13 @@ alongside the interpreter. Reach for them (through the `Value` / `List` / `Dict`
 - **You want structural equality, hashing, and stringification for free.** Every container's
   `equals`, `hash`, and `str` walks the tree correctly (cycle-guarded, depth-bounded), so nested
   Dicts compare and print with no extra code. Scalars follow suit.
-- **You want the code-point-aware String.** `StrVal` holds UTF-8 but indexes and slices by **code
+- **You want the code-point-aware String.** `String` holds UTF-8 but `s[i]` indexes by **code
   point** — the right unit for anything user-facing. `std::string` gives you bytes, which
-  mishandles every non-ASCII character. The `.items()` iterator on a String yields 1-character
-  Values; the raw bytes are still available via `.asString()`; free UTF-8 helpers in `builtins.hpp`
+  mishandles every non-ASCII character. `.size()` counts code points; raw UTF-8 bytes still
+  available via `.utf8()` / `.asStringRef()`; free UTF-8 helpers in `builtins.hpp`
   (`utf8Length` / `utf8Starts` / `utf8DecodeAt` / `utf8Encode` / `utf8ToUpperCp` / `utf8ToLowerCp`)
   let you do the same code-point work on any `std::string`.
-- **`BytesVal`** is the byte-exact counterpart to `StrVal` — the right type for binary I/O.
+- **`Bytes`** is the byte-exact counterpart to `String` — the right type for binary I/O.
 - **Scalars are interned where it counts.** `None`, `True`/`False`, and small Integers in
   `[-128, 255]` share one arena slot per VM.
 - **GC-managed ownership.** No `unique_ptr` / `shared_ptr` bookkeeping.
@@ -459,8 +468,15 @@ value stays purely on the C++ side.
 ```cpp
 class Value {                                  // value.hpp
 public:
-    Value();                                    // null Value (unusable — for slot init)
-    Value(KiritoVM& vm, Handle h);
+    Value();                                    // empty view (unusable — for slot init)
+    Value(KiritoVM& vm, Handle h);              // wrap an existing arena handle
+    // primitive constructors — replace the old free `val(vm, x)` / `none(vm)` helpers
+    Value(KiritoVM& vm, std::nullptr_t);        // None
+    Value(KiritoVM& vm, bool b);
+    Value(KiritoVM& vm, int64_t v);             // (also int, long, unsigned…)
+    Value(KiritoVM& vm, double v);
+    Value(KiritoVM& vm, const char* s);         // (also std::string / std::string_view)
+    static Value None(KiritoVM& vm);            // factory for the None singleton
 
     // conversions
     operator Handle() const;
@@ -474,24 +490,60 @@ public:
     std::string  str() const;                    // via vm.stringify
 
     // type tests
-    bool isInt() const;      bool isFloat() const;      bool isNumber() const;
-    bool isString() const;   bool isBool() const;       bool isNone() const;
-    bool isList() const;     bool isDict() const;       bool isSet() const;
+    bool isNone() const;    bool isBool() const;     bool isInt() const;
+    bool isFloat() const;   bool isNumber() const;   bool isString() const;
+    bool isBytes() const;   bool isList() const;     bool isDict() const;   bool isSet() const;
 
     // typed reads — `who` names the caller in the error message
-    int64_t             asInt   (const char* who = "value") const;
-    double              asFloat (const char* who = "value") const;   // accepts Integer or Float
-    const std::string&  asString(const char* who = "value") const;
-    bool                asBool  (const char* who = "value") const;
+    int64_t             asInt      (const char* who = "value") const;
+    double              asFloat    (const char* who = "value") const;   // Integer or Float
+    bool                asBool     (const char* who = "value") const;
+    const std::string&  asStringRef(const char* who = "value") const;   // raw UTF-8 bytes
 
-    // collection reads
-    std::size_t                          len() const;
-    Value                                at(int64_t i) const;                    // list index; negatives OK
-    std::vector<Value>                   items() const;                          // iterate any iterable
-    bool                                 has(std::string_view key) const;         // dict has key
-    Value                                get(std::string_view key) const;         // dict get; throws if absent
-    Value                                get(std::string_view key, Value dflt) const;
-    std::vector<std::pair<Value, Value>> pairs() const;                          // dict [key, value]s
+    // peek + wrap — throws on wrong kind; use tryX for optional wrapping
+    Bool    asBoolV  (const char* who = "value") const;
+    Integer asInteger(const char* who = "value") const;
+    Float   asFloatV (const char* who = "value") const;
+    String  asString (const char* who = "value") const;
+    Bytes   asBytes  (const char* who = "value") const;
+    List    asList   (const char* who = "value") const;
+    Dict    asDict   (const char* who = "value") const;
+    Set     asSet    (const char* who = "value") const;
+
+    std::optional<Bool>    tryBoolV()   const;
+    std::optional<Integer> tryInteger()const;
+    std::optional<Float>   tryFloatV() const;
+    std::optional<String>  tryString() const;
+    std::optional<Bytes>   tryBytes()  const;
+    std::optional<List>    tryList()   const;
+    std::optional<Dict>    tryDict()   const;
+    std::optional<Set>     trySet()    const;
+
+    // universal reads
+    std::size_t         len() const;                                 // any type with a length
+    std::vector<Value>  items() const;                               // iterate any iterable
+    bool                equals(const Value& other) const;            // structural equals
+
+    // full operator surface — delegates to applyBinaryOp / applyUnaryOp so semantics match Kirito
+    // exactly (wraparound on Integer overflow, true-division /, exact IEEE-754 ==, per-type dispatch).
+    Value  operator+ (const Value&) const;   Value  operator- (const Value&) const;
+    Value  operator* (const Value&) const;   Value  operator/ (const Value&) const;
+    Value  operator% (const Value&) const;   Value  operator- ()             const;   // unary neg
+    Value  floordiv  (const Value&) const;   Value  pow       (const Value&) const;
+
+    bool   operator==(const Value&) const;   bool   operator!=(const Value&) const;
+    bool   operator< (const Value&) const;   bool   operator<=(const Value&) const;
+    bool   operator> (const Value&) const;   bool   operator>=(const Value&) const;
+
+    explicit operator bool()        const;   bool   operator!()             const;
+    bool   contains  (const Value&) const;                            // the `in` operator
+    std::size_t hash() const;                                         // throws on unhashable
+
+    // callable & attribute access — through the object protocol
+    Value  call    (std::span<const Handle> args) const;
+    Value  call    (std::initializer_list<detail::Anything> args) const;
+    Value  getAttr (std::string_view name) const;
+    void   setAttr (std::string_view name, const Value& v) const;
 };
 ```
 
@@ -505,61 +557,130 @@ String otherwise silently unpacks into its characters. The router integration te
 if (!r.isList()) throw KiritoError("rule must return a List, got '" + r.typeName() + "'");
 ```
 
-### Building values — `val()`, `none()`, and the builders
+### Typed wrappers — every builtin has one
+
+`Value` is the polymorphic base; every Kirito builtin has a matching thin wrapper that adds a
+Kirito-mirroring method surface. All are zero-cost `(KiritoVM&, Handle)` views over an arena-owned
+object — copying is O(1) and never allocates. The `asX()` peek-and-wrap flow inherits any GC pin
+from the source Value automatically.
 
 ```cpp
-inline Value val (KiritoVM& vm, int64_t x);
-inline Value val (KiritoVM& vm, int x);
-inline Value val (KiritoVM& vm, std::size_t x);
-inline Value val (KiritoVM& vm, double x);
-inline Value val (KiritoVM& vm, bool x);
-inline Value val (KiritoVM& vm, const char* s);
-inline Value val (KiritoVM& vm, std::string s);
-inline Value none(KiritoVM& vm);
-```
-
-Every `val()` overload wraps the matching `vm.makeX` helper; the appeal is a single spelling that
-accepts any C++ primitive. The `List` / `Dict` / `Set` builders' `.add` / `.set` template overloads
-call `val()` for you, so `List(vm).add(1).add(3.14).add("mixed")` needs no intermediate handles.
-
-```cpp
-class List {                                     // value.hpp
+class Integer : public Value {                   // value.hpp
 public:
-    explicit List(KiritoVM& vm);
-    List& add(Handle h);
-    List& add(const Value& v);
-    template <class T> List& add(T x);           // calls val() for you
+    explicit Integer(KiritoVM& vm, int64_t v);   // (also int, long, unsigned variants)
+    Integer(KiritoVM& vm, Handle h);              // wrap an existing Integer handle
+    int64_t value() const;
+    operator int64_t() const;                     // implicit -> int64_t for interop
+    bool compare(const Value& other, double rel_tol = 1e-9, double abs_tol = 0.0) const;
+};
+
+class Float : public Value {                     // value.hpp
+public:
+    explicit Float(KiritoVM& vm, double v);
+    Float(KiritoVM& vm, Handle h);
+    double value() const;
+    operator double() const;
+    bool compare(const Value& other, double rel_tol = 1e-9, double abs_tol = 0.0) const;
+};
+
+class Bool : public Value {                      // value.hpp
+public:
+    explicit Bool(KiritoVM& vm, bool v);
+    Bool(KiritoVM& vm, Handle h);
+    bool value() const;
+    operator bool() const;
+};
+
+class String : public Value {                    // value.hpp
+public:
+    explicit String(KiritoVM& vm, std::string_view utf8);   // (also const char*, std::string)
+    String(KiritoVM& vm, Handle h);
+    const std::string& utf8() const;              // raw UTF-8 bytes — zero-copy
+    std::size_t        size() const;              // code-point count (Kirito's `len(s)`)
+    String  operator[](std::ptrdiff_t i) const;   // 1-code-point String; negatives from the end
+    bool    contains(std::string_view sub) const;
+    bool    startsWith(std::string_view p) const;
+    bool    endsWith(std::string_view p) const;
+    String  operator+(const String& rhs) const;
+    bool    operator==(std::string_view rhs) const;    // fast-path against literals
+    operator std::string_view() const;                 // implicit -> string_view for std helpers
+};
+
+class Bytes : public Value {                     // value.hpp / defined in bytes.hpp
+public:
+    explicit Bytes(KiritoVM& vm, std::string_view raw);
+    Bytes(KiritoVM& vm, Handle h);
+    const std::string& data() const;
+    std::size_t        size() const;
+    int     operator[](std::ptrdiff_t i) const;   // byte 0..255; negatives from the end
+};
+
+class List : public Value {                      // value.hpp
+public:
+    explicit List(KiritoVM& vm);                  // fresh empty
+    List(KiritoVM& vm, Handle h);                 // wrap
+    List(KiritoVM& vm, std::initializer_list<detail::Anything> items);
+    List(KiritoVM& vm, const std::vector<Handle>& handles);
+
     std::size_t size() const;
-    Value build();
+    Value  operator[](std::ptrdiff_t i) const;    // negatives from the end
+    void   set (std::ptrdiff_t i, const Value& v);
+    List&  push(const Value& v);                  // chainable append
+    Value  pop();
+    bool   contains(const Value& v) const;
+    void   clear();
+    // range-for: `for (Value e : xs) …`
 };
 
-class Dict {                                     // value.hpp
+class Dict : public Value {                      // value.hpp
 public:
-    explicit Dict(KiritoVM& vm);
-    Dict& set(Handle key, Handle value);
-    Dict& set(std::string_view key, Handle value);
-    Dict& set(std::string_view key, const Value& value);
-    template <class T> Dict& set(std::string_view key, T value);
-    Value build();
+    explicit Dict(KiritoVM& vm);                  // fresh empty
+    Dict(KiritoVM& vm, Handle h);                 // wrap
+    Dict(KiritoVM& vm, std::initializer_list<
+             std::pair<detail::Anything, detail::Anything>> entries);
+
+    std::size_t size() const;
+    Value  operator[](const Value& k)     const;  // read; throws if absent
+    Value  operator[](std::string_view sk)const;
+    Value  get (const Value& k, Value dflt) const;
+    Value  get (std::string_view sk, Value dflt) const;
+    std::optional<Value> tryGet(const Value& k) const;
+
+    Dict&  set (const Value& k, const Value& v);  // chainable write
+    template <class K, class V> Dict& set(K k, V v);
+
+    bool   contains(const Value& k) const;
+    bool   contains(std::string_view sk) const;
+    bool   has(std::string_view sk) const;         // Kirito-style alias
+    bool   remove(const Value& k);
+    void   clear();
+
+    std::vector<Value> keys()   const;
+    std::vector<Value> values() const;
+    std::vector<std::pair<Value, Value>> pairs() const;
+    // range-for: `for (auto [k, v] : d) …`
 };
 
-class Set {                                      // value.hpp
+class Set : public Value {                       // value.hpp
 public:
-    explicit Set(KiritoVM& vm);
-    Set& add(Handle h);
-    Set& add(const Value& v);
-    template <class T> Set& add(T x);
-    Value build();
-};
+    explicit Set(KiritoVM& vm);                   // fresh empty
+    Set(KiritoVM& vm, Handle h);                  // wrap
+    Set(KiritoVM& vm, std::initializer_list<detail::Anything> items);
 
-inline Value makeList(KiritoVM& vm, std::initializer_list<Handle> elems);
-inline Value makeList(KiritoVM& vm, const std::vector<Handle>& elems);
+    std::size_t size() const;
+    Set&   add(const Value& v);                   // chainable insert
+    bool   contains(const Value& v) const;
+    void   discard(const Value& v);               // silent if absent
+    void   clear();
+    std::vector<Value> items() const;
+    // range-for: `for (Value e : s) …`
+};
 ```
 
-Every builder holds a `RootScope` internally, so an allocation mid-build cannot reclaim the
-partially built value. Consequence: **builders are non-movable and non-copyable** — you can't put
-them in a `std::vector` or return them from a function that doesn't NRVO. For streaming
-construction across many C++ statements, use the pattern shown after the walkthrough.
+Every fresh-allocation constructor (`List(vm)`, `Dict(vm, {…})`, `String(vm, "hi")`, …)
+GC-pins its handle for the wrapper's lifetime, so a subsequent allocation can't sweep it before you
+finish building. Wrap constructors (`List(vm, existingHandle)`, `arg.asDict()`) don't pin — the
+object is already rooted somewhere the GC can see (an argument, a Dict field, etc.).
 
 ### End-to-end walkthrough: build → hand to Kirito → read back
 
@@ -569,17 +690,16 @@ using namespace kirito;
 
 KiritoVM vm;
 
-// 1. Build every collection type from C++ ------------------------------------
-Value name = val(vm, "Ada");                         // String
-Value nums = List(vm).add(1).add(2).add(3).build();  // List of Integer
-Value tags = Set(vm).add("blue").add("fast").build();// Set of String
-Value cfg  = Dict(vm)                                // Dict {String: Value}
-    .set("name", name)
-    .set("nums", nums)
-    .set("tags", tags)
-    .build();
+// 1. Build every collection type from C++ — one line each, no builders --------
+List nums(vm, {1, 2, 3});                             // List of Integer
+Set  tags(vm, {"blue", "fast"});                      // Set of String
+Dict cfg(vm, {                                        // Dict {String: Value}
+    {"name", "Ada"},
+    {"nums", nums},
+    {"tags", tags},
+});
 
-// 2. Hand it to Kirito -------------------------------------------------------
+// 2. Hand it to Kirito --------------------------------------------------------
 vm.registerGlobal("cfg", cfg);
 
 Handle out = vm.runSource(
@@ -588,14 +708,14 @@ Handle out = vm.runSource(
     "cfg[\"length\"] = len(cfg[\"nums\"])\n"
     "cfg\n");
 
-// 3. Read the result back ----------------------------------------------------
-Value res(vm, out);
-std::printf("name   = %s\n",  res.get("name").asString().c_str());
-std::printf("length = %lld\n", (long long)res.get("length").asInt());
+// 3. Read the result back — the wrappers mirror Kirito's own methods ----------
+Dict res(vm, out);
+std::printf("name   = %s\n", res["name"].asString().utf8().c_str());
+std::printf("length = %lld\n", (long long)res["length"].asInt());
 std::printf("nums   = ");
-for (Value n : res.get("nums").items()) std::printf("%lld ", (long long)n.asInt());
+for (Value n : res["nums"].asList()) std::printf("%lld ", (long long)n.asInt());
 std::printf("\ntags   = ");
-for (Value t : res.get("tags").items()) std::printf("'%s' ", t.asString().c_str());
+for (Value t : res["tags"].asSet()) std::printf("'%s' ", t.asString().utf8().c_str());
 std::printf("\n");
 ```
 
@@ -614,47 +734,29 @@ Patterns worth remembering:
   Kirito's `cfg["nums"].append(4)` mutates the same List your C++ code built. You could read the
   appended element back through the local `nums` handle, no round-trip through `runSource` needed.
   Immutable scalars are also handles, but every mutation produces a *new* handle.
-- **Reading a Dict:** `.get(key)` throws when absent; `.get(key, default)` substitutes; `.has(key)`
-  tests without throwing; `.pairs()` iterates every `[key, value]` (bucket order, unspecified).
-- **Reading a List:** `.at(i)` indexes (negative counts from the end); `.items()` iterates.
-- **Reading a Set:** `.items()` — same shape as List.
-- **Reading a String — bytes vs code points.** `.asString()` returns the underlying UTF-8 as
-  `const std::string&`; that's the right handle for raw bytes. For code-point iteration/index use
-  `.items()` (each element is a 1-character `Value`), or drop to `StrVal` for `isAscii()` /
-  `codePointStarts()` and the free UTF-8 helpers.
-- **Rooting.** If you hold a value **across another allocating call**, root it:
-  `RootScope rs(vm); rs.add(res.handle());`. Values read and immediately consumed need no rooting.
+- **Reading a Dict:** `d[k]` throws when absent; `d.get(k, default)` substitutes; `d.contains(k)`
+  (or `d.has(k)`) tests without throwing; range-for `for (auto [k, v] : d)` iterates every pair.
+- **Reading a List:** `xs[i]` indexes (negatives from the end); range-for iterates.
+- **Reading a Set:** range-for iterates.
+- **Reading a String — bytes vs code points.** `s[i]` is a 1-code-point String (Kirito semantics);
+  `s.size()` is the code-point count; `s.utf8()` (or the `.asStringRef()` on the base `Value`) is
+  the raw UTF-8 buffer for byte-oriented I/O.
+- **Rooting.** Wrapper constructors that ALLOCATE pin their h_ automatically; wrappers of already-
+  live handles need no rooting. If you're operating on a raw `Handle` outside a wrapper across
+  another allocating call, root it: `RootScope rs(vm); rs.add(h);`.
 
 #### Code-point iteration
 
 ```cpp
-Value s = val(vm, "café日");
-std::printf("bytes = %zu\n", s.asString().size());   // 9  (UTF-8 length)
-std::printf("codepoints = %zu\n", s.len());           // 5
-for (Value ch : s.items()) std::printf("  %s\n", ch.asString().c_str());
+String s(vm, "café日");
+std::printf("bytes = %zu\n", s.utf8().size());   // 9  (UTF-8 length)
+std::printf("codepoints = %zu\n", s.size());      // 5
+for (std::size_t i = 0; i < s.size(); ++i)
+    std::printf("  %s\n", s[i].utf8().c_str());
 // c, a, f, é, 日  — each on its own line, split at code-point boundaries.
 
 std::string t = "naïve";
 utf8Length(t);   // 5 (not 6)   — the free helper works on any std::string
-```
-
-#### Streaming construction (when the builder gets in your way)
-
-The builder's non-movable `RootScope` prevents putting it in a container or returning it across
-scopes. For a Dict-of-Dicts built across many statements — parsing an INI file section-by-section,
-merging a batch of records into a Dict-of-Dicts — allocate a bare `DictVal` under a `RootScope`
-instead. This is the pattern the lint example
-(`tools/tests/integration/embed_lint.cpp`) uses:
-
-```cpp
-RootScope rs(vm);
-Handle rootH = rs.add(vm.alloc(std::make_unique<DictVal>()));
-for (const auto& [k, v] : records) {
-    Handle key = rs.add(vm.makeString(k));
-    Handle val = rs.add(vm.makeString(v));
-    static_cast<DictVal&>(vm.arena().deref(rootH)).set(vm.arena(), key, val);
-}
-return rootH;
 ```
 
 ### `Args` — reading a native function's positional arguments
@@ -668,6 +770,8 @@ public:
     Value operator[](std::size_t i) const;       // unchecked
     Value at(std::size_t i) const;               // throws "fn missing argument N"
     Value opt(std::size_t i, Value dflt) const;  // substitutes a default
+    void  require(std::size_t n) const;          // throws "fn expects N arguments, got M"
+    std::span<const Handle> raw() const;         // pass-through to the low-layer protocol
 };
 ```
 
