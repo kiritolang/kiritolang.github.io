@@ -248,7 +248,7 @@ public:
             return bind(std::string(name).c_str(), {"string", "pos", "endpos"}, [self, re, name = std::string(name)](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 RegexVal& R = re(vm, self);
                 Args args(vm, a, name.c_str());
-                std::string s = args.at(0).asString(name.c_str());
+                std::string s = args.at(0).asStringRef(name.c_str());
                 auto text = reng::toCodepoints(s);
                 int pos = (a.size() > 1) ? static_cast<int>(args[1].asInt("pos")) : 0;
                 if (pos < 0) pos = 0;
@@ -270,7 +270,7 @@ public:
             return bind("finditer", {"string", "pos", "endpos"}, [self, re](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 RegexVal& R = re(vm, self);
                 Args args(vm, a, "finditer");
-                std::string s = args.at(0).asString("finditer");
+                std::string s = args.at(0).asStringRef("finditer");
                 auto text = reng::toCodepoints(s);
                 int pos = (a.size() > 1) ? static_cast<int>(args[1].asInt("pos")) : 0;
                 if (pos < 0) pos = 0;
@@ -289,7 +289,7 @@ public:
             return bind("findall", {"string", "pos", "endpos"}, [self, re](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 RegexVal& R = re(vm, self);
                 Args args(vm, a, "findall");
-                std::string s = args.at(0).asString("findall");
+                std::string s = args.at(0).asStringRef("findall");
                 auto text = reng::toCodepoints(s);
                 auto starts = utf8Starts(s);
                 int pos = (a.size() > 1) ? static_cast<int>(args[1].asInt("pos")) : 0;
@@ -320,7 +320,7 @@ public:
                 RegexVal& R = re(vm, self);
                 Args args(vm, a, "sub");
                 Handle repl = args.at(0).handle();
-                std::string s = args.at(1).asString("sub string");
+                std::string s = args.at(1).asStringRef("sub string");
                 int count = (a.size() > 2) ? static_cast<int>(args[2].asInt("count")) : 0;
                 auto text = reng::toCodepoints(s);
                 auto starts = utf8Starts(s);
@@ -355,7 +355,7 @@ public:
             return bind("split", {"string", "maxsplit"}, [self, re](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 RegexVal& R = re(vm, self);
                 Args args(vm, a, "split");
-                std::string s = args.at(0).asString("split");
+                std::string s = args.at(0).asStringRef("split");
                 int maxsplit = (a.size() > 1) ? static_cast<int>(args[1].asInt("maxsplit")) : 0;
                 auto text = reng::toCodepoints(s);
                 auto starts = utf8Starts(s);
@@ -399,13 +399,13 @@ public:
         m.fn("compile", {{"pattern", "String"}, {"flags", "Integer", vm.makeInt(0)}}, "Regex",
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "compile");
-            return compileRegex(vm, args.at(0).asString("pattern"),
+            return compileRegex(vm, args.at(0).asStringRef("pattern"),
                                 a.size() > 1 ? static_cast<int>(args[1].asInt("flags")) : 0);
         });
 
         // escape(s) -> a String safe to drop into a pattern as a literal
         m.fn("escape", {{"s", "String"}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            std::string s = Args(vm, a, "escape").at(0).asString("escape");
+            std::string s = Args(vm, a, "escape").at(0).asStringRef("escape");
             std::string out;
             for (std::size_t st : utf8Starts(s)) {
                 unsigned cp = utf8DecodeAt(s, st);
@@ -433,7 +433,7 @@ public:
         m.fn("sub", {{"pattern", "String"}, {"repl"}, {"string", "String"}, {"count", "Integer", vm.makeInt(0)}}, "String",
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "sub");
-            Handle rx = compileRegex(vm, args.at(0).asString("pattern"), 0);
+            Handle rx = compileRegex(vm, args.at(0).asStringRef("pattern"), 0);
             RootScope rs(vm); rs.add(rx);
             Handle method = vm.arena().deref(rx).getAttr(vm, rx, "sub");
             std::array<Handle, 3> ma{args.at(1).handle(), args.at(2).handle(),
@@ -453,7 +453,7 @@ private:
     // match/search/fullmatch/findall/finditer: (pattern, string[, flags]) -> delegate to the method.
     static Handle oneShot(KiritoVM& vm, std::span<const Handle> a, const char* method) {
         Args args(vm, a, method);
-        Handle rx = compileRegex(vm, args.at(0).asString("pattern"),
+        Handle rx = compileRegex(vm, args.at(0).asStringRef("pattern"),
                                  a.size() > 2 ? static_cast<int>(args[2].asInt("flags")) : 0);
         RootScope rs(vm); rs.add(rx);
         Handle fn = vm.arena().deref(rx).getAttr(vm, rx, method);
@@ -463,7 +463,7 @@ private:
     // split: (pattern, string[, maxsplit]) — the 3rd arg is maxsplit, not flags.
     static Handle oneShotExtra(KiritoVM& vm, std::span<const Handle> a, const char* method) {
         Args args(vm, a, method);
-        Handle rx = compileRegex(vm, args.at(0).asString("pattern"), 0);
+        Handle rx = compileRegex(vm, args.at(0).asStringRef("pattern"), 0);
         RootScope rs(vm); rs.add(rx);
         Handle fn = vm.arena().deref(rx).getAttr(vm, rx, method);
         std::array<Handle, 2> ma{args.at(1).handle(), a.size() > 2 ? args[2].handle() : vm.makeInt(0)};

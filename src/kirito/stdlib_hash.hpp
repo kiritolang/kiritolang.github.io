@@ -38,7 +38,7 @@ public:
         auto digest = [&](const char* name, std::string (*fn)(const std::string&)) {
             m.fn(name, {{"data"}}, "String", [fn, name](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 Args args(vm, a, name);
-                return val(vm, fn(argStringOrBytes(vm, args[0].handle(), name)));
+                return Value(vm, fn(argStringOrBytes(vm, args[0].handle(), name)));
             });
         };
         digest("md5", hashing::md5);
@@ -48,7 +48,7 @@ public:
         auto checksum32 = [&](const char* name, uint32_t (*fn)(const std::string&)) {
             m.fn(name, {{"data"}}, "Integer", [fn, name](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 Args args(vm, a, name);
-                return val(vm, static_cast<int64_t>(fn(argStringOrBytes(vm, args[0].handle(), name))));
+                return Value(vm, static_cast<int64_t>(fn(argStringOrBytes(vm, args[0].handle(), name))));
             });
         };
         checksum32("adler32", deflate::adler32);
@@ -56,7 +56,7 @@ public:
         // crc64 — the 64-bit value reinterpreted as a signed Integer (top bit -> negative).
         m.fn("crc64", {{"data"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "crc64");
-            return val(vm, static_cast<int64_t>(crc64(argStringOrBytes(vm, args[0].handle(), "crc64"))));
+            return Value(vm, static_cast<int64_t>(crc64(argStringOrBytes(vm, args[0].handle(), "crc64"))));
         });
         // `hash(x)` — the SAME hash Dict/Set key off, exposed to Kirito code. Works uniformly on
         // every hashable value: Integer, Float, Bool, None, String, Bytes, and a user-class
@@ -69,7 +69,7 @@ public:
                 throw KiritoError("unhashable type '" + o.typeName() + "'");
             // The Object::hash() virtual returns size_t; reinterpret as int64_t so the Integer
             // preserves every bit (dict-lookup identity is what matters, not the numeric value).
-            return val(vm, static_cast<int64_t>(o.hash()));
+            return Value(vm, static_cast<int64_t>(o.hash()));
         });
     }
 };

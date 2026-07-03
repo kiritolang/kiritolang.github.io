@@ -13,33 +13,33 @@ int main() {
     KiritoVM vm;
 
     // ---- kind / typeName / truthy / str ----
-    CHECK(val(vm, 1).kind() == ValueKind::Integer);
-    CHECK(val(vm, 1.0).typeName() == "Float");
-    CHECK(val(vm, std::string("x")).typeName() == "String");
-    CHECK(val(vm, 0).truthy() == false);
-    CHECK(val(vm, 5).truthy() == true);
-    CHECK(none(vm).truthy() == false);
-    CHECK(val(vm, std::string("")).truthy() == false);
+    CHECK(Value(vm, 1).kind() == ValueKind::Integer);
+    CHECK(Value(vm, 1.0).typeName() == "Float");
+    CHECK(Value(vm, std::string("x")).typeName() == "String");
+    CHECK(Value(vm, 0).truthy() == false);
+    CHECK(Value(vm, 5).truthy() == true);
+    CHECK(Value::None(vm).truthy() == false);
+    CHECK(Value(vm, std::string("")).truthy() == false);
     CHECK(List(vm).add(1).add(2).build().str() == "[1, 2]");
-    CHECK(val(vm, 42).str() == "42");
+    CHECK(Value(vm, 42).str() == "42");
 
     // ---- items() over every iterable kind ----
     CHECK(List(vm).add(1).add(2).add(3).build().items().size() == 3);
     {
-        std::vector<Value> chars = val(vm, std::string("aéz")).items();  // String -> code points
-        CHECK(chars.size() == 3 && chars[1].asString() == "é");
+        std::vector<Value> chars = Value(vm, std::string("aéz")).items();  // String -> code points
+        CHECK(chars.size() == 3 && chars[1].asStringRef() == "é");
     }
     CHECK(Set(vm).add(1).add(2).build().items().size() == 2);            // Set -> elements
     {
-        std::vector<Value> keys = Dict(vm).set("a", val(vm, 1)).set("b", val(vm, 2)).build().items();
+        std::vector<Value> keys = Dict(vm).set("a", Value(vm, 1)).set("b", Value(vm, 2)).build().items();
         CHECK(keys.size() == 2);                                          // Dict -> keys
     }
-    CHECK_THROWS(val(vm, 5).items());                                     // Integer is not iterable
+    CHECK_THROWS(Value(vm, 5).items());                                     // Integer is not iterable
 
     // ---- pairs() over a Dict ----
     {
-        auto ps = Dict(vm).set("k", val(vm, 9)).build().pairs();
-        CHECK(ps.size() == 1 && ps[0].first.asString() == "k" && ps[0].second.asInt() == 9);
+        auto ps = Dict(vm).set("k", Value(vm, 9)).build().pairs();
+        CHECK(ps.size() == 1 && ps[0].first.asStringRef() == "k" && ps[0].second.asInt() == 9);
     }
 
     // ---- at() on a list, negative + out of range ----
@@ -52,30 +52,30 @@ int main() {
 
     // ---- len() success + error path ----
     CHECK(List(vm).add(1).add(2).build().len() == 2);
-    CHECK(val(vm, std::string("héllo")).len() == 5);
-    CHECK_THROWS(val(vm, 5).len());               // Integer has no length
+    CHECK(Value(vm, std::string("héllo")).len() == 5);
+    CHECK_THROWS(Value(vm, 5).len());               // Integer has no length
 
     // ---- typed-read mismatches all throw ----
-    CHECK_THROWS(val(vm, std::string("x")).asInt());
-    CHECK_THROWS(val(vm, 1).asString());
-    CHECK_THROWS(val(vm, std::string("x")).asBool());
-    CHECK_THROWS(val(vm, std::string("x")).asFloat());
-    CHECK(val(vm, 7).asFloat() == 7.0);           // asFloat accepts an Integer
+    CHECK_THROWS(Value(vm, std::string("x")).asInt());
+    CHECK_THROWS(Value(vm, 1).asStringRef());
+    CHECK_THROWS(Value(vm, std::string("x")).asBool());
+    CHECK_THROWS(Value(vm, std::string("x")).asFloat());
+    CHECK(Value(vm, 7).asFloat() == 7.0);           // asFloat accepts an Integer
 
     // ---- has / get on a Dict + error on a non-Dict ----
     {
-        Value d = Dict(vm).set("name", val(vm, std::string("Ada"))).build();
+        Value d = Dict(vm).set("name", Value(vm, std::string("Ada"))).build();
         CHECK(d.has("name") == true && d.has("missing") == false);
-        CHECK(d.get("name").asString() == "Ada");
-        CHECK(d.get("missing", val(vm, 0)).asInt() == 0);   // default for an absent key
+        CHECK(d.get("name").asStringRef() == "Ada");
+        CHECK(d.get("missing", Value(vm, 0)).asInt() == 0);   // default for an absent key
         CHECK_THROWS(d.get("missing"));                      // no default -> throws
-        CHECK_THROWS(val(vm, 1).has("k"));                   // not a Dict
+        CHECK_THROWS(Value(vm, 1).has("k"));                   // not a Dict
     }
 
     // ---- makeList from a std::vector<Handle> ----
     {
         std::vector<Handle> hs{vm.makeInt(1), vm.makeInt(2), vm.makeInt(3)};
-        CHECK(makeList(vm, hs).len() == 3);
+        CHECK(List(vm, hs).len() == 3);
     }
 
     // ---- Args: empty / size / at / opt, via a registered native ----

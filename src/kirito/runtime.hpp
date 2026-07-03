@@ -2791,12 +2791,12 @@ inline void KiritoVM::installBuiltins() {
             return vm.alloc(std::make_unique<BytesVal>());
         std::string enc = "utf-8";
         if (args.size() > 1 && vm.arena().deref(args[1]).kind() != ValueKind::None)
-            enc = Value(vm, args[1]).asString("Bytes encoding");
+            enc = Value(vm, args[1]).asStringRef("Bytes encoding");
         return makeBytes(vm, args[0], enc);
     });
     // Bytes.fromhex equivalent as a free builtin: fromhex("48 65") -> Bytes.
     defSig("fromhex", {{"s", "String"}}, "Bytes", [](KiritoVM& vm, std::span<const Handle> args) -> Handle {
-        return vm.alloc(std::make_unique<BytesVal>(bytesutil::fromHex(Value(vm, args[0]).asString("fromhex"))));
+        return vm.alloc(std::make_unique<BytesVal>(bytesutil::fromHex(Value(vm, args[0]).asStringRef("fromhex"))));
     });
     // Reconstruct a Bytes from its serialized (latin-1 String) state.
     registerDeserializer("Bytes", [](KiritoVM& vm, Handle) -> Handle {

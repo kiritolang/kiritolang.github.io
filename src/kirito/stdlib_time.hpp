@@ -288,29 +288,29 @@ public:
 
         // time() -> Float seconds since the Unix epoch (wall clock).
         m.fn("time", {}, "Float", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            return val(vm, duration<double>(system_clock::now().time_since_epoch()).count());
+            return Value(vm, duration<double>(system_clock::now().time_since_epoch()).count());
         });
 
         // timens() -> Integer nanoseconds since the epoch (wall clock).
         m.fn("timens", {}, "Integer", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            return val(vm, static_cast<int64_t>(duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count()));
+            return Value(vm, static_cast<int64_t>(duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count()));
         });
 
         // monotonic() -> Float seconds from a steady clock (for measuring intervals).
         m.fn("monotonic", {}, "Float", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            return val(vm, duration<double>(steady_clock::now().time_since_epoch()).count());
+            return Value(vm, duration<double>(steady_clock::now().time_since_epoch()).count());
         });
 
         // perfcounterns() -> Integer nanoseconds from the highest-resolution steady clock.
         m.fn("perfcounterns", {}, "Integer", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            return val(vm, static_cast<int64_t>(duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count()));
+            return Value(vm, static_cast<int64_t>(duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count()));
         });
 
         // sleep(seconds) — Float or Integer seconds.
         m.fn("sleep", {{"seconds", "Number"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             double secs = Args(vm, a, "sleep")[0].asFloat("sleep");
             if (secs > 0) std::this_thread::sleep_for(duration<double>(secs));
-            return none(vm);
+            return Value::None(vm);
         });
 
         // datetime(timestamp) -> DateTime; with no arg (or None), the current UTC time.
@@ -366,8 +366,8 @@ public:
         m.fn("strptime", {{"text", "String"}, {"format", "String"}}, "DateTime", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "strptime");
             std::tm tm{};
-            if (!strptimeCompat(args[0].asString("strptime text").c_str(),
-                                args[1].asString("strptime format").c_str(), tm))
+            if (!strptimeCompat(args[0].asStringRef("strptime text").c_str(),
+                                args[1].asStringRef("strptime format").c_str(), tm))
                 throw KiritoError("strptime: text does not match format");
             return vm.alloc(std::make_unique<DateTime>(timegmCompat(tm)));
         });

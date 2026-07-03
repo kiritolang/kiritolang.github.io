@@ -82,9 +82,9 @@ static std::vector<Finding> lint(KiritoVM& vm, const std::vector<Handle>& rules,
         if (!res.isList())
             throw KiritoError("lint: rule must return a List, got '" + res.typeName() + "'");
         for (Value f : res.items()) {
-            out.push_back({ f.get("severity").asString("severity"),
-                            f.get("path").asString("path"),
-                            f.get("msg").asString("msg") });
+            out.push_back({ f.get("severity").asStringRef("severity"),
+                            f.get("path").asStringRef("path"),
+                            f.get("msg").asStringRef("msg") });
         }
     }
     return out;

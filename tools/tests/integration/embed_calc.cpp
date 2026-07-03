@@ -107,7 +107,7 @@ struct CalcModule : NativeModule {
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                  Args args(vm, a, "abs");
                  double d = args.at(0).asFloat("x");
-                 return val(vm, d < 0.0 ? -d : d);
+                 return Value(vm, d < 0.0 ? -d : d);
              });
     }
 };
@@ -176,7 +176,7 @@ Function(s):
     // ---- adversarial: unknown operator + stack underflow + operator that throws ----
     CHECK_THROWS(c.run("3 4 bogus"));                 // unknown operator
     CHECK_THROWS(c.run("+"));                          // stack underflow
-    CHECK_THROWS(c.run("1 2 /").asString(""));        // asString on a Float throws (not a semantic bug)
+    CHECK_THROWS(c.run("1 2 /").asStringRef(""));        // asString on a Float throws (not a semantic bug)
     CHECK_THROWS(c.run(""));                           // empty stack at end
     // An operator that throws inside its Kirito body surfaces cleanly.
     c.registerOp("boom", compile("Function(s): throw \"kaboom\"\n"));

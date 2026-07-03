@@ -163,9 +163,9 @@ int main() {
     // Build a `people` table: three rows with name (String) + age (Integer) + city (String).
     auto row = [&](const std::string& n, int64_t a, const std::string& c) {
         Dict d(vm);
-        d.set("name", val(vm, n));
-        d.set("age",  val(vm, a));
-        d.set("city", val(vm, c));
+        d.set("name", Value(vm, n));
+        d.set("age",  Value(vm, a));
+        d.set("city", Value(vm, c));
         return d.build().handle();
     };
     sql.registerTable("people", {row("Ada", 36, "London"),
@@ -192,7 +192,7 @@ Function(r):
         auto rows = sql.query("SELECT name, age FROM people");
         CHECK(rows.size() == 4);
         CHECK(rows[0].size() == 2);
-        CHECK(Value(vm, rows[0][0]).asString("") == "Ada");
+        CHECK(Value(vm, rows[0][0]).asStringRef("") == "Ada");
         CHECK(Value(vm, rows[0][1]).asInt("") == 36);
     }
 
@@ -200,8 +200,8 @@ Function(r):
     {
         auto rows = sql.query("SELECT upper_name(*), age_bucket(*) FROM people WHERE is_senior(*)");
         CHECK(rows.size() == 1);       // Grace only
-        CHECK(Value(vm, rows[0][0]).asString("") == "GRACE");
-        CHECK(Value(vm, rows[0][1]).asString("") == "senior");
+        CHECK(Value(vm, rows[0][0]).asStringRef("") == "GRACE");
+        CHECK(Value(vm, rows[0][1]).asStringRef("") == "senior");
     }
 
     // --- SELECT name FROM people WHERE from_UK(*)
@@ -209,7 +209,7 @@ Function(r):
         auto rows = sql.query("SELECT name FROM people WHERE from_UK(*)");
         CHECK(rows.size() == 2);
         std::vector<std::string> got;
-        for (auto& r : rows) got.push_back(Value(vm, r[0]).asString(""));
+        for (auto& r : rows) got.push_back(Value(vm, r[0]).asStringRef(""));
         std::vector<std::string> want{"Ada", "Alan"};
         CHECK(got == want);
     }

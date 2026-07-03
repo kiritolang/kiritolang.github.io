@@ -590,7 +590,7 @@ namespace net {
 inline Handle makeResponse(KiritoVM& vm, const HttpResult& r, Handle cookiesH) {
     RootScope rs(vm);
     Dict hd(vm);
-    for (const auto& [k, v] : r.headers) hd.set(k, val(vm, v));
+    for (const auto& [k, v] : r.headers) hd.set(k, Value(vm, v));
     auto resp = std::make_unique<ResponseVal>();
     resp->status = r.status;
     resp->reason = r.reason;
@@ -716,7 +716,7 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     Dict jar(vm);
     Handle cookiesOpt = netOpt(vm, opts, "cookies");
     if (vm.arena().deref(cookiesOpt).kind() == ValueKind::Dict)
-        for (const auto& [k, v] : Value(vm, cookiesOpt).pairs()) jar.set(k.str(), val(vm, v.str()));
+        for (const auto& [k, v] : Value(vm, cookiesOpt).pairs()) jar.set(k.str(), Value(vm, v.str()));
     Handle jarH = rs.add(jar.build());
     auto& jarDict = static_cast<DictVal&>(vm.arena().deref(jarH));
 
@@ -825,7 +825,7 @@ inline Handle SessionVal::getAttr(KiritoVM& vm, Handle self, std::string_view na
             [self, method](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 Args args(vm, a, "session");
                 Handle opts = args.size() > 1 ? a[1] : vm.none();
-                return sessionDo(vm, self, method, args[0].asString("url"), opts);
+                return sessionDo(vm, self, method, args[0].asStringRef("url"), opts);
             }, std::vector<Handle>{self});
     };
     if (name == "get") return verb("get", "GET");
@@ -840,7 +840,7 @@ inline Handle SessionVal::getAttr(KiritoVM& vm, Handle self, std::string_view na
             [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 Args args(vm, a, "session.request");
                 Handle opts = args.size() > 2 ? a[2] : vm.none();
-                return sessionDo(vm, self, args[0].asString("method"), args[1].asString("url"), opts);
+                return sessionDo(vm, self, args[0].asStringRef("method"), args[1].asStringRef("url"), opts);
             }, std::vector<Handle>{self});
     return Object::getAttr(vm, self, name);
 }
@@ -1040,14 +1040,14 @@ public:
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                  Args args(vm, a, "request");
                  Handle opts = args.size() > 2 ? a[2] : vm.none();
-                 return netRequest(vm, args[0].asString("method"), args[1].asString("url"), opts);
+                 return netRequest(vm, args[0].asStringRef("method"), args[1].asStringRef("url"), opts);
              });
         auto verb = [&m](const char* fnName, const char* method) {
             m.fn(fnName, {{"url", "String"}, {"options", "", m.vm().none()}}, "Response",
                  [method](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                      Args args(vm, a, "http");
                      Handle opts = args.size() > 1 ? a[1] : vm.none();
-                     return netRequest(vm, method, args[0].asString("url"), opts);
+                     return netRequest(vm, method, args[0].asStringRef("url"), opts);
                  });
         };
         verb("get", "GET");
@@ -1060,16 +1060,16 @@ public:
 
         // --- URL helpers (urllib.parse style) ---
         m.fn("quote", {{"s", "String"}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, net::percentEncode(Args(vm, a, "quote")[0].asString("s")));
+            return Value(vm, net::percentEncode(Args(vm, a, "quote")[0].asStringRef("s")));
         });
         m.fn("unquote", {{"s", "String"}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, net::percentDecode(Args(vm, a, "unquote")[0].asString("s")));
+            return Value(vm, net::percentDecode(Args(vm, a, "unquote")[0].asStringRef("s")));
         });
         m.fn("urlencode", {{"params", "Dict"}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return val(vm, formUrlencode(vm, a[0]));
+            return Value(vm, formUrlencode(vm, a[0]));
         });
         m.fn("parseqs", {{"query", "String"}}, "Dict", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            std::string q = Args(vm, a, "parseqs")[0].asString("parseqs");
+            std::string q = Args(vm, a, "parseqs")[0].asStringRef("parseqs");
             Dict d(vm);
             std::size_t i = 0;
             while (i < q.size()) {
@@ -1078,14 +1078,14 @@ public:
                 std::size_t eq = pair.find('=');
                 std::string k = net::percentDecode(eq == std::string::npos ? pair : pair.substr(0, eq));
                 std::string v = eq == std::string::npos ? "" : net::percentDecode(pair.substr(eq + 1));
-                if (!k.empty()) d.set(k, val(vm, v));
+                if (!k.empty()) d.set(k, Value(vm, v));
                 if (amp == std::string::npos) break;
                 i = amp + 1;
             }
             return d.build();
         });
         m.fn("urlsplit", {{"url", "String"}}, "Dict", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            net::UrlParts p = net::splitUrl(Args(vm, a, "urlsplit")[0].asString("urlsplit"));
+            net::UrlParts p = net::splitUrl(Args(vm, a, "urlsplit")[0].asStringRef("urlsplit"));
             return Dict(vm).set("scheme", p.scheme).set("host", p.host).set("port", p.port)
                            .set("path", p.path).set("query", p.query).set("fragment", p.fragment).build();
         });

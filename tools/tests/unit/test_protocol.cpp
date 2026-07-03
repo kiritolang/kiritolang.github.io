@@ -27,7 +27,7 @@ int main() {
 
     // ---- List: getItem / setItem / iterate / length / contains / slice / children ----
     {
-        Handle lst = makeList(vm, {vm.makeInt(10), vm.makeInt(20), vm.makeInt(30)}).handle();
+        Handle lst = List(vm, {vm.makeInt(10), vm.makeInt(20), vm.makeInt(30)}).handle();
         Object& lo = arena.deref(lst);
         std::array<Handle, 1> k1{vm.makeInt(1)};
         CHECK(vm.stringify(lo.getItem(vm, k1)) == "20");
@@ -49,7 +49,7 @@ int main() {
     // ---- Dict: getItem / length / contains / children ----
     {
         Dict d(vm);
-        d.set("x", val(vm, 1)).set("y", val(vm, 2));
+        d.set("x", Value(vm, 1)).set("y", Value(vm, 2));
         Handle dh = d.build().handle();
         Object& dobj = arena.deref(dh);
         std::array<Handle, 1> kx{vm.makeString("x")};
@@ -81,7 +81,7 @@ int main() {
         CHECK(arena.deref(vm.makeString("k")).hashable() == true);
         CHECK(arena.deref(vm.makeBool(true)).hashable() == true);
         (void)arena.deref(vm.makeInt(7)).hash();   // does not throw
-        Handle lst = makeList(vm, {vm.makeInt(1)}).handle();
+        Handle lst = List(vm, {vm.makeInt(1)}).handle();
         CHECK(arena.deref(lst).hashable() == false);
         CHECK_THROWS(arena.deref(lst).hash());      // unhashable type
     }
@@ -104,8 +104,8 @@ int main() {
     {
         CHECK(arena.deref(vm.makeInt(5)).equals(arena, arena.deref(vm.makeInt(5))) == true);
         CHECK(arena.deref(vm.makeInt(5)).equals(arena, arena.deref(vm.makeInt(6))) == false);
-        Handle l1 = makeList(vm, {vm.makeInt(1), vm.makeInt(2)}).handle();
-        Handle l2 = makeList(vm, {vm.makeInt(1), vm.makeInt(2)}).handle();
+        Handle l1 = List(vm, {vm.makeInt(1), vm.makeInt(2)}).handle();
+        Handle l2 = List(vm, {vm.makeInt(1), vm.makeInt(2)}).handle();
         CHECK(arena.deref(l1).equals(arena, arena.deref(l2)) == true);
     }
 

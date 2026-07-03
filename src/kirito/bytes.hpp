@@ -270,7 +270,7 @@ inline Handle BytesVal::getAttr(KiritoVM& vm, Handle self, std::string_view name
     if (name == "decode")
         return makeMethod(vm, "decode", {"encoding"}, [self, self_b](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::string enc = "utf-8";
-            if (!a.empty() && vm.arena().deref(a[0]).kind() != ValueKind::None) enc = Value(vm, a[0]).asString("decode encoding");
+            if (!a.empty() && vm.arena().deref(a[0]).kind() != ValueKind::None) enc = Value(vm, a[0]).asStringRef("decode encoding");
             return vm.makeString(bytesutil::decode(self_b(vm, self).data, enc));
         }, std::vector<Handle>{self});
     if (name == "hex")
@@ -301,7 +301,7 @@ inline Handle BytesVal::getAttr(KiritoVM& vm, Handle self, std::string_view name
     if (name == "_setstate_")
         return makeMethod(vm, "_setstate_", {"state"}, [self, self_b](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.empty()) throw KiritoError("_setstate_ expects the serialized state");
-            self_b(vm, self).data = bytesutil::encode(Value(vm, a[0]).asString("Bytes state"), "latin-1");
+            self_b(vm, self).data = bytesutil::encode(Value(vm, a[0]).asStringRef("Bytes state"), "latin-1");
             return vm.none();
         }, std::vector<Handle>{self});
     return Object::getAttr(vm, self, name);
@@ -354,6 +354,17 @@ inline Handle makeStringOrBytes(KiritoVM& vm, Handle templateInput, std::string 
 #if defined(__GNUC__)
 #  pragma GCC diagnostic pop
 #endif
+
+// Out-of-line definitions for the Bytes facade (needs BytesVal to be complete).
+inline Bytes::Bytes(KiritoVM& vm, std::string_view raw) {
+    vm_ = &vm; h_ = vm.alloc(std::make_unique<BytesVal>(std::string(raw)));
+}
+inline Bytes::Bytes(KiritoVM& vm, std::string raw) {
+    vm_ = &vm; h_ = vm.alloc(std::make_unique<BytesVal>(std::move(raw)));
+}
+inline const std::string& Bytes::data() const {
+    return static_cast<const BytesVal&>(ref()).data;
+}
 
 }  // namespace kirito
 

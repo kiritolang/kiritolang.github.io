@@ -50,12 +50,12 @@ static std::vector<Bar> makeSeries(int64_t n) {
 // Pack a bar into a Kirito Dict (freshly allocated per call — cheap enough for a backtest).
 static Handle barToDict(KiritoVM& vm, const Bar& b) {
     Dict d(vm);
-    d.set("t",      val(vm, b.t));
-    d.set("open",   val(vm, b.open));
-    d.set("high",   val(vm, b.high));
-    d.set("low",    val(vm, b.low));
-    d.set("close",  val(vm, b.close));
-    d.set("volume", val(vm, b.volume));
+    d.set("t",      Value(vm, b.t));
+    d.set("open",   Value(vm, b.open));
+    d.set("high",   Value(vm, b.high));
+    d.set("low",    Value(vm, b.low));
+    d.set("close",  Value(vm, b.close));
+    d.set("volume", Value(vm, b.volume));
     return d.build().handle();
 }
 
@@ -80,7 +80,7 @@ static BacktestResult run(KiritoVM& vm, Handle strategyH, const std::vector<Bar>
         Handle resH = rs.add(vm.arena().deref(sH).call(vm, args));
         Value res(vm, resH);
         // The strategy MUST return a Dict — the {"action": ..., "qty"?: ...} contract.
-        std::string action = res.get("action").asString("strategy action");
+        std::string action = res.get("action").asStringRef("strategy action");
         int64_t qty = res.has("qty") ? res.get("qty").asInt("strategy qty") : int64_t{1};
         r.lastSignal = action;
         if (action == "buy" && r.cash >= b.close * static_cast<double>(qty)) {
@@ -110,10 +110,10 @@ struct StratModule : NativeModule {
                  auto items = args.at(0).items();
                  int64_t n = static_cast<int64_t>(items.size());
                  int64_t take = std::min(n, w);
-                 if (take == 0) return val(vm, 0.0);
+                 if (take == 0) return Value(vm, 0.0);
                  double sum = 0.0;
                  for (int64_t i = n - take; i < n; ++i) sum += items[static_cast<std::size_t>(i)].asFloat("value");
-                 return val(vm, sum / static_cast<double>(take));
+                 return Value(vm, sum / static_cast<double>(take));
              });
     }
 };

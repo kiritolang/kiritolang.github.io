@@ -553,13 +553,13 @@ public:
         // Scalar reductions: modulus/abs, phase/argument, norm2, conjugate. `abs`/`argument` are
         // aliases of `modulus`/`phase` (one shared impl registered under both names — single source
         // of truth, matching the ComplexVal::getAttr method-alias pattern above).
-        auto modulusFn = [](KiritoVM& vm, std::span<const Handle> a) -> Handle { return val(vm, std::abs(cpx::asComplex(vm, a[0]))); };
+        auto modulusFn = [](KiritoVM& vm, std::span<const Handle> a) -> Handle { return Value(vm, std::abs(cpx::asComplex(vm, a[0]))); };
         m.fn("modulus", {{"z"}}, "Float", modulusFn);
         m.fn("abs", {{"z"}}, "Float", modulusFn);
-        auto phaseFn = [](KiritoVM& vm, std::span<const Handle> a) -> Handle { return val(vm, std::arg(cpx::asComplex(vm, a[0]))); };
+        auto phaseFn = [](KiritoVM& vm, std::span<const Handle> a) -> Handle { return Value(vm, std::arg(cpx::asComplex(vm, a[0]))); };
         m.fn("phase", {{"z"}}, "Float", phaseFn);
         m.fn("argument", {{"z"}}, "Float", phaseFn);
-        m.fn("norm2", {{"z"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle { return val(vm, std::norm(cpx::asComplex(vm, a[0]))); });
+        m.fn("norm2", {{"z"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle { return Value(vm, std::norm(cpx::asComplex(vm, a[0]))); });
         m.fn("conjugate", {{"z"}}, "Complex", [](KiritoVM& vm, std::span<const Handle> a) -> Handle { return cpx::make(vm, std::conj(cpx::asComplex(vm, a[0]))); });
 
         // Analytic functions — the complex extensions of the `math` module's transcendental set.

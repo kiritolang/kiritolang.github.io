@@ -82,7 +82,7 @@ Function(x):
     p.addStage(sFmt);
 
     std::vector<Handle> input;
-    for (int64_t i = 0; i < 8; ++i) input.push_back(val(vm, i).handle());
+    for (int64_t i = 0; i < 8; ++i) input.push_back(Value(vm, i).handle());
     p.run(input);
 
     // 0,1,2,3,4,5,6,7 → keep even → 0,2,4,6 → double → 0,4,8,12 → fanout → 0,1,4,5,8,9,12,13
@@ -90,7 +90,7 @@ Function(x):
     const auto& out = p.sink();
     CHECK(out.size() == 8);
     std::vector<std::string> got;
-    for (Handle h : out) got.push_back(Value(vm, h).asString(""));
+    for (Handle h : out) got.push_back(Value(vm, h).asStringRef(""));
     std::vector<std::string> want{"v=0","v=1","v=4","v=5","v=8","v=9","v=12","v=13"};
     CHECK(got == want);
 
@@ -107,7 +107,7 @@ Function(x):
         Pipeline p3(vm);
         p3.addStage(compile("Function(x): return None\n"));
         p3.addStage(compile("Function(x): return x + 1000\n"));   // never runs
-        p3.run({val(vm, int64_t{1}).handle(), val(vm, int64_t{2}).handle()});
+        p3.run({Value(vm, int64_t{1}).handle(), Value(vm, int64_t{2}).handle()});
         CHECK(p3.sink().empty());
     }
 
@@ -121,7 +121,7 @@ Function(x):
     return x
 )KI"));
         std::vector<Handle> in;
-        for (int64_t i = 0; i < 10; ++i) in.push_back(val(vm, i).handle());
+        for (int64_t i = 0; i < 10; ++i) in.push_back(Value(vm, i).handle());
         p4.run(in);
         CHECK(p4.sink().size() == 9);   // 0..9 minus 5
     }
@@ -130,7 +130,7 @@ Function(x):
     {
         Pipeline p5(vm);
         p5.addStage(compile("Function(x): throw \"pipeline burst\"\n"));
-        CHECK_THROWS(p5.run({val(vm, int64_t{1}).handle()}));
+        CHECK_THROWS(p5.run({Value(vm, int64_t{1}).handle()}));
     }
 
     // ---- deep pipeline (many stages, each identity): output should equal input untouched ----
@@ -139,7 +139,7 @@ Function(x):
         Handle identity = compile("Function(x): return x\n");
         for (int i = 0; i < 20; ++i) p6.addStage(identity);
         std::vector<Handle> in;
-        for (int64_t i = 0; i < 5; ++i) in.push_back(val(vm, i).handle());
+        for (int64_t i = 0; i < 5; ++i) in.push_back(Value(vm, i).handle());
         p6.run(in);
         CHECK(p6.sink().size() == 5);
         for (std::size_t i = 0; i < 5; ++i)

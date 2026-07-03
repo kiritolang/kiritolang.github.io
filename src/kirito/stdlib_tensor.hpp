@@ -233,7 +233,7 @@ inline tensor::Shape readShape(Value v) {
 inline bool wantsComplex(KiritoVM& vm, Handle h) {
     const Object& o = vm.arena().deref(h);
     if (o.kind() == ValueKind::None) return false;
-    std::string d = Value(vm, h).asString("dtype");
+    std::string d = Value(vm, h).asStringRef("dtype");
     if (d == "Float") return false;
     if (d == "Complex") return true;
     throw KiritoError("Tensor dtype must be \"Float\" or \"Complex\"");
@@ -2002,7 +2002,7 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
             throw KiritoError("cannot serialize a Tensor that requires grad; call detach() first "
                               "(only gradient-free tensors are serializable)");
         List st(vm);
-        st.add(val(vm, std::string(t.dtypeName())));                 // [0] dtype
+        st.add(Value(vm, std::string(t.dtypeName())));                 // [0] dtype
         List shapeL(vm);
         for (std::size_t d : t.shape()) shapeL.add(static_cast<int64_t>(d));
         st.add(shapeL.build());                                      // [1] shape
@@ -2020,7 +2020,7 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         auto& t = self_t(vm, self);
         auto items = Value(vm, a[0]).items();
         if (items.size() < 3) throw KiritoError("Tensor _setstate_: malformed state");
-        std::string dtype = items[0].asString("dtype");
+        std::string dtype = items[0].asStringRef("dtype");
         tensor::Shape shape;
         for (Value e : items[1].items()) shape.push_back(static_cast<std::size_t>(e.asInt("dim")));
         tns::checkSize(shape);
@@ -2442,7 +2442,7 @@ public:
         });
         m.fn("einsum", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {  // variadic: (spec, *tensors)
             if (a.empty()) throw KiritoError("einsum needs a subscripts string and at least one tensor");
-            std::string spec = Value(vm, a[0]).asString("einsum subscripts");
+            std::string spec = Value(vm, a[0]).asStringRef("einsum subscripts");
             std::vector<Handle> ops(a.begin() + 1, a.end());
             return tns::wrap([&]() { return tns::einsumT(vm, spec, ops); });
         });
