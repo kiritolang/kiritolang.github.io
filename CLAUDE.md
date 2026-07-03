@@ -384,7 +384,7 @@ a stability fuzzer, and a benchmark). Working today:
     (`matrix`), **Complex/ComplexMatrix** (`complex`), **DateTime** (`time`), **Random** (`random` —
     restores the generator's exact stream, a reproducible checkpoint), and gradient-free **Tensor**
     (`tensor`). Resource-like natives that wrap live state (`Socket`/`Session`, open files/`BytesIO`/
-    streams, compiled regex `Pattern`/`Match`) are intentionally **not** serializable and throw a
+    streams, compiled regex `Regex`/`Match`) are intentionally **not** serializable and throw a
     clear, catchable error.
   - `net` — TCP sockets (connect/bind/listen/accept/send/recv/recvall/settimeout; `recv`/`recvall`
     return **`Bytes`** so binary streams stay byte-exact — `.decode()` for text — and `send` accepts a

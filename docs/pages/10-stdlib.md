@@ -297,7 +297,9 @@ same type as its input.
 - `compress(data) → data` (alias `gzip`) — wrap the DEFLATE body in the gzip container (RFC 1952). A
   valid `.gz` stream interoperable with `gzip(1)`/`gunzip` (OS = unknown, MTIME = 0, so not byte-identical to gzip(1)).
 - `decompress(data) → data` (alias `gunzip`) — validate the header, skip the optional filename/extra
-  fields, INFLATE, and verify the CRC-32 trailer (throws on a corrupt stream).
+  fields, INFLATE, and verify both trailers — the CRC-32 **and** the ISIZE (uncompressed length)
+  (throws on a corrupt stream). Multiple gzip members concatenated into one stream (`cat a.gz b.gz`)
+  are all decoded and joined.
 
 Pair with `net.get(url).content` (raw `Bytes`) to fetch and unpack a `.gz` resource:
 
@@ -375,10 +377,10 @@ Each call also takes an optional `stream=` keyword to redirect that single call 
 
 Returned by `io.open`. Iterating a file yields its remaining lines.
 
-- `f.read([n]) → String` — read `n` characters, or the whole rest of the file if omitted. (In binary mode, returns [`Bytes`](types.html#bytes); `n` counts bytes.)
+- `f.read([size]) → String` — read `size` characters, or the whole rest of the file if omitted. (In binary mode, returns [`Bytes`](types.html#bytes); `size` counts bytes.)
 - `f.readline() → String` — read one line (without the trailing newline). (Bytes in binary mode.)
 - `f.readlines() → List` — read all remaining lines into a List.
-- `f.write(s: String | Bytes) → None` — write `s` at the current position. Throws on a closed file
+- `f.write(data: String | Bytes) → None` — write `data` at the current position. Throws on a closed file
   or one opened read-only — a write is never silently dropped.
 - `f.writelines(lines) → None` — write each String/Bytes in an iterable (same throwing rules).
 - `f.seek(offset: Integer, whence: Integer = 0) → Integer` — move the read/write cursor and return the
@@ -392,13 +394,13 @@ Returned by `io.open`. Iterating a file yields its remaining lines.
 
 ### BytesIO object
 
-- `b.write(s: String) → Integer` — write bytes at the cursor (overwriting/extending); returns the count written.
-- `b.read([n]) → String` — read `n` bytes from the cursor, or the rest if omitted (an explicit
+- `b.write(data: String | Bytes) → Integer` — write bytes at the cursor (overwriting/extending); returns the count written.
+- `b.read([size]) → String` — read `size` bytes from the cursor, or the rest if omitted (an explicit
   `read(None)` also reads the rest, unlike `File.read` which requires an Integer).
 - `b.readline() → String` — read up to and including the next newline (returned without it).
 - `b.getvalue() → String` — the entire buffer contents.
 - `b.tell() → Integer` — the current cursor position.
-- `b.seek(off[, whence]) → Integer` — move the cursor (whence 0=start, 1=cur, 2=end). A resulting
+- `b.seek(offset[, whence]) → Integer` — move the cursor (whence 0=start, 1=cur, 2=end). A resulting
   position before the start clamps to 0 (whereas `File.seek` to a negative position throws).
 - `b.size() → Integer` — total buffer length in bytes (`len(b)` also works).
 - `b.truncate() → Integer` — drop everything after the cursor.
@@ -437,6 +439,10 @@ JSON parsing and serialization (flat data interchange — for reference/cycle-pr
 
 - `parse(text: String)` — parse JSON text into Kirito values (objects → Dict, arrays → List, decodes `\u` escapes and surrogate pairs). Throws a clear error on malformed input. Alias `loads`.
 - `stringify(value, indent: Integer = 0) → String` — serialize a value to JSON; compact by default, pretty-printed when the indent width is greater than zero. Alias `dumps`.
+
+As a JavaScript-style extension, non-finite Floats round-trip: `stringify` emits the bare tokens
+`NaN` / `Infinity` / `-Infinity`, and `parse` accepts them back. This is convenient within Kirito but
+is **not** strict RFC-8259, so such output may be rejected by other JSON readers.
 
 Floats **round-trip exactly**: `loads(dumps(x))` recovers the identical double for any Float `x`
 (`dumps` emits enough digits, e.g. `0.1 + 0.2` → `"0.30000000000000004"`).
@@ -575,8 +581,9 @@ TCP sockets, a full-fledged HTTP/1.1 client, and URL helpers.
   (`.headers`) across requests; has the same `request(method, url[, options])` and verb methods
   (`s.get(url[, options])`, …).
 
-The `options` Dict may contain: `headers` (Dict), `params` (Dict → query string), `data` (String or
-form-Dict), `json` (any value → JSON body + `application/json`), `files` (Dict → `multipart/form-data`
+The `options` Dict may contain: `headers` (Dict), `params` (Dict → query string), `data` (String, a
+form-Dict, or `Bytes` → sent as `application/octet-stream`), `json` (any value → JSON body +
+`application/json`), `files` (Dict → `multipart/form-data`
 upload; value is content or `[filename, content]`), `auth` (`[user, pass]` → HTTP Basic), `timeout`
 (seconds), `allowredirects` (Bool, default `True`) / `maxredirects` (Integer, default 10), `verify`
 (Bool, default `True` — TLS certificate verification; trust roots come from the OS — OpenSSL's default
@@ -720,8 +727,9 @@ woken by interpreter shutdown.
   parties and keeps the barrier reusable; `abort()` is **permanent** — every later `wait` throws.
 
 These primitives cross VM boundaries **by identity** (passing one into `spawn`, or returning one from a
-worker, shares the same underlying object), but they define no `==`/hash: two handles to the same object
-compare `==` as `False`, and a primitive cannot be used as a Dict/Set key (it is unhashable).
+worker, shares the same underlying object). They define no *value* `==`/hash: equality is **identity**
+(a handle compares `==` to itself, but two separately-obtained wrappers of the same cross-VM object do
+not), and a primitive is **unhashable**, so it cannot be a Dict/Set key.
 
 ### Avoiding deadlock
 
@@ -759,10 +767,12 @@ if path.exists(full) and path.isfile(full):
 
 ### Path strings
 
-- `join(*parts) → String` — join path components with `/`. A later component that is **absolute**
-  (starts with `/`) resets the result; a trailing slash is not doubled; empty parts contribute
-  nothing. Like `os.path.join` it needs at least one component — `join()` with no parts **throws**. A
-  leading `\` is **not** treated as absolute (only `/` resets).
+- `join(*parts) → String` — join path components with `/`, exactly like `os.path.join`. A later
+  component that is **absolute** (starts with `/`) resets the result; a separator is inserted between
+  components only when the running result doesn't already end in one — so an empty component still
+  emits a separator (`join("a", "")` → `"a/"`, `join("a", "", "b")` → `"a/b"`). It needs at least one
+  component — `join()` with no parts **throws**. A leading `\` is **not** treated as absolute (only
+  `/` resets).
 - `dirname(path: String) → String` — the directory part of `path` (the root is kept: `dirname("/a")`
   is `"/"`).
 - `basename(path: String) → String` — the final component of `path` (empty for a trailing-slash path).
@@ -875,7 +885,7 @@ Literals and `.` (any char except newline; `\n` too under DOTALL); character cla
 `[^...]`, ranges `a-z`; shorthands `\d \D \w \W \s \S` (ASCII); anchors `^ $`, `\b \B`, `\A \z \Z`;
 groups `(...)`, non-capturing `(?:...)`, named `(?P<name>...)` or `(?<name>...)`; alternation `|`;
 quantifiers `* + ?`, `{n}`, `{n,}`, `{n,m}`, each greedy or **lazy** with a trailing `?`; escapes
-`\n \t \r \f \v \a \xHH \uHHHH`, octal `\0NN` (a leading-zero octal escape; `\b` is a backspace
+`\n \t \r \f \v \a \xHH \uHHHH \UHHHHHHHH` (2-, 4-, and 8-hex-digit code points), octal `\0NN` (a leading-zero octal escape; `\b` is a backspace
 *inside* a class), and any escaped metacharacter; inline flags `(?i)` / `(?m)` / `(?s)`. A bare
 `\1`–`\9` is **rejected** (it reads as a backreference, which is unsupported) — write an octal
 character as `\0NN`.
@@ -907,7 +917,7 @@ count), `r.groupindex` (name → group number).
 - `r.search(string[, pos[, endpos]]) → Match` — first match at/after `pos`, or `None`.
 - `r.fullmatch(string[, pos[, endpos]]) → Match` — whole-(sub)string match, or `None`.
 - `r.findall(string[, pos[, endpos]]) → List` — with **0** groups: a List of the matched Strings; with **1** group: a List of that group's Strings; with **2+** groups: a List of per-match group Lists.
-- `r.finditer(string) → List` — a List of `Match` objects, one per non-overlapping match.
+- `r.finditer(string[, pos[, endpos]]) → List` — a List of `Match` objects, one per non-overlapping match.
 - `r.sub(repl, string[, count]) → String` — replace matches. `repl` is either a template String (`\1`, `\g<name>`, `\g<0>`, `\\`) or a **function** taking a `Match` and returning a String. `count = 0` replaces all.
 - `r.split(string[, maxsplit]) → List` — split around matches; any captured groups are interleaved into the result.
 - `r.pattern` — the source pattern String.
@@ -1154,8 +1164,10 @@ Public names follow Kirito's lowercase-no-underscore convention (`readcsv`, `sor
 ### Series
 
 Indexing: `s[label]` (by index label, falling back to position), `s.iat(pos)`. Element-wise `+ - *
-/ // %` and comparisons `> >= < <=` against a scalar or another Series (the comparisons return a
-**boolean Series** for masking); `s.eq(x)`/`s.ne(x)`/`s.isin(values)`.
+/ // %` and comparisons `== != > >= < <=` against a scalar or another Series (the comparisons return
+a **boolean Series** for masking); `s.eq(x)`/`s.ne(x)`/`s.isin(values)`. Because `==`/`!=` are
+element-wise, a Series has no single truth value — using one directly in an `if`/`while` is an error;
+reduce it first (`s.all()`/`s.any()`) or index with the mask.
 
 - Aggregations (skip missing; Bool counts as 0/1): `sum`, `mean`, `min`, `max`, `median`, `variance`,
   `std`, `prod`, `count`.
@@ -1172,19 +1184,23 @@ Indexing: `s[label]` (by index label, falling back to position), `s.iat(pos)`. E
   `df.column(name)`, `df.at(label, col)`, `df.iat(pos, col)`.
 - `df["new"] = series_or_list_or_scalar` adds/replaces a column; `assign(name, value)` returns a copy
   with the column added.
-- Shape/views: `shape()` → `[rows, cols]`, `columns`, `index`, `len(df)`, `head`/`tail`/`slice`,
+- Shape/views: `shape()` → `[rows, cols]`, `nrows()`, `columns`, `index`, `len(df)`,
+  `head`/`tail`/`slice`, `rowat(pos)` (one row as a Dict) / `rowsat(positions)` (a sub-DataFrame),
   `rename(columns)`, `drop(columns)`, `setindex(col)`, `resetindex()`, `copy()`, `todict()`,
   `torows()`, `iterrows()`, `tocsv()`.
 - Aggregations over **numeric** columns → a Series indexed by column: `sum`, `mean`, `min`, `max`,
   `std`. `count` is the exception — it tallies non-null values for **every** column (any dtype).
+  `apply(fn)` maps `fn` over each numeric column's Series, returning a Series indexed by column.
   `describe()` → a DataFrame of count/mean/std/min/median/max.
 - `sortvalues(by, ascending = True)`, `groupby(col)`, `merge(other, on, how)`, `dropna()`,
   `fillna(value)`.
 
 ### GroupBy
 
-`df.groupby(col)` returns a grouping with numeric-column reductions `sum`/`mean`/`min`/`max`/`std`/
-`count`, `size()` (a Series of group sizes), `agg({col: reducer})` where `reducer` is one of
+`df.groupby(col)` returns a grouping with numeric-column reductions `sum`/`mean`/`min`/`max`/`std`,
+`size()` (a Series of group sizes), and `count` — which, unlike the numeric reductions, spans **every**
+value column and reports each group's **row count** in each (effectively `size()` broadcast across the
+columns, not a per-column non-null tally). Also `agg({col: reducer})` where `reducer` is one of
 `"sum"`/`"mean"`/`"min"`/`"max"`/`"std"`/`"count"`/`"median"`, and `apply(fn)` (fn receives each
 group's sub-DataFrame).
 
@@ -1266,10 +1282,11 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
 - `t[i, j, ...] → Number` — a **full** index (one per dimension) returns the scalar element.
 - `t[i] → Tensor` — a **partial** index returns the sub-tensor of the remaining axes.
 - `t[i, j, ...] = v` — assign an element (full index).
-- `a + b`, `a - b`, `a * b`, `a / b` — **element-wise** with **broadcasting** (axes align from
-  the right; each must be equal or 1). `*` is element-wise (Hadamard), **not** matrix multiply.
+- `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a // b`, `a ** b` — **element-wise** with
+  **broadcasting** (axes align from the right; each must be equal or 1). `*` is element-wise
+  (Hadamard), **not** matrix multiply; `%`/`//` throw on a zero divisor, like scalar arithmetic.
   Mixing a `Float` and a `Complex` tensor promotes the result to `Complex`. A scalar operand applies
-  element-wise (`t * 2`).
+  element-wise (`t * 2`, `t ** 2`).
 - `-t` — element-wise negation.
 - `a == b → Bool` — equal shape and **exact** element-wise equality (`NaN` never equal); distinct
   from the elementwise `.eq()` mask. Use `a.compare(other, rel_tol = 1e-9, abs_tol = 0.0) → Bool` for
@@ -1285,6 +1302,8 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
 - `t.apply(fn) → Tensor` — a new tensor with `fn` mapped over every element (the element-wise map).
 - `t.astype(dtype: String) → Tensor` — convert dtype (`Float → Complex`, or `Complex → Float` keeping
   the real part).
+- `t.item() → Float | Complex` — the single scalar of a one-element tensor (throws otherwise).
+- `t.tolist() → List` — the tensor as a nested Kirito `List` (Float/Complex leaves), shape-for-shape.
 - `t.sum(axis = None)`, `t.mean(axis = None)`, `t.prod(axis = None)` — reduce the whole tensor to a
   scalar, or one `axis` to a lower-rank tensor. A **negative axis** counts from the end NumPy-style
   (`-1` is the last axis); an out-of-range axis throws. (Applies to every axis-taking reduction below.)
@@ -1323,7 +1342,7 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
 
 ### Structural ops
 
-- `t.squeeze(axis = None)`, `t.expanddims(axis)`, `t.swapaxes(a1, a2)`, `t.flip(axis = None)`,
+- `t.squeeze(axis = None)`, `t.expanddims(axis)`, `t.swapaxes(axis1, axis2)`, `t.flip(axis = None)`,
   `t.broadcastto(shape)`, `t.repeat(count, axis = None)`, `t.tile(reps)` — all differentiable except
   `repeat`/`tile`.
 - `concatenate(tensors, axis = 0)` (alias `concat`), `stack(tensors, axis = 0)`,
@@ -1411,19 +1430,24 @@ methods are Float-only as well. Complex tensors remain a full numeric container 
   scalar (a 0-D or single-element tensor) and the seed is `1`; otherwise pass a seed tensor of `t`'s
   shape. Gradients **accumulate** into `.grad` (call `zerograd()` between steps).
 - `t.zerograd() → None` — clear `t.grad`.
-- `t.detach() → Tensor` — a copy that shares the data but tracks no gradient (stops gradient flow).
+- `t.detach() → Tensor` — an independent copy (its own buffer) that tracks no gradient — it stops
+  gradient flow. (It is a deep copy, not a view: mutating one via element assignment does not affect
+  the other.)
 - `nograd()` — a context manager: inside `with tensor.nograd():` no operation tracks gradients (for
   inference or for in-place parameter updates).
 
-**Differentiable ops:** `+ - * /` (with broadcasting), `matmul`, `tensordot`/`contract`, `sum`/`mean`
-(whole-tensor or per-axis), `transpose`/`permute`/`reshape`/`flatten`, `squeeze`/`expanddims`/
-`swapaxes`/`flip`/`broadcastto`, `concatenate`/`stack`/`split`, `where`/`clip`/`maximum`/`minimum`,
-`cumsum`, the grad-aware `slice`/`take`, unary `-`, and the differentiable math set above.
-Non-differentiable ops — `apply` (an arbitrary function), `min`/`max`, `prod`, `ptp`, `cumprod`,
-`dot`, `unique`/`nonzero`/`searchsorted`, `sort`/`argsort`, `einsum`, and plain indexing — detach
-(stop the gradient; using one on a grad-tracking tensor emits a one-time detach warning). On a
-grad-tracking tensor, a whole-tensor `sum`/`mean` returns a 0-D tensor (so the graph continues)
-rather than a plain `Float`.
+**Differentiable ops:** `+ - * / **` (with broadcasting), `matmul`, `tensordot`/`contract`,
+`sum`/`mean` (whole-tensor or per-axis), `transpose`/`permute`/`reshape`/`flatten`, `squeeze`/
+`expanddims`/`swapaxes`/`flip`/`broadcastto`, `concatenate`/`stack`/`split`,
+`where`/`clip`/`maximum`/`minimum`, `cumsum`, the grad-aware `slice`/`take`, unary `-`, and the
+differentiable math set above. Non-differentiable ops — `apply` (an arbitrary function), `min`/`max`,
+`argmin`/`argmax`, `prod`, `ptp`, `median`, `all`/`any`, `cumprod`, `dot`, `sort`/`argsort`,
+`unique`/`nonzero`/`searchsorted`, `einsum`, `%`/`//`, the linear-algebra family
+(`det`/`inv`/`solve`/`trace`/`norm`/`outer`/`kron`/`cross`), `astype`, `repeat`/`tile`, and plain
+indexing — detach (stop the gradient). Each emits a **one-time detach warning** when used on a
+grad-tracking tensor, so a gradient break is **never silent** (call `detach()` or use `nograd()` to
+do it intentionally). On a grad-tracking tensor, a whole-tensor `sum`/`mean` returns a 0-D tensor
+(so the graph continues) rather than a plain `Float`.
 
 ```kirito
 var io = import("io")
@@ -1474,10 +1498,12 @@ Clocks and calendar time.
 - `make(year, month, day, hour = 0, minute = 0, second = 0) → DateTime` — build from UTC components.
   Out-of-range components **normalize** (C `mktime`-style: month 13 → January of the next year,
   day 32 → the 1st of the next month), rather than throwing.
-- `strptime(text: String, format: String) → DateTime` — parse a time string against a format of
-  `%`-codes (`%Y-%m-%d %H:%M:%S`, …). Unlike `make`, parsing is strict: a literal/format mismatch,
-  an **out-of-range** field (`2024-99-99`, hour `25`), or **unconverted trailing input**
-  (`"2024-01-01XYZ"`) all throw rather than silently producing a garbage date.
+- `strptime(text: String, format: String) → DateTime` — parse a time string against a format. The
+  directive set is deliberately small: `%Y %m %d %H %M %S` and a literal `%%` (any other `%`-directive
+  raises "does not match format" — this is narrower than `dt.format`, which delegates to the full
+  `strftime`). Unlike `make`, parsing is strict: a literal/format mismatch, an **out-of-range** field
+  (`2024-99-99`, hour `25`), or **unconverted trailing input** (`"2024-01-01XYZ"`) all throw rather
+  than silently producing a garbage date.
 
 ### DateTime object
 
@@ -1500,6 +1526,10 @@ Its methods:
 - `dt.add(seconds) → DateTime` — a new DateTime shifted forward by `seconds`.
 - `dt.sub(seconds) → DateTime` — a new DateTime shifted back by `seconds`.
 - `dt.diff(other) → Integer` — difference (`self - other`) in seconds.
+
+A `DateTime` has **value equality and hashing by instant** (epoch seconds): two DateTimes for the
+same moment compare `==` and hash the same, so a DateTime can be a `Dict` key or `Set` member. It is
+also **serializable** — it round-trips through both [`serialize`](#serialize) and [`dump`](#dump).
 
 ---
 

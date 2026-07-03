@@ -112,8 +112,9 @@ io.print((1.0).compare(1.5, abs_tol = 1.0))   # True   (widened absolute toleran
 
 Immutable Unicode text, indexed and sliced by **code point** (not byte). `+` concatenates, `*`
 repeats, `len` counts code points, `in` tests substrings, and iteration yields characters. Strings
-are hashable (usable as Dict keys / Set elements). f-strings (`f"{expr}"`) interpolate, and
-`.format()` / the `format` builtin apply the mini-format-spec (fill/align/sign/width/precision/type).
+are hashable (usable as Dict keys / Set elements). f-strings (`f"{expr}"`) and the `format` builtin
+apply the mini-format-spec (fill/align/sign/width/precision/type); the `.format()` method does only
+positional `{}`/`{N}` substitution (no format spec — see its entry below).
 
 ```kirito
 var s = "café"
@@ -359,7 +360,7 @@ Invoked as `x OP y` → `x._op_(y)`; return a `Bool` (or any truthy/falsy value)
 | `_setitem_(self, key, value)` | `x[key] = value` (variadic keys: `m[i, j] = v`) | nothing |
 | `_len_(self)` | `len(x)` | an `Integer` |
 | `_contains_(self, item)` | `item in x` / `item not in x` | a truth value |
-| `_iter_(self)` | `for v in x:`, and any iteration (unpacking, `List(x)`, …) | a List of the elements to yield |
+| `_iter_(self)` | `for v in x:`, and any iteration (unpacking, `List(x)`, …) | any iterable of the elements to yield (a List, Set, String, another iterable instance — the VM iterates whatever you return) |
 
 ### Callable and context-manager protocol
 

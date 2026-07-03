@@ -81,9 +81,10 @@ shr(-8, 1)           # -4   (arithmetic, sign-preserving)
 
 ## Comparisons
 
-`<`, `<=`, `>`, `>=`, `==`, `!=` compare two values and yield a `Bool`. On Floats, `==` is **exact
-IEEE-754 bit equality** — `0.1 + 0.2 == 0.3` is `False`. Use `.compare(other, rel_tol, abs_tol)` for
-tolerant comparison; see [Float](types.html#float) for the full contract.
+`<`, `<=`, `>`, `>=`, `==`, `!=` compare two values and yield a `Bool`; `in` and `not in`
+(membership) parse at this same precedence. On Floats, `==` is **exact IEEE-754 bit equality** —
+`0.1 + 0.2 == 0.3` is `False`. Use `.compare(other, rel_tol, abs_tol)` for tolerant comparison; see
+[Float](types.html#float) for the full contract.
 
 Comparisons **do not chain**: `1 < 2 < 3` is *not* `1 < 2 and 2 < 3`. It evaluates left-to-right as
 `(1 < 2) < 3` → `True < 3`, which throws (a `Bool` has no ordering against an `Integer`). Write the
@@ -136,7 +137,9 @@ rf"raw\path\{name}"              # raw f-string: backslashes literal, {expr} sti
 Because `'...'` exists, an f-string can hold a single-quoted string key inside its braces:
 `f"{d['key']}"`. Escapes in cooked (non-raw) strings: `\n \t \r \0 \\ \" \'` and `\xHH` (a byte from
 two hex digits). A single-line string can't span a newline (use a triple-quoted form); an
-unterminated string, a bad escape, or a raw string ending in a lone backslash is a clear lex error.
+unterminated string, an unknown escape in a **plain** string, or a raw string ending in a lone
+backslash is a clear lex error. (One exception: inside an **f-string**, an unrecognized escape is
+lenient — the backslash is dropped, so `f"\q"` yields `"q"`.)
 
 Methods: `upper`, `lower` (Unicode-aware), `strip`/`lstrip`/`rstrip`, `split`, `join`, `replace`,
 `startswith`, `endswith`, `find`/`rfind`, `index`/`rindex`, `count`, `format`, the `is...` predicates
@@ -405,7 +408,8 @@ has already finished loading is fine (a diamond `a` → {`b`, `c`} → `d` loads
 Every file runs with two names already bound in its scope:
 
 - **`arglist`** — a List of the command-line arguments the program was launched with (`arglist[0]`
-  is the first; the program name is not included). It's the same list in every file.
+  is the first; the program name is not included). Only the file **run directly** receives the
+  arguments; a file loaded via `import` gets a fresh **empty** `arglist`.
 - **`argmain`** — a Bool that is `True` when this file is the one being **run directly**, and `False`
   when it was loaded by another file via `import`. Guard a file's "run me" code with `if argmain:`
   so it stays dormant when
@@ -431,8 +435,11 @@ Use `discard EXPR` to say "I'm intentionally ignoring this result":
 discard validate(x)    # called for its side effect / exception; result ignored on purpose
 ```
 
-The interpreter also warns about local variables that are assigned but never used. Warnings go to
-stderr and never stop execution; `-w` disables them.
+A non-fatal analysis pass flags several more likely mistakes: a **local variable assigned but never
+used**; a **`var` re-declared** in the same block; **unreachable code** after a `return`/`throw`/
+`break`/`continue`; **self-assignment** (`x = x`); and **duplicate parameter names**. (`todo` also
+deliberately emits a reminder warning at its location.) Warnings carry `file:line:col`, go to stderr,
+and never stop execution; `-w` / `--no-warn` disables them.
 
 ## `pass` and `todo`
 

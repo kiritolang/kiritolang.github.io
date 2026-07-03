@@ -246,7 +246,7 @@ Some values are interned per VM so they share one arena slot and one Handle:
 
 - `vm.none()` — the unit value.
 - `vm.makeBool(true)` / `vm.makeBool(false)` — each is one arena slot.
-- `vm.makeInt(v)` for small `v` in `[-128, 255]` — the shared "small integer" pool.
+- `vm.makeInt(v)` for small `v` in `[-256, 256]` — the shared "small integer" pool.
 
 For interned values, identity `==` and structural `==` coincide. For anything else — a fresh
 String, a fresh List — every construction site produces a new Handle, and `==` distinguishes them.
@@ -461,7 +461,7 @@ alongside the interpreter. Reach for them (through the `Value` / `List` / `Dict`
   let you do the same code-point work on any `std::string`.
 - **`Bytes`** is the byte-exact counterpart to `String` — the right type for binary I/O.
 - **Scalars are interned where it counts.** `None`, `True`/`False`, and small Integers in
-  `[-128, 255]` share one arena slot per VM.
+  `[-256, 256]` share one arena slot per VM.
 - **GC-managed ownership.** No `unique_ptr` / `shared_ptr` bookkeeping.
 
 Fall back to `std::vector` / `std::unordered_map` / `std::string` / raw scalars only when the
@@ -537,6 +537,15 @@ public:
     Value  call    (std::initializer_list<detail::Anything> args) const;  // call({1, "x", …})
     Value  getAttr (std::string_view name) const;
     void   setAttr (std::string_view name, const Value& v) const;
+
+    // convenience shortcuts — read a container directly without an explicit .asList()/.asDict()
+    // (they throw if the value isn't the right container). `bound()` tests for the empty view.
+    Value  at   (std::ptrdiff_t i) const;                          // list-style index (negatives OK)
+    bool   has  (std::string_view key) const;                      // dict has key
+    Value  get  (std::string_view key) const;                      // dict get (throws if absent)
+    Value  get  (std::string_view key, Value dflt) const;          // dict get with default
+    std::vector<std::pair<Value, Value>> pairs() const;            // dict [key, value] pairs
+    bool   bound() const;                                          // false for a default-constructed Value
 };
 ```
 
@@ -803,7 +812,7 @@ public:
     Value operator[](std::size_t i) const;       // unchecked
     Value at(std::size_t i) const;               // throws "fn missing argument N"
     Value opt(std::size_t i, Value dflt) const;  // substitutes a default
-    void  require(std::size_t n) const;          // throws "fn expects N arguments, got M"
+    void  require(std::size_t n) const;          // throws "fn() expected at least N argument(s), got M"
     std::span<const Handle> raw() const;         // pass-through to the low-layer protocol
 };
 ```
@@ -1347,11 +1356,12 @@ manipulation, custom serialization, and reading/writing public data members.
 |-------|------|------------------|-----------|
 | `NoneVal` | interned unit value | `vm.none()` | `.isNone()` |
 | `BoolVal` | interned `True`/`False` | `vm.makeBool(b)` | `.asBool()` |
-| `IntVal` | 64-bit signed integer (small ints in `[-128,255]` interned) | `vm.makeInt(v)` | `.asInt()` |
+| `IntVal` | 64-bit signed integer (small ints in `[-256,256]` interned) | `vm.makeInt(v)` | `.asInt()` |
 | `FloatVal` | IEEE-754 double; equality is **exact** | `vm.makeFloat(v)` | `.asFloat()` (also accepts Integer) |
 
-Each has an `explicit T(v)` constructor and a `value()` accessor if you must reach past the `Value`
-API. `Bool` is **not** a subtype of `Integer` — comparing `True` with `1` returns `False`.
+`BoolVal`/`IntVal`/`FloatVal` each have an `explicit T(v)` constructor and a `value()` accessor if you
+must reach past the `Value` API; `NoneVal` is a unit value with neither (use `vm.none()` / `.isNone()`).
+`Bool` is **not** a subtype of `Integer` — comparing `True` with `1` returns `False`.
 
 ### `StrVal` (in `builtins.hpp`)
 
@@ -1501,6 +1511,7 @@ public:
     std::string className;
     bool hasHashDunder = false;                  // set at instantiation (walks class chain)
     bool hasEqDunder   = false;
+    bool hasBoolDunder = false;                  // `_bool_` present (opt-in truthiness)
     fum::unordered_map<std::string, Handle> attrs;
 
     Handle callKw(KiritoVM&, std::span<const Handle> args, std::span<const NamedArg> named);
@@ -1663,6 +1674,8 @@ public:
     void        popTempTo(std::size_t mark);
     void        pushAuxRoots(const std::vector<Handle>* v);   // extra root region
     void        popAuxRoots();
+    void        pinHandle(Handle h);             // refcounted GC root (the value.hpp wrappers use these)
+    void        unpinHandle(Handle h);
     void        collectGarbage();
     void        setGcThreshold(std::size_t n);
     void        setGcEnabled(bool on);
@@ -1689,6 +1702,8 @@ public:
     const Handle* findClass    (const std::string& name) const;
     void          registerDeserializer(std::string name,
                                        std::function<Handle(KiritoVM&, Handle)> fn);
+    const std::function<Handle(KiritoVM&, Handle)>* findDeserializer(const std::string& name) const;
+    std::string   currentChunkFile() const;      // the file of the chunk being run (see ChunkFileScope)
 
     // running code
     Handle runSource(std::string_view source, std::string_view chunkName = "<main>");
@@ -1912,7 +1927,13 @@ bundled stdlib. Declaring your own type with the same name fails to compile with
 `error: reference to 'X' is ambiguous`. Prefer prefixes (`AppEvent`, `MyDict`) or drop the
 `using namespace` and reach into `kirito::` explicitly.
 
-`Lexer`, `Parser`, `Value`, `Handle`, `Dict`, `List`, `Set`, `Args`, `Object`, `Event`, `Task`,
-`Queue`, `Lock`, `Semaphore`, `Barrier`, `Socket`, `Session`, `Response`, `DateTime`, `Random`,
-`Matrix`, `BytesIO`, `Pattern`, `Match`, `Complex`, `Tensor`, `NativeFunction`, `NativeModule`,
-`NativeClass`, `KiritoVM`, `KiritoDispatcher`, `KiritoError`, `KiritoThrow`.
+`Lexer`, `Parser`, `Value`, `Bool`, `Integer`, `Float`, `String`, `Bytes`, `Handle`, `Dict`, `List`,
+`Set`, `Args`, `Object`, `Event`, `Task`, `Lock`, `Semaphore`, `Barrier`, `DateTime`, `BytesIO`,
+`NativeFunction`, `NativeModule`, `NativeClass`, `KiritoVM`, `KiritoDispatcher`, `KiritoError`,
+`KiritoThrow`.
+
+The **Kirito-visible** type names of native objects are *not* C++ symbols and do **not** clash — their
+C++ classes carry a distinguishing suffix or a different name: `Socket`/`Session`/`Response`→`…Val`,
+`Matrix`/`Match`/`Complex`/`Tensor`→`…Val`, `Queue`→`ConcurrentQueue` (`QueueVal`), `Random`→`RandomState`,
+and there is no `Pattern` class at all (compiled regexes are `RegexVal`). Only the names in the list
+above are reserved in `kirito::`.
