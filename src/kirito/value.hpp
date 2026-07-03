@@ -14,6 +14,7 @@
 
 #include "builtins.hpp"
 #include "collections.hpp"
+#include "common.hpp"                                          // floatClose (numeric .compare)
 #include "object.hpp"
 #include "vm.hpp"
 
@@ -39,6 +40,8 @@
 namespace kirito {
 
 class Value;
+class Integer;
+class Float;
 class String;
 class Bytes;
 class List;
@@ -142,12 +145,16 @@ public:
     }
 
     // Peek + wrap. Throw on wrong kind; use `tryString()` etc. for optional wrapping.
+    Integer asInteger(const char* who = "value") const;
+    Float asFloatV(const char* who = "value") const;                       // "V" -> Value-typed
     String asString(const char* who = "value") const;
     Bytes asBytes(const char* who = "value") const;
     List asList(const char* who = "value") const;
     Dict asDict(const char* who = "value") const;
     Set asSet(const char* who = "value") const;
 
+    std::optional<Integer> tryInteger() const;
+    std::optional<Float> tryFloatV() const;
     std::optional<String> tryString() const;
     std::optional<Bytes> tryBytes() const;
     std::optional<List> tryList() const;
@@ -213,6 +220,74 @@ protected:
     }
     KiritoVM* vm_ = nullptr;
     Handle h_{};
+};
+
+// ================================================================================================
+// Integer — 64-bit signed integer. Includes `.compare(other, rel_tol, abs_tol)` (same predicate as
+// Kirito's `n.compare(m, rel_tol, abs_tol)`), so tolerance-aware comparisons work directly on the
+// wrapper without going through the object protocol.
+// ================================================================================================
+class Integer : public Value {
+public:
+    Integer() = default;
+    Integer(KiritoVM& vm, Handle h, const char* who = "Integer") {
+        vm_ = &vm; h_ = h;
+        if (!isInt()) typeError(who, "Integer");
+    }
+    // Fresh Integer from any built-in signed integral type.
+    explicit Integer(KiritoVM& vm, int v)                 { vm_ = &vm; h_ = vm.makeInt(v); }
+    explicit Integer(KiritoVM& vm, long v)                { vm_ = &vm; h_ = vm.makeInt(v); }
+    explicit Integer(KiritoVM& vm, long long v)           { vm_ = &vm; h_ = vm.makeInt(v); }
+    explicit Integer(KiritoVM& vm, unsigned v)            { vm_ = &vm; h_ = vm.makeInt(static_cast<int64_t>(v)); }
+    explicit Integer(KiritoVM& vm, unsigned long v)       { vm_ = &vm; h_ = vm.makeInt(static_cast<int64_t>(v)); }
+    explicit Integer(KiritoVM& vm, unsigned long long v)  { vm_ = &vm; h_ = vm.makeInt(static_cast<int64_t>(v)); }
+
+    // Raw int64.
+    int64_t value() const { return static_cast<const IntVal&>(ref()).value(); }
+    operator int64_t() const { return value(); }
+
+    // Kirito's `.compare(other, rel_tol=1e-9, abs_tol=0)`: True iff |a - b| <= max(rel_tol*max(|a|,|b|), abs_tol).
+    // Accepts any Integer or Float wrapper for `other`. Numeric `.compare` is intentionally tolerant —
+    // `==` stays bit-exact IEEE-754 (see CLAUDE.md, "The boundary rule").
+    bool compare(const Value& other, double rel_tol = 1e-9, double abs_tol = 0.0) const {
+        return floatClose(static_cast<double>(value()), other.asFloat("compare"),
+                          rel_tol, abs_tol);
+    }
+    bool compare(double other, double rel_tol = 1e-9, double abs_tol = 0.0) const {
+        return floatClose(static_cast<double>(value()), other, rel_tol, abs_tol);
+    }
+    bool compare(int64_t other, double rel_tol = 1e-9, double abs_tol = 0.0) const {
+        return floatClose(static_cast<double>(value()), static_cast<double>(other),
+                          rel_tol, abs_tol);
+    }
+};
+
+// ================================================================================================
+// Float — IEEE-754 double. Same `.compare(other, rel_tol, abs_tol)` as Integer.
+// ================================================================================================
+class Float : public Value {
+public:
+    Float() = default;
+    Float(KiritoVM& vm, Handle h, const char* who = "Float") {
+        vm_ = &vm; h_ = h;
+        if (!isFloat()) typeError(who, "Float");
+    }
+    explicit Float(KiritoVM& vm, double v)  { vm_ = &vm; h_ = vm.makeFloat(v); }
+    explicit Float(KiritoVM& vm, float v)   { vm_ = &vm; h_ = vm.makeFloat(static_cast<double>(v)); }
+
+    double value() const { return static_cast<const FloatVal&>(ref()).value(); }
+    operator double() const { return value(); }
+
+    // Kirito's `.compare(other, rel_tol=1e-9, abs_tol=0)`.
+    bool compare(const Value& other, double rel_tol = 1e-9, double abs_tol = 0.0) const {
+        return floatClose(value(), other.asFloat("compare"), rel_tol, abs_tol);
+    }
+    bool compare(double other, double rel_tol = 1e-9, double abs_tol = 0.0) const {
+        return floatClose(value(), other, rel_tol, abs_tol);
+    }
+    bool compare(int64_t other, double rel_tol = 1e-9, double abs_tol = 0.0) const {
+        return floatClose(value(), static_cast<double>(other), rel_tol, abs_tol);
+    }
 };
 
 // ================================================================================================
@@ -684,12 +759,20 @@ private:
 
 inline detail::Anything::Anything(const Value& v) : h(v.handle()) {}
 
-inline String Value::asString(const char* who) const { return String(*vm_, h_, who); }
-inline List   Value::asList(const char* who)   const { return List(*vm_, h_, who); }
-inline Dict   Value::asDict(const char* who)   const { return Dict(*vm_, h_, who); }
-inline Set    Value::asSet(const char* who)    const { return Set(*vm_, h_, who); }
-inline Bytes  Value::asBytes(const char* who)  const { return Bytes(*vm_, h_, who); }
+inline Integer Value::asInteger(const char* who) const { return Integer(*vm_, h_, who); }
+inline Float   Value::asFloatV(const char* who)  const { return Float(*vm_, h_, who); }
+inline String  Value::asString(const char* who)  const { return String(*vm_, h_, who); }
+inline List    Value::asList(const char* who)    const { return List(*vm_, h_, who); }
+inline Dict    Value::asDict(const char* who)    const { return Dict(*vm_, h_, who); }
+inline Set     Value::asSet(const char* who)     const { return Set(*vm_, h_, who); }
+inline Bytes   Value::asBytes(const char* who)   const { return Bytes(*vm_, h_, who); }
 
+inline std::optional<Integer> Value::tryInteger() const {
+    return isInt() ? std::optional<Integer>(Integer(*vm_, h_)) : std::nullopt;
+}
+inline std::optional<Float> Value::tryFloatV() const {
+    return isFloat() ? std::optional<Float>(Float(*vm_, h_)) : std::nullopt;
+}
 inline std::optional<String> Value::tryString() const {
     return isString() ? std::optional<String>(String(*vm_, h_)) : std::nullopt;
 }
