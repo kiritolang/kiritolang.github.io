@@ -290,6 +290,63 @@ try:
     rc, out, err = kpm("remove", "doesnotexist")
     check("remove missing is graceful", rc == 0 and "not installed" in (out+err), out+err)
 
+    # ---- 13. module-name collision detection ----
+    # 13a. A second package that would shadow an already-installed module's importable name is
+    #      refused; the first install stays put.
+    reset_home(); REGISTRY.clear()
+    a = reg("owner1", "pkgA"); b = reg("owner2", "pkgB")
+    put_manifest(a, "main", "pkgA", "1.0.0", ["shared.ki"])
+    put_file(a, "main", "shared.ki", "var v='A'\n")
+    put_manifest(b, "main", "pkgB", "1.0.0", ["shared.ki"])
+    put_file(b, "main", "shared.ki", "var v='B'\n")
+    rc, out, err = kpm("install", "owner1/pkgA")
+    check("collision setup: first install ok", rc == 0, err)
+    rc, out, err = kpm("install", "owner2/pkgB")
+    msg = (out + err).lower()
+    check("cross-package collision rejected", rc != 0 and "already provided by" in msg, out + err)
+    check("collision leaves the loser uninstalled", not os.path.exists(pkgdir("pkgB")))
+    check("collision keeps the winner intact",
+          os.path.exists(os.path.join(pkgdir("pkgA"), "shared.ki")))
+
+    # 13b. A single manifest that declares two module paths mapping to the same importable name
+    #      (e.g. `foo.bar.ki` and `foo/bar.ki` both collapse to `import("foo.bar")`) is refused
+    #      before any files are written.
+    reset_home(); REGISTRY.clear()
+    d = reg("owner", "dup")
+    put_manifest(d, "main", "dup", "1.0.0", ["foo.bar.ki", "foo/bar.ki"])
+    put_file(d, "main", "foo.bar.ki", "var v=1\n")
+    put_file(d, "main", "foo/bar.ki", "var v=2\n")
+    # Both modules collapse to importable name "foo.bar" — reject.
+    rc, out, err = kpm("install", "owner/dup")
+    msg = (out + err).lower()
+    check("intra-manifest duplicate rejected",
+          rc != 0 and "same importable name" in msg, out + err)
+    check("intra-manifest duplicate wrote nothing", not os.path.exists(pkgdir("dup")))
+
+    # 13c. A dependency chain whose two packages would install the same importable name is caught
+    #      during the same install run — before any files land.
+    reset_home(); REGISTRY.clear()
+    top = reg("owner", "top"); dep = reg("owner", "dep")
+    put_manifest(top, "main", "top", "1.0.0", ["thing.ki"], deps=["owner/dep"])
+    put_file(top, "main", "thing.ki", "var v='top'\n")
+    put_manifest(dep, "main", "dep", "1.0.0", ["thing.ki"])
+    put_file(dep, "main", "thing.ki", "var v='dep'\n")
+    rc, out, err = kpm("install", "owner/top")
+    msg = (out + err).lower()
+    check("intra-run collision (dep) rejected",
+          rc != 0 and "already provided by" in msg, out + err)
+    check("intra-run collision wrote no top", not os.path.exists(pkgdir("top")))
+
+    # 13d. Reinstalling the SAME package is not a self-collision (excludeName path).
+    reset_home(); REGISTRY.clear()
+    s = reg("owner", "same")
+    put_manifest(s, "main", "same", "1.0.0", ["same.ki"])
+    put_file(s, "main", "same.ki", "var v=1\n")
+    rc, out, err = kpm("install", "owner/same")
+    check("self-reinstall setup ok", rc == 0, err)
+    rc, out, err = kpm("install", "owner/same")
+    check("reinstalling same package does not self-collide", rc == 0, err)
+
 finally:
     SERVER.shutdown()
     shutil.rmtree(HOME, ignore_errors=True)

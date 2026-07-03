@@ -56,7 +56,7 @@ var sys = import("sys")
 var semver = import("semver")
 var path = import("path")
 
-var KPM_VERSION = "1.3.3"
+var KPM_VERSION = "1.4.0"
 
 # Self-maintenance (update-kpm / update-ki) always targets the Kirito project on github.com; these are
 # fixed and never redirected. The PACKAGE install path uses the host-aware adapters further down (so a
@@ -340,6 +340,34 @@ var resolveRef = Function(src, ref) -> String:
         return best
     return ref
 
+# The importable name a module path exposes to Kirito's `import(...)`. Each installed package sits at
+# `<packages>/<pkg>/` and that directory is on the import path, so a repo-relative module `mypkg.ki`
+# becomes `import("mypkg")` and `extra/util.ki` becomes `import("extra.util")` (slashes → dots, `.ki`
+# stripped). Used to detect a collision — two packages that would install the same importable name.
+var moduleImportName = Function(modPath) -> String:
+    var name = modPath.replace("\\", "/")
+    if name.endswith(".ki"):
+        name = name[0:len(name) - 3]
+    return name.replace("/", ".")
+
+# Map every already-installed package's importable module names to the package that owns them, minus
+# `excludeName` (so a reinstall / update of the same package doesn't collide with itself). Silently
+# skips a package whose `.kpm.json` is missing or malformed — those are broken installs, not owners.
+var installedModuleOwners = Function(excludeName) -> Dict:
+    var owners = {}
+    for rec in listInstalled():
+        if type(rec) != "Dict" or "name" not in rec:
+            continue
+        if rec["name"] == excludeName:
+            continue
+        var mods = []
+        if "modules" in rec and type(rec["modules"]) == "List":
+            mods = rec["modules"]
+        for m in mods:
+            if type(m) == "String":
+                owners[moduleImportName(m)] = rec["name"]
+    return owners
+
 # Write `text` to <dir>/<relpath>, creating any parent directories first.
 var writeFile = Function(dir, relpath, text):
     var full = path.join(dir, relpath)
@@ -374,6 +402,34 @@ var installOne = Function(spec, seen) -> String:
     var modules = parts[2]
     var deps = parts[3]
 
+    # Reject a manifest that would install two modules under the same importable name (e.g. `a.ki`
+    # + `a/mod.ki` collapsing to `a`), and a manifest whose modules would shadow the importable
+    # names of an already-installed *different* package OR another package earlier in this install
+    # run. Detected here from the manifest alone, so no files are written and no dependencies are
+    # installed for a doomed package.
+    var mineByImportName = {}
+    for m in modules:
+        var imp = moduleImportName(m)
+        if imp in mineByImportName:
+            var prevPath = mineByImportName[imp]
+            throw ("package '" + name + "' declares two modules for the same importable name '"
+                   + imp + "': '" + prevPath + "' and '" + m + "'")
+        mineByImportName[imp] = m
+    var owners = installedModuleOwners(name)
+    # Also check every other package already handled this install run (dependencies installed
+    # earlier, or a sibling top-level spec) — those aren't on disk yet but they will be.
+    for other in seen:
+        if other == name:
+            continue
+        if "modules" in seen[other]:
+            for otherImp in seen[other]["modules"]:
+                owners[otherImp] = other
+    for imp in mineByImportName:
+        if imp in owners:
+            throw ("package '" + name + "' would install module '" + imp
+                   + "' but it is already provided by package '" + owners[imp]
+                   + "' — refusing to install; remove the conflicting package first")
+
     if name in seen:
         var prev = seen[name]
         # Version-conflict warning: a semver constraint that the already-installed copy doesn't satisfy.
@@ -391,7 +447,8 @@ var installOne = Function(spec, seen) -> String:
             canonical = src["host"] + "/" + src["path"]
         else:
             canonical = src["kind"] + "+" + src["scheme"] + "://" + src["host"] + "/" + src["path"]
-    seen[name] = {"version": version, "display": src["display"]}
+    seen[name] = {"version": version, "display": src["display"],
+                  "modules": List(mineByImportName)}
     io.print("installing " + name + " " + version + " (" + src["display"] + "@" + ref + ")")
 
     for d in deps:
