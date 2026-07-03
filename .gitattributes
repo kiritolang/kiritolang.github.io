@@ -1,0 +1,19 @@
+# Keep line endings sane regardless of a contributor's core.autocrlf setting. This is a
+# Unix-developed project: shell scripts MUST stay LF (a CRLF turns `#!/usr/bin/env bash` into
+# `bash\r` and the script won't run), and the golden test fixtures are compared byte-for-byte, so
+# CRLF there would break the diffs. Normalize all text to LF in the repo and on checkout.
+* text=auto eol=lf
+
+# Always-LF, regardless of detection.
+*.sh    text eol=lf
+*.ki    text eol=lf
+*.py    text eol=lf
+*.expected text eol=lf
+*.experr   text eol=lf
+
+# Mark binaries so they are never line-ending converted.
+*.png binary
+*.jpg binary
+*.gz  binary
+*.zip binary
+*.exe binary
