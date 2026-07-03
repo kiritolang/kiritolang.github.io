@@ -180,8 +180,8 @@ inline Handle ComplexVal::getAttr(KiritoVM& vm, Handle self, std::string_view na
     if (name == "_getstate_")
         return bind("_getstate_", [self, self_z](KiritoVM& vm, std::span<const Handle>) -> Handle {
             cdouble v = self_z(vm, self);
-            List st(vm); st.add(v.real()); st.add(v.imag());
-            return st.build().handle();
+            List st(vm); st.push(v.real()); st.push(v.imag());
+            return st.handle();
         });
     if (name == "_setstate_")
         return makeMethod(vm, "_setstate_", {"state"}, [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -479,12 +479,12 @@ inline Handle ComplexMatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_v
     if (name == "_getstate_") return bind("_getstate_", {}, [self, self_m](KiritoVM& vm, std::span<const Handle>) -> Handle {
         auto& m = self_m(vm, self);
         List st(vm);
-        st.add(static_cast<int64_t>(m.rows()));
-        st.add(static_cast<int64_t>(m.cols()));
+        st.push(static_cast<int64_t>(m.rows()));
+        st.push(static_cast<int64_t>(m.cols()));
         List data(vm);
-        for (const cdouble& z : m.data()) { List p(vm); p.add(z.real()); p.add(z.imag()); data.add(p.build()); }
-        st.add(data.build());
-        return st.build().handle();
+        for (const cdouble& z : m.data()) { List p(vm); p.push(z.real()); p.push(z.imag()); data.push(p); }
+        st.push(data);
+        return st.handle();
     });
     if (name == "_setstate_") return bind("_setstate_", {"state"}, [self, self_m](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         requireArgs(a, 1, "_setstate_");

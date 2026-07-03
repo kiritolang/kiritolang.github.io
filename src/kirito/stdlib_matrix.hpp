@@ -290,12 +290,12 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     if (name == "_getstate_") return bind("_getstate_", {}, [self, self_m](KiritoVM& vm, std::span<const Handle>) -> Handle {
         auto& m = self_m(vm, self);
         List st(vm);
-        st.add(static_cast<int64_t>(m.rows()));
-        st.add(static_cast<int64_t>(m.cols()));
+        st.push(static_cast<int64_t>(m.rows()));
+        st.push(static_cast<int64_t>(m.cols()));
         List data(vm);
-        for (double x : m.data()) data.add(x);
-        st.add(data.build());
-        return st.build().handle();
+        for (double x : m.data()) data.push(x);
+        st.push(data);
+        return st.handle();
     });
     if (name == "_setstate_") return bind("_setstate_", {"state"}, [self, self_m](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         requireArgs(a, 1, "_setstate_");
