@@ -105,7 +105,7 @@ methods, grouped by role:
 | | `stringify(h)` | The `str()` of any value — what `print` shows. |
 | **Build values** | `makeInt(int64_t)` / `makeFloat(double)` / `makeBool(bool)` / `makeString(std::string)` | Lift a C++ scalar into the arena. |
 | | `none()` | The interned `None` handle. |
-| | `alloc(std::unique_ptr<Object>)` | GC-aware; use for `NativeClass` types and `BytesVal`. Prefer `val(vm, x)` and the builders ([Section 5](#5-working-with-values-the-value-api)). |
+| | `alloc(std::unique_ptr<Object>)` | GC-aware; use for `NativeClass` types and `BytesVal`. Prefer `Value(vm, x)` and the typed wrappers `List`/`Dict`/`Set`/`String`/… ([Section 5](#5-working-with-values-the-value-api)). |
 | **Register** | `registerGlobal(name, handle)` | Bind a top-level name. |
 | | `install<T>()` | Install a `NativeModule` subclass ([Section 7](#7-extending-adding-a-module)). |
 | | `registerSourceModule(name, src)` | Install a module whose body is Kirito source. |
@@ -267,7 +267,7 @@ or build one ergonomically:
 - Inside a native impl, wrap incoming Handles in `Args a(vm, raw, "myFn"); a.at(0).asInt(...)`.
 - Anywhere you'd otherwise write `static_cast<IntVal&>(vm.arena().deref(h)).value()`.
 
-`Value` converts implicitly to and from `Handle`, so you can freely mix — build with `val(vm, x)`,
+`Value` converts implicitly to and from `Handle`, so you can freely mix — build with `Value(vm, x)`,
 store the resulting `Value` where a `Handle` is expected, wrap a stored `Handle` in
 `Value(vm, h)` when you need to read.
 
@@ -801,7 +801,7 @@ vm.registerGlobal("clamp", vm.alloc(std::make_unique<NativeFunction>(
         int64_t x  = a.at(0).asInt("x");
         int64_t lo = a.at(1).asInt("lo");
         int64_t hi = a.at(2).asInt("hi");
-        return val(vm, std::max(lo, std::min(x, hi)));
+        return Value(vm, std::max(lo, std::min(x, hi)));
     })));
 // Kirito:  clamp(12, lo=0, hi=9)   ->   9
 ```
@@ -820,7 +820,7 @@ vm.registerGlobal("greet", vm.alloc(std::make_unique<NativeFunction>(
     [](KiritoVM& vm, std::span<const Handle> raw) -> Handle {
         Args a(vm, raw, "greet");
         std::string msg = "Hello, " + a.at(0).asString("name");
-        return val(vm, a.at(1).asBool("loud") ? msg + "!" : msg);
+        return Value(vm, a.at(1).asBool("loud") ? msg + "!" : msg);
     })));
 // Kirito:  greet("Ada")  /  greet(name="Ada", loud=True)  /  inspect(greet)
 ```
@@ -882,7 +882,7 @@ struct StatsModule : NativeModule {
                  double sum = 0; int64_t n = 0;
                  for (Value x : args.at(0).items()) { sum += x.asFloat("mean element"); ++n; }
                  if (n == 0) throw KiritoError("mean of empty list");
-                 return val(vm, sum / static_cast<double>(n));
+                 return Value(vm, sum / static_cast<double>(n));
              });
 
         // clamp(x, lo, hi) -> Integer — signatured, so it accepts keyword arguments and defaults.
@@ -890,10 +890,10 @@ struct StatsModule : NativeModule {
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                  Args args(vm, a, "clamp");
                  int64_t x = args.at(0).asInt("x"), lo = args.at(1).asInt("lo"), hi = args.at(2).asInt("hi");
-                 return val(vm, std::max(lo, std::min(x, hi)));
+                 return Value(vm, std::max(lo, std::min(x, hi)));
              });
 
-        m.value("VERSION", val(m.vm(), "1.0"));   // a plain constant member
+        m.value("VERSION", Value(m.vm(), "1.0"));   // a plain constant member
     }
 };
 
@@ -971,13 +971,13 @@ struct Vec2 : NativeClass<Vec2> {
     // Attribute reads return values directly; a method name returns a callable with `self` bound,
     // so v.length() / v.dot(o) arrive with the receiver already in hand.
     Handle getAttr(KiritoVM& vm, Handle self, std::string_view name) override {
-        if (name == "x") return val(vm, x);
-        if (name == "y") return val(vm, y);
+        if (name == "x") return Value(vm, x);
+        if (name == "y") return Value(vm, y);
         if (name == "length")
             return makeMethod(vm, "length", {},                            // no params
                 [self](KiritoVM& vm, std::span<const Handle>) -> Handle {
                     auto& v = static_cast<Vec2&>(vm.arena().deref(self));
-                    return val(vm, std::sqrt(v.x * v.x + v.y * v.y));
+                    return Value(vm, std::sqrt(v.x * v.x + v.y * v.y));
                 }, std::vector<Handle>{self});                              // bind self
         if (name == "dot")
             return makeMethod(vm, "dot", {"other"},                        // v.dot(o) or v.dot(other=o)
@@ -986,7 +986,7 @@ struct Vec2 : NativeClass<Vec2> {
                     auto& v = static_cast<Vec2&>(vm.arena().deref(self));
                     auto* o = dynamic_cast<const Vec2*>(&vm.arena().deref(args.at(0)));
                     if (!o) throw KiritoError("dot expects a Vec2");
-                    return val(vm, v.x * o->x + v.y * o->y);
+                    return Value(vm, v.x * o->x + v.y * o->y);
                 }, std::vector<Handle>{self});
         return Object::getAttr(vm, self, name);                             // unknown -> clear error
     }
@@ -1792,7 +1792,7 @@ in-flight exception (innermost first) and snapshotted onto the VM as its `lastTr
 | `module.hpp` | `ModuleValue` |
 | `function.hpp` | `NativeFn`, `NativeFnKw`, `NativeParam`, `NativeFunction`, `KiFunction` |
 | `native.hpp` | `argString`, `argInt`, `requireArgs`, `sliceIndices`, `ModuleBuilder`, `NativeModule`, `NativeClass`, `makeMethod` |
-| `value.hpp` | `Value`, `val(vm, x)`, `none(vm)`, `List`/`Dict`/`Set` builders, `makeList`, `Args` |
+| `value.hpp` | `Value` + `Bool`/`Integer`/`Float`/`String`/`Bytes`/`List`/`Dict`/`Set` wrappers, `Args` |
 | `vm.hpp` | `KiritoVM`, `RootScope`, `CallGuard`, `KiritoVM::ChunkFileScope` |
 | `dispatcher.hpp` | `KiritoDispatcher`, `Waitable`, cross-VM `ConcurrentQueue`/`Lock`/`Event`/`Semaphore`/`Barrier` |
 
