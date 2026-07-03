@@ -596,7 +596,7 @@ inline Handle makeResponse(KiritoVM& vm, const HttpResult& r, Handle cookiesH) {
     resp->reason = r.reason;
     resp->url = r.finalUrl;
     resp->body = r.body;
-    resp->headersH = rs.add(hd.build());
+    resp->headersH = rs.add(hd.handle());
     resp->cookiesH = cookiesH;
     return vm.alloc(std::move(resp));
 }
@@ -717,7 +717,7 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     Handle cookiesOpt = netOpt(vm, opts, "cookies");
     if (vm.arena().deref(cookiesOpt).kind() == ValueKind::Dict)
         for (const auto& [k, v] : Value(vm, cookiesOpt).pairs()) jar.set(k.str(), Value(vm, v.str()));
-    Handle jarH = rs.add(jar.build());
+    Handle jarH = rs.add(jar.handle());
     auto& jarDict = static_cast<DictVal&>(vm.arena().deref(jarH));
 
     double timeout = 0.0;
@@ -801,12 +801,12 @@ inline Handle sessionDo(KiritoVM& vm, Handle self, const std::string& method, co
     Dict hdr(vm);
     mergeInto(hdr, s.headersH);                        // session defaults...
     mergeInto(hdr, netOpt(vm, opts, "headers"));       // ...overlaid by per-call headers
-    eff.set("headers", hdr.build());
+    eff.set("headers", hdr);
     Dict ck(vm);
     mergeInto(ck, s.cookiesH);
     mergeInto(ck, netOpt(vm, opts, "cookies"));
-    eff.set("cookies", ck.build());
-    Handle effH = rs.add(eff.build());
+    eff.set("cookies", ck);
+    Handle effH = rs.add(eff.handle());
 
     Handle resp = netRequest(vm, method, url, effH);
     // persist response cookies into the session jar
@@ -1082,7 +1082,7 @@ public:
                 if (amp == std::string::npos) break;
                 i = amp + 1;
             }
-            return d.build();
+            return d;
         });
         m.fn("urlsplit", {{"url", "String"}}, "Dict", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             net::UrlParts p = net::splitUrl(Args(vm, a, "urlsplit")[0].asStringRef("urlsplit"));

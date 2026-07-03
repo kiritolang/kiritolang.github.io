@@ -160,16 +160,16 @@ public:
             List out(vm);
             std::error_code ec;
             for (const auto& entry : std::filesystem::directory_iterator(pathArg(vm, a[0]), ec))
-                out.add(Value(vm, entry.path().filename().string()));
-            return out.build();
+                out.push(Value(vm, entry.path().filename().string()));
+            return out;
         });
         // walk(dir) -> every file path under dir, recursively (flattened; tolerant like listdir).
         m.fn("walk", {{"dir", "String"}}, "List", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             List out(vm);
             std::error_code ec;
             for (const auto& entry : std::filesystem::recursive_directory_iterator(pathArg(vm, a[0]), ec))
-                if (entry.is_regular_file()) out.add(Value(vm, entry.path().string()));
-            return out.build();
+                if (entry.is_regular_file()) out.push(Value(vm, entry.path().string()));
+            return out;
         });
         m.fn("getcwd", {}, "String", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
             std::error_code ec;

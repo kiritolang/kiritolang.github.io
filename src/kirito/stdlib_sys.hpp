@@ -45,7 +45,7 @@ inline Handle runExternalProcess(KiritoVM& vm, const std::vector<std::string>& a
     d.set("code", vm.makeInt(r.code));
     d.set("stdout", Value(vm, r.out));
     d.set("stderr", Value(vm, r.err));
-    return d.build();
+    return d;
 }
 
 // The native-binding idiom below re-uses `vm`/`self` as bound-method lambda parameters that
@@ -144,7 +144,7 @@ public:
                 }
             }
 #endif
-            return d.build();
+            return d;
         });
 
         m.fn("exit", {{"code", "Integer", vm.makeInt(0)}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {

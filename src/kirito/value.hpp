@@ -562,12 +562,6 @@ public:
     List& push(Handle h) { mut().elems.push_back(h); return *this; }
     template <class T> List& push(T x) { return push(Value(*vm_, x)); }
 
-    // Compatibility aliases for callers migrating from the old builder API.
-    List& add(const Value& v) { return push(v); }
-    List& add(Handle h) { return push(h); }
-    template <class T> List& add(T x) { return push(x); }
-    Value build() { return *this; }                                  // no-op: already a Value view
-
     // Pop and return the last element.
     Value pop() {
         auto& e = mut().elems;
@@ -675,12 +669,9 @@ public:
     template <class K, class V> Dict& set(K k, V v) {
         return set(Value(*vm_, k), Value(*vm_, v));
     }
-    // Overloads accepting a raw Handle key (compat).
+    // Overloads accepting a raw Handle key.
     Dict& set(Handle k, Handle v) { return set(Value(*vm_, k), Value(*vm_, v)); }
     Dict& set(Handle k, const Value& v) { return set(Value(*vm_, k), v); }
-
-    // Compatibility: `build()` — the Dict is already a Value view.
-    Value build() { return *this; }
 
     // Membership check.
     bool contains(const Value& k) const { return raw().find(vm_->arena(), k.handle()) != nullptr; }
@@ -774,9 +765,6 @@ public:
     }
     template <class T> Set& add(T x) { return add(Value(*vm_, x)); }
     Set& add(Handle h) { return add(Value(*vm_, h)); }
-
-    // Compatibility: `build()` — the Set is already a Value view.
-    Value build() { return *this; }
 
     bool contains(const Value& v) const { return raw().contains(vm_->arena(), v.handle()); }
     template <class T> bool contains(T x) const { return contains(Value(*vm_, x)); }

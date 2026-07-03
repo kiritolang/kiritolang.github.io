@@ -80,9 +80,9 @@ static void runGraph(KiritoVM& vm, std::vector<Node>& nodes) {
         List depL(vm);
         for (const auto& dName : n.deps) {
             const Node& dNode = nodes[idx[dName]];
-            depL.add(dNode.value);
+            depL.push(dNode.value);
         }
-        Handle depsH = rs.add(depL.build().handle());
+        Handle depsH = rs.add(depL.handle());
         std::array<Handle, 1> args{depsH};
         n.value = rs.add(vm.arena().deref(n.fn).call(vm, args));
     }

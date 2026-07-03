@@ -2002,18 +2002,18 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
             throw KiritoError("cannot serialize a Tensor that requires grad; call detach() first "
                               "(only gradient-free tensors are serializable)");
         List st(vm);
-        st.add(Value(vm, std::string(t.dtypeName())));                 // [0] dtype
+        st.push(Value(vm, std::string(t.dtypeName())));                 // [0] dtype
         List shapeL(vm);
-        for (std::size_t d : t.shape()) shapeL.add(static_cast<int64_t>(d));
-        st.add(shapeL.build());                                      // [1] shape
+        for (std::size_t d : t.shape()) shapeL.push(static_cast<int64_t>(d));
+        st.push(shapeL);                                      // [1] shape
         List dataL(vm);
         if (t.isComplex()) {
-            for (cdouble z : std::get<CT>(t.store).data) { List p(vm); p.add(z.real()); p.add(z.imag()); dataL.add(p.build()); }
+            for (cdouble z : std::get<CT>(t.store).data) { List p(vm); p.push(z.real()); p.push(z.imag()); dataL.push(p); }
         } else {
-            for (double x : std::get<FT>(t.store).data) dataL.add(x);
+            for (double x : std::get<FT>(t.store).data) dataL.push(x);
         }
-        st.add(dataL.build());                                       // [2] data (Floats, or [re, im] pairs)
-        return st.build().handle();
+        st.push(dataL);                                       // [2] data (Floats, or [re, im] pairs)
+        return st.handle();
     });
     if (name == "_setstate_") return bind("_setstate_", {"state"}, [self, self_t](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         requireArgs(a, 1, "_setstate_");

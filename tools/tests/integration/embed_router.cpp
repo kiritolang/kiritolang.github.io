@@ -31,7 +31,7 @@ static Handle eventToDict(KiritoVM& vm, const Msg& e) {
     d.set("type",     Value(vm, e.type));
     d.set("payload",  Value(vm, e.payload));
     d.set("priority", Value(vm, e.priority));
-    return d.build().handle();
+    return d.handle();
 }
 static Msg dictToEvent(Value d) {
     return { d.get("type").asStringRef("type"),

@@ -56,7 +56,7 @@ static Handle barToDict(KiritoVM& vm, const Bar& b) {
     d.set("low",    Value(vm, b.low));
     d.set("close",  Value(vm, b.close));
     d.set("volume", Value(vm, b.volume));
-    return d.build().handle();
+    return d.handle();
 }
 
 struct BacktestResult {

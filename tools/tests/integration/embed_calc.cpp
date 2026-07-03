@@ -45,7 +45,7 @@ public:
     Value run(const std::string& src) {
         // The "stack" is a Kirito List — operators can push and pop with the built-in list methods.
         List stackB(vm_);
-        Handle stackH = stackB.build().handle();
+        Handle stackH = stackB.handle();
         RootScope rs(vm_);
         Handle stackR = rs.add(stackH);
         for (const auto& tok : tokenize(src)) {

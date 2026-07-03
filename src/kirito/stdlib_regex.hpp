@@ -93,8 +93,8 @@ public:
                 if (a.size() == 1) return M.groupString(vm, M.groupOf(vm, a[0]));
                 // several keys -> a List of the requested groups
                 List out(vm);
-                for (Handle k : a) out.add(M.groupString(vm, M.groupOf(vm, k)));
-                return out.build().handle();
+                for (Handle k : a) out.push(M.groupString(vm, M.groupOf(vm, k)));
+                return out.handle();
             });
         if (name == "groups")
             return bind("groups", {"default"}, [self, me](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -102,8 +102,8 @@ public:
                 Handle dflt = a.empty() ? vm.none() : a[0];
                 List out(vm);
                 for (int g = 1; g <= M.numGroups; ++g)
-                    out.add(M.slots[2 * g] < 0 ? dflt : M.groupString(vm, g));
-                return out.build().handle();
+                    out.push(M.slots[2 * g] < 0 ? dflt : M.groupString(vm, g));
+                return out.handle();
             });
         if (name == "groupdict")
             return bind("groupdict", {"default"}, [self, me](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -113,7 +113,7 @@ public:
                 for (int g = 1; g <= M.numGroups; ++g)
                     if (!M.names[g].empty())
                         out.set(M.names[g], M.slots[2 * g] < 0 ? dflt : M.groupString(vm, g));
-                return out.build().handle();
+                return out.handle();
             });
         if (name == "start")
             return bind("start", {"group"}, [self, me](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -131,8 +131,8 @@ public:
             return bind("span", {"group"}, [self, me](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 MatchVal& M = me(vm, self);
                 int g = a.empty() ? 0 : M.groupOf(vm, a[0]);
-                List out(vm); out.add(vm.makeInt(M.slots[2 * g])).add(vm.makeInt(M.slots[2 * g + 1]));
-                return out.build().handle();
+                List out(vm); out.push(vm.makeInt(M.slots[2 * g])).push(vm.makeInt(M.slots[2 * g + 1]));
+                return out.handle();
             });
         return Object::getAttr(vm, self, name);
     }
@@ -242,7 +242,7 @@ public:
         if (name == "groupindex") {
             Dict d(vm);
             for (const auto& [nm, g] : prog.nameToGroup) d.set(nm, vm.makeInt(g));
-            return d.build().handle();
+            return d.handle();
         }
         if (name == "match" || name == "search" || name == "fullmatch")
             return bind(std::string(name).c_str(), {"string", "pos", "endpos"}, [self, re, name = std::string(name)](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -282,8 +282,8 @@ public:
                 RootScope rs(vm);
                 List out(vm);
                 for (auto& r : redetail::allMatches(R.prog, text, -1, pos))
-                    out.add(rs.add(redetail::makeMatch(vm, args[0].handle(), r, R.prog)));
-                return out.build().handle();
+                    out.push(rs.add(redetail::makeMatch(vm, args[0].handle(), r, R.prog)));
+                return out.handle();
             });
         if (name == "findall")
             return bind("findall", {"string", "pos", "endpos"}, [self, re](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -304,16 +304,16 @@ public:
                     auto gtext = [&](int g) { return r.slots[2 * g] < 0 ? std::string("")
                                               : cpSlice(s, starts, r.slots[2 * g], r.slots[2 * g + 1]); };
                     if (R.prog.numGroups == 0) {
-                        out.add(vm.makeString(cpSlice(s, starts, r.slots[0], r.slots[1])));
+                        out.push(vm.makeString(cpSlice(s, starts, r.slots[0], r.slots[1])));
                     } else if (R.prog.numGroups == 1) {
-                        out.add(vm.makeString(gtext(1)));
+                        out.push(vm.makeString(gtext(1)));
                     } else {
                         List tup(vm);
-                        for (int g = 1; g <= R.prog.numGroups; ++g) tup.add(vm.makeString(gtext(g)));
-                        out.add(tup.build().handle());
+                        for (int g = 1; g <= R.prog.numGroups; ++g) tup.push(vm.makeString(gtext(g)));
+                        out.push(tup.handle());
                     }
                 }
-                return out.build().handle();
+                return out.handle();
             });
         if (name == "sub")
             return bind("sub", {"repl", "string", "count"}, [self, re](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -366,14 +366,14 @@ public:
                     int aPos = r.slots[0], bPos = r.slots[1];
                     // Split on empty matches too, so an empty-capable pattern yields the
                     // leading/inter-character ''s — consistent with findall over the same matches.
-                    out.add(vm.makeString(cpSlice(s, starts, lastEnd, aPos)));
+                    out.push(vm.makeString(cpSlice(s, starts, lastEnd, aPos)));
                     for (int g = 1; g <= R.prog.numGroups; ++g)        // include captured groups
-                        out.add(r.slots[2 * g] < 0 ? vm.none()
+                        out.push(r.slots[2 * g] < 0 ? vm.none()
                                 : vm.makeString(cpSlice(s, starts, r.slots[2 * g], r.slots[2 * g + 1])));
                     lastEnd = bPos; ++splits;
                 }
-                out.add(vm.makeString(cpSlice(s, starts, lastEnd, static_cast<int>(text.size()))));
-                return out.build().handle();
+                out.push(vm.makeString(cpSlice(s, starts, lastEnd, static_cast<int>(text.size()))));
+                return out.handle();
             });
         return Object::getAttr(vm, self, name);
     }

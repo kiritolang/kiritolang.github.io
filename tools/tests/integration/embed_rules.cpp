@@ -43,13 +43,13 @@ static Handle buildKb(KiritoVM& vm, const std::vector<Fact>& facts) {
         List row(vm);
         for (const Fact* f : list) {
             List pair(vm);
-            pair.add(Value(vm, f->a));
-            pair.add(Value(vm, f->b));
-            row.add(pair.build());
+            pair.push(Value(vm, f->a));
+            pair.push(Value(vm, f->b));
+            row.push(pair);
         }
-        d.set(pred, row.build());
+        d.set(pred, row);
     }
-    return d.build().handle();
+    return d.handle();
 }
 
 // Iterate a Value known to be a List of Facts (each Fact is a 3-element list [pred, a, b])

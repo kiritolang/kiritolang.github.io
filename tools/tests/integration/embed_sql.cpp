@@ -166,7 +166,7 @@ int main() {
         d.set("name", Value(vm, n));
         d.set("age",  Value(vm, a));
         d.set("city", Value(vm, c));
-        return d.build().handle();
+        return d.handle();
     };
     sql.registerTable("people", {row("Ada", 36, "London"),
                                  row("Alan", 41, "Manchester"),

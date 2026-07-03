@@ -168,8 +168,8 @@ public:
                 if (it == fns_.end()) throw std::runtime_error(std::string("dsl: no operator ") + a->op);
                 RootScope rs(vm_);
                 Handle f = rs.add(it->second);
-                List L(vm_); L.add(l); L.add(r);
-                std::array<Handle, 1> args{rs.add(L.build().handle())};
+                List L(vm_); L.push(l); L.push(r);
+                std::array<Handle, 1> args{rs.add(L.handle())};
                 return vm_.arena().deref(f).call(vm_, args);
             }
             case Ast::Call: {
@@ -178,8 +178,8 @@ public:
                 RootScope rs(vm_);
                 Handle f = rs.add(it->second);
                 List L(vm_);
-                for (const auto& c : a->args) L.add(rs.add(eval(c.get())));
-                std::array<Handle, 1> args{rs.add(L.build().handle())};
+                for (const auto& c : a->args) L.push(rs.add(eval(c.get())));
+                std::array<Handle, 1> args{rs.add(L.handle())};
                 return vm_.arena().deref(f).call(vm_, args);
             }
         }
