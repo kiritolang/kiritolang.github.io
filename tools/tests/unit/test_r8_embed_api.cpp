@@ -159,7 +159,7 @@ int main() {
             "probe", [](KiritoVM& kv, std::span<const Handle> raw) -> Handle {
                 Args a(kv, raw, "probe");
                 int64_t first = a.empty() ? -1 : a[0].asInt("first");          // a[0] unchecked, guarded by empty()
-                int64_t second = a.opt(1, val(kv, 100)).asInt("second");       // opt() default
+                int64_t second = a.opt(1, Value(kv, 100)).asInt("second");       // opt() default
                 return kv.makeInt(first * 1000 + second);
             })));
         CHECK(ev(vm, "probe(7)") == "7100");           // a[0]=7, opt default 100

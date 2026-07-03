@@ -345,6 +345,13 @@ public:
         for (const auto& a : items) { roots.add(a.h); lv->elems.push_back(a.h); }
         h_ = vm.alloc(std::move(lv));
     }
+    // Fresh List from an existing vector of Handles (bulk).
+    List(KiritoVM& vm, const std::vector<Handle>& handles) {
+        vm_ = &vm;
+        auto lv = std::make_unique<ListVal>();
+        lv->elems = handles;
+        h_ = vm.alloc(std::move(lv));
+    }
 
     std::size_t size() const { return raw().elems.size(); }
     bool empty() const { return raw().elems.empty(); }

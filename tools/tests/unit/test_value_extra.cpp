@@ -86,7 +86,7 @@ int main() {
             std::string out = "size=" + std::to_string(a.size()) +
                               " empty=" + (a.empty() ? "1" : "0");
             if (!a.empty()) out += " first=" + std::to_string(a.at(0).asInt("first"));
-            out += " opt=" + std::to_string(a.opt(1, val(kv, 99)).asInt("opt"));
+            out += " opt=" + std::to_string(a.opt(1, Value(kv, 99)).asInt("opt"));
             return kv.makeString(out);
         })));
     CHECK(vm.stringify(vm.runSource("probe()")) == "size=0 empty=1 opt=99");

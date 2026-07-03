@@ -175,8 +175,8 @@ int main() {
             "addmul", [](KiritoVM& kv, std::span<const Handle> raw) -> Handle {
                 Args a(kv, raw, "addmul");
                 int64_t x = a.at(0).asInt("x");
-                int64_t y = a.opt(1, val(kv, 1)).asInt("y");   // y defaults to 1 when absent
-                return val(kv, (x + y) * 2);
+                int64_t y = a.opt(1, Value(kv, 1)).asInt("y");   // y defaults to 1 when absent
+                return Value(kv, (x + y) * 2);
             })));
         CHECK(ev(vm, "addmul(3, 4)") == "14");
         CHECK(ev(vm, "addmul(3)") == "8");                 // opt() default used

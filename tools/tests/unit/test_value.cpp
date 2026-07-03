@@ -71,7 +71,7 @@ int main() {
             Args a(kv, raw, "demo");
             int64_t x = a.at(0).asInt("a");
             int64_t y = a.at(1).asInt("b");
-            Value extra = a.opt(2, val(kv, 0));
+            Value extra = a.opt(2, Value(kv, 0));
             List combined(kv);
             for (Value e : a[3].items()) combined.add(e);
             combined.add(extra);
