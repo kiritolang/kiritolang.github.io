@@ -601,14 +601,16 @@ allocates, and a wrap constructor throws `<T> expected …, got '<actual>'` on a
 
 #### `Bool`
 
-Kirito's boolean; implicitly decays to C++ `bool` for painless conditionals.
+Kirito's boolean. `if (b)` / `!b` / `static_cast<bool>(b)` work (the `operator bool` is `explicit`,
+like `Value`'s), but a `Bool` never silently decays to `bool`/`int` in arithmetic — read the raw
+value with `.value()`.
 
 ```cpp
 class Bool : public Value {
     explicit Bool(KiritoVM& vm, bool v);
     Bool(KiritoVM& vm, Handle h);          // wrap; throws if not a Bool
     bool value() const;
-    operator bool() const;                 // implicit -> bool
+    explicit operator bool() const;        // contextual only (if/!/&&); use .value() for a raw bool
 };
 ```
 ```cpp

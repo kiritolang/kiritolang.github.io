@@ -310,8 +310,8 @@ protected:
 };
 
 // ================================================================================================
-// Bool — Kirito's boolean. Implicitly converts to C++ `bool` for painless conditionals; construct
-// with `Bool(vm, true)` or the ambient `Value(vm, true)`.
+// Bool — Kirito's boolean. Construct with `Bool(vm, true)` or the ambient `Value(vm, true)`; read
+// the raw boolean with `.value()`.
 // ================================================================================================
 class Bool : public Value {
 public:
@@ -324,7 +324,12 @@ public:
     explicit Bool(KiritoVM& vm, bool v) { vm_ = &vm; h_ = vm.makeBool(v); }
 
     bool value() const { return static_cast<const BoolVal&>(ref()).value(); }
-    operator bool() const { return value(); }
+    // EXPLICIT, matching Value's truthiness operator: `if (b)` / `!b` / `b && x` / `static_cast<bool>(b)`
+    // still work (contextual conversions permit an explicit operator), but a Bool no longer silently
+    // decays to `bool` — and thence to `int` — in arithmetic/indexing (`b + 1`, `arr[b]`, `b << 2`).
+    // Use `.value()` for a raw `bool`. (An implicit operator here would reintroduce exactly the
+    // bool→int footgun that Value's `explicit operator bool` was made explicit to avoid.)
+    explicit operator bool() const { return value(); }
 };
 
 // ================================================================================================
@@ -835,11 +840,14 @@ public:
     // Raw underlying span, for delegating to the low-layer protocol.
     std::span<const Handle> raw() const { return a_; }
 
-    // Enforce a minimum arity with a clean message.
+    // Enforce a minimum arity. Wording is kept byte-identical to the low-layer `requireArgs`
+    // (native.hpp) so arity diagnostics stay uniform across the whole interpreter — a native still
+    // using requireArgs and one using Args::require report the same "<fn>() expected at least N
+    // argument(s)" message.
     void require(std::size_t n) const {
         if (a_.size() < n)
-            throw KiritoError(std::string(fn_) + " expects " + std::to_string(n) +
-                              " arguments, got " + std::to_string(a_.size()));
+            throw KiritoError(std::string(fn_) + "() expected at least " + std::to_string(n) +
+                              " argument(s)");
     }
 private:
     KiritoVM* vm_;
