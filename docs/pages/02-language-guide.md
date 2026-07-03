@@ -309,7 +309,8 @@ class Dog(Animal):            # inheritance
 ```
 
 Special methods use names wrapped in a **single** leading and trailing underscore: `_init_`, `_str_`,
-`_add_`/`_sub_`/`_mul_`/..., `_eq_`/`_lt_`/..., `_neg_`, `_call_`, `_getitem_`/`_setitem_`, `_len_`,
+`_add_`/`_sub_`/`_mul_`/..., `_eq_`/`_lt_`/..., `_neg_`, `_not_`, `_bool_` (opt-in truthiness —
+`if x:` etc. dispatch through it), `_call_`, `_getitem_`/`_setitem_`, `_len_`,
 `_contains_`, `_iter_`, `_enter_`/`_exit_`, and `_hash_` (opt-in hashability — see
 [Types → Hashability](types.html#hashability-set-dict-keys)).
 

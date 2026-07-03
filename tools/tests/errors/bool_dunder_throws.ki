@@ -1,0 +1,8 @@
+class Boom:
+    var _init_ = Function(self):
+        self.x = 1
+    var _bool_ = Function(self) -> Bool:
+        throw "kaboom in _bool_"
+
+if Boom():
+    discard 0

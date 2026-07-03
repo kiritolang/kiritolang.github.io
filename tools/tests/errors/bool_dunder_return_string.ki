@@ -1,0 +1,8 @@
+class BadBool:
+    var _init_ = Function(self):
+        self.x = 1
+    var _bool_ = Function(self):
+        return "not a bool"
+
+if BadBool():
+    discard 0

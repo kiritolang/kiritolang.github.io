@@ -129,8 +129,11 @@ Kirito should support:
   same value/object model as built-ins, so a C++-defined type and a Kirito `class` look alike to
   the VM. Special methods use dunder names with **single** underscores:
   `_init_`, `_str_`, `_add_`/`_sub_`/`_mul_`/`_div_`/`_floordiv_`/`_mod_`/`_pow_`,
-  `_eq_`/`_ne_`/`_lt_`/`_le_`/`_gt_`/`_ge_`, `_neg_`/`_not_`, `_call_`, `_getitem_`/`_setitem_`
-  (variadic keys: `m[i, j] = v`), `_len_`, `_contains_`, `_iter_`, `_enter_`/`_exit_`. Members whose
+  `_eq_`/`_ne_`/`_lt_`/`_le_`/`_gt_`/`_ge_`, `_neg_`/`_not_`, `_bool_` (opt-in truthiness — every
+  `if`/`while`/`and`/`or`/`not`/`Bool(x)`/`filter` dispatches through it; must return a `Bool`;
+  without it, an instance is always truthy — the additive-safe default), `_call_`,
+  `_getitem_`/`_setitem_` (variadic keys: `m[i, j] = v`), `_len_`, `_contains_`, `_iter_`,
+  `_enter_`/`_exit_`, and `_hash_`. Members whose
   name has a **single leading underscore and no trailing underscore** (e.g. `_count`) are **private**
   — accessible only from within a method of the same class **or a subclass** (privacy is per class
   *chain*, not per defining class — there is no name mangling). Non-function class-body

@@ -1590,6 +1590,7 @@ inline Handle ClassValue::callFull(KiritoVM& vm, std::span<const Handle> args,
     // then read a plain bool instead of doing a method lookup per hash/equals.
     inst->hasHashDunder = findMethod(vm.arena(), "_hash_") != nullptr;
     inst->hasEqDunder   = findMethod(vm.arena(), "_eq_")   != nullptr;
+    inst->hasBoolDunder = findMethod(vm.arena(), "_bool_") != nullptr;
     Handle instH = vm.alloc(std::move(inst));
     static_cast<InstanceValue&>(vm.arena().deref(instH)).selfHandle = instH;
     if (const Handle* init = findMethod(vm.arena(), "_init_")) {
@@ -1668,10 +1669,32 @@ inline Handle SuperValue::getAttr(KiritoVM& vm, Handle, std::string_view name) {
     return makeBoundMethod(vm, std::string(name), instance, methodH);
 }
 
-// --- `_hash_` / `_eq_` opt-in on user classes ---------------------------------------------------
-// These slots are const with no VM arg (Dict/Set call them deep), so the Kirito method is
-// dispatched through KiritoVM::activeVM() — the thread's current VM. The instance stashes a bool
-// at instantiation time so the hot path checks a plain field, not a hash-table lookup.
+// --- `_hash_` / `_eq_` / `_bool_` opt-in on user classes ---------------------------------------
+// These slots are const with no VM arg (Dict/Set call them deep, and every `if`/`while`/`and`/
+// `or`/`not`/`Bool(x)` reaches `truthy()`), so the Kirito method is dispatched through
+// KiritoVM::activeVM() — the thread's current VM. The instance stashes a bool at instantiation
+// time so the hot path checks a plain field, not a hash-table lookup.
+
+// `_bool_(self) -> Bool` — user-defined truthiness. Every conditional expression that reaches an
+// instance eventually calls truthy(); if the class defines `_bool_`, call it and require a Bool
+// return. Without `_bool_`, an instance is always truthy (the historical, additive-safe default).
+inline bool InstanceValue::truthy() const {
+    if (!hasBoolDunder) return true;
+    KiritoVM* vm = KiritoVM::activeVM();
+    if (!vm)
+        throw KiritoError("_bool_ requires an active interpreter context");
+    const Handle* m = findMethod(vm->arena(), "_bool_");
+    if (!m) return true;   // defensive: the cache flag says it exists, but a rebound class could differ
+    RootScope rs(*vm);
+    Handle sh = rs.add(selfHandle);
+    Handle mh = rs.add(*m);
+    std::vector<Handle> args{sh};
+    Handle out = vm->arena().deref(mh).call(*vm, args);
+    const Object& r = vm->arena().deref(out);
+    if (r.kind() != ValueKind::Bool)
+        throw KiritoError("'" + className + "'._bool_ must return a Bool, got '" + r.typeName() + "'");
+    return static_cast<const BoolVal&>(r).value();
+}
 
 inline std::size_t InstanceValue::hash() const {
     KiritoVM* vm = KiritoVM::activeVM();

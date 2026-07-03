@@ -4,7 +4,7 @@
 #   - swap / multi-target assignment with side effects and mixed name/index/member targets,
 #   - closures capturing a SHARED loop variable (late binding) + multi-level write-through,
 #   - operator-overload fallbacks (only _ne_ derives from _eq_; _gt_/_le_/_ge_ do NOT derive
-#     from _lt_; no reflected arithmetic; _eq_ propagates an inner error; no _hash_/_bool_),
+#     from _lt_; no reflected arithmetic; _eq_ propagates an inner error; `_bool_` and `_hash_`
 #   - _len_ does NOT drive truthiness; default _str_ / default-repr-in-container,
 #   - try/catch/finally where finally TRANSFERS control over a pending return/break (extends r5),
 #   - with: _exit_ return value does NOT suppress an exception; _exit_ on break/continue,
@@ -193,16 +193,21 @@ ok(throws(noHashKey), "a class without _hash_ stays unhashable")
 # ============================================================================
 # Truthiness and stringification of instances (gaps)
 # ============================================================================
-# _bool_ is NOT a recognised dunder: instances are always truthy regardless of any _bool_.
+# `_bool_(self) -> Bool` is the opt-in truthiness dunder. Defining it lets `if`/`while`/`and`/`or`/
+# `not`/`Bool(x)` route through the user's decision. A class WITHOUT `_bool_` remains always
+# truthy (the additive-safe default so adding the dunder later never silently flips existing code).
 class WithBool:
     var _init_ = Function(self): pass
-    var _bool_ = Function(self): return False
-ok(("t" if WithBool() else "f") == "t", "instances are truthy (no _bool_ dunder)")
+    var _bool_ = Function(self) -> Bool: return False
+class WithoutBool:
+    var _init_ = Function(self): pass
+ok(("t" if WithBool() else "f") == "f", "_bool_ returning False makes the instance falsy")
+ok(("t" if WithoutBool() else "f") == "t", "a class without _bool_ is always truthy")
 
-# _len_ does NOT drive truthiness (unlike Python): a len-0 instance is still truthy.
+# _len_ does NOT drive truthiness on its own (unlike Python): a class opts in via `_bool_`.
 class ZeroLen:
     var _len_ = Function(self): return 0
-ok(("t" if ZeroLen() else "f") == "t", "_len_ == 0 does NOT make an instance falsy")
+ok(("t" if ZeroLen() else "f") == "t", "_len_ == 0 does NOT make an instance falsy (no _bool_)")
 
 # A plain instance is always truthy.
 ok(("t" if Plain() else "f") == "t", "a plain instance is truthy")

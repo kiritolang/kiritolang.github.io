@@ -89,12 +89,16 @@ public:
     // Dict/Set hash/equals hot path is a plain bool test with no method lookup.
     bool hasHashDunder = false;   // class (or a base) defines `_hash_` → InstanceValue is hashable
     bool hasEqDunder   = false;   // class (or a base) defines `_eq_` → equals() uses it
+    bool hasBoolDunder = false;   // class (or a base) defines `_bool_` → truthy() calls it
 
     fum::unordered_map<std::string, Handle> attrs;
 
     ValueKind kind() const override { return ValueKind::Instance; }
     std::string typeName() const override { return className; }
-    bool truthy() const override { return true; }
+    // Custom truthiness via `_bool_(self) -> Bool` (opt-in). A class without `_bool_` keeps the
+    // historical behaviour: an instance is always truthy. See runtime.hpp for the dispatch (uses
+    // KiritoVM::activeVM(), same pattern as `_hash_`).
+    bool truthy() const override;
     std::string str(StringifyCtx&) const override;  // invokes _str_ if defined (runtime.hpp)
     // Structural equality falls through to `_eq_` when the class defines it (needed so a `_hash_`
     // opt-in doesn't break the "equal keys collide" invariant Dict/Set assume). If `_eq_` is not
