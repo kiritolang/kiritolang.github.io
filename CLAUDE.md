@@ -485,39 +485,72 @@ a stability fuzzer, and a benchmark). Working today:
   for name lookup was rejected — it measured break-even because the flat-vector scopes already make name
   lookup cheap and the cache itself allocated; v1.9's slot-addressed locals instead resolve slots at
   COMPILE time with zero added allocation — see the bytecode-VM section below.)
-- **Sample projects** in `examples/` (complex linear-system solver, rule34 image downloader,
-  word-frequency analyzer, RPN calculator, and three `tabular`-library data-analysis demos —
-  `tabular_iris.ki` on the bundled `examples/data/iris.csv`, `tabular_sales.ki`, `tabular_survey.ki`) demonstrate
-  non-trivial programs in pure Kirito.
-  `examples/big_projects/` holds larger ones with Python test harnesses that double as interpreter
-  stress tests: `sqldb` (a networked SQL database — **concurrent** via the `parallel` actor model: a
-  single DB-owner VM serializes access while a pool of connection workers handles socket I/O; a
-  `test_concurrent.py` asserts consistency under K simultaneous clients), `webserver` (an HTTP/1.1
-  server + a small routing framework — method+path routing with `:name` params, middleware, JSON,
-  static files — **concurrent** via a stateless `parallel` worker pool; `test_concurrent.py` fires
-  parallel requests + an adversarial burst), and
-  `kgrad` (a pure-Kirito tensor/autodiff/deep-learning library: strided views, reverse-mode autograd
-  with a computational graph, SGD/Adam, Linear/Conv2d/BatchNorm/activations as PyTorch-style Modules,
-  MSE/BCE/CE/NLL losses, Dataset/DataLoader, PCA, weight serialization, and a backend abstraction
-  ready for a future GPU device — trains an MLP that solves XOR; conv backward is gradient-checked),
-  and `imaging` (a Pillow/PIL-style image library in pure Kirito built on the `tensor` backend:
-  an `Image` class storing pixels as an `(H,W,C)` Float tensor, PNG [zlib + all five scanline
-  filters incl. Paeth]/PPM/PGM/BMP codecs, `convert`/`crop`/`resize` [nearest+bilinear]/`transpose`/
-  `rotate`/`paste`/`point`/`split`/`merge`/`blend`, `imageops` [invert/grayscale/posterize/solarize/
-  autocontrast/equalize/expand/colorize/...], `imagefilter` [convolution kernels + Gaussian/Box/rank
-  filters, vectorised as edge-pad + shifted-window accumulate], and `imagedraw` [line/rectangle/
-  ellipse/polygon]; **plus video reading** — a baseline-JPEG decoder (`jpeg.ki`: Huffman + a tensor
-  8×8 IDCT + YCbCr→RGB, so `.jpg` opens and MJPEG decodes), a GIF decoder (`gif.ki`: LZW + palette +
-  animation), and an OpenCV-`VideoCapture`-style `video.ki` reading MJPEG / animated-GIF / Y4M /
-  image-sequence files and **network MJPEG-over-HTTP** streams (over the now-`Bytes` socket) as frames
-  [`read`/`grab`/`get`/`set`/`release`/`for frame in cap`]; true H.264/HEVC/RTSP is out of reach in
-  pure Kirito [no codec, no subprocess] and documented as needing an external transcode to MJPEG;
-  distributed as a kpm package with a `kirito.json` manifest, and cross-validated
-  pixel-for-pixel against Pillow by `compare_pillow.py`/`compare_video_pillow.py`). Its self-tests run
-  in CTest (`script_imaging`, `script_video`).
-  `sqldb_kwargs`/`webserver_kwargs` are copies of two of those refactored so *every* call site passes
-  arguments by keyword — an end-to-end test that keyword arguments work across every callable; they
-  pass the same test harnesses.
+- **Sample projects** in `examples/` — single-file pure-Kirito demos:
+  `complex_linsolve.ki` (complex linear-system solver on `complex.ComplexMatrix` + a Gauss-Jordan
+  solver in `examples/lib/linsolve.ki`), `gen_systems.ki` / `solve_systems.ki` (a producer-consumer
+  pair that writes/reads system files under `/tmp`), `rpn_calculator.ki`,
+  `wordcount.ki`, `stats.ki`, `trie.ki`, `todo.ki`, `domain_suffix_bench.ki` (whitelist/blacklist
+  benchmark), `rule34_download.ki` (network image downloader — the only network-dependent example),
+  and three `tabular`-library data-analysis demos — `tabular_iris.ki` on the bundled
+  `examples/data/iris.csv`, `tabular_sales.ki`, `tabular_survey.ki`.
+  Two subdirectories bundle related material:
+  `examples/deep_learning/` is a tiny **PyTorch-like nn library** in pure Kirito (`lib/nn.ki`,
+  atop the native `tensor` autograd) plus ten worked projects that train real models on real,
+  downloaded datasets (MLP on iris, conv on digits, diabetes regression, digits autoencoder,
+  breast-cancer binary, wine MLP, digits softmax, PCA on digits, k-means on iris, denoising AE);
+  `examples/http_client/` is a `net` HTTP-client app + companion server + Python test harness.
+  `examples/big_projects/` holds larger, multi-file programs — each also a stress test for the
+  interpreter. Every project ships a self-test entry point that either matches a
+  `test_<proj>.expected` byte for byte, self-asserts and prints an `ALL TESTS PASSED` /
+  `N passed, 0 failed` line, or drives a live server through a Python harness:
+  - `sqldb` — a networked SQL database, **concurrent** via the `parallel` actor model: a single
+    DB-owner VM serializes access while a pool of connection workers handles socket I/O;
+    `test_client.py` runs functional + adversarial suites and `test_concurrent.py` asserts
+    consistency under K simultaneous clients.
+  - `webserver` — an HTTP/1.1 server + Sinatra/Flask-style routing framework (`:name` params,
+    middleware, JSON, static files), **concurrent** via a stateless `parallel` worker pool;
+    `test_client.py` + `test_concurrent.py` fire parallel requests and an adversarial burst.
+  - `kgrad` — a pure-Kirito tensor/autodiff/deep-learning library: strided views, reverse-mode
+    autograd with a computational graph, SGD/Adam, Linear/Conv2d/BatchNorm/activations as
+    PyTorch-style Modules, MSE/BCE/CE/NLL losses, Dataset/DataLoader, PCA, weight serialization,
+    and a backend abstraction ready for a future GPU device — trains an MLP that solves XOR; conv
+    backward is gradient-checked.
+  - `imaging` — a Pillow/PIL-style image library in pure Kirito, built on the `tensor` backend:
+    `Image` stores pixels as an `(H, W, C)` Float tensor, with PNG (zlib + all five scanline filters
+    incl. Paeth) / PPM / PGM / BMP codecs, `convert`/`crop`/`resize` (nearest+bilinear) /
+    `transpose`/`rotate`/`paste`/`point`/`split`/`merge`/`blend`, `imageops`
+    (invert/grayscale/posterize/solarize/autocontrast/equalize/expand/colorize/…),
+    `imagefilter` (convolution kernels + Gaussian/Box/rank filters, vectorised as edge-pad +
+    shifted-window accumulate), and `imagedraw` (line/rectangle/ellipse/polygon); **plus video** —
+    a baseline-JPEG decoder (`jpeg.ki`: Huffman + a tensor 8×8 IDCT + YCbCr→RGB, so `.jpg` opens and
+    MJPEG decodes), a GIF decoder (`gif.ki`: LZW + palette + animation), and an OpenCV-
+    `VideoCapture`-style `video.ki` reading MJPEG / animated-GIF / Y4M / image-sequence files and
+    network MJPEG-over-HTTP streams (`for frame in cap`); true H.264/HEVC/RTSP is out of reach in
+    pure Kirito (no codec, no subprocess) and documented as needing an external transcode to MJPEG.
+    Cross-validated pixel-for-pixel against Pillow by `compare_pillow.py` /
+    `compare_video_pillow.py`; its self-tests run in CTest as `script_imaging` and `script_video`.
+  - `selfhost` — a **Kirito interpreter written in Kirito** (`lib/interp.ki` + `lib/lexer.ki` +
+    `lib/parser.ki`, with pure-Kirito reimplementations of the stdlib under `lib/stdmods/`); `run.ki`
+    is the CLI front-end, `run_tests.ki` re-runs the main project's `tools/tests/scripts/*.ki`
+    golden suite through it (with a documented EXCLUDE / native-audit-prefix set for tests that
+    depend on native-only surface — `parallel`, native `net.Socket`, `serialize`'s KSER1 format, the
+    exhaustive `audit_/deep_/r4_/r5_/r6_/r10_/r11_` regression families, and `class_hash`).
+  - `cronki` — a cron-like scheduler + one-shot batch runner in pure Kirito; parses the full
+    crontab micro-language and appends every result to a JSON-lines history log.
+  - `feedreader` — an RSS 2.0 + Atom feed reader with a persistent store, unread/mark-read, and
+    search.
+  - `kirdown` — a self-contained CommonMark-subset Markdown → HTML converter.
+  - `ledger` — plain-text double-entry accounting inspired by `hledger` / `beancount` (balance,
+    income, register, top, stats, csv reports).
+  - `snip` — a CLI-first code-snippet manager using the `dump` binary codec for its on-disk format.
+  - `sqldb_kwargs` / `webserver_kwargs` — copies of the two servers refactored so *every* call site
+    passes arguments by name (built-in methods, native methods, stdlib functions included); an
+    end-to-end test that keyword arguments work uniformly across every callable.
+
+  All examples and big projects are covered by two release-binary smoke-test scripts —
+  `tools/scripts/test_examples.sh` (skips the network-only `rule34_download.ki`) and
+  `tools/scripts/test_big_projects.sh` (self-host is opt-in via `--selfhost` — it is slow) — both
+  take `--ki PATH`; the nightly workflow runs them against the freshly-built `dist/ki-linux-x64`.
 
 Tested under four CMake presets: **`debug`** (g++ `-O2` with the hardened warning set `-Werror
 -Wall -Wextra -Wformat=2 -Wconversion -Wpointer-arith -Wpedantic -fstack-protector-all -Wreorder
