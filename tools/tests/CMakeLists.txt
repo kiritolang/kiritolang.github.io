@@ -226,26 +226,6 @@ foreach(script ${ki_error_scripts})
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ki_error.cmake)
 endforeach()
 
-# --- the `imaging` example package (examples/big_projects/imaging): run its self-test through ki ---
-# A pure-Kirito Pillow-style image library built on the tensor backend. Its modules resolve via the
-# script's own directory (on the import path), so no copies are needed here. The self-test is an
-# assert-driven .ki whose final lines are matched against test_imaging.expected.
-set(_imaging_dir ${CMAKE_SOURCE_DIR}/examples/big_projects/imaging)
-add_test(NAME script_imaging
-         COMMAND ${CMAKE_COMMAND} -DKI=$<TARGET_FILE:ki>
-                 -DSCRIPT=${_imaging_dir}/test_imaging.ki
-                 -DEXPECTED=${_imaging_dir}/test_imaging.expected
-                 -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ki_script.cmake)
-
-# The video module (jpeg/gif codecs + an OpenCV-style VideoCapture) over the committed testdata/
-# assets. Run with the package dir as the working directory so the `testdata/...` paths resolve.
-add_test(NAME script_video
-         COMMAND ${CMAKE_COMMAND} -DKI=$<TARGET_FILE:ki>
-                 -DSCRIPT=${_imaging_dir}/test_video.ki
-                 -DEXPECTED=${_imaging_dir}/test_video.expected
-                 -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ki_script.cmake)
-set_tests_properties(script_video PROPERTIES WORKING_DIRECTORY ${_imaging_dir})
-
 # --- the `kirdown` example package: a Markdown -> HTML converter in pure Kirito ---
 # Exercises the regex, arg, path, io, hash, and time stdlib modules. Self-test is an assert-driven
 # .ki whose final line is matched against test_kirdown.expected. Modules live alongside the script

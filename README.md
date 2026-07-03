@@ -253,9 +253,9 @@ CMakePresets.json  and the test executables. Presets: debug / release / asan / t
 
 examples/          Sample `.ki` programs (RPN calculator, word count, todo, stats, …), plus:
   big_projects/      Large pure-Kirito programs that double as interpreter stress tests:
-                     kgrad (tensor/autodiff/neural nets), imaging (a Pillow-style image + video
-                     library), sqldb (a concurrent networked SQL database), webserver (a concurrent
-                     HTTP/1.1 server + routing framework), and selfhost (a Kirito interpreter in Kirito).
+                     kgrad (tensor/autodiff/neural nets), sqldb (a concurrent networked SQL
+                     database), webserver (a concurrent HTTP/1.1 server + routing framework), and
+                     selfhost (a Kirito interpreter in Kirito).
   http_client/       A `net` HTTP-client app + server + Python test harness.
   data/              Sample datasets (e.g. iris.csv) used by the examples.
 
