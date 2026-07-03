@@ -132,6 +132,9 @@ kirito_test(test_slot_locals unit/test_slot_locals.cpp)
 kirito_test(test_streams unit/test_streams.cpp)
 kirito_test(test_stress unit/test_stress.cpp)
 kirito_test(test_value unit/test_value.cpp)
+kirito_test(test_value_ops unit/test_value_ops.cpp)
+kirito_test(test_value_containers unit/test_value_containers.cpp)
+kirito_test(test_gc_stress unit/test_gc_stress.cpp)
 kirito_test(test_modules_fuzz unit/test_modules_fuzz.cpp)
 
 # Multiprocessing (KiritoDispatcher + the `parallel` module). Every blocking scenario runs under an
