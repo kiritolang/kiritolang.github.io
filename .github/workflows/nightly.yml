@@ -1,0 +1,123 @@
+name: Nightly
+
+# The full verification routine — `tools/scripts/post_work_check.sh` (debug + release + asan + tsan)
+# plus a Windows/Linux release build (`build_all.sh` cross-compiles the .exe with mingw-w64) and the
+# end-to-end `.ki` test suites against both binaries (`test_release.sh`; the Windows .exe runs under
+# Wine). Everything compiles on a single Linux runner.
+#
+# The workflow runs nightly on `main`, and only when there are new commits since the previous run —
+# a gate job compares HEAD against the head sha of the last completed Nightly run and skips the
+# heavy job if they match. A manual workflow_dispatch always runs.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC daily
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read   # so the gate can read prior runs of this workflow
+
+jobs:
+  gate:
+    name: Skip if no new commits since last nightly
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "manual trigger — always run"
+            echo "run=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head="$(git rev-parse HEAD)"
+          # Prior completed run of THIS workflow on main. Excludes the current in-progress run,
+          # covers both schedule and workflow_dispatch, and treats success/failure alike (so a
+          # failed nightly doesn't re-run on the same commit — use workflow_dispatch to retry).
+          last="$(gh run list \
+              --repo '${{ github.repository }}' \
+              --workflow '${{ github.workflow }}' \
+              --branch main \
+              --status completed \
+              --limit 1 \
+              --json headSha \
+              --jq '.[0].headSha // ""')"
+          echo "current HEAD:        $head"
+          echo "last nightly HEAD:   ${last:-<none>}"
+          if [ -z "$last" ] || [ "$last" != "$head" ]; then
+            echo "run=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "no new commits since last nightly — skipping."
+            echo "run=false" >>"$GITHUB_OUTPUT"
+          fi
+
+  verify:
+    name: post_work_check + release build (linux + windows)
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      # The post_work_check + release-cross build combined can consume ~15 GB; ubuntu-24.04 runners
+      # ship with ~14 GB free on /. Drop the preinstalled bits we do not need to give ourselves head-
+      # room before starting.
+      - name: Free disk
+        run: |
+          set -x
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost \
+                       /usr/local/lib/heroku /usr/share/swift /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Install toolchain
+        run: |
+          set -eux
+          sudo apt-get update
+          # Native gcc + cmake + ninja for post_work_check; mingw-w64 for the Windows cross-build;
+          # perl + libssl-dev to build the vendored static OpenSSL for the mingw target; wine64 to
+          # run the produced ki-windows-x64.exe through test_release.sh.
+          sudo apt-get install -y --no-install-recommends \
+              build-essential g++ cmake ninja-build git perl \
+              libssl-dev mingw-w64 wine64
+          g++ --version | head -1
+          cmake --version | head -1
+          ninja --version
+          wine64 --version || true
+
+      - name: post_work_check.sh (debug + release + asan + tsan)
+        run: bash tools/scripts/post_work_check.sh
+
+      - name: build_all.sh (linux native + windows via mingw-w64)
+        run: bash tools/scripts/build_all.sh
+
+      - name: test_release.sh (both binaries — linux native, windows via wine64)
+        run: bash tools/scripts/test_release.sh
+
+      - name: Upload release binaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ki-nightly-binaries
+          path: dist/ki-*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload post_work_check logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-logs
+          path: /tmp/pw_*.log
+          if-no-files-found: ignore
+          retention-days: 14
