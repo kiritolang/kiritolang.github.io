@@ -104,6 +104,12 @@ jobs:
       - name: test_release.sh (both binaries — linux native, windows via wine64)
         run: bash tools/scripts/test_release.sh
 
+      - name: test_examples.sh (every runnable examples/*.ki against the shipped linux binary)
+        run: bash tools/scripts/test_examples.sh --ki "$PWD/dist/ki-linux-x64"
+
+      - name: test_big_projects.sh (every big_projects/*/test_*.ki against the shipped linux binary)
+        run: bash tools/scripts/test_big_projects.sh --ki "$PWD/dist/ki-linux-x64"
+
       - name: Upload release binaries
         if: always()
         uses: actions/upload-artifact@v4
