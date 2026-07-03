@@ -65,7 +65,7 @@ var RAW = "https://raw.githubusercontent.com"
 var API = "https://api.github.com"
 var GH = "https://github.com"
 # The Kirito project's own repository — the source for `update-kpm` and `update-ki`.
-var KIRITO_REPO = "AzethMeron/KiritoLang"
+var KIRITO_REPO = "kiritolang/kiritolang.github.io"
 
 # GitHub package endpoints, overridable via env so tests (and GitHub Enterprise) can redirect them.
 # KPM_GITHUB_API / KPM_GITHUB_RAW take precedence over the public defaults.

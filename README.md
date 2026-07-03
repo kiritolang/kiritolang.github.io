@@ -13,7 +13,7 @@ embedded in any C++ project. One `KiritoVM` object is one fully isolated interpr
 > it on a stack VM behind the stable AST boundary. It is **no longer a tree-walking interpreter** —
 > the original tree-walking evaluator was removed and the bytecode compiler + VM is now the sole
 > engine. The last release built on the tree-walking evaluator is
-> [**v1.6.2**](https://github.com/AzethMeron/KiritoLang/releases/tag/1.6.2); everything from **v1.7.0**
+> [**v1.6.2**](https://github.com/kiritolang/kiritolang.github.io/releases/tag/1.6.2); everything from **v1.7.0**
 > onward runs the bytecode VM.
 
 ```kirito
@@ -187,7 +187,7 @@ and create the package directory `~/.kirito/packages` (which `ki` searches autom
 **Linux / macOS**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/AzethMeron/KiritoLang/main/tools/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/kiritolang/kiritolang.github.io/main/tools/scripts/install.sh | sh
 ```
 
 Installs to `~/.local/bin` (no root). Pass options after `-s --`, e.g.
@@ -198,7 +198,7 @@ platform without a prebuilt binary the script builds from source automatically (
 **Windows (PowerShell)**
 
 ```powershell
-irm https://raw.githubusercontent.com/AzethMeron/KiritoLang/main/tools/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/kiritolang/kiritolang.github.io/main/tools/scripts/install.ps1 | iex
 ```
 
 Installs `ki.exe` + `kpm.cmd` under `%LOCALAPPDATA%\Programs\Kirito` and adds it to your user `PATH`.
@@ -278,7 +278,6 @@ docs/              The documentation site: hand-authored Markdown in `docs/pages
                      (TextMate grammar + extension), and Vim. See `docs/editors/README.md`.
 
 CLAUDE.md          The project charter: what Kirito is, how it's built, and the working rules.
-Archive/           Two prior incomplete attempts (V1/V2) — reference only; not built.
 ```
 
 ## Building and running

@@ -3,7 +3,7 @@
 Before the first line of code, spend two minutes giving your editor **Kirito syntax highlighting**.
 It's optional — Kirito runs fine from a plain text file — but coloured keywords, strings, and
 comments make the rest of this course much easier to read. Kirito is young, so no editor knows it out
-of the box; the repository ships ready-to-install definitions under [`docs/editors/`](https://github.com/AzethMeron/KiritoLang/tree/main/docs/editors).
+of the box; the repository ships ready-to-install definitions under [`docs/editors/`](https://github.com/kiritolang/kiritolang.github.io/tree/main/docs/editors).
 
 Pick whichever editor you use.
 

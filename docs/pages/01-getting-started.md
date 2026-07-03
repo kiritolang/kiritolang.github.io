@@ -8,12 +8,12 @@ automatically):
 
 ```sh
 # Linux / macOS  (installs to ~/.local/bin, no root)
-curl -fsSL https://raw.githubusercontent.com/AzethMeron/KiritoLang/main/tools/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/kiritolang/kiritolang.github.io/main/tools/scripts/install.sh | sh
 ```
 
 ```powershell
 # Windows (PowerShell) — installs under %LOCALAPPDATA%\Programs\Kirito and updates your user PATH
-irm https://raw.githubusercontent.com/AzethMeron/KiritoLang/main/tools/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/kiritolang/kiritolang.github.io/main/tools/scripts/install.ps1 | iex
 ```
 
 Prebuilt 64-bit binaries (`ki-linux-x64`, `ki-windows-x64.exe`) are also attached to each GitHub

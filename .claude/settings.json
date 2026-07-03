@@ -4,6 +4,10 @@
       {
         "matcher": "Bash",
         "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/enforce_claude_branch.py"
+          }
         ]
       }
     ]

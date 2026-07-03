@@ -1,6 +1,6 @@
 # Kirito Language — VS Code extension
 
-Language support for the [Kirito](https://github.com/AzethMeron/KiritoLang) scripting language (`.ki`).
+Language support for the [Kirito](https://github.com/kiritolang/kiritolang.github.io) scripting language (`.ki`).
 
 ## Features
 

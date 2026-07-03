@@ -151,11 +151,11 @@ io.print(joined["name"].tolist())    # ['Mouse', 'Monitor']
 ## Putting it together
 
 The `examples/` directory has three complete programs built on this library:
-[`tabular_iris.ki`](https://github.com/AzethMeron/KiritoLang/blob/main/examples/tabular_iris.ki) (a
+[`tabular_iris.ki`](https://github.com/kiritolang/kiritolang.github.io/blob/main/examples/tabular_iris.ki) (a
 full exploratory analysis of the iris dataset — group means, a derived feature, a correlation),
-[`tabular_sales.ki`](https://github.com/AzethMeron/KiritoLang/blob/main/examples/tabular_sales.ki) (a
+[`tabular_sales.ki`](https://github.com/kiritolang/kiritolang.github.io/blob/main/examples/tabular_sales.ki) (a
 generated sales dataset joined to a catalog, then revenue ranked by region and product), and
-[`tabular_survey.ki`](https://github.com/AzethMeron/KiritoLang/blob/main/examples/tabular_survey.ki) (a
+[`tabular_survey.ki`](https://github.com/kiritolang/kiritolang.github.io/blob/main/examples/tabular_survey.ki) (a
 messy survey CSV cleaned with `dropna`/`fillna`/`apply`/`astype`).
 
 ## What you learned
