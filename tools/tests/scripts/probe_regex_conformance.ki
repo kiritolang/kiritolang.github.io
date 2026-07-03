@@ -1,0 +1,126 @@
+# Regex conformance vectors — a curated subset inspired by RE2 / PCRE test suites, minus the
+# features Kirito deliberately doesn't support (backreferences, lookaround). Every vector is a
+# (pattern, input, expected match-or-not, expected substring or None) tuple. The suite catches
+# the classical regex bugs: greedy vs lazy accounting, anchors, character-class boundaries,
+# empty-match handling, and Unicode class coverage.
+var io = import("io")
+var re = import("regex")
+
+var cases = []
+
+# --- Anchors / boundaries -------------------------------------------------------
+cases.append(["^abc", "abc", True, "abc"])
+cases.append(["^abc", "xabc", False, None])
+cases.append(["abc$", "abc", True, "abc"])
+cases.append(["abc$", "abcx", False, None])
+cases.append(["^$", "", True, ""])
+cases.append(["\\bfoo\\b", "foo bar", True, "foo"])
+cases.append(["\\bfoo\\b", "foobar", False, None])
+cases.append(["\\Bfoo\\B", "xfoox", True, "foo"])
+
+# --- Character classes ---------------------------------------------------------
+cases.append(["[abc]+", "aabbccx", True, "aabbcc"])
+cases.append(["[^abc]+", "aabbccxYZ", True, "xYZ"])
+cases.append(["[0-9]+", "abc123def", True, "123"])
+cases.append(["[a-fA-F0-9]+", "GG deadbeef HH", True, "deadbeef"])
+cases.append(["\\d+", "abc123", True, "123"])
+cases.append(["\\D+", "abc123", True, "abc"])
+cases.append(["\\w+", "hello_world!", True, "hello_world"])
+cases.append(["\\W+", "abc!!!def", True, "!!!"])
+cases.append(["\\s+", "a   b", True, "   "])
+
+# --- Quantifiers: greedy vs lazy ----------------------------------------------
+cases.append(["a+", "aaaa", True, "aaaa"])
+cases.append(["a+?", "aaaa", True, "a"])
+cases.append(["a*", "bbb", True, ""])
+cases.append(["a{3}", "aaaa", True, "aaa"])
+cases.append(["a{2,4}", "aaaaaa", True, "aaaa"])
+cases.append(["a{2,}", "aaaaaa", True, "aaaaaa"])
+cases.append(["<.+?>", "<b><i>x</i></b>", True, "<b>"])
+cases.append(["<.+>", "<b><i>x</i></b>", True, "<b><i>x</i></b>"])
+
+# --- Alternation ---------------------------------------------------------------
+cases.append(["cat|dog", "a dog here", True, "dog"])
+cases.append(["cat|dog", "no pets", False, None])
+cases.append(["(?:foo|bar|baz)+", "foobarbazqux", True, "foobarbaz"])
+
+# --- Grouping and captures -----------------------------------------------------
+var m = re.match("(\\d{4})-(\\d{2})-(\\d{2})", "2026-07-04")
+assert m != None, "captures: date matches"
+assert m.group(0) == "2026-07-04", "captures: group(0) is full match"
+assert m.group(1) == "2026", "captures: group(1) is year"
+assert m.group(2) == "07", "captures: group(2) is month"
+assert m.group(3) == "04", "captures: group(3) is day"
+
+var mn = re.match("(?P<year>\\d{4})-(?P<month>\\d{2})-(?P<day>\\d{2})", "2026-07-04")
+assert mn != None, "named captures: match"
+assert mn.group("year") == "2026", "named captures: year"
+assert mn.group("month") == "07", "named captures: month"
+
+# --- Escapes -------------------------------------------------------------------
+cases.append(["\\.", "a.b", True, "."])
+cases.append(["a\\+b", "1a+b2", True, "a+b"])
+cases.append(["a\\*b", "1a*b2", True, "a*b"])
+cases.append(["\\\\", "a\\b", True, "\\"])
+
+# --- Unicode ------------------------------------------------------------------
+cases.append([".+", "café", True, "café"])
+cases.append(["ä", "café", False, None])
+cases.append(["é", "café", True, "é"])
+
+# --- Empty-match behaviour ---------------------------------------------------
+cases.append(["a*", "", True, ""])
+cases.append(["", "abc", True, ""])
+cases.append([".*", "", True, ""])
+
+# --- Anchored .+ vs unanchored .+ -----------------------------------------
+cases.append([".+", "", False, None])
+cases.append([".+", "x", True, "x"])
+
+# --- Long alternative — the linear-time engine must not blow up ----------
+cases.append(["(?:a|aa|aaa)+b", "aaaaaaaaaaaaaaaaaaaaaaaaaaaab", True, "aaaaaaaaaaaaaaaaaaaaaaaaaaaab"])
+
+var passed = 0
+var failed = 0
+for c in cases:
+    var pat = c[0]
+    var inp = c[1]
+    var expect = c[2]
+    var wantSub = c[3]
+    var res = re.search(pat, inp)
+    var got = res != None
+    if got == expect:
+        if expect and wantSub != None:
+            if res.group(0) == wantSub:
+                passed = passed + 1
+            else:
+                io.print("FAIL substring: pattern=" + pat + " input=" + inp + " got=" + res.group(0) + " want=" + wantSub)
+                failed = failed + 1
+        else:
+            passed = passed + 1
+    else:
+        io.print("FAIL match: pattern=" + pat + " input=" + inp + " expected=" + String(expect) + " got=" + String(got))
+        failed = failed + 1
+assert failed == 0, "regex conformance: all vectors match expectations"
+
+# --- findall / finditer / sub / split ----------------------------------------
+assert re.findall("\\d+", "1 22 333") == ["1", "22", "333"], "findall"
+assert re.sub("\\d+", "#", "a1b22c333") == "a#b#c#", "sub with literal"
+assert re.split(",", "a,b,,c") == ["a", "b", "", "c"], "split preserves empty parts"
+
+# --- IGNORECASE / MULTILINE / DOTALL -----------------------------------------
+assert re.search("hello", "Hello World", re.IGNORECASE) != None, "IGNORECASE"
+assert re.findall("^\\d+", "1\n2\n3", re.MULTILINE) == ["1", "2", "3"], "MULTILINE"
+assert re.match(".+", "line1\nline2", re.DOTALL).group(0) == "line1\nline2", "DOTALL"
+
+# --- Rejection of unsupported features (backreference, lookaround) -----------
+var threw = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+assert threw(Function(): return re.compile("(a)\\1")), "backreference deliberately rejected"
+assert threw(Function(): return re.compile("(?=x)")), "lookahead deliberately rejected"
+
+io.print("OK regex_conformance")

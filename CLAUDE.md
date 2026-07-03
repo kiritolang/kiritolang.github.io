@@ -702,6 +702,17 @@ Toolchain present: `g++ 13`, `clang++ 18`, `cmake 3.28`, `ninja`, `ctest`.
   `test_client.py` + `test_concurrent.py` for sqldb, sqldb_kwargs, webserver, webserver_kwargs. Both
   take `--ki PATH`; the big-projects script keeps the slow self-host suite opt-in behind
   `--selfhost`.
+- **Doc-as-test**: `tools/scripts/test_docs_examples.py` walks every fenced ```kirito block in
+  `docs/pages/*.md`, prefixes a common import preamble, and runs it — any block missing an
+  `<!--norun-->` marker must execute cleanly. Prevents doc rot (bumped stdlib signatures, dropped
+  builtins) that a plain read-through would silently miss.
+- **Semantic-stability quick check**: `tools/scripts/bytecode_stability.sh` runs every golden
+  `.ki` in `tools/tests/scripts/` and diffs stdout against `.expected` — the same round-trip CTest
+  runs, packaged as a one-shot pre-commit script that needs no CMake configure/build.
+- **Coverage-guided fuzzing (opt-in)**: `-DKIRITO_ENABLE_LIBFUZZER=ON` builds `ki_fuzz` (needs
+  clang), a `LLVMFuzzerTestOneInput` around the interpreter under the same contract as the offline
+  `fuzz_eval.cpp` — a caught `KiritoError` is expected, any other C++ exception escaping the
+  interpreter is treated as a crash for libFuzzer to minimise.
 - **Nightly CI** (`.github/workflows/nightly.yml`) runs at 03:00 UTC on `main` with a
   fresh-commits gate — a small "gate" job compares `HEAD` against the last completed Nightly run and
   skips the heavy job when they match; a `workflow_dispatch` always runs. The heavy job runs

@@ -104,7 +104,8 @@ io.print(z.modulus())            # 5.0   — |z|
 io.print(z.argument())           # 0.927...   — the phase angle in radians
 
 # Euler's identity, and roots of negative numbers:
-io.print(C.exp(C.of(0, C.pi)))   # ~ -1.0 + 0i
+var math = import("math")
+io.print(C.exp(C.of(0, math.pi)))   # ~ -1.0 + 0i  (π lives in math, not complex)
 io.print(C.sqrt(C.of(-1, 0)))    # 0.0+1.0i  = i
 ```
 

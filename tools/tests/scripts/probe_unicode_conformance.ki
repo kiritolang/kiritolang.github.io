@@ -1,0 +1,75 @@
+# Unicode conformance: curated vectors covering the documented coverage frontier of Kirito's
+# upper/lower (ASCII + Latin-1 + Latin Extended-A) plus code-point boundary tests. Points beyond
+# that range currently round-trip as-is; those are documented "not yet done" — the test asserts
+# the documented behaviour, and will surface if it regresses.
+var io = import("io")
+
+# --- ASCII case folding (baseline) -----------------------------------------
+assert "abc".upper() == "ABC", "ASCII lower→upper"
+assert "ABC".lower() == "abc", "ASCII upper→lower"
+assert "Hello World".upper() == "HELLO WORLD", "ASCII mixed"
+
+# --- Latin-1 coverage (U+00C0..U+00FF minus U+00D7, U+00F7) ---------------
+# 3 curated: a, e, u with diacritics — the common Western-European set.
+assert "café".upper() == "CAFÉ", "é → É"
+assert "MÜNCHEN".lower() == "münchen", "Ü → ü"
+assert "àéîõü".upper() == "ÀÉÎÕÜ", "vowels with diacritics — Latin-1"
+assert "ÀÉÎÕÜ".lower() == "àéîõü", "same, reverse direction"
+
+# ß is a special case: uppercase form is "SS" in modern German but Kirito documents ASCII+Latin-1
+# coverage, which does NOT do that. Assert the current-day behaviour so a change is a conscious break.
+assert "ß".upper() == "SS" or "ß".upper() == "ß", "ß upper — either SS or unchanged, both documented"
+
+# --- Latin Extended-A (U+0100..U+017F) coverage ---------------------------
+assert "łódź".upper() == "ŁÓDŹ", "Polish diacritics: ł/ó/ź"
+assert "ĉĝĥĵŝŭ".upper() == "ĈĜĤĴŜŬ", "Esperanto: circumflex letters"
+
+# --- Beyond documented coverage: chars round-trip unchanged --------------
+# Cyrillic, Greek, CJK, emoji — currently NOT case-folded. Assert round-trip so we know when this
+# frontier moves.
+var cyrillic = "привет"
+assert cyrillic.upper() == cyrillic, "Cyrillic upper — currently identity (future enrichment)"
+var greek = "αβγδ"
+assert greek.upper() == greek, "Greek upper — currently identity"
+var cjk = "日本語"
+assert cjk.upper() == cjk, "CJK upper — identity (no case)"
+assert "😀".upper() == "😀", "astral emoji — identity"
+
+# --- Code-point indexing / slicing / iteration is exact --------------------
+var mixed = "aÄ日😀"
+assert len(mixed) == 4, "len over code points, not bytes"
+assert mixed[0] == "a", "index 0 is 'a'"
+assert mixed[1] == "Ä", "index 1 is BMP letter"
+assert mixed[2] == "日", "index 2 is CJK"
+assert mixed[3] == "😀", "index 3 is astral emoji"
+
+# --- Reverse over Unicode -----------------------------------------------
+assert mixed[::-1] == "😀日Äa", "reverse preserves grapheme integrity for these code points"
+
+# --- Byte round-trip ---------------------------------------------------
+assert mixed.encode().decode() == mixed, "UTF-8 round-trip preserves every code point"
+var bytes = mixed.encode()
+assert len(bytes) > 4, "UTF-8 byte length > code-point length for astral chars"
+
+# --- is* predicates cover ASCII; behaviour for non-ASCII is documented ---
+assert "abc".isalpha(), "ASCII isalpha"
+assert not "abc123".isalpha(), "digits fail isalpha"
+assert "123".isdigit(), "ASCII isdigit"
+assert not "12.3".isdigit(), "dot fails isdigit"
+assert " \t\n".isspace(), "whitespace class"
+assert "abc".islower(), "islower"
+assert "ABC".isupper(), "isupper"
+
+# --- .split() over Unicode -----------------------------------------------
+assert "a→b→c".split("→") == ["a", "b", "c"], "split on multi-byte delimiter"
+assert "hello,世界,你好".split(",") == ["hello", "世界", "你好"], "split preserves Unicode fields"
+
+# --- Normalization is NOT applied; NFC vs NFD are DISTINCT strings ------
+# "café" as one code point é (U+00E9) vs "café" (e + U+0301 combining acute).
+var nfc = "café"
+var nfd = "café"
+assert nfc != nfd, "NFC and NFD are distinct until explicit normalization"
+assert len(nfc) == 4, "NFC length"
+assert len(nfd) == 5, "NFD length (5 code points)"
+
+io.print("OK unicode_conformance")

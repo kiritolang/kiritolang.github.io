@@ -1,0 +1,93 @@
+# State-machine coverage for lifecycle types. Each type has an implicit state (open/closed,
+# fresh/used, connected/disconnected). For each state × op combination: legal ops succeed,
+# illegal ops throw a clean, catchable error. No crashes, no undefined behaviour.
+var io = import("io")
+var path = import("path")
+var re = import("regex")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+var tmp = path.gettempdir()
+var sep = "/"
+
+# --- File --------------------------------------------------------------------
+# States: fresh (never opened) — n/a, tested through `open`. open (opened, not closed) → legal:
+# read/write/seek/tell/flush; illegal after close.
+var p = tmp + sep + "kirito_smtest.txt"
+var f = io.open(p, "w")
+f.write("hello world\n")
+f.write("line 2\n")
+f.close()
+# After close: every I/O op throws
+assert throws(Function(): return f.read()), "File: read after close throws"
+assert throws(Function(): return f.write("x")), "File: write after close throws"
+assert throws(Function(): return f.readline()), "File: readline after close throws"
+assert throws(Function(): return f.tell()), "File: tell after close throws"
+# Double close is idempotent (contract with `with` context manager)
+f.close()   # must not throw
+
+# Re-open the same path for reading — a fresh File
+var f2 = io.open(p, "r")
+assert f2.readline() == "hello world", "File: readline works on freshly opened file (newline stripped)"
+assert f2.tell() > 0, "File: tell works when open"
+f2.close()
+assert throws(Function(): return f2.readline()), "File: readline after close throws"
+
+# `with` closes even if the body throws
+var closed = False
+try:
+    with io.open(p, "r") as fh:
+        assert fh.readline() != None, "with: readline inside works"
+        throw "abort"
+catch:
+    pass
+# fh went out of scope; can't easily assert-closed, but no crash either
+
+# --- BytesIO -----------------------------------------------------------------
+# BytesIO is an in-memory buffer; unlike File, close() is a no-op (nothing to release), and reads
+# and writes continue to work. The important lifecycle is seek/tell/read/write consistency.
+var b = io.BytesIO()
+b.write("hello")
+b.write(" world")
+assert b.tell() == 11, "BytesIO: tell tracks write position"
+b.seek(0)
+assert b.read() == "hello world", "BytesIO: seek/read round-trips"
+b.close()   # no-op; the buffer stays usable
+b.seek(0)
+assert b.read() == "hello world", "BytesIO: read after close still works (buffer, not stream)"
+
+# --- Compiled regex Pattern -------------------------------------------------
+var pat = re.compile("(\\w+)=(\\d+)")
+var m = pat.search("year=2026")
+assert m != None, "Pattern: search yields match"
+assert m.group(1) == "year", "Pattern: group access works"
+# A non-matching pattern
+var m2 = pat.search("nothing here")
+assert m2 == None, "Pattern: no match returns None"
+# findall works
+assert pat.findall("a=1 b=22 c=333") == [["a", "1"], ["b", "22"], ["c", "333"]], "Pattern: findall returns capture groups"
+
+# --- open() error paths ------------------------------------------------------
+var missingPath = "/definitely/does/not/exist/xxx.txt"
+assert throws(Function(): return io.open(missingPath, "r")), "open: missing path for read throws"
+assert throws(Function(): return io.open(p, "invalid-mode")), "open: bad mode throws"
+
+# --- io.BytesIO round-trip after seek to middle ------------------------------
+var b2 = io.BytesIO()
+b2.write("hello world")
+b2.seek(6)
+assert b2.read() == "world", "BytesIO: seek to middle, read from there"
+b2.seek(0)
+b2.write("HELLO")     # overwrite in place
+b2.seek(0)
+assert b2.read() == "HELLO world", "BytesIO: overwrite in place"
+
+# --- cleanup -----------------------------------------------------------------
+discard path.remove(p, missing_ok = True)
+
+io.print("OK state_machines")

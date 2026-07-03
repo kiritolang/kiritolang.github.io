@@ -122,6 +122,7 @@ io.print(h.sha256(blob))
 
 ## Inspect an object at runtime
 
+<!--norun (references `Stack` from an earlier snippet on this page)-->
 ```kirito
 var math = import("math")
 io.print(inspect(math))         # lists the module's functions

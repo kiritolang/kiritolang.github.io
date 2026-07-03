@@ -25,6 +25,7 @@ io.print(safe_divide(10, 2))               # => 5.0
 
 Wrap risky code in `try:`; put the recovery in `catch:`. A bare `catch` handles anything thrown:
 
+<!--norun (uses `safe_divide` defined in an earlier snippet on this page)-->
 ```kirito
 var io = import("io")
 

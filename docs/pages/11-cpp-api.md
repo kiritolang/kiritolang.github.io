@@ -409,6 +409,7 @@ try {
 The reverse direction Just Works: a Kirito `try/catch` catches any `std::exception` a native
 throws. The runtime promotes it into a Kirito `String` (via `.what()`) at the catch site, so:
 
+<!--norun (illustrative fragment; `...` is a placeholder, not valid Kirito syntax)-->
 ```kirito
 try:
     var page = net.get(...)         # if the native throws std::runtime_error,

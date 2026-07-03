@@ -1,0 +1,189 @@
+# Property-based coverage: assert INVARIANTS across random inputs. The rest of the probe suite is
+# mostly "did the program crash". Here every assertion is a property that must hold for every input
+# drawn from a distribution — the Python `hypothesis` idea, minus the framework. A regression that
+# breaks the invariant almost never breaks a specific golden output but always breaks a property.
+var io = import("io")
+var rnd = import("random")
+var hash = import("hash")
+var json = import("json")
+var math = import("math")
+
+var r = rnd.Random(20260703)      # fixed seed → reproducible failures
+var N = 500                       # runs per invariant — cheap enough for CTest, dense enough to catch regressions
+
+# --- 1. sorted() is monotonic non-decreasing AND is a permutation of the input --------
+var permutationEqual = Function(a, b) -> Bool:
+    if len(a) != len(b):
+        return False
+    var ta = List(a)
+    ta.sort()
+    var tb = List(b)
+    tb.sort()
+    var i = 0
+    while i < len(ta):
+        if ta[i] != tb[i]:
+            return False
+        i = i + 1
+    return True
+
+var i = 0
+while i < N:
+    var n = r.randint(0, 40)
+    var xs = []
+    var j = 0
+    while j < n:
+        xs.append(r.randint(-100, 100))
+        j = j + 1
+    var s = sorted(xs)
+    # monotone
+    var k = 1
+    while k < len(s):
+        assert s[k - 1] <= s[k], "sorted output is monotonic non-decreasing"
+        k = k + 1
+    # permutation of input
+    assert permutationEqual(s, xs), "sorted output is a permutation of the input"
+    i = i + 1
+
+# --- 2. hash determinism + equality respects hash contract ---------------------------
+i = 0
+while i < N:
+    var x = r.randint(-1000000, 1000000)
+    assert hash.hash(x) == hash.hash(x), "hash.hash is deterministic on Integer"
+    assert hash.hash(x) == x, "hash.hash(Integer) == Integer (identity)"
+    var y = x
+    assert hash.hash(x) == hash.hash(y), "equal Integers hash equal"
+    i = i + 1
+
+i = 0
+while i < N:
+    var length = r.randint(0, 30)
+    var s = ""
+    var j = 0
+    while j < length:
+        s = s + chr(r.randint(32, 126))
+        j = j + 1
+    assert hash.hash(s) == hash.hash(s), "hash.hash is deterministic on String"
+    var s2 = s + ""                                # constructed differently but content-equal
+    assert hash.hash(s) == hash.hash(s2), "content-equal Strings hash equal"
+    i = i + 1
+
+# --- 3. json.loads(json.dumps(v)) == v for the JSON-representable value set -----------
+var jsonRoundtrips = Function(v) -> Bool:
+    return json.loads(json.dumps(v)) == v
+i = 0
+while i < N:
+    var kind = r.randint(0, 5)
+    var v = None
+    if kind == 0:
+        v = None
+    elif kind == 1:
+        v = r.randint(-1000000, 1000000)
+    elif kind == 2:
+        v = r.random() * 1000.0
+    elif kind == 3:
+        v = r.randint(0, 1) == 1
+    elif kind == 4:
+        var len4 = r.randint(0, 12)
+        v = []
+        var j = 0
+        while j < len4:
+            v.append(r.randint(0, 100))
+            j = j + 1
+    else:
+        var len5 = r.randint(0, 8)
+        v = {}
+        var j = 0
+        while j < len5:
+            v["k" + String(j)] = r.randint(0, 100)
+            j = j + 1
+    assert jsonRoundtrips(v), "json.loads(json.dumps(v)) == v"
+    i = i + 1
+
+# --- 4. String encode/decode is byte-transparent (Bytes(s.encode()).decode() == s) ---
+i = 0
+while i < N:
+    var length = r.randint(0, 30)
+    var s = ""
+    var j = 0
+    while j < length:
+        # include some multi-byte code points so we exercise UTF-8, not just ASCII
+        var cp = r.randint(32, 1000)
+        if cp == 34 or cp == 92:                    # skip " and \ so we don't have to worry about repr
+            cp = 65
+        s = s + chr(cp)
+        j = j + 1
+    assert s.encode().decode() == s, "s.encode().decode() roundtrips"
+    var b = s.encode()
+    assert Bytes(List(b)) == b, "Bytes(List(b)) == b (bytes-to-list roundtrip)"
+    i = i + 1
+
+# --- 5. len() is monotone under append + shrinks under pop -----------------------------
+i = 0
+while i < N:
+    var xs = []
+    var target = r.randint(0, 30)
+    var j = 0
+    while j < target:
+        var before = len(xs)
+        xs.append(j)
+        assert len(xs) == before + 1, "append grows length by 1"
+        j = j + 1
+    assert len(xs) == target, "final length matches append count"
+    while len(xs) > 0:
+        var before = len(xs)
+        discard xs.pop()
+        assert len(xs) == before - 1, "pop shrinks length by 1"
+    i = i + 1
+
+# --- 6. Set algebra invariants: (A|B)\B ⊆ A, A ⊆ A|B, |A∩B| ≤ min(|A|,|B|) -----------
+var mkSet = Function(nmax):
+    var s = Set()
+    var n = r.randint(0, nmax)
+    var j = 0
+    while j < n:
+        s.add(r.randint(0, nmax))
+        j = j + 1
+    return s
+i = 0
+while i < N:
+    var A = mkSet(30)
+    var B = mkSet(30)
+    var union = A.union(B)
+    var inter = A.intersection(B)
+    var diff = A.difference(B)
+    assert len(inter) <= len(A) and len(inter) <= len(B), "|A∩B| ≤ min(|A|,|B|)"
+    assert len(union) >= len(A) and len(union) >= len(B), "|A∪B| ≥ max(|A|,|B|)"
+    assert A.issubset(union), "A ⊆ A∪B"
+    for x in diff:
+        assert x in A and x not in B, "x ∈ A\\B ⇒ x ∈ A ∧ x ∉ B"
+    i = i + 1
+
+# --- 7. Reverse of reverse is identity ------------------------------------------------
+i = 0
+while i < N:
+    var length = r.randint(0, 30)
+    var xs = []
+    var j = 0
+    while j < length:
+        xs.append(r.randint(0, 100))
+        j = j + 1
+    assert xs[::-1][::-1] == xs, "reverse of reverse is identity (List)"
+    var s = ""
+    var k = 0
+    while k < length:
+        s = s + chr(r.randint(65, 90))
+        k = k + 1
+    assert s[::-1][::-1] == s, "reverse of reverse is identity (String)"
+    i = i + 1
+
+# --- 8. abs/neg identities ------------------------------------------------------------
+i = 0
+while i < N:
+    var x = r.randint(-1000000, 1000000)
+    assert abs(x) >= 0, "abs is non-negative"
+    assert abs(-x) == abs(x), "abs(-x) == abs(x)"
+    assert -(-x) == x, "double negation"
+    assert (0 - x) + x == 0, "x + (-x) == 0 (two's complement integers)"
+    i = i + 1
+
+io.print("OK invariants")

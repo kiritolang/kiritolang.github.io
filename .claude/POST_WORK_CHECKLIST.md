@@ -13,6 +13,13 @@ The routine to run **after every change, before declaring it done**. The mechani
    - Code that *should fail* → `tools/tests/errors/NAME.ki` + `NAME.experr` (each `.experr` line is a
      required substring of stderr; the script must exit non-zero). Cover the bad path, not just the
      good one.
+   - **Regression-per-bug.** A fix for a specific bug ships an executable test the bug would have
+     failed. Name it after what it covers, not the bug's ID — `spec_dict_iter_after_delete.ki`,
+     not `fix_pr47.ki` — so a reader who trips it three years from now sees the *symptom* and can
+     read the fixture to understand it. The `r4_`/`r5_`/`r6_`/`r10_`/`r11_` families collect
+     these round-by-round; the newer `probe_*` files hold the property-based / doc-as-test /
+     conformance flavours. This turns the bug tracker into an executable diary that can never
+     silently rot.
 
 2. **Build the variants and run the WHOLE suite — SEQUENTIALLY, in order** (`tools/scripts/post_work_check.sh`).
    The order is the workflow gate, not just a list:

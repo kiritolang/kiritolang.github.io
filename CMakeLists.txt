@@ -10,6 +10,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # dependency-free; enable with -DKIRITO_ENABLE_TLS=ON.
 option(KIRITO_ENABLE_TLS "Enable HTTPS in the net module via OpenSSL" OFF)
 
+# Optional libFuzzer (coverage-guided) build of the stability fuzzer. Off by default. Enable with
+# -DKIRITO_ENABLE_LIBFUZZER=ON — requires clang. Builds tools/tests/fuzz/fuzz_libfuzzer.cpp as
+# `ki_fuzz`, which reads inputs from libFuzzer's `LLVMFuzzerTestOneInput` and runs each through the
+# interpreter under the same "OK if throws / not OK if crashes" contract as the offline fuzzer.
+# Run:  ./ki_fuzz corpus/ -max_total_time=600
+option(KIRITO_ENABLE_LIBFUZZER "Build ki_fuzz (libFuzzer entrypoint) for coverage-guided fuzzing" OFF)
+
 # Static linking for all builds, so the binaries are self-contained and don't depend on matching
 # shared libraries on the target machine. MSVC uses the static CRT (/MT); GCC/Clang link fully
 # static. Note: a fully static glibc link emits a harmless link-time warning about getaddrinfo
@@ -69,6 +76,17 @@ if(KIRITO_ENABLE_TLS)
         # a fully-static mingw/MSVC build resolves (harmless when OpenSSL is shared).
         target_link_libraries(ki PRIVATE crypt32 bcrypt ws2_32)
     endif()
+endif()
+
+# libFuzzer entrypoint: a coverage-guided binary that reads inputs from libFuzzer and runs each
+# through the interpreter under the same contract as the offline fuzz_eval.cpp. Requires clang
+# with `-fsanitize=fuzzer` — the caller supplies it via the CMake configure flags, we only build
+# the target when the option is on.
+if(KIRITO_ENABLE_LIBFUZZER)
+    add_executable(ki_fuzz tools/tests/fuzz/fuzz_libfuzzer.cpp)
+    target_link_libraries(ki_fuzz PRIVATE kirito)
+    target_compile_options(ki_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+    target_link_options(ki_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 enable_testing()
