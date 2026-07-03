@@ -840,14 +840,14 @@ public:
     // Raw underlying span, for delegating to the low-layer protocol.
     std::span<const Handle> raw() const { return a_; }
 
-    // Enforce a minimum arity. Wording is kept byte-identical to the low-layer `requireArgs`
-    // (native.hpp) so arity diagnostics stay uniform across the whole interpreter — a native still
-    // using requireArgs and one using Args::require report the same "<fn>() expected at least N
-    // argument(s)" message.
+    // Enforce a minimum arity. Wording matches the low-layer `requireArgs` (native.hpp) exactly, so
+    // arity diagnostics are uniform interpreter-wide, and follows the existing house style for a
+    // "not enough" error ("expected at least N values to unpack, got M") — informative about both
+    // the requirement and what was actually passed.
     void require(std::size_t n) const {
         if (a_.size() < n)
             throw KiritoError(std::string(fn_) + "() expected at least " + std::to_string(n) +
-                              " argument(s)");
+                              " argument(s), got " + std::to_string(a_.size()));
     }
 private:
     KiritoVM* vm_;
