@@ -660,6 +660,22 @@ Toolchain present: `g++ 13`, `clang++ 18`, `cmake 3.28`, `ninja`, `ctest`.
 - Tests run under **CTest**. **Every language feature gets a test.** Prefer many
   small, focused tests (one behavior each) over large ones. A feature isn't done
   until it has a test and the suite is green.
+- **Release-binary smoke tests** live alongside the C++ suite: `tools/scripts/test_examples.sh`
+  runs every runnable `examples/*.ki` against a chosen `ki` binary (with the right `--lib` flags
+  for `complex_linsolve.ki` / `solve_systems.ki`; skips the network-only `rule34_download.ki`), and
+  `tools/scripts/test_big_projects.sh` covers all three big-project testing conventions in one place
+  — golden-`.expected` (cronki, feedreader, kirdown, ledger, snip), self-asserting Kirito assertions
+  (imaging + imaging/video, kgrad + kgrad/extra), and the Python harnesses
+  `test_client.py` + `test_concurrent.py` for sqldb, sqldb_kwargs, webserver, webserver_kwargs. Both
+  take `--ki PATH`; the big-projects script keeps the slow self-host suite opt-in behind
+  `--selfhost`.
+- **Nightly CI** (`.github/workflows/nightly.yml`) runs at 03:00 UTC on `main` with a
+  fresh-commits gate — a small "gate" job compares `HEAD` against the last completed Nightly run and
+  skips the heavy job when they match; a `workflow_dispatch` always runs. The heavy job runs
+  `post_work_check.sh` (debug + release + asan + tsan), `build_all.sh` (Linux native + Windows
+  cross-compile via mingw-w64) and `test_release.sh`, then chains `test_examples.sh` +
+  `test_big_projects.sh` against the shipped `dist/ki-linux-x64`, and uploads the release binaries
+  as an artifact. All compilation happens on Linux.
 - Before claiming something works, actually build and run it; report real output.
 
 ## Code style & working directives
