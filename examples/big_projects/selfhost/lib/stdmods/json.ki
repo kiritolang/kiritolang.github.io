@@ -158,7 +158,15 @@ var _parseNum = Function(s, i):
     if len(text) == 0 or text == "-":
         throw "json: invalid number"
     if isFloat:
-        return [Float(text), i]
+        # A JSON number that overflows Float widens to ±inf (matches native, which mirrors CPython
+        # and other dynamic languages instead of raising). The host `Float()` throws on overflow,
+        # so trap it and fall back to a signed infinity.
+        try:
+            return [Float(text), i]
+        catch:
+            if text[0] == "-":
+                return [0.0 - math.inf, i]
+            return [math.inf, i]
     # An integer token too large for int64 widens to Float (native mirrors dynamic languages), rather
     # than wrapping the way the host Integer() constructor would.
     var neg = text[0] == "-"
@@ -167,7 +175,12 @@ var _parseNum = Function(s, i):
         mag = text[1:len(text)]
     if _int64Fits(mag, neg):
         return [Integer(text), i]
-    return [Float(text), i]
+    try:
+        return [Float(text), i]
+    catch:
+        if neg:
+            return [0.0 - math.inf, i]
+        return [math.inf, i]
 
 var _parseArr = Function(s, i):
     i = _ws(s, i + 1)

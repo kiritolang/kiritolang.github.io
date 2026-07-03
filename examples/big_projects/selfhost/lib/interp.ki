@@ -133,7 +133,8 @@ var typeName = Function(v):
     if k == "function" or k == "native" or k == "bound" or k == "boundnative":
         return "Function"
     if k == "class":
-        return v["name"]    # type(SomeClass) is the class's own name (Dog, not a generic "Type")
+        return v["name"]    # type(SomeClass) is the class's own name (Dog, not a generic "Type");
+                            # isinstance(SomeClass, "Class") separately accepts the "Class" sentinel.
     if k == "instance":
         return v["cls"]["name"]
     if k == "module":
@@ -465,9 +466,18 @@ var _hkey = Function(St, v):
     if boxKind(v) == "instance":
         var m = classLookup(v["cls"], "_hash_")
         if m != None:
+            # Validate the user hash and cache it — but use it only for the value-semantics path
+            # (a class that also defines _eq_). Without _eq_, the language keys the instance by
+            # IDENTITY (see docs/pages/09-types.md); if we used the user hash as the host Set/Dict
+            # key here, two distinct instances that happen to share a `_hash_` value would collapse
+            # into one bucket. So call _hash_ (for validation + `hash.hash` composability), but
+            # actually key by id() when _eq_ is absent.
             var h = callValue(St, mkBound(v, m), [], [])
             if type(h) != "Integer":
                 rtError("'" + v["cls"]["name"] + "'._hash_ must return an Integer, got '" + typeName(h) + "'")
+            var em = classLookup(v["cls"], "_eq_")
+            if em == None:
+                return id(v)
             return h
         var mk = classLookup(v["cls"], "_hashkey_")
         if mk != None:
@@ -2558,6 +2568,10 @@ var builtinIsinstance = Function(St, args, kwargs):
         rtError("isinstance second argument must be a class, a built-in type, or a type-name String")
     if name == "Any":
         return True
+    if name == "Class":
+        # isinstance(x, "Class") is the sentinel for "x is a class value" (not an instance / not a
+        # module / not a function). Matches native.
+        return boxKind(x) == "class"
     if name == "Number":
         # "Number" is the pseudo-type the numeric builtins advertise (inspect shows `x: Number`);
         # accept both real numeric kinds (Integer/Float), not any type literally named "Number".

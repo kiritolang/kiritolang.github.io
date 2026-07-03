@@ -74,10 +74,18 @@ class Complex:
         return Complex(self.re, -self.im)
     var modulus = Function(self):
         return math.hypot(self.re, self.im)
+    var magnitude = Function(self):
+        return math.hypot(self.re, self.im)                     # alias for modulus, matches native
+    var abs = Function(self):
+        return math.hypot(self.re, self.im)                     # abs alias (native also exposes this)
     var norm2 = Function(self):
         return self.re * self.re + self.im * self.im
     var argument = Function(self):
         return math.atan2(self.im, self.re)
+    var arg = Function(self):
+        return math.atan2(self.im, self.re)                     # arg alias (native also exposes this)
+    var phase = Function(self):
+        return math.atan2(self.im, self.re)                     # phase alias
     var is_zero = Function(self):
         return self.modulus() < 0.0000000001        # tolerant (magnitude < 1e-10), matching native
     # Tolerant comparison (rel/abs tolerance), mirroring native: |a-b| <= max(rel_tol*max(|a|,|b|),
@@ -195,6 +203,8 @@ var polar = Function(r, theta):
 var abs = Function(z):
     var c = _toC(z)
     return math.hypot(c.re, c.im)
+var magnitude = Function(z):
+    return _toC(z).modulus()
 var modulus = Function(z):
     return _toC(z).modulus()
 var phase = Function(z):

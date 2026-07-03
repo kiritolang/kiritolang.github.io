@@ -15,7 +15,7 @@ var _reqInt = Function(x):
     return x
 
 class Random:
-    var _init_ = Function(self, seed = None):
+    var _init_ = Function(self, seed = None, generator = "xoshiro"):
         # No seed (or an explicit None) -> OS-seeded: mix two independent high-resolution clocks
         # (pure Kirito has no direct OS-entropy builtin, so time is the closest available source).
         var s = seed
@@ -23,6 +23,11 @@ class Random:
             s = bitxor(time.timens(), time.perfcounterns())
         # mix the seed so small/zero seeds still scatter
         self._state = s * 2862933555777941757 + 3037000493
+        # `generator` is accepted for API parity with the native Random (which dispatches between
+        # xoshiro256++ and std::mt19937_64). The self-host uses a single LCG regardless of the value.
+        if generator != "xoshiro" and generator != "mersenne_twister":
+            throw "unknown generator: " + String(generator)
+        self.generator = generator
 
     # Random is a native type on the real interpreter (NativeClass), whose default str() is
     # "<Random>" — not the "<Random object>" a genuine guest class without _str_ would show.
