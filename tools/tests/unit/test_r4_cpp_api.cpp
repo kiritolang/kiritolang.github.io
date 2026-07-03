@@ -44,7 +44,7 @@ struct MathyMod : NativeModule {
             for (Value x : args.at(0).items()) s += x.asInt("element");
             return Value(vm, s);
         });
-        m.value("E3", val(m.vm(), 1000));
+        m.value("E3", Value(m.vm(), 1000));
     }
 };
 
