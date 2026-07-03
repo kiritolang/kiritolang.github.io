@@ -1,0 +1,289 @@
+# spec_bool_dunder.ki — comprehensive positive coverage for `_bool_(self) -> Bool`, the user-class
+# hook for custom truthiness. Every place the language reaches for a truth value ends at
+# Object::truthy(), so a single `_bool_` override drives if/while/and/or/not/Bool(x)/filter/any/all
+# and the conditional expression uniformly. This suite asserts that uniformity plus the boundary
+# behaviour: inheritance, override, opt-in default (no `_bool_` -> always truthy), interaction with
+# `_eq_`/`_hash_`, and mutation between calls.
+#
+# Final line: "bool_dunder: N checks passed" — matched against spec_bool_dunder.expected.
+
+var io = import("io")
+
+var n = 0
+var ok = Function(cond, msg):
+    assert cond, msg
+    n = n + 1
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+var throwsMsg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+    catch as e:
+        return needle in String(e)
+
+# =============================================================================
+# Default: an instance without _bool_ is always truthy (historical, additive-safe)
+# =============================================================================
+class Plain:
+    var _init_ = Function(self, v):
+        self.v = v
+ok(Bool(Plain(0)), "plain instance (no _bool_) is truthy even when its state looks 'zero'")
+ok(Bool(Plain([])), "plain instance with an empty container attr is still truthy")
+ok(Bool(Plain(None)), "plain instance with None attr is still truthy")
+
+# =============================================================================
+# Basic opt-in: _bool_ drives truthiness
+# =============================================================================
+class Bag:
+    var _init_ = Function(self, items):
+        self.items = items
+    var _bool_ = Function(self) -> Bool:
+        return len(self.items) > 0
+
+ok(not Bool(Bag([])), "empty Bag is falsy")
+ok(Bool(Bag([1])), "non-empty Bag is truthy")
+ok(Bool(Bag([0])), "Bag containing zero is truthy (length, not content)")
+
+# =============================================================================
+# Every boolean context reaches truthy(), so one _bool_ drives them all
+# =============================================================================
+var empty = Bag([])
+var full = Bag(["x"])
+
+# `if`
+if empty:
+    ok(False, "if empty: branch should not run")
+else:
+    ok(True, "if empty: else branch runs")
+if full:
+    ok(True, "if full: branch runs")
+else:
+    ok(False, "if full: else should not run")
+
+# `while` (single iteration then set falsy)
+var cnt = 0
+while full:
+    cnt = cnt + 1
+    if cnt >= 3:
+        full.items = []                          # mutate so _bool_ starts returning False
+ok(cnt == 3, "while loop honours _bool_ on each iteration; mutation switches to falsy")
+
+# `and` / `or` short-circuit
+var e2 = Bag([])
+var f2 = Bag([1])
+ok((e2 and 42) == e2, "and: falsy operand short-circuits to the LHS instance")
+ok((f2 and 42) == 42, "and: truthy LHS returns RHS")
+ok((e2 or 42) == 42, "or: falsy LHS returns RHS")
+ok((f2 or 42) == f2, "or: truthy LHS short-circuits to itself")
+
+# `not`
+ok(not Bag([]), "not on falsy Bag is True")
+ok(not (not Bag([1])), "not on truthy Bag is False (double-not idempotent)")
+
+# `Bool(x)` builtin
+ok(Bool(Bag([])) == False, "Bool(instance) uses _bool_")
+ok(Bool(Bag([1, 2])) == True, "Bool(non-empty) is True")
+
+# conditional expression
+var val = ("yes" if Bag([1]) else "no")
+ok(val == "yes", "conditional expr: truthy Bag picks then-branch")
+var val2 = ("yes" if Bag([]) else "no")
+ok(val2 == "no", "conditional expr: falsy Bag picks else-branch")
+
+# `all` / `any`
+ok(all([Bag([1]), Bag([2])]), "all() over truthy Bags is True")
+ok(not all([Bag([1]), Bag([])]), "all() with a falsy member is False")
+ok(any([Bag([]), Bag([1])]), "any() with one truthy member is True")
+ok(not any([Bag([]), Bag([])]), "any() with all falsy is False")
+
+# `filter`
+var mixed = [Bag([1]), Bag([]), Bag([2]), Bag([])]
+var kept = List(filter(Function(b): return Bool(b), mixed))
+ok(len(kept) == 2, "filter drops the falsy Bags")
+
+# =============================================================================
+# `_bool_` is called EACH time truthy() is asked — the answer can change with state
+# =============================================================================
+class Toggle:
+    var _init_ = Function(self):
+        self.on = False
+    var flip = Function(self):
+        self.on = not self.on
+    var _bool_ = Function(self) -> Bool:
+        return self.on
+
+var t = Toggle()
+ok(not Bool(t), "Toggle starts False")
+t.flip()
+ok(Bool(t), "Toggle flips True")
+t.flip()
+ok(not Bool(t), "Toggle flips back to False")
+
+# =============================================================================
+# Inheritance: subclass inherits base's _bool_
+# =============================================================================
+class Container:
+    var _init_ = Function(self, items):
+        self.items = items
+    var _bool_ = Function(self) -> Bool:
+        return len(self.items) > 0
+class SubContainer(Container):
+    var _init_ = Function(self, items, label):
+        self._super_()._init_(items)
+        self.label = label
+
+ok(not Bool(SubContainer([], "empty")), "subclass inherits base _bool_ (empty)")
+ok(Bool(SubContainer(["x"], "nonempty")), "subclass inherits base _bool_ (nonempty)")
+
+# Subclass override
+class InvertContainer(Container):
+    var _init_ = Function(self, items):
+        self._super_()._init_(items)
+    var _bool_ = Function(self) -> Bool:
+        return len(self.items) == 0                # inverted meaning
+
+ok(Bool(InvertContainer([])), "subclass override: empty is now truthy")
+ok(not Bool(InvertContainer(["x"])), "subclass override: nonempty is now falsy")
+
+# Subclass that adds _bool_ where base had none
+class BaseNoBool:
+    var _init_ = Function(self, n):
+        self.n = n
+class BoolBySize(BaseNoBool):
+    var _init_ = Function(self, n):
+        self._super_()._init_(n)
+    var _bool_ = Function(self) -> Bool:
+        return self.n != 0
+
+ok(Bool(BaseNoBool(0)), "base (no _bool_) is always truthy")
+ok(not Bool(BoolBySize(0)), "subclass adds _bool_ — 0 is falsy")
+ok(Bool(BoolBySize(1)), "subclass adds _bool_ — 1 is truthy")
+
+# =============================================================================
+# Interaction with other dunders — _bool_ is independent
+# =============================================================================
+class Combined:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _bool_ = Function(self) -> Bool:
+        return self.v != 0
+    var _eq_ = Function(self, other) -> Bool:
+        return isinstance(other, Combined) and self.v == other.v
+    var _hash_ = Function(self) -> Integer:
+        return self.v
+
+var a = Combined(0)
+var b = Combined(0)
+ok(a == b, "_eq_ still works alongside _bool_")
+ok(not Bool(a), "_bool_ still works alongside _eq_")
+var d = {}
+d[a] = "zero"
+ok(d[b] == "zero", "_hash_ + _eq_ still work alongside _bool_")
+
+# =============================================================================
+# _bool_ can call helpers, use attributes, no restriction on what it computes
+# =============================================================================
+class ThresholdGate:
+    var _init_ = Function(self, val, thresh):
+        self.val = val
+        self.thresh = thresh
+    var _bool_ = Function(self) -> Bool:
+        return self.val >= self.thresh
+
+ok(not Bool(ThresholdGate(5, 10)), "computed _bool_ (below threshold)")
+ok(Bool(ThresholdGate(10, 10)), "computed _bool_ (at threshold)")
+ok(Bool(ThresholdGate(15, 10)), "computed _bool_ (above threshold)")
+
+# =============================================================================
+# A _bool_ that consults *another* instance's _bool_ composes correctly
+# =============================================================================
+class NotOf:
+    var _init_ = Function(self, inner):
+        self.inner = inner
+    var _bool_ = Function(self) -> Bool:
+        return not self.inner
+
+ok(Bool(NotOf(Bag([]))), "NotOf(empty) is truthy")
+ok(not Bool(NotOf(Bag([1]))), "NotOf(non-empty) is falsy")
+ok(not Bool(NotOf(NotOf(Bag([])))), "double NotOf: empty stays 'empty' by composition")
+
+# =============================================================================
+# Error paths — the return contract is enforced
+# =============================================================================
+class BadStr:
+    var _init_ = Function(self):
+        self.x = 1
+    var _bool_ = Function(self):
+        return "yes"
+class BadInt:
+    var _init_ = Function(self):
+        self.x = 1
+    var _bool_ = Function(self):
+        return 1
+class BadNone:
+    var _init_ = Function(self):
+        self.x = 1
+    var _bool_ = Function(self):
+        return None
+class BadList:
+    var _init_ = Function(self):
+        self.x = 1
+    var _bool_ = Function(self):
+        return [True]
+
+ok(throwsMsg(Function(): return Bool(BadStr()), "must return a Bool"),
+   "String return in _bool_ throws a clear error")
+ok(throwsMsg(Function(): return Bool(BadInt()), "must return a Bool"),
+   "Integer return in _bool_ throws (even 1 is not accepted)")
+ok(throwsMsg(Function(): return Bool(BadNone()), "must return a Bool"),
+   "None return in _bool_ throws")
+ok(throwsMsg(Function(): return Bool(BadList()), "must return a Bool"),
+   "List return in _bool_ throws")
+
+class Boom:
+    var _init_ = Function(self):
+        self.x = 1
+    var _bool_ = Function(self) -> Bool:
+        throw "kaboom"
+ok(throwsMsg(Function(): return Bool(Boom()), "kaboom"),
+   "throwing _bool_ surfaces the thrown value")
+ok(throwsMsg(Function(): return Boom() and "unreached", "kaboom"),
+   "throwing _bool_ surfaces through `and`")
+
+# =============================================================================
+# _bool_ is opt-in — an ATTRIBUTE named _bool_ (not a method) is NOT enough
+# =============================================================================
+class NoBoolMethod:
+    var _init_ = Function(self):
+        self.x = 1
+var nbm = NoBoolMethod()
+nbm._bool_ = Function(): return False           # attach an attribute after construction
+ok(Bool(nbm), "attaching a `_bool_` attribute post-construction does NOT flip truthiness")
+
+# =============================================================================
+# Fuzz: a _bool_ over a random Integer follows the truthiness of that Integer
+# =============================================================================
+var rnd = import("random")
+var r = rnd.Random(20260703)
+class IntBool:
+    var _init_ = Function(self, n):
+        self.n = n
+    var _bool_ = Function(self) -> Bool:
+        return self.n != 0
+var i = 0
+while i < 200:
+    var v = r.randint(-100, 100)
+    var ib = IntBool(v)
+    ok(Bool(ib) == (v != 0), "fuzz: _bool_ matches Integer truthiness for v=" + String(v))
+    i = i + 1
+
+io.print("bool_dunder: " + String(n) + " checks passed")

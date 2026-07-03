@@ -369,6 +369,36 @@ Invoked as `x OP y` → `x._op_(y)`; return a `Bool` (or any truthy/falsy value)
 | `_enter_(self)` | entering a `with x as v:` block | the value bound to `v` |
 | `_exit_(self)` | leaving a `with` block (normally or via an exception) | ignored |
 
+### Truthiness
+
+| Method | Invoked by | Returns |
+|--------|-----------|---------|
+| `_bool_(self)` | every conditional context — `if x:`, `while x:`, `x and y`, `x or y`, `not x`, `Bool(x)`, `filter`, `all`, `any`, the conditional expression `a if x else b` | a `Bool` |
+
+Without `_bool_`, an instance is **always truthy** — the historical, additive-safe default. Define
+`_bool_` when your class has a natural notion of "empty" or "off" — an empty container, a disabled
+feature flag, a nothing-to-do work item — so plain `if x:` reads correctly. The return **must be a
+Bool** (not an Integer or truthy Non-Bool); a wrong return type throws with a clear message. A
+throwing `_bool_` propagates through the surrounding `and`/`or`/`if` as an ordinary exception.
+
+<!--norun (illustrative fragment)-->
+```kirito
+class Bag:
+    var _init_ = Function(self, items):
+        self.items = items
+    var _bool_ = Function(self) -> Bool:
+        return len(self.items) > 0
+
+if Bag([]):
+    io.print("truthy")             # NOT printed — Bag([]) is falsy via _bool_
+else:
+    io.print("falsy")              # printed
+```
+
+Subclasses inherit `_bool_` from a base class and can override it. `_bool_` is independent of
+`_hash_`/`_eq_`/`_len_` — `len(x) == 0` does not affect truthiness unless the class opts in via
+`_bool_`.
+
 ### Hashability (Set/Dict keys)
 
 | Method | Invoked by | Returns |
@@ -416,9 +446,10 @@ A few deliberate boundaries:
 - **Slice syntax does not reach `_getitem_`.** `x[a:b:c]` uses a separate native slice protocol that
   user classes can't intercept (there is no `_slice_`); only scalar/variadic keys (`x[i]`, `x[i, j]`)
   reach `_getitem_`/`_setitem_`. Expose a normal method (e.g. `x.slice(a, b)`) for range access.
-- **No `_bool_`.** Instances are **always truthy** (`_len_` does not affect truthiness — there is no
-  truthiness special method); `_hash_` DOES exist (see [Hashability](#hashability-set-dict-keys)
-  above) and is the opt-in for using an instance as a `Set` element or `Dict` key.
+- **`_len_` does not drive truthiness.** Kirito's built-in containers are falsy when empty (`if
+  xs:` on a `List`, `Dict`, `Set` is the size test), but a user class opts into that behaviour by
+  defining `_bool_` explicitly — `_len_` alone doesn't change truthiness. See
+  [Truthiness](#truthiness) above.
 
 ### Serialization protocol
 
