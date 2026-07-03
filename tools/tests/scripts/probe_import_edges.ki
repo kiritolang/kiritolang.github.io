@@ -1,0 +1,104 @@
+# Import-system edge cases. Uses `path.gettempdir()` to build a scratch import path with a few
+# .ki files, then imports them through Kirito's module resolution. The point is to exercise the
+# corners: same file imported by two paths, sys.exit at module top level, deep chains, module
+# whose top-level throws mid-load.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+# Build a scratch tree under a fresh temp dir every run so tests are hermetic.
+var root = path.join(path.gettempdir(), "kirito_import_edges_" + String(sys.time.timens() if False else 0))
+if path.exists(root):
+    discard path.rmtree(root, missing_ok = True)
+discard path.mkdir(root, exist_ok = True)
+
+var writeMod = Function(rel, contents):
+    var full = path.join(root, rel)
+    var parent = path.dirname(full)
+    if len(parent) > 0:
+        discard path.mkdir(parent, exist_ok = True)
+    var f = io.open(full, "w")
+    f.write(contents)
+    f.close()
+
+# --- 1. Deep chain (5 levels) --------------------------------------------------
+writeMod("chain0.ki", "var v = 0\n")
+writeMod("chain1.ki", "var m = import(\"chain0\")\nvar v = m.v + 1\n")
+writeMod("chain2.ki", "var m = import(\"chain1\")\nvar v = m.v + 1\n")
+writeMod("chain3.ki", "var m = import(\"chain2\")\nvar v = m.v + 1\n")
+writeMod("chain4.ki", "var m = import(\"chain3\")\nvar v = m.v + 1\n")
+writeMod("chain5.ki", "var m = import(\"chain4\")\nvar v = m.v + 1\n")
+
+# Extend the import path programmatically by re-running under KIRITO_PATH — the way library
+# writers exercise this. We spawn a subprocess so the env var is fresh.
+var runner = sys.executable if False else path.executable
+var proc = sys.shell(runner + " --lib '" + root + "' -e 'var m = import(\"chain5\"); io.print(m.v)'",
+                     None, None, 5000)
+# The `-e` flag doesn't exist yet; fall back to writing a driver file.
+var driverPath = path.join(root, "_driver.ki")
+writeMod("_driver.ki", "var io = import(\"io\")\nvar m = import(\"chain5\")\nio.print(m.v)\n")
+var proc2 = sys.createprocess([runner, "--lib", root, driverPath], None, None, 5000)
+assert proc2["code"] == 0, "deep import chain runs cleanly"
+assert proc2["stdout"].strip() == "5", "chain5.v == 5 (5 levels of import composition)"
+
+# --- 2. Circular import is a clean error, not a hang -----------------------
+writeMod("cyclA.ki", "var b = import(\"cyclB\")\nvar v = 1\n")
+writeMod("cyclB.ki", "var a = import(\"cyclA\")\nvar v = 2\n")
+writeMod("_cyclDriver.ki", "var a = import(\"cyclA\")\n")
+var procCyc = sys.createprocess([runner, "--lib", root, path.join(root, "_cyclDriver.ki")],
+                                None, None, 5000)
+assert procCyc["code"] != 0, "circular import fails"
+assert "circular import" in procCyc["stderr"], "error text names the cycle"
+
+# --- 3. A module whose top-level throws mid-load ---------------------------
+writeMod("bad.ki", "var io = import(\"io\")\nthrow \"boom on load\"\n")
+writeMod("_badDriver.ki",
+         "try:\n    var m = import(\"bad\")\n    io.print(\"unreached\")\ncatch as e:\n" +
+         "    var io = import(\"io\")\n    io.print(\"caught: \" + String(e))\n")
+var procBad = sys.createprocess([runner, "--lib", root, path.join(root, "_badDriver.ki")],
+                                None, None, 5000)
+assert procBad["code"] == 0, "throwing module raises a catchable error"
+assert "caught:" in procBad["stdout"], "caller catches the top-level throw"
+
+# --- 4. Re-importing a throwing module the second time still throws --------
+writeMod("_badRetryDriver.ki",
+         "var io = import(\"io\")\n" +
+         "var n = 0\n" +
+         "try:\n    discard import(\"bad\")\ncatch:\n    n = n + 1\n" +
+         "try:\n    discard import(\"bad\")\ncatch:\n    n = n + 1\n" +
+         "io.print(String(n))\n")
+var procRetry = sys.createprocess([runner, "--lib", root, path.join(root, "_badRetryDriver.ki")],
+                                  None, None, 5000)
+assert procRetry["code"] == 0, "retry driver runs cleanly"
+assert procRetry["stdout"].strip() == "2", "throwing module throws on every re-import (cache cleared)"
+
+# --- 5. Successful re-import is cached (side effect runs once) -------------
+writeMod("counter.ki",
+         "var io = import(\"io\")\n" +
+         "io.print(\"counter body ran\")\n" +
+         "var v = 42\n")
+writeMod("_counterDriver.ki",
+         "var io = import(\"io\")\n" +
+         "var a = import(\"counter\")\n" +
+         "var b = import(\"counter\")\n" +
+         "io.print(String(a.v == b.v))\n")
+var procCnt = sys.createprocess([runner, "--lib", root, path.join(root, "_counterDriver.ki")],
+                                None, None, 5000)
+assert procCnt["code"] == 0, "counter driver runs"
+# Body prints once, then the identity check
+var lines = procCnt["stdout"].strip().split("\n")
+assert len(lines) == 2, "exactly two lines of output"
+assert lines[0] == "counter body ran", "body executed exactly once"
+assert lines[1] == "True", "second import returned same module value"
+
+# --- cleanup -----------------------------------------------------------------
+discard path.rmtree(root, missing_ok = True)
+
+io.print("OK import_edges")

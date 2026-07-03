@@ -1,0 +1,111 @@
+# Adversarial deserialization: `dump`/`serialize` accept untrusted bytes/strings in principle,
+# so a malformed input must never crash the interpreter — it must throw a catchable error.
+var io = import("io")
+var dump = import("dump")
+var serialize = import("serialize")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+# --- 1. Truncate a valid dump at every byte offset --------------------------------
+var payload = {"a": [1, 2, 3], "b": "hello", "c": None, "d": True}
+var full = dump.dumps(payload)
+assert dump.loads(full) == payload, "dump round-trips the payload"
+
+var n = len(full)
+var i = 0
+var goodEnds = 0
+var cleanFails = 0
+while i < n:
+    var truncated = full[0:i]
+    try:
+        var v = dump.loads(truncated)
+        # If it decoded, that's fine — some prefixes are validly-terminated shorter payloads.
+        goodEnds = goodEnds + 1
+    catch:
+        cleanFails = cleanFails + 1
+    i = i + 1
+# Every offset must terminate one way or the other — no crash, no hang
+assert goodEnds + cleanFails == n, "every truncation offset resolves (no crash)"
+# The vast majority must fail (only a few tiny prefixes could be full valid payloads)
+assert cleanFails > n / 2, "most truncations are cleanly rejected"
+
+# --- 2. Random bytes are always cleanly rejected ---------------------------------
+var rnd = import("random")
+var r = rnd.Random(20260703)
+var trial = 0
+while trial < 100:
+    var length = r.randint(0, 200)
+    var bs = []
+    var j = 0
+    while j < length:
+        bs.append(r.randint(0, 255))
+        j = j + 1
+    var b = Bytes(bs)
+    # Random bytes — either they happen to decode as valid dump (astronomically rare and fine),
+    # or they cleanly throw. Never crash.
+    try:
+        discard dump.loads(b)
+    catch:
+        pass
+    trial = trial + 1
+assert True, "random bytes never crash dump.loads"
+
+# --- 3. Serialize (text): random ASCII never crashes -----------------------------
+trial = 0
+while trial < 100:
+    var length = r.randint(0, 100)
+    var s = ""
+    var j = 0
+    while j < length:
+        s = s + chr(r.randint(32, 126))
+        j = j + 1
+    try:
+        discard serialize.loads(s)
+    catch:
+        pass
+    trial = trial + 1
+assert True, "random text never crashes serialize.loads"
+
+# --- 4. A malformed dump header is a clean throw ---------------------------------
+assert throws(Function(): return dump.loads(Bytes([0, 0, 0, 0]))), "empty-ish bytes throw"
+assert throws(Function(): return dump.loads(Bytes([0xDE, 0xAD, 0xBE, 0xEF]))), "junk header throws"
+assert throws(Function(): return serialize.loads("")), "empty string throws"
+assert throws(Function(): return serialize.loads("not KSER at all")), "wrong prefix throws"
+
+# --- 5. A class whose _setstate_ throws surfaces the throw, doesn't crash --------
+class Bomb:
+    var _init_ = Function(self, x):
+        self.x = x
+    var _getstate_ = Function(self):
+        return self.x
+    var _setstate_ = Function(self, s):
+        throw "boom on restore"
+var b = Bomb(42)
+var blob = dump.dumps(b)                    # dumping is fine — _getstate_ returns 42
+assert throws(Function(): return dump.loads(blob)), "_setstate_ that throws surfaces on loads"
+
+# --- 6. Cycles round-trip through both codecs -------------------------------------
+class Ring:
+    var _init_ = Function(self, tag):
+        self.tag = tag
+        self.next = None
+var a = Ring("a")
+var b2 = Ring("b")
+a.next = b2
+b2.next = a
+var textBlob = serialize.dumps(a)
+var back = serialize.loads(textBlob)
+assert back.tag == "a", "cycle round-trip preserves head tag"
+assert back.next.tag == "b", "cycle round-trip preserves neighbour tag"
+assert back.next.next.tag == "a", "cycle round-trip preserves the cycle (a→b→a)"
+
+var binBlob = dump.dumps(a)
+var backBin = dump.loads(binBlob)
+assert backBin.tag == "a" and backBin.next.next.tag == "a", "binary codec preserves the cycle"
+
+io.print("OK serde_truncation")

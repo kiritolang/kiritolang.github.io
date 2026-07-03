@@ -110,6 +110,12 @@ jobs:
       - name: test_big_projects.sh (every big_projects/*/test_*.ki against the shipped linux binary)
         run: bash tools/scripts/test_big_projects.sh --ki "$PWD/dist/ki-linux-x64"
 
+      - name: test_docs_examples.py (every fenced ```kirito block in docs/pages/*.md)
+        run: python3 tools/scripts/test_docs_examples.py --ki "$PWD/dist/ki-linux-x64"
+
+      - name: bytecode_stability.sh (golden .ki corpus round-trips against the shipped binary)
+        run: bash tools/scripts/bytecode_stability.sh --ki "$PWD/dist/ki-linux-x64"
+
       - name: Upload release binaries
         if: always()
         uses: actions/upload-artifact@v4

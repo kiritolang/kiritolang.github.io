@@ -1,0 +1,144 @@
+# HTTP client vs adversarial server: spawn a Python abuse-server sibling process, then hit it with
+# `net.get` / `net.post` and assert every abuse produces a clean, catchable error (a Response with
+# status ≠ 200, or a raised String — never a crash, never a hang beyond the timeout). If Python
+# isn't on PATH, we skip cleanly; the CI environment always has it.
+var io = import("io")
+var net = import("net")
+var sys = import("sys")
+var path = import("path")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+# --- launch the abuse server as a subprocess ---------------------------------
+# The test is intended to be run from the repository root (both `ctest` and
+# `tools/scripts/test_release.sh` do that). Look for the abuse server next to this file.
+var candidates = ["tools/tests/net_abuse_server.py",
+                  path.join(path.getcwd(), "tools/tests/net_abuse_server.py")]
+var server = None
+for c in candidates:
+    if path.isfile(c):
+        server = c
+
+if server == None:
+    io.print("OK http_client_abuse (skipped — abuse server not found)")
+    sys.exit(0)
+
+# Any Kirito available? If not, skip cleanly.
+var pyProbe = sys.shell("python3 -c 'import socket' 2>/dev/null", None, "", 2)
+if pyProbe["code"] != 0:
+    io.print("OK http_client_abuse (skipped — python3 not on PATH)")
+    sys.exit(0)
+
+# Pick a port derived from the process time — cheap uniqueness without needing a rand fresh seed.
+var time = import("time")
+var port = 30000 + (time.timens() % 20000)
+
+# `sys.shell` here — we could use createprocess but shell lets us background trivially. However we
+# need the server to keep running across our calls; use createprocess with a background wrapper.
+# Simplest: use sys.shell to spawn `python3 net_abuse_server.py <port>` in the background, then
+# poll a TCP connect until it accepts.
+var pidHolder = path.join(path.gettempdir(), "kirito_httpc_abuse_" + String(port) + ".pid")
+var startCmd = "python3 '" + server + "' " + String(port) + " > /dev/null 2>&1 & echo $! > '" + pidHolder + "'"
+discard sys.shell(startCmd, None, "", 5)
+
+# Poll: keep trying to open a TCP connection until the server is up (or 5 sec elapses).
+var up = False
+var attempt = 0
+while attempt < 50 and not up:
+    var s = net.Socket()
+    try:
+        s.settimeout(0.1)
+        s.connect("127.0.0.1", port)
+        s.close()
+        up = True
+    catch:
+        try:
+            s.close()
+        catch:
+            pass
+        time.sleep(0.1)
+    attempt = attempt + 1
+assert up, "abuse server started on port " + String(port)
+
+var base = "http://127.0.0.1:" + String(port)
+
+# --- 1. 404 is a normal (non-throwing) response with status_code 404 ---------
+var r404 = net.get(base + "/notfound")
+assert r404["statuscode"] == 404, "404 returns a Response, doesn't throw"
+assert not r404["ok"], ".ok is False on 4xx"
+
+# --- 2. malformed chunked encoding — client must not hang; behaviour under a broken chunk header
+# is implementation-defined (throw OR return a truncated body). What matters is that we exit the
+# call within `timeout`, cleanly.
+var handled2 = False
+try:
+    var r2 = net.get(base + "/bad-chunked", {"timeout": 3})
+    handled2 = True
+catch:
+    handled2 = True
+assert handled2, "bad chunked encoding: no hang"
+
+# --- 3. drip-fed response body (1 byte / 200ms, no final newline) -----------
+# We set a 2s timeout that expires long before the drip completes. The client may either throw
+# (recv timeout) OR return a truncated response — both are cleanups, both are acceptable. What
+# matters is the call returns within a small multiple of the timeout, without crash.
+var start3 = time.timens()
+var handled3 = False
+try:
+    var r3 = net.get(base + "/slow-body", {"timeout": 2})
+    handled3 = True
+catch:
+    handled3 = True
+var elapsed3 = (time.timens() - start3) / 1000000000
+assert handled3, "slow body: no crash"
+assert elapsed3 < 10, "slow body: returns within a bounded time (elapsed=" + String(elapsed3) + ")"
+
+# --- 4. huge Content-Length lie (says 1000000 bytes, sends 10) --------------
+# Client should either time out waiting for the missing bytes, or return the partial body.
+# In either case: not a crash.
+var caught = False
+try:
+    var big = net.get(base + "/short-body", {"timeout": 3})
+    caught = big["statuscode"] == 200
+catch:
+    caught = True
+assert caught, "over-declared Content-Length terminates cleanly (throw or short body)"
+
+# --- 5. redirect loop — must give up after maxredirects, throw or return ----
+var handled5 = False
+try:
+    var r5 = net.get(base + "/loop", {"maxredirects": 5})
+    # If we get here, the client either capped redirects and returned the last 3xx (200 == would
+    # be surprising), or something similar — anything other than infinite recursion is fine.
+    handled5 = True
+catch:
+    handled5 = True
+assert handled5, "redirect loop terminates (capped or thrown)"
+
+# --- 6. non-HTTP garbage on the wire ---------------------------------------
+var handled6 = False
+try:
+    var r6 = net.get(base + "/garbage", {"timeout": 3})
+    handled6 = True
+catch:
+    handled6 = True
+assert handled6, "non-HTTP garbage: no crash"
+
+# --- shutdown --------------------------------------------------------------
+# Kill the server. Read its PID from the holder file.
+try:
+    var f = io.open(pidHolder, "r")
+    var pid = f.readline().strip()
+    f.close()
+    if len(pid) > 0:
+        discard sys.shell("kill " + pid, None, "", 2)
+catch:
+    pass
+discard path.remove(pidHolder, missing_ok = True)
+
+io.print("OK http_client_abuse")

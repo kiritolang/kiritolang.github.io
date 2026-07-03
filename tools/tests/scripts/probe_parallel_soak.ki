@@ -1,0 +1,71 @@
+# Concurrency soak test: N producers push M items each onto a shared Queue while K consumers pop
+# them. At the end the total popped must equal N*M, and every unique item must appear exactly
+# once. Runs under tsan in CI. The point isn't "does it work once" — it's "does the dispatcher
+# stay healthy under a few-second burst of contention".
+#
+# Worker functions must be defined at module level (`spawn` re-reads the file), and the driver
+# guards with `if argmain:` so re-loading in a worker VM doesn't re-run it.
+var io = import("io")
+var parallel = import("parallel")
+
+var soakProducer = Function(qq, base, count):
+    var i = 0
+    while i < count:
+        qq.put([base, i])
+        i = i + 1
+    return count
+
+var soakConsumer = Function(qq, budget):
+    var collected = []
+    var i = 0
+    while i < budget:
+        var v = qq.get()
+        if v == None:
+            return collected
+        collected.append(v)
+        i = i + 1
+    return collected
+
+if argmain:
+    var N_PRODUCERS = 3
+    var M_ITEMS = 100
+    var N_CONSUMERS = 2
+
+    var q = parallel.Queue()
+
+    var producerTasks = []
+    var p = 0
+    while p < N_PRODUCERS:
+        producerTasks.append(parallel.spawn(soakProducer, q, p, M_ITEMS))
+        p = p + 1
+
+    var perConsumer = (N_PRODUCERS * M_ITEMS) // N_CONSUMERS
+    var remainder = (N_PRODUCERS * M_ITEMS) % N_CONSUMERS
+    var consumerTasks = []
+    var c = 0
+    while c < N_CONSUMERS:
+        var budget = perConsumer
+        if c < remainder:
+            budget = budget + 1
+        consumerTasks.append(parallel.spawn(soakConsumer, q, budget))
+        c = c + 1
+
+    for t in producerTasks:
+        discard t.join()
+    var received = []
+    for t in consumerTasks:
+        var portion = t.join()
+        for item in portion:
+            received.append(item)
+
+    var totalExpected = N_PRODUCERS * M_ITEMS
+    assert len(received) == totalExpected, "received count == total sent"
+
+    var seen = Set()
+    for pair in received:
+        var key = String(pair[0]) + ":" + String(pair[1])
+        assert key not in seen, "no duplicates: " + key
+        seen.add(key)
+    assert len(seen) == totalExpected, "every unique (producer, index) pair present"
+
+    io.print("OK parallel_soak")

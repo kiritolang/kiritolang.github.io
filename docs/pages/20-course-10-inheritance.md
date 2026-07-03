@@ -40,6 +40,7 @@ Notice `describe` is defined only on `Shape`, yet `c.describe()` works and calls
 A subclass instance satisfies a base-class type annotation (Lesson 7), so functions written against
 the base accept any subclass:
 
+<!--norun (continues the Shape / Circle definition earlier on this page)-->
 ```kirito
 var io = import("io")
 

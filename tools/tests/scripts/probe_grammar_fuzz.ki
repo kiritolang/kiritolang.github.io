@@ -1,0 +1,90 @@
+# Grammar-aware fuzzer: generate SYNTACTICALLY VALID Kirito programs and run them through a
+# subprocess `ki`, asserting no crash. Byte-fuzzing the parser is what fuzz_eval.cpp already does;
+# this fuzzer's job is to reach semantic bugs — scope, closure, iterator invalidation, dispatch —
+# that a random-bytes fuzzer will never hit because it rarely produces a well-formed program.
+var io = import("io")
+var rnd = import("random")
+var sys = import("sys")
+var path = import("path")
+
+var r = rnd.Random(20260703)
+var runner = path.executable
+
+# Small library of "safe expressions" that always evaluate to a value without crashing. The fuzzer
+# assembles them; the choice space is deliberately small so every combination is enumerated many
+# times over 100 rounds and interesting interactions surface.
+var scalars = ["0", "1", "-1", "42", "3.14", "\"x\"", "\"\"", "True", "False", "None"]
+var builtins = ["len", "type", "id", "abs", "String", "Integer"]
+var binops = ["+", "-", "*", "//", "%"]        # `/` yields Float which is fine but noisy
+var cmpops = ["==", "!=", "<", "<=", ">", ">="]
+
+var pick = Function(lst):
+    return lst[r.randint(0, len(lst) - 1)]
+
+var mkExpr = Function(depth):
+    if depth <= 0:
+        return pick(scalars)
+    var kind = r.randint(0, 4)
+    if kind == 0:
+        return pick(scalars)
+    if kind == 1:
+        # binop over two Integer scalars — avoid string arithmetic
+        var a = String(r.randint(-20, 20))
+        var b = String(r.randint(1, 20))          # non-zero to dodge div-by-zero
+        return "(" + a + " " + pick(binops) + " " + b + ")"
+    if kind == 2:
+        # comparison (safe subset — same-type)
+        var a = String(r.randint(-20, 20))
+        var b = String(r.randint(-20, 20))
+        return "(" + a + " " + pick(cmpops) + " " + b + ")"
+    if kind == 3:
+        # builtin(scalar)
+        var fn = pick(builtins)
+        return fn + "(" + pick(scalars) + ")"
+    # conditional expression
+    return "(" + pick(scalars) + " if " + String(r.randint(0, 1) == 1) + " else " + pick(scalars) + ")"
+
+# Statement generators — deliberate coverage of scope, closure, mutation.
+var mkStmt = Function():
+    var kind = r.randint(0, 5)
+    if kind == 0:
+        return "var x = " + mkExpr(2) + "\n"
+    if kind == 1:
+        return "var xs = " + mkExpr(2) + "\ndiscard xs\n"
+    if kind == 2:
+        return "if " + mkExpr(2) + ":\n    var y = " + mkExpr(2) + "\n"
+    if kind == 3:
+        return "for i in [1, 2, 3]:\n    discard i\n"
+    if kind == 4:
+        return "var f = Function(x): return " + mkExpr(1) + "\ndiscard f(1)\n"
+    return "try:\n    discard " + mkExpr(2) + "\ncatch:\n    pass\n"
+
+# Wrap generated statements in a module and run it. Assert the process exits cleanly (any exit,
+# including a controlled throw) — the only unacceptable outcome is a crash or a hang.
+var tmpFile = path.join(path.gettempdir(), "kirito_gfuzz.ki")
+var crashes = 0
+var runs = 100
+var i = 0
+while i < runs:
+    var src = "var io = import(\"io\")\n"
+    var lines = r.randint(1, 8)
+    var j = 0
+    while j < lines:
+        src = src + mkStmt()
+        j = j + 1
+    var f = io.open(tmpFile, "w")
+    f.write(src)
+    f.close()
+    var p = sys.createprocess([runner, tmpFile], None, None, 5000)
+    # A signal-terminated exit (negative code, or > 128 on POSIX shells) would indicate a crash.
+    # A clean exit (0 or a raised-and-uncaught error → non-zero, non-signal) is fine.
+    if p["code"] < 0 or p["code"] >= 128:
+        io.eprint("crash on run " + String(i) + " (exit " + String(p["code"]) + "):")
+        io.eprint(src)
+        crashes = crashes + 1
+    i = i + 1
+
+assert crashes == 0, "no crashes across " + String(runs) + " grammar-fuzz rounds"
+
+discard path.remove(tmpFile, missing_ok = True)
+io.print("OK grammar_fuzz")

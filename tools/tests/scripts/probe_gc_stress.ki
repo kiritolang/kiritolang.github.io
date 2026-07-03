@@ -1,0 +1,152 @@
+# GC stress patterns: exercise reference cycles, mutation-during-iteration, and death-mid-throw
+# scenarios that ordinary usage never hits but a mark-sweep collector has to survive without
+# leaking or crashing. AddressSanitizer + the golden output together assert both memory-clean and
+# semantics-correct.
+var io = import("io")
+
+# --- 1. Cycle through every container kind × user-class instance --------------------
+class Node:
+    var _init_ = Function(self, tag):
+        self.tag = tag
+        self.peers = []                     # holds references to other Nodes
+
+var makeCycle = Function(kind):
+    # Build a 3-node cycle where the links live inside a container of the given kind.
+    var a = Node("a")
+    var b = Node("b")
+    var c = Node("c")
+    if kind == "list":
+        a.peers = [b]
+        b.peers = [c]
+        c.peers = [a]
+    elif kind == "dict":
+        a.peers = {"next": b}
+        b.peers = {"next": c}
+        c.peers = {"next": a}
+    return a
+
+# Build 200 cycles of every kind and let them die at once
+var kinds = ["list", "dict"]
+var stash = []
+for kind in kinds:
+    var i = 0
+    while i < 200:
+        stash.append(makeCycle(kind))
+        i = i + 1
+stash = []                                   # every cycle now unreachable
+
+# --- 2. A cycle whose _str_ method walks the cycle — must terminate ----------------
+class SelfPrinter:
+    var _init_ = Function(self, tag):
+        self.tag = tag
+        self.next = None
+    var _str_ = Function(self):
+        # Deliberately do NOT follow .next — recursion would blow the stack. This just asserts
+        # that a class in a cycle can still stringify without visiting the cycle.
+        return "SelfPrinter(" + self.tag + ")"
+
+var sp1 = SelfPrinter("x")
+var sp2 = SelfPrinter("y")
+sp1.next = sp2
+sp2.next = sp1
+assert String(sp1) == "SelfPrinter(x)", "cycle member stringifies"
+assert String(sp2) == "SelfPrinter(y)", "cycle member (other side) stringifies"
+
+# --- 3. Mutation during iteration snapshots — for every container -----------------
+# Kirito documents `for` as snapshotting the iterable at loop start, so mutation is safe.
+var d = {}
+d["a"] = 1
+d["b"] = 2
+d["c"] = 3
+var seenKeys = Set()
+for k in d:
+    seenKeys.add(k)
+    d[k + "!"] = 0                          # add key mid-loop — must not affect this pass
+assert len(seenKeys) == 3, "for over Dict sees only the snapshot keys"
+assert seenKeys == {"a", "b", "c"}, "for over Dict yields exactly the pre-loop keys"
+
+var xs = [1, 2, 3, 4, 5]
+var iterated = []
+for x in xs:
+    iterated.append(x)
+    xs.append(99)                            # append mid-loop — no infinite loop
+assert iterated == [1, 2, 3, 4, 5], "for over List sees only the snapshot"
+
+var s = {10, 20, 30}
+var seenS = 0
+for x in s:
+    seenS = seenS + 1
+    s.add(x + 1000)                          # mutate mid-loop
+assert seenS == 3, "for over Set sees only the snapshot"
+
+# --- 4. try / throw drops a giant graph — no crash on unwind -----------------------
+class Payload:
+    var _init_ = Function(self, n):
+        self.data = []
+        var i = 0
+        while i < n:
+            self.data.append([i, i * 2, i * 3])
+            i = i + 1
+        self.child = None
+
+var throwsAndDrops = Function() -> Bool:
+    try:
+        var root = Payload(300)
+        # build a deep chain
+        var cur = root
+        var i = 0
+        while i < 50:
+            var nxt = Payload(50)
+            cur.child = nxt
+            cur = nxt
+            i = i + 1
+        # now throw with the whole graph on the operand stack — unwinding should collect cleanly
+        throw "bail"
+    catch as e:
+        return e == "bail"
+
+var iter = 0
+while iter < 20:
+    assert throwsAndDrops(), "throw drops the graph without crashing"
+    iter = iter + 1
+
+# --- 5. Object identity survives passing through Sets/Dicts (roots correctness) ---
+class Widget:
+    var _init_ = Function(self, tag):
+        self.tag = tag
+
+var w = Widget("original")
+var indirection = {"holder": [w, w, w]}
+# force some allocation churn — collector should not evict `w`
+var noise = []
+var k = 0
+while k < 1000:
+    noise.append(Widget("noise" + String(k)))
+    k = k + 1
+noise = []
+# `w` must still be reachable via `indirection` and equal (by identity) to the retrieved value
+assert indirection["holder"][0].tag == "original", "reachable object survived collection under churn"
+
+# --- 6. Bound method + cycle: a method that closes over `self` --------------------
+class Ticker:
+    var _init_ = Function(self):
+        self.count = 0
+        self.callbacks = []
+    var register = Function(self, cb):
+        self.callbacks.append(cb)
+    var tick = Function(self):
+        self.count = self.count + 1
+        for cb in self.callbacks:
+            cb()
+
+var t = Ticker()
+# a callback that captures `t` — introduces a t → callbacks → closure → t cycle
+var bump = Function():
+    t.count = t.count + 10
+t.register(bump)
+t.tick()
+assert t.count == 11, "bound-method cycle works: 1 from tick + 10 from bump"
+# let the cycle die
+t = Ticker()
+
+io.print("OK gc_stress")
