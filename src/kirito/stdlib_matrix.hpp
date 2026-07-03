@@ -200,14 +200,14 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
             std::vector<Handle>{self}));
     }
     if (name == "get") return bind("get", {"row", "col"}, [self, self_m, idx](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 2, "get");
+        Args(vm, a, "get").require(2);
         auto& m = self_m(vm, self);
         std::size_t r = idx(vm, a[0]), c = idx(vm, a[1]);
         if (r >= m.rows() || c >= m.cols()) throw KiritoError("Matrix index out of range");
         return vm.makeFloat(m.at(r, c));
     });
     if (name == "set") return bind("set", {"row", "col", "value"}, [self, self_m, idx](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 3, "set");
+        Args(vm, a, "set").require(3);
         auto& m = self_m(vm, self);
         std::size_t r = idx(vm, a[0]), c = idx(vm, a[1]);
         if (r >= m.rows() || c >= m.cols()) throw KiritoError("Matrix index out of range");
@@ -235,7 +235,7 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return vm.makeFloat(tensor::trace(m.t));
     });
     if (name == "apply") return bind("apply", {"fn"}, [self, self_m](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 1, "apply");
+        Args(vm, a, "apply").require(1);
         Handle fn = a[0];
         auto& m = self_m(vm, self);
         auto out = mat::make(m.rows(), m.cols());
@@ -246,7 +246,7 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return vm.alloc(std::move(out));
     });
     if (name == "row") return bind("row", {"i"}, [self, self_m, idx](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 1, "row");
+        Args(vm, a, "row").require(1);
         auto& m = self_m(vm, self);
         std::size_t r = idx(vm, a[0]);
         if (r >= m.rows()) throw KiritoError("row index out of range");
@@ -257,7 +257,7 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     });
     // --- vector operations (a Matrix with one dimension == 1 is a vector) ---
     if (name == "dot") return bind("dot", {"other"}, [self, self_m](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 1, "dot");
+        Args(vm, a, "dot").require(1);
         auto& m = self_m(vm, self);
         const auto* o = dynamic_cast<const MatrixVal*>(&vm.arena().deref(a[0]));
         if (!o) throw KiritoError("dot expects a Matrix vector");
@@ -268,7 +268,7 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return vm.makeFloat(acc);
     });
     if (name == "cross") return bind("cross", {"other"}, [self, self_m](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 1, "cross");
+        Args(vm, a, "cross").require(1);
         auto& m = self_m(vm, self);
         const auto* o = dynamic_cast<const MatrixVal*>(&vm.arena().deref(a[0]));
         if (!o) throw KiritoError("cross expects a Matrix vector");
@@ -298,7 +298,7 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return st.handle();
     });
     if (name == "_setstate_") return bind("_setstate_", {"state"}, [self, self_m](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        requireArgs(a, 1, "_setstate_");
+        Args(vm, a, "_setstate_").require(1);
         auto& m = self_m(vm, self);
         auto items = Value(vm, a[0]).items();
         if (items.size() < 3) throw KiritoError("Matrix _setstate_: malformed state");

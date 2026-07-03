@@ -74,8 +74,8 @@ public:
         if (netcompat::isValid(fd) && !closed) { netcompat::closeSocket(fd); closed = true; }
     }
 
-    static int64_t asInt(KiritoVM& vm, Handle h) { return argInt(vm, h, "argument"); }
-    static const std::string& asStr(KiritoVM& vm, Handle h) { return argString(vm, h, "argument"); }
+    static int64_t asInt(KiritoVM& vm, Handle h) { return Value(vm, h).asInt("argument"); }
+    static const std::string& asStr(KiritoVM& vm, Handle h) { return Value(vm, h).asStringRef("argument"); }
 
     Handle getAttr(KiritoVM& vm, Handle self, std::string_view name) override;
 };
@@ -1002,7 +1002,7 @@ inline Handle ResponseVal::getAttr(KiritoVM& vm, Handle self, std::string_view n
         return bind("header", {"name", "default"}, [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             auto& r = static_cast<ResponseVal&>(vm.arena().deref(self));
             if (a.empty()) throw KiritoError("header() expected at least 1 argument (the header name)");
-            std::string want = net::asciiLower(argString(vm, a[0], "header"));
+            std::string want = net::asciiLower(Value(vm, a[0]).asStringRef("header"));
             const DictVal& hd = static_cast<const DictVal&>(vm.arena().deref(r.headersH));
             for (Handle k : hd.keys())
                 if (net::asciiLower(static_cast<const StrVal&>(vm.arena().deref(k)).value()) == want)
