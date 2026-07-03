@@ -233,17 +233,26 @@ ok(EQonly(1) != EQonly(2) and not (EQonly(1) != EQonly(1)), "_ne_ defaults to no
 class NOT:
     var _not_ = Function(self): return 99
 ok((not NOT()) == 99 and type(not NOT()) == "Integer", "not <instance> returns the raw _not_ value")
-# Instances are ALWAYS truthy — there is no _bool_, and _len_ does NOT drive truthiness.
+# _len_ does NOT drive truthiness — a class opts into custom truthiness via `_bool_` instead. A
+# class without `_bool_` remains always truthy (the additive-safe default).
 class LenZero:
     var _len_ = Function(self): return 0
-class HasBool:
-    var _bool_ = Function(self): return False
+class NoBool:
+    var _init_ = Function(self):
+        self.n = 0
+class BoolFalsy:
+    var _bool_ = Function(self) -> Bool: return False
 ok(Bool(LenZero()) == True, "_len_ == 0 does NOT make an instance falsy")
-ok(Bool(HasBool()) == True, "there is no _bool_ dunder (instance stays truthy)")
+ok(Bool(NoBool()) == True, "a class without _bool_ is always truthy (opt-in)")
+ok(Bool(BoolFalsy()) == False, "_bool_ returning False makes the instance falsy")
 var truthyHit = False
 if LenZero():
     truthyHit = True
-ok(truthyHit, "an instance is truthy in an `if`")
+ok(truthyHit, "an instance without _bool_ is truthy in an `if`")
+var boolFalsyHit = False
+if BoolFalsy():
+    boolFalsyHit = True
+ok(not boolFalsyHit, "_bool_ False routes to the else branch in `if`")
 # _len_ must return an Integer.
 class BadLen:
     var _len_ = Function(self): return 2.5
