@@ -73,14 +73,14 @@ static kirito::Handle randomValue(kirito::KiritoVM& vm, std::mt19937& rng, int d
         case 5: {
             kirito::List b(vm);
             int len = static_cast<int>(rng() % 4);
-            for (int i = 0; i < len; ++i) b.add(randomValue(vm, rng, depth - 1));
-            return b.build();
+            for (int i = 0; i < len; ++i) b.push(randomValue(vm, rng, depth - 1));
+            return b;
         }
         default: {
             kirito::Dict b(vm);
             int len = static_cast<int>(rng() % 4);
             for (int i = 0; i < len; ++i) b.set("k" + std::to_string(i), randomValue(vm, rng, depth - 1));
-            return b.build();
+            return b;
         }
     }
 }

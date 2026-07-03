@@ -20,38 +20,38 @@ int main() {
     CHECK(Value(vm, 5).truthy() == true);
     CHECK(Value::None(vm).truthy() == false);
     CHECK(Value(vm, std::string("")).truthy() == false);
-    CHECK(List(vm).add(1).add(2).build().str() == "[1, 2]");
+    CHECK(List(vm, {1, 2}).str() == "[1, 2]");
     CHECK(Value(vm, 42).str() == "42");
 
     // ---- items() over every iterable kind ----
-    CHECK(List(vm).add(1).add(2).add(3).build().items().size() == 3);
+    CHECK(List(vm, {1, 2, 3}).items().size() == 3);
     {
         std::vector<Value> chars = Value(vm, std::string("aéz")).items();  // String -> code points
         CHECK(chars.size() == 3 && chars[1].asStringRef() == "é");
     }
-    CHECK(Set(vm).add(1).add(2).build().items().size() == 2);            // Set -> elements
+    CHECK(Set(vm, {1, 2}).items().size() == 2);            // Set -> elements
     {
-        std::vector<Value> keys = Dict(vm).set("a", Value(vm, 1)).set("b", Value(vm, 2)).build().items();
+        std::vector<Value> keys = Dict(vm, {{"a", 1}, {"b", 2}}).items();
         CHECK(keys.size() == 2);                                          // Dict -> keys
     }
     CHECK_THROWS(Value(vm, 5).items());                                     // Integer is not iterable
 
     // ---- pairs() over a Dict ----
     {
-        auto ps = Dict(vm).set("k", Value(vm, 9)).build().pairs();
+        auto ps = Dict(vm, {{"k", 9}}).pairs();
         CHECK(ps.size() == 1 && ps[0].first.asStringRef() == "k" && ps[0].second.asInt() == 9);
     }
 
     // ---- at() on a list, negative + out of range ----
     {
-        Value xs = List(vm).add(10).add(20).add(30).build();
+        Value xs = List(vm, {10, 20, 30});
         CHECK(xs.at(0).asInt() == 10);
         CHECK(xs.at(-1).asInt() == 30);          // negatives count from the end
         CHECK_THROWS(xs.at(99));                  // out of range throws
     }
 
     // ---- len() success + error path ----
-    CHECK(List(vm).add(1).add(2).build().len() == 2);
+    CHECK(List(vm, {1, 2}).len() == 2);
     CHECK(Value(vm, std::string("héllo")).len() == 5);
     CHECK_THROWS(Value(vm, 5).len());               // Integer has no length
 
@@ -64,7 +64,7 @@ int main() {
 
     // ---- has / get on a Dict + error on a non-Dict ----
     {
-        Value d = Dict(vm).set("name", Value(vm, std::string("Ada"))).build();
+        Value d = Dict(vm, {{"name", std::string("Ada")}});
         CHECK(d.has("name") == true && d.has("missing") == false);
         CHECK(d.get("name").asStringRef() == "Ada");
         CHECK(d.get("missing", Value(vm, 0)).asInt() == 0);   // default for an absent key

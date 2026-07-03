@@ -1,6 +1,6 @@
 // The ergonomic C++ value API (value.hpp): reading Kirito values via the `Value` facade and `Args`,
-// and building them with the List/Dict/Set builders and `val(...)` — the default way to author a
-// native module against the built-in types (a new NativeClass is the fallback).
+// and building them with the List/Dict/Set constructors — the default way to author a native module
+// against the built-in types (a new NativeClass is the fallback).
 #include <string>
 
 #include "../check.hpp"
@@ -34,8 +34,8 @@ int main() {
     // asFloat accepts Integer or Float
     CHECK(Value(vm, 7).asFloat() == 7.0);
 
-    // --- List builder + reads ---
-    Value lst = List(vm).add(1).add(2).add(3).add("four").build();
+    // --- List construction + reads ---
+    Value lst = List(vm, {1, 2, 3, "four"});
     CHECK(lst.isList());
     CHECK(lst.len() == 4);
     CHECK(lst.at(0).asInt() == 1);
@@ -48,8 +48,8 @@ int main() {
     Value lst2 = List(vm, {vm.makeInt(10), vm.makeInt(20)});
     CHECK(lst2.len() == 2 && lst2.at(1).asInt() == 20);
 
-    // --- Dict builder + reads ---
-    Value d = Dict(vm).set("name", "Ada").set("age", 36).set("score", 9.5).build();
+    // --- Dict construction + reads ---
+    Value d = Dict(vm, {{"name", "Ada"}, {"age", 36}, {"score", 9.5}});
     CHECK(d.isDict());
     CHECK(d.get("name").asStringRef() == "Ada");
     CHECK(d.get("age").asInt() == 36);
@@ -60,8 +60,8 @@ int main() {
     for (const auto& [k, v] : d.pairs()) { (void)v; if (k.asStringRef() == "name" || k.asStringRef() == "age" || k.asStringRef() == "score") seen++; }
     CHECK(seen == 3);
 
-    // --- Set builder ---
-    Value s = Set(vm).add(1).add(2).add(2).add(3).build();
+    // --- Set construction ---
+    Value s = Set(vm, {1, 2, 2, 3});
     CHECK(s.isSet() && s.len() == 3);
 
     // --- Args wrapper + round-trip through a registered native function authored with the API ---
@@ -73,9 +73,9 @@ int main() {
             int64_t y = a.at(1).asInt("b");
             Value extra = a.opt(2, Value(kv, 0));
             List combined(kv);
-            for (Value e : a[3].items()) combined.add(e);
-            combined.add(extra);
-            return Dict(kv).set("sum", x + y).set("items", combined.build()).build();
+            for (Value e : a[3].items()) combined.push(e);
+            combined.push(extra);
+            return Dict(kv, {{"sum", x + y}, {"items", combined}});
         })));
 
     CHECK(vm.stringify(vm.runSource("demo(2, 3, 99, [7, 8])[\"sum\"]")) == "5");
@@ -88,11 +88,11 @@ int main() {
     }
     CHECK(argErr);
 
-    // --- GC safety: a builder roots its intermediates across allocations ---
+    // --- GC safety: a fresh List pins its own allocation across intermediate allocations ---
     vm.setGcThreshold(1);   // collect aggressively to expose any unrooted intermediate
     List big(vm);
-    for (int i = 0; i < 50; ++i) big.add(Value(vm, std::string("item") + std::to_string(i)));
-    Value bigv = big.build();
+    for (int i = 0; i < 50; ++i) big.push(Value(vm, std::string("item") + std::to_string(i)));
+    Value bigv = big;
     CHECK(bigv.len() == 50);
     CHECK(bigv.at(49).asStringRef() == "item49");   // survived GC during construction
 

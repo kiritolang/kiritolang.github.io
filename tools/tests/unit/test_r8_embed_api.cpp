@@ -4,8 +4,8 @@
 // see the header comment above each.
 //
 //   1. value.hpp facade corners: Value() default-constructed, handle()/vm() accessors, the
-//      val(int)/val(size_t) integer overloads, builder .size() growth, Args::operator[] (unchecked) vs
-//      at()/opt() bounds, and makeList(initializer_list) vs makeList(vector).
+//      Value(int)/Value(size_t) integer overloads, List .size() growth as you push, Args::operator[]
+//      (unchecked) vs at()/opt() bounds, and List(initializer_list) vs List(vector).
 //   2. WRONG-TYPE Value reads are clean, catchable KiritoErrors across EVERY accessor (asInt/asFloat/
 //      asString/asBool/len/at/items/has/get/pairs on a mismatched type) — the embedder never crashes
 //      on a bad read.
@@ -77,7 +77,7 @@ struct Vec3 : NativeClass<Vec3> {
         if (name == "_getstate_")
             return makeMethod(vm, "_getstate_", {}, [self](KiritoVM& v, std::span<const Handle>) -> Handle {
                 auto& s = static_cast<Vec3&>(v.arena().deref(self));
-                return Dict(v).set("x", s.c[0]).set("y", s.c[1]).set("z", s.c[2]).build();  // multi-field state
+                return Dict(v, {{"x", s.c[0]}, {"y", s.c[1]}, {"z", s.c[2]}});  // multi-field state
             }, std::vector<Handle>{self});
         if (name == "_setstate_")
             return makeMethod(vm, "_setstate_", {"state"}, [self](KiritoVM& v, std::span<const Handle> a) -> Handle {
@@ -140,15 +140,15 @@ int main() {
         CHECK(Value(vm, static_cast<int64_t>(8)).asInt() == 8);    // int64_t
         CHECK(Value(vm, static_cast<std::size_t>(12)).asInt() == 12);  // size_t
 
-        // builders report a growing size() before build(), and the std::vector overload also works.
+        // a List reports a growing size() as you push, and the std::vector overload also works.
         List lb(vm);
         CHECK(lb.size() == 0);
-        lb.add(1).add(2);
+        lb.push(1).push(2);
         CHECK(lb.size() == 2);
-        Value built = lb.build();
+        Value built = lb;
         CHECK(built.len() == 2);
 
-        // makeList(initializer_list) and makeList(vector) agree.
+        // List(initializer_list) and List(vector) agree.
         Value il = List(vm, {vm.makeInt(1), vm.makeInt(2), vm.makeInt(3)});
         std::vector<Handle> hs{vm.makeInt(1), vm.makeInt(2), vm.makeInt(3)};
         Value vl = List(vm, hs);
@@ -187,7 +187,7 @@ int main() {
         CHECK_THROWS(Value(vm, 5).get("k"));
         CHECK_THROWS(Value(vm, 5).pairs());
         // get on a real Dict with an absent key (no default) throws; with a default does not.
-        Value d = Dict(vm).set("a", 1).build();
+        Value d = Dict(vm, {{"a", 1}});
         CHECK_THROWS(d.get("absent"));
         CHECK(d.get("absent", Value(vm, -1)).asInt() == -1);
         // The error message is actionable (names the expected type), not a generic crash.
