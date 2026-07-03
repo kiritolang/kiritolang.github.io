@@ -65,6 +65,10 @@ var unquote = Function(s):
         if s[i] == "%":
             bytes.append(_hexVal(s[i + 1]) * 16 + _hexVal(s[i + 2]))
             i = i + 3
+        elif s[i] == "+":
+            # form-URL-encoding: '+' decodes to a space (matches native + Python urllib).
+            bytes.append(32)
+            i = i + 1
         else:
             bytes.append(ord(s[i]))
             i = i + 1

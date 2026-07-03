@@ -388,19 +388,52 @@ var crc64 = Function(data):
     lo = 4294967295 - lo
     return hi * 4294967296 + lo
 
-# hash(value) → Integer — the selfhost's parallel of the native `hash.hash(x)`. Kept simple:
-#  - Integer, Float, Bool, None, String, Bytes → the host's `id()` (which for the selfhost's
-#    scalar/string/bytes representation is deterministic and consistent with Dict/Set lookup —
-#    same value produces the same Integer, distinct values usually produce distinct Integers, and
-#    it matches what the interpreter's `_hkey` fold-into-Dict path uses).
-#  - A user-class instance that defines `_hash_` (a method returning an Integer) — dispatch to it.
-#  - Unhashable containers (List, Set, Dict, Function, Module) throw the standard
-#    `unhashable type '<name>'` message.
+# hash(value) → Integer — the selfhost's parallel of the native `hash.hash(x)`. The native
+# contract:
+#   Integer   → value itself (identity), so `hash(0)==0`, `hash(-1)==-1`, INT64_MIN/MAX stay put.
+#   Bool      → 1 / 0 (True hashes as 1, False as 0).
+#   None      → 0.
+#   Float     → deterministic; `0.0` and `-0.0` collapse (IEEE `==` says they are equal, so
+#               their hashes must agree or Dict/Set lookup would diverge).
+#   String    → FNV-1a over the UTF-8 bytes (content-based; equal-content Strings collide).
+#   Bytes     → FNV-1a over the raw bytes.
+#   Instance with `_hash_` → user method, return-type-checked (must be Integer).
+#   List/Set/Dict/Function/Module and a class without `_hash_` → `unhashable type 'X'`.
 #
 # Composability: a user's own `_hash_` can call `hash.hash(self.subfield)` to fold nested
 # attributes without knowing their type.
+var _FNV32_OFFSET = 2166136261
+var _FNV32_PRIME  = 16777619
+
+# FNV-1a 32-bit over an iterable of byte-sized Integers. Fits the selfhost's non-negative 32-bit
+# arithmetic model (`_xor` operates on unsigned 32-bit values, `_M32` = 2^32).
+var _fnv1a = Function(bytes):
+    var h = _FNV32_OFFSET
+    for b in bytes:
+        h = _xor(h, b)
+        h = (h * _FNV32_PRIME) % _M32
+    return h
+
 var hash = Function(value):
     var tn = type(value)
+    if tn == "Integer":
+        return value
+    if tn == "Bool":
+        if value:
+            return 1
+        return 0
+    if tn == "None":
+        return 0
+    if tn == "Float":
+        # 0.0 and -0.0 are IEEE-equal, so their hashes must be too. String() of a Float is a
+        # deterministic function of the value; normalising the sign of zero handles the -0.0 case.
+        if value == 0.0:
+            return 0
+        return _fnv1a(_bytesOf(String(value)))
+    if tn == "String":
+        return _fnv1a(_bytesOf(value))
+    if tn == "Bytes":
+        return _fnv1a(List(value))
     if tn == "List" or tn == "Set" or tn == "Function" or tn == "Module":
         throw "unhashable type '" + tn + "'"
     # A user-class instance opts in via `_hash_`. Try attribute access; if it exists, call and
@@ -413,4 +446,5 @@ var hash = Function(value):
     # A plain Dict (not an instance) is unhashable — but a Dict-shaped instance was handled above.
     if tn == "Dict":
         throw "unhashable type 'Dict'"
-    return id(value)
+    # A class instance without `_hash_` is deliberately unhashable (matches the native rejection).
+    throw "unhashable type '" + tn + "'"
