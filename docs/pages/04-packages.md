@@ -57,8 +57,23 @@ A package repository carries a `kirito.json` manifest **at its root**:
 |---|---|
 | `name` | The import name. Installs to `~/.kirito/packages/<name>/`, imported as `import("name")`. |
 | `version` | The package's semantic version. Recorded in `.kpm.json` and shown by `kpm list`. A constraint resolves against the repo's **git tags**, not this field — see [Versioning](#versioning). |
-| `modules` | Repo-relative `.ki` paths to fetch and install. Sub-paths (`extra/util.ki`) are recreated under the package directory. |
+| `modules` | Repo-relative `.ki` paths to fetch and install. Sub-paths (`extra/util.ki`) are recreated under the package directory. Each module's **importable name** is the path with `.ki` stripped and `/` → `.`, so `mypkg.ki` → `import("mypkg")` and `extra/util.ki` → `import("extra.util")`. See [Module-name collisions](#module-name-collisions). |
 | `dependencies` | Other packages, each an `owner/repo` optionally with an `@constraint`. Installed first (recursively); cycles and duplicates are guarded. |
+
+### Module-name collisions
+
+`kpm` computes each module's **importable name** (the path with `.ki` stripped and `/` → `.`) and
+refuses to install a package that would collide with:
+
+- **another already-installed package** — the new install writes nothing, the existing one is left
+  intact, and the error names both packages.
+- **another package in the same install run** — a dependency (or a sibling top-level spec) that
+  would install the same importable name is caught before any files land.
+- **itself** — a single manifest that lists two paths mapping to the same importable name
+  (e.g. `foo.bar.ki` and `foo/bar.ki`, both `import("foo.bar")`) is rejected.
+
+Reinstalling the same package on top of itself is not a self-collision. To swap one owner for
+another, `kpm remove <old>` first.
 
 ## Versioning
 
