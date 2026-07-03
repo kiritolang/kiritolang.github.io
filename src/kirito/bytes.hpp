@@ -355,12 +355,13 @@ inline Handle makeStringOrBytes(KiritoVM& vm, Handle templateInput, std::string 
 #  pragma GCC diagnostic pop
 #endif
 
-// Out-of-line definitions for the Bytes facade (needs BytesVal to be complete).
+// Out-of-line definitions for the Bytes facade (needs BytesVal to be complete). Fresh-alloc paths
+// go through Value::adopt() so the new BytesVal is GC-pinned.
 inline Bytes::Bytes(KiritoVM& vm, std::string_view raw) {
-    vm_ = &vm; h_ = vm.alloc(std::make_unique<BytesVal>(std::string(raw)));
+    adopt(vm, vm.alloc(std::make_unique<BytesVal>(std::string(raw))));
 }
 inline Bytes::Bytes(KiritoVM& vm, std::string raw) {
-    vm_ = &vm; h_ = vm.alloc(std::make_unique<BytesVal>(std::move(raw)));
+    adopt(vm, vm.alloc(std::make_unique<BytesVal>(std::move(raw))));
 }
 inline const std::string& Bytes::data() const {
     return static_cast<const BytesVal&>(ref()).data;

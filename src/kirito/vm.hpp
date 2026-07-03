@@ -90,6 +90,18 @@ public:
     std::size_t tempMark() const { return tempRoots_.size(); }
     void popTempTo(std::size_t mark) { tempRoots_.resize(mark); }
 
+    // Pinned roots: an out-of-order companion to tempRoots_. `pinHandle(h)` refcount-increments,
+    // `unpinHandle(h)` decrements (removing at zero), and the GC treats every pinned handle as
+    // reachable. Used by value.hpp's typed wrappers to keep freshly-allocated containers alive across
+    // subsequent allocations without pinning to LIFO order — a wrapper's h_ can outlive whichever
+    // frame allocated it (returned, stored in a Dict field, etc.).
+    void pinHandle(Handle h) { ++pinnedRoots_[h]; }
+    void unpinHandle(Handle h) {
+        auto it = pinnedRoots_.find(h);
+        if (it == pinnedRoots_.end()) return;   // no-op if not pinned (defensive)
+        if (--it->second <= 0) pinnedRoots_.erase(it);
+    }
+
     // Auxiliary root regions: the bytecode engine's operand stack lives in a C++ vector held by the
     // running BytecodeVM, not in tempRoots_. Registering that vector here (RAII, in execution order)
     // makes every operand it holds a GC root for as long as the frame is live. Nested frames each
@@ -124,6 +136,7 @@ public:
         if (arglist_.slot) enqueue(arglist_);  // the per-file `arglist`, shared by every module scope
         for (const auto& [name, h] : classRegistry_) enqueue(h);  // keep deserializable classes alive
         for (Handle h : tempRoots_) enqueue(h);
+        for (const auto& [h, cnt] : pinnedRoots_) { (void)cnt; enqueue(h); }  // C++-side pinned wrappers
         for (Handle h : bytecodeConsts_) enqueue(h);              // pinned bytecode literal pool
         for (const std::vector<Handle>* region : auxRoots_)       // live bytecode operand stacks
             for (Handle h : *region) enqueue(h);
@@ -286,6 +299,9 @@ private:
     bool replScopeReady_ = false;
     Handle arglist_{};  // the command-line arguments as a List, bound as `arglist` in every module scope
     std::vector<Handle> tempRoots_;
+    // Pinned C++-side roots — see pinHandle/unpinHandle. Refcount-map keyed by handle so the same h
+    // can be pinned by multiple wrappers (shared_ptr<Pin> copies).
+    fum::unordered_map<Handle, int> pinnedRoots_;
     // Class + deserializer registries for object-graph deserialization (serialize/dump): a class is
     // registered by name when defined, so a serialized instance can be reconstructed by looking its
     // class up here; a native type can register a reconstructor(state)->object to participate.

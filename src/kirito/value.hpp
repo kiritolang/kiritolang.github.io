@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -59,6 +60,21 @@ class Args;
 
 namespace detail {
 
+// RAII pin/unpin of an arena handle via KiritoVM::pinHandle/unpinHandle. Wrappers that ALLOCATE a
+// fresh container (`List(vm)`, `Dict(vm, {…})`, `Value(vm, "hi")`) hand one to their `pin_` member
+// so the freshly-allocated object survives any GC triggered by subsequent user code. The pin is a
+// `shared_ptr<Pin>` so a copy of the wrapper shares the same root — the last copy to destruct
+// releases the pin. Non-allocating wrappers (`Value(vm, existingHandle)`, `Dict d = arg.asDict()`)
+// leave `pin_` null: the underlying object is already rooted somewhere the GC can see.
+struct Pin {
+    KiritoVM* vm;
+    Handle h;
+    Pin(KiritoVM& v, Handle x) : vm(&v), h(x) { vm->pinHandle(x); }
+    ~Pin() { vm->unpinHandle(h); }
+    Pin(const Pin&) = delete;
+    Pin& operator=(const Pin&) = delete;
+};
+
 // A single value constructible from any C++ primitive or an existing Value/Handle. Powers the
 // `initializer_list<Anything>` overloads so `List(vm, {1, "hi", 3.14})` and
 // `Dict(vm, {{"k", 1}, {"n", "x"}})` mix types freely.
@@ -92,19 +108,22 @@ public:
     Value() = default;
     Value(KiritoVM& vm, Handle h) : vm_(&vm), h_(h) {}
 
-    // primitive constructors — replace the old free `val(vm, x)` / `none(vm)` helpers.
+    // primitive constructors — replace the old free `val(vm, x)` / `none(vm)` helpers. The
+    // small-int / Bool / None cases don't allocate (interned singletons), so they skip the pin;
+    // Integer / Float / String allocate a fresh boxed value and pin it via adopt() so a mid-
+    // expression GC can't sweep the temporary before it's stored somewhere.
     Value(KiritoVM& vm, std::nullptr_t) : vm_(&vm), h_(vm.none()) {}
     Value(KiritoVM& vm, bool b) : vm_(&vm), h_(vm.makeBool(b)) {}
-    Value(KiritoVM& vm, int v) : vm_(&vm), h_(vm.makeInt(static_cast<int64_t>(v))) {}
-    Value(KiritoVM& vm, unsigned v) : vm_(&vm), h_(vm.makeInt(static_cast<int64_t>(v))) {}
-    Value(KiritoVM& vm, long v) : vm_(&vm), h_(vm.makeInt(static_cast<int64_t>(v))) {}
-    Value(KiritoVM& vm, long long v) : vm_(&vm), h_(vm.makeInt(static_cast<int64_t>(v))) {}
-    Value(KiritoVM& vm, unsigned long v) : vm_(&vm), h_(vm.makeInt(static_cast<int64_t>(v))) {}
-    Value(KiritoVM& vm, unsigned long long v) : vm_(&vm), h_(vm.makeInt(static_cast<int64_t>(v))) {}
-    Value(KiritoVM& vm, double v) : vm_(&vm), h_(vm.makeFloat(v)) {}
-    Value(KiritoVM& vm, const char* s) : vm_(&vm), h_(vm.makeString(std::string(s))) {}
-    Value(KiritoVM& vm, std::string s) : vm_(&vm), h_(vm.makeString(std::move(s))) {}
-    Value(KiritoVM& vm, std::string_view s) : vm_(&vm), h_(vm.makeString(std::string(s))) {}
+    Value(KiritoVM& vm, int v)                { adopt(vm, vm.makeInt(static_cast<int64_t>(v))); }
+    Value(KiritoVM& vm, unsigned v)           { adopt(vm, vm.makeInt(static_cast<int64_t>(v))); }
+    Value(KiritoVM& vm, long v)               { adopt(vm, vm.makeInt(static_cast<int64_t>(v))); }
+    Value(KiritoVM& vm, long long v)          { adopt(vm, vm.makeInt(static_cast<int64_t>(v))); }
+    Value(KiritoVM& vm, unsigned long v)      { adopt(vm, vm.makeInt(static_cast<int64_t>(v))); }
+    Value(KiritoVM& vm, unsigned long long v) { adopt(vm, vm.makeInt(static_cast<int64_t>(v))); }
+    Value(KiritoVM& vm, double v)             { adopt(vm, vm.makeFloat(v)); }
+    Value(KiritoVM& vm, const char* s)        { adopt(vm, vm.makeString(std::string(s))); }
+    Value(KiritoVM& vm, std::string s)        { adopt(vm, vm.makeString(std::move(s))); }
+    Value(KiritoVM& vm, std::string_view s)   { adopt(vm, vm.makeString(std::string(s))); }
 
     // Kirito's `None` — the natural spelling. Static so it reads as a factory, not a value.
     static Value None(KiritoVM& vm) { return Value(vm, vm.none()); }
@@ -262,8 +281,17 @@ protected:
     void requireBound() const {
         if (!vm_) throw KiritoError("uninitialised Value (no VM)");
     }
+    // Adopt an allocation: store its handle AND pin it so a subsequent GC can't sweep it before the
+    // user finishes building. Used by every fresh-alloc constructor (List(vm, {…}), Dict(vm, {…}),
+    // Value(vm, "hi"), …). Copies of the wrapper share the pin via shared_ptr.
+    void adopt(KiritoVM& vm, Handle fresh) {
+        vm_ = &vm;
+        h_ = fresh;
+        pin_ = std::make_shared<detail::Pin>(vm, fresh);
+    }
     KiritoVM* vm_ = nullptr;
     Handle h_{};
+    std::shared_ptr<detail::Pin> pin_;      // GC pin for fresh-alloc wrappers; null when wrapping.
 };
 
 // ================================================================================================
@@ -277,6 +305,7 @@ public:
         vm_ = &vm; h_ = h;
         if (!isBool()) typeError(who, "Bool");
     }
+    // Bool singletons don't allocate — no pin needed.
     explicit Bool(KiritoVM& vm, bool v) { vm_ = &vm; h_ = vm.makeBool(v); }
 
     bool value() const { return static_cast<const BoolVal&>(ref()).value(); }
@@ -295,13 +324,14 @@ public:
         vm_ = &vm; h_ = h;
         if (!isInt()) typeError(who, "Integer");
     }
-    // Fresh Integer from any built-in signed integral type.
-    explicit Integer(KiritoVM& vm, int v)                 { vm_ = &vm; h_ = vm.makeInt(v); }
-    explicit Integer(KiritoVM& vm, long v)                { vm_ = &vm; h_ = vm.makeInt(v); }
-    explicit Integer(KiritoVM& vm, long long v)           { vm_ = &vm; h_ = vm.makeInt(v); }
-    explicit Integer(KiritoVM& vm, unsigned v)            { vm_ = &vm; h_ = vm.makeInt(static_cast<int64_t>(v)); }
-    explicit Integer(KiritoVM& vm, unsigned long v)       { vm_ = &vm; h_ = vm.makeInt(static_cast<int64_t>(v)); }
-    explicit Integer(KiritoVM& vm, unsigned long long v)  { vm_ = &vm; h_ = vm.makeInt(static_cast<int64_t>(v)); }
+    // Fresh Integer from any built-in signed integral type — pinned in adopt() against a mid-
+    // expression GC.
+    explicit Integer(KiritoVM& vm, int v)                 { adopt(vm, vm.makeInt(v)); }
+    explicit Integer(KiritoVM& vm, long v)                { adopt(vm, vm.makeInt(v)); }
+    explicit Integer(KiritoVM& vm, long long v)           { adopt(vm, vm.makeInt(v)); }
+    explicit Integer(KiritoVM& vm, unsigned v)            { adopt(vm, vm.makeInt(static_cast<int64_t>(v))); }
+    explicit Integer(KiritoVM& vm, unsigned long v)       { adopt(vm, vm.makeInt(static_cast<int64_t>(v))); }
+    explicit Integer(KiritoVM& vm, unsigned long long v)  { adopt(vm, vm.makeInt(static_cast<int64_t>(v))); }
 
     // Raw int64.
     int64_t value() const { return static_cast<const IntVal&>(ref()).value(); }
@@ -333,8 +363,8 @@ public:
         vm_ = &vm; h_ = h;
         if (!isFloat()) typeError(who, "Float");
     }
-    explicit Float(KiritoVM& vm, double v)  { vm_ = &vm; h_ = vm.makeFloat(v); }
-    explicit Float(KiritoVM& vm, float v)   { vm_ = &vm; h_ = vm.makeFloat(static_cast<double>(v)); }
+    explicit Float(KiritoVM& vm, double v)  { adopt(vm, vm.makeFloat(v)); }
+    explicit Float(KiritoVM& vm, float v)   { adopt(vm, vm.makeFloat(static_cast<double>(v))); }
 
     double value() const { return static_cast<const FloatVal&>(ref()).value(); }
     operator double() const { return value(); }
@@ -363,15 +393,15 @@ public:
         vm_ = &vm; h_ = h;
         if (!isString()) typeError(who, "String");
     }
-    // Fresh String from raw UTF-8.
+    // Fresh String from raw UTF-8 — pinned so a later allocation can't sweep it.
     explicit String(KiritoVM& vm, std::string_view utf8) {
-        vm_ = &vm; h_ = vm.makeString(std::string(utf8));
+        adopt(vm, vm.makeString(std::string(utf8)));
     }
     explicit String(KiritoVM& vm, const char* utf8) {
-        vm_ = &vm; h_ = vm.makeString(std::string(utf8));
+        adopt(vm, vm.makeString(std::string(utf8)));
     }
     explicit String(KiritoVM& vm, std::string utf8) {
-        vm_ = &vm; h_ = vm.makeString(std::move(utf8));
+        adopt(vm, vm.makeString(std::move(utf8)));
     }
 
     // Raw UTF-8 bytes — zero-copy reference into the arena.
@@ -472,25 +502,23 @@ public:
         vm_ = &vm; h_ = h;
         if (!isList()) typeError(who, "List");
     }
-    // Fresh empty List.
+    // Fresh empty List — pinned so a later `.push(Value(vm, ...))` can't sweep us.
     explicit List(KiritoVM& vm) {
-        vm_ = &vm; h_ = vm.alloc(std::make_unique<ListVal>());
+        adopt(vm, vm.alloc(std::make_unique<ListVal>()));
     }
     // Fresh List from an initializer list of any-type items.
     List(KiritoVM& vm, std::initializer_list<detail::Anything> items) {
-        vm_ = &vm;
         RootScope roots(vm);
         auto lv = std::make_unique<ListVal>();
         lv->elems.reserve(items.size());
         for (const auto& a : items) { roots.add(a.h); lv->elems.push_back(a.h); }
-        h_ = vm.alloc(std::move(lv));
+        adopt(vm, vm.alloc(std::move(lv)));
     }
     // Fresh List from an existing vector of Handles (bulk).
     List(KiritoVM& vm, const std::vector<Handle>& handles) {
-        vm_ = &vm;
         auto lv = std::make_unique<ListVal>();
         lv->elems = handles;
-        h_ = vm.alloc(std::move(lv));
+        adopt(vm, vm.alloc(std::move(lv)));
     }
 
     std::size_t size() const { return raw().elems.size(); }
@@ -577,18 +605,17 @@ public:
         if (!isDict()) typeError(who, "Dict");
     }
     explicit Dict(KiritoVM& vm) {
-        vm_ = &vm; h_ = vm.alloc(std::make_unique<DictVal>());
+        adopt(vm, vm.alloc(std::make_unique<DictVal>()));
     }
     Dict(KiritoVM& vm, std::initializer_list<
              std::pair<detail::Anything, detail::Anything>> entries) {
-        vm_ = &vm;
         RootScope roots(vm);
         auto dv = std::make_unique<DictVal>();
         for (const auto& [k, v] : entries) {
             roots.add(k.h); roots.add(v.h);
             dv->set(vm.arena(), k.h, v.h);
         }
-        h_ = vm.alloc(std::move(dv));
+        adopt(vm, vm.alloc(std::move(dv)));
     }
 
     std::size_t size() const { return raw().count; }
@@ -711,14 +738,13 @@ public:
         if (!isSet()) typeError(who, "Set");
     }
     explicit Set(KiritoVM& vm) {
-        vm_ = &vm; h_ = vm.alloc(std::make_unique<SetVal>());
+        adopt(vm, vm.alloc(std::make_unique<SetVal>()));
     }
     Set(KiritoVM& vm, std::initializer_list<detail::Anything> items) {
-        vm_ = &vm;
         RootScope roots(vm);
         auto sv = std::make_unique<SetVal>();
         for (const auto& a : items) { roots.add(a.h); sv->add(vm.arena(), a.h); }
-        h_ = vm.alloc(std::move(sv));
+        adopt(vm, vm.alloc(std::move(sv)));
     }
 
     std::size_t size() const { return raw().count; }
