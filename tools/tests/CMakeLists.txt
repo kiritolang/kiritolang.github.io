@@ -145,6 +145,8 @@ kirito_test(test_collections_deep unit/test_collections_deep.cpp)
 kirito_test(test_numeric_deep unit/test_numeric_deep.cpp)
 kirito_test(test_serialization_deep unit/test_serialization_deep.cpp)
 kirito_test(test_random_net_deep unit/test_random_net_deep.cpp)
+kirito_test(test_tensor_deep unit/test_tensor_deep.cpp)
+kirito_test(test_cppref_deep unit/test_cppref_deep.cpp)
 kirito_test(test_modules_fuzz unit/test_modules_fuzz.cpp)
 
 # Multiprocessing (KiritoDispatcher + the `parallel` module). Every blocking scenario runs under an
