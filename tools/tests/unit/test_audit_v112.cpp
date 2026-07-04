@@ -167,5 +167,12 @@ int main() {
     // >256 MiB truncation-throws path is logic-verified (a fixture producing 256 MiB is impractical). ===
     CHECK(has(ok("import(\"sys\").shell(\"echo hello-kirito\")[\"stdout\"]"), "hello-kirito"));
 
+    // === T-GUARD (A06-8): replace/join cap their amplified output at kMaxRepeat (throw, not OOM the
+    // host). Normal use unaffected; the >256 MiB trigger is logic-verified (it would need a ~256 MiB
+    // transient). join also now roots its iterated elements (a user _str_ may allocate mid-loop). ===
+    CHECK(ok("(\"a\" * 5).replace(\"a\", \"bb\")") == "bbbbbbbbbb");
+    CHECK(ok("\",\".join([\"a\", \"b\", \"c\"])") == "a,b,c");
+    CHECK(okGc1("\",\".join(\"abcde\")") == "a,b,c,d,e");   // join over a String (fresh handles) under GC1
+
     return RUN_TESTS();
 }

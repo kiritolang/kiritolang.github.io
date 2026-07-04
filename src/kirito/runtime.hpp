@@ -55,6 +55,11 @@ namespace kirito {
 
 // kMaxRepeat (the ~256 MB repetition/padding cap) is defined in common.hpp so bytes.hpp shares it.
 
+// Forward decl (defined near installBuiltins): fully iterate `src`, rooting every element in `rs` so
+// an allocating callback/rehash mid-loop can't sweep an unconsumed element. Used by both the built-in
+// type methods (below) and the free builtins, so the rooting is single-sourced.
+inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs, const char* err);
+
 // --- numeric helpers ------------------------------------------------------------------------
 
 inline bool isNumeric(const Object& o) {
@@ -1217,6 +1222,7 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
                     if (count >= 0 && done >= count) { break; }
                     out += to;
                     ++done;
+                    if (out.size() > kMaxRepeat) throw KiritoError("replace result too large");
                 }
                 out.append(s, prev, std::string::npos);
                 s = std::move(out);
@@ -1227,6 +1233,7 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
                 while ((pos = s.find(from, prev)) != std::string::npos) {
                     out.append(s, prev, pos - prev);
                     out += to;
+                    if (out.size() > kMaxRepeat) throw KiritoError("replace result too large");
                     prev = pos + from.size();
                     if (count >= 0 && ++done >= count) break;
                 }
@@ -1309,14 +1316,15 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
     if (name == "join")
         return bindReq("join", 1, {"iterable"}, [self, recv](KiritoVM& vm, std::span<const Handle> a) {
             const std::string& sep = recv(vm, self);
-            auto items = vm.arena().deref(a[0]).iterate(vm);
-            if (!items) throw KiritoError("join expects an iterable");   // a non-iterable user instance returns nullopt, not a throw
+            RootScope rs(vm);
+            auto items = rootedIterate(vm, a[0], rs, "join expects an iterable");  // root: a user _str_ may allocate
             std::string out;
             bool first = true;
-            for (Handle h : items.value()) {
+            for (Handle h : items) {
                 if (!first) out += sep;
                 first = false;
                 out += asStr(vm, h, "join");
+                if (out.size() > kMaxRepeat) throw KiritoError("join result too large");
             }
             return vm.makeString(std::move(out));
         });
