@@ -7,6 +7,10 @@
 #                            which the net module needs).
 #   dist/ki-windows-x64.exe  mingw-w64 cross-compile + a from-source static OpenSSL — fully static,
 #                            a standalone .exe with no DLL dependencies.
+#   dist/debug-asan          native gcc, Debug + AddressSanitizer/UBSan, dynamically linked and
+#                            unstripped (-g). NOT a shippable binary — a sanitizer-instrumented
+#                            interpreter for third-party automated testing (no TLS). No tests run here.
+#   dist/debug-tsan          the same, with ThreadSanitizer (data-race + deadlock detection).
 #
 # Prerequisites (Debian/Ubuntu/WSL):
 #   sudo apt-get update
@@ -56,8 +60,28 @@ build_ki() {
     echo "built dist/$out"
 }
 
+# build_ki_san <output-name> <sanitize-spec> — a Debug, sanitizer-instrumented `ki` for third-party
+# automated testing (NOT a shippable binary): dynamically linked, unstripped (-g), no TLS, with the
+# same hardened warning set and sanitizer flags as the `asan`/`tsan` CMake presets. Only builds — the
+# .ki suites are run against it by scripts/test_release.sh.
+build_ki_san() {
+    local out="$1" san="$2"
+    local dir="$ROOT/build-$out"; rm -rf "$dir"
+    local warn="-Wall -Wextra -Wformat=2 -Wconversion -Wpointer-arith -Wpedantic -Werror -fstack-protector-all -Wreorder -Wunused -Wshadow"
+    cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+        -DCMAKE_CXX_FLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=$san -fno-sanitize-recover=all $warn" \
+        -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=$san"
+    cmake --build "$dir" --target ki
+    cp "$dir/ki" "dist/$out"
+    echo "built dist/$out"
+}
+
 # --- Linux x86_64 (host) ---
 build_ki ki-linux-x64 -DCMAKE_EXE_LINKER_FLAGS="-s"
+
+# --- Linux x86_64 sanitizer builds (Debug; NOT shipped — for third-party automated testing) ---
+build_ki_san debug-asan address,undefined
+build_ki_san debug-tsan thread
 
 # --- Windows x86_64 via mingw-w64 (skipped if the cross compiler isn't installed) ---
 if command -v x86_64-w64-mingw32-g++ >/dev/null 2>&1; then
@@ -72,5 +96,5 @@ else
 fi
 
 echo "=================================================================="
-ls -la dist/ | grep -E 'ki-' || echo "(no binaries produced)"
-file dist/ki-* 2>/dev/null || true
+ls -la dist/ | grep -E 'ki-|debug-' || echo "(no binaries produced)"
+file dist/ki-* dist/debug-* 2>/dev/null || true
