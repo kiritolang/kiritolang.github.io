@@ -122,5 +122,14 @@ int main() {
     CHECK(ok("var t = import(\"tensor\")\nt.einsum(\"ij,jk->ik\", t.eye(3), t.eye(3)).tolist()")
           == "[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]");  // normal einsum still works
 
+    // === A20-1 (kpm-critical): semver comparator with whitespace before the version (">= 1.2.0")
+    // must satisfy like ">=1.2.0", not collapse to exact-match. ===
+    CHECK(ok("import(\"semver\").satisfies(\"1.5.0\", \">= 1.2.0\")") == "True");
+    CHECK(ok("import(\"semver\").satisfies(\"1.0.0\", \">= 1.2.0\")") == "False");
+    CHECK(ok("import(\"semver\").satisfies(\"1.5.0\", \"> 1.2.0\")") == "True");
+    CHECK(ok("import(\"semver\").satisfies(\"1.5.0\", \">=1.2.0\")") == "True");   // no-space still ok
+    CHECK(ok("import(\"semver\").satisfies(\"1.5.0\", \">= 1.2.0 < 2.0.0\")") == "True");   // AND
+    CHECK(ok("import(\"semver\").satisfies(\"2.5.0\", \">= 1.2.0 < 2.0.0\")") == "False");
+
     return RUN_TESTS();
 }

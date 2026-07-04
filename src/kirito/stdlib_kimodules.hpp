@@ -2731,6 +2731,21 @@ var _parserange = Function(rng):
         for t in orpart.strip().split(" "):
             if len(t) > 0:
                 toks.append(t)
+        # node-semver allows whitespace between a comparator operator and its version (">= 1.2.0"),
+        # which split(" ") tears into two tokens (">=", "1.2.0") that were then ANDed into
+        # ">=0.0.0 AND =1.2.0" (exact-match only) -> satisfies("1.5.0", ">= 1.2.0") wrongly False, so
+        # kpm resolved the wrong version. Re-join a lone operator with the token that follows it.
+        var joined = []
+        var j = 0
+        while j < len(toks):
+            var tk = toks[j]
+            if (tk == ">" or tk == ">=" or tk == "<" or tk == "<=" or tk == "=") and j + 1 < len(toks):
+                joined.append(tk + toks[j + 1])
+                j = j + 2
+            else:
+                joined.append(tk)
+                j = j + 1
+        toks = joined
         var comps = []
         var i = 0
         while i < len(toks):
