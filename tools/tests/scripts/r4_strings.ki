@@ -478,7 +478,7 @@ ck("a\\b" == "a" + chr(92) + "b", "esc-backslash")
 ck("a\"b" == "a" + chr(34) + "b", "esc-dquote")
 ck("\x41\x42" == "AB", "esc-hex")
 ck("\x00" == chr(0), "esc-hex-zero")
-ck(len("\xff") == 1, "esc-hex-highbyte-one-byte")             # \xff is one raw byte (latin-1 byte)
+ck(len("\xff") == 1, "esc-hex-highbyte-one-codepoint")        # \xff is code point U+00FF (one code point; 2 UTF-8 bytes, not a raw byte)
 ck(r"\n" == chr(92) + "n", "raw-backslash-n")
 ck(r"C:\path" == "C:" + chr(92) + "path", "raw-path")
 ck(len(r"\n\t") == 4, "raw-len")                             # 4 literal chars
