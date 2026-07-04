@@ -32,6 +32,11 @@ OUT_DIR = os.path.join(HERE, "site")
 # Built-in value types — a fixed set, used to tell a type "owner" heading (## List) apart from a
 # category heading that merely happens to be one word (## Numbers / ## Notes on the builtins page).
 TYPES = {"None", "Bool", "Integer", "Float", "String", "Bytes", "List", "Set", "Dict", "Array", "Number"}
+# A dotted token whose suffix is one of these is a FILENAME (analyzer.hpp, kirito.hpp), not an
+# `owner.member` symbol — never index or link it as such (its "member" would collide, e.g. every
+# `*.hpp` becoming a bogus `hpp` member that mis-resolves).
+_FILE_EXTS = {"hpp", "cpp", "h", "ki", "py", "sh", "ps1", "md", "json", "js", "html", "xml", "yml",
+              "yaml", "cmake", "txt", "gch", "gz", "so", "a", "o", "in", "expected", "experr", "args"}
 
 # Kirito keywords / builtins for lightweight highlighting of ```kirito fences.
 KW = set("var Function if elif else while for in break continue return and or not "
@@ -76,6 +81,7 @@ def highlight_kirito(code):
 QUALIFIED = {}     # "List.append" -> {"slug","anchor","sig","owner","name","kind"}
 BY_NAME = {}       # "append" -> [qualified keys]
 HEADING_SYMS = {}  # "List"/"io" -> {"slug","anchor","kind"} (a type/module/native-object owner section)
+_HEADING_LEVEL = {}  # "String" -> the heading level its HEADING_SYMS entry came from (shallowest wins)
 OWNERS = set()     # names that own members (modules + types + native objects)
 _EMITTED = set()   # (slug, anchor) ids already emitted this render, to avoid dup ids
 _CUR_SLUG = ""     # page slug currently rendering (for owner reset + ids)
@@ -130,13 +136,19 @@ def _collect_owners(pages):
                 OWNERS.add(mo.group(1))
                 HEADING_SYMS.setdefault(mo.group(1), {"slug": slug, "anchor": _slug(t), "kind": "type"})
             elif re.fullmatch(r"[A-Za-z_]\w*", t):
-                # a lowercase single-word level-2 heading is a module; a known builtin type is a type
-                if level == 2 and t[:1].islower():
+                # a lowercase single-word level-2 heading is a module; a known builtin type is a type.
+                # A name can head a section on MORE THAN ONE page — e.g. `## String` in the types
+                # reference AND `#### String` in the C++ API (the C++ wrapper). A bare mention must link
+                # to the CANONICAL entry, not whichever page happened to be processed last. Resolve by
+                # the SHALLOWEST heading level (the type reference's `## String` at level 2 wins over a
+                # `#### String` deep in another page), first page breaking a tie — order-independent.
+                kind = "module" if (level == 2 and t[:1].islower()) else ("type" if t in TYPES else None)
+                if kind and level < _HEADING_LEVEL.get(t, 99):
                     OWNERS.add(t)
-                    HEADING_SYMS[t] = {"slug": slug, "anchor": _slug(t), "kind": "module"}
-                elif t in TYPES:
-                    OWNERS.add(t)
-                    HEADING_SYMS[t] = {"slug": slug, "anchor": _slug(t), "kind": "type"}
+                    HEADING_SYMS[t] = {"slug": slug, "anchor": _slug(t), "kind": kind}
+                    _HEADING_LEVEL[t] = level
+                elif kind:
+                    OWNERS.add(t)   # still an owner (for member attribution), just not the link target
 
 
 def _classify_def(first_cell, owner):
@@ -152,6 +164,8 @@ def _classify_def(first_cell, owner):
     if "." in lead:
         head, member = lead.split(".", 1)
         member = member.split(".")[0]
+        if member in _FILE_EXTS:                 # `analyzer.hpp` etc. is a filename, not a symbol
+            return None
         if head in OWNERS:                       # io.print / math.gcd / tensor.dot
             q = head + "." + member
             kind = "function" if HEADING_SYMS.get(head, {}).get("kind") == "module" else "method"
@@ -235,6 +249,8 @@ def _resolve_link(code_text):
         return None
     head, member = m.group(1), m.group(2)
     if member is not None:
+        if member in _FILE_EXTS:                                          # `analyzer.hpp` — a filename, not a link
+            return None
         if head in OWNERS and (head + "." + member) in QUALIFIED:        # Owner.member (io.print, List.append)
             e = QUALIFIED[head + "." + member]
             return (e["slug"], e["anchor"])
