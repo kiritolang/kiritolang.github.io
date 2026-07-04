@@ -24,6 +24,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD/.deps"
 OPENSSL_TAG="openssl-3.3.2"
+JOBS="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"  # autodetected core count
 mkdir -p "$ROOT" dist
 
 # Build a static OpenSSL for the mingw (Windows x64) target, cached.
@@ -44,7 +45,7 @@ build_mingw_openssl() {
       # OpenSSL-blessed fallback in case the rule still fires. A genuine build error still fails the
       # second pass.
       touch Makefile
-      make -j"$(nproc)" >/dev/null 2>&1 || make -j"$(nproc)" >/dev/null
+      make -j"$JOBS" >/dev/null 2>&1 || make -j"$JOBS" >/dev/null
       make install_sw >/dev/null )
     echo "openssl[win-x64]: built"
 }
@@ -55,7 +56,7 @@ build_ki() {
     local dir="$ROOT/build-$out"; rm -rf "$dir"
     cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DKIRITO_ENABLE_TLS=ON -DOPENSSL_USE_STATIC_LIBS=ON "$@"
-    cmake --build "$dir" --target ki
+    cmake --build "$dir" --target ki -j "$JOBS"
     cp "$dir/ki" "dist/$out" 2>/dev/null || cp "$dir/ki.exe" "dist/$out"
     echo "built dist/$out"
 }
@@ -71,7 +72,7 @@ build_ki_san() {
     cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
         -DCMAKE_CXX_FLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=$san -fno-sanitize-recover=all $warn" \
         -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=$san"
-    cmake --build "$dir" --target ki
+    cmake --build "$dir" --target ki -j "$JOBS"
     cp "$dir/ki" "dist/$out"
     echo "built dist/$out"
 }
