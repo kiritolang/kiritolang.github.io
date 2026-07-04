@@ -856,6 +856,67 @@ private:
 };
 
 // ================================================================================================
+// PinnedHandle — an owning GC root you can STORE. A host that keeps a Kirito value in a long-lived
+// C++ object (a class member, a `std::vector`, a callback registry) can't use `RootScope` (it is
+// stack-scoped) and must not hold a bare `Handle` (the collector can't see it, so a mid-run GC
+// sweeps it — a dangling handle). `PinnedHandle` pins its handle for its own lifetime via
+// `KiritoVM::pinHandle`/`unpinHandle`, so the object survives every collection until the pin is
+// destroyed. It is copyable (each copy holds its own refcounted pin) and movable (the pin transfers),
+// converts to `Handle` for the raw protocol, and yields a `Value` wrapper on demand.
+//
+//   class Engine {
+//     KiritoVM& vm_;
+//     PinnedHandle policy_;              // a compiled Function — safe to keep across many calls
+//   public:
+//     Engine(KiritoVM& vm, Handle policy) : vm_(vm), policy_(vm, policy) {}
+//     Value run(Value arg) { return policy_.value().call({arg}); }
+//   };
+// ================================================================================================
+class PinnedHandle {
+public:
+    PinnedHandle() = default;
+    PinnedHandle(KiritoVM& vm, Handle h) : vm_(&vm), h_(h) { vm_->pinHandle(h_); }
+    explicit PinnedHandle(const Value& v) : PinnedHandle(v.vm(), v.handle()) {}
+
+    ~PinnedHandle() { reset(); }
+
+    // Copy: each PinnedHandle owns an independent pin (pinHandle is refcounted).
+    PinnedHandle(const PinnedHandle& o) : vm_(o.vm_), h_(o.h_) { if (vm_) vm_->pinHandle(h_); }
+    PinnedHandle& operator=(const PinnedHandle& o) {
+        if (this != &o) {
+            if (o.vm_) o.vm_->pinHandle(o.h_);      // pin the new before releasing the old (self-safe)
+            reset();
+            vm_ = o.vm_;
+            h_ = o.h_;
+        }
+        return *this;
+    }
+    // Move: steal the pin, leave the source empty.
+    PinnedHandle(PinnedHandle&& o) noexcept : vm_(o.vm_), h_(o.h_) { o.vm_ = nullptr; }
+    PinnedHandle& operator=(PinnedHandle&& o) noexcept {
+        if (this != &o) { reset(); vm_ = o.vm_; h_ = o.h_; o.vm_ = nullptr; }
+        return *this;
+    }
+
+    // Release the pin now (idempotent); leaves the PinnedHandle empty.
+    void reset() {
+        if (vm_) { vm_->unpinHandle(h_); vm_ = nullptr; }
+    }
+
+    bool pinned() const { return vm_ != nullptr; }
+    Handle handle() const { return h_; }
+    operator Handle() const { return h_; }
+    KiritoVM& vm() const { return *vm_; }
+    // Wrap for use with the ergonomic API. The returned Value is a plain view (not itself pinned) —
+    // this PinnedHandle is what keeps the object alive.
+    Value value() const { return Value(*vm_, h_); }
+
+private:
+    KiritoVM* vm_ = nullptr;
+    Handle    h_{};
+};
+
+// ================================================================================================
 // Deferred definitions — the typed wrappers, `Anything::Anything(const Value&)`, and the Bytes
 // helpers that depend on the BytesVal layout.
 // ================================================================================================

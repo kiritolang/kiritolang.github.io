@@ -661,7 +661,12 @@ bits). Measured ~10% on function-local arithmetic loops; no regression on call-h
   wraparound, true-division, exact IEEE-754 `==`). Fresh-alloc wrapper constructors GC-pin their
   handle for the wrapper's lifetime via `KiritoVM::pinHandle`/`unpinHandle` (a refcounted companion
   to `tempRoots_` scanned by `collectGarbage`), so mid-expression allocations don't sweep partially-
-  built containers. Returning built-in values is the default; defining a new `NativeClass` is the
+  built containers. A host that stores a Kirito value in a **long-lived** C++ object (a class member,
+  a `std::vector`, a callback registry) can't use `RootScope` (stack-scoped) and must not keep a bare
+  `Handle` (the collector can't see it, so a later GC sweeps it — a dangling handle); it holds a
+  **`PinnedHandle`** (value.hpp) instead — an owning, copy/move-aware RAII GC root that pins its handle
+  for its own lifetime (`PinnedHandle(vm, h)` / `.value()` / `operator Handle`).
+  Returning built-in values is the default; defining a new `NativeClass` is the
   fallback (only for genuinely new behaviour). `value.hpp` is included by `native.hpp`, so every
   module gets it.
 
