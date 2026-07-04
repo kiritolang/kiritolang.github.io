@@ -170,7 +170,7 @@ int main() {
         CHECK(ctx.get("tests_passed").asBool("tests_passed") == true);
         // deploy never ran: still the starting False, and no url key was ever set
         CHECK(ctx.get("deployed").asBool("deployed") == false);
-        CHECK(ctx.contains("url") == false);
+        CHECK(ctx.has("url") == false);
     }
 
     // ---- scenario 3: a failing gate short-circuits the rest ----
