@@ -37,17 +37,17 @@ And why did i call it after MC of SAO? Dunno, just thought it's funny. Also I do
 ## Contents
 
 - [Why Kirito](#why-kirito)
+- [Documentation](#documentation)
+- [Installing](#installing)
+- [Packages (`kpm`)](#packages-kpm)
 - [Limitations](#limitations)
+- [Repository structure](#repository-structure)
 - [Benchmarks](#benchmarks)
 - [Embedding Kirito in C++](#embedding-kirito-in-c)
 - [Extending Kirito from C++](#extending-kirito-from-c)
-- [Installing](#installing)
-  - [Packages (`kpm`)](#packages-kpm)
-- [Repository structure](#repository-structure)
 - [Building and running](#building-and-running)
-  - [Building the release binaries (static, TLS)](#building-the-release-binaries-static-tls)
-  - [Testing the built executables](#testing-the-built-executables)
-- [Documentation](#documentation)
+- [Building the release binaries (static, TLS)](#building-the-release-binaries-static-tls)
+- [Testing the built executables](#testing-the-built-executables)
 - [License](#license)
 
 ## Why Kirito
@@ -76,6 +76,87 @@ And why did i call it after MC of SAO? Dunno, just thought it's funny. Also I do
     add flows through the same object protocol as the built-ins, so to a Kirito program your C++ type
     is indistinguishable from a native one.
 
+## Documentation
+
+**Full documentation is live at [kiritolang.github.io](https://kiritolang.github.io)** — a small,
+dependency-free static site. It covers:
+
+- **Getting started**, the **language guide**, and a built-in **types & operator-overloading**
+  reference
+- The **built-in functions** and a per-function **standard-library** reference
+- **Embedding** Kirito in a C++ program and **extending** it with C++ functions, modules, and types
+- Recipes and a multi-part course with worked sample projects
+
+The site is generated from hand-authored Markdown in [`docs/pages/`](docs/pages/) by the
+dependency-free [`docs/build_docs.py`](docs/build_docs.py) into [`docs/site/`](docs/site/); you can
+also open [`docs/site/index.html`](docs/site/index.html) locally or read the Markdown sources
+directly.
+
+## Installing
+
+Prebuilt 64-bit `ki` binaries for **Windows and Linux** are attached to each
+[GitHub Release](../../releases): optimized builds with HTTPS (TLS) support, linked as statically as
+possible (OpenSSL and the C/C++ runtime are bundled in), so they run with no other dependencies.
+
+The one-line installers download `ki` and the `kpm` package manager, drop launchers on your `PATH`,
+and create the package directory `~/.kirito/packages` (which `ki` searches automatically):
+
+**Linux / macOS**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kiritolang/kiritolang.github.io/main/tools/scripts/install.sh | sh
+```
+
+Installs to `~/.local/bin` (no root). Pass options after `-s --`, e.g.
+`| sh -s -- --bin-dir ~/bin`, or `--from-source` to build locally instead of downloading. On a
+platform without a prebuilt binary the script builds from source automatically (needs `git` +
+`cmake`; install `libssl-dev` so `kpm`'s HTTPS works).
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/kiritolang/kiritolang.github.io/main/tools/scripts/install.ps1 | iex
+```
+
+Installs `ki.exe` + `kpm.cmd` under `%LOCALAPPDATA%\Programs\Kirito` and adds it to your user `PATH`.
+
+**Manual** — download `ki-linux-x64` / `ki-windows-x64.exe` from the latest release, put it on your
+`PATH` (rename to `ki`/`ki.exe`), and `chmod +x` it on Unix.
+
+## Packages (`kpm`)
+
+Kirito's package manager installs packages — collections of `.ki` modules — **straight from a git
+repository** (GitHub by default, GitLab too). There is no central index: you name an `owner/repo`.
+
+```sh
+kpm install owner/repo            # install the package (and its dependencies) from GitHub
+kpm install owner/repo@^1.2.0     # pin a tag/branch/commit, or a semver constraint
+kpm install gitlab.com/owner/repo # install from GitLab (also: gitlab:owner/repo, or a full URL)
+kpm list                          # what's installed
+kpm update --all                  # re-resolve + reinstall (or `kpm update <name>...`)
+kpm remove name                   # uninstall
+kpm update-kpm                    # update kpm itself; `kpm update-ki` updates the interpreter binary
+```
+
+Installed packages land in `~/.kirito/packages/<name>/` and are importable directly —
+`import("name")` — because `ki` puts that directory (and each package sub-directory, plus anything in
+the `KIRITO_PATH` environment variable) on its module import path.
+
+A package repository carries a `kirito.json` manifest at its root:
+
+```json
+{
+  "name": "mypkg",
+  "version": "1.0.0",
+  "modules": ["mypkg.ki", "extra/util.ki"],
+  "dependencies": ["someone/dep"]
+}
+```
+
+`modules` are repo-relative `.ki` paths; `dependencies` are other `owner/repo` packages installed
+first. `kpm` is itself written in Kirito (`kpm/kpm.ki`) — it just uses the `net`, `json`, `io`, `sys`,
+and `semver` modules — so it doubles as a worked example.
+
 ## Limitations
 
 Kirito is young and makes deliberate trade-offs. The notable current limits:
@@ -86,21 +167,53 @@ Kirito is young and makes deliberate trade-offs. The notable current limits:
   closes most of the gap and can match or beat Lua 5.1. See [Benchmarks](#benchmarks).
 - **Integers are fixed-width `int64`** with well-defined two's-complement wraparound on overflow;
   arbitrary-precision integers are a future enrichment.
-- **Equality (`==`) is always exact; tolerance is only ever via `.compare`.** Float/Integer `==` is
-  exact IEEE-754: `0.1 + 0.2 == 0.3` is `False`, `NaN` never equals anything (not even
-  itself), an infinity equals only an identical infinity — so `==`/`!=` agree with `<`/`>` and with
-  hashing. The same rule holds for every native numeric type — **`Complex`, `Matrix`, `Tensor`,
-  `ComplexMatrix`** all compare bit-exactly with `==`. For *approximate* comparison they each carry
-  **`.compare(other, rel_tol = 1e-9, abs_tol = 0.0)`** (close when `|a - b| <= max(rel_tol * max(|a|, |b|),
-  abs_tol)`) — the single, explicit way to ask "are these close?".
 - **Unicode case mapping** (`upper`/`lower`) covers ASCII, Latin-1 and Latin Extended-A, not the full
   Unicode case-folding tables.
-- **Not yet implemented:** comprehensions, generators, and variadic parameters. (Complex numbers
-  *are* supported — the native `complex` module.)
 - **A single `KiritoVM` is single-threaded** — one VM is one fully-encapsulated, serializable process
   touched by exactly one OS thread. True parallelism is therefore *multiprocessing*: the `parallel`
   module runs many fully-isolated VMs that share nothing and communicate only by passing serialized
   values through thread-safe queues and primitives.
+
+## Repository structure
+
+```
+src/kirito/        The interpreter — a header-only C++20 core (~50 headers). One umbrella header,
+  kirito.hpp         pulls in everything: lexer, parser, AST, the bytecode compiler + stack VM, the
+                     value/object model, the arena + mark-sweep GC, and the standard library
+                     (the stdlib_*.hpp modules: io, math, complex, json, net, time, hash, …).
+main.cpp           The standalone `ki` CLI (REPL + file runner) — the only `main()`.
+CMakeLists.txt     Thin CMake: an INTERFACE target for the header-only core, the `ki` executable,
+CMakePresets.json  and the test executables. Presets: debug / release / asan / tsan.
+
+examples/          Sample `.ki` programs (RPN calculator, word count, todo, stats, …), plus:
+  big_projects/      Large pure-Kirito programs that double as interpreter stress tests:
+                     kgrad (tensor/autodiff/neural nets), sqldb (a concurrent networked SQL
+                     database), webserver (a concurrent HTTP/1.1 server + routing framework), and
+                     selfhost (a Kirito interpreter in Kirito).
+  http_client/       A `net` HTTP-client app + server + Python test harness.
+  data/              Sample datasets (e.g. iris.csv) used by the examples.
+
+kpm/               kpm.ki — the package manager, written in Kirito (installs packages from GitHub).
+
+tools/             Project tooling:
+  tests/             The CTest suite (every feature gets a test):
+    unit/              C++ unit tests (one executable per area).
+    scripts/           Golden `.ki` programs — each `*.ki` checked against its `*.expected` stdout.
+    errors/            `.ki` programs that must fail, with required diagnostics in `*.experr`.
+    lang/              End-to-end language tests driven from C++.
+    integration/       C++-embedding projects (each embeds a `KiritoVM`).
+    fuzz/  bench/      Stability fuzzers; timing + cross-language C++/Python comparison.
+  scripts/           build_all.sh (release binaries), test_release.sh (run the `.ki` suites against
+                     a built binary), post_work_check.sh (clean-build every variant + full CTest),
+                     install.sh / install.ps1 (the Linux/macOS + Windows installers).
+
+docs/              The documentation site: hand-authored Markdown in `docs/pages/`, rendered by
+                   the dependency-free `docs/build_docs.py` into `docs/site/`.
+  editors/           Syntax-highlighting definitions for `.ki` files — Notepad++ (UDL), VS Code
+                     (TextMate grammar + extension), and Vim. See `docs/editors/README.md`.
+
+CLAUDE.md          The project charter: what Kirito is, how it's built, and the working rules.
+```
 
 ## Benchmarks
 
@@ -172,113 +285,11 @@ vm.registerGlobal("repeat", vm.alloc(std::make_unique<NativeFunction>(
 // Kirito:  repeat("ab", 3)   ->   "ababab"
 ```
 
-Whole modules and brand-new object types (with their own methods and operators) are added the same
-way — see the documentation for complete, worked examples.
-
-## Installing
-
-Prebuilt 64-bit `ki` binaries for **Windows and Linux** are attached to each
-[GitHub Release](../../releases): optimized builds with HTTPS (TLS) support, linked as statically as
-possible (OpenSSL and the C/C++ runtime are bundled in), so they run with no other dependencies.
-
-The one-line installers download `ki` and the `kpm` package manager, drop launchers on your `PATH`,
-and create the package directory `~/.kirito/packages` (which `ki` searches automatically):
-
-**Linux / macOS**
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/kiritolang/kiritolang.github.io/main/tools/scripts/install.sh | sh
-```
-
-Installs to `~/.local/bin` (no root). Pass options after `-s --`, e.g.
-`| sh -s -- --bin-dir ~/bin`, or `--from-source` to build locally instead of downloading. On a
-platform without a prebuilt binary the script builds from source automatically (needs `git` +
-`cmake`; install `libssl-dev` so `kpm`'s HTTPS works).
-
-**Windows (PowerShell)**
-
-```powershell
-irm https://raw.githubusercontent.com/kiritolang/kiritolang.github.io/main/tools/scripts/install.ps1 | iex
-```
-
-Installs `ki.exe` + `kpm.cmd` under `%LOCALAPPDATA%\Programs\Kirito` and adds it to your user `PATH`.
-
-**Manual** — download `ki-linux-x64` / `ki-windows-x64.exe` from the latest release, put it on your
-`PATH` (rename to `ki`/`ki.exe`), and `chmod +x` it on Unix.
-
-### Packages (`kpm`)
-
-Kirito's package manager installs packages — collections of `.ki` modules — **straight from a git
-repository** (GitHub by default, GitLab too). There is no central index: you name an `owner/repo`.
-
-```sh
-kpm install owner/repo            # install the package (and its dependencies) from GitHub
-kpm install owner/repo@^1.2.0     # pin a tag/branch/commit, or a semver constraint
-kpm install gitlab.com/owner/repo # install from GitLab (also: gitlab:owner/repo, or a full URL)
-kpm list                          # what's installed
-kpm update --all                  # re-resolve + reinstall (or `kpm update <name>...`)
-kpm remove name                   # uninstall
-kpm update-kpm                    # update kpm itself; `kpm update-ki` updates the interpreter binary
-```
-
-Installed packages land in `~/.kirito/packages/<name>/` and are importable directly —
-`import("name")` — because `ki` puts that directory (and each package sub-directory, plus anything in
-the `KIRITO_PATH` environment variable) on its module import path.
-
-A package repository carries a `kirito.json` manifest at its root:
-
-```json
-{
-  "name": "mypkg",
-  "version": "1.0.0",
-  "modules": ["mypkg.ki", "extra/util.ki"],
-  "dependencies": ["someone/dep"]
-}
-```
-
-`modules` are repo-relative `.ki` paths; `dependencies` are other `owner/repo` packages installed
-first. `kpm` is itself written in Kirito (`kpm/kpm.ki`) — it just uses the `net`, `json`, `io`, `sys`,
-and `semver` modules — so it doubles as a worked example.
-
-## Repository structure
-
-```
-src/kirito/        The interpreter — a header-only C++20 core (~50 headers). One umbrella header,
-  kirito.hpp         pulls in everything: lexer, parser, AST, the bytecode compiler + stack VM, the
-                     value/object model, the arena + mark-sweep GC, and the standard library
-                     (the stdlib_*.hpp modules: io, math, complex, json, net, time, hash, …).
-main.cpp           The standalone `ki` CLI (REPL + file runner) — the only `main()`.
-CMakeLists.txt     Thin CMake: an INTERFACE target for the header-only core, the `ki` executable,
-CMakePresets.json  and the test executables. Presets: debug / release / asan / tsan.
-
-examples/          Sample `.ki` programs (RPN calculator, word count, todo, stats, …), plus:
-  big_projects/      Large pure-Kirito programs that double as interpreter stress tests:
-                     kgrad (tensor/autodiff/neural nets), sqldb (a concurrent networked SQL
-                     database), webserver (a concurrent HTTP/1.1 server + routing framework), and
-                     selfhost (a Kirito interpreter in Kirito).
-  http_client/       A `net` HTTP-client app + server + Python test harness.
-  data/              Sample datasets (e.g. iris.csv) used by the examples.
-
-kpm/               kpm.ki — the package manager, written in Kirito (installs packages from GitHub).
-
-tools/             Project tooling:
-  tests/             The CTest suite (every feature gets a test):
-    unit/              C++ unit tests (one executable per area).
-    scripts/           Golden `.ki` programs — each `*.ki` checked against its `*.expected` stdout.
-    errors/            `.ki` programs that must fail, with required diagnostics in `*.experr`.
-    lang/ integration/ End-to-end language and C++-embedding tests.
-    fuzz/  bench/      Stability fuzzers; timing + cross-language C++/Python comparison.
-  scripts/           build_all.sh (release binaries), test_release.sh (run the `.ki` suites against
-                     a built binary), post_work_check.sh (clean-build every variant + full CTest),
-                     install.sh / install.ps1 (the Linux/macOS + Windows installers).
-
-docs/              The documentation site: hand-authored Markdown in `docs/pages/`, rendered by
-                   the dependency-free `docs/build_docs.py` into `docs/site/`.
-  editors/           Syntax-highlighting definitions for `.ki` files — Notepad++ (UDL), VS Code
-                     (TextMate grammar + extension), and Vim. See `docs/editors/README.md`.
-
-CLAUDE.md          The project charter: what Kirito is, how it's built, and the working rules.
-```
+To keep a Kirito value in a long-lived C++ object (a class member, a `std::vector`, a callback
+registry) hold a **`PinnedHandle`** rather than a bare `Handle` — it is an owning RAII GC root, so
+the value survives collection for as long as you keep it. Whole modules and brand-new object types
+(with their own methods and operators) are added the same way — see the documentation for complete,
+worked examples.
 
 ## Building and running
 
@@ -305,7 +316,7 @@ cmake --build build-debug -j
 
 ./build-debug/ki path/to/program.ki   # run a script
 ./build-debug/ki                      # start the REPL
-ctest --test-dir build-debug -j       # run the C++ unit + golden-script test suite (316 tests)
+ctest --test-dir build-debug -j       # run the C++ unit + golden-script test suite
 ```
 
 ### Sanitizers and the full test matrix
@@ -356,8 +367,7 @@ tools/scripts/post_work_check.sh        # debug+release first, then asan+tsan; p
 It does not touch git — it only builds and tests, then reports which variants are green so you decide
 whether to commit.
 
-
-### Building the release binaries (static, TLS)
+## Building the release binaries (static, TLS)
 
 `tools/scripts/build_all.sh` builds the shippable 64-bit binaries into `dist/` — `ki-linux-x64` and, when
 the mingw cross compiler is installed, `ki-windows-x64.exe` (it builds a static OpenSSL for the
@@ -375,7 +385,7 @@ keeps only glibc dynamic; the Windows `.exe` is fully static). To cut a release,
 `dist/ki-windows-x64.exe` to a GitHub Release tagged with the bare version (e.g. `1.7.0`). The
 project does not use CI.
 
-### Testing the built executables
+## Testing the built executables
 
 `tools/scripts/test_release.sh` runs the end-to-end `.ki` test suites (golden-output + error-diagnostic
 scripts) against the binaries in `dist/`, so you can verify each shipped interpreter directly. Linux
@@ -386,18 +396,6 @@ sudo apt-get install -y wine64        # only needed to test the .exe
 tools/scripts/test_release.sh               # tests every dist/ki-* binary
 tools/scripts/test_release.sh ./build/ki    # or test one specific interpreter
 ```
-
-## Documentation
-
-Full documentation lives in [`docs/`](docs/) as a small, dependency-free static site. Open
-[`docs/site/index.html`](docs/site/index.html) in a browser, or read the Markdown sources in
-[`docs/pages/`](docs/pages/). It covers:
-
-- **Getting started**, the **language guide**, and a built-in **types & operator-overloading**
-  reference
-- The **built-in functions** and a per-function **standard-library** reference
-- **Embedding** Kirito in a C++ program and **extending** it with C++ functions, modules, and types
-- Recipes and a multi-part course with worked sample projects
 
 ## License
 
