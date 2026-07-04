@@ -80,5 +80,20 @@ for bin in dist/ki-windows-*.exe ; do
     if [ -n "$w" ]; then run_suite "$(basename "$bin")" "$w" "$bin" || rc=1
     else echo "  SKIP: install wine to run the .exe (sudo apt-get install -y wine64)"; fi
 done
+# Sanitizer builds from build_all.sh — run the same suites with the sanitizer runtime active so a
+# third party gets a vetted, working interpreter. A sanitizer finding aborts the run loudly; leak
+# detection is left off here (the interpreter's exit-time roots are noisy and off-topic for a smoke
+# test — a third party can re-enable it via ASAN_OPTIONS).
+for bin in dist/debug-asan dist/debug-tsan ; do
+    [ -e "$bin" ] || continue
+    found=1; echo "=== $(basename "$bin") ==="
+    case "$bin" in
+        *asan) ASAN_OPTIONS="halt_on_error=1:abort_on_error=1:detect_leaks=0" \
+               UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
+               run_suite "$(basename "$bin")" "$bin" || rc=1 ;;
+        *tsan) TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1" \
+               run_suite "$(basename "$bin")" "$bin" || rc=1 ;;
+    esac
+done
 [ "$found" -eq 0 ] && { echo "no dist/ki-* binaries found — run scripts/build_all.sh first"; exit 1; }
 exit "$rc"
