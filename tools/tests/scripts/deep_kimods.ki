@@ -117,7 +117,7 @@ assert ft.reduce(Function(a, b): return a + b, [], 0) == 0, "reduce empty WITH i
 # FINDING (doc/parity): `initial` defaults to None and the impl uses `initial == None` as the
 # 'no initial given' sentinel -- so an EXPLICIT None initial is indistinguishable from omitting it.
 assert ft.reduce(Function(a, b): return a + b, [1, 2, 3], None) == 6, "FINDING: explicit initial=None is treated as NO initial (sentinel collision)"
-assert throws(Function(): return ft.reduce(Function(a, b): return a + b, [], None)), "FINDING: reduce([], None) RAISES -- None initial cannot seed an empty fold"
+assert throws(Function(): return ft.reduce(Function(a, b): return a + b, [], None)), "FINDING: reduce([], None) THROWS -- None initial cannot seed an empty fold"
 var emptymsg = ""
 try:
     discard ft.reduce(Function(a, b): return a + b, [])
@@ -141,7 +141,7 @@ var slow = Function(x):
 var fast = ft.cache(slow)
 assert fast(6) == 36 and fast(6) == 36 and fast(7) == 49, "cache returns correct values"
 assert hits[0] == 2, "cache evaluates once per DISTINCT argument (6 and 7 -> 2 calls)"
-assert throws(Function(): return ft.cache(Function(x): return x)([1, 2])), "FINDING: cache of an unhashable (List) argument RAISES (dict-key requirement, undocumented)"
+assert throws(Function(): return ft.cache(Function(x): return x)([1, 2])), "FINDING: cache of an unhashable (List) argument THROWS (dict-key requirement, undocumented)"
 
 io.print("ok functools")
 
@@ -267,7 +267,7 @@ for bs in [[], [0], [255], [0, 255, 128], [200, 150, 0, 255, 64]]:
 assert b64.decode(b64.encode("e")) == [101], "ASCII char encodes to its single byte"
 
 # --- invalid input throws; content after the first '=' is silently ignored (lenient). ------------
-assert throws(Function(): return b64.decode("@@@@")), "decode of a non-alphabet char RAISES"
+assert throws(Function(): return b64.decode("@@@@")), "decode of a non-alphabet char THROWS"
 assert throws(Function(): return b64.decode("ab*d")), "decode rejects an embedded illegal char"
 # FINDING (lenient): everything from the first '=' onward is dropped, so trailing garbage after
 # padding is ignored rather than rejected.
@@ -347,7 +347,7 @@ try:
 catch as e:
     badname = e
 assert "no such enum member" in badname, "the unknown-name error carries the documented message"
-assert throws(Function(): return Color.nameof(99)), "FINDING: nameof of an unknown value RAISES (undocumented; doc lists no error)"
+assert throws(Function(): return Color.nameof(99)), "FINDING: nameof of an unknown value THROWS (undocumented; doc lists no error)"
 
 # --- empty enum; and the SILENT-CORRUPTION on duplicate names. ------------------------------------
 var Empty = en.Enum([])

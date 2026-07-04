@@ -144,7 +144,7 @@ var cyc = [1]
 cyc.append(cyc)
 ok(throws(Function(): return json.dumps(cyc)), "stringify a cyclic structure throws")
 
-# ============================================================ MALFORMED INPUT MUST RAISE
+# ============================================================ MALFORMED INPUT MUST THROW
 ok(throws(Function(): return json.parse("")), "empty input throws")
 ok(throws(Function(): return json.parse("   ")), "whitespace-only input throws")
 ok(throws(Function(): return json.parse("[1, 2")), "truncated array throws")

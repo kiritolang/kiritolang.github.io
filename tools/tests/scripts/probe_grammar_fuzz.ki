@@ -77,7 +77,7 @@ while i < runs:
     f.close()
     var p = sys.createprocess([runner, tmpFile], None, None, 5000)
     # A signal-terminated exit (negative code, or > 128 on POSIX shells) would indicate a crash.
-    # A clean exit (0 or a raised-and-uncaught error → non-zero, non-signal) is fine.
+    # A clean exit (0 or a thrown-and-uncaught error → non-zero, non-signal) is fine.
     if p["code"] < 0 or p["code"] >= 128:
         io.eprint("crash on run " + String(i) + " (exit " + String(p["code"]) + "):")
         io.eprint(src)

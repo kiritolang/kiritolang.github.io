@@ -33,7 +33,7 @@ var throws = Function(f):
 
 # ===================================================================== loopback server workers
 # Bind the first free 127.0.0.1 port in [lo, lo+span); return [socket, port]. A fresh socket per
-# attempt (a socket whose bind failed is closed and not reused). Raises if the whole range is busy.
+# attempt (a socket whose bind failed is closed and not reused). Throws if the whole range is busy.
 var bindFree = Function(lo, span):
     var p = lo
     while p < lo + span:

@@ -112,7 +112,7 @@ ok(round(3.14159, 2) == 3.14, "round ndigits")
 ok(abs(-2.5) == 2.5, "abs Float")
 ok(-(3.0) == -3.0, "unary neg Float")
 # NOTE (doc error): docs/pages/09-types.md (Integer section) says a negative base with a
-# fractional exponent "yields NaN" via the ** operator, but the implementation RAISES
+# fractional exponent "yields NaN" via the ** operator, but the implementation THROWS
 # ("a negative base cannot be thrown to a fractional power"). Asserting REAL behavior:
 ok(throws(Function(): return (-2.0) ** 0.5), "(-2.0)**0.5 throws [docs wrongly say NaN]")
 ok(throws(Function(): return (-8.0) ** (1.0 / 3.0)), "(-8.0)**(1/3) throws")

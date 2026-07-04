@@ -28,7 +28,7 @@ static bool has(const std::string& hay, const std::string& needle) {
 }
 
 int main() {
-    // === deep nesting: iterative operator/postfix chains and indentation pyramids must RAISE at
+    // === deep nesting: iterative operator/postfix chains and indentation pyramids must THROW at
     // parse time, never overflow the native stack (parsing or the recursive AST teardown). 5000 > the
     // 2000 non-sanitizer parse-depth cap (and the 250 sanitizer cap). ----------------------------
     {

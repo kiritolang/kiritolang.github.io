@@ -251,7 +251,7 @@ catch String as e:
     }
 
     // ============================================================================================
-    // I) Adversarial: exception raised INSIDE _str_ during runSource's stringify wrap.
+    // I) Adversarial: exception thrown INSIDE _str_ during runSource's stringify wrap.
     // ============================================================================================
     {
         KiritoVM vm;

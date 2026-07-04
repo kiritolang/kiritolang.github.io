@@ -1,6 +1,6 @@
 // Regression tests for the "silent bug on bad input" pass: math/complex/tensor domain errors,
 // malformed Integer/Float strings, pow negative modulus, statistics.quantiles n, tabular Series
-// length-mismatch + ragged CSV, and time.strptime range/trailing checks must all RAISE a clear,
+// length-mismatch + ragged CSV, and time.strptime range/trailing checks must all THROW a clear,
 // catchable error instead of returning NaN/inf/garbage. Runs through a bare embedded KiritoVM so the
 // embedding path is covered too. Run under -fsanitize=address,undefined to confirm no UB leaks.
 #include <string>

@@ -153,7 +153,7 @@ ok("listdir(path: String) -> List" in INS and "walk(dir: String) -> List" in INS
 var MK = path.join(DIR, "mk")
 ok(path.mkdir(MK) == True, "mkdir creates a directory (returns True)")
 ok(path.isdir(MK), "mkdir: the directory now exists")
-ok(throws(Function(): return path.mkdir(MK)), "mkdir on an EXISTING directory RAISES by default")
+ok(throws(Function(): return path.mkdir(MK)), "mkdir on an EXISTING directory THROWS by default")
 ok(path.mkdir(MK, exist_ok = True) == False, "mkdir(exist_ok=True) on an existing directory is a no-op (False)")
 ok(path.mkdir(path.join(MK, "a", "b", "c")) == True, "mkdir creates missing parents")
 ok(path.isdir(path.join(MK, "a", "b", "c")), "mkdir: the nested directory exists")
@@ -164,7 +164,7 @@ var RMF = path.join(MK, "file.txt")
 io.open(RMF, "w").close()
 ok(path.remove(RMF) == True, "remove deletes a file (returns True)")
 ok(not path.exists(RMF), "remove: the file is gone")
-ok(throws(Function(): return path.remove(RMF)), "remove of a MISSING path RAISES by default")
+ok(throws(Function(): return path.remove(RMF)), "remove of a MISSING path THROWS by default")
 ok(path.remove(RMF, missing_ok = True) == False, "remove(missing_ok=True) of a missing path is a no-op (False)")
 # remove on a NON-EMPTY directory throws (that is rmtree's job)
 ok(throws(Function(): return path.remove(MK)), "remove of a NON-EMPTY directory throws (use rmtree)")
@@ -172,7 +172,7 @@ ok(throws(Function(): return path.remove(MK)), "remove of a NON-EMPTY directory 
 # =========================================================== rmtree: recursive delete + missing_ok
 ok(path.rmtree(MK) == True, "rmtree recursively deletes a non-empty directory (returns True)")
 ok(not path.exists(MK), "rmtree: the whole tree is gone")
-ok(throws(Function(): return path.rmtree(MK)), "rmtree of a MISSING path RAISES by default")
+ok(throws(Function(): return path.rmtree(MK)), "rmtree of a MISSING path THROWS by default")
 ok(path.rmtree(MK, missing_ok = True) == False, "rmtree(missing_ok=True) of a missing path is a no-op (False)")
 
 # =========================================================== rename

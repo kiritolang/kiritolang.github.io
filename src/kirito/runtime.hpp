@@ -2273,7 +2273,7 @@ inline Handle KiritoVM::importModule(const std::string& name) {
 
     // Circular-import detection. A module's members are published to moduleCache_ only AFTER its body
     // has fully evaluated, so if loading `name` (directly or transitively) asks to import `name`
-    // again, the import chain has looped. Raise a clear diagnostic naming the cycle instead of
+    // again, the import chain has looped. Throw a clear diagnostic naming the cycle instead of
     // recursing until the native stack or the call-depth guard blows.
     auto cycleError = [&](const std::string& dup) {
         std::string chain;
@@ -2510,7 +2510,7 @@ inline std::string inspectValue(KiritoVM& vm, Handle h) {
 
 // Mini format-spec: [[fill]align][sign][#][0][width][,][.precision][type].
 // Supports align <^>= , sign +/-/space, zero-pad, width, thousands ',', precision, and types
-// b/o/x/X/d/f/e/g/s/% . Returns the formatted String. Raises on a malformed spec.
+// b/o/x/X/d/f/e/g/s/% . Returns the formatted String. Throws on a malformed spec.
 inline std::string applyFormatSpec(KiritoVM& vm, Handle value, const std::string& spec) {
     const Object& o = vm.arena().deref(value);
     std::size_t i = 0;

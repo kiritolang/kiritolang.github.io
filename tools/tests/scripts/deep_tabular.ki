@@ -44,7 +44,7 @@ assert (pd.Series([1, 2]) + pd.Series([10, 20])).tolist() == [11, 22], "equal-le
 
 # =================================================================== Series MISSING-DATA arithmetic
 # Aggregations skip missing, but element-wise arithmetic / comparison / sort do NOT propagate NaN
-# like pandas — they RAISE on a None operand (a None can't take a binary operator / be ordered).
+# like pandas — they THROW on a None operand (a None can't take a binary operator / be ordered).
 assert throws(Function(): return pd.Series([1, None, 3]) + 1), "Series + scalar throws on a None element"
 assert throws(Function(): return pd.Series([1, None, 3]) > 0), "Series comparison throws on a None element"
 assert throws(Function(): return pd.Series([3, None, 1]).sortvalues()), "Series.sortvalues throws with None (cannot order None)"
@@ -146,7 +146,7 @@ assert bag(vcA.index) == bag(["a", "b", "c"]), "valuecounts index covers every v
 # Short row -> missing trailing cells become "" -> inferred as None (still padded, not an error).
 var ragShort = pd.readcsv("a,b,c\n1,2\n3,4,5")
 assert ragShort["c"].tolist() == [None, 5], "short CSV row: missing trailing cell -> None"
-# Long row -> extra cells beyond the header now RAISE (no silent data loss, like pandas' ParserError).
+# Long row -> extra cells beyond the header now THROW (no silent data loss, like pandas' ParserError).
 assert throws(Function(): return pd.readcsv("a,b\n1,2,3,4\n5,6")), "long CSV row (more fields than the header) throws"
 # Quoted field with an embedded newline stays one cell / one row.
 var emb = pd.readcsv("a,b\n\"x\ny\",z\np,q")

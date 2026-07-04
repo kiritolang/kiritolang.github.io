@@ -129,7 +129,7 @@ ok(math.isnan(math.asin(math.nan)), "asin(nan)=nan (passes)")
 ok(math.isinf(math.exp(1000)), "exp(1000)=inf (range, not domain — no throw)")
 ok(math.isinf(math.pow(10, 400)), "pow(10,400)=inf (no throw)")
 
-# ============================================================ MATH: DOMAIN ERRORS must RAISE
+# ============================================================ MATH: DOMAIN ERRORS must THROW
 ok(throws(Function(): return math.sqrt(-1)), "sqrt(-1) throws")
 ok(throws(Function(): return math.log(0)), "log(0) throws")
 ok(throws(Function(): return math.log(-1)), "log(-1) throws")
@@ -160,7 +160,7 @@ catch as e:
     mmsg = String(e)
 ok("math domain error" in mmsg, "domain error message says 'math domain error'")
 
-# ============================================================ MATH: type / overflow errors RAISE
+# ============================================================ MATH: type / overflow errors THROW
 ok(throws(Function(): return math.factorial(-1)), "factorial(-1) throws")
 ok(throws(Function(): return math.factorial(25)), "factorial(25) Integer overflow throws")
 ok(throws(Function(): return math.prod([1000000000, 1000000000, 1000000000])), "int prod overflow throws")
@@ -408,7 +408,7 @@ ok(complex.atanh(complex.zero).compare(complex.zero, 1e-9, 1e-9), "atanh(0)=0")
 # valid but off the real-axis domain of the real math module (must NOT throw)
 ok(not throws(Function(): return complex.asin(2)), "complex.asin(2) is valid")
 ok(not throws(Function(): return complex.acosh(0)), "complex.acosh(0) is valid")
-# genuine singularities RAISE
+# genuine singularities THROW
 ok(throws(Function(): return complex.log(complex.zero)), "complex.log(0) throws")
 ok(throws(Function(): return complex.log10(complex.zero)), "complex.log10(0) throws")
 ok(throws(Function(): return complex.atanh(complex.one)), "complex.atanh(1) throws")

@@ -126,7 +126,7 @@ r[0] == r
     CHECK(survives(vm, "import(\"math\").log(0)\n"));
     CHECK(survives(vm, "import(\"math\").factorial(-1)\n"));   // clean error
     CHECK(survives(vm, "import(\"math\").factorial(100000)\n"));  // huge, but bounded
-    // sqrt(-1) now RAISES a clear math domain error rather than silently returning NaN.
+    // sqrt(-1) now THROWS a clear math domain error rather than silently returning NaN.
     {
         bool thrown = false;
         try { vm.runSource("import(\"math\").sqrt(-1.0)"); }

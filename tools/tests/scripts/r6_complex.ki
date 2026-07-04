@@ -70,7 +70,7 @@ ok(cmp(C(1, 2) * 3, C(3, 6)), "Complex * Integer")
 ok(cmp(C(4, 6) / 2, C(2, 3)), "Complex / Integer")
 ok(cmp(C(2, 0) ** 3, C(8, 0)), "Complex ** Integer")
 
-# real op Complex (real on the LEFT) RAISES — Integer/Float don't know Complex.
+# real op Complex (real on the LEFT) THROWS — Integer/Float don't know Complex.
 ok(throws(Function(): return 2 + C(1, 1)), "Integer + Complex throws")
 ok(throws(Function(): return 2.0 * C(1, 1)), "Float * Complex throws")
 ok(throws(Function(): return 1 - C(0, 1)), "Integer - Complex throws")

@@ -219,7 +219,7 @@ struct Huffman {
 
 // Cap on inflate output (matches the 256 MiB ceiling used by the other resource guards). Without it
 // a tiny crafted stream — a "zip bomb" reachable via net.get().content -> gzip/zlib.decompress on
-// untrusted data — expands without bound and OOMs the process. Raise instead, like the other guards.
+// untrusted data — expands without bound and OOMs the process. Throw instead, like the other guards.
 inline constexpr std::size_t kMaxInflateOut = 256ull * 1024 * 1024;
 
 inline void inflateBlock(BitReader& br, const Huffman& lit, const Huffman& dist, std::string& out,

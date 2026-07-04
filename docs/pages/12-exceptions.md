@@ -1,6 +1,6 @@
 # Exceptions reference
 
-Every error Kirito can raise — what it means, why it happens, and how to fix it. This page is a
+Every error Kirito can throw — what it means, why it happens, and how to fix it. This page is a
 catalogue; for the *language* mechanics of handling errors (`try` / `catch` / `finally` / `throw`),
 see the [Errors course lesson](#course-11-errors) and the [Language guide](#language-guide).
 
@@ -14,7 +14,7 @@ std::exception
           └── KiritoError   an interpreter diagnostic — carries a message string
 ```
 
-- **`KiritoError`** is what the interpreter itself raises — a lexer/parser error, a type mismatch, a
+- **`KiritoError`** is what the interpreter itself throws — a lexer/parser error, a type mismatch, a
   division by zero, a stdlib domain error, and so on. It carries a **message** (the text you see) and
   a source **span** (`file:line:col`). Inside Kirito a `try`/`catch` still catches it: the runtime
   **promotes the message to a Kirito `String`** at the catch site, so `catch as e:` binds `e` to that
@@ -54,7 +54,7 @@ finally:
 
 A **bare `catch`** also catches any C++ `std::exception` that crosses the native boundary (see
 [Standard C++ exceptions](#standard-c-exceptions)) — a misbehaving native module can't escape a Kirito
-`try`. Every interpreter error is catchable at run time **except** the ones raised *before* execution
+`try`. Every interpreter error is catchable at run time **except** the ones thrown *before* execution
 starts: lexer, parser, name-resolution, and static-analysis errors are reported when the program is
 compiled, so a `try` inside the same program can't catch its own syntax error.
 
@@ -77,7 +77,7 @@ try {
 `KiritoError` **is-a** `KiritoThrow`, so if you distinguish them, order `catch (KiritoError&)` **before**
 `catch (KiritoThrow&)`.
 
-## Compile-time errors (raised before your program runs)
+## Compile-time errors (thrown before your program runs)
 
 These come from the lexer, parser, name resolver, and compiler — reported while the program is being
 compiled, so a `try` in the same program **cannot catch them**. Fix the source and re-run. (Two
@@ -306,7 +306,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | **KiritoThrow** `assertion failed` (or the custom message) | `assert cond[, msg]` with a falsy `cond` | Fix the condition or the assumption |
-| **KiritoThrow** `<value>` | A Kirito `throw <value>` raises a live value | Catch with a typed `catch`, or fix the cause |
+| **KiritoThrow** `<value>` | A Kirito `throw <value>` throws a live value | Catch with a typed `catch`, or fix the cause |
 
 ### Recursion & nesting guards
 
@@ -333,7 +333,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 
 | Message | Cause | Fix |
 |---|---|---|
-| `substring not found` | `index`/`rindex` (raising variants) with a missing substring | Use `find`/`rfind` (return -1) or check first |
+| `substring not found` | `index`/`rindex` (throwing variants) with a missing substring | Use `find`/`rfind` (return -1) or check first |
 | `empty separator` | `split`/`join`-family with an empty `sep` | Pass a non-empty separator |
 | `unmatched '{' in format string` | Unbalanced brace in `.format()` | Balance braces / escape with `{{` |
 | `format field must be an index` / `format index out of range` | Bad/oversized positional field in `.format()` | Use valid `{0}`-style indices |
@@ -673,7 +673,7 @@ Both throw **DeflateError** internally, re-wrapped with a `zlib:` / `gzip:` pref
 | `parallel.spawn: missing function argument` / `first argument must be a Kirito function (defined in a .ki file)` | Bad first arg to `spawn` | Pass a file-defined Kirito function |
 | `parallel.spawn: the function must be defined in a loadable .ki file (its source is <src>)` | A closure / `<main>` / anonymous fn | Define it in an importable `.ki` file |
 | `cannot dump type '<T>' (define _getstate_/_setstate_ to make it serializable)` | A non-serializable arg/queue item (socket, file, live regex) | Pass only serializable values |
-| `parallel: worker thrown: <err>` | The spawned task raised in its worker VM | Fix the worker function |
+| `parallel: worker thrown: <err>` | The spawned task threw in its worker VM | Fix the worker function |
 | `parallel.spawn: cannot read source file '<f>'` / `could not load '<f>'` / `could not locate the spawned function in '<f>'` | The worker can't re-load the fn's source | Keep the `.ki` file on the lib path; don't relocate the fn |
 
 ### blocking primitives (Queue / Lock / Event / Semaphore / Barrier)
@@ -692,9 +692,9 @@ Both throw **DeflateError** internally, re-wrapped with a `zlib:` / `gzip:` pref
 
 ## Kirito `throw` and `assert`
 
-A Kirito `throw <value>` raises a **`KiritoThrow`** carrying the live value; `assert cond[, msg]`
+A Kirito `throw <value>` throws a **`KiritoThrow`** carrying the live value; `assert cond[, msg]`
 lowers to the same when `cond` is falsy (value `"assertion failed"` or your message). A bare `throw`
-inside a `catch` re-raises the in-flight value with its original span. A typed `catch T as e:` routes
+inside a `catch` re-throws the in-flight value with its original span. A typed `catch T as e:` routes
 on the value's class chain; a bare `catch as e:` catches anything. If one reaches the top level
 uncaught, it is re-wrapped as `uncaught exception: <value>` (see the CLI table below).
 

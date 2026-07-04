@@ -2,7 +2,7 @@
 #define KIRITO_RESOLVER_HPP
 
 // Compile-time, scope-aware name resolution. Runs once over a parsed Program (before compilation),
-// and RAISES a KiritoError for any name reference that does not resolve to a binding — a parameter,
+// and THROWS a KiritoError for any name reference that does not resolve to a binding — a parameter,
 // a `var`/`for`/`class`/`catch`/`with` name in the current or an enclosing lexical scope, the
 // per-file `arglist`/`argmain`, or a global/builtin installed on the VM. Resolution is by scope
 // MEMBERSHIP, not textual order: a name declared anywhere in a scope is visible throughout it, so

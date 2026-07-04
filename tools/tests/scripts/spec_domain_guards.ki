@@ -1,5 +1,5 @@
 # Regression: bad-input "silent bug" guards added across the stdlib — domain/range/malformed inputs
-# must RAISE a clear error instead of returning NaN/inf/garbage. Each block prints `True` lines.
+# must THROW a clear error instead of returning NaN/inf/garbage. Each block prints `True` lines.
 var io = import("io")
 var math = import("math")
 var c = import("complex")

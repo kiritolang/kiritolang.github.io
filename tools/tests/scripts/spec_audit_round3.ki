@@ -87,7 +87,7 @@ var g = io.open("/tmp/ki_round3.txt", "r")
 discard g.readlines()
 assert len(g.read(9000000000000000000)) == 0, "read after EOF is empty (capped)"
 g.close()
-assert throws(Function(): return path.remove("/tmp/ki_round3_missing")), "remove of a missing file RAISES by default"
+assert throws(Function(): return path.remove("/tmp/ki_round3_missing")), "remove of a missing file THROWS by default"
 assert path.remove("/tmp/ki_round3_missing", missing_ok = True) == False, "remove(missing_ok=True) of a missing file is False"
 
 # --- net: out-of-range port and negative recv size throw (no silent wrap / bad_alloc) ---

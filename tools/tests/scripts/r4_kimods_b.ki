@@ -6,7 +6,7 @@
 # Every documented function/class/method/argument is exercised from typical, edge (empty/unicode/
 # quoted-CSV-with-commas+newlines/malformed-XML/semver-prerelease+ranges/base64-roundtrip+bad-input/
 # tabular-merge+groupby+missing-data), and malformed/wrong-type angles. Wrong-type and out-of-domain
-# inputs are asserted to RAISE via the `throws` helper. Keyword-argument and `inspect` support are
+# inputs are asserted to THROW via the `throws` helper. Keyword-argument and `inspect` support are
 # checked for every module. Everything is DETERMINISTIC; the final line is a fixed summary. Only
 # behavior CONFIRMED correct on the release interpreter is asserted here — suspected oddities are
 # reported separately, not encoded as passing assertions.
@@ -495,7 +495,7 @@ ok(a.isin([]).tolist() == [False, False, False, False], "Series.isin with an emp
 # the shared _binop throws on a length mismatch, in either direction.
 ok(throws(Function(): return tb.Series([1, 2]) + tb.Series([1, 2, 3])), "Series + Series of unequal length throws")
 ok(throws(Function(): return tb.Series([1, 2, 3]) + tb.Series([1, 2])), "the length-mismatch throw is symmetric")
-# element-wise ops RAISE on a None element (None can't take an operator / be ordered).
+# element-wise ops THROW on a None element (None can't take an operator / be ordered).
 ok(throws(Function(): return tb.Series([1, None, 3]) + 1), "Series + scalar throws on a None element")
 
 # --- Series aggregations (skip missing; Bool counts as 0/1).

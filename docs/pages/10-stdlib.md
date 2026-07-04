@@ -1500,7 +1500,7 @@ Clocks and calendar time.
   day 32 → the 1st of the next month), rather than throwing.
 - `strptime(text: String, format: String) → DateTime` — parse a time string against a format. The
   directive set is deliberately small: `%Y %m %d %H %M %S` and a literal `%%` (any other `%`-directive
-  raises "does not match format" — this is narrower than `dt.format`, which delegates to the full
+  throws "does not match format" — this is narrower than `dt.format`, which delegates to the full
   `strftime`). Unlike `make`, parsing is strict: a literal/format mismatch, an **out-of-range** field
   (`2024-99-99`, hour `25`), or **unconverted trailing input** (`"2024-01-01XYZ"`) all throw rather
   than silently producing a garbage date.

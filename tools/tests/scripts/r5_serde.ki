@@ -162,7 +162,7 @@ ok(dump.loads(dump.dumps(bigList))[99999] == 99999, "dump: 100k-element List rou
 ok(serialize.loads(serialize.dumps(bigList))[99999] == 99999, "serialize: 100k-element List round-trips")
 
 # ============================================================ DEEPLY-NESTED graph guard (no overflow)
-# A pathologically deep nested list must RAISE (the flatten depth guard), never overflow the C++ stack.
+# A pathologically deep nested list must THROW (the flatten depth guard), never overflow the C++ stack.
 var deep = []
 var cur = deep
 var d = 0

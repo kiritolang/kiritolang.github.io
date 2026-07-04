@@ -22,7 +22,7 @@ var is_ident_start = Function(c) -> Bool:
 var is_ident_part = Function(c) -> Bool:
     return is_ident_start(c = c) or is_digit(c = c)
 
-# Raised on a malformed token. Carries a message and the column where it occurred.
+# Thrown on a malformed token. Carries a message and the column where it occurred.
 class SqlLexError:
     var _init_ = Function(self, msg : String, col : Integer):
         self.msg = msg

@@ -1,7 +1,7 @@
 # Exhaustive probe of the compression + regex stdlib region: `zlib`, `gzip`, `hash`, `regex`.
 # Every public function/method/flag is exercised from typical, edge, and malformed angles:
 #   - zlib/gzip: String|Bytes round-trips, type preservation, interop with real zlib/gzip/raw-deflate
-#     streams produced by a reference implementation, CRC/checksum verification, corrupt-input RAISE.
+#     streams produced by a reference implementation, CRC/checksum verification, corrupt-input THROW.
 #   - hash: md5/sha1/sha256 known-answer vectors, adler32/crc32/crc64 constants, Bytes byte-identity.
 #   - regex: compile/match/search/fullmatch/findall/finditer/sub(str|callable)/split/escape, all flags,
 #     groups (numbered/named/optional), greedy+lazy quantifiers, classes/anchors/boundaries, unicode
@@ -69,7 +69,7 @@ assertEq(z.decompress(refZlib).decode(), refMsg, "zlib decompresses a real refer
 var refRaw = Bytes([243,206,44,202,44,201,87,200,201,204,75,77,44,210,45,201,204,77,85,40,74,77,79,173,80,72,204,75,81,112,113,117,243,113,12,113,213,83,240,166,187,42,0])
 assertEq(z.inflate(refRaw).decode(), refMsg, "inflate decompresses a real reference raw-DEFLATE stream (interop)")
 
-# --- corrupt / hostile input RAISES cleanly (no crash) ---
+# --- corrupt / hostile input THROWS cleanly (no crash) ---
 raisesWith(Function(): return z.decompress("not zlib data"), "zlib", "zlib decompress rejects garbage")
 raisesWith(Function(): return z.decompress(""), "zlib", "zlib decompress rejects empty")
 raisesWith(Function(): return z.inflate("\xff\xff\xff"), "zlib", "raw inflate rejects a bad block type")
@@ -100,7 +100,7 @@ assertEq(g.decompress(refGzip).decode(), refMsg, "gzip decompresses a real refer
 # --- multi-member concatenation (gunzip accepts `cat a.gz b.gz`) ---
 assertEq(g.decompress(g.compress("AAA") + g.compress("BBB")), "AAABBB", "gzip decodes concatenated members")
 
-# --- corrupt / truncated input RAISES (CRC + header + trailing-junk) ---
+# --- corrupt / truncated input THROWS (CRC + header + trailing-junk) ---
 raisesWith(Function(): return g.decompress("not a gzip stream here"), "gzip", "gzip rejects bad magic")
 raisesWith(Function(): return g.decompress(g.compress("data")[0:5]), "gzip", "gzip rejects a truncated stream")
 raisesWith(Function(): return g.decompress(g.compress("ok") + "JUNK!!!!"), "gzip", "gzip rejects trailing junk after a member")
@@ -208,7 +208,7 @@ var md = re.search("(?P<x>a)(?P<y>b)?", "a")
 assertEq(md.groups("MISS"), ["a", "MISS"], "groups(default) substitutes for absent groups")
 assertEq(md.groupdict("MISS"), {"x": "a", "y": "MISS"}, "groupdict(default) substitutes for absent groups")
 assertEq(md.groupdict(), {"x": "a", "y": None}, "groupdict() default is None")
-# bad group keys RAISE clearly
+# bad group keys THROW clearly
 raisesWith(Function(): return m.group(99), "no such group", "group() rejects an out-of-range index")
 raisesWith(Function(): return m.group("nope"), "no such group", "group() rejects an unknown name")
 
@@ -323,13 +323,13 @@ assertEq(cm.end(), 4, "unicode match end is a code-point index")
 assertEq(re.search(".", "é").group(), "é", "dot matches one code point, not one byte")
 assertEq(re.search("é+", "ééé!").span(), [0, 3], "unicode span counts code points")
 
-# ============================================================================ regex: rejected constructs RAISE cleanly
+# ============================================================================ regex: rejected constructs THROW cleanly
 raisesWith(Function(): return re.compile("(a)\\1"), "backreferences", "a numbered backreference is rejected")
 raisesWith(Function(): return re.compile("(?=a)"), "lookahead", "positive lookahead is rejected")
 raisesWith(Function(): return re.compile("(?!a)"), "lookahead", "negative lookahead is rejected")
 raisesWith(Function(): return re.compile("(?<=a)b"), "lookbehind", "positive lookbehind is rejected")
 raisesWith(Function(): return re.compile("(?<!a)b"), "lookbehind", "negative lookbehind is rejected")
-# --- malformed patterns RAISE with an actionable message ---
+# --- malformed patterns THROW with an actionable message ---
 raisesWith(Function(): return re.compile("*"), "nothing to repeat", "a leading quantifier is rejected")
 raisesWith(Function(): return re.compile("(a"), "missing )", "an unbalanced ( is rejected")
 raisesWith(Function(): return re.compile("a)"), "unbalanced", "an unbalanced ) is rejected")

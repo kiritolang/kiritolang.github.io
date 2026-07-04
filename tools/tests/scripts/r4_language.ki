@@ -883,12 +883,12 @@ ok(noReturn() == None, "function with no return yields None")
 var typed = Function(d : Dict) -> Integer:
     return len(d)
 ok(typed({"a": 1, "b": 2}) == 2, "annotated function accepts a matching argument")
-ok(throws(Function(): return typed([1, 2])), "wrong-type argument RAISES")
+ok(throws(Function(): return typed([1, 2])), "wrong-type argument THROWS")
 
 # return type is enforced
 var badReturn = Function() -> Integer:
     return "not an int"
-ok(throws(Function(): return badReturn()), "return type violation RAISES")
+ok(throws(Function(): return badReturn()), "return type violation THROWS")
 
 # Integer does NOT satisfy a Float annotation (no implicit widening at the boundary)
 var needsFloat = Function(x : Float) -> Float:

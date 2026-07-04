@@ -1,6 +1,6 @@
 # r4_linalg.ki — exhaustive audit of the `matrix` (real matrices/vectors) and `complex` (complex
 # numbers + complex matrices) stdlib modules. Probes every constructor/operator/method/constant from
-# every angle: typical, edge (1x1, 0x0, identity, rectangular, real-coercion), and the full RAISE
+# every angle: typical, edge (1x1, 0x0, identity, rectangular, real-coercion), and the full THROW
 # surface (non-square det/inv/trace, singular inverse, dimension mismatch, non-3-vec cross, ordering,
 # domain errors). Computed floats are checked with the tolerant `.compare()` / a modulus epsilon —
 # NEVER exact `==` on a transcendental — while exact `==` is asserted exactly where it must hold.
@@ -68,7 +68,7 @@ G[0, 1] = 77
 chk(G[0, 1] == 77.0, "m[i, j] = v index-set")
 
 # =================================================================================================
-# matrix — arithmetic (+, -, * matrix & scalar) and the RAISE surface
+# matrix — arithmetic (+, -, * matrix & scalar) and the THROW surface
 # =================================================================================================
 var B = m.Matrix([[5, 6], [7, 8]])
 chk(A + B == m.Matrix([[6, 8], [10, 12]]), "matrix add (exact, integral)")
@@ -78,7 +78,7 @@ chk(A * 2 == m.Matrix([[2, 4], [6, 8]]), "scalar multiply (right operand)")
 chk((A * 0.5) == m.Matrix([[0.5, 1.0], [1.5, 2.0]]), "float scalar multiply")
 # non-conformable matrix multiply where inner dims agree (rectangular) is fine
 chk(m.Matrix([[1, 2, 3], [4, 5, 6]]) * m.Matrix([[1], [2], [3]]) == m.Matrix([[14], [32]]), "rectangular multiply")
-# RAISE: shape-mismatch add/sub, inner-dim-mismatch multiply, scalar-on-LEFT, unsupported ops
+# THROW: shape-mismatch add/sub, inner-dim-mismatch multiply, scalar-on-LEFT, unsupported ops
 chk(throws(Function(): return A + m.Matrix([[1, 2, 3]])), "add shape mismatch throws")
 chk(throws(Function(): return A - m.Matrix([[1]])), "sub shape mismatch throws")
 chk(throws(Function(): return m.Matrix([[1, 2]]) * m.Matrix([[1, 2]])), "multiply inner-dim mismatch throws")
@@ -98,7 +98,7 @@ chk(approx(m.Matrix([[6, 1, 1], [4, -2, 5], [2, 8, 7]]).determinant(), -306.0), 
 chk(A.trace() == 5.0, "trace 2x2")
 chk(m.Matrix([[5]]).trace() == 5.0, "trace 1x1")
 chk(A.sum() == 10.0, "sum of all elements")
-# singular: determinant returns 0.0 (does NOT throw); inverse RAISES
+# singular: determinant returns 0.0 (does NOT throw); inverse THROWS
 chk(m.Matrix([[1, 2], [2, 4]]).determinant() == 0.0, "singular determinant -> 0.0 (no throw)")
 chk(throws(Function(): return m.Matrix([[1, 2], [2, 4]]).inverse()), "singular inverse throws")
 # A * inv(A) ~ I  (numerical correctness, tolerant compare with abs_tol for the exact-zero off-diagonals)
@@ -110,7 +110,7 @@ var Aw = m.Matrix([[1, 2], [3, 4]])
 chk((Aw * Aw.inverse() == m.identity(2)) == False, "exact == on computed inverse is False (roundoff)")
 # 1x1 inverse is the reciprocal
 chk(approx(m.Matrix([[2]]).inverse()[0, 0], 0.5), "1x1 inverse = reciprocal")
-# RAISE: non-square det/inverse/trace
+# THROW: non-square det/inverse/trace
 chk(throws(Function(): return m.Matrix([[1, 2, 3], [4, 5, 6]]).determinant()), "non-square determinant throws")
 chk(throws(Function(): return m.Matrix([[1, 2, 3], [4, 5, 6]]).inverse()), "non-square inverse throws")
 chk(throws(Function(): return m.Matrix([[1, 2, 3], [4, 5, 6]]).trace()), "non-square trace throws")
@@ -146,7 +146,7 @@ chk(m.vector([3, 4]).norm() == 5.0, "vector norm (3-4-5)")
 chk(approx(m.Matrix([[1, 2], [3, 4]]).norm(), 5.477225575051661), "norm is Frobenius for a matrix (sqrt 30)")
 # `*` is matrix multiply, never a dot: two same-shape row vectors have incompatible inner dims
 chk(throws(Function(): return u * v), "u * v throws (not a dot product)")
-# RAISE: dot length mismatch, dot on a non-vector, cross on non-3-element
+# THROW: dot length mismatch, dot on a non-vector, cross on non-3-element
 chk(throws(Function(): return m.vector([1, 2]).dot(m.vector([1, 2, 3]))), "dot length mismatch throws")
 chk(throws(Function(): return m.Matrix([[1, 2], [3, 4]]).dot(m.Matrix([[1, 2], [3, 4]]))), "dot on a 2x2 (non-vector) throws")
 chk(throws(Function(): return m.vector([1, 2]).cross(m.vector([3, 4]))), "cross on 2-vec throws")
@@ -208,7 +208,7 @@ chk(throws(Function(): return C.one / C.zero), "div by Complex zero throws")
 chk(throws(Function(): return C.of(1, 1) / 0), "div by real zero throws")
 
 # =================================================================================================
-# complex — equality (EXACT), real-equality both directions, NaN, ordering RAISE
+# complex — equality (EXACT), real-equality both directions, NaN, ordering THROW
 # =================================================================================================
 chk(C.of(2, 0) == 2 and 2 == C.of(2, 0), "Complex(re,0) == real, both directions")
 chk(C.of(2.0, 0) == 2.0 and 2.0 == C.of(2.0, 0), "Complex == Float, both directions")
@@ -323,7 +323,7 @@ chk(CG[1, 0] == C.of(7, 0), "complex m[i, j] = v")
 chk(C.Matrix([[C.one]]).get(row = 0, col = 0) == C.one, "complex get keyword args")
 
 # =================================================================================================
-# complex matrices — arithmetic + RAISE surface
+# complex matrices — arithmetic + THROW surface
 # =================================================================================================
 chk((M + M)[0, 0] == C.of(2, 2), "complex matrix add")
 chk((M - M)[0, 0] == C.zero, "complex matrix sub")
@@ -354,11 +354,11 @@ chk((Minv * M).compare(C.identity(2), abs_tol = 0.000001), "complex inv(M) * M =
 chk(C.Matrix([[C.of(2, 0)]]).inverse()[0, 0].compare(C.of(0.5, 0), abs_tol = 0.000000001), "complex 1x1 inverse")
 chk(M.trace() == C.of(2, 0), "complex trace")
 chk(M.apply(Function(zz): return C.conjugate(zz)) == M.conjugate(), "complex apply (elementwise conj)")
-# singular complex matrix: determinant 0, inverse RAISES
+# singular complex matrix: determinant 0, inverse THROWS
 chk(C.Matrix([[C.of(1, 0), C.of(2, 0)], [C.of(2, 0), C.of(4, 0)]]).determinant().compare(C.zero, abs_tol = 0.000000001), "complex singular determinant ~ 0")
 chk(throws(Function(): return C.Matrix([[C.of(1, 0), C.of(2, 0)], [C.of(2, 0), C.of(4, 0)]]).inverse()), "complex singular inverse throws")
 chk(throws(Function(): return C.zeros(2, 2).inverse()), "complex zero matrix inverse throws (singular)")
-# RAISE: non-square det/inverse/trace
+# THROW: non-square det/inverse/trace
 chk(throws(Function(): return C.Matrix([[C.one, C.one]]).determinant()), "complex non-square determinant throws")
 chk(throws(Function(): return C.Matrix([[C.one, C.one]]).inverse()), "complex non-square inverse throws")
 chk(throws(Function(): return C.Matrix([[C.one, C.one]]).trace()), "complex non-square trace throws")
@@ -388,7 +388,7 @@ chk(type(cv1.norm()) == "Float", "complex vector norm is a Float")
 var cx = C.vector([C.of(0, 1), C.zero, C.zero])
 var cy = C.vector([C.zero, C.of(0, 1), C.zero])
 chk(cx.cross(cy) == C.vector([C.zero, C.zero, C.of(-1, 0)]), "complex cross product")
-# RAISE: dot length mismatch, dot non-vector, cross non-3-vec
+# THROW: dot length mismatch, dot non-vector, cross non-3-vec
 chk(throws(Function(): return cv1.dot(C.vector([C.one, C.one, C.one]))), "complex dot length mismatch throws")
 chk(throws(Function(): return M.dot(M)), "complex dot on a 2x2 (non-vector) throws")
 chk(throws(Function(): return C.vector([C.one, C.one]).cross(C.vector([C.one, C.one]))), "complex cross on 2-vec throws")

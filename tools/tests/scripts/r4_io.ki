@@ -618,7 +618,7 @@ var ddir = P("fs")
 n = n + 1
 assert path.mkdir(ddir), "mkdir creates a directory (returns True)"
 n = n + 1
-assert throws(Function(): return path.mkdir(ddir)), "mkdir on an existing directory RAISES by default"
+assert throws(Function(): return path.mkdir(ddir)), "mkdir on an existing directory THROWS by default"
 n = n + 1
 assert path.mkdir(ddir, exist_ok = True) == False, "mkdir(exist_ok=True) on an existing directory is a no-op (False)"
 n = n + 1
@@ -657,7 +657,7 @@ assert path.exists(moved) and not path.exists(inside), "rename moves the file"
 n = n + 1
 assert path.remove(moved) and not path.exists(moved), "remove deletes a file and returns True"
 
-# missing-path semantics: getsize/rename RAISE; remove of a missing path is a tolerant no-op (False);
+# missing-path semantics: getsize/rename THROW; remove of a missing path is a tolerant no-op (False);
 # exists/isfile/isdir are False; listdir/walk of a missing dir are empty.
 var missing = P("missing_path")
 discard path.remove(missing, missing_ok = True)
@@ -666,7 +666,7 @@ assert throws(Function(): return path.getsize(missing)), "getsize of a missing p
 n = n + 1
 assert throws(Function(): return path.rename(missing, P("missing_dst"))), "rename of a missing path throws"
 n = n + 1
-assert throws(Function(): return path.remove(missing)), "remove of a missing path RAISES by default"
+assert throws(Function(): return path.remove(missing)), "remove of a missing path THROWS by default"
 n = n + 1
 assert path.remove(missing, missing_ok = True) == False, "remove(missing_ok=True) of a missing path is False"
 n = n + 1

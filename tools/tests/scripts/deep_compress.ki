@@ -2,7 +2,7 @@
 # deflate/inflate), gzip (compress/decompress + gunzip), hash (md5/sha1/sha256/adler32/crc32/crc64),
 # and base64 (encode/decode + urlsafe). Goes deeper than spec_zlib/spec_gzip/spec_hash/probe_compress_
 # fuzz: known vectors, String/Bytes type preservation (incl. empty), all 256 byte values, byte-flip /
-# CRC / Adler tampering, container mixing, truncation/garbage fuzzing (must RAISE not hang/crash), and
+# CRC / Adler tampering, container mixing, truncation/garbage fuzzing (must THROW not hang/crash), and
 # the actual (vs documented) behavior of base64 decode on invalid/trailing input. Deterministic.
 var io = import("io")
 var zlib = import("zlib")

@@ -64,7 +64,7 @@ writeMod("_badDriver.ki",
          "    var io = import(\"io\")\n    io.print(\"caught: \" + String(e))\n")
 var procBad = sys.createprocess([runner, "--lib", root, path.join(root, "_badDriver.ki")],
                                 None, None, 5000)
-assert procBad["code"] == 0, "throwing module raises a catchable error"
+assert procBad["code"] == 0, "throwing module throws a catchable error"
 assert "caught:" in procBad["stdout"], "caller catches the top-level throw"
 
 # --- 4. Re-importing a throwing module the second time still throws --------

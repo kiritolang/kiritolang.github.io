@@ -5,7 +5,7 @@
 #
 # Every documented function/class/method is exercised from typical, edge (empty/single/ties/
 # duplicates/cycles/negative/large), and malformed/wrong-type angles. Wrong-type and out-of-domain
-# inputs are asserted to RAISE via the `throws` helper. Everything is DETERMINISTIC; the final
+# inputs are asserted to THROW via the `throws` helper. Everything is DETERMINISTIC; the final
 # line is a fixed summary. Only behavior CONFIRMED correct on the release interpreter is asserted
 # here — suspected bugs are reported separately, not encoded as passing assertions.
 # =============================================================================================
