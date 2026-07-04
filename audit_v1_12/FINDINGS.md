@@ -14,18 +14,18 @@ Legend: ☐ todo · ▣ fixed+tested · ↷ deferred (documented, low value)
 Fix each with a regression test (C++ unit and/or `.ki` + `.experr`). Grouped by fix so themes land once.
 
 ### Crashes / uncatchable (violate the "guards THROW, never crash" invariant)
-- ☐ **A04-1** call-depth guard is count-based (`maxCallDepth_=3000`); recursion through a native
+- ▣ [FIXED] **A04-1** call-depth guard is count-based (`maxCallDepth_=3000`); recursion through a native
   higher-order fn (`sorted(key=g)`, `xs.sort(key=g)`, `min/max(key=g)`, `apply(g)`) has deep C++
   frames and overflows the 8 MB native stack at ~2940 → **SIGSEGV**. Fix: stack-pointer-aware guard
   (record base SP at VM start; in the depth check compare current SP against a margin).
-- ☐ **TENSOR-1** (A12) rank cap (64) enforced only on element count, not rank; `reshape`/`expanddims`/
+- ▣ [FIXED] **TENSOR-1** (A12) rank cap (64) enforced only on element count, not rank; `reshape`/`expanddims`/
   `broadcastto` build a rank-200000 tensor → recursive `str()`/`tolist()` **SIGSEGV**. Fix: enforce
   the rank cap in `tns::make`/`checkSize` (single-source next to `checkedNumel`).
-- ☐ **A10-4** `sys.createprocess`/`shell` capture child stdout/stderr with no size cap; the
+- ▣ [FIXED] **A10-4** `sys.createprocess`/`shell` capture child stdout/stderr with no size cap; the
   `std::bad_alloc` is thrown *inside a drain `std::thread` with no try/catch* → `std::terminate`/
   **SIGABRT**, uncatchable. Fix: cap captured output (throw catchably); wrap the drain-thread body in
   try/catch and propagate.
-- ☐ **A10-2** `sys.exit()` calls `std::exit()` unconditionally → from a `parallel` worker thread it
+- ▣ [FIXED] **A10-2** `sys.exit()` calls `std::exit()` unconditionally → from a `parallel` worker thread it
   runs static dtors while siblings live → **nondeterministic deadlock** (~50%). Fix: unwind via a
   dedicated exit signal to the owning thread / dispatcher instead of `std::exit` off-main-thread.
   (Related: A19-4 same root — `std::exit` skips `~KiritoDispatcher`.)
@@ -37,10 +37,10 @@ Fix each with a regression test (C++ unit and/or `.ki` + `.experr`). Grouped by 
   C++ equality wrappers through the shared `kiEquals`.
 
 ### GC-rooting THEME — fresh-alloc / `iterate()` handles swept mid-op (one shared fix)
-- ☐ **A09-3** `Set(iterable)` / `Dict(iterable)` constructors don't root `iterate()` handles → dangling.
-- ☐ **A09-4** `zip`/`map`/`filter`/`sorted`/`enumerate`/`all`/`any` same gap (min/max/reversed/List root
+- ▣ [FIXED] **A09-3** `Set(iterable)` / `Dict(iterable)` constructors don't root `iterate()` handles → dangling.
+- ▣ [FIXED] **A09-4** `zip`/`map`/`filter`/`sorted`/`enumerate`/`all`/`any` same gap (min/max/reversed/List root
   correctly — proving the omission is inconsistent).
-- ☐ **A06-1/A06-2** (Medium, folded here) `List.apply`/`List.sort`/`Dict.apply`/`Set.apply` snapshot
+- ▣ [FIXED] **A06-1/A06-2** (Medium, folded here) `List.apply`/`List.sort`/`Dict.apply`/`Set.apply` snapshot
   element handles into an unrooted vector.
 - ☐ **A07-4** (Medium, folded here) `Value::items()` over a String returns non-pinning views onto fresh
   per-char Strings rooted only by an internal RootScope destroyed on return.
@@ -51,19 +51,19 @@ Fix each with a regression test (C++ unit and/or `.ki` + `.experr`). Grouped by 
 - ▣ **A09-1** [FIXED, ASan-clean] `pow(base,exp,mod)` computes `((base%mod)+mod)%mod` in int64 → overflows before the
   `__int128` widen → silently wrong for mod > ~2^62 (UBSan-confirmed). Fix: do the reduction in
   `__int128`/unsigned.
-- ☐ **TENSOR-2** (A12) `einsum` contraction count is an unchecked product of all label sizes →
+- ▣ [FIXED] **TENSOR-2** (A12) `einsum` contraction count is an unchecked product of all label sizes →
   `size_t` overflow (silent wrong result) + no work cap (DoS hang). Fix: overflow-checked product vs a
   work cap.
 
 ### Resource-exhaustion / security
-- ☐ **A16-1** gzip multi-member decompress caps *each* member at 256 MiB but not the aggregate →
+- ▣ [FIXED] **A16-1** gzip multi-member decompress caps *each* member at 256 MiB but not the aggregate →
   400 MiB out from a 4.5 MiB `.gz`; reachable via `gzip.decompress(net.get(url).content)`. Fix:
   shrinking per-member budget (`kMaxInflateOut - result.size()`).
-- ☐ **NET-1** (A14) cross-origin / cross-scheme redirect leaks the `Authorization` header **and** the
+- ▣ [FIXED] **NET-1** (A14) cross-origin / cross-scheme redirect leaks the `Authorization` header **and** the
   whole cookie jar to the redirect target (incl. https→http downgrade) — credential exfiltration,
   `allowredirects` on by default. Fix: on a redirect whose origin differs, drop `Authorization`; scope
   cookies to their origin; never resend either over a downgraded scheme.
-- ☐ **A20-1** semver `_parserange` splits an OR-part on a single space, so `">= 1.2.0"` → `">="` AND
+- ▣ [FIXED] **A20-1** semver `_parserange` splits an OR-part on a single space, so `">= 1.2.0"` → `">="` AND
   `"1.2.0"` = exact-match only; `satisfies("1.5.0",">= 1.2.0")` is `False` → **kpm resolves the wrong
   version**. Fix: parse `operator WS* version` as one comparator (unify with the leading-zero fix A20-2).
 
@@ -71,7 +71,7 @@ Fix each with a regression test (C++ unit and/or `.ki` + `.experr`). Grouped by 
 
 ## Cross-cutting THEMES (single fix each; high leverage; single-source-of-truth)
 
-- ☐ **T-ROOT** GC-rooting helper — see the HIGH GC-rooting block (A09-3/4, A06-1/2, A07-4).
+- ▣ [FIXED] **T-ROOT** GC-rooting helper — see the HIGH GC-rooting block (A09-3/4, A06-1/2, A07-4).
 - ☐ **T-BIND** kwarg binding + param-default resolution duplicated 3–4× with divergent policies:
   **A05-2** (`makeMethod` fills omitted required args with `None` → `d.setdefault(default=7)` inserts
   `{None:7}`; `d.get(default=9)` returns 9 not error), A07 (three binders), **A03-3/A03-4** (resolver
