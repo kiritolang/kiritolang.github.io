@@ -169,15 +169,35 @@ maintainer, NOT changed):**
 - A02-1 — inline `Function(): return a, b` does NOT pack, so a list of inline thunks
   `[Function(): return X, Function(): return Y]` works (the comma belongs to the enclosing list).
 
-**Fixed since:** A07-3 (private-access asymmetry) — `checkPrivateAccess` now allows access when the
-running method's class and the receiver's class are related by inheritance in EITHER direction
-(new `classIsSubclassOf` helper), matching the documented per-class-*chain* privacy; regression tests
-in test_audit_v112.cpp cover subclass→base-instance, base→derived-instance, unrelated (throws), and
-plain-outside (throws).
+**Fixed since (all Mediums + a Low/Nit cluster):**
+- **A07-3** (private-access asymmetry) — `checkPrivateAccess` allows access when the running method's
+  class and the receiver's class are related by inheritance in EITHER direction (`classIsSubclassOf`).
+- **A20-4** (`reduce` initial=None) — identity sentinel `_reduce_unset`; explicit None is a real seed.
+- **A17-1** (`DateTime._setstate_`) — one-shot (`initialized_` guard); can't corrupt a live Set/Dict key.
+- **A19-1** (fork-bomb) — per-VM `bootstrapping` flag; a top-level spawn during worker bootstrap throws
+  "use `if argmain:`". PLUS fixed a real regression from the earlier T-RETAIN reclaim: `Task.join()` is
+  idempotent again (result cached in `TaskVal`), restoring r7/r8/r10_parallel.
+- **A07-4** (C++ `Value::items()`) — pins each element; String/Bytes iteration survives GC.
+- **A10-5** (eager `for line in file`) — added `Object::lazyIterate`/`LazyIterator`; File+stdin stream
+  one line per step (bounded memory, stdin processed as it arrives). Eager `iterate()` kept for
+  `List(f)`/`sorted(f)`.
+- **A02-2** (f-string spans) — sub-lexer seeded at the token's line/col; embedded errors report the
+  real file location.
+- **A03-3 follow-up** — aligned r7_language golden test + CLAUDE.md with the (already-runtime-true)
+  earlier-param-default semantics.
+- **A16-2** (stored-block NLEN), **A16-3** (zlib FCHECK/CINFO), **A18-1** (regex dead branch),
+  **A03-2** (Unpack comment), **A05-4** (if/while condition truthy span), **A04-2** (foreign-exception
+  traceback bookkeeping).
 
-**Remaining (genuine, not yet done):** T-BIND full binder unification (the concrete A05-2/A03-3 bugs
-are fixed; consolidating the 3–4 binders is DRY cleanup); Mediums A02-2 (f-string runtime line
-numbers), A10-5 (eager `for line in file`), A17-1 (`DateTime._setstate_`
-mutability), A19-1 (fork-bomb diagnostic), A20-4 (`reduce` initial=None sentinel), A07-4 (C++
-`Value::items()` String view); the 37 Low / 13 Nit batch; A09-2 bucket compaction / M3 pool cap; the
-A21 test-gap sweep; and the A22 before/after benchmark measurement of M1.
+**Deferred (need a build+run to re-baseline golden `.expected`, or are pure refactors — low value):**
+- Behavior changes that ripple into many golden `.expected` files: A11-1 (`trunc`→Integer), A20-3
+  (`quantiles` extrapolation), A20-8 (base64 non-canonical), A20-6 (groupby drops NaN), A20-7
+  (textwrap long-word break), A06-4 (empty-substring past-end across 5 string methods).
+- Pure DRY refactors: A11-2 (math int-extraction lambdas), A13-2/A13-3 (Matrix vs ComplexMatrix ~90%
+  overlap), T-BIND full binder unification, A03-4 (default-resolution rule in 4 places).
+- Defense-in-depth already mitigated: A15-1 (serde rebuild depth cap — downstream recursion already
+  guarded), A08-3/M3 (pool free-list high-water), A09-2 (bucket compaction).
+- By-design (SCRAPPED per user): A05-3/A13-1 (arithmetic reflection), A06-7/A06-5 (NaN container keys),
+  A02-1 (inline `return a,b`).
+- Remaining nits: A01-2/3/4 (lexer byte/cp columns), A02-3/4/5, A11-3/4, A13-4/5/6, A16-4, A17-2/3,
+  A19-3/4, A20-2, A09-5. A21 test-gap sweep; A22 M1 before/after benchmark.
