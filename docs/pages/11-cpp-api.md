@@ -309,9 +309,27 @@ outlives the current expression.
   refcounted GC root via `vm.pinHandle` / `unpinHandle`), so you almost never touch the rooting
   primitives directly — building through the wrappers is self-rooting. See [Section 5 → Constructing
   values](#constructing-values).
+- **`PinnedHandle`** (value.hpp) — for a handle you must store in a **long-lived** C++ object: a
+  class member, a `std::vector`, a callback registry. `RootScope` is stack-scoped, so it can't
+  outlive the function that created it; and a bare `Handle` member is invisible to the GC, so a later
+  collection sweeps it out from under you (a dangling handle — the classic "I cached a compiled
+  Kirito function and it vanished mid-run" bug). `PinnedHandle` is an owning, copy/move-aware RAII
+  root that pins its handle for its own lifetime and unpins on destruction (its pin is refcounted, so
+  copies are safe and moves transfer ownership):
 
-You need the manual primitives above only when you hold a bare `Handle` — with no wrapper around it —
-across another allocating call.
+  ```cpp
+  class Engine {
+      KiritoVM&    vm_;
+      PinnedHandle policy_;                 // a compiled Function, kept across MANY calls — safe
+  public:
+      Engine(KiritoVM& vm, Handle policy) : vm_(vm), policy_(vm, policy) {}
+      Value run(Value arg) { return policy_.value().call({arg}); }   // .value() wraps; operator Handle too
+  };
+  ```
+
+You need `RootScope` / `pushTemp` only for a handle you hold across another allocating call **within
+the same function**; reach for `PinnedHandle` the moment the handle has to be **stored** somewhere
+that outlives the current call.
 
 ### `NamedArg` — a keyword argument
 
@@ -1909,7 +1927,7 @@ in-flight exception (innermost first) and snapshotted onto the VM as its `lastTr
 | `module.hpp` | `ModuleValue` |
 | `function.hpp` | `NativeFn`, `NativeFnKw`, `NativeParam`, `NativeFunction`, `KiFunction` |
 | `native.hpp` | `argString`, `argInt`, `requireArgs`, `sliceIndices`, `ModuleBuilder`, `NativeModule`, `NativeClass`, `makeMethod` |
-| `value.hpp` | `Value` + `Bool`/`Integer`/`Float`/`String`/`Bytes`/`List`/`Dict`/`Set` wrappers, `Args` |
+| `value.hpp` | `Value` + `Bool`/`Integer`/`Float`/`String`/`Bytes`/`List`/`Dict`/`Set` wrappers, `Args`, `PinnedHandle` |
 | `vm.hpp` | `KiritoVM`, `RootScope`, `CallGuard`, `KiritoVM::ChunkFileScope` |
 | `dispatcher.hpp` | `KiritoDispatcher`, `Waitable`, cross-VM `ConcurrentQueue`/`Lock`/`Event`/`Semaphore`/`Barrier` |
 

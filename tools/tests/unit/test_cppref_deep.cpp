@@ -90,6 +90,7 @@ int main() {
         CHECK(terminated);
     }
 
+    // NOTE: PinnedHandle has its own exhaustive suite (test_pinned_handle.cpp).
     // NOTE: the native-authoring internals (signatured NativeFunction accessors params()/returnType()/
     // acceptsKwargs(), NativeFunction::callKw with a NamedArg span, ModuleBuilder::alias error path,
     // registerModule factory) need native.hpp-precise construction and are covered separately by the
