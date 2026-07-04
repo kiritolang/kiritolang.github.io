@@ -196,5 +196,13 @@ int main() {
     // an OPTIONAL leading param may still be skipped by naming a later one (regression guard):
     CHECK(ok("\"a b c\".split(maxsplit = 1)") == "['a', 'b c']");
 
+    // === A03-3: a parameter default may reference an EARLIER parameter (the binder defines params
+    // left-to-right). The resolver used to reject it as "name not defined"; now it resolves, and the
+    // default binds the actual parameter (not an enclosing same-named value). ===
+    CHECK(ok("var f = Function(a, b = a): return [a, b]\nvar a = 999\nf(7)") == "[7, 7]");
+    CHECK(ok("var pow2 = Function(base, exp = base): return base ** exp\npow2(3)") == "27");
+    // referencing a LATER parameter is still correctly rejected (not yet bound at default-eval time):
+    CHECK(has(err("var g = Function(a, b = c, c = 1): return a\n"), "not defined"));
+
     return RUN_TESTS();
 }
