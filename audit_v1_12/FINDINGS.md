@@ -189,6 +189,35 @@ maintainer, NOT changed):**
   **A03-2** (Unpack comment), **A05-4** (if/while condition truthy span), **A04-2** (foreign-exception
   traceback bookkeeping).
 
+## Post-fix review (since 1.11.0) — every fix re-verified
+
+A full re-review of all v1.12 fixes (5 parallel review clusters: GC/rooting, semantics, resource
+guards, stdlib, plus the session fixes) checked each one: *was it actually a bug?* (revert if not),
+idiomatic, no broken contract, exhaustive tests, docs. Result — **zero reverts among the true fixes;
+two reworks; one earlier-reverted non-bug confirmed:**
+- **REWORK — TENSOR-2 (einsum):** the guard reused the 64M-ELEMENT cap as an OPERATION-count bound,
+  wrongly rejecting a normal `"ij,jk->ik"` on 1000×1000 (a matmul-shaped 1e9-MAC contraction that
+  native `.matmul()` runs fine). Now overflow-checks the label product ONLY (the output tensor is
+  already element-bounded; a big loop is merely slow, matching uncapped matmul). Test amended to
+  assert the medium contraction succeeds and only a size_t-overflowing one throws.
+- **REWORK — A20-5 (tabular sortvalues):** was half-fixed — DESCENDING put missing at the FRONT, and a
+  Float NaN wasn't treated as missing. Now partitions via `_isnan` and appends missing LAST in both
+  directions (pandas parity). Descending/NaN/multi-missing regressions added.
+- **CONFIRMED NON-BUG (already reverted):** A11-1 (`trunc`→Integer) — trunc-Float is deliberate (int64
+  can't hold `trunc(1e300)`/`nan`/`inf`).
+- **Follow-up hardening from the review:** A05-2 extended to `List.insert` (missing-arg diagnostic);
+  docs for A01-1 (`\xHH` is a code point), NET-1 (cross-origin auth/cookie strip), T-GUARD
+  (replace/join cap) and the proc-capture cap; added A05-1 symmetry/derived-`!=`, A01-1 encode
+  round-trip, and A07-1 native-instance-coexist tests.
+- All other fixes (A04-1 stack guard, TENSOR-1 rank cap, A16-1 gzip aggregate, A10-4 proc capture,
+  A10-2 sys.exit, A08-1 pool drain, A07-1/A07-4, T-ROOT, A05-1, A03-3, A01-1, A06-7 revert, A20-1
+  semver, NET-1) — **real bugs, idiomatic fixes, kept.** Remaining test gaps (the 256 MiB throw paths
+  for T-GUARD/A16-1/A10-4, and the A08-1 release-RSS leak) are inherently hard to unit-test without an
+  injectable cap; noted for a future test-hook refactor rather than left as a silent gap.
+- **Integration-tested against the whole corpus:** examples (12/0), big projects (cronki/feedreader/
+  kirdown/ledger/snip/kgrad/sqldb/webserver), and the self-host core-language suite (updated to exclude
+  native-only `parallel`/`net.Socket` scripts + auto-detect `parallel` imports) all pass on the v1.12 build.
+
 **Rejected — by-design (verified by building the change):**
 - **A11-1** (`math.trunc` → Integer): NOT a bug. Kirito's Integer is int64, so an Integer `trunc`
   would THROW on `trunc(1e300)`/`trunc(nan)`/`trunc(inf)` (r7_math.ki:56, r8_math.ki:56 rely on these
