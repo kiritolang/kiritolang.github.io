@@ -51,6 +51,13 @@ int main() {
     CHECK(ok("class C:\n  var _hash_ = Function(self): return 0\n"
              "  var _eq_ = Function(self, o): return False\n"
              "var d = {}\nd[C()] = 1\nd[Bytes(\"\")] = 2\nlen(d)") == "2");
+    // The List path is the DETERMINISTIC trigger for InstanceValue::equals(Bytes): List.contains does a
+    // linear scan calling element.equals(query) with no hashing, so `Bytes("") in [C()]` (above) always
+    // exercises the fixed dynamic_cast. A native ValueKind::Instance (DateTime) vs a user instance also
+    // must not misfire the downcast — coexist as Set members cleanly.
+    CHECK(ok("var tm = import(\"time\")\nclass C:\n  var _hash_ = Function(self): return 7\n"
+             "  var _eq_ = Function(self, o): return False\n"
+             "len({C(), tm.make(2020, 1, 1)})") == "2");
 
     // === A09-1: modular pow must not overflow int64 during `(base % mod) + mod`. With mod just under
     // 2^63, base ≡ -1, so base^2 ≡ 1 — the buggy int64 path returned 9. ===
@@ -257,6 +264,17 @@ int main() {
     CHECK(ok("var f = import(\"functools\")\nf.reduce(Function(a, b): return a + b, [1, 2, 3], 10)") == "16");
     CHECK(has(err("var f = import(\"functools\")\nf.reduce(Function(a, b): return a + b, [])"),
               "empty sequence"));  // still throws when genuinely unset + empty
+
+    // === A05-2: a keyword call that skips a REQUIRED leading arg errors with "missing required
+    // argument", not a misleading downstream type error from a None-filled slot. ===
+    CHECK(has(err("var xs = [1]\nxs.insert(item = 99)"), "missing required argument"));  // index skipped
+    CHECK(has(err("var xs = [1]\nxs.insert(item = 99)"), "index"));                      // names the slot
+    CHECK(ok("var xs = [1, 2]\nxs.insert(index = 1, item = 99)\nxs") == "[1, 99, 2]");   // both keywords work
+    CHECK(ok("var xs = [1, 2]\nxs.insert(0, 9)\nxs") == "[9, 1, 2]");                    // positional unchanged
+    // the previously-silent Dict cases still throw "missing required argument" (regression from A05-2)
+    CHECK(has(err("var d = {1: 2}\nd.setdefault(default = 7)"), "missing required argument"));
+    CHECK(has(err("var d = {1: 2}\nd.get(default = 9)"), "missing required argument"));
+    CHECK(has(err("var d = {1: 2}\nd.pop(default = 9)"), "missing required argument"));
 
     // === A02-2: an error inside an f-string reports the f-string's REAL source line, not line 1.
     // The embedded {expr} is sub-lexed seeded at the token's line/col, so its node spans are absolute. ===

@@ -572,6 +572,9 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                 return vm.none();
             }, std::vector<Handle>{self});
     if (name == "insert")
+        // minArgs=2: a keyword call skipping a required slot (insert(item=99)) throws
+        // "missing required argument 'index'" rather than None-filling it into a misleading
+        // "insert expects an Integer" downstream (A05-2).
         return makeMethod(vm,
             "insert", {"index", "item"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.size() < 2) throw KiritoError("insert expects (index, item)");
@@ -582,7 +585,7 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                 if (i > static_cast<int64_t>(e.size())) i = static_cast<int64_t>(e.size());
                 e.insert(e.begin() + i, a[1]);
                 return vm.none();
-            }, std::vector<Handle>{self});
+            }, std::vector<Handle>{self}, 2);
     if (name == "remove")
         return makeMethod(vm,
             "remove", {"value"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
