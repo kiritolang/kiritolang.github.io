@@ -62,7 +62,7 @@ enum class Op : uint8_t {
     BuildString,      // a: (count) concatenate count Strings on the stack -> push the joined String
     GetIter,          //    replace the top iterable with an internal iteration cursor
     ForIter,          // a: advance the cursor on top; if exhausted pop it and ip=a, else push next item
-    Unpack,           // a: (unpacks[a]) pop an iterable -> push its n spread slots, last target on top
+    Unpack,           // a: (unpacks[a]) pop an iterable -> push its n spread slots, first target (slot 0) on top
     SwitchMatch,      //    v=pop, subj=pop -> push Bool(subj and v are the same scalar by type+value)
     SwitchDispatch,   // a: (switches[a]) pop subject -> ip = the arm offset for key(subject), else default (O(1))
     SetupBlock,       // a: push an exception block (try/with): on a throw, unwind here with the exc value

@@ -11,6 +11,9 @@ using namespace kirito;
 static std::string evalStr(KiritoVM& vm, const std::string& src) {
     return vm.stringify(vm.runSource(src));
 }
+static bool throws(KiritoVM& vm, const std::string& src) {
+    try { vm.runSource(src); return false; } catch (...) { return true; }
+}
 
 // Build `value` in Kirito (the `build` snippet must bind it to `v`), serialize it with the dump
 // module, compress the bytes, and report {raw_bytes, compressed_bytes, round_trips_ok}. Going
@@ -55,6 +58,13 @@ var z = import("zlib")
 var data = "The quick brown fox " * 20
 z.inflate(z.deflate(data)) == data
 )") == "True");
+
+    // A16-2: a stored (BTYPE=00) DEFLATE block whose NLEN != ~LEN is rejected (RFC 1951 §3.2.4).
+    // Header 0x01 (BFINAL, stored) + LEN=5 + NLEN + "ABCDE". Correct NLEN = ~5 = 0xFFFA.
+    CHECK(evalStr(vm, "var z = import(\"zlib\")\n"
+                      "z.inflate(Bytes([1, 5, 0, 250, 255, 65, 66, 67, 68, 69]))") == "ABCDE");  // valid NLEN
+    CHECK(throws(vm, "var z = import(\"zlib\")\n"
+                     "z.inflate(Bytes([1, 5, 0, 0, 0, 65, 66, 67, 68, 69]))"));                  // corrupt NLEN
 
     // adler32 known values (the adler32 checksum now lives in the hash module)
     CHECK(evalStr(vm, "import(\"hash\").adler32(\"\")") == "1");

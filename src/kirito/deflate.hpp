@@ -277,7 +277,11 @@ inline std::string inflateImpl(std::string_view in, std::size_t maxOut, std::siz
             std::size_t p = br.bytePos();
             if (p + 4 > in.size()) throw DeflateError("truncated stored block header");
             uint16_t len = static_cast<uint16_t>(static_cast<uint8_t>(in[p]) | (static_cast<uint8_t>(in[p + 1]) << 8));
-            p += 4;  // skip LEN + NLEN
+            uint16_t nlen = static_cast<uint16_t>(static_cast<uint8_t>(in[p + 2]) | (static_cast<uint8_t>(in[p + 3]) << 8));
+            // RFC 1951 §3.2.4: NLEN is the one's-complement of LEN. Raw inflate has no checksum, so a
+            // corrupt stored-block length would otherwise be silently accepted (A16-2).
+            if (static_cast<uint16_t>(~len) != nlen) throw DeflateError("invalid stored block lengths");
+            p += 4;  // consumed LEN + NLEN
             if (p + len > in.size()) throw DeflateError("truncated stored block");
             if (out.size() + len > maxOut) throw DeflateError("decompressed data exceeds the size limit");
             out.append(in, p, len);
@@ -352,11 +356,16 @@ inline std::string zlibDecompress(const std::string& in) {
     if (in.size() < 6) throw DeflateError("zlib data too short");
     uint8_t cmf = static_cast<uint8_t>(in[0]);
     if ((cmf & 0x0F) != 8) throw DeflateError("unsupported zlib compression method");
+    // RFC 1950 §2.2: CINFO (high nibble of CMF) is the base-2 log of the LZ77 window minus 8, so a
+    // window > 32K (CINFO > 7) is invalid for deflate.
+    if ((cmf >> 4) > 7) throw DeflateError("invalid zlib window size");
     // FDICT (FLG bit 5) means a 4-byte preset-dictionary id follows the header; feeding those bytes to
     // inflate as DEFLATE data would produce a bogus "invalid block"/checksum error on an otherwise
     // valid RFC-1950 stream. Reject it clearly (preset dictionaries are unsupported).
     uint8_t flg = static_cast<uint8_t>(in[1]);
     if (flg & 0x20) throw DeflateError("zlib preset dictionary is not supported");
+    // FCHECK: the 16-bit CMF*256+FLG must be a multiple of 31 (RFC 1950 §2.2).
+    if (((static_cast<uint32_t>(cmf) << 8) | flg) % 31 != 0) throw DeflateError("invalid zlib header check");
     std::string body = in.substr(2, in.size() - 6);  // strip 2-byte header + 4-byte trailer
     std::string out = inflate(body);
     // verify Adler-32 trailer (big-endian)
