@@ -48,6 +48,7 @@ kirito_test(test_audit_round2 unit/test_audit_round2.cpp)
 kirito_test(test_audit_regressions unit/test_audit_regressions.cpp)
 kirito_test(test_domain_guards unit/test_domain_guards.cpp)
 kirito_test(test_vm_serialization unit/test_vm_serialization.cpp)
+kirito_test(test_audit_hardening unit/test_audit_hardening.cpp)
 # CLI argument-handling test: drives the built ki as a subprocess (popen). The actual ki binary
 # isn't a link-time dependency, but the test needs it on disk — depend on the ki target and pass
 # its location as argv[1] so the test is hermetic.

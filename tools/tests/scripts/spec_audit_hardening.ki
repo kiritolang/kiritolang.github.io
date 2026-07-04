@@ -47,9 +47,10 @@ var s = {1}
 assert len(s.union("ab")) == 3, "set union with string"
 assert len(s.symmetricdifference("a")) == 2, "set symdiff with string"
 
-# --- format: an enormous precision is a clean error, not integer-overflow UB ---
-assert throws(Function(): return "{:.2345678901f}".format(1.5)), "huge format precision rejected"
-assert "{:.2f}".format(3.14159) == "3.14", "format precision still works"
+# --- format() mini-spec: an enormous precision is a clean error, not integer-overflow UB ---
+assert throws(Function(): return format(1.5, ".2345678901f")), "huge format precision rejected"
+assert format(3.14159, ".2f") == "3.14", "format precision still works"
+assert f"{3.14159:.2f}" == "3.14", "f-string precision still works"
 
 # --- String padding still correct (byte-length bound tightened, ASCII path unaffected) ---
 assert "x".ljust(5, ".") == "x....", "ljust"
