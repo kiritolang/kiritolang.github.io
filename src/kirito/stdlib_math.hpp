@@ -251,14 +251,19 @@ public:
             // comb: multiply then divide step-by-step so the running value stays the EXACT partial
             // binomial coefficient (always an integer) — avoids overflowing on the full numerator
             // for results that themselves fit in int64 (e.g. comb(30, 15) = 155117520).
+            // The running value r stays the EXACT partial binomial C(n-k+i, i), which is monotone up to
+            // the final C(n,k) — so if the result fits int64, every partial does too. Only the
+            // INTERMEDIATE r*(n-k+i) (before dividing by i) can exceed u64 near the central coefficient
+            // (e.g. comb(64,32) whose result 1.83e18 < INT64_MAX). Widen just that product to 128-bit so
+            // a representable result isn't falsely rejected as "too large".
             unsigned long long r = 1;
             for (int64_t i = 1; i <= k; ++i) {
-                if (__builtin_mul_overflow(r, static_cast<unsigned long long>(n - k + i), &r))
+                __extension__ unsigned __int128 t = static_cast<unsigned __int128>(r) * static_cast<unsigned long long>(n - k + i);
+                t /= static_cast<unsigned long long>(i);  // exact: the partial is an integer
+                if (t > static_cast<unsigned long long>(INT64_MAX))
                     throw KiritoError("comb/perm result too large for Integer");
-                r /= static_cast<unsigned long long>(i);  // exact: r is C(n-k+i, i) * (k! / i!)... integer
+                r = static_cast<unsigned long long>(t);
             }
-            if (r > static_cast<unsigned long long>(INT64_MAX))
-                throw KiritoError("comb/perm result too large for Integer");
             return Value(vm, static_cast<int64_t>(r));
         };
         m.fn("comb", {{"n", "Integer"}, {"k", "Integer"}}, "Integer", [combPerm](KiritoVM& vm, std::span<const Handle> a) { return combPerm(vm, a, true); });

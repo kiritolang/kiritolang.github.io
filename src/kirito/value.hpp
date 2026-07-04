@@ -536,6 +536,8 @@ public:
     }
     // Fresh List from an existing vector of Handles (bulk).
     List(KiritoVM& vm, const std::vector<Handle>& handles) {
+        RootScope roots(vm);  // the final vm.alloc may collect; root the not-yet-arena'd elements
+        for (Handle h : handles) roots.add(h);
         auto lv = std::make_unique<ListVal>();
         lv->elems = handles;
         adopt(vm, vm.alloc(std::move(lv)));

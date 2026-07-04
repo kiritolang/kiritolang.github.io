@@ -96,13 +96,14 @@ public:
         requireReadable();
         if (!n) { std::stringstream ss; ss << stream.rdbuf(); return ss.str(); }
         std::size_t want = *n;
-        stream.clear();                               // a prior readline/iterate to EOF leaves eof/fail set,
-        std::streampos cur = stream.tellg();          // making tellg()==-1 and skipping the cap below -> bad_alloc
-        if (cur >= 0) {                               // (a huge read(n) must not try to allocate n bytes)
-            stream.seekg(0, std::ios::end);
-            std::streampos endp = stream.tellg();
-            stream.seekg(cur);
-            if (endp >= cur) want = std::min(want, static_cast<std::size_t>(endp - cur));
+        stream.clear();                               // a prior readline/iterate to EOF leaves eof/fail set
+        std::streampos cur = stream.tellg();          // (making tellg()==-1); a huge read(n) must never try
+        stream.seekg(0, std::ios::end);               // to allocate n bytes, so clamp `want` to what remains
+        std::streampos endp = stream.tellg();         // — including when the cursor is unknown (cur<0) or
+        stream.seekg(cur >= 0 ? cur : endp);          // seeked PAST end (cur>endp): both leave 0 available.
+        if (endp >= 0) {
+            std::size_t avail = (cur >= 0 && endp >= cur) ? static_cast<std::size_t>(endp - cur) : 0;
+            want = std::min(want, avail);
         }
         std::string buf(want, '\0');
         stream.read(buf.data(), static_cast<std::streamsize>(want));

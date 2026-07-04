@@ -349,6 +349,11 @@ inline std::string zlibDecompress(const std::string& in) {
     if (in.size() < 6) throw DeflateError("zlib data too short");
     uint8_t cmf = static_cast<uint8_t>(in[0]);
     if ((cmf & 0x0F) != 8) throw DeflateError("unsupported zlib compression method");
+    // FDICT (FLG bit 5) means a 4-byte preset-dictionary id follows the header; feeding those bytes to
+    // inflate as DEFLATE data would produce a bogus "invalid block"/checksum error on an otherwise
+    // valid RFC-1950 stream. Reject it clearly (preset dictionaries are unsupported).
+    uint8_t flg = static_cast<uint8_t>(in[1]);
+    if (flg & 0x20) throw DeflateError("zlib preset dictionary is not supported");
     std::string body = in.substr(2, in.size() - 6);  // strip 2-byte header + 4-byte trailer
     std::string out = inflate(body);
     // verify Adler-32 trailer (big-endian)

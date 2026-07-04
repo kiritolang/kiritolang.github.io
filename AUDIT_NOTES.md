@@ -203,10 +203,57 @@ _(appended as each parallel audit agent returns; verified below)_
   block-stack discipline, with enter/exit, GC rooting across allocating ops, slot/name aliasing.
 
 ## FIXES APPLIED (this session)
-- `FIXED` HIGH — **break/continue/return in a `finally` reached via an exception** (crash/hang):
-  `compiler.hpp` now parks the in-flight exception in a hidden `$excN` local across the exception-path
-  finally body (both reraise sites), so it runs at clean operand height. Validated on the two
-  reproducers (were SEGFAULT / infinite-hang; now correct, matching Python's swallow semantics) +
-  all 259 golden scripts green. Regression: `tools/tests/scripts/spec_finally_control.ki`.
-- `FIXED` HIGH — `runtime.hpp` List.sort iterator-invalidation UAF: now snapshots elems, sorts the
-  snapshot, reassigns after all user code (key fn + `_lt_`) has run. (test pending)
+Validated (debug build + 260 golden scripts green): finally-crash, sort, Dict/Set reentrancy,
+Set-union GC, format-precision, comb, io-read-cap, https-cap, serde-caps. The rest are contained,
+compile-reviewed edits (user builds); the self-asserting `spec_audit_hardening.ki` re-checks them.
+
+- `FIXED` HIGH — **break/continue/return in a `finally` reached via an exception** (SEGFAULT/hang):
+  `compiler.hpp` parks the in-flight exception in a hidden `$excN` local across the exception-path
+  finally body. Validated on the reproducers + all golden. Regression: `spec_finally_control.ki`.
+- `FIXED` HIGH — `runtime.hpp` **List.sort iterator-invalidation UAF**: snapshot elems, sort snapshot,
+  reassign after all user code runs.
+- `FIXED` HIGH — `collections.hpp` + `runtime.hpp` **Dict/Set reentrant `_eq_`/`_hash_` bucket-UAF**:
+  a `ProbeScope` reentrancy guard rejects nested mutation during a probe with a clean error.
+- `FIXED` MED — `runtime.hpp` **Set.union/symmetricdifference GC-sweep UAF**: root iterated `other`
+  elements before the trailing alloc.
+- `FIXED` MED — `value.hpp` List-from-vector ctor: RootScope the elements across the alloc.
+- `FIXED` MED — `runtime.hpp` **format-spec precision int-overflow (UB)**: accumulate in int64, bound
+  each step.
+- `FIXED` MED — `stdlib_math.hpp` **math.comb false "too large"**: 128-bit intermediate.
+- `FIXED` MED — `stdlib_io.hpp` **File.read(n) cap bypass** past-EOF/unknown cursor: clamp to available.
+- `FIXED` MED — `stdlib_net.hpp` **HTTPS response unbounded (OOM)**: apply kMaxRecvAll in the SSL_read loop.
+- `FIXED` MED — `stdlib_dump.hpp` + `stdlib_serialize.hpp` **node-count OOM amplification**: grow the
+  node vector incrementally instead of sizing to the untrusted count.
+- `FIXED` HIGH — `parser.hpp` **nested f-string parse-depth escape (stack overflow)**: thread the
+  expression-nesting depth into the f-string sub-parser.
+- `FIXED` MED — `stdlib_net.hpp` **redirect/URL CRLF header-injection**: parseUrl rejects control chars.
+- `FIXED` LOW — `runtime.hpp` `Integer("0x0x5")` doubled-prefix rejected.
+- `FIXED` LOW — `runtime.hpp` String pad byte-length bound (multibyte fill).
+- `FIXED` LOW — `lexer.hpp` indentation counters int→int64 (overflow).
+- `FIXED` LOW — `regex_engine.hpp` `\u`/`\U`/`\x` reject lone surrogates.
+- `FIXED` LOW — `deflate.hpp` zlib FDICT (preset dictionary) rejected clearly.
+- `FIXED` LOW — `stdlib_dump.hpp` Dict/Object `c*2` uint32 wrap → uint64 loop bound.
+- `FIXED` LOW — `net_compat.hpp` send/recv length clamped to a 16 MiB chunk (int-truncation).
+- `FIXED` LOW — `tensor.hpp` checkedNumel: a 0 dim short-circuits to 0 (no false "too large").
+- `FIXED` LOW — `stdlib_tensor.hpp` `norm(ord=-inf)` returns min|x| (was max).
+- `FIXED` MED — `stdlib_kimodules.hpp` readcsv `_infer`: gate numeric inference on plain-decimal
+  (reject 0x/0o/0b + whitespace); skip blank lines (no all-None row).
+- `FIXED` LOW — `stdlib_kimodules.hpp` arg.Parser: a non-matching `-X` is a positional (negative nums).
+- `FIXED` LOW — `kpm/kpm.ki` cmdRemove vets the package name (path-traversal guard).
+
+## DEFERRED (need dedicated design + a build/sanitizer cycle — documented, not yet patched)
+- MED — `dispatcher.hpp` shutdown-created waitable never aborted (deadlock); Barrier-timeout stale
+  count; Semaphore over-release / Lock non-owner release. Concurrency fixes — need TSan validation.
+- MED — `regex_engine.hpp` per-thread capture vectors deep-copied → O(program²·groups) DoS. Needs
+  copy-on-write captures (or a numGroups cap) + benchmarking.
+- MED — `parser.hpp` f-string `{…}` scanner is quote-unaware (`f"{d['a:b']}"` mis-splits). Needs a
+  quote-state-tracking rescan; risky without tests.
+- MED — `proc_compat.hpp` timeout doesn't kill the process GROUP (grandchild holding the pipe hangs
+  the join). Platform-specific (setpgid/CreateJobObject).
+- LOW — `stdlib_serde.hpp` loads is pickle-style unsafe on hostile bytes (design: safe-mode/allowlist).
+- LOW — `arena.hpp` 32-bit generation wraparound; `handle.hpp` `Handle{}` aliases None (slot 0).
+- LOW — `stdlib_gzip.hpp` O(n²) substr per member (needs inflate-at-offset API).
+- LOW — `collections.hpp` Dict/Set iteration order not insertion-stable across delete.
+- LOW — `stdlib_regex.hpp` module sub/split drop the flags arg.
+- LOW — `parser.hpp` inline-body `return a, b` doesn't pack; `lexer.hpp` NUL-in-string = EOF.
+- nit — `bytes.hpp` repeat cap duplicates `kMaxRepeat` (needs the constant moved to a low-level header).

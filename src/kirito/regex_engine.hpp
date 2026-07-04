@@ -342,6 +342,9 @@ private:
             v = v * 16u + d; ++pos_;
         }
         if (v > 0x10FFFF) throw RegexError("escape value out of range (above U+10FFFF)");
+        // A lone UTF-16 surrogate is not a valid scalar value; it can never match well-formed input
+        // (a silently-dead pattern element), so reject it like Python's re does.
+        if (v >= 0xD800 && v <= 0xDFFF) throw RegexError("escape is a UTF-16 surrogate (not a scalar code point)");
         return static_cast<int32_t>(v);
     }
 

@@ -145,6 +145,12 @@ struct Url {
 };
 inline Url parseUrl(const std::string& url) {
     Url u;
+    // A URL must carry no raw control characters: a CR/LF in the host or path would inject into the
+    // request line / Host header (header injection / request smuggling). This matters most for a
+    // redirect `Location` (server-controlled, and re-parsed here on each hop). They must be
+    // percent-encoded, so reject them outright.
+    for (unsigned char ch : url)
+        if (ch < 0x20 || ch == 0x7F) throw KiritoError("URL contains a control character");
     std::string rest;
     if (url.compare(0, 7, "http://") == 0) {
         rest = url.substr(7);
@@ -509,7 +515,11 @@ inline std::string httpExchange(const Url& u, const std::string& request, double
         }
         char buf[4096];
         int n;
-        while ((n = SSL_read(ssl, buf, sizeof(buf))) > 0) raw.append(buf, static_cast<std::size_t>(n));
+        while ((n = SSL_read(ssl, buf, sizeof(buf))) > 0) {
+            raw.append(buf, static_cast<std::size_t>(n));
+            // Bound the response like the plain-TCP recvAll path, so a chatty HTTPS server can't OOM us.
+            if (raw.size() > net::kMaxRecvAll) throw KiritoError("HTTPS response exceeds the size limit");
+        }
     } catch (...) {
         SSL_shutdown(ssl); SSL_free(ssl); SSL_CTX_free(ctx); netcompat::closeSocket(fd);
         throw;

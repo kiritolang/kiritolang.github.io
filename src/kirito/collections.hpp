@@ -104,12 +104,29 @@ inline std::ptrdiff_t probeBucket(const ObjectArena& arena, const Bucket& bucket
 inline Handle dictKeyOf(const std::pair<Handle, Handle>& e) { return e.first; }
 inline Handle setKeyOf(Handle e) { return e; }
 
+// Reentrancy guard for the hash-bucketed Dict/Set. Probing a bucket runs the key's `_hash_`/`_eq_`,
+// which is arbitrary Kirito code that may mutate the SAME container — reallocating the bucket map or
+// the bucket vector and dangling a reference held across the probe (a use-after-free that corrupts
+// the heap). A ProbeScope marks a probe in progress for the container's lifetime of the call; a
+// mutating op refuses to run (a clean, catchable error) while a probe is active on that container, so
+// no realloc can invalidate a live bucket reference mid-probe. Reads may nest freely (they don't
+// realloc); only nested MUTATION during any probe is rejected.
+struct ProbeScope {
+    bool& flag;
+    bool prev;
+    explicit ProbeScope(bool& f) : flag(f), prev(f) { f = true; }
+    ~ProbeScope() { flag = prev; }
+    ProbeScope(const ProbeScope&) = delete;
+    ProbeScope& operator=(const ProbeScope&) = delete;
+};
+
 // Hash-bucketed mapping. Keys must be hashable; lookup hashes then compares with the value
 // protocol's equals within the bucket.
 class DictVal : public Object {
 public:
     fum::unordered_map<std::size_t, std::vector<std::pair<Handle, Handle>>> buckets;
     std::size_t count = 0;
+    mutable bool probing_ = false;  // a bucket probe (which runs user _hash_/_eq_) is in flight
 
     ValueKind kind() const override { return ValueKind::Dict; }
     std::string typeName() const override { return "Dict"; }
@@ -118,8 +135,11 @@ public:
     void set(ObjectArena& arena, Handle key, Handle value) {
         const Object& k = arena.deref(key);
         requireHashable(k);
-        auto& bucket = buckets[k.hash()];
-        auto i = probeBucket(arena, bucket, k, dictKeyOf);
+        std::size_t h = k.hash();  // may run _hash_; done before any bucket reference is cached
+        if (probing_) throw KiritoError("Dict changed size during a key comparison");
+        ProbeScope guard(probing_);
+        auto& bucket = buckets[h];
+        auto i = probeBucket(arena, bucket, k, dictKeyOf);  // may run _eq_ (nested mutation rejected)
         if (i >= 0) { bucket[static_cast<std::size_t>(i)].second = value; return; }
         bucket.emplace_back(key, value);
         ++count;
@@ -127,7 +147,9 @@ public:
     const Handle* find(const ObjectArena& arena, Handle key) const {
         const Object& k = arena.deref(key);
         requireHashable(k);
-        auto it = buckets.find(k.hash());
+        std::size_t h = k.hash();
+        ProbeScope guard(probing_);  // read: block nested mutation from a reentrant _eq_
+        auto it = buckets.find(h);
         if (it == buckets.end()) return nullptr;
         auto i = probeBucket(arena, it->second, k, dictKeyOf);
         return i >= 0 ? &it->second[static_cast<std::size_t>(i)].second : nullptr;
@@ -186,7 +208,10 @@ public:
     bool remove(ObjectArena& arena, Handle key) {
         const Object& k = arena.deref(key);
         if (!k.hashable()) return false;
-        auto it = buckets.find(k.hash());
+        std::size_t h = k.hash();
+        if (probing_) throw KiritoError("Dict changed size during a key comparison");
+        ProbeScope guard(probing_);
+        auto it = buckets.find(h);
         if (it == buckets.end()) return false;
         auto& bucket = it->second;
         auto i = probeBucket(arena, bucket, k, dictKeyOf);
@@ -212,6 +237,7 @@ class SetVal : public Object {
 public:
     fum::unordered_map<std::size_t, std::vector<Handle>> buckets;
     std::size_t count = 0;
+    mutable bool probing_ = false;  // a bucket probe (which runs user _hash_/_eq_) is in flight
 
     ValueKind kind() const override { return ValueKind::Set; }
     std::string typeName() const override { return "Set"; }
@@ -220,7 +246,10 @@ public:
     bool add(ObjectArena& arena, Handle value) {
         const Object& v = arena.deref(value);
         requireHashable(v);
-        auto& bucket = buckets[v.hash()];
+        std::size_t h = v.hash();
+        if (probing_) throw KiritoError("Set changed size during a value comparison");
+        ProbeScope guard(probing_);
+        auto& bucket = buckets[h];
         if (probeBucket(arena, bucket, v, setKeyOf) >= 0) return false;
         bucket.push_back(value);
         ++count;
@@ -229,7 +258,9 @@ public:
     bool contains(const ObjectArena& arena, Handle value) const {
         const Object& v = arena.deref(value);
         if (!v.hashable()) return false;
-        auto it = buckets.find(v.hash());
+        std::size_t h = v.hash();
+        ProbeScope guard(probing_);  // read: block nested mutation from a reentrant _eq_
+        auto it = buckets.find(h);
         if (it == buckets.end()) return false;
         return probeBucket(arena, it->second, v, setKeyOf) >= 0;
     }
