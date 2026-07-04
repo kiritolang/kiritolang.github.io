@@ -20,12 +20,12 @@
 using namespace kirito;
 
 // One domain event the C++ log holds before it is handed to Kirito as a Dict.
-struct Event {
+struct AccountEvent {
     std::string type;    // "deposit" / "withdraw" / "fee" / …
     int64_t     amount;
 };
 
-static Handle eventToDict(KiritoVM& vm, const Event& e) {
+static Handle eventToDict(KiritoVM& vm, const AccountEvent& e) {
     Dict d(vm);
     d.set("type",   Value(vm, e.type));
     d.set("amount", Value(vm, e.amount));
@@ -37,7 +37,7 @@ class Aggregate {
 public:
     Aggregate(KiritoVM& vm, Handle reducer) : vm_(vm), reducer_(reducer) {}
 
-    void append(const Event& e) { log_.push_back(e); }
+    void append(const AccountEvent& e) { log_.push_back(e); }
 
     // Replay the whole log from a fresh seed state, folding each event through the Kirito reducer.
     // Returns a handle to the rebuilt state Dict, GC-rooted by the caller's RootScope.
@@ -46,7 +46,7 @@ public:
         seed.set("balance", Value(vm_, int64_t{0}));
         seed.set("count",   Value(vm_, int64_t{0}));
         Handle stateH = rs.add(seed.handle());
-        for (const Event& e : log_) {
+        for (const AccountEvent& e : log_) {
             Handle evH = rs.add(eventToDict(vm_, e));
             std::array<Handle, 2> args{stateH, evH};
             Handle nextH = rs.add(vm_.arena().deref(reducer_).call(vm_, args));
@@ -64,7 +64,7 @@ public:
 private:
     KiritoVM&          vm_;
     Handle             reducer_;
-    std::vector<Event> log_;
+    std::vector<AccountEvent> log_;
 };
 
 int main() {
