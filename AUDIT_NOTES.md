@@ -185,6 +185,23 @@ _(appended as each parallel audit agent returns; verified below)_
 - safe: epsilon-cycle guard (visited/gen), {n,m} caps, empty-match advance, capture OOB guards,
   anchors/boundaries/MULTILINE/DOTALL, greedy/lazy priority.
 
+### Compiler / bytecode VM (compiler.hpp, bytecode_vm.hpp)
+- `NEW HIGH (REPRODUCED CRASH)` — `bytecode_vm.hpp:399-408 unwind + compiler.hpp:289-299/471` —
+  **`break`/`continue` in a `finally` reached via an exception SEGFAULTs or HANGS**. `unwind()` pushes
+  the exception value onto the operand stack, so the finally's exception-path landing pad runs with
+  `exc` sitting on top of the (still-live) loop iterator cursor. break/continue's fixed cursor-pop math
+  assumes a clean stack → mislocates. Reproduced on build-debug/ki:
+    - `for i in [1,2,3]: (try: throw "x") finally: continue` → SEGFAULT (exit 139)
+    - nested for with `finally: break` → infinite HANG (exit 124)
+  (return-in-finally & normal-path continue-in-finally are safe.) Fix: hold the in-flight exception in
+  a dedicated VM register/stack (like `excSpan_`), not on the operand stack, so finally/handler landing
+  pads always start at the clean operand level; Reraise/ExcMatch/handler-bind read it from the register.
+- `NEW LOW` — `compiler.hpp:433/471/475` — a `finally` body clobbers the try's carried result
+  (`try: 5 \n finally: pass` → result None not 5), contradicting the line-475 invariant. Cosmetic
+  (REPL echo). Fix: save/restore result slot around the finally, or update the comment.
+- safe: const-dedup keys type-prefixed, switch lowering balanced, unpack targets, try/catch/finally
+  block-stack discipline, with enter/exit, GC rooting across allocating ops, slot/name aliasing.
+
 ## FIXES APPLIED (this session)
 - `FIXED` HIGH — `runtime.hpp` List.sort iterator-invalidation UAF: now snapshots elems, sorts the
   snapshot, reassigns after all user code (key fn + `_lt_`) has run.
