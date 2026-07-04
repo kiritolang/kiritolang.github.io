@@ -162,8 +162,10 @@ _(appended as each parallel audit agent returns; verified below)_
   `result` without rooting; the final `vm.alloc` can GC and sweep them → dangling. (intersection/
   difference/issubset safe — receiver-owned elems.) Fix: `for (Handle e : *other) rs.add(e);` or
   GcPauseScope around build+alloc.
-- `NEW LOW` — `collections.hpp:111,213` — Dict/Set iteration order not insertion-stable across
-  delete (fum swap-on-erase) — diverges from Python's insertion order. Behavioral, not unsafe. (defer)
+- **REJECTED** — `collections.hpp:111,213` — Dict/Set iteration order not insertion-stable across
+  delete. By design: Kirito's Dict and Set are **unordered** — the language makes no insertion-order
+  guarantee (unlike Python 3.7+ dicts), so hash-bucket iteration order that shifts across delete is
+  correct behavior, not a defect. No fix; the divergence from Python here is intentional.
 - `NEW LOW(DRY)` — `bytes.hpp:124` — hardcoded `256*1024*1024` repeat cap vs shared `kMaxRepeat`. Unify.
 - safe: sliceIndices negative/step<0/overflow, int64↔double exact eq+hash, UTF-8 validation, fromhex.
 
@@ -269,18 +271,28 @@ compile-reviewed edits (user builds); the self-asserting `spec_audit_hardening.k
 - `FIXED` LOW — `kpm/kpm.ki` cmdRemove vets the package name (path-traversal guard).
 
 ## DEFERRED (need dedicated design + a build/sanitizer cycle — documented, not yet patched)
-- MED — `dispatcher.hpp` shutdown-created waitable never aborted (deadlock); Barrier-timeout stale
-  count; Semaphore over-release / Lock non-owner release. Concurrency fixes — need TSan validation.
-- MED — `regex_engine.hpp` per-thread capture vectors deep-copied → O(program²·groups) DoS. Needs
-  copy-on-write captures (or a numGroups cap) + benchmarking.
-- MED — `parser.hpp` f-string `{…}` scanner is quote-unaware (`f"{d['a:b']}"` mis-splits). Needs a
-  quote-state-tracking rescan; risky without tests.
-- MED — `proc_compat.hpp` timeout doesn't kill the process GROUP (grandchild holding the pipe hangs
-  the join). Platform-specific (setpgid/CreateJobObject).
+- ~~MED — `dispatcher.hpp` shutdown-created waitable never aborted (deadlock); Barrier-timeout stale
+  count; Semaphore over-release / Lock non-owner release.~~ **DONE (3 of 4)** — makeWaitable pre-aborts
+  during shutdown; Barrier timeout does a full generation reset; libPaths_/maxCallDepth_ reads guarded.
+  The Semaphore-over-release / Lock-non-owner-release pair is **REJECTED** — intentional
+  (counting-semaphore + transferable-lock semantics, pinned by r5/r7/r8_parallel). Tests in
+  test_parallel_sync.cpp.
+- ~~MED — `regex_engine.hpp` per-thread capture vectors deep-copied → O(program²·groups) DoS.~~
+  **DONE**: numGroups capped at 1000 at compile time (before the Pike VM runs). Test:
+  `spec_regex_group_cap.ki` + a probe in test_audit_hardening.cpp.
+- ~~MED — `parser.hpp` f-string `{…}` scanner is quote-unaware (`f"{d['a:b']}"` mis-splits).~~ **DONE**:
+  both the brace-matcher and the `:`-spec split now track string state. Tests in `spec_fstrings.ki`.
+- ~~MED — `proc_compat.hpp` timeout doesn't kill the process GROUP (grandchild holding the pipe hangs
+  the join).~~ **DONE**: POSIX setpgid + kill(-pgid); Windows KILL_ON_JOB_CLOSE Job Object. Tests:
+  `sys_proc_grandchild_kill.ki` + a test_proc.cpp probe.
 - LOW — `stdlib_serde.hpp` loads is pickle-style unsafe on hostile bytes (design: safe-mode/allowlist).
-- LOW — `arena.hpp` 32-bit generation wraparound; `handle.hpp` `Handle{}` aliases None (slot 0).
-- LOW — `stdlib_gzip.hpp` O(n²) substr per member (needs inflate-at-offset API).
-- LOW — `collections.hpp` Dict/Set iteration order not insertion-stable across delete.
+  **(EXCLUDED by request — left deferred.)**
+- ~~LOW — `arena.hpp` 32-bit generation wraparound; `handle.hpp` `Handle{}` aliases None (slot 0).~~
+  **DONE**: gen 0 reserved (kFirstGen=1) so `Handle{}` is a safe sentinel; near-wrap slots retired.
+- ~~LOW — `stdlib_gzip.hpp` O(n²) substr per member (needs inflate-at-offset API).~~ **DONE**:
+  `inflateImpl`/`BitReader` take a `string_view`; gzip inflates a suffix view (O(total) multi-member).
+- ~~LOW — `collections.hpp` Dict/Set iteration order not insertion-stable across delete.~~ **REJECTED**:
+  Kirito's Dict and Set are unordered BY DESIGN — no insertion-order guarantee, so this is intended.
 - ~~LOW — `stdlib_regex.hpp` module sub/split drop the flags arg.~~ **DONE**: added a trailing
   `flags` param to one-shot `regex.sub`/`regex.split`. Test: `spec_regex_oneshot_flags.ki`.
 - ~~LOW — `lexer.hpp` NUL-in-string = EOF.~~ **DONE**: added `atEnd()`; a genuine NUL byte in a string
