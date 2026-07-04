@@ -65,6 +65,22 @@ if(WIN32)
     target_link_libraries(kirito INTERFACE ws2_32)  # Winsock
 endif()
 
+# HTTPS in the `net` module is opt-in (-DKIRITO_ENABLE_TLS). Because src/kirito.hpp itself
+# #includes <openssl/ssl.h> under that flag, the TLS dependency (define + include path + link libs)
+# belongs on the INTERFACE target — so EVERY consumer that compiles the umbrella header gets OpenSSL's
+# headers: the shared PCH carrier and the tests, not only the final `ki` link. (Without this the PCH
+# carrier couldn't find openssl/ssl.h against a non-system OpenSSL, e.g. the mingw cross-build.)
+if(KIRITO_ENABLE_TLS)
+    find_package(OpenSSL REQUIRED)
+    target_compile_definitions(kirito INTERFACE KIRITO_ENABLE_TLS)
+    target_link_libraries(kirito INTERFACE OpenSSL::SSL OpenSSL::Crypto)
+    if(WIN32)
+        # A static OpenSSL on Windows pulls in the system cert store + CNG RNG; link those libs so
+        # a fully-static mingw/MSVC build resolves (harmless when OpenSSL is shared).
+        target_link_libraries(kirito INTERFACE crypt32 bcrypt ws2_32)
+    endif()
+endif()
+
 # ONE precompiled header for the whole build. src/kirito.hpp pulls in the entire header-only
 # interpreter; parsing it dominates compile time and it is included by main.cpp AND every test TU
 # (~156 in all). Compile it into a PCH ONCE here (a tiny carrier TU) and have `ki` plus every test
@@ -76,9 +92,6 @@ add_library(kirito_pch STATIC ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/pch_carrie
 target_link_libraries(kirito_pch PRIVATE kirito)
 if(NOT MSVC)
     target_compile_options(kirito_pch PRIVATE -Wall -Wextra -Wpedantic -Winvalid-pch)
-endif()
-if(KIRITO_ENABLE_TLS)
-    target_compile_definitions(kirito_pch PRIVATE KIRITO_ENABLE_TLS)  # match ki so the PCH stays reusable
 endif()
 target_precompile_headers(kirito_pch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/kirito.hpp)
 
@@ -102,16 +115,8 @@ if(WIN32)
     endif()
 endif()
 
-if(KIRITO_ENABLE_TLS)
-    find_package(OpenSSL REQUIRED)
-    target_compile_definitions(ki PRIVATE KIRITO_ENABLE_TLS)
-    target_link_libraries(ki PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    if(WIN32)
-        # A static OpenSSL on Windows pulls in the system cert store + CNG RNG; link those libs so
-        # a fully-static mingw/MSVC build resolves (harmless when OpenSSL is shared).
-        target_link_libraries(ki PRIVATE crypt32 bcrypt ws2_32)
-    endif()
-endif()
+# (TLS/OpenSSL is wired onto the `kirito` INTERFACE target above, so `ki` — which links `kirito` —
+# picks up the define, headers, and OpenSSL link libs transitively.)
 
 # libFuzzer entrypoint: a coverage-guided binary that reads inputs from libFuzzer and runs each
 # through the interpreter under the same contract as the offline fuzz_eval.cpp. Requires clang
