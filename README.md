@@ -30,9 +30,9 @@ And why did i call it after MC of SAO? For a long time, even I had forgotten.
 ## Contents
 
 - [Why Kirito](#why-kirito)
-- [Documentation](#documentation)
 - [Installing](#installing)
   - [Packages (`kpm`)](#packages-kpm)
+- [Documentation](#documentation)
 - [Limitations](#limitations)
 - [Repository structure](#repository-structure)
 - [Benchmarks](#benchmarks)
@@ -68,22 +68,6 @@ And why did i call it after MC of SAO? For a long time, even I had forgotten.
   - *Extend Kirito from C++* — register your own functions, modules, and object types. Anything you
     add flows through the same object protocol as the built-ins, so to a Kirito program your C++ type
     is indistinguishable from a native one.
-
-## Documentation
-
-**Full documentation is live at [kiritolang.github.io](https://kiritolang.github.io)** — a small,
-dependency-free static site. It covers:
-
-- **Getting started**, the **language guide**, and a built-in **types & operator-overloading**
-  reference
-- The **built-in functions** and a per-function **standard-library** reference
-- **Embedding** Kirito in a C++ program and **extending** it with C++ functions, modules, and types
-- Recipes and a multi-part course with worked sample projects
-
-The site is generated from hand-authored Markdown in [`docs/pages/`](docs/pages/) by the
-dependency-free [`docs/build_docs.py`](docs/build_docs.py) into [`docs/site/`](docs/site/); you can
-also open [`docs/site/index.html`](docs/site/index.html) locally or read the Markdown sources
-directly.
 
 ## Installing
 
@@ -149,6 +133,22 @@ A package repository carries a `kirito.json` manifest at its root:
 `modules` are repo-relative `.ki` paths; `dependencies` are other `owner/repo` packages installed
 first. `kpm` is itself written in Kirito (`kpm/kpm.ki`) — it just uses the `net`, `json`, `io`, `sys`,
 and `semver` modules — so it doubles as a worked example.
+
+## Documentation
+
+**Full documentation is live at [kiritolang.github.io](https://kiritolang.github.io)** — a small,
+dependency-free static site. It covers:
+
+- **Getting started**, the **language guide**, and a built-in **types & operator-overloading**
+  reference
+- The **built-in functions** and a per-function **standard-library** reference
+- **Embedding** Kirito in a C++ program and **extending** it with C++ functions, modules, and types
+- Recipes and a multi-part course with worked sample projects
+
+The site is generated from hand-authored Markdown in [`docs/pages/`](docs/pages/) by the
+dependency-free [`docs/build_docs.py`](docs/build_docs.py) into [`docs/site/`](docs/site/); you can
+also open [`docs/site/index.html`](docs/site/index.html) locally or read the Markdown sources
+directly.
 
 ## Limitations
 

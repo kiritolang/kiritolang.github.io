@@ -96,7 +96,7 @@ are deferred to the point the code is reached, so they *are* catchable; they're 
 | Message | Cause | Fix |
 |---|---|---|
 | `invalid numeric literal '<text>'` | A malformed number (bad digits for the base, stray prefix) | Write a valid decimal/hex/octal/binary/float literal |
-| `unterminated <string\|f-string>` (also `unterminated triple-quoted …`) | A string reaches EOF, a single-line string hits a newline, or a raw/f string ends on a lone backslash | Close the quote (or use a triple-quoted form to span lines) |
+| `unterminated string` / `unterminated f-string` (also `unterminated triple-quoted …`) | A string reaches EOF, a single-line string hits a newline, or a raw/f string ends on a lone backslash | Close the quote (or use a triple-quoted form to span lines) |
 | `invalid \x escape (expected hex digit)` | `\x` in a cooked string not followed by a hex digit | Supply two hex digits, e.g. `\x41` |
 | `invalid escape '\<e>'` | An unrecognized backslash escape in a cooked string | Use a valid escape (`\n \t \r \0 \\ \" \'` `\xHH`) or a raw string |
 
@@ -529,13 +529,13 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 
 | Message | Cause | Fix |
 |---|---|---|
-| `<fn>: math domain error (got <x>)` | A unary `math` fn outside its domain (`sqrt`(x<0), `asin`/`acos`(\|x\|>1), `acosh`(x<1), `atanh`(\|x\|≥1), `log2`/`log10`(x≤0), `gamma`/`lgamma` at a non-positive integer) | Restrict the argument to the domain (a `NaN` passes through) |
+| `<fn>: math domain error (got <x>)` | A unary `math` fn outside its domain (`sqrt`(x<0), `asin`/`acos`(abs>1), `acosh`(x<1), `atanh`(abs≥1), `log2`/`log10`(x≤0), `gamma`/`lgamma` at a non-positive integer) | Restrict the argument to the domain (a `NaN` passes through) |
 | `fmod: math domain error (divisor is zero)` | `math.fmod(x, 0)` | Use a non-zero divisor |
 | `log: math domain error (argument must be > 0)` / `(base must be > 0 and != 1)` | `math.log` with x≤0 or a bad base | Positive argument / valid base |
 | `pow: math domain error (a negative base requires an integer exponent)` / `(zero to a negative power)` | `math.pow(-2, 0.5)` / `math.pow(0, -1)` | Integer exponent for a negative base (or use `complex`) |
 | `<who>: cannot convert NaN/infinity to Integer` / `result out of Integer range` | `floor`/`ceil` of a non-finite/huge value | Feed a finite, in-range value |
 | `math function expected 1 argument` / `pow expected 2 arguments` | Wrong `math` fn arity | Match the arity |
-| `gcd/lcm expects Integers` / `factorial expects an Integer` / `<comb\|perm> expects Integers` | A Float/other where an Integer is required | Pass Integers |
+| `gcd/lcm expects Integers` / `factorial expects an Integer` / `comb/perm expects Integers` | A Float/other where an Integer is required | Pass Integers |
 | `factorial is not defined for negatives` / `comb/perm require non-negative Integers` | A negative argument | Pass non-negative Integers |
 | `prod expects an iterable` / `prod start must be a number` / `prod expects numbers` | Bad `math.prod` input | Pass an iterable of numbers |
 | `<fn> result too large for Integer` | Overflow in `gcd`/`lcm`/`factorial`/`prod`/`comb`/`perm` | Result exceeds int64 (arbitrary precision is future work) |
