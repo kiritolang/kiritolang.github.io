@@ -211,5 +211,8 @@ int main() {
     CHECK(ok("len(\"\\xff\")") == "1");
     CHECK(ok("ord(\"\\x41\")") == "65");         // ASCII is unchanged (1 byte)
 
+    // (A06-7 — "same NaN object should dedupe in a Set/Dict" — was reverted: NaN write-only keys are a
+    // documented invariant, r7_types.ki. Left to a maintainer design decision.)
+
     return RUN_TESTS();
 }
