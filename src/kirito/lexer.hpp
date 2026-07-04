@@ -337,7 +337,20 @@ private:
             int lo = hexDigitValue(peek());
             if (lo < 0) throw KiritoError("invalid \\x escape (expected hex digit)", SourceSpan{line_, col_, 1});
             advance();
-            return std::string(1, static_cast<char>(hi * 16 + lo));
+            // A String is a sequence of Unicode CODE POINTS (stored UTF-8), so `\xHH` is code point
+            // U+00HH — emit its UTF-8 encoding, not a raw byte. A raw high byte (HH >= 0x80) would
+            // merge with the following byte(s) under the code-point layer and mangle the string
+            // (A01-1: len("\xC3\x28") was 1, not 2). cp is 0..255 -> 1 or 2 UTF-8 bytes. For byte-exact
+            // data use Bytes, which is byte-addressed.
+            int cp = hi * 16 + lo;
+            std::string out;
+            if (cp < 0x80) {
+                out.push_back(static_cast<char>(cp));
+            } else {
+                out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            }
+            return out;
         }
         char out;
         switch (e) {

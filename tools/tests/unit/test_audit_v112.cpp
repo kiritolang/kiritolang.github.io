@@ -204,5 +204,12 @@ int main() {
     // referencing a LATER parameter is still correctly rejected (not yet bound at default-eval time):
     CHECK(has(err("var g = Function(a, b = c, c = 1): return a\n"), "not defined"));
 
+    // === A01-1: `\xHH` in a String literal is code point U+00HH (UTF-8-encoded), not a raw byte, so a
+    // high byte no longer merges with the following byte under the code-point layer. ===
+    CHECK(ok("len(\"\\xC3\\x28\")") == "2");    // U+00C3 then '(' — two code points (Python 3 parity)
+    CHECK(ok("ord(\"\\xC3\")") == "195");        // the single code point's value
+    CHECK(ok("len(\"\\xff\")") == "1");
+    CHECK(ok("ord(\"\\x41\")") == "65");         // ASCII is unchanged (1 byte)
+
     return RUN_TESTS();
 }
