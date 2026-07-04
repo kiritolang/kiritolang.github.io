@@ -229,11 +229,14 @@ var groupby = Function(iterable, key = None):
 
 // --- functools ---------------------------------------------------------------------------------
 inline constexpr std::string_view functools = R"KI(
-var reduce = Function(func, iterable, initial = None):
-    # `have` tracks whether we hold an accumulator yet — NOT `acc == None`, so a fold that legitimately
-    # produces None (reduce(fn, [1,2,3]) where fn returns None) is not mistaken for an empty sequence.
+# A unique sentinel (distinct object identity) meaning "no initial value supplied" — so an explicit
+# `initial = None` is a real seed (Python parity), NOT confused with the argument being omitted.
+var _reduce_unset = []
+var reduce = Function(func, iterable, initial = _reduce_unset):
+    # `have` tracks whether we hold an accumulator yet — by IDENTITY against the sentinel, not `== None`,
+    # so a legitimate None seed (or a fold that produces None) is not mistaken for an empty sequence.
     var acc = initial
-    var have = initial != None
+    var have = id(initial) != id(_reduce_unset)
     for x in iterable:
         if have:
             acc = func(acc, x)

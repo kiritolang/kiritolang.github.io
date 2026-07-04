@@ -222,6 +222,14 @@ int main() {
              "var df = t.DataFrame({\"a\": [3, None, 1], \"b\": [1, 2, 3]})\n"
              "df.sortvalues(\"a\").column(\"a\").tolist()") == "[1, 3, None]");
 
+    // === A20-4: functools.reduce must treat an explicit initial=None as a real seed (identity
+    // sentinel), not "no initial supplied". reduce(f, [], None) -> None; reduce(f, [1,2,3]) still folds. ===
+    CHECK(ok("var f = import(\"functools\")\nf.reduce(Function(a, b): return a + b, [], None)") == "None");
+    CHECK(ok("var f = import(\"functools\")\nf.reduce(Function(a, b): return a + b, [1, 2, 3])") == "6");
+    CHECK(ok("var f = import(\"functools\")\nf.reduce(Function(a, b): return a + b, [1, 2, 3], 10)") == "16");
+    CHECK(has(err("var f = import(\"functools\")\nf.reduce(Function(a, b): return a + b, [])"),
+              "empty sequence"));  // still throws when genuinely unset + empty
+
     // === A07-3: privacy is per class *chain*, not per defining class — a subclass method may read a
     // base(-typed) instance's private, symmetric with a base method reading a derived instance's.
     // Previously only base->derived worked (the check was isInstanceOf(obj, currentClass), one-directional). ===
