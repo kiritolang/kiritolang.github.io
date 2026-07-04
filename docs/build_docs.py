@@ -11,8 +11,10 @@ Architecture (single-page app, works straight from disk — file://, no server):
     no longer collide. Every inline `code` mention of a symbol becomes a link to its definition,
     resolved by context (a `recv.method` / `Owner.method` / the current section's owner); a name that
     is genuinely ambiguous links into the search panel pre-filled with that name.
-  - Search: the box matches symbols (name / qualified / signature) first; if a query has no symbol
-    hits it falls back to a full-text scan of the pages.
+  - Search: a single-word query fuzzy-matches symbols (name / qualified / signature, with a
+    subsequence fallback for typos) AND, alongside, a section-level full-text scan; a multi-word query
+    is treated as prose (AND across terms) and searches the text. Text hits deep-link to the nearest
+    section heading and are ranked by term frequency + heading matches.
   - Zero dependencies: a small self-contained Markdown renderer; stock Python 3. Dark theme only.
 
 Documentation content is authored in the .md files, NOT scraped from source-code comments.
@@ -32,6 +34,11 @@ OUT_DIR = os.path.join(HERE, "site")
 # Built-in value types — a fixed set, used to tell a type "owner" heading (## List) apart from a
 # category heading that merely happens to be one word (## Numbers / ## Notes on the builtins page).
 TYPES = {"None", "Bool", "Integer", "Float", "String", "Bytes", "List", "Set", "Dict", "Array", "Number"}
+# A dotted token whose suffix is one of these is a FILENAME (analyzer.hpp, kirito.hpp), not an
+# `owner.member` symbol — never index or link it as such (its "member" would collide, e.g. every
+# `*.hpp` becoming a bogus `hpp` member that mis-resolves).
+_FILE_EXTS = {"hpp", "cpp", "h", "ki", "py", "sh", "ps1", "md", "json", "js", "html", "xml", "yml",
+              "yaml", "cmake", "txt", "gch", "gz", "so", "a", "o", "in", "expected", "experr", "args"}
 
 # Kirito keywords / builtins for lightweight highlighting of ```kirito fences.
 KW = set("var Function if elif else while for in break continue return and or not "
@@ -76,6 +83,7 @@ def highlight_kirito(code):
 QUALIFIED = {}     # "List.append" -> {"slug","anchor","sig","owner","name","kind"}
 BY_NAME = {}       # "append" -> [qualified keys]
 HEADING_SYMS = {}  # "List"/"io" -> {"slug","anchor","kind"} (a type/module/native-object owner section)
+_HEADING_LEVEL = {}  # "String" -> the heading level its HEADING_SYMS entry came from (shallowest wins)
 OWNERS = set()     # names that own members (modules + types + native objects)
 _EMITTED = set()   # (slug, anchor) ids already emitted this render, to avoid dup ids
 _CUR_SLUG = ""     # page slug currently rendering (for owner reset + ids)
@@ -130,13 +138,19 @@ def _collect_owners(pages):
                 OWNERS.add(mo.group(1))
                 HEADING_SYMS.setdefault(mo.group(1), {"slug": slug, "anchor": _slug(t), "kind": "type"})
             elif re.fullmatch(r"[A-Za-z_]\w*", t):
-                # a lowercase single-word level-2 heading is a module; a known builtin type is a type
-                if level == 2 and t[:1].islower():
+                # a lowercase single-word level-2 heading is a module; a known builtin type is a type.
+                # A name can head a section on MORE THAN ONE page — e.g. `## String` in the types
+                # reference AND `#### String` in the C++ API (the C++ wrapper). A bare mention must link
+                # to the CANONICAL entry, not whichever page happened to be processed last. Resolve by
+                # the SHALLOWEST heading level (the type reference's `## String` at level 2 wins over a
+                # `#### String` deep in another page), first page breaking a tie — order-independent.
+                kind = "module" if (level == 2 and t[:1].islower()) else ("type" if t in TYPES else None)
+                if kind and level < _HEADING_LEVEL.get(t, 99):
                     OWNERS.add(t)
-                    HEADING_SYMS[t] = {"slug": slug, "anchor": _slug(t), "kind": "module"}
-                elif t in TYPES:
-                    OWNERS.add(t)
-                    HEADING_SYMS[t] = {"slug": slug, "anchor": _slug(t), "kind": "type"}
+                    HEADING_SYMS[t] = {"slug": slug, "anchor": _slug(t), "kind": kind}
+                    _HEADING_LEVEL[t] = level
+                elif kind:
+                    OWNERS.add(t)   # still an owner (for member attribution), just not the link target
 
 
 def _classify_def(first_cell, owner):
@@ -152,6 +166,8 @@ def _classify_def(first_cell, owner):
     if "." in lead:
         head, member = lead.split(".", 1)
         member = member.split(".")[0]
+        if member in _FILE_EXTS:                 # `analyzer.hpp` etc. is a filename, not a symbol
+            return None
         if head in OWNERS:                       # io.print / math.gcd / tensor.dot
             q = head + "." + member
             kind = "function" if HEADING_SYMS.get(head, {}).get("kind") == "module" else "method"
@@ -235,6 +251,8 @@ def _resolve_link(code_text):
         return None
     head, member = m.group(1), m.group(2)
     if member is not None:
+        if member in _FILE_EXTS:                                          # `analyzer.hpp` — a filename, not a link
+            return None
         if head in OWNERS and (head + "." + member) in QUALIFIED:        # Owner.member (io.print, List.append)
             e = QUALIFIED[head + "." + member]
             return (e["slug"], e["anchor"])
@@ -621,11 +639,13 @@ a.xref.ambig code{color:var(--muted)}
 .res{display:block;padding:8px 11px;border-radius:8px;color:var(--fg)}
 .res:hover,.res.sel{background:var(--sel);text-decoration:none}
 .res .sig{font-family:"SF Mono",SFMono-Regular,Consolas,Menlo,monospace;font-size:13px;color:var(--fg)}
+.res .sig b{color:var(--accent2);font-weight:700}
 .res .meta{font-size:11.5px;color:var(--muted);margin-top:1px}
+.res .meta .crumb{color:var(--faint)}
 .res .kindtag{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);
   border:1px solid var(--border);border-radius:4px;padding:0 5px;margin-left:6px}
 .res .snip{font-size:12.5px;color:var(--muted);margin-top:2px}
-.res .snip b{color:var(--fg);font-weight:600}
+.res .snip b{color:var(--fg);font-weight:600;background:rgba(124,92,255,.16);border-radius:3px}
 .res-group{color:var(--faint);text-transform:uppercase;letter-spacing:.07em;font-size:10.5px;
   font-weight:700;padding:8px 11px 4px}
 .res-empty{padding:14px 12px;color:var(--muted);font-size:13.5px}
@@ -732,59 +752,95 @@ APP_JS = r"""
     tocLinks.forEach(function(a){ a.classList.toggle("active", a.getAttribute("data-anchor")===best); });
   }, {passive:true});
 
-  // ---- search: symbols first, full-text fallback ----
+  // ---- search: fuzzy symbol match + section-level full-text, shown together ----
   var KIND_RANK={module:0,type:0,"function":1,method:1,attribute:1,symbol:2};
+  // Subsequence (fuzzy) score: every char of q appears in order in name -> tolerant of typos and gaps
+  // ("gtitem"->"getitem", "wrdcount"->"wordcount"). Tighter + earlier spans score higher. -1 if no.
+  function subseq(q,name){
+    var i=0,j=0,first=-1,last=-1;
+    while(i<q.length&&j<name.length){ if(q.charCodeAt(i)===name.charCodeAt(j)){ if(first<0)first=j; last=j; i++; } j++; }
+    if(i<q.length) return -1;
+    return 24-(last-first+1-q.length)-first*0.2;
+  }
   function scoreSym(s,q){
     var name=s.name.toLowerCase(), ql=s.q.toLowerCase();
     if(name===q) return 100;
     if(ql===q) return 95;
-    if(name.indexOf(q)===0) return 80-name.length*0.1;
-    if(ql.indexOf(q)===0) return 70;
-    if(name.indexOf(q)>=0) return 55;
-    if(ql.indexOf(q)>=0) return 45;
+    if(name.indexOf(q)===0) return 82-name.length*0.1;
+    if(ql.indexOf(q)===0) return 72;
+    if(name.indexOf(q)>=0) return 56;
+    if(ql.indexOf(q)>=0) return 46;
     if((s.sig||"").toLowerCase().indexOf(q)>=0) return 30;
+    if(q.length>=3){ var ss=subseq(q,name); if(ss>0) return ss; }   // fuzzy fallback
     return -1;
   }
-  var textCache=null;
-  function plainText(p){ var d=document.createElement("div"); d.innerHTML=p.html; return d.textContent||""; }
-  function fulltext(q){
-    if(!textCache){ textCache=D.pages.map(function(p){ return {p:p,t:plainText(p).replace(/\s+/g," ")}; }); }
-    var hits=[];
-    textCache.forEach(function(e){
-      var idx=e.t.toLowerCase().indexOf(q); if(idx<0) return;
-      var s=Math.max(0,idx-40), snip=(s>0?"…":"")+e.t.slice(s,idx+q.length+60)+"…";
-      hits.push({p:e.p, idx:idx, snip:snip});
+  function esctags(h){ var d=document.createElement("div"); d.innerHTML=h; return (d.textContent||"").replace(/\s+/g," "); }
+  function hl(escaped,terms){                                        // bold each (regex-escaped) term
+    if(!terms.length) return escaped;
+    return escaped.replace(new RegExp("("+terms.join("|")+")","ig"),"<b>$1</b>");
+  }
+  // Split each page into SECTIONS at headings that carry an id, so a text hit deep-links to the
+  // nearest section (not just the page top) and ranks at section granularity. Built once, cached.
+  var sectCache=null;
+  function buildSections(){
+    sectCache=[];
+    D.pages.forEach(function(p){
+      var re=/<h[1-4][^>]*\bid="([^"]+)"[^>]*>([\s\S]*?)<\/h[1-4]>/g, m, marks=[];
+      while((m=re.exec(p.html))){ marks.push({s:m.index, e:re.lastIndex, anchor:m[1], title:esctags(m[2])}); }
+      function push(anchor,title,chunk){ var t=esctags(chunk); if(t) sectCache.push({p:p,anchor:anchor,title:title,t:t,tl:t.toLowerCase(),titl:(title||"").toLowerCase()}); }
+      if(!marks.length){ push(null,p.title,p.html); return; }
+      push(null,p.title,p.html.slice(0,marks[0].s));
+      for(var k=0;k<marks.length;k++){ push(marks[k].anchor,marks[k].title,p.html.slice(marks[k].e, k+1<marks.length?marks[k+1].s:p.html.length)); }
     });
-    hits.sort(function(a,b){return a.idx-b.idx;});
-    return hits.slice(0,12);
+  }
+  function fulltext(terms){
+    if(!sectCache) buildSections();
+    var hits=[];
+    sectCache.forEach(function(sec){
+      var ok=true,score=0,firstIdx=1e9;
+      for(var i=0;i<terms.length;i++){ var t=terms[i], idx=sec.tl.indexOf(t); if(idx<0){ok=false;break;}
+        firstIdx=Math.min(firstIdx,idx);
+        var c=0,p=idx; while(p>=0&&c<8){ c++; p=sec.tl.indexOf(t,p+t.length); } score+=c;   // frequency
+        if(sec.titl.indexOf(t)>=0) score+=12;                                                // heading hit
+      }
+      if(!ok) return;
+      var s0=Math.max(0,firstIdx-45);
+      hits.push({sec:sec, score:score, snip:(s0>0?"…":"")+sec.t.slice(s0,firstIdx+90)+"…"});
+    });
+    hits.sort(function(a,b){ return b.score-a.score; });
+    return hits.slice(0,8);
   }
   function runSearch(q){
     q=(q||"").trim().toLowerCase();
     if(!q){ results.classList.remove("show"); results.innerHTML=""; return; }
+    var terms=q.split(/\s+/).filter(Boolean);
+    var reterms=terms.map(function(t){return t.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");});
     var syms=[];
-    D.symbols.forEach(function(s){ var sc=scoreSym(s,q); if(sc>=0) syms.push({s:s,sc:sc}); });
-    syms.sort(function(a,b){ return b.sc-a.sc || (KIND_RANK[a.s.kind]-KIND_RANK[b.s.kind]) || a.s.q.length-b.s.q.length; });
-    syms=syms.slice(0,40);
+    // match symbols on the FULL query (names have no spaces); skip if the query is multi-word prose.
+    if(terms.length===1){
+      D.symbols.forEach(function(s){ var sc=scoreSym(s,q); if(sc>=0) syms.push({s:s,sc:sc}); });
+      syms.sort(function(a,b){ return b.sc-a.sc || (KIND_RANK[a.s.kind]-KIND_RANK[b.s.kind]) || a.s.q.length-b.s.q.length; });
+      syms=syms.slice(0,14);
+    }
     var h="";
     if(syms.length){
       h+='<div class="res-group">Symbols</div>';
       syms.forEach(function(o){ var s=o.s;
-        h+='<a class="res" href="#'+s.slug+'::'+s.anchor+'"><span class="sig">'+esc(s.sig)+'</span>'+
+        h+='<a class="res" href="#'+s.slug+'::'+s.anchor+'"><span class="sig">'+hl(esc(s.sig),reterms)+'</span>'+
            '<span class="kindtag">'+esc(s.kind)+'</span><div class="meta">'+
            (s.owner?esc(s.owner)+" · ":"")+esc(pageBySlug[s.slug]?pageBySlug[s.slug].title:s.slug)+'</div></a>';
       });
-    } else {
-      var ft=fulltext(q);
-      if(ft.length){
-        h+='<div class="res-group">In the documentation</div>';
-        ft.forEach(function(o){
-          var snip=esc(o.snip).replace(new RegExp("("+q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+")","ig"),"<b>$1</b>");
-          h+='<a class="res" href="#'+o.p.slug+'"><div class="meta">'+esc(o.p.title)+'</div><div class="snip">'+snip+'</div></a>';
-        });
-      } else {
-        h='<div class="res-empty">No matches for “'+esc(q)+'”.</div>';
-      }
     }
+    var ft=fulltext(terms);                              // ALWAYS show relevant prose, alongside symbols
+    if(ft.length){
+      h+='<div class="res-group">In the documentation</div>';
+      ft.forEach(function(o){ var sec=o.sec;
+        var href='#'+sec.p.slug+(sec.anchor?'::'+sec.anchor:'');
+        var label=esc(sec.p.title)+(sec.title&&sec.title!==sec.p.title?' <span class="crumb">›</span> '+esc(sec.title):'');
+        h+='<a class="res" href="'+href+'"><div class="meta">'+label+'</div><div class="snip">'+hl(esc(o.snip),reterms)+'</div></a>';
+      });
+    }
+    if(!h) h='<div class="res-empty">No matches for “'+esc(q)+'”.</div>';
     results.innerHTML=h; results.classList.add("show"); selIdx=-1;
   }
   var selIdx=-1;
@@ -826,7 +882,7 @@ SHELL = ('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
          '<div class="tag">a dynamically-typed scripting language</div></div>'
          '<div class="search-wrap"><input id="search" type="text" autocomplete="off" spellcheck="false" '
          'placeholder="Search methods, types, text…"><div class="search-hint">Press '
-         '<kbd>/</kbd> to search · symbols first, then text</div></div>'
+         '<kbd>/</kbd> to search · fuzzy, jumps into the text</div></div>'
          '<div id="results"></div>'
          '<nav id="nav"></nav></aside>'
          '<main id="main"><div id="content"></div></main>'

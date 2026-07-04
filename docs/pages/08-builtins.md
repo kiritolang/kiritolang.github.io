@@ -27,7 +27,7 @@ parameter name.
   (decimal/scientific notation, plus the special values `"inf"`/`"infinity"`/`"nan"`, case-insensitive
   and sign-prefixable). Throws if a String doesn't parse; a C99 hex-float literal (`"0x1p4"`) is
   rejected too.
-- `String(x) → String` — the `str()` form of any value (the same text `io.print` would emit).
+- `String(x) → String` — the string form of any value (the same text `io.print` would emit).
 - `Bool(x) → Bool` — the truthiness of `x` (empty collections/`0`/`""`/`None` are `False`).
 - `List([iterable]) → List` — an empty list, or a new list built from any iterable. `List(iterable = xs)`.
 - `Set([iterable]) → Set` — an empty set, or a set of the distinct elements of an iterable.

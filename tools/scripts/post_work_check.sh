@@ -39,7 +39,16 @@
 # /tmp/pw_<v>.*.log are always kept regardless. Pass --keep-builds to retain every build dir.
 #
 # Usage:  scripts/post_work_check.sh [--no-asan] [--keep-builds]
+# TLS COMPILE GATE: none of the four presets set -DKIRITO_ENABLE_TLS, so a TLS-only build error — a
+# missing symbol inside an `#ifdef KIRITO_ENABLE_TLS` path, or the umbrella header failing to find
+# OpenSSL when the shared PCH is built — sails straight past debug/release/asan/tsan. Before the
+# variant matrix, this routine compiles `ki` once with TLS on (system OpenSSL) so that class of error
+# fails here instead of only in the nightly. The full non-system / Windows-OpenSSL path (which catches
+# include-propagation bugs the system OpenSSL hides) is covered by tools/scripts/build_all.sh's mingw
+# cross-build. The gate SKIPS gracefully if OpenSSL isn't installed on the dev box.
+#
 #   --no-asan       run debug + release only (the commit gate); skip the slow asan + tsan passes.
+#   --no-tls        skip the TLS compile gate.
 #   --keep-builds   do NOT delete a variant's build dir after it passes (keep all artifacts).
 #
 # Exit status is non-zero if ANY variant fails to build or has a failing test.
@@ -48,10 +57,12 @@ set -u
 cd "$(dirname "$0")/../.."
 
 NO_ASAN=0
+NO_TLS=0
 KEEP_BUILDS=0
 for arg in "$@"; do
     case "$arg" in
         --no-asan)     NO_ASAN=1 ;;
+        --no-tls)      NO_TLS=1 ;;
         --keep-builds) KEEP_BUILDS=1 ;;
         *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
@@ -88,7 +99,38 @@ fi
 
 declare -A DIR=( [debug]=build-debug [release]=build-release [asan]=build-asan [tsan]=build-tsan )
 FAILED=0
-GREEN_GATE=1   # cleared if debug or release fails
+GREEN_GATE=1   # cleared if debug or release (or the TLS gate) fails
+
+# --- TLS compile gate: build `ki` once with -DKIRITO_ENABLE_TLS on (see the header note). Cheap and
+# fast; catches TLS-only compile errors the four presets can't. Skips (does not fail) if CMake can't
+# find OpenSSL on this box. Returns 0 = ok/skipped, 1 = a real TLS build failure.
+TLS_RESULT="<not run>"
+tls_compile_gate() {
+    echo "==================== TLS COMPILE GATE ===================="
+    command -v cmake >/dev/null 2>&1 || { echo "[tls] cmake absent — skipped"; TLS_RESULT="skipped (no cmake)"; return 0; }
+    local d=build-tls
+    rm -rf "$d"
+    if ! cmake -S . -B "$d" -G Ninja -DKIRITO_ENABLE_TLS=ON \
+              -DCMAKE_CXX_FLAGS="-O0 -pipe -Wall -Wextra -Wpedantic -Werror -std=c++20" \
+              >"/tmp/pw_tls.cfg.log" 2>&1; then
+        echo "[tls] OpenSSL not found (or configure failed) — TLS gate SKIPPED (nightly still covers it):"
+        grep -iE 'openssl|error' "/tmp/pw_tls.cfg.log" | head -4
+        rm -rf "$d"; TLS_RESULT="skipped (no OpenSSL)"; return 0
+    fi
+    if ! cmake --build "$d" --target ki -j"$JOBS" >"/tmp/pw_tls.build.log" 2>&1; then
+        echo "[tls] BUILD FAILED ($(grep -cE 'error:' "/tmp/pw_tls.build.log") errors):"
+        grep -E 'error:' "/tmp/pw_tls.build.log" | head -20
+        TLS_RESULT="BUILD FAILED"; return 1
+    fi
+    echo "[tls] ki built with KIRITO_ENABLE_TLS: OK"
+    [ "$KEEP_BUILDS" -eq 0 ] && rm -rf "$d"
+    TLS_RESULT="OK"; return 0
+}
+if [ "$NO_TLS" -eq 1 ]; then
+    TLS_RESULT="<skipped>"
+elif ! tls_compile_gate; then
+    FAILED=1; GREEN_GATE=0
+fi
 
 # Build+test one variant from scratch. Returns 0 on success. asan gets a generous stack + sanitizer
 # options, scoped to its own invocation (the recursion guard's frames are larger under ASan).
@@ -144,15 +186,16 @@ run_variant release || GREEN_GATE=0
 
 echo "==================== COMMIT GATE ===================="
 if [ "$GREEN_GATE" -eq 1 ]; then
-    echo "READY TO PUSH: debug + release are GREEN — commit and push now, before asan."
+    echo "READY TO PUSH: debug + release (+ the TLS gate) are GREEN — commit and push now, before asan."
 else
-    echo "DO NOT PUSH: debug or release failed — fix before committing."
+    echo "DO NOT PUSH: debug, release, or the TLS gate failed — fix before committing."
 fi
 
 [ "$NO_ASAN" -eq 0 ] && run_variant asan
 [ "$NO_ASAN" -eq 0 ] && run_variant tsan
 
 echo "==================== SUMMARY ===================="
+echo "tls: $TLS_RESULT"
 for v in debug release asan tsan; do
     { [ "$v" = "asan" ] || [ "$v" = "tsan" ]; } && [ "$NO_ASAN" -eq 1 ] && { echo "$v: <skipped>"; continue; }
     line=$(grep -hE 'tests passed|TESTS FAILED|BUILD FAILED|CONFIG FAILED' \
