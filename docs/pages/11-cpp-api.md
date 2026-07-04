@@ -331,6 +331,12 @@ You need `RootScope` / `pushTemp` only for a handle you hold across another allo
 the same function**; reach for `PinnedHandle` the moment the handle has to be **stored** somewhere
 that outlives the current call.
 
+To suspend collection *wholesale* for a batch of allocations — rather than root specific values — use
+the RAII **`GcPauseScope`** (vm.hpp): it disables auto-GC for its lifetime and **restores the previous
+setting** on exit (so nested pauses compose), rather than calling `setGcEnabled(false)` / `(true)` by
+hand and risking a forgotten re-enable. Rooting the values you actually care about (`RootScope` /
+`PinnedHandle`) is usually the better tool; pausing is the blunt instrument.
+
 ### `NamedArg` — a keyword argument
 
 ```cpp
@@ -1696,7 +1702,8 @@ public:
     void        unpinHandle(Handle h);
     void        collectGarbage();
     void        setGcThreshold(std::size_t n);
-    void        setGcEnabled(bool on);
+    void        setGcEnabled(bool on);           // prefer the RAII GcPauseScope over a raw toggle
+    bool        gcEnabled() const;
     std::size_t liveCount() const;
 
     // call-depth guard
@@ -1928,7 +1935,7 @@ in-flight exception (innermost first) and snapshotted onto the VM as its `lastTr
 | `function.hpp` | `NativeFn`, `NativeFnKw`, `NativeParam`, `NativeFunction`, `KiFunction` |
 | `native.hpp` | `argString`, `argInt`, `requireArgs`, `sliceIndices`, `ModuleBuilder`, `NativeModule`, `NativeClass`, `makeMethod` |
 | `value.hpp` | `Value` + `Bool`/`Integer`/`Float`/`String`/`Bytes`/`List`/`Dict`/`Set` wrappers, `Args`, `PinnedHandle` |
-| `vm.hpp` | `KiritoVM`, `RootScope`, `CallGuard`, `KiritoVM::ChunkFileScope` |
+| `vm.hpp` | `KiritoVM`, `RootScope`, `CallGuard`, `GcPauseScope`, `KiritoVM::ChunkFileScope` |
 | `dispatcher.hpp` | `KiritoDispatcher`, `Waitable`, cross-VM `ConcurrentQueue`/`Lock`/`Event`/`Semaphore`/`Barrier` |
 
 The bytecode/parser/compiler headers (`ast.hpp`, `bytecode.hpp`, `compiler.hpp`, `lexer.hpp`,

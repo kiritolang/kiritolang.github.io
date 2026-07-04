@@ -154,6 +154,7 @@ public:
 
     void setGcThreshold(std::size_t n) { gcThreshold_ = n; }
     void setGcEnabled(bool on) { gcEnabled_ = on; }
+    bool gcEnabled() const { return gcEnabled_; }   // current setting (for a scoped GcPauseScope)
     std::size_t liveCount() const { return arena_.liveCount(); }
 
     // Call-depth guard: the VM still recurses on the native C++ stack (one nested call/compile
@@ -351,6 +352,20 @@ struct RootScope {
         vm.pushTemp(h);
         return h;
     }
+};
+
+// RAII: pause automatic garbage collection for a critical section and RESTORE the previous setting
+// on scope exit (even when unwinding). Nests correctly — an inner scope restores the outer's state,
+// not unconditionally "on". Use to batch allocations where a mid-run sweep would be wasteful; prefer
+// `RootScope` / `PinnedHandle` (value.hpp) to keep *specific* values alive — reach for this only to
+// suspend collection wholesale.
+struct GcPauseScope {
+    KiritoVM& vm;
+    bool prev;
+    explicit GcPauseScope(KiritoVM& v) : vm(v), prev(v.gcEnabled()) { vm.setGcEnabled(false); }
+    ~GcPauseScope() { vm.setGcEnabled(prev); }
+    GcPauseScope(const GcPauseScope&) = delete;
+    GcPauseScope& operator=(const GcPauseScope&) = delete;
 };
 
 }  // namespace kirito

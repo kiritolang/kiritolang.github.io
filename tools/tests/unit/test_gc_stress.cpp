@@ -114,5 +114,27 @@ while i < 100000:
         vm.unpinHandle(h);
     }
 
+    // ===== GcPauseScope: suspends auto-GC for its lifetime, restores the PREVIOUS setting =====
+    {
+        KiritoVM vm;                                                // GC on by default
+        CHECK(vm.gcEnabled() == true);
+        { GcPauseScope pause(vm); CHECK(vm.gcEnabled() == false); }
+        CHECK(vm.gcEnabled() == true);                              // restored to 'on'
+        // nesting: an inner scope restores the OUTER's state, not unconditionally 'on'
+        vm.setGcEnabled(false);
+        { GcPauseScope pause(vm); CHECK(vm.gcEnabled() == false); }
+        CHECK(vm.gcEnabled() == false);                            // restored to the prior 'off'
+        // behaviour: a bare handle survives an allocation storm while collection is paused
+        vm.setGcEnabled(true);
+        vm.setGcThreshold(1);                                       // would sweep on every alloc if enabled
+        {
+            GcPauseScope pause(vm);
+            Handle keep = vm.makeString("survives");
+            for (int i = 0; i < 200; ++i) vm.makeString("junk" + std::to_string(i));
+            CHECK(vm.stringify(keep) == "survives");               // no sweep ran while paused
+        }
+        CHECK(vm.gcEnabled() == true);                             // and auto-GC is back on afterward
+    }
+
     return RUN_TESTS();
 }
