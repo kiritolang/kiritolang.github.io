@@ -22,19 +22,26 @@
 
 namespace kirito {
 
-// An internal iteration cursor: the eagerly-materialised items of a for-loop's iterable plus a
-// position. It lives only on a frame's operand stack (so the GC traces its items via children())
-// between GetIter and the loop's end; it is never visible to Kirito code. kind() is a sentinel.
+// An internal iteration cursor: either the eagerly-materialised items of a for-loop's iterable plus a
+// position, OR a lazy pull-based source (a stream) that produces one item per step. It lives only on a
+// frame's operand stack (so the GC traces its items via children()) between GetIter and the loop's
+// end; it is never visible to Kirito code. kind() is a sentinel.
 class IterCursor : public Object {
 public:
     std::vector<Handle> items;
     std::size_t idx = 0;
+    std::unique_ptr<LazyIterator> lazy;   // set for a stream: pull one item per step (items unused)
+    Handle source{};                      // the lazily-consumed iterable — kept rooted so its buffer/
+                                          // stream survives the whole loop (the LazyIterator re-derefs it)
     ValueKind kind() const override { return ValueKind::None; }  // internal; never exposed to user code
     std::string typeName() const override { return "iterator"; }
     bool truthy() const override { return true; }
     std::string str(StringifyCtx&) const override { return "<iterator>"; }
     bool equals(const ObjectArena&, const Object& o) const override { return this == &o; }
-    void children(std::vector<Handle>& out) const override { out.insert(out.end(), items.begin(), items.end()); }
+    void children(std::vector<Handle>& out) const override {
+        out.insert(out.end(), items.begin(), items.end());
+        if (lazy) out.push_back(source);
+    }
 };
 
 // Executes one Proto frame against a scope. The operand stack is a single C++ vector whose first
@@ -283,21 +290,39 @@ public:
 
                 case Op::GetIter: {
                     Handle iterable = peek(0);
-                    auto items = located(in.span, [&] { return vm_.arena().deref(iterable).iterate(vm_); });
-                    if (!items)
-                        throw KiritoError("type '" + vm_.arena().deref(iterable).typeName() + "' is not iterable", in.span);
-                    RootScope rs(vm_);  // root freshly-materialised items until the cursor (a GC root) holds them
-                    for (Handle it : items.value()) rs.add(it);
+                    // Prefer a lazy (stream) cursor: pull one element per step so a large file / stdin is
+                    // not buffered to EOF (A10-5). Fall back to eager iterate() for everything else.
+                    auto lazy = located(in.span, [&] { return vm_.arena().deref(iterable).lazyIterate(vm_, iterable); });
                     auto cursor = std::make_unique<IterCursor>();
-                    cursor->items = std::move(items.value());
+                    if (lazy) {
+                        cursor->lazy = std::move(lazy);
+                        cursor->source = iterable;   // keep the stream rooted for the loop's duration
+                    } else {
+                        auto items = located(in.span, [&] { return vm_.arena().deref(iterable).iterate(vm_); });
+                        if (!items)
+                            throw KiritoError("type '" + vm_.arena().deref(iterable).typeName() + "' is not iterable", in.span);
+                        RootScope rs(vm_);  // root freshly-materialised items until the cursor (a GC root) holds them
+                        for (Handle it : items.value()) rs.add(it);
+                        cursor->items = std::move(items.value());
+                    }
                     Handle r = vm_.alloc(std::move(cursor));
                     pop();
                     push(r);
                 } break;
                 case Op::ForIter: {
-                    auto& cur = static_cast<IterCursor&>(vm_.arena().deref(peek(0)));
-                    if (cur.idx >= cur.items.size()) { pop(); ip = in.a; }  // exhausted: drop cursor, exit loop
-                    else push(cur.items[cur.idx++]);
+                    // peek(0) stays valid across a lazy next() (the cursor is on the operand stack, a GC
+                    // root); the produced item is pushed immediately, so no unrooted gap.
+                    if (static_cast<IterCursor&>(vm_.arena().deref(peek(0))).lazy) {
+                        auto step = located(in.span, [&] {
+                            return static_cast<IterCursor&>(vm_.arena().deref(peek(0))).lazy->next(vm_);
+                        });
+                        if (!step) { pop(); ip = in.a; }  // exhausted: drop cursor, exit loop
+                        else push(*step);
+                    } else {
+                        auto& cur = static_cast<IterCursor&>(vm_.arena().deref(peek(0)));
+                        if (cur.idx >= cur.items.size()) { pop(); ip = in.a; }  // exhausted: drop cursor, exit loop
+                        else push(cur.items[cur.idx++]);
+                    }
                 } break;
                 case Op::Unpack: {
                     const UnpackSpec& spec = proto.unpacks[in.a];
