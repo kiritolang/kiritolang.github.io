@@ -2113,6 +2113,21 @@ inline Handle applyBinaryOp(KiritoVM& vm, BinOp op, Handle lhs, Handle rhs) {
                 }
             }
         }
+        // Reflected: the LEFT operand is not an instance but the RIGHT is (`5 != c`). Prefer the
+        // RIGHT instance's own `_ne_`/`_eq_` so it is symmetric with `c != 5`, instead of silently
+        // falling through to structural equality (which ignores a standalone `_ne_`). ==/!= are
+        // symmetric, so the operand order can be swapped.
+        if (l.kind() != ValueKind::Instance) {
+            Object& r = vm.arena().deref(rhs);
+            if (auto* rinst = dynamic_cast<InstanceValue*>(&r)) {
+                if (rinst->findMethod(vm.arena(), binOpMethod(op)))
+                    return r.binary(vm, op, rhs, lhs);
+                if (op == BinOp::Ne && rinst->findMethod(vm.arena(), "_eq_")) {
+                    Handle eqr = r.binary(vm, BinOp::Eq, rhs, lhs);
+                    return vm.makeBool(!vm.arena().deref(eqr).truthy());
+                }
+            }
+        }
         bool eq = kiEquals(vm, lhs, rhs);
         return vm.makeBool(op == BinOp::Eq ? eq : !eq);
     }
@@ -2120,6 +2135,11 @@ inline Handle applyBinaryOp(KiritoVM& vm, BinOp op, Handle lhs, Handle rhs) {
         bool c = vm.arena().deref(rhs).contains(vm, lhs);
         return vm.makeBool(op == BinOp::In ? c : !c);
     }
+    // NOTE: arithmetic/ordering operators deliberately do NOT reflect onto a right-hand object
+    // (`3 * v` throws even if `v` defines `_mul_` — the object must be on the left). This is a
+    // documented invariant (tools/tests/scripts/r11_docinvariants.ki) — Kirito has no `_radd_`-style
+    // reflected dunder, so a correct reflection is impossible for the non-commutative ops. Only
+    // ==/!= are symmetric (handled above).
     return vm.arena().deref(lhs).binary(vm, op, lhs, rhs);
 }
 

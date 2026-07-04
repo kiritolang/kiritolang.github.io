@@ -174,5 +174,14 @@ int main() {
     CHECK(ok("\",\".join([\"a\", \"b\", \"c\"])") == "a,b,c");
     CHECK(okGc1("\",\".join(\"abcde\")") == "a,b,c,d,e");   // join over a String (fresh handles) under GC1
 
+    // === A05-1: ==/!= are symmetric, so `5 != c` must honor a right-hand instance's standalone `_ne_`
+    // (and `_eq_`), instead of falling through to structural equality. (Arithmetic/ordering operators
+    // deliberately do NOT reflect — a documented invariant; only ==/!= are symmetric.) ===
+    CHECK(ok("class C:\n  var _ne_ = Function(self, o): return True\n5 != C()") == "True");
+    CHECK(ok("class C:\n  var _ne_ = Function(self, o): return False\n5 != C()") == "False");
+    CHECK(ok("class C:\n  var _eq_ = Function(self, o): return True\n5 == C()") == "True");
+    // and the documented limitation still holds: arithmetic does not reflect onto the right operand.
+    CHECK(!err("class C:\n  var _mul_ = Function(self, o): return 1\n3 * C()").empty());  // throws
+
     return RUN_TESTS();
 }
