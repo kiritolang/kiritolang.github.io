@@ -202,6 +202,12 @@ int main() {
     CHECK(ok("class C:\n  var _ne_ = Function(self, o): return True\n5 != C()") == "True");
     CHECK(ok("class C:\n  var _ne_ = Function(self, o): return False\n5 != C()") == "False");
     CHECK(ok("class C:\n  var _eq_ = Function(self, o): return True\n5 == C()") == "True");
+    // `!=` derived from a standalone `_eq_` on the RHS (no `_ne_`): 5 != d negates d._eq_(5).
+    CHECK(ok("class D:\n  var _eq_ = Function(self, o): return True\n5 != D()") == "False");
+    CHECK(ok("class D:\n  var _eq_ = Function(self, o): return False\n5 != D()") == "True");
+    // symmetry: `5 == c` and `c == 5` agree; likewise for `!=`.
+    CHECK(ok("class C:\n  var _eq_ = Function(self, o): return o == 5\n"
+             "[5 == C(), C() == 5, 5 != C(), C() != 5]") == "[True, True, False, False]");
     // and the documented limitation still holds: arithmetic does not reflect onto the right operand.
     CHECK(!err("class C:\n  var _mul_ = Function(self, o): return 1\n3 * C()").empty());  // throws
 
@@ -232,6 +238,11 @@ int main() {
     CHECK(ok("ord(\"\\xC3\")") == "195");        // the single code point's value
     CHECK(ok("len(\"\\xff\")") == "1");
     CHECK(ok("ord(\"\\x41\")") == "65");         // ASCII is unchanged (1 byte)
+    // encode round-trips: U+00FF is 2 UTF-8 bytes / 1 latin-1 byte, and decodes back equal.
+    CHECK(ok("len(\"\\xff\".encode(\"utf-8\"))") == "2");     // UTF-8: U+00FF -> 0xC3 0xBF
+    CHECK(ok("len(\"\\xff\".encode(\"latin-1\"))") == "1");   // latin-1: one byte 0xFF
+    CHECK(ok("\"\\xff\".encode(\"latin-1\").decode(\"latin-1\") == \"\\xff\"") == "True");
+    CHECK(ok("\"\\xff\".encode(\"utf-8\").decode(\"utf-8\") == \"\\xff\"") == "True");
 
     // (A06-7 — "same NaN object should dedupe in a Set/Dict" — was reverted: NaN write-only keys are a
     // documented invariant, r7_types.ki. Left to a maintainer design decision.)
