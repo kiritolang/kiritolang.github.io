@@ -135,6 +135,11 @@ kirito_test(test_value unit/test_value.cpp)
 kirito_test(test_value_ops unit/test_value_ops.cpp)
 kirito_test(test_value_containers unit/test_value_containers.cpp)
 kirito_test(test_gc_stress unit/test_gc_stress.cpp)
+# --- _deep suites: adversarial/edge/error-path coverage filling audited gaps per area ---
+kirito_test(test_regex_deep unit/test_regex_deep.cpp)
+kirito_test(test_compress_hash_deep unit/test_compress_hash_deep.cpp)
+kirito_test(test_io_path_deep unit/test_io_path_deep.cpp)
+kirito_test(test_sys_time_deep unit/test_sys_time_deep.cpp)
 kirito_test(test_modules_fuzz unit/test_modules_fuzz.cpp)
 
 # Multiprocessing (KiritoDispatcher + the `parallel` module). Every blocking scenario runs under an
