@@ -81,3 +81,6 @@ Legend: ⬜ not started · 🟡 running · ✅ done · ❌ stopped/incomplete
 
 ## Status board (main session updates)
 - 2026-07-04: workspace created; branch `claude-branch` restarted from main (ecd6a3f). kVersion still 1.11.0.
+- 2026-07-04: **Wave 1 launched** — A01–A09 core-engine auditors running (read-only, each → its agents/Axx.md).
+  Main session commits the .md files on each completion so findings survive a force-stop / container loss.
+  Wave 2 (A10–A20) launches after Wave 1 reports; Wave 3 (A21–A22) after that.
