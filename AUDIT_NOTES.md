@@ -257,4 +257,5 @@ compile-reviewed edits (user builds); the self-asserting `spec_audit_hardening.k
 - ~~LOW — `stdlib_regex.hpp` module sub/split drop the flags arg.~~ **DONE**: added a trailing
   `flags` param to one-shot `regex.sub`/`regex.split`. Test: `spec_regex_oneshot_flags.ki`.
 - LOW — `parser.hpp` inline-body `return a, b` doesn't pack; `lexer.hpp` NUL-in-string = EOF.
-- nit — `bytes.hpp` repeat cap duplicates `kMaxRepeat` (needs the constant moved to a low-level header).
+- ~~nit — `bytes.hpp` repeat cap duplicates `kMaxRepeat`.~~ **DONE**: moved `kMaxRepeat` to
+  `common.hpp` (single source of truth); bytes.hpp/runtime.hpp both use it.
