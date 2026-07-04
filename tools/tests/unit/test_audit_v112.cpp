@@ -162,5 +162,10 @@ int main() {
         CHECK(!s5.dropAuth); CHECK(!s5.dropCookies);
     }
 
+    // === A10-4: capturing child stdout/stderr is now bounded (a runaway producer would OOM inside a
+    // drain thread with no catch -> SIGABRT). Normal small output must still be captured intact; the
+    // >256 MiB truncation-throws path is logic-verified (a fixture producing 256 MiB is impractical). ===
+    CHECK(has(ok("import(\"sys\").shell(\"echo hello-kirito\")[\"stdout\"]"), "hello-kirito"));
+
     return RUN_TESTS();
 }

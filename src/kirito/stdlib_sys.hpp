@@ -41,6 +41,8 @@ inline Handle runExternalProcess(KiritoVM& vm, const std::vector<std::string>& a
     } catch (const proccompat::ProcError& e) {
         throw KiritoError(std::string(e.what()));
     }
+    if (r.truncated)
+        throw KiritoError("process produced more than 256 MiB of output (capture limit exceeded)");
     Dict d(vm);
     d.set("code", vm.makeInt(r.code));
     d.set("stdout", Value(vm, r.out));
@@ -151,12 +153,23 @@ public:
             // None/no-arg -> 0; an Integer -> that status; anything else is treated as
             // an error message printed to stderr with status 1 (rather than silently exiting 0, which
             // would mask a failure).
-            if (a.empty()) std::exit(0);
+            // A10-2: plain std::exit() runs atexit handlers + static destructors, which — when called
+            // from a `parallel` worker thread while siblings are still live (incl. the dispatcher whose
+            // dtor joins them) — DEADLOCKS the process ~half the time. Flush the output streams
+            // ourselves and then std::_Exit(), which terminates immediately without running those
+            // destructors, so the exit is deterministic from any thread (the OS reclaims the rest).
+            auto doExit = [](int code) {
+                std::cout.flush();
+                std::cerr.flush();
+                std::fflush(nullptr);   // flush every open C stdio stream too
+                std::_Exit(code);
+            };
+            if (a.empty()) doExit(0);
             const Object& o = vm.arena().deref(a[0]);
-            if (o.kind() == ValueKind::None) std::exit(0);
-            if (o.kind() == ValueKind::Integer) std::exit(static_cast<int>(static_cast<const IntVal&>(o).value()));
+            if (o.kind() == ValueKind::None) doExit(0);
+            if (o.kind() == ValueKind::Integer) doExit(static_cast<int>(static_cast<const IntVal&>(o).value()));
             std::fprintf(stderr, "%s\n", vm.stringify(a[0]).c_str());
-            std::exit(1);
+            doExit(1);
             return Value::None(vm);  // unreachable
         });
 

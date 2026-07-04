@@ -11,6 +11,8 @@
 // / TerminateProcess) and throws. This is for running EXTERNAL programs (ffmpeg, a shell, ...), NOT
 // the `parallel` worker-VM model.
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <stdexcept>
 #include <string>
@@ -40,7 +42,14 @@ struct ProcResult {
     int code = 0;
     std::string out;
     std::string err;
+    bool truncated = false;   // a captured stream hit kMaxCapture and was cut off
 };
+
+// Cap on captured stdout/stderr. A runaway child could otherwise grow `out`/`err` until bad_alloc —
+// and that would be thrown INSIDE a drain thread with no try/catch, i.e. std::terminate / SIGABRT,
+// uncatchable by Kirito (A10-4). Past the cap we stop storing but keep draining (so the child can't
+// deadlock on a full pipe) and flag truncation; the caller turns it into a clean catchable error.
+inline constexpr std::size_t kMaxCapture = 256ull * 1024 * 1024;
 
 // Spawn failure (program not found, etc.) or timeout; the `sys` glue maps it to a KiritoError.
 struct ProcError : std::runtime_error {
@@ -79,10 +88,23 @@ inline std::wstring quoteArgW(const std::wstring& arg) {
     out.push_back(L'"');
     return out;
 }
-inline void drainHandle(HANDLE h, std::string& out) {
+inline void drainHandle(HANDLE h, std::string& out, std::atomic<bool>& truncated) {
     char buf[65536];
     DWORD n = 0;
-    while (::ReadFile(h, buf, sizeof(buf), &n, nullptr) && n > 0) out.append(buf, n);
+    try {
+        while (::ReadFile(h, buf, sizeof(buf), &n, nullptr) && n > 0) {
+            std::size_t got = n;
+            if (out.size() < kMaxCapture) {
+                std::size_t room = kMaxCapture - out.size();
+                out.append(buf, std::min(room, got));
+                if (got > room) truncated = true;
+            } else {
+                truncated = true;                    // keep reading (don't deadlock the child), discard
+            }
+        }
+    } catch (...) {
+        truncated = true;                            // a bad_alloc etc. must never escape the drain thread
+    }
 }
 
 inline ProcResult run(const std::vector<std::string>& argv, const std::string& cwd,
@@ -145,8 +167,9 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
     ::ResumeThread(pi.hThread);
 
     ProcResult res;
-    std::thread tout([&] { drainHandle(outR, res.out); });
-    std::thread terr([&] { drainHandle(errR, res.err); });
+    std::atomic<bool> trunc{false};
+    std::thread tout([&] { drainHandle(outR, res.out, trunc); });
+    std::thread terr([&] { drainHandle(errR, res.err, trunc); });
     std::thread tin([&] {
         std::size_t off = 0;
         while (off < input.size()) {
@@ -166,6 +189,7 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
         timedOut = true;
     }
     tin.join(); tout.join(); terr.join();
+    res.truncated = trunc.load();
 
     DWORD code = 0;
     ::GetExitCodeProcess(pi.hProcess, &code);
@@ -185,14 +209,27 @@ inline void ensureSigpipeIgnored() {
     static const bool once = [] { ::signal(SIGPIPE, SIG_IGN); return true; }();
     (void)once;
 }
-inline void drainFd(int fd, std::string& out) {
+inline void drainFd(int fd, std::string& out, std::atomic<bool>& truncated) {
     char buf[65536];
-    for (;;) {
-        ssize_t n = ::read(fd, buf, sizeof(buf));
-        if (n > 0) out.append(buf, static_cast<std::size_t>(n));
-        else if (n == 0) break;                  // EOF: the child closed this stream
-        else if (errno == EINTR) continue;
-        else break;
+    try {
+        for (;;) {
+            ssize_t n = ::read(fd, buf, sizeof(buf));
+            if (n > 0) {
+                std::size_t got = static_cast<std::size_t>(n);
+                if (out.size() < kMaxCapture) {
+                    std::size_t room = kMaxCapture - out.size();
+                    out.append(buf, std::min(room, got));
+                    if (got > room) truncated = true;
+                } else {
+                    truncated = true;            // keep reading (don't deadlock the child) but discard
+                }
+            }
+            else if (n == 0) break;              // EOF: the child closed this stream
+            else if (errno == EINTR) continue;
+            else break;
+        }
+    } catch (...) {
+        truncated = true;                        // a bad_alloc etc. must never escape the drain thread
     }
 }
 
@@ -248,8 +285,9 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
     }
 
     ProcResult res;
-    std::thread tout([&] { drainFd(outP[0], res.out); });
-    std::thread terr([&] { drainFd(errP[0], res.err); });
+    std::atomic<bool> trunc{false};
+    std::thread tout([&] { drainFd(outP[0], res.out, trunc); });
+    std::thread terr([&] { drainFd(errP[0], res.err, trunc); });
     std::thread tin([&] {
         std::size_t off = 0;
         while (off < input.size()) {
@@ -284,6 +322,7 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
 
     tin.join(); tout.join(); terr.join();
     ::close(outP[0]); ::close(errP[0]);
+    res.truncated = trunc.load();
 
     if (timedOut) throw ProcError("process timed out");
     if (WIFEXITED(status)) res.code = WEXITSTATUS(status);
