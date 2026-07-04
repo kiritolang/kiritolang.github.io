@@ -552,12 +552,18 @@ a stability fuzzer, and a benchmark). Working today:
   `tools/scripts/test_big_projects.sh` (self-host is opt-in via `--selfhost` — it is slow) — both
   take `--ki PATH`; the nightly workflow runs them against the freshly-built `dist/ki-linux-x64`.
 
-Tested under four CMake presets: **`debug`** (g++ `-O2` with the hardened warning set `-Werror
--Wall -Wextra -Wformat=2 -Wconversion -Wpointer-arith -Wpedantic -fstack-protector-all -Wreorder
--Wunused -Wshadow` — the strictest compile gate), **`release`** (the same minus `-Wconversion`/
-`-Wshadow`; the build to ship/benchmark), **`asan`** (AddressSanitizer/UBSan, hardened warnings), and
-**`tsan`** (ThreadSanitizer — the data-race + lock-order-inversion gate for the `parallel` dispatcher,
-the only concurrent code).
+Tested under four CMake presets: **`debug`** (g++ `-O0` — fast compiles for the dev loop — with the
+hardened warning set `-Werror -Wall -Wextra -Wformat=2 -Wconversion -Wpointer-arith -Wpedantic
+-fstack-protector-all -Wreorder -Wunused -Wshadow` — the strictest *warning* gate; note a few
+optimization-dependent warnings like `-Wmaybe-uninitialized` only fire under `-O1+`, so `release`
+`-O2` remains their gate), **`release`** (the same minus `-Wconversion`/`-Wshadow`, at `-O2`; the
+build to ship/benchmark), **`asan`** (AddressSanitizer/UBSan, `-O1`, hardened warnings), and
+**`tsan`** (ThreadSanitizer, `-O1` — the data-race + lock-order-inversion gate for the `parallel`
+dispatcher, the only concurrent code). A **shared precompiled header** (`kirito_pch`, defined in the
+root `CMakeLists.txt`) compiles the umbrella `src/kirito.hpp` once per build; `ki`/`main.cpp` and
+every test `REUSE_FROM` it (`-Winvalid-pch` + `-Werror` makes a silently-unusable PCH a hard error,
+never a quiet fallback to per-TU reparses). A faster linker (mold, else lld) is auto-selected when
+present (`-DKIRITO_FAST_LINKER=OFF` to disable).
 The codebase is `-Wconversion`-clean; the deliberate native-binding idiom where bound-method lambdas
 take `vm`/`self` parameters shadowing the enclosing `getAttr`/`setup` (same VM by design) is silenced
 with a scoped `#pragma GCC diagnostic ignored "-Wshadow"` in the stdlib glue + runtime type-methods,

@@ -1,21 +1,10 @@
 # One small executable per test file (one behavior-area each), linking the header-only core.
 find_package(Threads REQUIRED)
 
-# Shared precompiled header. Every test TU does `#include "kirito.hpp"`, which pulls in the entire
-# header-only interpreter — parsing it once per TU dominates the build. This carrier compiles that
-# umbrella into a PCH ONCE; each test reuses it (REUSE_FROM below), so a clean build parses the core
-# a single time instead of ~60 times. The carrier carries the exact compile setup the tests use
-# (same warnings, same kirito/Threads usage requirements) so the PCH is binary-compatible to reuse.
-# -Winvalid-pch is CRUCIAL: without it, if the PCH is ever stale/incompatible the compiler silently
-# discards it and reparses the whole umbrella header per TU — the build still succeeds but loses the
-# entire PCH speedup with no signal. With -Winvalid-pch (and the presets' -Werror) an unusable PCH is
-# a hard build failure instead, so a silent regression to ~155× reparses can never slip through. CMake
-# adds this flag itself for GCC/Clang PCH, but we set it explicitly so it holds regardless of the CMake
-# version/generator.
-add_library(kirito_pch STATIC pch_carrier.cpp)
-target_link_libraries(kirito_pch PRIVATE kirito Threads::Threads)
-target_compile_options(kirito_pch PRIVATE -Wall -Wextra -Wpedantic -Winvalid-pch)
-target_precompile_headers(kirito_pch PRIVATE ${CMAKE_SOURCE_DIR}/src/kirito.hpp)
+# The shared precompiled header `kirito_pch` is defined in the ROOT CMakeLists so `ki` (main.cpp) can
+# reuse it too — every test below REUSE_FROMs that single PCH, so the umbrella header src/kirito.hpp is
+# parsed ONCE per build instead of once per TU. -Winvalid-pch (set on each consumer, with the presets'
+# -Werror) makes a silently-unusable PCH a hard error rather than a quiet fallback to full reparses.
 
 function(kirito_test name)
     add_executable(${name} ${ARGN})
