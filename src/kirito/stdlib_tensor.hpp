@@ -1413,7 +1413,15 @@ inline Handle einsumT(KiritoVM& vm, const std::string& spec, const std::vector<H
     std::size_t nOut = outl.size();
     tensor::Shape ost = oshape.empty() ? tensor::Shape{} : tensor::rowMajorStrides(oshape);
     std::vector<tensor::Shape> ists; for (auto& sh : shps) ists.push_back(tensor::rowMajorStrides(sh));
-    std::size_t total = 1; for (std::size_t d : lsz) total *= d;
+    // The contraction iterates `total` = the product of ALL label sizes (output + contracted dims).
+    // Computing it unchecked overflowed size_t (a silently-wrong result) or, when it merely got huge,
+    // ran the loop unbounded (a DoS hang). Bound it with the same overflow-safe product + element cap
+    // the tensor allocator uses, so an oversized contraction throws catchably instead.
+    std::size_t total = 1;
+    for (std::size_t d : lsz) {
+        if (d != 0 && total > tensor::kMaxElems / d) throw KiritoError("einsum: contraction too large");
+        total *= d;
+    }
     std::vector<std::size_t> coord(labels.size(), 0);
     for (std::size_t t = 0; t < total; ++t) {
         double prod = 1.0;
@@ -2127,8 +2135,9 @@ public:
                 if (it.empty()) break;
                 cur = it[0];
             }
-            if (shape.size() > 64) throw KiritoError("Tensor: too many dimensions (max 64)");  // bound rec() depth (no stack overflow)
-            tns::checkSize(shape);
+            if (shape.size() > tensor::kMaxRank)  // bound rec() depth up front (before building `shape`)
+                throw KiritoError("Tensor: too many dimensions (max 64)");
+            tns::checkSize(shape);  // also enforces the rank cap (single-sourced in checkedNumel)
             std::vector<Handle> flat;
             std::function<void(Value, std::size_t)> rec = [&](Value v, std::size_t d) {
                 if (d == shape.size()) { flat.push_back(v.handle()); return; }

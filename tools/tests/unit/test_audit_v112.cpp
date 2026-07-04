@@ -107,5 +107,20 @@ int main() {
     CHECK(ok("var fact = Function(n): return 1 if n <= 1 else n * fact(n - 1)\nfact(20)")
           == "2432902008176640000");
 
+    // === TENSOR-1: the 64-dimension rank cap must hold for tensors built by reshape/expanddims/
+    // broadcastto (not just the nested-list ctor), or a huge-rank tensor SIGSEGVs the recursive
+    // str()/tolist(). Repeated expanddims past rank 64 must throw catchably. ===
+    CHECK(has(err("var t = import(\"tensor\")\nvar a = t.zeros([1])\n"
+                  "var i = 0\nwhile i < 100:\n  a = a.expanddims(0)\n  i = i + 1\n"), "dimension"));
+    CHECK(ok("var t = import(\"tensor\")\nt.zeros([1]).expanddims(0).ndim()") == "2");  // normal still ok
+
+    // === TENSOR-2: einsum's contraction count is the product of ALL label sizes; unchecked it
+    // overflows size_t (silent wrong) or hangs (DoS). An oversized contraction must throw. Here
+    // i*j*k = 1000^3 = 1e9 > the 64M element cap (the operands themselves are only 1e6 each). ===
+    CHECK(has(err("var t = import(\"tensor\")\nvar a = t.ones([1000, 1000])\n"
+                  "discard t.einsum(\"ij,jk->ik\", a, a)"), "too large"));
+    CHECK(ok("var t = import(\"tensor\")\nt.einsum(\"ij,jk->ik\", t.eye(3), t.eye(3)).tolist()")
+          == "[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]");  // normal einsum still works
+
     return RUN_TESTS();
 }

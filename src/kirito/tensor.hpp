@@ -46,7 +46,14 @@ inline std::size_t numel(const Shape& s) {
 // the product with the running division check throws a clean, catchable TensorError("Tensor too
 // large") instead. The Kirito layer's tns::checkSize delegates here so the cap is single-sourced.
 inline constexpr std::size_t kMaxElems = 64ull * 1024 * 1024;
+// Maximum rank (number of dimensions). NumPy's ndim ceiling, and critically the guard that keeps a
+// tensor's rank bounded so the RECURSIVE per-axis traversals (str/tolist/indexing) can't overflow the
+// native stack. Enforced here — the single point every allocated shape passes through — so ops that
+// build a high-rank shape from a valid one (reshape/expanddims/broadcastto) are covered too, not just
+// the nested-list constructor.
+inline constexpr std::size_t kMaxRank = 64;
 inline std::size_t checkedNumel(const Shape& s) {
+    if (s.size() > kMaxRank) throw TensorError("Tensor has too many dimensions (max 64)");
     // A zero along any axis means zero elements — no allocation — so the shape is fine regardless of
     // the other (possibly huge) dims (np.zeros((10**8, 0)) is valid). Short-circuit before the cap so
     // a large dim paired with a 0 dim isn't falsely rejected as "too large".
