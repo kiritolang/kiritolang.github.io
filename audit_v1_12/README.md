@@ -111,3 +111,6 @@ Legend: ⬜ not started · 🟡 running · ✅ done · ❌ stopped/incomplete
   Other confirmed Mediums: A01-1 (`\xHH` raw byte breaks String code-point layer), A02-1 (inline `return a,b` doesn't
   pack), A02-2 (f-string runtime errors report line 1), A07-3 (private-access asymmetry vs spec), A07-2/A05-1/A05-3
   (comparison/reflection asymmetries). Full detail + repros in agents/A01..A09.md.
+- 2026-07-04 17:00 UTC: session usage limit hit mid-Wave-2 (all A10–A20 agents died at startup; only A10 wrote 1 finding).
+  Limit reset at 17:00 UTC; **re-launched Wave 2 (A10–A20) + Wave 3 (A21 coverage-map, A22 perf-variance)** with
+  compact prompts leaning on this README's themes. Wave-1 findings were all committed before the interruption.
