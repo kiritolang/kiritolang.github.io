@@ -140,6 +140,11 @@ kirito_test(test_regex_deep unit/test_regex_deep.cpp)
 kirito_test(test_compress_hash_deep unit/test_compress_hash_deep.cpp)
 kirito_test(test_io_path_deep unit/test_io_path_deep.cpp)
 kirito_test(test_sys_time_deep unit/test_sys_time_deep.cpp)
+kirito_test(test_strbytes_deep unit/test_strbytes_deep.cpp)
+kirito_test(test_collections_deep unit/test_collections_deep.cpp)
+kirito_test(test_numeric_deep unit/test_numeric_deep.cpp)
+kirito_test(test_serialization_deep unit/test_serialization_deep.cpp)
+kirito_test(test_random_net_deep unit/test_random_net_deep.cpp)
 kirito_test(test_modules_fuzz unit/test_modules_fuzz.cpp)
 
 # Multiprocessing (KiritoDispatcher + the `parallel` module). Every blocking scenario runs under an
