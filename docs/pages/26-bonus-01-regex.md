@@ -295,7 +295,7 @@ then `\\d+` and an optional decimal part `(\\.\\d{2})?`.) Test it on
 
 ## What you learned
 
-- `re.search`/`match`/`fullmatch` return a Match or `None`; double every backslash in patterns.
+- `re.search`/`match`/`fullmatch` return a Match or `None`; prefer raw strings (`r"..."`) so backslashes stay literal.
 - Literals, `.`, classes `[...]`, shorthands `\d \w \s`, quantifiers (greedy and lazy), anchors `^ $ \b`.
 - Capturing and named groups; `.group()/.groups()/.groupdict()/.span()`.
 - `findall`/`finditer`, `sub` (template and callable), `split`, flags, `compile`, and `escape`.

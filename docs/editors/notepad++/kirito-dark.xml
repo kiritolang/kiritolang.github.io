@@ -46,8 +46,8 @@
             <Keywords name="Keywords1">and as assert break case catch class continue default discard elif else finally for if in not or pass return switch throw todo try var while with Function</Keywords>
             <Keywords name="Keywords2">True False None self</Keywords>
             <Keywords name="Keywords3">Any Array Bool Bytes Dict Float Integer List Set String</Keywords>
-            <Keywords name="Keywords4">abs all any bin bitand bitnot bitor bitxor chr divmod enumerate filter format fromhex hex id import inspect isinstance len map max min oct ord pow range reversed round shl shr sorted sum type zip</Keywords>
-            <Keywords name="Keywords5">_init_ _str_ _add_ _sub_ _mul_ _div_ _floordiv_ _mod_ _pow_ _eq_ _ne_ _lt_ _le_ _gt_ _ge_ _neg_ _not_ _call_ _getitem_ _setitem_ _len_ _contains_ _iter_ _enter_ _exit_ _super_ _getstate_ _setstate_</Keywords>
+            <Keywords name="Keywords4">abs all any bin bitand bitnot bitor bitxor chr divmod enumerate filter format fromhex hasattr hex id import inspect isinstance len map max min oct ord pow range reversed round shl shr sorted sum type zip</Keywords>
+            <Keywords name="Keywords5">_init_ _str_ _add_ _sub_ _mul_ _div_ _floordiv_ _mod_ _pow_ _eq_ _ne_ _lt_ _le_ _gt_ _ge_ _neg_ _not_ _bool_ _call_ _getitem_ _setitem_ _len_ _contains_ _iter_ _enter_ _exit_ _hash_ _super_ _getstate_ _setstate_</Keywords>
             <Keywords name="Keywords6">io math random tensor matrix complex json serialize dump net sys time zlib gzip hash regex parallel itertools functools collections statistics string textwrap base64 csv tabular xml heapq bisect copy enum tee arg semver</Keywords>
             <Keywords name="Keywords7"></Keywords>
             <Keywords name="Keywords8"></Keywords>

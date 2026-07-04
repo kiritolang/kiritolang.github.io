@@ -11,23 +11,40 @@ syn keyword kiritoKeyword var Function class if elif else while for in break con
 syn keyword kiritoKeyword try catch finally throw with as pass todo assert discard switch case default
 syn keyword kiritoOperator and or not
 syn keyword kiritoConstant True False None
-syn keyword kiritoType Integer Float String Bool List Set Dict Array Any
+syn keyword kiritoType Integer Float String Bytes Bool List Set Dict Array Any
 syn keyword kiritoBuiltin abs all any bin bitand bitnot bitor bitxor chr divmod enumerate filter
-syn keyword kiritoBuiltin format hex id import inspect isinstance len map max min oct ord pow range
-syn keyword kiritoBuiltin reversed round shl shr sorted sum type zip
+syn keyword kiritoBuiltin format fromhex hasattr hex id import inspect isinstance len map max min oct
+syn keyword kiritoBuiltin ord pow range reversed round shl shr sorted sum type zip
 
 syn match   kiritoComment "#.*$" contains=@Spell
+
+" Numbers: decimal, hex/octal/binary (case-insensitive prefix), float (with decimal point OR a
+" bare exponent — 1e10 / 2e-3 are valid), scientific.
 syn match   kiritoNumber  "\<0[xX]\x\+\>"
 syn match   kiritoNumber  "\<0[oO]\o\+\>"
 syn match   kiritoNumber  "\<0[bB][01]\+\>"
-syn match   kiritoNumber  "\<\d\+\>"
 syn match   kiritoNumber  "\<\d\+\.\d\+\([eE][-+]\?\d\+\)\?\>"
-syn match   kiritoSpecial "\<_\(init\|str\|add\|sub\|mul\|div\|floordiv\|mod\|pow\|eq\|ne\|lt\|le\|gt\|ge\|neg\|not\|call\|getitem\|setitem\|len\|contains\|iter\|enter\|exit\|super\|getstate\|setstate\)_\>"
+syn match   kiritoNumber  "\<\d\+[eE][-+]\?\d\+\>"
+syn match   kiritoNumber  "\<\d\+\>"
 
-syn region  kiritoString  start=+"+ skip=+\\"+ end=+"+ contains=kiritoEscape
-syn region  kiritoFString matchgroup=kiritoString start=+f"+ skip=+\\"+ end=+"+ contains=kiritoEscape,kiritoInterp
-syn match   kiritoEscape  contained "\\\(x\x\{2}\|u\x\{4}\|U\x\{8}\|[nrtfvab0\\\"']\)"
-syn region  kiritoInterp  contained matchgroup=kiritoDelim start=+{+ end=+}+ contains=kiritoNumber,kiritoBuiltin,kiritoConstant
+" Special (dunder) methods — the full set, incl. _bool_ and _hash_.
+syn match   kiritoSpecial "\<_\(init\|str\|add\|sub\|mul\|div\|floordiv\|mod\|pow\|eq\|ne\|lt\|le\|gt\|ge\|neg\|not\|bool\|call\|getitem\|setitem\|len\|contains\|iter\|enter\|exit\|hash\|super\|getstate\|setstate\)_\>"
+
+" Strings. Kirito supports single- and double-quotes, each triplable for multiline, with r (raw) and
+" f (f-string) prefixes in any order/case (r, f, rf, fr). Triple-quoted regions are declared first so
+" they take precedence over the single-line forms. Only the cooked escapes the lexer accepts are
+" highlighted: \n \t \r \0 \\ \" \' and \xHH.
+" Triple-quoted (double)
+syn region  kiritoString  start=+\c\%(rf\|fr\|[rf]\)\?"""+ end=+"""+ keepend contains=kiritoEscape,kiritoInterp
+" Triple-quoted (single)
+syn region  kiritoString  start=+\c\%(rf\|fr\|[rf]\)\?'''+ end=+'''+ keepend contains=kiritoEscape,kiritoInterp
+" Single-line double-quoted
+syn region  kiritoString  start=+\c\%(rf\|fr\|[rf]\)\?"+ skip=+\\"+ end=+"+ contains=kiritoEscape,kiritoInterp
+" Single-line single-quoted
+syn region  kiritoString  start=+\c\%(rf\|fr\|[rf]\)\?'+ skip=+\\'+ end=+'+ contains=kiritoEscape,kiritoInterp
+
+syn match   kiritoEscape  contained "\\\(x\x\{2}\|[nrt0\\\"']\)"
+syn region  kiritoInterp  contained matchgroup=kiritoDelim start=+{+ end=+}+ contains=kiritoNumber,kiritoBuiltin,kiritoConstant,kiritoString
 
 hi def link kiritoKeyword  Statement
 hi def link kiritoOperator Operator
@@ -37,7 +54,6 @@ hi def link kiritoBuiltin  Function
 hi def link kiritoComment  Comment
 hi def link kiritoNumber   Number
 hi def link kiritoString   String
-hi def link kiritoFString  String
 hi def link kiritoEscape   SpecialChar
 hi def link kiritoSpecial  Identifier
 hi def link kiritoDelim    Delimiter

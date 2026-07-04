@@ -1357,7 +1357,9 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
 
 ### Linear algebra (module functions, 2-D)
 
-- `det(t)`, `inv(t)`, `solve(a, b)`, `trace(t)`, `norm(t, ord = 2)`, `outer(a, b)`, `inner(a, b)`,
+- `det(t)`, `inv(t)`, `solve(a, b)`, `trace(t)`, `norm(t, ord = 2)` (**entry-wise** — the flattened
+  vector norm, so on a 2-D tensor `ord = 2` is Frobenius, not the induced matrix 2-norm), `outer(a, b)`,
+  `inner(a, b)`,
   `kron(a, b)`, `cross(a, b)` (3-vectors), and `einsum(spec, *tensors)` — a general Einstein-summation
   (transpose / diagonal / trace / contraction / outer, any subscript string). Work on both dtypes
   where it makes sense (forward only; the differentiable linear algebra is `matmul`/`tensordot`).

@@ -1,4 +1,4 @@
-# Bonus: Concurrency with `parallel`
+# Bonus Lesson 6 — Concurrency with `parallel`
 
 Kirito runs code in parallel by **multiprocessing**: instead of many threads sharing one heap, it runs
 many fully-isolated VMs — one per OS thread — that share **nothing** and talk only by passing

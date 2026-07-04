@@ -47,7 +47,7 @@ io.print(String(squares))           # [0, 1, 4, 9, 16]
 
 ## How to read these docs
 
-- **Getting Started**, **Embedding**, and **Extending** cover building, integrating, and growing
+- **Getting Started** covers install and build; the **C++ API** page covers embedding, integrating, and growing
   Kirito from C++.
 - **Language Guide** is the syntax/semantics reference; **Recipes** is task-oriented.
 - **Builtins** and **Standard Library** document every function, module, and method.

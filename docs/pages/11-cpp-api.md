@@ -43,6 +43,56 @@ int main() {
 That's the whole shape: **construct → run → stringify → destruct**. Every subsequent section fills
 in what happens between step 2 and step 3, and how you insert your own C++ code into the mix.
 
+### Compiling — precompile `kirito.hpp`
+
+The core is **header-only**: point the compiler at `src/` and `#include "kirito.hpp"`. It needs
+**C++20** and the threads library (the `parallel` dispatcher uses `std::thread`). A one-off program:
+
+```sh
+g++ -std=c++20 -I kirito/src -pthread main.cpp -o myapp
+```
+
+`kirito.hpp` pulls in the **entire** interpreter, so parsing it dominates compile time and re-parsing
+it in every translation unit is the main cost of a multi-file embed. **Precompile it once and reuse it**
+— and always pass **`-Winvalid-pch`**: without that flag a stale or flag-incompatible PCH is *silently
+discarded* and every TU reparses the whole header, losing the entire speedup with no warning.
+`-Winvalid-pch` turns that into a hard error (pair it with `-Werror`), so a broken PCH can never
+silently cost you.
+
+With raw `g++`/`clang++`:
+
+```sh
+# 1. build the PCH once
+g++ -std=c++20 -I kirito/src -Winvalid-pch -x c++-header kirito/src/kirito.hpp -o kirito.hpp.gch
+# 2. reuse it for every TU (-include pulls the PCH in; -Winvalid-pch makes a stale one fail loudly)
+g++ -std=c++20 -I kirito/src -Winvalid-pch -include kirito/src/kirito.hpp -pthread *.cpp -o myapp
+```
+
+With CMake (the recommended setup — one shared PCH across your whole target):
+
+```cmake
+add_library(kirito INTERFACE)
+target_include_directories(kirito INTERFACE path/to/kirito/src)
+target_compile_features(kirito INTERFACE cxx_std_20)
+find_package(Threads REQUIRED)
+target_link_libraries(kirito INTERFACE Threads::Threads)
+
+# Precompile the umbrella header ONCE (pch_carrier.cpp is a one-liner: #include "kirito.hpp").
+add_library(kirito_pch STATIC pch_carrier.cpp)
+target_link_libraries(kirito_pch PRIVATE kirito)
+target_compile_options(kirito_pch PRIVATE -Winvalid-pch)   # a silently-unusable PCH is a hard error
+target_precompile_headers(kirito_pch PRIVATE path/to/kirito/src/kirito.hpp)
+
+add_executable(myapp main.cpp policy.cpp report.cpp)
+target_link_libraries(myapp PRIVATE kirito)
+target_compile_options(myapp PRIVATE -Winvalid-pch)
+target_precompile_headers(myapp REUSE_FROM kirito_pch)     # parse kirito.hpp once, reuse everywhere
+```
+
+This is exactly how Kirito's own build compiles the header a single time and shares it across `ki` and
+all ~156 test executables. (HTTPS in the `net` module is opt-in: add `-DKIRITO_ENABLE_TLS` and link
+OpenSSL — see [net](stdlib.html#net).)
+
 ### Naming convention
 
 Kirito-visible functions, modules, and methods are **all lowercase, no underscores** (`gettempdir`,
@@ -1516,6 +1566,75 @@ Hashable check + bucket probe (in `collections.hpp`):
 ---
 
 ## 12. User classes and Kirito functions
+
+A Kirito `class` is just another first-class value in the same object model, so you drive one from C++
+with the ordinary [`Value` API](#5-working-with-values-the-value-api) — no special calls. The structs
+below (`ClassValue`/`InstanceValue`/…) are the C++ representation; you rarely touch them directly.
+
+### Using a Kirito class from C++
+
+A script's **final expression is what `runSource` returns**, so define the class and hand its value
+back to C++:
+
+```cpp
+#include "kirito.hpp"
+using namespace kirito;
+
+KiritoVM vm;
+
+// Define a class; the trailing bare `Point` is the value runSource returns.
+Value Point(vm, vm.runSource(R"KI(
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _add_ = Function(self, o): return Point(self.x + o.x, self.y + o.y)
+    var norm = Function(self): return (self.x * self.x + self.y * self.y) ** 0.5
+Point
+)KI"));
+
+// Instantiate — calling the class value runs _init_ (positional args).
+Value p = Point.call({3, 4});
+Value q = Point.call({1, 1});
+
+// Read / write instance attributes.
+std::printf("x = %lld\n", p.getAttr("x").asInt("x"));      // -> 3
+p.setAttr("y", Value(vm, 10));                              // p.y = 10
+
+// Call a method: getAttr returns the *bound* method, then .call it.
+double n = p.getAttr("norm").call({}).asFloat("norm");     // -> hypot(3, 10)
+
+// Operators dispatch through the dunder methods, exactly as in Kirito.
+Value sum = p + q;                                          // runs Point._add_
+std::printf("%s\n", sum.str().c_str());                    // whatever _str_/default prints
+```
+
+`Value::call({...})` forwards **positional** arguments. For **keyword** instantiation or method calls
+(`Point(x = 1, y = 2)`), drop to the free function `applyCall`, which takes a `NamedArg` span:
+
+```cpp
+std::vector<NamedArg> kw{ {"x", Value(vm, 1)}, {"y", Value(vm, 2)} };
+Value p2(vm, applyCall(vm, Point, /*positional=*/{}, kw));   // runtime.hpp
+```
+
+**Lifetime.** `Value(vm, handle)` wraps an existing handle but does **not** pin it (see the
+[rooting rule](#the-rooting-rule)). Within one C++ function with no intervening GC, the wrappers above
+are fine. To keep a class or instance in a **long-lived** C++ object (a member, a registry) across calls
+that allocate, hold a [`PinnedHandle`](#when-to-hold-a-kirito-value-in-c) instead of a bare `Value`:
+
+```cpp
+class Physics {
+    PinnedHandle pointClass_;   // survives GC for the object's lifetime
+public:
+    Physics(KiritoVM& vm) : pointClass_(vm, vm.runSource(/* … class Point … */)) {}
+    Value make(KiritoVM& vm, double x, double y) {
+        return Value(vm, pointClass_).call({x, y});
+    }
+};
+```
+
+`hasattr(obj, "name")`, `isinstance`, and `type(obj)` are ordinary builtins — call them from C++ by
+looking them up (`vm.runSource("isinstance")`) or just run a one-line Kirito snippet when that's simpler.
 
 ### `ClassValue` (in `class_value.hpp`)
 

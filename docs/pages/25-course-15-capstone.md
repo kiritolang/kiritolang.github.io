@@ -213,5 +213,5 @@ You now know enough to write real programs. To go further:
 
 Congratulations — you've finished the **core course**. What follows are **bonus lessons**: deeper
 dives into specialized libraries — regular expressions, command-line programs, tabular data analysis,
-linear algebra, and tensors with automatic differentiation. Take them in any order, or go build
+linear algebra, tensors with automatic differentiation, and concurrency. Take them in any order, or go build
 something.

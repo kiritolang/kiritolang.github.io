@@ -1,130 +1,131 @@
 # Recipes
 
-Task-oriented snippets. All assume `var io = import("io")`.
-
-## Read a file line by line
-
-<!--norun (reads a file that need not exist)-->
-```kirito
-with io.open("data.txt", "r") as f:
-    for line in f:
-        io.print(line.strip())
-```
-
-## Count word frequencies
-
-```kirito
-var text = "the cat sat on the mat the cat"
-var counts = {}
-for word in text.split(" "):
-    counts[word] = counts.get(word, 0) + 1
-for word, n in counts.items():
-    io.print(f"{word}: {n}")
-```
-
-## Sort by a key
-
-```kirito
-var people = [["Ann", 30], ["Bo", 25], ["Cy", 41]]
-var byAge = sorted(people, Function(p): return p[1])
-io.print(String(byAge))         # youngest first
-```
-
-## Swap and multiple return values
-
-```kirito
-var a = 1
-var b = 2
-a, b = b, a
-
-var minmax = Function(xs):
-    return min(xs), max(xs)
-var lo, hi = minmax([4, 1, 7, 3])
-```
-
-## Group with defaultdict
-
-```kirito
-var col = import("collections")
-var groups = col.defaultdict(Function(): return [])
-for n in range(10):
-    groups[n % 3].append(n)
-io.print(String(groups.items()))
-```
-
-## A small stack-based class
-
-```kirito
-class Stack:
-    var _init_ = Function(self):
-        self._items = []
-    var push = Function(self, x):
-        self._items.append(x)
-    var pop = Function(self):
-        if len(self._items) == 0:
-            throw "pop from empty stack"
-        return self._items.pop()
-    var _len_ = Function(self) -> Integer:
-        return len(self._items)
-
-var s = Stack()
-s.push(1)
-s.push(2)
-io.print(String(s.pop()))       # 2
-io.print(String(len(s)))        # 1
-```
-
-## Make a class iterable
-
-```kirito
-class Countdown:
-    var _init_ = Function(self, n):
-        self._n = n
-    var _iter_ = Function(self):
-        var out = []
-        var i = self._n
-        while i > 0:
-            out.append(i)
-            i = i - 1
-        return out
-
-for x in Countdown(3):
-    io.print(String(x))         # 3, 2, 1
-```
-
-## Typed, validated function
-
-```kirito
-var area = Function(width : Float, height : Float) -> Float:
-    return width * height
-# area("a", 2)  -> error: argument 'width' must be Float, got String
-```
+Short, task-shaped snippets that pull **several modules together** — the kind of thing the linear
+[course](course-01-hello.html) teaches piece by piece but never assembles in one place. All assume
+`var io = import("io")`.
 
 ## JSON round-trip
 
 ```kirito
 var json = import("json")
-var data = json.parse("{\"name\": \"Kirito\", \"version\": 1}")
-io.print(data["name"])
-io.print(json.stringify(data))
+var data = json.loads("{\"name\": \"Kirito\", \"version\": 1}")
+io.print(data["name"])                       # Kirito
+io.print(json.dumps(data, indent = 2))       # pretty-print back out
 ```
 
-## Compress and hash data
+(`json.loads`/`dumps` are the canonical names; `parse`/`stringify` are aliases.)
+
+## Hash binary data
 
 ```kirito
-var z = import("zlib")
-var h = import("hash")
-var blob = "x" * 10000
-var packed = z.compress(blob)
-io.print(f"{len(blob)} -> {len(packed)} bytes")
-io.print(h.sha256(blob))
+var hash = import("hash")
+var blob = "café · 世界".encode()             # String -> Bytes (UTF-8)
+io.print(hash.sha256(blob))                  # digest over the exact bytes
+io.print(hash.crc32(blob))                   # non-cryptographic checksum (Integer)
 ```
 
-## Inspect an object at runtime
+Hashers take a `String` **or** `Bytes`, so `hash.sha256("café")` hashes the same bytes as above.
 
-<!--norun (references `Stack` from an earlier snippet on this page)-->
+## Compress, then decompress — byte-exact
+
+```kirito
+var gzip = import("gzip")
+var original = "log line\n" * 1000
+var packed = gzip.compress(original.encode())          # Bytes in, Bytes out
+io.print(f"{len(original)} -> {len(packed)} bytes")
+var restored = gzip.decompress(packed).decode()
+assert restored == original
+```
+
+## Extract and rewrite with regex
+
+```kirito
+var regex = import("regex")
+var text = "Ada <ada@x.io>, Bo <bo@y.io>"
+var emails = regex.findall(r"<([^>]+)>", text)         # ['ada@x.io', 'bo@y.io']
+io.print(String(emails))
+var masked = regex.sub(r"@\w+", "@***", text)          # redact domains
+io.print(masked)
+```
+
+## Parse CSV, then emit JSON
+
+```kirito
+var csv = import("csv")
+var json = import("json")
+var rows = csv.parse("name,age\nAda,36\nBo,25\n")      # -> List of List
+var header = rows[0]
+var out = []
+for r in rows[1:]:
+    var obj = {}
+    for i, col in enumerate(header):
+        obj[col] = r[i]
+    out.append(obj)
+io.print(json.dumps(out))                              # [{"name": "Ada", "age": "36"}, ...]
+```
+
+## Serialize an object graph (shared references + cycles)
+
+```kirito
+var dump = import("dump")
+class Node:
+    var _init_ = Function(self, v):
+        self.v = v
+        self.next = None
+
+var a = Node(1)
+var b = Node(2)
+a.next = b
+b.next = a                                             # a cycle
+var blob = dump.dumps([a, b])                          # binary Bytes; preserves the shared/cyclic refs
+var back = dump.loads(blob)
+assert back[0].next.next.v == back[0].v                # the cycle round-trips
+```
+
+> `dump.loads`/`serialize.loads` rebuild registered classes and run `_setstate_` — like `pickle`, only
+> deserialize data you trust. See [Exceptions → trust boundary](exceptions.html#the-shared-limits-behind-the-guards).
+
+## Run an external command
+
+<!--norun (spawns a subprocess; environment-dependent)-->
+```kirito
+var sys = import("sys")
+var r = sys.shell("echo hello && echo oops 1>&2")
+io.print(r["code"], r["stdout"].strip(), r["stderr"].strip())   # 0 hello oops
+```
+
+## Download a URL (and unpack a .gz)
+
+<!--norun (network access)-->
+```kirito
+var net = import("net")
+var gzip = import("gzip")
+var resp = net.get("https://example.com/data.json.gz")
+resp.raiseforstatus()
+var text = gzip.decompress(resp.content).decode()      # resp.content is raw Bytes
+io.print(text[0:80])
+```
+
+## Fan work out across cores
+
+<!--norun (parallel.spawn needs a file-defined function; illustrative)-->
+```kirito
+var parallel = import("parallel")
+var square = Function(n): return n * n                  # must live in a .ki file to be spawned
+if argmain:
+    var tasks = []
+    for n in range(8):
+        tasks.append(parallel.spawn(square, n))
+    var results = []
+    for t in tasks:
+        results.append(t.join())       # collect each worker's result
+    io.print(String(results))
+```
+
+## Inspect anything at runtime
+
 ```kirito
 var math = import("math")
-io.print(inspect(math))         # lists the module's functions
-io.print(inspect(Stack))        # lists Stack's methods + signatures
+io.print(inspect(math))          # the module's functions, with signatures
+io.print(inspect("hi"))          # String's methods
 ```

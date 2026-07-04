@@ -1,6 +1,6 @@
 # Lesson 1 — Hello, Kirito
 
-Welcome to the Kirito course: twenty lessons that take you from your first line of output to a
+Welcome to the Kirito course: sixteen lessons that take you from your first line of output to a
 complete program. Every lesson builds on the previous ones, and every code block is a real program
 you can run. Type them into the REPL or save them to a `.ki` file — learning sticks when you run and
 tweak the code yourself.
