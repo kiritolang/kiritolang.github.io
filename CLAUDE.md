@@ -582,9 +582,9 @@ language guide, a built-in **types + special-methods/operator-overloading** refe
 reference, a **comprehensive per-function stdlib reference** with signatures/inputs/outputs, recipes,
 a **Packages & kpm** page (installing/versioning/publishing packages — the page lives right before
 the course), and a course — a **core** path of 16 lessons (Lesson 0 editor setup → Lesson 15 capstone; the basic
-types/control/collections/functions material is consolidated into dense lessons) followed by 5
+types/control/collections/functions material is consolidated into dense lessons) followed by 6
 **bonus lessons** for specialized libraries: regex, command-line programs, tabular data, linear
-algebra, and tensors+autograd). `build_docs.py` auto-anchors every documented
+algebra, tensors+autograd, and concurrency). `build_docs.py` auto-anchors every documented
 symbol and turns later `inline code` mentions into clickable cross-links — but only for
 *unambiguous* names: a name defined in more than one place, or an instance-method name reused across
 modules (`sum`/`split`/`mean`/…, detected from `receiver.name` forms in the reference pages), keeps

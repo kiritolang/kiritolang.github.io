@@ -41,6 +41,7 @@ value where `<X>` is.
 
 ### Catching errors — in Kirito
 
+<!--norun (illustrative — risky/handle/cleanup are placeholders)-->
 ```kirito
 try:
     risky()
@@ -697,6 +698,68 @@ lowers to the same when `cond` is falsy (value `"assertion failed"` or your mess
 inside a `catch` re-throws the in-flight value with its original span. A typed `catch T as e:` routes
 on the value's class chain; a bare `catch as e:` catches anything. If one reaches the top level
 uncaught, it is re-wrapped as `uncaught exception: <value>` (see the CLI table below).
+
+## Embedding & extending — errors you can only hit from C++
+
+Everything above surfaces from *Kirito* code. This section covers the throws you reach **only from the
+C++ side** — driving a `KiritoVM`, holding `Handle`s/`Value`s, or writing a `NativeFunction`/
+`NativeClass`. They are all `KiritoError` (so they're catchable in Kirito as a String and, on the C++
+side, as `kirito::KiritoError` — or `std::exception`). See the [C++ API](cpp-api.html) for the types.
+
+### Handle lifetime — the dangling handle
+
+A `Handle` is a `{slot, generation}` reference into the VM's arena. Dereferencing one that no longer
+names a live object throws — this is the guard that turns a use-after-free into a clean, catchable
+error. It comes from `ObjectArena::at()` (via the `dangling()` helper).
+
+| Message | Cause | Fix |
+|---|---|---|
+| `dangling handle (stale generation)` | The object was **swept by GC** (the slot was reused / its generation bumped) while you still held the handle — the classic *unrooted handle across an allocation*. The reserved sentinel `Handle{}` (generation 0) also lands here. | **Root** anything you hold across a call that can allocate: a stack-scoped `RootScope`, or a `PinnedHandle` for a value stored in a long-lived C++ object. See the C++ API's *rooting rule*. |
+| `dangling handle (slot out of range)` | The handle's slot is outside this arena — e.g. a handle from a **different `KiritoVM`**, or a fabricated/default one. | Never mix handles between VMs (each VM owns its arena); only deref handles this VM produced. |
+
+The arena's ABA guard (a slot is retired once its generation would wrap past 2³²) means a stale handle
+can **never** silently re-validate against a recycled object — you always get this throw, not wrong data.
+
+### Native functions — argument helpers (`native.hpp`)
+
+When you write a `NativeFunction`/`NativeClass` method, the argument helpers throw `KiritoError` on
+misuse — these become ordinary catchable Kirito errors at the call site.
+
+| Message | Cause |
+|---|---|
+| `<who>() expected at least N argument(s), got M` | `requireArgs(args, N, "who")` — too few positionals |
+| `<who> expects a String` / `<who> expects an Integer` | an `Args`/argument accessor got the wrong kind |
+| `<name>() got an unexpected keyword argument '<k>'` | a signatured native/`makeMethod` received a keyword it doesn't declare |
+| `<name>() got multiple values for argument '<k>'` | the same parameter was passed positionally **and** by keyword |
+| `slice indices must be Integer or None` / `slice step cannot be zero` | a custom `slice()` slot given non-Integer bounds / a zero step |
+| `alias target '<x>' not registered` | `ModuleBuilder::alias("new", "x")` where `x` was never registered |
+
+### The `Value` API — typed reads
+
+The `Value` wrapper's typed accessors throw a `KiritoError` when the underlying value is the wrong kind,
+so a native that peeks-then-wraps fails loudly instead of reading garbage.
+
+| Message | Cause | Fix |
+|---|---|---|
+| `<who> expected <Type>, got '<actual>'` | `arg.asInt("who")` / `.asString(...)` / `.asDict()` … on a value of another kind | Peek first (`arg.isInt()`, `arg.isDict()`) before the typed read, or accept the type mismatch as the error |
+| `unhashable type '<T>'` | using a non-hashable `Value` as a Dict key / Set element / `.hash()` target from C++ | Only hash hashable kinds (scalars, String, Bytes, frozen tuples-as-Lists are **not** hashable) |
+| `uninitialised Value (no VM)` | calling a method on a default-constructed `Value{}` (no bound VM) | Construct values as `Value(vm, …)`; never operate on a `Value{}` |
+
+### The shared limits behind the guards
+
+The resource and depth guards in the sections above surface identically to a C++ embedder. Two facts
+worth knowing when you embed:
+
+- **One 256 MiB ceiling.** The repetition/padding cap (`kMaxRepeat`), the inflate/zip-bomb cap
+  (`kMaxInflateOut`), the network `recvall` cap (`kMaxRecvAll`), and the in-memory `BytesIO` buffer all
+  share the same 256 MiB bound — a single number to reason about for untrusted input.
+- **Depth guards shrink under sanitizers.** The parser, VM call-depth, equality, and serde depth limits
+  are lower under an ASan/TSan build (`KIRITO_SANITIZER_BUILD`), because instrumented native frames are
+  larger. So a deeply-nested input that runs under `release` may hit a guard under `asan` — expected,
+  not a regression.
+- **`serialize`/`dump` `loads` is a trust boundary.** Deserializing rebuilds arbitrary **registered**
+  classes and runs their `_setstate_` — like Python's `pickle`, it is **not safe on hostile bytes**.
+  The format is bounds-checked against OOM/overflow, but only ever `loads()` data you produced or trust.
 
 ## The native boundary — how a C++ exception becomes catchable
 

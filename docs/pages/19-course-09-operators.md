@@ -165,6 +165,32 @@ io.print(byCoord[Coord(0, 0)])                          # "origin" — fresh Coo
 `_hash_` **must return an Integer**, and without `_eq_` collections still key by identity — see
 [Types → Hashability](types.html#hashability-set-dict-keys) for the full contract.
 
+## Truthiness: `_bool_`
+
+By default **every instance is truthy** — an `if obj:` on a plain instance always takes the branch.
+That's the safe default (an object exists, so it's "there"). To make an instance decide its own
+truthiness, define `_bool_(self) -> Bool`. Every `if`, `while`, `and`, `or`, `not`, `Bool(x)`, and
+`filter` then dispatches through it:
+
+```kirito
+class Cart:
+    var _init_ = Function(self):
+        self.items = []
+    var add = Function(self, x):
+        self.items.append(x)
+    var _bool_ = Function(self) -> Bool:
+        return len(self.items) > 0        # an empty cart is falsy, like an empty List
+
+var c = Cart()
+io.print("empty" if not c else "has items")   # "empty"
+c.add("apple")
+io.print("empty" if not c else "has items")   # "has items"
+```
+
+`_bool_` **must return a `Bool`** (returning anything else throws). It's opt-in: leave it out and the
+instance is always truthy — the additive-safe choice, so adding `_bool_` later never silently flips an
+existing `if obj:` that assumed presence.
+
 ## Try it
 
 Give the `Money` class above an `_add_` (add the cents), an `_eq_` (compare cents), and an `_lt_`
@@ -177,3 +203,4 @@ nicely, adds with `+`, and sorts — indistinguishable from a built-in at the ca
 - `_str_` for display; `_add_`/`_mul_`/… for arithmetic; `_eq_`/`_lt_`/… for comparison and sorting.
 - `_getitem_`/`_setitem_` (variadic keys), `_len_`, `_contains_`, `_iter_` make a container.
 - `_call_` makes instances callable; `_hash_` + `_eq_` makes them Dict/Set keys.
+- `_bool_` opts an instance into custom truthiness (must return a `Bool`); without it, always truthy.

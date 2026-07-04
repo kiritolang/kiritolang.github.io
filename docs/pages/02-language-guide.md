@@ -39,12 +39,22 @@ Dynamically typed, strongly typed. Built-in types:
 | `Integer` | `42`, `-7` (64-bit, two's-complement wraparound on overflow) |
 | `Float` | `3.14`, `1.0` |
 | `String` | `"hi"`, Unicode, code-point indexed |
+| `Bytes` | raw bytes 0–255, byte indexed — `"hi".encode()`, `Bytes([104, 105])`, `fromhex("6869")` |
 | `List` | `[1, 2, 3]` (ordered, mutable) |
 | `Set` | `{1, 2, 3}` (unique, unordered) |
 | `Dict` | `{"a": 1}` (key→value) |
 
 `type(x)` returns the type name as a String. Constructors double as converters: `Integer("42")`,
 `Float(3)`, `String(x)`, `Bool(x)`, and `List(iter)`, `Set(iter)`, `Dict(pairs)`.
+
+A `String` is Unicode **code points** (stored UTF-8); a `Bytes` is raw **bytes** — the byte-exact
+counterpart for binary data (files, network, `.gz`). Convert with `s.encode([enc])` and
+`b.decode([enc])`; `b[i]` is an Integer, slicing yields `Bytes`, iteration yields Integers. See the
+[Files & I/O lesson](course-13-files-io.html#text-vs-bytes-bytes-encode-decode) for when to reach for it.
+
+Beyond these, Kirito has a native **numeric stack** — `complex` (complex numbers), `matrix` (real
+matrices/vectors), and `tensor` (N-dimensional arrays with autograd) — covered in the
+[bonus lessons](bonus-04-linear-algebra.html).
 
 ## Numbers and arithmetic
 
@@ -395,7 +405,15 @@ bundled stdlib, then from `.ki` files on the import path. Each module loads once
 ```kirito
 var math = import("math")
 math.sqrt(2)
+
+var path = import("path")             # os.path + filesystem ops: join/dirname, exists/listdir, mkdir/remove
+path.join("dir", "file.ki")
 ```
+
+The bundled stdlib is broad — `io`/`path` (I/O and filesystem), `math`/`random`/`statistics`,
+`json`/`serialize`/`dump` (data), `net`/`gzip`/`hash`/`regex`, `time`, `parallel`, and Python-flavored
+`itertools`/`functools`/`collections`/`tabular`, among others. The [stdlib reference](stdlib.html)
+documents every module; the [course](course-14-stdlib-tour.html) tours the highlights.
 
 A module's members only become visible once its body has finished running, so a **circular import**
 — a module that imports itself, directly or through a chain (`a` imports `b` imports `a`) — cannot

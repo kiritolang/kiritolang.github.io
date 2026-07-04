@@ -564,4 +564,5 @@ reductions, `real`/`imag`/`conj`/`angle` — works on both dtypes.
   gradient-descent step **rebinds** the parameter (`w = w - w.grad*lr`, re-marked with
   `requiresgrad(True)`) rather than mutating it in place. (`t[i, j] = v` is the one in-place exception.)
 
-This is the final bonus lesson. Back to the **[course index](index.html)**, or go build a model.
+One more bonus lesson follows — **[Concurrency with `parallel`](bonus-06-concurrency.html)** — or head
+back to the **[course index](index.html)** and go build a model.

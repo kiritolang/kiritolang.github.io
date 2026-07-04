@@ -17,33 +17,8 @@ irm https://raw.githubusercontent.com/kiritolang/kiritolang.github.io/main/tools
 ```
 
 Prebuilt 64-bit binaries (`ki-linux-x64`, `ki-windows-x64.exe`) are also attached to each GitHub
-Release for manual download. To build from source instead, read on.
-
-## Requirements
-
-- A C++20 compiler (GCC 13+ or Clang 18+).
-- CMake 3.28+ and a generator (Ninja recommended).
-
-The interpreter core is **header-only**; CMake builds only the `ki` executable and the tests.
-
-## Building
-
-```
-cmake --preset debug          # or: release / asan
-cmake --build build-debug
-```
-
-Presets (`CMakePresets.json`):
-
-| Preset | What it is |
-|--------|-----------|
-| `debug` | `-O2` with the hardened warning set (`-Werror -Wall -Wextra -Wconversion -Wpedantic -fstack-protector-all -Wshadow ...`) — the strictest compile gate (binary dir `build-debug`) |
-| `release` | `-O2`, the looser warnings-as-errors set (no `-Wconversion`/`-Wshadow`); the build to benchmark and ship (`build-release`) |
-| `asan` | AddressSanitizer + UBSan with the same hardened warnings (memory/UB checks) (`build-asan`) |
-| `tsan` | ThreadSanitizer with the same hardened warnings — the data-race + lock-order check for the multiprocessing dispatcher (`build-tsan`) |
-
-The standalone binary is statically linked by default, so `build-debug/ki` (or the release build's
-`build-release/ki`) is self-contained.
+Release for manual download. That's all you need to start — jump straight to your first script below.
+Prefer to build from source? Skip to [Building from source](#building-from-source).
 
 ## Running
 
@@ -88,6 +63,10 @@ Run it:
 ki hello.ki
 ```
 
+From here, the **[Course](course-01-hello.html)** walks you from your first line to a full program in
+sixteen short lessons, and the **[Language Guide](language-guide.html)** is a one-page tour of the whole
+language.
+
 ## Packages (`kpm`)
 
 Kirito ships a package manager, **`kpm`**, that installs packages straight from GitHub (no central
@@ -95,7 +74,41 @@ index — you name an `owner/repo`) with semantic-version constraints, and can u
 the `ki` interpreter. It has its own page: **[Packages & kpm](packages.html)** — installing,
 versioning, and publishing.
 
-## Tests
+## Building from source
+
+### Requirements
+
+- A C++20 compiler (GCC 13+ or Clang 18+).
+- CMake 3.28+ and a generator (Ninja recommended).
+
+The interpreter core is **header-only**; CMake builds only the `ki` executable and the tests.
+
+### Building
+
+```
+cmake --preset debug          # or: release / asan / tsan
+cmake --build build-debug
+```
+
+Presets (`CMakePresets.json`):
+
+| Preset | What it is |
+|--------|-----------|
+| `debug` | `-O0` (fast compiles for the dev loop) with the hardened warning set (`-Werror -Wall -Wextra -Wconversion -Wpedantic -fstack-protector-all -Wshadow ...`) — the strictest warning gate (binary dir `build-debug`) |
+| `release` | `-O2`, the looser warnings-as-errors set (no `-Wconversion`/`-Wshadow`); the build to benchmark and ship, and the gate for optimization-only warnings like `-Wmaybe-uninitialized` (`build-release`) |
+| `asan` | AddressSanitizer + UBSan at `-O1` with the same hardened warnings (memory/UB checks) (`build-asan`) |
+| `tsan` | ThreadSanitizer at `-O1` — the data-race + lock-order check for the multiprocessing dispatcher (`build-tsan`) |
+
+Every preset shares **one precompiled header**: the umbrella `src/kirito.hpp` is compiled once and
+reused (`REUSE_FROM`) by `ki` and all the test executables, so the header-only core is parsed a single
+time per build rather than once per translation unit. A faster linker (mold, else lld) is auto-selected
+when installed. The standalone binary is statically linked by default, so `build-debug/ki` (or the
+release build's `build-release/ki`) is self-contained.
+
+> Embedding Kirito in your own C++ program? The [C++ API](cpp-api.html#compiling-precompile-kirito-hpp)
+> page shows how to share that same precompiled header (and why `-Winvalid-pch` matters) in your build.
+
+### Tests
 
 Kirito has an extensive CTest suite (unit tests, golden `.ki` scripts, error-message tests, an
 adversarial/fuzz suite, and an embedding test). Run it with:
@@ -104,6 +117,6 @@ adversarial/fuzz suite, and an embedding test). Run it with:
 ctest --test-dir build-debug --output-on-failure
 ```
 
-The `tools/scripts/post_work_check.sh` routine clean-builds the variants **sequentially** — `debug`, then
-`release`, commit+push once both are green, then `asan` — running the whole suite for each: the bar a
-change must clear before it's "done".
+The `tools/scripts/post_work_check.sh` routine clean-builds the variants **sequentially** — `debug`,
+then `release`, commit+push once both are green, then `asan` and `tsan` — running the whole suite for
+each: the bar a change must clear before it's "done".

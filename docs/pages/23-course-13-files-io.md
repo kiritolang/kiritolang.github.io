@@ -1,7 +1,8 @@
 # Lesson 13 — Files, I/O, and Streams
 
-Programs that matter usually read and write data. The `io` module covers it all: console I/O, files,
-in-memory buffers, and filesystem helpers — all built on one interchangeable **stream** abstraction.
+Programs that matter usually read and write data. Two modules cover it: `io` for console I/O, files, and in-memory buffers — all built on one
+interchangeable **stream** abstraction — and `path` for filesystem paths and operations (exists, listdir,
+mkdir, remove, …).
 
 ## Console I/O
 
@@ -37,6 +38,38 @@ with io.open(notes, "r") as f:
 # Append a line.
 with io.open(notes, "a") as f:
     f.write("fourth\n")
+```
+
+## Text vs bytes: `Bytes`, `encode`, `decode`
+
+A `String` is a sequence of Unicode **code points**; a **`Bytes`** is a sequence of raw **bytes**
+(0–255) — the byte-exact counterpart. Binary file mode hands you `Bytes`, and that's the right type
+for anything that isn't text: image data, a `.gz` blob, a network payload. You convert between them
+explicitly:
+
+```kirito
+var s = "héllo"                    # 5 code points
+var b = s.encode()                 # String -> Bytes (UTF-8 by default): 6 bytes ('é' is 2 bytes)
+io.print(len(s), len(b))           # => 5 6
+io.print(b.decode())               # Bytes -> String: "héllo" back again
+
+# Bytes indexes to an Integer; slicing gives Bytes; iterating gives Integers.
+io.print(b[0])                     # => 104   (the byte value of 'h')
+io.print(b.hex())                  # => "68c3a96c6c6f"
+```
+
+Why two types? A `String` is stored as UTF-8, so it can only address whole characters — it *can't*
+point at an arbitrary byte inside a multi-byte character. `Bytes` can, which is exactly what binary
+I/O needs. `encode`/`decode` take an optional encoding (`utf-8` default, `latin-1` for a lossless
+byte↔code-point map, `ascii`); `Bytes([104, 105])` builds from Integers, and `fromhex("6869")` from a
+hex string. So a round-trip through a binary file is byte-perfect:
+
+```kirito
+var raw = "data: café".encode()
+with io.open(path.join(path.getcwd(), "blob.bin"), "wb") as f:
+    f.write(raw)
+with io.open(path.join(path.getcwd(), "blob.bin"), "rb") as f:
+    io.print(f.read().decode())    # => "data: café"
 ```
 
 ## Reading line by line
@@ -141,6 +174,7 @@ back into a List (stripping newlines). Round-trip a few lines and confirm they m
 
 - `io.print`/`input`/`write` for the console; `io.open(path, mode)` with `"r"/"w"/"a"/"r+"`.
 - Use `with` so files close themselves; iterate a file for line-by-line reading.
-- Filesystem and path helpers (`exists`, `join`, `basename`, `listdir`, `walk`, …).
+- Binary mode (`"rb"`/`"wb"`) speaks `Bytes`; `s.encode()`/`b.decode()` convert text↔bytes.
+- Filesystem and path helpers live in `path` (`exists`, `join`, `basename`, `listdir`, `walk`, …).
 - `BytesIO` is an in-memory stream; `io.stdout` is rebindable and every call takes `stream=` —
   redirection is just an assignment.

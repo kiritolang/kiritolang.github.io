@@ -154,6 +154,7 @@ What you've seen is a slice. The full set, all imported the same way, includes:
   and files round-trip byte-exactly.
 - **Text matching:** `regex` — a linear-time regular-expression engine (Bonus Lesson 1).
 - **Networking:** `net` — TCP sockets and a full HTTP client.
+- **Parallelism:** `parallel` — share-nothing multiprocessing across worker VMs (Bonus Lesson 6).
 - **Command-line & data analysis:** `arg` (Bonus Lesson 2) and `tabular` (Bonus Lesson 3).
 
 For the complete, signature-by-signature listing of every module, see the **Standard Library**
