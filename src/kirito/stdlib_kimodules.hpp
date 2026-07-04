@@ -1535,7 +1535,10 @@ class Series:
         while i < len(self.values):
             pairs.append([self.values[i], self.index[i]])
             i = i + 1
-        pairs.sort(Function(p): return p[0], not ascending)
+        # None (missing) values can't be ordered; key them so they group at the end instead of throwing
+        # "cannot order None and X" (A20-5; pandas na_position='last'). The [flag, value] key never
+        # compares two Nones (equal flag+placeholder) nor a None against a value (flag differs first).
+        pairs.sort(Function(p): return [1, 0] if p[0] == None else [0, p[0]], not ascending)
         var vals = []
         var idx = []
         for p in pairs:
@@ -1830,7 +1833,9 @@ class DataFrame:
     var sortvalues = Function(self, by, ascending = True):
         var positions = _range(self.nrows())
         var col = self.data[by]
-        positions.sort(Function(p): return col[p], not ascending)
+        # None (missing) values sort to the end instead of throwing "cannot order None and X" (A20-5,
+        # pandas na_position='last'); the [flag, value] key never orders a None against anything.
+        positions.sort(Function(p): return [1, 0] if col[p] == None else [0, col[p]], not ascending)
         return self.rowsat(positions)
 
     var apply = Function(self, fn):

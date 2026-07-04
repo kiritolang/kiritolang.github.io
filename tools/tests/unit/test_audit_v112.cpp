@@ -214,5 +214,13 @@ int main() {
     // (A06-7 — "same NaN object should dedupe in a Set/Dict" — was reverted: NaN write-only keys are a
     // documented invariant, r7_types.ki. Left to a maintainer design decision.)
 
+    // === A20-5: tabular sortvalues must not crash on a column/Series with None (missing) values;
+    // they sort to the end (pandas na_position='last') instead of throwing "cannot order None and X". ===
+    CHECK(ok("var t = import(\"tabular\")\nvar s = t.Series([3, None, 1])\n"
+             "s.sortvalues().tolist()") == "[1, 3, None]");
+    CHECK(ok("var t = import(\"tabular\")\n"
+             "var df = t.DataFrame({\"a\": [3, None, 1], \"b\": [1, 2, 3]})\n"
+             "df.sortvalues(\"a\").column(\"a\").tolist()") == "[1, 3, None]");
+
     return RUN_TESTS();
 }
