@@ -114,3 +114,7 @@ Legend: ⬜ not started · 🟡 running · ✅ done · ❌ stopped/incomplete
 - 2026-07-04 17:00 UTC: session usage limit hit mid-Wave-2 (all A10–A20 agents died at startup; only A10 wrote 1 finding).
   Limit reset at 17:00 UTC; **re-launched Wave 2 (A10–A20) + Wave 3 (A21 coverage-map, A22 perf-variance)** with
   compact prompts leaning on this README's themes. Wave-1 findings were all committed before the interruption.
+- 2026-07-04: **ALL 22 AGENTS COMPLETE.** Totals: 13 High, 28 Medium, 37 Low, 13 Nit. No Critical.
+  Consolidated + ranked in FINDINGS.md with a themed hardening plan. Clean-held areas: GC core, regex
+  (3k ASan fuzz), serde deserialization (~44k ASan fuzz), parallel dispatcher (TSAN clean), math/random,
+  and control-flow lowering. Next: hardening in FINDINGS.md execution order (fix→test→post_work_check→commit).
