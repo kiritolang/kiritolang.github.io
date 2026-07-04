@@ -62,7 +62,7 @@ z.inflate(z.deflate(data)) == data
     // A16-2: a stored (BTYPE=00) DEFLATE block whose NLEN != ~LEN is rejected (RFC 1951 §3.2.4).
     // Header 0x01 (BFINAL, stored) + LEN=5 + NLEN + "ABCDE". Correct NLEN = ~5 = 0xFFFA.
     CHECK(evalStr(vm, "var z = import(\"zlib\")\n"
-                      "z.inflate(Bytes([1, 5, 0, 250, 255, 65, 66, 67, 68, 69]))") == "ABCDE");  // valid NLEN
+                      "z.inflate(Bytes([1, 5, 0, 250, 255, 65, 66, 67, 68, 69])).decode()") == "ABCDE");  // valid NLEN
     CHECK(throws(vm, "var z = import(\"zlib\")\n"
                      "z.inflate(Bytes([1, 5, 0, 0, 0, 65, 66, 67, 68, 69]))"));                  // corrupt NLEN
 
