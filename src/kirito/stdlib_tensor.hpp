@@ -1414,12 +1414,15 @@ inline Handle einsumT(KiritoVM& vm, const std::string& spec, const std::vector<H
     tensor::Shape ost = oshape.empty() ? tensor::Shape{} : tensor::rowMajorStrides(oshape);
     std::vector<tensor::Shape> ists; for (auto& sh : shps) ists.push_back(tensor::rowMajorStrides(sh));
     // The contraction iterates `total` = the product of ALL label sizes (output + contracted dims).
-    // Computing it unchecked overflowed size_t (a silently-wrong result) or, when it merely got huge,
-    // ran the loop unbounded (a DoS hang). Bound it with the same overflow-safe product + element cap
-    // the tensor allocator uses, so an oversized contraction throws catchably instead.
+    // Computing it unchecked overflowed size_t, wrapping to a small count and silently truncating the
+    // result. Guard ONLY against that overflow — do NOT impose an element cap: the output tensor is
+    // already element-bounded by its own shape, and the contraction WORK is left uncapped for parity
+    // with the native matmul path (a normal `"ij,jk->ik"` on 1000x1000 is 1e9 MACs, exactly what
+    // `.matmul()` runs unbounded). A pathologically large but non-overflowing einsum is merely slow,
+    // like any unbounded computation — never a wrong answer or an OOB.
     std::size_t total = 1;
     for (std::size_t d : lsz) {
-        if (d != 0 && total > tensor::kMaxElems / d) throw KiritoError("einsum: contraction too large");
+        if (d != 0 && total > SIZE_MAX / d) throw KiritoError("einsum: contraction size overflows");
         total *= d;
     }
     std::vector<std::size_t> coord(labels.size(), 0);

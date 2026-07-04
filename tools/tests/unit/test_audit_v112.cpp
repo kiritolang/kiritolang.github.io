@@ -122,13 +122,20 @@ int main() {
                   "var i = 0\nwhile i < 100:\n  a = a.expanddims(0)\n  i = i + 1\n"), "dimension"));
     CHECK(ok("var t = import(\"tensor\")\nt.zeros([1]).expanddims(0).ndim()") == "2");  // normal still ok
 
-    // === TENSOR-2: einsum's contraction count is the product of ALL label sizes; unchecked it
-    // overflows size_t (silent wrong) or hangs (DoS). An oversized contraction must throw. Here
-    // i*j*k = 1000^3 = 1e9 > the 64M element cap (the operands themselves are only 1e6 each). ===
-    CHECK(has(err("var t = import(\"tensor\")\nvar a = t.ones([1000, 1000])\n"
-                  "discard t.einsum(\"ij,jk->ik\", a, a)"), "too large"));
+    // === TENSOR-2: einsum's contraction count is the product of ALL label sizes; computing it
+    // unchecked overflowed size_t (wrapping to a small count -> a silently truncated result). The guard
+    // now catches ONLY that overflow — it does NOT cap the work at 64M elements (that wrongly rejected a
+    // normal matmul-shaped contraction, which the native .matmul() runs fine). ===
     CHECK(ok("var t = import(\"tensor\")\nt.einsum(\"ij,jk->ik\", t.eye(3), t.eye(3)).tolist()")
-          == "[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]");  // normal einsum still works
+          == "[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]");  // small einsum works
+    // A contraction with 7e7 iterations (> the old 64M element cap) must SUCCEED now, not throw:
+    CHECK(ok("var t = import(\"tensor\")\n"
+             "var m = t.einsum(\"ij,jk->ik\", t.ones([100, 7000]), t.ones([7000, 100]))\n"
+             "[m.shape(), m.tolist()[0][0]]") == "[[100, 100], 7000.0]");
+    // A genuinely astronomical contraction whose label product overflows size_t is rejected (each
+    // operand still fits the element cap; the DISTINCT-label product 1000^8 = 1e24 > SIZE_MAX):
+    CHECK(has(err("var t = import(\"tensor\")\nvar a = t.ones([1000, 1000])\n"
+                  "discard t.einsum(\"ij,jk,kl,lm,mn,no,op->ip\", a, a, a, a, a, a, a)"), "overflow"));
 
     // === A20-1 (kpm-critical): semver comparator with whitespace before the version (">= 1.2.0")
     // must satisfy like ">=1.2.0", not collapse to exact-match. ===
@@ -222,13 +229,26 @@ int main() {
     // (A06-7 — "same NaN object should dedupe in a Set/Dict" — was reverted: NaN write-only keys are a
     // documented invariant, r7_types.ki. Left to a maintainer design decision.)
 
-    // === A20-5: tabular sortvalues must not crash on a column/Series with None (missing) values;
-    // they sort to the end (pandas na_position='last') instead of throwing "cannot order None and X". ===
+    // === A20-5: tabular sortvalues must not crash on missing values; they sort to the END regardless
+    // of direction (pandas na_position='last'), and a Float NaN counts as missing too (not just None). ===
     CHECK(ok("var t = import(\"tabular\")\nvar s = t.Series([3, None, 1])\n"
              "s.sortvalues().tolist()") == "[1, 3, None]");
+    // DESCENDING: missing still last (the old [flag,value] key wrongly put None first under reverse)
+    CHECK(ok("var t = import(\"tabular\")\nvar s = t.Series([3, None, 1])\n"
+             "s.sortvalues(False).tolist()") == "[3, 1, None]");
+    // Float NaN is treated as missing (via _isnan), sorted last, not left in place
+    CHECK(ok("var t = import(\"tabular\")\nvar m = import(\"math\")\n"
+             "var s = t.Series([3.0, m.nan, 1.0])\n"
+             "s.sortvalues().tolist()") == "[1.0, 3.0, nan]");
+    // multiple missing, both directions
+    CHECK(ok("var t = import(\"tabular\")\nvar s = t.Series([3, None, 1, None, 2])\n"
+             "s.sortvalues(False).tolist()") == "[3, 2, 1, None, None]");
     CHECK(ok("var t = import(\"tabular\")\n"
              "var df = t.DataFrame({\"a\": [3, None, 1], \"b\": [1, 2, 3]})\n"
              "df.sortvalues(\"a\").column(\"a\").tolist()") == "[1, 3, None]");
+    CHECK(ok("var t = import(\"tabular\")\n"
+             "var df = t.DataFrame({\"a\": [3, None, 1], \"b\": [1, 2, 3]})\n"
+             "df.sortvalues(\"a\", False).column(\"a\").tolist()") == "[3, 1, None]");
 
     // === A20-4: functools.reduce must treat an explicit initial=None as a real seed (identity
     // sentinel), not "no initial supplied". reduce(f, [], None) -> None; reduce(f, [1,2,3]) still folds. ===

@@ -1533,18 +1533,24 @@ class Series:
         return Series(self.values[start:], self.index[start:], self.name)
 
     var sortvalues = Function(self, ascending = True):
-        var pairs = []
+        # Missing values (None or Float NaN, via _isnan) can't be ordered, so partition them out, sort
+        # only the present values, and append the missing ones — they land LAST regardless of ascending
+        # or descending (pandas na_position='last'; A20-5). Keying missing inline would let `reverse`
+        # flip them to the FRONT on a descending sort.
+        var present = []
+        var missing = []
         var i = 0
         while i < len(self.values):
-            pairs.append([self.values[i], self.index[i]])
+            var pair = [self.values[i], self.index[i]]
+            if _isnan(self.values[i]):
+                missing.append(pair)
+            else:
+                present.append(pair)
             i = i + 1
-        # None (missing) values can't be ordered; key them so they group at the end instead of throwing
-        # "cannot order None and X" (A20-5; pandas na_position='last'). The [flag, value] key never
-        # compares two Nones (equal flag+placeholder) nor a None against a value (flag differs first).
-        pairs.sort(Function(p): return [1, 0] if p[0] == None else [0, p[0]], not ascending)
+        present.sort(Function(p): return p[0], not ascending)
         var vals = []
         var idx = []
-        for p in pairs:
+        for p in present + missing:
             vals.append(p[0])
             idx.append(p[1])
         return Series(vals, idx, self.name)
@@ -1834,12 +1840,18 @@ class DataFrame:
         return DataFrame(newdata, numcols, stats)
 
     var sortvalues = Function(self, by, ascending = True):
-        var positions = _range(self.nrows())
         var col = self.data[by]
-        # None (missing) values sort to the end instead of throwing "cannot order None and X" (A20-5,
-        # pandas na_position='last'); the [flag, value] key never orders a None against anything.
-        positions.sort(Function(p): return [1, 0] if col[p] == None else [0, col[p]], not ascending)
-        return self.rowsat(positions)
+        # Missing rows (None or Float NaN, via _isnan) sort to the END regardless of direction (pandas
+        # na_position='last'; A20-5): partition them out, sort the present rows, append the missing.
+        var present = []
+        var missing = []
+        for p in _range(self.nrows()):
+            if _isnan(col[p]):
+                missing.append(p)
+            else:
+                present.append(p)
+        present.sort(Function(p): return col[p], not ascending)
+        return self.rowsat(present + missing)
 
     var apply = Function(self, fn):
         # apply fn to each column Series -> a Series of results (axis=columns reduction)
