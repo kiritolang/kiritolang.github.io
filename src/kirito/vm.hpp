@@ -150,9 +150,16 @@ public:
         }
         arena_.sweep();
         allocsSinceGc_ = 0;
+        // Adaptive retarget: next collection after ~4× the live set (floored), so pauses stay small
+        // and evenly spaced instead of arriving in fixed 100k-alloc bursts. Pinned off once a caller
+        // sets an explicit threshold.
+        if (gcAdaptive_)
+            gcThreshold_ = std::max(kGcThresholdFloor, arena_.liveCount() * 4);
     }
 
-    void setGcThreshold(std::size_t n) { gcThreshold_ = n; }
+    // Pin an explicit collection threshold; disables the adaptive retarget so the value sticks
+    // exactly (tests use setGcThreshold(1) to collect on every allocation).
+    void setGcThreshold(std::size_t n) { gcThreshold_ = n; gcAdaptive_ = false; }
     void setGcEnabled(bool on) { gcEnabled_ = on; }
     bool gcEnabled() const { return gcEnabled_; }   // current setting (for a scoped GcPauseScope)
     std::size_t liveCount() const { return arena_.liveCount(); }
@@ -317,6 +324,14 @@ private:
     fum::unordered_map<const void*, std::unique_ptr<Proto>> protoCache_;  // per-body compiled cache
     std::size_t allocsSinceGc_ = 0;
     std::size_t gcThreshold_ = 100000;
+    // When adaptive (the default — nobody pinned a threshold via setGcThreshold), each collection
+    // retargets the next trigger to a multiple of the surviving live set. This keeps total GC work
+    // amortized O(1) while spacing collections EVENLY and keeping each pause small — the fixed
+    // 100k-alloc trigger otherwise delivers GC in periodic ~1 ms lumps, the dominant source of the
+    // interpreter's run-to-run timing variance. An explicit setGcThreshold() pins the threshold and
+    // turns this off (tests rely on e.g. setGcThreshold(1) collecting on every allocation).
+    bool gcAdaptive_ = true;
+    static constexpr std::size_t kGcThresholdFloor = 20000;
     bool gcEnabled_ = true;
     std::size_t callDepth_ = 0;
     // Conservative default for an 8 MB stack with deep per-call expression nesting; embedders with

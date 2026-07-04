@@ -1746,10 +1746,15 @@ inline std::size_t InstanceValue::hash() const {
 inline bool InstanceValue::equals(const ObjectArena& arena, const Object& other) const {
     if (this == &other) return true;
     if (!hasEqDunder) return false;
-    if (other.kind() != ValueKind::Instance) return false;
+    // Every NativeClass (DateTime/Bytes/Matrix/…) ALSO reports ValueKind::Instance, so a kind check
+    // is not enough — a raw downcast of a native object to InstanceValue would read a garbage Handle
+    // (UB, reachable when a user instance and a native value share a Dict/Set bucket). dynamic_cast
+    // returns null for anything that isn't actually an InstanceValue.
+    const auto* rhsp = dynamic_cast<const InstanceValue*>(&other);
+    if (!rhsp) return false;
     // We have `other` as a reference; the InstanceValue keeps its own `selfHandle` so we can pass
     // both sides to the Kirito `_eq_` method by re-using their cached handles.
-    const auto& rhs = static_cast<const InstanceValue&>(other);
+    const auto& rhs = *rhsp;
     KiritoVM* vm = KiritoVM::activeVM();
     if (!vm) return false;
     const Handle* m = findMethod(arena, "_eq_");
@@ -3319,7 +3324,11 @@ inline void KiritoVM::installBuiltins() {
             // residue (C++ truncated `%` vs Kirito's floor `%`); reject it (docs scope this to
             // non-negative Integers) instead of returning a misleading number.
             if (mod < 0) throw KiritoError("pow modulus must be positive");
-            __extension__ __int128 result = 1 % mod, b = ((base % mod) + mod) % mod;
+            // Reduce in __int128: `(base % mod) + mod` in int64 overflows for a modulus above ~2^62
+            // (base%mod can be close to mod), silently corrupting the result. Widen first so the
+            // normalization and every multiply stay exact.
+            __extension__ __int128 m = mod;
+            __extension__ __int128 result = 1 % m, b = ((static_cast<__int128>(base) % m) + m) % m;
             while (exp > 0) {
                 if (exp & 1) result = (result * b) % mod;
                 b = (b * b) % mod;

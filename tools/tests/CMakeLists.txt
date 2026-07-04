@@ -42,6 +42,7 @@ kirito_test(test_audit_findings unit/test_audit_findings.cpp)
 kirito_test(test_audit_round2 unit/test_audit_round2.cpp)
 kirito_test(test_audit_regressions unit/test_audit_regressions.cpp)
 kirito_test(test_domain_guards unit/test_domain_guards.cpp)
+kirito_test(test_audit_v112 unit/test_audit_v112.cpp)
 kirito_test(test_vm_serialization unit/test_vm_serialization.cpp)
 kirito_test(test_audit_hardening unit/test_audit_hardening.cpp)
 # CLI argument-handling test: drives the built ki as a subprocess (popen). The actual ki binary
