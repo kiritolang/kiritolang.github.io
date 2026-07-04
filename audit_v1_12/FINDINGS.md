@@ -31,7 +31,7 @@ Fix each with a regression test (C++ unit and/or `.ki` + `.experr`). Grouped by 
   (Related: A19-4 same root — `std::exit` skips `~KiritoDispatcher`.)
 
 ### UB / memory
-- ☐ **A07-1** `InstanceValue::equals` `static_cast`s any `ValueKind::Instance`, but every `NativeClass`
+- ▣ **A07-1** [FIXED, ASan-clean] `InstanceValue::equals` `static_cast`s any `ValueKind::Instance`, but every `NativeClass`
   (DateTime/Bytes/Matrix/…) also reports `Instance` → wrong-type downcast reading a garbage `Handle`,
   reachable as a Dict/Set key (UBSan-confirmed). Fix: `dynamic_cast<const InstanceValue*>`; route the
   C++ equality wrappers through the shared `kiEquals`.
@@ -48,7 +48,7 @@ Fix each with a regression test (C++ unit and/or `.ki` + `.experr`). Grouped by 
   the above. Knocks out A09-3, A09-4, A06-1, A06-2, A07-4.
 
 ### Silent-wrong / overflow
-- ☐ **A09-1** `pow(base,exp,mod)` computes `((base%mod)+mod)%mod` in int64 → overflows before the
+- ▣ **A09-1** [FIXED, ASan-clean] `pow(base,exp,mod)` computes `((base%mod)+mod)%mod` in int64 → overflows before the
   `__int128` widen → silently wrong for mod > ~2^62 (UBSan-confirmed). Fix: do the reduction in
   `__int128`/unsigned.
 - ☐ **TENSOR-2** (A12) `einsum` contraction count is an unchecked product of all label sizes →
@@ -93,7 +93,7 @@ Fix each with a regression test (C++ unit and/or `.ki` + `.experr`). Grouped by 
 
 ## Performance (A22) — the requested variance work
 
-- ☐ **M1 (top pick, one line)** adaptive GC threshold: at the end of `collectGarbage`,
+- ▣ **M1 (top pick, one line)** [FIXED, ASan-clean] adaptive GC threshold: at the end of `collectGarbage`,
   `gcThreshold_ = max(~20000, 4*liveCount)`. Root cause of variance is the fixed 100 000-alloc trigger
   firing a stop-the-world O(arena) mark-sweep in periodic ~0.7–1.0 ms lumps (total GC ~25–31%, healthy,
   but bursty). Adaptive threshold shrinks each pause ~5× and spaces them evenly — pure variance
