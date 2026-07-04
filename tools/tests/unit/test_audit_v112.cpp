@@ -245,6 +245,11 @@ int main() {
     // a control (same error NOT in an f-string) still reports its own line, unchanged
     CHECK(errLine("var x = 0\n\n\nvar y = 1 / x\n") == 4);
 
+    // === A05-4: a non-Bool _bool_ used as an if/while CONDITION reports the condition's real line,
+    // not 0:0 (the JumpIf* condition path now wraps truthy() in located()). ===
+    CHECK(errLine("class Bad:\n  var _bool_ = Function(self): return 5\n\nwhile Bad():\n  break\n") == 4);
+    CHECK(errLine("class Bad:\n  var _bool_ = Function(self): return 5\n\nif Bad():\n  pass\n") == 4);
+
     // === A07-3: privacy is per class *chain*, not per defining class — a subclass method may read a
     // base(-typed) instance's private, symmetric with a base method reading a derived instance's.
     // Previously only base->derived worked (the check was isInstanceOf(obj, currentClass), one-directional). ===

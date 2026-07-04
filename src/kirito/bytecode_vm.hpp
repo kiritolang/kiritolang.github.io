@@ -130,13 +130,15 @@ public:
                 } break;
 
                 case Op::Jump: { ip = in.a; } break;
-                case Op::PopJumpIfFalse: { Handle v = pop(); if (!vm_.arena().deref(v).truthy()) ip = in.a; } break;
-                case Op::PopJumpIfTrue: { Handle v = pop(); if (vm_.arena().deref(v).truthy()) ip = in.a; } break;
+                // truthy() may throw (a user _bool_ returning a non-Bool); wrap in located() so the
+                // if/while condition error carries its real line:col instead of 0:0 (A05-4).
+                case Op::PopJumpIfFalse: { Handle v = pop(); if (!located(in.span, [&]{ return vm_.arena().deref(v).truthy(); })) ip = in.a; } break;
+                case Op::PopJumpIfTrue: { Handle v = pop(); if (located(in.span, [&]{ return vm_.arena().deref(v).truthy(); })) ip = in.a; } break;
                 case Op::JumpIfFalseOrPop: {
-                    if (!vm_.arena().deref(peek(0)).truthy()) ip = in.a; else pop();
+                    if (!located(in.span, [&]{ return vm_.arena().deref(peek(0)).truthy(); })) ip = in.a; else pop();
                 } break;
                 case Op::JumpIfTrueOrPop: {
-                    if (vm_.arena().deref(peek(0)).truthy()) ip = in.a; else pop();
+                    if (located(in.span, [&]{ return vm_.arena().deref(peek(0)).truthy(); })) ip = in.a; else pop();
                 } break;
 
                 case Op::Call: {
@@ -387,8 +389,14 @@ public:
             vm_.setLastTraceback(t.traceback);  // handled here -> expose the chain to sys.traceback()
           } catch (const std::exception& e) {
             // Any other native exception is also catchable (as a String), guarding the whole boundary.
+            // Mirror the two arms above: record THIS frame in a fresh traceback and, when handled here,
+            // expose it via sys.traceback() — otherwise the handler would see the PREVIOUS error's stale
+            // chain and this failing frame would be missing (A04-2).
+            std::vector<TraceFrame> tb;
+            appendFrame(tb, ip, code);
             Handle s = vm_.makeString(e.what());
             if (!unwind(s, SourceSpan{}, ip)) throw;
+            vm_.setLastTraceback(tb);
           }
         }
     }
