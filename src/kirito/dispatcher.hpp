@@ -552,7 +552,7 @@ public:
         // leaving it un-joined (and dereferencing a freed Task) — refuse once shutdown has begun.
         if (shuttingDown_) throw KiritoError("parallel: the dispatcher is shutting down");
         uint64_t id = nextId_++;
-        auto task = std::make_unique<Task>();
+        auto task = std::make_shared<Task>();
         task->id = id;
         Task* tp = task.get();
         tasks_[id] = std::move(task);
@@ -563,22 +563,33 @@ public:
     bool taskDone(uint64_t id) {
         std::lock_guard<std::mutex> lk(registryMutex_);
         auto it = tasks_.find(id);
-        return it != tasks_.end() && it->second->done.load();
+        // Absent => already join()ed and erased (an id comes only from a real spawn and is dropped
+        // from the map only after reap(), which implies done). Present => report its live flag.
+        return it == tasks_.end() || it->second->done.load();
     }
     // Join the worker thread (NOT holding the registry lock, so a worker that calls back in can't
     // deadlock) and return its result blob; `hasError`/`errorText` report a worker-side failure.
     std::string joinTask(uint64_t id, bool& hasError, std::string& errorText) {
-        Task* tp = nullptr;
+        std::shared_ptr<Task> t;
         {
             std::lock_guard<std::mutex> lk(registryMutex_);
             auto it = tasks_.find(id);
             if (it == tasks_.end()) throw KiritoError("parallel: invalid task handle");
-            tp = it->second.get();
+            t = it->second;   // a shared_ptr copy keeps the Task alive even after we drop it from the map
         }
-        reap(tp);   // join exactly once even if join()/shutdown() race on the same Task
-        hasError = tp->hasError;
-        errorText = tp->errorText;
-        return tp->result;
+        reap(t.get());   // join exactly once even if join()/shutdown() race on the same Task
+        hasError = t->hasError;
+        errorText = t->errorText;
+        std::string result = std::move(t->result);
+        {
+            // Drop the map's reference now that it is joined — else `tasks_` grows one Task (thread +
+            // result blob) per spawn for the dispatcher's whole life (A08-2/A19-2), unbounded in a
+            // long-running spawn-per-request server. `t` keeps it alive until this call returns; a
+            // concurrent shutdown() holds its own shared_ptr, so reap()/erase never dangle.
+            std::lock_guard<std::mutex> lk(registryMutex_);
+            tasks_.erase(id);
+        }
+        return result;
     }
 
     // Idempotent: abort EVERY waitable first (so blocked workers wake and unwind), then join all
@@ -591,12 +602,12 @@ public:
             for (auto& w : waitables_) if (auto sp = w.lock()) live.push_back(sp);
         }
         for (auto& sp : live) sp->abort();
-        std::vector<Task*> ts;
+        std::vector<std::shared_ptr<Task>> ts;
         {
             std::lock_guard<std::mutex> lk(registryMutex_);
-            for (auto& [id, t] : tasks_) ts.push_back(t.get());
-        }
-        for (auto* t : ts) reap(t);   // reap() each exactly once, coordinating with any live join()
+            for (auto& [id, t] : tasks_) ts.push_back(t);   // shared_ptr copies: a concurrent join()'s
+        }                                                    // erase can't free a Task we're about to reap
+        for (auto& t : ts) reap(t.get());   // reap() each exactly once, coordinating with any live join()
     }
 
     static unsigned cpuCount() {
@@ -721,7 +732,7 @@ private:
     fum::unordered_map<uint64_t, std::shared_ptr<Semaphore>> semaphores_;
     fum::unordered_map<uint64_t, std::shared_ptr<Barrier>> barriers_;
     std::vector<std::weak_ptr<Waitable>> waitables_;  // abort() fan-out for shutdown()
-    fum::unordered_map<uint64_t, std::unique_ptr<Task>> tasks_;
+    fum::unordered_map<uint64_t, std::shared_ptr<Task>> tasks_;
     uint64_t nextId_ = 1;  // one id space across all primitives + tasks
     bool shuttingDown_ = false;  // guarded by registryMutex_; set once by shutdown(), read by spawnTask
 };
