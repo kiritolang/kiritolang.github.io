@@ -130,6 +130,23 @@ int main() {
     }
 
     // ============================================================================================
+    // 1b) The default `Handle{}` sentinel never aliases a real value. Generation 0 is reserved, so
+    //     even the very first object allocated on a fresh VM/arena has a non-zero generation — a
+    //     default handle can therefore be used as a reliable "no value" marker (as class selfHandle,
+    //     KiritoError::value, and the no-owner call path all do).
+    // ============================================================================================
+    {
+        ObjectArena arena;
+        Handle first = arena.alloc(std::make_unique<ListVal>());
+        CHECK(first.slot == 0);                 // the first slot really is index 0...
+        CHECK(first.generation != 0);           // ...but its generation is NOT 0, so first != Handle{}
+        CHECK(!(first == Handle{}));            // an actual object is never equal to the sentinel
+        // The sentinel itself dangles (slot 0 IS occupied, but at the reserved generation 0 -> mismatch).
+        CHECK_THROWS(arena.deref(Handle{}));
+        CHECK(arena.markIfUnmarked(Handle{}) == false);
+    }
+
+    // ============================================================================================
     // 2) NativeClass `slice` slot — from Kirito (obj[a:b:c]) and from C++.
     // ============================================================================================
     {

@@ -58,10 +58,17 @@ _(appended as each parallel audit agent returns; verified below)_
 - `NEW MED` — `value.hpp:538-542` — `List(vm, const vector<Handle>&)` ctor lacks RootScope across its
   `alloc` (sibling init-list ctor has one). A GC during alloc can sweep un-rooted elements → dangling.
   Fix: RootScope the handles before final alloc.
-- `NEW LOW` — `arena.hpp:44,57` — 32-bit generation wraparound after 2^32 slot reuses → stale handle
-  accepted as live (long-running server). Fix: retire near-wrap slots, or widen to 64-bit.
-- `NEW LOW` — `handle.hpp:15-19 + vm.hpp:39` — default `Handle{}` == `none_` (slot0,gen0); an
-  uninitialized handle silently derefs to None instead of throwing. Fix: reserve slot 0 as invalid.
+- ~~`NEW LOW` — `arena.hpp:44,57` — 32-bit generation wraparound after 2^32 slot reuses → stale handle
+  accepted as live (long-running server).~~ **DONE** — sweep retires a slot permanently (off the
+  free-list, occupied=false) once its generation reaches UINT32_MAX instead of wrapping to 0, so a
+  stale handle can never re-validate (ABA). Costs one leaked slot only after 2^32 reuses of that one
+  slot.
+- ~~`NEW LOW` — `handle.hpp:15-19 + vm.hpp:39` — default `Handle{}` == `none_` (slot0,gen0); an
+  uninitialized handle silently derefs to None instead of throwing.~~ **DONE** — generation 0 is now
+  RESERVED: `ObjectArena::kFirstGen == 1`, so no live handle ever carries generation 0 and `Handle{}`
+  ({0,0}) can never alias a real object (in particular the first-allocated one). It cleanly dangles.
+  Tests: a new arena-sentinel block in `test_r7_embed_api.cpp` (first alloc has gen != 0; `Handle{}`
+  throws on deref and never marks).
 
 ### Concurrency (dispatcher.hpp, stdlib_parallel.hpp)
 - `NEW MED` — `dispatcher.hpp:572-586 shutdown + 610-619 makeWaitable` — **waitable created AFTER the

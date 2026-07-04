@@ -16,6 +16,11 @@ namespace kirito {
 // slots and bumps their generation but never moves live objects, so handles stay stable.
 class ObjectArena {
 public:
+    // Generation 0 is RESERVED: no live handle ever carries it, so a default-constructed `Handle{}`
+    // ({slot:0, gen:0}) is a reliable "no value" sentinel — it can never alias the first-allocated
+    // object (which would otherwise also be {0,0}). Real generations run [1, UINT32_MAX].
+    static constexpr uint32_t kFirstGen = 1;
+
     Handle alloc(std::unique_ptr<Object> obj) {
         if (!free_.empty()) {
             uint32_t slot = free_.back();
@@ -25,8 +30,8 @@ public:
             return Handle{slot, slots_[slot].generation};
         }
         uint32_t slot = static_cast<uint32_t>(slots_.size());
-        slots_.push_back(Slot{std::move(obj), 0, true, false});
-        return Handle{slot, 0};
+        slots_.push_back(Slot{std::move(obj), kFirstGen, true, false});
+        return Handle{slot, kFirstGen};
     }
 
     Object& deref(Handle h) { return *at(h).obj; }
@@ -53,9 +58,16 @@ public:
             if (s.occupied && !s.marked) {
                 s.obj.reset();
                 s.occupied = false;
+                ++freed;
+                if (s.generation == UINT32_MAX) {
+                    // The generation would wrap to 0 (the reserved null value) and could re-validate a
+                    // long-lived stale handle (ABA). Retire the slot permanently — leave it occupied=
+                    // false and OFF the free-list so it is never reused. Costs one leaked slot only
+                    // after 2^32 reuses of that single slot, which no real program reaches.
+                    continue;
+                }
                 ++s.generation;
                 free_.push_back(i);
-                ++freed;
             }
         }
         return freed;
@@ -70,7 +82,7 @@ public:
 private:
     struct Slot {
         std::unique_ptr<Object> obj;
-        uint32_t generation = 0;
+        uint32_t generation = kFirstGen;  // never 0 while live: gen 0 is the reserved Handle{} sentinel
         bool occupied = false;
         bool marked = false;
     };
