@@ -80,7 +80,7 @@ ok(T.tril(sq, k = BIG).tolist() == [[1.0, 2.0], [3.0, 4.0]], "tril k=INT64_MAX k
 ok(T.triu(sq, k = MIN).tolist() == [[1.0, 2.0], [3.0, 4.0]], "triu k=INT64_MIN keeps everything")
 ok(T.tril(sq, k = MIN).tolist() == [[0.0, 0.0], [0.0, 0.0]], "tril k=INT64_MIN zeroes everything")
 
-# ---- P2: determinant/inverse of a matrix with a non-finite element RAISES (was a silent 0.0) ----
+# ---- P2: determinant/inverse of a matrix with a non-finite element THROWS (was a silent 0.0) ----
 var inf = import("math").inf
 var mtx = import("matrix")
 ok(throws(Function(): return mtx.Matrix([[1.0, 2.0], [3.0, inf]]).determinant()), "matrix.determinant with inf throws (not a silent 0.0)")

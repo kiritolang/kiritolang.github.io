@@ -1,6 +1,6 @@
 # HTTP client vs adversarial server: spawn a Python abuse-server sibling process, then hit it with
 # `net.get` / `net.post` and assert every abuse produces a clean, catchable error (a Response with
-# status ≠ 200, or a raised String — never a crash, never a hang beyond the timeout). If Python
+# status ≠ 200, or a thrown String — never a crash, never a hang beyond the timeout). If Python
 # isn't on PATH, we skip cleanly; the CI environment always has it.
 var io = import("io")
 var net = import("net")

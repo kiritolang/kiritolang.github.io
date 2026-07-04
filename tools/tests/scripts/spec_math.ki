@@ -57,7 +57,7 @@ assert type(m.prod([2, 3])) == "Integer" and type(m.prod([2.0, 3.0])) == "Float"
 assert not m.isnan(1.0) and not m.isinf(1.0) and m.isfinite(1.0), "finite classification"
 assert m.isinf(1.0 / 0.0001 * m.inf), "inf arithmetic stays inf"
 
-# --- domain edges: out-of-domain args RAISE (no silent NaN/inf), factorial of a negative throws ---
+# --- domain edges: out-of-domain args THROW (no silent NaN/inf), factorial of a negative throws ---
 var throws = Function(thunk) -> Bool:
     try:
         discard thunk()

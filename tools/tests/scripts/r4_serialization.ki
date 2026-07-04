@@ -136,7 +136,7 @@ ok(json.loads(json.dumps(fx)) == fx, "json float exact round-trip (0.1+0.2)")
 ok(json.dumps(0.1 + 0.2) == "0.30000000000000004", "json emits shortest round-tripping float")
 ok(json.loads(json.dumps(1.0 / 3.0)) == 1.0 / 3.0, "json 1/3 exact round-trip")
 
-# ============================================================ JSON: malformed input RAISES
+# ============================================================ JSON: malformed input THROWS
 ok(throws(Function(): return json.parse("")), "json empty throws")
 ok(throws(Function(): return json.parse("   ")), "json all-whitespace throws")
 ok(throws(Function(): return json.parse("foo")), "json bareword throws")
@@ -376,7 +376,7 @@ class Holder:
         self.data = state
 var hl = dump.loads(dump.dumps(Holder()))
 ok(id(hl.data[0]) == id(hl.data[1]), "dump _getstate_ preserves internal aliasing")
-# a class defining _getstate_ but NO _setstate_: dumps OK, loads RAISES (clean diagnostic)
+# a class defining _getstate_ but NO _setstate_: dumps OK, loads THROWS (clean diagnostic)
 class OnlyGet:
     var _init_ = Function(self):
         self.x = 5
@@ -385,7 +385,7 @@ class OnlyGet:
 ok(throws(Function(): return dump.dumps(OnlyGet())) == False, "dump _getstate_-only dumps fine")
 ok(throws(Function(): return dump.loads(dump.dumps(OnlyGet()))), "dump _getstate_-only loads throws")
 ok(throws(Function(): return serialize.loads(serialize.dumps(OnlyGet()))), "serialize _getstate_-only loads throws")
-# _getstate_ returning a non-serializable value RAISES at dump time
+# _getstate_ returning a non-serializable value THROWS at dump time
 class BadState:
     var _init_ = Function(self):
         self.x = 1
@@ -429,7 +429,7 @@ discard rng2.randint(0, 100)
 var rng2S = serialize.loads(serialize.dumps(rng2))
 ok(rng2.randint(0, 100) == rng2S.randint(0, 100), "serialize Random restores the exact stream")
 
-# a grad-requiring Tensor RAISES (must detach() first); a detached one round-trips
+# a grad-requiring Tensor THROWS (must detach() first); a detached one round-trips
 var gt = tensor.Tensor([[1.0, 2.0]], requiresgrad = True)
 ok(throws(Function(): return dump.dumps(gt)), "dump rejects a grad-requiring Tensor")
 ok(throws(Function(): return serialize.dumps(gt)), "serialize rejects a grad-requiring Tensor")
@@ -453,7 +453,7 @@ var subblob = dump.dumps(subnormal)
 ok(dump.dumps(dump.loads(subblob)) == subblob, "dump round-trips a subnormal bit-exactly")
 ok(subblob != dump.dumps(2.2250738585072014e-308), "dump distinguishes subnormal from smallest normal")
 
-# ============================================================ RESOURCE TYPES must RAISE (no crash)
+# ============================================================ RESOURCE TYPES must THROW (no crash)
 var resources = [
     Function(): return net.Socket(),
     Function(): return net.Session(),
@@ -511,7 +511,7 @@ ok(dump.loads(dump.dumps(blob)) == blob, "dump blob (Bytes) re-dumps")
 # dump.loads accepts a String of the identical bytes (latin-1 round-trip)
 ok(dump.loads(blob.decode("latin-1").encode("latin-1")) == [1, 2, 3], "dump.loads accepts identical-byte String")
 
-# ============================================================ MALFORMED graph blobs RAISE (no crash)
+# ============================================================ MALFORMED graph blobs THROW (no crash)
 # binary
 ok(serialize.loads(serialize.dumps([1, 2, 3])) == [1, 2, 3], "serialize blob round-trips")
 ok(throws(Function(): return dump.loads("")), "dump empty throws")

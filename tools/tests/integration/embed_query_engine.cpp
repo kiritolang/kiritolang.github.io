@@ -176,7 +176,7 @@ Function(row):
         CHECK_THROWS(eng.project(everyone, badProj));
     }
 
-    // ---- adversarial: a predicate that reads a missing column raises a KeyError from Kirito ----
+    // ---- adversarial: a predicate that reads a missing column throws a KeyError from Kirito ----
     {
         Handle missing = compile(R"KI(
 Function(row) -> Bool:

@@ -126,8 +126,8 @@ private:
     // measures must agree on the relation (deeper/same/shallower) to each enclosing level. This is
     // the indentation rule and rejects e.g. a tab where the surrounding block used 8 spaces.
     bool handleIndentation(std::vector<Token>& out) {
-        int wide = 0, narrow = 0;
-        size_t scan = pos_;
+        int64_t wide = 0, narrow = 0;  // int64: a pathological run of leading tabs/spaces must not
+        size_t scan = pos_;            // overflow (wide grows up to 8x the byte count)
         while (scan < src_.size()) {
             char c = src_[scan];
             if (c == ' ') { ++wide; ++narrow; ++scan; }
@@ -427,7 +427,8 @@ private:
     size_t pos_ = 0;
     uint32_t line_ = 1;
     uint32_t col_ = 1;
-    struct Indent { int wide; int narrow; };  // tab-as-8 and tab-as-1 column measures
+    struct Indent { int64_t wide; int64_t narrow; };  // tab-as-8 and tab-as-1 column measures (int64: a
+                                                       // huge leading-whitespace run must not overflow)
     std::vector<Indent> indent_{{0, 0}};
     int parenDepth_ = 0;
 };

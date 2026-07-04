@@ -141,7 +141,7 @@ int main() {
         "", "String(len(x)) + \" \" + String(x[499][\"sq\"]) + \" \" + String(x[250][\"tags\"][2])",
         "500 249001 252");
 
-    // --- non-serializable resources must RAISE (never silently lose/corrupt data) ------------------
+    // --- non-serializable resources must THROW (never silently lose/corrupt data) ------------------
     {
         KiritoVM a; a.installStandardLibrary();
         CHECK_THROWS(a.runSource("var d = import(\"dump\")\nvar io = import(\"io\")\ndiscard d.dumps(io.BytesIO())"));

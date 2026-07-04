@@ -189,7 +189,7 @@ public:
 
         // --- mutation (strict by default: throw rather than silently no-op) ---
         // mkdir(path, exist_ok=False) -> Bool: create the directory (and any missing parents). By
-        // default RAISES if `path` already exists; exist_ok=True instead returns False for an existing
+        // default THROWS if `path` already exists; exist_ok=True instead returns False for an existing
         // directory. Returns True when it actually creates the directory.
         m.fn("mkdir", {{"path", "String"}, {"exist_ok", "Bool", vm.makeBool(false)}}, "Bool",
              [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -205,7 +205,7 @@ public:
             return Value(vm, true);
         });
         // remove(path, missing_ok=False) -> Bool: delete a file (or an EMPTY directory). By default
-        // RAISES if the path does not exist; missing_ok=True instead returns False. Returns True when
+        // THROWS if the path does not exist; missing_ok=True instead returns False. Returns True when
         // it removes something. A non-empty directory throws ("directory not empty") — use rmtree.
         m.fn("remove", {{"path", "String"}, {"missing_ok", "Bool", vm.makeBool(false)}}, "Bool",
              [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -220,7 +220,7 @@ public:
         });
         // rmtree(path, missing_ok=False) -> Bool: recursively delete a directory and everything under
         // it (or a single file) — the recursive counterpart to remove (like rm -rf / shutil.rmtree). By
-        // default RAISES if the path does not exist; missing_ok=True instead returns False. Returns True
+        // default THROWS if the path does not exist; missing_ok=True instead returns False. Returns True
         // when it removes something.
         m.fn("rmtree", {{"path", "String"}, {"missing_ok", "Bool", vm.makeBool(false)}}, "Bool",
              [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {

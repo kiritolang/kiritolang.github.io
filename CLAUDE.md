@@ -294,7 +294,7 @@ a stability fuzzer, and a benchmark). Working today:
     `gettempdir()` (system temp dir) and `executable` (absolute path of the running `ki` binary) —
     moved here from `sys`, since they name a place on disk.
   - `math` — constants and the usual functions (trig/hyperbolic, exp/log, gamma/erf/erfc, floor/ceil/
-    trunc, gcd/lcm, factorial, isnan/isinf, prod/comb/perm, ...). **Domain errors RAISE** a clear `math
+    trunc, gcd/lcm, factorial, isnan/isinf, prod/comb/perm, ...). **Domain errors THROW** a clear `math
     domain error` rather than returning silent `NaN`/`inf` rubbish (`sqrt(-1)`, `log(0)`, `asin(2)`,
     `acosh(0)`, `atanh(1)`, `gamma(0)`, `pow(-2, 0.5)`, `fmod(x, 0)`, …); a `NaN` argument passes
     through and genuine overflow-to-`inf` is not a domain error. The same policy holds across the

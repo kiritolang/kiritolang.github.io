@@ -88,9 +88,13 @@ public:
         long n = std::stol(token());
         if (n < 0 || static_cast<std::size_t>(n) > s_.size())
             throw KiritoError("corrupt serialized data: bad object count");
-        std::vector<serde::Node> nodes(static_cast<std::size_t>(n));
+        // Grow incrementally rather than sizing to the untrusted `n` (a Node is ~80 B, min record a few
+        // B) so a modest hostile blob can't force a multi-GB zeroed pre-allocation.
+        std::vector<serde::Node> nodes;
+        nodes.reserve(std::min<std::size_t>(static_cast<std::size_t>(n), std::size_t{1} << 16));
         for (long idx = 0; idx < n; ++idx) {
-            serde::Node& nd = nodes[static_cast<std::size_t>(idx)];
+            nodes.emplace_back();
+            serde::Node& nd = nodes.back();
             std::string t = token();
             // Tags are single chars — dispatch on t[0] (mirrors dump's numeric-tag switch).
             if (t.size() != 1) throw KiritoError("bad serialization tag '" + t + "'");

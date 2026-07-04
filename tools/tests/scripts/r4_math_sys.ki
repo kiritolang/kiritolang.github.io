@@ -121,7 +121,7 @@ assert math.log(8, None) == math.log(8), "log base None is the natural log"
 note()
 
 # =====================================================================================
-# math — DOMAIN ERRORS must RAISE (never silent NaN/inf)
+# math — DOMAIN ERRORS must THROW (never silent NaN/inf)
 # =====================================================================================
 assert throws(Function(): return math.sqrt(-1)), "sqrt(-1) throws"
 note()
@@ -354,7 +354,7 @@ assert random.Random(1).randrange(1) == 0, "randrange(1) is always 0"
 note()
 
 # =====================================================================================
-# random — edge cases and wrong types must RAISE
+# random — edge cases and wrong types must THROW
 # =====================================================================================
 assert throws(Function(): return random.Random(1).randint(5, 3)), "randint with lo > hi throws"
 note()

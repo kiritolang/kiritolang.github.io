@@ -69,11 +69,17 @@ inline bool startup() {
 #  define MSG_NOSIGNAL 0
 #endif
 
-// recv/send return ssize_t on POSIX and int on Windows; normalize to long long.
+// recv/send return ssize_t on POSIX and int on Windows; normalize to long long. The length is cast to
+// `int` (the Winsock signature), so clamp to a chunk first — a payload > 2 GiB would otherwise overflow
+// `int` to a negative/garbage length. Both calls may transfer fewer bytes than requested; the callers
+// already loop, so clamping each syscall is transparent.
+inline constexpr std::size_t kIoChunk = std::size_t{1} << 24;  // 16 MiB, well within INT_MAX
 inline long long sendBytes(socket_t s, const char* buf, std::size_t n) {
+    if (n > kIoChunk) n = kIoChunk;
     return static_cast<long long>(::send(s, buf, static_cast<int>(n), MSG_NOSIGNAL));
 }
 inline long long recvBytes(socket_t s, char* buf, std::size_t n) {
+    if (n > kIoChunk) n = kIoChunk;
     return static_cast<long long>(::recv(s, buf, static_cast<int>(n), 0));
 }
 

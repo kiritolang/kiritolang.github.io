@@ -41,7 +41,7 @@ var ascii = Function(s):
     return s.encode("ascii")
 
 # ================================================================= JSON: number leniency / strictness
-# Documented: "Raises a clear error on malformed input." These probes pin the ACTUAL accept/reject
+# Documented: "Throws a clear error on malformed input." These probes pin the ACTUAL accept/reject
 # boundary (the parser is lenient vs strict RFC 8259 in a few spots — recorded here so a regression
 # that changes it is caught).
 assert json.parse("-0") == 0, "json -0 -> 0"

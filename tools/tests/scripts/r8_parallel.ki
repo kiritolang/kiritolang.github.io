@@ -8,7 +8,7 @@
 #     TIMES OUT returns False (not throw) — for both Lock (worker-held) and Semaphore (value 0);
 #   - Lock & Semaphore used DIRECTLY as `with` context managers (the _enter_/_exit_ protocol);
 #   - Barrier: nwaiting() observed mid-rendezvous (gated, bounded poll, never timing); wait() timeout
-#     RAISES (contrast with Lock/Sem/Event which return False); abort() is PERMANENT (reset() after
+#     THROWS (contrast with Lock/Sem/Event which return False); abort() is PERMANENT (reset() after
 #     abort still throws); reset() returns None and the barrier is reusable after a plain reset();
 #   - spawn of an INLINE anonymous function literal, and of a function defined INSIDE `if argmain:`
 #     (found by source span even though that branch never runs in a worker); a duplicate
@@ -249,7 +249,7 @@ if argmain:
     ok(bout.get(True, 5.0) == "ok", "the parked worker rendezvoused and reported ok")
     discard bpt.join()
 
-    # wait() that times out RAISES (broken) — contrast with Lock/Semaphore/Event returning False
+    # wait() that times out THROWS (broken) — contrast with Lock/Semaphore/Event returning False
     var ubar = parallel.Barrier(2)
     ok(throws(Function(): return ubar.wait(0.05)), "under-filled Barrier.wait(timeout) RAISES (not False)")
 

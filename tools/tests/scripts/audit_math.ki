@@ -8,7 +8,7 @@ io.print(math.tau > 6.28 and math.tau < 6.29)
 io.print(math.isinf(math.inf))
 io.print(math.isnan(math.nan))
 
-# ---- domain errors RAISE (no silent NaN/inf rubbish) ------------------------------------------
+# ---- domain errors THROW (no silent NaN/inf rubbish) ------------------------------------------
 var domain_thunks = [Function(): return math.sqrt(-1), Function(): return math.log(0),
                      Function(): return math.log(-1), Function(): return math.acos(2),
                      Function(): return math.asin(2), Function(): return math.atanh(2),

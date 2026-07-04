@@ -2,7 +2,7 @@
 #   range, sum, min, max, sorted, enumerate, zip, map, filter, len, type, inspect,
 #   all, any, reversed, isinstance, import.
 # Typical use, edges (empty/single/huge/negative/kwargs/nested), and malformed/wrong-type input
-# (asserted to RAISE via `throws`). Output: a deterministic "OK" plus an assertion count.
+# (asserted to THROW via `throws`). Output: a deterministic "OK" plus an assertion count.
 var io = import("io")
 
 var throws = Function(f):

@@ -136,9 +136,15 @@ inline std::pair<std::vector<serde::Node>, uint32_t> decode(const std::string& d
     // Each record is at least one tag byte, so a count exceeding the input is corrupt — reject before
     // allocating to avoid a huge/bad allocation.
     if (n > data.size()) throw KiritoError("corrupt dump: object count exceeds data size");
-    std::vector<serde::Node> nodes(n);
+    // Grow incrementally rather than sizing to the untrusted `n`: a Node is ~80 B but the smallest
+    // record is 1 B, so `vector(n)` with n≈data.size() is an ~80× zeroed-allocation amplification
+    // (a modest hostile blob forces multi-GB). reserve() a modest floor; if the stream runs short the
+    // Reader throws before the vector can grow past the real record count.
+    std::vector<serde::Node> nodes;
+    nodes.reserve(std::min<std::size_t>(n, std::size_t{1} << 16));
     for (uint32_t i = 0; i < n; ++i) {
-        serde::Node& nd = nodes[i];
+        nodes.emplace_back();
+        serde::Node& nd = nodes.back();
         uint8_t t = r.u8();
         switch (t) {
             case 0: { nd.tag = serde::Tag::None; } break;
@@ -147,9 +153,9 @@ inline std::pair<std::vector<serde::Node>, uint32_t> decode(const std::string& d
             case 3: { nd.tag = serde::Tag::Float; nd.f = r.f64(); } break;
             case 4: { nd.tag = serde::Tag::String; nd.s = r.bytes(r.u32()); } break;
             case 5: { nd.tag = serde::Tag::List; uint32_t c = r.u32(); for (uint32_t k = 0; k < c; ++k) nd.links.push_back(r.u32()); } break;
-            case 6: { nd.tag = serde::Tag::Dict; uint32_t c = r.u32(); for (uint32_t k = 0; k < c * 2; ++k) nd.links.push_back(r.u32()); } break;
+            case 6: { nd.tag = serde::Tag::Dict; uint32_t c = r.u32(); for (uint64_t k = 0; k < static_cast<uint64_t>(c) * 2; ++k) nd.links.push_back(r.u32()); } break;
             case 7: { nd.tag = serde::Tag::Set; uint32_t c = r.u32(); for (uint32_t k = 0; k < c; ++k) nd.links.push_back(r.u32()); } break;
-            case 8: { nd.tag = serde::Tag::Object; nd.s = r.bytes(r.u32()); uint32_t c = r.u32(); for (uint32_t k = 0; k < c * 2; ++k) nd.links.push_back(r.u32()); } break;
+            case 8: { nd.tag = serde::Tag::Object; nd.s = r.bytes(r.u32()); uint32_t c = r.u32(); for (uint64_t k = 0; k < static_cast<uint64_t>(c) * 2; ++k) nd.links.push_back(r.u32()); } break;
             case 9: { nd.tag = serde::Tag::Stateful; nd.s = r.bytes(r.u32()); nd.links.push_back(r.u32()); } break;
             default: { throw KiritoError("bad dump tag"); } break;
         }

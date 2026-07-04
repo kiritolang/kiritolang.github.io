@@ -235,7 +235,7 @@ assert path.exists(moved) and not path.exists(inside), "rename moves the file"
 assert path.remove(moved) and not path.exists(moved), "remove deletes the file"
 discard path.remove(ddir, missing_ok = True)
 
-# missing-path operations: rename/getsize RAISE; remove of a missing path does NOT throw
+# missing-path operations: rename/getsize THROW; remove of a missing path does NOT throw
 assert throws(Function(): return path.rename(P("kds_missing_a"), P("kds_missing_b"))), "rename of a missing path throws"
 assert throws(Function(): return path.getsize(P("kds_missing_a"))), "getsize of a missing path throws"
 discard path.remove(P("kds_missing_a"), missing_ok = True)   # tolerant: removing a missing path is a no-op, not an error

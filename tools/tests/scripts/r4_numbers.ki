@@ -7,7 +7,7 @@
 # Every operator, conversion, comparison, method, and builtin is exercised from
 # typical, edge (0, +/-1, INT64_MAX/MIN, huge, NaN, +/-inf, -0.0, every literal
 # base, scientific), and malformed/wrong-type angles. Wrong-type / domain-error
-# cases assert they RAISE via the `throws` helper. Only CONFIRMED-correct
+# cases assert they THROW via the `throws` helper. Only CONFIRMED-correct
 # behavior is baked in here. Prints exactly one deterministic summary line at the
 # end iff every assertion held (any failure throws and aborts before it).
 # ============================================================================
@@ -40,7 +40,7 @@ assert 0x8000000000000000 == imin, "sign bit set = INT64_MIN"
 assert 0x7FFFFFFFFFFFFFFF == imax, "INT64_MAX hex"
 assert 0xFFFFFFFFFFFFFFFFFF == -1, "over-64-bit hex literal wraps (keeps low 64 bits)"
 # A giant decimal literal WRAPS two's-complement (it never throws at parse time);
-# this is distinct from Integer("...") on an overflowing string, which RAISES (below).
+# this is distinct from Integer("...") on an overflowing string, which THROWS (below).
 assert 99999999999999999999 == 7766279631452241919, "over-wide decimal literal wraps, never throws"
 assert type(255) == "Integer" and type(0xFF) == "Integer", "literal base forms are Integer"
 
@@ -129,7 +129,7 @@ assert 1.5 < 2 and 2 > 1.5 and 1.0 <= 1, "mixed Integer/Float ordering"
 # int64 ordering is exact (not collapsed through double): 2^53 boundary stays distinct.
 assert 9007199254740993 > 9007199254740992, "ints beyond 2^53 order exactly (no double rounding)"
 assert imax > imax - 1 and imin < imin + 1, "ordering at the int64 bounds"
-# Comparing a number against a non-number RAISES (ordering, unlike ==, is not cross-type).
+# Comparing a number against a non-number THROWS (ordering, unlike ==, is not cross-type).
 assert throws(Function(): return 1 < "x"), "Integer < String throws"
 assert throws(Function(): return 1 < [1]), "Integer < List throws"
 assert throws(Function(): return 1 < None), "Integer < None throws"
@@ -359,7 +359,7 @@ assert throws(Function(): return Integer("12.5")), "Integer('12.5') throws (not 
 assert throws(Function(): return Integer("")), "Integer('') throws"
 assert throws(Function(): return Integer("0x")), "Integer('0x') throws (no digits)"
 assert throws(Function(): return Integer("   ")), "Integer(whitespace) throws"
-assert throws(Function(): return Integer("99999999999999999999")), "Integer() on an overflowing decimal string RAISES (unlike a literal, which wraps)"
+assert throws(Function(): return Integer("99999999999999999999")), "Integer() on an overflowing decimal string THROWS (unlike a literal, which wraps)"
 assert throws(Function(): return Integer(None)), "Integer(None) throws"
 assert throws(Function(): return Integer(inf)), "Integer(inf) throws"
 assert throws(Function(): return Integer(nan)), "Integer(NaN) throws"

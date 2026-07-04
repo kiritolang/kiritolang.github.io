@@ -159,7 +159,7 @@ var _parseNum = Function(s, i):
         throw "json: invalid number"
     if isFloat:
         # A JSON number that overflows Float widens to ±inf (matches native, which mirrors CPython
-        # and other dynamic languages instead of raising). The host `Float()` throws on overflow,
+        # and other dynamic languages instead of throwing). The host `Float()` throws on overflow,
         # so trap it and fall back to a signed infinity.
         try:
             return [Float(text), i]

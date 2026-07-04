@@ -5,7 +5,7 @@
 #     0xFFFF…FF == -1, 0x8000…00 == INT64_MIN, `1E3`/`2e-3`; `5.`/`.5` and digit-separator REJECTION,
 #   - INT64 two's-complement wraparound on MULTIPLY/floordiv/mod at the INT64_MIN boundary,
 #   - full 4-sign matrix for `//` and `%` (int + float); `**` right-assoc + the float/int domain throws,
-#   - return-type annotation: implicit-None fall-off under `-> Integer` RAISES; `-> None` accepts
+#   - return-type annotation: implicit-None fall-off under `-> Integer` THROWS; `-> None` accepts
 #     explicit/bare/implicit None,
 #   - mutable-default freshness across RECURSION; defaults re-read an outer name at call time,
 #   - `not` looser than `in`/`==` but tighter than the ternary (fresh operator-precedence combos),
@@ -143,7 +143,7 @@ var retNoneBare = Function() -> None:
 var retNoneFall = Function() -> None:
     discard 1
 ok(retNoneExplicit() == None and retNoneBare() == None and retNoneFall() == None, "-> None accepts None three ways")
-# A non-None return annotation type-checks even the IMPLICIT None of falling off the end: it RAISES.
+# A non-None return annotation type-checks even the IMPLICIT None of falling off the end: it THROWS.
 ok(importErr("var f = Function(x) -> Integer:\n    if x > 0:\n        return x\nvar r = f(-1)\n", "must return"),
    "implicit None (fall-off) under `-> Integer` throws 'must return'")
 # A wrong explicit return type throws; the right one passes.

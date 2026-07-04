@@ -548,6 +548,10 @@ var cmdRemove = Function(names):
     if len(names) == 0:
         fail("remove needs a package name")
     for name in names:
+        # Vet the name exactly like the install side: a bare package name, never a path. Otherwise
+        # `kpm remove ../../foo` (or an absolute path) would rmtree OUTSIDE ~/.kirito/packages.
+        if "/" in name or "\\" in name or not safeRelPath(name):
+            fail("invalid package name: " + name)
         var dir = path.join(packagesDir(), name)
         if not path.exists(dir):
             io.eprint("kpm: not installed: " + name)

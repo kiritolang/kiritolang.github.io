@@ -210,7 +210,7 @@ ok(throws(Function(): return serialize.dumps(ok)), "serialize: a Function throws
 var bio = io.BytesIO()
 ok(throws(Function(): return dump.dumps(bio)), "dump: a BytesIO throws (resource)")
 
-# ============================================================ CORRUPT / TRUNCATED BLOBS RAISE CLEANLY
+# ============================================================ CORRUPT / TRUNCATED BLOBS THROW CLEANLY
 # A malformed blob must produce a catchable diagnostic, never a crash.
 ok(throws(Function(): return serialize.loads("not a blob")), "serialize: garbage text throws")
 ok(throws(Function(): return serialize.loads("")), "serialize: empty text throws")
@@ -257,7 +257,7 @@ ok(throws(Function(): return dump.save([1], "/nonexistent_dir_r6/x.bin")), "dump
 ok(throws(Function(): return serialize.load(path.join(SCRATCH, "r6_does_not_exist.kser"))), "serialize.load of a missing file throws")
 
 # ============================================================ DEPTH GUARD (no native-stack overflow)
-# A pathologically deep nested list must RAISE (flatten depth guard) instead of overflowing.
+# A pathologically deep nested list must THROW (flatten depth guard) instead of overflowing.
 var bad = []
 var cur = bad
 var depth = 0

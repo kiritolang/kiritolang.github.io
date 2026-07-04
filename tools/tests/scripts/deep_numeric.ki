@@ -58,7 +58,7 @@ check(10 ** 100 == 0)            # repeated squaring carries a factor 2^k -> wra
 check(2 ** 1000000000 == 0)
 n = n + 2
 
-# scalar division by zero RAISES for /, //, and % (all three)
+# scalar division by zero THROWS for /, //, and % (all three)
 var div0_raised = 0
 for thunk in [Function(): return 1 / 0, Function(): return 1 // 0, Function(): return 5 % 0, Function(): return 1.0 / 0.0]:
     try:
@@ -87,7 +87,7 @@ check(7 / 2 == 3.5 and type(4 / 2) == "Float")
 n = n + 2
 
 # =================================================================================================
-# math — domain edges RAISE (no silent NaN/inf), gcd/lcm/factorial/comb/perm guards, atan2
+# math — domain edges THROW (no silent NaN/inf), gcd/lcm/factorial/comb/perm guards, atan2
 # =================================================================================================
 # domain edges: out-of-domain arguments throw a clear "math domain error", not NaN/inf rubbish
 check(throws(Function(): return math.sqrt(-1)))
@@ -108,7 +108,7 @@ check(approx(math.atan2(-1, 1), -math.pi / 4))
 check(approx(math.atan2(0, -1), math.pi) and math.atan2(0, 1) == 0.0)
 n = n + 5
 
-# fmod takes the sign of x; fmod by zero RAISES (domain error); copysign honours -0.0
+# fmod takes the sign of x; fmod by zero THROWS (domain error); copysign honours -0.0
 check(math.fmod(-7, 3) == -1.0 and math.fmod(7, -3) == 1.0)
 check(throws(Function(): return math.fmod(5, 0)))
 check(math.copysign(3, -0.0) == -3.0 and math.copysign(-3, 1) == 3.0)
@@ -189,7 +189,7 @@ catch as e:
 check(axis_raised == 2)
 n = n + 9
 
-# sqrt/log of a negative element RAISE a tensor domain error (consistent with the scalar math module
+# sqrt/log of a negative element THROW a tensor domain error (consistent with the scalar math module
 # and the tensor div-by-zero policy); a valid element still computes.
 check(throws(Function(): return T.Tensor([-1.0, 4.0]).sqrt()))
 check(throws(Function(): return T.Tensor([-2.0, 1.0]).log()))

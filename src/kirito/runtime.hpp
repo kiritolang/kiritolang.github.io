@@ -535,14 +535,18 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                     hasKey = true;
                 }
                 if (a.size() > 1) reverse = vm.arena().deref(a[1]).truthy();
-                auto& e = self_list(vm, self).elems;
+                // Snapshot the elements first: the `key` fn and the `_lt_` comparator run arbitrary
+                // Kirito code that may mutate THIS list (append/clear), which would realloc `elems`
+                // and dangle a cached reference/iterator (a UAF). We sort the snapshot and only
+                // write the result back once all user code has run — mirroring `apply`.
+                std::vector<Handle> src = self_list(vm, self).elems;
                 // Precompute keys once per element (Schwartzian transform): avoids re-invoking the
                 // key function O(n log n) times and keeps the comparator allocation-free. The keys
                 // are GC-rooted for the duration of the sort.
                 RootScope rs(vm);
                 std::vector<std::pair<Handle, Handle>> tagged;  // (key, element)
-                tagged.reserve(e.size());
-                for (Handle el : e) {
+                tagged.reserve(src.size());
+                for (Handle el : src) {
                     Handle k = el;
                     if (hasKey) {
                         std::array<Handle, 1> args{el};
@@ -555,7 +559,12 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                                      return reverse ? kiLessThan(vm, y.first, x.first)
                                                     : kiLessThan(vm, x.first, y.first);
                                  });
-                for (std::size_t i = 0; i < e.size(); ++i) e[i] = tagged[i].second;
+                // Re-fetch the list (the handle is rooted, so the ListVal itself is stable) and
+                // overwrite its contents with the sorted order.
+                auto& e = self_list(vm, self).elems;
+                e.clear();
+                e.reserve(tagged.size());
+                for (const auto& p : tagged) e.push_back(p.second);
                 return vm.none();
             }, std::vector<Handle>{self});
     if (name == "insert")
@@ -826,7 +835,10 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             auto& s = set_of(vm, self);
             const Object& v = vm.arena().deref(a[0]);
             if (!v.hashable()) throw KiritoError("unhashable type");
-            auto it = s.buckets.find(v.hash());
+            std::size_t h = v.hash();
+            if (s.probing_) throw KiritoError("Set changed size during a value comparison");
+            ProbeScope guard(s.probing_);  // reentrant _eq_ must not realloc the bucket we hold
+            auto it = s.buckets.find(h);
             if (it != s.buckets.end()) {
                 auto i = probeBucket(vm.arena(), it->second, v, setKeyOf);
                 if (i >= 0) { it->second.erase(it->second.begin() + i); --s.count; return vm.none(); }
@@ -846,7 +858,10 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             auto& s = set_of(vm, self);
             const Object& v = vm.arena().deref(a[0]);
             if (!v.hashable()) return vm.none();
-            auto it = s.buckets.find(v.hash());
+            std::size_t h = v.hash();
+            if (s.probing_) throw KiritoError("Set changed size during a value comparison");
+            ProbeScope guard(s.probing_);  // reentrant _eq_ must not realloc the bucket we hold
+            auto it = s.buckets.find(h);
             if (it != s.buckets.end()) {
                 auto i = probeBucket(vm.arena(), it->second, v, setKeyOf);
                 if (i >= 0) { it->second.erase(it->second.begin() + i); --s.count; }
@@ -882,6 +897,10 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             auto& s = set_of(vm, self);
             auto other = vm.arena().deref(a[0]).iterate(vm);
             if (!other) throw KiritoError(op + " expects an iterable");
+            // GC-root the iterated elements: a String/Bytes/large-range `other` yields FRESHLY
+            // allocated handles that are otherwise reachable from no root, so the trailing vm.alloc
+            // (which may collect) could sweep them out of the not-yet-arena'd `result` (a UAF).
+            for (Handle e : other.value()) rs.add(e);
             if (op == "union") {
                 for (Handle e : s.items()) result->add(vm.arena(), e);
                 for (Handle e : other.value()) result->add(vm.arena(), e);
@@ -1421,6 +1440,10 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             if (utf8Length(fill) != 1) throw KiritoError(op + " fill must be a single character");
             int64_t pad = width - static_cast<int64_t>(utf8Length(s));
             if (pad <= 0) return vm.makeString(s);
+            // The width bound above is a CODE-POINT count, but a fill char is up to 4 UTF-8 bytes, so
+            // bound the produced byte length too (else the buffer can reach ~4x the intended cap).
+            if (static_cast<uint64_t>(pad) > kMaxRepeat / fill.size())
+                throw KiritoError(op + " result too large");
             auto rep = [&](int64_t n) { std::string r; for (int64_t i = 0; i < n; ++i) r += fill; return r; };
             if (op == "ljust") return vm.makeString(s + rep(pad));
             if (op == "rjust") return vm.makeString(rep(pad) + s);
@@ -2273,7 +2296,7 @@ inline Handle KiritoVM::importModule(const std::string& name) {
 
     // Circular-import detection. A module's members are published to moduleCache_ only AFTER its body
     // has fully evaluated, so if loading `name` (directly or transitively) asks to import `name`
-    // again, the import chain has looped. Raise a clear diagnostic naming the cycle instead of
+    // again, the import chain has looped. Throw a clear diagnostic naming the cycle instead of
     // recursing until the native stack or the call-depth guard blows.
     auto cycleError = [&](const std::string& dup) {
         std::string chain;
@@ -2510,7 +2533,7 @@ inline std::string inspectValue(KiritoVM& vm, Handle h) {
 
 // Mini format-spec: [[fill]align][sign][#][0][width][,][.precision][type].
 // Supports align <^>= , sign +/-/space, zero-pad, width, thousands ',', precision, and types
-// b/o/x/X/d/f/e/g/s/% . Returns the formatted String. Raises on a malformed spec.
+// b/o/x/X/d/f/e/g/s/% . Returns the formatted String. Throws on a malformed spec.
 inline std::string applyFormatSpec(KiritoVM& vm, Handle value, const std::string& spec) {
     const Object& o = vm.arena().deref(value);
     std::size_t i = 0;
@@ -2536,12 +2559,14 @@ inline std::string applyFormatSpec(KiritoVM& vm, Handle value, const std::string
     }
     if (i < spec.size() && spec[i] == ',') { comma = true; ++i; }
     if (i < spec.size() && spec[i] == '.') {
-        ++i; precision = 0;
+        ++i;
+        int64_t prec = 0;  // accumulate wide + bound each step so `int precision` can't overflow (UB)
         while (i < spec.size() && spec[i] >= '0' && spec[i] <= '9') {
-            precision = precision * 10 + (spec[i] - '0');
-            if (precision > static_cast<int>(kMaxRepeat)) throw KiritoError("format precision too large");  // bound like width
+            prec = prec * 10 + (spec[i] - '0');
+            if (prec > static_cast<int64_t>(kMaxRepeat)) throw KiritoError("format precision too large");
             ++i;
         }
+        precision = static_cast<int>(prec);
     }
     if (i < spec.size()) { type = spec[i]; ++i; }
     if (i != spec.size()) throw KiritoError("invalid format spec '" + spec + "'");
@@ -2723,6 +2748,11 @@ inline void KiritoVM::installBuiltins() {
                         return base > 10 && lc >= 'a' && lc < 'a' + (base - 10);
                     };
                     if (!isBaseDigit(s[i])) throw std::invalid_argument("no digit after sign/prefix");
+                    // std::stoull(base 16) itself re-accepts a "0x" prefix, so a DOUBLED prefix like
+                    // "0x0x5" would slip through and parse as 5. Reject an embedded prefix explicitly.
+                    if (base == 16 && i + 1 < s.size() && s[i] == '0' &&
+                        std::tolower(static_cast<unsigned char>(s[i + 1])) == 'x')
+                        throw std::invalid_argument("embedded base prefix");
                     std::size_t pos = 0;
                     // Parse the magnitude as unsigned and bit-cast (two's-complement negate if signed),
                     // mirroring the lexer's intLiteral, so the full 64-bit range round-trips:

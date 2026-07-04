@@ -293,7 +293,7 @@ assert threw, "Bytes is immutable (no item assignment)"
 # --- MATH module ----------------------------------------------------------------------------
 assert math.sqrt(0) == 0.0, "sqrt(0)"
 assert math.sqrt(4) == 2.0, "sqrt(4)"
-# sqrt of a negative RAISES a math domain error (use complex.sqrt for the principal root)
+# sqrt of a negative THROWS a math domain error (use complex.sqrt for the principal root)
 assert throws(Function(): return math.sqrt(-1)), "sqrt(-1) throws"
 # transcendental edges
 assert math.exp(0) == 1.0, "exp(0)"

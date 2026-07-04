@@ -107,7 +107,7 @@ got
 
     // --- tensor: exact whole == but NaN never equal; sqrt/// /% of bad input throw ---------------
     CHECK(ev(vm, "var T = import(\"tensor\")\nT.Tensor([1, 2]) == T.Tensor([1, 2])") == "True");
-    // sqrt of a negative now RAISES a clear domain error (was a silent NaN); the NaN-never-equal
+    // sqrt of a negative now THROWS a clear domain error (was a silent NaN); the NaN-never-equal
     // whole-== check uses a literal NaN element instead.
     CHECK_THROWS(vm.runSource("var T = import(\"tensor\")\ndiscard T.Tensor([-1.0]).sqrt()"));
     CHECK(ev(vm, "var T = import(\"tensor\")\nvar n = import(\"math\").nan\nT.Tensor([n]) == T.Tensor([n])") == "False");

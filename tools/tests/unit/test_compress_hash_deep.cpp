@@ -13,7 +13,7 @@ using namespace kirito;
 static std::string run(KiritoVM& vm, const std::string& src) {
     return vm.stringify(vm.runSource(src));
 }
-// True iff the program raises (a KiritoError or any std::exception crossing the boundary).
+// True iff the program throws (a KiritoError or any std::exception crossing the boundary).
 static bool throws(KiritoVM& vm, const std::string& src) {
     try { vm.runSource(src); return false; }
     catch (...) { return true; }

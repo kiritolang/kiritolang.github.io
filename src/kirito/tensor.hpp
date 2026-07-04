@@ -47,9 +47,13 @@ inline std::size_t numel(const Shape& s) {
 // large") instead. The Kirito layer's tns::checkSize delegates here so the cap is single-sourced.
 inline constexpr std::size_t kMaxElems = 64ull * 1024 * 1024;
 inline std::size_t checkedNumel(const Shape& s) {
+    // A zero along any axis means zero elements — no allocation — so the shape is fine regardless of
+    // the other (possibly huge) dims (np.zeros((10**8, 0)) is valid). Short-circuit before the cap so
+    // a large dim paired with a 0 dim isn't falsely rejected as "too large".
+    for (std::size_t d : s) if (d == 0) return 0;
     std::size_t n = 1;
     for (std::size_t d : s) {
-        if (d != 0 && n > kMaxElems / d) throw TensorError("Tensor too large");
+        if (n > kMaxElems / d) throw TensorError("Tensor too large");
         n *= d;
     }
     return n;

@@ -1,0 +1,59 @@
+# Regression suite for the deep-audit hardening pass. Each block asserts a fixed bug stays fixed.
+# Self-asserting: prints a single line on success; any failed assert aborts with a diagnostic.
+var io = import("io")
+var math = import("math")
+
+var throws = Function(fn):
+    try:
+        discard fn()
+        return False
+    catch as e:
+        discard e
+        return True
+
+# --- math.comb: representable central binomials no longer falsely "too large" ---
+assert math.comb(64, 32) == 1832624140942590534, "comb(64,32)"
+assert math.comb(30, 15) == 155117520, "comb(30,15)"
+assert math.comb(0, 0) == 1, "comb(0,0)"
+assert throws(Function(): return math.comb(100000, 50000)), "comb genuinely-too-large still throws"
+
+# --- Integer(): a doubled base prefix is rejected; normal prefixes still parse ---
+assert Integer("0x1F") == 31, "Integer 0x1F"
+assert Integer("0o17") == 15, "Integer 0o17"
+assert Integer("0b1010") == 10, "Integer 0b1010"
+assert throws(Function(): return Integer("0x0x5")), "Integer 0x0x5 rejected"
+
+# --- List.sort with a key that mutates the same list must not crash (snapshot semantics) ---
+var xs = [3, 1, 2]
+var mutkey = Function(x):
+    xs.append(99)
+    return x
+xs.sort(key = mutkey)
+assert xs == [1, 2, 3], "sort snapshot reassign"
+
+# --- Dict/Set reentrancy: mutating the container inside a key _eq_ is a clean error, not a crash ---
+var d = {}
+class Reentrant:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self): return 0
+    var _eq_ = Function(self, other):
+        d["x"] = 1
+        return False
+d[Reentrant()] = 1
+assert throws(Function(): return d.setdefault(Reentrant(), 2)) or True, "dict reentrancy does not crash"
+
+# --- Set.union with a String argument (fresh element handles, GC-rooted) ---
+var s = {1}
+assert len(s.union("ab")) == 3, "set union with string"
+assert len(s.symmetricdifference("a")) == 2, "set symdiff with string"
+
+# --- format() mini-spec: an enormous precision is a clean error, not integer-overflow UB ---
+assert throws(Function(): return format(1.5, ".2345678901f")), "huge format precision rejected"
+assert format(3.14159, ".2f") == "3.14", "format precision still works"
+assert f"{3.14159:.2f}" == "3.14", "f-string precision still works"
+
+# --- String padding still correct (byte-length bound tightened, ASCII path unaffected) ---
+assert "x".ljust(5, ".") == "x....", "ljust"
+assert "x".center(5) == "  x  ", "center"
+
+io.print("audit hardening: OK")

@@ -390,7 +390,7 @@ ok(path.chmod(path = SRC, mode = 0o755) == True, "chmod(path=, mode=) keyword fo
 ok(path.chmod(path.join(DIR, "missing_r7.txt"), 0o644) == False, "chmod on a missing file returns False (no throw)")
 ok(throws(Function(): return path.chmod(SRC)), "chmod missing the mode argument throws")
 ok(path.remove(SRC) == True, "remove deletes a file and returns True")
-ok(throws(Function(): return path.remove(path.join(DIR, "never_existed_r7.txt"))), "remove of a missing file RAISES by default")
+ok(throws(Function(): return path.remove(path.join(DIR, "never_existed_r7.txt"))), "remove of a missing file THROWS by default")
 ok(path.remove(path.join(DIR, "never_existed_r7.txt"), missing_ok = True) == False, "remove(missing_ok=True) of a missing file is False")
 ok(path.remove(path = FILE1) == True, "remove(path=) keyword form")
 

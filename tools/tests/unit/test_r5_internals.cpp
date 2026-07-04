@@ -5,7 +5,7 @@
 //   1. GC stress from C++: many allocations under a tight threshold, rooted survivors, manual
 //      collection, and a CYCLE (a<->b, and a self-referencing list) reclaimed once unrooted —
 //      mark-sweep handles cycles, no leak/dangle (mirrors test_gc.cpp / test_arena.cpp).
-//   2. Bytecode VM / compiler edges: a very deep expression evaluates; the call-depth guard RAISES
+//   2. Bytecode VM / compiler edges: a very deep expression evaluates; the call-depth guard THROWS
 //      (catchable) instead of overflowing the native stack; constant dedup is transparent; and
 //      slot-addressed locals' read-before-assign falls back correctly (rebind-outer vs UnboundLocal).
 //   3. Resolver + analyzer from C++: an undefined name is a COMPILE-time error (thrown from
@@ -145,7 +145,7 @@ int main() {
         CHECK(run("((((1 + 2)) * ((3 + 4))))") == "21");
     }
     {
-        // The call-depth guard RAISES a catchable error instead of overflowing the native stack.
+        // The call-depth guard THROWS a catchable error instead of overflowing the native stack.
         CHECK(throws("var r = Function(n): return r(n + 1)\nr(0)"));
         // ...and it is catchable from within Kirito (a runtime error, not a hard crash).
         CHECK(run("var r = Function(n): return r(n + 1)\n"

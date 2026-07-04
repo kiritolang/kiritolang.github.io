@@ -253,17 +253,17 @@ ok(returnFromTry() == 1, "return through a try returns the right value")
 ok(log == ["ret-fin"], "finally runs on the return path")
 
 # =============================================================================
-# Section 5: re-raise (bare throw in a catch block)
+# Section 5: re-throw (bare throw in a catch block)
 # =============================================================================
-# Re-raising in Kirito: throw takes an explicit value, so you re-raise by writing `throw e`.
+# Re-throwing in Kirito: throw takes an explicit value, so you re-throw by writing `throw e`.
 var _reThrow = Function():
     try:
         throw "level-1"
     catch as e:
-        throw e                   # explicit re-raise
+        throw e                   # explicit re-throw
 ok(throws(_reThrow), "re-throw propagates")
 
-# re-raise across a nested try
+# re-throw across a nested try
 log = []
 var _reThrowNested = Function():
     try:

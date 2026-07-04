@@ -1334,7 +1334,11 @@ inline Handle normT(KiritoVM& vm, Handle ah, double ord) {
     const FT& a = reqFloat(asT(vm, ah), "norm");
     if (ord == 0.0) { double c = 0; for (double x : a.data) c += (x != 0.0); return vm.makeFloat(c); }  // NumPy: count of nonzeros
     if (ord == 2.0) { double s = 0; for (double x : a.data) s += x * x; return vm.makeFloat(std::sqrt(s)); }
-    if (std::isinf(ord)) { double m = 0; for (double x : a.data) m = std::max(m, std::fabs(x)); return vm.makeFloat(m); }
+    if (std::isinf(ord)) {
+        if (ord > 0) { double m = 0; for (double x : a.data) m = std::max(m, std::fabs(x)); return vm.makeFloat(m); }
+        double m = HUGE_VAL; for (double x : a.data) m = std::min(m, std::fabs(x));  // ord == -inf: NumPy min|x|
+        return vm.makeFloat(a.data.empty() ? 0.0 : m);
+    }
     if (ord == 1.0) { double s = 0; for (double x : a.data) s += std::fabs(x); return vm.makeFloat(s); }
     double s = 0; for (double x : a.data) s += std::pow(std::fabs(x), ord);
     return vm.makeFloat(std::pow(s, 1.0 / ord));

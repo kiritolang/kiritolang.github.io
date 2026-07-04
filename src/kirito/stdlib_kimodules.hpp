@@ -1193,10 +1193,8 @@ class Parser:
                     result[name] = self._convert(name, value)
                 else:
                     throw "unknown option: --" + name
-            elif token.startswith("-") and len(token) == 2:
+            elif token.startswith("-") and len(token) == 2 and self._byshort(token[1:]) != None:
                 var matched = self._byshort(token[1:])
-                if matched == None:
-                    throw "unknown option: " + token
                 if matched[0] == "flag":
                     result[matched[1]] = True
                 else:
@@ -1278,6 +1276,21 @@ var _range = Function(n):
         i = i + 1
     return out
 
+# A cell looks numeric only in a PLAIN decimal form. Integer()/Float() also accept 0x/0o/0b base
+# prefixes and surrounding whitespace, which would silently convert a CSV cell that should stay text
+# (a hex-looking id like "0x1F", or a whitespace-padded field) — so gate inference on this first.
+var _looksnumeric = Function(text):
+    if text != text.strip():
+        return False
+    var b = text
+    if b.startswith("-") or b.startswith("+"):
+        b = b[1:]
+    if len(b) == 0:
+        return False
+    if b.startswith("0x") or b.startswith("0X") or b.startswith("0o") or b.startswith("0O") or b.startswith("0b") or b.startswith("0B"):
+        return False
+    return True
+
 var _infer = Function(text):
     # turn a CSV cell string into Integer / Float / Bool / None / String
     if text == "":
@@ -1286,6 +1299,8 @@ var _infer = Function(text):
         return True
     if text == "False" or text == "false":
         return False
+    if not _looksnumeric(text):
+        return text
     try:
         return Integer(text)
     catch as e:
@@ -2140,6 +2155,11 @@ var readcsv = Function(source, header = True, infer = True):
     var r = start
     while r < len(rows):
         var row = rows[r]
+        # A blank line parses to a single empty field; pandas skips such lines rather than emitting a
+        # spurious all-None row, so drop it here too.
+        if len(row) == 1 and row[0] == "":
+            r = r + 1
+            continue
         # A row with MORE fields than the header would silently lose its surplus cells; reject it
         # (like pandas' ParserError) rather than truncate. Short rows are still padded with "".
         if len(row) > len(cols):

@@ -18,7 +18,11 @@ namespace kirito {
 // and 2**3**2 == 512.
 class Parser {
 public:
-    explicit Parser(std::vector<Token> tokens) : toks_(std::move(tokens)) {}
+    // `startDepth` seeds the expression-nesting counter — used when re-parsing an f-string's embedded
+    // expression so nested f-strings (`f"{f'{...}'}"`) accumulate toward kMaxParseDepth instead of
+    // resetting to 0 each level and overflowing the native stack.
+    explicit Parser(std::vector<Token> tokens, int startDepth = 0)
+        : toks_(std::move(tokens)), exprDepth_(startDepth) {}
 
     ast::Program parseProgram() {
         ast::Program prog;
@@ -891,7 +895,7 @@ private:
         ast::Program prog;
         try {
             Lexer lex(code);
-            Parser sub(lex.tokenize());
+            Parser sub(lex.tokenize(), exprDepth_ + 1);  // carry nesting so deep f-string nesting is bounded
             prog = sub.parseProgram();
         } catch (const KiritoError& err) {
             throw KiritoError(err.what(), span);

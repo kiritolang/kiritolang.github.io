@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-# Cross-language benchmark driver: Kirito vs C++ vs Python.
+# Cross-language benchmark driver: Kirito vs C++ vs Python vs Lua 5.1 vs Bash.
 #
-# For each workload it runs the three equivalent implementations (compare_bench.{cpp,py,ki}), each of
-# which times `reps` internal repetitions (excluding process startup and input generation) and prints
-# "<mean_ns> <stddev_ns>". This driver tabulates mean ± stddev per language and the Kirito slowdown
-# factor, grouped into:
-#   pessimistic  — interpreter-bound tight loops, where a tree-walker is expected to do poorly
-#   optimistic   — work delegated to library/builtins, where Kirito's per-op overhead is amortized
+# For each workload it runs the equivalent implementations (compare_bench.{cpp,py,ki,lua,sh}), each of
+# which times its internal repetitions (excluding process startup and input generation) and prints
+# "<mean_ns> <stddev_ns>". This driver tabulates the RAW per-repetition mean ± stddev for every
+# language — no ratios — with every cell in a row rendered in the SAME unit (chosen from the row's
+# slowest language) to 3 significant figures. Workloads are grouped into:
+#   pessimistic  — interpreter-bound tight loops, where the bytecode VM pays per-op dispatch
+#   optimistic   — work delegated to library/builtins, where per-op overhead is amortized
 #
-# Usage:  python3 tests/bench/compare.py [--ki PATH] [--scale F] [--reps-min N]
+# Usage:  python3 tests/bench/compare.py [--ki PATH] [--lua PATH] [--scale F]
 #   --scale F     multiply every reps count by F (e.g. 0.1 for a quick smoke run)
 #   --ki PATH     path to the `ki` interpreter (default: ../../build/ki relative to this script)
 import argparse
@@ -22,7 +23,8 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # (name, category, N, reps).  N/reps are tuned so each Kirito run stays in a few seconds while every
-# language times the same algorithm on the same LCG-generated data.
+# language times the same algorithm on the same LCG-generated data. (Bash uses adaptive reps — it
+# repeats only until ~0.5 s has elapsed — since a full run would take many minutes.)
 WORKLOADS = [
     ("sum_loop",   "pessimistic", 1000, 2000),
     ("fib",        "pessimistic",   17,  300),
@@ -32,15 +34,29 @@ WORKLOADS = [
     ("string_ops", "optimistic",  1500, 2000),
 ]
 
+# Fixed column order for the table.
+LANGS = ["C++ (-O2)", "Python 3", "Lua 5.1", "Bash", "Kirito"]
 
-def fmt(ns):
-    if ns < 1e3:
-        return "%.0f ns" % ns
-    if ns < 1e6:
-        return "%.2f us" % (ns / 1e3)
-    if ns < 1e9:
-        return "%.2f ms" % (ns / 1e6)
-    return "%.2f s" % (ns / 1e9)
+
+def unit_of(ns):
+    """The single time unit for every row: microseconds."""
+    del ns
+    return ("us", 1e3)
+
+
+def sig3(x):
+    """Format x to 3 significant figures (fixed-point)."""
+    if x <= 0:
+        return "0.00"
+    dec = max(0, 2 - int(math.floor(math.log10(x))))
+    return "%.*f" % (dec, x)
+
+
+def cell(v, factor):
+    """A 'mean ± stddev' cell in the row's unit, or an em-dash when the language is absent."""
+    if not v:
+        return "—"
+    return "%s ± %s" % (sig3(v[0] / factor), sig3(v[1] / factor))
 
 
 def run(cmd):
@@ -76,6 +92,7 @@ def main():
     pybench = os.path.join(HERE, "compare_bench.py")
     kibench = os.path.join(HERE, "compare_bench.ki")
     lubench = os.path.join(HERE, "compare_bench.lua")
+    shbench = os.path.join(HERE, "compare_bench.sh")
 
     rows = []
     for name, cat, N, reps in WORKLOADS:
@@ -84,48 +101,32 @@ def main():
         cpp = run([cbin, name, str(N), str(reps)])
         py = run([sys.executable, pybench, name, str(N), str(reps)])
         lu = run([lua, lubench, name, str(N), str(reps)]) if lua else None
+        sh = run(["bash", shbench, name, str(N), str(reps)])
         kj = run([ki, kibench, name, str(N), str(reps)])
-        rows.append((name, cat, N, reps, cpp, py, lu, kj))
+        rows.append((name, cat, N, reps, [cpp, py, lu, sh, kj]))
 
-    # --- present results ---
-    def cell(v):
-        return "%s ± %s" % (fmt(v[0]), fmt(v[1])) if v else "—"
-
+    # --- present results: raw per-rep mean ± stddev, one unit per row, 3 significant figures ---
+    W = 20  # per-language cell width
+    hdr = "%-12s %5s %6s %5s  %s" % (
+        "workload", "N", "reps", "unit", "  ".join("%-*s" % (W, l) for l in LANGS))
+    bar = "=" * len(hdr)
     print()
-    bar = "=" * 116
     print(bar)
-    print("  Kirito vs C++ vs Python vs Lua 5.1  —  mean ± stddev per repetition  (lower is better)")
+    print("  Raw per-repetition timing — mean ± stddev, one unit per row  (lower is better)")
     print(bar)
-    hdr = "%-12s %-7s %8s  %18s  %18s  %18s  %18s  %7s %7s %7s" % (
-        "workload", "N", "reps", "C++ (-O2)", "Python 3", "Lua 5.1", "Kirito",
-        "Ki/C++", "Ki/Py", "Ki/Lua")
     for cat in ("pessimistic", "optimistic"):
         print("\n[%s]" % cat)
         print(hdr)
-        print("-" * 116)
-        for name, c, N, reps, cpp, py, lu, kj in rows:
+        print("-" * len(hdr))
+        for name, c, N, reps, vals in rows:
             if c != cat:
                 continue
-            ki_cpp = kj[0] / cpp[0] if cpp[0] else float("inf")
-            ki_py = kj[0] / py[0] if py[0] else float("inf")
-            ki_lua = "%6.1fx" % (kj[0] / lu[0]) if lu and lu[0] else "     —"
-            print("%-12s %-7d %8d  %18s  %18s  %18s  %18s  %6.0fx %6.1fx %s" % (
-                name, N, reps, cell(cpp), cell(py), cell(lu), cell(kj), ki_cpp, ki_py, ki_lua))
-
-    # geometric-mean slowdowns
-    def geomean(vals):
-        return math.exp(sum(math.log(v) for v in vals) / len(vals))
-    for cat in ("pessimistic", "optimistic"):
-        sub = [r for r in rows if r[1] == cat]
-        gm_cpp = geomean([kj[0] / cpp[0] for _, _, _, _, cpp, _, _, kj in sub])
-        gm_py = geomean([kj[0] / py[0] for _, _, _, _, _, py, _, kj in sub])
-        tail = ""
-        if all(lu for _, _, _, _, _, _, lu, _ in sub):
-            gm_lua = geomean([kj[0] / lu[0] for _, _, _, _, _, _, lu, kj in sub])
-            tail = ",  %.1fx Lua 5.1" % gm_lua
-        print("\n  %-11s geo-mean slowdown:  Kirito is %.0fx C++,  %.1fx Python%s" % (
-            cat, gm_cpp, gm_py, tail))
-    print()
+            means = [v[0] for v in vals if v]
+            unit, factor = unit_of(max(means))
+            cells = "  ".join("%-*s" % (W, cell(v, factor)) for v in vals)
+            print("%-12s %5d %6d %5s  %s" % (name, N, reps, unit, cells))
+    print("\n  (Bash uses adaptive reps — ~0.5 s per workload, min 5 — so its stddev is over fewer"
+          "\n   samples; every other language runs the full `reps` shown.)\n")
 
 
 if __name__ == "__main__":

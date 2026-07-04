@@ -31,7 +31,7 @@ if argmain:
     assert True
 )KI");
 
-    // ---- getnowait on a CLOSED empty queue raises (the Closed path, distinct from Empty) ----
+    // ---- getnowait on a CLOSED empty queue throws (the Closed path, distinct from Empty) ----
     expectOk("getnowait on closed empty queue throws", R"KI(
 var parallel = import("parallel")
 if argmain:

@@ -11,7 +11,7 @@
 #   - constructor VALIDATION (Queue(-1), Semaphore(-1), Barrier(0/-5), and a non-integral Float arg);
 #   - close() interaction with qsize/empty/putnowait/getnowait; double-close is a no-op;
 #   - Task.done() observed DETERMINISTICALLY False (an Event-gated worker can't finish until released),
-#     then True; done() is True even when the worker RAISED; join() is idempotent;
+#     then True; done() is True even when the worker THREW; join() is idempotent;
 #   - the serialization boundary BOTH ways: an enforced type annotation is checked in the worker; a
 #     Dict carrying a primitive keeps cross-VM identity; an arity mismatch surfaces at join;
 #   - Barrier arrival indices are the unique set 0..parties-1; abort()-then-wait() throws.
@@ -254,7 +254,7 @@ if argmain:
     ok(gt.done() == True, "done() is True after join")
     ok(gt.join() == 99, "join() is idempotent (second join returns the same value)")
 
-    # done() is True even when the worker RAISED
+    # done() is True even when the worker THREW
     var bt = parallel.spawn(w_boom)
     ok(throws(Function(): return bt.join()), "a throwing worker re-throws at join")
     ok(bt.done() == True, "done() True even when the worker thrown")

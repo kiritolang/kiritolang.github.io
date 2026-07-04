@@ -104,7 +104,7 @@ assert math.factorial(0) == 1, "factorial(0)"
 assert math.factorial(1) == 1, "factorial(1)"
 assert math.factorial(10) == 3628800, "factorial(10)"
 
-# --- boundary/zero behaviours (Kirito's rule: raise, don't silent NaN) --------
+# --- boundary/zero behaviours (Kirito's rule: throw, don't silent NaN) --------
 assert throws(Function(): return math.gamma(0.0)), "gamma(0) is a domain error"
 assert throws(Function(): return math.log(0.0)), "log(0) is a domain error"
 

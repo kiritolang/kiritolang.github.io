@@ -1,0 +1,70 @@
+# Regression: break / continue / return inside a `finally` reached via an EXCEPTION.
+# Previously the in-flight exception sat on the operand stack while the finally body ran, so a
+# break/continue/return in that body mislocated the stack -> SEGFAULT (continue) or infinite loop
+# (nested break). The exception is now parked in a hidden local across the finally body, so the body
+# runs at a clean operand height. Python semantics: break/continue/return in a finally SWALLOWS the
+# in-flight exception.
+var io = import("io")
+
+# continue-in-finally: the throw is swallowed, the loop advances.
+var a = []
+for i in [1, 2, 3]:
+    try:
+        throw "x"
+    finally:
+        a.append(i)
+        continue
+io.print(a)                       # [1, 2, 3]
+
+# break-in-finally (nested): inner break each outer iteration, no hang.
+var hits = 0
+for x in [1, 2]:
+    for y in [10, 20]:
+        try:
+            throw "x"
+        finally:
+            hits = hits + 1
+            break
+io.print(hits)                    # 2
+
+# return-in-finally swallows the exception and returns the value.
+var f = Function():
+    try:
+        throw "boom"
+    finally:
+        return 42
+io.print(f())                     # 42
+
+# a finally WITHOUT break/continue/return still lets the exception propagate.
+var log = []
+try:
+    try:
+        throw "boom"
+    finally:
+        log.append("fin")
+catch as e:
+    log.append(e)
+io.print(log)                     # ['fin', 'boom']
+
+# normal-path (no exception) break-in-finally also works.
+var b = []
+for i in [1, 2, 3]:
+    try:
+        b.append(i)
+    finally:
+        break
+io.print(b)                       # [1]
+
+# break-in-finally overrides an in-flight break target correctly (single loop level).
+var c = 0
+for i in [1, 2, 3, 4]:
+    try:
+        if i == 2:
+            throw "e"
+    finally:
+        c = c + 1
+        if i == 2:
+            break
+io.print(c)                       # 2
+
+io.print("ALL FINALLY-CONTROL TESTS PASSED")
