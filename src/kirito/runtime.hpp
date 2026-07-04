@@ -663,6 +663,11 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
     auto bind = [&](const char* nm, std::vector<std::string> params, NativeFn fn) {
         return makeMethod(vm, nm, std::move(params), std::move(fn), std::vector<Handle>{self});
     };
+    // Like bind but with `req` leading REQUIRED params: a keyword call that skips one (e.g.
+    // d.setdefault(default=7)) errors instead of silently passing None as the key (A05-2).
+    auto bindReq = [&](const char* nm, std::size_t req, std::vector<std::string> params, NativeFn fn) {
+        return makeMethod(vm, nm, std::move(params), std::move(fn), std::vector<Handle>{self}, req);
+    };
     auto dict = [](KiritoVM& vm, Handle self) -> DictVal& {
         return static_cast<DictVal&>(vm.arena().deref(self));
     };
@@ -709,14 +714,14 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
             return vm.alloc(std::move(list));
         });
     if (name == "get")
-        return bind("get", {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        return bindReq("get", 1, {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.empty()) throw KiritoError("get expects a key");
             const Handle* v = dict(vm, self).find(vm.arena(), a[0]);
             if (v) return *v;
             return a.size() > 1 ? a[1] : vm.none();
         });
     if (name == "pop")
-        return bind("pop", {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        return bindReq("pop", 1, {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.empty()) throw KiritoError("pop expects a key");
             auto& d = dict(vm, self);
             const Handle* v = d.find(vm.arena(), a[0]);
@@ -772,7 +777,7 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
             return vm.none();
         });
     if (name == "setdefault")
-        return bind("setdefault", {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        return bindReq("setdefault", 1, {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             // setdefault(key[, default]): return existing value, else insert default (or None).
             if (a.empty()) throw KiritoError("setdefault expected at least 1 argument");
             auto& d = dict(vm, self);
@@ -1099,7 +1104,10 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
                 throw KiritoError(nm + "() expected at least " + std::to_string(minArgs) + " argument(s)");
             return fn(v, a);
         };
-        return makeMethod(vm, nm, std::move(params), std::move(guarded), std::vector<Handle>{self});
+        // Pass minArgs to makeMethod too: the positional guard above catches an under-arity POSITIONAL
+        // call, but a keyword call that skips a required leading arg (e.g. `m.replace(new="x")`) is
+        // caught inside makeMethod before it None-fills the hole. (A05-2.)
+        return makeMethod(vm, nm, std::move(params), std::move(guarded), std::vector<Handle>{self}, minArgs);
     };
     auto recv = [](KiritoVM& vm, Handle self) -> const std::string& {
         return static_cast<StrVal&>(vm.arena().deref(self)).value();

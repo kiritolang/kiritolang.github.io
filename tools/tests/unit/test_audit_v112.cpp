@@ -183,5 +183,18 @@ int main() {
     // and the documented limitation still holds: arithmetic does not reflect onto the right operand.
     CHECK(!err("class C:\n  var _mul_ = Function(self, o): return 1\n3 * C()").empty());  // throws
 
+    // === A05-2 (T-BIND): a keyword call that skips a REQUIRED leading arg must error, not silently
+    // gap-fill it with None. `d.setdefault(default=7)` used to insert {None: 7}; now it throws. ===
+    CHECK(has(err("var d = {}\nd.setdefault(default = 7)"), "required"));
+    CHECK(has(err("var d = {\"a\": 1}\nd.get(default = 9)"), "required"));
+    CHECK(has(err("var d = {\"a\": 1}\nd.pop(default = 9)"), "required"));
+    // normal calls (positional, all-keyword, or key + keyword default) still work:
+    CHECK(ok("var d = {}\nd.setdefault(\"k\", 7)\nd[\"k\"]") == "7");
+    CHECK(ok("var d = {\"a\": 1}\nd.get(key = \"a\")") == "1");
+    CHECK(ok("var d = {\"a\": 1}\nd.get(key = \"z\", default = 9)") == "9");
+    CHECK(ok("var d = {}\nd.setdefault(key = \"k\", default = 7)\nd[\"k\"]") == "7");
+    // an OPTIONAL leading param may still be skipped by naming a later one (regression guard):
+    CHECK(ok("\"a b c\".split(maxsplit = 1)") == "['a', 'b c']");
+
     return RUN_TESTS();
 }
