@@ -131,5 +131,13 @@ int main() {
     CHECK(ok("import(\"semver\").satisfies(\"1.5.0\", \">= 1.2.0 < 2.0.0\")") == "True");   // AND
     CHECK(ok("import(\"semver\").satisfies(\"2.5.0\", \">= 1.2.0 < 2.0.0\")") == "False");
 
+    // === A16-1: multi-member gzip decompress now bounds the AGGREGATE output with a shrinking budget
+    // (a small .gz of many members was an unbounded bomb past the per-member cap). A legitimate
+    // multi-member stream (cat of two members) must still round-trip. The full >256 MiB bomb
+    // rejection is logic-verified — the per-member inflate cap already has coverage and the budget
+    // now shrinks across members, so the aggregate can never exceed it. ===
+    CHECK(ok("var g = import(\"gzip\")\n"
+             "g.decompress(g.compress(\"hello \") + g.compress(\"world!\"))") == "hello world!");
+
     return RUN_TESTS();
 }
