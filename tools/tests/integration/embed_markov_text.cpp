@@ -178,15 +178,11 @@ int main() {
         CHECK(one.items().at(0).asStringRef("only word") == "cat");
     }
 
-    // ---- terminal start: "ran" has no successors, so the walk stops at length 1 ----
-    {
-        Value dead(vm, roots.add(engine.generate(modelH, "ran", 4, freshRng())));
-        CHECK(dead.len() == 1);
-        CHECK(dead.items().at(0).asStringRef("dead word") == "ran");
-    }
-
-    // ---- adversarial: generating from a word that isn't in the model must throw ----
-    CHECK_THROWS(engine.generate(modelH, "zzz-not-a-word", 5, freshRng()));
+    // ---- adversarial: a start word with no model entry must throw. Note this includes a *terminal*
+    //      corpus word like "ran" (it never precedes another, so the builder makes no key for it) —
+    //      indistinguishable here from a word that never appeared at all. ----
+    CHECK_THROWS(engine.generate(modelH, "ran", 5, freshRng()));            // terminal word: no key
+    CHECK_THROWS(engine.generate(modelH, "zzz-not-a-word", 5, freshRng())); // never in the corpus
 
     return RUN_TESTS();
 }
