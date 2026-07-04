@@ -73,17 +73,17 @@ Fix each with a regression test (C++ unit and/or `.ki` + `.experr`). Grouped by 
 
 - ▣ [FIXED] **T-ROOT** GC-rooting helper — see the HIGH GC-rooting block (A09-3/4, A06-1/2, A07-4).
 - ☐ **T-BIND** kwarg binding + param-default resolution duplicated 3–4× with divergent policies:
-  **A05-2** (`makeMethod` fills omitted required args with `None` → `d.setdefault(default=7)` inserts
+  **A05-2** [FIXED] (`makeMethod` fills omitted required args with `None` → `d.setdefault(default=7)` inserts
   `{None:7}`; `d.get(default=9)` returns 9 not error), A07 (three binders), **A03-3/A03-4** (resolver
   rejects `Function(n, size=n)` that the runtime binder accepts). Fix: one binder with a real "required"
   notion; one param-default resolution rule shared by resolver/locals/analyzer/runtime.
 - ☐ **T-REFLECT** operator reflection is partial/asymmetric: **A05-3** only `==` reflects onto a RHS
-  instance (`3 + Money(5)` throws), **A05-1** `!=` non-commutative with a standalone `_ne_`, **A13-1**
+  instance (`3 + Money(5)` throws), **A05-1** [FIXED] `!=` non-commutative with a standalone `_ne_`, **A13-1** [BY DESIGN]
   scalar-on-left `2*M`/`2+z`/`i*C` throw. Fix: reflect the arithmetic/ordering operators onto the RHS in
   the runtime numeric-dispatch fallback (one place); document any deliberate limits.
-- ☐ **T-GUARD** missing output-size guards: **A06-8** `replace`/`join` OOM the host (unlike
+- ▣ [FIXED] **T-GUARD** missing output-size guards: **A06-8** `replace`/`join` OOM the host (unlike
   `*`/`ljust`/`center`). Fix: cap output length (throw) via the shared `kMaxRepeat`-style ceiling.
-- ☐ **T-RETAIN** unbounded retention in the long-lived VM: **A08-2/A19-2** dispatcher `tasks_` never
+- ▣ [FIXED] **T-RETAIN** unbounded retention in the long-lived VM: **A08-2/A19-2** dispatcher `tasks_` never
   erased (also masks a would-be UAF — fix carefully), **A09-2** Dict/Set buckets never compact,
   **A08-1** pool free-lists leak at thread exit + never shrink (**A08-1 is High** — sanitizer-invisible
   ~0.87 MB/spawn leak). Fix: erase joined Tasks (preserving reap validity); drain pool free-lists on
