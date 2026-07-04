@@ -84,3 +84,30 @@ Legend: ⬜ not started · 🟡 running · ✅ done · ❌ stopped/incomplete
 - 2026-07-04: **Wave 1 launched** — A01–A09 core-engine auditors running (read-only, each → its agents/Axx.md).
   Main session commits the .md files on each completion so findings survive a force-stop / container loss.
   Wave 2 (A10–A20) launches after Wave 1 reports; Wave 3 (A21–A22) after that.
+- 2026-07-04: **Wave 1 COMPLETE (9/9).** Tally: 6 High, 14 Medium, 17 Low, 2 Nit. No Critical; the GC core
+  (mark-sweep, generation retirement, children() coverage) and control-flow lowering held up clean under ASan.
+
+  **High findings (fix first):**
+  - A04-1 — call-depth guard is count-based; recursion through a native HOF (`sorted(key=g)`, `xs.sort(key=g)`,
+    `apply(g)`) overflows the native stack → **SIGSEGV** before the guard fires. Fix: stack-pointer-aware guard.
+  - A07-1 — `InstanceValue::equals` `static_cast`s any `ValueKind::Instance`, but native types also report Instance
+    → wrong-type downcast reading a garbage Handle (UBSan-confirmed), reachable as a Dict/Set key. Fix: `dynamic_cast`.
+  - A08-1 — thread-local small-object pool leaks each worker's free-list at thread exit (~0.87 MB per `spawn`,
+    unbounded, sanitizer-invisible). Fix: drain free-lists on thread exit.
+  - A09-1 — `pow(base,exp,mod)` computes `((base%mod)+mod)%mod` in int64 which overflows before the `__int128`
+    widen → silently wrong result in release + UB for mod > ~2^62.
+  - A09-3, A09-4 — `Set`/`Dict` constructors and `zip`/`map`/`filter`/`sorted`/`enumerate`/`all`/`any` don't
+    GC-root the handles from `iterate()` → dangling handles.
+
+  **Cross-cutting THEMES (single fix each, high leverage):**
+  - **GC-rooting of fresh-alloc / snapshot / iterate handles** — recurs in A06-1/2 (apply/sort), A07-4 (String iter),
+    A09-3/4 (constructors + 7 builtins). A shared `rootedSnapshot` / rooted-iterate helper fixes them all at once.
+  - **DRY: kwarg binding + param-default resolution duplicated 3–4×** with divergent policies — A05-2 (`makeMethod`
+    None-fill → `d.setdefault(default=7)` inserts `{None:7}`), A07 (three binders), A03-3/4 (resolver rejects
+    `Function(n, size=n)` the binder accepts). Unify into one binder / one resolution rule.
+  - **Missing output-size resource guards** — A06-8 (`replace`/`join` OOM the host), unlike `*`/`ljust`/`center`.
+  - **Unbounded retention in long-lived VM** — A08-2 (dispatcher Tasks), A09-2 (Dict/Set buckets never compact).
+
+  Other confirmed Mediums: A01-1 (`\xHH` raw byte breaks String code-point layer), A02-1 (inline `return a,b` doesn't
+  pack), A02-2 (f-string runtime errors report line 1), A07-3 (private-access asymmetry vs spec), A07-2/A05-1/A05-3
+  (comparison/reflection asymmetries). Full detail + repros in agents/A01..A09.md.
