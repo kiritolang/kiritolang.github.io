@@ -29,6 +29,34 @@ if argmain:
     assert t.done() == True
 )KI");
 
+    // join() is idempotent even though the dispatcher reclaims a Task's slot on the first join: the
+    // result/error is cached in the Task object, so a second join returns the same value (and a second
+    // join on a throwing worker re-throws the same cached error). Regression for the T-RETAIN reclaim.
+    expectOk("join idempotent after reclaim", R"KI(
+var parallel = import("parallel")
+var work = Function(x): return x * 3
+var boom = Function(): throw "boom-once"
+if argmain:
+    var t = parallel.spawn(work, 7)
+    assert t.join() == 21
+    assert t.join() == 21
+    assert t.done() == True
+    assert t.join() == 21
+    var bt = parallel.spawn(boom)
+    var e1 = ""
+    try:
+        discard bt.join()
+    catch as ex:
+        e1 = String(ex)
+    var e2 = ""
+    try:
+        discard bt.join()
+    catch as ex:
+        e2 = String(ex)
+    assert e1 == e2 and e1.find("boom-once") >= 0
+    assert bt.done() == True
+)KI");
+
     // A nested value graph survives put/get through a Queue (serialize -> deserialize).
     expectOk("queue value graph", R"KI(
 var parallel = import("parallel")

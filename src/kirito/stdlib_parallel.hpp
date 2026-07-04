@@ -180,6 +180,13 @@ class TaskVal : public NativeClass<TaskVal> {
 public:
     static constexpr const char* kTypeName = "Task";
     uint64_t taskId = 0;
+    // join() is idempotent: the first call blocks, drains the dispatcher-side result (which then erases
+    // its entry to reclaim memory), and caches it HERE. Later joins return the cached value / re-throw
+    // the cached error without touching the (now-erased) dispatcher entry. Single-VM/single-thread, so
+    // no locking is needed. (The dispatcher only owns the result until the owning Task first joins.)
+    bool joined_ = false;
+    bool cachedError_ = false;
+    std::string cached_;   // serialized result blob, or the error text when cachedError_
 
     std::vector<std::string> inspectMembers() const override {
         return {"join() -> value", "done() -> Bool"};
@@ -191,18 +198,25 @@ public:
         };
         if (name == "join")
             return bind("join", {}, [self](KiritoVM& vm, std::span<const Handle>) -> Handle {
-                KiritoDispatcher& d = requireDispatcher(vm, "parallel.Task.join");
-                uint64_t id = static_cast<TaskVal&>(vm.arena().deref(self)).taskId;
-                bool hasError = false;
-                std::string err;
-                std::string blob = d.joinTask(id, hasError, err);
-                if (hasError) throw KiritoError("parallel: worker thrown: " + err);
-                return dumpfmt::read(vm, blob);
+                auto& tv = static_cast<TaskVal&>(vm.arena().deref(self));
+                if (!tv.joined_) {
+                    KiritoDispatcher& d = requireDispatcher(vm, "parallel.Task.join");
+                    bool hasError = false;
+                    std::string err;
+                    std::string blob = d.joinTask(tv.taskId, hasError, err);  // blocks; erases the entry
+                    tv.joined_ = true;
+                    tv.cachedError_ = hasError;
+                    tv.cached_ = hasError ? std::move(err) : std::move(blob);
+                }
+                if (tv.cachedError_) throw KiritoError("parallel: worker thrown: " + tv.cached_);
+                return dumpfmt::read(vm, tv.cached_);
             });
         if (name == "done")
             return bind("done", {}, [self](KiritoVM& vm, std::span<const Handle>) -> Handle {
+                auto& tv = static_cast<TaskVal&>(vm.arena().deref(self));
+                if (tv.joined_) return vm.makeBool(true);  // already drained -> definitely done
                 KiritoDispatcher& d = requireDispatcher(vm, "parallel.Task.done");
-                return vm.makeBool(d.taskDone(static_cast<TaskVal&>(vm.arena().deref(self)).taskId));
+                return vm.makeBool(d.taskDone(tv.taskId));
             });
         return Object::getAttr(vm, self, name);
     }
@@ -519,6 +533,14 @@ public:
         // its source location (see dispatcher.hpp), so it must be a Kirito function in a loadable file.
         m.kwfn("spawn", [](KiritoVM& v, std::span<const Handle> pos, std::span<const NamedArg> named) -> Handle {
             KiritoDispatcher& d = requireDispatcher(v, "parallel.spawn");
+            // Refuse a spawn issued while a worker is bootstrapping (re-evaluating a source file's top
+            // level to rebuild a closure). Otherwise a bare top-level spawn re-runs on every worker load
+            // and fork-bombs the host. Guard such calls with `if argmain:` so they run only when the file
+            // is executed directly, not when a worker re-loads it (A19-1).
+            if (v.bootstrapping())
+                throw KiritoError("parallel.spawn: cannot spawn from a module's top level (a worker "
+                                  "re-loading the file would fork-bomb) — put your spawn calls behind "
+                                  "`if argmain:` so they run only when the file is executed directly");
             if (pos.empty()) throw KiritoError("parallel.spawn: missing function argument");
             Object& o = v.arena().deref(pos[0]);
             if (o.kind() != ValueKind::Function)

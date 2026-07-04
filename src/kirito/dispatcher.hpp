@@ -682,7 +682,13 @@ private:
                 RootScope rs(worker);
                 Handle modScope = rs.add(worker.newModuleScope(/*isMain=*/false));
                 std::string src = readModuleSource(worker, sourceFile);
+                // Re-evaluating the source-file top level to rebuild the closure is the "bootstrap"
+                // phase: a top-level `spawn` here would fork-bomb (every worker re-runs it). Flag it so
+                // parallel.spawn throws a clear diagnostic instead. Cleared before the target fn runs, so
+                // legitimate nested spawns from inside the spawned function still work (A19-1).
+                worker.setBootstrapping(true);
                 worker.evalIn(src, modScope, sourceFile);  // populate modScope + index its Program
+                worker.setBootstrapping(false);
                 const ast::Program* prog = worker.programForFile(sourceFile);
                 if (!prog) throw KiritoError("parallel.spawn: could not load '" + sourceFile + "'");
                 const ast::FunctionExpr* def = findFunctionBySpan(*prog, line, col);

@@ -261,6 +261,12 @@ public:
     // is absent); the `ki` interpreter builds every VM through a KiritoDispatcher.
     void setDispatcher(KiritoDispatcher* d) { dispatcher_ = d; }
     KiritoDispatcher* dispatcher() const { return dispatcher_; }
+    // True while a worker VM is re-evaluating a spawned function's source-file top level to rebuild its
+    // closure (the "bootstrap" phase). `parallel.spawn` refuses to run in this window: a top-level
+    // spawn re-executed by every worker load is an unbounded fork bomb (guard such calls with
+    // `if argmain:`). The main entry run does NOT set this — its first spawn is the legitimate kickoff.
+    void setBootstrapping(bool b) { bootstrapping_ = b; }
+    bool bootstrapping() const { return bootstrapping_; }
     // The retained AST of a chunk by its file/chunk name (set when evaluated). Used by the dispatcher
     // to reconstruct a spawned function by its source span in a worker VM. Null if not loaded here.
     const ast::Program* programForFile(const std::string& f) const {
@@ -311,6 +317,7 @@ private:
     // so the dispatcher can find a spawned function's definition by source span in a worker VM).
     fum::unordered_map<std::string, const ast::Program*> programByFile_;
     KiritoDispatcher* dispatcher_ = nullptr;
+    bool bootstrapping_ = false;  // worker re-evaluating a spawned fn's module top level (A19-1 guard)
     // Circular-import guard: names/paths currently mid-load, and the active chain (for diagnostics).
     // A module is published to moduleCache_ only after its body finishes, so a re-entrant import of
     // an in-progress module is a cycle — detected here instead of recursing until the stack blows.
