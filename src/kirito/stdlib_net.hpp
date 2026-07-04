@@ -105,10 +105,13 @@ inline void sendAll(netcompat::socket_t fd, const std::string& data) {
     }
 }
 
+// Ceiling so a hostile/garrulous peer that never closes the connection throws instead of streaming
+// until the process OOMs (consistent with the 256 MiB ceiling the other resource guards use).
+// Namespace-scoped so both recvAll (plain TCP) and the HTTPS SSL_read loop (net::kMaxRecvAll, only
+// compiled under KIRITO_ENABLE_TLS) share the one bound.
+inline constexpr std::size_t kMaxRecvAll = 256ull * 1024 * 1024;
+
 inline std::string recvAll(netcompat::socket_t fd) {
-    // Ceiling so a hostile/garrulous peer that never closes the connection throws instead of streaming
-    // until the process OOMs (consistent with the 256 MiB ceiling the other resource guards use).
-    constexpr std::size_t kMaxRecvAll = 256ull * 1024 * 1024;
     std::string out;
     char buf[4096];
     while (true) {
