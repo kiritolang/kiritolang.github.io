@@ -39,15 +39,15 @@ And why did i call it after MC of SAO? Dunno, just thought it's funny. Also I do
 - [Why Kirito](#why-kirito)
 - [Documentation](#documentation)
 - [Installing](#installing)
-- [Packages (`kpm`)](#packages-kpm)
+  - [Packages (`kpm`)](#packages-kpm)
 - [Limitations](#limitations)
 - [Repository structure](#repository-structure)
 - [Benchmarks](#benchmarks)
 - [Embedding Kirito in C++](#embedding-kirito-in-c)
 - [Extending Kirito from C++](#extending-kirito-from-c)
 - [Building and running](#building-and-running)
-- [Building the release binaries (static, TLS)](#building-the-release-binaries-static-tls)
-- [Testing the built executables](#testing-the-built-executables)
+  - [Building the release binaries (static, TLS)](#building-the-release-binaries-static-tls)
+  - [Testing the built executables](#testing-the-built-executables)
 - [License](#license)
 
 ## Why Kirito
@@ -123,7 +123,7 @@ Installs `ki.exe` + `kpm.cmd` under `%LOCALAPPDATA%\Programs\Kirito` and adds it
 **Manual** — download `ki-linux-x64` / `ki-windows-x64.exe` from the latest release, put it on your
 `PATH` (rename to `ki`/`ki.exe`), and `chmod +x` it on Unix.
 
-## Packages (`kpm`)
+### Packages (`kpm`)
 
 Kirito's package manager installs packages — collections of `.ki` modules — **straight from a git
 repository** (GitHub by default, GitLab too). There is no central index: you name an `owner/repo`.
@@ -367,7 +367,7 @@ tools/scripts/post_work_check.sh        # debug+release first, then asan+tsan; p
 It does not touch git — it only builds and tests, then reports which variants are green so you decide
 whether to commit.
 
-## Building the release binaries (static, TLS)
+### Building the release binaries (static, TLS)
 
 `tools/scripts/build_all.sh` builds the shippable 64-bit binaries into `dist/` — `ki-linux-x64` and, when
 the mingw cross compiler is installed, `ki-windows-x64.exe` (it builds a static OpenSSL for the
@@ -379,21 +379,25 @@ sudo apt-get install -y build-essential cmake ninja-build git perl libssl-dev mi
 tools/scripts/build_all.sh
 ```
 
-Each binary is a Release build with TLS on and linked as statically as possible (the Linux binary
-keeps only glibc dynamic; the Windows `.exe` is fully static). To cut a release, bump the version in
+Each shipped binary is a Release build with TLS on and linked as statically as possible (the Linux
+binary keeps only glibc dynamic; the Windows `.exe` is fully static). `build_all.sh` also produces two
+**non-shippable** sanitizer interpreters for third-party automated testing — `dist/debug-asan`
+(AddressSanitizer + UBSan) and `dist/debug-tsan` (ThreadSanitizer) — Debug, dynamically linked, and
+unstripped; they are built but not tested here. To cut a release, bump the version in
 `src/kirito/version.hpp`, build with `build_all.sh`, and upload `dist/ki-linux-x64` and
 `dist/ki-windows-x64.exe` to a GitHub Release tagged with the bare version (e.g. `1.7.0`). The
 project does not use CI.
 
-## Testing the built executables
+### Testing the built executables
 
 `tools/scripts/test_release.sh` runs the end-to-end `.ki` test suites (golden-output + error-diagnostic
-scripts) against the binaries in `dist/`, so you can verify each shipped interpreter directly. Linux
-binaries run natively; Windows `.exe` binaries run under Wine:
+scripts) against the binaries in `dist/`, so you can verify each interpreter directly — including the
+`debug-asan` / `debug-tsan` sanitizer builds, run with the sanitizer runtime active. Linux binaries
+run natively; Windows `.exe` binaries run under Wine:
 
 ```sh
 sudo apt-get install -y wine64        # only needed to test the .exe
-tools/scripts/test_release.sh               # tests every dist/ki-* binary
+tools/scripts/test_release.sh               # tests every dist/ binary (release + sanitizer)
 tools/scripts/test_release.sh ./build/ki    # or test one specific interpreter
 ```
 
