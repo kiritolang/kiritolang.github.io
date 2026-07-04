@@ -121,7 +121,7 @@ public:
             if (b.kind() != ValueKind::Integer) throw KiritoError("can only repeat Bytes by an Integer");
             int64_t nrep = static_cast<const IntVal&>(b).value();
             if (nrep <= 0 || data.empty()) return vm.alloc(std::make_unique<BytesVal>());
-            if (static_cast<uint64_t>(nrep) > (256ull * 1024 * 1024) / data.size())
+            if (static_cast<uint64_t>(nrep) > kMaxRepeat / data.size())  // shared cap (common.hpp)
                 throw KiritoError("repeated Bytes too large");
             std::string out;
             out.reserve(data.size() * static_cast<std::size_t>(nrep));

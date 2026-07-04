@@ -36,6 +36,23 @@ else()
     add_link_options(-static)
 endif()
 
+# Prefer a faster linker when one is installed (mold > lld > the system default). Linking the ~156
+# static test/embed binaries is a large slice of a clean build, and mold/lld cut it substantially.
+# Purely a link-time acceleration — the -static / self-contained-binary policy above is unchanged, and
+# both linkers handle a fully-static C++ link. Opt out with -DKIRITO_FAST_LINKER=OFF.
+option(KIRITO_FAST_LINKER "Use mold/lld if available for faster linking" ON)
+if(KIRITO_FAST_LINKER AND NOT MSVC)
+    find_program(KIRITO_MOLD mold)
+    find_program(KIRITO_LLD NAMES ld.lld lld)
+    if(KIRITO_MOLD)
+        add_link_options(-fuse-ld=mold)
+        message(STATUS "Kirito: linking with mold (${KIRITO_MOLD})")
+    elseif(KIRITO_LLD)
+        add_link_options(-fuse-ld=lld)
+        message(STATUS "Kirito: linking with lld (${KIRITO_LLD})")
+    endif()
+endif()
+
 # The interpreter is header-only: an INTERFACE target that just exposes src/. It also carries
 # the platform's socket library and the threads library (the multiprocessing dispatcher uses
 # std::thread/mutex) so any consumer (CLI or tests) links them transparently.
@@ -48,12 +65,30 @@ if(WIN32)
     target_link_libraries(kirito INTERFACE ws2_32)  # Winsock
 endif()
 
+# ONE precompiled header for the whole build. src/kirito.hpp pulls in the entire header-only
+# interpreter; parsing it dominates compile time and it is included by main.cpp AND every test TU
+# (~156 in all). Compile it into a PCH ONCE here (a tiny carrier TU) and have `ki` plus every test
+# REUSE_FROM it, so the core is parsed a single time per build instead of once per TU. Defined here
+# (not under tools/tests) so the `ki` target below can reuse it too.
+# -Winvalid-pch (with the presets' -Werror) makes a silently-unusable PCH a hard error, so a flag
+# mismatch that would quietly drop the PCH and reparse everything can never slip through.
+add_library(kirito_pch STATIC ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/pch_carrier.cpp)
+target_link_libraries(kirito_pch PRIVATE kirito)
+if(NOT MSVC)
+    target_compile_options(kirito_pch PRIVATE -Wall -Wextra -Wpedantic -Winvalid-pch)
+endif()
+if(KIRITO_ENABLE_TLS)
+    target_compile_definitions(kirito_pch PRIVATE KIRITO_ENABLE_TLS)  # match ki so the PCH stays reusable
+endif()
+target_precompile_headers(kirito_pch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/kirito.hpp)
+
 # The only compiled translation unit with a main().
 add_executable(ki main.cpp)
 target_link_libraries(ki PRIVATE kirito)
 if(NOT MSVC)
-    target_compile_options(ki PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(ki PRIVATE -Wall -Wextra -Wpedantic -Winvalid-pch)
 endif()
+target_precompile_headers(ki REUSE_FROM kirito_pch)  # reuse the one shared PCH (parsed once)
 
 # Windows defaults to a small stack (1 MB MSVC / 2 MB mingw) vs ~8 MB on Linux, and reaching the
 # parser's nesting guard (kMaxParseDepth) descends the full precedence chain per level — a few MB of

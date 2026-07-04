@@ -528,8 +528,9 @@ ok(throws(Function(): return p.parse(["X", "-c"])), "arg short option missing va
 var pdash = arg.Parser()
 discard pdash.positional("x")
 ok(pdash.parse(["-"])["x"] == "-", "arg lone dash is positional")
-# a "-5"-style token (length 2 starting with -) is treated as a short option -> unknown -> throws
-ok(throws(Function(): return pdash.parse(["-5"])), "arg dash-digit token treated as short option")
+# a "-5"-style token (dash + DIGIT) is a negative-number POSITIONAL, not a short option (only a
+# dash + LETTER like -z is an option, so unknown ones can be flagged while negative numbers pass).
+ok(pdash.parse(["-5"])["x"] == "-5", "arg dash-digit token is a positional (negative number)")
 
 # =====================================================================================  semver
 var sv = import("semver")

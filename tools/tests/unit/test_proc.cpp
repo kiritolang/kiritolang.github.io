@@ -3,6 +3,7 @@
 // fork/exec/pipe/thread machinery is exercised on its own — and, crucially, under asan/tsan, which
 // instrument the per-stream reader threads, the stdin writer thread, and every fd. The substantive
 // cases use POSIX shell commands (the sanitizer matrix is Linux); Windows gets a portable smoke set.
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,17 @@ int main() {
     // --- timeout kills the child and throws; a fast child under a generous timeout does not ---
     CHECK(run(sh("sleep 0.05"), "", "", 5.0).code == 0);
     CHECK_THROWS(run(sh("sleep 5"), "", "", 0.3));
+
+    // --- timeout kills the WHOLE process group: a backgrounded grandchild that outlives its parent
+    //     shell must not keep the pipes open and hang the drain threads. `sleep 30 & wait` keeps sh
+    //     alive to the timeout; without the group kill the surviving sleep would hold stdout and this
+    //     would block ~30s. Assert it both throws AND returns promptly. ---
+    {
+        auto t0 = std::chrono::steady_clock::now();
+        CHECK_THROWS(run(sh("sleep 30 & wait"), "", "", 0.4));
+        double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        CHECK(secs < 10.0);  // ~0.4s in practice; a regression would wedge until the grandchild exits
+    }
 
     // --- a child killed by a signal reports 128 + signal (here SIGKILL = 9 -> 137) ---
     CHECK(run(sh("kill -9 $$"), "", "", 0.0).code == 137);

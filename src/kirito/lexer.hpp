@@ -114,6 +114,10 @@ private:
         size_t i = pos_ + ahead;
         return i < src_.size() ? src_[i] : '\0';
     }
+    // True at end of input. Distinct from `peek() == '\0'`, which is also true for a genuine embedded
+    // NUL byte — so end-of-input tests must use this, not the '\0' sentinel (a NUL in a string literal
+    // is a valid character, not a premature terminator).
+    bool atEnd() const { return pos_ >= src_.size(); }
     Token make(TokenType t, uint32_t line, uint32_t col, std::string text = {}, bool raw = false) const {
         return Token{t, std::move(text), SourceSpan{line, col, 0}, raw};
     }
@@ -295,16 +299,16 @@ private:
 
         std::string text;
         while (!atClose()) {
+            if (atEnd()) throw unterminated();     // real end-of-input (a NUL byte is a valid char, below)
             char c = peek();
-            if (c == '\0') throw unterminated();
             if (c == '\n' && !triple) throw unterminated();  // single-line forms can't span lines
             if (c == '\\') {
                 // f-strings (raw or not) keep escapes verbatim; the parser decodes them later, so a
                 // backslash here also shields the next char from terminating the literal.
                 if (isF || isRaw) {
                     text += c; advance();
+                    if (atEnd()) throw unterminated();
                     char e = peek();
-                    if (e == '\0') throw unterminated();
                     if (e == '\n' && !triple) throw unterminated();
                     text += e; advance();
                     continue;

@@ -120,14 +120,29 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
     cmdbuf.push_back(L'\0');  // CreateProcessW requires a mutable buffer
     std::wstring cwdW = utf8ToWide(cwd);
 
-    BOOL ok = ::CreateProcessW(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+    // A Job Object with KILL_ON_JOB_CLOSE is the Windows analogue of a POSIX process group: assigning
+    // the child to it makes a timeout's TerminateJobObject kill the ENTIRE process tree (grandchildren
+    // included), so a surviving grandchild can't keep the stdout/stderr pipes open and hang the drain
+    // threads. Create the child SUSPENDED, assign it, then resume — no window where it could spawn a
+    // child before being placed in the job.
+    HANDLE job = ::CreateJobObjectW(nullptr, nullptr);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+        jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        ::SetInformationJobObject(job, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
+    }
+    BOOL ok = ::CreateProcessW(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE,
+                               CREATE_NO_WINDOW | CREATE_SUSPENDED,
                                nullptr, cwd.empty() ? nullptr : cwdW.c_str(), &si, &pi);
     ::CloseHandle(inR); ::CloseHandle(outW); ::CloseHandle(errW);  // child-side ends, parent is done with them
     if (!ok) {
         DWORD e = ::GetLastError();
+        if (job) ::CloseHandle(job);
         ::CloseHandle(inW); ::CloseHandle(outR); ::CloseHandle(errR);
         throw ProcError("failed to start '" + argv[0] + "' (error " + std::to_string(e) + ")");
     }
+    if (job) ::AssignProcessToJobObject(job, pi.hProcess);
+    ::ResumeThread(pi.hThread);
 
     ProcResult res;
     std::thread tout([&] { drainHandle(outR, res.out); });
@@ -145,6 +160,7 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
     bool timedOut = false;
     DWORD waitMs = timeoutSecs > 0 ? static_cast<DWORD>(timeoutSecs * 1000.0) : INFINITE;
     if (::WaitForSingleObject(pi.hProcess, waitMs) == WAIT_TIMEOUT) {
+        if (job) ::TerminateJobObject(job, 1);   // kills the whole tree; falls back to the process below
         ::TerminateProcess(pi.hProcess, 1);
         ::WaitForSingleObject(pi.hProcess, INFINITE);
         timedOut = true;
@@ -154,6 +170,7 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
     DWORD code = 0;
     ::GetExitCodeProcess(pi.hProcess, &code);
     ::CloseHandle(outR); ::CloseHandle(errR);
+    if (job) ::CloseHandle(job);
     ::CloseHandle(pi.hProcess); ::CloseHandle(pi.hThread);
     if (timedOut) throw ProcError("process timed out");
     res.code = static_cast<int>(code);
@@ -201,6 +218,11 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
     }
     if (pid == 0) {
         // CHILD: only async-signal-safe calls before exec.
+        // Become a process-group leader (pgid == our pid) so a timeout can SIGKILL the WHOLE tree
+        // (`kill(-pgid)`), not just this direct child — otherwise a grandchild (`sh -c "sleep 100 &"`)
+        // survives, keeps the stdout/stderr pipes open, and the parent's drain-thread joins hang
+        // forever even after the timeout fired.
+        ::setpgid(0, 0);
         ::dup2(inP[0], 0); ::dup2(outP[1], 1); ::dup2(errP[1], 2);
         ::close(inP[0]); ::close(inP[1]); ::close(outP[0]); ::close(outP[1]);
         ::close(errP[0]); ::close(errP[1]); ::close(exP[0]);
@@ -248,7 +270,8 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
             if (w == pid) break;
             if (w < 0 && errno != EINTR) break;
             if (std::chrono::steady_clock::now() >= deadline) {
-                ::kill(pid, SIGKILL);
+                ::kill(-pid, SIGKILL);   // the whole process group (child is its leader) -> grandchildren too
+                ::kill(pid, SIGKILL);    // fallback, in case setpgid(0,0) hadn't taken effect yet
                 while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
                 timedOut = true;
                 break;

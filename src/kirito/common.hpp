@@ -108,6 +108,13 @@ inline bool floatClose(double a, double b, double relTol, double absTol) {
     return diff <= std::max(relTol * std::max(std::fabs(a), std::fabs(b)), absTol);
 }
 
+// Upper bound on the size (in elements/bytes) of a single value built by repetition or padding, so a
+// hostile or careless count (`"x" * 10**12`, `"".ljust(10**9)`, `b"x" * 10**12`) throws cleanly
+// instead of OOMing the host. ~256 MB is far beyond any legitimate scripting use. Single source of
+// truth for String/List/Bytes repetition, padding, and `range` — defined here so bytes.hpp (compiled
+// before runtime.hpp) shares the exact same cap.
+inline constexpr uint64_t kMaxRepeat = 256ull * 1024 * 1024;
+
 }  // namespace kirito
 
 // KiritoError and KiritoThrow — see the note above their placeholder-comment. Included at the

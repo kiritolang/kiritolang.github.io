@@ -1193,8 +1193,13 @@ class Parser:
                     result[name] = self._convert(name, value)
                 else:
                     throw "unknown option: --" + name
-            elif token.startswith("-") and len(token) == 2 and self._byshort(token[1:]) != None:
+            elif token.startswith("-") and len(token) == 2 and token[1:].isalpha():
+                # A `-x` where x is a LETTER is a short option (a `-5`/`-2` stays a positional so a
+                # negative number can be a positional argument). An unknown letter is a hard error, not
+                # silently swallowed as a positional.
                 var matched = self._byshort(token[1:])
+                if matched == None:
+                    throw "unknown option: -" + token[1:]
                 if matched[0] == "flag":
                     result[matched[1]] = True
                 else:

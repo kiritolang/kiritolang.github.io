@@ -1,20 +1,15 @@
 # One small executable per test file (one behavior-area each), linking the header-only core.
 find_package(Threads REQUIRED)
 
-# Shared precompiled header. Every test TU does `#include "kirito.hpp"`, which pulls in the entire
-# header-only interpreter — parsing it once per TU dominates the build. This carrier compiles that
-# umbrella into a PCH ONCE; each test reuses it (REUSE_FROM below), so a clean build parses the core
-# a single time instead of ~60 times. The carrier carries the exact compile setup the tests use
-# (same warnings, same kirito/Threads usage requirements) so the PCH is binary-compatible to reuse.
-add_library(kirito_pch STATIC pch_carrier.cpp)
-target_link_libraries(kirito_pch PRIVATE kirito Threads::Threads)
-target_compile_options(kirito_pch PRIVATE -Wall -Wextra -Wpedantic)
-target_precompile_headers(kirito_pch PRIVATE ${CMAKE_SOURCE_DIR}/src/kirito.hpp)
+# The shared precompiled header `kirito_pch` is defined in the ROOT CMakeLists so `ki` (main.cpp) can
+# reuse it too — every test below REUSE_FROMs that single PCH, so the umbrella header src/kirito.hpp is
+# parsed ONCE per build instead of once per TU. -Winvalid-pch (set on each consumer, with the presets'
+# -Werror) makes a silently-unusable PCH a hard error rather than a quiet fallback to full reparses.
 
 function(kirito_test name)
     add_executable(${name} ${ARGN})
     target_link_libraries(${name} PRIVATE kirito Threads::Threads)
-    target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic -Winvalid-pch)
     target_precompile_headers(${name} REUSE_FROM kirito_pch)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
@@ -55,6 +50,7 @@ kirito_test(test_audit_hardening unit/test_audit_hardening.cpp)
 add_executable(test_cli_args unit/test_cli_args.cpp)
 target_compile_features(test_cli_args PRIVATE cxx_std_20)
 target_link_libraries(test_cli_args PRIVATE kirito)
+target_compile_options(test_cli_args PRIVATE -Winvalid-pch)
 target_precompile_headers(test_cli_args REUSE_FROM kirito_pch)
 add_dependencies(test_cli_args ki)
 add_test(NAME test_cli_args COMMAND test_cli_args $<TARGET_FILE:ki>)

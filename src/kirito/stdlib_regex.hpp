@@ -428,12 +428,16 @@ public:
              [](KiritoVM& vm, std::span<const Handle> a) { return oneShot(vm, a, "findall"); });
         m.fn("finditer", {{"pattern", "String"}, {"string", "String"}, {"flags", "Integer", vm.makeInt(0)}}, "List",
              [](KiritoVM& vm, std::span<const Handle> a) { return oneShot(vm, a, "finditer"); });
-        m.fn("split", {{"pattern", "String"}, {"string", "String"}, {"maxsplit", "Integer", vm.makeInt(0)}}, "List",
+        m.fn("split", {{"pattern", "String"}, {"string", "String"}, {"maxsplit", "Integer", vm.makeInt(0)},
+                       {"flags", "Integer", vm.makeInt(0)}}, "List",
              [](KiritoVM& vm, std::span<const Handle> a) { return oneShotExtra(vm, a, "split"); });
-        m.fn("sub", {{"pattern", "String"}, {"repl"}, {"string", "String"}, {"count", "Integer", vm.makeInt(0)}}, "String",
+        m.fn("sub", {{"pattern", "String"}, {"repl"}, {"string", "String"}, {"count", "Integer", vm.makeInt(0)},
+                     {"flags", "Integer", vm.makeInt(0)}}, "String",
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "sub");
-            Handle rx = compileRegex(vm, args.at(0).asStringRef("pattern"), 0);
+            // Thread the optional `flags` (5th arg) into compilation, like Python's re.sub(..., flags=).
+            Handle rx = compileRegex(vm, args.at(0).asStringRef("pattern"),
+                                     a.size() > 4 ? static_cast<int>(args[4].asInt("flags")) : 0);
             RootScope rs(vm); rs.add(rx);
             Handle method = vm.arena().deref(rx).getAttr(vm, rx, "sub");
             std::array<Handle, 3> ma{args.at(1).handle(), args.at(2).handle(),
@@ -460,10 +464,11 @@ private:
         std::array<Handle, 1> ma{args.at(1).handle()};
         return vm.arena().deref(fn).call(vm, ma);
     }
-    // split: (pattern, string[, maxsplit]) — the 3rd arg is maxsplit, not flags.
+    // split: (pattern, string[, maxsplit[, flags]]) — the 3rd arg is maxsplit, the 4th is flags.
     static Handle oneShotExtra(KiritoVM& vm, std::span<const Handle> a, const char* method) {
         Args args(vm, a, method);
-        Handle rx = compileRegex(vm, args.at(0).asStringRef("pattern"), 0);
+        Handle rx = compileRegex(vm, args.at(0).asStringRef("pattern"),
+                                 a.size() > 3 ? static_cast<int>(args[3].asInt("flags")) : 0);
         RootScope rs(vm); rs.add(rx);
         Handle fn = vm.arena().deref(rx).getAttr(vm, rx, method);
         std::array<Handle, 2> ma{args.at(1).handle(), a.size() > 2 ? args[2].handle() : vm.makeInt(0)};

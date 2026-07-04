@@ -53,10 +53,7 @@ namespace kirito {
 #  pragma GCC diagnostic ignored "-Wshadow"
 #endif
 
-// Upper bound on the size of a single string/collection built by repetition or padding, so a
-// hostile or careless count (e.g. "x" * 10**12, "".ljust(10**9)) throws cleanly instead of OOMing
-// the host. ~256 MB of characters is far beyond any legitimate scripting use.
-inline constexpr uint64_t kMaxRepeat = 256ull * 1024 * 1024;
+// kMaxRepeat (the ~256 MB repetition/padding cap) is defined in common.hpp so bytes.hpp shares it.
 
 // --- numeric helpers ------------------------------------------------------------------------
 

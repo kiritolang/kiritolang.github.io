@@ -1,0 +1,26 @@
+# Regression: on a TIMEOUT, the child's ENTIRE process tree must be killed, not just the direct child.
+# A backgrounded grandchild that outlives its parent shell would otherwise keep the stdout/stderr pipes
+# open, and the parent's drain threads would hang forever — the timeout would never actually return.
+# The fix puts the child in its own process group (setpgid) and kills the group (kill(-pgid)); on
+# Windows the analogue is a KILL_ON_JOB_CLOSE Job Object (exercised in real use, not scriptable here).
+#
+# POSIX-only: it relies on /bin/sh job control (`&`/`wait`). On Windows we just print OK.
+var io = import("io")
+var sys = import("sys")
+var t = import("time")
+
+if sys.platform != "windows":
+    var threw = False
+    var start = t.monotonic()
+    try:
+        # `sleep 30` is a grandchild of sh; `wait` keeps sh itself alive until the 0.5s timeout fires.
+        # Without the group kill, sleep survives, holds the pipe, and this call hangs for ~30s (the
+        # CTest timeout would then fail the test). With it, the whole tree dies and we return at ~0.5s.
+        discard sys.shell("sleep 30 & wait", timeout = 0.5)
+    catch:
+        threw = True
+    var elapsed = t.monotonic() - start
+    assert threw, "a past-timeout child must throw"
+    assert elapsed < 10.0, "must return promptly after the timeout, not wait out the grandchild"
+
+io.print("sys_proc_grandchild_kill: OK")

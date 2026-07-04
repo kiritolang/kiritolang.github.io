@@ -378,7 +378,7 @@ if argmain:
     # ---- inspect of the regex module + a compiled Regex + a Match ----
     var insRe = inspect(re)
     ok("compile(pattern: String, flags: Integer = 0) -> Regex" in insRe, "inspect regex lists compile signature")
-    ok("sub(pattern: String, repl, string: String, count: Integer = 0) -> String" in insRe, "inspect regex lists sub signature")
+    ok("sub(pattern: String, repl, string: String, count: Integer = 0, flags: Integer = 0) -> String" in insRe, "inspect regex lists sub signature")
     ok("escape(s: String) -> String" in insRe, "inspect regex lists escape")
     var insRx = inspect(re.compile("(?P<a>x)"))
     ok("pattern: String" in insRx and "groups: Integer" in insRx, "inspect Regex lists pattern/groups")

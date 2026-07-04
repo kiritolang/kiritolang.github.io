@@ -17,8 +17,8 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_FLAGS": "-O2 -pipe -Wall -Wextra -Wformat=2 -Wconversion -Wpointer-arith -Wpedantic -Werror -fstack-protector-all -Wreorder -Wunused -Wshadow",
+        "CMAKE_BUILD_TYPE": "",
+        "CMAKE_CXX_FLAGS": "-O0 -pipe -Wall -Wextra -Wformat=2 -Wconversion -Wpointer-arith -Wpedantic -Werror -fstack-protector-all -Wreorder -Wunused -Wshadow",
         "CMAKE_EXE_LINKER_FLAGS": "-s"
       }
     },

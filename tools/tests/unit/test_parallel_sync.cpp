@@ -123,6 +123,47 @@ int main() {
         CHECK(bar->wait(0.05, idx) == WaitResult::Broken);
     });
 
+    // Barrier — REUSABLE after a timeout: the timed-out waiter must reset the generation's count, so a
+    // fresh, complete set of parties rendezvous cleanly. With a stale count a single later arrival
+    // would trip "last party" off the departed waiter and self-heal the barrier at the wrong moment.
+    noDeadlock("barrier reusable after a timeout", 20.0, [] {
+        KiritoDispatcher disp;
+        auto bar = disp.createBarrier(2);
+        int64_t idx = -1;
+        CHECK(bar->wait(0.05, idx) == WaitResult::Broken);   // one party, times out -> breaks + resets
+        std::atomic<int> okCount{0};
+        std::vector<std::thread> ts;
+        for (int i = 0; i < 2; ++i)
+            ts.emplace_back([&] {
+                int64_t j = -1;
+                if (bar->wait(5.0, j) == WaitResult::Ok) ++okCount;
+            });
+        for (auto& t : ts) t.join();
+        CHECK(okCount.load() == 2);   // both fresh parties released together (buggy: 0)
+    });
+
+    // Semaphore — UNBOUNDED by design: over-releasing grows the permit count (a plain counting
+    // semaphore, not a BoundedSemaphore), so a later burst of acquires all succeed.
+    noDeadlock("semaphore over-release grows permits", 20.0, [] {
+        KiritoDispatcher disp;
+        auto sem = disp.createSemaphore(1);
+        for (int i = 0; i < 4; ++i) sem->release();                        // 1 + 4 == 5 permits
+        for (int i = 0; i < 5; ++i) CHECK(sem->acquire(false, std::nullopt) == WaitResult::Ok);
+        CHECK(sem->acquire(false, std::nullopt) == WaitResult::TimedOut);  // and no more
+    });
+
+    // Lock — released BY IDENTITY, not by owning thread: a lock acquired on one thread can be released
+    // from another (the transferable-handoff pattern the parallel tests rely on).
+    noDeadlock("lock cross-thread release", 20.0, [] {
+        KiritoDispatcher disp;
+        auto lock = disp.createLock();
+        std::thread t([&] { CHECK(lock->acquire(true, std::nullopt) == WaitResult::Ok); });  // held by worker
+        t.join();
+        CHECK(lock->locked() == true);
+        CHECK(lock->release() == true);   // a DIFFERENT thread (main) releases it
+        CHECK(lock->locked() == false);
+    });
+
     // End-to-end through Kirito: workers wait on a shared Event, then report via a shared Queue.
     expectOk("event + queue (kirito)", R"KI(
 var parallel = import("parallel")

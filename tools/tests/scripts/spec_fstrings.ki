@@ -60,4 +60,18 @@ assert f"{[1, [2, 3]]}" == "[1, [2, 3]]", "nested list interpolation"
 var set_fs = f"{Set([1, 2, 2])}"
 assert "1" in set_fs and "2" in set_fs and len(Set([1, 2, 2])) == 2, "set interpolation (deduped to 2 elements, both present)"
 
+# --- quote-aware scanning: a `:` or `}`/`{` INSIDE a string literal is data, not structure ---
+# A colon inside a quoted string is not mistaken for the format-spec separator.
+assert f"{'a:b'}" == "a:b", "colon inside string literal is not a spec separator"
+assert f"{'::'}" == "::", "leading colon inside string literal"
+# A brace inside a quoted string does not close the field.
+var braces = {"}": 2, "{": 3}
+assert f"{braces['}']}" == "2", "close-brace inside string is data"
+assert f"{braces['{']}" == "3", "open-brace inside string is data"
+# A real format spec still applies alongside a quoted colon in the value.
+assert f"{'x:y':>6}" == "   x:y", "real spec after a quoted colon"
+# A dict key that contains a colon, accessed inside the field.
+var dc = {"a:b": 7}
+assert f"{dc['a:b']}" == "7", "colon in a bracketed dict key"
+
 io.print("OK")

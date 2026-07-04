@@ -104,4 +104,17 @@ while trial < 40:
     assert zlib.inflate(zlib.deflate(blobf)) == blobf, "fuzz deflate round-trip"
     trial = trial + 1
 
+# ---- multi-member streams (RFC 1952 §2.2: `cat a.gz b.gz`) inflate at an offset without copying the
+# ---- rest of the buffer each member, so N concatenated members are O(total), not O(N*total). ----
+assert gzip.decompress(gzip.compress("AAA") + gzip.compress("BBB") + gzip.compress("CCC")) == "AAABBBCCC", "3-member concat"
+var many = ""
+var want = ""
+var mi = 0
+while mi < 400:
+    var piece = "m" + String(mi) + ";"
+    many = many + gzip.compress(piece)
+    want = want + piece
+    mi = mi + 1
+assert gzip.decompress(many) == want, "400 concatenated members (no O(n^2) blowup)"
+
 io.print("OK gzip")

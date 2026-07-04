@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace kirito::deflate {
@@ -161,7 +162,7 @@ inline std::string compress(const std::string& in) {
 // ---- bit reader (LSB-first) ------------------------------------------------------------------
 class BitReader {
 public:
-    explicit BitReader(const std::string& s) : s_(s) {}
+    explicit BitReader(std::string_view s) : s_(s) {}
     int bit() {
         if (bitpos_ == 0) {
             if (pos_ >= s_.size()) throw DeflateError("unexpected end of deflate stream");
@@ -177,12 +178,12 @@ public:
         return v;
     }
     void alignByte() { bitpos_ = 0; }
-    const std::string& raw() const { return s_; }
+    std::string_view raw() const { return s_; }
     std::size_t bytePos() const { return pos_; }
     void setBytePos(std::size_t p) { pos_ = p; bitpos_ = 0; }
 
 private:
-    const std::string& s_;
+    std::string_view s_;
     std::size_t pos_ = 0;
     uint8_t byte_ = 0;
     int bitpos_ = 0;
@@ -260,7 +261,9 @@ inline Huffman fixedDistHuffman() {
 // `consumed`, if non-null, receives the number of input bytes the stream occupied (rounded up to the
 // next byte boundary past the final block) — gzip needs it to find the trailer / a following member.
 // `inflate(in)` is the simple public entry point; gzip uses this directly for the consumed count.
-inline std::string inflateImpl(const std::string& in, std::size_t maxOut, std::size_t* consumed) {
+// `in` is a view: gzip passes a suffix of the whole stream (a following member starts mid-buffer)
+// WITHOUT copying it — inflating N concatenated members is O(total), not O(N * total).
+inline std::string inflateImpl(std::string_view in, std::size_t maxOut, std::size_t* consumed) {
     BitReader br(in);
     std::string out;
     bool final = false;

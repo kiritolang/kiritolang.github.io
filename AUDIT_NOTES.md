@@ -58,32 +58,50 @@ _(appended as each parallel audit agent returns; verified below)_
 - `NEW MED` — `value.hpp:538-542` — `List(vm, const vector<Handle>&)` ctor lacks RootScope across its
   `alloc` (sibling init-list ctor has one). A GC during alloc can sweep un-rooted elements → dangling.
   Fix: RootScope the handles before final alloc.
-- `NEW LOW` — `arena.hpp:44,57` — 32-bit generation wraparound after 2^32 slot reuses → stale handle
-  accepted as live (long-running server). Fix: retire near-wrap slots, or widen to 64-bit.
-- `NEW LOW` — `handle.hpp:15-19 + vm.hpp:39` — default `Handle{}` == `none_` (slot0,gen0); an
-  uninitialized handle silently derefs to None instead of throwing. Fix: reserve slot 0 as invalid.
+- ~~`NEW LOW` — `arena.hpp:44,57` — 32-bit generation wraparound after 2^32 slot reuses → stale handle
+  accepted as live (long-running server).~~ **DONE** — sweep retires a slot permanently (off the
+  free-list, occupied=false) once its generation reaches UINT32_MAX instead of wrapping to 0, so a
+  stale handle can never re-validate (ABA). Costs one leaked slot only after 2^32 reuses of that one
+  slot.
+- ~~`NEW LOW` — `handle.hpp:15-19 + vm.hpp:39` — default `Handle{}` == `none_` (slot0,gen0); an
+  uninitialized handle silently derefs to None instead of throwing.~~ **DONE** — generation 0 is now
+  RESERVED: `ObjectArena::kFirstGen == 1`, so no live handle ever carries generation 0 and `Handle{}`
+  ({0,0}) can never alias a real object (in particular the first-allocated one). It cleanly dangles.
+  Tests: a new arena-sentinel block in `test_r7_embed_api.cpp` (first alloc has gen != 0; `Handle{}`
+  throws on deref and never marks).
 
 ### Concurrency (dispatcher.hpp, stdlib_parallel.hpp)
-- `NEW MED` — `dispatcher.hpp:572-586 shutdown + 610-619 makeWaitable` — **waitable created AFTER the
-  abort fan-out is never aborted → shutdown deadlock**: a worker that creates a Queue/Event/Lock after
-  phase-1 abort then blocks forever; phase-2 join() hangs. Fix: makeWaitable (holds registryMutex_)
-  should abort/throw immediately when shuttingDown_.
-- `NEW MED` — `dispatcher.hpp:268-273 Barrier::wait timeout` — broken generation not cleared: timeout
-  sets `brokenGen_` but leaves `count_` stale → a later single arrival can trip "last party" and
-  self-heal the barrier off a stale count. Fix: full resetBarrier bookkeeping on timeout.
-- `NEW LOW` — `dispatcher.hpp:515-522,550-553` — unsynchronized `libPaths_`/`maxCallDepth_` read on
-  worker threads (outside registryMutex_). TSan race if set-during-spawn. Fix: guard or document.
-- `NEW LOW` — `dispatcher.hpp:228-231 Semaphore::release / 154-159 Lock::release` — unbounded
-  over-release (no ceiling) and non-owner lock release (ignores owner_). Fix: bound/owner checks.
+- ~~`NEW MED` — `dispatcher.hpp:572-586 shutdown + 610-619 makeWaitable` — **waitable created AFTER the
+  abort fan-out is never aborted → shutdown deadlock**.~~ **DONE** — makeWaitable (which already holds
+  registryMutex_) now calls `sp->abort()` on the just-created primitive when `shuttingDown_`, so a
+  primitive born during teardown starts already-aborted and any wait on it returns Aborted immediately.
+- ~~`NEW MED` — `dispatcher.hpp:268-273 Barrier::wait timeout` — broken generation not cleared: timeout
+  sets `brokenGen_` but leaves `count_` stale → a later single arrival can trip "last party".~~ **DONE**
+  — on timeout the barrier does the full reset (`brokenGen_ = gen; ++generation_; count_ = 0`, guarded
+  so concurrent timeouts break the generation once), so a fresh set of parties rendezvous cleanly.
+  Test: "barrier reusable after a timeout" in `test_parallel_sync.cpp`.
+- ~~`NEW LOW` — `dispatcher.hpp:515-522,550-553` — unsynchronized `libPaths_`/`maxCallDepth_` read on
+  worker threads (outside registryMutex_). TSan race if set-during-spawn.~~ **DONE** — the writes
+  (addLibPath/setMaxCallDepth) take registryMutex_ and configureVM() snapshots both under the lock
+  before applying them to the worker VM (lock not held across the VM calls).
+- **REJECTED** — `dispatcher.hpp Semaphore::release / Lock::release` — the "unbounded over-release" and
+  "non-owner release" are INTENTIONAL, not bugs. Kirito's `Semaphore` is a plain counting semaphore
+  (over-release raises the permit count, like Python's `threading.Semaphore`, NOT BoundedSemaphore —
+  r5/r7_parallel assert this), and its `Lock` releases by identity so a worker can hand a held Lock
+  back for another VM to release (r8_parallel asserts this transferable handoff). Bounding/owner-checking
+  either one breaks documented, tested behavior. C++ tests pin both intended semantics.
 
 ### Front end (lexer.hpp, parser.hpp)
 - `NEW HIGH` — `parser.hpp:893-894 parseEmbedded` — **nested f-strings escape the parse-depth guard →
   native stack overflow**: each `{expr}` spawns a fresh Parser with `exprDepth_=0`, so kMaxParseDepth
   never accumulates across f-string nesting → SIGSEGV on deeply nested quote-alternating f-strings.
   Fix: thread exprDepth_/a global recursion counter into the sub-parser, or cap f-string nesting.
-- `NEW MED` — `parser.hpp:924-941 parseFString` — f-string `{…}` scanner is quote-unaware: the
+- ~~`NEW MED` — `parser.hpp:924-941 parseFString` — f-string `{…}` scanner is quote-unaware: the
   brace-match and `:`-spec split ignore string literals inside the expr → `f"{d['a:b']}"` and
-  `f"{d['}']}"` (documented-supported) fail to parse. Fix: track quote state in both loops.
+  `f"{d['}']}"` (documented-supported) fail to parse.~~ **DONE** — both loops now track string state
+  (open-quote char + backslash escape) so a brace/colon inside `'…'`/`"…"` is treated as data, not
+  structure. `f"{'a:b'}"`, `f"{braces['}']}"`, and `f"{'x:y':>6}"` (real spec after a quoted colon)
+  all parse. Tests appended to `spec_fstrings.ki`.
 - `NEW LOW` — `lexer.hpp:129-136` — indentation width counters are `int`; `wide += 8-(wide%8)` per tab
   can overflow signed int (UB) on a huge leading-tab run. Fix: int64/size_t + cap.
 - `NEW LOW` — `lexer.hpp:113-116,297-299` — embedded NUL byte in a string literal is treated as EOF →
@@ -97,9 +115,13 @@ _(appended as each parallel audit agent returns; verified below)_
 - `NEW MED` — `stdlib_net.hpp:510-512` — **HTTPS response body unbounded (OOM)**: the plain-TCP path
   uses `recvAll` (256 MiB cap) but the TLS path's own `while(SSL_read>0) raw.append` has NO cap. A
   chatty HTTPS server OOMs the process. Fix: apply kMaxRecvAll ceiling in the SSL_read loop.
-- `NEW MED` — `proc_compat.hpp:262 (POSIX)/133,152 (Win)` — timeout doesn't kill the process GROUP; a
+- ~~`NEW MED` — `proc_compat.hpp:262 (POSIX)/133,152 (Win)` — timeout doesn't kill the process GROUP; a
   lingering grandchild holding the stdout pipe blocks `tout.join()` forever → sys.shell never returns
-  despite timeout=. Fix: setpgid + kill(-pgid) on timeout, or poll/deadline drains. (harder fix)
+  despite timeout=.~~ **DONE** — POSIX: child `setpgid(0,0)` (own group leader), timeout does
+  `kill(-pid, SIGKILL)` (whole group) + `kill(pid)` fallback. Windows: child assigned to a
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Job Object (created SUSPENDED, assigned, resumed), timeout does
+  `TerminateJobObject`. Tests: `sys_proc_grandchild_kill.ki` (`sleep 30 & wait` returns at ~0.5s, no
+  orphan) + a `test_proc.cpp` probe (throws AND returns < 10s).
 - `NEW MED` — `stdlib_net.hpp:375,743-777` — redirect `Location`/URL with bare `\n` flows unsanitized
   into the next request line/Host → header injection/request smuggling driven by the server. Fix:
   strip/reject CR/LF (control chars) in parseUrl host/path + resolveUrl output.
@@ -122,8 +144,12 @@ _(appended as each parallel audit agent returns; verified below)_
 - `NEW LOW(note)` — `stdlib_serde.hpp:181-245` — dump/serialize.loads is pickle-style unsafe on hostile
   bytes (instantiates arbitrary registered classes + runs `_setstate_`). Trust-boundary; document
   loudly / consider safe-mode. (design, not a quick fix)
-- `NEW LOW` — `stdlib_gzip.hpp:70` — O(n²) `data.substr(pos)` copy per member on many-member gzip. Fix:
-  inflate over an offset/string_view.
+- ~~`NEW LOW` — `stdlib_gzip.hpp:70` — O(n²) `data.substr(pos)` copy per member on many-member gzip.~~
+  **DONE** — `inflateImpl` and `BitReader` now take a `std::string_view`; gzip passes
+  `std::string_view(data).substr(pos)` (O(1), no copy), so N concatenated members inflate in O(total).
+  `inflate(const std::string&)` keeps its signature (used as a function pointer by zlib). Tests:
+  multi-member cases in `spec_gzip.ki` (400 members) + a `test_zlib.cpp` probe driving `inflateImpl`
+  on a mid-buffer offset view.
 - `NEW LOW` — `deflate.hpp:348-353` — zlibDecompress ignores FDICT (`FLG & 0x20`) → a valid preset-dict
   stream is misparsed. Fix: throw "preset dictionary unsupported" (or skip 4 DICTID bytes).
 - `NEW LOW` — `stdlib_dump.hpp:150,152` — `for(k < c*2)` uint32 wrap for a Dict/Object count
@@ -136,8 +162,10 @@ _(appended as each parallel audit agent returns; verified below)_
   `result` without rooting; the final `vm.alloc` can GC and sweep them → dangling. (intersection/
   difference/issubset safe — receiver-owned elems.) Fix: `for (Handle e : *other) rs.add(e);` or
   GcPauseScope around build+alloc.
-- `NEW LOW` — `collections.hpp:111,213` — Dict/Set iteration order not insertion-stable across
-  delete (fum swap-on-erase) — diverges from Python's insertion order. Behavioral, not unsafe. (defer)
+- **REJECTED** — `collections.hpp:111,213` — Dict/Set iteration order not insertion-stable across
+  delete. By design: Kirito's Dict and Set are **unordered** — the language makes no insertion-order
+  guarantee (unlike Python 3.7+ dicts), so hash-bucket iteration order that shifts across delete is
+  correct behavior, not a defect. No fix; the divergence from Python here is intentional.
 - `NEW LOW(DRY)` — `bytes.hpp:124` — hardcoded `256*1024*1024` repeat cap vs shared `kMaxRepeat`. Unify.
 - safe: sliceIndices negative/step<0/overflow, int64↔double exact eq+hash, UTF-8 validation, fromhex.
 
@@ -173,11 +201,12 @@ _(appended as each parallel audit agent returns; verified below)_
   NaN-last comparator is valid strict-weak-order.
 
 ### Regex (regex_engine.hpp, stdlib_regex.hpp)
-- `NEW MED` — `regex_engine.hpp:585,599,603` — **Pike-VM capture vectors deep-copied per epsilon step
+- ~~`NEW MED` — `regex_engine.hpp:585,599,603` — **Pike-VM capture vectors deep-copied per epsilon step
   → O(program² · groups) DoS**: one input position costs O(program × numGroups); a group-dense pattern
-  `"()"*99000` (~198 KB, under the 200000-instr cap) hangs on a 1-byte/empty subject. The stated
-  "O(input·program)" bound is wrong. Fix: COW capture arrays (shared_ptr), cap numGroups, or a shared
-  slot log. (larger fix — mitigate by capping numGroups)
+  `"()"*99000` (~198 KB, under the 200000-instr cap) hangs on a 1-byte/empty subject.~~ **DONE** — cap
+  `numGroups` at 1000 at compile time (right after `prog.numGroups = parser.groupCount()`), before the
+  Pike VM ever runs, so the blow-up is unreachable. 1000 groups is far beyond any realistic pattern.
+  Test: `spec_regex_group_cap.ki` (2000 groups rejected instantly, 500 still compiles) + a C++ probe.
 - `NEW LOW` — `stdlib_regex.hpp:431-442` — module `sub`/`split` drop the `flags` arg (IGNORECASE/etc.
   unreachable one-shot). Fix: add trailing flags param.
 - `NEW LOW` — `regex_engine.hpp:334-346` — `\u`/`\U`/`\x` accept lone surrogates (D800-DFFF) → dead
@@ -242,18 +271,36 @@ compile-reviewed edits (user builds); the self-asserting `spec_audit_hardening.k
 - `FIXED` LOW — `kpm/kpm.ki` cmdRemove vets the package name (path-traversal guard).
 
 ## DEFERRED (need dedicated design + a build/sanitizer cycle — documented, not yet patched)
-- MED — `dispatcher.hpp` shutdown-created waitable never aborted (deadlock); Barrier-timeout stale
-  count; Semaphore over-release / Lock non-owner release. Concurrency fixes — need TSan validation.
-- MED — `regex_engine.hpp` per-thread capture vectors deep-copied → O(program²·groups) DoS. Needs
-  copy-on-write captures (or a numGroups cap) + benchmarking.
-- MED — `parser.hpp` f-string `{…}` scanner is quote-unaware (`f"{d['a:b']}"` mis-splits). Needs a
-  quote-state-tracking rescan; risky without tests.
-- MED — `proc_compat.hpp` timeout doesn't kill the process GROUP (grandchild holding the pipe hangs
-  the join). Platform-specific (setpgid/CreateJobObject).
+- ~~MED — `dispatcher.hpp` shutdown-created waitable never aborted (deadlock); Barrier-timeout stale
+  count; Semaphore over-release / Lock non-owner release.~~ **DONE (3 of 4)** — makeWaitable pre-aborts
+  during shutdown; Barrier timeout does a full generation reset; libPaths_/maxCallDepth_ reads guarded.
+  The Semaphore-over-release / Lock-non-owner-release pair is **REJECTED** — intentional
+  (counting-semaphore + transferable-lock semantics, pinned by r5/r7/r8_parallel). Tests in
+  test_parallel_sync.cpp.
+- ~~MED — `regex_engine.hpp` per-thread capture vectors deep-copied → O(program²·groups) DoS.~~
+  **DONE**: numGroups capped at 1000 at compile time (before the Pike VM runs). Test:
+  `spec_regex_group_cap.ki` + a probe in test_audit_hardening.cpp.
+- ~~MED — `parser.hpp` f-string `{…}` scanner is quote-unaware (`f"{d['a:b']}"` mis-splits).~~ **DONE**:
+  both the brace-matcher and the `:`-spec split now track string state. Tests in `spec_fstrings.ki`.
+- ~~MED — `proc_compat.hpp` timeout doesn't kill the process GROUP (grandchild holding the pipe hangs
+  the join).~~ **DONE**: POSIX setpgid + kill(-pgid); Windows KILL_ON_JOB_CLOSE Job Object. Tests:
+  `sys_proc_grandchild_kill.ki` + a test_proc.cpp probe.
 - LOW — `stdlib_serde.hpp` loads is pickle-style unsafe on hostile bytes (design: safe-mode/allowlist).
-- LOW — `arena.hpp` 32-bit generation wraparound; `handle.hpp` `Handle{}` aliases None (slot 0).
-- LOW — `stdlib_gzip.hpp` O(n²) substr per member (needs inflate-at-offset API).
-- LOW — `collections.hpp` Dict/Set iteration order not insertion-stable across delete.
-- LOW — `stdlib_regex.hpp` module sub/split drop the flags arg.
-- LOW — `parser.hpp` inline-body `return a, b` doesn't pack; `lexer.hpp` NUL-in-string = EOF.
-- nit — `bytes.hpp` repeat cap duplicates `kMaxRepeat` (needs the constant moved to a low-level header).
+  **(EXCLUDED by request — left deferred.)**
+- ~~LOW — `arena.hpp` 32-bit generation wraparound; `handle.hpp` `Handle{}` aliases None (slot 0).~~
+  **DONE**: gen 0 reserved (kFirstGen=1) so `Handle{}` is a safe sentinel; near-wrap slots retired.
+- ~~LOW — `stdlib_gzip.hpp` O(n²) substr per member (needs inflate-at-offset API).~~ **DONE**:
+  `inflateImpl`/`BitReader` take a `string_view`; gzip inflates a suffix view (O(total) multi-member).
+- ~~LOW — `collections.hpp` Dict/Set iteration order not insertion-stable across delete.~~ **REJECTED**:
+  Kirito's Dict and Set are unordered BY DESIGN — no insertion-order guarantee, so this is intended.
+- ~~LOW — `stdlib_regex.hpp` module sub/split drop the flags arg.~~ **DONE**: added a trailing
+  `flags` param to one-shot `regex.sub`/`regex.split`. Test: `spec_regex_oneshot_flags.ki`.
+- ~~LOW — `lexer.hpp` NUL-in-string = EOF.~~ **DONE**: added `atEnd()`; a genuine NUL byte in a string
+  literal is now a valid character, not a premature "unterminated string". Test in test_audit_hardening.cpp.
+- ~~LOW — `parser.hpp` inline-body `return a, b` doesn't pack.~~ **REJECTED (would regress)**: the
+  codebase has thousands of inline callbacks like `sort(Function(p): return p[1], True)` where the
+  trailing comma is a CALL-ARG separator (`True` is sort's reverse flag). Packing the inline `return`
+  (parseValueSeq) would swallow those args and break the dominant inline-callback pattern; the current
+  `parseExpr` behavior is correct — the block form packs only because a newline unambiguously ends it.
+- ~~nit — `bytes.hpp` repeat cap duplicates `kMaxRepeat`.~~ **DONE**: moved `kMaxRepeat` to
+  `common.hpp` (single source of truth); bytes.hpp/runtime.hpp both use it.
