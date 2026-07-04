@@ -23,6 +23,14 @@ static std::string ok(const std::string& src) {
 static bool has(const std::string& hay, const std::string& needle) {
     return hay.find(needle) != std::string::npos;
 }
+// Run `src` collecting on EVERY allocation, so an unrooted intermediate is swept immediately
+// (release: throws "dangling handle"; ASan: heap-use-after-free) — the deterministic T-ROOT gate.
+static std::string okGc1(const std::string& src) {
+    KiritoVM vm;
+    vm.installStandardLibrary();
+    vm.setGcThreshold(1);
+    return vm.stringify(vm.runSource(src));
+}
 
 int main() {
     // === A07-1: InstanceValue::equals must not downcast a NATIVE value that also reports
@@ -61,6 +69,31 @@ int main() {
         CHECK(vm.stringify(vm.runSource(
             "var xs = []\nvar i = 0\nwhile i < 500:\n  xs.append([i])\n  i = i + 1\nlen(xs)")) == "500");
     }
+
+    // === T-ROOT (A09-3/4 High, A06-1/2 Medium): every iterable-consuming builtin and every
+    // apply/sort snapshot roots its fresh element handles across a callback/rehash that allocates.
+    // Source is a String so iteration yields FRESH per-char handles (the vulnerable case); under
+    // gcThreshold(1) an unrooted element is swept the instant the next allocation happens. ===
+    CHECK(okGc1("len(Set(\"abcdefghij\"))") == "10");                              // A09-3 Set ctor
+    CHECK(okGc1("len(Dict([[\"a\", 1], [\"b\", 2], [\"c\", 3]]))") == "3");        // A09-3 Dict ctor
+    CHECK(okGc1("len(List(\"abcdefghij\"))") == "10");                            // List ctor
+    CHECK(okGc1("len(map(Function(c): return c + \"!\", \"abcdefghij\"))") == "10");  // A09-4 map
+    CHECK(okGc1("len(filter(Function(c): return True, \"abcdefghij\"))") == "10");    // A09-4 filter
+    CHECK(okGc1("sorted(\"dbca\")") == "['a', 'b', 'c', 'd']");                    // A09-4 sorted (key/_lt_)
+    CHECK(okGc1("all(map(Function(x): return True, \"abcde\"))") == "True");       // A09-4 all
+    CHECK(okGc1("any(map(Function(x): return False, \"abcde\"))") == "False");     // A09-4 any
+    CHECK(okGc1("len(zip(\"abc\", \"defgh\"))") == "3");                           // zip columns
+    CHECK(okGc1("len(enumerate(\"abcde\"))") == "5");                              // enumerate
+    CHECK(okGc1("len(reversed(\"abcde\"))") == "5");                               // reversed
+    // A06-1/2: apply's fn CLEARS the receiver (dropping the only other reference to the snapshot's
+    // fresh string handles) then allocates — the snapshot must stay rooted. Elements are Strings, not
+    // interned small ints, so a swept element genuinely dangles.
+    CHECK(okGc1("var xs = [\"aa\", \"bb\", \"cc\", \"dd\", \"ee\"]\n"
+                "var f = Function(x):\n  xs.clear()\n  return x + \"!\"\n"
+                "len(xs.apply(f))") == "5");
+    CHECK(okGc1("var s = Set([\"aa\", \"bb\", \"cc\", \"dd\", \"ee\"])\n"
+                "var g = Function(x):\n  s.clear()\n  return x + \"!\"\n"
+                "len(s.apply(g))") == "5");
 
     return RUN_TESTS();
 }

@@ -367,6 +367,10 @@ struct RootScope {
         vm.pushTemp(h);
         return h;
     }
+    // Root every handle in a snapshot vector at once — for the apply/sort methods that copy a
+    // container's elements into a local vector and then run user code (fn / key / _lt_) that may
+    // clear the source + allocate, which would otherwise sweep the not-yet-consumed snapshot entries.
+    void addAll(const std::vector<Handle>& hs) { for (Handle h : hs) vm.pushTemp(h); }
 };
 
 // RAII: pause automatic garbage collection for a critical section and RESTORE the previous setting
