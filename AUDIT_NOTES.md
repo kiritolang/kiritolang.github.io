@@ -92,3 +92,99 @@ _(appended as each parallel audit agent returns; verified below)_
   block-body return which parseValueSeq-packs into `[a,b]` — behavior inconsistency. Fix: parseValueSeq
   in the inline-return arm.
 - clean: ast.hpp, resolver.hpp, locals.hpp, analyzer.hpp.
+
+### IO / net / sys / time / proc (stdlib_io/net/sys/time.hpp, proc_compat.hpp, net_compat.hpp)
+- `NEW MED` — `stdlib_net.hpp:510-512` — **HTTPS response body unbounded (OOM)**: the plain-TCP path
+  uses `recvAll` (256 MiB cap) but the TLS path's own `while(SSL_read>0) raw.append` has NO cap. A
+  chatty HTTPS server OOMs the process. Fix: apply kMaxRecvAll ceiling in the SSL_read loop.
+- `NEW MED` — `proc_compat.hpp:262 (POSIX)/133,152 (Win)` — timeout doesn't kill the process GROUP; a
+  lingering grandchild holding the stdout pipe blocks `tout.join()` forever → sys.shell never returns
+  despite timeout=. Fix: setpgid + kill(-pgid) on timeout, or poll/deadline drains. (harder fix)
+- `NEW MED` — `stdlib_net.hpp:375,743-777` — redirect `Location`/URL with bare `\n` flows unsanitized
+  into the next request line/Host → header injection/request smuggling driven by the server. Fix:
+  strip/reject CR/LF (control chars) in parseUrl host/path + resolveUrl output.
+- `NEW MED` — `stdlib_io.hpp:99-108` — **File.read(n) size-cap bypassed when cursor is past EOF**: the
+  `want = min(want, endp-cur)` clamp only applies when `endp>=cur`; after `seek(past_end)` (cur>endp or
+  tell==-1) the guard is skipped → `string buf(n,0)` allocs the full user n (~9e18). Fix: clamp to
+  max(0, endp-cur) regardless of sign.
+- `NEW LOW` — `stdlib_net.hpp:723-726` — default `timeout=0` = no socket timeout → a stalling server
+  hangs the request forever. Consider a default deadline.
+- `NEW LOW` — `net_compat.hpp:73-77` — send/recv length `static_cast<int>(n)`; a >2 GiB payload
+  overflows int → misbehaving loop. Fix: clamp each syscall to a chunk size before the cast.
+- safe (checked): dechunk bounded, gunzip FEXTRA bounded, chunk-size overflow caught, redirect count
+  bounded, TLS verify no bypass, timegm/make/strptime range-checked, BytesIO/File seek overflow-guarded.
+
+### Serialization / compression (stdlib_serde/serialize/dump/gzip.hpp, deflate.hpp)
+- `NEW MED` — `stdlib_dump.hpp:138-139` & `stdlib_serialize.hpp:89-91` — **node-count allocation
+  amplification (OOM)**: decode validates only `n > data.size()` then `vector<Node>(n)` (~80 B/node,
+  min record 1 B) → ~80× zeroed alloc; a ~200 MB blob forces multi-GB. Fix: cap n to
+  data.size()/minRecord or reserve incrementally.
+- `NEW LOW(note)` — `stdlib_serde.hpp:181-245` — dump/serialize.loads is pickle-style unsafe on hostile
+  bytes (instantiates arbitrary registered classes + runs `_setstate_`). Trust-boundary; document
+  loudly / consider safe-mode. (design, not a quick fix)
+- `NEW LOW` — `stdlib_gzip.hpp:70` — O(n²) `data.substr(pos)` copy per member on many-member gzip. Fix:
+  inflate over an offset/string_view.
+- `NEW LOW` — `deflate.hpp:348-353` — zlibDecompress ignores FDICT (`FLG & 0x20`) → a valid preset-dict
+  stream is misparsed. Fix: throw "preset dictionary unsupported" (or skip 4 DICTID bytes).
+- `NEW LOW` — `stdlib_dump.hpp:150,152` — `for(k < c*2)` uint32 wrap for a Dict/Object count
+  `c >= 0x80000000`. Fix: uint64 loop bound.
+- safe: INFLATE Huffman/distance bounds, rebuild id-checks, MD5/SHA/CRC/Adler vectors.
+
+### Collections / builtins / bytes (collections.hpp, runtime.hpp Set ops, bytes.hpp)
+- `NEW MED` — `runtime.hpp:875-903` — **Set.union / Set.symmetricdifference GC-sweep UAF**: when `other`
+  is a String/Bytes/large range, `iterate` returns FRESH element handles stored into the not-yet-arena'd
+  `result` without rooting; the final `vm.alloc` can GC and sweep them → dangling. (intersection/
+  difference/issubset safe — receiver-owned elems.) Fix: `for (Handle e : *other) rs.add(e);` or
+  GcPauseScope around build+alloc.
+- `NEW LOW` — `collections.hpp:111,213` — Dict/Set iteration order not insertion-stable across
+  delete (fum swap-on-erase) — diverges from Python's insertion order. Behavioral, not unsafe. (defer)
+- `NEW LOW(DRY)` — `bytes.hpp:124` — hardcoded `256*1024*1024` repeat cap vs shared `kMaxRepeat`. Unify.
+- safe: sliceIndices negative/step<0/overflow, int64↔double exact eq+hash, UTF-8 validation, fromhex.
+
+### Kirito-modules / kpm / native glue (stdlib_kimodules.hpp, kpm/kpm.ki)
+- `NEW MED` — `stdlib_kimodules.hpp:1281-1297 _infer` — readcsv mis-coerces: `Integer/Float` accept
+  `0x1F`/`00123`/`1e3`/whitespace → a zero-padded ZIP or hex-ID string is silently converted, corrupting
+  data pandas keeps as string. Fix: strict `^-?[0-9]+$` / plain-decimal check before converting.
+- `NEW MED` — `stdlib_kimodules.hpp:682,2141` — blank CSV line → padded all-None row (pandas skips).
+  Fix: skip a parsed lone-empty-field row in readcsv.
+- `NEW LOW` — `stdlib_kimodules.hpp:1196` — arg.Parser treats any 2-char `-X` as an option → negative
+  positional `-5` throws "unknown option". Fix: option only when `_byshort` matches.
+- `NEW LOW` — `kpm/kpm.ki:547-556 cmdRemove` — package name not vetted with `safeRelPath` → `kpm remove
+  ../../foo` rmtree's outside `~/.kirito/packages`. Fix: safeRelPath-check name before join/rmtree.
+- safe: semver ranges/prerelease precedence, makeMethod kw binding, safeRelPath/validateManifest,
+  base64, csv quoting, xml, statistics.quantiles, tabular merge/groupby/valuecounts.
+
+---
+
+### Numeric: tensor / matrix / complex / math (tensor.hpp, stdlib_tensor/matrix/complex/math.hpp)
+- `NEW MED` — `stdlib_math.hpp:254-262` — **math.comb false "too large"**: step-wise `r*(n-k+i)`
+  overflows u64 on the intermediate even when the final fits int64; `math.comb(64,32)` throws though
+  `C(64,32)=1.83e18 < INT64_MAX`. Fix: `__int128` intermediate or gcd-reduce before multiply.
+- `NEW LOW` — `stdlib_tensor.hpp:1337` — `norm(ord=-inf)` returns max|x| not min|x| (isinf catches both
+  signs). Fix: branch `ord<0` → min.
+- `NEW LOW` — `stdlib_tensor.hpp:1332-1341` — `norm` on a 2-D tensor is entrywise not induced
+  (ord=1/2/inf disagree with NumPy; Frobenius default OK). Fix: doc vector-only or dispatch induced.
+- `NEW LOW` — `tensor.hpp:49-56` — `checkedNumel` rejects `zeros([1e8, 0])` (per-dim cap fires before a
+  later 0 axis collapses count). Fix: short-circuit to 0 if any dim is 0.
+- `NEW LOW` — `stdlib_tensor.hpp:1412-1424` — einsum contraction `total` (product of all label extents)
+  is only a loop bound, never size-checked → `einsum("ij,jk->ik")` with i≈k≈64Mi, j=1 → ~4.5e15-iter
+  hang (DoS from small input). Fix: cap total.
+- safe: checkedNumel/checkSize at every growing ctor, slicePicks count-driven, INT64_MIN-safe helpers,
+  NaN-last comparator is valid strict-weak-order.
+
+### Regex (regex_engine.hpp, stdlib_regex.hpp)
+- `NEW MED` — `regex_engine.hpp:585,599,603` — **Pike-VM capture vectors deep-copied per epsilon step
+  → O(program² · groups) DoS**: one input position costs O(program × numGroups); a group-dense pattern
+  `"()"*99000` (~198 KB, under the 200000-instr cap) hangs on a 1-byte/empty subject. The stated
+  "O(input·program)" bound is wrong. Fix: COW capture arrays (shared_ptr), cap numGroups, or a shared
+  slot log. (larger fix — mitigate by capping numGroups)
+- `NEW LOW` — `stdlib_regex.hpp:431-442` — module `sub`/`split` drop the `flags` arg (IGNORECASE/etc.
+  unreachable one-shot). Fix: add trailing flags param.
+- `NEW LOW` — `regex_engine.hpp:334-346` — `\u`/`\U`/`\x` accept lone surrogates (D800-DFFF) → dead
+  pattern element. Fix: reject surrogate range.
+- safe: epsilon-cycle guard (visited/gen), {n,m} caps, empty-match advance, capture OOB guards,
+  anchors/boundaries/MULTILINE/DOTALL, greedy/lazy priority.
+
+## FIXES APPLIED (this session)
+- `FIXED` HIGH — `runtime.hpp` List.sort iterator-invalidation UAF: now snapshots elems, sorts the
+  snapshot, reassigns after all user code (key fn + `_lt_`) has run.
