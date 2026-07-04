@@ -136,8 +136,12 @@ _(appended as each parallel audit agent returns; verified below)_
 - `NEW LOW(note)` — `stdlib_serde.hpp:181-245` — dump/serialize.loads is pickle-style unsafe on hostile
   bytes (instantiates arbitrary registered classes + runs `_setstate_`). Trust-boundary; document
   loudly / consider safe-mode. (design, not a quick fix)
-- `NEW LOW` — `stdlib_gzip.hpp:70` — O(n²) `data.substr(pos)` copy per member on many-member gzip. Fix:
-  inflate over an offset/string_view.
+- ~~`NEW LOW` — `stdlib_gzip.hpp:70` — O(n²) `data.substr(pos)` copy per member on many-member gzip.~~
+  **DONE** — `inflateImpl` and `BitReader` now take a `std::string_view`; gzip passes
+  `std::string_view(data).substr(pos)` (O(1), no copy), so N concatenated members inflate in O(total).
+  `inflate(const std::string&)` keeps its signature (used as a function pointer by zlib). Tests:
+  multi-member cases in `spec_gzip.ki` (400 members) + a `test_zlib.cpp` probe driving `inflateImpl`
+  on a mid-buffer offset view.
 - `NEW LOW` — `deflate.hpp:348-353` — zlibDecompress ignores FDICT (`FLG & 0x20`) → a valid preset-dict
   stream is misparsed. Fix: throw "preset dictionary unsupported" (or skip 4 DICTID bytes).
 - `NEW LOW` — `stdlib_dump.hpp:150,152` — `for(k < c*2)` uint32 wrap for a Dict/Object count

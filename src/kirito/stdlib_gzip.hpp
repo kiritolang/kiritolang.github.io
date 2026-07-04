@@ -67,7 +67,9 @@ inline std::string decompress(const std::string& data) {
         if (flg & 0x02) pos += 2;                // FHCRC
         if (pos + 8 > data.size()) throw deflate::DeflateError("gzip: truncated header/stream");
         std::size_t consumed = 0;
-        std::string out = deflate::inflateImpl(data.substr(pos), deflate::kMaxInflateOut, &consumed);
+        // A string_view suffix — no copy — so many concatenated members inflate in O(total), not O(n^2).
+        std::string out = deflate::inflateImpl(std::string_view(data).substr(pos),
+                                               deflate::kMaxInflateOut, &consumed);
         std::size_t t = pos + consumed;          // the 8-byte CRC-32 + ISIZE trailer follows the body
         if (t + 8 > data.size()) throw deflate::DeflateError("gzip: truncated stream");
         uint32_t want = b(t) | (b(t + 1) << 8) | (b(t + 2) << 16) | (static_cast<uint32_t>(b(t + 3)) << 24);

@@ -175,5 +175,24 @@ catch as e:
 ok
 )") == "caught");
 
+    // gzip multi-member: several members concatenated inflate at an OFFSET into the shared buffer
+    // (inflateImpl takes a string_view suffix, no per-member copy). Under asan this also checks the
+    // view never outlives its backing string.
+    CHECK(evalStr(vm, R"(
+var g = import("gzip")
+g.decompress(g.compress("AAA") + g.compress("BBB") + g.compress("CCC"))
+)") == "AAABBBCCC");
+    {
+        // Drive inflateImpl directly on a mid-buffer view: [junk prefix][deflate body]. `consumed` must
+        // be relative to the view's start, and the decode must not read before the offset.
+        std::string input("payload-\x00\x01\x02-tail", 16);  // embedded NUL/control bytes, explicit length
+        std::string body = deflate::compress(input);
+        std::string buf = "PREFIX!!" + body;                 // body starts at offset 8
+        std::size_t consumed = 0;
+        std::string out = deflate::inflateImpl(std::string_view(buf).substr(8), deflate::kMaxInflateOut, &consumed);
+        CHECK(out == input);
+        CHECK(consumed == body.size());
+    }
+
     return RUN_TESTS();
 }
