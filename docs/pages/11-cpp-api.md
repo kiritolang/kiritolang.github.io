@@ -300,44 +300,48 @@ Values you read and immediately return (as inside a native impl) need no rooting
 already keeps them alive under the call frame's temp-root region. Root only when your handle
 outlives the current expression.
 
-**Alternatives to `RootScope`** — highest-level first; reach for a RAII guard, not a raw primitive:
+**Choose the root by how long the value must live — reach for a RAII guard, not a raw primitive:**
 
-- **The `List`/`Dict`/`Set`/`String`/… wrappers** pin their own allocation for their lifetime (a
-  refcounted GC root via `vm.pinHandle` / `unpinHandle`), so you almost never touch the rooting
-  primitives directly — building through the wrappers is self-rooting. See [Section 5 → Constructing
-  values](#constructing-values).
-- **`PinnedHandle`** (value.hpp) — for a handle you must store in a **long-lived** C++ object: a
-  class member, a `std::vector`, a callback registry. `RootScope` is stack-scoped, so it can't
-  outlive the function that created it; and a bare `Handle` member is invisible to the GC, so a later
-  collection sweeps it out from under you (a dangling handle — the classic "I cached a compiled
-  Kirito function and it vanished mid-run" bug). `PinnedHandle` is an owning, copy/move-aware RAII
-  root that pins its handle for its own lifetime and unpins on destruction (its pin is refcounted, so
-  copies are safe and moves transfer ownership):
+| The value… | Root it with |
+|---|---|
+| is read and immediately returned (as in a native impl) | *nothing* — the call frame's temp-roots already cover it |
+| is held across another allocating call **within one function** | **`RootScope`** — `rs.add(h)` |
+| is a container you're building | the **`List` / `Dict` / `Set` / `String` / …** wrappers self-root (see [Constructing values](#constructing-values)) |
+| is **stored** in a long-lived C++ object (a member, a `std::vector`, a registry) | **`PinnedHandle`** (value.hpp) |
+| is bound into a scope for the program's use | **`registerGlobal(name, h)`** |
 
-  ```cpp
-  class Engine {
-      KiritoVM&    vm_;
-      PinnedHandle policy_;                 // a compiled Function, kept across MANY calls — safe
-  public:
-      Engine(KiritoVM& vm, Handle policy) : vm_(vm), policy_(vm, policy) {}
-      Value run(Value arg) { return policy_.value().call({arg}); }   // .value() wraps; operator Handle too
-  };
-  ```
-- **`registerGlobal(name, h)`** roots via the module scope for as long as the binding survives.
-- **`vm.pushTemp(h)`** / **`vm.popTempTo(mark)`** — the raw primitive `RootScope` wraps. Prefer
-  `RootScope` unless you're implementing something like `RootScope` yourself. (Likewise `pinHandle` /
-  `unpinHandle` is what `PinnedHandle` wraps, and `setGcEnabled` is what `GcPauseScope` wraps — call
-  these directly only when building your own guard.)
+`PinnedHandle` is the one to reach for the moment a handle outlives the call that made it — `RootScope`
+is stack-scoped and can't be a class member, and a bare `Handle` member is invisible to the GC, so a
+later collection sweeps it out from under you (the classic "I cached a compiled Kirito function and it
+vanished mid-run" bug). It is an owning, copy/move-aware root — the pin is refcounted, so copies are
+safe and moves transfer ownership:
 
-You need `RootScope` / `pushTemp` only for a handle you hold across another allocating call **within
-the same function**; reach for `PinnedHandle` the moment the handle has to be **stored** somewhere
-that outlives the current call.
+```cpp
+class Engine {
+    KiritoVM&    vm_;
+    PinnedHandle policy_;                 // a compiled Function, kept across MANY calls — safe
+public:
+    Engine(KiritoVM& vm, Handle policy) : vm_(vm), policy_(vm, policy) {}
+    Value run(Value arg) { return policy_.value().call({arg}); }   // .value() wraps; operator Handle too
+};
+```
 
 To suspend collection *wholesale* for a batch of allocations — rather than root specific values — use
-the RAII **`GcPauseScope`** (vm.hpp): it disables auto-GC for its lifetime and **restores the previous
-setting** on exit (so nested pauses compose), rather than calling `setGcEnabled(false)` / `(true)` by
-hand and risking a forgotten re-enable. Rooting the values you actually care about (`RootScope` /
-`PinnedHandle`) is usually the better tool; pausing is the blunt instrument.
+**`GcPauseScope`** (vm.hpp): it disables auto-GC for its lifetime and **restores the previous setting**
+on exit (nested pauses compose), instead of toggling `setGcEnabled` by hand and risking a forgotten
+re-enable. Rooting the values you actually care about is usually better; pausing is the blunt
+instrument.
+
+**The raw primitives (you rarely touch these).** Every RAII guard above just wraps a low-level VM call.
+Reach for the guard, not the primitive — call the primitive directly only when you are building your
+own guard:
+
+| Raw primitive | Prefer instead |
+|---|---|
+| `pushTemp(h)` / `popTempTo(mark)` | **`RootScope`** |
+| `pinHandle(h)` / `unpinHandle(h)` | **`PinnedHandle`** (and every `value.hpp` wrapper's self-pin) |
+| `setGcEnabled(on)` | **`GcPauseScope`** |
+| `enterCall()` / `leaveCall()` | **`CallGuard`** |
 
 ### `NamedArg` — a keyword argument
 
