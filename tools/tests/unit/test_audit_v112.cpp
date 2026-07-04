@@ -23,6 +23,14 @@ static std::string ok(const std::string& src) {
 static bool has(const std::string& hay, const std::string& needle) {
     return hay.find(needle) != std::string::npos;
 }
+// The source line a KiritoError points at (0 if none / no error) — for pinning diagnostic locations.
+static uint32_t errLine(const std::string& src) {
+    KiritoVM vm;
+    vm.installStandardLibrary();
+    try { vm.runSource(src); return 0; }
+    catch (const KiritoError& e) { return e.span.line; }
+    catch (...) { return 0; }
+}
 // Run `src` collecting on EVERY allocation, so an unrooted intermediate is swept immediately
 // (release: throws "dangling handle"; ASan: heap-use-after-free) — the deterministic T-ROOT gate.
 static std::string okGc1(const std::string& src) {
@@ -229,6 +237,13 @@ int main() {
     CHECK(ok("var f = import(\"functools\")\nf.reduce(Function(a, b): return a + b, [1, 2, 3], 10)") == "16");
     CHECK(has(err("var f = import(\"functools\")\nf.reduce(Function(a, b): return a + b, [])"),
               "empty sequence"));  // still throws when genuinely unset + empty
+
+    // === A02-2: an error inside an f-string reports the f-string's REAL source line, not line 1.
+    // The embedded {expr} is sub-lexed seeded at the token's line/col, so its node spans are absolute. ===
+    CHECK(errLine("var x = 0\n\n\nf\"{1 / x}\"\n") == 4);        // runtime div-by-zero on line 4
+    CHECK(errLine("\n\nf\"{undefined_name_here}\"\n") == 3);     // resolver undefined-name on line 3
+    // a control (same error NOT in an f-string) still reports its own line, unchanged
+    CHECK(errLine("var x = 0\n\n\nvar y = 1 / x\n") == 4);
 
     // === A07-3: privacy is per class *chain*, not per defining class — a subclass method may read a
     // base(-typed) instance's private, symmetric with a base method reading a derived instance's.

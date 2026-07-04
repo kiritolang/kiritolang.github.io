@@ -39,6 +39,11 @@ struct Token {
 class Lexer {
 public:
     explicit Lexer(std::string_view source) : src_(normalizeNewlines(source)) {}
+    // Seed the starting line/col so a sub-lexed fragment (an f-string's embedded `{expr}`) produces
+    // spans ABSOLUTE to the enclosing source file rather than relative to line 1 — so errors inside an
+    // f-string report the real file location (A02-2).
+    Lexer(std::string_view source, uint32_t startLine, uint32_t startCol)
+        : src_(normalizeNewlines(source)), line_(startLine), col_(startCol) {}
 
     // Universal newlines: collapse CRLF and lone CR to a single LF up front, so a file authored on
     // Windows (or copied through a CRLF filesystem, e.g. Windows -> WSL) lexes identically to Unix

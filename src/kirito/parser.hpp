@@ -888,13 +888,13 @@ private:
         std::size_t e = rawCode.find_last_not_of(" \t");
         std::string code = (b == std::string::npos) ? std::string() : rawCode.substr(b, e - b + 1);
         if (code.empty()) throw KiritoError("f-string '{...}' must contain a single expression", span);
-        // The embedded expression is lexed/parsed by a FRESH Lexer+Parser that starts at line 1, so any
-        // error it throws carries a span relative to the `{expr}` text (e.g. "1:10"), not the real file
-        // position. Re-anchor such an error to the f-string token's span so the diagnostic points at the
-        // f-string on the correct source line instead of line 1.
+        // The embedded expression is lexed/parsed by a sub Lexer+Parser SEEDED at the f-string token's
+        // line/col, so every AST node it produces carries a span absolute to the source file (not line 1)
+        // — runtime/resolver errors inside an f-string then report the real file location (A02-2). Parse
+        // errors are also re-anchored to the token span for the same reason.
         ast::Program prog;
         try {
-            Lexer lex(code);
+            Lexer lex(code, span.line, span.col);
             Parser sub(lex.tokenize(), exprDepth_ + 1);  // carry nesting so deep f-string nesting is bounded
             prog = sub.parseProgram();
         } catch (const KiritoError& err) {
