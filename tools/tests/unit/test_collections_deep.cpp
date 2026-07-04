@@ -39,9 +39,9 @@ int main() {
     CHECK(throws(vm, "{1, 2}.isdisjoint()"));
 
     // ---- NaN in a List value-search: exact ==, so it is never found ----
-    CHECK(run(vm, "import(\"math\")\n[math.nan].count(math.nan)") == "0");
-    CHECK(throws(vm, "import(\"math\")\n[math.nan].index(math.nan)"));
-    CHECK(throws(vm, "import(\"math\")\n[math.nan].remove(math.nan)"));
+    CHECK(run(vm, "var math = import(\"math\")\n[math.nan].count(math.nan)") == "0");
+    CHECK(throws(vm, "var math = import(\"math\")\n[math.nan].index(math.nan)"));
+    CHECK(throws(vm, "var math = import(\"math\")\n[math.nan].remove(math.nan)"));
 
     // ---- List slice: negative step WITH bounds, and a float bound throws ----
     CHECK(run(vm, "[0, 1, 2, 3, 4][4:1:-1]") == "[4, 3, 2]");
@@ -61,10 +61,10 @@ int main() {
     // ---- Float key identity: +0.0 and -0.0 collapse; +inf and -inf are distinct ----
     CHECK(run(vm, "var d = {}\nd[0.0] = 1\nd[-0.0] = 2\nlen(d)") == "1");
     CHECK(run(vm, "var d = {}\nd[0.0] = 1\nd[-0.0] = 2\nd[0.0]") == "2");
-    CHECK(run(vm, "import(\"math\")\nlen({math.inf, math.inf})") == "1");
-    CHECK(run(vm, "import(\"math\")\nlen({math.inf, -math.inf})") == "2");
+    CHECK(run(vm, "var math = import(\"math\")\nlen({math.inf, math.inf})") == "1");
+    CHECK(run(vm, "var math = import(\"math\")\nlen({math.inf, -math.inf})") == "2");
     // NaN keys are each distinct (exact identity, never equal)
-    CHECK(run(vm, "import(\"math\")\nlen({math.nan, math.nan})") == "2");
+    CHECK(run(vm, "var math = import(\"math\")\nlen({math.nan, math.nan})") == "2");
 
     return RUN_TESTS();
 }

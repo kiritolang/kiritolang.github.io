@@ -164,8 +164,9 @@ kirito_test(test_parallel_deadlock unit/test_parallel_deadlock.cpp)
 kirito_test(test_parallel_random unit/test_parallel_random.cpp)
 kirito_test(test_parallel_edge unit/test_parallel_edge.cpp)
 kirito_test(test_parallel_fuzz unit/test_parallel_fuzz.cpp)
+kirito_test(test_parallel_deep unit/test_parallel_deep.cpp)
 set_tests_properties(test_parallel test_parallel_sync test_parallel_deadlock test_parallel_random
-                     test_parallel_edge test_parallel_fuzz PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+                     test_parallel_edge test_parallel_fuzz test_parallel_deep PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 
 kirito_test(embed_demo integration/embed_demo.cpp)
 # --- embed_* integration projects: real C++ programs that embed KiritoVM ---

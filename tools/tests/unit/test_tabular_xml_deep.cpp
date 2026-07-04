@@ -23,42 +23,42 @@ int main() {
     // ================= tabular =================
 
     // ---- Series scalar arithmetic: -, //, % (Series-scalar forms) ----
-    CHECK(run(vm, "import(\"tabular\")\n(tabular.Series([10, 20, 30]) - 5).tolist()") == "[5, 15, 25]");
-    CHECK(run(vm, "import(\"tabular\")\n(tabular.Series([10, 21]) // 2).tolist()") == "[5, 10]");
-    CHECK(run(vm, "import(\"tabular\")\n(tabular.Series([10, 21, 32]) % 3).tolist()") == "[1, 0, 2]");
+    CHECK(run(vm, "var tabular = import(\"tabular\")\n(tabular.Series([10, 20, 30]) - 5).tolist()") == "[5, 15, 25]");
+    CHECK(run(vm, "var tabular = import(\"tabular\")\n(tabular.Series([10, 21]) // 2).tolist()") == "[5, 10]");
+    CHECK(run(vm, "var tabular = import(\"tabular\")\n(tabular.Series([10, 21, 32]) % 3).tolist()") == "[1, 0, 2]");
 
     // ---- Series _setitem_ write path (positional default index + string label) ----
-    CHECK(run(vm, R"KI(import("tabular")
+    CHECK(run(vm, R"KI(var tabular = import("tabular")
 var s = tabular.Series([1, 2, 3])
 s[0] = 99
 s.tolist())KI") == "[99, 2, 3]");
-    CHECK(run(vm, R"KI(import("tabular")
+    CHECK(run(vm, R"KI(var tabular = import("tabular")
 var s = tabular.Series([1, 2, 3], index=["a", "b", "c"])
 s["b"] = 99
 s.tolist())KI") == "[1, 99, 3]");
 
     // ---- Series / DataFrame _str_ rendering exercises the value + name/header layout ----
-    CHECK(run(vm, "import(\"tabular\")\n\"20\" in String(tabular.Series([10, 20, 30]))") == "True");
-    CHECK(run(vm, "import(\"tabular\")\n\"mycol\" in String(tabular.Series([10, 20], name=\"mycol\"))") == "True");
-    CHECK(run(vm, R"KI(import("tabular")
+    CHECK(run(vm, "var tabular = import(\"tabular\")\n\"20\" in String(tabular.Series([10, 20, 30]))") == "True");
+    CHECK(run(vm, "var tabular = import(\"tabular\")\n\"mycol\" in String(tabular.Series([10, 20], name=\"mycol\"))") == "True");
+    CHECK(run(vm, R"KI(var tabular = import("tabular")
 "a" in String(tabular.readcsv("a,b\n1,2\n3,4")))KI") == "True");
 
     // ================= xml =================
 
     // ---- empty numeric entities are kept verbatim (parse returns -1 -> literal text) ----
-    CHECK(run(vm, "import(\"xml\")\nxml.parse(\"<x>&#;</x>\").text") == "&#;");
-    CHECK(run(vm, "import(\"xml\")\nxml.parse(\"<x>&#x;</x>\").text") == "&#x;");
+    CHECK(run(vm, "var xml = import(\"xml\")\nxml.parse(\"<x>&#;</x>\").text") == "&#;");
+    CHECK(run(vm, "var xml = import(\"xml\")\nxml.parse(\"<x>&#x;</x>\").text") == "&#x;");
     // a well-formed numeric entity still decodes (sanity around the same branch)
-    CHECK(run(vm, "import(\"xml\")\nxml.parse(\"<x>&#65;</x>\").text") == "A");
+    CHECK(run(vm, "var xml = import(\"xml\")\nxml.parse(\"<x>&#65;</x>\").text") == "A");
 
     // ---- unterminated comment / CDATA / PI / decl are consumed leniently to end (no crash) ----
-    CHECK(!throws(vm, "import(\"xml\")\ndiscard xml.parse(\"<a>ok</a><!-- trailing\")"));
-    CHECK(!throws(vm, "import(\"xml\")\ndiscard xml.parse(\"<a>ok</a><![CDATA[ trailing\")"));
-    CHECK(!throws(vm, "import(\"xml\")\ndiscard xml.parse(\"<a>ok</a><?pi trailing\")"));
-    CHECK(!throws(vm, "import(\"xml\")\ndiscard xml.parse(\"<a>ok</a><!DOCTYPE x\")"));
+    CHECK(!throws(vm, "var xml = import(\"xml\")\ndiscard xml.parse(\"<a>ok</a><!-- trailing\")"));
+    CHECK(!throws(vm, "var xml = import(\"xml\")\ndiscard xml.parse(\"<a>ok</a><![CDATA[ trailing\")"));
+    CHECK(!throws(vm, "var xml = import(\"xml\")\ndiscard xml.parse(\"<a>ok</a><?pi trailing\")"));
+    CHECK(!throws(vm, "var xml = import(\"xml\")\ndiscard xml.parse(\"<a>ok</a><!DOCTYPE x\")"));
 
     // ---- tostring coerces a non-String attribute value ----
-    CHECK(run(vm, "import(\"xml\")\n\"42\" in xml.tostring(xml.Element(\"r\", {\"id\": 42}))") == "True");
+    CHECK(run(vm, "var xml = import(\"xml\")\n\"42\" in xml.tostring(xml.Element(\"r\", {\"id\": 42}))") == "True");
 
     return RUN_TESTS();
 }
