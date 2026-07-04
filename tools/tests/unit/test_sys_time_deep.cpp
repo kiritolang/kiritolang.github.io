@@ -100,12 +100,19 @@ int main() {
     CHECK(run(vm, "var time = import(\"time\")\ntime.strptime(\"2000-02-29\", \"%Y-%m-%d\").iso()")
               == "2000-02-29T00:00:00");
 
-    // NOTE: DateTime._setstate_ with a non-Integer epoch is guarded in C++
-    // ("DateTime _setstate_: expected an Integer epoch"), but there is no Kirito-level path to hand a
-    // malformed state to a freshly-deserialized DateTime — _setstate_ is only invoked by the serialize/
-    // dump reconstruction core, which always supplies the Integer written by _getstate_. So the
-    // non-Integer branch is not reachable from a Kirito snippet; skipping (would require forging a
-    // corrupt blob at the C++ layer, out of scope for this source-level suite).
+    // ---- DateTime._setstate_ is one-shot: it can fill a freshly-deserialized value but NEVER re-home
+    // an established one (A17-1) — otherwise mutating a live Dict/Set key in place corrupts the container
+    // (DateTime is immutable + hashable). Calling it on any user-visible DateTime throws. ----
+    CHECK(throws(vm, "var time = import(\"time\")\ntime.make(2020, 1, 1)._setstate_(0)"));
+    CHECK(run(vm, "var time = import(\"time\")\nvar d = time.make(2020, 1, 1)\nvar s = {d}\n"
+                  "var msg = \"\"\ntry:\n    d._setstate_(0)\ncatch as e:\n    msg = e\n"
+                  "d in s and \"immutable\" in msg") == "True");   // the Set key stays findable; the mutation was refused
+    // Round-trip through serialize/dump still works (the deserializer's alloc-empty -> _setstate_ path).
+    CHECK(run(vm, "var time = import(\"time\")\nvar ser = import(\"serialize\")\n"
+                  "var d = time.make(2020, 6, 15, 12, 30, 0)\nser.loads(ser.dumps(d)).iso()")
+              == "2020-06-15T12:30:00");
+    CHECK(run(vm, "var time = import(\"time\")\nvar dp = import(\"dump\")\n"
+                  "var d = time.make(1999, 12, 31, 23, 59, 59)\ndp.loads(dp.dumps(d)) == d") == "True");
 
     // ---- sys.version shape (interpreter semver) -------------------------------------------------
     // Non-empty and semver-shaped (>= 2 dots), matching what `ki --version` reports.

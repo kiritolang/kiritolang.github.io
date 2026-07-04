@@ -136,9 +136,10 @@ public:
     static constexpr const char* kTypeName = "DateTime";
     int64_t epoch = 0;  // whole seconds since 1970-01-01 UTC
     std::tm tm{};       // broken-down UTC fields
+    bool initialized_ = false;  // true once a value is fully built; guards _setstate_ (see below)
 
     DateTime() { setEpoch(0); }                       // empty value for serialize/dump reconstruction
-    explicit DateTime(int64_t secs) { setEpoch(secs); }
+    explicit DateTime(int64_t secs) { setEpoch(secs); initialized_ = true; }
 
     // Set the epoch and recompute the broken-down UTC fields, keeping `epoch` and `tm` consistent.
     // Uses the portable gmtimeCompat (not the platform gmtime, whose range differs across OSes), so the
@@ -262,10 +263,18 @@ public:
             return makeMethod(vm, "_setstate_", {"state"},
                 [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                     Args(vm, a, "_setstate_").require(1);                  // guard the positional fast path (a[0] OOB otherwise)
+                    auto& d = static_cast<DateTime&>(vm.arena().deref(self));
+                    // DateTime is immutable + hashable (a Dict/Set key). _setstate_ exists ONLY for the
+                    // deserializer's alloc(empty) -> _setstate_(epoch) path; re-homing an established value
+                    // in place would corrupt any container keyed on it. So it is one-shot: refuse once built.
+                    if (d.initialized_)
+                        throw KiritoError("DateTime _setstate_: cannot re-initialize an established DateTime "
+                                          "(it is immutable once built)");
                     const Object& o = vm.arena().deref(a[0]);
                     if (o.kind() != ValueKind::Integer)
                         throw KiritoError("DateTime _setstate_: expected an Integer epoch");
-                    static_cast<DateTime&>(vm.arena().deref(self)).setEpoch(static_cast<const IntVal&>(o).value());
+                    d.setEpoch(static_cast<const IntVal&>(o).value());
+                    d.initialized_ = true;
                     return vm.none();
                 }, std::vector<Handle>{self});
         return Object::getAttr(vm, self, name);
