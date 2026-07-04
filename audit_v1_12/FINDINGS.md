@@ -74,7 +74,7 @@ Fix each with a regression test (C++ unit and/or `.ki` + `.experr`). Grouped by 
 - ▣ [FIXED] **T-ROOT** GC-rooting helper — see the HIGH GC-rooting block (A09-3/4, A06-1/2, A07-4).
 - ☐ **T-BIND** kwarg binding + param-default resolution duplicated 3–4× with divergent policies:
   **A05-2** [FIXED] (`makeMethod` fills omitted required args with `None` → `d.setdefault(default=7)` inserts
-  `{None:7}`; `d.get(default=9)` returns 9 not error), A07 (three binders), **A03-3/A03-4** (resolver
+  `{None:7}`; `d.get(default=9)` returns 9 not error), A07 (three binders), **A03-3** [FIXED — resolver] / A03-4 (resolver
   rejects `Function(n, size=n)` that the runtime binder accepts). Fix: one binder with a real "required"
   notion; one param-default resolution rule shared by resolver/locals/analyzer/runtime.
 - ☐ **T-REFLECT** operator reflection is partial/asymmetric: **A05-3** only `==` reflects onto a RHS
@@ -105,16 +105,16 @@ Fix each with a regression test (C++ unit and/or `.ki` + `.experr`). Grouped by 
 
 ## MEDIUM (correctness / spec / diagnostics) — fix after High
 
-A01-1 (`\xHH` emits a raw byte → breaks the String code-point layer; `len("\xC3\x28")==1`), A02-1
+A01-1 [FIXED] (`\xHH` emits a raw byte → breaks the String code-point layer; `len("\xC3\x28")==1`), A02-1 [BY DESIGN — inline thunks in comma contexts]
 (inline `Function(): return a,b` doesn't pack → binding becomes a List), A02-2 (f-string runtime/
-resolver errors report line 1), A06-7 (Set/Dict store the same NaN object twice — no identity
+resolver errors report line 1), A06-7 [BY DESIGN — NaN write-only keys, r7_types.ki] (Set/Dict store the same NaN object twice — no identity
 short-circuit in `probeBucket`), A07-2 (comparison dunders not required to return Bool), A07-3
 (private-access asymmetry: subclass can't read a base-typed instance's inherited private — vs spec),
 A10-3 (BytesIO.seek clamps negative vs File.seek throws), A10-5 (`for line in file` is eager → OOM on
 big files), A17-1 (`DateTime._setstate_` public, mutates in place → breaks immutability + hash-key
 invariant), A19-1 (fork-bomb when spawning an entry-script fn without `if argmain:` — `<main>` guard is
 dead code, no diagnostic), A20-2 (semver accepts leading zeros), A20-4 (`functools.reduce` conflates
-no-initial with `initial=None`), A20-5 (`tabular.sortvalues` crashes on a None column), A02 f-string
+no-initial with `initial=None`), A20-5 [FIXED] (`tabular.sortvalues` crashes on a None column), A02 f-string
 invalid-escape leniency, plus the reflection/retain items folded into themes above.
 
 ## LOW / Nit — batch-fix or document
@@ -150,3 +150,28 @@ MEDIUM fix above ships with its regression test, which closes most of these dire
 
 Verification: `tools/scripts/post_work_check.sh` (debug→release→asan→tsan) + the TLS compile gate on
 every push; `bytecode_stability.sh` for semantic stability.
+
+---
+
+## v1.12 hardening — final status (this session)
+
+**All 13 HIGH fixed** (A04-1, TENSOR-1, TENSOR-2, A10-4, A10-2, A07-1, A09-1, A09-3, A09-4, A16-1,
+NET-1, A20-1, A08-1). **Themes:** T-ROOT ✅, T-GUARD ✅, T-RETAIN (dispatcher) ✅, M1 adaptive GC ✅.
+**Mediums fixed:** A05-1, A05-2 (+ makeMethod minArgs), A03-3, A01-1, A20-5.
+kVersion → 1.12.0.
+
+**Reclassified BY DESIGN (auditor-flagged, but a documented/load-bearing invariant — left to the
+maintainer, NOT changed):**
+- A05-3 / A13-1 — arithmetic/ordering operators don't reflect onto the RHS (r11_docinvariants.ki;
+  Kirito has no `_radd_`-style dunder). Only ==/!= are symmetric (A05-1 fixed that).
+- A06-7 — NaN Set/Dict keys are "write-only" (insert-only, never `in`, retrieval throws) —
+  r7_types.ki documents it as a consequence of exact NaN-never-equal equality.
+- A02-1 — inline `Function(): return a, b` does NOT pack, so a list of inline thunks
+  `[Function(): return X, Function(): return Y]` works (the comma belongs to the enclosing list).
+
+**Remaining (genuine, not yet done):** T-BIND full binder unification (the concrete A05-2/A03-3 bugs
+are fixed; consolidating the 3–4 binders is DRY cleanup); Mediums A02-2 (f-string runtime line
+numbers), A07-3 (private-access asymmetry), A10-5 (eager `for line in file`), A17-1 (`DateTime._setstate_`
+mutability), A19-1 (fork-bomb diagnostic), A20-4 (`reduce` initial=None sentinel), A07-4 (C++
+`Value::items()` String view); the 37 Low / 13 Nit batch; A09-2 bucket compaction / M3 pool cap; the
+A21 test-gap sweep; and the A22 before/after benchmark measurement of M1.
