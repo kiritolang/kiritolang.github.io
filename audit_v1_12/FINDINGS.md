@@ -169,9 +169,15 @@ maintainer, NOT changed):**
 - A02-1 — inline `Function(): return a, b` does NOT pack, so a list of inline thunks
   `[Function(): return X, Function(): return Y]` works (the comma belongs to the enclosing list).
 
+**Fixed since:** A07-3 (private-access asymmetry) — `checkPrivateAccess` now allows access when the
+running method's class and the receiver's class are related by inheritance in EITHER direction
+(new `classIsSubclassOf` helper), matching the documented per-class-*chain* privacy; regression tests
+in test_audit_v112.cpp cover subclass→base-instance, base→derived-instance, unrelated (throws), and
+plain-outside (throws).
+
 **Remaining (genuine, not yet done):** T-BIND full binder unification (the concrete A05-2/A03-3 bugs
 are fixed; consolidating the 3–4 binders is DRY cleanup); Mediums A02-2 (f-string runtime line
-numbers), A07-3 (private-access asymmetry), A10-5 (eager `for line in file`), A17-1 (`DateTime._setstate_`
+numbers), A10-5 (eager `for line in file`), A17-1 (`DateTime._setstate_`
 mutability), A19-1 (fork-bomb diagnostic), A20-4 (`reduce` initial=None sentinel), A07-4 (C++
 `Value::items()` String view); the 37 Low / 13 Nit batch; A09-2 bucket compaction / M3 pool cap; the
 A21 test-gap sweep; and the A22 before/after benchmark measurement of M1.

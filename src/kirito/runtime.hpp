@@ -2072,14 +2072,34 @@ inline bool isInstanceOf(KiritoVM& vm, Handle value, Handle typeH) {
     return !name.empty() && typeMatches(vm, value, name);
 }
 
-// A private member (_name, no trailing underscore) may only be touched from within a method of the
-// receiver's class chain (i.e. while running such a method). currentClass/hasCurrentClass describe
-// the method currently executing.
+// True if class `subH` is `superH` or descends from it (walking the base chain). Both handles must
+// name user classes.
+inline bool classIsSubclassOf(KiritoVM& vm, Handle subH, Handle superH) {
+    Handle cur = subH;
+    while (true) {
+        if (cur == superH) return true;
+        const auto& c = static_cast<const ClassValue&>(vm.arena().deref(cur));
+        if (!c.hasBase) return false;
+        cur = c.base;
+    }
+}
+
+// A private member (_name, no trailing underscore) may only be touched from within a method whose
+// class is in the receiver's class chain — privacy is per class *chain*, not per defining class, so
+// a subclass method may read a base instance's private and vice versa (CLAUDE.md). currentClass/
+// hasCurrentClass describe the method currently executing; access is allowed when the running
+// method's class and the receiver's class are related by inheritance in EITHER direction.
 inline void checkPrivateAccess(KiritoVM& vm, Handle obj, const std::string& name, Handle currentClass,
                                bool hasCurrentClass, SourceSpan span) {
     if (!isPrivateName(name)) return;
-    if (!dynamic_cast<const InstanceValue*>(&vm.arena().deref(obj))) return;  // user classes only
-    if (hasCurrentClass && isInstanceOf(vm, obj, currentClass)) return;
+    const auto* inst = dynamic_cast<const InstanceValue*>(&vm.arena().deref(obj));
+    if (!inst) return;  // user classes only
+    if (hasCurrentClass && vm.arena().deref(currentClass).kind() == ValueKind::Class) {
+        Handle objClass = inst->cls;
+        if (classIsSubclassOf(vm, objClass, currentClass) ||
+            classIsSubclassOf(vm, currentClass, objClass))
+            return;
+    }
     throw KiritoError("cannot access private member '" + name + "' of '" +
                       vm.arena().deref(obj).typeName() + "' outside its class", span);
 }

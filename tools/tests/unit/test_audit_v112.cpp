@@ -222,5 +222,26 @@ int main() {
              "var df = t.DataFrame({\"a\": [3, None, 1], \"b\": [1, 2, 3]})\n"
              "df.sortvalues(\"a\").column(\"a\").tolist()") == "[1, 3, None]");
 
+    // === A07-3: privacy is per class *chain*, not per defining class — a subclass method may read a
+    // base(-typed) instance's private, symmetric with a base method reading a derived instance's.
+    // Previously only base->derived worked (the check was isInstanceOf(obj, currentClass), one-directional). ===
+    // subclass method reading a base instance's inherited private via self (already worked):
+    CHECK(ok("class B:\n  var _init_ = Function(self): self._x = 10\n"
+             "class D(B):\n  var read = Function(self): return self._x\nD().read()") == "10");
+    // subclass method reading a SEPARATE base instance's private (the fixed case):
+    CHECK(ok("class B:\n  var _init_ = Function(self): self._x = 10\n"
+             "class D(B):\n  var peek = Function(self, o): return o._x\nD().peek(B())") == "10");
+    // base method reading a derived instance's private (was and stays allowed — symmetry):
+    CHECK(ok("class B:\n  var _init_ = Function(self): self._x = 10\n"
+             "  var peek = Function(self, o): return o._x\n"
+             "class D(B):\n  var go = Function(self): return 0\nB().peek(D())") == "10");
+    // an UNRELATED class still cannot reach into the private member:
+    CHECK(has(err("class B:\n  var _init_ = Function(self): self._x = 10\n"
+                  "class O:\n  var peek = Function(self, o): return o._x\nO().peek(B())"),
+              "cannot access private member"));
+    // and plain outside code still cannot:
+    CHECK(has(err("class B:\n  var _init_ = Function(self): self._x = 10\nB()._x"),
+              "cannot access private member"));
+
     return RUN_TESTS();
 }
