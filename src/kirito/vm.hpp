@@ -166,9 +166,24 @@ public:
 
     // Call-depth guard: the VM still recurses on the native C++ stack (one nested call/compile
     // descends into BytecodeVM::run again), so unbounded Kirito recursion would overflow it and crash
-    // the host. A RAII CallGuard caps the depth and throws a catchable error instead. The limit is
-    // well under what an 8 MB stack tolerates.
+    // the host. A RAII CallGuard throws a catchable error instead. TWO limits, whichever trips first:
+    //   1. a fixed call COUNT (maxCallDepth_) — the cheap common-case bound for shallow Kirito frames;
+    //   2. actual native STACK USAGE (maxStackBytes_) — because a call routed through a native
+    //      higher-order builtin (`sorted(key=g)`, `xs.sort(key=g)`, `apply(g)`, `min/max(key=g)`)
+    //      carries a much deeper C++ frame, so a *count* calibrated for a bare Kirito call overflows
+    //      the stack long before it fires (A04-1: a hard SIGSEGV). We estimate usage from the address
+    //      of a stack local relative to a base captured at the outermost call of this run.
     void enterCall() {
+        char probe;
+        auto cur = reinterpret_cast<std::uintptr_t>(&probe);
+        if (callDepth_ == 0) {
+            stackBase_ = cur;                          // top of this run's native stack
+        } else {
+            // uintptr_t arithmetic (not pointer subtraction of unrelated objects) so it stays defined.
+            std::uintptr_t used = stackBase_ > cur ? stackBase_ - cur : cur - stackBase_;
+            if (used > maxStackBytes_)
+                throw KiritoError("maximum recursion depth exceeded");
+        }
         if (++callDepth_ > maxCallDepth_) {
             --callDepth_;
             throw KiritoError("maximum recursion depth exceeded");
@@ -176,6 +191,7 @@ public:
     }
     void leaveCall() { --callDepth_; }
     void setMaxCallDepth(std::size_t n) { maxCallDepth_ = n; }
+    void setMaxStackBytes(std::size_t n) { maxStackBytes_ = n; }
 
     // Expose a C++ callable (or any value) as a Kirito global — the simplest extension point.
     void registerGlobal(const std::string& name, Handle value) {
@@ -340,9 +356,15 @@ private:
     // guard would fire — drop the default under ASan so the guard still throws cleanly.
 #if defined(KIRITO_SANITIZER_BUILD)
     std::size_t maxCallDepth_ = 500;
+    // Sanitizer frames are far larger (redzones + shadow), so bound native stack usage tightly too.
+    std::size_t maxStackBytes_ = 2u * 1024 * 1024;
 #else
     std::size_t maxCallDepth_ = 3000;
+    // ~6 MB of an 8 MB stack: leaves headroom for the frames below the captured base + the throw path,
+    // and trips a deep-native-frame recursion (A04-1) before it can overflow.
+    std::size_t maxStackBytes_ = 6u * 1024 * 1024;
 #endif
+    std::uintptr_t stackBase_ = 0;   // native-stack top captured at the outermost (depth-0) call
 };
 
 // RAII call-depth guard: increments on entry, decrements on scope exit (even when unwinding).

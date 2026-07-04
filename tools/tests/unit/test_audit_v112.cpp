@@ -95,5 +95,17 @@ int main() {
                 "var g = Function(x):\n  s.clear()\n  return x + \"!\"\n"
                 "len(s.apply(g))") == "5");
 
+    // === A04-1: recursion routed through a native higher-order builtin carries deep C++ frames, so a
+    // COUNT-only guard overflows the native stack before firing (SIGSEGV). The stack-usage guard must
+    // catch it and throw a catchable "maximum recursion depth exceeded" instead — no crash. ===
+    CHECK(has(err("var g = Function(n): return sorted([n], key = g)\ndiscard g(0)"), "recursion"));
+    CHECK(has(err("var h = Function(n): return [n].apply(h)\ndiscard h(0)"), "recursion"));
+    CHECK(has(err("var m = Function(n): return max([n, n], key = m)\ndiscard m(0)"), "recursion"));
+    // Plain (shallow-frame) Kirito recursion still throws catchably via the count guard.
+    CHECK(has(err("var f = Function(n): return f(n + 1)\ndiscard f(0)"), "recursion"));
+    // And ordinary bounded recursion still works (guard doesn't fire early on legitimate depth).
+    CHECK(ok("var fact = Function(n): return 1 if n <= 1 else n * fact(n - 1)\nfact(20)")
+          == "2432902008176640000");
+
     return RUN_TESTS();
 }
