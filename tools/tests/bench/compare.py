@@ -39,14 +39,9 @@ LANGS = ["C++ (-O2)", "Python 3", "Lua 5.1", "Bash", "Kirito"]
 
 
 def unit_of(ns):
-    """Pick a single time unit for a whole row, based on its slowest (largest) value."""
-    if ns < 1e3:
-        return ("ns", 1.0)
-    if ns < 1e6:
-        return ("us", 1e3)
-    if ns < 1e9:
-        return ("ms", 1e6)
-    return ("s", 1e9)
+    """The single time unit for every row: microseconds."""
+    del ns
+    return ("us", 1e3)
 
 
 def sig3(x):

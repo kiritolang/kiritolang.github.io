@@ -22,12 +22,11 @@ Each implementation times its internal repetitions with its own high-resolution 
 (`steady_clock` / `time.perfcounterns` / `os.clock` / bash `EPOCHREALTIME`), excluding process startup
 and input generation, then prints `<mean_ns> <stddev_ns>`. The driver tabulates the **raw
 per-repetition mean ± stddev** for every language — no slowdown ratios — with every cell in a row
-rendered in the **same time unit** (chosen from the row's slowest language) to **3 significant
-figures**. Example row:
+rendered in the **same time unit** (microseconds) to **3 significant figures**. Example row:
 
 ```
 workload         N   reps  unit  C++ (-O2)             Python 3              Lua 5.1               Bash                  Kirito
-sum_loop      1000   2000    ms  0.000374 ± 0.0000138  0.0382 ± 0.00512      —                     3.15 ± 0.0912         0.261 ± 0.235
+sum_loop      1000   2000    us  0.376 ± 0.0195        39.2 ± 6.54           —                     3110 ± 28.7           274 ± 236
 ```
 
 The **Lua 5.1** column is included automatically when a `lua5.1` interpreter is on `PATH` (or pass
