@@ -100,9 +100,13 @@ _(appended as each parallel audit agent returns; verified below)_
 - `NEW MED` — `stdlib_net.hpp:510-512` — **HTTPS response body unbounded (OOM)**: the plain-TCP path
   uses `recvAll` (256 MiB cap) but the TLS path's own `while(SSL_read>0) raw.append` has NO cap. A
   chatty HTTPS server OOMs the process. Fix: apply kMaxRecvAll ceiling in the SSL_read loop.
-- `NEW MED` — `proc_compat.hpp:262 (POSIX)/133,152 (Win)` — timeout doesn't kill the process GROUP; a
+- ~~`NEW MED` — `proc_compat.hpp:262 (POSIX)/133,152 (Win)` — timeout doesn't kill the process GROUP; a
   lingering grandchild holding the stdout pipe blocks `tout.join()` forever → sys.shell never returns
-  despite timeout=. Fix: setpgid + kill(-pgid) on timeout, or poll/deadline drains. (harder fix)
+  despite timeout=.~~ **DONE** — POSIX: child `setpgid(0,0)` (own group leader), timeout does
+  `kill(-pid, SIGKILL)` (whole group) + `kill(pid)` fallback. Windows: child assigned to a
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Job Object (created SUSPENDED, assigned, resumed), timeout does
+  `TerminateJobObject`. Tests: `sys_proc_grandchild_kill.ki` (`sleep 30 & wait` returns at ~0.5s, no
+  orphan) + a `test_proc.cpp` probe (throws AND returns < 10s).
 - `NEW MED` — `stdlib_net.hpp:375,743-777` — redirect `Location`/URL with bare `\n` flows unsanitized
   into the next request line/Host → header injection/request smuggling driven by the server. Fix:
   strip/reject CR/LF (control chars) in parseUrl host/path + resolveUrl output.
