@@ -415,7 +415,22 @@ private:
     void visit(const ast::TryStmt& s) override {
         bool hasFin = s.hasFinally;
         bool hasHand = !s.handlers.empty();
+        // On the exception path a `finally` runs with the in-flight exception value sitting on the
+        // operand stack (unwind pushes it there). If that finally body contains break/continue/return,
+        // their operand-stack cleanup math assumes a clean level and would mislocate the exception —
+        // corrupting the stack (a crash / infinite loop). So on the exception paths we park the
+        // exception in a hidden local across the finally body and reload it just before Reraise, so the
+        // finally always runs at the clean operand height. `$` can't appear in a user name.
+        std::string excName = hasFin ? "$exc" + std::to_string(tryCounter_++) : std::string();
+        if (hasFin) ensureHiddenSlot(excName);
         auto emitFinally = [this, &s, hasFin] { if (hasFin) compileBlock(s.finallyBody); };
+        // Run the finally on an EXCEPTION path: stash exc (top of stack) -> finally -> reload exc.
+        auto emitFinallyExc = [this, &s, hasFin, &excName] {
+            if (!hasFin) return;
+            emitStore(excName, s.span);
+            compileBlock(s.finallyBody);
+            emitLoad(excName, s.span);
+        };
 
         std::size_t finSetup = 0, exSetup = 0;
         if (hasFin) {  // outer block: catches exceptions in the body AND in handlers
@@ -456,8 +471,8 @@ private:
             }
             if (hasFin) frames_.pop_back();  // FINALLY frame no longer active beyond the handler bodies
             if (pendingNext != SIZE_MAX) patch(pendingNext, here());
-            if (!sawCatchAll) {  // no handler matched: run finally, re-throw
-                if (hasFin) { emit(Op::PopBlock); emitFinally(); }
+            if (!sawCatchAll) {  // no handler matched: run finally (exc parked), re-throw
+                if (hasFin) { emit(Op::PopBlock); emitFinallyExc(); }
                 emit(Op::Reraise, 0, s.span);
             }
             uint32_t lhandled = here();
@@ -466,9 +481,9 @@ private:
             endJumps.push_back(emit(Op::Jump));  // -> Lend
         }
 
-        if (hasFin) {  // Lfin: an exception in a handler (or in a type expr) — finally then re-throw
+        if (hasFin) {  // Lfin: an exception in a handler (or in a type expr) — finally (exc parked), re-throw
             patch(finSetup, here());
-            emitFinally();
+            emitFinallyExc();
             emit(Op::Reraise, 0, s.span);
         }
         for (std::size_t j : endJumps) patch(j, here());  // Lend
@@ -687,6 +702,7 @@ private:
     Proto& proto_;
     std::vector<CFrame> frames_;
     int withCounter_ = 0;  // unique hidden-local index per `with` (holds the context manager)
+    int tryCounter_ = 0;   // unique hidden-local index per `try` (parks the in-flight exception)
     int depth_ = 0;
     bool slotsEnabled_ = false;                      // true only when compiling a true function body
     fum::unordered_map<std::string, uint32_t> slotOf_;  // slotted local name -> frame slot index

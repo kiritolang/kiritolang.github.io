@@ -203,5 +203,10 @@ _(appended as each parallel audit agent returns; verified below)_
   block-stack discipline, with enter/exit, GC rooting across allocating ops, slot/name aliasing.
 
 ## FIXES APPLIED (this session)
+- `FIXED` HIGH — **break/continue/return in a `finally` reached via an exception** (crash/hang):
+  `compiler.hpp` now parks the in-flight exception in a hidden `$excN` local across the exception-path
+  finally body (both reraise sites), so it runs at clean operand height. Validated on the two
+  reproducers (were SEGFAULT / infinite-hang; now correct, matching Python's swallow semantics) +
+  all 259 golden scripts green. Regression: `tools/tests/scripts/spec_finally_control.ki`.
 - `FIXED` HIGH — `runtime.hpp` List.sort iterator-invalidation UAF: now snapshots elems, sorts the
-  snapshot, reassigns after all user code (key fn + `_lt_`) has run.
+  snapshot, reassigns after all user code (key fn + `_lt_`) has run. (test pending)
