@@ -139,5 +139,28 @@ int main() {
     CHECK(ok("var g = import(\"gzip\")\n"
              "g.decompress(g.compress(\"hello \") + g.compress(\"world!\"))") == "hello world!");
 
+    // === NET-1 (security): a redirect must not forward the Authorization header / cookie jar to a
+    // different origin or over an https->http downgrade. The policy is pure, so test it directly. ===
+    {
+        auto scope = [](const char* from, const char* to) {
+            return net::redirectScope(net::parseUrl(from), net::parseUrl(to));
+        };
+        // same origin -> keep both
+        auto s1 = scope("https://api.example.com/a", "https://api.example.com/b");
+        CHECK(!s1.dropAuth); CHECK(!s1.dropCookies);
+        // different host -> drop both
+        auto s2 = scope("https://api.example.com/a", "https://evil.example.net/b");
+        CHECK(s2.dropAuth); CHECK(s2.dropCookies);
+        // different port, same host -> drop auth (cookies are host-scoped, not port-scoped -> kept)
+        auto s3 = scope("http://127.0.0.1:8080/a", "http://127.0.0.1:9090/b");
+        CHECK(s3.dropAuth); CHECK(!s3.dropCookies);
+        // https -> http downgrade, same host -> drop auth (cookies same-host kept)
+        auto s4 = scope("https://api.example.com/a", "http://api.example.com/b");
+        CHECK(s4.dropAuth); CHECK(!s4.dropCookies);
+        // http -> https upgrade, same host -> keep both (as requests does)
+        auto s5 = scope("http://api.example.com/a", "https://api.example.com/b");
+        CHECK(!s5.dropAuth); CHECK(!s5.dropCookies);
+    }
+
     return RUN_TESTS();
 }
