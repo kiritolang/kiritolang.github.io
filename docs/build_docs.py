@@ -447,7 +447,7 @@ def _group_of(slug):
         return "Course"
     if slug.startswith("bonus-"):
         return "Bonus lessons"
-    if slug in ("builtins", "types", "stdlib", "cpp-api"):
+    if slug in ("builtins", "types", "stdlib", "cpp-api", "exceptions"):
         return "Reference"
     return "Guide"
 
