@@ -521,6 +521,13 @@ inline Program compile(const std::string& patternUtf8, int flags) {
     detail::Parser parser(cps, prog.flags, prog.classes, prog.groupNames, prog.nameToGroup);
     detail::Node root = parser.parse();
     prog.numGroups = parser.groupCount();
+    // Each NFA thread carries a per-group capture-position vector (size 2*(numGroups+1)) that is copied
+    // as threads split/save. A pattern with a huge number of groups (e.g. `"()"*99000`) makes that copy
+    // dominate — turning the O(input * program) guarantee into O(input * program * numGroups) and
+    // hanging the Pike VM even on a 1-byte subject. Cap the group count so the per-thread copy stays
+    // bounded; 1000 is far beyond any realistic pattern. (Rejected here at compile time, before the VM
+    // ever runs, so the blow-up is unreachable.)
+    if (prog.numGroups > 1000) throw RegexError("too many capture groups (max 1000)");
     if (static_cast<int>(prog.groupNames.size()) <= prog.numGroups) prog.groupNames.resize(prog.numGroups + 1);
     detail::Compiler comp(prog);
     comp.compileTop(root);

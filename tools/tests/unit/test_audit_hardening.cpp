@@ -165,6 +165,12 @@ seen.add(RS())
         CHECK(has(errOf(R"KI(import("regex").compile(r"\uD800"))KI"), "surrogate"));
         CHECK(run(R"KI(import("regex").search(r"A", "xAy") != None)KI") == "True");  // valid \u still works
 
+        // regex: a group-dense pattern (huge numGroups) is rejected at COMPILE time so the Pike VM's
+        // per-thread capture-copy can't turn into an O(input*program*numGroups) hang. 2000 groups is
+        // over the 1000 cap; 500 is under it and still compiles.
+        CHECK(has(errOf(R"KI(import("regex").compile("()" * 2000))KI"), "too many capture groups"));
+        CHECK(run(R"KI(import("regex").compile("()" * 500) != None)KI") == "True");
+
         // lexer: a genuine NUL byte inside a string literal is a valid character, not a premature EOF
         // (was mis-reported as "unterminated string" because '\0' doubled as the end-of-input sentinel).
         {

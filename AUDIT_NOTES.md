@@ -173,11 +173,12 @@ _(appended as each parallel audit agent returns; verified below)_
   NaN-last comparator is valid strict-weak-order.
 
 ### Regex (regex_engine.hpp, stdlib_regex.hpp)
-- `NEW MED` — `regex_engine.hpp:585,599,603` — **Pike-VM capture vectors deep-copied per epsilon step
+- ~~`NEW MED` — `regex_engine.hpp:585,599,603` — **Pike-VM capture vectors deep-copied per epsilon step
   → O(program² · groups) DoS**: one input position costs O(program × numGroups); a group-dense pattern
-  `"()"*99000` (~198 KB, under the 200000-instr cap) hangs on a 1-byte/empty subject. The stated
-  "O(input·program)" bound is wrong. Fix: COW capture arrays (shared_ptr), cap numGroups, or a shared
-  slot log. (larger fix — mitigate by capping numGroups)
+  `"()"*99000` (~198 KB, under the 200000-instr cap) hangs on a 1-byte/empty subject.~~ **DONE** — cap
+  `numGroups` at 1000 at compile time (right after `prog.numGroups = parser.groupCount()`), before the
+  Pike VM ever runs, so the blow-up is unreachable. 1000 groups is far beyond any realistic pattern.
+  Test: `spec_regex_group_cap.ki` (2000 groups rejected instantly, 500 still compiles) + a C++ probe.
 - `NEW LOW` — `stdlib_regex.hpp:431-442` — module `sub`/`split` drop the `flags` arg (IGNORECASE/etc.
   unreachable one-shot). Fix: add trailing flags param.
 - `NEW LOW` — `regex_engine.hpp:334-346` — `\u`/`\U`/`\x` accept lone surrogates (D800-DFFF) → dead

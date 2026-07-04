@@ -1,0 +1,22 @@
+# Regression: a pattern with an enormous number of capture groups (e.g. `"()" * 99000`) turned the
+# Pike VM's per-thread capture-copy into an O(input * program * numGroups) blow-up that hung even on
+# a one-byte subject. The group count is now capped at compile time (before the VM ever runs), so the
+# pathological pattern is rejected instantly instead of hanging.
+var io = import("io")
+var re = import("regex")
+
+# A pattern well under the cap still compiles and captures normally.
+var p = re.compile("()" * 500)
+assert re.search("x", "x") != None, "sanity: search works"
+
+# Over the cap: rejected at COMPILE time with a clear message (and fast — no hang).
+var err = ""
+try:
+    discard re.compile("()" * 2000)
+    err = "NO THROW"
+catch as e:
+    err = String(e)
+assert err != "NO THROW", "over-cap pattern must be rejected"
+assert "too many capture groups" in err, "clear diagnostic"
+
+io.print("regex group cap: OK")
