@@ -151,7 +151,11 @@ public:
         owner_ = std::this_thread::get_id();
         return WaitResult::Ok;
     }
-    bool release() {  // returns false if it wasn't held (a usage error the caller reports)
+    // Release, returning false if it wasn't held (a usage error the caller reports). A Lock is
+    // deliberately NOT owner-bound: a worker may acquire it, hand the live Lock back to another VM,
+    // and that VM releases it (a transferable handoff, like Python's threading.Lock) — so release is
+    // by identity, not by owning thread.
+    bool release() {
         bool was;
         { std::lock_guard<std::mutex> lk(m_); was = held_; held_ = false; owner_ = std::thread::id{}; }
         if (was) cv_.notify_one();
@@ -225,6 +229,9 @@ public:
         --count_;
         return WaitResult::Ok;
     }
+    // Unbounded, by design: releasing more than was acquired grows the permit count (a plain counting
+    // semaphore / latch, like Python's threading.Semaphore — NOT BoundedSemaphore). A ceiling would
+    // break the deliberate over-release-to-raise-permits pattern.
     void release() {
         { std::lock_guard<std::mutex> lk(m_); ++count_; }
         cv_.notify_one();
@@ -267,7 +274,12 @@ public:
         auto ready = [&] { return aborted_ || generation_ != gen || brokenGen_ == gen; };
         if (timeout) {
             if (!cv_.wait_for(lk, waitDuration(*timeout), ready)) {
-                brokenGen_ = gen;  // a timed-out waiter breaks the barrier
+                // A timed-out waiter breaks the barrier. Reset the generation's bookkeeping FULLY —
+                // advance the generation and clear count_ — so a later arrival starts a clean
+                // generation instead of tripping "last party" off a count that still includes this
+                // (now-departed) waiter and its still-blocked peers. The guard makes concurrent
+                // timeouts in the same generation break it only once.
+                if (brokenGen_ != gen) { brokenGen_ = gen; ++generation_; count_ = 0; }
                 cv_.notify_all();
                 return WaitResult::Broken;
             }
@@ -513,11 +525,13 @@ public:
         return *main_;
     }
     void addLibPath(const std::string& d) {
-        libPaths_.push_back(d);
+        // libPaths_/maxCallDepth_ are read by worker threads in configureVM(); guard the write so a
+        // set-during-spawn is not a data race (TSan). The lock is NOT held across mainVM()/the VM call.
+        { std::lock_guard<std::mutex> lk(registryMutex_); libPaths_.push_back(d); }
         mainVM().addLibPath(d);
     }
     void setMaxCallDepth(std::size_t n) {
-        maxCallDepth_ = n;
+        { std::lock_guard<std::mutex> lk(registryMutex_); maxCallDepth_ = n; }
         if (main_) main_->setMaxCallDepth(n);
     }
 
@@ -615,6 +629,11 @@ private:
         std::shared_ptr<T> sp = std::make_shared<T>(id, std::forward<A>(args)...);
         reg[id] = sp;
         waitables_.push_back(std::weak_ptr<Waitable>(std::static_pointer_cast<Waitable>(sp)));
+        // A worker that creates a primitive AFTER shutdown()'s abort fan-out (it holds registryMutex_
+        // between its two phases, but a worker can still slip a makeWaitable in between the abort loop
+        // and the join loop) would otherwise get a live primitive and block on it forever, hanging the
+        // join. Pre-abort anything born during teardown so any wait on it returns Aborted immediately.
+        if (shuttingDown_) sp->abort();
         return sp;
     }
     template <class Map>

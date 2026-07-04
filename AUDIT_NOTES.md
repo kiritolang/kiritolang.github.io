@@ -71,17 +71,25 @@ _(appended as each parallel audit agent returns; verified below)_
   throws on deref and never marks).
 
 ### Concurrency (dispatcher.hpp, stdlib_parallel.hpp)
-- `NEW MED` — `dispatcher.hpp:572-586 shutdown + 610-619 makeWaitable` — **waitable created AFTER the
-  abort fan-out is never aborted → shutdown deadlock**: a worker that creates a Queue/Event/Lock after
-  phase-1 abort then blocks forever; phase-2 join() hangs. Fix: makeWaitable (holds registryMutex_)
-  should abort/throw immediately when shuttingDown_.
-- `NEW MED` — `dispatcher.hpp:268-273 Barrier::wait timeout` — broken generation not cleared: timeout
-  sets `brokenGen_` but leaves `count_` stale → a later single arrival can trip "last party" and
-  self-heal the barrier off a stale count. Fix: full resetBarrier bookkeeping on timeout.
-- `NEW LOW` — `dispatcher.hpp:515-522,550-553` — unsynchronized `libPaths_`/`maxCallDepth_` read on
-  worker threads (outside registryMutex_). TSan race if set-during-spawn. Fix: guard or document.
-- `NEW LOW` — `dispatcher.hpp:228-231 Semaphore::release / 154-159 Lock::release` — unbounded
-  over-release (no ceiling) and non-owner lock release (ignores owner_). Fix: bound/owner checks.
+- ~~`NEW MED` — `dispatcher.hpp:572-586 shutdown + 610-619 makeWaitable` — **waitable created AFTER the
+  abort fan-out is never aborted → shutdown deadlock**.~~ **DONE** — makeWaitable (which already holds
+  registryMutex_) now calls `sp->abort()` on the just-created primitive when `shuttingDown_`, so a
+  primitive born during teardown starts already-aborted and any wait on it returns Aborted immediately.
+- ~~`NEW MED` — `dispatcher.hpp:268-273 Barrier::wait timeout` — broken generation not cleared: timeout
+  sets `brokenGen_` but leaves `count_` stale → a later single arrival can trip "last party".~~ **DONE**
+  — on timeout the barrier does the full reset (`brokenGen_ = gen; ++generation_; count_ = 0`, guarded
+  so concurrent timeouts break the generation once), so a fresh set of parties rendezvous cleanly.
+  Test: "barrier reusable after a timeout" in `test_parallel_sync.cpp`.
+- ~~`NEW LOW` — `dispatcher.hpp:515-522,550-553` — unsynchronized `libPaths_`/`maxCallDepth_` read on
+  worker threads (outside registryMutex_). TSan race if set-during-spawn.~~ **DONE** — the writes
+  (addLibPath/setMaxCallDepth) take registryMutex_ and configureVM() snapshots both under the lock
+  before applying them to the worker VM (lock not held across the VM calls).
+- **REJECTED** — `dispatcher.hpp Semaphore::release / Lock::release` — the "unbounded over-release" and
+  "non-owner release" are INTENTIONAL, not bugs. Kirito's `Semaphore` is a plain counting semaphore
+  (over-release raises the permit count, like Python's `threading.Semaphore`, NOT BoundedSemaphore —
+  r5/r7_parallel assert this), and its `Lock` releases by identity so a worker can hand a held Lock
+  back for another VM to release (r8_parallel asserts this transferable handoff). Bounding/owner-checking
+  either one breaks documented, tested behavior. C++ tests pin both intended semantics.
 
 ### Front end (lexer.hpp, parser.hpp)
 - `NEW HIGH` — `parser.hpp:893-894 parseEmbedded` — **nested f-strings escape the parse-depth guard →

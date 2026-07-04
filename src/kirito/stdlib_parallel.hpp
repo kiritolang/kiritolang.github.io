@@ -549,8 +549,13 @@ public:
 // it can see ParallelModule (dispatcher.hpp, included earlier, only declares this member).
 inline void KiritoDispatcher::configureVM(KiritoVM& vm) {
     vm.setDispatcher(this);
-    for (const auto& p : libPaths_) vm.addLibPath(p);
-    if (maxCallDepth_) vm.setMaxCallDepth(maxCallDepth_);
+    // Snapshot the config under the registry lock (this runs on a worker thread; the main thread may
+    // concurrently addLibPath/setMaxCallDepth). Apply to the worker VM outside the lock.
+    std::vector<std::string> paths;
+    std::size_t depth;
+    { std::lock_guard<std::mutex> lk(registryMutex_); paths = libPaths_; depth = maxCallDepth_; }
+    for (const auto& p : paths) vm.addLibPath(p);
+    if (depth) vm.setMaxCallDepth(depth);
     vm.install<ParallelModule>();
     vm.importModule("parallel");  // run setup() now -> registers the cross-VM deserializers
 }
