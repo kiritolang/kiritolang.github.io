@@ -254,6 +254,7 @@ compile-reviewed edits (user builds); the self-asserting `spec_audit_hardening.k
 - LOW — `arena.hpp` 32-bit generation wraparound; `handle.hpp` `Handle{}` aliases None (slot 0).
 - LOW — `stdlib_gzip.hpp` O(n²) substr per member (needs inflate-at-offset API).
 - LOW — `collections.hpp` Dict/Set iteration order not insertion-stable across delete.
-- LOW — `stdlib_regex.hpp` module sub/split drop the flags arg.
+- ~~LOW — `stdlib_regex.hpp` module sub/split drop the flags arg.~~ **DONE**: added a trailing
+  `flags` param to one-shot `regex.sub`/`regex.split`. Test: `spec_regex_oneshot_flags.ki`.
 - LOW — `parser.hpp` inline-body `return a, b` doesn't pack; `lexer.hpp` NUL-in-string = EOF.
 - nit — `bytes.hpp` repeat cap duplicates `kMaxRepeat` (needs the constant moved to a low-level header).

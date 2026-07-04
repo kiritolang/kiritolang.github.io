@@ -1,0 +1,24 @@
+# Regression: the module-level one-shot regex.sub / regex.split now accept a trailing `flags` arg
+# (they previously compiled with flags=0, so IGNORECASE/MULTILINE/DOTALL were unreachable one-shot).
+var io = import("io")
+var re = import("regex")
+
+# sub with IGNORECASE (5th arg, after count): matches A and a.
+assert re.sub("a", "X", "aAaA", 0, re.IGNORECASE) == "XXXX", "sub IGNORECASE"
+# without the flag, only lowercase 'a' is replaced.
+assert re.sub("a", "X", "aAaA") == "XAXA", "sub default case-sensitive"
+# count still works alongside flags.
+assert re.sub("a", "X", "aAaA", 2, re.IGNORECASE) == "XXaA", "sub count + flags"
+
+# split with IGNORECASE (4th arg, after maxsplit): split on 'x' or 'X'.
+assert re.split("x", "aXbxc", 0, re.IGNORECASE) == ["a", "b", "c"], "split IGNORECASE"
+# default is case-sensitive: only lowercase 'x' splits.
+assert re.split("x", "aXbxc") == ["aXb", "c"], "split default case-sensitive"
+
+# DOTALL via one-shot sub: '.' matches a newline.
+assert re.sub("a.b", "Z", "a\nb", 0, re.DOTALL) == "Z", "sub DOTALL"
+
+# MULTILINE via one-shot split on a line-anchored pattern still compiles with the flag.
+assert re.sub("^x", "Y", "x\nx", 0, re.MULTILINE) == "Y\nY", "sub MULTILINE"
+
+io.print("regex one-shot flags: OK")

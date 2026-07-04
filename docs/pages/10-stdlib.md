@@ -902,8 +902,8 @@ unsupported-feature or invalid pattern is rejected with a clean error rather tha
 - `fullmatch(pattern: String, string: String, flags: Integer = 0)` — match that covers the whole string, or `None`.
 - `findall(pattern: String, string: String, flags: Integer = 0) → List` — all matches (see Regex.findall for the shape).
 - `finditer(pattern: String, string: String, flags: Integer = 0) → List` — a List of `Match` objects.
-- `sub(pattern: String, repl, string: String, count: Integer = 0) → String` — substitute matches.
-- `split(pattern: String, string: String, maxsplit: Integer = 0) → List` — split on matches.
+- `sub(pattern: String, repl, string: String, count: Integer = 0, flags: Integer = 0) → String` — substitute matches.
+- `split(pattern: String, string: String, maxsplit: Integer = 0, flags: Integer = 0) → List` — split on matches.
 - `escape(s: String) → String` — backslash-escape regex metacharacters so `s` matches literally.
 
 ### Regex object
