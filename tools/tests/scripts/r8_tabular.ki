@@ -136,9 +136,12 @@ ok(SL.slice(2, 2)["a"].tolist() == [], "slice with start==stop is empty")
 var inf = tb.readcsv("v\n1e3\n-5\n0x1F\n0o17\n0b101\n007\n3.0\nTRUE\ntrue\nFalse")
 ok(type(inf["v"][0]) == "Float" and inf["v"][0].compare(1000.0), "infer 1e3 -> Float (scientific)")
 ok(type(inf["v"][1]) == "Integer" and inf["v"][1] == -5, "infer -5 -> negative Integer")
-ok(type(inf["v"][2]) == "Integer" and inf["v"][2] == 31, "infer 0x1F -> Integer 31 (hex)")
-ok(type(inf["v"][3]) == "Integer" and inf["v"][3] == 15, "infer 0o17 -> Integer 15 (octal)")
-ok(type(inf["v"][4]) == "Integer" and inf["v"][4] == 5, "infer 0b101 -> Integer 5 (binary)")
+# Base-prefixed literals stay TEXT on purpose: a CSV cell like "0x1F" is far more likely a hex-looking
+# id/code than a number the reader should silently reinterpret (see tabular._looksnumeric). Only plain
+# decimal (incl. leading zeros) is inferred numeric.
+ok(type(inf["v"][2]) == "String" and inf["v"][2] == "0x1F", "infer 0x1F -> stays String (hex not auto-parsed)")
+ok(type(inf["v"][3]) == "String" and inf["v"][3] == "0o17", "infer 0o17 -> stays String (octal not auto-parsed)")
+ok(type(inf["v"][4]) == "String" and inf["v"][4] == "0b101", "infer 0b101 -> stays String (binary not auto-parsed)")
 ok(type(inf["v"][5]) == "Integer" and inf["v"][5] == 7, "infer 007 -> Integer 7 (leading zeros)")
 ok(type(inf["v"][6]) == "Float" and inf["v"][6].compare(3.0), "infer 3.0 -> Float (has a dot)")
 ok(type(inf["v"][7]) == "String" and inf["v"][7] == "TRUE", "infer TRUE (uppercase) stays String")
