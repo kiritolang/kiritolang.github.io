@@ -6,7 +6,7 @@
 #      `<proj>/test_<proj>.expected`. (cronki, feedreader, kirdown, ledger, snip)
 #   2. Self-asserting Kirito test — `<proj>/test_*.ki` runs `assert`s and prints a
 #      "N passed, 0 failed" / "ALL TESTS PASSED" line. Exit 0 iff every assertion held.
-#      (imaging: test_imaging.ki + test_video.ki; kgrad: test_kgrad.ki + test_extra.ki;
+#      (kgrad: test_kgrad.ki + test_extra.ki;
 #       selfhost: run_tests.ki — a Kirito-in-Kirito interpreter run over the whole
 #       tools/tests/scripts/*.ki golden suite; genuinely slow AND lags recent language
 #       features, so it's opt-in via --selfhost.)
@@ -91,11 +91,6 @@ for proj in cronki feedreader kirdown ledger snip; do
 done
 
 # --- self-asserting Kirito tests ------------------------------------------------------------
-run examples/big_projects/imaging/test_imaging.ki \
-    "$KI" examples/big_projects/imaging/test_imaging.ki
-run examples/big_projects/imaging/test_video.ki \
-    "$KI" examples/big_projects/imaging/test_video.ki
-
 run examples/big_projects/kgrad/test_kgrad.ki \
     "$KI" --lib examples/big_projects/kgrad/lib \
     examples/big_projects/kgrad/test_kgrad.ki

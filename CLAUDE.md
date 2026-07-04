@@ -529,20 +529,6 @@ a stability fuzzer, and a benchmark). Working today:
     PyTorch-style Modules, MSE/BCE/CE/NLL losses, Dataset/DataLoader, PCA, weight serialization,
     and a backend abstraction ready for a future GPU device — trains an MLP that solves XOR; conv
     backward is gradient-checked.
-  - `imaging` — a Pillow/PIL-style image library in pure Kirito, built on the `tensor` backend:
-    `Image` stores pixels as an `(H, W, C)` Float tensor, with PNG (zlib + all five scanline filters
-    incl. Paeth) / PPM / PGM / BMP codecs, `convert`/`crop`/`resize` (nearest+bilinear) /
-    `transpose`/`rotate`/`paste`/`point`/`split`/`merge`/`blend`, `imageops`
-    (invert/grayscale/posterize/solarize/autocontrast/equalize/expand/colorize/…),
-    `imagefilter` (convolution kernels + Gaussian/Box/rank filters, vectorised as edge-pad +
-    shifted-window accumulate), and `imagedraw` (line/rectangle/ellipse/polygon); **plus video** —
-    a baseline-JPEG decoder (`jpeg.ki`: Huffman + a tensor 8×8 IDCT + YCbCr→RGB, so `.jpg` opens and
-    MJPEG decodes), a GIF decoder (`gif.ki`: LZW + palette + animation), and an OpenCV-
-    `VideoCapture`-style `video.ki` reading MJPEG / animated-GIF / Y4M / image-sequence files and
-    network MJPEG-over-HTTP streams (`for frame in cap`); true H.264/HEVC/RTSP is out of reach in
-    pure Kirito (no codec, no subprocess) and documented as needing an external transcode to MJPEG.
-    Cross-validated pixel-for-pixel against Pillow by `compare_pillow.py` /
-    `compare_video_pillow.py`; its self-tests run in CTest as `script_imaging` and `script_video`.
   - `selfhost` — a **Kirito interpreter written in Kirito** (`lib/interp.ki` + `lib/lexer.ki` +
     `lib/parser.ki`, with pure-Kirito reimplementations of the stdlib under `lib/stdmods/`); `run.ki`
     is the CLI front-end, `run_tests.ki` re-runs the main project's `tools/tests/scripts/*.ki`
@@ -724,7 +710,7 @@ Toolchain present: `g++ 13`, `clang++ 18`, `cmake 3.28`, `ninja`, `ctest`.
   for `complex_linsolve.ki` / `solve_systems.ki`; skips the network-only `rule34_download.ki`), and
   `tools/scripts/test_big_projects.sh` covers all three big-project testing conventions in one place
   — golden-`.expected` (cronki, feedreader, kirdown, ledger, snip), self-asserting Kirito assertions
-  (imaging + imaging/video, kgrad + kgrad/extra), and the Python harnesses
+  (kgrad + kgrad/extra), and the Python harnesses
   `test_client.py` + `test_concurrent.py` for sqldb, sqldb_kwargs, webserver, webserver_kwargs. Both
   take `--ki PATH`; the big-projects script keeps the slow self-host suite opt-in behind
   `--selfhost`.

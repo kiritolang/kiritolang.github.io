@@ -1,7 +1,0 @@
-{
-  "name": "imaging",
-  "version": "1.1.0",
-  "description": "A pure-Kirito image-processing library in the spirit of Pillow, built on the tensor standard library. Image class with PNG/PPM/BMP/JPEG/GIF codecs, conversions, geometry, point ops, ImageOps, convolution ImageFilter, ImageDraw, and an OpenCV-style VideoCapture (MJPEG/GIF/Y4M/image-sequence/HTTP-MJPEG).",
-  "modules": ["imaging.ki", "imageops.ki", "imagefilter.ki", "imagedraw.ki", "jpeg.ki", "gif.ki", "video.ki"],
-  "dependencies": []
-}

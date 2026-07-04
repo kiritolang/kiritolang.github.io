@@ -132,6 +132,24 @@ kirito_test(test_slot_locals unit/test_slot_locals.cpp)
 kirito_test(test_streams unit/test_streams.cpp)
 kirito_test(test_stress unit/test_stress.cpp)
 kirito_test(test_value unit/test_value.cpp)
+kirito_test(test_value_ops unit/test_value_ops.cpp)
+kirito_test(test_value_containers unit/test_value_containers.cpp)
+kirito_test(test_gc_stress unit/test_gc_stress.cpp)
+# --- _deep suites: adversarial/edge/error-path coverage filling audited gaps per area ---
+kirito_test(test_regex_deep unit/test_regex_deep.cpp)
+kirito_test(test_compress_hash_deep unit/test_compress_hash_deep.cpp)
+kirito_test(test_io_path_deep unit/test_io_path_deep.cpp)
+kirito_test(test_sys_time_deep unit/test_sys_time_deep.cpp)
+kirito_test(test_strbytes_deep unit/test_strbytes_deep.cpp)
+kirito_test(test_collections_deep unit/test_collections_deep.cpp)
+kirito_test(test_numeric_deep unit/test_numeric_deep.cpp)
+kirito_test(test_serialization_deep unit/test_serialization_deep.cpp)
+kirito_test(test_random_net_deep unit/test_random_net_deep.cpp)
+kirito_test(test_tensor_deep unit/test_tensor_deep.cpp)
+kirito_test(test_cppref_deep unit/test_cppref_deep.cpp)
+kirito_test(test_kimods_deep unit/test_kimods_deep.cpp)
+kirito_test(test_builtins_deep unit/test_builtins_deep.cpp)
+kirito_test(test_tabular_xml_deep unit/test_tabular_xml_deep.cpp)
 kirito_test(test_modules_fuzz unit/test_modules_fuzz.cpp)
 
 # Multiprocessing (KiritoDispatcher + the `parallel` module). Every blocking scenario runs under an
@@ -146,8 +164,9 @@ kirito_test(test_parallel_deadlock unit/test_parallel_deadlock.cpp)
 kirito_test(test_parallel_random unit/test_parallel_random.cpp)
 kirito_test(test_parallel_edge unit/test_parallel_edge.cpp)
 kirito_test(test_parallel_fuzz unit/test_parallel_fuzz.cpp)
+kirito_test(test_parallel_deep unit/test_parallel_deep.cpp)
 set_tests_properties(test_parallel test_parallel_sync test_parallel_deadlock test_parallel_random
-                     test_parallel_edge test_parallel_fuzz PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+                     test_parallel_edge test_parallel_fuzz test_parallel_deep PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 
 kirito_test(embed_demo integration/embed_demo.cpp)
 # --- embed_* integration projects: real C++ programs that embed KiritoVM ---
@@ -161,6 +180,27 @@ kirito_test(embed_pipe integration/embed_pipe.cpp)
 kirito_test(embed_sql integration/embed_sql.cpp)
 kirito_test(embed_dsl integration/embed_dsl.cpp)
 kirito_test(embed_ga integration/embed_ga.cpp)
+# --- 20 more embed_* projects: each a real little app whose POLICY is Kirito, probing the C++ facade ---
+kirito_test(embed_ledger_bank integration/embed_ledger_bank.cpp)
+kirito_test(embed_spreadsheet integration/embed_spreadsheet.cpp)
+kirito_test(embed_fsm integration/embed_fsm.cpp)
+kirito_test(embed_template_engine integration/embed_template_engine.cpp)
+kirito_test(embed_json_validator integration/embed_json_validator.cpp)
+kirito_test(embed_query_engine integration/embed_query_engine.cpp)
+kirito_test(embed_job_scheduler integration/embed_job_scheduler.cpp)
+kirito_test(embed_expr_ast integration/embed_expr_ast.cpp)
+kirito_test(embed_binproto integration/embed_binproto.cpp)
+kirito_test(embed_lru_cache integration/embed_lru_cache.cpp)
+kirito_test(embed_workflow_cond integration/embed_workflow_cond.cpp)
+kirito_test(embed_metrics_agg integration/embed_metrics_agg.cpp)
+kirito_test(embed_pluralize integration/embed_pluralize.cpp)
+kirito_test(embed_dice integration/embed_dice.cpp)
+kirito_test(embed_config_layer integration/embed_config_layer.cpp)
+kirito_test(embed_markov_text integration/embed_markov_text.cpp)
+kirito_test(embed_physics_step integration/embed_physics_step.cpp)
+kirito_test(embed_shopping_cart integration/embed_shopping_cart.cpp)
+kirito_test(embed_event_sourcing integration/embed_event_sourcing.cpp)
+kirito_test(embed_graph_paths integration/embed_graph_paths.cpp)
 kirito_test(fuzz_eval fuzz/fuzz_eval.cpp)
 kirito_test(bench bench/bench.cpp)
 
@@ -225,26 +265,6 @@ foreach(script ${ki_error_scripts})
                      -DEXPECTED=${expected}
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ki_error.cmake)
 endforeach()
-
-# --- the `imaging` example package (examples/big_projects/imaging): run its self-test through ki ---
-# A pure-Kirito Pillow-style image library built on the tensor backend. Its modules resolve via the
-# script's own directory (on the import path), so no copies are needed here. The self-test is an
-# assert-driven .ki whose final lines are matched against test_imaging.expected.
-set(_imaging_dir ${CMAKE_SOURCE_DIR}/examples/big_projects/imaging)
-add_test(NAME script_imaging
-         COMMAND ${CMAKE_COMMAND} -DKI=$<TARGET_FILE:ki>
-                 -DSCRIPT=${_imaging_dir}/test_imaging.ki
-                 -DEXPECTED=${_imaging_dir}/test_imaging.expected
-                 -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ki_script.cmake)
-
-# The video module (jpeg/gif codecs + an OpenCV-style VideoCapture) over the committed testdata/
-# assets. Run with the package dir as the working directory so the `testdata/...` paths resolve.
-add_test(NAME script_video
-         COMMAND ${CMAKE_COMMAND} -DKI=$<TARGET_FILE:ki>
-                 -DSCRIPT=${_imaging_dir}/test_video.ki
-                 -DEXPECTED=${_imaging_dir}/test_video.expected
-                 -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ki_script.cmake)
-set_tests_properties(script_video PROPERTIES WORKING_DIRECTORY ${_imaging_dir})
 
 # --- the `kirdown` example package: a Markdown -> HTML converter in pure Kirito ---
 # Exercises the regex, arg, path, io, hash, and time stdlib modules. Self-test is an assert-driven
