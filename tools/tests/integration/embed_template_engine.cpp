@@ -85,7 +85,7 @@ Function(name, ctx) -> String:
         return u.upper()
     if name == "greeting":
         return f"Hello, {ctx.get('user', 'friend')}!"
-    if ctx.contains(name):
+    if name in ctx:
         return String(ctx[name])
     return "<missing:" + name + ">"
 )KI");

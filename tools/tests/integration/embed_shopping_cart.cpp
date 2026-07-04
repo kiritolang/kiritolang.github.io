@@ -170,14 +170,14 @@ Function(cart, subtotal) -> Integer:
         CHECK(eng.checkout(none) == 0);
     }
 
-    // ---- adversarial: a promotion returning a NEGATIVE discount larger than the subtotal would
-    //      push the total negative — C++ must clamp it to zero. ----
+    // ---- adversarial: a promotion returning a discount LARGER than the subtotal would push the
+    //      total negative — C++ must clamp it to zero. ----
     {
         PricingEngine eng(vm);
-        // Returns a discount of -(subtotal + 1000): a "discount" that ADDS more than the whole cart.
+        // Returns a discount of subtotal + 1000: more than the whole cart is worth.
         eng.addPromotion(compile(R"KI(
 Function(cart, subtotal) -> Integer:
-    return -(subtotal + 1000)
+    return subtotal + 1000
 )KI"));
         int64_t total = eng.checkout(cart);
         CHECK(total == 0);        // clamped, never negative

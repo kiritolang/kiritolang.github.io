@@ -25,7 +25,13 @@ struct Particle {
 //   a = force(state);  vel += a*dt;  pos += vel*dt.
 class Integrator {
 public:
-    Integrator(KiritoVM& vm, Handle force) : vm_(vm), force_(force) {}
+    // Pin the compiled force-function handle: it came from a throwaway runSource module scope, so
+    // nothing else roots it, and `accel` allocates enough per step to trigger a GC that would
+    // otherwise sweep it (dangling handle) mid-run.
+    Integrator(KiritoVM& vm, Handle force) : vm_(vm), force_(force) { vm_.pinHandle(force_); }
+    ~Integrator() { vm_.unpinHandle(force_); }
+    Integrator(const Integrator&) = delete;
+    Integrator& operator=(const Integrator&) = delete;
 
     // Advance the particle `steps` times with timestep `dt`, returns the final state. Records the
     // trajectory into `trace` if non-null (for post-hoc trajectory checks).

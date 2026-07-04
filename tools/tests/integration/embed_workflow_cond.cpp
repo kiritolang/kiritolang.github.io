@@ -79,8 +79,8 @@ static void wireBuildTestDeploy(KiritoVM& vm, Pipeline& p) {
     Handle buildGate = compile("Function(ctx) -> Bool:\n    return True\n");
     Handle buildAction = compile(R"KI(
 Function(ctx) -> Dict:
-    ctx.set("built", True)
-    ctx.set("artifacts", 3)
+    ctx["built"] = True
+    ctx["artifacts"] = 3
     return ctx
 )KI");
 
@@ -91,8 +91,8 @@ Function(ctx) -> Bool:
 )KI");
     Handle testAction = compile(R"KI(
 Function(ctx) -> Dict:
-    ctx.set("tested", True)
-    ctx.set("tests_passed", ctx.get("artifacts", 0) > 0)
+    ctx["tested"] = True
+    ctx["tests_passed"] = ctx.get("artifacts", 0) > 0
     return ctx
 )KI");
 
@@ -103,8 +103,8 @@ Function(ctx) -> Bool:
 )KI");
     Handle deployAction = compile(R"KI(
 Function(ctx) -> Dict:
-    ctx.set("deployed", True)
-    ctx.set("url", "https://" + ctx.get("branch", "") + ".example.com")
+    ctx["deployed"] = True
+    ctx["url"] = "https://" + ctx.get("branch", "") + ".example.com"
     return ctx
 )KI");
 

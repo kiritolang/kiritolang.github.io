@@ -78,7 +78,7 @@ Function(base : Dict, overlay : Dict) -> Dict:
     for k in base.keys():
         out[k] = base[k]
     for k in overlay.keys():
-        if base.has(k) and isinstance(base[k], Dict) and isinstance(overlay[k], Dict):
+        if k in base and isinstance(base[k], Dict) and isinstance(overlay[k], Dict):
             out[k] = merge(base[k], overlay[k])
         else:
             out[k] = overlay[k]
@@ -89,7 +89,7 @@ var merge = Function(base : Dict, overlay : Dict) -> Dict:
     for k in base.keys():
         out[k] = base[k]
     for k in overlay.keys():
-        if base.has(k) and isinstance(base[k], Dict) and isinstance(overlay[k], Dict):
+        if k in base and isinstance(base[k], Dict) and isinstance(overlay[k], Dict):
             out[k] = merge(base[k], overlay[k])
         else:
             out[k] = overlay[k]
@@ -103,17 +103,17 @@ merge
 Function(cfg : Dict) -> List:
     var errs = []
     for req in ["server", "log"]:
-        if not cfg.has(req):
+        if not req in cfg:
             errs.append("missing required section: " + req)
-    if cfg.has("server"):
+    if "server" in cfg:
         var srv = cfg["server"]
-        if srv.has("port"):
+        if "port" in srv:
             var port = srv["port"]
             if port < 1 or port > 65535:
                 errs.append("server.port out of range: " + String(port))
         else:
             errs.append("missing server.port")
-    if cfg.has("log"):
+    if "log" in cfg:
         var lvl = cfg["log"]["level"]
         if not (lvl == "debug" or lvl == "info" or lvl == "warn" or lvl == "error"):
             errs.append("bad log.level: " + lvl)

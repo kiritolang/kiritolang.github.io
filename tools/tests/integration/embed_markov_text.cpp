@@ -109,7 +109,7 @@ int main() {
     MarkovEngine engine(vm, buildH, genH);
 
     // A fresh, seeded RNG. A brand-new Random(7) each time it is used gives a reproducible stream.
-    auto freshRng = [&]() { return roots.add(vm.runSource("import(\"random\")\nRandom(7)")); };
+    auto freshRng = [&]() { return roots.add(vm.runSource("import(\"random\")\nrandom.Random(7)")); };
 
     // ---- train ----
     // Bigrams of "the cat sat on the mat the cat ran":

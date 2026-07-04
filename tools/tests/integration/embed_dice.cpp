@@ -111,7 +111,7 @@ private:
 
 // A freshly-seeded rng: the trailing `rng` expression is what runSource returns.
 static Handle freshRng(KiritoVM& vm) {
-    return vm.runSource("import(\"random\")\nvar rng = Random(42)\nrng\n");
+    return vm.runSource("import(\"random\")\nvar rng = random.Random(42)\nrng\n");
 }
 
 int main() {

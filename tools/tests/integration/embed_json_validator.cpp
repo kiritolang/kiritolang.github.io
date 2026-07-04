@@ -75,7 +75,7 @@ int main() {
     // Rule: "name" is required and must be a non-empty String.
     v.addRule(compile(R"KI(
 Function(rec) -> List:
-    if not rec.contains("name"):
+    if "name" not in rec:
         return ["name: required field missing"]
     if not isinstance(rec["name"], String):
         return ["name: must be a String"]
@@ -88,7 +88,7 @@ Function(rec) -> List:
     v.addRule(compile(R"KI(
 Function(rec) -> List:
     var errs = []
-    if not rec.contains("age"):
+    if "age" not in rec:
         errs.append("age: required field missing")
         return errs
     if not isinstance(rec["age"], Integer):
@@ -104,7 +104,7 @@ Function(rec) -> List:
     // Rule: "email", if present, must be a String containing "@".
     v.addRule(compile(R"KI(
 Function(rec) -> List:
-    if not rec.contains("email"):
+    if "email" not in rec:
         return []
     if not isinstance(rec["email"], String):
         return ["email: must be a String"]
@@ -116,7 +116,7 @@ Function(rec) -> List:
     // Rule: "tags", if present, must be a List whose every element is a String.
     v.addRule(compile(R"KI(
 Function(rec) -> List:
-    if not rec.contains("tags"):
+    if "tags" not in rec:
         return []
     if not isinstance(rec["tags"], List):
         return ["tags: must be a List"]
