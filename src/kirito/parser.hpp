@@ -925,21 +925,45 @@ private:
             if (c == '{') {
                 if (i + 1 < raw.size() && raw[i + 1] == '{') { lit += '{'; i += 2; continue; }
                 flush();
+                // Find the matching `}` that closes this `{`. The scan must be QUOTE-AWARE: a brace
+                // inside an embedded string literal (`f"{d['}']}"`) is data, not structure — counting
+                // it would truncate the expression. Track a string state (open-quote char + escape) so
+                // braces/colons inside `'...'`/`"..."` are skipped.
                 std::size_t depth = 1, j = i + 1;
-                for (; j < raw.size() && depth > 0; ++j) {
-                    if (raw[j] == '{') ++depth;
-                    else if (raw[j] == '}' && --depth == 0) break;
+                char quote = 0;
+                bool esc = false;
+                for (; j < raw.size(); ++j) {
+                    char cj = raw[j];
+                    if (quote) {
+                        if (esc) esc = false;
+                        else if (cj == '\\') esc = true;
+                        else if (cj == quote) quote = 0;
+                        continue;
+                    }
+                    if (cj == '\'' || cj == '"') quote = cj;
+                    else if (cj == '{') ++depth;
+                    else if (cj == '}' && --depth == 0) break;
                 }
-                if (depth != 0) throw KiritoError("unmatched '{' in f-string", t.span);
+                if (j >= raw.size() || depth != 0) throw KiritoError("unmatched '{' in f-string", t.span);
                 ast::FStringExpr::Part p;
                 p.isExpr = true;
                 std::string inner = raw.substr(i + 1, j - (i + 1));
                 // Split off an optional `:format-spec` at bracket depth 0 (so a `:` inside a slice
-                // `x[1:2]` or a dict `{1:2}` is not mistaken for a spec separator).
+                // `x[1:2]` or a dict `{1:2}` is not mistaken for a spec separator) — and, likewise
+                // quote-aware, so a `:` inside a string literal (`f"{'a:b'}"`) is not a spec separator.
                 int bd = 0;
+                char sq = 0;
+                bool sesc = false;
                 for (std::size_t k = 0; k < inner.size(); ++k) {
                     char ch = inner[k];
-                    if (ch == '(' || ch == '[' || ch == '{') ++bd;
+                    if (sq) {
+                        if (sesc) sesc = false;
+                        else if (ch == '\\') sesc = true;
+                        else if (ch == sq) sq = 0;
+                        continue;
+                    }
+                    if (ch == '\'' || ch == '"') sq = ch;
+                    else if (ch == '(' || ch == '[' || ch == '{') ++bd;
                     else if (ch == ')' || ch == ']' || ch == '}') --bd;
                     else if (ch == ':' && bd == 0) { p.spec = inner.substr(k + 1); inner.resize(k); break; }
                 }

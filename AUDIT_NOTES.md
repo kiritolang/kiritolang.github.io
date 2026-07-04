@@ -81,9 +81,12 @@ _(appended as each parallel audit agent returns; verified below)_
   native stack overflow**: each `{expr}` spawns a fresh Parser with `exprDepth_=0`, so kMaxParseDepth
   never accumulates across f-string nesting → SIGSEGV on deeply nested quote-alternating f-strings.
   Fix: thread exprDepth_/a global recursion counter into the sub-parser, or cap f-string nesting.
-- `NEW MED` — `parser.hpp:924-941 parseFString` — f-string `{…}` scanner is quote-unaware: the
+- ~~`NEW MED` — `parser.hpp:924-941 parseFString` — f-string `{…}` scanner is quote-unaware: the
   brace-match and `:`-spec split ignore string literals inside the expr → `f"{d['a:b']}"` and
-  `f"{d['}']}"` (documented-supported) fail to parse. Fix: track quote state in both loops.
+  `f"{d['}']}"` (documented-supported) fail to parse.~~ **DONE** — both loops now track string state
+  (open-quote char + backslash escape) so a brace/colon inside `'…'`/`"…"` is treated as data, not
+  structure. `f"{'a:b'}"`, `f"{braces['}']}"`, and `f"{'x:y':>6}"` (real spec after a quoted colon)
+  all parse. Tests appended to `spec_fstrings.ki`.
 - `NEW LOW` — `lexer.hpp:129-136` — indentation width counters are `int`; `wide += 8-(wide%8)` per tab
   can overflow signed int (UB) on a huge leading-tab run. Fix: int64/size_t + cap.
 - `NEW LOW` — `lexer.hpp:113-116,297-299` — embedded NUL byte in a string literal is treated as EOF →

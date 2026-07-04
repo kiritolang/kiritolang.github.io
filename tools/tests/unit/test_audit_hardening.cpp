@@ -171,6 +171,13 @@ seen.add(RS())
         CHECK(has(errOf(R"KI(import("regex").compile("()" * 2000))KI"), "too many capture groups"));
         CHECK(run(R"KI(import("regex").compile("()" * 500) != None)KI") == "True");
 
+        // f-string: the `{…}` scanner is quote-aware — a `:` or `}` inside a string literal is data,
+        // not a spec separator / closing brace (was mis-split when the scanner ignored quotes).
+        CHECK(run(R"KI(f"{'a:b'}")KI") == "a:b");        // colon inside a string is not a spec sep
+        CHECK(run(R"KI(f"{'x:y':>6}")KI") == "   x:y");   // real spec still applies after a quoted colon
+        CHECK(run(R"KI(var d = {"}": 9}
+f"{d['}']}")KI") == "9");                                 // brace inside a string does not close the field
+
         // lexer: a genuine NUL byte inside a string literal is a valid character, not a premature EOF
         // (was mis-reported as "unterminated string" because '\0' doubled as the end-of-input sentinel).
         {
