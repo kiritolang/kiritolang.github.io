@@ -189,8 +189,15 @@ maintainer, NOT changed):**
   **A03-2** (Unpack comment), **A05-4** (if/while condition truthy span), **A04-2** (foreign-exception
   traceback bookkeeping).
 
+**Rejected — by-design (verified by building the change):**
+- **A11-1** (`math.trunc` → Integer): NOT a bug. Kirito's Integer is int64, so an Integer `trunc`
+  would THROW on `trunc(1e300)`/`trunc(nan)`/`trunc(inf)` (r7_math.ki:56, r8_math.ki:56 rely on these
+  working). `trunc` returning Float is deliberate — it preserves the full float domain that the
+  int64-returning `floor`/`ceil` cannot. The auditor's "consistency with floor/ceil" argument missed
+  the domain trade-off. Left as-is.
+
 **Deferred (need a build+run to re-baseline golden `.expected`, or are pure refactors — low value):**
-- Behavior changes that ripple into many golden `.expected` files: A11-1 (`trunc`→Integer), A20-3
+- Behavior changes that ripple into many golden `.expected` files: A20-3
   (`quantiles` extrapolation), A20-8 (base64 non-canonical), A20-6 (groupby drops NaN), A20-7
   (textwrap long-word break), A06-4 (empty-substring past-end across 5 string methods).
 - Pure DRY refactors: A11-2 (math int-extraction lambdas), A13-2/A13-3 (Matrix vs ComplexMatrix ~90%
