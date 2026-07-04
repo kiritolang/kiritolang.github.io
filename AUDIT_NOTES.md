@@ -256,6 +256,12 @@ compile-reviewed edits (user builds); the self-asserting `spec_audit_hardening.k
 - LOW — `collections.hpp` Dict/Set iteration order not insertion-stable across delete.
 - ~~LOW — `stdlib_regex.hpp` module sub/split drop the flags arg.~~ **DONE**: added a trailing
   `flags` param to one-shot `regex.sub`/`regex.split`. Test: `spec_regex_oneshot_flags.ki`.
-- LOW — `parser.hpp` inline-body `return a, b` doesn't pack; `lexer.hpp` NUL-in-string = EOF.
+- ~~LOW — `lexer.hpp` NUL-in-string = EOF.~~ **DONE**: added `atEnd()`; a genuine NUL byte in a string
+  literal is now a valid character, not a premature "unterminated string". Test in test_audit_hardening.cpp.
+- ~~LOW — `parser.hpp` inline-body `return a, b` doesn't pack.~~ **REJECTED (would regress)**: the
+  codebase has thousands of inline callbacks like `sort(Function(p): return p[1], True)` where the
+  trailing comma is a CALL-ARG separator (`True` is sort's reverse flag). Packing the inline `return`
+  (parseValueSeq) would swallow those args and break the dominant inline-callback pattern; the current
+  `parseExpr` behavior is correct — the block form packs only because a newline unambiguously ends it.
 - ~~nit — `bytes.hpp` repeat cap duplicates `kMaxRepeat`.~~ **DONE**: moved `kMaxRepeat` to
   `common.hpp` (single source of truth); bytes.hpp/runtime.hpp both use it.

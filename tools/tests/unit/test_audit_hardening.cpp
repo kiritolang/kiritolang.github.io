@@ -165,6 +165,19 @@ seen.add(RS())
         CHECK(has(errOf(R"KI(import("regex").compile(r"\uD800"))KI"), "surrogate"));
         CHECK(run(R"KI(import("regex").search(r"A", "xAy") != None)KI") == "True");  // valid \u still works
 
+        // lexer: a genuine NUL byte inside a string literal is a valid character, not a premature EOF
+        // (was mis-reported as "unterminated string" because '\0' doubled as the end-of-input sentinel).
+        {
+            std::string src = "var s = \"";
+            src += '\0';               // an embedded NUL byte in the literal
+            src += "Z\"\ndiscard len(s)\n";
+            CHECK(errOf(src) == "<ok>");
+            std::string val = "var s = \"";
+            val += '\0';
+            val += "Z\"\nlen(s)\n";
+            CHECK(run(val) == "2");    // NUL + 'Z' == two code points
+        }
+
         // zlib: a preset-dictionary (FDICT) stream is rejected clearly instead of misparsed.
         // CMF=0x78, FLG=0x20 is a valid header check (30752 % 31 == 0) with the FDICT bit set.
         CHECK(has(errOf(R"KI(import("zlib").decompress(Bytes([120, 32, 0, 0, 0, 0, 0, 0])))KI"),
