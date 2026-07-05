@@ -132,5 +132,46 @@ int main() {
     CHECK(okGc1("var mx = import(\"matrix\")\nvar a = mx.identity(3)\n"
                 "var b = a.apply(Function(x): return x + 1.0)\nString(b[0, 0])") == "2.0");
 
+    // === A15-1 (Medium-high, autograd): a retained non-leaf tensor's `.grad` was used as the
+    // reverse-mode accumulator and never cleared between passes, so a second backward() through it
+    // re-seeded the stale value and doubled the leaf gradient. Non-leaves are now grad-reset each
+    // pass (leaves keep accumulating, as the tests rely on). ===
+    {
+        const std::string pre = "var T = import(\"tensor\")\n";
+        // Two passes through the SAME intermediate y = x*x; x.grad must be [2,4], not [4,8].
+        CHECK(ok(pre + "var x = T.Tensor([1.0, 2.0], requiresgrad = True)\nvar y = x * x\n"
+                       "y.sum().backward()\nx.zerograd()\ny.sum().backward()\nString(x.grad.tolist())")
+              == "[2.0, 4.0]");
+        // Driving an intermediate root directly twice: leaf grad is exactly 2x a single pass (linear).
+        CHECK(ok(pre + "var x = T.Tensor([1.0, 2.0, 3.0], requiresgrad = True)\nvar y = x * x\n"
+                       "y.backward(T.ones([3]))\ny.backward(T.ones([3]))\nString(x.grad.tolist())")
+              == "[4.0, 8.0, 12.0]");  // each pass contributes 2x = [2,4,6]; two passes -> [4,8,12]
+        // A single pass still gives the un-doubled result (no regression).
+        CHECK(ok(pre + "var x = T.Tensor([1.0, 2.0], requiresgrad = True)\n(x * x).sum().backward()\n"
+                       "String(x.grad.tolist())") == "[2.0, 4.0]");
+    }
+
+    // === A18-3 (Low, use-after-close): detach() left `fd` intact, so a second detach handed out the
+    // same fd (double-adopt) and fileno() after close/detach returned a stale/recycled number. Now
+    // detach resets fd (second detach throws) and fileno returns -1 on a closed socket. ===
+    {
+        const std::string pre = "var net = import(\"net\")\n";
+        CHECK(has(err(pre + "var s = net.tcpsocket()\ndiscard s.detach()\ndiscard s.detach()"),
+                  "socket is closed"));                                    // detach-twice throws
+        CHECK(ok(pre + "var s = net.tcpsocket()\ns.close()\nString(s.fileno())") == "-1");  // Python-style
+        CHECK(ok(pre + "var s = net.tcpsocket()\ndiscard s.detach()\nString(s.fileno())") == "-1");
+        CHECK(ok(pre + "var s = net.tcpsocket()\nString(s.fileno() >= 0)") == "True");       // open: real fd
+    }
+
+    // === A18-4 (Medium, hang): settimeout() now also bounds connect() (it stores the value and connect
+    // uses non-blocking connect + select). Deterministic assertion: settimeout is accepted and a connect
+    // to a refused local port still fails promptly (connection refused), i.e. the timeout path doesn't
+    // break normal error reporting. The true black-hole-timeout case is environment-sensitive. ===
+    {
+        const std::string pre = "var net = import(\"net\")\n";
+        CHECK(has(err(pre + "var s = net.tcpsocket()\ns.settimeout(2.0)\ns.connect(\"127.0.0.1\", 9)"),
+                  "connect failed"));   // refused (or timed out) — either way a clean throw, no hang
+    }
+
     return RUN_TESTS();
 }

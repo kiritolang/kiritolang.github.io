@@ -125,6 +125,65 @@ inline bool setBlocking(socket_t s, bool blocking) {
 #endif
 }
 
+// Connect with a bounded wait. A plain blocking ::connect() to a black-hole host (silently dropped
+// SYNs) hangs for the OS default (tens of seconds to minutes) regardless of any SO_*TIMEO — those
+// only bound send/recv. When `seconds > 0` this switches to non-blocking connect + select on
+// writability, so the wait is capped. Returns 0 on success, -1 on error/timeout (errno/WSA set as
+// usual; a timeout reports ETIMEDOUT / WSAETIMEDOUT). Restores the socket's blocking mode on return.
+inline int connectWithTimeout(socket_t s, const sockaddr* addr, socklen_t addrlen, double seconds) {
+    if (seconds <= 0) return ::connect(s, addr, addrlen);
+    if (!setBlocking(s, false)) return ::connect(s, addr, addrlen);  // fall back to blocking
+    int rc = ::connect(s, addr, addrlen);
+#if defined(_WIN32)
+    bool inProgress = (rc != 0) && (::WSAGetLastError() == WSAEWOULDBLOCK);
+#else
+    bool inProgress = (rc != 0) && (errno == EINPROGRESS);
+#endif
+    if (rc == 0) { setBlocking(s, true); return 0; }          // connected immediately
+    if (!inProgress) { int e =
+#if defined(_WIN32)
+        ::WSAGetLastError();
+#else
+        errno;
+#endif
+        setBlocking(s, true);
+#if defined(_WIN32)
+        ::WSASetLastError(e);
+#else
+        errno = e;
+#endif
+        return -1;
+    }
+    fd_set wset;
+    FD_ZERO(&wset);
+    FD_SET(s, &wset);
+    struct timeval tv;
+    tv.tv_sec = static_cast<long>(seconds);
+    tv.tv_usec = static_cast<long>((seconds - static_cast<double>(tv.tv_sec)) * 1e6);
+    int sel = ::select(static_cast<int>(s) + 1, nullptr, &wset, nullptr, &tv);
+    if (sel <= 0) {                                            // 0 = timeout, <0 = select error
+        setBlocking(s, true);
+#if defined(_WIN32)
+        ::WSASetLastError(WSAETIMEDOUT);
+#else
+        errno = (sel == 0) ? ETIMEDOUT : errno;
+#endif
+        return -1;
+    }
+    int soerr = 0;
+    if (!getSockOptInt(s, SOL_SOCKET, SO_ERROR, soerr) || soerr != 0) {  // connect's real result
+        setBlocking(s, true);
+#if defined(_WIN32)
+        ::WSASetLastError(soerr ? soerr : WSAETIMEDOUT);
+#else
+        errno = soerr ? soerr : ETIMEDOUT;
+#endif
+        return -1;
+    }
+    setBlocking(s, true);
+    return 0;
+}
+
 // A connected pair of sockets (like Python socket.socketpair). POSIX has a native socketpair() over
 // AF_UNIX. Windows has none, so emulate a STREAM pair over a 127.0.0.1 loopback listener; a datagram
 // pair is unsupported there (returns false → the net module throws a clear error).

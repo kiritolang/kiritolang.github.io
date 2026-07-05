@@ -73,6 +73,7 @@ public:
     int family = AF_INET;
     int socktype = SOCK_STREAM;
     bool closed = false;
+    double timeout = 0.0;   // settimeout() value (seconds); 0 = blocking. Bounds connect() too.
 
     SocketVal() : SocketVal(AF_INET, SOCK_STREAM) {}
     SocketVal(int fam, int type) : family(fam), socktype(type) {
@@ -528,7 +529,7 @@ inline HttpResult parseRaw(const std::string& raw) {
 
 // Open a connected TCP socket to the URL's host:port, or throw. Family-agnostic (AF_UNSPEC): tries
 // each address getaddrinfo returns, so an IPv6 host — http://[::1]:8080/ — connects as readily as IPv4.
-inline netcompat::socket_t dialTcp(const Url& u) {
+inline netcompat::socket_t dialTcp(const Url& u, double timeout = 0.0) {
     netcompat::startup();
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;          // IPv4 or IPv6, whichever the host has
@@ -542,7 +543,10 @@ inline netcompat::socket_t dialTcp(const Url& u) {
     for (addrinfo* ai = res; ai; ai = ai->ai_next) {
         fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (!netcompat::isValid(fd)) { lastErr = netcompat::lastError(); continue; }
-        if (::connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;  // connected
+        // `timeout` bounds the connect too (not just send/recv): a black-hole host would otherwise
+        // hang for the OS default regardless of the request timeout.
+        if (netcompat::connectWithTimeout(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen), timeout) == 0)
+            break;  // connected
         lastErr = netcompat::lastError();
         netcompat::closeSocket(fd);
         fd = netcompat::kInvalidSocket;
@@ -576,7 +580,7 @@ inline void addWindowsRootCerts(SSL_CTX* ctx) {
 }
 #endif
 inline std::string httpExchange(const Url& u, const std::string& request, double timeout, bool verify) {
-    netcompat::socket_t fd = dialTcp(u);
+    netcompat::socket_t fd = dialTcp(u, timeout);
     setTimeout(fd, timeout);
     if (!u.tls) {
         std::string raw;
@@ -649,7 +653,7 @@ inline std::string httpExchange(const Url& u, const std::string& request, double
     (void)verify;
     if (u.tls)
         throw KiritoError("https requires building with KIRITO_ENABLE_TLS (OpenSSL); use http:// otherwise");
-    netcompat::socket_t fd = dialTcp(u);
+    netcompat::socket_t fd = dialTcp(u, timeout);
     setTimeout(fd, timeout);
     std::string raw;
     try { net::sendAll(fd, request); raw = net::recvAll(fd); }
@@ -1028,7 +1032,7 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
             sockaddr_storage ss{}; socklen_t sl = 0; std::string err;
             if (!net::resolveAddr(host, static_cast<int>(port), s.family, s.socktype, ss, sl, err))
                 throw KiritoError("connect: could not resolve host '" + host + "': " + err);
-            if (::connect(s.fdOrThrow("connect"), reinterpret_cast<sockaddr*>(&ss), sl) != 0)
+            if (netcompat::connectWithTimeout(s.fdOrThrow("connect"), reinterpret_cast<sockaddr*>(&ss), sl, s.timeout) != 0)
                 throw KiritoError("connect failed: " + netcompat::lastError());
             return vm.none();
         });
@@ -1090,7 +1094,9 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
             double secs = t.kind() == ValueKind::Float
                               ? static_cast<const FloatVal&>(t).value()
                               : static_cast<double>(asInt(vm, a[0]));
-            net::setTimeout(sock(vm, self).fdOrThrow("settimeout"), secs);
+            auto& s = sock(vm, self);
+            net::setTimeout(s.fdOrThrow("settimeout"), secs);
+            s.timeout = secs;   // also bounds a subsequent connect() (Python semantics)
             return vm.none();
         });
     // --- datagram (UDP) I/O ---
@@ -1210,7 +1216,11 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         });
     if (name == "fileno")   // the raw fd, non-destructively (cf. detach, which relinquishes ownership)
         return bind("fileno", {}, [self, sock](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            return vm.makeInt(static_cast<int64_t>(sock(vm, self).fd));
+            auto& s = sock(vm, self);
+            // -1 on a closed/detached socket (Python semantics): the underlying fd is gone or recycled,
+            // so handing its old number to net.fromfd would adopt an unrelated fd.
+            if (s.closed || !netcompat::isValid(s.fd)) return vm.makeInt(-1);
+            return vm.makeInt(static_cast<int64_t>(s.fd));
         });
     if (name == "close" || name == "_exit_")
         return bind("close", {}, [self, sock](KiritoVM& vm, std::span<const Handle>) -> Handle {
@@ -1222,8 +1232,9 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     if (name == "detach")
         return bind("detach", {}, [self, sock](KiritoVM& vm, std::span<const Handle>) -> Handle {
             auto& s = sock(vm, self);
-            int64_t fd = static_cast<int64_t>(s.fd);
-            s.closed = true;  // relinquish ownership: ~SocketVal must not close this fd
+            int64_t fd = static_cast<int64_t>(s.fdOrThrow("detach"));  // detach-twice throws, not a stale fd
+            s.closed = true;             // relinquish ownership: ~SocketVal must not close this fd
+            s.fd = netcompat::kInvalidSocket;  // and the old number can't leak out via a second detach/fileno
             return vm.makeInt(fd);
         });
     if (name == "_enter_")

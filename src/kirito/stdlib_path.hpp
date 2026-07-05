@@ -159,16 +159,26 @@ public:
         m.fn("listdir", {{"path", "String"}}, "List", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             List out(vm);
             std::error_code ec;
-            for (const auto& entry : std::filesystem::directory_iterator(pathArg(vm, a[0]), ec))
-                out.push(Value(vm, entry.path().filename().string()));
+            // Manual increment(ec): the range-for's operator++ THROWS on a mid-iteration error, which
+            // would break the "tolerant: missing/inaccessible -> []" contract.
+            std::filesystem::directory_iterator it(pathArg(vm, a[0]), ec), end;
+            for (; !ec && it != end; it.increment(ec))
+                out.push(Value(vm, it->path().filename().string()));
             return out;
         });
         // walk(dir) -> every file path under dir, recursively (flattened; tolerant like listdir).
         m.fn("walk", {{"dir", "String"}}, "List", [pathArg](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             List out(vm);
             std::error_code ec;
-            for (const auto& entry : std::filesystem::recursive_directory_iterator(pathArg(vm, a[0]), ec))
-                if (entry.is_regular_file()) out.push(Value(vm, entry.path().string()));
+            // recursive_directory_iterator's operator++ THROWS when it can't descend into a nested dir
+            // (e.g. no read permission). increment(ec) reports the error instead; skip_permission_denied
+            // keeps the walk going past an unreadable subtree rather than aborting the whole walk.
+            auto opts = std::filesystem::directory_options::skip_permission_denied;
+            std::filesystem::recursive_directory_iterator it(pathArg(vm, a[0]), opts, ec), end;
+            for (; !ec && it != end; it.increment(ec)) {
+                std::error_code sec;
+                if (it->is_regular_file(sec) && !sec) out.push(Value(vm, it->path().string()));
+            }
             return out;
         });
         m.fn("getcwd", {}, "String", [](KiritoVM& vm, std::span<const Handle>) -> Handle {

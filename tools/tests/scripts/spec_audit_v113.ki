@@ -78,4 +78,13 @@ assert throws(Function(): return xs.remove(Evil())), "A09-1: remove(no-match) th
 assert [1, 2, 3, 2].index(2) == 1, "A09-1: index normal behaviour intact"
 assert [1, 2, 3, 2].count(2) == 2, "A09-1: count normal behaviour intact"
 
+# --- A15-1: a second backward() through a RETAINED intermediate must not double the leaf gradient ---
+var T = import("tensor")
+var x = T.Tensor([1.0, 2.0], requiresgrad = True)
+var y = x * x                      # intermediate (non-leaf) — its .grad must not persist across passes
+y.sum().backward()
+x.zerograd()
+y.sum().backward()
+assert x.grad.tolist() == [2.0, 4.0], "A15-1: retained-intermediate double backward not doubled"
+
 io.print("OK audit_v113")
