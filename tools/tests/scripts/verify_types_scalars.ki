@@ -1,0 +1,217 @@
+# Doc-vs-impl verification for the SCALAR built-in types — None / Bool / Integer / Float
+# (docs/pages/09-types.md). Functioning cases (exact results), edge cases (exact IEEE-754 equality,
+# NaN/inf, +-0.0, int64 wraparound, floor division / modulo sign, right-assoc **, base literals,
+# .compare tolerance boundaries), and HARDENING (bad input must raise the RIGHT message; anything
+# that SHOULD raise but silently succeeds is a bug). Prints "OK types_scalars".
+var io = import("io")
+var math = import("math")
+
+# returns True iff calling fn() throws (any error)
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+# returns True iff fn() throws AND the message contains `needle` (hardening: the RIGHT error)
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ type() names
+assert type(None) == "None", "type None"
+assert type(True) == "Bool" and type(False) == "Bool", "type Bool"
+assert type(42) == "Integer" and type(-7) == "Integer", "type Integer"
+assert type(3.14) == "Float" and type(1e10) == "Float", "type Float"
+
+# ============================================================ None
+# The single value None: falsy, equal only to itself, stringifies "None", hashable.
+assert None == None, "None equals itself"
+assert not (None == False) and not (None == 0) and not (None == ""), "None equal only to None"
+assert None != False and None != 0, "None != falsy non-None"
+assert Bool(None) == False, "None is falsy"
+assert not None, "not None is truthy"
+assert String(None) == "None", "None stringifies"
+var _nomiss = Function(): pass
+assert _nomiss() == None, "no-return function yields None"
+# None hashable (usable as a Dict key)
+var dn = {}
+dn[None] = "here"
+assert dn[None] == "here" and len(dn) == 1, "None is a hashable Dict key"
+# None supports no arithmetic
+assert raises_msg(Function(): return None + 1, "type 'None' does not support this binary operator"), "None + 1 raises"
+
+# ============================================================ Bool
+assert True and not False, "True truthy, False falsy"
+assert Bool(True) == True and Bool(False) == False, "Bool of Bool"
+# Bool(x) is the truthiness of any value: None/0/0.0/""/empty collections falsy, else truthy
+assert Bool(0) == False and Bool(0.0) == False and Bool("") == False, "Bool falsy scalars"
+assert Bool(None) == False and Bool([]) == False and Bool({}) == False and Bool({1} - {1}) == False, "Bool falsy empties"
+assert Bool(1) == True and Bool(-1) == True and Bool(0.5) == True and Bool("x") == True and Bool([0]) == True, "Bool truthy"
+assert Bool(-0.0) == False, "Bool(-0.0) is False"
+# comparisons and logical operators produce Bool
+assert type(1 < 2) == "Bool" and type(1 == 1) == "Bool", "comparisons yield Bool"
+assert (True == True) and (False == False) and not (True == False), "Bool equality"
+# Bool is a DISTINCT type, not an Integer
+assert True != 1 and False != 0, "Bool != Integer (strong typing)"
+assert not (True == 1) and not (1 == True) and not (1.0 == True), "Bool not equal to numbers"
+assert raises_msg(Function(): return True + 1, "type 'Bool' does not support this binary operator"), "True + 1 is a type error"
+assert raises_msg(Function(): return 1 + True, "unsupported operand type 'Bool' for arithmetic with 'Integer'"), "1 + True is a type error"
+assert raises(Function(): return True * 2), "True * 2 raises"
+assert raises(Function(): return True < False), "Bool has no ordering"
+# convert explicitly to count/sum truth values
+assert Integer(True) == 1 and Integer(False) == 0, "Integer(Bool)"
+assert Float(True) == 1.0 and Float(False) == 0.0, "Float(Bool)"
+assert Integer(True) + Integer(True) == 2, "sum truth via Integer()"
+# and/or short-circuit and return the operand value; not returns a Bool
+assert (True and 5) == 5 and (False and 5) == False, "and returns operand / short-circuits"
+assert (False or "x") == "x" and (None or 3) == 3, "or returns operand"
+assert (not None) == True and (not 0) == True and (not "") == True and (not 5) == False, "not yields Bool"
+# Bool hashable
+var db = {True: "t", False: "f"}
+assert db[True] == "t" and db[False] == "f" and len(db) == 2, "Bool hashable, distinct keys"
+
+# ============================================================ Integer — literals
+assert 0xFF == 255 and 0o17 == 15 and 0b1010 == 10, "hex/oct/bin literals"
+assert 0XfF == 255 and 0O17 == 15 and 0B101 == 5, "base prefix is case-insensitive"
+assert 42 == 42 and -7 == 0 - 7, "decimal literals"
+# full-width two's-complement literals (documented in CLAUDE.md)
+assert 0xFFFFFFFFFFFFFFFF == -1, "0xFFFF..F is -1 (full-width two's complement)"
+assert 0x8000000000000000 == -9223372036854775808, "0x8000..0 is INT64_MIN"
+
+# ============================================================ Integer — arithmetic
+assert 2 + 3 == 5 and 10 - 4 == 6 and 6 * 7 == 42, "int +,-,*"
+assert type(2 + 3) == "Integer" and type(6 * 7) == "Integer", "int arithmetic stays Integer"
+# `/` ALWAYS yields Float, even on exact division
+assert 7 / 2 == 3.5 and 4 / 2 == 2.0, "true division"
+assert type(4 / 2) == "Float" and type(7 / 2) == "Float", "/ always Float"
+# `//` floor division, `%` modulo — both floor toward negative infinity (remainder sign = divisor)
+assert 7 // 2 == 3 and -7 // 3 == -3 and 7 // -3 == -3, "// floors toward -inf"
+assert 7 % 3 == 1 and -7 % 3 == 2 and 7 % -3 == -2, "% takes sign of divisor"
+assert type(7 // 2) == "Integer" and type(7 % 3) == "Integer", "//,% Integer result"
+assert divmod(-7, 3) == [-3, 2], "divmod floor + sign-of-divisor"
+# `**` exponentiation, right-associative, Integer**Integer(>=0) stays Integer
+assert 2 ** 10 == 1024 and 2 ** 0 == 1 and 0 ** 0 == 1, "** basic"
+assert 2 ** 3 ** 2 == 512, "** right-associative (not 64)"
+assert (-2) ** 3 == -8 and (-2) ** 10 == 1024, "** negative base integer exponent"
+assert type(2 ** 10) == "Integer", "int**int(nonneg) is Integer"
+assert type(2 ** 0.5) == "Float" and type(2.0 ** 3) == "Float", "** with a Float is Float"
+assert (2 ** 0.5) > 1.41 and (2 ** 0.5) < 1.42, "sqrt(2) via **"
+# negative exponent on integer promotes to Float
+assert 2 ** (-1) == 0.5 and type(2 ** (-1)) == "Float", "int ** negative exponent -> Float"
+
+# ============================================================ Integer — wraparound (edge)
+var imax = 9223372036854775807
+var imin = -9223372036854775808
+assert imax + 1 == imin, "INT64_MAX + 1 wraps to INT64_MIN"
+assert imin - 1 == imax, "INT64_MIN - 1 wraps to INT64_MAX"
+assert imin * -1 == imin, "-INT64_MIN wraps (stays INT64_MIN)"
+assert -imin == imin, "unary negate of INT64_MIN wraps"
+# DISCREPANCY (minor): a DECIMAL literal exceeding INT64_MAX silently wraps rather than erroring
+# (the docs only promise wraparound on *arithmetic* overflow) — pinned to current behaviour.
+assert 9223372036854775808 == imin, "decimal literal past INT64_MAX wraps to INT64_MIN"
+
+# ============================================================ Integer — hex/oct/bin builtins, compare
+assert hex(255) == "0xff" and oct(8) == "0o10" and bin(5) == "0b101", "hex/oct/bin render"
+assert hex(-255) == "-0xff" and bin(-2) == "-0b10", "hex/bin sign-aware"
+# .compare(other, rel_tol=1e-9, abs_tol=0.0) — approximate equality on Integer
+assert (5).compare(5) == True and (1000000).compare(1000001) == False, "Integer.compare"
+assert (100).compare(100.001) == False, "Integer.compare tight default tolerance"
+assert (100).compare(101, abs_tol = 2) == True, "Integer.compare widened abs_tol"
+assert hasattr(5, "compare") and "compare" in inspect(5), "Integer exposes compare"
+# exact cross-type numeric equality (Integer vs Float): 1 and 1.0 are equal and share a hash
+assert 1 == 1.0 and 2 == 2.0 and not (1 == 1.5), "Integer == Float exact"
+
+# ============================================================ Float — literals & promotion
+assert type(1.5e3) == "Float" and 1.5e3 == 1500.0, "scientific literal"
+assert 2e-3 == 0.002 and 1e10 == 10000000000.0, "sci exponent literals"
+assert type(1 + 2.0) == "Float" and (1 + 2.0) == 3.0, "Integer+Float promotes to Float"
+assert type(3.0 - 1) == "Float" and (3.0 * 2) == 6.0, "mixed arithmetic -> Float"
+assert String(2.0) == "2.0" and String(0.5) == "0.5" and String(1.5e3) == "1500.0", "Float stringifies"
+
+# ============================================================ Float — division/modulo/pow (edge)
+assert type(-7.0 // 2.0) == "Float" and -7.0 // 2.0 == -4.0, "float // floors, stays Float"
+assert 7.0 % -3.0 == -2.0 and -7.0 % 3.0 == 2.0, "float % takes sign of divisor"
+assert (-2.0) ** 2 == 4.0 and 9.0 ** 0.5 == 3.0, "float ** ok when in-domain"
+
+# ============================================================ Float — EXACT IEEE-754 equality (edge)
+assert (0.1 + 0.2 == 0.3) == False, "0.1 + 0.2 != 0.3 (stored doubles differ)"
+assert 0.3 == 0.3, "bit-identical floats equal"
+assert (0.1 + 0.2) != 0.3, "!= agrees with exact =="
+# NaN is never equal to anything, including itself
+assert (math.nan == math.nan) == False, "nan == nan is False"
+assert math.nan != math.nan, "nan != nan is True"
+assert (math.nan == 0.0) == False and (math.nan < 1.0) == False and (math.nan > 1.0) == False, "nan unordered"
+# infinities
+assert math.inf == math.inf, "inf == inf"
+assert math.inf > 1e308 and -math.inf < -1e308, "inf ordering"
+assert -math.inf == -math.inf and -math.inf != math.inf, "-inf equality"
+# +0.0 and -0.0 are equal, and hash the same (one Dict/Set key)
+assert 0.0 == -0.0, "0.0 == -0.0"
+var dz = {}
+dz[0.0] = "a"
+dz[-0.0] = "b"
+assert len(dz) == 1 and dz[0.0] == "b", "+-0.0 collapse to one key"
+# but -0.0 still stringifies with its sign, and is falsy
+assert String(-0.0) == "-0.0" and String(0.0) == "0.0", "-0.0 keeps sign in str"
+# a Float equal to an integer value hashes like that integer (1.0 and 1 share one key)
+var dm = {}
+dm[1] = "int"
+dm[1.0] = "float"
+assert len(dm) == 1 and dm[1] == "float", "1 and 1.0 are one key"
+# NaN keys: each is distinct (nan != nan), so re-inserting nan grows the Dict
+var dnan = {}
+dnan[math.nan] = 1
+dnan[math.nan] = 2
+assert len(dnan) == 2, "distinct nan keys (nan != nan)"
+
+# ============================================================ Float — .compare tolerance (edge)
+assert (0.1 + 0.2).compare(0.3) == True, "compare: 0.1+0.2 ~ 0.3"
+assert (1.0).compare(1.5) == False, "compare: too far apart"
+assert (1.0).compare(1.5, abs_tol = 1.0) == True, "compare: widened abs_tol"
+assert (1.0).compare(1.0 + 1e-10) == True, "compare: within default rel_tol"
+assert (1.0).compare(1.0 + 1e-7) == False, "compare: outside default rel_tol"
+assert (0.0).compare(1e-10) == False, "compare: rel_tol useless near zero"
+assert (0.0).compare(1e-10, abs_tol = 1e-9) == True, "compare: abs_tol rescues near zero"
+assert (100.0).compare(100.0 + 1e-6) == False, "compare: rel tolerance scales with magnitude"
+assert hasattr(5.0, "compare") and "compare" in inspect(5.0), "Float exposes compare"
+
+# ============================================================ round / abs on Float
+assert abs(-2.5) == 2.5 and abs(2.5) == 2.5 and abs(-5) == 5, "abs"
+assert round(2.5) == 3 and round(-1.5) == -2 and round(0.5) == 1, "round half away from zero"
+assert round(3.14159, 2) == 3.14 and type(round(3.14159, 2)) == "Float", "round ndigits keeps Float"
+
+# ============================================================ HARDENING — bad input must raise (right msg)
+# division / modulo by zero — each form has its own exact message
+assert raises_msg(Function(): return 1 / 0, "division by zero"), "1 / 0 raises"
+assert raises_msg(Function(): return 1 // 0, "integer division by zero"), "1 // 0 raises"
+assert raises_msg(Function(): return 1 % 0, "integer modulo by zero"), "1 % 0 raises"
+assert raises_msg(Function(): return 1.0 / 0.0, "division by zero"), "1.0 / 0.0 raises"
+assert raises_msg(Function(): return 1.0 // 0.0, "float division by zero"), "1.0 // 0.0 raises"
+assert raises_msg(Function(): return 1.0 % 0.0, "float modulo by zero"), "1.0 % 0.0 raises"
+assert raises_msg(Function(): return 5 // 0.0, "float division by zero"), "mixed // zero raises"
+# ** domain errors — mirror math.pow policy (throw, not silent NaN/inf)
+assert raises_msg(Function(): return (-2) ** 0.5, "a negative base cannot be raised to a fractional power"), "(-2)**0.5 raises"
+assert raises_msg(Function(): return (-2.0) ** 0.5, "a negative base cannot be raised to a fractional power"), "(-2.0)**0.5 raises"
+assert raises_msg(Function(): return 0 ** (-1), "zero cannot be raised to a negative power"), "0**-1 raises"
+assert raises_msg(Function(): return 0.0 ** (-1.0), "zero cannot be raised to a negative power"), "0.0**-1.0 raises"
+# .compare with a non-number argument
+assert raises_msg(Function(): return (5).compare("x"), "compare() expects a number, not 'String'"), "compare(non-number) raises"
+assert raises_msg(Function(): return (5).compare(None), "compare() expects a number"), "compare(None) raises"
+assert raises_msg(Function(): return (5).compare(3, rel_tol = "a"), "compare() rel_tol and abs_tol must be numbers"), "compare(rel_tol=str) raises"
+assert raises_msg(Function(): return (5).compare(3, abs_tol = []), "compare() rel_tol and abs_tol must be numbers"), "compare(abs_tol=list) raises"
+# mixing types in arithmetic is a hard error, not a coercion
+assert raises(Function(): return 1 + "x"), "Integer + String raises (no coercion)"
+assert raises(Function(): return 1.5 + None), "Float + None raises"
+
+# ============================================================ SILENT-ERROR probes — these SHOULD raise
+# (a silent success on any of these would be a bug — confirm the interpreter refuses each)
+assert not raises(Function(): return 5 * 2), "control: a valid op does NOT raise"
+assert raises(Function(): return 0.0 ** (-1.0)), "0.0**-1 must not silently yield inf"
+assert raises(Function(): return (-2.0) ** 0.5), "(-2.0)**0.5 must not silently yield NaN"
+assert raises(Function(): return 1 // 0), "1 // 0 must not silently yield 0"
+
+io.print("OK types_scalars")

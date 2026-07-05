@@ -1,0 +1,95 @@
+# Doc-vs-impl verification for the `hash` stdlib module (docs/pages/10-stdlib.md "## hash").
+# md5/sha1/sha256 hex digests, adler32/crc32/crc64 checksums, and the generic hash(value).
+# Functioning cases (known test vectors), edge cases (empty/binary Bytes/String==Bytes), and
+# HARDENING (unhashable input must raise the right message). Prints "OK hash".
+var io = import("io")
+var hash = import("hash")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ md5 (known vectors)
+assert hash.md5("") == "d41d8cd98f00b204e9800998ecf8427e", "md5 empty"
+assert hash.md5("abc") == "900150983cd24fb0d6963f7d28e17f72", "md5 abc"
+assert hash.md5("message digest") == "f96b697d7cb7938d525a2f31aaf161d0", "md5 message digest"
+assert type(hash.md5("")) == "String" and len(hash.md5("")) == 32, "md5 is 32 hex chars"
+
+# ============================================================ sha1 (known vectors)
+assert hash.sha1("") == "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha1 empty"
+assert hash.sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d", "sha1 abc"
+assert len(hash.sha1("")) == 40, "sha1 is 40 hex chars"
+
+# ============================================================ sha256 (known vectors)
+assert hash.sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 empty"
+assert hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc"
+assert len(hash.sha256("")) == 64, "sha256 is 64 hex chars"
+
+# digests are lowercase hex only
+assert hash.sha256("abc") == hash.sha256("abc").lower(), "digest is lowercase hex"
+
+# ============================================================ adler32
+assert hash.adler32("") == 1, "adler32 empty is 1"
+assert hash.adler32("a") == 6422626, "adler32 'a'"
+assert hash.adler32("Wikipedia") == 300286872, "adler32 Wikipedia"
+assert type(hash.adler32("")) == "Integer", "adler32 is Integer"
+
+# ============================================================ crc32 (IEEE)
+assert hash.crc32("") == 0, "crc32 empty is 0"
+assert hash.crc32("123456789") == 3421780262, "crc32 standard 0xCBF43926"
+assert type(hash.crc32("")) == "Integer" and hash.crc32("abc") >= 0, "crc32 non-negative Integer"
+
+# ============================================================ crc64 (CRC-64/XZ, signed)
+assert hash.crc64("") == 0, "crc64 empty is 0"
+assert hash.crc64("123456789") == -7395533204333446662, "crc64/XZ 0x995DC9BBDF1939FA as signed"
+assert type(hash.crc64("")) == "Integer", "crc64 is Integer"
+
+# ============================================================ String OR Bytes: same digest
+# Every byte-data function accepts a String OR a Bytes; hash(s) == hash(s.encode()).
+assert hash.md5("abc") == hash.md5(Bytes("abc")), "md5 String == Bytes"
+assert hash.sha1("abc") == hash.sha1("abc".encode()), "sha1 String == encoded Bytes"
+assert hash.sha256("abc") == hash.sha256(Bytes("abc")), "sha256 String == Bytes"
+assert hash.crc32("abc") == hash.crc32(Bytes("abc")), "crc32 String == Bytes"
+assert hash.adler32("abc") == hash.adler32(Bytes("abc")), "adler32 String == Bytes"
+assert hash.crc64("abc") == hash.crc64(Bytes("abc")), "crc64 String == Bytes"
+
+# ============================================================ binary Bytes (non-UTF-8) still hash
+var bin = Bytes([0, 1, 2, 255, 254, 128, 0])
+assert len(hash.md5(bin)) == 32 and hash.crc32(bin) >= 0, "hash of arbitrary binary Bytes"
+assert hash.md5(bin) == hash.md5(bin), "hash of binary Bytes is deterministic"
+assert hash.crc32(Bytes([0])) != hash.crc32(Bytes([0, 0])), "crc32 distinguishes length"
+
+# ============================================================ hash(value) — the Dict/Set key hasher
+assert hash.hash(42) == 42, "hash(Integer) is identity"
+assert hash.hash(0) == 0 and hash.hash(-1) == -1, "hash(Integer) identity signed"
+assert type(hash.hash(42)) == "Integer", "hash(value) returns Integer"
+assert hash.hash("x") == hash.hash("x"), "hash(String) deterministic"
+assert hash.hash("abc") == hash.hash(String("abc")), "hash(String) content-based"
+assert hash.hash(Bytes("abc")) == hash.hash(Bytes("abc")), "hash(Bytes) deterministic"
+assert hash.hash(True) == hash.hash(True) and hash.hash(None) == hash.hash(None), "hash Bool/None stable"
+assert hash.hash(1.5) == hash.hash(1.5), "hash(Float) stable"
+# a user-class instance with _hash_ folds via hash.hash
+class Email:
+    var _init_ = Function(self, addr): self.addr = addr
+    var _hash_ = Function(self): return hash.hash(self.addr)
+assert hash.hash(Email("a@b")) == hash.hash("a@b"), "hash composes user _hash_"
+
+# ============================================================ HARDENING — unhashable throws
+assert raises_msg(Function(): return hash.hash([1, 2, 3]), "unhashable type 'List'"), "hash(List) throws unhashable"
+assert raises_msg(Function(): return hash.hash({"a": 1}), "unhashable type 'Dict'"), "hash(Dict) throws unhashable"
+assert raises_msg(Function(): return hash.hash({1, 2}), "unhashable type 'Set'"), "hash(Set) throws unhashable"
+# digests reject non String/Bytes input (silent-bug probe)
+assert raises(Function(): return hash.md5(123)), "md5(Integer) throws"
+assert raises(Function(): return hash.crc32([1])), "crc32(List) throws"
+assert raises(Function(): return hash.sha256(None)), "sha256(None) throws"
+
+io.print("OK hash")

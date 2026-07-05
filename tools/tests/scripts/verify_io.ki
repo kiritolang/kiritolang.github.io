@@ -1,0 +1,278 @@
+# Doc-vs-impl verification for the `io` stdlib module (docs/pages/10-stdlib.md ## io).
+# Console streams (print/eprint/write/input/read + stream= + rebindable stdout/stderr/stdin),
+# open() modes (text r/w/a/r+ and binary rb/wb/ab/r+b), File + BytesIO objects.
+# Functioning (exact values), edge cases, HARDENING (bad input must raise the RIGHT error), and
+# SILENT-error probes. Prints "OK io". Uses only temp files + in-memory buffers (never touches the
+# real terminal until the final line) and cleans up every temp file it creates.
+var io = import("io")
+var path = import("path")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# A unique temp base so a stale run can't collide; clean everything under it at the end.
+var tmp = path.gettempdir()
+var tf = path.join(tmp, "kirito_verify_io.txt")
+var tb = path.join(tmp, "kirito_verify_io.bin")
+discard path.remove(tf, missing_ok = True)
+discard path.remove(tb, missing_ok = True)
+
+# ============================================================ console: stream= keyword to BytesIO
+# print: space-separated, newline-terminated.
+var buf = io.BytesIO()
+io.print("a", "b", 1, stream = buf)
+assert buf.getvalue() == "a b 1\n", "print space-sep + newline"
+# write: no separator, no newline.
+var buf2 = io.BytesIO()
+io.write("x", "y", 1, stream = buf2)
+assert buf2.getvalue() == "xy1", "write no-sep no-newline"
+# eprint: same shape as print (defaults to stderr, here redirected).
+var buf3 = io.BytesIO()
+io.eprint("e", 2, stream = buf3)
+assert buf3.getvalue() == "e 2\n", "eprint newline"
+# print of a nested String uses repr form (container stringification).
+var buf4 = io.BytesIO()
+io.print(["a", "b"], stream = buf4)
+assert buf4.getvalue() == "['a', 'b']\n", "print nested string repr"
+# print with no args -> just a newline.
+var buf5 = io.BytesIO()
+io.print(stream = buf5)
+assert buf5.getvalue() == "\n", "print() empty -> newline"
+
+# ============================================================ rebindable stdout / __stdout__
+# io.stdout is rebindable; __stdout__ holds the original StdStream. Redirect, print, restore.
+assert String(io.__stdout__) == "<stdout>", "__stdout__ repr"
+assert String(io.__stderr__) == "<stderr>", "__stderr__ repr"
+assert String(io.__stdin__) == "<stdin>", "__stdin__ repr"
+var cap = io.BytesIO()
+io.stdout = cap
+io.print("redirected")
+io.write("more")
+io.stdout = io.__stdout__               # restore before anything prints for real
+assert cap.getvalue() == "redirected\nmore", "rebound stdout captured"
+# stderr rebinding likewise.
+var caperr = io.BytesIO()
+io.stderr = caperr
+io.eprint("errline")
+io.stderr = io.__stderr__
+assert caperr.getvalue() == "errline\n", "rebound stderr captured"
+
+# ============================================================ input / read via redirected stdin
+# input() reads one line (newline stripped) from the current stdin; read([n]) reads n chars.
+io.stdin = io.BytesIO("hello\nworld\n")
+assert io.input() == "hello", "input first line"
+assert io.input() == "world", "input second line"
+assert io.input() == "", "input past EOF -> empty"
+io.stdin = io.__stdin__
+# stream= keyword redirects a single call without rebinding.
+var src = io.BytesIO("abcdef")
+assert io.read(3, stream = src) == "abc", "read n via stream="
+assert io.read(stream = src) == "def", "read rest via stream="
+assert io.read(10, stream = src) == "", "read past EOF -> empty"
+var lsrc = io.BytesIO("one\ntwo")
+assert io.input(stream = lsrc) == "one", "input via stream="
+assert io.input(stream = lsrc) == "two", "input via stream= last (no newline)"
+
+# ============================================================ open(): text write/read round-trip
+var f = io.open(tf, "w")
+f.write("line1\n")
+f.write("line2\n")
+f.close()
+assert path.getsize(tf) == 12, "written file size"
+var g = io.open(tf, "r")
+assert g.read() == "line1\nline2\n", "read whole file"
+g.close()
+# read(n) reads n characters; readline strips the newline; readlines splits remaining lines.
+var g2 = io.open(tf, "r")
+assert g2.read(3) == "lin", "read(3)"
+assert g2.read(3) == "e1\n", "read(3) continues"
+g2.close()
+var g3 = io.open(tf, "r")
+assert g3.readline() == "line1", "readline strips newline"
+assert g3.readlines() == ["line2"], "readlines rest"
+g3.close()
+# iterating a file yields its remaining lines.
+var g4 = io.open(tf, "r")
+var got = []
+for line in g4:
+    got.append(line)
+g4.close()
+assert got == ["line1", "line2"], "iterate file lines"
+# read past EOF returns "".
+var g5 = io.open(tf, "r")
+discard g5.read()
+assert g5.read() == "", "read past EOF empty String"
+assert g5.read(5) == "", "read(n) past EOF empty"
+g5.close()
+
+# ============================================================ append mode / r+ / seek+tell
+var fa = io.open(tf, "a")
+fa.write("line3\n")
+fa.close()
+var fr = io.open(tf, "r")
+assert fr.readlines() == ["line1", "line2", "line3"], "append added a line"
+fr.close()
+# r+ read/write; seek returns new position; tell reports the byte position.
+var frw = io.open(tf, "r+")
+assert frw.tell() == 0, "tell at start"
+assert frw.seek(6) == 6, "seek returns new pos"
+assert frw.tell() == 6, "tell after seek"
+assert frw.read(5) == "line2", "read after seek"
+assert frw.seek(0, 2) > 0, "seek from end (whence 2)"
+assert frw.seek(-1, 1) == frw.tell(), "seek relative (whence 1)"
+frw.close()
+# writelines writes each String in an iterable (no separators added).
+discard path.remove(tf, missing_ok = True)
+var fw = io.open(tf, "w")
+fw.writelines(["p\n", "q\n", "r"])
+fw.close()
+var fchk = io.open(tf, "r")
+assert fchk.read() == "p\nq\nr", "writelines concatenates"
+fchk.close()
+
+# ============================================================ empty file edge case
+discard path.remove(tf, missing_ok = True)
+var fe = io.open(tf, "w")
+fe.close()
+assert path.getsize(tf) == 0, "empty file size 0"
+var fer = io.open(tf, "r")
+assert fer.read() == "", "read empty file"
+assert fer.readline() == "", "readline empty file"
+assert fer.readlines() == [], "readlines empty file"
+fer.close()
+
+# ============================================================ binary mode yields Bytes
+var fb = io.open(tb, "wb")
+fb.write(Bytes([72, 73, 10, 74]))       # "HI\nJ"
+fb.close()
+var fbr = io.open(tb, "rb")
+var data = fbr.read()
+assert type(data) == "Bytes", "binary read yields Bytes"
+assert data == Bytes([72, 73, 10, 74]), "binary content exact"
+fbr.close()
+# binary readline yields Bytes too.
+var fbr2 = io.open(tb, "rb")
+var bl = fbr2.readline()
+assert type(bl) == "Bytes" and bl == Bytes([72, 73]), "binary readline Bytes (newline stripped)"
+fbr2.close()
+# binary iteration yields Bytes.
+var fbr3 = io.open(tb, "rb")
+var blines = []
+for chunk in fbr3:
+    blines.append(type(chunk))
+fbr3.close()
+assert blines == ["Bytes", "Bytes"], "binary iteration yields Bytes"
+# ab binary append.
+var fba = io.open(tb, "ab")
+fba.write(Bytes([75]))
+fba.close()
+assert path.getsize(tb) == 5, "binary append grew file"
+
+# ============================================================ with context manager
+discard path.remove(tf, missing_ok = True)
+with io.open(tf, "w") as wf:
+    wf.write("ctx")
+var cf = io.open(tf, "r")
+assert cf.read() == "ctx", "with-managed write flushed+closed"
+cf.close()
+
+# ============================================================ BytesIO object
+var b = io.BytesIO()
+assert b.write("hello") == 5, "BytesIO.write returns count"
+assert b.tell() == 5, "BytesIO.tell after write"
+assert b.seek(0) == 0, "BytesIO.seek to start"
+var bpart = b.read(2)
+assert bpart == "he" and type(bpart) == "String", "BytesIO.read(2) is a String"
+assert b.read() == "llo", "BytesIO.read rest"
+assert b.read(None) == "", "BytesIO.read(None) at end reads rest (empty)"
+assert b.getvalue() == "hello", "BytesIO.getvalue whole buffer"
+assert b.size() == 5 and len(b) == 5, "BytesIO.size / len"
+# readline includes up to newline (returned without it).
+var b2 = io.BytesIO("a\nbb\nc")
+assert b2.readline() == "a", "BytesIO.readline 1"
+assert b2.readline() == "bb", "BytesIO.readline 2"
+assert b2.readline() == "c", "BytesIO.readline last no newline"
+assert b2.readline() == "", "BytesIO.readline at EOF"
+# seek before start clamps to 0 (unlike File.seek which throws).
+var b3 = io.BytesIO("xyz")
+assert b3.seek(-100) == 0, "BytesIO.seek negative clamps to 0"
+assert b3.seek(0, 2) == 3, "BytesIO.seek end (whence 2)"
+# truncate drops everything after the cursor.
+var b4 = io.BytesIO("abcdef")
+discard b4.seek(3)
+assert b4.truncate() == 3, "BytesIO.truncate returns new size"
+assert b4.getvalue() == "abc", "BytesIO.truncate content"
+# write overwrites/extends at the cursor.
+var b5 = io.BytesIO("abcdef")
+discard b5.seek(2)
+discard b5.write("XY")
+assert b5.getvalue() == "abXYef", "BytesIO overwrite at cursor"
+
+# ============================================================ HARDENING (bad input -> RIGHT error)
+# open a missing file for reading throws.
+var missing = path.join(tmp, "kirito_verify_io_does_not_exist.txt")
+discard path.remove(missing, missing_ok = True)
+assert raises_msg(Function(): return io.open(missing, "r"), "could not open file"), "open missing for read raises"
+# unsupported mode throws with the mode named.
+assert raises_msg(Function(): return io.open(tf, "q"), "unsupported file mode"), "bad mode raises"
+assert raises_msg(Function(): return io.open(tf, "xb"), "unsupported file mode"), "bad binary mode raises"
+# write to a read-only file throws.
+var ro = io.open(tf, "w")
+ro.write("z")
+ro.close()
+var rof = io.open(tf, "r")
+assert raises_msg(Function(): return rof.write("nope"), "not open for writing"), "write read-only raises"
+rof.close()
+# read from a write-only file throws.
+var wof = io.open(tf, "w")
+assert raises_msg(Function(): return wof.read(), "not open for reading"), "read write-only raises"
+wof.close()
+# I/O on a closed file throws.
+var cl = io.open(tf, "r")
+cl.close()
+assert raises_msg(Function(): return cl.read(), "closed file"), "read closed file raises"
+assert raises_msg(Function(): return cl.seek(0), "closed file"), "seek closed file raises"
+# File.seek to a negative absolute position throws; bad whence throws.
+var sk = io.open(tf, "r")
+assert raises_msg(Function(): return sk.seek(-1), "position is negative"), "seek negative raises"
+assert raises_msg(Function(): return sk.seek(0, 5), "whence must be"), "seek bad whence raises"
+sk.close()
+# print/read reject an unexpected keyword argument, naming it.
+assert raises_msg(Function(): return io.print("x", bogus = 1), "unexpected keyword argument"), "print bad kw raises"
+assert raises_msg(Function(): return io.read(1, bogus = 1), "unexpected keyword argument"), "read bad kw raises"
+# writing Bytes to a text StdStream via its .write() throws (must be a String) — before any output.
+assert raises_msg(Function(): return io.__stdout__.write(Bytes([65])), "expected String"), "StdStream.write Bytes raises"
+# BytesIO expects a byte String initial.
+assert raises_msg(Function(): return io.BytesIO([1, 2]), "byte String"), "BytesIO bad initial raises"
+# BytesIO.read of a non-Integer, non-None size throws (not a silent read-all).
+var bh = io.BytesIO("abc")
+assert raises(Function(): return bh.read("x")), "BytesIO.read non-Integer size raises"
+
+# ============================================================ SILENT-error probes (should NOT raise)
+# read(negative n) is treated as read-all (documented: only n>=0 caps), not an error.
+var bn = io.BytesIO("abcdef")
+assert bn.read(-5) == "abcdef", "read negative n -> read all (no throw)"
+# File.read(negative) likewise reads the rest.
+var fn2 = io.open(tf, "r")
+assert type(fn2.read(-1)) == "String", "File.read negative n no throw"
+fn2.close()
+# flush on a BytesIO is a documented no-op (not an error).
+discard io.BytesIO("x").flush()
+
+# ============================================================ CLEAN UP
+discard path.remove(tf, missing_ok = True)
+discard path.remove(tb, missing_ok = True)
+discard path.remove(missing, missing_ok = True)
+assert not path.exists(tf) and not path.exists(tb), "temp files cleaned up"
+
+io.print("OK io")

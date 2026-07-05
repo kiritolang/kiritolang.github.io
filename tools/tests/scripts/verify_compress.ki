@@ -1,0 +1,110 @@
+# Doc-vs-impl verification for the `zlib` and `gzip` stdlib modules (docs/pages/10-stdlib.md).
+# zlib.compress/decompress (RFC 1950) + raw deflate/inflate (RFC 1951); gzip.compress/decompress
+# (RFC 1952) with the gzip/gunzip aliases. Round-trips (String in -> String out, Bytes in -> Bytes
+# out), edge cases (empty/repetitive/binary), and HARDENING (garbage/truncated/corrupt must throw the
+# right message; anything that should raise but doesn't is a silent bug). Prints "OK compress".
+var io = import("io")
+var zlib = import("zlib")
+var gzip = import("gzip")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+var s = "hello world hello world hello world the quick brown fox"
+
+# ============================================================ zlib round-trip + result TYPE
+# String in -> String out; Bytes in -> Bytes out (same type as input).
+assert type(zlib.compress(s)) == "String", "zlib.compress(String) -> String"
+assert zlib.decompress(zlib.compress(s)) == s, "zlib String round-trip"
+assert type(zlib.decompress(zlib.compress(s))) == "String", "zlib.decompress(String) -> String"
+var sb = Bytes(s)
+assert type(zlib.compress(sb)) == "Bytes", "zlib.compress(Bytes) -> Bytes"
+assert zlib.decompress(zlib.compress(sb)) == sb, "zlib Bytes round-trip"
+assert type(zlib.decompress(zlib.compress(sb))) == "Bytes", "zlib.decompress(Bytes) -> Bytes"
+
+# ============================================================ raw deflate/inflate round-trip
+assert zlib.inflate(zlib.deflate(s)) == s, "raw deflate/inflate String round-trip"
+assert zlib.inflate(zlib.deflate(sb)) == sb, "raw deflate/inflate Bytes round-trip"
+assert type(zlib.deflate(s)) == "String" and type(zlib.deflate(sb)) == "Bytes", "deflate keeps type"
+# raw deflate has NO zlib header -> its bytes differ from a zlib-wrapped stream
+assert zlib.deflate(s) != zlib.compress(s), "raw deflate != zlib stream (no header/trailer)"
+
+# ============================================================ zlib edge cases
+assert zlib.decompress(zlib.compress("")) == "", "zlib empty String round-trip"
+assert zlib.inflate(zlib.deflate("")) == "", "raw empty round-trip"
+assert zlib.decompress(zlib.compress(Bytes([]))) == Bytes([]), "zlib empty Bytes round-trip"
+# repetitive/large input compresses strictly smaller
+var big = s * 40
+assert len(zlib.compress(big)) < len(big), "zlib shrinks repetitive input"
+assert len(zlib.deflate(big)) < len(big), "deflate shrinks repetitive input"
+assert zlib.decompress(zlib.compress(big)) == big, "zlib large round-trip"
+# binary bytes stay byte-exact (the whole point of Bytes)
+var bin = Bytes([0, 1, 2, 255, 254, 0, 128, 0, 0, 77, 13, 10])
+assert zlib.decompress(zlib.compress(bin)) == bin, "zlib binary Bytes byte-exact"
+assert zlib.inflate(zlib.deflate(bin)) == bin, "deflate binary Bytes byte-exact"
+# unicode text round-trips (compressed on the UTF-8 bytes)
+var u = "héllo wörld — ☃ ☕ 日本語"
+assert zlib.decompress(zlib.compress(u)) == u, "zlib unicode String round-trip"
+
+# ============================================================ gzip round-trip + aliases + TYPE
+assert type(gzip.compress(s)) == "String", "gzip.compress(String) -> String"
+assert gzip.decompress(gzip.compress(s)) == s, "gzip String round-trip"
+assert type(gzip.compress(sb)) == "Bytes" and type(gzip.decompress(gzip.compress(sb))) == "Bytes", "gzip Bytes keeps type"
+assert gzip.decompress(gzip.compress(sb)) == sb, "gzip Bytes round-trip"
+# gzip/gunzip aliases behave identically to compress/decompress
+assert gzip.gunzip(gzip.gzip(s)) == s, "gzip/gunzip aliases round-trip"
+assert gzip.gzip(s) == gzip.compress(s), "gzip alias == compress"
+assert gzip.gunzip(gzip.compress(s)) == s, "gunzip alias == decompress"
+
+# ============================================================ gzip edge cases
+assert gzip.decompress(gzip.compress("")) == "", "gzip empty String round-trip"
+assert gzip.decompress(gzip.compress(bin)) == bin, "gzip binary Bytes byte-exact"
+assert len(gzip.compress(big)) < len(big), "gzip shrinks repetitive input"
+assert gzip.decompress(gzip.compress(big)) == big, "gzip large round-trip"
+# a gzip stream begins with the RFC 1952 magic (0x1f 0x8b) + CM=deflate (0x08)
+var gz = Bytes(gzip.compress("hi"))
+assert gz[0] == 31 and gz[1] == 139 and gz[2] == 8, "gzip magic + deflate method"
+# concatenated gzip members (cat a.gz b.gz) all decode and join
+var member = gzip.compress("aaa")
+assert gzip.decompress(member + member) == "aaaaaa", "gzip concatenated members joined"
+assert gzip.decompress(member + gzip.compress("bbb")) == "aaabbb", "gzip mixed members joined"
+
+# ============================================================ cross-format: zlib and gzip differ
+assert zlib.compress(s) != gzip.compress(s), "zlib stream != gzip container"
+# a gzip stream is not a valid zlib stream and vice versa -> each rejects the other
+assert raises(Function(): return zlib.decompress(gzip.compress(s))), "zlib rejects gzip stream"
+assert raises(Function(): return gzip.decompress(zlib.compress(s))), "gzip rejects zlib stream"
+
+# ============================================================ HARDENING — garbage/truncated/corrupt
+# zlib.decompress / inflate of non-compressed garbage throws (prefixed "zlib:")
+assert raises_msg(Function(): return zlib.decompress("not compressed data at all"), "zlib:"), "zlib.decompress garbage throws"
+assert raises_msg(Function(): return zlib.inflate("plain text not deflate stream"), "zlib:"), "zlib.inflate garbage throws"
+assert raises_msg(Function(): return zlib.decompress(""), "zlib:"), "zlib.decompress empty throws"
+# truncated zlib stream throws
+var zc = zlib.compress("hello world this is a longer string to compress and then truncate")
+assert raises_msg(Function(): return zlib.decompress(zc[0 : len(zc) - 3]), "zlib:"), "zlib truncated stream throws"
+
+# gzip.decompress of a non-gzip stream throws ("gzip:" + magic)
+assert raises_msg(Function(): return gzip.decompress("this is definitely not a gzip stream here"), "gzip:"), "gzip non-gzip throws"
+assert raises_msg(Function(): return gzip.decompress("this is definitely not a gzip stream here"), "magic"), "gzip bad-magic message"
+# too-short input throws "stream too short"
+assert raises_msg(Function(): return gzip.decompress("short"), "too short"), "gzip too-short throws"
+# truncated gzip body throws "truncated"
+var full = gzip.compress("hello world this needs to be long enough to have a real body")
+assert raises_msg(Function(): return gzip.decompress(full[0 : len(full) - 1]), "truncated"), "gzip truncated throws"
+# corrupt body -> CRC-32 mismatch is detected
+var comp = List(Bytes(gzip.compress("hello world compress me please right now")))
+comp[13] = bitxor(comp[13], 255)
+assert raises_msg(Function(): return gzip.decompress(Bytes(comp)), "CRC-32"), "gzip CRC-32 mismatch detected"
+
+io.print("OK compress")

@@ -1,0 +1,288 @@
+# Doc-vs-impl verification for the collection types List / Set / Dict (docs/pages/09-types.md).
+# Functioning cases (exact results), edge cases (empty/single/duplicate/negative/OOR/disjoint/equal),
+# and HARDENING (bad input must raise the RIGHT message; anything that SHOULD raise but doesn't is a
+# silent bug, pinned in disc_types_collections.md). Dict/Set are UNORDERED by design: never assert an
+# iteration order — assert via len, membership, or sorted(List(...)). Prints "OK types_collections".
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ LIST — indexing / slicing / in
+var xs = [10, 20, 30, 40, 50]
+assert xs[0] == 10 and xs[-1] == 50 and xs[-5] == 10, "list index +/-"
+assert xs[1:3] == [20, 30], "list slice"
+assert xs[::-1] == [50, 40, 30, 20, 10], "list slice reverse"
+assert xs[::2] == [10, 30, 50], "list slice step"
+assert xs[1:] == [20, 30, 40, 50] and xs[:2] == [10, 20], "list open slice"
+assert xs[10:20] == [], "list slice past end empty"
+assert 30 in xs and 99 not in xs, "list in"
+assert [] == [] and [1] != [], "list eq empty"
+assert raises_msg(Function(): return xs[5], "index out of range"), "list index OOR raises"
+assert raises_msg(Function(): return xs[-6], "index out of range"), "list index neg OOR raises"
+assert raises_msg(Function(): return xs["a"], "index must be Integer"), "list non-int index raises"
+
+# ============================================================ LIST — + concat, * repeat
+assert [1, 2] + [3, 4] == [1, 2, 3, 4], "list concat"
+assert [] + [1] == [1] and [1] + [] == [1], "list concat empty"
+assert [1, 2] * 3 == [1, 2, 1, 2, 1, 2], "list repeat"
+assert [1, 2] * 0 == [] and [1, 2] * -1 == [], "list repeat 0/neg empty"
+assert [] * 5 == [], "list repeat empty"
+assert raises_msg(Function(): return [1] + 5, "can only concatenate List to List"), "list concat non-list raises"
+assert raises_msg(Function(): return [1] * "x", "can only repeat List by an Integer"), "list repeat non-int raises"
+
+# ============================================================ LIST — lexicographic ordering
+assert [1, 2, 3] < [1, 2, 4], "list lt"
+assert [1, 2] < [1, 2, 0], "list prefix-shorter is less"
+assert [1, 2, 3] <= [1, 2, 3] and [1, 2, 3] >= [1, 2, 3], "list le/ge equal"
+assert [2] > [1, 9, 9] and [1, 9] >= [1, 9], "list gt/ge"
+assert not ([1, 2] < [1, 2]), "list lt equal is False"
+assert raises_msg(Function(): return [1] < 5, "cannot order 'List' and 'Integer'"), "list order non-list raises"
+
+# ============================================================ LIST — append / pop / insert
+var la = [1, 2, 3]
+la.append(4)
+assert la == [1, 2, 3, 4], "append"
+assert la.pop() == 4 and la == [1, 2, 3], "pop last"
+assert la.pop(0) == 1 and la == [2, 3], "pop index"
+assert la.pop(-1) == 3 and la == [2], "pop negative"
+la.insert(0, 99)
+assert la == [99, 2], "insert front"
+la.insert(1, 50)
+assert la == [99, 50, 2], "insert middle"
+la.insert(100, 7)
+assert la == [99, 50, 2, 7], "insert past end clamps to end"
+la.insert(-100, 0)
+assert la == [0, 99, 50, 2, 7], "insert far-negative clamps to front"
+assert raises_msg(Function(): return [].pop(), "pop from empty List"), "pop empty raises"
+assert raises_msg(Function(): return [1].pop(5), "pop index out of range"), "pop OOR raises"
+assert raises_msg(Function(): return [1].pop("x"), "pop index must be an Integer"), "pop non-int raises"
+
+# ============================================================ LIST — remove / index / count
+var lr = [5, 6, 5, 7, 5]
+lr.remove(5)
+assert lr == [6, 5, 7, 5], "remove first occurrence"
+assert lr.index(5) == 1, "index"
+assert lr.index(5, 2) == 3, "index with start window"
+assert lr.count(5) == 2, "count"
+assert [1, 2, 3].count(9) == 0, "count absent zero"
+assert raises_msg(Function(): return [1, 2].remove(9), "remove: value not in List"), "remove missing raises"
+assert raises_msg(Function(): return [1, 2].index(9), "index: value not in List"), "index missing raises"
+assert raises_msg(Function(): return [1, 2].index(1, 1), "index: value not in List"), "index outside window raises"
+
+# ============================================================ LIST — reverse / sort / extend / copy / clear / apply
+var lv = [3, 1, 2]
+lv.reverse()
+assert lv == [2, 1, 3], "reverse"
+lv.sort()
+assert lv == [1, 2, 3], "sort default"
+var lw = [3, 1, 2, 5, 4]
+lw.sort(reverse = True)
+assert lw == [5, 4, 3, 2, 1], "sort reverse"
+var lk = ["ccc", "a", "bb"]
+lk.sort(key = len)
+assert lk == ["a", "bb", "ccc"], "sort key=len"
+# multi-key sort via a list-returning key (sort by first field, then second)
+var pairs = [[2, "a"], [1, "b"], [2, "b"], [1, "a"]]
+pairs.sort(key = Function(p): return [p[0], p[1]])
+assert pairs == [[1, "a"], [1, "b"], [2, "a"], [2, "b"]], "multi-key sort via list key"
+# stability: equal keys keep original relative order
+var stab = [[1, "x"], [1, "y"], [1, "z"]]
+stab.sort(key = Function(p): return p[0])
+assert stab == [[1, "x"], [1, "y"], [1, "z"]], "sort is stable"
+var lempty = []
+lempty.sort()
+assert lempty == [], "sort empty list ok"
+var le = [1, 2]
+le.extend([3, 4])
+assert le == [1, 2, 3, 4], "extend list"
+le.extend("ab")
+assert le == [1, 2, 3, 4, "a", "b"], "extend iterable (String)"
+# A non-iterable arg throws "type 'Integer' is not iterable" (iterate() throws before the
+# "extend expects an iterable" fallback, which only fires for a nullopt-returning iterate()).
+assert raises_msg(Function(): return [1].extend(5), "not iterable"), "extend non-iterable raises"
+var lc = [[1], 2]
+var lcopy = lc.copy()
+lcopy.append(3)
+assert lc == [[1], 2] and lcopy == [[1], 2, 3], "copy is shallow (independent length)"
+lcopy[0].append(9)
+assert lc[0] == [1, 9], "copy shares element handles (aliasing)"
+var lcl = [1, 2, 3]
+lcl.clear()
+assert lcl == [] and len(lcl) == 0, "clear"
+assert [1, 2, 3].apply(Function(x): return x * 2) == [2, 4, 6], "list apply"
+assert [].apply(Function(x): return x) == [], "list apply empty"
+
+# ============================================================ SET — construction / in / len / dedup
+assert len(Set()) == 0, "empty set"
+assert len({1, 2, 3}) == 3, "set literal len"
+assert len({1, 1, 2, 2, 3}) == 3, "set literal dedups"
+assert len(Set([1, 1, 2])) == 2, "Set() ctor dedups"
+assert 2 in {1, 2, 3} and 9 not in {1, 2, 3}, "set in"
+assert {1, 2, 3}.contains(2) and not {1, 2, 3}.contains(9), "set contains method"
+assert {1, 2, 3} == {3, 2, 1}, "set eq is membership-based (order-independent)"
+assert {1, 2} != {1, 2, 3}, "set ne by len"
+# unordered by design: verify contents via sorted(List(...))
+assert sorted(List({3, 1, 2})) == [1, 2, 3], "set contents via sorted(List)"
+
+# ============================================================ SET — add / discard / remove / pop / clear / copy
+var sa = Set()
+sa.add(1)
+sa.add(1)
+sa.add(2)
+assert len(sa) == 2 and sa.contains(1), "add + dedup"
+sa.discard(1)
+assert not sa.contains(1) and len(sa) == 1, "discard present"
+sa.discard(99)
+assert len(sa) == 1, "discard absent is a no-op"
+var sr = {1, 2, 3}
+sr.remove(2)
+assert not sr.contains(2) and len(sr) == 2, "remove present"
+assert raises_msg(Function(): return {1}.remove(9), "remove: value not in Set"), "set remove missing raises"
+var sp = {42}
+assert sp.pop() == 42 and len(sp) == 0, "pop single"
+assert raises_msg(Function(): return Set().pop(), "pop from an empty Set"), "set pop empty raises"
+var sc = {1, 2, 3}
+var scopy = sc.copy()
+scopy.add(4)
+assert len(sc) == 3 and len(scopy) == 4, "set copy independent"
+var scl = {1, 2, 3}
+scl.clear()
+assert len(scl) == 0, "set clear"
+
+# ============================================================ SET — algebra methods
+var A = {1, 2, 3}
+var B = {3, 4, 5}
+assert sorted(List(A.union(B))) == [1, 2, 3, 4, 5], "union"
+assert sorted(List(A.intersection(B))) == [3], "intersection"
+assert sorted(List(A.difference(B))) == [1, 2], "difference"
+assert sorted(List(A.symmetricdifference(B))) == [1, 2, 4, 5], "symmetricdifference"
+# disjoint / equal / subset edges
+assert {1, 2}.isdisjoint({3, 4}) and not {1, 2}.isdisjoint({2, 3}), "isdisjoint"
+assert {1}.issubset({1, 2}) and {1, 2}.issubset({1, 2}), "issubset (incl. equal)"
+assert not {1, 3}.issubset({1, 2}), "not subset"
+assert {1, 2, 3}.issuperset({1, 2}) and {1, 2}.issuperset({1, 2}), "issuperset (incl. equal)"
+assert Set().issubset({1}) and Set().isdisjoint({1}), "empty set is subset of / disjoint from all"
+assert sorted(List(Set().union({1, 2}))) == [1, 2], "union with empty"
+assert len(A.intersection(Set())) == 0, "intersection with empty"
+# methods accept any iterable for `other`
+assert sorted(List({1, 2}.union([2, 3]))) == [1, 2, 3], "union accepts a List"
+assert sorted(List({1, 2, 3}.difference("stray"))) == [1, 2, 3], "difference accepts a String"
+assert {1, 2}.issubset([1, 2, 3]), "issubset accepts a List"
+
+# ============================================================ SET — operator forms (- < <= > >=)
+assert sorted(List({1, 2, 3} - {2, 3})) == [1], "set - difference operator"
+assert sorted(List({1, 2} - {5})) == [1, 2], "set - disjoint operator"
+assert {1} < {1, 2} and not ({1, 2} < {1, 2}), "set < proper subset"
+assert {1, 2} <= {1, 2} and {1} <= {1, 2}, "set <= subset"
+assert {1, 2, 3} > {1, 2} and not ({1, 2} > {1, 2}), "set > proper superset"
+assert {1, 2} >= {1, 2} and {1, 2, 3} >= {1}, "set >= superset"
+assert not ({1, 2} < {2, 3}) and not ({1, 2} > {2, 3}), "incomparable sets: neither < nor >"
+# operator forms require a Set on the RHS (unlike the iterable-accepting methods)
+assert raises_msg(Function(): return {1, 2} - [1], "does not support this binary operator"), "set - non-Set raises"
+assert raises_msg(Function(): return {1, 2} < [1, 2, 3], "does not support this binary operator"), "set < non-Set raises"
+
+# ============================================================ SET — apply
+assert sorted(List({1, 2, 3}.apply(Function(x): return x * 10))) == [10, 20, 30], "set apply"
+assert len({1, 2, 3}.apply(Function(x): return 0)) == 1, "set apply collisions collapse"
+assert len(Set().apply(Function(x): return x)) == 0, "set apply empty"
+
+# ============================================================ DICT — d[k] get/set, in, len
+var d = {"a": 1, "b": 2}
+assert d["a"] == 1 and d["b"] == 2, "dict get"
+d["c"] = 3
+assert d["c"] == 3 and len(d) == 3, "dict set new key"
+d["a"] = 10
+assert d["a"] == 10 and len(d) == 3, "dict set overwrites, len unchanged"
+assert "a" in d and "z" not in d, "dict in over keys"
+assert 1 not in d, "dict in is keys not values"
+assert len({}) == 0, "empty dict len"
+assert {} == {} and {"a": 1} != {}, "dict eq empty"
+assert {"a": 1, "b": 2} == {"b": 2, "a": 1}, "dict eq order-independent"
+assert raises_msg(Function(): return {"a": 1}["z"], "key not found"), "dict missing key raises"
+assert raises_msg(Function(): return {}["x"], "key not found"), "dict empty index raises"
+
+# ============================================================ DICT — keys / values / items (unordered)
+var dk = {"x": 1, "y": 2, "z": 3}
+assert sorted(dk.keys()) == ["x", "y", "z"], "keys (via sorted)"
+assert sorted(dk.values()) == [1, 2, 3], "values (via sorted)"
+assert len(dk.items()) == 3, "items len"
+assert ["x", 1] in dk.items(), "items contains a known pair"
+# reconstruct a dict from items and compare (order-independent eq)
+var rebuilt = {}
+for kv in dk.items():
+    rebuilt[kv[0]] = kv[1]
+assert rebuilt == dk, "items round-trips"
+
+# ============================================================ DICT — get / pop / remove / setdefault / popitem
+var dg = {"a": 1}
+assert dg.get("a") == 1, "get present"
+assert dg.get("z") == None, "get missing -> None"
+assert dg.get("z", 99) == 99, "get missing with default"
+assert dg.get("a", 99) == 1, "get present ignores default"
+var dp = {"a": 1, "b": 2}
+assert dp.pop("a") == 1 and "a" not in dp and len(dp) == 1, "pop present"
+assert dp.pop("z", -1) == -1, "pop missing with default"
+assert raises_msg(Function(): return {"a": 1}.pop("z"), "pop: key not found"), "pop missing no default raises"
+var dm = {"a": 1, "b": 2}
+dm.remove("a")
+assert "a" not in dm and len(dm) == 1, "remove present"
+assert raises_msg(Function(): return {"a": 1}.remove("z"), "key not found"), "remove missing raises"
+var ds = {"a": 1}
+assert ds.setdefault("a", 99) == 1 and ds["a"] == 1, "setdefault existing returns value"
+assert ds.setdefault("b", 5) == 5 and ds["b"] == 5, "setdefault inserts default"
+assert ds.setdefault("c") == None and "c" in ds, "setdefault no default inserts None"
+var dpi = {"only": 1}
+var item = dpi.popitem()
+assert item == ["only", 1] and len(dpi) == 0, "popitem single pair"
+assert raises_msg(Function(): return {}.popitem(), "popitem: dictionary is empty"), "popitem empty raises"
+# popitem on a multi-entry dict: don't assert WHICH pair (unordered) — assert validity + shrink
+var dpi2 = {"a": 1, "b": 2, "c": 3}
+var pk = dpi2.popitem()
+assert len(pk) == 2 and pk[0] in {"a", "b", "c"} and len(dpi2) == 2, "popitem shrinks by one"
+
+# ============================================================ DICT — update / copy / clear / apply
+var du = {"a": 1, "b": 2}
+du.update({"b": 20, "c": 3})
+assert du["b"] == 20 and du["c"] == 3 and len(du) == 3, "update from Dict (override + add)"
+du.update([["d", 4]])
+assert du["d"] == 4, "update from [key, value] pairs"
+assert raises_msg(Function(): return {}.update([[1]]), "each pair must have exactly 2 elements"), "update bad pair raises"
+# Like extend, a scalar throws "type 'Integer' is not iterable" (iterate() throws before the
+# "update expects a Dict or an iterable" fallback, reachable only for a nullopt iterate()).
+assert raises_msg(Function(): return {}.update(5), "not iterable"), "update non-iterable raises"
+var dc = {"a": 1}
+var dcopy = dc.copy()
+dcopy["b"] = 2
+assert "b" not in dc and "b" in dcopy, "dict copy independent"
+var dcl = {"a": 1, "b": 2}
+dcl.clear()
+assert len(dcl) == 0, "dict clear"
+var da = {"a": 1, "b": 2}
+var dares = da.apply(Function(v): return v * 10)
+assert dares["a"] == 10 and dares["b"] == 20 and da["a"] == 1, "dict apply maps values, keeps keys, non-mutating"
+assert len({}.apply(Function(v): return v)) == 0, "dict apply empty"
+
+# ============================================================ HARDENING — unhashable keys/elements
+assert raises_msg(Function(): return Set().add([1]), "unhashable type 'List'"), "set add unhashable List raises"
+assert raises_msg(Function(): return Set().add({1: 2}), "unhashable type 'Dict'"), "set add unhashable Dict raises"
+var setUnhashableKey = Function():
+    var m = {}
+    m[[1]] = 5
+assert raises_msg(setUnhashableKey, "unhashable type 'List'"), "dict set unhashable key raises"
+assert raises_msg(Function(): return {}[[1]], "unhashable type 'List'"), "dict get unhashable key raises"
+# DISCREPANCY (pinned): Set membership `in` with an unhashable element returns False silently
+# (SetVal::contains short-circuits on !hashable) rather than throwing like Dict `in` does.
+assert ([1] in {1, 2}) == False, "set 'in' unhashable element -> silent False (see disc)"
+
+io.print("OK types_collections")

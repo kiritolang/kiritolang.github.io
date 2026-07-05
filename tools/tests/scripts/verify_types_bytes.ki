@@ -1,0 +1,156 @@
+# Doc-vs-impl verification for the Bytes type and its methods/operators (docs/pages/09-types.md).
+# Functioning cases (exact results), edge cases (empty/single/0-255 boundaries, Integer-index vs
+# Bytes-slice, negative index, slice step, iteration, *0/*-1, ordering, hashing, encode/decode
+# round-trips across utf-8/latin-1/ascii), and HARDENING (bad input must raise the right message;
+# anything that SHOULD raise but doesn't is a silent bug). Prints "OK types_bytes".
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ construction / type / repr
+var b = Bytes([72, 105])
+assert type(b) == "Bytes", "type is Bytes"
+assert String(b) == "b'Hi'", "repr printable ASCII verbatim"
+assert String(Bytes([])) == "b''", "empty repr"
+assert String(Bytes([0])) == "b'\\x00'", "byte 0 repr is \\x00"
+assert String(Bytes([255])) == "b'\\xff'", "byte 255 repr is \\xff"
+assert String(Bytes([10, 9, 13, 92, 39])) == "b'\\n\\t\\r\\\\\\''", "special-char repr escapes"
+assert Bytes([72, 105]) == Bytes("Hi"), "Bytes(String) utf-8 == list form"
+
+# ============================================================ len / indexing (Integer)
+assert len(b) == 2 and len(Bytes([])) == 0 and len(Bytes([0, 0, 0])) == 3, "len"
+assert b[0] == 72 and b[1] == 105, "b[i] value"
+assert type(b[0]) == "Integer", "b[i] yields Integer, not Bytes"
+assert Bytes([0])[0] == 0 and Bytes([255])[0] == 255, "0 and 255 boundary bytes readable"
+assert b[-1] == 105 and b[-2] == 72, "negative index counts from end"
+assert Bytes([65])[-1] == 65, "single-byte negative index"
+
+# ============================================================ slicing (Bytes)
+assert type(b[0:1]) == "Bytes", "b[i:j] yields Bytes, not Integer"
+assert b[0:1] == Bytes([72]) and b[1:2] == Bytes([105]), "slice values"
+assert String(b[0:1]) == "b'H'", "slice repr"
+var q = Bytes([1, 2, 3, 4, 5])
+assert q[1:4] == Bytes([2, 3, 4]), "middle slice"
+assert q[::2] == Bytes([1, 3, 5]), "slice step 2"
+assert q[::-1] == Bytes([5, 4, 3, 2, 1]), "slice reversed"
+assert q[10:20] == Bytes([]), "out-of-range slice is empty (no throw)"
+assert q[:] == q and q[:] == Bytes([1, 2, 3, 4, 5]), "full slice copies"
+assert Bytes([])[0:5] == Bytes([]), "slice of empty is empty"
+
+# ============================================================ iteration -> Integers
+var acc = []
+for x in q:
+    acc.append(x)
+assert acc == [1, 2, 3, 4, 5], "iteration collects Integers"
+var acc2 = []
+for x in Bytes([]):
+    acc2.append(x)
+assert acc2 == [], "iterating empty Bytes yields nothing"
+assert type(List(b)[0]) == "Integer", "List(Bytes) elements are Integers"
+
+# ============================================================ membership (in)
+assert 72 in b and 105 in b, "Integer byte membership"
+assert not (73 in b), "absent Integer byte"
+assert not (256 in b) and not (-1 in b), "out-of-byte-range Integer is never contained (no throw)"
+assert Bytes([72, 105]) in b, "Bytes subsequence membership (whole)"
+assert Bytes([105]) in b, "Bytes subsequence membership (part)"
+assert Bytes([]) in b, "empty Bytes is a subsequence"
+assert not (Bytes([106]) in b), "absent Bytes subsequence"
+assert raises_msg(Function(): return "x" in b, "requires an Integer byte or a Bytes"), "in with String raises"
+
+# ============================================================ + concatenate, * repeat
+assert Bytes([1, 2]) + Bytes([3]) == Bytes([1, 2, 3]), "concatenate"
+assert Bytes([]) + b == b and b + Bytes([]) == b, "concat empty identity"
+assert b * 3 == Bytes([72, 105, 72, 105, 72, 105]), "repeat 3"
+assert b * 1 == b, "repeat 1"
+assert b * 0 == Bytes([]), "repeat 0 -> empty"
+assert b * -1 == Bytes([]), "repeat negative -> empty"
+assert Bytes([]) * 5 == Bytes([]), "repeat of empty is empty"
+assert raises_msg(Function(): return b + "x", "can only concatenate Bytes to Bytes"), "concat non-Bytes raises"
+assert raises_msg(Function(): return b + 5, "can only concatenate Bytes to Bytes"), "concat Integer raises"
+assert raises_msg(Function(): return b * "n", "can only repeat Bytes by an Integer"), "repeat by String raises"
+
+# ============================================================ ordering (lexicographic) / equality
+assert Bytes([65]) == Bytes([65]) and Bytes([65]) != Bytes([66]), "equality"
+assert not (Bytes([65]) == "A") and Bytes([65]) != "A", "Bytes never equals String"
+assert Bytes([1, 2]) < Bytes([1, 3]), "lexicographic <"
+assert Bytes([1]) < Bytes([1, 2]), "shorter-prefix < longer"
+assert Bytes([1, 2]) <= Bytes([1, 2]) and Bytes([1, 2]) >= Bytes([1, 2]), "<= >= equal"
+assert Bytes([2]) > Bytes([1, 9]), "first byte dominates ordering"
+assert Bytes([255]) > Bytes([254]), "255 boundary ordering"
+# DISCREPANCY: the `<`/`<=`/`>`/`>=` operators order Bytes lexicographically (docs: "ordered
+# lexicographically"), but sorted()/min()/max() go through kiLessThan (runtime.hpp), which has no
+# Bytes case and throws "cannot order 'Bytes' and 'Bytes'". Pin the current (throwing) behaviour.
+assert raises_msg(Function(): return sorted([Bytes([2]), Bytes([1])]), "cannot order 'Bytes' and 'Bytes'"), "sorted(Bytes) throws (kiLessThan has no Bytes case)"
+assert raises_msg(Function(): return min([Bytes([2]), Bytes([1])]), "cannot order 'Bytes' and 'Bytes'"), "min(Bytes) throws"
+
+# ============================================================ hashing / Dict & Set keys
+var d = {}
+d[b] = "first"
+d[Bytes([1])] = "one"
+assert d[Bytes([72, 105])] == "first", "Bytes as Dict key (by value)"
+assert d[Bytes([1])] == "one", "second Bytes key"
+var s = {Bytes([1]), Bytes([1]), Bytes([2])}
+assert len(s) == 2, "Set dedups equal Bytes"
+assert Bytes([1]) in s and not (Bytes([3]) in s), "Set membership by value"
+
+# ============================================================ .hex()
+assert b.hex() == "4869", "hex of b'Hi'"
+assert Bytes([]).hex() == "", "hex of empty"
+assert Bytes([0, 255]).hex() == "00ff", "hex boundary bytes lowercase"
+assert Bytes([171]).hex() == "ab", "hex lowercase letters"
+
+# ============================================================ .decode() / .encode() round-trips
+assert Bytes([72, 105]).decode() == "Hi", "decode default utf-8"
+assert Bytes([72, 105]).decode("utf-8") == "Hi", "decode explicit utf-8"
+assert Bytes([0xc3, 0xa9]).decode("utf-8") == "é", "decode multi-byte utf-8"
+assert "Hi".encode() == Bytes([72, 105]), "encode default utf-8"
+assert type("Hi".encode()) == "Bytes", "encode yields Bytes"
+assert "héllo".encode("utf-8") == Bytes([104, 0xc3, 0xa9, 108, 108, 111]), "encode utf-8 multi-byte"
+assert "".encode().hex() == "" and Bytes([]).decode() == "", "empty round-trips"
+# utf-8 round-trip
+assert "héllo café".encode("utf-8").decode("utf-8") == "héllo café", "utf-8 round-trip"
+# ascii
+assert "Hi".encode("ascii") == Bytes([72, 105]) and Bytes([72, 105]).decode("ascii") == "Hi", "ascii round-trip"
+assert Bytes([127]).decode("ascii") == chr(127), "ascii accepts 0x7f (127)"
+# latin-1 lossless byte<->code-point bridge
+assert Bytes([200]).decode("latin-1") == chr(200), "latin-1 byte 200 -> U+00C8"
+assert Bytes([255]).decode("latin-1").encode("latin-1") == Bytes([255]), "latin-1 lossless 255"
+assert Bytes([0]).decode("latin-1").encode("latin-1") == Bytes([0]), "latin-1 lossless 0"
+var allbytes = Bytes(range(256))
+assert allbytes.decode("latin-1").encode("latin-1") == allbytes, "latin-1 lossless for all 0..255"
+# encoding-name normalisation
+assert Bytes([72]).decode("UTF-8") == "H" and Bytes([72]).decode("utf8") == "H", "encoding name case/dash-insensitive"
+
+# ============================================================ .apply(fn)
+assert b.apply(Function(x): return x + 1) == Bytes([73, 106]), "apply maps each byte"
+assert type(b.apply(Function(x): return x)) == "Bytes", "apply yields Bytes"
+assert Bytes([]).apply(Function(x): return x + 1) == Bytes([]), "apply on empty"
+assert raises_msg(Function(): return b.apply(Function(x): return 300), "must be a byte (0..255)"), "apply out-of-range result raises"
+assert raises_msg(Function(): return b.apply(Function(x): return -1), "must be a byte (0..255)"), "apply negative result raises"
+
+# ============================================================ HARDENING
+assert raises_msg(Function(): return b[5], "Bytes index out of range"), "index OOR (positive)"
+assert raises_msg(Function(): return b[-3], "Bytes index out of range"), "index OOR (negative)"
+assert raises_msg(Function(): return Bytes([])[0], "Bytes index out of range"), "index into empty raises"
+assert raises_msg(Function(): return b["k"], "Bytes index must be Integer"), "non-Integer index raises"
+assert raises_msg(Function(): return b.decode("bogus"), "unknown encoding: 'bogus'"), "decode unknown encoding raises"
+assert raises_msg(Function(): return "é".encode("ascii"), "'ascii' codec can't encode code point U+00E9"), "encode non-ascii char as ascii raises"
+assert raises_msg(Function(): return Bytes([200]).decode("ascii"), "'ascii' codec can't decode byte 0xc8"), "decode >127 as ascii raises"
+assert raises_msg(Function(): return Bytes([0xff, 0xfe]).decode("utf-8"), "invalid UTF-8 byte sequence"), "decode invalid utf-8 raises"
+assert raises_msg(Function(): return Bytes([0xc3]).decode("utf-8"), "invalid UTF-8 byte sequence"), "decode truncated utf-8 raises"
+assert raises_msg(Function(): return "Ā".encode("latin-1"), "codec can't encode code point"), "encode >255 as latin-1 raises"
+assert raises_msg(Function(): return b * 999999999999, "repeated Bytes too large"), "huge repetition raises"
+
+io.print("OK types_bytes")

@@ -1,0 +1,231 @@
+# Doc-vs-impl verification for the `math` stdlib module (docs/pages/10-stdlib.md `## math`).
+# Functioning cases (EXACT values; .compare() tolerance for irrationals), edge cases, and HARDENING:
+# the module's rule is "domain errors THROW a clear 'math domain error'" (never a silent NaN/inf), so
+# every out-of-domain input must raise the right message. A NaN argument PASSES THROUGH, and genuine
+# overflow-to-inf is a RANGE (not domain) condition and must NOT throw. Prints "OK math".
+var io = import("io")
+var m = import("math")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ constants
+assert m.pi.compare(3.141592653589793), "pi"
+assert m.e.compare(2.718281828459045), "e"
+assert m.tau.compare(6.283185307179586), "tau"
+assert m.tau.compare(2.0 * m.pi), "tau == 2*pi"
+assert m.inf > 1e308 and m.isinf(m.inf), "inf constant"
+assert m.nan != m.nan, "nan constant is NaN"
+assert type(m.pi) == "Float" and type(m.inf) == "Float" and type(m.nan) == "Float", "constants are Float"
+
+# ============================================================ sqrt / cbrt
+assert m.sqrt(4.0) == 2.0, "sqrt exact perfect square"
+assert m.sqrt(0.0) == 0.0, "sqrt zero"
+assert m.sqrt(2).compare(1.4142135623730951), "sqrt 2 irrational"
+assert m.sqrt(2) == m.sqrt(2), "sqrt deterministic"
+assert m.cbrt(27.0).compare(3.0), "cbrt 27"
+assert m.cbrt(-8.0).compare(-2.0), "cbrt negative (defined)"
+assert m.cbrt(0.0) == 0.0, "cbrt zero"
+
+# ============================================================ trig (radians)
+assert m.sin(0.0) == 0.0 and m.cos(0.0) == 1.0 and m.tan(0.0) == 0.0, "trig at 0"
+assert m.sin(m.pi / 2.0).compare(1.0), "sin pi/2"
+assert m.cos(m.pi).compare(-1.0), "cos pi"
+assert m.tan(m.pi / 4.0).compare(1.0), "tan pi/4"
+# inverse trig
+assert m.asin(0.0) == 0.0 and m.acos(1.0) == 0.0 and m.atan(0.0) == 0.0, "inverse trig at identity points"
+assert m.asin(1.0).compare(m.pi / 2.0), "asin 1"
+assert m.acos(-1.0).compare(m.pi), "acos -1"
+assert m.atan(1.0).compare(m.pi / 4.0), "atan 1"
+assert m.atan2(1.0, 1.0).compare(m.pi / 4.0), "atan2 quadrant"
+assert m.atan2(1.0, -1.0).compare(3.0 * m.pi / 4.0), "atan2 uses both signs"
+assert m.atan2(0.0, -1.0).compare(m.pi), "atan2 0,-1 -> pi"
+
+# ============================================================ hyperbolic
+assert m.sinh(0.0) == 0.0 and m.cosh(0.0) == 1.0 and m.tanh(0.0) == 0.0, "hyperbolic at 0"
+assert m.cosh(1.0).compare(1.5430806348152437), "cosh 1"
+assert m.sinh(1.0).compare(1.1752011936438014), "sinh 1"
+assert m.asinh(0.0) == 0.0 and m.acosh(1.0) == 0.0 and m.atanh(0.0) == 0.0, "inverse hyperbolic identity points"
+assert m.asinh(m.sinh(2.0)).compare(2.0), "asinh inverts sinh"
+assert m.acosh(m.cosh(2.0)).compare(2.0), "acosh inverts cosh"
+assert m.atanh(0.5).compare(0.5493061443340548), "atanh 0.5"
+
+# ============================================================ exp / log family
+assert m.exp(0.0) == 1.0, "exp 0"
+assert m.exp(1.0).compare(m.e), "exp 1 == e"
+assert m.expm1(0.0) == 0.0, "expm1 0"
+assert m.expm1(1.0).compare(m.e - 1.0), "expm1 1"
+assert m.log1p(0.0) == 0.0, "log1p 0"
+assert m.log1p(m.e - 1.0).compare(1.0), "log1p inverts expm1"
+assert m.log2(8.0).compare(3.0), "log2 8"
+assert m.log2(1.0) == 0.0, "log2 1"
+assert m.log10(1000.0).compare(3.0), "log10 1000"
+assert m.log10(1.0) == 0.0, "log10 1"
+assert m.log(m.e).compare(1.0), "log natural"
+assert m.log(1.0) == 0.0, "log 1"
+assert m.log(8.0, 2.0).compare(3.0), "log base 2"
+assert m.log(100.0, 10.0).compare(2.0), "log base 10"
+assert m.log(x = 8.0, base = 2.0).compare(3.0), "log keyword args"
+assert m.log(5.0, base = None).compare(m.log(5.0)), "log None base == natural"
+
+# ============================================================ pow / hypot
+assert m.pow(2.0, 10.0) == 1024.0, "pow 2^10"
+assert m.pow(2.0, 0.5).compare(1.4142135623730951), "pow fractional exp"
+assert m.pow(9.0, 0.5).compare(3.0), "pow sqrt via pow"
+assert m.pow(-2.0, 3.0) == -8.0, "pow negative base integer exp"
+assert m.pow(-2.0, 2.0) == 4.0, "pow negative base even exp"
+assert m.pow(5.0, 0.0) == 1.0, "pow anything^0"
+assert type(m.pow(2.0, 3.0)) == "Float", "math.pow always Float"
+assert m.hypot(3.0, 4.0) == 5.0, "hypot 3,4,5"
+assert m.hypot(0.0, 0.0) == 0.0, "hypot zero"
+assert m.hypot(5.0, 12.0) == 13.0, "hypot 5,12,13"
+
+# ============================================================ gamma / lgamma / erf / erfc
+assert m.gamma(5.0).compare(24.0), "gamma 5 == 4!"
+assert m.gamma(1.0).compare(1.0), "gamma 1"
+assert m.gamma(0.5).compare(1.7724538509055159), "gamma 0.5 == sqrt(pi)"
+assert m.gamma(-0.5).compare(-3.5449077018110318), "gamma negative non-integer defined"
+assert not raises(Function(): return m.gamma(-0.5)), "gamma(-0.5) does not throw (non-integer)"
+assert m.lgamma(1.0) == 0.0, "lgamma 1 == 0"
+assert m.lgamma(5.0).compare(m.log(24.0)), "lgamma 5 == log(24)"
+assert m.erf(0.0) == 0.0, "erf 0"
+assert m.erf(1.0).compare(0.8427007929497149), "erf 1"
+assert m.erfc(0.0) == 1.0, "erfc 0"
+assert m.erf(0.5).compare(1.0 - m.erfc(0.5)), "erf + erfc == 1"
+
+# ============================================================ rounding: floor / ceil / trunc
+assert m.floor(2.7) == 2 and m.ceil(2.1) == 3, "floor/ceil"
+assert m.floor(-2.1) == -3 and m.ceil(-2.7) == -2, "floor/ceil negative"
+assert m.floor(2.0) == 2 and m.ceil(2.0) == 2, "floor/ceil integral"
+assert type(m.floor(2.7)) == "Integer" and type(m.ceil(2.1)) == "Integer", "floor/ceil -> Integer"
+assert m.trunc(2.7) == 2.0 and m.trunc(-2.7) == -2.0, "trunc toward zero"
+assert type(m.trunc(2.7)) == "Float", "trunc -> Float (per doc)"
+
+# ============================================================ fabs / copysign / fmod / degrees / radians
+assert m.fabs(-3.5) == 3.5 and m.fabs(3.5) == 3.5 and m.fabs(0.0) == 0.0, "fabs"
+assert type(m.fabs(-2)) == "Float", "fabs -> Float"
+assert m.copysign(3.0, -1.0) == -3.0 and m.copysign(-3.0, 1.0) == 3.0, "copysign"
+assert m.copysign(3.0, -0.0) == -3.0, "copysign respects -0.0"
+assert m.fmod(7.0, 3.0) == 1.0, "fmod 7,3"
+assert m.fmod(-7.0, 3.0) == -1.0, "fmod keeps sign of x"
+assert m.fmod(7.0, m.inf) == 7.0, "fmod(finite, inf) == finite (not domain)"
+assert m.degrees(m.pi).compare(180.0), "degrees pi"
+assert m.degrees(m.pi / 2.0).compare(90.0), "degrees pi/2"
+assert m.radians(180.0).compare(m.pi), "radians 180"
+assert m.radians(90.0).compare(m.pi / 2.0), "radians 90"
+assert m.degrees(m.radians(57.0)).compare(57.0), "degrees inverts radians"
+
+# ============================================================ isnan / isinf / isfinite
+assert m.isnan(m.nan) and not m.isnan(1.0) and not m.isnan(m.inf), "isnan"
+assert m.isinf(m.inf) and m.isinf(-m.inf) and not m.isinf(1.0) and not m.isinf(m.nan), "isinf"
+assert m.isfinite(1.0) and not m.isfinite(m.inf) and not m.isfinite(m.nan), "isfinite"
+
+# ============================================================ integer number theory
+assert m.gcd(12, 8) == 4 and m.gcd(0, 5) == 5 and m.gcd(0, 0) == 0, "gcd"
+assert m.gcd(-12, 8) == 4 and m.gcd(12, -8) == 4, "gcd magnitude"
+assert m.lcm(4, 6) == 12 and m.lcm(0, 5) == 0 and m.lcm(7, 7) == 7, "lcm"
+assert m.lcm(-4, 6) == 12, "lcm magnitude"
+assert m.factorial(0) == 1 and m.factorial(1) == 1 and m.factorial(5) == 120, "factorial"
+assert m.factorial(20) == 2432902008176640000, "factorial 20 (max that fits int64)"
+assert type(m.factorial(5)) == "Integer", "factorial -> Integer"
+assert m.comb(5, 2) == 10 and m.comb(5, 0) == 1 and m.comb(5, 5) == 1, "comb"
+assert m.comb(5, 6) == 0, "comb k>n == 0"
+assert m.comb(30, 15) == 155117520, "comb 30,15 (no false overflow)"
+assert m.comb(64, 32) == 1832624140942590534, "comb 64,32 (128-bit intermediate)"
+assert m.perm(5, 2) == 20 and m.perm(5, 0) == 1, "perm"
+assert m.perm(5) == 120, "perm(n) == n!"
+assert m.perm(5, None) == 120, "perm(n, None) == n!"
+assert m.perm(5, 6) == 0, "perm k>n == 0"
+
+# ============================================================ prod
+assert m.prod([1, 2, 3, 4]) == 24, "prod ints"
+assert m.prod([]) == 1, "prod empty == 1"
+assert m.prod([5]) == 5, "prod singleton"
+assert type(m.prod([2, 3])) == "Integer", "prod all-Integer -> Integer"
+assert m.prod([1.0, 2, 3]).compare(6.0) and type(m.prod([1.0, 2, 3])) == "Float", "prod float -> Float"
+assert m.prod([2, 3], start = 10) == 60, "prod start"
+assert m.prod([], start = 5) == 5, "prod empty with start"
+assert m.prod([2, 3], start = 2.0).compare(12.0), "prod float start -> Float"
+assert m.prod(range(1, 6)) == 120, "prod over range == 5!"
+
+# ============================================================ HARDENING: domain errors THROW (never silent NaN)
+assert raises_msg(Function(): return m.sqrt(-1.0), "domain error"), "sqrt(-1) domain error"
+assert raises_msg(Function(): return m.asin(2.0), "domain error"), "asin(2) domain error"
+assert raises_msg(Function(): return m.asin(-2.0), "domain error"), "asin(-2) domain error"
+assert raises_msg(Function(): return m.acos(2.0), "domain error"), "acos(2) domain error"
+assert raises_msg(Function(): return m.acosh(0.0), "domain error"), "acosh(0) domain error"
+assert raises_msg(Function(): return m.atanh(1.0), "domain error"), "atanh(1) domain error"
+assert raises_msg(Function(): return m.atanh(-1.0), "domain error"), "atanh(-1) domain error"
+assert raises_msg(Function(): return m.log1p(-1.0), "domain error"), "log1p(-1) domain error"
+assert raises_msg(Function(): return m.log(0.0), "domain error"), "log(0) domain error"
+assert raises_msg(Function(): return m.log(-1.0), "domain error"), "log(-1) domain error"
+assert raises_msg(Function(): return m.log(8.0, 1.0), "domain error"), "log base 1 domain error"
+assert raises_msg(Function(): return m.log(8.0, 0.0), "domain error"), "log base 0 domain error"
+assert raises_msg(Function(): return m.log(8.0, -2.0), "domain error"), "log base negative domain error"
+assert raises_msg(Function(): return m.log2(0.0), "domain error"), "log2(0) domain error"
+assert raises_msg(Function(): return m.log2(-1.0), "domain error"), "log2(-1) domain error"
+assert raises_msg(Function(): return m.log10(0.0), "domain error"), "log10(0) domain error"
+assert raises_msg(Function(): return m.log10(-1.0), "domain error"), "log10(-1) domain error"
+assert raises_msg(Function(): return m.gamma(0.0), "domain error"), "gamma(0) domain error"
+assert raises_msg(Function(): return m.gamma(-1.0), "domain error"), "gamma(-1) domain error"
+assert raises_msg(Function(): return m.gamma(-2.0), "domain error"), "gamma(-2) domain error"
+assert raises_msg(Function(): return m.lgamma(0.0), "domain error"), "lgamma(0) domain error"
+assert raises_msg(Function(): return m.lgamma(-1.0), "domain error"), "lgamma(-1) domain error"
+assert raises_msg(Function(): return m.pow(-2.0, 0.5), "domain error"), "pow(-2, 0.5) domain error"
+assert raises_msg(Function(): return m.pow(0.0, -1.0), "domain error"), "pow(0, -1) domain error"
+assert raises_msg(Function(): return m.fmod(5.0, 0.0), "domain error"), "fmod(x, 0) domain error"
+assert raises_msg(Function(): return m.fmod(m.inf, 3.0), "domain error"), "fmod(inf, 3) domain error"
+
+# ============================================================ HARDENING: NaN PASSES THROUGH (not a domain error)
+assert m.isnan(m.sqrt(m.nan)), "sqrt(nan) -> nan (passthrough)"
+assert m.isnan(m.asin(m.nan)), "asin(nan) -> nan"
+assert m.isnan(m.acosh(m.nan)), "acosh(nan) -> nan"
+assert m.isnan(m.log(m.nan)), "log(nan) -> nan"
+assert m.isnan(m.log2(m.nan)), "log2(nan) -> nan"
+assert m.isnan(m.gamma(m.nan)), "gamma(nan) -> nan"
+assert m.isnan(m.pow(m.nan, 2.0)), "pow(nan, 2) -> nan"
+assert m.isnan(m.pow(2.0, m.nan)), "pow(2, nan) -> nan"
+assert m.isnan(m.fmod(m.nan, 3.0)), "fmod(nan, 3) -> nan"
+assert m.isnan(m.fmod(3.0, m.nan)), "fmod(3, nan) -> nan"
+assert not raises(Function(): return m.sqrt(m.nan)), "sqrt(nan) does not throw"
+
+# ============================================================ HARDENING: overflow-to-inf is RANGE, not domain (no throw)
+assert m.isinf(m.exp(1000.0)), "exp(1000) -> inf (not a domain error)"
+assert not raises(Function(): return m.exp(1000.0)), "exp(1000) does not throw"
+assert m.isinf(m.cosh(1000.0)), "cosh(1000) -> inf"
+assert not raises(Function(): return m.pow(10.0, 400.0)), "pow overflow does not throw"
+assert m.isinf(m.pow(10.0, 400.0)), "pow(10, 400) -> inf"
+
+# ============================================================ HARDENING: Integer overflow / negatives throw
+assert raises_msg(Function(): return m.factorial(21), "too large for Integer"), "factorial(21) overflow"
+assert raises(Function(): return m.factorial(-1)), "factorial negative raises"
+assert raises_msg(Function(): return m.comb(100, 50), "too large for Integer"), "comb overflow"
+assert raises_msg(Function(): return m.perm(30, 20), "too large for Integer"), "perm overflow"
+assert raises_msg(Function(): return m.perm(25), "too large for Integer"), "perm(25)==25! overflow"
+assert raises_msg(Function(): return m.prod([1000000000000, 1000000000000, 1000000000000]), "too large for Integer"), "prod overflow"
+assert raises_msg(Function(): return m.lcm(1000000000000, 999999999997), "too large for Integer"), "lcm overflow"
+assert raises(Function(): return m.comb(-1, 2)), "comb negative raises"
+assert raises(Function(): return m.perm(5, -1)), "perm negative k raises"
+# a Float in the product removes the overflow concept (result is Float inf/large, no throw)
+assert not raises(Function(): return m.prod([1e200, 1e200])), "prod float never overflow-throws"
+
+# ============================================================ HARDENING: type / arity errors
+assert raises(Function(): return m.sqrt("x")), "sqrt non-number raises"
+assert raises(Function(): return m.factorial(2.5)), "factorial non-Integer raises"
+assert raises(Function(): return m.gcd(1.5, 2)), "gcd non-Integer raises"
+assert raises(Function(): return m.lcm(1.5, 2)), "lcm non-Integer raises"
+assert raises(Function(): return m.comb(5.0, 2)), "comb non-Integer raises"
+assert raises(Function(): return m.prod(5)), "prod non-iterable raises"
+assert raises(Function(): return m.prod([1, "x"])), "prod non-number element raises"
+
+io.print("OK math")
