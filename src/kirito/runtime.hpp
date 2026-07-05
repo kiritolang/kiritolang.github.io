@@ -1878,6 +1878,16 @@ inline bool InstanceValue::contains(KiritoVM& vm, Handle value) {
 inline std::optional<std::vector<Handle>> InstanceValue::iterate(KiritoVM& vm) {
     // A class becomes iterable by defining _iter_(self) returning any iterable (commonly a List).
     if (!findMethod(vm.arena(), "_iter_")) return std::nullopt;
+    // Guard against `_iter_` returning `self` (or a mutually-referential instance): the result is
+    // re-dispatched through iterate(), and a self/cyclic return recurses in native C++ — each level's
+    // `_iter_` call keeps the call-depth guard balanced, so it never trips → native stack overflow
+    // (A07-1). Bound the re-dispatch depth and throw a catchable error; a legitimate `_iter_` chain
+    // (A -> B -> List) is only a few levels deep. One OS thread == one VM, so thread_local is VM-scoped.
+    static thread_local int iterDepth = 0;
+    if (iterDepth >= 100)
+        throw KiritoError("'" + className + "' _iter_ recurses too deeply (does _iter_ return self or a cycle?)");
+    ++iterDepth;
+    struct DepthGuard { int& d; ~DepthGuard() { --d; } } depthGuard{iterDepth};
     Handle r = invokeOp(vm, *this, "_iter_", {}, "'" + className + "' is not iterable");
     RootScope rs(vm);
     rs.add(r);

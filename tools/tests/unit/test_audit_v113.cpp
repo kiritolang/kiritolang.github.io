@@ -101,5 +101,36 @@ int main() {
     // index with a start/end window still works after the snapshot rework.
     CHECK(ok("[1, 2, 3, 2, 1].index(2, 2)") == "3");
 
+    // === A07-1 (Medium, uncatchable crash): `_iter_` returning `self` re-dispatched iterate() into
+    // unbounded native recursion (the balanced _iter_ call kept the depth guard from tripping) → SIGSEGV.
+    // Now bounded → a catchable error. ===
+    CHECK(has(err("class C:\n    var _iter_ = Function(self): return self\nfor x in C():\n    pass"),
+              "recurses too deeply"));
+    // a mutually-referential _iter_ pair likewise terminates with a clean error, not a crash
+    CHECK(has(err("class A:\n    var other = None\n    var _iter_ = Function(self): return self.other\n"
+                  "var a = A()\nvar b = A()\na.other = b\nb.other = a\nfor x in a:\n    pass"),
+              "recurses too deeply"));
+    // a legitimate _iter_ chain (instance -> List) still works
+    CHECK(ok("class R:\n    var _iter_ = Function(self): return [1, 2, 3]\nvar t = 0\nfor x in R():\n    t = t + x\nt") == "6");
+
+    // === A18-1 (Medium, security — CRLF header injection): user headers/cookies were written verbatim
+    // into the request; a CR/LF splits/smuggles headers. Now rejected before any connection. ===
+    // (\\r\\n in the C++ literal -> Kirito \r\n escapes -> CR/LF bytes in the header value)
+    CHECK(has(err("var n = import(\"net\")\nn.get(\"http://127.0.0.1:9/\", {\"headers\": {\"X\": \"a\\r\\nEvil: 1\"}})"),
+              "control character"));
+    CHECK(has(err("var n = import(\"net\")\nn.get(\"http://127.0.0.1:9/\", {\"cookies\": {\"s\": \"v\\r\\nInjected: 1\"}})"),
+              "control character"));
+
+    // === A13-1 (Medium): fmod is a math domain error for an infinite dividend (libm returns silent NaN),
+    // consistent with the divisor-zero guard and the module-wide throw-don't-return-NaN policy. ===
+    CHECK(has(err("var m = import(\"math\")\nm.fmod(m.inf, 3.0)"), "domain error"));
+    CHECK(ok("var m = import(\"math\")\nString(m.fmod(5.0, 3.0))") == "2.0");        // normal
+    CHECK(ok("var m = import(\"math\")\nString(m.fmod(5.0, m.inf))") == "5.0");      // finite / inf = finite
+
+    // === A16-1 (Medium, GC-safety): Matrix.apply passed an un-rooted makeFloat arg across the callback;
+    // a GC during call() could sweep it. Rooted now — round-trips under per-alloc GC. ===
+    CHECK(okGc1("var mx = import(\"matrix\")\nvar a = mx.identity(3)\n"
+                "var b = a.apply(Function(x): return x + 1.0)\nString(b[0, 0])") == "2.0");
+
     return RUN_TESTS();
 }

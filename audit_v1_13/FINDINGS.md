@@ -14,7 +14,7 @@ Deduped, ranked roll-up of the per-agent findings in `agents/`. Status: `fixed`,
 | A09-1 | List `remove`/`index`/`count`/`in` searched over a live `elems` reference (or range-for iterators) while `kiEquals` could run a user `_eq_` that reallocs the list → UAF (`Evil() in xs`). | Search a GC-rooted snapshot; erase from the live list bounds-checked. | fixed + test |
 | A04-1 | `return EXPR` crossing a `finally` that does `break`/`continue`: the value stayed on the operand stack, so the break's cursor-`Pop` removed the return value not the loop cursor → orphaned cursor → enclosing loop corruption (observed: infinite hang). | Park the return value in a hidden local across the crossed cleanups (mirrors `emitFinallyExc`). | fixed + test |
 
-### MEDIUM (correctness / contract) — todo
+### MEDIUM (correctness / contract) — several FIXED+TESTED (test_audit_v113.cpp); rest todo
 
 | ID | Bug | Proposed fix |
 |----|-----|--------------|
@@ -22,7 +22,7 @@ Deduped, ranked roll-up of the per-agent findings in `agents/`. Status: `fixed`,
 | A02-1 | `var f = Function(): return a, b` silently misparses: inline body's `return` reads with `parseExpr` (stops at comma), the enclosing `parseValueSeq` absorbs `, b` → `f = [<fn>, b]`. Root: **A02-11 DRY** — `parseInlineStatement` duplicates `parseStatement`. | Unify inline/block statement parsing (or make the inline return pack). |
 | A04-2 | Duplicate **negative** switch case values (`case -1: … case -1:`) silently accepted — `-1` is `UnaryExpr`, not `LiteralExpr`, so the duplicate detector misses it. (A04-3: a single `case -1` also silently downgrades the whole switch O(1)→O(n).) Root touches **A04-12 DRY** — switch-key logic in two headers must agree. | Fold constant unary-neg literals before duplicate detection / key building. |
 | A06-1 | `!=` asymmetry: with a one-sided user `_ne_` the reflected path differs from `==`'s. | (verify) mirror the `_eq_` reflection in `_ne_`. |
-| A07-1 | `_iter_` returning `self` → unbounded native recursion → SIGSEGV (uncatchable); `iterate` lacks the cycle guard `str` has. | Add a depth/cycle guard to `InstanceValue::iterate`. |
+| A07-1 ✔ | `_iter_` returning `self` → unbounded native recursion → SIGSEGV (uncatchable); `iterate` lacks the cycle guard `str` has. | Add a depth/cycle guard to `InstanceValue::iterate`. |
 | A07-5 | `_str_` return value not type-checked (unlike `_bool_`/`_hash_`/`_len_`). | Validate `_str_` returns a String. |
 | A09-2 | Sorting / min / max on a NaN-containing List uses `kiLessThan`, not a strict-weak-ordering with NaN → `std::stable_sort` UB. | Define a total order for NaN (or reject / partition), as the tensor/numeric side already reasons about. |
 | A10-1 | `"İ".lower()` / Unicode case-fold edge (per A10). | (verify against the documented ASCII+Latin-1+Latin-Ext-A scope.) |
@@ -47,3 +47,11 @@ Coverage gaps are logged comprehensively per agent (the bulk of each `.md`); the
 test-writing phase (C++ then `.ki`).
 
 ## Remaining scan (todo): A11–A35 (stdlib native, ki-modules, builtins, cross-cutting, meta).
+
+## Fix batch 2 (Medium bugs, FIXED+TESTED, debug-green + no regressions)
+- A07-1 `_iter_` self/cyclic recursion → SIGSEGV: bounded re-dispatch depth → catchable error.
+- A18-1 CRLF header/cookie injection (security): reject CR/LF in header keys/values + cookie names/values.
+- A13-1 fmod(inf, finite) silent NaN → math domain error (throw).
+- A16-1 Matrix.apply un-rooted makeFloat arg across callback → GC-safety (rooted).
+(Still todo: A01-1/2 f-string [A01-3 DRY], A02-1 [A02-11 DRY], A04-2 dup-neg-case, A09-2 NaN sort,
+A12-1 walk tolerance, A15-1 double-backward, A17-1 serde wrong-bucket, A18-4 connect timeout, A19-1/4, A21-2, ...)

@@ -822,6 +822,11 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     // assembled (case-insensitively keyed) request headers, with defaults
     std::vector<std::pair<std::string, std::string>> hdrs;
     auto setHdr = [&](const std::string& k, const std::string& v) {
+        // Reject CR/LF in a header key or value: user-supplied headers/cookies flow here and are written
+        // verbatim into the request, so a CRLF would inject extra headers or smuggle a second request
+        // (A18-1). Rejection (not encoding) is correct for header fields, matching http.client/requests.
+        if (k.find_first_of("\r\n") != std::string::npos || v.find_first_of("\r\n") != std::string::npos)
+            throw KiritoError("header contains a control character (CR/LF): '" + k + "'");
         std::string lc = net::asciiLower(k);
         for (auto& h : hdrs) if (net::asciiLower(h.first) == lc) { h.second = v; return; }
         hdrs.emplace_back(k, v);
@@ -843,7 +848,12 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     Dict jar(vm);
     Handle cookiesOpt = netOpt(vm, opts, "cookies");
     if (vm.arena().deref(cookiesOpt).kind() == ValueKind::Dict)
-        for (const auto& [k, v] : Value(vm, cookiesOpt).pairs()) jar.set(k.str(), Value(vm, v.str()));
+        for (const auto& [k, v] : Value(vm, cookiesOpt).pairs()) {
+            std::string ck = k.str(), cv = v.str();  // reject CRLF: cookies fold into a Cookie header (A18-1)
+            if (ck.find_first_of("\r\n") != std::string::npos || cv.find_first_of("\r\n") != std::string::npos)
+                throw KiritoError("cookie contains a control character (CR/LF): '" + ck + "'");
+            jar.set(ck, Value(vm, cv));
+        }
     Handle jarH = rs.add(jar.handle());
     auto& jarDict = static_cast<DictVal&>(vm.arena().deref(jarH));
 
