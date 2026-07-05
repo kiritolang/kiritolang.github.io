@@ -5,7 +5,7 @@ Deduped, ranked roll-up of the per-agent findings in `agents/`. Status: `fixed`,
 
 ## Confirmed bugs — CORE wave (A01–A10)
 
-### HIGH (memory-safety / correctness) — all FIXED + tested (test_audit_v113.cpp, spec_audit_v113.ki)
+### HIGH (memory-safety / correctness) — all FIXED + TESTED + VALIDATED (debug 727/727 + asan/ubsan clean)
 
 | ID | Bug | Fix | Status |
 |----|-----|-----|--------|
