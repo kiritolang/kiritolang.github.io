@@ -1,0 +1,81 @@
+# Regression golden for the v1.13 audit — the observable core-engine fixes, driven from Kirito.
+# (The memory-safety fixes A05-1 / A09-1 are gated as C++/ASan tests in test_audit_v113.cpp; here we
+# pin their observable, no-crash behaviour too.)
+var io = import("io")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+# --- A03-1: a nested function's parameter default captures the ENCLOSING function's local ---
+var z = 100
+var make = Function():
+    var z = 10
+    var g = Function(x, y = z): return x + y   # y default must see F's z = 10, not module z = 100
+    return g
+assert make()(5) == 15, "A03-1: nested default captures enclosing local (15, not 105)"
+# no outer shadow (the bug threw a spurious NameError)
+var make2 = Function():
+    var q = 7
+    var g = Function(x, y = q): return x + y
+    return g
+assert make2()(3) == 10, "A03-1: nested default, no outer shadow (no NameError)"
+# a default referencing an EARLIER nested param still binds to the param
+var addparam = Function(a, b = a): return a + b
+assert addparam(6) == 12, "A03-1: default referencing an earlier param binds to it"
+
+# --- A04-1: `return` crossing a finally that break/continues must not corrupt an enclosing loop ---
+var g1 = Function():
+    var out = []
+    for i in [1, 2]:
+        for j in [10, 20, 30]:
+            try:
+                return 99
+            finally:
+                break        # abandons the return, breaks the inner loop
+        out.append(i)
+    return out
+assert g1() == [1, 2], "A04-1: return in try + break in finally preserves the enclosing loop"
+var g2 = Function():
+    var n = 0
+    for i in [1, 2, 3]:
+        try:
+            return 99
+        finally:
+            continue         # abandons each return; falls through to `return n`
+    return n
+assert g2() == 0, "A04-1: return in try + continue in finally"
+var g3 = Function():
+    for i in [1]:
+        try:
+            return 42
+        finally:
+            pass             # a normal finally must still let the return return its value
+    return -1
+assert g3() == 42, "A04-1: normal finally still returns the value"
+
+# --- A05-1: iterating a String / Bytes materialises fresh handles — none lost under GC ---
+var s = ""
+for c in "hello":
+    s = s + c
+assert s == "hello", "A05-1: for over String round-trips"
+var bs = []
+for b in Bytes([65, 66, 67]):
+    bs.append(b)
+assert bs == [65, 66, 67], "A05-1: for over Bytes round-trips"
+
+# --- A09-1: a hostile _eq_ mutating the list mid-search must not crash; result stays sane ---
+var xs = [1, 2, 3, 4, 5]
+class Evil:
+    var _eq_ = Function(self, o):
+        xs.append(0)         # realloc xs mid-search
+        return False
+assert not (Evil() in xs), "A09-1: reentrant _eq_ during `in` search — no crash"
+assert throws(Function(): return xs.remove(Evil())), "A09-1: remove(no-match) throws cleanly"
+assert [1, 2, 3, 2].index(2) == 1, "A09-1: index normal behaviour intact"
+assert [1, 2, 3, 2].count(2) == 2, "A09-1: count normal behaviour intact"
+
+io.print("OK audit_v113")
