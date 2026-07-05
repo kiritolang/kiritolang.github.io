@@ -313,7 +313,23 @@ private:
     void visit(const ast::ReturnStmt& s) override {
         if (s.value) compileExpr(*s.value);
         else emit(Op::LoadNone);
-        unwindFramesAbove(0);  // run every enclosing finally/with cleanup before returning (value on stack)
+        // If this return crosses any try-finally / with whose cleanup runs here, park the return value
+        // in a hidden local so those cleanups run at a CLEAN operand height and are reloaded after —
+        // exactly as emitFinallyExc parks the in-flight exception. Otherwise a break/continue inside a
+        // crossed finally would Pop the return value (top of stack) instead of a loop cursor, orphaning
+        // the cursor and corrupting an enclosing loop's iteration (A04-1).
+        bool crossesCleanup = false;
+        for (const auto& f : frames_)
+            if (f.kind == CFrame::Block && f.cleanup) { crossesCleanup = true; break; }
+        if (crossesCleanup) {
+            std::string retName = "$ret" + std::to_string(retCounter_++);
+            ensureHiddenSlot(retName);
+            emitStore(retName, s.span);
+            unwindFramesAbove(0);
+            emitLoad(retName, s.span);
+        } else {
+            unwindFramesAbove(0);  // no cleanup to run at height — the value can ride the stack
+        }
         emit(Op::Return, 0, s.span);
     }
 
@@ -703,6 +719,7 @@ private:
     std::vector<CFrame> frames_;
     int withCounter_ = 0;  // unique hidden-local index per `with` (holds the context manager)
     int tryCounter_ = 0;   // unique hidden-local index per `try` (parks the in-flight exception)
+    int retCounter_ = 0;   // unique hidden-local index per value-parking `return` crossing a cleanup
     int depth_ = 0;
     bool slotsEnabled_ = false;                      // true only when compiling a true function body
     fum::unordered_map<std::string, uint32_t> slotOf_;  // slotted local name -> frame slot index

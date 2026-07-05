@@ -69,9 +69,18 @@ struct CaptureScan {
     }
 
     void enterFunction(const ast::FunctionExpr& fn, bool inNested, const NameSet& nb) {
-        for (const auto& p : fn.params) if (p.defaultValue) scanExpr(*p.defaultValue, inNested, nb);  // defaults: enclosing scope
+        (void)inNested;  // enterFunction is only reached for a NESTED function literal, whose defaults
+        // AND body both belong to its own lazily-evaluated closure — so both scan at inNested=true.
+        // A parameter default is compiled to its own Proto and evaluated at fn's call time through fn's
+        // closure (parent = the scope that defined fn), so a reference in a default to one of F's locals
+        // is a genuine capture, exactly like a body reference (A03-1) — NOT the enclosing frame. Grow
+        // `inner` over the earlier params first, so `Function(a, b = a)` binds `a` to fn's own param
+        // (not a capture of an F-local named `a`).
         NameSet inner = nb;
-        for (const auto& p : fn.params) inner.insert(p.name);
+        for (const auto& p : fn.params) {
+            if (p.defaultValue) scanExpr(*p.defaultValue, /*inNested=*/true, inner);
+            inner.insert(p.name);
+        }
         collectBlockDecls(fn.body, inner);
         scanBlock(fn.body, /*inNested=*/true, inner);
     }

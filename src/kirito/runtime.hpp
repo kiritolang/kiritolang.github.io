@@ -590,18 +590,28 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
         return makeMethod(vm,
             "remove", {"value"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.empty()) throw KiritoError("remove expects a value");
-                auto& e = self_list(vm, self).elems;
-                for (std::size_t i = 0; i < e.size(); ++i)
-                    if (kiEquals(vm, e[i], a[0])) { e.erase(e.begin() + i); return vm.none(); }
+                // Find in a GC-rooted snapshot: kiEquals may run a user _eq_ that reallocs/mutates this
+                // List, dangling a live `elems` reference (A09-1). Erase from the LIVE list, bounds-checked.
+                RootScope rs(vm);
+                std::vector<Handle> snap = self_list(vm, self).elems;
+                for (Handle h : snap) rs.add(h);
+                for (std::size_t i = 0; i < snap.size(); ++i)
+                    if (kiEquals(vm, snap[i], a[0])) {
+                        auto& e = self_list(vm, self).elems;
+                        if (i < e.size()) e.erase(e.begin() + i);
+                        return vm.none();
+                    }
                 throw KiritoError("remove: value not in List");
             }, std::vector<Handle>{self});
     if (name == "index")
         return makeMethod(vm,
             "index", {"value", "start", "end"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.empty()) throw KiritoError("index expects a value");
-                auto& e = self_list(vm, self).elems;
+                RootScope rs(vm);                                    // search a rooted snapshot (A09-1)
+                std::vector<Handle> snap = self_list(vm, self).elems;
+                for (Handle h : snap) rs.add(h);
                 // Optional [start[, end]] search window (negatives count from the end).
-                int64_t n = static_cast<int64_t>(e.size()), start = 0, end = n;
+                int64_t n = static_cast<int64_t>(snap.size()), start = 0, end = n;
                 auto clampIdx = [&](Handle h, int64_t dflt) {
                     if (vm.arena().deref(h).kind() == ValueKind::None) return dflt;
                     int64_t k = argInt(vm, h, "index");
@@ -611,7 +621,7 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                 if (a.size() > 1) start = clampIdx(a[1], 0);
                 if (a.size() > 2) end = clampIdx(a[2], n);
                 for (int64_t i = start; i < end; ++i)
-                    if (kiEquals(vm, e[static_cast<std::size_t>(i)], a[0]))
+                    if (kiEquals(vm, snap[static_cast<std::size_t>(i)], a[0]))
                         return vm.makeInt(i);
                 throw KiritoError("index: value not in List");
             }, std::vector<Handle>{self});
@@ -643,9 +653,11 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
         return makeMethod(vm,
             "count", {"value"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.size() != 1) throw KiritoError("count expected 1 argument");
-                auto& e = self_list(vm, self).elems;
+                RootScope rs(vm);                                    // count over a rooted snapshot (A09-1)
+                std::vector<Handle> snap = self_list(vm, self).elems;
+                for (Handle h : snap) rs.add(h);
                 int64_t n = 0;
-                for (Handle h : e)
+                for (Handle h : snap)
                     if (kiEquals(vm, h, a[0])) ++n;
                 return vm.makeInt(n);
             }, std::vector<Handle>{self});
@@ -1607,8 +1619,14 @@ inline bool kiEquals(KiritoVM& vm, Handle a, Handle b) {
 }
 
 inline bool ListVal::contains(KiritoVM& vm, Handle value) {
-    for (Handle e : elems)
-        if (kiEquals(vm, e, value)) return true;
+    // Search a GC-rooted snapshot: kiEquals may run a user _eq_ that reallocs/mutates this List, which
+    // would dangle a live iterator over `elems` (A09-1); rooting keeps the handles alive if a reentrant
+    // clear()+GC drops them.
+    RootScope rs(vm);
+    std::vector<Handle> snap = elems;
+    for (Handle h : snap) rs.add(h);
+    for (Handle h : snap)
+        if (kiEquals(vm, h, value)) return true;
     return false;
 }
 inline bool DictVal::contains(KiritoVM& vm, Handle key) {
