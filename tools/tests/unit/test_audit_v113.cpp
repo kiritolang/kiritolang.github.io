@@ -204,5 +204,33 @@ int main() {
     CHECK(ok("var m = import(\"math\")\nString(min([2.0, 1.0, 3.0]))") == "1.0");   // no regression
     CHECK(ok("var m = import(\"math\")\nString(max([2.0, 1.0, 3.0]))") == "3.0");
 
+    // === A17-1 (serde wrong-bucket): a Set element / Dict key with a CONTENT-based hash (Bytes,
+    // DateTime, attr-based _hash_) was wired into the Set/Dict in pass 2 — BEFORE its payload was
+    // restored by _setstate_ (pass 3) — so it bucketed under its empty hash, and a later lookup on the
+    // real hash landed in a different bucket (silent membership corruption). Set/Dict wiring is now a
+    // final pass after all state is restored. ===
+    {
+        const std::string dl = "var d = import(\"dump\")\n";     // dump (binary)
+        const std::string sl = "var d = import(\"serialize\")\n";// serialize (text) — shared core
+        for (const std::string& pre : {dl, sl}) {
+            // Set of Bytes: both members found after round-trip.
+            CHECK(ok(pre + "var s = {Bytes([1, 2]), Bytes([3, 4])}\nvar b = d.loads(d.dumps(s))\n"
+                          "String(b.contains(Bytes([1, 2]))) + String(b.contains(Bytes([3, 4]))) + String(len(b))")
+                  == "TrueTrue2");
+            // Dict keyed by Bytes: key lookup succeeds.
+            CHECK(ok(pre + "var m = {Bytes([9]): \"nine\"}\nvar b = d.loads(d.dumps(m))\nb[Bytes([9])]") == "nine");
+        }
+        // Dict/Set keyed by DateTime (hash by epoch; empty epoch=0 at insert without the fix).
+        CHECK(ok("var d = import(\"dump\")\nvar t = import(\"time\")\nvar dt = t.make(2020, 1, 1)\n"
+                 "var b = d.loads(d.dumps({dt: \"y\"}))\nb[dt]") == "y");
+        // A user class with an attribute-based _hash_ used as a Set member.
+        CHECK(ok("var d = import(\"dump\")\n"
+                 "class K:\n    var _init_ = Function(self, v): self.v = v\n"
+                 "    var _hash_ = Function(self): return self.v\n"
+                 "    var _eq_ = Function(self, o): return self.v == o.v\n"
+                 "var b = d.loads(d.dumps({K(5), K(7)}))\nString(b.contains(K(5))) + String(b.contains(K(7)))")
+              == "TrueTrue");
+    }
+
     return RUN_TESTS();
 }

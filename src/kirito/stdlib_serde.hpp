@@ -209,19 +209,17 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             } break;
         }
     }
-    // Pass 2: wire containers and instance attributes (handles only — contents finish filling here).
+    // Pass 2: wire Lists and instance attributes (handles only — contents finish filling here). Sets
+    // and Dicts are DEFERRED to pass 4: their add/set hashes the element/key EAGERLY, but a Stateful
+    // element's real payload (and an Object element's attributes) is only restored in pass 3, and
+    // flatten reserves a container's id BEFORE its children — so wiring a Set/Dict here would bucket a
+    // content-hashed member (Bytes/DateTime/attr-based _hash_) under its empty hash and then mutate it,
+    // landing a later lookup in the wrong bucket (silent membership corruption). See A17-1.
     for (uint32_t i = 0; i < n; ++i) {
         const Node& nd = nodes[i];
         if (nd.tag == Tag::List) {
             auto& l = static_cast<ListVal&>(vm.arena().deref(objs[i]));
             for (uint32_t id : nd.links) l.elems.push_back(objs[checkId(id)]);
-        } else if (nd.tag == Tag::Set) {
-            auto& s = static_cast<SetVal&>(vm.arena().deref(objs[i]));
-            for (uint32_t id : nd.links) s.add(vm.arena(), objs[checkId(id)]);
-        } else if (nd.tag == Tag::Dict) {
-            auto& d = static_cast<DictVal&>(vm.arena().deref(objs[i]));
-            for (std::size_t k = 0; k + 1 < nd.links.size(); k += 2)
-                d.set(vm.arena(), objs[checkId(nd.links[k])], objs[checkId(nd.links[k + 1])]);
         } else if (nd.tag == Tag::Object) {
             auto& inst = static_cast<InstanceValue&>(vm.arena().deref(objs[i]));
             for (std::size_t k = 0; k + 1 < nd.links.size(); k += 2) {
@@ -243,6 +241,19 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             throw KiritoError("cannot deserialize '" + nd.s + "': it defines _getstate_ but no _setstate_");
         std::array<Handle, 1> args{state};
         vm.arena().deref(*setm).call(vm, args);
+    }
+    // Pass 4: wire Sets and Dicts now that every element/key is fully materialised, so a content-based
+    // hash (Bytes/DateTime/attr-based _hash_) buckets correctly (A17-1).
+    for (uint32_t i = 0; i < n; ++i) {
+        const Node& nd = nodes[i];
+        if (nd.tag == Tag::Set) {
+            auto& s = static_cast<SetVal&>(vm.arena().deref(objs[i]));
+            for (uint32_t id : nd.links) s.add(vm.arena(), objs[checkId(id)]);
+        } else if (nd.tag == Tag::Dict) {
+            auto& d = static_cast<DictVal&>(vm.arena().deref(objs[i]));
+            for (std::size_t k = 0; k + 1 < nd.links.size(); k += 2)
+                d.set(vm.arena(), objs[checkId(nd.links[k])], objs[checkId(nd.links[k + 1])]);
+        }
     }
     return objs[rootId];
 }
