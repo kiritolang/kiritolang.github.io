@@ -679,12 +679,16 @@ how the socket was created.
   additionally reads `error`, `type`, `acceptconn`.
 - `s.setreuseaddr(flag)` / `s.setnodelay(flag)` / `s.setbroadcast(flag)` / `s.setkeepalive(flag)` —
   named conveniences for the common toggles.
-- `s.settimeout(seconds) → None` — bound subsequent send/recv with a timeout.
+- `s.settimeout(seconds) → None` — bound send/recv **and a subsequent `connect()`** with a timeout
+  (a non-blocking connect + `select` under the hood), so a connect to a black-hole host can't hang
+  past the timeout.
 - `s.setblocking(flag: Bool) → None` — switch between blocking and non-blocking mode.
-- `s.fileno() → Integer` — the raw fd, **non-destructively** (unlike `detach`).
+- `s.fileno() → Integer` — the raw fd, **non-destructively** (unlike `detach`); returns `-1` on a
+  closed or detached socket (its fd is gone or recycled, so it must not be adopted).
 - `s.close() → None` — close the socket.
 - `s.detach() → Integer` — surrender the raw fd to the caller and stop owning it (the socket's
-  destructor will no longer close it). Pair with `net.fromfd` to hand a connection to a worker VM.
+  destructor will no longer close it), then clear it — a second `detach()` throws rather than handing
+  out the same fd twice. Pair with `net.fromfd` to hand a connection to a worker VM.
 
 Every entry point validates its input — an unknown `family`/`type`/`option`, a port outside 0–65535,
 or a negative size throws a clear error, and any call on a closed (or detached) socket throws
@@ -918,7 +922,9 @@ Object-based RNG — no global state; create a generator and call methods on it.
   population, throws. (Contrast `sample`, which is **without** replacement.)
 - `r.shuffle(seq) → None` — shuffle a List in place.
 - `r.sample(population, k) → List` — `k` distinct elements chosen at random (without replacement).
-- `r.gauss(mu, sigma) → Float` — a sample from a normal distribution (alias `normalvariate`).
+- `r.gauss(mu, sigma) → Float` — a sample from a normal distribution (alias `normalvariate`). Both
+  arguments default (`mu = 0.0`, `sigma = 1.0`) and take keywords, so `r.gauss(sigma = 2.0)` works; a
+  negative `sigma` throws.
 - `r.expovariate(lambd) → Float` — exponential distribution.
 
 ---
