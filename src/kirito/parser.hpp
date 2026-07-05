@@ -308,15 +308,31 @@ private:
         SourceSpan span = peek().span;
         auto first = parseExpr();
         if (!at(TokenType::Comma)) return first;
+        // A bare comma right after an INLINE-bodied function literal reads ambiguously: the `, b` in
+        // `var f = Function(): return a, b` was silently absorbed into a top-level pack, binding f to
+        // the List [<function>, b] (and the function returning only `a`). Inline functions don't pack —
+        // reject it with a clear diagnostic. (A call-arg or bracketed list, which delimit, are fine and
+        // don't go through parseValueSeq; wrap the function in [ ] if a List of it and more is intended.)
+        rejectInlineFnPack(*first);
         auto tup = std::make_unique<ast::TupleExpr>();
         tup->span = span;
         tup->elems.push_back(std::move(first));
         while (at(TokenType::Comma)) {
             advance();
             if (at(TokenType::Newline) || at(TokenType::EndOfFile) || at(TokenType::Dedent)) break;
-            tup->elems.push_back(parseExpr());
+            auto elem = parseExpr();
+            if (at(TokenType::Comma)) rejectInlineFnPack(*elem);  // a mid-pack inline fn is just as ambiguous
+            tup->elems.push_back(std::move(elem));
         }
         return tup;
+    }
+
+    // Reject a comma-pack whose element is a bare inline-bodied function literal (see parseValueSeq).
+    void rejectInlineFnPack(const ast::Expr& e) {
+        if (const auto* fn = dynamic_cast<const ast::FunctionExpr*>(&e); fn && fn->inlineBody)
+            throw KiritoError("an inline function cannot be comma-packed here (its trailing comma is "
+                              "ambiguous); use an indented block body, or wrap it in a List with [ ]",
+                              e.span);
     }
 
     ast::Block parseBlock() {
@@ -722,6 +738,7 @@ private:
         } else {
             // Inline body: one statement on the same line, e.g. Function(x): return x * x.
             // It is a normal statement (uses explicit return) with no trailing-newline requirement.
+            node->inlineBody = true;
             node->body.push_back(parseInlineStatement());
         }
         --funcDepth_;

@@ -283,5 +283,22 @@ int main() {
     CHECK(ok("String(\"\\xe9\" == \"é\")") == "True");
     CHECK(has(err("var s = \"a\\qb\""), "invalid escape"));
 
+    // === A02-1 (inline-function comma-pack): `var f = Function(): return a, b` silently absorbed the
+    // `, b` into a top-level pack -> f bound to [<function>, b], function returning only `a`. Inline
+    // functions don't pack; the ambiguous comma is now rejected. Call-arg / bracketed-list commas
+    // (which delimit) still work. ===
+    CHECK(has(err("var a = 1\nvar b = 2\nvar f = Function(): return a, b"), "inline function cannot be comma-packed"));
+    CHECK(has(err("var t = Function(): pass, 1"), "inline function cannot be comma-packed"));
+    CHECK(has(err("var x = 0\nvar t = 1, Function(): return x, 2"), "inline function cannot be comma-packed"));
+    // an inline function as a call argument followed by more args is fine (comma delimits args)
+    CHECK(ok("String(List(map(Function(x): return x * 2, [1, 2, 3])))") == "[2, 4, 6]");
+    CHECK(ok("String(sorted([3, 1, 2], key = Function(x): return -x))") == "[3, 2, 1]");
+    // an inline function inside a List literal followed by more elements is fine (brackets delimit)
+    CHECK(ok("var xs = [Function(): return 9, 1]\nString(len(xs)) + String(xs[0]()) + String(xs[1])") == "291");
+    // a BLOCK-bodied function still packs its return normally
+    CHECK(ok("var f = Function():\n    return 1, 2\nString(f())") == "[1, 2]");
+    // an inline function with no trailing comma is unaffected
+    CHECK(ok("var f = Function(): return 42\nString(f())") == "42");
+
     return RUN_TESTS();
 }

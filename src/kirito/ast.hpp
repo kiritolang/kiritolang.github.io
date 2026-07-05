@@ -284,6 +284,10 @@ struct FunctionExpr : Expr {
     std::string name;              // binding name (`var NAME = Function`/method), "" if anonymous; used
                                    // only to label tracebacks — name resolution never depends on it
     Block body;
+    bool inlineBody = false;        // true for `Function(): STMT` (a single same-line statement), false
+                                    // for an indented block. The parser rejects a bare comma-pack right
+                                    // after an inline-bodied literal (its trailing comma reads
+                                    // ambiguously — see parseValueSeq).
     // Evaluator-side memo: true once we've determined this function has no param/return annotations,
     // enabling a no-temporaries fast bind for positional, exact-arity calls. Computed lazily.
     mutable std::optional<bool> fastBindable;
