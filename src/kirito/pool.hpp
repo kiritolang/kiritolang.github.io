@@ -37,7 +37,22 @@ inline constexpr std::size_t kMaxPooled = 224;             // bytes; larger obje
 inline constexpr std::size_t kClasses = kMaxPooled / kAlign;  // 16,32,...,224-byte classes
 
 struct FreeBlock { FreeBlock* next; };
-inline thread_local FreeBlock* freeLists[kClasses] = {};
+
+// The per-thread free-lists live inside a thread_local OBJECT so its destructor runs at thread exit
+// and RETURNS every recycled-but-unused block to the general allocator. Without this, a raw pointer
+// array would just be discarded on exit and leak its whole chain — and because `parallel.spawn` runs
+// each worker on a fresh, short-lived OS thread, that leaked ~0.87 MB PER SPAWN, unbounded, and was
+// invisible to the sanitizers (which bypass the pool entirely). The VM and all its Objects are stack-
+// scoped within the worker's thread function, so they are destroyed (returning their blocks here)
+// before this thread_local destructor drains the lists — no use-after-free.
+struct FreeLists {
+    FreeBlock* lists[kClasses] = {};
+    ~FreeLists() {
+        for (FreeBlock*& head : lists)
+            for (FreeBlock* b = head; b;) { FreeBlock* next = b->next; ::operator delete(b); b = next; }
+    }
+};
+inline thread_local FreeLists tls;
 
 inline std::size_t classOf(std::size_t n) { return (n + kAlign - 1) / kAlign - 1; }  // 1..64 -> 0..3
 
@@ -45,7 +60,7 @@ inline void* allocate(std::size_t n) {
     if (n == 0) n = 1;
     if (n > kMaxPooled) return ::operator new(n);
     std::size_t c = classOf(n);
-    if (FreeBlock* b = freeLists[c]) { freeLists[c] = b->next; return b; }
+    if (FreeBlock* b = tls.lists[c]) { tls.lists[c] = b->next; return b; }
     return ::operator new((c + 1) * kAlign);  // fresh block, sized to its class so reuse is exact
 }
 
@@ -56,8 +71,8 @@ inline void deallocate(void* p, std::size_t n) noexcept {
     if (n == 0) n = 1;
     if (n > kMaxPooled) { ::operator delete(p); return; }
     FreeBlock* b = static_cast<FreeBlock*>(p);
-    b->next = freeLists[classOf(n)];
-    freeLists[classOf(n)] = b;
+    b->next = tls.lists[classOf(n)];
+    tls.lists[classOf(n)] = b;
 }
 
 #endif

@@ -145,8 +145,9 @@ rf"raw\path\{name}"              # raw f-string: backslashes literal, {expr} sti
 ```
 
 Because `'...'` exists, an f-string can hold a single-quoted string key inside its braces:
-`f"{d['key']}"`. Escapes in cooked (non-raw) strings: `\n \t \r \0 \\ \" \'` and `\xHH` (a byte from
-two hex digits). A single-line string can't span a newline (use a triple-quoted form); an
+`f"{d['key']}"`. Escapes in cooked (non-raw) strings: `\n \t \r \0 \\ \" \'` and `\xHH` (the code
+point U+00HH from two hex digits — e.g. `"\xff"` is one code point, U+00FF, not a raw byte; use
+[`Bytes`](types.html#bytes) for raw bytes). A single-line string can't span a newline (use a triple-quoted form); an
 unterminated string, an unknown escape in a **plain** string, or a raw string ending in a lone
 backslash is a clear lex error. (One exception: inside an **f-string**, an unrecognized escape is
 lenient — the backslash is dropped, so `f"\q"` yields `"q"`.)

@@ -115,5 +115,29 @@ out.getvalue() + "->" + name
 )") == "Name? ->Alice");
     }
 
+    // A10-5: `for line in file` iterates LAZILY (one line per step), not by buffering to EOF first.
+    // Proof: break after the first line, then readline() returns the SECOND line — with the old eager
+    // path the whole file was materialized at loop entry, leaving the file at EOF (readline -> "").
+    {
+        KiritoVM vm;
+        CHECK(run(vm, R"(
+var io = import("io")
+var path = import("path")
+var p = path.join(path.gettempdir(), "kirito_lazy_iter_test.txt")
+var w = io.open(p, "w")
+w.write("l1\nl2\nl3\n")
+w.close()
+var f = io.open(p)
+var first = ""
+for line in f:
+    first = line
+    break
+var nxt = f.readline()
+f.close()
+path.remove(p)
+first + "|" + nxt
+)") == "l1|l2");
+    }
+
     return RUN_TESTS();
 }

@@ -588,7 +588,9 @@ upload; value is content or `[filename, content]`), `auth` (`[user, pass]` → H
 (seconds), `allowredirects` (Bool, default `True`) / `maxredirects` (Integer, default 10), `verify`
 (Bool, default `True` — TLS certificate verification; trust roots come from the OS — OpenSSL's default
 paths or the `SSL_CERT_FILE` env var on Unix, the Windows system certificate store on Windows — and a
-verify failure reports the specific reason; pass `verify = False` to skip), and `cookies` (Dict). Redirects are followed,
+verify failure reports the specific reason; pass `verify = False` to skip), and `cookies` (Dict). Redirects are followed
+(the `Authorization` header and cookies are **stripped when a redirect crosses to a different origin**,
+matching `requests` — so credentials never leak to a third-party host; same-origin redirects keep them),
 chunked transfer-encoding is decoded, and `gzip`/`deflate` responses are decompressed automatically.
 
 ### Response object

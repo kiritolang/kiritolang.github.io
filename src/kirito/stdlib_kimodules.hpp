@@ -229,11 +229,14 @@ var groupby = Function(iterable, key = None):
 
 // --- functools ---------------------------------------------------------------------------------
 inline constexpr std::string_view functools = R"KI(
-var reduce = Function(func, iterable, initial = None):
-    # `have` tracks whether we hold an accumulator yet — NOT `acc == None`, so a fold that legitimately
-    # produces None (reduce(fn, [1,2,3]) where fn returns None) is not mistaken for an empty sequence.
+# A unique sentinel (distinct object identity) meaning "no initial value supplied" — so an explicit
+# `initial = None` is a real seed (Python parity), NOT confused with the argument being omitted.
+var _reduce_unset = []
+var reduce = Function(func, iterable, initial = _reduce_unset):
+    # `have` tracks whether we hold an accumulator yet — by IDENTITY against the sentinel, not `== None`,
+    # so a legitimate None seed (or a fold that produces None) is not mistaken for an empty sequence.
     var acc = initial
-    var have = initial != None
+    var have = id(initial) != id(_reduce_unset)
     for x in iterable:
         if have:
             acc = func(acc, x)
@@ -1530,15 +1533,24 @@ class Series:
         return Series(self.values[start:], self.index[start:], self.name)
 
     var sortvalues = Function(self, ascending = True):
-        var pairs = []
+        # Missing values (None or Float NaN, via _isnan) can't be ordered, so partition them out, sort
+        # only the present values, and append the missing ones — they land LAST regardless of ascending
+        # or descending (pandas na_position='last'; A20-5). Keying missing inline would let `reverse`
+        # flip them to the FRONT on a descending sort.
+        var present = []
+        var missing = []
         var i = 0
         while i < len(self.values):
-            pairs.append([self.values[i], self.index[i]])
+            var pair = [self.values[i], self.index[i]]
+            if _isnan(self.values[i]):
+                missing.append(pair)
+            else:
+                present.append(pair)
             i = i + 1
-        pairs.sort(Function(p): return p[0], not ascending)
+        present.sort(Function(p): return p[0], not ascending)
         var vals = []
         var idx = []
-        for p in pairs:
+        for p in present + missing:
             vals.append(p[0])
             idx.append(p[1])
         return Series(vals, idx, self.name)
@@ -1828,10 +1840,18 @@ class DataFrame:
         return DataFrame(newdata, numcols, stats)
 
     var sortvalues = Function(self, by, ascending = True):
-        var positions = _range(self.nrows())
         var col = self.data[by]
-        positions.sort(Function(p): return col[p], not ascending)
-        return self.rowsat(positions)
+        # Missing rows (None or Float NaN, via _isnan) sort to the END regardless of direction (pandas
+        # na_position='last'; A20-5): partition them out, sort the present rows, append the missing.
+        var present = []
+        var missing = []
+        for p in _range(self.nrows()):
+            if _isnan(col[p]):
+                missing.append(p)
+            else:
+                present.append(p)
+        present.sort(Function(p): return col[p], not ascending)
+        return self.rowsat(present + missing)
 
     var apply = Function(self, fn):
         # apply fn to each column Series -> a Series of results (axis=columns reduction)
@@ -2731,6 +2751,21 @@ var _parserange = Function(rng):
         for t in orpart.strip().split(" "):
             if len(t) > 0:
                 toks.append(t)
+        # node-semver allows whitespace between a comparator operator and its version (">= 1.2.0"),
+        # which split(" ") tears into two tokens (">=", "1.2.0") that were then ANDed into
+        # ">=0.0.0 AND =1.2.0" (exact-match only) -> satisfies("1.5.0", ">= 1.2.0") wrongly False, so
+        # kpm resolved the wrong version. Re-join a lone operator with the token that follows it.
+        var joined = []
+        var j = 0
+        while j < len(toks):
+            var tk = toks[j]
+            if (tk == ">" or tk == ">=" or tk == "<" or tk == "<=" or tk == "=") and j + 1 < len(toks):
+                joined.append(tk + toks[j + 1])
+                j = j + 2
+            else:
+                joined.append(tk)
+                j = j + 1
+        toks = joined
         var comps = []
         var i = 0
         while i < len(toks):

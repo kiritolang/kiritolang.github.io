@@ -36,6 +36,22 @@ int main() {
     }
     CHECK_THROWS(Value(vm, 5).items());                                     // Integer is not iterable
 
+    // ---- A07-4: items() results survive a forced GC. String/Bytes iterate yields FRESH per-element
+    // boxes; items() must pin them, else a collection between items() and use leaves dangling views. ----
+    {
+        KiritoVM g;
+        g.setGcThreshold(1);                                   // collect on every allocation
+        std::vector<Value> chars = Value(g, std::string("hello")).items();
+        std::vector<Value> bytes = Value(g, Bytes(g, std::string("world"))).items();
+        std::vector<Value> keys  = Dict(g, {{"a", 1}, {"b", 2}}).items();
+        for (int i = 0; i < 500; ++i) g.makeString(std::string(64, 'x'));  // force many GCs
+        std::string acc;
+        for (auto& c : chars) acc += c.asStringRef();          // would throw "dangling handle" if unpinned
+        CHECK(acc == "hello");
+        CHECK(bytes.size() == 5 && bytes[0].asInt() == 'w');
+        CHECK(keys.size() == 2);
+    }
+
     // ---- pairs() over a Dict ----
     {
         auto ps = Dict(vm, {{"k", 9}}).pairs();

@@ -149,8 +149,10 @@ Kirito should support:
   — accessible only from within a method of the same class **or a subclass** (privacy is per class
   *chain*, not per defining class — there is no name mangling). Non-function class-body
   `var`s are shared class attributes: instances read them through the class and copy-on-write on
-  assignment. Parameter **defaults are evaluated at call time**, once per call in the call scope (so
-  a mutable default like `xs = []` is a fresh list each call — not a shared-once footgun).
+  assignment. Parameter **defaults are evaluated at call time**, once per call, left-to-right (so
+  a mutable default like `xs = []` is a fresh list each call — not a shared-once footgun); a default
+  may reference an **earlier (already-bound) parameter** (`Function(a, b = a + 1)`) as well as
+  enclosing-scope names — the resolver, analyzer, and runtime binder all agree.
   `self._super_()` returns a *parent view*
   of self (method lookup starts at the base of the currently-running method's class) — for extending
   inherited methods/constructors; it climbs one level per call (so multi-level chains compose),

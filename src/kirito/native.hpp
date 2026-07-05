@@ -166,9 +166,9 @@ public:
 // positional-only call takes a fast path identical to the original. Unknown/duplicate keywords throw
 // a clear error. Used to give every built-in type method and native-class method keyword support.
 inline Handle makeMethod(KiritoVM& vm, std::string name, std::vector<std::string> params,
-                         NativeFn impl, std::vector<Handle> captures = {}) {
-    NativeFnKw kw = [name, params, impl](KiritoVM& v, std::span<const Handle> pos,
-                                         std::span<const NamedArg> named) -> Handle {
+                         NativeFn impl, std::vector<Handle> captures = {}, std::size_t minArgs = 0) {
+    NativeFnKw kw = [name, params, impl, minArgs](KiritoVM& v, std::span<const Handle> pos,
+                                                  std::span<const NamedArg> named) -> Handle {
         if (named.empty()) return impl(v, pos);  // positional fast path: unchanged behaviour
         std::size_t nparams = params.size();
         std::size_t total = std::max(nparams, pos.size());
@@ -186,7 +186,17 @@ inline Handle makeMethod(KiritoVM& vm, std::string name, std::vector<std::string
         }
         std::size_t outlen = 0;
         for (std::size_t i = 0; i < total; ++i) if (set[i]) outlen = i + 1;
-        for (std::size_t i = 0; i < outlen; ++i) if (!set[i]) slots[i] = v.none();
+        // A hole before the last supplied arg is filled with None (the impl's default handling) —
+        // EXCEPT a hole in a REQUIRED leading slot (index < minArgs), which means the caller named a
+        // later arg but omitted a required one (`d.setdefault(default=7)` skipping `key`). None-filling
+        // it silently passed None as that argument (inserting {None: 7}); instead this is a clear error.
+        for (std::size_t i = 0; i < outlen; ++i) {
+            if (set[i]) continue;
+            if (i < minArgs)
+                throw KiritoError(name + "() missing required argument '" +
+                                  (i < params.size() ? params[i] : std::to_string(i)) + "'");
+            slots[i] = v.none();
+        }
         slots.resize(outlen);
         return impl(v, slots);
     };

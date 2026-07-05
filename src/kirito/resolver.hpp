@@ -144,7 +144,16 @@ private:
         else if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&e)) { for (const auto& x : tup->elems) checkExpr(*x); }
         else if (const auto* star = dynamic_cast<const ast::StarExpr*>(&e)) checkExpr(*star->inner);
         else if (const auto* fn = dynamic_cast<const ast::FunctionExpr*>(&e)) {
-            for (const auto& p : fn->params) if (p.defaultValue) checkExpr(*p.defaultValue);  // defaults: enclosing scope
+            // A param default is evaluated in the enclosing (call) scope, but the binder defines the
+            // params LEFT-TO-RIGHT, so a default may reference an EARLIER param — `Function(n, size = n)`
+            // (A03-3). Check each default with the preceding params visible (a temporary innermost
+            // scope populated incrementally), then resolve the body with all params.
+            scopes_.emplace_back();
+            for (const auto& p : fn->params) {
+                if (p.defaultValue) checkExpr(*p.defaultValue);   // sees enclosing scopes + earlier params
+                declare(p.name);                                   // visible to the defaults that follow
+            }
+            scopes_.pop_back();
             resolveScope(fn->body, &fn->params);
         }
         // LiteralExpr binds/references nothing.

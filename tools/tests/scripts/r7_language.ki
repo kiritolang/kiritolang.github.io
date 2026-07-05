@@ -428,8 +428,13 @@ ok(importErr("var f = Function(a = 1, b): return a + b\n", "non-default"), "requ
 # Two starred targets are rejected.
 ok(importErr("var a, *b, *c = [1, 2, 3]\n", ""), "two starred targets are rejected")
 
-# A default expression evaluates in the CALL scope and cannot see an earlier parameter.
-ok(importErr("var f = Function(a, b = a + 1): return b\n", "not defined"), "a default cannot reference an earlier parameter")
+# A default expression evaluates at call time and CAN reference an earlier (already-bound) parameter,
+# as well as enclosing-scope names (the resolver, analyzer, and runtime binder all agree — A03-3).
+var earlierParamDefault = Function(a, b = a + 1): return [a, b]
+ok(earlierParamDefault(10) == [10, 11], "a default may reference an earlier parameter")
+ok(earlierParamDefault(10, 99) == [10, 99], "an explicit arg overrides the earlier-param default")
+# ...but a name bound to neither an earlier param nor an enclosing scope is still undefined.
+ok(importErr("var f = Function(a, b = c + 1): return b\n", "not defined"), "a default referencing an unbound name is rejected")
 
 # A default evaluated left-to-right, fresh each call (side effects re-run, in order).
 var defOrder = 0

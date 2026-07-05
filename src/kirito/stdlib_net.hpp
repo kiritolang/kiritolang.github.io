@@ -308,6 +308,21 @@ inline std::string asciiLower(std::string s) {
     return s;
 }
 
+// Which credentials a redirect from `from` to `to` must NOT carry (NET-1). Mirrors requests'
+// should_strip_auth: the Authorization header is dropped when the hostname changes, or when the
+// port/scheme changes — EXCEPT a same-host http->https upgrade on the standard ports, which keeps it.
+// The cookie jar is dropped only when the HOSTNAME changes (cookies are host-scoped, not port- or
+// scheme-scoped, per RFC 6265). Pure + side-effect-free so the policy is unit-testable without a
+// live server. (Ports here are already the scheme default 80/443 when the URL omitted one.)
+struct RedirectScope { bool dropAuth; bool dropCookies; };
+inline RedirectScope redirectScope(const Url& from, const Url& to) {
+    bool hostnameChanged = asciiLower(to.host) != asciiLower(from.host);
+    bool stdUpgrade = !from.tls && from.port == 80 && to.tls && to.port == 443;  // http->https, std ports
+    bool stripAuth = hostnameChanged ||
+                     (!stdUpgrade && (from.port != to.port || from.tls != to.tls));
+    return {stripAuth, hostnameChanged};
+}
+
 // Decode a chunked transfer-encoded body.
 inline std::string dechunk(const std::string& body) {
     std::string out;
@@ -787,7 +802,18 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
                           r.status == 307 || r.status == 308;
         std::string loc = r.header("location");
         if (allowRedirects && isRedirect && !loc.empty() && redirect < maxRedirects) {
-            curUrl = net::resolveUrl(curUrl, loc);
+            std::string newUrl = net::resolveUrl(curUrl, loc);
+            // A redirect must not leak credentials to a DIFFERENT origin or over a downgraded scheme
+            // (NET-1: allowredirects is on by default). The policy lives in one testable place.
+            net::RedirectScope scope = net::redirectScope(u, net::parseUrl(newUrl));
+            if (scope.dropAuth)
+                hdrs.erase(std::remove_if(hdrs.begin(), hdrs.end(),
+                                          [](const std::pair<std::string, std::string>& h) {
+                                              return net::asciiLower(h.first) == "authorization";
+                                          }),
+                           hdrs.end());
+            if (scope.dropCookies) jar.clear();
+            curUrl = newUrl;
             if (r.status == 303 || ((r.status == 301 || r.status == 302) && method == "POST")) {
                 method = "GET";
                 curBody.clear();

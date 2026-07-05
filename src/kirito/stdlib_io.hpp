@@ -118,7 +118,26 @@ public:
     }
     void streamFlush() override { stream.flush(); }
 
-    // Iterating a file yields its remaining lines (so `for line in f:` works).
+    // Iterating a file yields its remaining lines (so `for line in f:` works). Lazily — one line per
+    // step — so a multi-GB log is never buffered whole (A10-5). The cursor keeps this FileVal rooted,
+    // so `src` stays valid for the loop's duration.
+    struct LineIter : LazyIterator {
+        Handle src;
+        explicit LineIter(Handle s) : src(s) {}
+        std::optional<Handle> next(KiritoVM& vm) override {
+            auto& f = static_cast<FileVal&>(vm.arena().deref(src));
+            f.requireReadable();
+            std::string line;
+            if (!std::getline(f.stream, line)) return std::nullopt;
+            return f.wrapRead(vm, std::move(line));
+        }
+    };
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle self) override {
+        requireReadable();
+        return std::make_unique<LineIter>(self);
+    }
+    // Eager iterate() stays for direct consumers (List(f), sorted(f), set(f)); the for-loop prefers
+    // lazyIterate above.
     std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
         requireReadable();
         RootScope rs(vm);
@@ -405,7 +424,22 @@ public:
         std::string line; std::getline(std::cin, line); stripCR(line); return line;
     }
 
-    // `for line in io.stdin:` reads stdin line-by-line.
+    // `for line in io.stdin:` reads stdin line-by-line — LAZILY, one line per step, so interactive /
+    // piped / `tail -f` input is processed as it arrives instead of buffered to EOF first (A10-5).
+    struct StdinLineIter : LazyIterator {
+        std::optional<Handle> next(KiritoVM& vm) override {
+            std::string line;
+            if (!std::getline(std::cin, line)) return std::nullopt;
+            stripCR(line);
+            return vm.makeString(std::move(line));
+        }
+    };
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle) override {
+        if (dir != Dir::In) return nullptr;   // a write stream isn't iterable -> eager path throws
+        return std::make_unique<StdinLineIter>();
+    }
+    // Eager iterate() stays for direct consumers (list(io.stdin), sorted(io.stdin)); the for-loop
+    // prefers lazyIterate above. A write stream is not iterable.
     std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
         if (dir != Dir::In) return std::nullopt;
         RootScope rs(vm);

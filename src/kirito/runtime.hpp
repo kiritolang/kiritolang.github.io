@@ -55,6 +55,11 @@ namespace kirito {
 
 // kMaxRepeat (the ~256 MB repetition/padding cap) is defined in common.hpp so bytes.hpp shares it.
 
+// Forward decl (defined near installBuiltins): fully iterate `src`, rooting every element in `rs` so
+// an allocating callback/rehash mid-loop can't sweep an unconsumed element. Used by both the built-in
+// type methods (below) and the free builtins, so the rooting is single-sourced.
+inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs, const char* err);
+
 // --- numeric helpers ------------------------------------------------------------------------
 
 inline bool isNumeric(const Object& o) {
@@ -505,6 +510,7 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
             Handle fn = a[0];
             std::vector<Handle> src = self_list(vm, self).elems;   // snapshot: fn must not see the result
             RootScope rs(vm);
+            rs.addAll(src);   // fn may clear THIS list + allocate; keep the snapshot elements alive
             auto out = std::make_unique<ListVal>();
             out->elems.reserve(src.size());
             for (Handle h : src) {
@@ -541,6 +547,7 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                 // key function O(n log n) times and keeps the comparator allocation-free. The keys
                 // are GC-rooted for the duration of the sort.
                 RootScope rs(vm);
+                rs.addAll(src);   // key/_lt_ may clear THIS list + allocate; keep the snapshot alive
                 std::vector<std::pair<Handle, Handle>> tagged;  // (key, element)
                 tagged.reserve(src.size());
                 for (Handle el : src) {
@@ -565,6 +572,9 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                 return vm.none();
             }, std::vector<Handle>{self});
     if (name == "insert")
+        // minArgs=2: a keyword call skipping a required slot (insert(item=99)) throws
+        // "missing required argument 'index'" rather than None-filling it into a misleading
+        // "insert expects an Integer" downstream (A05-2).
         return makeMethod(vm,
             "insert", {"index", "item"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.size() < 2) throw KiritoError("insert expects (index, item)");
@@ -575,7 +585,7 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                 if (i > static_cast<int64_t>(e.size())) i = static_cast<int64_t>(e.size());
                 e.insert(e.begin() + i, a[1]);
                 return vm.none();
-            }, std::vector<Handle>{self});
+            }, std::vector<Handle>{self}, 2);
     if (name == "remove")
         return makeMethod(vm,
             "remove", {"value"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -656,6 +666,11 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
     auto bind = [&](const char* nm, std::vector<std::string> params, NativeFn fn) {
         return makeMethod(vm, nm, std::move(params), std::move(fn), std::vector<Handle>{self});
     };
+    // Like bind but with `req` leading REQUIRED params: a keyword call that skips one (e.g.
+    // d.setdefault(default=7)) errors instead of silently passing None as the key (A05-2).
+    auto bindReq = [&](const char* nm, std::size_t req, std::vector<std::string> params, NativeFn fn) {
+        return makeMethod(vm, nm, std::move(params), std::move(fn), std::vector<Handle>{self}, req);
+    };
     auto dict = [](KiritoVM& vm, Handle self) -> DictVal& {
         return static_cast<DictVal&>(vm.arena().deref(self));
     };
@@ -666,6 +681,7 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
             Handle fn = a[0];
             auto pairs = dict(vm, self).pairs();                  // snapshot
             RootScope rs(vm);
+            for (auto& [k, v] : pairs) { rs.add(k); rs.add(v); }  // fn may clear THIS dict + allocate
             auto out = std::make_unique<DictVal>();
             for (auto& [k, v] : pairs) {
                 std::array<Handle, 1> args{v};
@@ -701,14 +717,14 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
             return vm.alloc(std::move(list));
         });
     if (name == "get")
-        return bind("get", {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        return bindReq("get", 1, {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.empty()) throw KiritoError("get expects a key");
             const Handle* v = dict(vm, self).find(vm.arena(), a[0]);
             if (v) return *v;
             return a.size() > 1 ? a[1] : vm.none();
         });
     if (name == "pop")
-        return bind("pop", {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        return bindReq("pop", 1, {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.empty()) throw KiritoError("pop expects a key");
             auto& d = dict(vm, self);
             const Handle* v = d.find(vm.arena(), a[0]);
@@ -764,7 +780,7 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
             return vm.none();
         });
     if (name == "setdefault")
-        return bind("setdefault", {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        return bindReq("setdefault", 1, {"key", "default"}, [self, dict](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             // setdefault(key[, default]): return existing value, else insert default (or None).
             if (a.empty()) throw KiritoError("setdefault expected at least 1 argument");
             auto& d = dict(vm, self);
@@ -800,6 +816,7 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             Handle fn = a[0];
             std::vector<Handle> src = static_cast<SetVal&>(vm.arena().deref(self)).items();  // snapshot
             RootScope rs(vm);
+            rs.addAll(src);   // fn may clear THIS set + allocate; keep the snapshot elements alive
             auto out = std::make_unique<SetVal>();
             for (Handle h : src) {
                 std::array<Handle, 1> args{h};
@@ -1090,7 +1107,10 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
                 throw KiritoError(nm + "() expected at least " + std::to_string(minArgs) + " argument(s)");
             return fn(v, a);
         };
-        return makeMethod(vm, nm, std::move(params), std::move(guarded), std::vector<Handle>{self});
+        // Pass minArgs to makeMethod too: the positional guard above catches an under-arity POSITIONAL
+        // call, but a keyword call that skips a required leading arg (e.g. `m.replace(new="x")`) is
+        // caught inside makeMethod before it None-fills the hole. (A05-2.)
+        return makeMethod(vm, nm, std::move(params), std::move(guarded), std::vector<Handle>{self}, minArgs);
     };
     auto recv = [](KiritoVM& vm, Handle self) -> const std::string& {
         return static_cast<StrVal&>(vm.arena().deref(self)).value();
@@ -1213,6 +1233,7 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
                     if (count >= 0 && done >= count) { break; }
                     out += to;
                     ++done;
+                    if (out.size() > kMaxRepeat) throw KiritoError("replace result too large");
                 }
                 out.append(s, prev, std::string::npos);
                 s = std::move(out);
@@ -1223,6 +1244,7 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
                 while ((pos = s.find(from, prev)) != std::string::npos) {
                     out.append(s, prev, pos - prev);
                     out += to;
+                    if (out.size() > kMaxRepeat) throw KiritoError("replace result too large");
                     prev = pos + from.size();
                     if (count >= 0 && ++done >= count) break;
                 }
@@ -1305,14 +1327,15 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
     if (name == "join")
         return bindReq("join", 1, {"iterable"}, [self, recv](KiritoVM& vm, std::span<const Handle> a) {
             const std::string& sep = recv(vm, self);
-            auto items = vm.arena().deref(a[0]).iterate(vm);
-            if (!items) throw KiritoError("join expects an iterable");   // a non-iterable user instance returns nullopt, not a throw
+            RootScope rs(vm);
+            auto items = rootedIterate(vm, a[0], rs, "join expects an iterable");  // root: a user _str_ may allocate
             std::string out;
             bool first = true;
-            for (Handle h : items.value()) {
+            for (Handle h : items) {
                 if (!first) out += sep;
                 first = false;
                 out += asStr(vm, h, "join");
+                if (out.size() > kMaxRepeat) throw KiritoError("join result too large");
             }
             return vm.makeString(std::move(out));
         });
@@ -1746,10 +1769,15 @@ inline std::size_t InstanceValue::hash() const {
 inline bool InstanceValue::equals(const ObjectArena& arena, const Object& other) const {
     if (this == &other) return true;
     if (!hasEqDunder) return false;
-    if (other.kind() != ValueKind::Instance) return false;
+    // Every NativeClass (DateTime/Bytes/Matrix/…) ALSO reports ValueKind::Instance, so a kind check
+    // is not enough — a raw downcast of a native object to InstanceValue would read a garbage Handle
+    // (UB, reachable when a user instance and a native value share a Dict/Set bucket). dynamic_cast
+    // returns null for anything that isn't actually an InstanceValue.
+    const auto* rhsp = dynamic_cast<const InstanceValue*>(&other);
+    if (!rhsp) return false;
     // We have `other` as a reference; the InstanceValue keeps its own `selfHandle` so we can pass
     // both sides to the Kirito `_eq_` method by re-using their cached handles.
-    const auto& rhs = static_cast<const InstanceValue&>(other);
+    const auto& rhs = *rhsp;
     KiritoVM* vm = KiritoVM::activeVM();
     if (!vm) return false;
     const Handle* m = findMethod(arena, "_eq_");
@@ -2047,14 +2075,34 @@ inline bool isInstanceOf(KiritoVM& vm, Handle value, Handle typeH) {
     return !name.empty() && typeMatches(vm, value, name);
 }
 
-// A private member (_name, no trailing underscore) may only be touched from within a method of the
-// receiver's class chain (i.e. while running such a method). currentClass/hasCurrentClass describe
-// the method currently executing.
+// True if class `subH` is `superH` or descends from it (walking the base chain). Both handles must
+// name user classes.
+inline bool classIsSubclassOf(KiritoVM& vm, Handle subH, Handle superH) {
+    Handle cur = subH;
+    while (true) {
+        if (cur == superH) return true;
+        const auto& c = static_cast<const ClassValue&>(vm.arena().deref(cur));
+        if (!c.hasBase) return false;
+        cur = c.base;
+    }
+}
+
+// A private member (_name, no trailing underscore) may only be touched from within a method whose
+// class is in the receiver's class chain — privacy is per class *chain*, not per defining class, so
+// a subclass method may read a base instance's private and vice versa (CLAUDE.md). currentClass/
+// hasCurrentClass describe the method currently executing; access is allowed when the running
+// method's class and the receiver's class are related by inheritance in EITHER direction.
 inline void checkPrivateAccess(KiritoVM& vm, Handle obj, const std::string& name, Handle currentClass,
                                bool hasCurrentClass, SourceSpan span) {
     if (!isPrivateName(name)) return;
-    if (!dynamic_cast<const InstanceValue*>(&vm.arena().deref(obj))) return;  // user classes only
-    if (hasCurrentClass && isInstanceOf(vm, obj, currentClass)) return;
+    const auto* inst = dynamic_cast<const InstanceValue*>(&vm.arena().deref(obj));
+    if (!inst) return;  // user classes only
+    if (hasCurrentClass && vm.arena().deref(currentClass).kind() == ValueKind::Class) {
+        Handle objClass = inst->cls;
+        if (classIsSubclassOf(vm, objClass, currentClass) ||
+            classIsSubclassOf(vm, currentClass, objClass))
+            return;
+    }
     throw KiritoError("cannot access private member '" + name + "' of '" +
                       vm.arena().deref(obj).typeName() + "' outside its class", span);
 }
@@ -2096,6 +2144,21 @@ inline Handle applyBinaryOp(KiritoVM& vm, BinOp op, Handle lhs, Handle rhs) {
                 }
             }
         }
+        // Reflected: the LEFT operand is not an instance but the RIGHT is (`5 != c`). Prefer the
+        // RIGHT instance's own `_ne_`/`_eq_` so it is symmetric with `c != 5`, instead of silently
+        // falling through to structural equality (which ignores a standalone `_ne_`). ==/!= are
+        // symmetric, so the operand order can be swapped.
+        if (l.kind() != ValueKind::Instance) {
+            Object& r = vm.arena().deref(rhs);
+            if (auto* rinst = dynamic_cast<InstanceValue*>(&r)) {
+                if (rinst->findMethod(vm.arena(), binOpMethod(op)))
+                    return r.binary(vm, op, rhs, lhs);
+                if (op == BinOp::Ne && rinst->findMethod(vm.arena(), "_eq_")) {
+                    Handle eqr = r.binary(vm, BinOp::Eq, rhs, lhs);
+                    return vm.makeBool(!vm.arena().deref(eqr).truthy());
+                }
+            }
+        }
         bool eq = kiEquals(vm, lhs, rhs);
         return vm.makeBool(op == BinOp::Eq ? eq : !eq);
     }
@@ -2103,6 +2166,11 @@ inline Handle applyBinaryOp(KiritoVM& vm, BinOp op, Handle lhs, Handle rhs) {
         bool c = vm.arena().deref(rhs).contains(vm, lhs);
         return vm.makeBool(op == BinOp::In ? c : !c);
     }
+    // NOTE: arithmetic/ordering operators deliberately do NOT reflect onto a right-hand object
+    // (`3 * v` throws even if `v` defines `_mul_` — the object must be on the left). This is a
+    // documented invariant (tools/tests/scripts/r11_docinvariants.ki) — Kirito has no `_radd_`-style
+    // reflected dunder, so a correct reflection is impossible for the non-commutative ops. Only
+    // ==/!= are symmetric (handled above).
     return vm.arena().deref(lhs).binary(vm, op, lhs, rhs);
 }
 
@@ -2677,6 +2745,20 @@ inline std::string applyFormatSpec(KiritoVM& vm, Handle value, const std::string
 
 // --- built-in globals ------------------------------------------------------------------------
 
+// Fully iterate `src` and return its element handles, EACH registered as a GC root in `rs`. Every
+// iterable-consuming builtin (map/filter/sorted/all/any/zip/enumerate, the Set/Dict constructors)
+// runs a user callback or `_bool_`/`_lt_`/`_hash_` — or rehashes a container — mid-loop; a collection
+// triggered by that allocation would sweep the elements not yet consumed (they live only in the
+// returned vector), leaving dangling handles. Rooting the whole snapshot up front is the single guard
+// against that, so every consumer routes through here instead of re-deriving the pattern. `err` is the
+// "not iterable" diagnostic thrown when `src` has no iteration protocol.
+inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs, const char* err) {
+    auto items = vm.arena().deref(src).iterate(vm);
+    if (!items) throw KiritoError(err);
+    for (Handle h : items.value()) rs.add(h);
+    return std::move(items.value());
+}
+
 inline void KiritoVM::installBuiltins() {
     auto& g = static_cast<EnvValue&>(arena_.deref(global_));
     auto def = [&](const char* name, NativeFn fn) {
@@ -2837,12 +2919,8 @@ inline void KiritoVM::installBuiltins() {
     defSig("List", {{"iterable", "", none()}}, "List", [](KiritoVM& vm, std::span<const Handle> args) -> Handle {
         RootScope rs(vm);
         auto list = std::make_unique<ListVal>();
-        if (!args.empty() && vm.arena().deref(args[0]).kind() != ValueKind::None) {
-            auto items = vm.arena().deref(args[0]).iterate(vm);
-            if (!items) throw KiritoError("List() argument must be iterable");
-            for (Handle h : items.value()) rs.add(h);
-            list->elems = std::move(items.value());
-        }
+        if (!args.empty() && vm.arena().deref(args[0]).kind() != ValueKind::None)
+            list->elems = rootedIterate(vm, args[0], rs, "List() argument must be iterable");
         return vm.alloc(std::move(list));
     });
     defSig("Set", {{"iterable", "", none()}}, "Set", [](KiritoVM& vm, std::span<const Handle> args) -> Handle {
@@ -2850,9 +2928,8 @@ inline void KiritoVM::installBuiltins() {
         Handle sh = rs.add(vm.alloc(std::make_unique<SetVal>()));
         auto& s = static_cast<SetVal&>(vm.arena().deref(sh));
         if (!args.empty() && vm.arena().deref(args[0]).kind() != ValueKind::None) {
-            auto items = vm.arena().deref(args[0]).iterate(vm);
-            if (!items) throw KiritoError("Set() argument must be iterable");
-            for (Handle h : items.value()) s.add(vm.arena(), h);
+            auto items = rootedIterate(vm, args[0], rs, "Set() argument must be iterable");
+            for (Handle h : items) s.add(vm.arena(), h);
         }
         return sh;
     });
@@ -2862,13 +2939,11 @@ inline void KiritoVM::installBuiltins() {
         auto& d = static_cast<DictVal&>(vm.arena().deref(dh));
         if (!args.empty() && vm.arena().deref(args[0]).kind() != ValueKind::None) {
             // Dict(pairs): each item is an iterable [key, value].
-            auto items = vm.arena().deref(args[0]).iterate(vm);
-            if (!items) throw KiritoError("Dict() argument must be iterable of pairs");
-            for (Handle h : items.value()) {
-                auto pair = vm.arena().deref(h).iterate(vm);
-                if (!pair || pair.value().size() != 2)
-                    throw KiritoError("Dict() items must be [key, value] pairs");
-                d.set(vm.arena(), pair.value()[0], pair.value()[1]);
+            auto items = rootedIterate(vm, args[0], rs, "Dict() argument must be iterable of pairs");
+            for (Handle h : items) {
+                auto pair = rootedIterate(vm, h, rs, "Dict() items must be [key, value] pairs");
+                if (pair.size() != 2) throw KiritoError("Dict() items must be [key, value] pairs");
+                d.set(vm.arena(), pair[0], pair[1]);   // key/value rooted by rootedIterate before set()
             }
         }
         return dh;
@@ -3057,11 +3132,9 @@ inline void KiritoVM::installBuiltins() {
         bool hasKey = false, reverse = false;
         if (a.size() > 1 && vm.arena().deref(a[1]).kind() != ValueKind::None) { keyFn = a[1]; hasKey = true; }
         if (a.size() > 2) reverse = vm.arena().deref(a[2]).truthy();
-        auto items = vm.arena().deref(a[0]).iterate(vm);
-        if (!items) throw KiritoError("sorted() argument is not iterable");
+        auto items = rootedIterate(vm, a[0], rs, "sorted() argument is not iterable");
         std::vector<std::pair<Handle, Handle>> tagged;
-        for (Handle h : items.value()) {
-            rs.add(h);
+        for (Handle h : items) {
             Handle k = h;
             if (hasKey) { std::array<Handle, 1> args{h}; k = rs.add(vm.arena().deref(keyFn).call(vm, args)); }
             tagged.emplace_back(k, h);
@@ -3077,8 +3150,6 @@ inline void KiritoVM::installBuiltins() {
     defSig("enumerate", {{"iterable"}, {"start", "", makeInt(0)}}, "List", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         RootScope rs(vm);
         auto out = std::make_unique<ListVal>();
-        auto items = vm.arena().deref(a[0]).iterate(vm);
-        if (!items) throw KiritoError("enumerate() argument is not iterable");
         int64_t i = 0;
         if (a.size() > 1) {
             const Object& so = vm.arena().deref(a[1]);
@@ -3086,8 +3157,8 @@ inline void KiritoVM::installBuiltins() {
                 throw KiritoError("enumerate() start must be an Integer, got " + so.typeName());
             i = static_cast<const IntVal&>(so).value();
         }
-        for (Handle h : items.value()) {
-            rs.add(h);
+        auto items = rootedIterate(vm, a[0], rs, "enumerate() argument is not iterable");
+        for (Handle h : items) {
             auto pair = std::make_unique<ListVal>();
             pair->elems.push_back(vm.makeInt(i));
             i = wadd(i, 1);  // two's-complement wrap, no signed-overflow UB at INT64_MAX start
@@ -3101,9 +3172,9 @@ inline void KiritoVM::installBuiltins() {
         std::vector<std::vector<Handle>> cols;
         std::size_t minLen = SIZE_MAX;
         for (Handle h : a) {
-            auto col = vm.arena().deref(h).iterate(vm);
-            if (!col) throw KiritoError("zip() argument is not iterable");
-            cols.push_back(col.value()); minLen = std::min(minLen, cols.back().size());
+            auto col = rootedIterate(vm, h, rs, "zip() argument is not iterable");
+            minLen = std::min(minLen, col.size());
+            cols.push_back(std::move(col));
         }
         if (cols.empty()) minLen = 0;
         auto out = std::make_unique<ListVal>();
@@ -3118,10 +3189,8 @@ inline void KiritoVM::installBuiltins() {
         RootScope rs(vm);
         Handle f = a[0];
         auto out = std::make_unique<ListVal>();
-        auto items = vm.arena().deref(a[1]).iterate(vm);
-        if (!items) throw KiritoError("map() argument is not iterable");
-        for (Handle x : items.value()) {
-            rs.add(x);
+        auto items = rootedIterate(vm, a[1], rs, "map() argument is not iterable");
+        for (Handle x : items) {
             std::array<Handle, 1> args{x};
             out->elems.push_back(rs.add(vm.arena().deref(f).call(vm, args)));
         }
@@ -3131,10 +3200,8 @@ inline void KiritoVM::installBuiltins() {
         RootScope rs(vm);
         Handle f = a[0];
         auto out = std::make_unique<ListVal>();
-        auto items = vm.arena().deref(a[1]).iterate(vm);
-        if (!items) throw KiritoError("filter() argument is not iterable");
-        for (Handle x : items.value()) {
-            rs.add(x);
+        auto items = rootedIterate(vm, a[1], rs, "filter() argument is not iterable");
+        for (Handle x : items) {
             std::array<Handle, 1> args{x};
             if (vm.arena().deref(vm.arena().deref(f).call(vm, args)).truthy()) out->elems.push_back(x);
         }
@@ -3167,28 +3234,26 @@ inline void KiritoVM::installBuiltins() {
 
     defSig("all", {{"iterable"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         if (a.size() != 1) throw KiritoError("all expected 1 argument");
-        auto items = vm.arena().deref(a[0]).iterate(vm);
-        if (!items) throw KiritoError("all expects an iterable");
-        for (Handle h : items.value())
-            if (!vm.arena().deref(h).truthy()) return vm.makeBool(false);
+        RootScope rs(vm);
+        auto items = rootedIterate(vm, a[0], rs, "all expects an iterable");
+        for (Handle h : items)
+            if (!vm.arena().deref(h).truthy()) return vm.makeBool(false);   // a user _bool_ may allocate
         return vm.makeBool(true);
     });
     defSig("any", {{"iterable"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         if (a.size() != 1) throw KiritoError("any expected 1 argument");
-        auto items = vm.arena().deref(a[0]).iterate(vm);
-        if (!items) throw KiritoError("any expects an iterable");
-        for (Handle h : items.value())
-            if (vm.arena().deref(h).truthy()) return vm.makeBool(true);
+        RootScope rs(vm);
+        auto items = rootedIterate(vm, a[0], rs, "any expects an iterable");
+        for (Handle h : items)
+            if (vm.arena().deref(h).truthy()) return vm.makeBool(true);    // a user _bool_ may allocate
         return vm.makeBool(false);
     });
     defSig("reversed", {{"iterable"}}, "List", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         if (a.size() != 1) throw KiritoError("reversed expected 1 argument");
-        auto items = vm.arena().deref(a[0]).iterate(vm);
-        if (!items) throw KiritoError("reversed expects an iterable");
         RootScope rs(vm);
-        for (Handle h : items.value()) rs.add(h);
+        auto items = rootedIterate(vm, a[0], rs, "reversed expects an iterable");
         auto out = std::make_unique<ListVal>();
-        out->elems.assign(items.value().rbegin(), items.value().rend());
+        out->elems.assign(items.rbegin(), items.rend());
         return vm.alloc(std::move(out));
     });
     defSig("divmod", {{"a"}, {"b"}}, "List", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -3319,7 +3384,11 @@ inline void KiritoVM::installBuiltins() {
             // residue (C++ truncated `%` vs Kirito's floor `%`); reject it (docs scope this to
             // non-negative Integers) instead of returning a misleading number.
             if (mod < 0) throw KiritoError("pow modulus must be positive");
-            __extension__ __int128 result = 1 % mod, b = ((base % mod) + mod) % mod;
+            // Reduce in __int128: `(base % mod) + mod` in int64 overflows for a modulus above ~2^62
+            // (base%mod can be close to mod), silently corrupting the result. Widen first so the
+            // normalization and every multiply stay exact.
+            __extension__ __int128 m = mod;
+            __extension__ __int128 result = 1 % m, b = ((static_cast<__int128>(base) % m) + m) % m;
             while (exp > 0) {
                 if (exp & 1) result = (result * b) % mod;
                 b = (b * b) % mod;

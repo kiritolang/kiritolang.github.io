@@ -67,9 +67,13 @@ inline std::string decompress(const std::string& data) {
         if (flg & 0x02) pos += 2;                // FHCRC
         if (pos + 8 > data.size()) throw deflate::DeflateError("gzip: truncated header/stream");
         std::size_t consumed = 0;
+        // Cap the AGGREGATE output across ALL members with a shrinking budget, not each member against
+        // the full ceiling independently — otherwise a small `.gz` of many members is an unbounded
+        // decompression bomb (A16-1: 400 MiB out of a 4.5 MiB input past the 256 MiB per-member cap).
+        std::size_t budget = result.size() >= deflate::kMaxInflateOut
+                                 ? 0 : deflate::kMaxInflateOut - result.size();
         // A string_view suffix — no copy — so many concatenated members inflate in O(total), not O(n^2).
-        std::string out = deflate::inflateImpl(std::string_view(data).substr(pos),
-                                               deflate::kMaxInflateOut, &consumed);
+        std::string out = deflate::inflateImpl(std::string_view(data).substr(pos), budget, &consumed);
         std::size_t t = pos + consumed;          // the 8-byte CRC-32 + ISIZE trailer follows the body
         if (t + 8 > data.size()) throw deflate::DeflateError("gzip: truncated stream");
         uint32_t want = b(t) | (b(t + 1) << 8) | (b(t + 2) << 16) | (static_cast<uint32_t>(b(t + 3)) << 24);

@@ -97,6 +97,11 @@ public:
 template <class Bucket, class KeyOf>
 inline std::ptrdiff_t probeBucket(const ObjectArena& arena, const Bucket& bucket, const Object& key,
                                   KeyOf keyOf) {
+    // NOTE: Kirito deliberately does NOT do an identity (`is`) short-circuit before `==` here. A NaN
+    // key is therefore a "write-only" key — insertable but never findable, since NaN is never `==` to
+    // itself — a documented consequence of exact NaN-never-equal equality (tools/tests/scripts/
+    // r7_types.ki). (The A06-7 audit note flagged this as divergent from Python's is-before-==; that
+    // is a maintainer design decision, not a unilateral hardening change.)
     for (std::size_t i = 0; i < bucket.size(); ++i)
         if (arena.deref(keyOf(bucket[i])).equals(arena, key)) return static_cast<std::ptrdiff_t>(i);
     return -1;

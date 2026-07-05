@@ -42,6 +42,7 @@ kirito_test(test_audit_findings unit/test_audit_findings.cpp)
 kirito_test(test_audit_round2 unit/test_audit_round2.cpp)
 kirito_test(test_audit_regressions unit/test_audit_regressions.cpp)
 kirito_test(test_domain_guards unit/test_domain_guards.cpp)
+kirito_test(test_audit_v112 unit/test_audit_v112.cpp)
 kirito_test(test_vm_serialization unit/test_vm_serialization.cpp)
 kirito_test(test_audit_hardening unit/test_audit_hardening.cpp)
 # CLI argument-handling test: drives the built ki as a subprocess (popen). The actual ki binary
@@ -242,7 +243,7 @@ endforeach()
 
 # The parallel golden scripts can block on a real bug; cap them so a regression fails rather than
 # stalling CI (the watchdog backstop, mirroring the parallel unit tests' TIMEOUT).
-foreach(nm parallel_basic parallel_sync probe_parallel probe_parallel_adversarial)
+foreach(nm parallel_basic parallel_sync probe_parallel probe_parallel_adversarial parallel_forkbomb_guard)
     if(TEST script_${nm})
         set_tests_properties(script_${nm} PROPERTIES TIMEOUT 60)
     endif()

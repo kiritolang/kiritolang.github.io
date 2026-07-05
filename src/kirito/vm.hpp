@@ -150,18 +150,40 @@ public:
         }
         arena_.sweep();
         allocsSinceGc_ = 0;
+        // Adaptive retarget: next collection after ~4× the live set (floored), so pauses stay small
+        // and evenly spaced instead of arriving in fixed 100k-alloc bursts. Pinned off once a caller
+        // sets an explicit threshold.
+        if (gcAdaptive_)
+            gcThreshold_ = std::max(kGcThresholdFloor, arena_.liveCount() * 4);
     }
 
-    void setGcThreshold(std::size_t n) { gcThreshold_ = n; }
+    // Pin an explicit collection threshold; disables the adaptive retarget so the value sticks
+    // exactly (tests use setGcThreshold(1) to collect on every allocation).
+    void setGcThreshold(std::size_t n) { gcThreshold_ = n; gcAdaptive_ = false; }
     void setGcEnabled(bool on) { gcEnabled_ = on; }
     bool gcEnabled() const { return gcEnabled_; }   // current setting (for a scoped GcPauseScope)
     std::size_t liveCount() const { return arena_.liveCount(); }
 
     // Call-depth guard: the VM still recurses on the native C++ stack (one nested call/compile
     // descends into BytecodeVM::run again), so unbounded Kirito recursion would overflow it and crash
-    // the host. A RAII CallGuard caps the depth and throws a catchable error instead. The limit is
-    // well under what an 8 MB stack tolerates.
+    // the host. A RAII CallGuard throws a catchable error instead. TWO limits, whichever trips first:
+    //   1. a fixed call COUNT (maxCallDepth_) — the cheap common-case bound for shallow Kirito frames;
+    //   2. actual native STACK USAGE (maxStackBytes_) — because a call routed through a native
+    //      higher-order builtin (`sorted(key=g)`, `xs.sort(key=g)`, `apply(g)`, `min/max(key=g)`)
+    //      carries a much deeper C++ frame, so a *count* calibrated for a bare Kirito call overflows
+    //      the stack long before it fires (A04-1: a hard SIGSEGV). We estimate usage from the address
+    //      of a stack local relative to a base captured at the outermost call of this run.
     void enterCall() {
+        char probe;
+        auto cur = reinterpret_cast<std::uintptr_t>(&probe);
+        if (callDepth_ == 0) {
+            stackBase_ = cur;                          // top of this run's native stack
+        } else {
+            // uintptr_t arithmetic (not pointer subtraction of unrelated objects) so it stays defined.
+            std::uintptr_t used = stackBase_ > cur ? stackBase_ - cur : cur - stackBase_;
+            if (used > maxStackBytes_)
+                throw KiritoError("maximum recursion depth exceeded");
+        }
         if (++callDepth_ > maxCallDepth_) {
             --callDepth_;
             throw KiritoError("maximum recursion depth exceeded");
@@ -169,6 +191,7 @@ public:
     }
     void leaveCall() { --callDepth_; }
     void setMaxCallDepth(std::size_t n) { maxCallDepth_ = n; }
+    void setMaxStackBytes(std::size_t n) { maxStackBytes_ = n; }
 
     // Expose a C++ callable (or any value) as a Kirito global — the simplest extension point.
     void registerGlobal(const std::string& name, Handle value) {
@@ -238,6 +261,12 @@ public:
     // is absent); the `ki` interpreter builds every VM through a KiritoDispatcher.
     void setDispatcher(KiritoDispatcher* d) { dispatcher_ = d; }
     KiritoDispatcher* dispatcher() const { return dispatcher_; }
+    // True while a worker VM is re-evaluating a spawned function's source-file top level to rebuild its
+    // closure (the "bootstrap" phase). `parallel.spawn` refuses to run in this window: a top-level
+    // spawn re-executed by every worker load is an unbounded fork bomb (guard such calls with
+    // `if argmain:`). The main entry run does NOT set this — its first spawn is the legitimate kickoff.
+    void setBootstrapping(bool b) { bootstrapping_ = b; }
+    bool bootstrapping() const { return bootstrapping_; }
     // The retained AST of a chunk by its file/chunk name (set when evaluated). Used by the dispatcher
     // to reconstruct a spawned function by its source span in a worker VM. Null if not loaded here.
     const ast::Program* programForFile(const std::string& f) const {
@@ -288,6 +317,7 @@ private:
     // so the dispatcher can find a spawned function's definition by source span in a worker VM).
     fum::unordered_map<std::string, const ast::Program*> programByFile_;
     KiritoDispatcher* dispatcher_ = nullptr;
+    bool bootstrapping_ = false;  // worker re-evaluating a spawned fn's module top level (A19-1 guard)
     // Circular-import guard: names/paths currently mid-load, and the active chain (for diagnostics).
     // A module is published to moduleCache_ only after its body finishes, so a re-entrant import of
     // an in-progress module is a cycle — detected here instead of recursing until the stack blows.
@@ -317,6 +347,14 @@ private:
     fum::unordered_map<const void*, std::unique_ptr<Proto>> protoCache_;  // per-body compiled cache
     std::size_t allocsSinceGc_ = 0;
     std::size_t gcThreshold_ = 100000;
+    // When adaptive (the default — nobody pinned a threshold via setGcThreshold), each collection
+    // retargets the next trigger to a multiple of the surviving live set. This keeps total GC work
+    // amortized O(1) while spacing collections EVENLY and keeping each pause small — the fixed
+    // 100k-alloc trigger otherwise delivers GC in periodic ~1 ms lumps, the dominant source of the
+    // interpreter's run-to-run timing variance. An explicit setGcThreshold() pins the threshold and
+    // turns this off (tests rely on e.g. setGcThreshold(1) collecting on every allocation).
+    bool gcAdaptive_ = true;
+    static constexpr std::size_t kGcThresholdFloor = 20000;
     bool gcEnabled_ = true;
     std::size_t callDepth_ = 0;
     // Conservative default for an 8 MB stack with deep per-call expression nesting; embedders with
@@ -325,9 +363,15 @@ private:
     // guard would fire — drop the default under ASan so the guard still throws cleanly.
 #if defined(KIRITO_SANITIZER_BUILD)
     std::size_t maxCallDepth_ = 500;
+    // Sanitizer frames are far larger (redzones + shadow), so bound native stack usage tightly too.
+    std::size_t maxStackBytes_ = 2u * 1024 * 1024;
 #else
     std::size_t maxCallDepth_ = 3000;
+    // ~6 MB of an 8 MB stack: leaves headroom for the frames below the captured base + the throw path,
+    // and trips a deep-native-frame recursion (A04-1) before it can overflow.
+    std::size_t maxStackBytes_ = 6u * 1024 * 1024;
 #endif
+    std::uintptr_t stackBase_ = 0;   // native-stack top captured at the outermost (depth-0) call
 };
 
 // RAII call-depth guard: increments on entry, decrements on scope exit (even when unwinding).
@@ -352,6 +396,10 @@ struct RootScope {
         vm.pushTemp(h);
         return h;
     }
+    // Root every handle in a snapshot vector at once — for the apply/sort methods that copy a
+    // container's elements into a local vector and then run user code (fn / key / _lt_) that may
+    // clear the source + allocate, which would otherwise sweep the not-yet-consumed snapshot entries.
+    void addAll(const std::vector<Handle>& hs) { for (Handle h : hs) vm.pushTemp(h); }
 };
 
 // RAII: pause automatic garbage collection for a critical section and RESTORE the previous setting

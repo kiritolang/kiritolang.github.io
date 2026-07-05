@@ -79,7 +79,12 @@ var readFile = Function(path):
 #     tests can't be satisfied without reimplementing xoshiro AND MT19937_64 in pure Kirito. The
 #     API-parity fix (accepting `generator=` and exposing `.generator`) lives in stdmods/random.ki;
 #     the deep-statistical tests remain out of scope, like the audit_/deep_/r10_/r11_ families.
-var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz", "libraries", "spec_net", "spec_pass_todo", "spec_tee", "spec_io_stream", "parallel_basic", "parallel_sync", "probe_parallel", "probe_parallel_adversarial", "probe_surface", "probe_parallel_fuzz", "probe_binary_adversarial", "probe_inspect", "probe_serde_matrix", "probe_trio", "spec_edges", "spec_inspect", "spec_traceback", "path_module", "r8_language", "r7_parallel", "r8_parallel", "r7_net_regex", "r8_net_regex", "r9_net_parallel", "class_hash", "random_generators", "random_prng_quality"])
+var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz", "libraries", "spec_net", "spec_pass_todo", "spec_tee", "spec_io_stream", "parallel_basic", "parallel_sync", "probe_parallel", "probe_parallel_adversarial", "probe_surface", "probe_parallel_fuzz", "probe_binary_adversarial", "probe_inspect", "probe_serde_matrix", "probe_trio", "spec_edges", "spec_inspect", "spec_traceback", "path_module", "r8_language", "r7_parallel", "r8_parallel", "r7_net_regex", "r8_net_regex", "r9_net_parallel", "parallel_forkbomb_guard", "probe_http_client_abuse", "class_hash", "random_generators", "random_prng_quality"])
+# Belt-and-suspenders: any script importing the `parallel` module (true multiprocessing — no sequential
+# equivalent in a tree-walker) is out of scope for the pure-Kirito self-host even if not named above, so
+# a newly-added such script does not silently fail the run. Detected per-script by _usesNativeOnly.
+var _usesNativeOnly = Function(base):
+    return "import(\"parallel\")" in readFile(SCRIPTS + "/" + base + ".ki")
 # The `audit_*`, `deep_*`, and `r4_`/`r5_`/`r6_`/`r10_`/`r11_` families are the NATIVE-interpreter
 # audit suites — they deliberately probe native stdlib behaviour (Integer("0xFF"), Latin-1 case,
 # sys.arch, RFC-4180 csv, Matrix.shape, Tensor // and cumprod, native serde round-trips, agent-gap
@@ -107,7 +112,7 @@ var cases = []
 for entry in path.listdir(SCRIPTS):
     if entry.endswith(".ki"):
         var base = entry[0:len(entry) - 3]
-        if path.exists(SCRIPTS + "/" + base + ".expected") and not isNativeAudit(base):
+        if path.exists(SCRIPTS + "/" + base + ".expected") and not isNativeAudit(base) and not _usesNativeOnly(base):
             if runAll or not (base in EXCLUDE or base in SLOW):
                 cases.append(base)
 cases.sort()

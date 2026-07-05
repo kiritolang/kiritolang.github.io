@@ -63,7 +63,7 @@ int main() {
     CHECK(run(vm, "var d = {}\nd[0.0] = 1\nd[-0.0] = 2\nd[0.0]") == "2");
     CHECK(run(vm, "var math = import(\"math\")\nlen({math.inf, math.inf})") == "1");
     CHECK(run(vm, "var math = import(\"math\")\nlen({math.inf, -math.inf})") == "2");
-    // NaN keys are each distinct (exact identity, never equal)
+    // NaN keys are each distinct (exact identity, never equal — write-only keys, a documented invariant)
     CHECK(run(vm, "var math = import(\"math\")\nlen({math.nan, math.nan})") == "2");
 
     return RUN_TESTS();

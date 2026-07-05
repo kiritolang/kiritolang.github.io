@@ -323,6 +323,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `repeated String/List/Bytes too large` | `*` repetition exceeding the cap | Use a smaller count |
+| `replace result too large` / `join result too large` | `String.replace`/`String.join` output exceeding the 256 MiB cap (memory-amplification guard) | Reduce the input/replacement size |
 | `range too large` | A `range` span exceeding the cap | Use a smaller range |
 | `range step cannot be zero` | `range(a, b, 0)` | Use a non-zero step |
 | `range() got multiple values for '<start/stop/step>'` / `range() got an unexpected keyword argument '<name>'` / `range() missing required argument 'stop'` / `range expects 1 to 3 positional arguments` / `range expects Integers` | A malformed `range()` call | Fix the `range` args |
@@ -456,6 +457,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `setenv failed for '<name>'` | OS rejected the env-var set | Use a valid name/value |
 | `createprocess: args must be a (non-empty) List of Strings (the program and its arguments)` | Bad/empty argv | Pass a non-empty List of Strings |
 | `<ProcError message>` (e.g. `process timed out`, `failed to start '<argv0>'…`) | `createprocess`/`shell` spawn failed or the `timeout` elapsed — **ProcError** re-wrapped as a `KiritoError` | Fix the command/cwd, or raise the timeout |
+| `process produced more than 256 MiB of output (capture limit exceeded)` | A child's stdout/stderr exceeded the `kMaxCapture` bound — a catchable error, not a crash (the child is still drained so it can't deadlock) | Have the child write to a file, or filter/limit its output |
 
 ### time — DateTime construction & methods
 
@@ -750,9 +752,11 @@ so a native that peeks-then-wraps fails loudly instead of reading garbage.
 The resource and depth guards in the sections above surface identically to a C++ embedder. Two facts
 worth knowing when you embed:
 
-- **One 256 MiB ceiling.** The repetition/padding cap (`kMaxRepeat`), the inflate/zip-bomb cap
-  (`kMaxInflateOut`), the network `recvall` cap (`kMaxRecvAll`), and the in-memory `BytesIO` buffer all
-  share the same 256 MiB bound — a single number to reason about for untrusted input.
+- **One 256 MiB ceiling.** The repetition/padding cap (`kMaxRepeat`, also bounding `String.replace`/
+  `join` output), the inflate/zip-bomb cap (`kMaxInflateOut`), the network `recvall` cap
+  (`kMaxRecvAll`), the in-memory `BytesIO` buffer, and the external-process output capture
+  (`kMaxCapture`, for `sys.shell`/`createprocess`) all share the same 256 MiB bound — a single number to
+  reason about for untrusted input.
 - **Depth guards shrink under sanitizers.** The parser, VM call-depth, equality, and serde depth limits
   are lower under an ASan/TSan build (`KIRITO_SANITIZER_BUILD`), because instrumented native frames are
   larger. So a deeply-nested input that runs under `release` may hit a guard under `asan` — expected,

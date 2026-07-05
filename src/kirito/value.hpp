@@ -212,13 +212,22 @@ public:
         return static_cast<std::size_t>(*n);
     }
 
-    // Iterate any iterable into Values (list elements, string code-points, dict keys, …).
+    // Iterate any iterable into Values (list elements, string code-points, dict keys, …). Each element
+    // is PINNED for the returned vector's lifetime: a String/Bytes iterate yields FRESH per-element
+    // boxes rooted only by iterate's internal scope (destroyed on return), so an unpinned view would
+    // dangle after the next allocation-triggered GC (A07-4). Pinning is harmless for already-rooted
+    // List/Set/Dict elements. No arena allocation happens in the loop, so nothing is swept before the
+    // pins are taken.
     std::vector<Value> items() const {
         auto it = ref().iterate(*vm_);
         if (!it) throw KiritoError("type '" + typeName() + "' is not iterable");
         std::vector<Value> out;
         out.reserve(it->size());
-        for (Handle e : *it) out.emplace_back(*vm_, e);
+        for (Handle e : *it) {
+            Value v;
+            v.adopt(*vm_, e);
+            out.push_back(std::move(v));
+        }
         return out;
     }
 

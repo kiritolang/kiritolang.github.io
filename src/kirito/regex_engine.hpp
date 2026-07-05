@@ -491,8 +491,7 @@ private:
         const Node& body = n.kids[0];
         for (int i = 0; i < n.rmin; ++i) compile(body);          // n mandatory copies
         if (n.rmax == -1) {
-            if (n.rmin == 0) compileStar(body, n.greedy);
-            else compileStar(body, n.greedy);                    // n copies above, then * for the rest
+            compileStar(body, n.greedy);                         // {n,}: n copies above, then * for the rest
         } else {
             for (int i = n.rmin; i < n.rmax; ++i) compileQuest(body, n.greedy);  // up to (m-n) optionals
         }

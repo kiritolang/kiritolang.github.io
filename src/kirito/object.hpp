@@ -54,6 +54,15 @@ struct EqualsGuard {
     EqualsGuard& operator=(const EqualsGuard&) = delete;
 };
 
+// Optional lazy (pull-based) iteration. Most iterables materialize their elements up front via
+// iterate(); a STREAM (a file/stdin/BytesIO) instead yields one element per next() so memory stays
+// bounded and stdin is processed as it arrives (not buffered to EOF). A type opts in by overriding
+// Object::lazyIterate to hand back one of these; the for-loop pulls next() until it returns nullopt.
+struct LazyIterator {
+    virtual ~LazyIterator() = default;
+    virtual std::optional<Handle> next(KiritoVM& vm) = 0;  // nullopt == exhausted
+};
+
 // The one uniform protocol every value implements — built-in scalars, collections,
 // C++-authored types, and (later) Kirito `class` instances. The evaluator only ever talks
 // to this interface, so it cannot tell built-ins from user-defined objects apart.
@@ -104,6 +113,9 @@ public:
     // start/stop/step are Integer handles or None for "omitted".
     virtual Handle slice(KiritoVM&, Handle start, Handle stop, Handle step);
     virtual std::optional<std::vector<Handle>> iterate(KiritoVM&);
+    // Opt-in lazy iteration (streams). `self` is the receiver's handle so the iterator can re-deref it
+    // each step. Default: none — the for-loop falls back to eager iterate().
+    virtual std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle /*self*/) { return nullptr; }
     virtual std::optional<int64_t> length(KiritoVM&);
     virtual bool contains(KiritoVM&, Handle value);  // the `in` operator
 };

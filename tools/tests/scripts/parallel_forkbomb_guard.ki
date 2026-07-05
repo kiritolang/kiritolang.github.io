@@ -1,0 +1,14 @@
+# A19-1 regression: an UNGUARDED top-level `spawn` must NOT fork-bomb. When a worker re-loads this
+# file to rebuild the spawned closure, it re-hits this very top-level spawn during bootstrap; the
+# guard makes parallel.spawn throw a clear diagnostic there instead of spawning workers ad infinitum.
+# We observe that failure at join and assert the diagnostic — the whole run terminates promptly.
+var io = import("io")
+var p = import("parallel")
+var f = Function(x): return x + 1
+var t = p.spawn(f, 41)          # main: the legitimate first spawn; worker: re-run -> guarded throw
+var msg = ""
+try:
+    discard t.join()
+catch as e:
+    msg = e
+io.print("guard fired:", "if argmain" in msg)
