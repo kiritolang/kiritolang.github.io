@@ -173,5 +173,13 @@ int main() {
                   "connect failed"));   // refused (or timed out) — either way a clean throw, no hang
     }
 
+    // === A24-1 (statistics.mean int64 overflow): Float(sum(data)) summed all-Integer data in int64
+    // FIRST, so a large-integer dataset wrapped (two's-complement) before the Float conversion. mean
+    // now accumulates in Float space. Two copies of 2^62 sum to exactly INT64_MAX+1 -> the old code
+    // wrapped to a negative mean; the fix yields ~4.6e18. ===
+    CHECK(ok("var st = import(\"statistics\")\n"
+             "String(st.mean([4611686018427387904, 4611686018427387904]) > 0.0)") == "True");
+    CHECK(ok("var st = import(\"statistics\")\nString(st.mean([2, 4, 6]))") == "4.0");  // no regression
+
     return RUN_TESTS();
 }

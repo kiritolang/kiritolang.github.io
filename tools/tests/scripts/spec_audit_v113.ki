@@ -87,4 +87,28 @@ x.zerograd()
 y.sum().backward()
 assert x.grad.tolist() == [2.0, 4.0], "A15-1: retained-intermediate double backward not doubled"
 
+# --- A25-1 / A25-2: a Float NaN group/merge key must not crash (write-only NaN Dict); None keys kept ---
+var pd = import("tabular")
+var mm = import("math")
+var gdf = pd.DataFrame({"k": [1.0, mm.nan, 2.0, 1.0], "v": [10, 20, 30, 40]})
+assert len(gdf.groupby("k").agg({"v": "sum"})) == 2, "A25-1: NaN group key dropped, no crash"
+var ndf = pd.DataFrame({"k": [None, 5.0, None], "v": [1, 2, 3]})
+assert len(ndf.groupby("k").agg({"v": "sum"})) == 2, "A25-1: None kept as a group key"
+var ml = pd.DataFrame({"k": [1.0, 2.0], "a": [10, 20]})
+var mr = pd.DataFrame({"k": [1.0, mm.nan], "b": [100, 200]})
+assert pd.merge(ml, mr, "k", "left").nrows() == 2, "A25-2: NaN merge key non-matching, no crash"
+
+# --- A26-1: an XML surrogate numeric entity is kept verbatim, never crashes the lenient parser ---
+var xml = import("xml")
+assert xml.fromstring("<x>&#xD800;</x>").text == "&#xD800;", "A26-1: surrogate entity kept verbatim"
+
+# --- A26-2: partial `>`/`<=` comparators round up per node-semver (>1 -> >=2.0.0, <=1 -> <2.0.0) ---
+var sv = import("semver")
+assert not sv.satisfies("1.5.0", ">1"), "A26-2: >1 excludes 1.5.0"
+assert sv.satisfies("2.0.0", ">1"), "A26-2: >1 includes 2.0.0"
+assert not sv.satisfies("1.2.5", ">1.2"), "A26-2: >1.2 excludes 1.2.5"
+assert sv.satisfies("1.3.0", ">1.2"), "A26-2: >1.2 includes 1.3.0"
+assert sv.satisfies("1.9.9", "<=1"), "A26-2: <=1 includes 1.9.9 (<2.0.0)"
+assert not sv.satisfies("2.0.0", "<=1"), "A26-2: <=1 excludes 2.0.0"
+
 io.print("OK audit_v113")
