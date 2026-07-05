@@ -53,7 +53,12 @@ test-writing phase (C++ then `.ki`).
 - A18-1 CRLF header/cookie injection (security): reject CR/LF in header keys/values + cookie names/values.
 - A13-1 fmod(inf, finite) silent NaN → math domain error (throw).
 - A16-1 Matrix.apply un-rooted makeFloat arg across callback → GC-safety (rooted).
-(Still todo: A01-1/2 f-string [A01-3 DRY], A02-1 [A02-11 DRY], A11-3 native-annotation enforcement, ...)
+(Still todo: A02-1 [A02-11 DRY] inline-return-packing, A11-3 native-annotation enforcement, and the
+lower-severity weak-spots/coverage-gaps enumerated per agent.)
+
+**Validation:** full **debug CTest 728/728 green**; every changed area re-run under **ASan/UBSan clean**
+(test_audit_v113, serde/dump/serialize, fstring/lexer/string_literals, regex, random, collections,
+tensor, net), and `spec_audit_v113.ki` runs clean under the ASan `ki`.
 
 ## Fix batches 3–9 (FIXED + TESTED, debug-green; memory-safety ones asan-gated)
 
@@ -79,3 +84,4 @@ All regressions in `tools/tests/unit/test_audit_v113.cpp` + `tools/tests/scripts
 | A19-1 | `DateTime` epoch year narrowed to int before the range check → huge epoch wrongly accepted | validate the pre-narrow int64 year in `gmtimeCompat` |
 | A11-1 | `round(x, ndigits)` precision wrong where `long double == double` (MSVC) | `#if LDBL_MANT_DIG > DBL_MANT_DIG` guard + snprintf fallback (GCC/Clang path unchanged) |
 | A23-5 | itertools `product`/`permutations`/`combinations` OOM/hang on huge inputs (no resource guard) | analytical up-front size guard → catchable "result too large" |
+| A01-1/2/3 | f-string escapes diverged from plain strings: `\xHH` emitted a raw byte (f"\xff" != "\xff"), unknown escape silently dropped (f"\q"→"q") — DRY root: escape decode duplicated in lexer vs parser | one shared `decodeCookedEscape` in common.hpp used by both |
