@@ -6,7 +6,7 @@ implementations in `src/kirito/runtime.hpp`. Existing tests:
 `tools/tests/unit/test_list_ops.cpp`, `test_sort.cpp`, `test_collections_deep.cpp`,
 `tools/tests/scripts/` golden scripts.
 
-Status: IN PROGRESS.
+Status: COMPLETE. 6 findings (1 High, 1 Medium, 1 Low-Medium, 3 Low) + coverage matrix.
 
 ---
 
@@ -141,3 +141,87 @@ Status: IN PROGRESS.
 - **proposed-fix**: Root `other.value()` in the subset/superset/disjoint branch too (one shared
   helper for "materialize `other` into a rooted `SetVal`" would DRY 918-946 as well).
 - **confidence**: Medium that it is currently safe; the inconsistency itself is certain.
+
+### A09-6: DRY — Set.remove and Set.discard duplicate the hash→probe→erase body; Array is a phantom ValueKind
+
+- **severity**: Low (maintainability)
+- **location**: `SetVal::getAttr` `remove` (runtime.hpp 846-861) and `discard` (869-884) differ only
+  in the not-found action (throw vs no-op) yet re-implement the whole
+  `hashable? → hash → probing_ check → ProbeScope → find bucket → probeBucket → erase` sequence
+  inline (which itself re-derives logic already in `SetVal`/`probeBucket`). The `copy()` bodies for
+  List/Set/Dict (628-635, 748-754, 862-868) are also near-identical shallow-copy boilerplate.
+- **category**: DRY
+- **description**: A single private `SetVal::eraseIfPresent(arena, value) -> bool` would let `remove`,
+  `discard`, and the `-`/set-op helpers share one guarded erase. Separately, `ValueKind::Array`
+  (object.hpp 23) is referenced defensively in ~8 places (`kind()==Array` in runtime.hpp 263/402/430/458,
+  value.hpp 165, stdlib_json.hpp, stdlib_tensor.hpp) but **no `Object` ever returns
+  `ValueKind::Array`** — `ListVal::kind()` is hard-coded to `List` and there is no `ArrayVal` class.
+  The "internal Array" described in CLAUDE.md does not exist as a distinct type; the `|| ...==Array`
+  checks are dead branches. Either wire up the intended Array type or drop the phantom kind and its
+  dead checks.
+- **proposed-fix**: Extract the shared Set erase helper; remove or implement `ValueKind::Array`.
+- **confidence**: High.
+
+---
+
+## Coverage assessment (method-by-method)
+
+Existing tests are strong for the *happy path* and for previously-audited edge cases. Sources:
+`test_sort.cpp`, `test_list_ops.cpp`, `test_collections_deep.cpp`, `test_audit_hardening.cpp`,
+`spec_collections.ki`, `r4_collections.ki` (very thorough), `class_hash.ki`, `r6_hash.ki` (crypto
+module, not value hashing).
+
+**Well covered:**
+- List: index/negative/OOB, slice (incl. negative step + bounds, float-bound throw, zero-step),
+  concat/`+`, repeat/`*` (incl. `*0`) with guard, lexicographic `< <= > >=`, append/pop(idx)/insert
+  (clamps)/remove/index(start,end)/count/extend/copy(shallow, independent)/clear/reverse, `apply`
+  (empty, missing-fn throw), `_eq_`-driven membership/index/count/remove on instances (non-mutating).
+- sort: ascending, empty, single, strings, floats, reverse, key, key+reverse, **stability** (incl.
+  under reverse and a 1000-element random tie stress), multi-key list keys, mixed int/float numeric
+  order, un-orderable-type throw, list-vs-non-list throw. `sorted()` builtin parity.
+- Set: dedup, len/membership, add/discard(no-error)/remove/contains/pop/clear, union/intersection/
+  difference/symmetricdifference/issubset/issuperset/isdisjoint (+ missing-arg throws), operator
+  algebra (`-`, `< <= > >=` with Set rhs required), apply (collision-collapse), equality by membership,
+  empty operands.
+- Dict: get/set/`in`(keys-not-values)/len, missing-key throw, unhashable-key throw, keys/values/items,
+  get/pop/setdefault (+ defaults + kwargs + missing throws), remove(absent throw)/popitem(empty throw),
+  update (Dict / pairs / bad-pair throw / non-iter throw), copy(shallow), clear, apply(over values),
+  order-independent equality, multi-key subscript rejected.
+- Hashing: Int/Float hash-consistency with `==` (integral Float hashes as the int64; ±0.0 collapse;
+  ±inf distinct; NaN write-only keys), `0` vs `False` distinct keys, Bytes hashable as key,
+  user-class `_hash_` opt-in + `_eq_` consistency (`class_hash.ki`), Dict/Set reentrant `_eq_`/`_hash_`
+  guard (`test_audit_hardening.cpp`, ASan-stressed).
+- Stringify: cyclic list `[...]`, deep-acyclic throw, repr-in-container for Strings/Bytes.
+
+**Gaps (no test found):**
+1. **List value-search reentrancy** — the A09-1 UAF: no test drives `remove`/`index`/`count`/`in`
+   with an `_eq_` that mutates the list. Dict/Set have such a test; List does not.
+2. **NaN in ordering** — no test sorts / `min`s / `max`es a NaN-containing list (A09-2).
+3. **Unhashable in membership** — `[] in aSet` vs `[] in aDict` asymmetry (A09-3) is untested; the
+   existing "unhashable key throws" test only covers subscript `d[[]]`, not `in`.
+4. **Large Dict/Set stress** — only List sort has a 1000–2000-element stress; no bulk
+   insert/lookup/delete correctness test for Dict/Set (bucket integrity, count invariant under churn).
+5. **Mutation-during-for-loop** — the snapshot semantics (`for x in xs: xs.append(...)` iterates a
+   frozen copy) are relied upon by `iterate()` returning a copy but never asserted.
+6. **Dict/Set bucket reclamation / churn** (A09-4) — no soak test; empty-bucket accumulation unobserved.
+7. **`extend`/`update` self-argument** — `xs.extend(xs)` and `d.update(d)` are safe (snapshot) but
+   untested; a good regression pin.
+8. **Set.pop determinism/exhaustion** — `pop` down to empty then throw is only single-element tested.
+9. **Cross-type numeric key unification** — `d[1]` then `d[1.0]` resolving to the SAME entry (a direct
+   consequence of `1 == 1.0` + matching hash) is not asserted; the `r4` comment even mislabels
+   "1.0 vs 1" as distinct keys, which they are not.
+
+## Notes verified as CORRECT (no action)
+
+- `sliceIndices` (native.hpp 46-79) is count-driven and overflow-safe at INT64_MIN step / huge step —
+  no OOB, no non-termination. Slice/index negative handling is correct.
+- `List.insert` clamps both directions; `List.pop(idx)` negative + range check correct.
+- GC rooting in `sort`/`apply`/`sorted`/`Dict.items`/`Dict.keys`/`Dict.popitem`/`Set` union family is
+  present and correct (snapshots + `RootScope`); List `==`/`Dict ==` re-fetch the vector via the stable
+  object reference (not a cached vector ref), so they are NOT vulnerable to the A09-1 realloc — only the
+  value-search methods cache the reference.
+- `FloatVal::hash` range `[-2^63, 2^63)` matches `intFloatEqual` exactly; Int/Float/`==`/hash triad is
+  consistent. `EqualsGuard` (thread-local shared depth counter, cap 1000) bounds both `kiEquals` and
+  `kiLessThan` recursion, so cyclic/deeply-nested `==`/`<`/sort throw instead of overflowing.
+- Mutable containers (List/Set/Dict) correctly are NOT hashable, so they cannot be Dict/Set keys.
+- Dict/Set `ProbeScope` reentrancy guard is sound and tested.
