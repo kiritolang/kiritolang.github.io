@@ -1,4 +1,4 @@
-// Regression tests for the v1.12 hardening pass (audit_v1_12/FINDINGS.md). Each block pins one
+// Regression tests for the v1.12 hardening pass (.audit/v1.12/FINDINGS.md). Each block pins one
 // confirmed finding so it can never silently return. Run under -fsanitize=address,undefined — several
 // of these were UBSan/ASan-confirmed crashes, so the sanitizer build is the real gate.
 #include <string>

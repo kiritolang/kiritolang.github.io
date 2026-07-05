@@ -1,4 +1,4 @@
-// Regression tests for the v1.13 audit (audit_v1_13/). Each block pins one confirmed finding so it
+// Regression tests for the v1.13 audit (.audit/v1.13/). Each block pins one confirmed finding so it
 // can never silently return. Several are memory-safety bugs — run under -fsanitize=address,undefined:
 // the sanitizer build is the real gate for A05-1 (GC use-after-free) and A09-1 (List-search UAF).
 #include <string>
