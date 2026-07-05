@@ -125,4 +125,13 @@ assert srt[0] == 1.0 and srt[1] == 2.0 and srt[2] == 3.0, "A09-2: reals sort bef
 assert srt[3] != srt[3], "A09-2: NaN sorts to the end"
 assert min([5.0, 2.0, 9.0]) == 2.0 and max([5.0, 2.0, 9.0]) == 9.0, "A09-2: min/max intact"
 
+# --- A23-5: combinatorial explosion (product/permutations/combinations) throws, doesn't OOM/hang ---
+var itt = import("itertools")
+assert len(itt.product([[1, 2], [3, 4]])) == 4, "A23-5: product normal case"
+assert len(itt.permutations([1, 2, 3])) == 6, "A23-5: permutations normal case"
+assert len(itt.combinations([1, 2, 3, 4], 2)) == 6, "A23-5: combinations normal case"
+assert throws(Function(): return itt.product([range(0, 4000), range(0, 4000)])), "A23-5: huge product throws"
+assert throws(Function(): return itt.permutations(range(0, 15))), "A23-5: huge permutations throws"
+assert throws(Function(): return itt.combinations(range(0, 40), 20)), "A23-5: huge combinations throws"
+
 io.print("OK audit_v113")

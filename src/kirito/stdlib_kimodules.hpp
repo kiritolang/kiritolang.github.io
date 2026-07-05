@@ -73,10 +73,19 @@ var accumulate = Function(iterable, func = None):
         out.append(total)
     return out
 
+# Guard the eager combinators (product/permutations/combinations) so a huge request throws a clean,
+# catchable error instead of OOMing/hanging the VM — matching the native range/repetition resource
+# policy. ~10M rows is far past any realistic materialised result.
+var _MAXCOMBINATIONS = 10000000
+
 var product = Function(lists):
     # Cartesian product of a list of lists -> list of lists.
     var out = [[]]
     for pool in lists:
+        # Check the PROJECTED size before building this pool's multiply, so an oversized product throws
+        # up front instead of first materialising 10^8 rows.
+        if len(out) * len(pool) > _MAXCOMBINATIONS:
+            throw "product: result too large (> " + String(_MAXCOMBINATIONS) + " combinations)"
         var nxt = []
         for prefix in out:
             for item in pool:
@@ -94,6 +103,15 @@ var permutations = Function(items, r = None):
     var result = []
     if k > n or k < 0:
         return result
+    # Guard the eager result up front: the count is n*(n-1)*...*(n-k+1). Throw a clean error rather
+    # than OOMing/hanging on a huge request (mirrors the native range/repetition resource policy).
+    var pcount = 1
+    var pj = 0
+    while pj < k:
+        pcount = pcount * (n - pj)
+        if pcount > _MAXCOMBINATIONS:
+            throw "permutations: result too large (> " + String(_MAXCOMBINATIONS) + " permutations)"
+        pj = pj + 1
     # Iterative DFS (recursion is discouraged in Kirito): each frame is a list of chosen indices.
     # Pushing candidate indices in descending order makes the smallest pop first, so the emission
     # order matches the classic recursive enumeration exactly.
@@ -118,6 +136,15 @@ var combinations = Function(items, r):
     var result = []
     if r > n or r < 0:
         return result
+    # Guard the eager result up front: the count is C(n, r), built with the exact multiplicative
+    # binomial recurrence so it stays integer at each step. Throw rather than OOM on a huge request.
+    var ccount = 1
+    var cj = 0
+    while cj < r:
+        ccount = ccount * (n - cj) // (cj + 1)
+        if ccount > _MAXCOMBINATIONS:
+            throw "combinations: result too large (> " + String(_MAXCOMBINATIONS) + " combinations)"
+        cj = cj + 1
     # Iterative DFS (no recursion): each frame is [chosen indices, next-start]. Pushing the next
     # candidate indices in descending order keeps emission in ascending lexicographic order.
     var stack = [[[], 0]]
