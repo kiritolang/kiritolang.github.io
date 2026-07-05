@@ -1,0 +1,123 @@
+# HTTPS client vs a real in-process TLS server (Python + an openssl-generated self-signed cert). The
+# actual handshake runs only when this build has TLS (net.tlsenabled) AND python3/openssl are present;
+# otherwise it skips cleanly. Either way the script prints exactly ONE line ("OK net_tls"), so the
+# golden output is identical whether TLS is on (debug/release) or off (asan/tsan run the same .ki).
+var net = import("net")
+var io = import("io")
+var sys = import("sys")
+var path = import("path")
+var time = import("time")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+var finish = Function():
+    io.print("OK net_tls")
+    sys.exit(0)
+
+# Skip when this build lacks TLS — asan/tsan run this same file with https disabled.
+if not net.tlsenabled:
+    finish()
+
+# Need python3 (the server) and the openssl CLI (to mint a self-signed cert).
+if sys.shell("python3 -c 'import ssl, socket, threading' 2>/dev/null", None, "", 5)["code"] != 0:
+    finish()
+if sys.shell("openssl version 2>/dev/null", None, "", 5)["code"] != 0:
+    finish()
+
+# Locate the server harness (tests run from the repo root under ctest / test_release.sh).
+var candidates = ["tools/tests/net_tls_server.py",
+                  path.join(path.getcwd(), "tools/tests/net_tls_server.py")]
+var server = None
+for c in candidates:
+    if path.isfile(c):
+        server = c
+if server == None:
+    finish()
+
+# Mint an ephemeral self-signed cert covering 127.0.0.1 into a private temp dir.
+var certdir = path.join(path.gettempdir(), "kirito_tls_ki_" + String(time.timens()))
+discard path.mkdir(certdir)
+var cert = path.join(certdir, "cert.pem")
+var key = path.join(certdir, "key.pem")
+var subj = "-subj '/CN=localhost' -addext 'subjectAltName=IP:127.0.0.1,DNS:localhost'"
+var genCmd = "openssl req -x509 -newkey rsa:2048 -keyout '" + key + "' -out '" + cert + "' -days 1 -nodes " + subj + " 2>/dev/null"
+if sys.shell(genCmd, None, "", 30)["code"] != 0:
+    discard path.rmtree(certdir, missing_ok = True)
+    finish()
+
+# Launch the TLS server in the background; record its PID for teardown.
+var port = 52000 + (time.timens() % 8000)
+var pidHolder = path.join(certdir, "server.pid")
+var startCmd = "python3 '" + server + "' " + String(port) + " '" + cert + "' '" + key + "' > /dev/null 2>&1 & echo $! > '" + pidHolder + "'"
+discard sys.shell(startCmd, None, "", 5)
+
+# Poll a plain TCP connect until the listener is up (the TLS handshake happens on the real requests).
+var up = False
+var attempt = 0
+while attempt < 50 and not up:
+    var probe = net.Socket()
+    try:
+        probe.settimeout(0.1)
+        probe.connect("127.0.0.1", port)
+        probe.close()
+        up = True
+    catch:
+        try:
+            probe.close()
+        catch:
+            pass
+        time.sleep(0.1)
+    attempt = attempt + 1
+
+var base = "https://127.0.0.1:" + String(port) + "/"
+var ok1 = False
+var ok2 = False
+var ok3 = False
+if up:
+    # 1. verify=False accepts the self-signed cert and round-trips the body.
+    try:
+        var r = net.get(base, {"verify": False, "timeout": 10})
+        ok1 = r.status == 200 and r.body == "tls-ok"
+    catch:
+        ok1 = False
+    # 2. verify=True (default trust store) REJECTS the untrusted self-signed cert.
+    ok2 = throws(Function(): return net.get(base, {"verify": True, "timeout": 10}))
+    # 3. verify=True SUCCEEDS once our cert is trusted (SSL_CERT_FILE); IP-SAN satisfies the hostname
+    #    check for 127.0.0.1.
+    try:
+        sys.setenv("SSL_CERT_FILE", cert)
+        var rt = net.get(base, {"verify": True, "timeout": 10})
+        ok3 = rt.status == 200 and rt.body == "tls-ok"
+    catch:
+        ok3 = False
+    try:
+        sys.unsetenv("SSL_CERT_FILE")
+    catch:
+        pass
+
+# Teardown: kill the server, remove the temp dir. Always runs, before we assert, so a failed check
+# never leaks the child process.
+try:
+    var f = io.open(pidHolder, "r")
+    var pid = f.readline().strip()
+    f.close()
+    if len(pid) > 0:
+        discard sys.shell("kill " + pid + " 2>/dev/null", None, "", 2)
+catch:
+    pass
+discard path.rmtree(certdir, missing_ok = True)
+
+# Infra hiccup (server never came up) is a skip, not a failure — a broken *client* would still let the
+# server listen, so the poll succeeding is the real gate on the assertions below.
+if not up:
+    finish()
+
+assert ok1, "verify=False round-trips over TLS"
+assert ok2, "verify=True rejects a self-signed cert"
+assert ok3, "verify=True accepts the cert once trusted via SSL_CERT_FILE"
+finish()

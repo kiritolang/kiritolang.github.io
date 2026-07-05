@@ -565,7 +565,11 @@ Matrices are arbitrary-shape (any rows × cols). Shape-specific operations (`det
 
 ## net
 
-TCP sockets, a full-fledged HTTP/1.1 client, and URL helpers.
+A complete socket foundation (TCP **and** UDP, over IPv4 and IPv6), a full-fledged HTTP/1.1 client,
+and URL helpers. `net.tlsenabled` (`Bool`) reports whether this build was compiled with HTTPS support
+(`-DKIRITO_ENABLE_TLS`) — the `debug` and `release` build presets enable it. (Deliberately out of
+scope, by design: asyncio/event loops and a built-in HTTP server — servers are built directly on the
+sockets below; see the `webserver` example.)
 
 ### HTTP client
 
@@ -623,25 +627,76 @@ chunked transfer-encoding is decoded, and `gzip`/`deflate` responses are decompr
   it numeric). A bracketed IPv6 literal is preserved in `host` with its brackets, and the optional
   port follows after `]:` — `urlsplit("http://[::1]:8080/p")` -> `host = "[::1]", port = "8080"`.
 
-### Socket object
+### Sockets
 
-- `Socket() → Socket` — a new TCP socket.
-- `fromfd(fd: Integer) → Socket` — adopt an existing raw socket file descriptor (e.g. one handed over
-  by `s.detach()`). Valid only within the same OS process — the basis for handing an accepted
-  connection to a worker VM under `parallel` (see [`parallel`](#parallel)).
-- `s.connect(host: String, port: Integer) → None` — connect to a server.
-- `s.bind(host: String, port: Integer) → None` — bind a server socket (sets `SO_REUSEADDR`).
-- `s.listen([backlog: Integer]) → None` — start listening.
-- `s.accept() → Socket` — accept the next connection (a new Socket).
+**Constructors.**
+
+- `Socket() → Socket` — a new TCP/IPv4 socket (the historical default).
+- `socket(family: String = "inet", type: String = "stream") → Socket` — the general constructor;
+  `family` is `"inet"` (IPv4) or `"inet6"` (IPv6), `type` is `"stream"` (TCP) or `"dgram"` (UDP).
+- `tcpsocket(family: String = "inet") → Socket` / `udpsocket(family: String = "inet") → Socket` —
+  shorthands for the stream / datagram cases.
+- `socketpair(type: String = "stream") → [Socket, Socket]` — a connected, share-nothing pair of
+  sockets (native `AF_UNIX` on POSIX; a loopback stream pair on Windows, where a datagram pair is
+  unsupported).
+- `fromfd(fd: Integer, family: String = "inet", type: String = "stream") → Socket` — adopt an existing
+  raw socket file descriptor (e.g. one handed over by `s.detach()`). Valid only within the same OS
+  process — the basis for handing an accepted connection to a worker VM under `parallel` (see
+  [`parallel`](#parallel)).
+
+The read-only attributes `s.family` (`"inet"`/`"inet6"`) and `s.type` (`"stream"`/`"dgram"`) report
+how the socket was created.
+
+**Connection / stream I/O.**
+
+- `s.connect(host: String, port: Integer) → None` — connect to a peer. On a UDP socket this sets the
+  default peer, so `send`/`recv` then work without an address.
+- `s.bind(host: String, port: Integer) → None` — bind (sets `SO_REUSEADDR`); an empty host binds all
+  interfaces. Resolves the host in the socket's family (IPv4 or IPv6).
+- `s.listen([backlog: Integer]) → None` / `s.accept() → Socket` — server side (TCP); the accepted
+  socket inherits the listener's family/type.
 - `s.send(data: String | Bytes) → Integer` — send all of `data` (text or binary); returns the byte count.
 - `s.recv([n: Integer]) → Bytes` — receive up to `n` bytes (default 4096). A socket carries raw bytes,
   so this returns `Bytes`; for a text protocol call `.decode()` on the result
   (e.g. `s.recv(4096).decode("utf-8")`).
 - `s.recvall() → Bytes` — receive until the peer closes (raw `Bytes`; `.decode()` for text).
+
+**Datagram (UDP) I/O.**
+
+- `s.sendto(data: String | Bytes, host: String, port: Integer) → Integer` — send one datagram to an
+  address; returns the byte count.
+- `s.recvfrom([n: Integer]) → [Bytes, [host, port]]` — receive one datagram (default buffer 65536)
+  together with the sender's `[host, port]`.
+
+**Address, options, lifecycle.**
+
+- `s.getsockname() → [host, port]` / `s.getpeername() → [host, port]` — the local / remote address.
+- `s.shutdown([how: String]) → None` — half-close one direction: `"read"`, `"write"`, or `"both"`
+  (default `"both"`).
+- `s.setsockopt(option: String, value: Integer) → None` / `s.getsockopt(option: String) → Integer` —
+  string-keyed socket options (no raw `SO_*` integers). Settable: `reuseaddr`, `broadcast`,
+  `keepalive`, `rcvbuf`, `sndbuf`, `nodelay` (and `reuseport` where the OS provides it); `getsockopt`
+  additionally reads `error`, `type`, `acceptconn`.
+- `s.setreuseaddr(flag)` / `s.setnodelay(flag)` / `s.setbroadcast(flag)` / `s.setkeepalive(flag)` —
+  named conveniences for the common toggles.
 - `s.settimeout(seconds) → None` — bound subsequent send/recv with a timeout.
+- `s.setblocking(flag: Bool) → None` — switch between blocking and non-blocking mode.
+- `s.fileno() → Integer` — the raw fd, **non-destructively** (unlike `detach`).
 - `s.close() → None` — close the socket.
 - `s.detach() → Integer` — surrender the raw fd to the caller and stop owning it (the socket's
   destructor will no longer close it). Pair with `net.fromfd` to hand a connection to a worker VM.
+
+Every entry point validates its input — an unknown `family`/`type`/`option`, a port outside 0–65535,
+or a negative size throws a clear error, and any call on a closed (or detached) socket throws
+`"… : socket is closed"` rather than a raw OS error.
+
+### Name resolution
+
+- `gethostname() → String` — the local hostname.
+- `gethostbyname(host: String) → String` — resolve a name to its first IPv4 address.
+- `getaddrinfo(host: String[, port[, family[, type]]]) → List` — resolve to a List of
+  `{family, type, host, port}` dicts. `port` may be an Integer or a service-name String; `family`
+  (`"inet"`/`"inet6"`) and `type` (`"stream"`/`"dgram"`) filter the results when given.
 
 A Socket is also usable as a `with` context manager — it is closed automatically on block exit
 (`with net.Socket() as s: ...`). A `Response` additionally supports Dict-style indexing as a

@@ -561,7 +561,11 @@ int main() {
     // --- URL helpers + validation ---
     CHECK(evalStr(vm, "import(\"net\").quote(\"a b/c\")\n") == "a%20b%2Fc");
     CHECK(evalStr(vm, "import(\"net\").unquote(\"a%20b%2Fc\")\n") == "a b/c");
-    CHECK_THROWS(vm.runSource("import(\"net\").get(\"https://example.com\")\n"));  // no TLS in this build
+#ifndef KIRITO_ENABLE_TLS
+    // Without TLS, an https:// request is rejected up front. (With TLS the client actually dials, so
+    // the end-to-end HTTPS path is exercised in test_net_tls.cpp against an in-process server instead.)
+    CHECK_THROWS(vm.runSource("import(\"net\").get(\"https://example.com\")\n"));
+#endif
     CHECK_THROWS(vm.runSource("import(\"net\").get(\"ftp://example.com\")\n"));
     CHECK_THROWS(vm.runSource("import(\"net\").get(\"not a url\")\n"));
 

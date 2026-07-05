@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <string>
@@ -50,28 +51,52 @@ namespace kirito {
 #  pragma GCC diagnostic ignored "-Wshadow"
 #endif
 
-// A TCP socket. Wraps an OS socket handle (POSIX fd or Winsock SOCKET), closed automatically when
-// the value is collected. There is no global state; you create a Socket and operate on it.
+// A socket. Wraps an OS socket handle (POSIX fd or Winsock SOCKET), closed automatically when the
+// value is collected. There is no global state; you create a Socket and operate on it. The family
+// (AF_INET/AF_INET6) and type (SOCK_STREAM/SOCK_DGRAM) are remembered so bind/connect/sendto resolve
+// addresses in the right family and datagram vs stream semantics are correct.
 class SocketVal : public NativeClass<SocketVal> {
 public:
     static constexpr const char* kTypeName = "Socket";
     std::vector<std::string> inspectMembers() const override {
-        return {"connect(host, port)", "bind(host, port)", "listen(backlog)", "accept() -> Socket", "send(data) -> Integer", "recv(n) -> Bytes", "recvall() -> Bytes", "settimeout(seconds)", "close()", "detach() -> Integer"};
+        return {"family: String", "type: String",
+                "connect(host, port)", "bind(host, port)", "listen(backlog)", "accept() -> Socket",
+                "send(data) -> Integer", "recv(n) -> Bytes", "recvall() -> Bytes",
+                "sendto(data, host, port) -> Integer", "recvfrom(n) -> [Bytes, [host, port]]",
+                "getsockname() -> [host, port]", "getpeername() -> [host, port]",
+                "setsockopt(option, value)", "getsockopt(option) -> Integer",
+                "setreuseaddr(flag)", "setnodelay(flag)", "setbroadcast(flag)", "setkeepalive(flag)",
+                "setblocking(flag)", "settimeout(seconds)", "shutdown(how)",
+                "fileno() -> Integer", "close()", "detach() -> Integer"};
     }
     netcompat::socket_t fd = netcompat::kInvalidSocket;
+    int family = AF_INET;
+    int socktype = SOCK_STREAM;
     bool closed = false;
 
-    SocketVal() {
+    SocketVal() : SocketVal(AF_INET, SOCK_STREAM) {}
+    SocketVal(int fam, int type) : family(fam), socktype(type) {
         netcompat::startup();
-        fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        fd = ::socket(fam, type, 0);
         if (!netcompat::isValid(fd))
             throw KiritoError("socket() failed: " + netcompat::lastError());
     }
-    explicit SocketVal(netcompat::socket_t existing) : fd(existing) {}
+    // Adopt an existing fd (accept()/fromfd()/socketpair()); the caller supplies the best-known
+    // family/type. All three are required — on POSIX socket_t IS int, so a defaulted 2-arg overload
+    // would be ambiguous with SocketVal(fam, type).
+    SocketVal(netcompat::socket_t existing, int fam, int type)
+        : fd(existing), family(fam), socktype(type) {}
     ~SocketVal() override { closeFd(); }
 
     void closeFd() {
         if (netcompat::isValid(fd) && !closed) { netcompat::closeSocket(fd); closed = true; }
+    }
+    // The fd for a syscall, or a clean error if the socket was closed/detached — so an operation on a
+    // dead socket throws "recv: socket is closed" instead of a raw EBADF or touching a stale handle.
+    netcompat::socket_t fdOrThrow(const char* op) const {
+        if (closed || !netcompat::isValid(fd))
+            throw KiritoError(std::string(op) + ": socket is closed");
+        return fd;
     }
 
     static int64_t asInt(KiritoVM& vm, Handle h) { return Value(vm, h).asInt("argument"); }
@@ -82,18 +107,92 @@ public:
 
 namespace net {
 
-// Resolve host:port into a sockaddr (IPv4). Returns the first usable address.
-inline bool resolve(const std::string& host, int port, sockaddr_in& out) {
+// Resolve host:port for a given family/type into a sockaddr_storage (the first usable address).
+// `passive` (for bind) sets AI_PASSIVE so an empty host means "all interfaces" (INADDR_ANY /
+// in6addr_any). On failure returns false and fills `err` with the getaddrinfo reason.
+inline bool resolveAddr(const std::string& host, int port, int family, int socktype,
+                        sockaddr_storage& out, socklen_t& outLen, std::string& err, bool passive = false) {
     netcompat::startup();
     addrinfo hints{};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = family;
+    hints.ai_socktype = socktype;
+    if (passive) hints.ai_flags = AI_PASSIVE;
     addrinfo* res = nullptr;
     std::string portStr = std::to_string(port);
-    if (::getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res) != 0 || !res) return false;
-    out = *reinterpret_cast<sockaddr_in*>(res->ai_addr);
+    const char* node = (passive && host.empty()) ? nullptr : host.c_str();
+    int rc = ::getaddrinfo(node, portStr.c_str(), &hints, &res);
+    if (rc != 0 || !res) { err = ::gai_strerror(rc); return false; }
+    std::memcpy(&out, res->ai_addr, res->ai_addrlen);
+    outLen = static_cast<socklen_t>(res->ai_addrlen);
     ::freeaddrinfo(res);
     return true;
+}
+
+// Format a resolved sockaddr back into a numeric (host, port) pair (IPv4 or IPv6), via getnameinfo.
+inline void formatAddr(const sockaddr* sa, socklen_t len, std::string& host, int& port) {
+    char hbuf[NI_MAXHOST], pbuf[NI_MAXSERV];
+    if (::getnameinfo(sa, len, hbuf, sizeof(hbuf), pbuf, sizeof(pbuf),
+                      NI_NUMERICHOST | NI_NUMERICSERV) == 0) {
+        host = hbuf;
+        port = std::atoi(pbuf);
+    } else {
+        host.clear();
+        port = 0;
+    }
+}
+
+// String <-> constant mappings for the address family / socket type (Kirito exposes these as short
+// lowercase strings rather than raw AF_*/SOCK_* integers).
+inline int parseFamily(const std::string& s) {
+    if (s == "inet" || s == "inet4" || s == "ipv4") return AF_INET;
+    if (s == "inet6" || s == "ipv6") return AF_INET6;
+    throw KiritoError("unknown address family '" + s + "' (expected 'inet' or 'inet6')");
+}
+inline int parseType(const std::string& s) {
+    if (s == "stream" || s == "tcp") return SOCK_STREAM;
+    if (s == "dgram" || s == "udp") return SOCK_DGRAM;
+    throw KiritoError("unknown socket type '" + s + "' (expected 'stream' or 'dgram')");
+}
+inline const char* familyName(int f) { return f == AF_INET6 ? "inet6" : "inet"; }
+inline const char* typeName(int t) { return t == SOCK_DGRAM ? "dgram" : "stream"; }
+
+// Socket options addressed by a short lowercase string (so no raw SO_*/IPPROTO_* integers leak into
+// Kirito). settable+gettable int options; a few are getsockopt-only (error/type/acceptconn).
+struct SockOpt { int level; int opt; };
+inline bool lookupSockOpt(const std::string& name, SockOpt& out) {
+    if (name == "reuseaddr") { out = {SOL_SOCKET, SO_REUSEADDR}; return true; }
+    if (name == "broadcast") { out = {SOL_SOCKET, SO_BROADCAST}; return true; }
+    if (name == "keepalive") { out = {SOL_SOCKET, SO_KEEPALIVE}; return true; }
+    if (name == "rcvbuf")    { out = {SOL_SOCKET, SO_RCVBUF};    return true; }
+    if (name == "sndbuf")    { out = {SOL_SOCKET, SO_SNDBUF};    return true; }
+    if (name == "nodelay")   { out = {IPPROTO_TCP, TCP_NODELAY}; return true; }
+#ifdef SO_REUSEPORT
+    if (name == "reuseport") { out = {SOL_SOCKET, SO_REUSEPORT}; return true; }
+#endif
+    return false;
+}
+inline bool lookupGetSockOpt(const std::string& name, SockOpt& out) {
+    if (lookupSockOpt(name, out)) return true;
+    if (name == "error")      { out = {SOL_SOCKET, SO_ERROR};      return true; }
+    if (name == "type")       { out = {SOL_SOCKET, SO_TYPE};       return true; }
+    if (name == "acceptconn") { out = {SOL_SOCKET, SO_ACCEPTCONN}; return true; }
+    return false;
+}
+inline const char* sockOptNames() {
+    return "reuseaddr, broadcast, keepalive, rcvbuf, sndbuf, nodelay"
+#ifdef SO_REUSEPORT
+           ", reuseport"
+#endif
+        ;
+}
+inline std::string getSockOptNames() { return std::string(sockOptNames()) + ", error, type, acceptconn"; }
+
+// Extract the raw bytes to transmit from a String or Bytes argument (send/sendto accept either).
+inline std::string payloadBytes(KiritoVM& vm, Handle h, const char* who) {
+    Object& o = vm.arena().deref(h);
+    if (o.kind() == ValueKind::String) return static_cast<StrVal&>(o).value();
+    if (auto* b = dynamic_cast<BytesVal*>(&o)) return b->data;
+    throw KiritoError(std::string(who) + " expects a String or Bytes");
 }
 
 inline void sendAll(netcompat::socket_t fd, const std::string& data) {
@@ -903,44 +1002,40 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     auto sock = [](KiritoVM& vm, Handle self) -> SocketVal& {
         return static_cast<SocketVal&>(vm.arena().deref(self));
     };
+    // Read-only introspection attributes, like Python's socket.family / socket.type.
+    if (name == "family") return vm.makeString(net::familyName(sock(vm, self).family));
+    if (name == "type")   return vm.makeString(net::typeName(sock(vm, self).socktype));
+    auto checkPort = [](int64_t port) {
+        if (port < 0 || port > 65535)
+            throw KiritoError("port out of range: " + std::to_string(port) + " (must be 0-65535)");
+    };
     if (name == "connect")
-        return bindReq("connect", 2, {"host", "port"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        return bindReq("connect", 2, {"host", "port"}, [self, sock, checkPort](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             auto& s = sock(vm, self);
-            sockaddr_in addr{};
             int64_t port = asInt(vm, a[1]);
-            if (port < 0 || port > 65535) throw KiritoError("port out of range: " + std::to_string(port) + " (must be 0-65535)");
-            if (!net::resolve(asStr(vm, a[0]), static_cast<int>(port), addr))
-                throw KiritoError("could not resolve host");
-            if (::connect(s.fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+            checkPort(port);
+            std::string host = asStr(vm, a[0]);
+            sockaddr_storage ss{}; socklen_t sl = 0; std::string err;
+            if (!net::resolveAddr(host, static_cast<int>(port), s.family, s.socktype, ss, sl, err))
+                throw KiritoError("connect: could not resolve host '" + host + "': " + err);
+            if (::connect(s.fdOrThrow("connect"), reinterpret_cast<sockaddr*>(&ss), sl) != 0)
                 throw KiritoError("connect failed: " + netcompat::lastError());
             return vm.none();
         });
     if (name == "bind")
-        return bindReq("bind", 2, {"host", "port"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        return bindReq("bind", 2, {"host", "port"}, [self, sock, checkPort](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             auto& s = sock(vm, self);
-            int yes = 1;
-            ::setsockopt(s.fd, SOL_SOCKET, SO_REUSEADDR,
-                         reinterpret_cast<const char*>(&yes), sizeof(yes));
-            sockaddr_in addr{};
-            addr.sin_family = AF_INET;
+            netcompat::setSockOptInt(s.fdOrThrow("bind"), SOL_SOCKET, SO_REUSEADDR, 1);
             int64_t port = asInt(vm, a[1]);
-            if (port < 0 || port > 65535) throw KiritoError("port out of range: " + std::to_string(port) + " (must be 0-65535)");
-            addr.sin_port = htons(static_cast<uint16_t>(port));
-            // Resolve the host so bind("localhost", ...) binds the loopback, not every interface. An
-            // empty host is the explicit "all interfaces" idiom; a valid IPv4 literal binds that IP; any
-            // other name is resolved (so a hostname can't silently fall through to 0.0.0.0).
+            checkPort(port);
             std::string host = asStr(vm, a[0]);
-            if (host.empty()) {
-                addr.sin_addr.s_addr = INADDR_ANY;
-            } else if (::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
-                addrinfo hints{}; hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
-                addrinfo* res = nullptr;
-                if (::getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res)
-                    throw KiritoError("bind: cannot resolve host '" + host + "'");
-                addr.sin_addr = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr;
-                ::freeaddrinfo(res);
-            }
-            if (::bind(s.fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+            // Resolve so bind("localhost", ...) binds the loopback, not every interface; an empty host
+            // means "all interfaces" (AI_PASSIVE → INADDR_ANY / in6addr_any for the socket's family).
+            // Family-aware: an AF_INET6 socket binds an IPv6 address, an AF_INET socket an IPv4 one.
+            sockaddr_storage ss{}; socklen_t sl = 0; std::string err;
+            if (!net::resolveAddr(host, static_cast<int>(port), s.family, s.socktype, ss, sl, err, /*passive=*/true))
+                throw KiritoError("bind: cannot resolve host '" + host + "': " + err);
+            if (::bind(s.fd, reinterpret_cast<sockaddr*>(&ss), sl) != 0)
                 throw KiritoError("bind failed: " + netcompat::lastError());
             return vm.none();
         });
@@ -953,19 +1048,15 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         });
     if (name == "accept")
         return bind("accept", {}, [self, sock](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            netcompat::socket_t c = ::accept(sock(vm, self).fd, nullptr, nullptr);
+            auto& s = sock(vm, self);
+            netcompat::socket_t c = ::accept(s.fdOrThrow("accept"), nullptr, nullptr);
             if (!netcompat::isValid(c)) throw KiritoError("accept failed: " + netcompat::lastError());
-            return vm.alloc(std::make_unique<SocketVal>(c));
+            return vm.alloc(std::make_unique<SocketVal>(c, s.family, s.socktype));  // inherit family/type
         });
     if (name == "send")
         return bindReq("send", 1, {"data"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            // Accept a String or Bytes: text callers pass a String, binary callers Bytes.
-            Object& o = vm.arena().deref(a[0]);
-            std::string data;
-            if (o.kind() == ValueKind::String) data = static_cast<StrVal&>(o).value();
-            else if (auto* b = dynamic_cast<BytesVal*>(&o)) data = b->data;
-            else throw KiritoError("send expects a String or Bytes");
-            net::sendAll(sock(vm, self).fd, data);
+            std::string data = net::payloadBytes(vm, a[0], "send");   // String or Bytes
+            net::sendAll(sock(vm, self).fdOrThrow("send"), data);
             return vm.makeInt(static_cast<int64_t>(data.size()));
         });
     if (name == "recv")
@@ -974,14 +1065,14 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
             if (reqN < 0) throw KiritoError("recv size must be non-negative");
             std::size_t n = static_cast<std::size_t>(std::min<int64_t>(reqN, 64ll * 1024 * 1024));  // cap the buffer; recv returns <= size anyway
             std::vector<char> buf(n);
-            long long got = netcompat::recvBytes(sock(vm, self).fd, buf.data(), n);
+            long long got = netcompat::recvBytes(sock(vm, self).fdOrThrow("recv"), buf.data(), n);
             if (got < 0) throw KiritoError("recv failed: " + netcompat::lastError());
             // Bytes, not String: a socket carries raw bytes (binary video, gzip, ...). Decode for text.
             return vm.alloc(std::make_unique<BytesVal>(std::string(buf.data(), static_cast<std::size_t>(got))));
         });
     if (name == "recvall")
         return bind("recvall", {}, [self, sock](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            return vm.alloc(std::make_unique<BytesVal>(net::recvAll(sock(vm, self).fd)));
+            return vm.alloc(std::make_unique<BytesVal>(net::recvAll(sock(vm, self).fdOrThrow("recvall"))));
         });
     if (name == "settimeout")
         return bindReq("settimeout", 1, {"seconds"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -989,8 +1080,127 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
             double secs = t.kind() == ValueKind::Float
                               ? static_cast<const FloatVal&>(t).value()
                               : static_cast<double>(asInt(vm, a[0]));
-            net::setTimeout(sock(vm, self).fd, secs);
+            net::setTimeout(sock(vm, self).fdOrThrow("settimeout"), secs);
             return vm.none();
+        });
+    // --- datagram (UDP) I/O ---
+    if (name == "sendto")
+        return bindReq("sendto", 3, {"data", "host", "port"}, [self, sock, checkPort](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            auto& s = sock(vm, self);
+            std::string data = net::payloadBytes(vm, a[0], "sendto");   // String or Bytes
+            if (data.size() > netcompat::kIoChunk) throw KiritoError("sendto: datagram too large");
+            int64_t port = asInt(vm, a[2]);
+            checkPort(port);
+            std::string host = asStr(vm, a[1]);
+            sockaddr_storage ss{}; socklen_t sl = 0; std::string err;
+            if (!net::resolveAddr(host, static_cast<int>(port), s.family, s.socktype, ss, sl, err))
+                throw KiritoError("sendto: could not resolve host '" + host + "': " + err);
+            long long n = netcompat::sendTo(s.fdOrThrow("sendto"), data.data(), data.size(),
+                                            reinterpret_cast<sockaddr*>(&ss), sl);
+            if (n < 0) throw KiritoError("sendto failed: " + netcompat::lastError());
+            return vm.makeInt(n);
+        });
+    if (name == "recvfrom")   // recvfrom([n]) -> [Bytes, [host, port]]
+        return bind("recvfrom", {"n"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            int64_t reqN = a.empty() ? 65536 : asInt(vm, a[0]);
+            if (reqN < 0) throw KiritoError("recvfrom size must be non-negative");
+            std::size_t n = static_cast<std::size_t>(std::min<int64_t>(reqN, 64ll * 1024 * 1024));
+            std::vector<char> buf(n);
+            sockaddr_storage ss{}; socklen_t sl = sizeof(ss);
+            long long got = netcompat::recvFrom(sock(vm, self).fdOrThrow("recvfrom"), buf.data(), n,
+                                                reinterpret_cast<sockaddr*>(&ss), &sl);
+            if (got < 0) throw KiritoError("recvfrom failed: " + netcompat::lastError());
+            std::string host; int port;
+            net::formatAddr(reinterpret_cast<sockaddr*>(&ss), sl, host, port);
+            RootScope rs(vm);
+            Handle data = rs.add(vm.alloc(std::make_unique<BytesVal>(std::string(buf.data(), static_cast<std::size_t>(got)))));
+            List addr(vm);
+            addr.push(vm.makeString(host));
+            addr.push(vm.makeInt(static_cast<int64_t>(port)));
+            List out(vm);
+            out.push(data);
+            out.push(addr);
+            return out.handle();
+        });
+    // --- half-close / address introspection ---
+    if (name == "shutdown")
+        return bind("shutdown", {"how"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            std::string how = a.empty() ? "both" : asStr(vm, a[0]);
+            int h;
+            if (how == "read" || how == "r") h = 0;
+            else if (how == "write" || how == "w") h = 1;
+            else if (how == "both" || how == "rw" || how == "readwrite") h = 2;
+            else throw KiritoError("shutdown: how must be 'read', 'write', or 'both' (got '" + how + "')");
+            if (netcompat::shutdownSocket(sock(vm, self).fdOrThrow("shutdown"), h) != 0)
+                throw KiritoError("shutdown failed: " + netcompat::lastError());
+            return vm.none();
+        });
+    if (name == "getsockname" || name == "getpeername") {
+        bool peer = (name == "getpeername");
+        return bind(peer ? "getpeername" : "getsockname", {}, [self, sock, peer](KiritoVM& vm, std::span<const Handle>) -> Handle {
+            auto& s = sock(vm, self);
+            const char* op = peer ? "getpeername" : "getsockname";
+            sockaddr_storage ss{}; socklen_t sl = sizeof(ss);
+            int rc = peer ? ::getpeername(s.fdOrThrow(op), reinterpret_cast<sockaddr*>(&ss), &sl)
+                          : ::getsockname(s.fdOrThrow(op), reinterpret_cast<sockaddr*>(&ss), &sl);
+            if (rc != 0) throw KiritoError(std::string(op) + " failed: " + netcompat::lastError());
+            std::string host; int port;
+            net::formatAddr(reinterpret_cast<sockaddr*>(&ss), sl, host, port);
+            List out(vm);
+            out.push(vm.makeString(host));
+            out.push(vm.makeInt(static_cast<int64_t>(port)));
+            return out.handle();
+        });
+    }
+    // --- socket options (string-keyed; no raw SO_*/IPPROTO_* integers leak into Kirito) ---
+    if (name == "setsockopt")
+        return bindReq("setsockopt", 2, {"option", "value"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            std::string opt = asStr(vm, a[0]);
+            int64_t val = asInt(vm, a[1]);
+            net::SockOpt so;
+            if (!net::lookupSockOpt(opt, so))
+                throw KiritoError("setsockopt: unknown option '" + opt + "' (valid: " + net::sockOptNames() + ")");
+            if (!netcompat::setSockOptInt(sock(vm, self).fdOrThrow("setsockopt"), so.level, so.opt, static_cast<int>(val)))
+                throw KiritoError("setsockopt(" + opt + ") failed: " + netcompat::lastError());
+            return vm.none();
+        });
+    if (name == "getsockopt")
+        return bindReq("getsockopt", 1, {"option"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            std::string opt = asStr(vm, a[0]);
+            net::SockOpt so;
+            if (!net::lookupGetSockOpt(opt, so))
+                throw KiritoError("getsockopt: unknown option '" + opt + "' (valid: " + net::getSockOptNames() + ")");
+            int val = 0;
+            if (!netcompat::getSockOptInt(sock(vm, self).fdOrThrow("getsockopt"), so.level, so.opt, val))
+                throw KiritoError("getsockopt(" + opt + ") failed: " + netcompat::lastError());
+            return vm.makeInt(val);
+        });
+    {
+        // Named boolean conveniences over setsockopt (the common toggles), so callers needn't remember
+        // the option strings for the everyday cases.
+        auto boolSetter = [&](const char* methodName, int level, int opt) {
+            return bindReq(methodName, 1, {"flag"}, [self, sock, level, opt, methodName](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+                int on = Value(vm, a[0]).truthy() ? 1 : 0;
+                if (!netcompat::setSockOptInt(sock(vm, self).fdOrThrow(methodName), level, opt, on))
+                    throw KiritoError(std::string(methodName) + " failed: " + netcompat::lastError());
+                return vm.none();
+            });
+        };
+        if (name == "setreuseaddr") return boolSetter("setreuseaddr", SOL_SOCKET, SO_REUSEADDR);
+        if (name == "setbroadcast") return boolSetter("setbroadcast", SOL_SOCKET, SO_BROADCAST);
+        if (name == "setkeepalive") return boolSetter("setkeepalive", SOL_SOCKET, SO_KEEPALIVE);
+        if (name == "setnodelay")   return boolSetter("setnodelay",   IPPROTO_TCP, TCP_NODELAY);
+    }
+    if (name == "setblocking")
+        return bindReq("setblocking", 1, {"flag"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            bool blocking = Value(vm, a[0]).truthy();
+            if (!netcompat::setBlocking(sock(vm, self).fdOrThrow("setblocking"), blocking))
+                throw KiritoError("setblocking failed: " + netcompat::lastError());
+            return vm.none();
+        });
+    if (name == "fileno")   // the raw fd, non-destructively (cf. detach, which relinquishes ownership)
+        return bind("fileno", {}, [self, sock](KiritoVM& vm, std::span<const Handle>) -> Handle {
+            return vm.makeInt(static_cast<int64_t>(sock(vm, self).fd));
         });
     if (name == "close" || name == "_exit_")
         return bind("close", {}, [self, sock](KiritoVM& vm, std::span<const Handle>) -> Handle {
@@ -1056,15 +1266,111 @@ public:
     std::string name() const override { return "net"; }
     void setup(ModuleBuilder& m) override {
         KiritoVM& vm = m.vm();
+        // Whether this build has HTTPS/TLS (compiled with KIRITO_ENABLE_TLS). Lets Kirito code branch —
+        // e.g. skip an https:// call, or a test — instead of hitting the "requires TLS" error.
+#ifdef KIRITO_ENABLE_TLS
+        m.value("tlsenabled", vm.makeBool(true));
+#else
+        m.value("tlsenabled", vm.makeBool(false));
+#endif
+
+        // --- socket constructors ---
+        // Socket() is the historical TCP/IPv4 default; socket(family, type) is the general form and
+        // tcpsocket/udpsocket are the common shortcuts. family: "inet"/"inet6"; type: "stream"/"dgram".
         m.fn("Socket", {}, "Socket", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
             return vm.alloc(std::make_unique<SocketVal>());
         });
-        // fromfd(fd) -> Socket: adopt an existing raw fd (e.g. one handed over by socket.detach() to a
-        // worker VM). Valid only within the same OS process.
-        m.fn("fromfd", {{"fd", "Integer"}}, "Socket", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            int64_t fd = Args(vm, a, "fromfd")[0].asInt("fromfd");
-            return vm.alloc(std::make_unique<SocketVal>(static_cast<netcompat::socket_t>(fd)));
+        m.fn("socket", {{"family", "String", vm.makeString("inet")}, {"type", "String", vm.makeString("stream")}}, "Socket",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+                 Args args(vm, a, "socket");
+                 int fam = net::parseFamily(args[0].asStringRef("family"));
+                 int typ = net::parseType(args[1].asStringRef("type"));
+                 return vm.alloc(std::make_unique<SocketVal>(fam, typ));
+             });
+        m.fn("tcpsocket", {{"family", "String", vm.makeString("inet")}}, "Socket",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+                 int fam = net::parseFamily(Args(vm, a, "tcpsocket")[0].asStringRef("family"));
+                 return vm.alloc(std::make_unique<SocketVal>(fam, SOCK_STREAM));
+             });
+        m.fn("udpsocket", {{"family", "String", vm.makeString("inet")}}, "Socket",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+                 int fam = net::parseFamily(Args(vm, a, "udpsocket")[0].asStringRef("family"));
+                 return vm.alloc(std::make_unique<SocketVal>(fam, SOCK_DGRAM));
+             });
+        // socketpair(type) -> [Socket, Socket]: a connected, share-nothing pair (Python socketpair).
+        // POSIX uses AF_UNIX natively; Windows emulates a stream pair over 127.0.0.1 (dgram unsupported).
+        m.fn("socketpair", {{"type", "String", vm.makeString("stream")}}, "List",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+                 std::string ts = Args(vm, a, "socketpair")[0].asStringRef("type");
+                 int typ = net::parseType(ts);
+                 netcompat::socket_t fds[2];
+                 if (!netcompat::socketPair(typ, fds))
+                     throw KiritoError("socketpair(" + ts + ") failed: " + netcompat::lastError());
+                 RootScope rs(vm);
+                 Handle s0 = rs.add(vm.alloc(std::make_unique<SocketVal>(fds[0], AF_INET, typ)));
+                 Handle s1 = rs.add(vm.alloc(std::make_unique<SocketVal>(fds[1], AF_INET, typ)));
+                 List out(vm);
+                 out.push(s0);
+                 out.push(s1);
+                 return out.handle();
+             });
+        // fromfd(fd[, family, type]) -> Socket: adopt an existing raw fd (e.g. one handed over by
+        // socket.detach() to a worker VM). Valid only within the same OS process.
+        m.fn("fromfd", {{"fd", "Integer"}, {"family", "String", vm.makeString("inet")}, {"type", "String", vm.makeString("stream")}}, "Socket",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+                 Args args(vm, a, "fromfd");
+                 int64_t fd = args[0].asInt("fromfd");
+                 int fam = net::parseFamily(args[1].asStringRef("family"));
+                 int typ = net::parseType(args[2].asStringRef("type"));
+                 return vm.alloc(std::make_unique<SocketVal>(static_cast<netcompat::socket_t>(fd), fam, typ));
+             });
+
+        // --- name resolution ---
+        m.fn("gethostname", {}, "String", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
+            return vm.makeString(netcompat::hostName());
         });
+        // gethostbyname(host) -> the first IPv4 address as a string (Python's IPv4-only semantics).
+        m.fn("gethostbyname", {{"host", "String"}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            std::string host = Args(vm, a, "gethostbyname")[0].asStringRef("host");
+            sockaddr_storage ss{}; socklen_t sl = 0; std::string err;
+            if (!net::resolveAddr(host, 0, AF_INET, SOCK_STREAM, ss, sl, err))
+                throw KiritoError("gethostbyname: cannot resolve '" + host + "': " + err);
+            std::string ip; int port;
+            net::formatAddr(reinterpret_cast<sockaddr*>(&ss), sl, ip, port);
+            return vm.makeString(ip);
+        });
+        // getaddrinfo(host[, port[, family[, type]]]) -> List of {family, type, host, port} dicts.
+        m.fn("getaddrinfo", {{"host", "String"}, {"port", "", vm.none()}, {"family", "String", vm.makeString("")}, {"type", "String", vm.makeString("")}}, "List",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+                 Args args(vm, a, "getaddrinfo");
+                 std::string host = args[0].asStringRef("host");
+                 std::string portStr;
+                 Value p(vm, a[1]);
+                 if (p.isNone()) portStr = "";
+                 else if (p.isString()) portStr = p.asStringRef("port");
+                 else portStr = std::to_string(p.asInt("port"));
+                 int fam = AF_UNSPEC, typ = 0;
+                 std::string fs = args[2].asStringRef("family"); if (!fs.empty()) fam = net::parseFamily(fs);
+                 std::string ty = args[3].asStringRef("type");   if (!ty.empty()) typ = net::parseType(ty);
+                 netcompat::startup();
+                 addrinfo hints{}; hints.ai_family = fam; hints.ai_socktype = typ;
+                 addrinfo* res = nullptr;
+                 int rc = ::getaddrinfo(host.empty() ? nullptr : host.c_str(),
+                                        portStr.empty() ? nullptr : portStr.c_str(), &hints, &res);
+                 if (rc != 0) throw KiritoError("getaddrinfo('" + host + "') failed: " + std::string(::gai_strerror(rc)));
+                 RootScope rs(vm);
+                 List out(vm);
+                 for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+                     std::string ip; int port;
+                     net::formatAddr(ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen), ip, port);
+                     Dict d(vm, {{"family", net::familyName(ai->ai_family)},
+                                 {"type", net::typeName(ai->ai_socktype)},
+                                 {"host", ip}, {"port", static_cast<int64_t>(port)}});
+                     out.push(d);
+                 }
+                 ::freeaddrinfo(res);
+                 return out.handle();
+             });
         m.fn("Session", {}, "Session", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
             auto s = std::make_unique<SessionVal>();
             RootScope rs(vm);
