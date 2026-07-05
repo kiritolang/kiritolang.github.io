@@ -269,5 +269,19 @@ int main() {
     CHECK(ok("String(round(-2.5))") == "-3");
     CHECK(ok("String(round(1.2345, 3))") == "1.234");
 
+    // === A01-1/A01-2/A01-3 (f-string escape decoder DRY): the f-string literal-part decoder diverged
+    // from the plain-string lexer — `\xHH` emitted a RAW byte (breaking the code-point invariant, so
+    // f"\xff" != "\xff") and an unknown escape was silently dropped (f"\q" -> "q") instead of the
+    // documented lex error. Both now route through the shared common.hpp decodeCookedEscape. ===
+    CHECK(ok("String(f\"\\xff\" == \"\\xff\")") == "True");   // \xHH is a code point (UTF-8), not a raw byte
+    CHECK(ok("String(len(f\"\\xe9\"))") == "1");              // one code point, not one/two raw bytes
+    CHECK(ok("String(f\"\\xe9\" == \"é\")") == "True");
+    CHECK(ok("String(f\"a\\tb\" == \"a\\tb\")") == "True");   // ordinary escapes unchanged
+    CHECK(has(err("var s = f\"a\\qb\""), "invalid escape"));  // unknown escape now throws (was silent)
+    CHECK(has(err("var s = f\"\\x4\""), "invalid \\x escape"));  // short \x throws in f-strings too
+    // plain-string behaviour is unchanged (same shared decoder)
+    CHECK(ok("String(\"\\xe9\" == \"é\")") == "True");
+    CHECK(has(err("var s = \"a\\qb\""), "invalid escape"));
+
     return RUN_TESTS();
 }

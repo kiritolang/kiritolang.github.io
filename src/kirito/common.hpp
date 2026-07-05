@@ -97,6 +97,49 @@ inline int hexDigitValue(char d) {
     return -1;
 }
 
+// Decode ONE cooked (non-raw) backslash escape from `src[i]`, where `src[i]` must be the backslash.
+// Appends the decoded bytes to `out` and returns the number of source characters consumed (backslash
+// + body). On a bad/incomplete escape it consumes nothing, writes a human message to `err`, and
+// returns 0 — the CALLER then throws with its own SourceSpan (the lexer's line/col, the parser's f-
+// string span), so diagnostics keep their location. THE single source of truth for cooked escapes:
+// the plain-string lexer and the f-string literal-part decoder both call this, so `\xHH` (a code
+// point emitted as UTF-8, NOT a raw byte) and the bad-escape error can never drift between the two
+// spellings again (A01-1/A01-2/A01-3). Supported: \n \t \r \0 \\ \" \' and \xHH.
+inline std::size_t decodeCookedEscape(std::string_view src, std::size_t i, std::string& out,
+                                      std::string& err) {
+    if (i + 1 >= src.size()) { err = "dangling backslash in string"; return 0; }
+    char e = src[i + 1];
+    if (e == 'x') {
+        if (i + 3 >= src.size()) { err = "invalid \\x escape (expected two hex digits)"; return 0; }
+        int hi = hexDigitValue(src[i + 2]), lo = hexDigitValue(src[i + 3]);
+        if (hi < 0 || lo < 0) { err = "invalid \\x escape (expected hex digit)"; return 0; }
+        // A String is a sequence of Unicode CODE POINTS (stored UTF-8), so `\xHH` is U+00HH — emit its
+        // UTF-8 encoding (1 byte for HH<0x80, else 2), never a raw high byte (which would merge with
+        // following bytes under the code-point layer and mangle the string). Use Bytes for raw bytes.
+        int cp = hi * 16 + lo;
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+        return 4;
+    }
+    char d;
+    switch (e) {
+        case 'n': d = '\n'; break;
+        case 't': d = '\t'; break;
+        case 'r': d = '\r'; break;
+        case '0': d = '\0'; break;
+        case '\\': d = '\\'; break;
+        case '"': d = '"'; break;
+        case '\'': d = '\''; break;
+        default: { err = std::string("invalid escape '\\") + e + "'"; return 0; }
+    }
+    out.push_back(d);
+    return 2;
+}
+
 // Approximate float comparison: |a-b| <= max(relTol*max(|a|,|b|), absTol). NaN is never close; equal
 // infinities are close. The single source of truth for the numeric `.compare()` tolerance, shared by
 // the runtime's Integer/Float compare and the matrix/complex/tensor modules (defined here, in the

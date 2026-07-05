@@ -974,30 +974,14 @@ private:
                 if (i + 1 < raw.size() && raw[i + 1] == '}') { lit += '}'; i += 2; continue; }
                 throw KiritoError("single '}' in f-string", t.span);
             } else if (c == '\\' && !t.raw && i + 1 < raw.size()) {
-                char e = raw[i + 1];
-                if (e == 'x') {
-                    // Require two hex digits — short of that (`f"ab\x4"`) must throw, not silently fall
-                    // through to the default escape arm (which would drop the backslash -> "abx4").
-                    if (i + 3 >= raw.size())
-                        throw KiritoError("invalid \\x escape (expected two hex digits)", t.span);
-                    int hi = hexDigitValue(raw[i + 2]), lo = hexDigitValue(raw[i + 3]);
-                    if (hi < 0 || lo < 0)
-                        throw KiritoError("invalid \\x escape (expected hex digit)", t.span);
-                    lit += static_cast<char>(hi * 16 + lo);
-                    i += 4;
-                    continue;
-                }
-                switch (e) {
-                    case 'n': { lit += '\n'; } break;
-                    case 't': { lit += '\t'; } break;
-                    case 'r': { lit += '\r'; } break;
-                    case '0': { lit += '\0'; } break;
-                    case '\\': { lit += '\\'; } break;
-                    case '"': { lit += '"'; } break;
-                    case '\'': { lit += '\''; } break;
-                    default: { lit += e; } break;
-                }
-                i += 2;
+                // Route through the SAME cooked-escape decoder the lexer uses (common.hpp), so an f-
+                // string's `\xHH` emits the U+00HH code point (not a raw byte) and an unknown escape
+                // throws a lex error — identical to a plain string. Previously these diverged
+                // (f"\xff" != "\xff"; f"\q" silently became "q").
+                std::string err;
+                std::size_t consumed = decodeCookedEscape(raw, i, lit, err);
+                if (consumed == 0) throw KiritoError(err, t.span);
+                i += consumed;
             } else {
                 lit += c;
                 ++i;

@@ -134,4 +134,20 @@ assert throws(Function(): return itt.product([range(0, 4000), range(0, 4000)])),
 assert throws(Function(): return itt.permutations(range(0, 15))), "A23-5: huge permutations throws"
 assert throws(Function(): return itt.combinations(range(0, 40), 20)), "A23-5: huge combinations throws"
 
+# --- A01-1/A01-2: f-string escapes now match plain strings (shared cooked-escape decoder) ---
+assert f"\xff" == "\xff", "A01-1: f-string \\xHH is a code point, not a raw byte"
+assert len(f"\xe9") == 1, "A01-1: f-string \\xe9 is one code point"
+# a bad escape inside an f-string is a lex error (can't be caught at run time — it's a parse error),
+# so it's pinned in the C++ test; here just confirm the good escapes behave.
+assert f"a\tb" == "a\tb", "A01: ordinary f-string escapes unchanged"
+
+# --- A17-1: a Set of user-class instances with an attribute-based _hash_ round-trips (correct bucket) ---
+var dmp = import("dump")
+class Kv:
+    var _init_ = Function(self, v): self.v = v
+    var _hash_ = Function(self): return self.v
+    var _eq_ = Function(self, o): return self.v == o.v
+var kback = dmp.loads(dmp.dumps({Kv(5), Kv(7)}))
+assert kback.contains(Kv(5)) and kback.contains(Kv(7)), "A17-1: attr-hashed Set members bucket correctly"
+
 io.print("OK audit_v113")
