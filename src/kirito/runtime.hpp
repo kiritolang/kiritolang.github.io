@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -3017,8 +3018,25 @@ inline void KiritoVM::installBuiltins() {
             // Scale with long double so the intermediate x*f doesn't double-round (e.g. 2.675*100 in
             // plain double becomes 267.5 -> 268; in extended precision it stays 267.4999... -> 267,
             // i.e. round(2.675, 2) == 2.67). Keeps Kirito's documented half-away-from-zero rounding.
+#if LDBL_MANT_DIG > DBL_MANT_DIG
             long double f = std::pow(10.0L, static_cast<long double>(nd));
             return vm.makeFloat(static_cast<double>(std::round(static_cast<long double>(x) * f) / f));
+#else
+            // No extended precision here (e.g. MSVC, where long double == double): the extended-precision
+            // scaling trick above is a no-op, so `x * 10^nd` double-rounds and round(2.675, 2) would be
+            // wrong. Fall back to the C library's correctly-rounded decimal conversion (platform-
+            // independent) for nd >= 0; for negative nd, scaling in double is exact enough (10^|nd| is a
+            // power of ten within double's integer range for the reachable |nd| <= 323).
+            if (nd >= 0) {
+                char buf[512];
+                std::snprintf(buf, sizeof(buf), "%.*f", static_cast<int>(nd), x);
+                return vm.makeFloat(std::strtod(buf, nullptr));
+            }
+            double f = std::pow(10.0, static_cast<double>(nd));
+            double scaled = x * f;
+            double r = (scaled >= 0.0) ? std::floor(scaled + 0.5) : std::ceil(scaled - 0.5);
+            return vm.makeFloat(r / f);
+#endif
         }
         if (std::isnan(x)) throw KiritoError("cannot round NaN to Integer");
         if (std::isinf(x)) throw KiritoError("cannot round infinity to Integer");

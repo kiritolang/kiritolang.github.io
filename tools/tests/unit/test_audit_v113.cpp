@@ -253,5 +253,21 @@ int main() {
     CHECK(ok("var sys = import(\"sys\")\nsys.setenv(\"KI_AUDIT_V113\", \"y\")\nsys.unsetenv(\"KI_AUDIT_V113\")\n"
              "sys.getenv(\"KI_AUDIT_V113\", \"gone\")") == "gone");
 
+    // === A19-1 (DateTime epoch year-narrow): gmtimeCompat computed the true year as int64 then
+    // narrowed to int BEFORE setEpoch's range check read it, so a pathological epoch wrapped into the
+    // valid [-9999, 9999] band and a corrupt DateTime was accepted. The range is now validated on the
+    // pre-narrow int64 year. ===
+    CHECK(has(err("var t = import(\"time\")\ndiscard t.datetime(999999999999999999)"), "out of representable range"));
+    CHECK(has(err("var t = import(\"time\")\ndiscard t.datetime(-999999999999999999)"), "out of representable range"));
+    CHECK(ok("var t = import(\"time\")\nt.datetime(0).iso()") == "1970-01-01T00:00:00");  // sane epoch intact
+
+    // === A11-1 (round ndigits): on this platform long double has extra precision, so the extended-
+    // scaling path is unchanged — pin the documented half-away-from-zero result so the #if guard around
+    // the MSVC fallback can't silently regress it. ===
+    CHECK(ok("String(round(2.675, 2))") == "2.67");   // extended precision avoids the 2.675*100 double-round
+    CHECK(ok("String(round(2.5))") == "3");           // half away from zero
+    CHECK(ok("String(round(-2.5))") == "-3");
+    CHECK(ok("String(round(1.2345, 3))") == "1.234");
+
     return RUN_TESTS();
 }

@@ -59,6 +59,12 @@ inline void gmtimeCompat(int64_t secs, std::tm& tm) {
     int64_t d = doy - (153 * mp + 2) / 5 + 1;                                // [1, 31]
     int64_t m = mp < 10 ? mp + 3 : mp - 9;                                   // [1, 12]
     y += (m <= 2);
+    // Validate the TRUE (int64) year before narrowing to int. A pathological epoch yields a |year| far
+    // beyond int range; `static_cast<int>(y - 1900)` would wrap and a later range check on the narrowed
+    // tm_year could then wrongly ACCEPT a corrupt DateTime. DateTime's contract is year in [-9999, 9999].
+    if (y < -9999 || y > 9999)
+        throw KiritoError("DateTime: epoch " + std::to_string(secs) +
+                          " is out of representable range (year " + std::to_string(y) + ")");
     tm = std::tm{};
     tm.tm_year = static_cast<int>(y - 1900);
     tm.tm_mon = static_cast<int>(m - 1);
