@@ -1,0 +1,415 @@
+# Doc-vs-impl verification for OPERATORS & SPECIAL METHODS (dunders) on user classes, plus
+# cross-type operator semantics. Backs docs/pages/09-types.md ("Special methods / operator
+# overloading") and 02-language-guide.md (classes/operators). Every documented dunder gets a class
+# that defines it, an assertion that the operator dispatches to it (functioning), and hardening
+# (wrong return type / missing dunder / cross-type misuse must raise the RIGHT error — and anything
+# that SHOULD raise but silently doesn't is flagged in .audit/doc-verify/disc_operators.md).
+# Prints "OK operators".
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ _init_ (construction)
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+var pt = Point(1, 2)
+assert pt.x == 1 and pt.y == 2, "_init_ sets attributes"
+# _init_ accepts keyword args (forwarded by ClassValue::callFull)
+assert Point(y = 9, x = 4).x == 4 and Point(y = 9, x = 4).y == 9, "_init_ keyword args"
+# A class with no _init_ takes no arguments
+class NoInit:
+    var greet = Function(self): return "hi"
+assert NoInit().greet() == "hi", "class without _init_ instantiates"
+assert raises_msg(Function(): return NoInit(1), "takes no arguments"), "no _init_ + args raises"
+
+# ============================================================ _str_ (display)
+class Named:
+    var _init_ = Function(self, n): self.n = n
+    var _str_ = Function(self): return "Named(" + self.n + ")"
+assert String(Named("k")) == "Named(k)", "_str_ drives String()"
+assert f"{Named('z')}" == "Named(z)", "_str_ drives f-strings"
+# Nested in a container: _str_ is used (repr form is only for built-in String elements)
+assert String([Named("a"), Named("b")]) == "[Named(a), Named(b)]", "_str_ used when nested"
+# Without _str_, the default form is "<ClassName object>"
+class Bare:
+    var _init_ = Function(self): pass
+assert String(Bare()) == "<Bare object>", "default str is <ClassName object>"
+# DISCREPANCY-PIN: docs say _str_ "Returns a String", but a non-String return does NOT throw —
+# the returned value is recursively stringified instead. Pin the ACTUAL (silent) behaviour.
+class StrInt:
+    var _init_ = Function(self): pass
+    var _str_ = Function(self): return 42
+assert String(StrInt()) == "42", "PIN: non-String _str_ return is stringified, not rejected"
+
+# ============================================================ arithmetic dunders
+class Num:
+    var _init_ = Function(self, n): self.n = n
+    var _add_ = Function(self, o): return Num(self.n + o.n)
+    var _sub_ = Function(self, o): return Num(self.n - o.n)
+    var _mul_ = Function(self, o): return Num(self.n * o.n)
+    var _div_ = Function(self, o): return Num(self.n / o.n)
+    var _floordiv_ = Function(self, o): return Num(self.n // o.n)
+    var _mod_ = Function(self, o): return Num(self.n % o.n)
+    var _pow_ = Function(self, o): return Num(self.n ** o.n)
+assert (Num(6) + Num(2)).n == 8, "_add_ drives +"
+assert (Num(6) - Num(2)).n == 4, "_sub_ drives -"
+assert (Num(6) * Num(2)).n == 12, "_mul_ drives *"
+assert (Num(7) / Num(2)).n == 3.5, "_div_ drives /"
+assert (Num(7) // Num(2)).n == 3, "_floordiv_ drives //"
+assert (Num(7) % Num(2)).n == 1, "_mod_ drives %"
+assert (Num(2) ** Num(3)).n == 8, "_pow_ drives **"
+# Missing arithmetic dunder throws "'<class>' has no operator '_op_'"
+class NoArith:
+    var _init_ = Function(self): pass
+assert raises_msg(Function(): return NoArith() + NoArith(), "has no operator '_add_'"), "missing _add_ raises"
+assert raises_msg(Function(): return NoArith() - NoArith(), "has no operator '_sub_'"), "missing _sub_ raises"
+assert raises_msg(Function(): return NoArith() * NoArith(), "has no operator '_mul_'"), "missing _mul_ raises"
+assert raises_msg(Function(): return NoArith() / NoArith(), "has no operator '_div_'"), "missing _div_ raises"
+assert raises_msg(Function(): return NoArith() // NoArith(), "has no operator '_floordiv_'"), "missing _floordiv_ raises"
+assert raises_msg(Function(): return NoArith() % NoArith(), "has no operator '_mod_'"), "missing _mod_ raises"
+assert raises_msg(Function(): return NoArith() ** NoArith(), "has no operator '_pow_'"), "missing _pow_ raises"
+
+# ============================================================ comparison dunders
+class Cmp:
+    var _init_ = Function(self, n): self.n = n
+    var _eq_ = Function(self, o): return isinstance(o, Cmp) and self.n == o.n
+    var _lt_ = Function(self, o): return self.n < o.n
+    var _le_ = Function(self, o): return self.n <= o.n
+    var _gt_ = Function(self, o): return self.n > o.n
+    var _ge_ = Function(self, o): return self.n >= o.n
+assert Cmp(1) == Cmp(1) and not (Cmp(1) == Cmp(2)), "_eq_ drives =="
+assert Cmp(1) < Cmp(2) and not (Cmp(2) < Cmp(1)), "_lt_ drives <"
+assert Cmp(2) <= Cmp(2) and Cmp(1) <= Cmp(2), "_le_ drives <="
+assert Cmp(3) > Cmp(2) and not (Cmp(2) > Cmp(3)), "_gt_ drives >"
+assert Cmp(3) >= Cmp(3) and not (Cmp(2) >= Cmp(3)), "_ge_ drives >="
+# _eq_ drives sorted()/min()/max() through _lt_
+var sortedCmp = sorted([Cmp(3), Cmp(1), Cmp(2)])
+assert sortedCmp[0].n == 1 and sortedCmp[2].n == 3, "_lt_ drives sorted()"
+# _eq_ drives `in` / index / count / remove on Lists
+var lst = [Cmp(1), Cmp(2), Cmp(3)]
+assert Cmp(2) in lst, "_eq_ drives `in` on List"
+assert lst.index(Cmp(3)) == 2 and lst.count(Cmp(1)) == 1, "_eq_ drives index/count"
+
+# _ne_ falls back to `not _eq_` when only _eq_ is defined (documented exception)
+assert Cmp(1) != Cmp(2) and not (Cmp(1) != Cmp(1)), "_ne_ derives from _eq_"
+# An explicit _ne_ overrides the fallback
+class NeExplicit:
+    var _init_ = Function(self, n): self.n = n
+    var _eq_ = Function(self, o): return self.n == o.n
+    var _ne_ = Function(self, o): return True     # deliberately always-True
+assert (NeExplicit(1) != NeExplicit(1)) == True, "explicit _ne_ overrides"
+# Ordering dunders do NOT derive from each other: only _lt_ defined -> `>` still throws
+class OnlyLt:
+    var _init_ = Function(self, n): self.n = n
+    var _lt_ = Function(self, o): return self.n < o.n
+assert (OnlyLt(1) < OnlyLt(2)) == True, "_lt_ works"
+assert raises_msg(Function(): return OnlyLt(1) > OnlyLt(2), "has no operator '_gt_'"), "ordering does not derive"
+# No comparison dunder at all -> < throws (== falls back to identity, does not throw)
+class NoCmp:
+    var _init_ = Function(self): pass
+assert raises_msg(Function(): return NoCmp() < NoCmp(), "has no operator '_lt_'"), "missing _lt_ raises"
+
+# ============================================================ default identity ==
+# Without _eq_, == is identity (never throws): same instance equal, distinct instances not.
+class Plain:
+    var _init_ = Function(self): pass
+var pinst = Plain()
+assert pinst == pinst, "identity ==: same instance equal"
+assert not (Plain() == Plain()), "identity ==: distinct instances not equal"
+assert Plain() != Plain(), "identity !=: distinct instances unequal"
+
+# ============================================================ reflected ==/!= (symmetry exception)
+# ==/!= are the ONLY symmetric ops: `5 == c` consults the right-hand instance's _eq_.
+class RefEq:
+    var _init_ = Function(self, n): self.n = n
+    var _eq_ = Function(self, o): return isinstance(o, Integer) and self.n == o
+assert (5 == RefEq(5)) == True, "reflected ==: number on left, instance on right"
+assert (5 != RefEq(3)) == True, "reflected !=: number on left, instance on right"
+assert (RefEq(5) == 5) == True, "== instance on left too"
+
+# ============================================================ unary dunders
+class Vec1:
+    var _init_ = Function(self, x): self.x = x
+    var _neg_ = Function(self): return Vec1(-self.x)
+    var _not_ = Function(self): return self.x == 0
+assert (-Vec1(5)).x == -5, "_neg_ drives unary -"
+assert (not Vec1(0)) == True and (not Vec1(3)) == False, "_not_ drives `not`"
+# Missing _neg_ throws; but `not` WITHOUT _not_ falls back to (not truthy) — always truthy default
+class NoUnary:
+    var _init_ = Function(self): pass
+assert raises_msg(Function(): return -NoUnary(), "has no operator '_neg_'"), "missing _neg_ raises"
+assert (not NoUnary()) == False, "`not` without _not_ falls back to truthiness (always truthy)"
+
+# ============================================================ _bool_ (opt-in truthiness)
+class Bag:
+    var _init_ = Function(self, items): self.items = items
+    var _bool_ = Function(self) -> Bool: return len(self.items) > 0
+assert Bool(Bag([1])) == True and Bool(Bag([])) == False, "_bool_ drives Bool()"
+# Reaches every conditional context
+var hitIf = "no"
+if Bag([1]):
+    hitIf = "yes"
+assert hitIf == "yes", "_bool_ drives if"
+assert (Bag([]) or "fallback") == "fallback", "_bool_ drives or"
+assert (Bag([1]) and "kept") == "kept", "_bool_ drives and"
+assert (not Bag([])) == True, "_bool_ drives not"
+assert ("t" if Bag([1]) else "f") == "t", "_bool_ drives conditional expr"
+assert len(List(filter(Function(b): return Bool(b), [Bag([]), Bag([1]), Bag([])]))) == 1, "_bool_ drives filter"
+assert all([Bag([1]), Bag([2])]) and not all([Bag([1]), Bag([])]), "_bool_ drives all"
+assert any([Bag([]), Bag([1])]) and not any([Bag([]), Bag([])]), "_bool_ drives any"
+# WITHOUT _bool_, an instance is ALWAYS truthy (historical default) even when "empty"
+assert Bool(Plain()) == True, "no _bool_ -> always truthy"
+if Plain():
+    hitIf = "still"
+assert hitIf == "still", "no _bool_ -> if runs"
+# _bool_ must return a Bool — a non-Bool return throws (even Integer 1)
+class BoolInt:
+    var _init_ = Function(self): pass
+    var _bool_ = Function(self): return 1
+assert raises_msg(Function(): return Bool(BoolInt()), "must return a Bool"), "_bool_ Integer return raises"
+class BoolNone:
+    var _init_ = Function(self): pass
+    var _bool_ = Function(self): return None
+assert raises_msg(Function(): return Bool(BoolNone()), "must return a Bool"), "_bool_ None return raises"
+# A throwing _bool_ propagates through the surrounding context
+class BoolBoom:
+    var _init_ = Function(self): pass
+    var _bool_ = Function(self) -> Bool: throw "kaboom"
+assert raises_msg(Function(): return Bool(BoolBoom()), "kaboom"), "throwing _bool_ propagates"
+# _len_ alone does NOT drive truthiness (documented limitation)
+class LenOnly:
+    var _init_ = Function(self): pass
+    var _len_ = Function(self): return 0
+assert Bool(LenOnly()) == True, "_len_==0 does not make an instance falsy (needs _bool_)"
+
+# ============================================================ _call_ (callable instances)
+class Adder:
+    var _init_ = Function(self, base): self.base = base
+    var _call_ = Function(self, x): return self.base + x
+assert Adder(10)(5) == 15, "_call_ drives instance call"
+# _call_ accepts keyword args and defaults
+class KwCall:
+    var _init_ = Function(self): pass
+    var _call_ = Function(self, a, b = 100): return a + b
+assert KwCall()(a = 1, b = 2) == 3 and KwCall()(5) == 105, "_call_ keyword args + defaults"
+# Non-callable instance throws
+assert raises_msg(Function(): return Plain()(), "object is not callable"), "no _call_ raises"
+
+# ============================================================ _getitem_ / _setitem_ (variadic keys)
+class Grid:
+    var _init_ = Function(self): self.d = {}
+    var _getitem_ = Function(self, i, j): return self.d.get(String(i) + "," + String(j), 0)
+    var _setitem_ = Function(self, i, j, val): self.d[String(i) + "," + String(j)] = val
+var grid = Grid()
+grid[1, 2] = 99
+assert grid[1, 2] == 99 and grid[0, 0] == 0, "_getitem_/_setitem_ variadic keys m[i,j]"
+# scalar key
+class Box:
+    var _init_ = Function(self): self.v = {}
+    var _getitem_ = Function(self, k): return self.v.get(k, None)
+    var _setitem_ = Function(self, k, val): self.v[k] = val
+var box = Box()
+box["k"] = 7
+assert box["k"] == 7, "_getitem_/_setitem_ scalar key"
+# Missing indexing dunders throw
+assert raises_msg(Function(): return Plain()[0], "object is not indexable"), "no _getitem_ raises"
+assert raises_msg(Function(): Plain()[0] = 1, "does not support item assignment"), "no _setitem_ raises"
+
+# ============================================================ _len_
+class Sized:
+    var _init_ = Function(self, n): self.n = n
+    var _len_ = Function(self): return self.n
+assert len(Sized(4)) == 4, "_len_ drives len()"
+assert raises_msg(Function(): return len(Plain()), "has no length"), "no _len_ raises"
+# _len_ must return a non-negative Integer
+class LenStr:
+    var _init_ = Function(self): pass
+    var _len_ = Function(self): return "z"
+assert raises_msg(Function(): return len(LenStr()), "_len_ must return an Integer"), "_len_ non-Integer raises"
+class LenNeg:
+    var _init_ = Function(self): pass
+    var _len_ = Function(self): return -1
+assert raises_msg(Function(): return len(LenNeg()), "non-negative"), "_len_ negative raises"
+
+# ============================================================ _contains_
+class Coll:
+    var _init_ = Function(self): self.items = [1, 2, 3]
+    var _contains_ = Function(self, x): return x in self.items
+assert (2 in Coll()) == True and (5 in Coll()) == False, "_contains_ drives `in`"
+assert (5 not in Coll()) == True, "_contains_ drives `not in`"
+assert raises_msg(Function(): return 1 in Plain(), "does not support 'in'"), "no _contains_ raises"
+
+# ============================================================ _iter_
+class Range3:
+    var _init_ = Function(self): pass
+    var _iter_ = Function(self): return [10, 20, 30]
+var acc = []
+for x in Range3():
+    acc.append(x)
+assert acc == [10, 20, 30], "_iter_ drives for-loop"
+assert List(Range3()) == [10, 20, 30], "_iter_ drives List()"
+var ua = None
+var ub = None
+var uc = None
+ua, ub, uc = Range3()
+assert ua == 10 and uc == 30, "_iter_ drives unpacking"
+# Missing _iter_ -> not iterable (message reported by the loop machinery)
+var iterPlain = Function():
+    for z in Plain():
+        pass
+assert raises_msg(iterPlain, "is not iterable"), "no _iter_ raises"
+# _iter_ returning a non-iterable value throws when the result is re-iterated
+class IterInt:
+    var _init_ = Function(self): pass
+    var _iter_ = Function(self): return 42
+assert raises_msg(Function(): return List(IterInt()), "is not iterable"), "_iter_ non-iterable return raises"
+
+# ============================================================ _enter_ / _exit_ (with-context)
+class Ctx:
+    var _init_ = Function(self): self.log = []
+    var _enter_ = Function(self):
+        self.log.append("enter")
+        return self
+    var _exit_ = Function(self): self.log.append("exit")
+var ctx = Ctx()
+var boundV = None
+with ctx as v:
+    boundV = v
+    v.log.append("body")
+assert ctx.log == ["enter", "body", "exit"], "_enter_/_exit_ ordering"
+assert boundV == ctx, "_enter_ return is bound to the `as` name"
+# _exit_ runs even when the body throws (and cannot suppress the exception)
+class Ctx2:
+    var _init_ = Function(self): self.exited = False
+    var _enter_ = Function(self): return self
+    var _exit_ = Function(self): self.exited = True
+var ctx2 = Ctx2()
+var runCtx2 = Function():
+    with ctx2 as w:
+        throw "boom"
+assert raises_msg(runCtx2, "boom"), "exception propagates out of with (not suppressed by _exit_)"
+assert ctx2.exited == True, "_exit_ runs on exceptional exit"
+
+# ============================================================ _hash_ (+ _eq_) — Set/Dict keys
+class Pt:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _hash_ = Function(self) -> Integer: return self.x * 73856093 + self.y * 19349663
+    var _eq_ = Function(self, o): return isinstance(o, Pt) and self.x == o.x and self.y == o.y
+var seen = {Pt(1, 2), Pt(1, 2), Pt(3, 4)}
+assert len(seen) == 2, "_hash_+_eq_ makes Set value-based (dedups equal Points)"
+var dm = {}
+dm[Pt(1, 2)] = "a"
+assert dm[Pt(1, 2)] == "a", "_hash_+_eq_ makes Dict lookup value-based"
+assert Pt(1, 2) in dm, "value-based `in` on Dict keys"
+# _hash_ WITHOUT _eq_ -> Dict/Set key by identity (every fresh instance distinct)
+class HId:
+    var _init_ = Function(self, x): self.x = x
+    var _hash_ = Function(self) -> Integer: return self.x
+var d2 = {}
+d2[HId(1)] = "a"
+assert (HId(1) in d2) == False, "_hash_ without _eq_ keys by identity"
+# No _hash_ -> unhashable
+assert raises_msg(Function(): return {Plain()}, "unhashable type 'Plain'"), "no _hash_ -> unhashable"
+# _hash_ must return an Integer
+class HStr:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self): return "x"
+assert raises_msg(Function(): return {HStr()}, "_hash_ must return an Integer"), "_hash_ non-Integer raises"
+
+# ============================================================ privacy (_member)
+class Secret:
+    var _init_ = Function(self): self._token = 42
+    var reveal = Function(self): return self._token          # own method: allowed
+    var _bump = Function(self): self._token = self._token + 1 # private method too
+    var use = Function(self):
+        self._bump()
+        return self._token
+assert Secret().reveal() == 42, "private member readable from own method"
+assert Secret().use() == 43, "private method callable from own method"
+# Subclass method may touch a base private (privacy is per class CHAIN)
+class SubSecret(Secret):
+    var _init_ = Function(self): self._super_()._init_()
+    var peek = Function(self): return self._token
+assert SubSecret().peek() == 42, "private member readable from subclass method"
+# From OUTSIDE any method -> access raises
+assert raises_msg(Function(): return Secret()._token, "cannot access private member '_token'"), "private read outside raises"
+assert raises(Function(): Secret()._token = 1), "private write outside raises"
+# A dunder (_name_) is NOT private
+assert String(Named("q")) == "Named(q)", "dunder (double underscore-bounded) is not private"
+
+# ============================================================ _super_ (parent view)
+class Base:
+    var _init_ = Function(self, n): self.n = n
+    var describe = Function(self): return "Base(" + String(self.n) + ")"
+class Mid(Base):
+    var _init_ = Function(self, n):
+        self._super_()._init_(n)          # extend inherited constructor
+        self.tag = "mid"
+    var describe = Function(self): return "Mid->" + self._super_().describe()
+class Leaf(Mid):
+    var _init_ = Function(self, n): self._super_()._init_(n)
+    var describe = Function(self): return "Leaf->" + self._super_().describe()
+assert Mid(5).n == 5 and Mid(5).tag == "mid", "_super_()._init_ extends constructor"
+# Climbs exactly one level per call, so multi-level chains compose
+assert Leaf(7).describe() == "Leaf->Mid->Base(7)", "_super_ climbs one level per call"
+# _super_() in a baseless class throws
+class Lonely:
+    var _init_ = Function(self): pass
+    var go = Function(self): return self._super_()
+assert raises_msg(Function(): return Lonely().go(), "does not inherit from any class"), "_super_ with no base raises"
+
+# ============================================================ shared class vars (copy-on-write)
+class Shared:
+    var count = 0                          # class-body non-function var: shared attribute
+    var _init_ = Function(self): pass
+var s1 = Shared()
+var s2 = Shared()
+assert s1.count == 0 and s2.count == 0, "instances read shared class var through the class"
+s1.count = 5                               # copy-on-write: only s1 gets its own binding
+assert s1.count == 5, "assignment gives that instance its own copy"
+assert s2.count == 0, "other instances still see the shared default (copy-on-write)"
+# DISCREPANCY-PIN: reading the shared var directly on the CLASS value is NOT supported — it throws
+# 'has no attribute'. The docs describe reads "through the class" from an INSTANCE only.
+assert raises_msg(Function(): return Shared.count, "has no attribute 'count'"), "PIN: Class.count read raises"
+
+# ============================================================ cross-type operator hardening
+class Money:
+    var _init_ = Function(self, n): self.n = n
+    var _add_ = Function(self, o): return Money(self.n + o.n)
+# Number on the LEFT, instance on the RIGHT -> no reflected dunder -> throws (documented invariant)
+assert raises_msg(Function(): return 3 + Money(5), "unsupported operand type 'Money'"), "3 + Money throws (no reflected _add_)"
+assert raises_msg(Function(): return 2 * Money(5), "unsupported operand type 'Money'"), "2 * Money throws (no reflected _mul_)"
+# Instance on the LEFT works
+assert (Money(3) + Money(5)).n == 8, "Money + Money works (instance on left)"
+# Strong typing across built-ins: no silent coercion
+assert raises_msg(Function(): return "x" + 5, "can only concatenate String to String"), "String + Integer throws"
+assert raises_msg(Function(): return 5 + "x", "unsupported operand"), "Integer + String throws"
+assert raises_msg(Function(): return True + 1, "does not support this binary operator"), "Bool + Integer throws (Bool is not numeric)"
+# ==/!= across unrelated types never throw — just False/True
+assert (1 == "x") == False and (1 != "x") == True, "cross-type == is False, not an error"
+assert (Money(1) == 5) == False, "instance == number (no _eq_) is identity-False, not an error"
+
+# ============================================================ exact IEEE-754 float ==
+assert (0.1 + 0.2 == 0.3) == False, "float == is exact bit-equality (0.1+0.2 != 0.3)"
+assert (0.3 == 0.3) == True, "bit-identical floats are =="
+var nan = Float("nan")
+assert (nan == nan) == False and (nan != nan) == True, "NaN never equal to itself"
+assert (Float("inf") == Float("inf")) == True, "inf == inf"
+assert (0.0 == -0.0) == True, "0.0 == -0.0"
+
+io.print("OK operators")
