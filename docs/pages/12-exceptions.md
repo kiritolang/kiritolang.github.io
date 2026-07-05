@@ -128,6 +128,7 @@ are deferred to the point the code is reached, so they *are* catchable; they're 
 | `'return' outside function` | `return` at module/class-body scope | Only `return` inside a function body |
 | `two starred targets in assignment` | More than one `*name` on an unpack target | Use at most one starred target |
 | `non-default parameter '<name>' follows a default parameter` | A parameter without a default declared after one with a default | Move defaulted parameters last |
+| `an inline function cannot be comma-packed here …` | A bare comma-pack whose element is an inline-bodied `Function(): …` — e.g. `var f = Function(): return a, b` | Use an indented block body, or wrap the function in a List `[ ]` (a call-arg / list-element comma is fine) |
 
 ### Parser — switch / try
 
@@ -317,6 +318,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `maximum equality recursion depth exceeded (cyclic structure?)` | A deep/cyclic structure compared with `==` | Avoid comparing cyclic structures |
 | `structure too deeply nested to stringify` | `str()`/print of a structure >1000 deep | Flatten the structure |
 | `expression too deeply nested to evaluate` / `expression nested too deeply` | Pathologically nested source | Simplify the expression nesting |
+| `'<Class>' _iter_ recurses too deeply (does _iter_ return self or a cycle?)` | A user `_iter_` that returns `self` (or forms an `_iter_` cycle), so iteration re-dispatches without bottoming out | Return a genuine iterable (a List / built-in iterator), not `self` |
 
 ### Resource guards (repetition / padding / range)
 
@@ -325,6 +327,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `repeated String/List/Bytes too large` | `*` repetition exceeding the cap | Use a smaller count |
 | `replace result too large` / `join result too large` | `String.replace`/`String.join` output exceeding the 256 MiB cap (memory-amplification guard) | Reduce the input/replacement size |
 | `range too large` | A `range` span exceeding the cap | Use a smaller range |
+| `product` / `permutations` / `combinations`: `result too large (> <N> …)` | An `itertools` combinator whose eager result would exceed the ~10M-element cap (e.g. `permutations(range(13))`) | Reduce the input size / narrow `r` |
 | `range step cannot be zero` | `range(a, b, 0)` | Use a non-zero step |
 | `range() got multiple values for '<start/stop/step>'` / `range() got an unexpected keyword argument '<name>'` / `range() missing required argument 'stop'` / `range expects 1 to 3 positional arguments` / `range expects Integers` | A malformed `range()` call | Fix the `range` args |
 | `<op> width too large` / `zfill width too large` / `format width/precision too large` | Padding/format width or precision exceeds the cap | Use a smaller width/precision |
@@ -500,6 +503,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `could not resolve host '<host>'` / `could not connect to <host>: <reason>` | DNS/connect failed during the exchange | Check the host/reachability |
+| `header contains a control character (CR/LF): '<k>'` / `cookie contains a control character (CR/LF): '<name>'` | A request header/cookie name or value with an embedded CR or LF (a header/response-splitting injection guard) | Strip CR/LF from user-supplied header/cookie data |
 | `invalid gzip data` / `truncated gzip data` | The server's gzip body is bad/short | Server bug — retry / disable gzip |
 | `<method>() expected at least <n> argument(s)` | Too few args to `get`/`post`/`request`/… | Pass the required args |
 | `HTTP <status> <reason> for <url>` | `raiseforstatus()` on a ≥400 response | Handle the status yourself |
@@ -522,6 +526,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `Random: unknown generator '<name>' …` | Bad `generator=` kwarg | Use `"xoshiro"` or `"mersenne_twister"` |
 | `expected a number` / `uniform expects (a, b)` / `randint expects (a, b)` / `randrange expects 1 to 3 arguments` | Bad arity/type to a distribution | Pass the expected numeric args |
 | `expovariate: lambda must be positive` | λ ≤ 0 | Pass λ > 0 |
+| `gauss: sigma must be non-negative` | A negative standard deviation to `gauss`/`normalvariate` | Pass `sigma ≥ 0` |
 | `randint: empty range` / `randrange: empty range` / `randrange: step must not be zero` / `randrange: range too large to sample` | A degenerate integer range | Widen the range / use a non-zero step |
 | `choice/choices from empty sequence/population` | Sampling an empty population | Provide items |
 | `choices: k must be non-negative` / `choices: k too large` | Bad `k` for `choices` | Pass 0 ≤ k ≤ cap |
@@ -533,7 +538,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `<fn>: math domain error (got <x>)` | A unary `math` fn outside its domain (`sqrt`(x<0), `asin`/`acos`(abs>1), `acosh`(x<1), `atanh`(abs≥1), `log2`/`log10`(x≤0), `gamma`/`lgamma` at a non-positive integer) | Restrict the argument to the domain (a `NaN` passes through) |
-| `fmod: math domain error (divisor is zero)` | `math.fmod(x, 0)` | Use a non-zero divisor |
+| `fmod: math domain error (divisor is zero)` / `(infinite dividend)` | `math.fmod(x, 0)`, or `math.fmod(inf, y)` (libm would return a silent `NaN`) | Use a finite dividend and a non-zero divisor |
 | `log: math domain error (argument must be > 0)` / `(base must be > 0 and != 1)` | `math.log` with x≤0 or a bad base | Positive argument / valid base |
 | `pow: math domain error (a negative base requires an integer exponent)` / `(zero to a negative power)` | `math.pow(-2, 0.5)` / `math.pow(0, -1)` | Integer exponent for a negative base (or use `complex`) |
 | `<who>: cannot convert NaN/infinity to Integer` / `result out of Integer range` | `floor`/`ceil` of a non-finite/huge value | Feed a finite, in-range value |

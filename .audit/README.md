@@ -46,3 +46,27 @@ Findings are numbered per round (`AXX-N`), so an `AXX` id is only unambiguous **
 v1.12 `A18` (net) and v1.13 `A18` (net) are different documents. Always qualify by round when citing.
 Later rounds re-audit earlier subsystems from scratch rather than diffing, so a genuinely fixed bug
 should not reappear; if it does, that is itself a finding (a regression the earlier round's test missed).
+
+## False positives / rejected findings (do NOT re-fix)
+
+Every round flags some behaviours that turn out to be **correct by design** or otherwise not bugs.
+Because each round re-audits from scratch, the *same* false positive tends to resurface — so it is
+recorded here once, with the reason, to stop it being re-litigated (or "fixed" into a regression).
+Consult this list before acting on any finding that proposes changing one of these behaviours; if you
+believe a rejection is wrong, argue it explicitly rather than silently reverting a load-bearing choice.
+
+| Behaviour (auditor-flagged) | Verdict | Why it is not a bug |
+|---|---|---|
+| `math.trunc(x)` / `round(x)` return an **Integer**, not a Float (v1.12 A11-1) | by design | Kirito's Integer is int64 and truncation yields a whole number; returning Float would lose the type. Confirmed non-bug; an earlier "fix" was reverted. |
+| A NaN used as a Set element / Dict key is **write-only** — you can insert it but never find it, and two NaNs both store (v1.12 A06-7) | by design | `==` on floats is exact IEEE-754, and `NaN != NaN`; membership/hashing agree with `==`. Load-bearing (`r7_types.ki`). *Note:* the v1.13 tabular NaN-key crashes (v1.13 A25-1/A25-2) were fixed at the **tabular** layer — drop NaN keys, pandas-style — precisely because the core NaN-key semantics are intentional and must not change. |
+| Dict / Set iteration order is **not** insertion-stable across delete (pre-1.12) | by design | Kirito's Dict and Set are documented as **unordered**; no insertion-order guarantee is made. |
+| `Semaphore.release` "over-release" and `Lock.release` by a non-owner are accepted, not rejected (pre-1.12) | intentional | Matches the permissive counting-semaphore / advisory-lock contract; rejecting would break valid producer/consumer patterns. |
+| Scalar-on-the-**left** tensor arithmetic throws — `2 * t` fails, `t * 2` works (v1.13 A15) | documented limitation | Kirito has no reflected (`_radd_`-style) dunder, so `applyBinaryOp` never dispatches to the right operand. A documented invariant (`r11_docinvariants.ki`), not a bug — an ergonomics gap noted for a future reflected-op feature. |
+| `io.write`/`io.print` stringify a `Bytes` argument (repr) instead of writing raw bytes; `BytesIO(Bytes(...))` is rejected (v1.13 A12-5) | intentional | Text vs binary streams are distinct; raw-byte output goes through a binary-mode `File`/`open(..., "wb")`. The `BytesIO(Bytes)` rejection is tested (`r4_io.ki`). |
+| A03 analyzer "assigned-but-never-used" / "unused-result" flags on use-before-`var` or a shadowed call target (v1.13 A03-1/A03-3) | analyzer false positive | Non-fatal *warnings*, not exceptions; the flagged code runs correctly. Tightening the analyzer risks false negatives; left as-is. |
+
+**Evolved case worth noting:** inline-function `return a, b` "doesn't pack" was **rejected as by-design**
+in pre-1.12 and v1.12 (an inline body is a single-expression thunk; the comma belongs to the enclosing
+context). v1.13 kept that rule but fixed the *real* defect underneath it — in a bare pack position the
+trailing comma was **silently** absorbed into `[<function>, b]`; it is now a clear parse error (v1.13
+A02-1). So the "no packing" verdict stood, but the silent-misparse it masked did not.
