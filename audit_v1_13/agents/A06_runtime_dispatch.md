@@ -137,3 +137,94 @@ low-severity/diagnostic notes, and coverage gaps.
 
 ## Coverage gaps (existing tests strong; these angles appear untested)
 
+### A06-6: Cross-type Integer↔Float EXACT equality at the 2^53 boundary is untested
+- severity: coverage
+- location: `runtime.hpp:86-97` (`compareIntFloat`/`intFloatEqual`), `runtime.hpp:251-256`, `274-279`
+- description: `r4_numbers.ki:130` tests Integer↔Integer ordering beyond 2^53, and `:79` tests
+  small `1 == 1.0`. But the load-bearing claim in the comments — that `intFloatEqual` avoids the
+  lossy `(double)int` round-trip so `2^53+1 != the float 2^53` and `INT64_MAX != 2.0^63` — has no
+  direct assertion. This is the exact behavior `compareIntFloat` exists to guarantee.
+- proposed-test: `assert not (9007199254740993 == 9007199254740992.0)`;
+  `assert 9223372036854775807 != 9223372036854775808.0` (imax vs 2^63);
+  `assert not (imax < 9223372036854775808.0) == False` (i.e. imax < 2^63 is True);
+  and hashing agreement: `{9007199254740992.0}` must not contain `9007199254740993`.
+- confidence: high (gap).
+
+### A06-7: Huge String/List repetition guards ("repeated String too large" / "repeated List too large") untested
+- severity: coverage
+- location: `runtime.hpp:351-352` (String `*`), `runtime.hpp:448-449` (List `*`)
+- description: `range` too-large is tested; the `kMaxRepeat` guards on `String * n` and `List * n`
+  are not exercised. These are the OOM-defense paths.
+- proposed-test: `assert throws(Function(): return "x" * 10**12)`;
+  `assert throws(Function(): return [0] * 10**12)`; and confirm `"x" * 0 == ""`, `[1] * 0 == []`,
+  and negative counts yield empty.
+- confidence: high (gap).
+
+### A06-8: Sibling/unrelated-class privacy rejection untested
+- severity: coverage
+- location: `runtime.hpp:2095-2108` (`checkPrivateAccess`), `classIsSubclassOf` bidirectional check
+- description: Tests cover (a) subclass-reads-parent-private and (b) outside-any-class rejection.
+  The bidirectional `classIsSubclassOf(objClass, currentClass) || classIsSubclassOf(currentClass,
+  objClass)` means two SIBLING classes (both extend a common base, neither a subclass of the other)
+  must NOT touch each other's privates — untested. Also untested: a method of an UNRELATED class
+  reaching into an instance's private.
+- proposed-test: `class B1(Base)` and `class B2(Base)`; a `B1` method accessing `b2._priv` (a `B2`
+  instance) must throw "cannot access private member". Also: same-class-different-instance access
+  (`a._priv` where a is another A) must SUCCEED.
+- confidence: high (gap).
+
+### A06-9: Reflected `!=`/`==` with a non-instance on the LEFT and instance on the RIGHT is thinly tested
+- severity: coverage
+- location: `runtime.hpp:2147-2161`
+- description: The reflected branch (`5 == c`, `5 != c` where c defines `_eq_`/`_ne_`) has no
+  direct spec assertion found. `_eq_` symmetry is tested "both directions symmetric-ish" for two
+  instances, but the number-on-the-left reflected path (and the standalone-`_ne_`-on-the-right
+  variant, see A06-1) is not.
+- proposed-test: `assert 5 == c and c == 5` for a class whose `_eq_(self,o)` matches 5; likewise
+  `5 != c`; and a class with only `_ne_`.
+- confidence: high (gap).
+
+### A06-10: `numericBinary` non-numeric guard via direct builtin entry is untested
+- severity: coverage
+- location: `runtime.hpp:161-167`
+- description: The guard exists specifically because `pow`/`round`/`divmod` call `numericBinary`
+  directly with raw args (bypassing the operator path's numeric pre-check), where a non-numeric
+  operand would otherwise be `asDouble`-downcast (type-confusion UB). No test drives a non-numeric
+  arg INTO these builtins to confirm the clean throw.
+- proposed-test: `assert throws(Function(): return pow("x", 2))`,
+  `assert throws(Function(): return divmod("x", 2))`,
+  `assert throws(Function(): return round("x"))` — each with a "unsupported operand type" message.
+- confidence: high (gap).
+
+### A06-11: `Integer * sequence` reversed-repetition dispatch (`3 * "ab"`, `3 * [1]`) not asserted here
+- severity: coverage (may live in A09/A10 String/List suites)
+- location: `runtime.hpp:257-268` (`IntVal::binary` Mul special-case defers to the sequence)
+- description: The `Integer * seq` path (either operand order) routes through `IntVal::binary`'s
+  Mul branch to the sequence's own `*`. No assertion found in the numeric suite; ensure it is
+  covered (either here or in the sequence suites) since the dispatch logic is in-scope.
+- proposed-test: `assert 3 * "ab" == "ababab"` and `assert 3 * [1] == [1, 1, 1]` and
+  `assert 3 * b"ab" == b"ababab"`.
+- confidence: medium (may be covered by A09/A10).
+
+### A06-12: Default-param evaluation order/scope edge cases lightly covered
+- severity: coverage
+- location: `runtime.hpp:2027-2040` (defaults filled left-to-right in the call scope)
+- description: Covered: default reads `arglist`/enclosing scope at call time; mutable freshness
+  (`xs = []` per call) is implied. NOT directly asserted: (a) a default that references an EARLIER
+  parameter (`Function(a, b = a + 1)`) — the CLAUDE.md invariant; (b) a mutable default is a FRESH
+  object each call (mutate it in call 1, confirm call 2 sees a new empty one); (c) a default
+  referencing a LATER parameter must be a name error (or read the enclosing scope, not the later
+  param).
+- proposed-test: `var f = Function(a, b = a + 1): return b` then `f(10) == 11`, `f(10, 5) == 5`;
+  `var g = Function(xs = []): xs.append(1); return len(xs)` then `g() == 1 and g() == 1` (freshness).
+- confidence: high (gap for the earlier-param and freshness assertions specifically).
+
+### A06-13: No differential test that the numeric fast path == the virtual-dispatch path
+- severity: coverage (low)
+- location: `runtime.hpp:2122-2132` (fast path) vs `IntVal::binary`/`FloatVal::binary` -> `numericBinary`
+- description: The fast path is asserted equivalent by construction/comment. A cheap guard would
+  compute a matrix of op×(Int,Float) combos through both entry points (operator vs a builtin that
+  forces `numericBinary`) and assert identical results — protecting against future divergence.
+- proposed-test: parametric loop over {+,-,*,/,//,%,**,<,<=,>,>=} × {int,float} asserting stable
+  results incl. wraparound and exact-compare corners.
+- confidence: medium.
