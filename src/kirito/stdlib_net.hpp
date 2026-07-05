@@ -1077,6 +1077,10 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return bind("recv", {"n"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {  // param `n` matches the docs (recv([n]))
             int64_t reqN = a.empty() ? 4096 : asInt(vm, a[0]);
             if (reqN < 0) throw KiritoError("recv size must be non-negative");
+            // recv(0) returns empty Bytes immediately (Python semantics). A raw ::recv(fd, buf, 0)
+            // BLOCKS on Linux until data or EOF, which is a surprising hang; short-circuit it. Still
+            // validate the socket isn't closed, for a consistent error.
+            if (reqN == 0) { (void)sock(vm, self).fdOrThrow("recv"); return vm.alloc(std::make_unique<BytesVal>(std::string())); }
             std::size_t n = static_cast<std::size_t>(std::min<int64_t>(reqN, 64ll * 1024 * 1024));  // cap the buffer; recv returns <= size anyway
             std::vector<char> buf(n);
             long long got = netcompat::recvBytes(sock(vm, self).fdOrThrow("recv"), buf.data(), n);

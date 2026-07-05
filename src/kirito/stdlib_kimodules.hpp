@@ -973,6 +973,10 @@ class Enum:
         self._order = []                 # definition order (a Dict's keys() is unordered)
         var i = 0
         for name in names:
+            # Reject a duplicate name: without this the second entry would silently overwrite the
+            # first's value, leaving get()/nameof() disagreeing and values() no longer 0..n-1.
+            if name in self._byName:
+                throw "duplicate enum member: " + name
             self._byName[name] = i
             self._byValue[i] = name
             self._order.append(name)
@@ -1456,6 +1460,19 @@ class Series:
             if not _isnan(v):
                 c = c + 1
         return c
+    var all = Function(self) -> Bool:
+        # truth reduction of a (boolean) Series: True iff every non-missing value is truthy (vacuously
+        # True when empty / all-missing) — the documented way to collapse a boolean mask to a scalar.
+        for v in self.values:
+            if not _isnan(v) and not Bool(v):
+                return False
+        return True
+    var any = Function(self) -> Bool:
+        # True iff at least one non-missing value is truthy.
+        for v in self.values:
+            if not _isnan(v) and Bool(v):
+                return True
+        return False
     var mean = Function(self):
         var nums = _numeric(self.values)
         if len(nums) == 0:

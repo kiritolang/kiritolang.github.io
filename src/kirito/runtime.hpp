@@ -410,6 +410,12 @@ inline bool kiLessThan(KiritoVM& vm, Handle a, Handle b) {
     }
     if (x.kind() == ValueKind::String && y.kind() == ValueKind::String)
         return static_cast<const StrVal&>(x).value() < static_cast<const StrVal&>(y).value();
+    // Bytes order lexicographically by unsigned byte (as the `< <= > >=` operators already do) — so
+    // sorted()/min()/max() work on Bytes too. std::string's `<` is char_traits<char> = unsigned-byte
+    // memcmp order, exactly the byte order we want. (Bytes is a NativeClass, so kind() == Instance.)
+    if (auto* xb = dynamic_cast<const BytesVal*>(&x))
+        if (auto* yb = dynamic_cast<const BytesVal*>(&y))
+            return xb->data < yb->data;
     if ((x.kind() == ValueKind::List || x.kind() == ValueKind::Array) &&
         (y.kind() == ValueKind::List || y.kind() == ValueKind::Array)) {
         const auto& xe = static_cast<const ListVal&>(x).elems;

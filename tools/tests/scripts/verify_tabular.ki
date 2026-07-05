@@ -326,11 +326,14 @@ assert raises_msg(Function(): return tb.merge(orders, products, on = "product_id
 assert raises_msg(Function(): return orders.merge(products, "product_id", "bogus"), "how must be one of"), "bad how via DataFrame.merge throws"
 assert raises(Function(): return gdf.groupby("dept").agg({"salary": "bogus"})), "unknown reducer in agg raises"
 
-# ============================================================ DISCREPANCIES (documented but absent)
-# docs (10-stdlib.md line 1233) say a boolean Series reduces via `s.all()`/`s.any()`, but NEITHER
-# method exists on Series in the impl -> both raise. Pinned so a future fix is noticed.
-assert raises(Function(): return (s > 20).all()), "Series.all() is documented but NOT implemented"
-assert raises(Function(): return (s > 20).any()), "Series.any() is documented but NOT implemented"
+# ============================================================ Series.all()/any() (now implemented)
+# docs (10-stdlib.md) present s.all()/s.any() as the way to reduce a boolean Series to a scalar.
+var bmask = tb.Series([True, True, False])
+assert bmask.all() == False and bmask.any() == True, "Series all/any on a mixed mask"
+assert tb.Series([True, True]).all() == True, "Series.all() all-true"
+assert tb.Series([False, False]).any() == False, "Series.any() all-false"
+assert tb.Series([]).all() == True and tb.Series([]).any() == False, "Series all/any empty (vacuous)"
+assert (tb.Series([10, 30, 20]) > 25).any() == True and (tb.Series([10, 30, 20]) > 25).all() == False, "all/any on a comparison mask"
 # a DataFrame has no arithmetic operators (docs: 'operated on per-column'); df + 1 raises.
 assert raises(Function(): return df + 1), "DataFrame arithmetic operator not implemented"
 

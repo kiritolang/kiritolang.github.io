@@ -1248,7 +1248,7 @@ reduce it first (`s.all()`/`s.any()`) or index with the mask.
 - `df["new"] = series_or_list_or_scalar` adds/replaces a column; `assign(name, value)` returns a copy
   with the column added.
 - Shape/views: `shape()` → `[rows, cols]`, `nrows()`, `columns`, `index`, `len(df)`,
-  `head`/`tail`/`slice`, `rowat(pos)` (one row as a Dict) / `rowsat(positions)` (a sub-DataFrame),
+  `head`/`tail`/`slice`, `rowat(pos)` (one row as a Series, indexed by column name) / `rowsat(positions)` (a sub-DataFrame),
   `rename(columns)`, `drop(columns)`, `setindex(col)`, `resetindex()`, `copy()`, `todict()`,
   `torows()`, `iterrows()`, `tocsv()`.
 - Aggregations over **numeric** columns → a Series indexed by column: `sum`, `mean`, `min`, `max`,

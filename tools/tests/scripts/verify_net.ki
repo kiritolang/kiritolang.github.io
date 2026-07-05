@@ -122,8 +122,12 @@ assert pair[0].send("ab") == 2, "socketpair send returns byte count"
 assert pair[1].recv(2).decode() == "ab", "socketpair a -> b"
 discard pair[1].send("BA")
 assert pair[0].recv(2).decode() == "BA", "socketpair b -> a"
+# FIXED: recv(0) returns empty Bytes immediately (Python semantics) instead of blocking on ::recv.
+assert pair[0].recv(0) == Bytes([]) and len(pair[0].recv(0)) == 0, "recv(0) -> empty Bytes, no block"
 pair[0].close()
 pair[1].close()
+# recv(0) on a CLOSED socket still errors (not silently empty)
+assert raises_msg(Function(): return pair[0].recv(0), "socket is closed"), "recv(0) on closed socket throws"
 # datagram socketpair (POSIX); tolerate a platform that lacks it.
 if not raises(Function(): return net.socketpair("dgram")):
     var dp = net.socketpair("dgram")

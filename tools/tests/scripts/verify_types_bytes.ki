@@ -89,11 +89,13 @@ assert Bytes([1]) < Bytes([1, 2]), "shorter-prefix < longer"
 assert Bytes([1, 2]) <= Bytes([1, 2]) and Bytes([1, 2]) >= Bytes([1, 2]), "<= >= equal"
 assert Bytes([2]) > Bytes([1, 9]), "first byte dominates ordering"
 assert Bytes([255]) > Bytes([254]), "255 boundary ordering"
-# DISCREPANCY: the `<`/`<=`/`>`/`>=` operators order Bytes lexicographically (docs: "ordered
-# lexicographically"), but sorted()/min()/max() go through kiLessThan (runtime.hpp), which has no
-# Bytes case and throws "cannot order 'Bytes' and 'Bytes'". Pin the current (throwing) behaviour.
-assert raises_msg(Function(): return sorted([Bytes([2]), Bytes([1])]), "cannot order 'Bytes' and 'Bytes'"), "sorted(Bytes) throws (kiLessThan has no Bytes case)"
-assert raises_msg(Function(): return min([Bytes([2]), Bytes([1])]), "cannot order 'Bytes' and 'Bytes'"), "min(Bytes) throws"
+# FIXED: kiLessThan now has a Bytes branch (lexicographic by unsigned byte), so sorted()/min()/max()
+# work on Bytes — consistent with the `<`/`<=`/`>`/`>=` operators and the "ordered lexicographically"
+# docs. (Was: they threw "cannot order 'Bytes'".)
+assert sorted([Bytes([3]), Bytes([1]), Bytes([2])]) == [Bytes([1]), Bytes([2]), Bytes([3])], "sorted(Bytes) lexicographic"
+assert sorted([Bytes([1, 0]), Bytes([1])]) == [Bytes([1]), Bytes([1, 0])], "sorted(Bytes) shorter-prefix first"
+assert min([Bytes([2]), Bytes([1])]) == Bytes([1]) and max([Bytes([2]), Bytes([1])]) == Bytes([2]), "min/max(Bytes)"
+assert sorted([Bytes([200]), Bytes([100])]) == [Bytes([100]), Bytes([200])], "sorted(Bytes) unsigned (>127) order"
 
 # ============================================================ hashing / Dict & Set keys
 var d = {}

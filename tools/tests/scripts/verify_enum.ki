@@ -49,17 +49,13 @@ assert raises_msg(Function(): return color.get("NOPE"), "no such enum member"), 
 # nameof with an unknown value hits a missing Dict key -> throws (not silent)
 assert raises(Function(): return color.nameof(99)), "nameof unknown value throws"
 
-# ============================================================ FINDING: duplicate names silently corrupt the enum
-# Enum performs no uniqueness check. A duplicated name overwrites its earlier index (last wins),
-# yet names() still lists the duplicate and values() reports the duplicated index with a gap.
-# This is a SILENT-CORRUPTION bug (see disc_base64_csv_copy_enum.md). Pinned here as current behaviour.
-var dup = enum.Enum(["A", "B", "A"])
-assert dup.get("A") == 2, "duplicate name: last index wins (0 is lost)"
-assert dup.names() == ["A", "B", "A"], "duplicate name appears twice in names()"
-assert dup.values() == [2, 1, 2], "values() corrupted: index 0 gone, 2 duplicated"
-# nameof still maps the OTHER (surviving) value slots; value 0 stays mapped to the shadowed name
-assert dup.nameof(0) == "A" and dup.nameof(2) == "A", "both value slots map back to A (byValue not deduped)"
-# no throw was raised building the corrupted enum -- confirm the silent nature
-assert not raises(Function(): return enum.Enum(["X", "X"])), "duplicate-name enum builds WITHOUT error (silent)"
+# ============================================================ FIXED: duplicate names are now rejected
+# Enum() previously performed no uniqueness check, so a duplicated name silently overwrote its earlier
+# index (get/nameof then disagreed, values() lost 0..n-1). It now throws a clear error at construction.
+assert raises_msg(Function(): return enum.Enum(["A", "B", "A"]), "duplicate enum member: A"), "duplicate name rejected"
+assert raises_msg(Function(): return enum.Enum(["X", "X"]), "duplicate enum member: X"), "adjacent duplicate rejected"
+# a genuinely distinct-name enum still builds fine with a clean 0..n-1 value set
+var e3 = enum.Enum(["A", "B", "C"])
+assert e3.values() == [0, 1, 2] and e3.names() == ["A", "B", "C"], "distinct enum intact"
 
 io.print("OK enum")
