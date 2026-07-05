@@ -160,6 +160,26 @@ private:
         if (std::holds_alternative<std::string>(lit.value)) return "S" + std::get<std::string>(lit.value);
         return std::nullopt;
     }
+    // The switch key for a case-label EXPRESSION: a literal scalar, OR a unary minus applied to a
+    // numeric literal. A negative label like `-1` parses as UnaryExpr(Neg, Literal 1), NOT a
+    // LiteralExpr — so without folding it here it (a) escaped duplicate detection (`case -1` twice was
+    // accepted) and (b) silently dropped the whole switch off the O(1) dispatch to the O(n) chain.
+    // The folded key must match what scalarSwitchKey computes for the negated value at run time.
+    static std::optional<std::string> constSwitchKey(const ast::Expr& e) {
+        if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(&e)) return literalSwitchKey(*lit);
+        if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&e); un && un->op == UnOp::Neg)
+            if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(un->operand.get())) {
+                if (std::holds_alternative<int64_t>(lit->value))
+                    return "I" + std::to_string(-std::get<int64_t>(lit->value));
+                if (std::holds_alternative<double>(lit->value)) {
+                    double d = -std::get<double>(lit->value);
+                    if (std::isnan(d)) return std::nullopt;
+                    if (d == 0.0) d = 0.0;
+                    return "F" + floatToRoundtrip(d);
+                }
+            }
+        return std::nullopt;
+    }
 
     // --- recursion with a depth guard (matching the parser's nesting bound) so a pathologically deep
     // AST throws a clean error (with the node's span) instead of overflowing the compiler's stack. ---
@@ -351,8 +371,7 @@ private:
             fum::unordered_set<std::string> seen;
             for (const auto& c : s.cases)
                 for (const auto& valExpr : c.values)
-                    if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(valExpr.get()))
-                        if (auto key = literalSwitchKey(*lit); key && !seen.insert(*key).second) {
+                    if (auto key = constSwitchKey(*valExpr); key && !seen.insert(*key).second) {
                             compileExpr(*s.subject);
                             emit(Op::Pop);
                             emit(Op::LoadConst, addConst(vm_.makeString("duplicate switch case value")));
@@ -361,11 +380,9 @@ private:
                             return;
                         }
         }
-        // Fast path: all case values are literal scalars -> one O(1) hash dispatch built at compile time.
-        auto litKey = [](const ast::Expr& e) -> std::optional<std::string> {
-            if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(&e)) return literalSwitchKey(*lit);
-            return std::nullopt;
-        };
+        // Fast path: all case values are compile-time constant scalars (incl. negated numeric literals)
+        // -> one O(1) hash dispatch built at compile time.
+        auto litKey = [](const ast::Expr& e) { return constSwitchKey(e); };
         bool allLiteral = true;
         for (const auto& c : s.cases)
             for (const auto& v : c.values)

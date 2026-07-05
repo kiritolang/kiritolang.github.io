@@ -232,5 +232,26 @@ int main() {
               == "TrueTrue");
     }
 
+    // === A04-2 / A04-3 (switch negative case labels): a negative label `-1` parses as UnaryExpr(Neg,
+    // Literal), not a LiteralExpr, so it (a) escaped duplicate detection — `case -1` twice was accepted
+    // — and (b) dropped the whole switch off the O(1) dispatch. constSwitchKey now folds a negated
+    // numeric literal, so duplicates are rejected and negative cases dispatch correctly. ===
+    CHECK(has(err("var x = 5\nswitch x:\n    case -1:\n        pass\n    case -1:\n        pass"),
+              "duplicate switch case value"));
+    CHECK(has(err("var x = 5\nswitch x:\n    case -1.5:\n        pass\n    case -1.5:\n        pass"),
+              "duplicate switch case value"));
+    // a negative and its positive are NOT duplicates
+    CHECK(ok("var x = 5\nswitch x:\n    case -1:\n        pass\n    case 1:\n        pass\n1") == "1");
+    // negative-case dispatch returns the right arm (fast path)
+    CHECK(ok("var f = Function(x):\n    switch x:\n        case -1:\n            return \"a\"\n"
+             "        case -2:\n            return \"b\"\n        default:\n            return \"c\"\n"
+             "f(-1) + f(-2) + f(-9)") == "abc");
+
+    // === A19-4 (env thread-safety): the four env entry points are now serialized by a process-wide
+    // mutex (the tsan build is the real race gate). Functional no-regression: set/get/unset round-trip. ===
+    CHECK(ok("var sys = import(\"sys\")\nsys.setenv(\"KI_AUDIT_V113\", \"x\")\nsys.getenv(\"KI_AUDIT_V113\")") == "x");
+    CHECK(ok("var sys = import(\"sys\")\nsys.setenv(\"KI_AUDIT_V113\", \"y\")\nsys.unsetenv(\"KI_AUDIT_V113\")\n"
+             "sys.getenv(\"KI_AUDIT_V113\", \"gone\")") == "gone");
+
     return RUN_TESTS();
 }
