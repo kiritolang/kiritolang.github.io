@@ -1,0 +1,65 @@
+# Doc-vs-impl verification for the enum stdlib module (docs/pages/10-stdlib.md "## enum").
+# Enum(names) maps each name to its index. Prints "OK enum".
+var io = import("io")
+var enum = import("enum")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ functioning
+var color = enum.Enum(["RED", "GREEN", "BLUE"])
+assert color.get("RED") == 0 and color.get("GREEN") == 1 and color.get("BLUE") == 2, "get -> index"
+assert color["RED"] == 0 and color["BLUE"] == 2, "index syntax == get"
+assert color.nameof(0) == "RED" and color.nameof(2) == "BLUE", "nameof value -> name"
+assert color.names() == ["RED", "GREEN", "BLUE"], "names() in definition order"
+assert color.values() == [0, 1, 2], "values() are the indices"
+assert "RED" in color and "BLUE" in color, "membership present"
+assert not ("PURPLE" in color), "membership absent"
+assert "PURPLE" not in color, "not in absent"
+
+# names() returns a copy: mutating it does not affect the enum
+var ns = color.names()
+ns.append("MUTATED")
+assert color.names() == ["RED", "GREEN", "BLUE"], "names() returns an independent copy"
+
+# ============================================================ edge: single member, empty enum
+var one = enum.Enum(["ONLY"])
+assert one.get("ONLY") == 0 and one.nameof(0) == "ONLY" and one.names() == ["ONLY"], "single-member enum"
+var empty = enum.Enum([])
+assert empty.names() == [] and empty.values() == [], "empty enum"
+assert not ("X" in empty), "empty enum membership"
+
+# definition order is preserved even when it differs from sorted/hash order
+var mixed = enum.Enum(["zulu", "alpha", "mike"])
+assert mixed.names() == ["zulu", "alpha", "mike"], "order preserved (not sorted)"
+assert mixed.get("alpha") == 1, "order-based indices"
+
+# ============================================================ hardening
+assert raises_msg(Function(): return color.get("NOPE"), "no such enum member"), "get unknown name throws"
+# nameof with an unknown value hits a missing Dict key -> throws (not silent)
+assert raises(Function(): return color.nameof(99)), "nameof unknown value throws"
+
+# ============================================================ FINDING: duplicate names silently corrupt the enum
+# Enum performs no uniqueness check. A duplicated name overwrites its earlier index (last wins),
+# yet names() still lists the duplicate and values() reports the duplicated index with a gap.
+# This is a SILENT-CORRUPTION bug (see disc_base64_csv_copy_enum.md). Pinned here as current behaviour.
+var dup = enum.Enum(["A", "B", "A"])
+assert dup.get("A") == 2, "duplicate name: last index wins (0 is lost)"
+assert dup.names() == ["A", "B", "A"], "duplicate name appears twice in names()"
+assert dup.values() == [2, 1, 2], "values() corrupted: index 0 gone, 2 duplicated"
+# nameof still maps the OTHER (surviving) value slots; value 0 stays mapped to the shadowed name
+assert dup.nameof(0) == "A" and dup.nameof(2) == "A", "both value slots map back to A (byValue not deduped)"
+# no throw was raised building the corrupted enum -- confirm the silent nature
+assert not raises(Function(): return enum.Enum(["X", "X"])), "duplicate-name enum builds WITHOUT error (silent)"
+
+io.print("OK enum")

@@ -1,0 +1,243 @@
+# Doc-vs-impl verification for the `serialize` (text KSER1) AND `dump` (binary KDMP) stdlib modules —
+# two formats of one object-graph serializer (docs/pages/10-stdlib.md "## serialize", "## dump").
+# Covers built-in + user-class + native-value round-trips, reference/cycle preservation (id identity),
+# content-hashed members, save/load, and HARDENING (resource types must raise; truncated/garbage
+# blobs must raise, not crash/hang). Prints "OK serde".
+var io = import("io")
+var ser = import("serialize")
+var dump = import("dump")
+var path = import("path")
+var matrix = import("matrix")
+var complex = import("complex")
+var time = import("time")
+var random = import("random")
+var tensor = import("tensor")
+var net = import("net")
+var regex = import("regex")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# Round-trip helpers for each format.
+var rs = Function(x): return ser.loads(ser.dumps(x))
+var rd = Function(x): return dump.loads(dump.dumps(x))
+
+# ============================================================ output types + wire headers
+assert type(ser.dumps(1)) == "String", "serialize.dumps -> String (text)"
+assert type(dump.dumps(1)) == "Bytes", "dump.dumps -> Bytes (binary)"
+assert ser.dumps(1).startswith("KSER1 "), "serialize wire header KSER1"
+assert dump.dumps(1)[0:4] == Bytes("KDMP"), "dump wire magic KDMP"
+# dump.loads also accepts a String carrying the same bytes (latin-1 keeps them byte-exact).
+assert dump.loads(dump.dumps([7, 8]).decode("latin-1")) == [7, 8], "dump.loads accepts a String blob"
+
+# ============================================================ built-in type round-trips (BOTH formats)
+assert rs(None) == None and rd(None) == None, "round-trip None"
+assert rs(True) == True and rs(False) == False, "round-trip Bool (text)"
+assert rd(True) == True and rd(False) == False, "round-trip Bool (binary)"
+assert rs(42) == 42 and rs(-999999999999) == -999999999999, "round-trip Integer (text)"
+assert rd(42) == 42 and rd(-999999999999) == -999999999999, "round-trip Integer (binary)"
+assert rs(3.5) == 3.5 and rs(0.1 + 0.2) == 0.1 + 0.2, "round-trip Float exact (text)"
+assert rd(3.5) == 3.5 and rd(0.1 + 0.2) == 0.1 + 0.2, "round-trip Float exact (binary)"
+var snan = rs(Float("nan"))
+assert snan != snan and rs(Float("inf")) > 1e308, "round-trip non-finite Float (text)"
+assert rs("héllo\tworld") == "héllo\tworld", "round-trip String unicode+control (text)"
+assert rd("héllo\tworld") == "héllo\tworld", "round-trip String unicode+control (binary)"
+assert rs("") == "" and rd("") == "", "round-trip empty String"
+assert rs("a b  c\nd") == "a b  c\nd", "round-trip String with spaces/newlines (text codec is space-tokenized)"
+assert rs([1, [2, [3, 4]]]) == [1, [2, [3, 4]]], "round-trip nested List (text)"
+assert rd([1, [2, [3, 4]]]) == [1, [2, [3, 4]]], "round-trip nested List (binary)"
+assert rs([]) == [] and rd([]) == [], "round-trip empty List"
+assert rs({"a": 1, "b": [2, 3]}) == {"a": 1, "b": [2, 3]}, "round-trip Dict (text)"
+assert rd({"a": 1, "b": [2, 3]}) == {"a": 1, "b": [2, 3]}, "round-trip Dict (binary)"
+assert rs({}) == {}, "round-trip empty Dict"
+assert rs({1, 2, 3}) == {1, 2, 3} and rd({1, 2, 3}) == {1, 2, 3}, "round-trip Set (both)"
+assert rs({}) == {} and len(rs(Set())) == 0, "round-trip empty Set"
+# Bytes (a native value type opting in via _getstate_/_setstate_)
+assert rs(Bytes([1, 2, 3])) == Bytes([1, 2, 3]) and type(rd(Bytes([9]))) == "Bytes", "round-trip Bytes (both)"
+
+# ============================================================ user class instances (by attributes)
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+var p1 = rs(Point(3, 4))
+assert type(p1) == "Point" and p1.x == 3 and p1.y == 4, "class by attributes (text)"
+var p2 = rd(Point(5, 6))
+assert p2.x == 5 and p2.y == 6, "class by attributes (binary)"
+# _init_ is NOT re-run on load: an instance carrying a value _init_ never sets still restores it.
+class Bag:
+    var _init_ = Function(self): self.items = []
+var bag = Bag()
+bag.items = [1, 2]
+bag.extra = "hi"
+var bag2 = rs(bag)
+assert bag2.items == [1, 2] and bag2.extra == "hi", "class restores post-init attributes"
+
+# --- _getstate_/_setstate_ protocol (drop a transient, recompute on load) ---
+class Temp:
+    var _init_ = Function(self, c):
+        self.c = c
+        self.cached = c * 2
+    var _getstate_ = Function(self): return self.c
+    var _setstate_ = Function(self, state):
+        self.c = state
+        self.cached = state * 2
+var t1 = rs(Temp(10))
+assert t1.c == 10 and t1.cached == 20, "_getstate_/_setstate_ (text)"
+var t2 = rd(Temp(7))
+assert t2.c == 7 and t2.cached == 14, "_getstate_/_setstate_ (binary)"
+
+# ============================================================ REFERENCE + CYCLE preservation
+# A List that contains itself: the cycle must reconstruct (id identity), not hang or duplicate.
+var cyc = [1]
+cyc.append(cyc)
+var c1 = rs(cyc)
+assert len(c1) == 2 and c1[0] == 1 and id(c1[1]) == id(c1), "self-referential List cycle (text)"
+var c2 = rd(cyc)
+assert id(c2[1]) == id(c2), "self-referential List cycle (binary)"
+# A Dict that references itself.
+var dcyc = {"n": 1}
+dcyc["me"] = dcyc
+var dc = rs(dcyc)
+assert dc["n"] == 1 and id(dc["me"]) == id(dc), "self-referential Dict cycle"
+
+# Shared reference: one object reachable by two paths must stay ONE object after the round-trip.
+var shared = [99]
+var doc = {"x": shared, "y": shared}
+var r1 = rs(doc)
+assert id(r1["x"]) == id(r1["y"]), "shared reference preserved (text)"
+var r2 = rd(doc)
+assert id(r2["x"]) == id(r2["y"]), "shared reference preserved (binary)"
+# mutating the shared child through one path is visible via the other (proves identity, not a copy)
+r1["x"].append(100)
+assert r1["y"] == [99, 100], "shared reference is genuinely aliased after load"
+# shared object as a Dict VALUE under two different keys, restored identical
+var g = Point(1, 2)
+var pair = [g, g]
+var pr = rd(pair)
+assert id(pr[0]) == id(pr[1]), "shared class instance preserved (binary)"
+
+# ============================================================ native VALUE types round-trip (both)
+var m = matrix.identity(3)
+var m2 = rs(m)
+assert type(m2) == "Matrix" and m2[0, 0] == 1.0 and m2[2, 2] == 1.0 and m2[0, 1] == 0.0, "Matrix (text)"
+assert type(rd(m)) == "Matrix", "Matrix (binary)"
+var v = matrix.vector([3, 4])
+var v2 = rd(v)
+assert type(v2) == "Matrix" and v2.norm() == v.norm(), "Vector"
+var cx = complex.of(3, -4)
+var cx2 = rs(cx)
+assert type(cx2) == "Complex" and cx2.re == 3.0 and cx2.im == -4.0, "Complex (text)"
+assert rd(cx).im == -4.0, "Complex (binary)"
+var cm = complex.identity(2)
+assert type(rs(cm)) == "ComplexMatrix", "ComplexMatrix"
+var dt = time.make(2020, 6, 15, 10, 30, 0)
+var dt2 = rs(dt)
+assert type(dt2) == "DateTime" and dt2 == dt, "DateTime (text, value equality by instant)"
+assert rd(dt) == dt, "DateTime (binary)"
+# Random restores the EXACT generator stream (reproducible checkpoint).
+var rng = random.Random(1234)
+discard rng.randint(0, 1000000)
+var rngText = rs(rng)
+var rngBin = rd(rng)
+var expected = rng.random()
+assert rngText.random() == expected and rngBin.random() == expected, "Random restores exact stream (both)"
+# gradient-free Tensor.
+var tn = tensor.arange(6)
+var tn2 = rs(tn)
+assert type(tn2) == "Tensor" and tn2.tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "Tensor (text)"
+assert rd(tn).tolist() == tn.tolist(), "Tensor (binary)"
+
+# native value types nested inside a container, with shared references preserved
+var nested = {"m": m, "again": m, "pt": Point(7, 8)}
+var nr = rd(nested)
+assert nr["m"][1, 1] == 1.0 and id(nr["m"]) == id(nr["again"]) and nr["pt"].x == 7, "native value shared+nested"
+
+# ============================================================ CONTENT-HASHED members round-trip
+# A Set of Bytes and a Dict keyed by Bytes/DateTime hash by CONTENT — membership must survive.
+var sb = {Bytes([1, 2]), Bytes([3, 4]), Bytes([1, 2])}
+var sb2 = rd(sb)
+assert len(sb2) == 2 and sb2.contains(Bytes([1, 2])) and sb2.contains(Bytes([3, 4])), "Set of Bytes membership (binary)"
+var sbt = rs(sb)
+assert sbt.contains(Bytes([1, 2])) and sbt.contains(Bytes([3, 4])), "Set of Bytes membership (text)"
+var dbytes = {Bytes([9, 9]): "val", Bytes([8]): "other"}
+var db2 = rs(dbytes)
+assert db2[Bytes([9, 9])] == "val" and db2[Bytes([8])] == "other", "Dict keyed by Bytes (text)"
+assert rd(dbytes)[Bytes([9, 9])] == "val", "Dict keyed by Bytes (binary)"
+var ddate = {dt: "when"}
+var dd2 = rd(ddate)
+assert dd2[dt] == "when", "Dict keyed by DateTime (binary)"
+# a user instance with _hash_ as a Set member (content hash restored in the deferred pass)
+class Coin:
+    var _init_ = Function(self, v): self.v = v
+    var _hash_ = Function(self): return self.v
+    var _eq_ = Function(self, o): return self.v == o.v
+var coins = {Coin(1), Coin(2)}
+var coins2 = rd(coins)
+assert coins2.contains(Coin(1)) and coins2.contains(Coin(2)) and len(coins2) == 2, "Set of hashable instances membership"
+
+# ============================================================ HARDENING: resource types NOT serializable
+# Socket / open File / compiled Regex wrap live state -> a clear, catchable error (never a crash).
+assert raises_msg(Function(): return ser.dumps(net.Socket()), "cannot serialize type 'Socket'"), "serialize Socket raises"
+assert raises_msg(Function(): return dump.dumps(net.Socket()), "cannot dump type 'Socket'"), "dump Socket raises"
+assert raises_msg(Function(): return ser.dumps(regex.compile("a+")), "cannot serialize type 'Regex'"), "serialize Regex raises"
+var tmpf = path.join(path.gettempdir(), "ki_serde_probe_res.txt")
+var fh = io.open(tmpf, "w")
+assert raises_msg(Function(): return dump.dumps(fh), "cannot dump type 'File'"), "dump open File raises"
+discard fh.close()
+discard path.remove(tmpf)
+# a grad-requiring Tensor must be detach()-ed first.
+var gt = tensor.arange(3)
+discard gt.requiresgrad(True)
+assert raises_msg(Function(): return dump.dumps(gt), "requires grad"), "grad Tensor raises without detach"
+assert type(rd(gt.detach())) == "Tensor", "detach()-ed grad Tensor round-trips"
+# a plain Function has no state protocol -> not serializable.
+assert raises_msg(Function(): return ser.dumps(Function(): return 1), "cannot serialize"), "serialize Function raises"
+
+# ============================================================ HARDENING: corrupt/truncated blobs
+# text (KSER1)
+assert raises_msg(Function(): return ser.loads("garbage"), "bad serialization header"), "text bad header raises"
+assert raises_msg(Function(): return ser.loads(""), "unexpected end of serialized data"), "text empty raises"
+assert raises_msg(Function(): return ser.loads("KSER1 abc"), "corrupt serialized data"), "text bad count raises"
+assert raises_msg(Function(): return ser.loads("KSER1 5 N"), "unexpected end of serialized data"), "text truncated records raise"
+assert raises_msg(Function(): return ser.loads("KSER1 1 X 0"), "bad serialization tag"), "text bad tag raises"
+assert raises_msg(Function(): return ser.loads("KSER1 1 N 5"), "root id out of range"), "text root id out of range raises"
+assert raises_msg(Function(): return ser.loads("KSER1 1 O 7 Unknown 0 0"), "class 'Unknown' is not defined"), "text unknown class raises"
+# binary (KDMP)
+assert raises_msg(Function(): return dump.loads(Bytes([1, 2, 3, 4])), "bad dump header"), "binary bad header raises"
+assert raises_msg(Function(): return dump.loads(Bytes([1, 2, 3])), "truncated dump data"), "binary sub-magic length truncated raises"
+assert raises_msg(Function(): return dump.loads(Bytes("KDMP")), "truncated dump data"), "binary header-only truncated raises"
+var blob = dump.dumps([1, 2, 3, 4, 5])
+assert raises_msg(Function(): return dump.loads(blob[0:6]), "truncated dump data"), "binary truncated body raises"
+assert raises_msg(Function(): return dump.loads(42), "loads expects a Bytes"), "binary non-Bytes arg raises"
+# unsupported version byte (KDMP, version=2, count=0)
+assert raises_msg(Function(): return dump.loads(Bytes([75, 68, 77, 80, 2, 0, 0, 0, 0, 0, 0, 0, 0])), "unsupported dump version"), "binary bad version raises"
+
+# ============================================================ save / load to a temp file (both), cleaned up
+var tmpTxt = path.join(path.gettempdir(), "ki_verify_serde_text.kser")
+var tmpBin = path.join(path.gettempdir(), "ki_verify_serde_bin.kdmp")
+var payload = {"nums": [1, 2, 3], "nested": {"flag": True, "pt": Point(1, 2)}}
+discard ser.save(payload, tmpTxt)
+var loadedTxt = ser.load(tmpTxt)
+assert loadedTxt["nums"] == [1, 2, 3] and loadedTxt["nested"]["flag"] == True and loadedTxt["nested"]["pt"].x == 1, "serialize save/load round-trip"
+discard dump.save(payload, tmpBin)
+var loadedBin = dump.load(tmpBin)
+assert loadedBin["nums"] == [1, 2, 3] and loadedBin["nested"]["pt"].y == 2, "dump save/load round-trip"
+discard path.remove(tmpTxt)
+discard path.remove(tmpBin)
+assert not path.exists(tmpTxt) and not path.exists(tmpBin), "temp files cleaned up"
+# load of a missing file raises cleanly
+assert raises_msg(Function(): return ser.load(path.join(path.gettempdir(), "ki_no_such_serde_file.xyz")), "could not open file for loading"), "load missing file raises"
+assert raises_msg(Function(): return dump.load(path.join(path.gettempdir(), "ki_no_such_serde_file.xyz")), "could not open file for loading"), "dump.load missing file raises"
+
+io.print("OK serde")

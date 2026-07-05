@@ -1,0 +1,146 @@
+# Doc-vs-impl verification for the `itertools` module (docs/pages/10-stdlib.md "## itertools").
+# Kirito has NO generators, so every combinator returns a List and the unbounded forms
+# (count/repeat/cycle/islice) take explicit bounds. Functioning (exact List results), edge cases,
+# and HARDENING (resource guards + missing-bound + zero-step must raise the RIGHT error, and any
+# case that SHOULD raise but silently doesn't is a bug). Prints "OK itertools".
+var io = import("io")
+var it = import("itertools")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ count(start, step, stop)
+# NOTE param order is start, step, stop (step BEFORE stop, unlike range).
+assert it.count(0, 2, 10) == [0, 2, 4, 6, 8], "count start/step/stop"
+assert it.count(stop = 5) == [0, 1, 2, 3, 4], "count keyword stop, defaults start=0 step=1"
+assert it.count(5, -1, 0) == [5, 4, 3, 2, 1], "count negative step"
+assert it.count(0, 1, 0) == [], "count empty when start==stop"
+assert it.count(0, 0.5, 2) == [0, 0.5, 1.0, 1.5], "count float step"
+# HARDENING: needs a bound; step must be non-zero.
+assert raises_msg(Function(): return it.count(), "needs a stop bound"), "count no bound raises"
+assert raises_msg(Function(): return it.count(0, 1), "needs a stop bound"), "count stop=None raises"
+assert raises_msg(Function(): return it.count(0, 0, 10), "step must not be zero"), "count step 0 raises"
+
+# ============================================================ repeat(value, times)
+assert it.repeat("x", 3) == ["x", "x", "x"], "repeat"
+assert it.repeat(0, 0) == [], "repeat zero times"
+assert it.repeat("x", -2) == [], "repeat negative times -> empty (range(-2))"
+assert it.repeat([1], 2) == [[1], [1]], "repeat a list value"
+# HARDENING: `times` is required (no default) -> missing-argument error.
+assert raises_msg(Function(): return it.repeat("x"), "times"), "repeat missing bound raises"
+
+# ============================================================ cycle(iterable, times)
+assert it.cycle([1, 2], 3) == [1, 2, 1, 2, 1, 2], "cycle"
+assert it.cycle([1, 2], 0) == [], "cycle zero times"
+assert it.cycle([], 5) == [], "cycle empty iterable"
+assert it.cycle("ab", 2) == ["a", "b", "a", "b"], "cycle over a String"
+assert raises_msg(Function(): return it.cycle([1, 2]), "times"), "cycle missing bound raises"
+
+# ============================================================ chain(lists)
+assert it.chain([[1, 2], [3, 4]]) == [1, 2, 3, 4], "chain"
+assert it.chain([]) == [], "chain of nothing"
+assert it.chain([[], []]) == [], "chain of empties"
+assert it.chain([[1], [], [2, 3]]) == [1, 2, 3], "chain skips empties"
+assert it.chain(["ab", "cd"]) == ["a", "b", "c", "d"], "chain over Strings"
+
+# ============================================================ islice(iterable, start, stop[, step])
+assert it.islice(range(10), 2, 6) == [2, 3, 4, 5], "islice start/stop"
+assert it.islice(range(10), 1, 8, 2) == [1, 3, 5, 7], "islice with step"
+assert it.islice(range(3), 5, 10) == [], "islice start past end"
+assert it.islice(range(5), 0, 0) == [], "islice empty when stop==0"
+assert it.islice("abcdef", 1, 5, 2) == ["b", "d"], "islice over a String"
+# HARDENING: step 0 divides by zero when it reaches `start` (silent-bug probe -> it DOES raise).
+assert raises_msg(Function(): return it.islice([1, 2, 3], 0, 3, 0), "modulo by zero"), "islice step 0 raises"
+# ...but step 0 with an already-empty window (stop<=start) never reaches the modulo, so it is []
+assert it.islice([1, 2, 3], 0, 0, 0) == [], "islice step 0 harmless when window empty"
+
+# ============================================================ accumulate(iterable[, func])
+assert it.accumulate([1, 2, 3, 4]) == [1, 3, 6, 10], "accumulate running sum"
+assert it.accumulate([1, 2, 3, 4], Function(a, b): return a * b) == [1, 2, 6, 24], "accumulate with func"
+assert it.accumulate([]) == [], "accumulate empty"
+assert it.accumulate([7]) == [7], "accumulate single"
+# The leading element is taken verbatim (func is only applied from the 2nd element on).
+assert it.accumulate([None, None], Function(a, b): return b) == [None, None], "accumulate folds leading None as a real value"
+# ...so a numeric accumulate that begins with None tries None + Int and raises (None is a value, not "unset").
+assert raises(Function(): return it.accumulate([None, 1, 2])), "accumulate None+Int raises"
+
+# ============================================================ product(lists)
+assert it.product([[1, 2], [3, 4]]) == [[1, 3], [1, 4], [2, 3], [2, 4]], "product"
+assert it.product([]) == [[]], "product of empty list-of-lists is [[]]"
+assert it.product([[1, 2]]) == [[1], [2]], "product of a single pool"
+assert it.product([[1, 2], []]) == [], "product with an empty pool collapses to []"
+# HARDENING: projected size guard throws up front (16M > 10M cap) without materialising.
+assert raises_msg(Function(): return it.product([range(4000), range(4000)]), "result too large"), "product guard"
+
+# ============================================================ permutations(items[, r])
+assert it.permutations([1, 2, 3]) == [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]], "permutations full"
+assert it.permutations([1, 2, 3], 2) == [[1, 2], [1, 3], [2, 1], [2, 3], [3, 1], [3, 2]], "permutations r=2"
+assert it.permutations([1, 2], 5) == [], "permutations r>n -> []"
+assert it.permutations([1, 2, 3], 0) == [[]], "permutations r=0 -> [[]]"
+assert it.permutations([]) == [[]], "permutations of empty -> [[]]"
+assert it.permutations([1, 2], -1) == [], "permutations negative r -> []"
+# HARDENING: count guard throws up front (15! projection far exceeds 10M) without building rows.
+assert raises_msg(Function(): return it.permutations(range(15)), "result too large"), "permutations guard"
+
+# ============================================================ combinations(items, r)
+assert it.combinations([1, 2, 3], 2) == [[1, 2], [1, 3], [2, 3]], "combinations"
+assert it.combinations([1, 2, 3], 0) == [[]], "combinations r=0 -> [[]]"
+assert it.combinations([1, 2], 5) == [], "combinations r>n -> []"
+assert it.combinations([1, 2, 3], 3) == [[1, 2, 3]], "combinations r==n"
+assert it.combinations([1, 2], -1) == [], "combinations negative r -> []"
+# HARDENING: C(40,20) ~ 1.4e11 >> 10M cap -> throws from the multiplicative count, fast.
+assert raises_msg(Function(): return it.combinations(range(40), 20), "result too large"), "combinations guard"
+
+# ============================================================ takewhile / dropwhile / filterfalse
+var lt3 = Function(x): return x < 3
+assert it.takewhile(lt3, [1, 2, 3, 1]) == [1, 2], "takewhile stops at first false"
+assert it.takewhile(lt3, [5, 1]) == [], "takewhile none pass"
+assert it.takewhile(lt3, []) == [], "takewhile empty"
+assert it.dropwhile(lt3, [1, 2, 3, 1]) == [3, 1], "dropwhile keeps the rest"
+assert it.dropwhile(lt3, [5, 6]) == [5, 6], "dropwhile drops nothing"
+assert it.dropwhile(lt3, [1, 2]) == [], "dropwhile drops everything"
+assert it.filterfalse(Function(x): return x % 2 == 0, range(6)) == [1, 3, 5], "filterfalse keeps falsy-pred"
+assert it.filterfalse(Function(x): return True, [1, 2]) == [], "filterfalse all-true pred -> []"
+
+# ============================================================ compress(data, selectors)
+assert it.compress([1, 2, 3, 4], [True, False, True, False]) == [1, 3], "compress by truthy selector"
+assert it.compress([1, 2, 3, 4], [1, 0, 1, 0]) == [1, 3], "compress truthiness (not just Bool)"
+assert it.compress([1, 2, 3, 4], [True]) == [1], "compress selectors shorter than data"
+assert it.compress([1, 2], [True, True, True]) == [1, 2], "compress selectors longer than data"
+assert it.compress([], [True]) == [], "compress empty data"
+
+# ============================================================ starmap(func, argtuples)
+# Each tuple is passed as ONE List argument (Kirito has no *args spread).
+assert it.starmap(Function(t): return t[0] + t[1], [[1, 2], [3, 4]]) == [3, 7], "starmap"
+assert it.starmap(Function(t): return t[0], [[9]]) == [9], "starmap single-tuple"
+assert it.starmap(Function(t): return 0, []) == [], "starmap empty"
+
+# ============================================================ pairwise(iterable)
+assert it.pairwise([1, 2, 3, 4]) == [[1, 2], [2, 3], [3, 4]], "pairwise"
+assert it.pairwise([1]) == [], "pairwise single -> []"
+assert it.pairwise([]) == [], "pairwise empty -> []"
+assert it.pairwise("abc") == [["a", "b"], ["b", "c"]], "pairwise over a String"
+
+# ============================================================ ziplongest(lists, fillvalue=None)
+assert it.ziplongest([[1, 2], [3]]) == [[1, 3], [2, None]], "ziplongest pads with None"
+assert it.ziplongest([[1, 2], [3]], fillvalue = 0) == [[1, 3], [2, 0]], "ziplongest custom fillvalue"
+assert it.ziplongest([[], []]) == [], "ziplongest all empty -> []"
+assert it.ziplongest([[1], [2], [3]]) == [[1, 2, 3]], "ziplongest equal-length"
+
+# ============================================================ groupby(iterable[, key])
+assert it.groupby([1, 1, 2, 2, 3, 1]) == [[1, [1, 1]], [2, [2, 2]], [3, [3]], [1, [1]]], "groupby consecutive (repeats form separate groups)"
+assert it.groupby([]) == [], "groupby empty"
+assert it.groupby([5]) == [[5, [5]]], "groupby single"
+assert it.groupby([1, 3, 2, 4, 5], Function(x): return x % 2) == [[1, [1, 3]], [0, [2, 4]], [1, [5]]], "groupby with key fn"
+
+io.print("OK itertools")

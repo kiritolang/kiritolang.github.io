@@ -1,0 +1,89 @@
+# Doc-vs-impl verification for the `statistics` stdlib module (docs/pages/10-stdlib.md `## statistics`).
+# Functioning (exact / .compare-tolerant), edge cases, and HARDENING (bad input raises the right msg;
+# a case that should raise but doesn't is a silent bug — probed explicitly). Prints "OK statistics".
+var io = import("io")
+var st = import("statistics")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ mean
+assert st.mean([1, 2, 3, 4, 5]) == 3.0, "mean basic"
+assert type(st.mean([1, 2, 3])) == "Float", "mean returns Float"
+assert st.mean([42]) == 42.0, "mean single element"
+assert st.mean([1, 2]) == 1.5, "mean two elements"
+assert st.mean([-1.0, 1.0]) == 0.0, "mean floats"
+assert st.mean([2, 2, 2, 2]) == 2.0, "mean all-equal"
+# Large-integer mean must NOT overflow (per-element Float accumulation): mean([2^62, 2^62]) ~ 4.6e18.
+var big = 4611686018427387904
+assert st.mean([big, big]) > 0.0, "mean large ints stays positive (no int64 wrap)"
+assert st.mean([big, big]).compare(Float(big)), "mean large ints ~ 4.6e18"
+
+# ============================================================ median
+assert st.median([1, 2, 3]) == 2.0, "median odd count"
+assert st.median([1, 2, 3, 4]) == 2.5, "median even count averages middle two"
+assert st.median([7]) == 7.0, "median single"
+assert st.median([2, 1]) == 1.5, "median sorts first"
+assert type(st.median([1, 2, 3])) == "Float", "median returns Float"
+assert st.median([1, 100, 2, 3]) == 2.5, "median unsorted even"
+
+# ============================================================ mode / multimode
+assert st.mode([1, 1, 2, 2, 3]) == 1, "mode first to reach the top count on tie"
+assert st.mode([5]) == 5, "mode single"
+assert st.mode(["a", "b", "a"]) == "a", "mode strings"
+assert st.mode([1, 2, 2, 3, 3, 3]) == 3, "mode clear winner"
+assert st.multimode([1, 1, 2, 2, 3]) == [1, 2], "multimode all tied, first-seen order"
+assert st.multimode([1, 2, 3]) == [1, 2, 3], "multimode all singletons"
+assert st.multimode([4, 4, 4]) == [4], "multimode single winner"
+assert st.multimode(["a", "b", "b"]) == ["b"], "multimode strings"
+
+# ============================================================ variance / stdev (sample)
+# variance([2,4,4,4,5,5,7,9]) = 32/7 (sample), pvariance = 4.0 (population).
+assert st.variance([2, 4, 4, 4, 5, 5, 7, 9]).compare(32.0 / 7.0), "sample variance"
+assert st.pvariance([2, 4, 4, 4, 5, 5, 7, 9]) == 4.0, "population variance exact"
+assert st.stdev([2, 4, 4, 4, 5, 5, 7, 9]).compare(st.variance([2, 4, 4, 4, 5, 5, 7, 9]) ** 0.5), "stdev = sqrt(variance)"
+assert st.pstdev([2, 4, 4, 4, 5, 5, 7, 9]) == 2.0, "population stdev exact"
+assert st.variance([1, 1]) == 0.0, "variance of equal points is 0"
+assert st.pvariance([9]) == 0.0, "pvariance single point is 0"
+assert type(st.stdev([1, 2, 3])) == "Float", "stdev returns Float"
+
+# ============================================================ quantiles
+assert st.quantiles([1, 2, 3, 4, 5]) == [1.5, 3.0, 4.5], "quantiles default n=4"
+assert st.quantiles([1, 2, 3, 4, 5], 4) == [1.5, 3.0, 4.5], "quantiles explicit n=4"
+assert st.quantiles([1, 2, 3, 4], 2) == [2.5], "quantiles n=2 = median cut"
+assert st.quantiles([1, 2], 4) == [1.0, 1.5, 2.0], "quantiles two points"
+assert st.quantiles([1, 2, 3, 4, 5], 1) == [], "quantiles n=1 yields no cut points"
+assert len(st.quantiles([1, 2, 3, 4, 5, 6, 7, 8], 4)) == 3, "quantiles n=4 -> 3 cut points"
+
+# ============================================================ HARDENING (must raise the right message)
+assert raises_msg(Function(): return st.mean([]), "at least one data point"), "mean empty raises"
+assert raises_msg(Function(): return st.median([]), "at least one data point"), "median empty raises"
+assert raises_msg(Function(): return st.mode([]), "no mode for empty data"), "mode empty raises"
+assert raises_msg(Function(): return st.variance([1]), "at least two data points"), "variance single raises"
+assert raises_msg(Function(): return st.stdev([1]), "at least two data points"), "stdev single raises (via variance)"
+assert raises_msg(Function(): return st.pvariance([]), "at least one data point"), "pvariance empty raises"
+assert raises_msg(Function(): return st.pstdev([]), "at least one data point"), "pstdev empty raises"
+assert raises_msg(Function(): return st.quantiles([1]), "at least two data points"), "quantiles single raises"
+assert raises_msg(Function(): return st.quantiles([1, 2], 0), "n must be at least 1"), "quantiles n=0 raises"
+assert raises_msg(Function(): return st.quantiles([1, 2], -3), "n must be at least 1"), "quantiles n<0 raises"
+
+# --- PINNED behaviours (silent / non-obvious; documents current impl) --------------------------
+# multimode of EMPTY data does NOT raise — it silently returns [] (unlike mode, which throws).
+assert st.multimode([]) == [], "PIN: multimode([]) returns [] (no raise)"
+# quantiles checks the data-size guard BEFORE the n guard: quantiles([1], 0) reports 'two data points'.
+assert raises_msg(Function(): return st.quantiles([1], 0), "at least two data points"), "PIN: size guard precedes n guard"
+# Bool is NOT numeric in Kirito arithmetic, so a Bool dataset raises rather than treating True/False as 1/0.
+assert raises(Function(): return st.mean([True, False])), "PIN: mean of Bool data raises (Bool not numeric)"
+assert raises(Function(): return st.median([True, False])), "PIN: median of Bool data raises (Bool unorderable)"
+
+io.print("OK statistics")

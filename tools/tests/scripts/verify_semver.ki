@@ -1,0 +1,181 @@
+# Doc-vs-impl verification for the `semver` stdlib module (docs/pages/10-stdlib.md `## semver`,
+# and docs/pages/04-packages.md for the kpm range grammar). semver.org precedence + node-semver ranges:
+# parse/valid/clean, compare/eq/lt/gt/diff/inc, and the range grammar
+# satisfies/validrange/maxsatisfying/minsatisfying/sort/rsort.
+# Functioning (EXACT results) + edge cases (prerelease gating, x-ranges, partial-comparator rounding)
+# + hardening (bad versions/ranges) + silent-error probes. Prints "OK semver".
+var io = import("io")
+var s = import("semver")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ clean / parse / valid
+assert s.clean("v1.2.3") == "1.2.3", "clean strips leading v"
+assert s.clean("  =v1.2.3  ") == "1.2.3", "clean strips = / v / whitespace"
+assert s.clean("V2.0.0") == "2.0.0", "clean strips uppercase V"
+var p = s.parse("v1.2.3-a.1+b.2")
+assert p["major"] == 1 and p["minor"] == 2 and p["patch"] == 3, "parse core components"
+assert p["prerelease"] == ["a", "1"], "parse prerelease -> List of ids"
+assert p["build"] == ["b", "2"], "parse build metadata -> List of ids"
+assert p["raw"] == "1.2.3-a.1+b.2", "parse raw (cleaned)"
+assert s.parse("1.0.0")["prerelease"] == [], "parse no prerelease -> empty List"
+assert s.valid("1.2.3") == "1.2.3", "valid returns cleaned string"
+assert s.valid("v1.2.3") == "1.2.3", "valid cleans"
+assert s.valid("abc") == None, "valid invalid -> None (not a throw)"
+assert s.valid("1.2") == None, "valid partial -> None"
+assert s.valid("1.2.3.4") == None, "valid too-many-components -> None"
+assert s.major("1.2.3") == 1 and s.minor("1.2.3") == 2 and s.patch("1.2.3") == 3, "major/minor/patch"
+assert s.prerelease("1.2.3") == None, "prerelease none -> None"
+assert s.prerelease("1.2.3-rc.1") == ["rc", "1"], "prerelease ids"
+
+# ============================================================ compare (EXACT) + precedence
+assert s.compare("1.2.3", "1.2.4") == -1, "compare patch lower -> -1"
+assert s.compare("1.2.4", "1.2.3") == 1, "compare patch higher -> 1"
+assert s.compare("1.2.3", "1.2.3") == 0, "compare equal -> 0"
+assert s.compare("2.0.0", "1.9.9") == 1, "compare major dominates"
+# a prerelease sorts BEFORE its release
+assert s.compare("1.0.0-alpha", "1.0.0") == -1, "prerelease < release"
+# numeric prerelease ids sort before alphanumeric; numerics compare numerically
+assert s.compare("1.0.0-alpha.1", "1.0.0-alpha.beta") == -1, "numeric id < alphanumeric id"
+assert s.compare("1.0.0-alpha", "1.0.0-alpha.1") == -1, "shorter prerelease < longer (prefix)"
+assert s.compare("1.0.0-1", "1.0.0-2") == -1, "numeric prerelease compares numerically"
+assert s.compare("1.0.0-2", "1.0.0-10") == -1, "numeric prerelease NOT lexical (2 < 10)"
+# build metadata is ignored
+assert s.compare("1.0.0+a", "1.0.0+b") == 0, "build metadata ignored in compare"
+
+# ============================================================ comparison shortcuts (EXACT)
+assert s.eq("1.2.3", "1.2.3") and not s.eq("1.2.3", "1.2.4"), "eq"
+assert s.neq("1.2.3", "1.2.4") and not s.neq("1.2.3", "1.2.3"), "neq"
+assert s.lt("1.2.3", "1.2.4") and not s.lt("1.2.4", "1.2.3"), "lt"
+assert s.lte("1.0.0", "1.0.0") and s.lte("1.0.0", "1.0.1"), "lte"
+assert s.gt("1.0.10", "1.0.9"), "gt numeric (not lexical: 10 > 9)"
+assert s.gte("2.0.0", "1.0.0") and s.gte("1.0.0", "1.0.0"), "gte"
+
+# ============================================================ diff (EXACT)
+assert s.diff("1.0.0", "2.0.0") == "major", "diff major"
+assert s.diff("1.0.0", "1.1.0") == "minor", "diff minor"
+assert s.diff("1.0.0", "1.0.1") == "patch", "diff patch"
+assert s.diff("1.0.0-a", "1.0.0-b") == "prerelease", "diff prerelease"
+assert s.diff("1.2.3", "1.2.3") == None, "diff equal -> None"
+assert s.diff("1.0.0+x", "1.0.0+y") == None, "diff build-only -> None (build ignored)"
+
+# ============================================================ inc (EXACT) — major/minor/patch only, drops prerelease/build
+assert s.inc("1.2.3", "major") == "2.0.0", "inc major zeros minor+patch"
+assert s.inc("1.2.3", "minor") == "1.3.0", "inc minor zeros patch"
+assert s.inc("1.2.3", "patch") == "1.2.4", "inc patch"
+assert s.inc("1.2.3-rc.1+b", "major") == "2.0.0", "inc drops prerelease/build"
+assert s.inc("1.2.3-rc.1", "patch") == "1.2.4", "inc patch drops prerelease"
+
+# ============================================================ satisfies — caret / tilde / x-range / hyphen / AND / OR
+assert s.satisfies("1.5.0", "^1.2.0") == True, "caret: 1.5.0 in ^1.2.0"
+assert s.satisfies("1.2.0", "^1.2.0") == True, "caret: lower bound inclusive"
+assert s.satisfies("2.0.0", "^1.2.0") == False, "caret: 2.0.0 out of ^1.2.0"
+assert s.satisfies("1.1.9", "^1.2.0") == False, "caret: below lower bound"
+# caret on a 0.x version pins the minor (^0.2.3 -> >=0.2.3 <0.3.0)
+assert s.satisfies("0.2.5", "^0.2.3") == True, "caret 0.x: same minor"
+assert s.satisfies("0.3.0", "^0.2.3") == False, "caret 0.x: next minor excluded"
+# tilde
+assert s.satisfies("1.2.9", "~1.2") == True and s.satisfies("1.3.0", "~1.2") == False, "tilde ~1.2 -> >=1.2.0 <1.3.0"
+assert s.satisfies("1.2.4", "~1.2.3") == True and s.satisfies("1.2.2", "~1.2.3") == False, "tilde ~1.2.3 lower bound"
+# x-ranges
+assert s.satisfies("1.2.9", "1.2.x") == True and s.satisfies("1.3.0", "1.2.x") == False, "x-range 1.2.x"
+assert s.satisfies("1.9.9", "1.x") == True and s.satisfies("2.0.0", "1.x") == False, "x-range 1.x"
+assert s.satisfies("1.5.0", "1") == True and s.satisfies("2.0.0", "1") == False, "bare major '1' acts as 1.x"
+assert s.satisfies("9.9.9", "*") == True and s.satisfies("0.0.1", "") == True, "'*' / '' match anything"
+# hyphen range
+assert s.satisfies("1.5.0", "1.0.0 - 2.0.0") == True, "hyphen range inside"
+assert s.satisfies("2.0.1", "1.0.0 - 2.0.0") == False, "hyphen range above upper (inclusive) bound"
+assert s.satisfies("2.0.0", "1.0.0 - 2.0.0") == True, "hyphen range upper bound inclusive"
+# explicit comparators, AND (space), OR (||)
+assert s.satisfies("1.5.0", ">=1.0.0 <2.0.0") == True, "AND: within"
+assert s.satisfies("2.0.0", ">=1.0.0 <2.0.0") == False, "AND: at exclusive upper"
+assert s.satisfies("3.0.0", "^1.0.0 || ^3.0.0") == True, "OR: matches second set"
+assert s.satisfies("1.5.0", "^1.0.0 || ^3.0.0") == True, "OR: matches first set"
+assert s.satisfies("2.0.0", "^1.0.0 || ^3.0.0") == False, "OR: matches neither"
+# exact-version range
+assert s.satisfies("1.2.3", "1.2.3") == True and s.satisfies("1.2.4", "1.2.3") == False, "exact version range"
+assert s.satisfies("1.5.0", "=1.5.0") == True, "explicit = comparator"
+
+# ============================================================ CRUCIAL: partial-comparator rounding (recent fix)
+assert s.satisfies("1.5.0", ">1") == False, ">1 rounds up to >=2.0.0 (1.5.0 excluded)"
+assert s.satisfies("2.0.0", ">1") == True, ">1 -> 2.0.0 included"
+assert s.satisfies("1.9.9", "<=1") == True, "<=1 rounds up to <2.0.0 (1.9.9 included)"
+assert s.satisfies("2.0.0", "<=1") == False, "<=1 -> 2.0.0 excluded"
+assert s.satisfies("1.2.5", ">1.2") == False, ">1.2 rounds up to >=1.3.0 (1.2.5 excluded)"
+assert s.satisfies("1.3.0", ">1.2") == True, ">1.2 -> 1.3.0 included"
+assert s.satisfies("1.3.0", "<=1.2") == False and s.satisfies("1.2.9", "<=1.2") == True, "<=1.2 -> <1.3.0"
+# >= and < fill with 0 (already correct, no rounding)
+assert s.satisfies("1.0.0", ">=1") == True and s.satisfies("0.9.9", ">=1") == False, ">=1 -> >=1.0.0"
+assert s.satisfies("0.9.9", "<1") == True and s.satisfies("1.0.0", "<1") == False, "<1 -> <1.0.0"
+# node-semver allows whitespace between operator and version (recent fix)
+assert s.satisfies("1.5.0", ">= 1.2.0") == True, "whitespace after comparator operator honored"
+assert s.satisfies("1.5.0", ">=1.0.0 < 2.0.0") == True, "whitespace inside AND set honored"
+
+# ============================================================ prerelease gating (node-semver default)
+# a plain caret range excludes prereleases
+assert s.satisfies("1.2.3-alpha", "^1.2.0") == False, "prerelease excluded from a non-prerelease range"
+# a prerelease matches only when a comparator pins the same major.minor.patch with a prerelease
+assert s.satisfies("1.2.0-alpha", ">=1.2.0-alpha <2.0.0") == True, "prerelease allowed when comparator pins same M.m.p"
+assert s.satisfies("1.2.1-alpha", ">=1.2.0-alpha <2.0.0") == False, "prerelease on a different M.m.p not allowed"
+# a normal release always satisfies (no gating)
+assert s.satisfies("1.5.0", ">=1.2.0-alpha <2.0.0") == True, "release satisfies even a prerelease-pinned range"
+
+# ============================================================ maxsatisfying / minsatisfying — original strings
+assert s.maxsatisfying(["v1.0.0", "v1.4.2", "v2.0.0"], "^1.0.0") == "v1.4.2", "maxsatisfying returns original v-prefixed tag"
+assert s.minsatisfying(["v1.0.0", "v1.4.2", "v2.0.0"], "^1.0.0") == "v1.0.0", "minsatisfying original string"
+# the kpm table (04-packages.md): tags 1.0.0 1.2.0 1.2.5 1.3.0 2.0.0
+var tags = ["1.0.0", "1.2.0", "1.2.5", "1.3.0", "2.0.0"]
+assert s.maxsatisfying(tags, "1.2.3") == None, "exact 1.2.3 not present -> None"
+assert s.maxsatisfying(tags, "^1.2.0") == "1.3.0", "kpm ^1.2.0 -> 1.3.0"
+assert s.maxsatisfying(tags, "~1.2.0") == "1.2.5", "kpm ~1.2.0 -> 1.2.5"
+assert s.maxsatisfying(tags, "1.2.x") == "1.2.5", "kpm 1.2.x -> 1.2.5"
+assert s.maxsatisfying(tags, "1.x") == "1.3.0", "kpm 1.x -> 1.3.0"
+assert s.maxsatisfying(tags, "*") == "2.0.0", "kpm * -> highest tag"
+assert s.maxsatisfying(tags, ">=1.0.0 <2.0.0") == "1.3.0", "kpm explicit range -> 1.3.0"
+assert s.maxsatisfying(["1.0.0", "2.0.0"], "^3.0.0") == None, "no match -> None"
+assert s.minsatisfying([], "*") == None, "empty list -> None"
+
+# ============================================================ sort / rsort — numeric precedence, invalid dropped
+assert s.sort(["1.10.0", "1.2.0", "1.1.0"]) == ["1.1.0", "1.2.0", "1.10.0"], "sort ascending numeric (1.10 > 1.2)"
+assert s.rsort(["1.1.0", "1.10.0", "1.2.0"]) == ["1.10.0", "1.2.0", "1.1.0"], "rsort descending"
+assert s.sort(["1.0.0", "bad", "0.9.0", "not-a-version"]) == ["0.9.0", "1.0.0"], "sort drops invalid versions"
+assert s.sort(["1.0.0-rc.1", "1.0.0"]) == ["1.0.0-rc.1", "1.0.0"], "sort keeps prerelease before release"
+
+# ============================================================ validrange — distinguishes a range from a literal ref (kpm)
+assert s.validrange("^1.2.0") == True, "validrange caret"
+assert s.validrange("~1.2") == True, "validrange tilde"
+assert s.validrange("1.x") == True, "validrange x-range"
+assert s.validrange(">=1.0.0 <2.0.0") == True, "validrange explicit range"
+assert s.validrange("1.0.0 - 2.0.0") == True, "validrange hyphen"
+assert s.validrange("*") == True and s.validrange("") == True, "validrange * / empty match-all"
+assert s.validrange("main") == False, "validrange literal ref 'main' -> False"
+assert s.validrange("1.2.3.4") == False, "validrange too-many-components -> False (agrees with valid)"
+assert s.validrange("abcxyz") == False, "validrange garbage -> False"
+
+# ============================================================ satisfies never throws (unparseable range -> False)
+assert s.satisfies("1.0.0", "not a range at all!") == False, "unparseable range -> satisfies False (no throw)"
+
+# ============================================================ HARDENING: bad versions/ranges raise with a clear message
+assert raises_msg(Function(): return s.parse("abc"), "invalid version"), "parse garbage raises"
+assert raises_msg(Function(): return s.parse("1.2"), "MAJOR.MINOR.PATCH"), "parse partial raises with shape hint"
+assert raises_msg(Function(): return s.parse("1.2.x"), "non-numeric core"), "parse x-version raises non-numeric"
+assert raises(Function(): return s.parse("1.0.0-")), "parse empty prerelease id raises"
+assert raises(Function(): return s.parse("1.2.3.4")), "parse too-many-components raises"
+# compare/inc go through parse, so bad input raises (a silent wrong answer would be a bug)
+assert raises(Function(): return s.compare("abc", "1.0.0")), "compare with invalid version raises (not silent)"
+assert raises(Function(): return s.major("nope")), "major of invalid raises"
+assert raises_msg(Function(): return s.inc("1.0.0", "prerelease"), "major/minor/patch"), "inc unsupported release raises"
+assert raises(Function(): return s.inc("1.0.0", "zzz")), "inc bad release kind raises"
+
+io.print("OK semver")

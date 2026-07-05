@@ -1,0 +1,94 @@
+# Doc-vs-impl verification for the `heapq` module (docs/pages/10-stdlib.md "## heapq").
+# A min-heap maintained inside an ordinary List. Functioning (heap property: repeated heappop
+# yields sorted order), edge (empty pop raises, single, n>len, n=0/negative), HARDENING. Prints "OK heapq".
+var io = import("io")
+var heapq = import("heapq")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ heapify (returns a NEW list)
+var data = [5, 1, 4, 2, 8, 3, 7, 6]
+var heap2 = heapq.heapify(data)
+assert data == [5, 1, 4, 2, 8, 3, 7, 6], "heapify does NOT modify its input"
+assert heap2[0] == 1, "heapify: smallest at root"
+assert len(heap2) == 8, "heapify preserves count"
+
+# ============================================================ heappop yields sorted order
+var sortedout = []
+while len(heap2) > 0:
+    sortedout.append(heapq.heappop(heap2))
+assert sortedout == [1, 2, 3, 4, 5, 6, 7, 8], "repeated heappop -> ascending sorted"
+assert len(heap2) == 0, "heap drained empty"
+
+# ============================================================ heappush keeps invariant
+var hp = []
+for x in [3, 1, 4, 1, 5, 9, 2, 6]:
+    heapq.heappush(hp, x)
+assert hp[0] == 1, "heappush: min bubbles to root"
+var drained = []
+while len(hp) > 0:
+    drained.append(heapq.heappop(hp))
+assert drained == [1, 1, 2, 3, 4, 5, 6, 9], "heappush stream drains sorted (with dups)"
+
+# ============================================================ heapreplace (pop smallest, push item)
+var hr = heapq.heapify([1, 3, 5])
+var popped = heapq.heapreplace(hr, 4)
+assert popped == 1, "heapreplace returns old smallest"
+assert hr[0] == 3, "heapreplace root after replace"
+# heapreplace returns the OLD smallest even when the new item is smaller
+var hr2 = heapq.heapify([5, 7, 9])
+assert heapq.heapreplace(hr2, 1) == 5, "heapreplace returns old top even if new is smaller"
+assert hr2[0] == 1, "heapreplace new smaller item becomes root"
+
+# ============================================================ nsmallest / nlargest
+assert heapq.nsmallest(3, [5, 1, 4, 2, 8, 3]) == [1, 2, 3], "nsmallest(3)"
+assert heapq.nlargest(3, [5, 1, 4, 2, 8, 3]) == [8, 5, 4], "nlargest(3)"
+
+# --- edge: n > len returns all (sorted) ---
+assert heapq.nsmallest(10, [3, 1, 2]) == [1, 2, 3], "nsmallest n>len -> all ascending"
+assert heapq.nlargest(10, [3, 1, 2]) == [3, 2, 1], "nlargest n>len -> all descending"
+
+# --- edge: n == 0 -> [] ---
+assert heapq.nsmallest(0, [3, 1, 2]) == [], "nsmallest(0) -> []"
+assert heapq.nlargest(0, [3, 1, 2]) == [], "nlargest(0) -> []"
+
+# --- edge: negative n -> [] (both) ---
+assert heapq.nsmallest(-1, [3, 1, 2]) == [], "nsmallest(-1) -> []"
+assert heapq.nlargest(-1, [3, 1, 2]) == [], "nlargest(-1) -> []"
+
+# --- edge: empty items ---
+assert heapq.nsmallest(3, []) == [], "nsmallest of empty -> []"
+assert heapq.nlargest(3, []) == [], "nlargest of empty -> []"
+assert heapq.heapify([]) == [], "heapify empty -> []"
+
+# --- edge: single element ---
+var single = heapq.heapify([42])
+assert single == [42] and heapq.heappop(single) == 42, "single-element heap"
+
+# ============================================================ merge (already-sorted lists)
+assert heapq.merge([[1, 4, 7], [2, 5], [3, 6, 8]]) == [1, 2, 3, 4, 5, 6, 7, 8], "merge sorted lists"
+assert heapq.merge([]) == [], "merge no lists -> []"
+assert heapq.merge([[], [], []]) == [], "merge empty lists -> []"
+assert heapq.merge([[1, 2, 3]]) == [1, 2, 3], "merge single list"
+
+# ============================================================ HARDENING
+assert raises_msg(Function(): return heapq.heappop([]), "empty heap"), "heappop empty raises (right message)"
+assert raises_msg(Function(): return heapq.heapreplace([], 1), "empty heap"), "heapreplace empty raises (right message)"
+# comparing incompatible element types must raise (heap ordering)
+assert raises_msg(Function(): return heapq.heappush([1, 2], "x"), "operator"), "heappush mixed types raises"
+
+# ============================================================ documented surface: heappushpop is NOT provided
+assert not hasattr(heapq, "heappushpop"), "heapq has no heappushpop (not documented/impl)"
+
+io.print("OK heapq")

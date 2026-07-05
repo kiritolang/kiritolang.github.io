@@ -1,0 +1,128 @@
+# Doc-vs-impl verification for the `json` stdlib module (docs/pages/10-stdlib.md "## json").
+# parse/loads (objects->Dict, arrays->List, \u escapes + surrogate pairs), stringify/dumps (indent),
+# round-trip, exact-string checks, and HARDENING (malformed input must raise the right error; a
+# non-serializable value / cycle must raise, not silently produce garbage or hang). Prints "OK json".
+var io = import("io")
+var json = import("json")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ aliases exist
+assert json.dumps == json.stringify, "dumps is stringify"
+assert json.loads == json.parse, "loads is parse"
+
+# ============================================================ dumps of simple values (EXACT strings)
+assert json.dumps(None) == "null", "dumps None"
+assert json.dumps(True) == "true" and json.dumps(False) == "false", "dumps Bool"
+assert json.dumps(42) == "42" and json.dumps(-7) == "-7" and json.dumps(0) == "0", "dumps Integer"
+assert json.dumps(3.5) == "3.5", "dumps Float"
+# Floats round-trip EXACTLY: dumps emits the shortest round-tripping form.
+assert json.dumps(0.1 + 0.2) == "0.30000000000000004", "dumps Float exact round-trip digits"
+assert json.dumps("hi") == "\"hi\"", "dumps String quoted"
+assert json.dumps("a\nb\tc") == "\"a\\nb\\tc\"", "dumps String escapes control chars"
+assert json.dumps("\"") == "\"\\\"\"", "dumps String escapes quote"
+assert json.dumps("\\") == "\"\\\\\"", "dumps String escapes backslash"
+assert json.dumps([1, 2, 3]) == "[1, 2, 3]", "dumps List"
+assert json.dumps({"a": 1}) == "{\"a\": 1}", "dumps Dict"
+assert json.dumps([]) == "[]" and json.dumps({}) == "{}", "dumps empty container"
+assert json.dumps([1, [2, [3]]]) == "[1, [2, [3]]]", "dumps nested"
+
+# --- non-finite Floats round-trip as bare tokens (a JS-style extension, not strict RFC 8259) ---
+assert json.dumps(Float("nan")) == "NaN", "dumps NaN"
+assert json.dumps(Float("inf")) == "Infinity", "dumps Infinity"
+assert json.dumps(Float("-inf")) == "-Infinity", "dumps -Infinity"
+
+# --- Bool/None object keys emit the canonical JSON tokens (not Kirito's "True"/"None") ---
+assert json.dumps({True: 1}) == "{\"true\": 1}", "dumps Bool key -> true"
+assert json.dumps({None: 1}) == "{\"null\": 1}", "dumps None key -> null"
+
+# ============================================================ dumps pretty-print (indent)
+assert json.dumps([1, 2], 2) == "[\n  1,\n  2\n]", "dumps indent list"
+assert json.dumps({"a": 1, "b": [2]}, 2) == "{\n  \"a\": 1,\n  \"b\": [\n    2\n  ]\n}", "dumps indent nested"
+# indent = 0 (the default) is compact; empty containers stay [] / {} even when indented.
+assert json.dumps([1, 2], 0) == "[1, 2]", "dumps indent 0 compact"
+assert json.dumps([], 4) == "[]" and json.dumps({}, 4) == "{}", "dumps indent empty stays flat"
+assert json.dumps([1], indent = 2) == "[\n  1\n]", "dumps indent keyword"
+
+# ============================================================ parse / loads
+assert json.loads("null") == None, "parse null"
+assert json.loads("true") == True and json.loads("false") == False, "parse booleans"
+assert json.loads("42") == 42 and json.loads("-7") == -7, "parse integers"
+assert type(json.loads("1")) == "Integer", "parse int stays Integer"
+assert type(json.loads("1.0")) == "Float" and json.loads("1.5") == 1.5, "parse float stays Float"
+assert type(json.loads("1e3")) == "Float" and json.loads("1e3") == 1000.0, "parse exponent -> Float"
+assert json.loads("\"hi\"") == "hi", "parse string"
+assert json.loads("[]") == [] and json.loads("{}") == {}, "parse empty containers"
+assert json.loads("  [ 1 , 2 ]  ") == [1, 2], "parse tolerates whitespace"
+assert type(json.loads("[1]")) == "List", "arrays -> List"
+assert type(json.loads("{\"a\": 1}")) == "Dict", "objects -> Dict"
+assert json.loads("{\"a\": 1, \"b\": [2, 3]}") == {"a": 1, "b": [2, 3]}, "parse nested"
+# non-finite tokens parse back
+var pnan = json.loads("NaN")
+assert pnan != pnan, "parse NaN"
+assert json.loads("Infinity") > 1e308 and json.loads("-Infinity") < -1e308, "parse Infinity"
+
+# --- \u escapes and surrogate pairs ---
+assert json.loads("\"\\u0041\"") == "A", "parse \\u BMP"
+assert json.loads("\"\\u00e9\"") == "é", "parse \\u Latin-1"
+assert json.loads("\"\\ud83d\\ude00\"") == "😀", "parse surrogate pair -> astral"
+assert len(json.loads("\"\\ud83d\\ude00\"")) == 1, "surrogate pair is one code point"
+# a lone (unpaired) high surrogate becomes U+FFFD, not invalid UTF-8
+assert json.loads("\"\\ud800\"") == chr(0xFFFD), "lone surrogate -> replacement char"
+# standard two-char escapes
+assert json.loads("\"a\\nb\\tc\\\\d\\\"e\"") == "a\nb\tc\\d\"e", "parse two-char escapes"
+
+# ============================================================ round-trip: loads(dumps(x)) == x
+var rt = Function(x): return json.loads(json.dumps(x))
+assert rt(None) == None and rt(True) == True and rt(False) == False, "round-trip scalars"
+assert rt(0) == 0 and rt(-12345) == -12345 and rt(255) == 255, "round-trip integers"
+assert rt(3.14159) == 3.14159 and rt(0.1 + 0.2) == 0.1 + 0.2, "round-trip floats exactly"
+assert rt("héllo\tworld\n") == "héllo\tworld\n", "round-trip string with escapes + unicode"
+assert rt([1, "a", True, None, [2.5]]) == [1, "a", True, None, [2.5]], "round-trip mixed list"
+assert rt({"n": 1, "s": "x", "b": False, "z": None, "list": [1, 2]}) == {"n": 1, "s": "x", "b": False, "z": None, "list": [1, 2]}, "round-trip nested dict"
+assert type(rt(1)) == "Integer" and type(rt(1.0)) == "Float", "round-trip preserves int/float distinction"
+
+# ============================================================ HARDENING: malformed input must raise
+assert raises_msg(Function(): return json.loads(""), "JSON parse error"), "empty input raises"
+assert raises_msg(Function(): return json.loads("[1, 2, ]"), "JSON parse error"), "trailing comma in array raises"
+assert raises_msg(Function(): return json.loads("{\"a\": 1, }"), "JSON parse error"), "trailing comma in object raises"
+assert raises_msg(Function(): return json.loads("[1, 2"), "expected ',' or ']'"), "unclosed array raises"
+assert raises_msg(Function(): return json.loads("{\"a\": 1"), "JSON parse error"), "unclosed object raises"
+assert raises_msg(Function(): return json.loads("}"), "unexpected character"), "lone brace raises"
+assert raises_msg(Function(): return json.loads("tru"), "invalid literal"), "bad token raises"
+assert raises_msg(Function(): return json.loads("{a: 1}"), "expected string key"), "unquoted key raises"
+assert raises_msg(Function(): return json.loads("1 2"), "trailing characters"), "trailing value raises"
+assert raises_msg(Function(): return json.loads("\"abc"), "unterminated string"), "unterminated string raises"
+assert raises_msg(Function(): return json.loads("\"\\q\""), "bad escape"), "bad escape raises"
+assert raises(Function(): return json.loads("[")), "lone open bracket raises"
+
+# --- HARDENING: dumps of a non-serializable value must raise (not silently drop) ---
+assert raises_msg(Function(): return json.dumps({1, 2}), "cannot serialize 'Set' to JSON"), "dumps Set raises"
+assert raises_msg(Function(): return json.dumps(Function(): return 1), "cannot serialize 'Function' to JSON"), "dumps Function raises"
+assert raises_msg(Function(): return json.dumps(Bytes([1, 2])), "cannot serialize 'Bytes' to JSON"), "dumps Bytes raises (json has no Bytes notion)"
+
+# --- HARDENING: json has NO cycle preservation; a self-referential structure must raise, not hang ---
+var cyc = [1]
+cyc.append(cyc)
+assert raises_msg(Function(): return json.dumps(cyc), "cannot serialize a cyclic structure to JSON"), "dumps self-ref list raises"
+var cycd = {"self": None}
+cycd["self"] = cycd
+assert raises_msg(Function(): return json.dumps(cycd), "cannot serialize a cyclic structure to JSON"), "dumps self-ref dict raises"
+# same guard on the pretty-printer path
+assert raises_msg(Function(): return json.dumps(cyc, 2), "cannot serialize a cyclic structure to JSON"), "dumps indent self-ref raises"
+
+# --- SILENT-ERROR probe: a Set nested deep inside must still raise (not be dropped) ---
+assert raises_msg(Function(): return json.dumps([1, [2, {3, 4}]]), "cannot serialize 'Set' to JSON"), "nested Set still raises"
+
+io.print("OK json")

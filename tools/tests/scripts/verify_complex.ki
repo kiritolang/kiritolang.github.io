@@ -1,0 +1,189 @@
+# Doc-vs-impl verification for the `complex` stdlib module (docs/pages/10-stdlib.md "## complex").
+# Functioning cases (exact == where bit-exact, tolerant .compare for analytic/computed results),
+# edge cases (pure real/imaginary, i*i, is_zero tolerance), and HARDENING (unordered comparisons,
+# analytic domain errors, singular/shape-mismatch matrices). Prints "OK complex".
+var io = import("io")
+var c = import("complex")
+var math = import("math")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ constructors & constants
+var z = c.Complex(3, 4)
+assert type(z) == "Complex", "Complex type name"
+assert z.re == 3.0 and z.im == 4.0, "re/im"
+assert z.real == 3.0 and z.imag == 4.0, "real/imag aliases"
+assert c.Complex(5) == c.of(5, 0) and c.Complex(5).im == 0.0, "Complex(re) default im=0"
+assert c.of(1, 2) == c.Complex(1, 2), "of(re,im)"
+assert c.real(7) == c.Complex(7, 0) and c.real(7).im == 0.0, "real(re) on the real axis"
+assert c.polar(2, 0).compare(c.of(2, 0), abs_tol = 1e-12), "polar(r,0) == r"
+assert c.polar(1, math.pi / 2).compare(c.i, abs_tol = 1e-12), "polar(1, pi/2) ~ i"
+# constants
+assert c.zero == c.Complex(0, 0) and c.one == c.Complex(1, 0) and c.i == c.Complex(0, 1), "constants zero/one/i"
+assert c.i.re == 0.0 and c.i.im == 1.0, "i is 0+1i"
+
+# ============================================================ arithmetic (exact ==)
+assert c.of(1, 2) + c.of(3, 4) == c.of(4, 6), "add"
+assert c.of(5, 6) - c.of(1, 2) == c.of(4, 4), "sub"
+assert c.of(1, 2) * c.of(3, 4) == c.of(-5, 10), "mul (1+2i)(3+4i) = -5+10i"
+assert c.of(4, 0) / c.of(2, 0) == c.of(2, 0), "div"
+assert c.of(3, 4) / c.of(3, 4) == c.one, "div self = 1"
+assert -c.of(3, -4) == c.of(-3, 4), "unary negation"
+# i*i = -1
+assert c.i * c.i == -c.one, "i*i == -one (exact)"
+assert c.i ** c.real(2) == -c.one or (c.i ** c.real(2)).compare(-c.one, abs_tol = 1e-12), "i**2 == -1"
+# ** exponentiation (tolerant for the transcendental path)
+assert (c.of(1, 1) ** c.real(2)).compare(c.of(0, 2), abs_tol = 1e-12), "(1+i)**2 ~ 2i"
+assert (c.of(2, 0) ** c.real(10)).compare(c.of(1024, 0), abs_tol = 1e-6), "(2)**10 ~ 1024"
+
+# reals coerce to the real axis (Complex must be the LEFT operand)
+assert c.of(1, 2) + 3 == c.of(4, 2), "Complex + Integer coerces"
+assert c.of(1, 2) * 2 == c.of(2, 4), "Complex * Integer coerces"
+assert c.of(1, 2) - 1.5 == c.of(-0.5, 2), "Complex - Float coerces"
+# a Complex with zero imaginary part equals the matching real number
+assert c.Complex(2, 0) == 2 and c.Complex(2, 0) == 2.0, "Complex(2,0) == real 2"
+assert not (c.Complex(2, 1) == 2), "Complex with nonzero im != real"
+
+# ============================================================ methods / reductions
+assert z.modulus() == 5.0 and z.magnitude() == 5.0 and z.abs() == 5.0, "modulus/magnitude/abs = |3+4i| = 5"
+assert z.norm2() == 25.0, "norm2 = |z|^2"
+assert z.conjugate() == c.of(3, -4), "conjugate"
+assert z.argument().compare(math.atan2(4, 3)), "argument = atan2(im,re)"
+assert z.arg() == z.argument() and z.phase() == z.argument(), "arg/phase aliases"
+# module-function reductions
+assert c.modulus(z) == 5.0 and c.abs(z) == 5.0, "module modulus/abs"
+assert c.phase(z).compare(z.argument()) and c.argument(z).compare(z.argument()), "module phase/argument"
+assert c.norm2(z) == 25.0, "module norm2"
+assert c.conjugate(z) == c.of(3, -4), "module conjugate"
+# reductions accept plain numbers (coerced to the real axis)
+assert c.modulus(-5) == 5.0 and c.norm2(3) == 9.0, "reductions accept real numbers"
+
+# ============================================================ is_zero (tolerant, unlike exact ==)
+assert c.zero.is_zero() and c.Complex(0, 0).is_zero(), "is_zero on exact zero"
+assert c.Complex(1e-11, 0).is_zero() and c.Complex(0, 1e-11).is_zero(), "is_zero within tolerance (~1e-10)"
+assert not c.Complex(1e-6, 0).is_zero(), "is_zero False above tolerance"
+assert not c.one.is_zero() and not c.i.is_zero(), "is_zero False for one/i"
+
+# ============================================================ analytic set (tolerant compare)
+assert c.exp(c.zero).compare(c.one, abs_tol = 1e-12), "exp(0) = 1"
+assert c.log(c.one).compare(c.zero, abs_tol = 1e-12), "log(1) = 0"
+assert c.sqrt(c.real(-1)).compare(c.i, abs_tol = 1e-12), "sqrt(-1) = i (defined off the real axis)"
+assert c.log(c.real(-1)).compare(c.of(0, math.pi), abs_tol = 1e-12), "log(-1) = i*pi"
+assert c.log10(c.real(100)).compare(c.of(2, 0), abs_tol = 1e-12), "log10(100) = 2"
+assert c.cbrt(c.of(8, 0)).compare(c.of(2, 0), abs_tol = 1e-12), "cbrt(8) = 2"
+assert c.pow(c.of(2, 0), c.of(3, 0)).compare(c.of(8, 0), abs_tol = 1e-9), "pow(2,3) = 8"
+# analytic functions accept a plain number too, and are valid off the usual real domain
+assert c.sqrt(-4).compare(c.of(0, 2), abs_tol = 1e-12), "sqrt(-4) = 2i (real arg coerced)"
+assert c.asin(c.of(2, 0)).compare(c.asin(c.of(2, 0))), "asin(2) is valid (no domain throw)"
+assert c.acosh(c.zero).compare(c.acosh(c.zero)), "acosh(0) is valid (no domain throw)"
+# trig/hyperbolic sanity
+assert c.sin(c.zero).compare(c.zero, abs_tol = 1e-12) and c.cos(c.zero).compare(c.one, abs_tol = 1e-12), "sin(0)=0, cos(0)=1"
+assert c.tanh(c.zero).compare(c.zero, abs_tol = 1e-12), "tanh(0)=0"
+
+# ============================================================ compare vs exact ==
+assert c.of(1, 2) == c.of(1, 2), "== identical"
+assert not (c.of(1, 2) == c.of(1, 2.0000001)), "== exact (tiny perturbation not equal)"
+assert c.of(1, 2).compare(c.of(1, 2.0000000001)), "compare tolerant within rel_tol"
+assert not c.of(1, 2).compare(c.of(1, 3)), "compare distinguishes real difference"
+
+# ============================================================ complex Matrix
+var M = c.Matrix([[c.of(1, 1), c.of(2, 0)], [c.of(0, 1), c.of(3, 3)]])
+assert type(M) == "ComplexMatrix", "ComplexMatrix type name"
+assert M.rows() == 2 and M.cols() == 2 and M.shape() == [2, 2], "cm rows/cols/shape"
+assert M[0, 0] == c.of(1, 1) and type(M[0, 0]) == "Complex", "cm element access"
+assert M[0] == [c.of(1, 1), c.of(2, 0)], "cm row as List of Complex"
+assert M.row(1) == [c.of(0, 1), c.of(3, 3)], "cm row(i)"
+assert M.get(1, 1) == c.of(3, 3), "cm get()"
+M.set(0, 1, c.of(9, 9))
+assert M[0, 1] == c.of(9, 9), "cm set()"
+M.set(0, 1, c.of(2, 0))  # restore
+# factories
+assert c.identity(2) == c.Matrix([[c.one, c.zero], [c.zero, c.one]]), "cm identity"
+assert c.zeros(2, 2) == c.Matrix([[c.zero, c.zero], [c.zero, c.zero]]), "cm zeros"
+assert c.ones(2, 2) == c.Matrix([[c.one, c.one], [c.one, c.one]]), "cm ones"
+assert c.vector([c.of(1, 1), c.of(2, 0)]).shape() == [1, 2], "cm vector is 1xn"
+# cells may be plain numbers (coerced to the real axis)
+assert c.Matrix([[1, 2], [3, 4]]) == c.Matrix([[c.of(1, 0), c.of(2, 0)], [c.of(3, 0), c.of(4, 0)]]), "cm numeric cells coerce"
+
+# arithmetic
+assert M + c.identity(2) == c.Matrix([[c.of(2, 1), c.of(2, 0)], [c.of(0, 1), c.of(4, 3)]]), "cm add"
+assert M - M == c.zeros(2, 2), "cm sub -> zeros"
+assert M * c.identity(2) == M, "cm matmul with identity"
+assert (M * c.of(2, 0)).compare(c.Matrix([[c.of(2, 2), c.of(4, 0)], [c.of(0, 2), c.of(6, 6)]])), "cm scalar multiply"
+# transpose / conjugate / hermitian
+var CM = c.Matrix([[c.of(1, 2), c.of(3, 4)]])
+assert CM.transpose() == c.Matrix([[c.of(1, 2)], [c.of(3, 4)]]), "cm transpose"
+assert CM.conjugate() == c.Matrix([[c.of(1, -2), c.of(3, -4)]]), "cm conjugate (element-wise)"
+assert CM.hermitian() == c.Matrix([[c.of(1, -2)], [c.of(3, -4)]]), "cm hermitian (conjugate transpose)"
+assert CM.conjugatetranspose() == CM.hermitian(), "cm conjugatetranspose alias"
+# determinant / inverse / trace
+assert c.Matrix([[c.of(1, 0), c.of(2, 0)], [c.of(3, 0), c.of(4, 0)]]).determinant().compare(c.real(-2), abs_tol = 1e-9), "cm determinant (Gaussian)"
+assert c.Matrix([[c.i, c.zero], [c.zero, c.i]]).trace() == c.of(0, 2), "cm trace = 2i"
+var CA = c.Matrix([[c.of(4, 0), c.of(7, 0)], [c.of(2, 0), c.of(6, 0)]])
+assert (CA * CA.inverse()).compare(c.identity(2), abs_tol = 1e-9), "cm inverse: A * A^-1 ~ I (Gauss-Jordan)"
+# apply
+assert M.apply(Function(x): return x.conjugate()) == M.conjugate(), "cm apply (conjugate each)"
+# == exact / compare
+assert M == M and not (M == c.identity(2)), "cm == exact"
+assert not (M == c.zeros(2, 3)), "cm == shape mismatch"
+
+# ============================================================ complex vectors
+var v = c.vector([c.of(1, 1), c.of(2, 0)])
+# Hermitian inner product: conj(1+i)(1+i) + conj(2)(2) = |1+i|^2 + 4 = 2 + 4 = 6 (real, non-negative)
+assert v.dot(v) == c.of(6, 0), "cm dot self = sum|zi|^2 (real)"
+assert v.norm().compare(6 ** 0.5), "cm norm = sqrt(sum|zi|^2)"
+assert c.vector([c.one, c.zero, c.zero]).cross(c.vector([c.zero, c.one, c.zero])) == c.vector([c.zero, c.zero, c.one]), "cm cross i x j = k"
+
+# ============================================================ HARDENING
+# complex numbers are unordered: <, <=, >, >= throw
+assert raises_msg(Function(): return c.i < c.one, "not ordered"), "< throws"
+assert raises_msg(Function(): return c.i > c.one, "not ordered"), "> throws"
+assert raises_msg(Function(): return c.i <= c.one, "not ordered"), "<= throws"
+assert raises_msg(Function(): return c.i >= c.one, "not ordered"), ">= throws"
+# division by zero
+assert raises_msg(Function(): return c.one / c.zero, "complex division by zero"), "div by zero throws"
+# analytic domain errors (the true singularities) THROW
+assert raises_msg(Function(): return c.log(c.zero), "math domain error"), "log(0) throws domain error"
+assert raises_msg(Function(): return c.log10(c.zero), "math domain error"), "log10(0) throws domain error"
+assert raises_msg(Function(): return c.atanh(c.one), "math domain error"), "atanh(1) throws domain error"
+assert raises_msg(Function(): return c.atanh(-c.one), "math domain error"), "atanh(-1) throws domain error"
+# zero to a negative / non-real power is a singularity
+assert raises_msg(Function(): return c.zero ** c.real(-1), "zero to a negative or complex power"), "zero**-1 throws"
+assert raises_msg(Function(): return c.pow(c.zero, c.i), "zero to a negative or complex power"), "pow(0, i) throws"
+assert raises_msg(Function(): return c.zero / c.zero, "complex division by zero"), "0/0 throws"
+# arithmetic with a non-number RHS
+assert raises_msg(Function(): return c.i + "x", "Complex or a number"), "Complex + String throws"
+# but sqrt(-1), log(-1), asin(2) must NOT throw (valid off the real domain) — silent-error probe
+assert not raises(Function(): return c.sqrt(c.real(-1))), "sqrt(-1) does NOT throw"
+assert not raises(Function(): return c.log(c.real(-1))), "log(-1) does NOT throw"
+assert not raises(Function(): return c.asin(c.of(2, 0))), "asin(2) does NOT throw"
+assert not raises(Function(): return c.acosh(c.zero)), "acosh(0) does NOT throw"
+# 0 ** 0 == 1 (not a domain error)
+assert (c.zero ** c.zero) == c.one, "0**0 == 1"
+
+# complex matrix hardening
+assert raises_msg(Function(): return c.Matrix([[c.one, c.one]]).determinant(), "square"), "cm determinant non-square throws"
+assert raises_msg(Function(): return c.Matrix([[c.one, c.one]]).inverse(), "square"), "cm inverse non-square throws"
+assert raises_msg(Function(): return c.Matrix([[c.one, c.one]]).trace(), "square"), "cm trace non-square throws"
+assert raises_msg(Function(): return c.Matrix([[c.zero, c.zero], [c.zero, c.zero]]).inverse(), "singular"), "cm inverse of singular throws"
+assert raises_msg(Function(): return c.identity(2) + c.identity(3), "equal shape"), "cm add shape mismatch throws"
+assert raises_msg(Function(): return c.Matrix([[c.one, c.one]]) * c.Matrix([[c.one, c.one]]), "inner dimensions differ"), "cm matmul inner mismatch throws"
+assert raises_msg(Function(): return c.identity(2)[5, 0], "out of range"), "cm element index OOB throws"
+assert raises_msg(Function(): return c.identity(2)[5], "row index out of range"), "cm row index OOB throws"
+assert raises_msg(Function(): return c.Matrix([[c.one, c.one], [c.one]]), "equal length"), "cm ragged ctor throws"
+assert raises_msg(Function(): return c.vector([c.one, c.one]).dot(c.vector([c.one, c.one, c.one])), "equal length"), "cm dot mismatched lengths throws"
+assert raises_msg(Function(): return c.identity(2).dot(c.identity(2)), "requires vectors"), "cm dot non-vector throws"
+assert raises_msg(Function(): return c.vector([c.one, c.one]).cross(c.vector([c.one, c.one])), "3-element vectors"), "cm cross non-3-vector throws"
+
+io.print("OK complex")

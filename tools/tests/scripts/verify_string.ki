@@ -1,0 +1,89 @@
+# Doc-vs-impl verification for the `string` STDLIB MODULE (docs/pages/10-stdlib.md `## string`):
+# constants + capwords + levenshtein-based similarity/closest/fuzzymatch. NOT the String TYPE.
+# Functioning (exact), edge, and HARDENING. Prints "OK string".
+var io = import("io")
+var s = import("string")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ constants (exact contents)
+assert s.ascii_lowercase == "abcdefghijklmnopqrstuvwxyz", "ascii_lowercase"
+assert s.ascii_uppercase == "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ascii_uppercase"
+assert s.ascii_letters == s.ascii_lowercase + s.ascii_uppercase, "ascii_letters = lower+upper"
+assert len(s.ascii_letters) == 52, "ascii_letters length"
+assert s.digits == "0123456789", "digits"
+assert s.hexdigits == "0123456789abcdefABCDEF", "hexdigits"
+assert s.octdigits == "01234567", "octdigits"
+assert s.punctuation == "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", "punctuation"
+assert len(s.punctuation) == 32, "punctuation length"
+assert s.whitespace == " \t\n\r", "whitespace = space/tab/newline/CR"
+assert len(s.whitespace) == 4, "whitespace length"
+# every constant is a String
+assert type(s.digits) == "String" and type(s.punctuation) == "String", "constants are Strings"
+
+# ============================================================ capwords
+assert s.capwords("hello world") == "Hello World", "capwords basic"
+assert s.capwords("HELLO WORLD") == "Hello World", "capwords lowercases the tail"
+assert s.capwords("foo BAR baz") == "Foo Bar Baz", "capwords mixed case"
+assert s.capwords("single") == "Single", "capwords single word"
+assert s.capwords("") == "", "capwords empty"
+# splits on SINGLE spaces only — runs are preserved as empty words, tabs are not separators
+assert s.capwords("a  b") == "A  B", "capwords double-space keeps the gap"
+assert s.capwords("a\tb") == "A\tb", "capwords does NOT split on tab (one word)"
+assert s.capwords("  x") == "  X", "capwords leading spaces preserved"
+assert type(s.capwords("x")) == "String", "capwords returns String"
+
+# ============================================================ similarity (String form)
+assert s.similarity("abc", "abc") == 1.0, "similarity identical is 1.0"
+assert s.similarity("", "") == 1.0, "similarity two empty strings is 1.0"
+assert s.similarity("abc", "") == 0.0, "similarity vs empty is 0.0"
+assert s.similarity("kitten", "sitting").compare(1.0 - 3.0 / 7.0), "similarity kitten/sitting ~0.571"
+assert s.similarity("abc", "abd") == 1.0 - 1.0 / 3.0, "similarity one edit"
+assert s.similarity("xyz", "abc") == 0.0, "similarity fully different"
+assert type(s.similarity("a", "b")) == "Float", "similarity String form returns Float"
+
+# ============================================================ similarity (List form)
+assert s.similarity("abc", ["abc", "abd", "xyz"]) == [1.0, 1.0 - 1.0 / 3.0, 0.0], "similarity List form"
+assert s.similarity("x", []) == [], "similarity empty candidate list is []"
+assert type(s.similarity("a", ["a"])) == "List", "similarity List form returns List"
+assert len(s.similarity("q", ["a", "b", "c"])) == 3, "similarity List form one score per candidate"
+
+# ============================================================ closest
+assert s.closest("aple", ["apple", "grape", "mango"]) == "apple", "closest typo correction"
+assert s.closest("exact", ["exact", "other"]) == "exact", "closest exact match"
+assert s.closest("x", []) == None, "closest empty list is None"
+assert s.closest("z", ["only"]) == "only", "closest single candidate"
+# ties go to the earliest candidate
+assert s.closest("cat", ["car", "bat"]) == "car", "closest ties to earliest"
+
+# ============================================================ fuzzymatch
+assert s.fuzzymatch("apple", ["apple", "aple", "xyz", "grape"]) == [["apple", 1.0], ["aple", 0.8]], "fuzzymatch default cutoff 0.6, sorted desc"
+assert s.fuzzymatch("apple", ["zzzzz"]) == [], "fuzzymatch no match above cutoff"
+assert s.fuzzymatch("apple", []) == [], "fuzzymatch empty candidates"
+assert s.fuzzymatch("apple", ["apple"], 1.0) == [["apple", 1.0]], "fuzzymatch cutoff 1.0 keeps exact"
+assert len(s.fuzzymatch("apple", ["apple", "aple", "xyz", "grape"], 0.0)) == 4, "fuzzymatch cutoff 0.0 keeps all"
+# result is sorted by score descending
+var fm = s.fuzzymatch("apple", ["aple", "apple"], 0.0)
+assert fm[0][1] >= fm[1][1], "fuzzymatch sorted by score descending"
+
+# ============================================================ HARDENING / silent probes
+# similarity/closest/fuzzymatch call String.levenshtein — a non-String query has no such method.
+assert raises(Function(): return s.similarity(5, "abc")), "similarity non-String query raises"
+assert raises(Function(): return s.closest(5, ["a"])), "closest non-String query raises"
+assert raises(Function(): return s.fuzzymatch(5, ["a"])), "fuzzymatch non-String query raises"
+assert raises(Function(): return s.capwords(123)), "capwords non-String raises"
+# capwords needs a String argument; missing arg raises
+assert raises(Function(): return s.capwords()), "capwords missing arg raises"
+
+io.print("OK string")

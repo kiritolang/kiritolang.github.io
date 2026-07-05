@@ -1,0 +1,75 @@
+# Doc-vs-impl verification for the `textwrap` stdlib module (docs/pages/10-stdlib.md `## textwrap`):
+# wrap/fill/indent/dedent. Functioning (exact), edge, and HARDENING. Prints "OK textwrap".
+var io = import("io")
+var tw = import("textwrap")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ wrap
+assert tw.wrap("the quick brown fox jumps", 10) == ["the quick", "brown fox", "jumps"], "wrap to width 10"
+assert tw.wrap("hello world", 5) == ["hello", "world"], "wrap width 5"
+assert tw.wrap("one two three", 100) == ["one two three"], "wrap wide width -> single line"
+assert type(tw.wrap("a b", 3)) == "List", "wrap returns List"
+# a word longer than width still occupies its own line (never truncated)
+assert tw.wrap("verylongword short", 4) == ["verylongword", "short"], "wrap over-long word on its own line"
+# default width is 70
+assert len(tw.wrap("a b c d e")) == 1, "wrap default width fits short text on one line"
+
+# ============================================================ wrap edge cases
+assert tw.wrap("", 10) == [], "wrap empty string -> []"
+assert tw.wrap("word", 0) == ["word"], "wrap width 0 -> word still emitted"
+assert tw.wrap("a b c", 0) == ["a", "b", "c"], "wrap width 0 puts each word on its own line"
+assert tw.wrap("a b c", -5) == ["a", "b", "c"], "wrap negative width -> one word per line"
+assert tw.wrap("single", 3) == ["single"], "wrap single over-long word"
+# wrap splits on spaces only; an embedded newline stays glued inside a 'word'
+assert tw.wrap("a\nb c", 100) == ["a\nb c"], "wrap does not treat \\n as a break"
+
+# ============================================================ fill
+assert tw.fill("the quick brown fox", 10) == "the quick\nbrown fox", "fill joins wrapped lines with newline"
+assert tw.fill("hello world", 5) == "hello\nworld", "fill width 5"
+assert tw.fill("", 10) == "", "fill empty string"
+assert tw.fill("oneword", 3) == "oneword", "fill single word"
+assert type(tw.fill("a b", 2)) == "String", "fill returns String"
+
+# ============================================================ indent
+assert tw.indent("a\nb\nc", "> ") == "> a\n> b\n> c", "indent prefixes each line"
+assert tw.indent("a\n\nb", "# ") == "# a\n\n# b", "indent skips empty lines"
+assert tw.indent("solo", ">>") == ">>solo", "indent single line"
+assert tw.indent("", "> ") == "", "indent empty string stays empty (not prefixed)"
+assert tw.indent("x", "") == "x", "indent with empty prefix is a no-op"
+assert type(tw.indent("x", "> ")) == "String", "indent returns String"
+
+# ============================================================ dedent
+assert tw.dedent("    a\n    b\n      c") == "a\nb\n  c", "dedent removes common leading whitespace"
+assert tw.dedent("  a\n    b") == "a\n  b", "dedent to the minimum indent"
+assert tw.dedent("no indent") == "no indent", "dedent no common indent is a no-op"
+assert tw.dedent("") == "", "dedent empty string"
+assert tw.dedent("\ta\n\tb") == "a\nb", "dedent tabs as leading whitespace"
+# a blank / whitespace-only line is ignored when computing the common indent, and preserved
+assert tw.dedent("    a\n\n    b") == "a\n\nb", "dedent ignores blank lines for min-indent"
+assert tw.dedent("      x") == "x", "dedent single indented line"
+assert type(tw.dedent("  x")) == "String", "dedent returns String"
+
+# ============================================================ HARDENING / silent probes
+# non-String input has no .split -> raises
+assert raises(Function(): return tw.wrap(123, 10)), "wrap non-String raises"
+assert raises(Function(): return tw.fill(123, 10)), "fill non-String raises"
+assert raises(Function(): return tw.dedent(123)), "dedent non-String raises"
+assert raises(Function(): return tw.indent(123, "> ")), "indent non-String text raises"
+# indent concatenates prefix + line, so a non-String prefix raises (String + Integer unsupported)
+assert raises(Function(): return tw.indent("a", 5)), "indent non-String prefix raises"
+# indent requires a prefix argument (no default)
+assert raises(Function(): return tw.indent("a")), "indent missing prefix raises"
+
+io.print("OK textwrap")

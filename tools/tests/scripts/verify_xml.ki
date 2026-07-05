@@ -1,0 +1,148 @@
+# Doc-vs-impl verification for the `xml` stdlib module (docs/pages/10-stdlib.md `## xml`).
+# ElementTree-style parser/serializer: parse/fromstring/tostring + an Element tree with
+# tag/attrib/text/tail/children and find/findall/findtext/get/itertext/Element.
+# Functioning (exact) + edge cases + hardening (the parser is LENIENT and must NEVER crash on odd
+# input; a surrogate numeric entity is kept verbatim). Anything that crashes on bad input is a bug.
+# Prints "OK xml".
+var io = import("io")
+var xml = import("xml")
+
+# returns True iff calling fn() throws (any error)
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+# returns True iff fn() throws AND the message contains `needle`
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ parse / navigate / serialize (doc example)
+var root = xml.parse("<books><book id='1'><title>The Hobbit</title></book>" +
+                     "<book id='2'><title>SICP</title></book></books>")
+assert root.tag == "books", "root tag"
+assert len(root) == 2, "root has two children (len)"
+assert len(root.findall("book")) == 2, "findall book -> 2"
+assert root.find("book").get("id") == "1", "get attribute"
+assert root.find("book").findtext("title") == "The Hobbit", "findtext"
+assert xml.tostring(root.find("book")) == "<book id=\"1\"><title>The Hobbit</title></book>", "tostring subtree"
+# find returns first match; findall preserves order
+var titles = []
+for book in root.findall("book"):
+    titles.append(book.findtext("title"))
+assert titles == ["The Hobbit", "SICP"], "iterate findall in order"
+
+# ============================================================ Element attributes / accessors
+var e = xml.parse("<a x=\"1\" y=\"2\">t</a>")
+assert e.attrib == {"x": "1", "y": "2"}, "attrib Dict"
+assert e.get("x") == "1", "get present"
+assert e.get("zzz") == None, "get absent -> None default"
+assert e.get("zzz", "d") == "d", "get absent -> custom default"
+assert e.text == "t", "text before first child"
+assert e.children == [], "no children"
+assert len(e.findall("nope")) == 0, "findall no match -> []"
+assert e.find("nope") == None, "find no match -> None"
+assert e.findtext("nope") == "", "findtext no match -> default empty string"
+assert e.findtext("nope", "D") == "D", "findtext no match -> custom default"
+
+# ============================================================ indexing + iteration
+var tl = xml.parse("<a>t1<b>x</b>tail1<c/>tail2</a>")
+assert tl[0].tag == "b" and tl[1].tag == "c", "indexing children"
+var tags = []
+for ch in tl:
+    tags.append(ch.tag)
+assert tags == ["b", "c"], "iteration yields children"
+
+# ============================================================ text vs tail (mixed content, document order)
+assert tl.text == "t1", "element text is data before first child"
+assert tl[0].tail == "tail1", "child tail is data after its end tag"
+assert tl[1].tail == "tail2", "second child tail"
+assert tl.itertext() == ["t1", "x", "tail1", "tail2"], "itertext walks text + tails in order"
+# round-trip preserves mixed content
+assert xml.tostring(tl) == "<a>t1<b>x</b>tail1<c />tail2</a>", "round-trip mixed content"
+# deeper nesting itertext
+assert xml.parse("<a>1<b>2<c>3</c>4</b>5</a>").itertext() == ["1", "2", "3", "4", "5"], "deep itertext"
+
+# ============================================================ entities (named + numeric)
+var ent = xml.parse("<a>x &amp; y &lt; z &gt; w &quot;q&quot; &apos;p&apos; &#65; &#x42;</a>")
+assert ent.text == "x & y < z > w \"q\" 'p' A B", "named + numeric entities decoded"
+# numeric entity forms both work; hex prefix is case-insensitive
+assert xml.parse("<a>&#x41;&#X41;</a>").text == "AA", "hex numeric entity case-insensitive"
+# unknown entity kept verbatim (lenient)
+assert xml.parse("<a>&nope;</a>").text == "&nope;", "unknown entity kept verbatim"
+# ampersand without a semicolon kept literal (lenient)
+assert xml.parse("<a>x & y</a>").text == "x & y", "bare ampersand kept literal"
+# CDATA is raw: entities inside are NOT decoded
+assert xml.parse("<a><![CDATA[<raw> & stuff]]></a>").text == "<raw> & stuff", "CDATA raw, no decoding"
+
+# ============================================================ HARDENING: surrogate numeric entity kept verbatim (recent fix)
+assert xml.parse("<a>&#xD800;</a>").text == "&#xD800;", "hex surrogate entity kept verbatim (no crash)"
+assert xml.parse("<a>&#55296;</a>").text == "&#55296;", "decimal surrogate entity kept verbatim"
+assert xml.parse("<a>&#xDFFF;</a>").text == "&#xDFFF;", "top-of-surrogate-range kept verbatim"
+# out-of-range / malformed numeric entities kept verbatim, never crash
+assert xml.parse("<a>&#zz;</a>").text == "&#zz;", "non-numeric decimal body kept verbatim"
+assert xml.parse("<a>&#xGG;</a>").text == "&#xGG;", "non-hex body kept verbatim"
+assert xml.parse("<a>&#1114112;</a>").text == "&#1114112;", "beyond max code point kept verbatim"
+assert xml.parse("<a>&#;</a>").text == "&#;", "empty numeric body kept verbatim"
+
+# ============================================================ comments, XML declaration, DOCTYPE
+var doc = xml.parse("<?xml version='1.0' encoding='UTF-8'?><!DOCTYPE r><r><!-- a comment -->hi</r>")
+assert doc.tag == "r", "declaration + doctype skipped, root parsed"
+assert doc.text == "hi", "comment skipped, text kept"
+assert xml.parse("<a><!--c1--><b/><!--c2--></a>").tag == "a", "interleaved comments skipped"
+
+# ============================================================ empty / self-closing elements
+assert xml.tostring(xml.parse("<a><b/></a>")) == "<a><b /></a>", "self-closing child serialized ' />'"
+var em = xml.parse("<a/>")
+assert em.tag == "a" and len(em) == 0 and em.text == "", "empty root element"
+assert xml.tostring(em) == "<a />", "empty element self-closes on serialize"
+
+# ============================================================ Element() constructor (build a tree)
+var built = xml.Element("node", {"a": "1"})
+built.text = "hi"
+assert built.tag == "node" and built.attrib == {"a": "1"} and built.text == "hi", "Element() fields"
+assert xml.tostring(built) == "<node a=\"1\">hi</node>", "built element serialized"
+# default attrib is an empty Dict
+assert xml.Element("x").attrib == {}, "Element() default attrib empty"
+# _str_ equals tostring()
+assert String(built) == built.tostring(), "_str_ == tostring()"
+
+# ============================================================ serialize escaping (text + attribute)
+var esc = xml.Element("t", {"k": "a<b>&\"q"})
+esc.text = "x < y & z"
+assert xml.tostring(esc) == "<t k=\"a&lt;b&gt;&amp;&quot;q\">x &lt; y &amp; z</t>", "escape special chars in text + attr"
+
+# ============================================================ fromstring alias
+assert xml.fromstring("<a/>").tag == "a", "fromstring is a parse alias"
+
+# ============================================================ document-shape edge cases
+assert xml.parse("no elements here") == None, "text with no element -> None"
+assert xml.parse("") == None, "empty string -> None"
+assert xml.parse("<a/><b/><c/>").tag == "c", "several top-level siblings -> LAST becomes root"
+assert xml.parse("<a>  </a>").text == "  ", "whitespace-only text preserved"
+
+# ============================================================ HARDENING: leniency — odd input must NEVER crash
+assert not raises(Function(): return xml.parse("<a><b>")), "unclosed tags: no crash"
+assert xml.parse("<a><b>").tag == "a", "unclosed tags: root still parsed"
+assert not raises(Function(): return xml.parse("</x><a/>")), "stray close tag: no crash"
+assert not raises(Function(): return xml.parse("<<<>>>")), "angle-bracket soup: no crash"
+assert not raises(Function(): return xml.parse("<")), "lone '<': no crash"
+assert xml.parse("<").tag == "", "lone '<' yields an element with an empty tag"
+assert not raises(Function(): return xml.parse("<a x=1 y>t</a>")), "unquoted attribute: no crash"
+# unquoted value isn't captured (only quoted values are read); the token becomes a bare attr name
+assert xml.parse("<a x=1 y>t</a>").attrib == {"x": "", "1": "", "y": ""}, "unquoted attr value not captured (lenient)"
+assert not raises(Function(): return xml.parse("<!-- unterminated comment")), "unterminated comment: no crash"
+assert not raises(Function(): return xml.parse("<![CDATA[ unterminated")), "unterminated CDATA: no crash"
+assert not raises(Function(): return xml.parse("<?xml unterminated")), "unterminated declaration: no crash"
+assert not raises(Function(): return xml.parse("<a>&#xD800; &#zz; &nope; text")), "mixed bad entities + no close: no crash"
+
+# ============================================================ SILENT-ERROR probes: tostring needs a real Element
+assert raises(Function(): return xml.tostring(5)), "tostring on a non-Element raises (not a silent no-op)"
+assert raises(Function(): return xml.tostring("<a/>")), "tostring on a String raises"
+
+io.print("OK xml")

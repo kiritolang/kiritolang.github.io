@@ -1,0 +1,81 @@
+# Doc-vs-impl verification for the `functools` module (docs/pages/10-stdlib.md "## functools").
+# reduce (with/without initializer; empty-without-init raises), partial (list-of-leading-args,
+# snapshot semantics), and cache (memoization; unhashable arg throws). Functioning + edge + HARDENING.
+# Prints "OK functools".
+var io = import("io")
+var ft = import("functools")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+var add = Function(a, b): return a + b
+
+# ============================================================ reduce(func, iterable[, initial])
+assert ft.reduce(add, [1, 2, 3, 4]) == 10, "reduce no init folds left-to-right"
+assert ft.reduce(add, [1, 2, 3], 100) == 106, "reduce with initial seed"
+assert ft.reduce(add, [], 42) == 42, "reduce empty with init returns the seed"
+assert ft.reduce(add, [7]) == 7, "reduce single element no init"
+assert ft.reduce(Function(a, b): return a * b, [1, 2, 3, 4]) == 24, "reduce product"
+# initial is by-IDENTITY sentinel, so an explicit `None` seed is a REAL seed (not "omitted").
+assert ft.reduce(Function(a, b): return b, [1, 2], None) == 2, "reduce explicit None seed is used"
+assert ft.reduce(Function(a, b): return b, [], None) == None, "reduce empty with None seed returns None"
+# left-to-right order check: subtraction is order-sensitive.
+assert ft.reduce(Function(a, b): return a - b, [10, 1, 2]) == 7, "reduce is left fold"
+# HARDENING: empty sequence with NO initial value throws the documented message.
+assert raises_msg(Function(): return ft.reduce(add, []), "reduce of empty sequence with no initial value"), "reduce empty no-init raises"
+
+# ============================================================ partial(func, bound)
+# func should accept a single List of args; partial pre-binds a List of leading args, and the
+# returned wrapper takes a List of the remaining args.
+var sumall = Function(args):
+    var s = 0
+    for x in args:
+        s = s + x
+    return s
+var p = ft.partial(sumall, [1, 2])
+assert p([3, 4]) == 10, "partial combines bound + rest"
+assert p([]) == 3, "partial with empty rest -> just the bound args"
+assert p([5]) == 8, "partial reusable"
+assert ft.partial(sumall, [])([1, 2]) == 3, "partial with empty bound"
+# SNAPSHOT: mutating the caller's bound list after creation must NOT leak in.
+var boundList = [10]
+var p2 = ft.partial(sumall, boundList)
+boundList.append(999)
+assert p2([1]) == 11, "partial snapshots bound at creation (mutation does not leak)"
+# The wrapper does NOT mutate the frozen bound across calls.
+assert p2([1]) == 11 and p2([2, 3]) == 15, "partial does not accumulate across calls"
+
+# ============================================================ cache(func)
+# Memoize a single-argument function on its (hashable) argument.
+var calls = [0]
+var squared = Function(x):
+    calls[0] = calls[0] + 1
+    return x * x
+var cf = ft.cache(squared)
+assert cf(5) == 25 and cf(5) == 25 and cf(5) == 25, "cache returns same result on repeat"
+assert calls[0] == 1, "cache calls the underlying fn only once per distinct arg"
+assert cf(6) == 36 and calls[0] == 2, "cache misses on a new arg"
+assert cf(5) == 25 and calls[0] == 2, "cache still hits the old arg"
+# String keys work too (any hashable arg is a valid cache key).
+var scalls = [0]
+var upper = Function(s):
+    scalls[0] = scalls[0] + 1
+    return s.upper()
+var cu = ft.cache(upper)
+assert cu("hi") == "HI" and cu("hi") == "HI" and scalls[0] == 1, "cache on String arg"
+assert cu("yo") == "YO" and scalls[0] == 2, "cache miss on new String arg"
+# HARDENING: an unhashable argument (a List) can't be a Dict key -> throws.
+assert raises_msg(Function(): return ft.cache(Function(x): return x)([1, 2]), "unhashable"), "cache unhashable arg raises"
+assert raises_msg(Function(): return ft.cache(Function(x): return x)({"a": 1}), "unhashable"), "cache unhashable Dict arg raises"
+
+io.print("OK functools")

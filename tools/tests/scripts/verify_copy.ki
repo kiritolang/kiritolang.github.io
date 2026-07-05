@@ -1,0 +1,90 @@
+# Doc-vs-impl verification for the copy stdlib module (docs/pages/10-stdlib.md "## copy").
+# copy() shallow vs deepcopy() deep, verified via id() sharing. Prints "OK copy".
+var io = import("io")
+var copy = import("copy")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+# ============================================================ immutable scalars: returned as-is
+assert copy.copy(5) == 5 and copy.deepcopy("hi") == "hi", "scalar copy value"
+assert copy.copy(None) == None and copy.deepcopy(True) == True, "None/Bool copy"
+assert copy.copy(3.14) == 3.14 and copy.deepcopy(Bytes([1, 2])) == Bytes([1, 2]), "Float/Bytes copy"
+# id preserved for immutables (returned unchanged, not re-allocated)
+var s = "shared string value"
+assert id(copy.copy(s)) == id(s), "copy of immutable is identity"
+assert id(copy.deepcopy(s)) == id(s), "deepcopy of immutable is identity"
+
+# ============================================================ shallow copy: new top, shared nesting
+var inner = [1, 2]
+var outer = [inner, 99]
+var sc = copy.copy(outer)
+assert sc == outer, "shallow copy equal by value"
+assert id(sc) != id(outer), "shallow copy is a new top-level container"
+assert id(sc[0]) == id(inner), "shallow copy SHARES the nested container"
+# mutating the shared nested list shows through both
+inner.append(3)
+assert sc[0] == [1, 2, 3], "shallow shares nested mutation"
+
+# ============================================================ deep copy: fully independent
+var inner2 = [1, 2]
+var outer2 = [inner2, 99]
+var dc = copy.deepcopy(outer2)
+assert dc == outer2, "deep copy equal by value"
+assert id(dc) != id(outer2), "deep copy new top"
+assert id(dc[0]) != id(inner2), "deep copy INDEPENDENT nested container"
+inner2.append(3)
+assert dc[0] == [1, 2], "deep copy unaffected by original mutation"
+
+# ============================================================ Dict / Set
+var d = {"k": [1, 2], "n": 7}
+assert id(copy.copy(d)["k"]) == id(d["k"]), "dict shallow shares value"
+assert id(copy.deepcopy(d)["k"]) != id(d["k"]), "dict deep independent value"
+assert copy.deepcopy(d) == d, "dict deep equal"
+var st = Set([1, 2, 3])
+assert copy.copy(st) == st and id(copy.copy(st)) != id(st), "set shallow new-but-equal"
+assert copy.deepcopy(st) == st, "set deep equal"
+
+# ============================================================ empty containers
+assert copy.copy([]) == [] and copy.deepcopy([]) == [], "empty list"
+assert copy.copy({}) == {} and copy.deepcopy({}) == {}, "empty dict"
+assert copy.copy(Set()) == Set() and copy.deepcopy(Set()) == Set(), "empty set"
+
+# ============================================================ shared references preserved by deepcopy
+var shared = [0]
+var both = [shared, shared]
+var db = copy.deepcopy(both)
+assert id(db[0]) == id(db[1]), "deepcopy preserves shared-ref aliasing"
+assert id(db[0]) != id(shared), "...but the shared node is itself deep-copied"
+
+# ============================================================ self-referential structure: must not hang
+var cyc = [1, 2]
+cyc.append(cyc)
+var dcyc = copy.deepcopy(cyc)
+assert len(dcyc) == 3, "deepcopy cyclic length"
+assert id(dcyc) != id(cyc), "deepcopy cyclic is independent"
+assert id(dcyc[2]) == id(dcyc), "deepcopy re-creates the cycle (points to the copy)"
+assert dcyc[0] == 1 and dcyc[1] == 2, "deepcopy cyclic scalars"
+
+# cyclic dict
+var cd = {"self": None}
+cd["self"] = cd
+var dcd = copy.deepcopy(cd)
+assert id(dcd["self"]) == id(dcd), "deepcopy cyclic dict"
+
+# ============================================================ class instance: copied deep+independent (via serde)
+class Box:
+    var _init_ = Function(self, v):
+        self.v = v
+var bx = Box([1, 2])
+var cbx = copy.copy(bx)
+assert id(cbx) != id(bx), "instance copy is a new object"
+assert cbx.v == [1, 2] and id(cbx.v) != id(bx.v), "instance copy is DEEP (independent nested attr)"
+var dbx = copy.deepcopy(bx)
+assert id(dbx) != id(bx) and dbx.v == [1, 2], "instance deepcopy independent"
+
+io.print("OK copy")
