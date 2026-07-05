@@ -53,5 +53,29 @@ test-writing phase (C++ then `.ki`).
 - A18-1 CRLF header/cookie injection (security): reject CR/LF in header keys/values + cookie names/values.
 - A13-1 fmod(inf, finite) silent NaN → math domain error (throw).
 - A16-1 Matrix.apply un-rooted makeFloat arg across callback → GC-safety (rooted).
-(Still todo: A01-1/2 f-string [A01-3 DRY], A02-1 [A02-11 DRY], A04-2 dup-neg-case, A09-2 NaN sort,
-A12-1 walk tolerance, A15-1 double-backward, A17-1 serde wrong-bucket, A18-4 connect timeout, A19-1/4, A21-2, ...)
+(Still todo: A01-1/2 f-string [A01-3 DRY], A02-1 [A02-11 DRY], A11-3 native-annotation enforcement, ...)
+
+## Fix batches 3–9 (FIXED + TESTED, debug-green; memory-safety ones asan-gated)
+
+All regressions in `tools/tests/unit/test_audit_v113.cpp` + `tools/tests/scripts/spec_audit_v113.ki`.
+
+| ID | Bug (one line) | Fix |
+|----|-----|-----|
+| A15-1 | Autograd: a retained non-leaf tensor's `.grad` was reused as the reverse-mode accumulator and never cleared between passes → a 2nd `backward()` doubled the leaf gradient | `runBackward` grad-resets every graph node before seeding (leaves keep accumulating) |
+| A12-1 | `path.listdir`/`walk`: the range-for's throwing `operator++` aborted the tolerant walk on a nested-permission error | manual `increment(ec)` + `skip_permission_denied` + ec-guarded `is_regular_file` |
+| A18-4 | `net`: a black-hole host hung far past the request `timeout` (SO_*TIMEO doesn't bound `connect`) | `netcompat::connectWithTimeout` (non-blocking connect + `select`); `dialTcp`/`Socket.connect` route through it; `settimeout` stores the value |
+| A18-3 | `net`: `detach()` left `fd` intact (double-adopt); `fileno()` after close returned a stale fd | `detach` throws-if-closed + clears fd; `fileno` returns -1 when closed |
+| A25-1 | `tabular.groupby` crashed on a Float NaN key (write-only NaN Dict) | drop Float NaN keys (pandas `dropna=True`); None keys kept |
+| A25-2 | `tabular.merge` crashed on a NaN right-frame join key | skip Float NaN keys (non-matching), None kept |
+| A26-1 | `xml`: a surrogate numeric entity reached `chr()` → threw, breaking the lenient never-crash contract | `_parsehex`/`_parsedec` reject 0xD800–0xDFFF → kept verbatim |
+| A26-2 | `semver`: partial `>`/`<=` comparators didn't round up (`>1` wrong) → bad kpm resolution | fold `>`→`>=next`, `<=`→`<next` per node-semver |
+| A24-1 | `statistics.mean`: `Float(sum(data))` summed all-Integer data in int64 first → wrap | accumulate in Float space |
+| A17-1 | serde: a content-hashed Set element / Dict key (Bytes/DateTime/attr-`_hash_`) round-tripped into the WRONG hash bucket (silent membership loss) | defer Set/Dict wiring to a pass AFTER `_setstate_`/attr restore |
+| A09-2 | Sort/min/max on a NaN-containing List → non-strict-weak-ordering comparator → `std::sort` UB | total order: NaN sorts last |
+| A21-2/3 | `regex` match/search/finditer/findall with `endpos=` but `pos` omitted threw (None hole-fill); huge pos/endpos unclamped | shared `resolvePosEndpos`: None→absent, int64 clamped |
+| A14-1/3 | `random.gauss(sigma=…)` with `mu` omitted threw (None hole-fill); `sigma` unvalidated | `optNum` treats None slot as default; reject negative sigma |
+| A04-2/3 | Duplicate/negative switch case labels not detected + dropped off the O(1) dispatch (`-1` is UnaryExpr) | `constSwitchKey` folds unary-neg numeric literals |
+| A19-4 | `sys` env access (getenv/setenv/unsetenv/environ) not thread-safe across worker VMs | process-wide mutex (tsan-gated) |
+| A19-1 | `DateTime` epoch year narrowed to int before the range check → huge epoch wrongly accepted | validate the pre-narrow int64 year in `gmtimeCompat` |
+| A11-1 | `round(x, ndigits)` precision wrong where `long double == double` (MSVC) | `#if LDBL_MANT_DIG > DBL_MANT_DIG` guard + snprintf fallback (GCC/Clang path unchanged) |
+| A23-5 | itertools `product`/`permutations`/`combinations` OOM/hang on huge inputs (no resource guard) | analytical up-front size guard → catchable "result too large" |
