@@ -221,7 +221,11 @@ a stability fuzzer, and a benchmark). Working today:
 - **f-strings** `f"{expr}"` (with optional `:format-spec` — `f"{x:05d}"`, `f"{pi:.2f}"` — and
   surrounding whitespace allowed inside the braces) in any quote style/flavour (`f'…'`, `f"""…"""`,
   raw `rf"…"`); because `'…'` strings exist, an f-string can hold a single-quoted key:
-  `f"{d['k']}"`. Inline anonymous functions `Function(x): return x*x`.
+  `f"{d['k']}"`. Inline anonymous functions `Function(x): return x*x` (a single same-line statement;
+  an inline body does NOT comma-pack — `var f = Function(): return a, b` is rejected as ambiguous
+  rather than silently binding `f` to `[<function>, b]`; use an indented block body to pack, or wrap
+  the function in `[ ]`. A comma after an inline function in a call-argument or bracketed-list position
+  still delimits normally).
 - **Static warnings + `discard`**: a non-fatal analysis pass (`analyzer.hpp`) run before execution
   flags: function-local variables assigned-but-never-used; bare expression statements whose
   non-`None` value is dropped; a `var` re-declared in the same block; unreachable code after a
