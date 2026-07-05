@@ -180,9 +180,13 @@ assert df.loc[[1, 3]]["name"].tolist() == ["Alan", "Edsger"], "loc list -> DataF
 assert df.column("dept").tolist() == ["eng", "eng", "ops", "ops"], "df.column"
 assert df.at(2, "name") == "Grace", "df.at(label, col)"
 assert df.iat(3, 0) == "Edsger", "df.iat(pos, col)"
-# PINNED: rowat returns a Series (docs say "a Dict")
-assert type(df.rowat(0)) == "Series", "rowat returns Series (doc says Dict) -- DISCREPANCY pinned"
-assert df.rowat(0)["dept"] == "eng", "rowat row access"
+# rowat(pos) -> one row as a Series (indexed by column name); docs corrected from "a Dict".
+assert type(df.rowat(0)) == "Series", "rowat returns a Series"
+assert df.rowat(0)["dept"] == "eng", "rowat row access by column name"
+# rowsat(positions) -> a sub-DataFrame of the selected row positions.
+var sub = df.rowsat([0, 2])
+assert type(sub) == "DataFrame" and sub.nrows() == 2, "rowsat -> sub-DataFrame of the given rows"
+assert sub.rowat(0)["dept"] == df.rowat(0)["dept"], "rowsat preserves the selected rows"
 
 # ============================================================ mutation / assign / rename / drop
 var dm = df.copy()
