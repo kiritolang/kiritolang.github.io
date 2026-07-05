@@ -1,0 +1,149 @@
+# Doc-vs-impl verification for the `time` stdlib module (docs/pages/10-stdlib.md "## time").
+# Functioning cases (exact, using FIXED instants — never now()), edge cases, and HARDENING (bad input
+# must raise the RIGHT error; anything that SHOULD raise but doesn't is a silent bug). Prints "OK time".
+var io = import("io")
+var time = import("time")
+var serialize = import("serialize")
+var dump = import("dump")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ high-precision clocks
+assert type(time.time()) == "Float", "time() -> Float"
+assert type(time.timens()) == "Integer", "timens() -> Integer"
+assert type(time.monotonic()) == "Float", "monotonic() -> Float"
+assert type(time.perfcounterns()) == "Integer", "perfcounterns() -> Integer"
+assert time.time() > 1.5e9, "time() is a plausible epoch (post-2017)"
+# monotonic is non-decreasing across two reads
+var mo0 = time.monotonic()
+var mo1 = time.monotonic()
+assert mo1 >= mo0, "monotonic() is non-decreasing"
+var pc0 = time.perfcounterns()
+var pc1 = time.perfcounterns()
+assert pc1 >= pc0, "perfcounterns() is non-decreasing"
+
+# ============================================================ sleep (kept < 0.05s)
+var before = time.monotonic()
+assert time.sleep(0.01) == None, "sleep returns None"
+assert time.monotonic() >= before, "monotonic advanced across a sleep"
+# edge: a non-positive sleep is a no-op (does not throw, does not block)
+assert time.sleep(0) == None, "sleep(0) is a no-op"
+assert time.sleep(-1) == None, "sleep(negative) is a no-op"
+# hardening: sleep needs a number
+assert raises(Function(): return time.sleep("x")), "sleep non-number raises"
+
+# ============================================================ datetime() / now() types
+assert type(time.now()) == "DateTime", "now() -> DateTime"
+assert type(time.datetime()) == "DateTime", "datetime() (no arg) -> DateTime"
+assert type(time.datetime(0)) == "DateTime", "datetime(epoch) -> DateTime"
+
+# ============================================================ FIXED-instant fields (deterministic)
+# The Unix epoch: 1970-01-01T00:00:00Z, a Thursday (weekday 4 in the 0=Sunday convention).
+var e0 = time.datetime(0)
+assert e0.year == 1970 and e0.month == 1 and e0.day == 1, "epoch date fields"
+assert e0.hour == 0 and e0.minute == 0 and e0.second == 0, "epoch time fields"
+assert e0.weekday == 4, "epoch weekday is Thursday (4, Sunday=0)"
+assert e0.yearday == 1, "epoch is day 1 of the year"
+assert e0.timestamp == 0, "epoch timestamp is 0"
+assert e0.iso() == "1970-01-01T00:00:00", "epoch iso()"
+
+# 2020-01-01T00:00:00Z = epoch 1577836800, a Wednesday (weekday 3).
+var a = time.make(2020, 1, 1)
+assert a.timestamp == 1577836800, "make(2020,1,1) epoch"
+assert a.year == 2020 and a.month == 1 and a.day == 1, "make date fields"
+assert a.weekday == 3, "2020-01-01 is Wednesday (3)"
+assert a.iso() == "2020-01-01T00:00:00", "make iso()"
+# make with hh:mm:ss
+var b = time.make(2020, 1, 1, 12, 30, 45)
+assert b.iso() == "2020-01-01T12:30:45", "make with time components"
+assert b.hour == 12 and b.minute == 30 and b.second == 45, "make time fields"
+assert time.make(year = 2020, month = 1, day = 1).iso() == "2020-01-01T00:00:00", "make keyword args"
+
+# ============================================================ iso / isoformat / format
+assert a.iso() == a.isoformat(), "isoformat() aliases iso()"
+assert b.format("%Y") == "2020", "format %Y"
+assert b.format("%Y-%m-%d") == "2020-01-01", "format %Y-%m-%d"
+assert b.format("%H:%M:%S") == "12:30:45", "format %H:%M:%S"
+assert b.format("") == "", "format empty string -> empty"
+
+# ============================================================ add / sub / diff arithmetic
+assert a.add(86400).iso() == "2020-01-02T00:00:00", "add(seconds) shifts forward"
+assert a.add(86400).timestamp == a.timestamp + 86400, "add adjusts epoch"
+assert time.make(2020, 1, 2).sub(86400).timestamp == a.timestamp, "sub(seconds) shifts back"
+assert time.make(2020, 1, 2).diff(a) == 86400, "diff(other) = self - other seconds"
+assert a.diff(time.make(2020, 1, 2)) == -86400, "diff is signed"
+assert a.add(0).timestamp == a.timestamp, "add(0) is a no-op"
+# add/sub accept a Float number of seconds (truncated to int64)
+assert a.add(1.9).timestamp == a.timestamp + 1, "add truncates a Float delta"
+
+# ============================================================ value equality + hashing by instant
+var c = time.datetime(1577836800)
+assert a == c, "two DateTimes for the same instant are =="
+assert not (a == b), "different instants are !="
+assert time.make(2020, 1, 2) != a, "distinct DateTimes compare !="
+# usable as Dict keys and Set members (hash by epoch)
+var d = {}
+d[a] = "new-year"
+assert d[c] == "new-year", "DateTime is a Dict key (equal instant hits the same slot)"
+var s = {a, c, b}
+assert len(s) == 2, "Set dedups DateTimes by instant (a==c, b distinct)"
+
+# ============================================================ strptime
+assert time.strptime("2020-01-01", "%Y-%m-%d").timestamp == 1577836800, "strptime date"
+assert time.strptime("2020-01-01 12:30:45", "%Y-%m-%d %H:%M:%S").iso() == "2020-01-01T12:30:45", "strptime datetime"
+assert time.strptime("2020", "%Y").iso() == "2020-01-01T00:00:00", "strptime partial (defaults)"
+assert time.strptime("2020%01", "%Y%%%m").month == 1, "strptime literal %% directive"
+
+# ============================================================ make normalization (C-mktime style; PINNED)
+# Docs: out-of-range components normalize rather than throwing.
+assert time.make(2020, 13, 1).iso() == "2021-01-01T00:00:00", "make month 13 -> next January"
+assert time.make(2020, 1, 32).iso() == "2020-02-01T00:00:00", "make day 32 -> next month 1st"
+assert time.make(2020, 0, 1).iso() == "2019-12-01T00:00:00", "make month 0 -> previous December"
+assert time.make(2020, 1, 1, 24).iso() == "2020-01-02T00:00:00", "make hour 24 -> next day"
+
+# ============================================================ HARDENING
+# datetime: out-of-representable-range epoch (year > 9999) throws
+assert raises_msg(Function(): return time.datetime(253402300800), "out of representable range"), "datetime huge epoch throws"
+assert raises_msg(Function(): return time.datetime(-400000000000), "out of representable range"), "datetime tiny epoch throws"
+# datetime: NaN / infinity cannot be a timestamp
+assert raises_msg(Function(): return time.datetime(Float("nan")), "NaN"), "datetime(NaN) throws"
+assert raises_msg(Function(): return time.datetime(Float("inf")), "infinity"), "datetime(inf) throws"
+# make: a wildly out-of-range component throws before overflow
+assert raises_msg(Function(): return time.make(3000000000, 1, 1), "date component out of range"), "make component out of range throws"
+assert raises_msg(Function(): return time.make(20000, 1, 1), "out of representable range"), "make year 20000 -> epoch out of range"
+# strptime: mismatch / out-of-range field / trailing input / unsupported directive all throw
+assert raises_msg(Function(): return time.strptime("2024-99-99", "%Y-%m-%d"), "does not match format"), "strptime out-of-range month/day throws"
+assert raises_msg(Function(): return time.strptime("2024-01-01", "%Y/%m/%d"), "does not match format"), "strptime literal mismatch throws"
+assert raises_msg(Function(): return time.strptime("2024-01-01XYZ", "%Y-%m-%d"), "does not match format"), "strptime trailing input throws"
+assert raises_msg(Function(): return time.strptime("2024", "%Q"), "does not match format"), "strptime unsupported directive throws"
+assert raises_msg(Function(): return time.strptime("2020-13-01", "%Y-%m-%d"), "does not match format"), "strptime month 13 throws (strict, unlike make)"
+assert raises_msg(Function(): return time.strptime("2020-01-01 25:00:00", "%Y-%m-%d %H:%M:%S"), "does not match format"), "strptime hour 25 throws"
+# DateTime method hardening
+assert raises_msg(Function(): return a.add("x"), "number of seconds"), "add non-number throws"
+assert raises_msg(Function(): return a.sub([1]), "number of seconds"), "sub non-number throws"
+assert raises_msg(Function(): return a.add(Float("nan")), "add/sub"), "add(NaN) throws"
+assert raises_msg(Function(): return a.diff(5), "expects a DateTime"), "diff non-DateTime throws"
+assert raises_msg(Function(): return a.format(5), "expects a String"), "format non-String throws"
+
+# ============================================================ serializable (serialize + dump)
+assert serialize.loads(serialize.dumps(b)) == b, "DateTime round-trips through serialize"
+assert dump.loads(dump.dumps(b)) == b, "DateTime round-trips through dump"
+# a round-tripped DateTime preserves its exact instant
+assert serialize.loads(serialize.dumps(b)).timestamp == b.timestamp, "serialize preserves epoch"
+
+# ============================================================ SILENT-error probes (should raise)
+# A DateTime is immutable once built: _setstate_ must refuse to re-home an established value.
+assert raises_msg(Function(): return a._setstate_(0), "immutable once built"), "DateTime _setstate_ on a built value throws (not silent)"
+
+io.print("OK time")

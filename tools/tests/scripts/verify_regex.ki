@@ -1,0 +1,241 @@
+# Doc-vs-impl verification for the `regex` stdlib module (docs/pages/10-stdlib.md `## regex`,
+# 26-bonus-01-regex.md; impl src/kirito/stdlib_regex.hpp + regex_engine.hpp).
+# Functioning cases (exact match text, groups, positions), edge cases (empty pattern/string,
+# zero-width, unicode, overlapping, caps), and HARDENING (bad input must raise the right error;
+# anything that SHOULD raise but doesn't is a silent bug). Prints "OK regex".
+var io = import("io")
+var re = import("regex")
+var time = import("time")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ flags: constants + aliases
+assert re.IGNORECASE == 1 and re.MULTILINE == 2 and re.DOTALL == 4, "flag values"
+assert re.I == re.IGNORECASE and re.M == re.MULTILINE and re.S == re.DOTALL, "flag aliases"
+
+# ============================================================ search / match / fullmatch
+assert re.search(r"\d+", "id 4821 x").group() == "4821", "search anywhere"
+assert re.match(r"\d+", "id 4821 x") == None, "match must start at 0 -> None"
+assert re.match("id", "id 4821 x").group() == "id", "match at start"
+assert re.fullmatch(r"\d+", "4821").group() == "4821", "fullmatch whole string"
+assert re.fullmatch(r"\d+", "4821x") == None, "fullmatch partial -> None"
+assert re.search("zzz", "no match here") == None, "search fail -> None"
+
+# ============================================================ building blocks
+assert re.search("a.c", "xaqcy").group() == "aqc", "dot any-char"
+assert re.search(".", "\n") == None, "dot excludes newline"
+assert re.search("[aeiou]", "rhythm and blues").group() == "a", "class set"
+assert re.search("[A-Z]+", "shouting LOUDLY now").group() == "LOUDLY", "class range"
+assert re.search("[^0-9]+", "123abc").group() == "abc", "negated class"
+assert re.search(r"\w+", "  hi_there!").group() == "hi_there", "shorthand \\w"
+assert re.search(r"\s+", "a   b").group() == "   ", "shorthand \\s"
+assert re.search(r"\D+", "12ab34").group() == "ab", "shorthand \\D negation"
+
+# ============================================================ quantifiers
+assert re.search("ab*c", "ac").group() == "ac", "* zero"
+assert re.search("ab+c", "abbbc").group() == "abbbc", "+ one-or-more"
+assert re.search("colou?r", "color").group() == "color", "? optional"
+assert re.search(r"\d{3}-\d{4}", "call 555-0199 now").group() == "555-0199", "{n} exact"
+assert re.search("a{2,4}", "aaaaa").group() == "aaaa", "{n,m} greedy upper"
+assert re.search("a{2,}", "aaaa").group() == "aaaa", "{n,} unbounded"
+# greedy vs lazy
+assert re.search("<.*>", "<a><b>").group() == "<a><b>", "greedy .*"
+assert re.search("<.*?>", "<a><b>").group() == "<a>", "lazy .*?"
+assert re.search("a+?", "aaa").group() == "a", "lazy +?"
+
+# ============================================================ anchors & boundaries
+assert re.search("^id", "id 99").group() == "id", "^ start"
+assert re.search("99$", "id 99").group() == "99", "$ end"
+assert re.search("^id", "x id") == None, "^ not at start"
+assert re.findall(r"\bcat\b", "cat scatter cat") == ["cat", "cat"], "\\b word boundary"
+assert re.search(r"\Bcat", "scatcat").group() == "cat", "\\B not-boundary"
+assert re.search(r"\Aid", "id 9").group() == "id", "\\A absolute start"
+assert re.search(r"\Aid", "x\nid", re.MULTILINE) == None, "\\A ignores MULTILINE"
+assert re.search(r"9\z", "id 9").group() == "9", "\\z absolute end"
+assert re.search(r"9\Z", "id 9").group() == "9", "\\Z absolute end"
+
+# ============================================================ groups
+var m = re.search(r"(\d{4})-(\d{2})-(\d{2})", "log 2024-06-07 ok")
+assert m.group() == "2024-06-07", "group() whole"
+assert m.group(0) == "2024-06-07", "group(0) whole"
+assert m.group(1) == "2024" and m.group(2) == "06" and m.group(3) == "07", "group(n)"
+assert m.groups() == ["2024", "06", "07"], "groups()"
+assert m.span() == [4, 14], "span()"
+assert m.start() == 4 and m.end() == 14, "start/end whole"
+assert m.start(1) == 4 and m.end(1) == 8 and m.span(2) == [9, 11], "start/end/span(group)"
+assert m.string == "log 2024-06-07 ok", "match.string"
+assert m.group(1, 2) == ["2024", "06"], "group multi-key -> List"
+# non-capturing
+assert re.search("(?:ab)+", "ababab").group() == "ababab", "non-capturing match"
+assert re.compile("(?:ab)+").groups == 0, "non-capturing adds no group"
+# optional non-participating group
+var partial = re.search(r"(\d+)?-(\d+)", "-5")
+assert partial.group(1) == None, "non-participating group -> None"
+assert partial.group(2) == "5", "participating group"
+assert partial.groups() == [None, "5"], "groups() with None"
+assert partial.groups("X") == ["X", "5"], "groups(default)"
+assert partial.start(1) == -1 and partial.span(1) == [-1, -1], "absent group start/span -1"
+
+# named groups
+var who = re.search(r"(?P<user>\w+)@(?P<host>[\w.]+)", "write ada@kirito.dev today")
+assert who.group("user") == "ada" and who.group("host") == "kirito.dev", "named group()"
+var gd = who.groupdict()
+assert gd["user"] == "ada" and gd["host"] == "kirito.dev" and len(gd) == 2, "groupdict()"
+assert who.start("user") == 6 and who.span("host") == [10, 20], "named start/span"
+# (?<name>...) alternate spelling
+assert re.search(r"(?<n>\d+)", "x42").group("n") == "42", "(?<name>) spelling"
+# groupindex / groups attrs
+var rr = re.compile(r"(?P<x>a)(b)")
+assert rr.groupindex == {"x": 1} and rr.groups == 2, "groupindex + groups attrs"
+assert rr.pattern == r"(?P<x>a)(b)", "pattern attr"
+
+# ============================================================ alternation
+assert re.search("cat|dog|bird", "I have a dog").group() == "dog", "alternation"
+assert re.findall("(jan|feb|mar)", "feb and mar") == ["feb", "mar"], "alternation findall 1-group"
+
+# ============================================================ findall / finditer
+assert re.findall(r"\d+", "3 cats, 12 dogs, 1 fox") == ["3", "12", "1"], "findall 0-group whole"
+assert re.findall(r"(\w+)=(\d+)", "x=1 y=22") == [["x", "1"], ["y", "22"]], "findall 2-group tuples"
+assert re.findall(r"(\w)", "ab") == ["a", "b"], "findall 1-group strings"
+var iters = re.finditer(r"\d+", "a1 b22")
+assert len(iters) == 2, "finditer count"
+assert iters[0].group() == "1" and iters[0].start() == 1, "finditer[0]"
+assert iters[1].group() == "22" and iters[1].start() == 4, "finditer[1]"
+# overlapping / non-overlapping via finditer: matches are non-overlapping, leftmost
+assert len(re.finditer("aa", "aaaa")) == 2, "finditer non-overlapping"
+
+# ============================================================ sub (string + callable)
+assert re.sub(r"\s+", " ", "too   many    spaces") == "too many spaces", "sub literal template"
+assert re.sub(r"(\w+)@(\w+)", r"\2.\1", "user@host") == "host.user", "sub backref template"
+assert re.sub(r"\d+", r"<\g<0>>", "a1b2") == "a<1>b<2>", "sub \\g<0> whole"
+assert re.sub(r"(?P<w>\w+)", r"[\g<w>]", "hi") == "[hi]", "sub \\g<name>"
+var redact = Function(mm):
+    return "*" * len(mm.group())
+assert re.sub(r"\d+", redact, "card 1234 5678") == "card **** ****", "sub callable"
+assert re.sub("a", "X", "aaaa", 2) == "XXaa", "sub count limits"
+assert re.sub("a", "X", "aaaa", 0) == "XXXX", "sub count 0 = all"
+
+# ============================================================ split
+assert re.split(r",\s*", "a, b,c ,  d") == ["a", "b", "c ", "d"], "split basic"
+assert re.split(r"(\s+)", "one two") == ["one", " ", "two"], "split keeps captured separator"
+assert re.split("(,)", "a,b,c", 1) == ["a", ",", "b,c"], "split maxsplit + capture"
+assert re.split("x", "abc") == ["abc"], "split no match -> whole"
+
+# ============================================================ escape
+assert re.escape("a.b*c") == r"a\.b\*c", "escape metachars"
+assert re.escape("héllo") == "héllo", "escape leaves unicode/word chars"
+assert re.search(re.escape("3.14"), "pi=3.14").group() == "3.14", "escaped literal dot"
+
+# ============================================================ flags in use
+assert re.findall("cat", "Cat CAT cat", re.IGNORECASE) == ["Cat", "CAT", "cat"], "IGNORECASE"
+assert re.findall(r"^\w+", "one\ntwo\nthree", re.MULTILINE) == ["one", "two", "three"], "MULTILINE"
+assert re.search(".", "\n", re.DOTALL).group() == "\n", "DOTALL dot matches newline"
+assert re.findall("^cat", "cat\nCAT", re.MULTILINE + re.IGNORECASE) == ["cat", "CAT"], "combined flags with +"
+# inline flags apply to whole pattern regardless of position
+assert re.search("(?i)hello", "HELLO there").group() == "HELLO", "inline (?i) leading"
+assert re.search("a(?i)b", "AB").group() == "AB", "inline (?i) mid-pattern applies globally"
+
+# ============================================================ compile / reuse
+var word = re.compile("[A-Za-z]+", re.IGNORECASE)
+assert word.findall("Hello, World!") == ["Hello", "World"], "compiled findall"
+assert word.pattern == "[A-Za-z]+" and word.groups == 0, "compiled pattern/groups attrs"
+
+# ============================================================ pos / endpos (Regex methods)
+var p = re.compile("a+")
+assert p.search("aaa", 1).group() == "aa", "search with pos"
+assert p.search("aaa", endpos = 2).group() == "aa", "search endpos, pos omitted (hole-fill fix)"
+assert p.findall("aaaa", 1, 3) == ["aa"], "findall pos+endpos"
+assert re.compile(r"\d+").fullmatch("ab123", 2).group() == "123", "fullmatch with pos"
+assert re.compile("b$").search("abc", 0, 2).group() == "b", "endpos anchors $"
+assert re.compile(r"\bc").search("abc", 0, 2) == None, "endpos truncates before boundary"
+
+# ============================================================ EDGE: empty pattern / string / zero-width
+assert re.findall("", "abc") == ["", "", "", ""], "empty pattern zero-width matches"
+assert re.search("", "abc").span() == [0, 0], "empty pattern span"
+assert re.split("", "abc") == ["", "a", "b", "c", ""], "split on empty pattern"
+assert re.findall("a*", "aba") == ["a", "", "a", ""], "zero-width capable findall"
+assert re.search("a*", "").group() == "", "empty subject star matches empty"
+assert re.match("", "").group() == "", "empty pattern empty subject"
+assert re.match("x", "") == None, "no match on empty subject"
+
+# ============================================================ EDGE: unicode code points
+assert re.search("é", "café").group() == "é", "unicode literal match"
+assert re.search("é", "café").span() == [3, 4], "unicode span is code-point index"
+assert re.findall(".", "áé") == ["á", "é"], "unicode dot per code point"
+assert re.findall(r"\w+", "naïve") == ["na", "ve"], "\\w is ASCII-only (non-ascii ï is not a word char)"
+# octal escape \0NN (leading-zero); a bare \1-\9 reads as a backreference (rejected below)
+assert re.search(r"\060", "0").group() == "0", "octal \\060 = '0'"
+assert re.search(r"\077", chr(63)).group() == chr(63), "octal \\077"
+# \b inside a class is a backspace
+assert re.search(r"[\b]", chr(8)).group() == chr(8), "\\b in class = backspace"
+# hex/unicode escapes
+assert re.search(r"\x41", "A").group() == "A", "\\xHH escape"
+assert re.search(r"é", "é").group() == "é", "\\uHHHH escape"
+
+# ============================================================ str() forms + Match/Regex identity
+assert String(re.compile("a+")) == "<Regex /a+/>", "Regex str()"
+assert String(re.search("a", "a")) == "<Match span=(0, 1)>", "Match str()"
+
+# ============================================================ LINEAR-TIME: pathological pattern
+# A backtracking engine hangs on (a+)+b over a run of a's; this Thompson-NFA engine returns fast.
+var t0 = time.perfcounterns()
+assert re.search("(a+)+b", "a" * 30 + "c") == None, "(a+)+b pathological -> None"
+var elapsed_ms = (time.perfcounterns() - t0) / 1e6
+assert elapsed_ms < 1000, "pathological completes fast (no catastrophic backtracking)"
+
+# ============================================================ HARDENING: rejected features / bad patterns
+# backreferences deliberately rejected (linear-time guarantee)
+assert raises_msg(Function(): return re.compile(r"(a)\1"), "backreferences are not supported"), "backref rejected"
+assert raises_msg(Function(): return re.compile(r"\1"), "backreferences are not supported"), "bare \\1 = backref rejected"
+assert raises_msg(Function(): return re.compile("(?P=name)"), "named backreferences are not supported"), "named backref rejected"
+# lookaround deliberately rejected
+assert raises_msg(Function(): return re.compile("a(?=b)"), "lookahead"), "lookahead rejected"
+assert raises_msg(Function(): return re.compile("a(?!b)"), "lookahead"), "negative lookahead rejected"
+assert raises_msg(Function(): return re.compile("(?<=a)b"), "lookbehind"), "lookbehind rejected"
+assert raises_msg(Function(): return re.compile("(?<!a)b"), "lookbehind"), "negative lookbehind rejected"
+# structural / syntax errors
+assert raises_msg(Function(): return re.compile("(a"), "missing ) in pattern"), "unbalanced open paren"
+assert raises_msg(Function(): return re.compile("a)"), "unbalanced ')' in pattern"), "unbalanced close paren"
+assert raises_msg(Function(): return re.compile("*a"), "nothing to repeat"), "leading quantifier"
+assert raises_msg(Function(): return re.compile("a\\"), "trailing backslash"), "trailing backslash"
+assert raises_msg(Function(): return re.compile("[abc"), "unterminated character class"), "unterminated class"
+assert raises_msg(Function(): return re.compile("[z-a]"), "bad character range"), "bad class range"
+assert raises_msg(Function(): return re.compile("a{3,1}"), "bad repetition bounds"), "bad repetition bounds"
+assert raises_msg(Function(): return re.compile("(?P<x>a)(?P<x>b)"), "duplicate group name"), "duplicate group name"
+assert raises_msg(Function(): return re.compile("(?P<>a)"), "empty group name"), "empty group name"
+assert raises_msg(Function(): return re.compile("(?P<1x>a)"), "bad group name"), "bad group name"
+assert raises_msg(Function(): return re.compile(r"\U00110000"), "out of range"), "escape > U+10FFFF"
+assert raises_msg(Function(): return re.compile(r"\uD800"), "surrogate"), "surrogate escape rejected"
+assert raises_msg(Function(): return re.compile(r"\x1"), "incomplete"), "incomplete \\x escape"
+# structural caps
+assert raises_msg(Function(): return re.compile("a{2000}"), "repetition count too large (max 1000)"), "repetition cap"
+assert raises_msg(Function(): return re.compile("()" * 1001), "too many capture groups (max 1000)"), "group-count cap"
+assert raises_msg(Function(): return re.compile("(" * 2001 + ")" * 2001), "nested too deeply"), "nesting-depth cap"
+assert raises_msg(Function(): return re.compile("(?:a{1000}){1000}"), "compiled pattern too large"), "program-size cap"
+
+# ============================================================ HARDENING: Match/sub/group misuse
+# bad group key on Match
+assert raises_msg(Function(): return m.group(9), "no such group: 9"), "group out-of-range index"
+assert raises_msg(Function(): return who.group("nope"), "no such group: 'nope'"), "group unknown name"
+assert raises_msg(Function(): return m.group([1]), "group key must be an Integer index or a String name"), "group bad key type"
+assert raises_msg(Function(): return m.start(9), "no such group: 9"), "start out-of-range group"
+# sub template invalid group reference
+assert raises_msg(Function(): return re.sub("(a)", "\\2", "a"), "invalid group reference"), "sub template bad group"
+assert raises_msg(Function(): return re.sub(r"(a)", "\\g<none>", "a"), "no group named"), "sub template bad name"
+# sub callable must return a String
+assert raises_msg(Function(): return re.sub("a", Function(x): return 5, "a"), "must return a String"), "sub callable non-String return"
+# sub replacement wrong type
+assert raises_msg(Function(): return re.sub("a", 5, "aa"), "must be a String or a function"), "sub bad repl type"
+
+io.print("OK regex")
