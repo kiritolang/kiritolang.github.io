@@ -118,9 +118,10 @@ ok(ft.reduce(Function(a, b): return a - b, [10, 1, 2, 3]) == 4, "reduce subtract
 # A falsy non-None seed (empty String) actually seeds (have = initial != None is True for "").
 ok(ft.reduce(Function(a, b): return a + b, ["x", "y"], "") == "xy", "reduce with an empty-String seed seeds")
 ok(ft.reduce(Function(a, b): return a + b, [], "") == "", "reduce empty list with empty-String seed returns the seed")
-# Explicit initial=None is indistinguishable from omitting it (sentinel collision; documented behaviour).
-ok(ft.reduce(Function(a, b): return a + b, [1, 2, 3], None) == 6, "reduce explicit initial=None == no initial")
-ok(throws(Function(): return ft.reduce(Function(a, b): return a + b, [], None)), "reduce empty list with None seed throws (None cannot seed)")
+# Explicit initial=None is a REAL seed (identity sentinel, Python parity): it folds None with the first
+# element (None + 1 -> error), and seeds an empty fold to None instead of throwing.
+ok(throws(Function(): return ft.reduce(Function(a, b): return a + b, [1, 2, 3], None)), "reduce explicit initial=None seeds the fold (None + 1 raises)")
+ok(ft.reduce(Function(a, b): return a + b, [], None) == None, "reduce empty list with None seed returns the None seed")
 # partial R8 snapshot — probed by INDEX mutation and by full REASSIGNMENT of the caller's binding.
 var snap = [1, 2]
 var pIdx = ft.partial(Function(args): return args, snap)
