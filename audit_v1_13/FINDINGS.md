@@ -56,9 +56,12 @@ test-writing phase (C++ then `.ki`).
 (Still todo: A11-3 native-annotation enforcement, and the lower-severity weak-spots/coverage-gaps
 enumerated per agent.)
 
-**Validation:** full **debug CTest 728/728 green**; every changed area re-run under **ASan/UBSan clean**
+**Validation:** full **debug CTest 729/729 green**; every changed area re-run under **ASan/UBSan clean**
 (test_audit_v113, serde/dump/serialize, fstring/lexer/string_literals, regex, random, collections,
-tensor, net), and `spec_audit_v113.ki` runs clean under the ASan `ki`.
+tensor, net), `spec_audit_v113.ki` runs clean under the ASan `ki`, and the concurrent path is
+**tsan-clean** (test_parallel{,_sync,_deadlock}, test_sys_time_deep, test_audit_v113 — gates the
+A19-4 env mutex). A **perf** change also landed: the adaptive-GC floor 20k→64k cut tight-loop GC
+frequency ~3×, ~10% faster in-function loop with a tighter run-to-run spread (the reported variance).
 
 ## Fix batches 3–9 (FIXED + TESTED, debug-green; memory-safety ones asan-gated)
 
