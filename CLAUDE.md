@@ -400,10 +400,14 @@ a stability fuzzer, and a benchmark). Working today:
     `sendto` accept a String or Bytes. Half-close via `shutdown([how])` (`"read"`/`"write"`/`"both"`);
     introspect with `getsockname()` / `getpeername()` (→ `[host, port]`), the read-only `family` /
     `type` attributes, and `fileno()` (the raw fd, non-destructive — cf. `detach()`, which relinquishes
-    ownership). Options are **string-keyed**: `setsockopt(option, value)` / `getsockopt(option)` over
+    ownership and clears the fd; `fileno()` returns `-1` on a closed/detached socket, and a second
+    `detach()` throws rather than handing out a stale fd). Options are **string-keyed**:
+    `setsockopt(option, value)` / `getsockopt(option)` over
     `reuseaddr`/`broadcast`/`keepalive`/`rcvbuf`/`sndbuf`/`nodelay` (+ read-only `error`/`type`/
     `acceptconn`; `reuseport` where the OS has it), with named conveniences `setreuseaddr`/`setnodelay`/
-    `setbroadcast`/`setkeepalive`, plus `setblocking(flag)` and `settimeout(seconds)`. Name resolution:
+    `setbroadcast`/`setkeepalive`, plus `setblocking(flag)` and `settimeout(seconds)` (which bounds a
+    subsequent `connect()` too — via a non-blocking connect + `select` — not only send/recv, so a
+    black-hole host can't hang past the timeout). Name resolution:
     `gethostname()`, `gethostbyname(host)` (first IPv4), `getaddrinfo(host[, port[, family[, type]]])`
     (→ a List of `{family, type, host, port}` dicts). `fromfd(fd[, family, type])` adopts an existing
     fd (e.g. one handed over by `socket.detach()` to a worker VM). Every entry point validates its
