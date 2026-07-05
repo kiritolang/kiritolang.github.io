@@ -181,5 +181,28 @@ int main() {
              "String(st.mean([4611686018427387904, 4611686018427387904]) > 0.0)") == "True");
     CHECK(ok("var st = import(\"statistics\")\nString(st.mean([2, 4, 6]))") == "4.0");  // no regression
 
+    // === A14-1 (random.gauss keyword-only): makeMethod hole-fills a skipped leading optional (mu)
+    // with None when a LATER arg (sigma) is passed by keyword, and the impl fed None to asNum -> throw.
+    // A None slot now means "use the default". ===
+    CHECK(ok("var r = import(\"random\").Random(1)\nString(r.gauss(sigma = 2.0) == r.gauss(sigma = 2.0))")
+          == "False");                                    // runs (draws two values), doesn't throw
+    CHECK(has(err("var r = import(\"random\").Random(1)\ndiscard r.gauss(sigma = -1.0)"), "sigma"));  // A14-3
+
+    // === A21-2 (regex endpos hole-fill): match/search/finditer/findall with `endpos=` but `pos`
+    // omitted hole-filled pos with None, then asInt(None) threw. None slots are now "absent". ===
+    CHECK(ok("var re = import(\"regex\")\nre.compile(\"a+\").search(\"aaa\", endpos = 2).group()") == "aa");
+    CHECK(ok("var re = import(\"regex\")\nString(len(re.compile(\"a\").findall(\"aaaa\", endpos = 2)))") == "2");
+    // A21-3: a huge pos/endpos is clamped, not misbehaving (past-end pos matches nothing, no OOB).
+    CHECK(ok("var re = import(\"regex\")\nString(re.compile(\"a\").search(\"aaa\", 999999999999) == None)") == "True");
+
+    // === A09-2 (NaN sort UB): the sort/min/max comparator returned false both ways for a NaN operand,
+    // making NaN equivalent to every number (not a strict weak ordering -> std::sort UB). NaN now sorts
+    // as the largest value. Assert a stable, total order (no crash under ASan, deterministic result). ===
+    CHECK(ok("var m = import(\"math\")\nvar s = sorted([3.0, m.nan, 1.0, 2.0, m.nan])\n"
+             "String(s[0]) + \",\" + String(s[1]) + \",\" + String(s[2]) + \",\" + String(s[3] != s[3]) + \",\" + String(s[4] != s[4])")
+          == "1.0,2.0,3.0,True,True");                    // reals first (1,2,3), the two NaNs last
+    CHECK(ok("var m = import(\"math\")\nString(min([2.0, 1.0, 3.0]))") == "1.0");   // no regression
+    CHECK(ok("var m = import(\"math\")\nString(max([2.0, 1.0, 3.0]))") == "3.0");
+
     return RUN_TESTS();
 }

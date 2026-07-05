@@ -396,7 +396,17 @@ inline bool kiLessThan(KiritoVM& vm, Handle a, Handle b) {
     const Object& y = vm.arena().deref(b);
     // Numbers compare EXACTLY (Integer↔Integer and Integer↔Float both avoid the lossy double round-trip
     // that would collapse int64 magnitudes beyond 2^53 and mis-order sort/sorted/min/max + List compares).
-    if (isNumeric(x) && isNumeric(y)) return numericCompare(x, y) == -1;
+    if (isNumeric(x) && isNumeric(y)) {
+        int c = numericCompare(x, y);
+        if (c != 2) return c == -1;
+        // A NaN operand makes numericCompare "unordered". Returning false both ways would make NaN
+        // equivalent to EVERY number (NaN~1, NaN~2 but 1<2) — not a strict weak ordering, so
+        // std::sort / min / max are undefined. Impose a total order: NaN sorts as the largest value
+        // (after every real, incl. +inf) and NaN is not less than NaN. So x<y iff only y is NaN.
+        auto isNan = [](const Object& o) { return o.kind() == ValueKind::Float &&
+                                                  static_cast<const FloatVal&>(o).value() != static_cast<const FloatVal&>(o).value(); };
+        return isNan(y) && !isNan(x);
+    }
     if (x.kind() == ValueKind::String && y.kind() == ValueKind::String)
         return static_cast<const StrVal&>(x).value() < static_cast<const StrVal&>(y).value();
     if ((x.kind() == ValueKind::List || x.kind() == ValueKind::Array) &&
