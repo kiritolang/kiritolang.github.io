@@ -217,26 +217,28 @@ Kirito (bytecode VM) vs C++ (`-O2`) vs CPython 3.11 vs Lua 5.1 on identical algo
 | Workload | C++ (-O2) | Python 3.11 | Lua 5.1 | Kirito | Ki / C++ | Ki / Py | Ki / Lua |
 |---|---|---|---|---|---|---|---|
 | *pessimistic — interpreter-bound tight loops* | | | | | | | |
-| `sum_loop` (arithmetic loop) | 0.29 µs | 44 µs | 13.2 µs | 152 µs | ~525× | 3.5× | 11.5× |
-| `fib` (recursive calls) | 3.0 µs | 215 µs | 170 µs | 1.58 ms | ~525× | 7.3× | 9.3× |
-| `sieve` (nested loops + indexed writes) | 1.6 µs | 113 µs | 110 µs | 1.14 ms | ~700× | 10× | 10× |
+| `sum_loop` (arithmetic loop) | 0.40 µs | 41 µs | 16.3 µs | 253 µs | ~640× | 6.2× | 15.5× |
+| `fib` (recursive calls) | 3.0 µs | 209 µs | 164 µs | 1.64 ms | ~550× | 7.9× | 10× |
+| `sieve` (nested loops + indexed writes) | 1.8 µs | 108 µs | 128 µs | 1.27 ms | ~690× | 11.7× | 9.9× |
 | *optimistic — work delegated to C++ builtins* | | | | | | | |
-| `sort` (builtin sort) | 13.3 µs | 91 µs | 314 µs | 253 µs | 19× | 2.8× | **0.8×** |
-| `dict_ops` (hash insert/lookup) | 46 µs | 117 µs | 121 µs | 336 µs | 7× | 2.9× | 2.8× |
-| `string_ops` (`split`/`join`) | 32 µs | 41 µs | 200 µs | 107 µs | 3× | 2.6× | **0.5×** |
+| `sort` (builtin sort) | 16.2 µs | 101 µs | 354 µs | 350 µs | 22× | 3.5× | **1.0×** |
+| `dict_ops` (hash insert/lookup) | 50 µs | 114 µs | 127 µs | 382 µs | 7.7× | 3.4× | 3.0× |
+| `string_ops` (`split`/`join`) | 37 µs | 42 µs | 190 µs | 133 µs | 3.6× | 3.2× | **0.7×** |
 
-Geometric-mean slowdown: **pessimistic ≈ 580× C++ / 6.3× Python / 10× Lua 5.1**, **optimistic ≈ 8×
-C++ / 2.8× Python / 1.0× Lua 5.1**. The shape is what a bytecode VM with a fast C++ standard library
+Geometric-mean slowdown: **pessimistic ≈ 620× C++ / 8.3× Python / 11.5× Lua 5.1**, **optimistic ≈ 8.4×
+C++ / 3.4× Python / 1.3× Lua 5.1**. The shape is what a bytecode VM with a fast C++ standard library
 should show: it still pays per-operation dispatch on tight loops — where Lua 5.1's register VM is
 ~10× quicker — but amortizes that away once work lands in native builtins, where Kirito is on par with
 or **faster than** Lua 5.1 (`sort`, `string_ops` delegate to `std::sort` / `std::string`).
 **Slot-addressed locals** (resolving each function's non-captured locals to a frame-slot index at
-compile time) plus a numeric binary fast path landed in 1.9 and roughly halved the tight-loop gap —
-`sum_loop` went 7.1×→3.5× and `dict_ops` 4.7×→2.9× versus Python. The C++ baseline runs in tens to hundreds of *nanoseconds*,
-where timer jitter dominates, so the `Ki / C++` column is approximate and swings run-to-run; the
-`Ki / Py` and `Ki / Lua` ratios are the stable, meaningful ones. Lua 5.1 has no integer type, so its
-column uses doubles; the benchmark's 31-bit LCG is computed with an exact split-multiply so every
-language runs on byte-identical data.
+compile time) plus a numeric binary fast path landed in 1.9 and roughly halved the tight-loop gap
+versus Python. Absolute numbers depend heavily on the host — these were measured on a shared cloud
+container, so they run slower and noisier than a dedicated machine (Kirito's per-run stddev is large,
+which is why the table reports the median of three runs). The C++ baseline runs in tens to hundreds of
+*nanoseconds*, where timer jitter dominates, so the `Ki / C++` column is approximate and swings
+run-to-run; the `Ki / Py` and `Ki / Lua` ratios are the stable, meaningful ones. Lua 5.1 has no integer
+type, so its column uses doubles; the benchmark's 31-bit LCG is computed with an exact split-multiply so
+every language runs on byte-identical data.
 
 Reproduce: `cmake --build build-release --target ki && python3 tools/tests/bench/compare.py --ki build-release/ki`
 (the Lua column appears automatically when `lua5.1` is on your `PATH`).
