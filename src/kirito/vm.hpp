@@ -354,7 +354,14 @@ private:
     // interpreter's run-to-run timing variance. An explicit setGcThreshold() pins the threshold and
     // turns this off (tests rely on e.g. setGcThreshold(1) collecting on every allocation).
     bool gcAdaptive_ = true;
-    static constexpr std::size_t kGcThresholdFloor = 20000;
+    // The floor only binds when the live set is small (< floor/4), i.e. allocation-heavy but low-live
+    // workloads — tight loops and deep recursion (fib), which churn transient boxes while keeping few
+    // live. At the old 20k floor those collected every 20k allocs, and the frequent (cheap) pauses both
+    // slowed the loop and jittered its timing. Raising the floor to 64k cut GC frequency ~3× there:
+    // measured ~10% faster on the in-function numeric loop and ~5% on the module loop, with a tighter
+    // run-to-run spread, for a few MB more transient retention. Larger-live workloads are unaffected
+    // (the adaptive 4× live dominates). setGcThreshold() still pins an exact value (tests use 1).
+    static constexpr std::size_t kGcThresholdFloor = 65536;
     bool gcEnabled_ = true;
     std::size_t callDepth_ = 0;
     // Conservative default for an 8 MB stack with deep per-call expression nesting; embedders with
