@@ -89,3 +89,41 @@ Status: IN PROGRESS.
 - **failure-scenario**: code that records `pos = tell()` before/after an append write to index records computes wrong offsets.
 - **proposed-fix**: document that seek/tell are meaningless for writes in append mode (or force tell() to report the put position / reject seek in append mode).
 - **confidence**: CONFIRMED
+
+### A11-10: `BytesIO.truncate(size)` silently ignores its argument (always truncates to the cursor)
+- **severity**: LOW
+- **location**: `stdlib_io.hpp:361-366` `truncate` (bound with no params; body always `buf.resize(pos)`).
+- **category**: bug / API divergence
+- **description**: CONFIRMED: `b = BytesIO("hello world"); b.seek(3); b.truncate(2)` returns 3 and leaves value "hel" — the `2` argument is dropped, truncation is to the cursor (3). Python's `truncate([size])` truncates to `size` if given. Because the method has zero declared params the extra positional arg is silently swallowed (same for `tell(99)`, `getvalue(9)` etc. — extra positional args on no-param native methods are ignored, not rejected).
+- **failure-scenario**: `b.truncate(n)` to cap a buffer at n bytes silently truncates to wherever the cursor happens to be instead.
+- **proposed-test**: `b.truncate(2)` truncates to 2 bytes; or asserts it throws on an extra arg.
+- **proposed-fix**: accept an optional `size` param (truncate to size when given, else to pos), matching Python.
+- **confidence**: CONFIRMED
+
+### A11-11: `File.seek` silently no-ops on an out-of-range large target while `BytesIO.seek` accepts it (inconsistency)
+- **severity**: LOW
+- **location**: `FileVal::seek` 220-246 vs `BytesIO::seek` 342-356.
+- **category**: consistency
+- **description**: CONFIRMED: on a 3-byte file/buffer, `seek(9223372036854775800, 2)` (no arithmetic overflow) leaves the File at position 3 with NO error (the underlying seekg past a huge offset fails, tell() clears failbit → reports 3), whereas `BytesIO.seek` sets `pos = 9223372036854775803` and tell() reports it. So an impossible seek is a silent no-op on File but succeeds logically on BytesIO. File gives no signal the seek didn't take.
+- **proposed-fix**: on File, detect the failed seek (stream fail state) and throw, or clamp consistently with BytesIO; make the two surfaces agree.
+- **confidence**: CONFIRMED
+
+### A11-12: unbounded read-all can OOM (A12-3 carried over)
+- **severity**: LOW
+- **location**: `stdlib_io.hpp:97` (File.streamRead no-n `ss << rdbuf()`), 398 (StdStream.streamRead no-n), 603-609 (io.read).
+- **category**: resource-limit (by-design CPython parity, but inconsistent with Kirito's guard policy)
+- **description**: `read()` with no size buffers the entire remaining stream; `/dev/zero`/an infinite pipe → bad_alloc, not the bounded catchable error Kirito applies to string/list repetition, range, tensor, regex, BytesIO (256 MiB cap). Sized reads ARE clamped. Unchanged from v1.13.
+- **proposed-fix**: cap accumulated size in the no-n branches (mirror BytesIO kMaxBuf) and throw "read result too large".
+- **confidence**: HIGH (behaviour), design-judgement on severity.
+
+## Confirmed FIXED since v1.13
+- **A12-1 (walk/listdir tolerance)** — FIXED: `listdir` now iterates with `increment(ec)`, `walk` uses `directory_options::skip_permission_denied` + `increment(ec)` + `is_regular_file(sec)`; no throw on a perm-denied nested dir (P19 confirmed no throw).
+- **A12-2 (writelines non-iterable → bad_optional_access)** — FIXED: `f.writelines(42)` now throws a clean catchable "type 'Integer' is not iterable" (P1b confirmed).
+
+## Coverage gaps (behaviour plausible/tested-at-runtime but no automated test)
+- **A11-13**: no test for embedded-NUL path truncation (A11-1) — highest-value gap (security).
+- **A11-14**: no test for `io.open(dir,"r")` (A11-5) — should assert throw/empty-and-documented.
+- **A11-15**: no test asserting `File.write`/`StdStream.write` return value (A11-6) or `BytesIO.truncate(size)` semantics (A11-10).
+- **A11-16**: no test calls io stream methods by keyword (`f.read(size=)`, `f.seek(offset=,whence=)`, `b.write(data=)`) though they WORK (P24) — the uniform-kwargs guarantee is unverified for io streams (A12-9 carried).
+- **A11-17**: no test for duck-typed stdout flush (A11-3), `stream=None` diagnostic (A11-4), append-mode seek/tell (A11-9), read(None) divergence (A11-7), `io.write(Bytes)` repr (A11-2).
+- **A11-18**: no test for the BytesIO 256 MiB guard at the .ki level (P20 confirms it fires) or File seek-overflow no-op (A11-11).

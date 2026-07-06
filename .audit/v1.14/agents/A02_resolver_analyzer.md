@@ -44,3 +44,36 @@ Findings appended incrementally below.
 - proposed-test: test_warnings.cpp — assert `c and f()` and `f() if c else g()` (f/g None-returning locals) do NOT warn unused-result; keep flagging `a + b`, bare `x`, and a value-returning-local call.
 - proposed-fix: for Logical/Conditional, recurse into the value-producing operands (the two branches / RHS) and flag only when those would themselves be flagged (i.e. treat a side-effecting call leaf as "used"). Or, more simply, exempt Logical/Conditional whose relevant leaves are CallExprs.
 - confidence: high (reproduced)
+
+### A02-3: Coverage gap — no test pins the read-before-assign / use-before-def runtime behavior (A02-1)
+- severity: coverage-gap
+- location: tools/tests/errors/ (no `.experr` covers a local read before its `var`) and tools/tests/scripts/ (no golden pins the outer-leak value)
+- category: coverage
+- description: The resolver accepts a local read that precedes its `var` (membership scoping). Two runtime outcomes exist and neither is pinned: (a) an outer same-name binding → silent outer value (p4.ki: prints 42), (b) no outer binding → runtime `name 'X' is not defined` (p3.ki). A regression could flip either silently.
+- proposed-test: `tools/tests/errors/read_before_assign.ki` asserting the no-outer case throws `name 'y' is not defined`; a `tools/tests/scripts` golden asserting the module-shadow case prints the OUTER value (or, if fixed, an unbound-local error).
+- confidence: high
+
+### A02-4: Coverage gap — unused-result NEGATIVE cases for side-effect idioms untested (pins A02-2 either way)
+- severity: coverage-gap
+- location: tools/tests/unit/test_warnings.cpp:69-83 (negatives cover only bare None-call and native call; no Logical/Conditional idiom)
+- category: coverage
+- description: test_warnings.cpp covers `a + b`, bare index, value-returning-local call (positives) and None-call / native-call (negatives), but never a `cond and f()` or `f() if c else g()`. Whichever way A02-2 is decided, a test should pin it. Also (prior A03-6, still unfixed) `throw`/`continue` unreachable-code cases and a bare `Name`/`Member`/`Tuple` unused-result remain untested in C++.
+- proposed-test: add the two idiom snippets to test_warnings.cpp; add throw/continue unreachable cases.
+- confidence: high
+
+### A02-5: capture analysis verified sound across nested defaults, class methods, transitive 2-level capture, loop-var capture, and write-capture (non-bug, positive confirmation)
+- severity: non-bug
+- location: src/kirito/locals.hpp (capturedLocals / CaptureScan)
+- category: correctness
+- description: Probed the dangerous direction (a real capture MISSED → wrong slot). All exercised cases are correctly detected: nested-fn parameter default referencing an F-local (p7: 10), class-method referencing an enclosing local (p8: 99), transitive 2-levels-up capture, loop-variable capture (p16: late-binding 3/3/3), and write-capture via index/rebind. A middle-scope local that shadows an F-local correctly prevents a spurious capture. No miss found. The A03-15 triplicated-walk DRY risk remains structural (a future node added to only some walks would silently escape capture analysis), but all three walks are currently in sync over the full 17-Expr / 18-Stmt node set.
+- confidence: high
+
+## Summary
+- medium: 1 (A02-1 read-before-assign silently resolves to enclosing/module binding — masks shadow bugs)
+- low: 1 (A02-2 unused-result false positive on `and`/conditional side-effect idioms — deviates from analyzer's own "no useful side effect" intent)
+- coverage-gap: 2 (A02-3 read-before-assign untested; A02-4 side-effect-idiom + throw/continue unreachable untested)
+- non-bug: 1 (A02-5 capture analysis confirmed sound across all probed nesting patterns)
+
+Prior v1.13 findings status (not re-reported): A03-1 FIXED (verified). A03-2 (declare resets `used` on re-decl) and A03-3 (lookupFunc skips closer shadowing binding) appear STILL PRESENT in current code (analyzer.hpp:74-76, 83-89) — were "todo".
+
+Status: COMPLETE.
