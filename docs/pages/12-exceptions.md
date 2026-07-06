@@ -646,6 +646,7 @@ Compile rejections are thrown as **RegexError** inside the engine and re-wrapped
 | `invalid regex: bad character range in class` / `trailing backslash …` / `incomplete \x/\u escape` / `escape value out of range …` | Malformed class/escape | Fix the class/escape |
 | `invalid regex: duplicate/empty/bad group name …` / `malformed named group …` / `unsupported (?...) group` | A malformed group construct | Use a supported group form |
 | `invalid regex: backreferences are not supported …` / `named backreferences …` / `lookahead …` / `lookbehind …` | Backrefs/lookaround (rejected by design for linear time) | Restructure without them |
+| `regex match exceeded its complexity budget …` | A many-capture-group pattern over a long input (cost is O(text × program × groups)) | Simplify the pattern or reduce capture groups |
 | `no such group: <g>` / `group key must be an Integer index or a String name` | Bad group access on a Match | Use a valid group number/name |
 | `invalid group reference <g> in replacement template` / `bad replacement: …` | Malformed `sub` template | Reference an existing group; fix the `\g<…>` |
 | `sub replacement must be a String or a function` / `sub replacement function must return a String` | Bad `sub` replacement | Pass a String template / return a String |

@@ -145,6 +145,18 @@ int main() {
     // past the element guard (c==0), yielding rows()==-1 from untrusted state. Reject it. ===
     CHECK(has(err("import(\"matrix\").zeros(1, 1)._setstate_([-1, 0, []])"), "negative dimension"));
 
+    // === A17-1 (MEDIUM, DoS): the linear-time regex is O(text * program * groups) because each NFA
+    // thread copies its capture vector; a pattern with hundreds of groups over a long input ran for
+    // tens of seconds ((a?)x500 + b over 10k a's). A capture-volume budget now throws instead of
+    // hanging (matching an untrusted pattern is a stated security property). ===
+    CHECK(has(err(
+        "var re = import(\"regex\")\nvar pat = \"\"\nvar i = 0\n"
+        "while i < 500:\n    pat = pat + \"(a?)\"\n    i = i + 1\n"
+        "pat = pat + \"b\"\ndiscard re.search(pat, \"a\" * 10000)"), "complexity budget"));
+    // a legitimate regex (few groups) is unaffected
+    CHECK(ok("import(\"regex\").search(\"(\\\\d+)-(\\\\d+)\", \"x 12-34 y\").group(2)") == "34");
+    CHECK(ok("String(import(\"regex\").findall(\"\\\\w+\", \"a bb ccc\") == [\"a\", \"bb\", \"ccc\"])") == "True");
+
     // === A19-1 / A19-2 (MEDIUM, embedding memory): Value's arithmetic/unary operators, call,
     // getAttr, at (getItem) and List::pop wrapped their fresh, not-yet-rooted result in the
     // NON-pinning Value(vm, Handle) ctor, so a GC between the op and first use swept it (dangling

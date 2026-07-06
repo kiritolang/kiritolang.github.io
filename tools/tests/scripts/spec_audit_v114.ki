@@ -106,4 +106,18 @@ assert complex.atan(complex.real(0.5)).re > 0.4, "A13-2: atan of an in-domain va
 var matrix = import("matrix")
 assert throws(Function(): return matrix.zeros(1, 1)._setstate_([-1, 0, []])), "A13-3: negative dim rejected"
 
+# --- A17-1: a pathological many-group regex over a long input throws a budget error, not a 20s hang ---
+var regex = import("regex")
+var buildPat = Function():
+    var p = ""
+    var i = 0
+    while i < 500:
+        p = p + "(a?)"
+        i = i + 1
+    return p + "b"
+assert throws(Function(): return regex.search(buildPat(), "a" * 10000)), "A17-1: capture-DoS pattern throws (bounded)"
+# a normal regex with a few groups is unaffected
+assert regex.search(r"(\d+)-(\d+)", "x 12-34 y").group(2) == "34", "A17-1: an ordinary regex still matches"
+assert regex.findall(r"\w+", "a bb ccc") == ["a", "bb", "ccc"], "A17-1: findall unaffected"
+
 io.print("OK audit-v114")
