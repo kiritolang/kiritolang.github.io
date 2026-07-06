@@ -1,0 +1,273 @@
+# labx: deep verification of the `math` module — domain-error hardening, exact boundaries,
+# NaN passthrough, overflow (range vs domain), gcd/lcm/factorial/comb/perm/prod edges, kwargs.
+# Every real check is an assert; the only output is the final sentinel line.
+var io = import("io")
+var math = import("math")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ------------------------------------------------------------------ constants
+assert math.pi.compare(3.141592653589793), "pi"
+assert math.e.compare(2.718281828459045), "e"
+assert math.tau.compare(2.0 * math.pi), "tau"
+assert math.isinf(math.inf), "inf"
+assert math.inf > 0, "inf sign"
+assert math.isnan(math.nan), "nan"
+assert math.nan != math.nan, "nan != nan (exact IEEE)"
+assert not math.isnan(math.inf), "inf not nan"
+assert not math.isinf(math.nan), "nan not inf"
+
+# ------------------------------------------------ EVERY documented domain error THROWS
+assert raises_msg(Function(): return math.sqrt(-1), "math domain error"), "sqrt(-1)"
+assert raises_msg(Function(): return math.log(0), "math domain error"), "log(0)"
+assert raises_msg(Function(): return math.log(-1), "math domain error"), "log(-1)"
+assert raises_msg(Function(): return math.asin(2), "math domain error"), "asin(2)"
+assert raises_msg(Function(): return math.asin(-2), "math domain error"), "asin(-2)"
+assert raises_msg(Function(): return math.acos(2), "math domain error"), "acos(2)"
+assert raises_msg(Function(): return math.acos(-2), "math domain error"), "acos(-2)"
+assert raises_msg(Function(): return math.acosh(0), "math domain error"), "acosh(0)"
+assert raises_msg(Function(): return math.atanh(1), "math domain error"), "atanh(1)"
+assert raises_msg(Function(): return math.atanh(-1), "math domain error"), "atanh(-1)"
+assert raises_msg(Function(): return math.log2(0), "math domain error"), "log2(0)"
+assert raises_msg(Function(): return math.log10(0), "math domain error"), "log10(0)"
+assert raises_msg(Function(): return math.log1p(-1), "math domain error"), "log1p(-1)"
+assert raises_msg(Function(): return math.log1p(-2), "math domain error"), "log1p(-2)"
+assert raises_msg(Function(): return math.gamma(0), "math domain error"), "gamma(0)"
+assert raises_msg(Function(): return math.gamma(-1), "math domain error"), "gamma(-1)"
+assert raises_msg(Function(): return math.gamma(-2), "math domain error"), "gamma(-2)"
+assert raises_msg(Function(): return math.lgamma(0), "math domain error"), "lgamma(0)"
+assert raises_msg(Function(): return math.lgamma(-3), "math domain error"), "lgamma(-3)"
+assert raises_msg(Function(): return math.pow(-2, 0.5), "math domain error"), "pow(-2,0.5)"
+assert raises_msg(Function(): return math.pow(0, -1), "math domain error"), "pow(0,-1)"
+assert raises_msg(Function(): return math.fmod(1, 0), "math domain error"), "fmod(x,0)"
+assert raises_msg(Function(): return math.log(8, 1), "math domain error"), "log base 1"
+assert raises_msg(Function(): return math.log(8, -2), "math domain error"), "log base <0"
+assert raises_msg(Function(): return math.log(8, 0), "math domain error"), "log base 0"
+# fmod: an infinite dividend is also a domain error (libm would return NaN)
+assert raises_msg(Function(): return math.fmod(math.inf, 3), "math domain error"), "fmod(inf,3)"
+
+# ------------------------------------------------ exact domain BOUNDARIES (inside ok, just-outside throws)
+assert math.asin(1).compare(math.pi / 2), "asin(1) ok"
+assert math.asin(-1).compare(-math.pi / 2), "asin(-1) ok"
+assert raises(Function(): return math.asin(1.0000001)), "asin just>1 throws"
+assert raises(Function(): return math.asin(-1.0000001)), "asin just<-1 throws"
+assert math.acos(1) == 0.0, "acos(1) ok"
+assert math.acos(-1).compare(math.pi), "acos(-1) ok"
+assert math.acosh(1) == 0.0, "acosh(1) ok (boundary)"
+assert raises(Function(): return math.acosh(0.9999999)), "acosh just<1 throws"
+assert math.isfinite(math.atanh(0.9999999)), "atanh near 1 ok"
+assert math.isfinite(math.atanh(-0.9999999)), "atanh near -1 ok"
+assert math.isfinite(math.log1p(-0.9999999)), "log1p near -1 ok"
+assert math.isfinite(math.log(5e-324)), "log of smallest positive subnormal ok"
+assert math.isfinite(math.log2(5e-324)), "log2 of smallest positive ok"
+assert math.sqrt(0) == 0.0, "sqrt(0) boundary ok"
+# gamma is defined for negative NON-integers (only the non-positive integer poles throw)
+assert math.isfinite(math.gamma(-0.5)), "gamma(-0.5) ok"
+assert math.isfinite(math.gamma(0.5)), "gamma(0.5) ok"
+assert math.gamma(0.5).compare(math.sqrt(math.pi)), "gamma(0.5)==sqrt(pi)"
+
+# ------------------------------------------------ NaN passes through (no throw) for EVERY guarded fn
+assert math.isnan(math.sqrt(math.nan)), "sqrt(nan)"
+assert math.isnan(math.asin(math.nan)), "asin(nan)"
+assert math.isnan(math.acos(math.nan)), "acos(nan)"
+assert math.isnan(math.acosh(math.nan)), "acosh(nan)"
+assert math.isnan(math.atanh(math.nan)), "atanh(nan)"
+assert math.isnan(math.log(math.nan)), "log(nan)"
+assert math.isnan(math.log2(math.nan)), "log2(nan)"
+assert math.isnan(math.log10(math.nan)), "log10(nan)"
+assert math.isnan(math.log1p(math.nan)), "log1p(nan)"
+assert math.isnan(math.gamma(math.nan)), "gamma(nan)"
+assert math.isnan(math.lgamma(math.nan)), "lgamma(nan)"
+assert math.isnan(math.pow(math.nan, 2)), "pow(nan,2)"
+assert math.isnan(math.fmod(math.nan, 3)), "fmod(nan,3)"
+assert math.isnan(math.log(8, math.nan)), "log(x, nan base)"
+
+# ------------------------------------------------ overflow-to-inf is a RANGE, not a domain, condition
+assert math.isinf(math.exp(1000)), "exp overflow -> inf, no throw"
+assert math.isinf(math.pow(10, 400)), "pow overflow -> inf, no throw"
+assert math.isinf(math.cosh(1000)), "cosh overflow -> inf"
+assert math.isinf(math.log(math.inf)), "log(inf)=inf (inf in domain)"
+
+# ------------------------------------------------ trig / inverse / hyperbolic values
+assert math.sin(0) == 0.0, "sin(0)"
+assert math.cos(0) == 1.0, "cos(0)"
+assert math.tan(0) == 0.0, "tan(0)"
+assert math.sin(math.pi / 2).compare(1.0), "sin(pi/2)"
+assert math.atan(1).compare(math.pi / 4), "atan(1)"
+assert math.atan2(1, 0).compare(math.pi / 2), "atan2(1,0)"
+assert math.atan2(0, 1) == 0.0, "atan2(0,1)"
+assert math.atan2(-1, -1).compare(-3.0 * math.pi / 4), "atan2 quadrant signs"
+assert math.sinh(0) == 0.0, "sinh(0)"
+assert math.cosh(0) == 1.0, "cosh(0)"
+assert math.tanh(0) == 0.0, "tanh(0)"
+assert math.asinh(0) == 0.0, "asinh(0)"
+assert math.hypot(3, 4) == 5.0, "hypot(3,4)"
+assert math.hypot(0, 0) == 0.0, "hypot(0,0)"
+
+# ------------------------------------------------ exp/log family
+assert math.exp(0) == 1.0, "exp(0)"
+assert math.expm1(0) == 0.0, "expm1(0)"
+assert math.log1p(0) == 0.0, "log1p(0)"
+assert math.log(math.e).compare(1.0), "log(e)=1 natural"
+assert math.log2(16).compare(4.0), "log2(16)"
+assert math.log10(1000).compare(3.0), "log10(1000)"
+assert math.log(100, 10).compare(2.0), "log base 10"
+assert math.log(8, 2).compare(3.0), "log base 2"
+assert math.log(27, 3).compare(3.0), "log base 3"
+assert math.sqrt(144) == 12.0, "sqrt(144)"
+assert math.cbrt(27).compare(3.0), "cbrt(27)"
+assert math.cbrt(-27).compare(-3.0), "cbrt(-27) (defined for negatives)"
+
+# ------------------------------------------------ gamma / erf
+assert math.gamma(5).compare(24.0), "gamma(5)=4!"
+assert math.gamma(1) == 1.0, "gamma(1)"
+assert math.lgamma(1) == 0.0, "lgamma(1)"
+assert math.erf(0) == 0.0, "erf(0)"
+assert math.erfc(0) == 1.0, "erfc(0)"
+assert math.erf(math.inf) == 1.0, "erf(inf)=1 (range, no throw)"
+
+# ------------------------------------------------ floor / ceil / trunc / fabs / copysign
+assert type(math.floor(1.5)) == "Integer", "floor -> Integer"
+assert type(math.ceil(1.5)) == "Integer", "ceil -> Integer"
+assert type(math.trunc(1.5)) == "Float", "trunc -> Float"
+assert math.floor(-1.5) == -2, "floor(-1.5)"
+assert math.ceil(-1.5) == -1, "ceil(-1.5)"
+assert math.trunc(-1.7) == -1.0, "trunc(-1.7) toward zero"
+assert math.trunc(1.7) == 1.0, "trunc(1.7)"
+assert math.fabs(-3.5) == 3.5, "fabs"
+assert math.copysign(1, -2) == -1.0, "copysign sign of y (neg)"
+assert math.copysign(-3, 5) == 3.0, "copysign sign of y (pos)"
+assert math.copysign(2, -0.0) == -2.0, "copysign onto -0.0"
+# floor/ceil that cannot fit an Integer must throw (NaN/inf/out-of-range)
+assert raises_msg(Function(): return math.floor(math.nan), "cannot convert NaN"), "floor(nan)"
+assert raises_msg(Function(): return math.ceil(math.inf), "cannot convert infinity"), "ceil(inf)"
+assert raises_msg(Function(): return math.floor(1e30), "out of Integer range"), "floor(1e30)"
+
+# ------------------------------------------------ fmod vs the % operator (distinct semantics!)
+# fmod keeps the sign of the DIVIDEND; % (floor modulo) keeps the sign of the DIVISOR.
+assert math.fmod(7, 3) == 1.0, "fmod(7,3)"
+assert math.fmod(-7, 3) == -1.0, "fmod(-7,3) sign of dividend"
+assert (-7 % 3) == 2, "-7 % 3 floor modulo"
+assert math.fmod(7, -3) == 1.0, "fmod(7,-3)"
+assert (7 % -3) == -2, "7 % -3 floor modulo"
+assert math.fmod(-7.0, 3.0) == -1.0, "float fmod sign of dividend"
+assert (-7.0 % 3.0) == 2.0, "float % floor modulo"
+
+# ------------------------------------------------ degrees / radians
+assert math.degrees(math.pi).compare(180.0), "degrees(pi)"
+assert math.radians(180).compare(math.pi), "radians(180)"
+assert math.radians(math.degrees(1.234)).compare(1.234), "degrees/radians roundtrip"
+
+# ------------------------------------------------ isnan / isinf / isfinite on edges
+assert math.isinf(math.inf) and math.isinf(-math.inf), "isinf both signs"
+assert not math.isinf(1e308), "isinf on large-but-finite"
+assert math.isnan(math.nan) and not math.isnan(0.0), "isnan"
+assert math.isfinite(1.5) and math.isfinite(0.0), "isfinite finite"
+assert not math.isfinite(math.nan) and not math.isfinite(math.inf), "isfinite nan/inf"
+
+# ------------------------------------------------ gcd / lcm: zero, negatives, mixed signs
+assert math.gcd(12, 8) == 4, "gcd(12,8)"
+assert math.gcd(-12, 8) == 4, "gcd neg lhs (magnitude)"
+assert math.gcd(12, -8) == 4, "gcd neg rhs"
+assert math.gcd(-12, -8) == 4, "gcd both neg"
+assert math.gcd(0, 5) == 5, "gcd(0,5)"
+assert math.gcd(5, 0) == 5, "gcd(5,0)"
+assert math.gcd(0, 0) == 0, "gcd(0,0)"
+assert math.gcd(17, 5) == 1, "gcd coprime"
+assert math.lcm(4, 6) == 12, "lcm(4,6)"
+assert math.lcm(-4, 6) == 12, "lcm neg (magnitude)"
+assert math.lcm(4, -6) == 12, "lcm neg rhs"
+assert math.lcm(0, 5) == 0, "lcm(0,5)=0"
+assert math.lcm(0, 0) == 0, "lcm(0,0)=0"
+assert math.lcm(21, 6) == 42, "lcm(21,6)"
+assert raises_msg(Function(): return math.lcm(3037000500, 3037000501), "too large for Integer"), "lcm overflow"
+
+# ------------------------------------------------ factorial: value, negative, non-integer, overflow
+assert math.factorial(0) == 1, "0!"
+assert math.factorial(1) == 1, "1!"
+assert math.factorial(5) == 120, "5!"
+assert math.factorial(20) == 2432902008176640000, "20! (largest fitting int64)"
+assert raises_msg(Function(): return math.factorial(-1), "not defined for negatives"), "factorial(-1)"
+assert raises_msg(Function(): return math.factorial(2.0), "expects an Integer"), "factorial(non-integer)"
+assert raises_msg(Function(): return math.factorial(21), "too large for Integer"), "21! overflow"
+assert raises_msg(Function(): return math.factorial(100), "too large for Integer"), "100! overflow"
+
+# ------------------------------------------------ comb / perm: n<k, negatives, symmetry, k omitted, overflow
+assert math.comb(5, 2) == 10, "comb(5,2)"
+assert math.comb(5, 3) == 10, "comb symmetry"
+assert math.comb(5, 10) == 0, "comb n<k -> 0"
+assert math.comb(10, 0) == 1, "comb k=0 -> 1"
+assert math.comb(10, 10) == 1, "comb k=n -> 1"
+assert math.comb(30, 15) == 155117520, "comb(30,15)"
+assert math.comb(64, 32) == 1832624140942590534, "comb(64,32) central (128-bit intermediate)"
+assert math.perm(5, 2) == 20, "perm(5,2)"
+assert math.perm(5, 0) == 1, "perm k=0 -> 1"
+assert math.perm(5, 10) == 0, "perm n<k -> 0"
+assert math.perm(10, 5) == 30240, "perm(10,5)"
+assert math.perm(5) == 120, "perm(n) omitted k == n!"
+assert math.perm(5, None) == 120, "perm None k == n!"
+assert raises_msg(Function(): return math.comb(-1, 2), "non-negative"), "comb neg n"
+assert raises_msg(Function(): return math.comb(5, -1), "non-negative"), "comb neg k"
+assert raises_msg(Function(): return math.perm(-1, 2), "non-negative"), "perm neg n"
+assert raises_msg(Function(): return math.perm(5, -1), "non-negative"), "perm neg k"
+assert raises_msg(Function(): return math.comb(100, 50), "too large for Integer"), "comb overflow"
+assert raises_msg(Function(): return math.perm(30, 20), "too large for Integer"), "perm overflow"
+
+# ------------------------------------------------ prod: empty, start, mixed, overflow, keyword
+assert math.prod([1, 2, 3, 4]) == 24, "prod integers"
+assert type(math.prod([1, 2, 3, 4])) == "Integer", "prod all-int -> Integer"
+assert math.prod([]) == 1, "prod empty -> start default 1"
+assert math.prod([], 7) == 7, "prod empty with start"
+assert math.prod([2, 3], 5) == 30, "prod with start"
+assert math.prod([1.0, 2.0, 3.0]) == 6.0, "prod floats"
+assert type(math.prod([1.0, 2.0])) == "Float", "prod float -> Float"
+assert math.prod([1, 2, 3.0]) == 6.0, "prod mixed -> Float"
+assert type(math.prod([1, 2, 3.0])) == "Float", "prod mixed type Float"
+assert math.prod([1, 2, 3], 2.0) == 12.0, "prod float start -> Float"
+assert math.prod([5]) == 5, "prod single"
+assert raises_msg(Function(): return math.prod([1000000000, 1000000000, 1000000000]), "too large for Integer"), "prod int overflow"
+# a Float anywhere means no overflow concept (result just becomes inf, no throw)
+assert math.isinf(math.prod([1e308, 1e308])), "prod float overflow -> inf, no throw"
+
+# ------------------------------------------------ pow: value cases and non-error edges
+assert math.pow(2, 10) == 1024.0, "pow(2,10)"
+assert type(math.pow(2, 10)) == "Float", "math.pow -> Float always"
+assert math.pow(0, 0) == 1.0, "pow(0,0)=1"
+assert math.pow(-2, 3) == -8.0, "pow neg base integer exp ok"
+assert math.pow(-8, 2) == 64.0, "pow neg base even exp ok"
+assert math.pow(4, 0.5) == 2.0, "pow fractional exp positive base ok"
+assert raises(Function(): return math.pow(-8, 0.5)), "pow neg base fractional exp throws"
+
+# ------------------------------------------------ keyword arguments work uniformly
+assert math.log(x=8, base=2).compare(3.0), "log kwargs"
+assert math.log(x=math.e).compare(1.0), "log x kwarg only"
+assert math.pow(x=2, y=3) == 8.0, "pow kwargs"
+assert math.comb(n=5, k=2) == 10, "comb kwargs"
+assert math.perm(n=5) == 120, "perm n kwarg"
+assert math.perm(n=6, k=2) == 30, "perm kwargs"
+assert math.prod(iterable=[2, 3], start=5) == 30, "prod kwargs"
+assert math.copysign(x=3, y=-1) == -3.0, "copysign kwargs"
+assert math.fmod(x=7, y=3) == 1.0, "fmod kwargs"
+assert math.hypot(x=3, y=4) == 5.0, "hypot kwargs"
+assert math.atan2(y=1, x=1).compare(math.pi / 4), "atan2 kwargs"
+assert math.gcd(a=12, b=8) == 4, "gcd kwargs"
+assert math.lcm(a=4, b=6) == 12, "lcm kwargs"
+assert math.factorial(n=6) == 720, "factorial kwargs"
+assert math.sqrt(x=25) == 5.0, "unary kwarg"
+
+# ------------------------------------------------ Integer arguments accepted where Float expected
+assert math.sqrt(4) == 2.0, "sqrt of Integer"
+assert type(math.sqrt(4)) == "Float", "unary returns Float even for Integer arg"
+
+io.print("OK math")

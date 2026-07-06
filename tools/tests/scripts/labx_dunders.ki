@@ -1,0 +1,339 @@
+# labx_dunders.ki — deep edge/hardening pass over user classes + special (dunder) methods +
+# operator overloading. Goes BEYOND probe_dunders/spec_classes/spec_bool_dunder/verify_operators/
+# class_hash: focuses on the corners those skip — reflected-operator semantics, raw-vs-coerced dunder
+# returns, class-attribute copy-on-write aliasing, call-time default evaluation, per-class-chain
+# privacy across siblings, mutation-during-iteration, and the _bool_/_len_ return contracts.
+# Final line: "OK dunders" — matched against labx_dunders.expected. All real checks are asserts.
+
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+    catch as e:
+        return needle in String(e)
+
+# =============================================================================
+# Reflected operators: arithmetic/ordering NEVER reflect onto a right-hand
+# instance, but ==/!= DO consult the right instance's _eq_/_ne_.
+# =============================================================================
+class Money:
+    var _init_ = Function(self, n): self.n = n
+    var _add_ = Function(self, o): return Money(self.n + o.n)
+    var _mul_ = Function(self, k): return Money(self.n * k)
+    var _lt_ = Function(self, o) -> Bool: return self.n < o.n
+# Instance on the left works
+assert (Money(3) + Money(5)).n == 8, "instance-on-left _add_"
+assert (Money(3) * 4).n == 12, "instance-on-left _mul_"
+# Number on the left, instance on the right -> NO reflected dunder -> throws
+assert raises_msg(Function(): return 3 + Money(5), "unsupported operand"), "3 + Money throws (no reflected _add_)"
+assert raises_msg(Function(): return 4 * Money(5), "unsupported operand"), "4 * Money throws (no reflected _mul_)"
+assert raises(Function(): return 3 < Money(5)), "3 < Money throws (no reflected _gt_ on the number)"
+# ==/!= ARE symmetric: a bare number on the left consults the right instance's _eq_.
+class ReflEq:
+    var _init_ = Function(self, n): self.n = n
+    var _eq_ = Function(self, o) -> Bool: return isinstance(o, Integer) and self.n == o
+assert (7 == ReflEq(7)) == True, "reflected ==: number on left uses right instance _eq_"
+assert (7 == ReflEq(8)) == False, "reflected ==: mismatch is False"
+assert (7 != ReflEq(8)) == True, "reflected != derives from right instance _eq_"
+assert (ReflEq(7) == 7) == True, "instance-on-left == still works"
+# An explicit _ne_ on the right instance is honoured by a left-hand number too.
+class ReflNe:
+    var _init_ = Function(self, n): self.n = n
+    var _eq_ = Function(self, o) -> Bool: return isinstance(o, Integer) and self.n == o
+    var _ne_ = Function(self, o) -> Bool: return True     # deliberately always-True
+assert (5 != ReflNe(5)) == True, "reflected explicit _ne_ overrides (always True)"
+
+# =============================================================================
+# Raw, UNCOERCED returns from _neg_ and _not_ (unlike _bool_, which must be Bool).
+# `not obj` / `-obj` hand back whatever the dunder returns, of any type.
+# =============================================================================
+class RawUnary:
+    var _init_ = Function(self, v): self.v = v
+    var _neg_ = Function(self): return "neg:" + self.v
+    var _not_ = Function(self): return [self.v]
+assert (-RawUnary("a")) == "neg:a", "_neg_ return is the raw value (a String here)"
+var notted = not RawUnary("b")
+assert notted == ["b"], "_not_ return is raw+uncoerced (a List, not a Bool)"
+# Missing _neg_ throws; `not` WITHOUT _not_ falls back to (not truthy) => always-truthy default
+class NoUnary:
+    var _init_ = Function(self): pass
+assert raises_msg(Function(): return -NoUnary(), "_neg_"), "missing _neg_ raises"
+assert (not NoUnary()) == False, "`not` without _not_ falls back to truthiness (always truthy)"
+
+# =============================================================================
+# _bool_ return contract: MUST be a Bool. Every non-Bool return (incl. Integer 1,
+# a truthy String, None, a List) throws. And _bool_ drives every truth context.
+# =============================================================================
+class BoolInt:
+    var _init_ = Function(self): pass
+    var _bool_ = Function(self): return 1
+class BoolStr:
+    var _init_ = Function(self): pass
+    var _bool_ = Function(self): return "yes"
+class BoolNone:
+    var _init_ = Function(self): pass
+    var _bool_ = Function(self): return None
+assert raises_msg(Function(): return Bool(BoolInt()), "must return a Bool"), "_bool_ Integer 1 rejected"
+assert raises_msg(Function(): return Bool(BoolStr()), "must return a Bool"), "_bool_ String rejected"
+assert raises_msg(Function(): return Bool(BoolNone()), "must return a Bool"), "_bool_ None rejected"
+# The wrong-return error also fires from an implicit truth context (an `if`), not just Bool().
+var useInIf = Function():
+    if BoolInt():
+        return 1
+    return 0
+assert raises_msg(useInIf, "must return a Bool"), "_bool_ contract enforced inside `if` too"
+# _len_ alone does NOT drive truthiness — only _bool_ does.
+class LenZero:
+    var _init_ = Function(self): pass
+    var _len_ = Function(self) -> Integer: return 0
+assert Bool(LenZero()) == True, "_len_==0 does not make an instance falsy (needs _bool_)"
+
+# =============================================================================
+# _len_ return contract: a non-negative Integer only. Bool/Float/negative reject.
+# =============================================================================
+class LenBool:
+    var _init_ = Function(self): pass
+    var _len_ = Function(self): return True
+class LenFloat:
+    var _init_ = Function(self): pass
+    var _len_ = Function(self): return 2.0
+class LenNeg:
+    var _init_ = Function(self): pass
+    var _len_ = Function(self): return -3
+assert raises_msg(Function(): return len(LenBool()), "must return an Integer"), "_len_ Bool return rejected"
+assert raises_msg(Function(): return len(LenFloat()), "must return an Integer"), "_len_ Float return rejected"
+assert raises_msg(Function(): return len(LenNeg()), "non-negative"), "_len_ negative return rejected"
+
+# =============================================================================
+# _contains_ overrides `in` and its return is COERCED to a truth value (need not
+# be a Bool) — distinct from _bool_'s strict contract.
+# =============================================================================
+class Truthy:
+    var _init_ = Function(self, hit): self.hit = hit
+    var _contains_ = Function(self, x): return self.hit          # returns a raw Integer
+assert (0 in Truthy(99)) == True, "_contains_ non-Bool truthy return coerces to True"
+assert (0 in Truthy(0)) == False, "_contains_ falsy (0) return coerces to False"
+assert (0 not in Truthy(0)) == True, "_contains_ drives `not in`"
+class OddColl:
+    var _init_ = Function(self): pass
+    var _contains_ = Function(self, x) -> Bool: return x % 2 == 1
+assert (3 in OddColl()) and not (4 in OddColl()), "_contains_ computes membership"
+
+# =============================================================================
+# _getitem_ / _setitem_ — 1, 2, and 3 variadic keys; arity mismatch raises.
+# =============================================================================
+class Cube:
+    var _init_ = Function(self): self.d = {}
+    var _getitem_ = Function(self, i, j, k): return self.d.get(String(i) + String(j) + String(k), -1)
+    var _setitem_ = Function(self, i, j, k, v): self.d[String(i) + String(j) + String(k)] = v
+var cube = Cube()
+cube[1, 2, 3] = 42
+assert cube[1, 2, 3] == 42 and cube[0, 0, 0] == -1, "3-key _getitem_/_setitem_"
+# A 1-key _getitem_ called with 2 keys is an arity error.
+class One:
+    var _init_ = Function(self): pass
+    var _getitem_ = Function(self, i): return i
+assert raises(Function(): return One()[1, 2]), "1-key _getitem_ called m[i,j] raises (arity)"
+# Slice syntax does NOT reach _getitem_ (separate native slice protocol; no _slice_).
+assert raises(Function(): return One()[0:2]), "slice on a _getitem_-only class raises (no _slice_)"
+
+# =============================================================================
+# _iter_ protocol: returns any iterable; MATERIALIZES a snapshot, so mutating the
+# backing store mid-loop does not extend iteration; a self-returning _iter_ is
+# depth-guarded rather than crashing.
+# =============================================================================
+class Snap:
+    var _init_ = Function(self): self.data = [1, 2, 3]
+    var _iter_ = Function(self): return self.data
+var snap = Snap()
+var seen = []
+for v in snap:
+    seen.append(v)
+    snap.data.append(99)                     # mutate the SAME backing list during the loop
+assert seen == [1, 2, 3], "_iter_ result is a snapshot — mid-loop appends don't extend the loop"
+assert len(snap.data) == 6, "the backing list did grow (3 appends) — proving snapshot, not live"
+# _iter_ may return a String (iterates code points) or a Set.
+class StrIter:
+    var _init_ = Function(self): pass
+    var _iter_ = Function(self): return "xy"
+assert List(StrIter()) == ["x", "y"], "_iter_ returning a String iterates its code points"
+# _iter_ returning self (or a cycle) is guarded — a catchable error, not a native stack overflow.
+class SelfIter:
+    var _init_ = Function(self): pass
+    var _iter_ = Function(self): return self
+assert raises_msg(Function(): return List(SelfIter()), "recurses"), "_iter_ returning self is depth-guarded"
+# _iter_ returning a non-iterable scalar raises "is not iterable".
+class IntIter:
+    var _init_ = Function(self): pass
+    var _iter_ = Function(self): return 5
+assert raises_msg(Function(): return List(IntIter()), "is not iterable"), "_iter_ returning a scalar raises"
+
+# =============================================================================
+# _call_ — kwargs, defaults, and a default that references an EARLIER parameter
+# (evaluated at call time, left-to-right).
+# =============================================================================
+class Calc:
+    var _init_ = Function(self): pass
+    var _call_ = Function(self, a, b = a * 10): return a + b
+assert Calc()(3) == 33, "_call_ default references earlier param (b = a*10)"
+assert Calc()(a = 4) == 44, "_call_ default via keyword"
+assert Calc()(a = 4, b = 1) == 5, "_call_ explicit b overrides the earlier-param default"
+# A non-callable instance (no _call_) throws.
+class NotCallable:
+    var _init_ = Function(self): pass
+assert raises_msg(Function(): return NotCallable()(), "not callable"), "instance without _call_ is not callable"
+
+# =============================================================================
+# Parameter defaults are evaluated at CALL time, once per call: a mutable default
+# is a FRESH list each call (not a shared-once footgun), and a default may
+# reference an earlier already-bound parameter.
+# =============================================================================
+var fresh = Function(xs = []):
+    xs.append(1)
+    return len(xs)
+assert fresh() == 1 and fresh() == 1 and fresh() == 1, "mutable default xs=[] is fresh every call"
+var earlier = Function(a, b = a + 1, c = a + b):
+    return [a, b, c]
+assert earlier(10) == [10, 11, 21], "defaults may chain across earlier params (b=a+1, c=a+b)"
+assert earlier(10, 100) == [10, 100, 110], "an explicit earlier arg feeds a later default"
+
+# =============================================================================
+# Privacy is per class CHAIN: readable from an own method and a SUBCLASS method,
+# but not from outside and not from an unrelated SIBLING class.
+# =============================================================================
+class Vault:
+    var _init_ = Function(self): self._secret = 7
+    var reveal = Function(self): return self._secret            # own method: allowed
+class SubVault(Vault):
+    var _init_ = Function(self): self._super_()._init_()
+    var peek = Function(self): return self._secret              # subclass method: allowed
+class Sibling:
+    var _init_ = Function(self): pass
+    var pry = Function(self, other): return other._secret       # unrelated class: forbidden
+assert Vault().reveal() == 7, "private read from own method"
+assert SubVault().peek() == 7, "private read from a subclass method (per-chain privacy)"
+assert raises_msg(Function(): return Vault()._secret, "cannot access private member '_secret'"), "private read from outside raises the exact message"
+assert raises(Function(): Vault()._secret = 1), "private write from outside raises"
+assert raises_msg(Function(): return Sibling().pry(Vault()), "private"), "a sibling class cannot read another class's private member"
+# A dunder (double-underscore-bounded) is NOT private.
+class Disp:
+    var _init_ = Function(self): pass
+    var _str_ = Function(self) -> String: return "disp"
+assert String(Disp()) == "disp", "a dunder is not treated as private"
+
+# =============================================================================
+# _super_ — climbs exactly one level per call across a 3-level chain; a class with
+# no base raises when it calls _super_.
+# =============================================================================
+class L0:
+    var _init_ = Function(self, n): self.n = n
+    var tag = Function(self) -> String: return "L0(" + String(self.n) + ")"
+class L1(L0):
+    var _init_ = Function(self, n): self._super_()._init_(n)
+    var tag = Function(self) -> String: return "L1>" + self._super_().tag()
+class L2(L1):
+    var _init_ = Function(self, n): self._super_()._init_(n)
+    var tag = Function(self) -> String: return "L2>" + self._super_().tag()
+assert L2(5).n == 5, "_super_()._init_ chains construction to the base"
+assert L2(5).tag() == "L2>L1>L0(5)", "_super_ climbs one level per call (3-level chain composes)"
+# Binding the parent view to a local and calling through it works the same.
+class Held(L0):
+    var _init_ = Function(self, n): self._super_()._init_(n)
+    var tag = Function(self) -> String:
+        var parent = self._super_()
+        return "Held>" + parent.tag()
+assert Held(9).tag() == "Held>L0(9)", "a bound _super_() view still dispatches to the base"
+# _super_ in a class with no base throws with the documented message.
+class Orphan:
+    var _init_ = Function(self): pass
+    var go = Function(self): return self._super_()
+assert raises_msg(Function(): return Orphan().go(), "does not inherit from any class"), "_super_ with no base raises the documented message"
+
+# =============================================================================
+# Class attributes: copy-on-write on ASSIGNMENT (an instance rebind gives that
+# instance its own binding and leaves siblings + the shared default untouched);
+# but in-place MUTATION of a shared mutable class attr aliases across instances
+# (the assignment-only copy-on-write rule, a documented sharp edge).
+# =============================================================================
+class Counters:
+    var count = 0                                # shared scalar default
+    var _init_ = Function(self): pass
+var c1 = Counters()
+var c2 = Counters()
+assert c1.count == 0 and c2.count == 0, "instances read the shared class default"
+c1.count = 5                                     # copy-on-write: only c1 gets its own binding
+assert c1.count == 5, "assignment gives that instance its own copy"
+assert c2.count == 0, "a sibling still sees the shared default (copy-on-write)"
+# Rebinding a mutable class attr also isolates; in-place mutation does NOT.
+class Tagged:
+    var tags = []
+    var _init_ = Function(self): pass
+var t1 = Tagged()
+var t2 = Tagged()
+t1.tags = ["own"]                                # rebind -> t1's own list
+assert t1.tags == ["own"] and t2.tags == [], "rebinding a mutable class attr isolates it"
+var t3 = Tagged()
+var t4 = Tagged()
+t3.tags.append("shared")                         # in-place mutation of the SHARED default list
+assert t4.tags == ["shared"], "in-place mutation of a shared mutable class attr aliases (assignment-only COW)"
+
+# =============================================================================
+# _eq_ without _hash_ makes an instance UNHASHABLE (== is structural, but it
+# cannot be a Set/Dict key); and no dunders at all keeps == by identity.
+# =============================================================================
+class EqOnly:
+    var _init_ = Function(self, v): self.v = v
+    var _eq_ = Function(self, o) -> Bool: return isinstance(o, EqOnly) and self.v == o.v
+assert EqOnly(3) == EqOnly(3), "_eq_ alone makes == structural"
+assert raises_msg(Function(): return {EqOnly(1)}, "unhashable"), "_eq_ without _hash_ -> unhashable in a Set"
+var eqDict = Function():
+    var d = {}
+    d[EqOnly(1)] = "x"
+    return d
+assert raises_msg(eqDict, "unhashable"), "_eq_ without _hash_ -> unhashable as a Dict key"
+class Nothing:
+    var _init_ = Function(self): pass
+var only = Nothing()
+assert only == only, "no _eq_ -> identity ==: same instance equal"
+assert not (Nothing() == Nothing()), "no _eq_ -> distinct instances not equal"
+
+# =============================================================================
+# Keyword arguments to _init_ (forwarded), and inheritance-aware isinstance +
+# typed catch.
+# =============================================================================
+class Pt:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+var p = Pt(y = 9, x = 4)
+assert p.x == 4 and p.y == 9, "_init_ accepts out-of-order keyword args"
+class Animal:
+    var _init_ = Function(self): pass
+class Dog(Animal):
+    var _init_ = Function(self): self._super_()._init_()
+var d = Dog()
+assert isinstance(d, Dog) and isinstance(d, Animal), "isinstance is inheritance-aware"
+assert isinstance(d, "Animal"), "isinstance accepts a type-name String (base)"
+# A typed catch matches by the class chain: catching the base catches a subclass throw.
+class BaseErr:
+    var _init_ = Function(self): pass
+class SubErr(BaseErr):
+    var _init_ = Function(self): self._super_()._init_()
+var caughtAsBase = False
+try:
+    throw SubErr()
+catch BaseErr as e:
+    caughtAsBase = True
+assert caughtAsBase, "typed catch on a base class matches a subclass throw"
+
+io.print("OK dunders")

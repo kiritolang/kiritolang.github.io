@@ -59,10 +59,11 @@ assert it.islice(range(10), 1, 8, 2) == [1, 3, 5, 7], "islice with step"
 assert it.islice(range(3), 5, 10) == [], "islice start past end"
 assert it.islice(range(5), 0, 0) == [], "islice empty when stop==0"
 assert it.islice("abcdef", 1, 5, 2) == ["b", "d"], "islice over a String"
-# HARDENING: step 0 divides by zero when it reaches `start` (silent-bug probe -> it DOES raise).
-assert raises_msg(Function(): return it.islice([1, 2, 3], 0, 3, 0), "modulo by zero"), "islice step 0 raises"
-# ...but step 0 with an already-empty window (stop<=start) never reaches the modulo, so it is []
-assert it.islice([1, 2, 3], 0, 0, 0) == [], "islice step 0 harmless when window empty"
+# HARDENING: step must be a positive integer (Python parity); a non-positive step is rejected up front.
+assert raises_msg(Function(): return it.islice([1, 2, 3], 0, 3, 0), "positive integer"), "islice step 0 raises"
+assert raises_msg(Function(): return it.islice([1, 2, 3], 0, 3, -1), "positive integer"), "islice negative step raises"
+# The step guard runs BEFORE any window logic, so an empty window (stop<=start) with step 0 still raises.
+assert raises_msg(Function(): return it.islice([1, 2, 3], 0, 0, 0), "positive integer"), "islice step 0 raises even for an empty window"
 
 # ============================================================ accumulate(iterable[, func])
 assert it.accumulate([1, 2, 3, 4]) == [1, 3, 6, 10], "accumulate running sum"

@@ -48,7 +48,12 @@ Convert explicitly with `Integer(flag)` when you need to count or sum truth valu
 
 Signed 64-bit integers. Arithmetic wraps on overflow with well-defined two's-complement semantics —
 never undefined behavior. Literals may be decimal (`42`, `-7`), hexadecimal (`0xFF`), octal (`0o17`),
-or binary (`0b1010`); the base prefix is case-insensitive.
+or binary (`0b1010`); the base prefix is case-insensitive. The same width applies to *literals*: a
+constant wider than 64 bits keeps only its low 64 bits (`0x1_0000_0000_0000_0000` → `0`, and a decimal
+literal past `9223372036854775807` wraps into the negative range) — arbitrary-precision integers are a
+future enrichment. Because there is no positive counterpart to the most-negative value, `abs` of it
+returns the value unchanged (`abs(-9223372036854775808)` is still negative — the one input where `abs`
+can't return a non-negative result).
 
 The arithmetic operators are `+`, `-`, `*`, the three division forms below, and `**`
 (exponentiation, right-associative: `2 ** 3 ** 2 == 512`).
@@ -187,7 +192,7 @@ String (encoded; default `utf-8`), or another Bytes (copied) — or `fromhex("48
 | `b.decode([encoding])` | Decode to a `String` (`utf-8` default, or `latin-1`/`ascii`). Throws on bytes that aren't valid for the encoding (malformed/overlong/surrogate UTF-8; a byte ≥ 0x80 for `ascii`). |
 | `b.hex()` | Lowercase hex String (`b'Hi' → "4869"`). |
 | `b.apply(fn)` | A new Bytes with `fn` applied to each byte (`fn` takes/returns an Integer 0–255). |
-| `fromhex(s)` | Build a Bytes from a hex String (whitespace ignored). |
+| `fromhex(s)` | Build a Bytes from a hex String. Whitespace is allowed *between* byte pairs (`fromhex("48 69")`), but not between the two nibbles of a single byte (`fromhex("4 8")` throws); an odd number of hex digits or a non-hex character throws. |
 | `len(b)`, `b[i]`, `b[a:b:c]`, `x in b` | Byte length, byte at `i`, a Bytes slice, membership (Integer byte or Bytes subsequence). |
 
 > **latin-1 is the lossless byte↔code-point bridge**: every byte 0–255 maps to exactly one code point
@@ -349,8 +354,13 @@ Invoked as `x OP y` → `x._op_(y)`; return a `Bool` (or any truthy/falsy value)
 
 | Method | Invoked by | Returns |
 |--------|-----------|---------|
-| `_neg_(self)` | `-x` | the negated value |
-| `_not_(self)` | `not x` | a truth value |
+| `_neg_(self)` | `-x` | the negated value (returned **raw**, any type) |
+| `_not_(self)` | `not x` | whatever you return, **raw and uncoerced** (any type) |
+
+> **`_not_` and `_neg_` do not coerce their result.** Unlike `if`/`while`/`Bool(x)` (which route through
+> `_bool_` and demand a `Bool`), the `not x` and `-x` operators hand back exactly what your method
+> returns — a String, a List, anything. `not obj` is therefore **not** guaranteed to be a `Bool` when the
+> class defines `_not_`. Return a `Bool` from `_not_` yourself if you want boolean semantics.
 
 ### Container / indexing protocol
 

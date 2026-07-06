@@ -106,6 +106,16 @@ assert path.walk(emptyd) == [], "walk of empty dir -> []"
 # ============================================================ getcwd / gettempdir / executable
 assert type(path.getcwd()) == "String" and len(path.getcwd()) > 0, "getcwd is a non-empty String"
 assert type(path.gettempdir()) == "String" and len(path.gettempdir()) > 0, "gettempdir is a non-empty String"
+# fasttemp: the fastest available scratch dir (a RAM tmpfs where the OS has one, else gettempdir).
+assert type(path.fasttemp()) == "String" and len(path.fasttemp()) > 0, "fasttemp is a non-empty String"
+assert path.isdir(path.fasttemp()), "fasttemp() is an existing directory"
+# it is usable as a scratch location: build a path, write, read back, clean up
+var fastf = path.join(path.fasttemp(), "kirito_verify_fasttemp.txt")
+var fh2 = io.open(fastf, "w")
+discard fh2.write("fast")
+fh2.close()
+assert path.exists(fastf) and path.getsize(fastf) == 4, "fasttemp() dir is writable + readable"
+assert path.remove(fastf) == True, "fasttemp scratch file cleaned up"
 assert type(path.executable) == "String", "executable is a String"
 assert path.executable == "" or path.exists(path.executable), "executable is empty or a real path"
 

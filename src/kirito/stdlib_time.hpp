@@ -324,6 +324,12 @@ public:
         // sleep(seconds) — Float or Integer seconds.
         m.fn("sleep", {{"seconds", "Number"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             double secs = Args(vm, a, "sleep")[0].asFloat("sleep");
+            // Guard the one float entry point that reaches an int64 duration_cast: a non-finite or
+            // absurd value would overflow it (UB — `sleep(inf)` returned immediately) or request a
+            // multi-billion-year sleep (`sleep(1e18)` hung). Reject both, like the rest of the
+            // numeric stack rejects out-of-range float->int conversions.
+            if (!std::isfinite(secs)) throw KiritoError("sleep: seconds must be a finite number");
+            if (secs > 1e9) throw KiritoError("sleep: seconds too large (maximum 1e9)");
             if (secs > 0) std::this_thread::sleep_for(duration<double>(secs));
             return Value::None(vm);
         });

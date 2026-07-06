@@ -29,6 +29,14 @@ inline int64_t argInt(KiritoVM& vm, Handle h, const char* who) {
     if (o.kind() != ValueKind::Integer) throw KiritoError(std::string(who) + " expects an Integer");
     return static_cast<const IntVal&>(o).value();
 }
+// A Kirito String is byte-transparent, so it can hold an embedded NUL — but the OS filesystem APIs
+// (fopen / std::filesystem) are NUL-terminated and SILENTLY TRUNCATE the path at the first NUL,
+// which defeats any suffix/extension check ("safe.txt\0.sh" opens "safe.txt"): a validation/sandbox
+// bypass. Reject it up front (Python raises the same ValueError). One place for every path entry.
+inline void requireNoNulPath(const std::string& p, const char* who) {
+    if (p.find('\0') != std::string::npos)
+        throw KiritoError(std::string(who) + ": embedded NUL byte in path");
+}
 // Reject an under-arity positional call before the impl dereferences a[0]/a[1]/... `makeMethod`'s
 // positional fast path forwards the call's args verbatim (no padding), so a method whose body
 // indexes a fixed `a[i]` must guard first — else it reads past the span (UB). One place to do it so

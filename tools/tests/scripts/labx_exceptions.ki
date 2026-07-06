@@ -1,0 +1,387 @@
+# labx_exceptions.ki — deep verification of the exceptions catalogue (docs/pages/12-exceptions.md)
+# and try/catch/finally/throw control-flow (docs/pages/21-course-11-errors.md).
+#
+# Goes BEYOND spec_exceptions / exceptions_deep / spec_finally_control / spec_domain_guards:
+#  - finally that itself throws/returns overriding a pending exception/return
+#  - break/continue inside try+finally; throw from a loop finally
+#  - `with` whose _exit_ throws (bare and overriding a body throw)
+#  - typed-catch class-chain routing incl. wrong-type propagation and re-throw
+#  - throwing non-String/non-instance values and catching them (bare + typed)
+#  - 25 documented native-boundary hardening throws asserted by message substring
+#
+# Sentinel: "OK exceptions" (== labx_exceptions.expected). All checking via assert.
+var io = import("io")
+var math = import("math")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# =============================================================================
+# Section 1: finally overriding a pending exception / return (Python semantics)
+# =============================================================================
+
+# finally that THROWS replaces the in-flight exception with its own value.
+var finThrowOverEx = Function():
+    try:
+        throw "original"
+    finally:
+        throw "override"
+var r = "unset"
+try:
+    discard finThrowOverEx()
+catch as e:
+    r = e
+ok(r == "override", "a throw in finally overrides the pending exception")
+
+# finally that THROWS overrides a pending return.
+var finThrowOverRet = Function():
+    try:
+        return 1
+    finally:
+        throw "no-return"
+r = "unset"
+try:
+    discard finThrowOverRet()
+catch as e:
+    r = e
+ok(r == "no-return", "a throw in finally overrides a pending return")
+
+# finally that RETURNS overrides the try's return value.
+var finRetOverRet = Function():
+    try:
+        return 1
+    finally:
+        return 2
+ok(finRetOverRet() == 2, "a return in finally overrides the try's return")
+
+# finally that RETURNS swallows a pending exception (control-flow wins).
+var finRetSwallow = Function():
+    try:
+        throw "boom"
+    finally:
+        return 7
+ok(finRetSwallow() == 7, "a return in finally swallows the in-flight exception")
+
+# A catch that itself throws still runs its finally before propagating.
+var catchThrowLog = []
+var catchThrows = Function():
+    try:
+        throw "a"
+    catch as e:
+        throw "b"
+    finally:
+        catchThrowLog.append("fin")
+try:
+    discard catchThrows()
+catch as e:
+    catchThrowLog.append("caught:" + e)
+ok(catchThrowLog == ["fin", "caught:b"], "finally runs when the catch handler re-throws")
+
+# =============================================================================
+# Section 2: break / continue inside try+finally, and throw from a loop finally
+# =============================================================================
+
+# break through try still runs its finally (each visited iteration).
+var brk = []
+for i in [1, 2, 3]:
+    try:
+        brk.append("t" + String(i))
+        if i == 2:
+            break
+    finally:
+        brk.append("f" + String(i))
+ok(brk == ["t1", "f1", "t2", "f2"], "break through try runs finally then exits")
+
+# continue through try runs finally, loop advances.
+var cont = []
+for i in [1, 2, 3]:
+    try:
+        if i == 2:
+            continue
+        cont.append("t" + String(i))
+    finally:
+        cont.append("f" + String(i))
+ok(cont == ["t1", "f1", "f2", "t3", "f3"], "continue through try runs finally")
+
+# continue INSIDE finally swallows an in-flight throw and advances the loop.
+var contFin = []
+for i in [1, 2, 3]:
+    try:
+        throw "x"
+    finally:
+        contFin.append(i)
+        continue
+ok(contFin == [1, 2, 3], "continue in finally swallows the throw and advances")
+
+# a throw raised in a loop's finally propagates out (caught outside the loop).
+var loopThrow = []
+try:
+    for i in [1, 2]:
+        try:
+            loopThrow.append(i)
+        finally:
+            throw "boom" + String(i)
+catch as e:
+    loopThrow.append(e)
+ok(loopThrow == [1, "boom1"], "a throw in a loop finally escapes the loop on the first iteration")
+
+# =============================================================================
+# Section 3: context managers — _exit_ that throws
+# =============================================================================
+class Guard:
+    var _init_ = Function(self, log):
+        self.log = log
+    var _enter_ = Function(self):
+        self.log.append("enter")
+        return self
+    var _exit_ = Function(self):
+        self.log.append("exit")
+        throw "exit boom"
+
+# _exit_ throwing on the NORMAL path surfaces its error.
+var g1 = []
+r = "unset"
+try:
+    with Guard(g1) as h:
+        g1.append("body")
+catch as e:
+    r = e
+ok(g1 == ["enter", "body", "exit"] and r == "exit boom", "_exit_ that throws on the normal path raises")
+
+# _exit_ throwing OVERRIDES a body throw (the exit error wins).
+var g2 = []
+r = "unset"
+try:
+    with Guard(g2) as h:
+        g2.append("body")
+        throw "body boom"
+catch as e:
+    r = e
+ok(g2 == ["enter", "body", "exit"] and r == "exit boom", "_exit_ throw overrides the body throw")
+
+# =============================================================================
+# Section 4: typed-catch routing, wrong-type propagation, re-throw
+# =============================================================================
+class Base:
+    var _init_ = Function(self, msg):
+        self.msg = msg
+class Derived(Base):
+    var _init_ = Function(self, msg):
+        self._super_()._init_(msg)
+class Unrelated:
+    var _init_ = Function(self):
+        self.tag = "u"
+
+# base catch catches a thrown subclass instance.
+r = "unset"
+try:
+    throw Derived("sub")
+catch Base as e:
+    r = "base:" + e.msg
+ok(r == "base:sub", "a base-typed catch catches a subclass instance")
+
+# a WRONG typed catch does not match; it propagates to the outer handler; inner finally still runs.
+var flow = []
+try:
+    try:
+        throw Base("x")
+    catch Derived as e:
+        flow.append("inner-wrong")
+    finally:
+        flow.append("inner-fin")
+catch Base as e:
+    flow.append("outer:" + e.msg)
+ok(flow == ["inner-fin", "outer:x"], "a non-matching typed catch propagates; inner finally still runs")
+
+# an unrelated class does not match a Base catch and escapes.
+var escapes = Function():
+    try:
+        throw Unrelated()
+    catch Base as e:
+        return "caught"
+ok(raises(escapes), "an unrelated class is not caught by a Base-typed catch")
+
+# nested try where the inner catch RE-THROWS a NEW value to the outer.
+var order = []
+var rethrowNew = Function():
+    try:
+        try:
+            throw "inner"
+        catch as e:
+            order.append("inner:" + e)
+            throw "rewrapped:" + e
+    catch as e:
+        order.append("outer:" + e)
+        throw e
+ok(raises(rethrowNew), "inner catch re-throws a new value that the outer sees then re-throws")
+ok(order == ["inner:inner", "outer:rewrapped:inner"], "re-throw carries the new value across frames once each")
+
+# =============================================================================
+# Section 5: throwing non-String / non-instance values (bare + typed catch)
+# =============================================================================
+
+# throw a Float, catch bare (stringifies) and typed Float (routes on kind).
+r = "unset"
+try:
+    throw 2.5
+catch String as e:
+    r = "s"
+catch Float as e:
+    r = "f:" + String(e)
+ok(r == "f:2.5", "a typed catch Float routes a Float throw, past a non-matching catch String")
+
+# throw a List value — catchable and the live value is usable in the handler.
+r = "unset"
+try:
+    throw [10, 20, 30]
+catch as e:
+    r = String(e[1] + len(e))
+ok(r == "23", "a thrown List is a live value in the handler (indexable, len)")
+
+# throw a Bytes value, typed catch Bytes.
+r = "unset"
+try:
+    throw Bytes([65, 66])
+catch Bytes as e:
+    r = String(e[0])
+ok(r == "65", "a typed catch Bytes routes a Bytes throw")
+
+# throw None, catch bare.
+r = "unset"
+try:
+    throw None
+catch as e:
+    r = String(e)
+ok(r == "None", "throwing None is catchable")
+
+# a bare `throw e` from a catch is an explicit re-throw of the same value.
+var sameValue = None
+var rethrowSame = Function():
+    try:
+        throw [1, 2]
+    catch as e:
+        throw e
+try:
+    discard rethrowSame()
+catch as e:
+    sameValue = e
+ok(sameValue == [1, 2], "an explicit `throw e` re-throws the same value")
+
+# =============================================================================
+# Section 6: assert lowers to a throw carrying the message
+# =============================================================================
+r = "unset"
+try:
+    assert 1 == 2, "custom assert message"
+catch String as e:
+    r = e
+ok(r == "custom assert message", "assert with a false condition throws its message")
+
+r = "unset"
+try:
+    assert False
+catch String as e:
+    r = e
+ok(r == "assertion failed", "a message-less assert throws 'assertion failed'")
+
+# =============================================================================
+# Section 7: documented native-boundary hardening throws (message substrings)
+# =============================================================================
+# Each must raise AND carry the message text the catalogue promises.
+
+ok(raises_msg(Function(): return math.sqrt(-1), "math domain error"), "sqrt(-1) domain error")
+ok(raises_msg(Function(): return [1, 2, 3][10], "index out of range"), "list index out of range")
+ok(raises_msg(Function(): return {"a": 1}["z"], "key not found"), "dict missing key")
+ok(raises_msg(Function(): return Integer("x"), "cannot convert String to Integer"), "Integer('x')")
+ok(raises_msg(Function(): return Float("nope"), "cannot convert String to Float"), "Float('nope')")
+ok(raises_msg(Function(): return 5 % 0, "integer modulo by zero"), "modulo by zero")
+ok(raises_msg(Function(): return 5 // 0, "integer division by zero"), "floor division by zero")
+ok(raises_msg(Function(): return 1 / 0, "division by zero"), "true division by zero")
+ok(raises_msg(Function(): return "a" * 999999999999, "repeated String too large"), "huge repetition guard")
+ok(raises_msg(Function(): return range(999999999999), "range too large"), "range too large guard")
+ok(raises_msg(Function(): return (0 - 2) ** 0.5, "negative base"), "negative base fractional power")
+ok(raises_msg(Function(): return 0 ** (0 - 1), "zero cannot be raised to a negative power"), "0 ** -1")
+ok(raises_msg(Function(): return chr(-1), "chr argument out of Unicode range"), "chr(-1)")
+ok(raises_msg(Function(): return chr(0xD800), "surrogate"), "chr surrogate rejected")
+ok(raises_msg(Function(): return "abc".index("z"), "substring not found"), "index() missing substring")
+ok(raises_msg(Function(): return "abc".split(""), "empty separator"), "split('') empty separator")
+ok(raises_msg(Function(): return [1, 2, 3][::0], "slice step cannot be zero"), "zero slice step")
+ok(raises_msg(Function(): return "a" - "b", "does not support this operator"), "String '-' unsupported")
+ok(raises_msg(Function(): return 1 + "x", "unsupported operand type"), "1 + String type error")
+ok(raises_msg(Function(): return abs("x"), "abs expects a number"), "abs of a non-number")
+ok(raises_msg(Function(): return min([]), "empty sequence"), "min of an empty sequence")
+ok(raises_msg(Function(): return chr(0x100).encode("ascii"), "codec can't encode"), "ascii encode of U+0100")
+ok(raises_msg(Function(): return Bytes([255]).decode("utf-8"), "codec can't decode"), "invalid utf-8 decode")
+ok(raises_msg(Function(): return "a".encode("cp1252"), "unknown encoding"), "unknown encoding name")
+ok(raises_msg(Function(): return pow(2, 3, 0 - 5), "pow modulus must be positive"), "negative modular pow")
+ok(raises_msg(Function(): return shl(1, -1), "negative shift count"), "shl negative count")
+ok(raises_msg(Function(): return import("no_such_module_xyz"), "no module named"), "import of a missing module")
+
+# recursion-depth guard and deep-stringify guard (structural, not simple thunks)
+var recurse = Function(x):
+    return recurse(x + 1)
+ok(raises_msg(Function(): return recurse(0), "maximum recursion depth exceeded"), "recursion-depth guard")
+
+var buildDeep = Function():
+    var top = []
+    var cur = top
+    var i = 0
+    while i < 2000:
+        var nxt = []
+        cur.append(nxt)
+        cur = nxt
+        i = i + 1
+    return String(top)
+ok(raises_msg(buildDeep, "too deeply nested to stringify"), "deep-stringify guard")
+
+# arity / annotation / attribute / privacy diagnostics
+var oneParam = Function(a):
+    return a
+ok(raises_msg(Function(): return oneParam(1, 2), "positional argument"), "too-many-positional arity")
+ok(raises_msg(Function(): return oneParam(z = 1), "unexpected keyword argument"), "unexpected keyword")
+
+var typed = Function(x : Integer):
+    return x
+ok(raises_msg(Function(): return typed("s"), "must be Integer, got String"), "enforced arg annotation")
+
+class HasPriv:
+    var _init_ = Function(self):
+        self._secret = 1
+ok(raises_msg(Function(): return HasPriv()._secret, "cannot access private member"), "private-member access")
+ok(raises_msg(Function(): return HasPriv().missing, "has no attribute"), "missing attribute")
+
+# unhashable key, non-callable, non-iterable, unpack-count
+var badKey = Function():
+    var s = {}
+    s[[1, 2]] = 1
+ok(raises_msg(badKey, "unhashable type 'List'"), "unhashable List key")
+var callInt = Function():
+    var q = 5
+    return q()
+ok(raises_msg(callInt, "is not callable"), "calling a non-callable")
+var iterInt = Function():
+    for x in 5:
+        pass
+ok(raises_msg(iterInt, "is not iterable"), "iterating a non-iterable")
+var unpackBad = Function():
+    var a, b = [1, 2, 3]
+    return [a, b]
+ok(raises_msg(unpackBad, "expected 2 values to unpack, got 3"), "unpack count mismatch")
+
+io.print("OK exceptions")

@@ -196,6 +196,8 @@ public:
         const auto& o = static_cast<const DictVal&>(other);
         if (o.count != count) return false;
         EqualsGuard guard;
+        ProbeScope pguard(probing_);  // we iterate THIS's live buckets; a reentrant _eq_ that
+                                      // mutates/clears this dict mid-compare must be rejected, not UAF
         for (const auto& [h, bucket] : buckets)
             for (const auto& [k, v] : bucket) {
                 const Handle* ov = o.find(arena, k);
@@ -223,7 +225,17 @@ public:
         if (i < 0) return false;
         bucket.erase(bucket.begin() + i);
         --count;
+        if (bucket.empty()) buckets.erase(it);   // reclaim the now-empty bucket (A08-4: else the
+                                                  // bucket map grows unbounded across delete-distinct cycles)
         return true;
+    }
+
+    // Empty the dict. Guarded like every other mutator: a reentrant _hash_/_eq_ that clears the
+    // dict mid-probe would free the bucket a live C++ probe loop holds by reference (double-free).
+    void clear() {
+        if (probing_) throw KiritoError("Dict changed size during a key comparison");
+        buckets.clear();
+        count = 0;
     }
 
     Handle getItem(KiritoVM&, std::span<const Handle> keys) override;
@@ -277,6 +289,28 @@ public:
         return out;
     }
 
+    // Empty the set. Guarded like add/remove/discard: a reentrant _hash_/_eq_ that clears the set
+    // mid-probe would free the bucket a live C++ probe loop holds by reference (double-free).
+    void clear() {
+        if (probing_) throw KiritoError("Set changed size during a value comparison");
+        buckets.clear();
+        count = 0;
+    }
+    // Remove and return an arbitrary element (throws on empty). Guarded like clear(): popping a
+    // bucket entry mid-probe would corrupt the vector a live probe loop is iterating.
+    Handle popArbitrary() {
+        if (probing_) throw KiritoError("Set changed size during a value comparison");
+        for (auto it = buckets.begin(); it != buckets.end(); ++it)
+            if (!it->second.empty()) {
+                Handle v = it->second.back();
+                it->second.pop_back();
+                --count;
+                if (it->second.empty()) buckets.erase(it);   // reclaim the emptied bucket (A08-4)
+                return v;
+            }
+        throw KiritoError("pop from an empty Set");
+    }
+
     std::string str(StringifyCtx& ctx) const override {
         return stringifyGuarded(this, ctx, "{", "}", [&] {
             std::string s;
@@ -296,6 +330,8 @@ public:
         const auto& o = static_cast<const SetVal&>(other);
         if (o.count != count) return false;
         EqualsGuard guard;
+        ProbeScope pguard(probing_);  // we iterate THIS's live buckets; a reentrant _eq_ (run by
+                                      // o.contains) that clears this set mid-compare must be rejected
         for (const auto& [h, bucket] : buckets)
             for (Handle e : bucket)
                 if (!o.contains(arena, e)) return false;

@@ -139,6 +139,15 @@ int main() {
     // gettempdir + executable are filesystem locations, so they live in `path` (moved from `sys`).
     CHECK(evalStr(vm, "import(\"path\").isdir(import(\"path\").gettempdir())") == "True");
     CHECK(evalStr(vm, "len(import(\"path\").gettempdir()) > 0") == "True");
+    // fasttemp(): the fastest available scratch dir — RAM tmpfs (/dev/shm) on Linux, else gettempdir.
+    // Whatever it resolves to must be an existing, non-empty directory path (portable, best-effort).
+    CHECK(evalStr(vm, "var p = import(\"path\")\np.isdir(p.fasttemp()) and len(p.fasttemp()) > 0") == "True");
+    CHECK(evalStr(vm, "type(import(\"path\").fasttemp()) == \"String\"") == "True");
+    // it is a usable scratch location: build a path under it, write, read the size back, remove.
+    CHECK(evalStr(vm, "var p = import(\"path\")\nvar io = import(\"io\")\n"
+                      "var f = p.join(p.fasttemp(), \"kirito_fasttemp_cpp.txt\")\n"
+                      "var h = io.open(f, \"w\")\ndiscard h.write(\"xyz\")\nh.close()\n"
+                      "var okw = p.exists(f) and p.getsize(f) == 3\ndiscard p.remove(f, missing_ok = True)\nokw") == "True");
     CHECK(evalStr(vm, "type(import(\"path\").executable) == \"String\" and len(import(\"path\").executable) > 0") == "True");
     // ...and no longer in sys.
     CHECK(evalStr(vm, "hasattr(import(\"sys\"), \"gettempdir\") or hasattr(import(\"sys\"), \"executable\")") == "False");

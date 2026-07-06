@@ -143,6 +143,12 @@ public:
     // Kirito's `None` — the natural spelling. Static so it reads as a factory, not a value.
     static Value None(KiritoVM& vm) { return Value(vm, vm.none()); }
 
+    // Wrap a FRESHLY-allocated handle (an applyBinaryOp / call / getAttr / pop result) and PIN it, so
+    // a GC before the Value is first used can't sweep the new object (a dangling handle / UAF). Use
+    // this — not the plain Value(vm, h) ctor, which assumes the handle is already rooted elsewhere —
+    // whenever the handle is a new allocation not otherwise reachable from a GC root.
+    static Value adopting(KiritoVM& vm, Handle fresh) { Value v; v.adopt(vm, fresh); return v; }
+
     // implicit → Handle for interop with the raw protocol.
     operator Handle() const { return h_; }
     Handle handle() const { return h_; }
@@ -277,9 +283,10 @@ public:
     Value get(std::string_view k) const;
     Value get(std::string_view k, Value dflt) const;
 
-    // Call this Value as a callable, forwarding positional handles.
+    // Call this Value as a callable, forwarding positional handles. The result is a fresh, not-yet-
+    // rooted allocation, so pin it (adopting) — a GC before first use would otherwise sweep it. A19-2.
     Value call(std::span<const Handle> args) const {
-        return Value(*vm_, ref().call(*vm_, args));
+        return Value::adopting(*vm_, ref().call(*vm_, args));
     }
     // Convenience: call with primitives / Values captured in an initializer list.
     Value call(std::initializer_list<detail::Anything> args) const {
@@ -289,9 +296,10 @@ public:
         return call(std::span<const Handle>(hs));
     }
 
-    // Attribute access, matching the object protocol.
+    // Attribute access, matching the object protocol. getAttr may synthesise a fresh value (a bound
+    // method, a computed property), so pin the result against a GC before first use. A19-2.
     Value getAttr(std::string_view name) const {
-        return Value(*vm_, ref().getAttr(*vm_, h_, name));
+        return Value::adopting(*vm_, ref().getAttr(*vm_, h_, name));
     }
     void setAttr(std::string_view name, const Value& v) const {
         ref().setAttr(*vm_, name, v.h_);
@@ -578,13 +586,14 @@ public:
     List& push(Handle h) { mut().elems.push_back(h); return *this; }
     template <class T> List& push(T x) { return push(Value(*vm_, x)); }
 
-    // Pop and return the last element.
+    // Pop and return the last element. Popping removes the list's reference to it, so if nothing
+    // else roots it a GC before the caller uses the result would sweep it — pin it (adopting). A19-2.
     Value pop() {
         auto& e = mut().elems;
         if (e.empty()) throw KiritoError("pop from empty list");
         Handle h = e.back();
         e.pop_back();
-        return Value(*vm_, h);
+        return Value::adopting(*vm_, h);
     }
 
     // Membership by value-protocol equality.
@@ -969,10 +978,12 @@ inline std::optional<Bytes> Value::tryBytes() const {
 }
 
 // Value::at — negative-index element access via the object protocol (works for List/String/etc).
+// getItem may allocate a fresh result (a 1-char String, a Bytes byte, a slice), so pin it against a
+// GC before first use — a bare String/Bytes index otherwise returns a dangling handle. A19-2.
 inline Value Value::at(std::ptrdiff_t i) const {
     Handle key = vm_->makeInt(static_cast<int64_t>(i));
     std::array<Handle, 1> keys{key};
-    return Value(*vm_, ref().getItem(*vm_, keys));
+    return Value::adopting(*vm_, ref().getItem(*vm_, keys));
 }
 inline std::vector<std::pair<Value, Value>> Value::pairs() const { return asDict("pairs").pairs(); }
 inline bool Value::has(std::string_view k) const { return asDict("has").contains(k); }
@@ -980,29 +991,32 @@ inline Value Value::get(std::string_view k) const { return asDict("get").at(Valu
 inline Value Value::get(std::string_view k, Value dflt) const { return asDict("get").get(k, dflt); }
 
 // --- Operator definitions — delegate to applyBinaryOp/applyUnaryOp (defined in runtime.hpp) -------
+// Each arithmetic/unary op allocates a fresh result (a Float, a big Integer, a String/List concat)
+// that is not yet rooted anywhere the GC can see, so it must be PINNED (adopting) — else a GC
+// between the op and the caller's first use of the result sweeps it (dangling handle / UAF). A19-1.
 inline Value Value::operator+(const Value& r) const {
-    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Add, h_, r.h_));
+    return Value::adopting(*vm_, applyBinaryOp(*vm_, BinOp::Add, h_, r.h_));
 }
 inline Value Value::operator-(const Value& r) const {
-    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Sub, h_, r.h_));
+    return Value::adopting(*vm_, applyBinaryOp(*vm_, BinOp::Sub, h_, r.h_));
 }
 inline Value Value::operator*(const Value& r) const {
-    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Mul, h_, r.h_));
+    return Value::adopting(*vm_, applyBinaryOp(*vm_, BinOp::Mul, h_, r.h_));
 }
 inline Value Value::operator/(const Value& r) const {
-    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Div, h_, r.h_));
+    return Value::adopting(*vm_, applyBinaryOp(*vm_, BinOp::Div, h_, r.h_));
 }
 inline Value Value::operator%(const Value& r) const {
-    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Mod, h_, r.h_));
+    return Value::adopting(*vm_, applyBinaryOp(*vm_, BinOp::Mod, h_, r.h_));
 }
 inline Value Value::operator-() const {
-    return Value(*vm_, applyUnaryOp(*vm_, UnOp::Neg, h_));
+    return Value::adopting(*vm_, applyUnaryOp(*vm_, UnOp::Neg, h_));
 }
 inline Value Value::floordiv(const Value& r) const {
-    return Value(*vm_, applyBinaryOp(*vm_, BinOp::FloorDiv, h_, r.h_));
+    return Value::adopting(*vm_, applyBinaryOp(*vm_, BinOp::FloorDiv, h_, r.h_));
 }
 inline Value Value::pow(const Value& r) const {
-    return Value(*vm_, applyBinaryOp(*vm_, BinOp::Pow, h_, r.h_));
+    return Value::adopting(*vm_, applyBinaryOp(*vm_, BinOp::Pow, h_, r.h_));
 }
 inline bool Value::operator==(const Value& r) const {
     Handle h = applyBinaryOp(*vm_, BinOp::Eq, h_, r.h_);

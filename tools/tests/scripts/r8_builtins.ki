@@ -73,7 +73,7 @@ ok(format(math.inf, " f") == " inf", "format inf takes the space sign flag")
 ok(format(math.nan, "8.2f") == "     nan", "format NaN right-padded to width (no sign)")
 # A GENUINE negative zero (the literal / unary negate) keeps its sign through every float branch
 # (NB 0.0 - 0.0 is +0.0 by IEEE — that case shows no sign, covered elsewhere).
-ok(format(-0.0, "") == "-0", "format negative-zero literal shows the sign")
+ok(format(-0.0, "") == "-0.0", "format negative-zero literal, empty spec == String(): '-0.0' (keeps the sign)")
 ok(format(-0.0, "f") == "-0.000000", "format -0.0 fixed keeps the sign")
 ok(format(-0.0, ".1f") == "-0.0", "format -0.0 one decimal keeps the sign")
 ok(format(-0.0, "+.1f") == "-0.0", "format -0.0 with + still shows minus")

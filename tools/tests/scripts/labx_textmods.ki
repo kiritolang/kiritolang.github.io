@@ -1,0 +1,164 @@
+# labx_textmods.ki — deep edge/hardening pass over the Kirito-authored text modules:
+#   string (constants + capwords + levenshtein fuzzy), textwrap, base64, csv.
+# Goes BEYOND verify_string / verify_textwrap / verify_base64 / verify_csv / deep_text / audit_csv:
+# non-canonical base64 padding, byte-value non-validation edges, csv whitespace/quote-toggle corners,
+# dedent by char-count (mixed tabs/spaces), capwords/indent argument surface. Prints "OK textmods".
+var io = import("io")
+var s = import("string")
+var tw = import("textwrap")
+var b64 = import("base64")
+var csv = import("csv")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================================================
+# STRING — constants: exact contents + membership + the gaps vs Python's set (no \v \f)
+# ============================================================================================
+assert s.ascii_letters == "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", "ascii_letters exact"
+assert len(s.hexdigits) == 22, "hexdigits has lower+upper a-f (16 unique, 22 chars)"
+assert "a" in s.hexdigits and "F" in s.hexdigits and "g" not in s.hexdigits, "hexdigits membership"
+assert len(s.octdigits) == 8 and "8" not in s.octdigits, "octdigits 0-7 only"
+# whitespace is exactly space/tab/newline/CR — Kirito's set omits \v and \f that CPython includes
+assert s.whitespace == " \t\n\r" and len(s.whitespace) == 4, "whitespace is 4 chars"
+assert "\x0b" not in s.whitespace and "\x0c" not in s.whitespace, "whitespace omits VT/FF"
+assert "," in s.punctuation and "!" in s.punctuation and " " not in s.punctuation, "punctuation has no space"
+# constants are independent Strings (ascii_letters is the concatenation)
+assert s.ascii_letters == s.ascii_lowercase + s.ascii_uppercase, "ascii_letters == lower+upper"
+
+# ============================================================================================
+# STRING — capwords: space-split semantics, Latin-1 casing, and the NO-custom-sep surface
+# ============================================================================================
+assert s.capwords("the QUICK brown") == "The Quick Brown", "capwords lowercases the tail"
+assert s.capwords("a b  c") == "A B  C", "capwords preserves double-space (empty word kept)"
+assert s.capwords(" lead") == " Lead", "capwords keeps a leading empty word"
+assert s.capwords("trail ") == "Trail ", "capwords keeps a trailing empty word"
+# a tab is NOT a separator: the whole 'a\tb' is one word -> first char uppered, rest lowered
+assert s.capwords("aA\tbB") == "Aa\tbb", "capwords treats tab-joined text as a single word"
+# Latin-1 casing works on the leading code point
+assert s.capwords("évariste galois") == "Évariste Galois", "capwords Latin-1 first-letter upper"
+# capwords has NO sep parameter (unlike CPython's string.capwords(s, sep)); a 2nd arg over-applies
+assert raises(Function(): return s.capwords("a,b", ",")), "capwords takes no sep argument"
+
+# ============================================================================================
+# STRING — similarity / closest / fuzzymatch: empty, identical, disjoint, threshold boundary
+# ============================================================================================
+assert s.similarity("", "") == 1.0, "similarity empty vs empty is 1.0"
+assert s.similarity("same", "same") == 1.0, "similarity identical is 1.0"
+assert s.similarity("abc", "") == 0.0 and s.similarity("", "abc") == 0.0, "similarity vs empty is 0.0"
+assert s.similarity("abc", "xyz") == 0.0, "similarity fully disjoint is 0.0"
+assert s.similarity("kitten", "sitting").compare(1.0 - 3.0 / 7.0), "similarity kitten/sitting ~0.571"
+# List form: candidates may include empty strings and the query itself
+assert s.similarity("", ["", "a"]) == [1.0, 0.0], "similarity List form with empty candidates"
+assert s.similarity("q", []) == [], "similarity over empty candidate list is []"
+# closest: empty query resolves against candidates by edit distance; ties to earliest
+assert s.closest("", ["", "a"]) == "", "closest empty query picks the empty candidate"
+assert s.closest("cat", ["car", "cot"]) == "car", "closest ties go to the earliest"
+assert s.closest("x", []) == None, "closest over empty list is None"
+# fuzzymatch: threshold boundary is inclusive (score >= cutoff), and the sort is stable on ties
+assert s.fuzzymatch("aple", ["apple"], 0.8) == [["apple", 0.8]], "fuzzymatch cutoff boundary is inclusive"
+assert s.fuzzymatch("aple", ["apple"], 0.8000001) == [], "fuzzymatch just-above cutoff excludes"
+var ties = s.fuzzymatch("ab", ["aX", "Xb"], 0.0)
+assert ties == [["aX", 0.5], ["Xb", 0.5]], "fuzzymatch equal scores keep input order (stable)"
+
+# ============================================================================================
+# TEXTWRAP — wrap overflow, width<=0, fill default, indent/dedent corner semantics
+# ============================================================================================
+# a word strictly longer than width overflows onto its own line (never broken/truncated)
+assert tw.wrap("aaaaaaaa bb", 4) == ["aaaaaaaa", "bb"], "wrap over-long word overflows, not split"
+assert tw.wrap("x y z", 0) == ["x", "y", "z"], "wrap width 0 -> one word per line"
+assert tw.wrap("x y z", -3) == ["x", "y", "z"], "wrap negative width -> one word per line"
+assert tw.wrap("", 5) == [], "wrap empty text -> []"
+# the width accounts for the joining space exactly (a+space+b == width fits)
+assert tw.wrap("ab cd", 5) == ["ab cd"], "wrap boundary: a+' '+b == width fits on one line"
+assert tw.wrap("ab cde", 5) == ["ab", "cde"], "wrap boundary: one over spills"
+assert tw.fill("a b c") == "a b c", "fill default width keeps short text on one line"
+# indent: non-empty lines get the prefix, blank lines are left untouched (no predicate parameter)
+assert tw.indent("x\n\ny", "..") == "..x\n\n..y", "indent leaves blank lines unprefixed"
+assert raises(Function(): return tw.indent("a", "> ", Function(l): return True)), "indent takes no predicate arg"
+# dedent removes the COMMON leading run by CHARACTER COUNT (content-agnostic), and ignores blank lines
+assert tw.dedent("  \ta\n  \tb") == "a\nb", "dedent strips a shared 3-char (2sp+tab) prefix"
+assert tw.dedent("\ta\n  b") == "a\n b", "dedent strips min char-count (1), not by matching content"
+assert tw.dedent("    a\n\n    b") == "a\n\nb", "dedent ignores blank line for min-indent, preserves it"
+assert tw.dedent("noindent") == "noindent", "dedent no-common-indent no-op"
+
+# ============================================================================================
+# BASE64 — padding correctness, binary high bytes, urlsafe alphabet, non-canonical rejection
+# ============================================================================================
+# padding: 1 byte -> '==', 2 bytes -> '=', 3 bytes -> none (exact RFC-4648 remainders)
+assert b64.encode("f") == "Zg==" and b64.encode("fo") == "Zm8=" and b64.encode("foo") == "Zm9v", "padding by remainder"
+assert b64.encode("") == "" and b64.decode("") == [], "empty round-trips through nothing"
+assert b64.encode([]) == "", "encode empty List is empty"
+# String-in -> String-out; Bytes-in matches; decode ALWAYS returns a List of Integers (not Bytes)
+assert type(b64.encode("Man")) == "String", "encode returns String"
+assert b64.encode(Bytes("Man")) == b64.encode("Man"), "encode Bytes == encode String"
+assert type(b64.decode("TWFu")) == "List" and b64.decode("TWFu") == [77, 97, 110], "decode returns List of Integers"
+# round-trip String -> base64 -> bytes must match the original UTF-8 bytes
+var samples = ["", "M", "Ma", "Man", "hello, world", "café", "\x00\x01\xfe\xff"]
+for smp in samples:
+    assert Bytes(b64.decode(b64.encode(smp))) == smp.encode(), "round-trip sample"
+# every byte 0..255 survives exactly (high bytes included)
+var allbytes = Bytes(range(256))
+assert Bytes(b64.decode(b64.encode(allbytes))) == allbytes, "0..255 binary round-trip"
+# urlsafe swaps only + -> - and / -> _; identical output when neither 62/63 sextet appears
+assert b64.encode(Bytes([255, 255])) == "//8=" and b64.urlsafeencode(Bytes([255, 255])) == "__8=", "urlsafe / -> _"
+assert b64.encode(Bytes([251])) == "+w==" and b64.urlsafeencode(Bytes([251])) == "-w==", "urlsafe + -> -"
+assert b64.urlsafeencode("Man") == b64.encode("Man"), "urlsafe == standard when no +//"
+assert b64.urlsafedecode("__8=") == [255, 255] and b64.urlsafedecode("-w==") == [251], "urlsafe decode"
+assert Bytes(b64.urlsafedecode(b64.urlsafeencode(allbytes))) == allbytes, "urlsafe binary round-trip"
+# padding-less but canonical input still decodes (zero leftover bits)
+assert b64.decode("SGk") == [72, 105], "canonical no-pad decodes"
+
+# base64 HARDENING
+# a lone trailing char = 6 leftover bits -> invalid length
+assert raises_msg(Function(): return b64.decode("S"), "lone trailing character"), "decode lone char"
+# a canonical group with non-zero low bits is NON-canonical -> rejected (not silently truncated)
+assert raises_msg(Function(): return b64.decode("Zh=="), "truncated or corrupted"), "reject non-canonical 1-byte group"
+assert raises_msg(Function(): return b64.decode("SGl"), "truncated or corrupted"), "reject non-canonical no-pad group"
+# invalid characters (space, punctuation, and the cross-alphabet char) throw with the char named
+assert raises_msg(Function(): return b64.decode("SG k="), "invalid base64 character"), "decode rejects space"
+assert raises_msg(Function(): return b64.decode("-w=="), "invalid base64 character"), "std decode rejects urlsafe '-'"
+# decode stops at the first '=' and ignores the tail (padding sentinel)
+assert b64.decode("SGk=junk") == [72, 105], "decode stops at first '='"
+
+# ============================================================================================
+# CSV — quote toggling, whitespace preservation, ragged rows, embedded newline round-trip
+# ============================================================================================
+# quotes toggle state ANYWHERE in a field, not only at the field boundary
+assert csv.parserow("a\"b\"c") == ["abc"], "parserow quotes toggle mid-field"
+assert csv.parse("\"a\"\"b\",c") == [["a\"b", "c"]], "parse doubled-quote inside quoted field"
+# leading/trailing whitespace is preserved verbatim (never stripped)
+assert csv.parse(" a , b ") == [[" a ", " b "]], "parse preserves surrounding whitespace"
+assert csv.parserow("\tx\t") == ["\tx\t"], "parserow keeps tabs"
+# an embedded newline inside quotes stays one field / one row; a bare newline splits rows
+assert csv.parse("\"line1\nline2\",x") == [["line1\nline2", "x"]], "parse embedded newline in quotes"
+assert csv.parse("a\nb\nc") == [["a"], ["b"], ["c"]], "parse three single-field rows"
+# parserow does NOT special-case newline (it is a per-line helper): \n is an ordinary char
+assert csv.parserow("a\nb") == ["a\nb"], "parserow treats newline as ordinary text"
+# ragged rows: differing field counts are fine, empty fields preserved
+assert csv.parse("a,b,c\nd\ne,f") == [["a", "b", "c"], ["d"], ["e", "f"]], "parse ragged rows"
+assert csv.parse(",\n,,") == [["", ""], ["", "", ""]], "parse rows of only empty fields"
+# trailing newline does not add a spurious empty row; CRLF is normalized
+assert csv.parse("a,b\n") == [["a", "b"]], "parse trailing newline no spurious row"
+assert csv.parse("a\r\nb") == [["a"], ["b"]], "parse CRLF terminator"
+# format quotes exactly the fields that need it; round-trip is identity for these rows
+var rows = [["plain", "has,comma", "has\"quote"], ["has\nnl", "", "trail "], ["1", "2", "3"]]
+assert csv.parse(csv.format(rows)) == rows, "format/parse round-trip (comma/quote/newline/ws)"
+assert csv.formatrow(["a", "b\"c", ""]) == "a,\"b\"\"c\",", "formatrow quotes only the embedded-quote field"
+# format stringifies non-String cells (no throw), quoting a container's repr because of its comma
+assert csv.formatrow([1, True, None]) == "1,True,None", "formatrow stringifies scalars"
+assert csv.formatrow([[1, 2]]) == "\"[1, 2]\"", "formatrow quotes a stringified list (has a comma)"
+# parse is lenient: an unterminated quote just absorbs the remainder, never throwing
+assert csv.parse("\"open,ended") == [["open,ended"]], "parse unterminated quote is lenient"
+
+io.print("OK textmods")

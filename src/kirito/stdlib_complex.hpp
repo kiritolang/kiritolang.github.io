@@ -588,7 +588,11 @@ public:
         unary("tan", [](const cdouble& z) { return std::tan(z); });
         unary("asin", [](const cdouble& z) { return std::asin(z); });
         unary("acos", [](const cdouble& z) { return std::acos(z); });
-        unary("atan", [](const cdouble& z) { return std::atan(z); });
+        unary("atan", [](const cdouble& z) { return std::atan(z); },
+              [](const cdouble& z) -> const char* {   // poles at ±i (mirror atanh's ±1 guard)
+                  return (z == cdouble(0.0, 1.0) || z == cdouble(0.0, -1.0))
+                             ? "math domain error (atan of ±i)" : nullptr;
+              });
         unary("sinh", [](const cdouble& z) { return std::sinh(z); });
         unary("cosh", [](const cdouble& z) { return std::cosh(z); });
         unary("tanh", [](const cdouble& z) { return std::tanh(z); });

@@ -83,7 +83,7 @@ ok(format("x", "->5") == "----x", "format dash fill right align string")
 ok(format(0, "+d") == "+0", "format + sign on zero")
 ok(format(0, " d") == " 0", "format space sign on zero")
 ok(format(5, "+") == "+5", "format + sign no type")
-ok(format(-0.0, "") == "-0", "format negative zero shows the sign")
+ok(format(-0.0, "") == "-0.0", "format negative zero, empty spec == String(): '-0.0' (keeps the sign)")
 # Strings: default left align; precision truncates by CODE POINTS; type 's' optional.
 ok(format("hello", "10") == "hello     ", "format String default left align")
 ok(format("hello", ".3") == "hel", "format String precision (no type) truncates")

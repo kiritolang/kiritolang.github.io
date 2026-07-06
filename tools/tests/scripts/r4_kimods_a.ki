@@ -72,7 +72,7 @@ ok(it.islice([0, 1, 2], 0, 100) == [0, 1, 2], "islice caps stop at the end")
 ok(it.islice([0, 1, 2, 3, 4], 3, 1) == [], "islice start>stop -> empty")
 ok(it.islice([1, 2, 3], 2, 2) == [], "islice start==stop -> empty")
 ok(it.islice([], 0, 5) == [], "islice of empty -> empty")
-ok(throws(Function(): return it.islice([1, 2, 3], 0, 3, 0)), "islice step=0 throws (modulo by zero)")
+ok(throws(Function(): return it.islice([1, 2, 3], 0, 3, 0)), "islice step=0 throws (step must be positive)")
 
 # --- accumulate(iterable[, func])
 ok(it.accumulate([1, 2, 3, 4]) == [1, 3, 6, 10], "accumulate running sum")

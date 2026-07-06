@@ -303,8 +303,13 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         auto& m = self_m(vm, self);
         auto items = Value(vm, a[0]).items();
         if (items.size() < 3) throw KiritoError("Matrix _setstate_: malformed state");
-        std::size_t r = static_cast<std::size_t>(items[0].asInt("rows"));
-        std::size_t c = static_cast<std::size_t>(items[1].asInt("cols"));
+        int64_t r64 = items[0].asInt("rows"), c64 = items[1].asInt("cols");
+        // A negative dim would cast to a huge size_t and slip past the element-count guard (c==0
+        // skips it), yielding a matrix with rows()==-1 from untrusted state. Reject it up front
+        // (the complex-matrix sibling already does). ints are non-negative counts.
+        if (r64 < 0 || c64 < 0) throw KiritoError("Matrix _setstate_: negative dimension");
+        std::size_t r = static_cast<std::size_t>(r64);
+        std::size_t c = static_cast<std::size_t>(c64);
         if (c != 0 && r > mat::kMaxMatrixElems / c) throw KiritoError("Matrix too large");
         std::vector<double> data;
         for (Value e : items[2].items()) data.push_back(e.asFloat("element"));

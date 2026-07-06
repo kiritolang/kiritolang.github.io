@@ -81,7 +81,14 @@ public:
 
     void setup(ModuleBuilder& m) override {
         KiritoVM& vm = m.vm();
-        auto pathArg = [](KiritoVM& vm, Handle h) -> std::string { return Value(vm, h).asStringRef("path"); };
+        // Funnel for every filesystem-touching entry (exists/isfile/getsize/mkdir/remove/...): a NUL
+        // in the String would truncate the path at the OS boundary, so reject it here. (The pure
+        // string ops join/dirname/basename/splitext don't hit the filesystem and keep asStringRef.)
+        auto pathArg = [](KiritoVM& vm, Handle h) -> std::string {
+            std::string p = Value(vm, h).asStringRef("path");
+            requireNoNulPath(p, "path");
+            return p;
+        };
 
         // join(parts...) -> the parts joined with '/'. A later component that is absolute (starts
         // with '/') resets the result. Like os.path.join it needs at least one component (throws
@@ -190,6 +197,23 @@ public:
         // (like path.executable) it lives here in `path`, the single home for path/filesystem surface.
         m.fn("gettempdir", {}, "String", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
             std::error_code ec;
+            auto p = std::filesystem::temp_directory_path(ec);
+            return Value(vm, ec ? std::string("/tmp") : p.string());
+        });
+        // fasttemp() -> the FASTEST available scratch directory: a RAM-backed tmpfs where the OS
+        // publishes one (Linux `/dev/shm`), otherwise the ordinary system temp dir. Portable and
+        // best-effort — you get memory-speed temp I/O (useful for large intermediate files, e.g.
+        // feeding a subprocess) without leaving the process, and it degrades transparently to
+        // gettempdir() on macOS/Windows, which expose no public RAM disk. Same usage as gettempdir:
+        // build a path with path.join(path.fasttemp(), name).
+        m.fn("fasttemp", {}, "String", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
+            std::error_code ec;
+#if !defined(_WIN32)
+            // Linux exposes a world-writable tmpfs at /dev/shm; prefer it when it is a real directory.
+            if (std::filesystem::is_directory("/dev/shm", ec) && !ec)
+                return Value(vm, std::string("/dev/shm"));
+            ec.clear();
+#endif
             auto p = std::filesystem::temp_directory_path(ec);
             return Value(vm, ec ? std::string("/tmp") : p.string());
         });

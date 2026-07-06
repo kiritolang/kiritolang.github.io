@@ -1,0 +1,83 @@
+# ================================================ REENTRANT clear()/pop() DURING A HASH-PROBE (A08-1)
+# A user _hash_/_eq_ that MUTATES the container while a bucket probe is in flight must raise a clean,
+# catchable "changed size" error — never corrupt the bucket a live C++ probe loop holds (which was a
+# double-free before v1.14). add/remove/discard were already guarded; clear() and Set.pop() were the
+# one pair that skipped the guard. This pins all of them, plus recovery: the container survives.
+var io = import("io")
+
+var raised = Function(fn):
+    try:
+        fn()
+    catch as e:
+        return True
+    return False
+
+# --- Set.clear() inside a colliding _eq_ (add probes the bucket) ---
+var s1 = Set()
+class ClearOnEq:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self): return 0          # force a collision so _eq_ runs on the 2nd add
+    var _eq_ = Function(self, other):
+        s1.clear()
+        return False
+s1.add(ClearOnEq())
+assert raised(Function(): s1.add(ClearOnEq())), "Set.clear() mid-probe must raise, not crash"
+assert len(s1) == 1, "the set survives the rejected reentrant clear (still has its one member)"
+
+# --- Set.pop() inside a colliding _eq_ ---
+var s2 = Set()
+class PopOnEq:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self): return 0
+    var _eq_ = Function(self, other):
+        discard s2.pop()
+        return False
+s2.add(PopOnEq())
+assert raised(Function(): s2.add(PopOnEq())), "Set.pop() mid-probe must raise, not crash"
+assert len(s2) == 1, "the set survives the rejected reentrant pop"
+
+# --- Dict.clear() inside a colliding _eq_ (subscript-set probes the bucket) ---
+var d1 = {}
+class DClearOnEq:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self): return 0
+    var _eq_ = Function(self, other):
+        d1.clear()
+        return False
+d1[DClearOnEq()] = 1
+var setDict = Function():
+    d1[DClearOnEq()] = 2
+assert raised(setDict), "Dict.clear() mid-probe must raise, not crash"
+assert len(d1) == 1, "the dict survives the rejected reentrant clear"
+
+# --- Set == Set routes through the live-iterating SetVal::equals; a member whose _eq_ clears the
+#     LEFT set mid-compare must raise, not corrupt the bucket equals() iterates ---
+var a = Set()
+class ClearOnCmp:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self): return 0
+    var _eq_ = Function(self, other):
+        a.clear()
+        return False
+a.add(ClearOnCmp())
+var b = Set()
+b.add(ClearOnCmp())
+var cmp = Function():
+    var r = a == b
+    return r
+assert raised(cmp), "Set == Set with a reentrant-clear member must raise, not corrupt"
+assert len(a) == 1, "the left set survives the rejected reentrant clear during =="
+
+# --- a NON-mutating _eq_ still works normally (the guard doesn't over-reject reads) ---
+var s3 = Set()
+class Plain:
+    var _init_ = Function(self, n): self.n = n
+    var _hash_ = Function(self): return 0          # all collide, so _eq_ is exercised
+    var _eq_ = Function(self, other): return self.n == other.n
+s3.add(Plain(1))
+s3.add(Plain(2))
+s3.add(Plain(1))                                   # dup of Plain(1): probe compares, no insert
+assert len(s3) == 2, "a read-only reentrant-safe _eq_ still dedups correctly (no false rejection)"
+assert Plain(2) in s3, "membership via a colliding _eq_ still works"
+
+io.print("OK reentrant-clear")

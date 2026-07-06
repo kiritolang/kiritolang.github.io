@@ -169,6 +169,7 @@ are deferred to the point the code is reached, so they *are* catchable; they're 
 |---|---|---|
 | `positional argument follows keyword argument` | A positional argument written after a keyword argument in a call | Put all positional args before keyword args |
 | `duplicate switch case value` | Two `case` arms with the same literal scalar value | Make each case value distinct |
+| `switch case value must be Integer, Float, String, Bool, or None` | A `case` label that evaluates to a non-scalar at run time | Use a constant scalar case label |
 
 ### Static analysis warnings (NOT exceptions)
 
@@ -193,14 +194,14 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 
 | Message | Cause | Fix |
 |---|---|---|
-| `unsupported operand type '<T>' for <op>` | Numeric binary op given a non-numeric operand (`1 + "x"`) | Convert operands to compatible numeric types |
+| `unsupported operand type '<T>' for arithmetic with '<U>'` / `… for comparison with '<U>'` | Numeric binary op or `<`/`>`/`<=`/`>=` given a non-numeric operand (`1 + "x"`, `1 < "x"`) — `<T>` is the offending operand, `<U>` the other | Convert operands to compatible numeric types |
 | `type '<T>' does not support this binary operator` | A type with no such operator | Use a supported type/operator, or define the dunder |
 | `type '<T>' does not support this unary operator` | Unary `-`/`not` on a type lacking it | Use a supporting type |
 | `type 'String' does not support this operator` | Operator on String outside `+`/`*`/comparisons | Use a valid String operator |
 | `can only concatenate String to String, not '<T>'` | `"a" + <non-String>` | Concatenate only Strings (convert with `String(x)`) |
 | `can only concatenate List to List, not '<T>'` | `[...] + <non-List>` | Concatenate only Lists |
 | `can only repeat String by an Integer` / `can only repeat List by an Integer` | `"x" * "y"` / `[1] * 2.0` | Repeat by an Integer count |
-| `cannot order '<X>' and '<Y>'` | `<`/`>`/… between unorderable types | Compare only ordered/like types |
+| `cannot order '<X>' and '<Y>'` | `sorted`/`sort`/`min`/`max` (or List-vs-List element ordering) hitting two unorderable types — a *direct* `a < b` on incompatible types instead raises the `unsupported operand`/`does not support this operator` message above | Compare only ordered/like types |
 | `cannot order 'List' and '<T>'` | List ordered against a non-List | Compare List to List |
 | `compare() expects a number, not '<T>'` | `n.compare(other)` with non-numeric `other` | Pass a number |
 | `compare() rel_tol and abs_tol must be numbers` | Non-numeric tolerance kwarg to `.compare` | Pass numeric `rel_tol`/`abs_tol` |
@@ -243,6 +244,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `slice step cannot be zero` | `x[a:b:0]` | Use a non-zero step |
 | `pop index out of range` / `pop from empty List` | `pop()` on empty or bad index | Pop only in-range from a non-empty list |
 | `pop index must be an Integer` | Non-Integer arg to List `pop` | Pass an Integer index |
+| `remove: value not in List` / `index: value not in List` | `list.remove(v)`/`list.index(v)` for a value not present | Check with `in` first |
 
 ### Dict keys / Set / hashing
 
@@ -252,6 +254,10 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `unhashable type '<T>'` | Using an unhashable value as a Dict/Set key or in `hash()` | Use a hashable (immutable) key |
 | `unhashable type` | Set `remove` of an unhashable value | Pass a hashable value |
 | `pop from an empty Set` | `set.pop()` when empty | Pop only from a non-empty set |
+| `Dict changed size during a key comparison` / `Set changed size during a value comparison` | A user `_eq_`/`_hash_` mutated the container mid-probe | Don't mutate the container from its keys' `_eq_`/`_hash_` |
+| `remove: value not in Set` | `set.remove(v)` for an absent value | Use `discard` (no-op if absent) or check first |
+| `pop: key not found` | `dict.pop(k)` (no default) for an absent key | Pass a default, or check with `in` |
+| `popitem: dictionary is empty` | `dict.popitem()` on an empty Dict | Check the Dict is non-empty |
 
 ### Arithmetic
 
@@ -315,10 +321,11 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `maximum recursion depth exceeded` | Native call depth exceeds the call-depth guard (deep/infinite recursion) | Reduce recursion / raise the configured limit |
-| `maximum equality recursion depth exceeded (cyclic structure?)` | A deep/cyclic structure compared with `==` | Avoid comparing cyclic structures |
+| `maximum comparison recursion depth exceeded (cyclic structure?)` | A deep/cyclic structure compared with `==`/`<`/`sort`/`min`/`max` | Avoid comparing cyclic structures |
 | `structure too deeply nested to stringify` | `str()`/print of a structure >1000 deep | Flatten the structure |
 | `expression too deeply nested to evaluate` / `expression nested too deeply` | Pathologically nested source | Simplify the expression nesting |
 | `'<Class>' _iter_ recurses too deeply (does _iter_ return self or a cycle?)` | A user `_iter_` that returns `self` (or forms an `_iter_` cycle), so iteration re-dispatches without bottoming out | Return a genuine iterable (a List / built-in iterator), not `self` |
+| `'<Class>' _str_ recurses too deeply` | A user `_str_` that returns `self` (or forms a stringification cycle), so `str()`/print re-dispatches without bottoming out | Return a plain String from `_str_`, not `self` |
 
 ### Resource guards (repetition / padding / range)
 
@@ -333,6 +340,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `<op> width too large` / `zfill width too large` / `format width/precision too large` | Padding/format width or precision exceeds the cap | Use a smaller width/precision |
 | `<op> expects an Integer width` / `zfill expects an Integer width` | Non-Integer width to `ljust`/`rjust`/`center`/`zfill` | Pass an Integer width |
 | `<op> fill must be a single character` | Multi-char fill to a padding method | Pass one character |
+| `<op> result too large` | `ljust`/`rjust`/`center` whose multi-byte fill makes the padded result exceed the cap | Use a smaller width / a single-byte fill |
 
 ### String search & format methods
 
@@ -374,6 +382,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `isinstance second argument must be a class, a built-in type, or a type-name String` | Bad 2nd arg to `isinstance` | Pass a type/class/type-name |
 | `hasattr: name (2nd argument) must be a String` | Non-String name to `hasattr` | Pass a String name |
 | `pow exponent must be non-negative with a modulus` / `pow modulus must be non-zero` / `pow modulus must be positive` | Bad 3-arg modular `pow` | Non-negative exponent, positive non-zero Integer modulus |
+| `pow base/exp/mod must be Integer with 3 args` | A non-Integer base, exponent, or modulus in 3-arg `pow` | Use Integers for modular `pow` |
 
 ### Imports
 
@@ -395,6 +404,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `fromhex: odd-length hex string` / `fromhex: non-hex digit` | Bad `fromhex` input | Pass an even-length hex string |
 | `Bytes() expects a List of Integers, an Integer, a String, or Bytes` / `Bytes() list elements must be Integers` / `Bytes() element out of range (0..255)` | Bad `Bytes(x)` construction | Pass valid 0–255 Integers / supported types |
 | `Bytes too large` | `Bytes(n)` with an oversized n | Use a bounded count |
+| `negative count` | `Bytes(n)` with a negative n (e.g. `Bytes(-1)`) | Pass a non-negative count |
 
 ### Class dunder / super protocol
 
@@ -405,6 +415,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `'<class>'._bool_ must return a Bool, got '<T>'` / `._hash_ must return an Integer` / `_len_ must return a (non-negative) Integer` | A dunder returns the wrong type | Return the required type from the dunder |
 | `unhashable type '<class>'` | `_hash_` absent (or opted out) when hashing an instance | Define `_hash_` |
 | `_super_() called in '<class>' …` (no base) | `self._super_()` where the class has no parent | Only call `_super_` from a subclass |
+| `base class must be a class, got <T>` | `class D(x):` where the base `x` is not a class value | Inherit from a class |
 
 ## Standard library
 
@@ -414,6 +425,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 |---|---|---|
 | `open expected 1 or 2 arguments` | `io.open` called with 0 or >2 args | Pass `open(path[, mode])` |
 | `open path must be a String` / `open mode must be a String` | Non-String path/mode to `open` | Pass Strings |
+| `open: embedded NUL byte in path` | A String path containing a `\0` (the OS truncates at it — a validation bypass) | Remove the NUL byte |
 | `unsupported file mode '<mode>'` | Mode not in the r/w/a[+][b] set | Use `"r"`/`"w"`/`"a"`/`"r+"` + optional `b` |
 | `could not open file '<path>'` | OS could not open the path (missing dir, permission) | Check the path exists / is accessible |
 
@@ -426,6 +438,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `write failed: <path>` | Underlying stream write failed (disk full, etc.) | Check the device/permissions |
 | `stream is not writable` / `stream is not readable` | Read/write on a one-way stream | Use a stream of the right direction |
 | `stdin is not writable` / `a write stream is not readable` | Writing to stdin / reading from stdout/stderr | Direct I/O to the correct std stream |
+| `<who> expects a String or Bytes` | A non-String/Bytes value to `write`/`writelines`/`BytesIO.write` (e.g. `f.write(123)`) | Write a String or Bytes (convert with `String(x)`) |
 
 ### io — seek & BytesIO
 
@@ -434,7 +447,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `seek expects an offset` | `seek()` with no offset | Pass an integer offset |
 | `seek: whence must be 0 (set), 1 (cur), or 2 (end)` | Out-of-range `whence` | Use 0, 1, or 2 |
 | `seek: resulting position is out of range` / `seek: resulting position is negative` | Offset over/underflows the stream | Seek to a valid non-negative position |
-| `BytesIO too large` | The in-memory buffer grew past the cap | Stream to a file instead |
+| `BytesIO too large` | The in-memory buffer grew past the 256 MiB cap (via `write` or a `truncate` that extends after a large `seek`) | Stream to a file instead |
 | `BytesIO expects a byte String` | Non-String passed to `BytesIO(...)` | Pass a (byte-transparent) String |
 
 ### path — pure paths & queries
@@ -442,6 +455,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `join expected at least one path component` | `path.join()` with zero args | Pass ≥1 component |
+| `path: embedded NUL byte in path` | A filesystem query/mutation on a String path containing a `\0` (the OS truncates at it) | Remove the NUL byte |
 | `getsize: <reason>` | `getsize` on a missing/non-regular path | Ensure the file exists |
 
 ### path — mutation (strict by default)
@@ -474,6 +488,8 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `add/sub: cannot convert NaN/infinity to Integer` / `add/sub: result out of Integer range` / `DateTime arithmetic overflow` | Non-finite/huge delta or epoch overflow | Pass a finite, in-range delta |
 | `diff expects 1 argument (a DateTime)` / `diff expects a DateTime` | Bad arg to `diff` | Pass a DateTime |
 | `format expects a String` | Non-String format to `format` | Pass a format String |
+| `sleep: seconds must be a finite number` / `sleep: seconds too large (maximum 1e9)` | `time.sleep(inf/nan)` or an absurdly large duration | Pass a finite, in-range number of seconds |
+| `DateTime _setstate_: <expected an Integer epoch / cannot re-initialize an established DateTime>` | Deserializing a corrupt DateTime, or re-`_setstate_`-ing an already-initialized one | Deserialize only trusted data |
 
 ### net — TCP sockets
 
@@ -489,6 +505,19 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `send failed: <err>` / `recv failed: <err>` | Socket write/read failed | Peer closed — reconnect / handle EOF |
 | `recv size must be non-negative` | Negative `recv(n)` | Pass n ≥ 0 |
 | `recvall: received data exceeds the size limit` | `recvall` accumulated past the cap | Read in bounded chunks |
+| `<op>: socket is closed` | Any op (send/recv/bind/detach/fileno/…) on a closed or detached socket — a second `detach()` or a `fileno()` on a dead socket lands here too | Don't reuse a socket after `close()`/`detach()` |
+| `unknown address family '<s>' (expected 'inet' or 'inet6')` | Bad `family` to `socket()`/`socketpair()` | Use `"inet"` or `"inet6"` |
+| `unknown socket type '<s>' (expected 'stream' or 'dgram')` | Bad `type` to `socket()`/`socketpair()` | Use `"stream"` or `"dgram"` |
+| `sendto: datagram too large` | A `sendto` payload past the datagram size limit | Send a smaller datagram |
+| `sendto: could not resolve host '<host>'` | DNS resolve failed for the `sendto` peer | Check the host/DNS |
+| `sendto failed` / `recvfrom failed` | The UDP send/receive syscall failed | Check the socket state / peer reachability |
+| `recvfrom size must be non-negative` | Negative `recvfrom(n)` | Pass n ≥ 0 |
+| `shutdown: how must be 'read', 'write', or 'both'` | Bad `how` to `shutdown` | Use `"read"`/`"write"`/`"both"` |
+| `setsockopt: unknown option '<opt>'` / `getsockopt: unknown option '<opt>'` | An option name outside the supported set | Use a documented option name |
+| `<net op> failed: <err>` | An OS socket syscall failed (setsockopt/getsockopt/shutdown/setblocking/settimeout, the named convenience setters) | Check the socket state / the option value |
+| `socketpair(<type>) failed` | The OS could not create the connected pair | Retry; check resource limits |
+| `gethostbyname: cannot resolve '<host>'` | DNS lookup returned no address | Check the hostname/DNS |
+| `getaddrinfo('<host>') failed` | Address resolution failed | Check the host/service arguments |
 
 ### net — URL parsing
 
@@ -497,6 +526,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `URL must start with http:// or https://` | Unsupported scheme | Prefix with `http://`/`https://` |
 | `malformed IPv6 URL (missing ']')` / `(junk after ']')` | Malformed `[…]` host | Use `[host]:port` |
 | `invalid port in URL '<url>': '<portStr>'` / `port out of range in URL …` | Non-numeric / out-of-range URL port | Use a numeric port 1–65535 |
+| `URL contains a control character` | A raw CR/LF/NUL-style control character embedded in the URL (a request-splitting guard) | Percent-encode or strip the control character |
 
 ### net — HTTP client & Response
 
@@ -518,6 +548,8 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `TLS certificate verification failed for <host> (pass verify=False to skip)` | The peer cert didn't verify | Trust the CA or pass `verify=False` |
 | `SSL_write failed` | TLS write error mid-request | Reconnect |
 | `https requires building with KIRITO_ENABLE_TLS (OpenSSL); use http:// otherwise` | HTTPS on a non-TLS build | Rebuild with TLS or use http:// |
+| `SSL_CTX_new failed` | OpenSSL could not create the TLS context | Environment/OpenSSL problem — retry |
+| `HTTPS response exceeds the size limit` | A TLS response body grew past the cap | Fetch a smaller resource / stream it |
 
 ### random — RNG construction & sampling
 
@@ -525,13 +557,17 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 |---|---|---|
 | `Random: unknown generator '<name>' …` | Bad `generator=` kwarg | Use `"xoshiro"` or `"mersenne_twister"` |
 | `expected a number` / `uniform expects (a, b)` / `randint expects (a, b)` / `randrange expects 1 to 3 arguments` | Bad arity/type to a distribution | Pass the expected numeric args |
-| `expovariate: lambda must be positive` | λ ≤ 0 | Pass λ > 0 |
-| `gauss: sigma must be non-negative` | A negative standard deviation to `gauss`/`normalvariate` | Pass `sigma ≥ 0` |
+| `expovariate: lambda must be positive and finite` | λ ≤ 0 or a non-finite λ (a NaN slips past `≤`) | Pass a finite λ > 0 |
+| `gauss: sigma must be non-negative` / `gauss: mu and sigma must be finite numbers` | A negative or non-finite param to `gauss`/`normalvariate` | Pass a finite `sigma ≥ 0` |
+| `uniform: a and b must be finite numbers` | A NaN/inf bound to `uniform` | Pass finite bounds |
 | `randint: empty range` / `randrange: empty range` / `randrange: step must not be zero` / `randrange: range too large to sample` | A degenerate integer range | Widen the range / use a non-zero step |
 | `choice/choices from empty sequence/population` | Sampling an empty population | Provide items |
 | `choices: k must be non-negative` / `choices: k too large` | Bad `k` for `choices` | Pass 0 ≤ k ≤ cap |
 | `shuffle requires a List` | Non-List to `shuffle` | Pass a List |
 | `sample expects (population, k)` / `sample: k out of range` | Bad `sample` args | Use an iterable + 0 ≤ k ≤ len |
+| `seed expects a value` | `Random.seed()` called with no argument | Pass a seed value |
+| `Random _setstate_: <malformed engine state / unknown generator '<kind>'>` | Deserializing a corrupt/foreign Random blob | Deserialize only trusted `dump`/`serialize` output |
+| `choice`/`choices`/`sample` `expects a(n) (iterable) sequence/population` | A non-iterable population to `choice`/`choices`/`sample` | Pass a sequence/iterable population |
 
 ### math — domain & Integer requirements
 
@@ -542,7 +578,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `log: math domain error (argument must be > 0)` / `(base must be > 0 and != 1)` | `math.log` with x≤0 or a bad base | Positive argument / valid base |
 | `pow: math domain error (a negative base requires an integer exponent)` / `(zero to a negative power)` | `math.pow(-2, 0.5)` / `math.pow(0, -1)` | Integer exponent for a negative base (or use `complex`) |
 | `<who>: cannot convert NaN/infinity to Integer` / `result out of Integer range` | `floor`/`ceil` of a non-finite/huge value | Feed a finite, in-range value |
-| `math function expected 1 argument` / `pow expected 2 arguments` | Wrong `math` fn arity | Match the arity |
+| `math function expected 1 argument` / `pow expected 2 arguments` / `atan2 expected 2 arguments` / `hypot expected 2 arguments` | Wrong `math` fn arity | Match the arity |
 | `gcd/lcm expects Integers` / `factorial expects an Integer` / `comb/perm expects Integers` | A Float/other where an Integer is required | Pass Integers |
 | `factorial is not defined for negatives` / `comb/perm require non-negative Integers` | A negative argument | Pass non-negative Integers |
 | `prod expects an iterable` / `prod start must be a number` / `prod expects numbers` | Bad `math.prod` input | Pass an iterable of numbers |
@@ -557,7 +593,9 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `complex division by zero` | `z / 0` | Use a non-zero divisor |
 | `complex pow: zero to a negative or complex power` | `0j ** -1` / `0j ** 1j` | Avoid the singularity |
 | `complex.pow expects 2 arguments` | Wrong arity to `complex.pow` | Pass two arguments |
-| `<fn>: math domain error (logarithm of zero)` / `(atanh of ±1)` | `complex.log`/`log10` of 0, or `atanh(±1)` | Keep the argument in domain |
+| `<fn>: math domain error (logarithm of zero)` / `(atanh of ±1)` / `(atan of ±i)` | `complex.log`/`log10` of 0, `atanh(±1)`, or `atan(±i)` (each a pole) | Keep the argument in domain |
+| `Complex does not support this operator` / `Complex does not support this unary operator` | An operator outside `+ - * / **` (or unary `-`) on a Complex | Use a supported operator |
+| `Complex _setstate_: malformed state` | Deserializing a corrupt Complex blob | Deserialize only trusted data |
 
 ### matrix / ComplexMatrix
 
@@ -570,7 +608,12 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `determinant/inverse/trace requires a square Matrix/ComplexMatrix` | A square-only op on a non-square matrix | Use a square matrix |
 | `dot/cross expects a … vector` / `dot requires vectors of equal length` / `cross is only defined for two 3-element vectors` | Malformed vector operands | Use conforming 1×n / n×1 vectors |
 | `Matrix rows must have equal length` / `Matrix expects a nested list …` / `… dimensions must be non-negative` | Bad constructor/factory input | Pass a rectangular nested list / valid dims |
+| `Matrix _setstate_: negative dimension` / `… malformed state` / `… data size does not match shape` | Corrupt/hostile serialized Matrix state (a negative dim would otherwise build a garbage matrix) | Deserialize only trusted data |
 | `Matrix() got an unexpected keyword argument '<name>'` / `got multiple values for 'rows'` | Bad keyword to `Matrix()` | Use `rows=`/`cols=` once each |
+| `Matrix/ComplexMatrix does not support this operator` | An operator past `+ - *` on a matrix | Use a supported matrix operator |
+| `compare expects a Matrix/ComplexMatrix` | `.compare(other)` with a non-matrix `other` | Pass a matrix of the same kind |
+| `Matrix(rows, cols) needs both rows and cols` | A dimension-form `Matrix()` with only one of rows/cols | Pass both `rows` and `cols` |
+| `ComplexMatrix _setstate_: element must be [re, im]` | Deserializing a corrupt ComplexMatrix blob | Deserialize only trusted data |
 
 ### tensor
 
@@ -603,6 +646,14 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `eye/linspace: … must be non-negative` / `arange step must be non-zero` / `arange: missing stop` | Bad factory arguments | Pass valid factory args |
 | `split: axis length is not divisible …` / `repeat count must be non-negative` / `searchsorted: the first tensor must be 1-D and sorted` | Bad structural-op args | Match the op's requirements |
 | `<op> expects a Tensor` / `Tensor does not support this operator (use .matmul for matrix products)` / `Tensor does not support this unary operator` | Wrong operand type / unsupported operator | Pass Tensor(s); use `.matmul`; only `-` is defined |
+| `Tensor _setstate_: malformed state` / `_setstate_: complex element must be [re, im]` / `tensor data size does not match its shape` | A corrupt/hostile serialized tensor blob | Deserialize only trusted data |
+| `cannot squeeze an axis whose size is not 1` | `squeeze` of an axis whose length is not 1 | Squeeze only size-1 axes |
+| `concatenate: tensors must have the same rank` / `concatenate: shapes differ off the join axis` | Mismatched inputs to `concatenate` | Match rank and the non-join dimensions |
+| `concatenate/stack needs at least one tensor` | `concatenate`/`stack` with an empty input list | Pass at least one tensor |
+| `broadcastto: cannot broadcast to the requested shape` | `broadcastto` target incompatible with the source shape | Use a broadcast-compatible shape |
+| `dot requires two 1-D tensors` / `dot requires vectors of equal length` | Bad operands to tensor `dot` | Pass two equal-length 1-D tensors |
+| `take: tensor has no axes` | `take` on a 0-D tensor | Take from a tensor with ≥ 1 axis |
+| `split: section sizes must sum to the axis length` | Explicit `split` sections don't cover the axis | Make the sizes sum to the axis length |
 
 ### json — parse & stringify
 
@@ -615,6 +666,7 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `JSON parse error: unterminated string` / `bad escape` / `bad \u escape` / `invalid \u escape …` / `invalid low surrogate …` | Malformed string/escape | Fix the string escaping |
 | `cannot serialize a cyclic structure to JSON` / `structure too deeply nested to serialize to JSON` | `json.stringify` hit a cycle / >1000 depth | Break the cycle / flatten |
 | `cannot serialize '<T>' to JSON` | A Set/Function/native in the graph | Convert to JSON-native types (List/Dict/scalars) |
+| `json.stringify: indent too large (maximum 100)` | A huge `indent=` to `stringify` (would overflow/OOM the pad) | Use an indent ≤ 100 |
 
 ### serialize / dump — text (KSER1) & binary (KDMP)
 
@@ -632,6 +684,9 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `bad serialization header` / `bad dump header` / `unsupported dump version` | Wrong/foreign format header | Feed real `serialize.dumps`/`dump.dumps` output |
 | `loads expects a Bytes (or String) of dump data` | `dump.loads` given the wrong type | Pass the `dumps` Bytes |
 | `could not open file for saving` / `could not open file for loading` | `save`/`load` couldn't open the path | Check the path/permissions |
+| `bad serialization tag '<t>'` / `bad dump tag` | A corrupt blob carries an unrecognized type tag | Deserialize only trusted data |
+| `cannot deserialize: instance attribute name is not a String` | A corrupt instance record with a non-String attribute name | Deserialize only trusted data |
+| `cannot deserialize '<name>': missing state` | An instance/native tag whose state payload is absent | Deserialize only trusted data |
 
 ### regex
 
@@ -644,8 +699,11 @@ Compile rejections are thrown as **RegexError** inside the engine and re-wrapped
 | `invalid regex: nothing to repeat` / `bad repetition bounds {<lo>,<hi>}` / `repetition count too large (max 1000)` | A misplaced/oversized quantifier | Fix the quantifier |
 | `invalid regex: pattern nested too deeply` / `compiled pattern too large` | A pathological pattern | Simplify the pattern |
 | `invalid regex: bad character range in class` / `trailing backslash …` / `incomplete \x/\u escape` / `escape value out of range …` | Malformed class/escape | Fix the class/escape |
+| `invalid regex: escape is a UTF-16 surrogate (not a scalar code point)` | A `\u` escape naming a surrogate (e.g. `\uD800`) | Escape a valid scalar code point |
+| `invalid regex: too many capture groups (max 1000)` | A pattern with more than 1000 capturing groups | Reduce the group count / use non-capturing `(?:…)` |
 | `invalid regex: duplicate/empty/bad group name …` / `malformed named group …` / `unsupported (?...) group` | A malformed group construct | Use a supported group form |
 | `invalid regex: backreferences are not supported …` / `named backreferences …` / `lookahead …` / `lookbehind …` | Backrefs/lookaround (rejected by design for linear time) | Restructure without them |
+| `regex match exceeded its complexity budget …` | A many-capture-group pattern over a long input (cost is O(text × program × groups)) | Simplify the pattern or reduce capture groups |
 | `no such group: <g>` / `group key must be an Integer index or a String name` | Bad group access on a Match | Use a valid group number/name |
 | `invalid group reference <g> in replacement template` / `bad replacement: …` | Malformed `sub` template | Reference an existing group; fix the `\g<…>` |
 | `sub replacement must be a String or a function` / `sub replacement function must return a String` | Bad `sub` replacement | Pass a String template / return a String |
@@ -658,6 +716,8 @@ Both throw **DeflateError** internally, re-wrapped with a `zlib:` / `gzip:` pref
 |---|---|---|
 | `zlib: zlib data too short` / `unsupported zlib compression method` / `checksum mismatch (corrupt data)` | Malformed/corrupt zlib stream | Provide a valid zlib stream |
 | `zlib: unexpected end of deflate stream` / `invalid Huffman code` / `invalid block type` / `truncated stored block …` / `invalid length/distance symbol` / `distance too far back` / `bad dynamic lengths` | Corrupt/truncated DEFLATE data | Data is corrupt — re-fetch |
+| `zlib: invalid stored block lengths` / `invalid repeat` | A corrupt DEFLATE stored-block header / code-length repeat | Data is corrupt — re-fetch |
+| `zlib: invalid zlib window size` / `zlib preset dictionary is not supported` / `invalid zlib header check` | A malformed or unsupported zlib header (bad window/CMF-FLG check, preset dictionary) | Provide a standard zlib stream |
 | `zlib: decompressed data exceeds the size limit` | Inflate output passed the 256 MiB guard (zip bomb) | Don't decompress the hostile stream |
 | `gzip: stream too short` / `bad magic (not a gzip stream)` / `unsupported compression method` | Not a valid gzip stream | Provide a real `.gz` stream |
 | `gzip: truncated FEXTRA/header/stream` / `CRC-32 mismatch …` / `ISIZE mismatch …` | Corrupt/truncated gzip member | Data is corrupt/truncated |
@@ -668,6 +728,43 @@ Both throw **DeflateError** internally, re-wrapped with a `zlib:` / `gzip:` pref
 | Message | Cause | Fix |
 |---|---|---|
 | `unhashable type '<T>'` | `hash(x)` on a value with no hash (a List, or an instance lacking `_hash_`) | Pass a hashable value |
+| `<fn> expects a String or Bytes` | A `hash`/`zlib`/`gzip` function given something other than a `String` or `Bytes` | Pass text or binary data |
+
+### Standard library — Kirito-authored modules
+
+The frozen-source modules (`itertools`, `functools`, `statistics`, `base64`, `heapq`, `enum`, `arg`,
+`tabular`, `semver`, …) are written in Kirito and `throw` plain-String errors — caught by a bare `catch`
+or `catch String as e`. (Their combinator size caps — `product`/`permutations`/`combinations` *result too
+large* — live under [Resource guards](#resource-guards-repetition--padding--range) above.)
+
+| Message | Cause | Fix |
+|---|---|---|
+| `itertools.count needs a stop bound (no lazy generators)` | `count()`/`count(start)` with no stop (Kirito has no lazy generators) | Pass a stop bound |
+| `itertools.count step must not be zero` | `count(start, 0)` | Use a non-zero step |
+| `step for islice() must be a positive integer` | `islice(xs, start, stop, step)` with `step ≤ 0` | Use a positive step |
+| `reduce of empty sequence with no initial value` | `functools.reduce(f, [])` without an initializer | Pass an initial value, or a non-empty sequence |
+| `mean requires at least one data point` / `median requires at least one data point` / `pvariance requires at least one data point` | `statistics` central-tendency on an empty list | Provide data |
+| `variance requires at least two data points` / `quantiles requires at least two data points` | `statistics.variance`/`quantiles` on fewer than two points | Provide ≥ 2 points |
+| `no mode for empty data` | `statistics.mode([])` | Provide data (or use `multimode`, which returns `[]`) |
+| `quantiles: n must be at least 1` | `statistics.quantiles(data, n)` with `n < 1` | Use `n ≥ 1` |
+| `invalid base64 character: '<ch>'` / `invalid base64: a lone trailing character (invalid length)` / `invalid base64: truncated or corrupted input` | `base64.decode` of malformed input | Decode only valid base64 |
+| `heappop from empty heap` / `heapreplace on empty heap` | `heapq.heappop`/`heapreplace` on an empty list | Check the heap is non-empty |
+| `duplicate enum member: <name>` | Two members with the same name passed to `enum.Enum` | Use unique member names |
+| `no such enum member: <name>` | `e.nameof(v)` / member lookup for an unknown value | Look up an existing member |
+| `unknown option: --<name>` / `unknown option: -<c>` | `arg.Parser.parse` given a flag/option the parser doesn't declare | Declare the option, or drop it |
+| `missing required argument: <<name>>` | A required positional not supplied on the command line | Supply the positional |
+| `option --<name> expects an integer, got '<v>'` / `expects a number, got '<v>'` | An option whose default is Integer/Float given an unconvertible value | Pass a value of the option's type |
+| `option --<name> requires a value` / `option <token> requires a value` | A value-taking option given at the end with no value | Supply the option's value |
+| `Series: index length does not match values length` | Constructing a `Series` with mismatched index/values | Match the lengths |
+| `Series: length mismatch (<a> vs <b>)` | Element-wise op between Series of different lengths | Align the Series first |
+| `DataFrame: data must be a Dict of columns or a List of rows` | `DataFrame(x)` with an unsupported shape | Pass a column-Dict or a row-List |
+| `DataFrame: all columns must have the same length` | Ragged column data | Make every column the same length |
+| `DataFrame: new column length must match row count` | Assigning a column of the wrong length | Match the row count |
+| `boolean mask length does not match row count` | Boolean-mask selection with a wrong-length mask | Match the mask to the frame |
+| `merge: how must be one of inner/left/right/outer, got '<how>'` | Invalid `how` to `tabular.merge` | Use inner/left/right/outer |
+| `readcsv: row <r> has <n> fields, expected <k>` | A CSV row with more fields than the header (no silent data loss) | Fix the row / header |
+| `invalid version '<s>': need MAJOR.MINOR.PATCH` / `non-numeric core` / `empty prerelease identifier` / `invalid version (too many components): <rest>` | `semver.parse`/`clean` of a malformed version (`valid()` returns `None` instead of throwing) | Pass a valid semver, or probe with `valid()` first |
+| `inc: release must be major/minor/patch, got '<release>'` | `semver.inc` with an unknown release part | Use major/minor/patch |
 
 ## Concurrency — the `parallel` module
 
@@ -683,6 +780,10 @@ Both throw **DeflateError** internally, re-wrapped with a `zlib:` / `gzip:` pref
 | `cannot dump type '<T>' (define _getstate_/_setstate_ to make it serializable)` | A non-serializable arg/queue item (socket, file, live regex) | Pass only serializable values |
 | `parallel: worker thrown: <err>` | The spawned task threw in its worker VM | Fix the worker function |
 | `parallel.spawn: cannot read source file '<f>'` / `could not load '<f>'` / `could not locate the spawned function in '<f>'` | The worker can't re-load the fn's source | Keep the `.ki` file on the lib path; don't relocate the fn |
+| `parallel.spawn: cannot spawn from a module's top level …` (`put your spawn calls behind 'if argmain:'`) | `spawn` reached at import/module-top-level | Guard `spawn` calls with `if argmain:` |
+| `parallel: the dispatcher is shutting down` | `spawn`/enqueue after shutdown began | Don't spawn during shutdown |
+| `parallel: invalid task handle` | A `Task` method on a foreign/garbage handle | Use a `Task` returned by `spawn` |
+| `parallel: corrupt spawn arguments` | The serialized spawn-argument blob is malformed | Pass only serializable args |
 
 ### blocking primitives (Queue / Lock / Event / Semaphore / Barrier)
 
@@ -697,6 +798,7 @@ Both throw **DeflateError** internally, re-wrapped with a `zlib:` / `gzip:` pref
 | `parallel.Lock: release of an unlocked lock` | `release()` without holding it | Only release what you hold |
 | `parallel.Queue: maxsize must be >= 0` / `Semaphore: value must be >= 0` / `Barrier: parties must be >= 1` | A bad constructor argument | Pass a valid initial value |
 | `parallel.<Type>: uninitialized …` / `cannot rebind (unknown id…)` | A method on an uninitialized/foreign primitive | Construct it in this dispatcher |
+| `Queue.put: missing item` / `Queue.putnowait: missing item` | `put`/`putnowait` called with no item argument | Pass the item to enqueue |
 
 ## Kirito `throw` and `assert`
 
@@ -740,6 +842,7 @@ misuse — these become ordinary catchable Kirito errors at the call site.
 | `<name>() got multiple values for argument '<k>'` | the same parameter was passed positionally **and** by keyword |
 | `slice indices must be Integer or None` / `slice step cannot be zero` | a custom `slice()` slot given non-Integer bounds / a zero step |
 | `alias target '<x>' not registered` | `ModuleBuilder::alias("new", "x")` where `x` was never registered |
+| `<fn> missing argument N` | `Args::at(N)` (the C++ positional accessor) reaching past the arguments actually passed |
 
 ### The `Value` API — typed reads
 
@@ -751,6 +854,7 @@ so a native that peeks-then-wraps fails loudly instead of reading garbage.
 | `<who> expected <Type>, got '<actual>'` | `arg.asInt("who")` / `.asString(...)` / `.asDict()` … on a value of another kind | Peek first (`arg.isInt()`, `arg.isDict()`) before the typed read, or accept the type mismatch as the error |
 | `unhashable type '<T>'` | using a non-hashable `Value` as a Dict key / Set element / `.hash()` target from C++ | Only hash hashable kinds (scalars, String, Bytes, frozen tuples-as-Lists are **not** hashable) |
 | `uninitialised Value (no VM)` | calling a method on a default-constructed `Value{}` (no bound VM) | Construct values as `Value(vm, …)`; never operate on a `Value{}` |
+| `Dict has no key '<k>'` | `Dict::at(k)` (the C++ throwing accessor) for a key not present | Check with `.contains(k)` / use `.get(k, dflt)` before `at` |
 
 ### The shared limits behind the guards
 

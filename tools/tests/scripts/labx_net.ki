@@ -1,0 +1,184 @@
+# labx_net: deep, OFFLINE-only exercise of the `net` module's deterministic surface —
+# URL helpers, socket construction + validation/hardening, and a self-contained 127.0.0.1
+# loopback + socketpair exchange. NO outbound network, NO DNS to external hosts. Goes beyond
+# verify_net / spec_net / spec_net_primitives / audit_net / r6_net / r10_net into corners those skip.
+var net = import("net")
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================== tlsenabled ==============================================
+assert type(net.tlsenabled) == "Bool", "tlsenabled is a Bool"
+
+# ============================== quote: Unicode above Latin-1 via chr() ==================
+# A NUL byte and code points above 0xFF (no \u escape in Kirito — build them with chr()).
+assert net.quote(chr(0)) == "%00", "quote NUL byte -> %00"
+assert net.quote(chr(233)) == "%C3%A9", "quote U+00E9 (é) -> UTF-8 %C3%A9"
+assert net.quote(chr(8364)) == "%E2%82%AC", "quote U+20AC (€) -> 3-byte UTF-8"
+assert net.quote(chr(0x1F600)) == "%F0%9F%98%80", "quote astral code point -> 4-byte UTF-8"
+assert net.quote("a=b&c") == "a%3Db%26c", "quote encodes = and &"
+assert net.quote("~-._") == "~-._", "quote leaves the full unreserved punctuation set"
+
+# ============================== unquote: multi-byte + malformed corners ================
+assert net.unquote("%00") == chr(0), "unquote %00 -> NUL"
+assert net.unquote("%E2%82%AC") == chr(8364), "unquote 3-byte UTF-8 -> €"
+assert net.unquote("%F0%9F%98%80") == chr(0x1F600), "unquote 4-byte UTF-8 -> astral"
+assert net.unquote("%C3%A9%") == "é%", "unquote trailing lone % passes through after a valid escape"
+assert net.unquote("%%41") == "%A", "unquote: a bare % then a valid escape"
+assert net.unquote(net.quote(chr(8364))) == chr(8364), "quote/unquote Unicode round-trip"
+
+# ============================== urlencode: order + Unicode value ======================
+assert net.urlencode({"z": "1", "a": "2", "m": "3"}) == "z=1&a=2&m=3", "urlencode keeps insertion order"
+assert net.urlencode({"q": chr(233)}) == "q=%C3%A9", "urlencode encodes a Unicode value"
+assert net.urlencode({"a b": chr(0)}) == "a%20b=%00", "urlencode encodes both key and value fully"
+
+# ============================== parseqs: encoded keys, extra '=' =======================
+assert net.parseqs("a%20b=1&a%20b=2") == {"a b": "2"}, "parseqs decodes keys; duplicate last-wins"
+assert net.parseqs("a==") == {"a": "="}, "parseqs: a second '=' is part of the value"
+assert net.parseqs("k=%E2%82%AC")["k"] == chr(8364), "parseqs decodes multi-byte value"
+assert net.parseqs("=drop&keep=1") == {"keep": "1"}, "parseqs drops an empty-key pair, keeps the rest"
+
+# ============================== urlsplit: query-without-path, '?' in fragment ==========
+var q1 = net.urlsplit("http://h?q=1")
+assert q1["host"] == "h" and q1["path"] == "" and q1["query"] == "q=1", "urlsplit query with no path"
+var f1 = net.urlsplit("http://h/p#f?notquery")
+assert f1["fragment"] == "f?notquery" and f1["query"] == "" and f1["path"] == "/p", "urlsplit: '?' inside a fragment stays in the fragment"
+var hp = net.urlsplit("http://h:80")
+assert hp["host"] == "h" and hp["port"] == "80" and hp["path"] == "", "urlsplit host:port with no path"
+var v6 = net.urlsplit("http://[2001:db8::1]/x")
+assert v6["host"] == "[2001:db8::1]" and v6["port"] == "", "urlsplit IPv6 literal without a port"
+
+# ============================== socket construction + read-only attrs ==================
+assert net.Socket().family == "inet" and net.Socket().type == "stream", "Socket() defaults"
+assert net.socket("inet", "dgram").type == "dgram", "socket(inet, dgram) type"
+assert net.socket(type = "dgram").type == "dgram", "socket keyword arg (type=)"
+assert net.udpsocket().type == "dgram", "udpsocket() type"
+# IPv6 socket CONSTRUCTION needs kernel AF_INET6 support (absent in some sandboxes); guard it — the
+# family-STRING validation is covered unconditionally by the bad-family cases below.
+var v6_ok = True
+try:
+    assert net.socket("inet6", "stream").family == "inet6", "socket(inet6) family"
+catch:
+    v6_ok = False
+
+# ============================== family / type validation (message text) ===============
+assert raises_msg(Function(): return net.socket("bogus", "stream"), "unknown address family"), "bad family message"
+assert raises_msg(Function(): return net.socket("inet", "raw"), "unknown socket type"), "bad type message"
+assert raises(Function(): return net.tcpsocket("ipv9")), "tcpsocket bad family throws"
+assert raises(Function(): return net.udpsocket("nope")), "udpsocket bad family throws"
+assert raises(Function(): return net.socketpair("bogus")), "socketpair bad type throws"
+
+# ============================== port-range validation (0..65535, message text) ========
+# checkPort runs BEFORE any host resolution / connection, so these are network-free & deterministic.
+assert raises_msg(Function(): return net.tcpsocket().connect("127.0.0.1", 65536), "must be 0-65535"), "connect port 65536 rejected"
+assert raises_msg(Function(): return net.tcpsocket().connect("127.0.0.1", -1), "out of range"), "connect port -1 rejected"
+assert raises(Function(): return net.udpsocket().sendto("x", "127.0.0.1", 70000)), "sendto port out of range throws"
+assert raises(Function(): return net.tcpsocket().bind("127.0.0.1", 99999)), "bind port out of range throws"
+
+# ============================== setsockopt / getsockopt string keys ====================
+var so = net.tcpsocket()
+so.setsockopt("reuseaddr", 1)
+assert so.getsockopt("reuseaddr") != 0, "reuseaddr round-trips"
+so.setnodelay(True)
+assert so.getsockopt("nodelay") != 0, "setnodelay helper"
+assert so.getsockopt("error") == 0, "SO_ERROR is 0 on a fresh socket"
+so.close()
+# unknown option (both directions) reports the valid set
+assert raises_msg(Function(): return net.tcpsocket().setsockopt("nope", 1), "unknown option"), "setsockopt unknown option message"
+assert raises_msg(Function(): return net.tcpsocket().getsockopt("nope"), "unknown option"), "getsockopt unknown option message"
+# the getsockopt-ONLY options must not be settable (silent-error hunt)
+assert raises(Function(): return net.tcpsocket().setsockopt("error", 1)), "setsockopt('error') rejected (read-only)"
+assert raises(Function(): return net.tcpsocket().setsockopt("type", 1)), "setsockopt('type') rejected (read-only)"
+assert raises(Function(): return net.tcpsocket().setsockopt("acceptconn", 1)), "setsockopt('acceptconn') rejected (read-only)"
+# stream vs dgram have distinct SO_TYPE
+assert net.udpsocket().getsockopt("type") != net.tcpsocket().getsockopt("type"), "getsockopt('type') distinguishes stream/dgram"
+
+# ============================== recv size validation ===================================
+assert raises_msg(Function(): return net.tcpsocket().recv(-1), "non-negative"), "recv(-1) rejected"
+
+# ============================== use-after-close throws "socket is closed" ==============
+var dead = net.tcpsocket()
+dead.close()
+assert raises_msg(Function(): return dead.recv(4), "socket is closed"), "recv on closed socket"
+assert raises_msg(Function(): return dead.send("x"), "socket is closed"), "send on closed socket"
+assert raises_msg(Function(): return dead.getsockname(), "socket is closed"), "getsockname on closed socket"
+assert raises_msg(Function(): return dead.getsockopt("reuseaddr"), "socket is closed"), "getsockopt on closed socket"
+assert raises_msg(Function(): return dead.bind("127.0.0.1", 0), "socket is closed"), "bind on closed socket"
+assert dead.fileno() == -1, "fileno() -> -1 after close (does NOT throw)"
+# close() is idempotent (no throw on a second close)
+dead.close()
+# getpeername on an unconnected (open) socket throws
+assert raises(Function(): return net.tcpsocket().getpeername()), "getpeername on an unconnected socket throws"
+
+# ============================== fileno / detach lifecycle ==============================
+var lf = net.tcpsocket()
+assert lf.fileno() >= 0, "fileno >= 0 on an open socket"
+var fd = lf.detach()
+assert fd >= 0, "detach returns the raw fd"
+assert lf.fileno() == -1, "fileno -> -1 after detach"
+assert raises_msg(Function(): return lf.detach(), "socket is closed"), "second detach throws"
+# adopt the detached fd back so we don't leak it, then close it
+var adopted = net.fromfd(fd)
+assert adopted.fileno() >= 0, "fromfd adopts the detached fd"
+adopted.close()
+
+# ============================== 127.0.0.1 TCP loopback exchange (byte-exact) ===========
+var srv = net.tcpsocket()
+srv.settimeout(5)
+srv.bind("127.0.0.1", 0)
+srv.listen(1)
+var lport = srv.getsockname()[1]
+assert lport > 0 and lport <= 65535, "ephemeral port is a valid port number"
+var cli = net.tcpsocket()
+cli.settimeout(5)
+cli.connect("127.0.0.1", lport)
+var conn = srv.accept()
+conn.settimeout(5)
+assert conn.type == "stream", "accepted socket inherits the listener's type"
+var payload = Bytes([0, 1, 255, 65, 66])
+assert cli.send(payload) == 5, "send returns the byte count"
+assert conn.recv(16) == payload, "recv is byte-exact (incl. NUL and 0xFF)"
+assert conn.recv(0) == Bytes([]), "recv(0) returns empty Bytes without blocking"
+cli.close()
+conn.close()
+srv.close()
+
+# ============================== socketpair exchange ====================================
+var pr = net.socketpair()
+assert pr[0].send("xy") == 2, "socketpair send count"
+assert pr[1].recv(2).decode() == "xy", "socketpair a -> b"
+assert pr[1].send("zw") == 2, "socketpair reverse send"
+assert pr[0].recv(2).decode() == "zw", "socketpair b -> a"
+pr[0].close()
+pr[1].close()
+
+# ============================== name resolution (numeric / local only) ================
+assert type(net.gethostname()) == "String" and len(net.gethostname()) > 0, "gethostname is a non-empty String"
+assert net.gethostbyname("127.0.0.1") == "127.0.0.1", "gethostbyname of a literal is identity"
+# 127.0.0.1 resolves numerically with no DNS — reliable offline.
+var ai = net.getaddrinfo("127.0.0.1", 80)
+assert len(ai) >= 1, "getaddrinfo returns at least one record"
+assert ai[0]["host"] == "127.0.0.1" and ai[0]["port"] == 80, "getaddrinfo host/port"
+assert "family" in ai[0] and "type" in ai[0], "getaddrinfo record has family/type keys"
+var aif = net.getaddrinfo("127.0.0.1", 80, "inet", "stream")
+assert aif[0]["family"] == "inet" and aif[0]["type"] == "stream", "getaddrinfo family/type filter"
+# localhost / service-name lookups can be absent in a minimal sandbox — guard, don't assert values.
+var loopback_ok = True
+try:
+    var lai = net.getaddrinfo("localhost")
+    assert len(lai) >= 1, "localhost resolves to >=1 record"
+catch:
+    loopback_ok = False
+
+io.print("OK net")

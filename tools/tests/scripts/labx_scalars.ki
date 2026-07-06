@@ -1,0 +1,195 @@
+# labx_scalars — deep edge/hardening verification of the SCALAR built-in types
+# (None / Bool / Integer / Float) documented in docs/pages/09-types.md and the numeric
+# semantics in docs/pages/02-language-guide.md. Goes BEYOND verify_types_scalars.ki:
+# it stresses the .compare tolerance formula at its EXACT boundary, NaN/inf tolerance,
+# floor-div/modulo sign conventions across every sign combination, right-associative **
+# with negative/fractional exponents, two's-complement wrap at the INT64_MIN/MAX corners
+# (incl. INT64_MIN // -1 and -INT64_MIN), ipow overflow wrap, base-literal max/overflow
+# parsing, and the exact division/modulo/pow-domain error messages.
+# Prints "OK scalars".
+var io = import("io")
+var math = import("math")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+var imax = 9223372036854775807
+var imin = -9223372036854775808
+
+# ============================================================ None (concise, non-overlapping)
+assert None == None and String(None) == "None" and not None, "None basics"
+# None is equal ONLY to itself — not to any other falsy value, and it is unordered
+assert None != 0 and None != False and None != "" and None != [], "None distinct from falsies"
+assert raises(Function(): return None < None), "None has no ordering"
+assert raises(Function(): return None + None), "None supports no arithmetic"
+# None round-trips as a Set element and as a Dict key
+var sn = {None, None}
+assert len(sn) == 1 and None in sn, "None dedups in a Set"
+
+# ============================================================ Bool arithmetic / distinctness
+# True + True is NOT 2 — Bool is a distinct type with no arithmetic (strong typing)
+assert raises(Function(): return True + True), "True + True is a type error (not 2)"
+assert raises(Function(): return True * 2) and raises(Function(): return True - False), "no Bool arithmetic"
+assert raises(Function(): return True < True), "Bool is unordered"
+# to actually count truth values you must convert
+assert Integer(True) + Integer(True) == 2, "Integer(True)+Integer(True) == 2"
+assert Integer(False) == 0 and Float(True) == 1.0, "Integer/Float of Bool"
+# Bool is never == to its numeric shadow
+assert True != 1 and False != 0 and not (1.0 == True), "Bool != numbers"
+# distinct Dict keys, and distinct from the integers 0/1
+var dbk = {True: "t", False: "f", 1: "one", 0: "zero"}
+assert len(dbk) == 4, "True/False and 1/0 are four distinct keys"
+
+# ============================================================ Integer literals — base max & overflow
+assert 0x7FFFFFFFFFFFFFFF == imax, "hex INT64_MAX"
+assert 0x8000000000000000 == imin, "hex 0x8000..0 == INT64_MIN (two's complement)"
+assert 0xFFFFFFFFFFFFFFFF == -1, "hex 64 set bits == -1"
+assert 0o777777777777777777777 == imax, "octal INT64_MAX"
+assert 0o1777777777777777777777 == -1, "octal 64 set bits == -1"
+assert 0b111111111111111111111111111111111111111111111111111111111111111 == imax, "binary INT64_MAX"
+# a base literal WIDER than 64 bits truncates to the low 64 bits (silent, current behaviour)
+assert 0x10000000000000000 == 0, "hex 2^64 truncates to 0"
+assert 0x1FFFFFFFFFFFFFFFF == -1, "hex (2^65-1) keeps low 64 bits == -1"
+# case-insensitive prefix AND digits
+assert 0Xabcdef == 0xABCDEF and 0xdeadBEEF == 3735928559, "hex digits case-insensitive"
+
+# ============================================================ Integer — floor-div / modulo across all sign combos
+# // floors toward -inf; % takes the sign of the DIVISOR; the identity a == (a//b)*b + a%b holds.
+assert 7 // 3 == 2 and 7 % 3 == 1, "pos // pos, pos % pos"
+assert -7 // 3 == -3 and -7 % 3 == 2, "neg // pos floors down, % sign = divisor"
+assert 7 // -3 == -3 and 7 % -3 == -2, "pos // neg, % sign = divisor"
+assert -7 // -3 == 2 and -7 % -3 == -1, "neg // neg, % sign = divisor"
+assert divmod(-7, 3) == [-3, 2] and divmod(7, -3) == [-3, -2], "divmod matches // and %"
+var _q = -7 // 3
+var _r = -7 % 3
+assert _q * 3 + _r == -7, "floor-div/mod identity a == (a//b)*b + a%b"
+
+# ============================================================ Integer — INT64_MIN / wraparound corners
+assert imax + 1 == imin and imin - 1 == imax, "add/sub wrap at the boundary"
+assert -imin == imin and imin * -1 == imin, "negating INT64_MIN wraps to itself"
+# INT64_MIN // -1 and % -1 would be UB in C — the VM defines them by wrap, no crash
+assert imin // -1 == imin, "INT64_MIN // -1 wraps to INT64_MIN (no UB)"
+assert imin % -1 == 0, "INT64_MIN % -1 == 0 (no UB)"
+assert imin // 1 == imin and imin % 1 == 0, "INT64_MIN // 1, % 1"
+assert divmod(imin, -1) == [imin, 0], "divmod(INT64_MIN, -1) wraps cleanly"
+# abs of INT64_MIN has no positive representation, so it wraps (stays negative) — pinned behaviour
+assert abs(imin) == imin, "abs(INT64_MIN) wraps (no positive int64 for it)"
+
+# ============================================================ Integer — ** right-assoc, overflow wrap, negative exp
+assert 2 ** 3 ** 2 == 512, "** right-associative: 2**(3**2), not (2**3)**2"
+assert 2 ** 0 == 1 and 0 ** 0 == 1, "x**0 == 1, 0**0 == 1"
+assert (-2) ** 3 == -8 and (-2) ** 2 == 4, "negative base, integer exponent"
+assert 2 ** 62 == 4611686018427387904, "2**62 in range"
+assert 2 ** 63 == imin, "2**63 overflows and wraps to INT64_MIN"
+assert 2 ** 64 == 0, "2**64 wraps to 0"
+# negative exponent on an Integer promotes to Float
+assert 2 ** (-1) == 0.5 and 2 ** (-2) == 0.25, "int ** negative exp -> Float value"
+assert type(2 ** (-2)) == "Float", "int ** negative exp is Float-typed"
+
+# ============================================================ Float — true division, floor, modulo signs
+assert 7 / 2 == 3.5 and 4 / 2 == 2.0 and type(4 / 2) == "Float", "/ always Float"
+assert -7.0 // 2.0 == -4.0 and 7.0 // -2.0 == -4.0, "float // floors toward -inf"
+assert -7.0 % 2.0 == 1.0 and 7.0 % -2.0 == -1.0, "float % takes sign of divisor"
+assert 5 // 2.0 == 2.0 and type(5 // 2.0) == "Float", "mixed // promotes to Float"
+
+# ============================================================ Float — ** domain: negative/fractional exponents
+assert (-2.0) ** 3.0 == -8.0 and (-2.0) ** 2.0 == 4.0, "negative base, integer-valued Float exp is fine"
+assert 9.0 ** 0.5 == 3.0 and 2.0 ** (-1.0) == 0.5, "in-domain fractional/negative exp"
+# a negative base with a genuinely fractional exponent has no real result -> throws (even cube roots)
+assert raises_msg(Function(): return (-2) ** 0.5, "a negative base cannot be raised to a fractional power"), "(-2)**0.5 throws"
+assert raises_msg(Function(): return (-8) ** (1.0 / 3.0), "a negative base cannot be raised to a fractional power"), "(-8)**(1/3) throws (no silent NaN)"
+assert raises_msg(Function(): return 0.0 ** (-1.0), "zero cannot be raised to a negative power"), "0.0**-1 throws (no silent inf)"
+assert raises_msg(Function(): return 0 ** (-1), "zero cannot be raised to a negative power"), "0**-1 throws"
+
+# ============================================================ Float — EXACT IEEE-754 == boundary
+assert (0.1 + 0.2 == 0.3) == False and (0.1 + 0.2) != 0.3, "0.1+0.2 != 0.3 (exact)"
+assert 0.3 == 0.3 and 0.5 == 0.5, "bit-identical floats equal"
+# NaN is never equal to anything, incl. itself; and it is unordered against everything
+assert (math.nan == math.nan) == False and math.nan != math.nan, "NaN != NaN"
+assert (math.nan < 0.0) == False and (math.nan > 0.0) == False and (math.nan == 0.0) == False, "NaN unordered"
+assert math.inf == math.inf and -math.inf == -math.inf, "inf == inf"
+assert (math.inf == -math.inf) == False and math.inf > 1e308, "inf sign / ordering"
+assert 0.0 == -0.0 and (0.0 < -0.0) == False, "0.0 == -0.0"
+# 1 and 1.0 are equal and share one Dict/Set key; -0.0 and 0.0 collapse; each NaN is its own key
+var dk = {}
+dk[1] = "a"
+dk[1.0] = "b"
+dk[0.0] = "z"
+dk[-0.0] = "y"
+assert len(dk) == 2 and dk[1] == "b" and dk[0.0] == "y", "1==1.0 one key; +-0.0 one key"
+var dnan = {}
+dnan[math.nan] = 1
+dnan[math.nan] = 2
+assert len(dnan) == 2, "each NaN is a distinct key (NaN != NaN)"
+# -0.0 still keeps its sign as text and is falsy
+assert String(-0.0) == "-0.0" and Bool(-0.0) == False, "-0.0 signed text, falsy"
+
+# ============================================================ .compare — exact-boundary tolerance formula
+# floatClose: |a-b| <= max(rel_tol*max(|a|,|b|), abs_tol). The boundary is INCLUSIVE (<=).
+# abs_tol boundary: diff == abs_tol exactly -> close (uses exactly-representable integer-valued doubles)
+assert (0.0).compare(2.0, abs_tol = 2.0) == True, "abs boundary inclusive: diff == abs_tol is close"
+assert (0.0).compare(2.0, abs_tol = 1.0) == False, "diff > abs_tol is not close"
+# rel_tol boundary: rel_tol*max(|a|,|b|) == diff exactly -> close
+assert (100.0).compare(200.0, rel_tol = 0.5) == True, "rel boundary inclusive: 0.5*200 == 100 == diff"
+assert (100.0).compare(200.0, rel_tol = 0.4) == False, "0.4*200 == 80 < 100 -> not close"
+# rel scales with the LARGER magnitude; near zero rel is useless, abs rescues
+assert (0.0).compare(1e-10) == False and (0.0).compare(1e-10, abs_tol = 1e-9) == True, "rel useless near 0, abs rescues"
+# both tolerances zero == exact IEEE-754 == (agrees with ==)
+assert (0.3).compare(0.3, rel_tol = 0.0, abs_tol = 0.0) == True, "compare(0,0) == exact =="
+assert (0.1 + 0.2).compare(0.3, rel_tol = 0.0, abs_tol = 0.0) == False, "compare(0,0) mirrors 0.1+0.2!=0.3"
+# a negative rel_tol clamps via max(...,0): only an exact == survives
+assert (1.0).compare(1.0, rel_tol = -1.0) == True and (1.0).compare(2.0, rel_tol = -1.0) == False, "negative rel_tol"
+# default rel_tol = 1e-9 window around 1.0
+assert (1.0).compare(1.0 + 1e-10) == True and (1.0).compare(1.0 + 1e-7) == False, "default rel_tol window"
+
+# ============================================================ .compare — NaN / inf are never "close"
+assert math.nan.compare(math.nan) == False, "NaN.compare(NaN) is False even at equality"
+assert math.nan.compare(1.0, abs_tol = 1e300) == False, "no tolerance makes NaN close"
+assert math.inf.compare(math.inf) == True, "inf.compare(inf) True (exact-equal path)"
+assert math.inf.compare(1e308, abs_tol = 1e309) == False, "inf vs finite never close"
+assert (-math.inf).compare(math.inf) == False, "-inf vs +inf never close"
+
+# ============================================================ .compare — cross-type, argument hardening
+assert (5).compare(5) == True and (5).compare(5.0) == True, "Integer.compare same value / cross-type"
+assert (5).compare(5.0000001) == False, "Integer.compare rejects a tiny drift at default tol"
+assert hasattr(5, "compare") and hasattr(5.0, "compare"), "both Integer and Float expose compare"
+assert "compare" in inspect(5) and "compare" in inspect(5.0), "compare appears under inspect"
+# a Bool is NOT numeric, so it is rejected everywhere compare wants a number
+assert raises_msg(Function(): return (5).compare(True), "compare() expects a number, not 'Bool'"), "compare(Bool) rejected"
+assert raises_msg(Function(): return (5).compare("x"), "compare() expects a number, not 'String'"), "compare(String) rejected"
+assert raises_msg(Function(): return (5).compare(None), "compare() expects a number, not 'None'"), "compare(None) rejected"
+assert raises_msg(Function(): return (5).compare(3, rel_tol = True), "compare() rel_tol and abs_tol must be numbers"), "rel_tol=Bool rejected"
+assert raises_msg(Function(): return (5).compare(3, abs_tol = "x"), "compare() rel_tol and abs_tol must be numbers"), "abs_tol=String rejected"
+
+# ============================================================ HARDENING — division / modulo by zero (exact messages)
+assert raises_msg(Function(): return 1 / 0, "division by zero"), "1 / 0"
+assert raises_msg(Function(): return 1 // 0, "integer division by zero"), "1 // 0"
+assert raises_msg(Function(): return 1 % 0, "integer modulo by zero"), "1 % 0"
+assert raises_msg(Function(): return 1.0 // 0.0, "float division by zero"), "1.0 // 0.0"
+assert raises_msg(Function(): return 1.0 % 0.0, "float modulo by zero"), "1.0 % 0.0"
+assert raises_msg(Function(): return 5 // 0.0, "float division by zero"), "mixed // 0.0"
+# strong typing: no coercion across kinds
+assert raises(Function(): return 1 + "x") and raises(Function(): return 1.5 + None), "no cross-type coercion"
+
+# ============================================================ SILENT-ERROR probes (must refuse, not succeed)
+assert not raises(Function(): return 5 * 2 + 1), "control: a valid op does not raise"
+assert raises(Function(): return (-2.0) ** 0.5), "must not silently yield NaN"
+assert raises(Function(): return 0.0 ** (-1.0)), "must not silently yield inf"
+assert raises(Function(): return 7 // 0), "must not silently yield 0"
+
+# ============================================================ float total order under sort (NaN sorts last)
+var xs = sorted([math.inf, math.nan, 1.0, -math.inf, 0.0])
+assert xs[0] == -math.inf and xs[1] == 0.0 and xs[2] == 1.0 and xs[3] == math.inf, "finite order under sort"
+assert xs[4] != xs[4], "NaN sorts last (still unequal to itself)"
+
+io.print("OK scalars")

@@ -1,0 +1,203 @@
+# labx: DEEP edge/hardening pass over the Kirito-authored data/functional modules
+# (itertools, functools, collections, heapq, bisect, copy, enum) — docs/pages/10-stdlib.md.
+# Goes BEYOND verify_*/audit_*/deep_kimods: the corners they skipped and the "does the doc-implied
+# feature actually exist?" silent-error probes. Everything deterministic; prints "OK datatools".
+var io = import("io")
+var it = import("itertools")
+var ft = import("functools")
+var coll = import("collections")
+var hq = import("heapq")
+var bs = import("bisect")
+var cp = import("copy")
+var en = import("enum")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ itertools: islice negative/zero args
+# islice validates the STEP (must be a positive integer, Python parity) but not start/stop; negative
+# start/stop fall through the raw `i >= start` / `i >= stop` logic — assert that ACTUAL behavior.
+# A non-positive STEP is rejected up front (was a silent "keep all" via floor-modulo before the guard).
+assert raises_msg(Function(): return it.islice([0, 1, 2, 3, 4], 0, 5, -1), "positive integer"), "islice negative step raises"
+assert raises_msg(Function(): return it.islice([1, 2, 3], 0, 3, 0), "positive integer"), "islice step 0 raises"
+# A negative START makes `i >= start` always true from i=0 -> keeps all up to stop.
+assert it.islice([0, 1, 2, 3, 4], -2, 5) == [0, 1, 2, 3, 4], "islice negative start keeps all"
+# A negative STOP makes `i >= stop` true immediately -> empty.
+assert it.islice([0, 1, 2, 3, 4], 0, -1) == [], "islice negative stop -> empty"
+
+# ============================================================ itertools: accumulate has NO initial
+# Doc signature is accumulate(iterable[, func]) — there is NO 3rd `initial` parameter (unlike Python).
+assert raises_msg(Function(): return it.accumulate([1, 2, 3], Function(a, b): return a + b, 100), "positional"), "accumulate rejects an initial arg"
+assert it.accumulate([2, 4], Function(a, b): return a if a > b else b) == [2, 4], "accumulate running max"
+
+# ============================================================ itertools: product has NO repeat=
+# Doc signature is product(lists) — no `repeat=` keyword (unlike Python's itertools.product).
+assert raises_msg(Function(): return it.product([[1, 2]], repeat = 2), "unexpected keyword"), "product rejects repeat="
+# product tuples are independent copies (prefix.copy()), so mutating one never leaks into another.
+var pr = it.product([[1, 2], [3]])
+pr[0].append(99)
+assert pr[1] == [2, 3], "product emits independent copies"
+
+# ============================================================ itertools: groupby uses == (int==float)
+# groupby compares keys with ==, and Integer==Float is value-equal, so 1.0 and 1 share a group.
+assert it.groupby([1.0, 1, 2]) == [[1.0, [1.0, 1]], [2, [2]]], "groupby: 1.0 and 1 are equal keys"
+# a key fn that maps distinct elements to one value collapses them into a single consecutive group.
+assert it.groupby(["aa", "bb", "cc"], Function(s): return len(s)) == [[2, ["aa", "bb", "cc"]]], "groupby key collapses same-length words"
+
+# ============================================================ itertools: permutations/combinations r-edges
+assert it.permutations([], None) == [[]], "permutations of empty -> one empty arrangement"
+assert it.permutations([1, 2, 3], 0) == [[]] and it.combinations([1, 2, 3], 0) == [[]], "r=0 -> [[]] for both"
+assert it.permutations([1, 2], 3) == [] and it.combinations([1, 2], 3) == [], "r>n -> [] for both"
+assert len(it.permutations([1, 2, 3, 4])) == 24 and len(it.combinations([1, 2, 3, 4, 5], 2)) == 10, "full counts 4!=24, C(5,2)=10"
+
+# ============================================================ functools: reduce None-seed identity
+var take2 = Function(a, b): return b
+assert ft.reduce(take2, [1, 2], None) == 2, "reduce with explicit None seed folds normally"
+assert ft.reduce(take2, [], None) == None, "reduce empty with None seed returns None, not throw"
+assert raises_msg(Function(): return ft.reduce(take2, []), "empty sequence"), "reduce empty no-seed raises"
+
+# ============================================================ functools: partial takes a LIST, no kwargs
+# partial(func, bound) — bound is ONE list; the wrapper takes ONE list of the rest. A stray 3rd
+# positional (Python-style extra bound arg) is rejected — there is no kwargs binding here.
+var joinall = Function(args):
+    var s = ""
+    for x in args:
+        s = s + String(x)
+    return s
+assert ft.partial(joinall, ["a", "b"])(["c"]) == "abc", "partial: bound list + rest list"
+assert raises_msg(Function(): return ft.partial(joinall, ["a"], "b"), "positional"), "partial rejects a 3rd positional (no kwargs binding)"
+
+# ============================================================ functools: cache — None key + unhashable
+var cnt = [0]
+var idf = Function(x):
+    cnt[0] = cnt[0] + 1
+    return x
+var cf = ft.cache(idf)
+assert cf(None) == None and cf(None) == None and cnt[0] == 1, "cache: None is a valid (hashable) key, memoized once"
+assert raises_msg(Function(): return ft.cache(Function(x): return x)([1, 2]), "unhashable"), "cache List arg -> unhashable throws"
+assert raises_msg(Function(): return ft.cache(Function(x): return x)(Set([1])), "unhashable"), "cache Set arg -> unhashable throws"
+
+# ============================================================ collections: Counter has NO arithmetic
+var ca = coll.Counter(["a", "a", "b"])
+var cb = coll.Counter(["a", "c"])
+assert raises_msg(Function(): return ca + cb, "_add_"), "Counter + Counter is unsupported (no operator)"
+assert not hasattr(ca, "subtract") and not hasattr(ca, "elements"), "Counter has no subtract/elements"
+# Counter tallies iterables of any hashable: a Dict iterates its KEYS, a Set its members.
+assert coll.Counter({"a": 99, "b": 99}).get("a") == 1, "Counter over a Dict counts its keys"
+assert coll.Counter(Set([7, 8, 9])).get(8) == 1, "Counter over a Set counts its members"
+# mostcommon negative n is an end-slice; more-negative-than-length collapses to [].
+assert ca.mostcommon(-5) == [], "mostcommon(-5) with 2 distinct -> []"
+# tie order is unspecified (unordered Dict) — assert only the reproducible, order-free facts.
+var tied = coll.Counter(["x", "y", "z"])
+assert tied.mostcommon() == tied.mostcommon(), "mostcommon reproducible within a run"
+assert len(tied.mostcommon()) == 3 and tied.get("x") == 1, "mostcommon size + counts (order-agnostic)"
+
+# ============================================================ collections: deque — no rotate/maxlen; serde-copyable
+var dq = coll.deque([1, 2, 3])
+assert not hasattr(dq, "rotate") and not hasattr(dq, "maxlen") and not hasattr(dq, "extend"), "deque lacks rotate/maxlen/extend"
+# a stdlib class instance round-trips through copy (serde): independent, equal by _str_.
+var dqc = cp.copy(dq)
+dq.append(4)
+assert String(dqc) == "deque([1, 2, 3])", "copy of a deque is an independent snapshot"
+
+# ============================================================ collections: defaultdict factory arity
+# The factory is called with ZERO args; a factory that requires an argument fails on first miss.
+var ddbad = coll.defaultdict(Function(x): return x)
+assert raises_msg(Function(): return ddbad["k"], "missing required argument"), "defaultdict factory must take no args"
+# a fresh mutable per key (independent lists), plus contains only after access.
+var dd = coll.defaultdict(Function(): return [])
+dd["a"].append(1)
+assert dd["b"] == [] and dd["a"] == [1] and ("c" not in dd), "defaultdict fresh factory per key"
+
+# ============================================================ heapq: no key= param; merge sorts anything
+assert raises_msg(Function(): return hq.nlargest(2, [3, 1, 2], Function(x): return x), "positional"), "nlargest has no key param"
+assert raises_msg(Function(): return hq.nsmallest(2, [3, 1, 2], Function(x): return x), "positional"), "nsmallest has no key param"
+# merge heap-pushes EVERYTHING, so it fully sorts even non-sorted inputs (more lenient than the doc's
+# 'already-sorted' wording).
+assert hq.merge([[3, 1, 2], [9, 0]]) == [0, 1, 2, 3, 9], "merge sorts unsorted inputs too"
+assert raises_msg(Function(): return hq.heapreplace([], 5), "empty heap"), "heapreplace empty raises"
+# heapify with a mix of Integer/Float keeps the min invariant.
+var mixheap = hq.heapify([3, 1.5, 2])
+assert mixheap[0] == 1.5, "heapify min across Integer/Float"
+
+# ============================================================ bisect: descending list is silently wrong
+# bisect assumes an ASCENDING sorted list; on a descending list it returns a bogus (but non-throwing)
+# index — a precondition violation, asserted here as the actual behavior (see report).
+assert bs.bisectleft([5, 4, 3, 2, 1], 3) == 0, "bisect on descending list is silently wrong (returns 0)"
+# insort returns None (it mutates in place).
+var arr = [1, 3, 5]
+assert bs.insortleft(arr, 4) == None and arr == [1, 3, 4, 5], "insort returns None, mutates in place"
+
+# ============================================================ copy: cross-container aliasing + cyclic instances
+# deepcopy preserves aliasing even when the SAME node appears in different container kinds.
+var shared = [1]
+var mixed = [shared, {"k": shared}]
+var dmixed = cp.deepcopy(mixed)
+assert id(dmixed[0]) == id(dmixed[1]["k"]), "deepcopy preserves aliasing across List and Dict"
+assert id(dmixed[0]) != id(shared), "...and the shared node is itself copied"
+# a cyclic linked structure of user instances round-trips (serde handles the cycle).
+class Node:
+    var _init_ = Function(self, v):
+        self.v = v
+        self.next = None
+var n1 = Node(1)
+var n2 = Node(2)
+n1.next = n2
+n2.next = n1
+var dn = cp.deepcopy(n1)
+assert dn.next.next.v == 1 and id(dn.next.next) == id(dn), "deepcopy rebuilds a cyclic instance graph"
+assert id(dn) != id(n1), "...as an independent copy"
+
+# ============================================================ enum: nameof out-of-range value throws
+var e = en.Enum(["X", "Y"])
+assert e.nameof(0) == "X" and e.nameof(1) == "Y", "enum nameof valid values"
+assert raises(Function(): return e.nameof(5)), "enum nameof unknown value throws (not silent)"
+
+# ============================================================ itertools predicate/spread family
+var isodd = Function(x): return x % 2 == 1
+assert it.takewhile(isodd, [1, 3, 5, 2, 7]) == [1, 3, 5], "takewhile stops at the first False"
+assert it.takewhile(isodd, [2, 4]) == [], "takewhile empty when the head fails"
+assert it.dropwhile(isodd, [1, 3, 2, 5]) == [2, 5], "dropwhile drops the leading run then keeps the rest"
+assert it.dropwhile(isodd, [1, 3]) == [], "dropwhile drops everything when all match"
+assert it.filterfalse(isodd, [1, 2, 3, 4]) == [2, 4], "filterfalse keeps where pred is False"
+assert it.pairwise([1, 2, 3, 4]) == [[1, 2], [2, 3], [3, 4]], "pairwise consecutive pairs"
+assert it.pairwise([1]) == [], "pairwise of one element is empty"
+# starmap passes the WHOLE tuple as a single List arg (Kirito has no *args spread) — see the doc.
+assert it.starmap(Function(t): return t[0] + t[1], [[1, 2], [3, 4]]) == [3, 7], "starmap single-List-arg contract"
+assert it.ziplongest([[1, 2], [3]], 0) == [[1, 3], [2, 0]], "ziplongest pads the short iterable with fillvalue"
+
+# ============================================================ heapq push/pop invariant
+# heapify returns a NEW heap-ordered List and does NOT mutate its argument (per the doc); heappush/pop
+# are in place. Verify both contracts.
+var src = [5, 3, 8, 1, 9, 2]
+var h = hq.heapify(src)
+assert src == [5, 3, 8, 1, 9, 2], "heapify does not mutate its argument (returns a new List)"
+hq.heappush(h, 0)
+var drained = []
+while len(h) > 0:
+    drained.append(hq.heappop(h))
+assert drained == [0, 1, 2, 3, 5, 8, 9], "heappush/heappop drain yields ascending order"
+
+# ============================================================ bisect *right + deque *left ends
+assert bs.bisectright([1, 2, 2, 3], 2) == 3, "bisectright lands after equal elements"
+assert bs.bisectleft([1, 2, 2, 3], 2) == 1, "bisectleft lands before equal elements"
+var sr = [1, 3, 5]
+bs.insortright(sr, 3)
+assert sr == [1, 3, 3, 5], "insortright inserts after an equal element"
+var dqe = coll.deque([1, 2, 3])
+dqe.appendleft(0)
+assert dqe.popleft() == 0 and List(dqe) == [1, 2, 3], "deque appendleft/popleft at the front"
+assert dqe.pop() == 3 and List(dqe) == [1, 2], "deque pop at the back"
+assert raises(Function(): return coll.deque([]).popleft()), "popleft on an empty deque throws"
+
+io.print("OK datatools")

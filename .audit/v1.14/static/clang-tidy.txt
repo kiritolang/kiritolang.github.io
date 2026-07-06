@@ -1,0 +1,5 @@
+47787 warnings generated.
+/tmp/tidy_tu.cpp:1:1: warning: included header kirito.hpp is not used directly [misc-include-cleaner]
+    1 | #include "kirito.hpp"
+      | ^~~~~~~~~~~~~~~~~~~~~
+    2 | int main(){ return 0; }

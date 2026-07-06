@@ -585,18 +585,32 @@ inline bool assertHolds(int kind, const std::vector<int32_t>& t, int sp, int fla
 
 struct Thread { int pc; std::vector<int> caps; };
 
+// Complexity budget for a single run(): the Pike VM is O(text * program) in STATES, but each thread
+// carries a capture vector of 2*(numGroups+1) ints that is copied on every epsilon step, so the real
+// cost is O(text * program * groups). A pattern with hundreds of capture groups over a long input
+// (e.g. `(a?)`×500 over 10 KB) therefore runs for tens of seconds even though it is "linear" — and
+// matching an untrusted pattern is a stated security property. Bound the total capture-int volume so
+// such a case throws a clean, catchable RegexError instead of hanging. The ceiling is generous (a
+// legitimate large match stays well under it) but far below the pathological blow-up.
+inline constexpr std::uint64_t kMaxMatchWork = 1'000'000'000ull;
+
 // Follow all epsilon transitions from `pc0` and append the reachable consuming/Match instructions to
 // `list`, in priority order. An explicit stack (not recursion) keeps a huge program from overflowing
 // the native stack; `visited`/`gen` ensures each pc is added at most once per step (the bound that
-// makes the whole simulation linear).
+// makes the whole simulation linear). `work` accumulates the capture-vector volume touched (the true
+// cost driver) and throws once it exceeds kMaxMatchWork.
 inline void addThread(const Program& prog, const std::vector<int32_t>& text, int sp,
                       std::vector<Thread>& list, std::vector<int>& visited, int gen,
-                      int pc0, std::vector<int> caps0) {
+                      int pc0, std::vector<int> caps0, std::uint64_t& work) {
     std::vector<Thread> stack;
     stack.push_back({pc0, std::move(caps0)});
     while (!stack.empty()) {
         Thread fr = std::move(stack.back());
         stack.pop_back();
+        work += fr.caps.size() + 1;
+        if (work > kMaxMatchWork)
+            throw RegexError("regex match exceeded its complexity budget (the pattern is too "
+                             "expensive for this input; simplify it or reduce capture groups)");
         if (visited[fr.pc] == gen) continue;
         visited[fr.pc] = gen;
         const Inst& in = prog.insts[fr.pc];
@@ -650,8 +664,9 @@ inline MatchResult run(const Program& prog, const std::vector<int32_t>& text,
 
     std::vector<Thread> clist, nlist;
     clist.reserve(m); nlist.reserve(m);
+    std::uint64_t work = 0;                              // capture-volume budget (see kMaxMatchWork)
     int curGen = ++gen;
-    addThread(prog, text, startPos, clist, visited, curGen, 0, init);
+    addThread(prog, text, startPos, clist, visited, curGen, 0, init, work);
 
     MatchResult best;
     for (int sp = startPos;; ++sp) {
@@ -665,15 +680,15 @@ inline MatchResult run(const Program& prog, const std::vector<int32_t>& text,
             switch (in.op) {
                 case Inst::Char: {
                     if (sp < n && charEq(text[sp], in.ch, prog.flags & IGNORECASE))
-                        addThread(prog, text, sp + 1, nlist, visited, nextGen, t.pc + 1, t.caps);
+                        addThread(prog, text, sp + 1, nlist, visited, nextGen, t.pc + 1, t.caps, work);
                 } break;
                 case Inst::Any: {
                     if (sp < n && ((prog.flags & DOTALL) || text[sp] != '\n'))
-                        addThread(prog, text, sp + 1, nlist, visited, nextGen, t.pc + 1, t.caps);
+                        addThread(prog, text, sp + 1, nlist, visited, nextGen, t.pc + 1, t.caps, work);
                 } break;
                 case Inst::Class: {
                     if (sp < n && classMatches(prog.classes[in.klass], text[sp], prog.flags & IGNORECASE))
-                        addThread(prog, text, sp + 1, nlist, visited, nextGen, t.pc + 1, t.caps);
+                        addThread(prog, text, sp + 1, nlist, visited, nextGen, t.pc + 1, t.caps, work);
                 } break;
                 case Inst::Match: {
                     if (!requireEnd || sp == n) {
@@ -690,7 +705,7 @@ inline MatchResult run(const Program& prog, const std::vector<int32_t>& text,
         if (sp >= n) break;
         // For a search, keep trying to start a new match (lowest priority) until one is found.
         if (!anchored && !best.matched)
-            addThread(prog, text, sp + 1, clist, visited, curGen, 0, init);
+            addThread(prog, text, sp + 1, clist, visited, curGen, 0, init, work);
     }
     return best;
 }

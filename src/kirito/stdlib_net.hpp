@@ -1056,7 +1056,7 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     if (name == "listen")
         return bind("listen", {"backlog"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             int backlog = a.empty() ? 16 : static_cast<int>(asInt(vm, a[0]));
-            if (::listen(sock(vm, self).fd, backlog) != 0)
+            if (::listen(sock(vm, self).fdOrThrow("listen"), backlog) != 0)
                 throw KiritoError("listen failed: " + netcompat::lastError());
             return vm.none();
         });

@@ -1,0 +1,286 @@
+# labx_random.ki — deep verification of the `random` stdlib module (docs/pages/10-stdlib.md).
+# Goes BEYOND verify_random / spec_random / audit_random / random_generators / random_prng_quality:
+# focuses on NaN/inf param rejection on EVERY numeric arg slot, exact mid-stream serialize/dump
+# continuation (assert the next draws match), cross-engine divergence, randrange step arithmetic,
+# _setstate_ hardening, float-arg rejection, and choices-has-no-weights. Fully SEEDED / deterministic.
+# Prints "OK random".
+var io = import("io")
+var random = import("random")
+var math = import("math")
+var serialize = import("serialize")
+var dump = import("dump")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ REPRODUCIBILITY (deep)
+# Two Random(42) produce byte-identical streams across a mix of every method.
+var mk_stream = Function(seed, gen):
+    var g = random.Random(seed, generator = gen)
+    var out = []
+    for i in range(30):
+        out.append(g.randint(0, 1000000000))
+        out.append(g.random())
+        out.append(g.gauss(0.0, 1.0))
+        out.append(g.expovariate(2.0))
+        out.append(g.uniform(-3.0, 7.0))
+        out.append(g.randrange(1, 100, 3))
+    return out
+assert mk_stream(42, "xoshiro") == mk_stream(42, "xoshiro"), "two Random(42) xoshiro -> identical mixed stream"
+assert mk_stream(42, "mersenne_twister") == mk_stream(42, "mersenne_twister"), "two Random(42) mt -> identical mixed stream"
+# Different seeds diverge.
+assert mk_stream(42, "xoshiro") != mk_stream(43, "xoshiro"), "different seed -> different stream"
+# SAME seed, DIFFERENT engine -> different stream (independent engines).
+assert mk_stream(42, "xoshiro") != mk_stream(42, "mersenne_twister"), "same seed, different engine -> different stream"
+# choice / choices / sample / shuffle are also reproducible under a fixed seed.
+var pop = [11, 22, 33, 44, 55, 66, 77]
+assert random.Random(9).choices(pop, 12) == random.Random(9).choices(pop, 12), "choices reproducible"
+assert random.Random(9).sample(pop, 5) == random.Random(9).sample(pop, 5), "sample reproducible"
+var la = [1, 2, 3, 4, 5, 6, 7, 8]
+var lb = [1, 2, 3, 4, 5, 6, 7, 8]
+random.Random(9).shuffle(la)
+random.Random(9).shuffle(lb)
+assert la == lb, "shuffle reproducible under fixed seed"
+
+# ============================================================ NaN / inf param rejection (CRITICAL)
+# The docs (and impl) promise every distribution rejects non-finite params. Verify EACH arg slot.
+var r = random.Random(42)
+# uniform: both bounds
+assert raises_msg(Function(): return r.uniform(math.nan, 1.0), "finite"), "uniform NaN a raises"
+assert raises_msg(Function(): return r.uniform(1.0, math.nan), "finite"), "uniform NaN b raises"
+assert raises_msg(Function(): return r.uniform(math.inf, 1.0), "finite"), "uniform +inf a raises"
+assert raises_msg(Function(): return r.uniform(1.0, math.inf), "finite"), "uniform +inf b raises"
+assert raises_msg(Function(): return r.uniform(-math.inf, 1.0), "finite"), "uniform -inf a raises"
+# gauss / normalvariate: mu and sigma, positional and keyword
+assert raises_msg(Function(): return r.gauss(math.nan, 1.0), "finite"), "gauss NaN mu raises"
+assert raises_msg(Function(): return r.gauss(0.0, math.nan), "finite"), "gauss NaN sigma raises"
+assert raises_msg(Function(): return r.gauss(0.0, math.inf), "finite"), "gauss +inf sigma raises"
+assert raises_msg(Function(): return r.gauss(math.inf, 1.0), "finite"), "gauss +inf mu raises"
+assert raises_msg(Function(): return r.gauss(sigma = math.nan), "finite"), "gauss NaN sigma (keyword) raises"
+assert raises_msg(Function(): return r.gauss(mu = math.inf), "finite"), "gauss inf mu (keyword) raises"
+assert raises_msg(Function(): return r.normalvariate(math.nan, 1.0), "finite"), "normalvariate NaN mu raises"
+assert raises_msg(Function(): return r.normalvariate(0.0, math.inf), "finite"), "normalvariate inf sigma raises"
+# expovariate: lambda
+assert raises_msg(Function(): return r.expovariate(math.nan), "positive and finite"), "expovariate NaN raises"
+assert raises_msg(Function(): return r.expovariate(math.inf), "positive and finite"), "expovariate inf raises"
+assert raises_msg(Function(): return r.expovariate(-math.inf), "positive and finite"), "expovariate -inf raises"
+
+# ============================================================ finite-but-degenerate numeric params
+# gauss(sigma=0) collapses to mu exactly; sigma<0 rejected; expovariate<=0 rejected.
+assert r.gauss(5.0, 0.0) == 5.0, "gauss sigma=0 -> mu exactly"
+assert raises_msg(Function(): return r.gauss(0.0, -0.001), "non-negative"), "gauss sigma<0 raises"
+assert raises_msg(Function(): return r.expovariate(0.0), "positive"), "expovariate lambda=0 raises"
+assert raises_msg(Function(): return r.expovariate(-2.0), "positive"), "expovariate lambda<0 raises"
+# defaults: gauss() and expovariate() with no args work (mu=0,sigma=1,lambd=1).
+assert type(r.gauss()) == "Float", "gauss() all-default works"
+assert type(r.expovariate()) == "Float", "expovariate() default lambd=1 works"
+# uniform accepts a==b (degenerate but finite) -> returns that value.
+assert r.uniform(5.0, 5.0) == 5.0, "uniform a==b -> a"
+
+# ============================================================ randint bounds (inclusive)
+var rb = random.Random(7)
+var okint = True
+for i in range(1000):
+    var v = rb.randint(-4, 4)
+    if v < -4 or v > 4:
+        okint = False
+assert okint, "randint stays inside [-4, 4] inclusive"
+# both endpoints are reachable (inclusive) over many draws
+var seen = Set()
+for i in range(1000):
+    seen.add(rb.randint(0, 3))
+assert seen == Set([0, 1, 2, 3]), "randint hits every inclusive value incl endpoints"
+assert rb.randint(9, 9) == 9, "randint singleton"
+assert raises_msg(Function(): return rb.randint(5, 1), "empty range"), "randint a>b empty range"
+assert raises(Function(): return rb.randint(1.5, 3)), "randint rejects float bound"
+
+# ============================================================ randrange bounds / step (exclusive stop)
+var rr = random.Random(3)
+# randrange(stop): [0, stop)
+var sset = Set()
+for i in range(400):
+    sset.add(rr.randrange(4))
+assert sset == Set([0, 1, 2, 3]), "randrange(4) exactly covers [0,4)"
+# randrange(start, stop): [start, stop)
+var s2 = Set()
+for i in range(400):
+    s2.add(rr.randrange(10, 14))
+assert s2 == Set([10, 11, 12, 13]), "randrange(10,14) covers [10,14) (stop excluded)"
+# positive step
+var s3 = Set()
+for i in range(400):
+    s3.add(rr.randrange(0, 21, 5))
+assert s3 == Set([0, 5, 10, 15, 20]), "randrange(0,21,5) honors step, stop excluded"
+# negative step: descending members
+var s4 = Set()
+for i in range(400):
+    s4.add(rr.randrange(20, 0, -5))
+assert s4 == Set([20, 15, 10, 5]), "randrange(20,0,-5) descending members"
+# keyword forms
+assert rr.randrange(stop = 1) == 0, "randrange(stop=1) -> 0 only member"
+assert rr.randrange(start = 2, stop = 3) == 2, "randrange(start=,stop=) single member"
+# empty / bad ranges
+assert raises_msg(Function(): return rr.randrange(0), "empty range"), "randrange(0) empty"
+assert raises_msg(Function(): return rr.randrange(-3), "empty range"), "randrange(-3) empty (0 not > -3)"
+assert raises_msg(Function(): return rr.randrange(5, 5), "empty range"), "randrange(5,5) empty"
+assert raises_msg(Function(): return rr.randrange(5, 10, -1), "empty range"), "randrange down-step on ascending empty"
+assert raises_msg(Function(): return rr.randrange(0, 10, 0), "step must not be zero"), "randrange step 0"
+assert raises(Function(): return rr.randrange(5.5)), "randrange rejects float"
+
+# ============================================================ choice / choices (with replacement)
+var cpop = [10, 20, 30, 40, 50]
+var okc = True
+for i in range(300):
+    if not (r.choice(cpop) in cpop):
+        okc = False
+assert okc, "choice always returns a pool member"
+assert r.choice([99]) == 99, "choice singleton"
+# choice accepts any iterable (String, Set, Dict-keys) — beyond a bare List
+assert r.choice("q") == "q", "choice on single-char String"
+assert r.choice(Set([7])) == 7, "choice on singleton Set"
+assert r.choice({5: "v"}) == 5, "choice on Dict iterates keys"
+# choices: length == k, all members, k defaults to 1, k=0 -> [], k may exceed len (with replacement)
+assert len(r.choices(cpop, 15)) == 15, "choices k=15 length"
+assert len(r.choices(cpop)) == 1, "choices default k=1"
+assert r.choices(cpop, 0) == [], "choices k=0 -> []"
+assert r.choices([7], 4) == [7, 7, 7, 7], "choices singleton pop repeats (with replacement)"
+assert len(r.choices([1, 2], 9)) == 9, "choices k may exceed population size"
+assert len(r.choices("abc", 5)) == 5, "choices over a String population"
+# choices k= keyword
+assert len(r.choices(cpop, k = 6)) == 6, "choices k= keyword"
+# hardening
+assert raises_msg(Function(): return r.choices(cpop, -1), "non-negative"), "choices k<0 raises"
+assert raises_msg(Function(): return r.choices([], 3), "empty population"), "choices empty population raises"
+assert raises_msg(Function(): return r.choices([1], 300000000), "too large"), "choices enormous k raises"
+assert raises_msg(Function(): return r.choice([]), "empty sequence"), "choice empty raises"
+# choices does NOT support weighting (unlike Python) — a weights= kwarg is unknown and raises.
+assert raises(Function(): return r.choices(cpop, k = 2, weights = [1, 1, 1, 1, 1])), "choices has no weights kwarg"
+
+# ============================================================ sample (without replacement)
+var okdistinct = True
+for trial in range(50):
+    var s = r.sample(cpop, 5)
+    if len(Set(s)) != 5:
+        okdistinct = False
+    if sorted(s) != sorted(cpop):
+        okdistinct = False
+assert okdistinct, "sample k=len is always a distinct permutation"
+assert len(Set(r.sample(range(100), 20))) == 20, "sample from a large iterable is distinct"
+assert r.sample(cpop, 0) == [], "sample k=0 -> []"
+assert r.sample([], 0) == [], "sample from empty with k=0 -> []"
+assert r.sample([42], 1) == [42], "sample singleton"
+assert raises_msg(Function(): return r.sample(cpop, 6), "k out of range"), "sample k>len raises"
+assert raises_msg(Function(): return r.sample(cpop, -1), "k out of range"), "sample k<0 raises"
+assert raises_msg(Function(): return r.sample([], 1), "k out of range"), "sample empty with k>0 raises"
+
+# ============================================================ shuffle (in place, multiset-preserving)
+var deck = []
+for i in range(50):
+    deck.append(i)
+var multiset_before = sorted(deck.copy())
+r.shuffle(deck)
+assert sorted(deck) == multiset_before, "shuffle preserves the exact multiset"
+assert len(deck) == 50, "shuffle preserves length"
+# shuffle returns None and actually mutates in place (over many trials it is not the identity).
+var moved = False
+for trial in range(20):
+    var d = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    var ret = r.shuffle(d)
+    assert ret == None, "shuffle returns None"
+    if d != [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]:
+        moved = True
+assert moved, "shuffle actually permutes (not always identity)"
+r.shuffle([])
+assert True, "shuffle empty is a no-op (no crash)"
+# shuffle requires a List
+assert raises_msg(Function(): return r.shuffle("abc"), "requires a List"), "shuffle String raises"
+assert raises_msg(Function(): return r.shuffle(Set([1, 2])), "requires a List"), "shuffle Set raises"
+assert raises_msg(Function(): return r.shuffle({1: 2}), "requires a List"), "shuffle Dict raises"
+
+# ============================================================ constructor / generator kwarg / attr
+assert random.Random(0).generator == "xoshiro", "default engine xoshiro"
+assert random.Random(0, generator = "mersenne_twister").generator == "mersenne_twister", "mt kwarg"
+assert random.Random(0, generator = "xoshiro256").generator == "xoshiro", "xoshiro256 alias"
+assert random.Random(0, generator = "mt19937_64").generator == "mersenne_twister", "mt19937_64 alias"
+assert type(random.Random()) == "Random", "unseeded Random constructs"
+assert raises_msg(Function(): return random.Random(0, generator = "bogus"), "unknown generator"), "unknown generator raises"
+assert raises(Function(): return random.Random(0, generator = "XOSHIRO")), "generator name is case-sensitive"
+assert raises(Function(): return random.Random(1.5)), "float seed rejected"
+# generator attribute is read-only.
+assert raises(Function(): random.Random(0).generator = "mersenne_twister"), "generator is read-only"
+# .seed(a) reseeds the CURRENT engine (does not switch kind) and reproduces the stream.
+var gs = random.Random(1, generator = "mersenne_twister")
+gs.seed(123)
+var d1 = gs.randint(0, 1000000000)
+gs.seed(123)
+assert gs.randint(0, 1000000000) == d1, "seed() reseeds to reproduce"
+assert gs.generator == "mersenne_twister", "seed() keeps engine kind"
+assert raises(Function(): return random.Random(0).seed()), "seed() no-arg raises"
+assert raises(Function(): return random.Random(0).seed(1.5)), "seed() float rejected"
+
+# ============================================================ serialize / dump: EXACT mid-stream continuation
+# Advance a generator mid-stream, snapshot it, then assert the RESTORED copy yields the identical
+# NEXT draws (not just the same kind). Test text (serialize), binary (dump), and manual _get/_setstate_.
+var continuation_ok = Function(gen, save, load):
+    var src = random.Random(20260706, generator = gen)
+    for i in range(13):
+        discard src.randint(0, 1000000)   # advance to a non-trivial mid-stream position
+    var snap = save(src)
+    var expected = []
+    for i in range(15):
+        expected.append(src.randint(0, 1000000000))
+        expected.append(src.random())
+    var restored = load(snap)
+    assert restored.generator == gen, gen + ": restore preserves engine kind"
+    var got = []
+    for i in range(15):
+        got.append(restored.randint(0, 1000000000))
+        got.append(restored.random())
+    return expected == got
+# serialize (text)
+assert continuation_ok("xoshiro", Function(x): return serialize.dumps(x), Function(s): return serialize.loads(s)), "xoshiro serialize continues exact stream"
+assert continuation_ok("mersenne_twister", Function(x): return serialize.dumps(x), Function(s): return serialize.loads(s)), "mt serialize continues exact stream"
+# dump (binary) — snapshot is Bytes
+assert type(dump.dumps(random.Random(1))) == "Bytes", "dump.dumps -> Bytes"
+assert continuation_ok("xoshiro", Function(x): return dump.dumps(x), Function(s): return dump.loads(s)), "xoshiro dump continues exact stream"
+assert continuation_ok("mersenne_twister", Function(x): return dump.dumps(x), Function(s): return dump.loads(s)), "mt dump continues exact stream"
+# manual _getstate_ / _setstate_ onto a differently-seeded, different-engine target
+var advance = random.Random(555)
+for i in range(9):
+    discard advance.random()
+var state = advance._getstate_()
+assert type(state) == "String", "_getstate_ -> String"
+assert "xoshiro:" in state, "state string carries the engine-kind prefix"
+var target = random.Random(0, generator = "mersenne_twister")
+target._setstate_(state)
+assert target.generator == "xoshiro", "_setstate_ switches engine kind to the saved one"
+var e2 = []
+var g2 = []
+for i in range(10):
+    e2.append(advance.randint(0, 1000000000))
+    g2.append(target.randint(0, 1000000000))
+assert e2 == g2, "_setstate_ resumes the exact saved stream"
+
+# ============================================================ _setstate_ hardening
+assert raises_msg(Function(): return random.Random(0)._setstate_(5), "expected the engine-state String"), "_setstate_ non-String raises"
+assert raises_msg(Function(): return random.Random(0)._setstate_("nocolon"), "missing kind prefix"), "_setstate_ no colon raises"
+assert raises_msg(Function(): return random.Random(0)._setstate_("bogus:123"), "unknown generator"), "_setstate_ unknown kind raises"
+assert raises_msg(Function(): return random.Random(0)._setstate_("xoshiro:not-a-number"), "malformed xoshiro"), "_setstate_ malformed xoshiro raises"
+assert raises_msg(Function(): return random.Random(0)._setstate_("mersenne_twister:xyz"), "malformed mt19937_64"), "_setstate_ malformed mt raises"
+
+# ============================================================ inspect surface
+var members = inspect(r)
+for nm in ["random", "uniform", "randint", "randrange", "choice", "choices", "shuffle", "sample", "gauss", "normalvariate", "expovariate", "seed", "generator"]:
+    assert nm in members, "inspect lists " + nm
+
+io.print("OK random")

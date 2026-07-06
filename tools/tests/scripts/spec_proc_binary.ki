@@ -1,0 +1,171 @@
+# spec_proc_binary.ki — thorough coverage of sys.createprocess/shell binary I/O:
+#   * a Bytes `input=` is fed to stdin VERBATIM (no UTF-8 ballooning of high bytes);
+#   * `binary=True` returns stdout/stderr as raw Bytes, byte-exact;
+#   * everything is back-compat (String input / default String output unchanged).
+# CROSS-PLATFORM by construction: the child is always `ki` itself running a byte-transparent echo
+# helper (so it runs identically under wine on Windows CI). The round-trip `rawEcho(b) == b` IS the
+# no-ballooning proof: if `[0xFF]` were UTF-8-re-encoded to `[0xC3, 0xBF]` on the way in, the child
+# would echo two bytes and the result would differ from the one-byte input. `len(Bytes)` is a byte
+# count, so length assertions pin it independently. A few POSIX-only checks against `od`/`wc -c`
+# (a genuinely foreign tool that counts raw bytes) are guarded by sys.platform.
+var io = import("io")
+var sys = import("sys")
+var path = import("path")
+var random = import("random")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+var KI = path.executable
+var DIR = path.gettempdir()
+var helper = path.join(DIR, "procbin_helper.ki")
+# helper modes: echo (stdin->stdout), echoerr (stdin->stderr), both (stdin->both), exitn (drain, exit N)
+var src = r"""var io = import("io")
+var sys = import("sys")
+var m = arglist[0] if len(arglist) >= 1 else ""
+if m == "echo":
+    io.write(io.read())
+elif m == "echoerr":
+    io.write(io.read(), stream = io.stderr)
+elif m == "both":
+    var d = io.read()
+    io.write(d)
+    io.write(d, stream = io.stderr)
+elif m == "exitn":
+    discard io.read()
+    sys.exit(Integer(arglist[1]) if len(arglist) > 1 else 0)
+"""
+var fh = io.open(helper, "w")
+discard fh.write(src)
+fh.close()
+
+var rawEcho = Function(b):
+    return sys.createprocess([KI, helper, "echo"], input = b, binary = True)["stdout"]
+var rawEchoErr = Function(b):
+    return sys.createprocess([KI, helper, "echoerr"], input = b, binary = True)["stderr"]
+
+# ============================================================ RETURN TYPES & BACK-COMPAT
+ok(type(rawEcho(Bytes([1, 2, 3]))) == "Bytes", "binary=True stdout is Bytes")
+ok(type(rawEchoErr(Bytes([1, 2, 3]))) == "Bytes", "binary=True stderr is Bytes")
+ok(type(sys.createprocess([KI, helper, "echo"], input = "hi")["stdout"]) == "String", "default stdout is a String")
+ok(type(sys.createprocess([KI, helper, "echo"], input = Bytes([1]))["stdout"]) == "String", "default output is a String even for a Bytes input")
+
+# ============================================================ EXACT ROUND-TRIP: EVERY BYTE VALUE 0..255
+var all256 = []
+var bi = 0
+while bi < 256:
+    all256.append(bi)
+    bi = bi + 1
+var allB = Bytes(all256)
+ok(rawEcho(allB) == allB, "all 256 byte values round-trip byte-exact")
+ok(len(rawEcho(allB)) == 256, "...the length is exactly 256 (Bytes len is a byte count)")
+
+# ============================================================ THE CORE FIX: high bytes are NOT re-encoded
+# 0xFF is one byte; a String built from it would UTF-8-encode to two (0xC3 0xBF). A Bytes stays one:
+# the echoed result equals the one-byte input AND has length 1 (a ballooned send would give length 2).
+ok(rawEcho(Bytes([255])) == Bytes([255]) and len(rawEcho(Bytes([255]))) == 1, "a single 0xFF stays ONE byte")
+ok(len(rawEcho(Bytes([255, 254, 253, 128, 129]))) == 5, "five high bytes stay five bytes")
+ok(len(rawEcho(Bytes([0xC3, 0x28]))) == 2, "an invalid-UTF-8 pair stays two bytes")
+
+# ============================================================ EDGE CASES
+ok(rawEcho(Bytes([])) == Bytes([]) and len(rawEcho(Bytes([]))) == 0, "empty Bytes -> empty Bytes (length 0)")
+ok(rawEcho(Bytes([0])) == Bytes([0]), "a lone NUL byte round-trips")
+ok(rawEcho(Bytes([0, 0, 0, 0])) == Bytes([0, 0, 0, 0]), "only-NUL payload round-trips")
+ok(rawEcho(Bytes([65, 0, 66, 0, 67])) == Bytes([65, 0, 66, 0, 67]), "NUL-interspersed payload round-trips")
+ok(rawEcho(Bytes([127, 128])) == Bytes([127, 128]), "the 0x7F/0x80 boundary round-trips")
+
+# invalid / adversarial UTF-8 sequences that String mode would mangle or reject
+ok(rawEcho(Bytes([0x80])) == Bytes([0x80]), "a lone continuation byte round-trips")
+ok(rawEcho(Bytes([0xC0, 0xC1])) == Bytes([0xC0, 0xC1]), "the illegal 0xC0/0xC1 bytes round-trip")
+ok(rawEcho(Bytes([0xE0, 0x80])) == Bytes([0xE0, 0x80]), "a truncated 3-byte lead round-trips")
+ok(rawEcho(Bytes([0xED, 0xA0, 0x80])) == Bytes([0xED, 0xA0, 0x80]), "a surrogate-range UTF-8 encoding round-trips")
+ok(rawEcho(Bytes([0xF4, 0x90, 0x80, 0x80])) == Bytes([0xF4, 0x90, 0x80, 0x80]), "an out-of-range 4-byte sequence round-trips")
+ok(rawEcho(Bytes([0xFF, 0xFE])) == Bytes([0xFF, 0xFE]), "a UTF-16-BOM-looking pair round-trips")
+
+# control bytes 0..31 + DEL + high, as raw Bytes
+var ctrlList = []
+var ci = 0
+while ci < 32:
+    ctrlList.append(ci)
+    ci = ci + 1
+ctrlList.append(127)
+ctrlList.append(255)
+var ctrlB = Bytes(ctrlList)
+ok(rawEcho(ctrlB) == ctrlB and len(rawEcho(ctrlB)) == 34, "all C0 control bytes + DEL + 0xFF round-trip as Bytes")
+
+# ============================================================ STDERR & BOTH STREAMS
+var payload = Bytes([255, 0, 128, 195, 40, 10, 13, 26, 254])
+ok(rawEchoErr(payload) == payload, "binary stderr is byte-exact")
+var bothR = sys.createprocess([KI, helper, "both"], input = payload, binary = True)
+ok(bothR["stdout"] == payload and bothR["stderr"] == payload, "binary stdout AND stderr both byte-exact")
+ok(bothR["code"] == 0, "...alongside the exit code")
+
+# ============================================================ EXIT-CODE INTERACTION
+var exr = sys.createprocess([KI, helper, "exitn", "7"], input = Bytes([1, 2, 3]), binary = True)
+ok(exr["code"] == 7, "a nonzero exit code coexists with binary mode")
+ok(type(exr["stdout"]) == "Bytes" and exr["stdout"] == Bytes([]), "empty binary stdout on a child that writes nothing")
+
+# ============================================================ LARGE PAYLOAD
+var chunk = Bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xFF, 0x00])   # PNG sig + high/NUL
+var big = chunk * 20000                                                          # 200 000 bytes
+ok(rawEcho(big) == big, "200k-byte binary payload round-trips exactly")
+ok(len(rawEcho(big)) == 200000, "...exact length preserved")
+
+# ============================================================ STRING INPUT + binary OUTPUT
+ok(sys.createprocess([KI, helper, "echo"], input = "AB", binary = True)["stdout"] == Bytes([65, 66]), "ASCII String input -> its bytes")
+# a non-ASCII String is fed as its UTF-8 encoding; binary output returns those bytes
+ok(sys.createprocess([KI, helper, "echo"], input = "é", binary = True)["stdout"] == Bytes([0xC3, 0xA9]), "String 'é' input -> its UTF-8 bytes 0xC3 0xA9")
+ok(sys.createprocess([KI, helper, "echo"], input = "", binary = True)["stdout"] == Bytes([]), "empty String input -> empty Bytes")
+
+# ============================================================ TYPE / ARGUMENT ADVERSARIAL
+ok(throws(Function(): return sys.createprocess([KI, helper, "echo"], input = 123)), "Integer input rejected (String or Bytes)")
+ok(throws(Function(): return sys.createprocess([KI, helper, "echo"], input = [1, 2, 3])), "List input rejected")
+ok(throws(Function(): return sys.createprocess([KI, helper, "echo"], input = {"a": 1})), "Dict input rejected")
+ok(throws(Function(): return sys.createprocess([1, 2], input = Bytes([1]))), "non-String argv element rejected")
+# binary= is truthy-tested (not strictly Bool-typed): 1 acts as True, 0 as False
+ok(type(sys.createprocess([KI, helper, "echo"], input = Bytes([65]), binary = 1)["stdout"]) == "Bytes", "binary=1 (truthy) returns Bytes")
+ok(type(sys.createprocess([KI, helper, "echo"], input = Bytes([65]), binary = 0)["stdout"]) == "String", "binary=0 (falsy) returns a String")
+
+# ============================================================ FUZZ: random Bytes, random length, all values
+var rng = random.Random(20260706)
+var f = 0
+while f < 40:
+    var plen = rng.randint(0, 400)
+    var vals = []
+    var t = 0
+    while t < plen:
+        vals.append(rng.randint(0, 255))
+        t = t + 1
+    var fb = Bytes(vals)
+    var got = rawEcho(fb)
+    ok(got == fb and len(got) == plen, "fuzz binary round-trip #" + String(f) + " (len " + String(plen) + ")")
+    f = f + 1
+
+# ============================================================ shell() binary mode (cross-platform via ki)
+var shbin = sys.shell(KI + " " + helper + " echo", input = Bytes([255, 254, 253, 252]), binary = True)
+ok(type(shbin["stdout"]) == "Bytes", "shell() binary=True returns Bytes")
+ok(shbin["stdout"] == Bytes([255, 254, 253, 252]), "shell() feeds a Bytes to stdin verbatim + binary out")
+
+# ============================================================ POSIX-ONLY: prove RAW bytes reach a foreign tool
+if sys.platform == "linux" or sys.platform == "darwin":
+    # wc -c counts bytes on stdin; 3 high bytes must count as 3 (not 6 UTF-8-ballooned)
+    ok(Integer(sys.shell("wc -c", input = Bytes([255, 254, 253]))["stdout"].strip()) == 3, "POSIX wc -c sees 3 raw bytes")
+    # od dumps the exact bytes the foreign tool reads
+    ok(sys.shell("od -An -tx1", input = Bytes([255, 128, 195, 40]), binary = True)["stdout"].decode().split() == ["ff", "80", "c3", "28"], "POSIX od sees the exact raw bytes")
+    # cat is a pure byte pipe; round-trip an all-256 payload through it
+    ok(sys.shell("cat", input = allB, binary = True)["stdout"] == allB, "POSIX cat round-trips all 256 bytes exactly")
+else:
+    ok(True, "POSIX foreign-tool checks skipped on this platform")
+    ok(True, "POSIX foreign-tool checks skipped on this platform")
+    ok(True, "POSIX foreign-tool checks skipped on this platform")
+
+discard path.remove(helper, missing_ok = True)
+io.print("spec_proc_binary: " + String(n) + " checks passed")

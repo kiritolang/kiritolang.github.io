@@ -1,0 +1,245 @@
+# labx: deep edge/hardening verification for `statistics` and `tabular` (docs/pages/10-stdlib.md +
+# docs/pages/28-bonus-03-data.md). Goes BEYOND verify_/spec_/audit_/probe_/deep_ suites: pins the
+# label-vs-position alignment semantics, the astype silent-String fallback, tocsv round-trip type
+# drift, one-to-many merge cartesian expansion, sort stability, and the empty/single-element throw
+# boundaries. Floats compared with .compare. Prints "OK stats_tabular".
+var io = import("io")
+var st = import("statistics")
+var tb = import("tabular")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ==================================================================== statistics: boundaries
+# mean/median/variance/stdev on empty -> throw; the message text is part of the contract.
+assert raises_msg(Function(): return st.mean([]), "at least one data point"), "mean empty"
+assert raises_msg(Function(): return st.median([]), "at least one data point"), "median empty"
+assert raises_msg(Function(): return st.variance([]), "at least two data points"), "variance empty"
+assert raises_msg(Function(): return st.pvariance([]), "at least one data point"), "pvariance empty"
+assert raises_msg(Function(): return st.stdev([]), "at least two data points"), "stdev empty (via variance)"
+assert raises_msg(Function(): return st.pstdev([]), "at least one data point"), "pstdev empty (via pvariance)"
+
+# single element: sample variance/stdev THROW (n<2), population variance/stdev are 0.0.
+assert raises_msg(Function(): return st.variance([7]), "at least two data points"), "variance single throws"
+assert raises_msg(Function(): return st.stdev([7]), "at least two data points"), "stdev single throws"
+assert st.pvariance([7]) == 0.0, "pvariance single is 0"
+assert st.pstdev([7]) == 0.0, "pstdev single is 0"
+assert st.mean([7]) == 7.0, "mean single"
+assert st.median([7]) == 7.0, "median single"
+
+# sample vs population: sample = pop * n/(n-1); an identical-values set has both = 0.
+var d = [4, 8, 15, 16, 23, 42]
+assert st.variance(d).compare(st.pvariance(d) * 6.0 / 5.0), "sample = pop * n/(n-1)"
+assert st.pvariance([9, 9, 9]) == 0.0 and st.variance([9, 9, 9]) == 0.0, "constant data zero variance"
+
+# median: even length averages the two middle, odd returns the middle; ALWAYS Float (annotated).
+assert st.median([1, 2, 3, 4]) == 2.5, "median even"
+assert st.median([1, 2, 3, 4, 5]) == 3.0, "median odd"
+assert st.median([5, 1, 4, 2, 3]) == 3.0, "median sorts internally"
+assert type(st.median([1, 3, 2])) == "Float", "statistics.median always Float (unlike Series.median)"
+assert st.median([2, 8]).compare(5.0), "median even of two"
+
+# mode: single most common; on a tie the value that FIRST reaches the max count wins (Python parity).
+assert st.mode([2, 2, 1, 1]) == 2, "mode tie: 2 reaches count 2 first (both end tied at 2)"
+assert st.mode([1, 2, 2, 1]) == 2, "mode tie: 2 reaches count 2 before 1's second"
+assert st.mode(["a", "b", "a"]) == "a", "mode strings"
+assert raises_msg(Function(): return st.mode([]), "no mode for empty data"), "mode empty throws"
+
+# multimode: ALL values tied for the top count, first-seen order; empty -> [] (does NOT throw).
+assert st.multimode([1, 1, 2, 3, 3]) == [1, 3], "multimode ties first-seen"
+assert st.multimode([9, 9, 9]) == [9], "multimode single winner"
+assert st.multimode([1, 2, 3]) == [1, 2, 3], "multimode all-distinct = every value"
+assert st.multimode([]) == [], "PIN: multimode([]) is [] not a throw (asymmetric with mode)"
+
+# quantiles: default n=4 -> 3 cut points; n=1 -> [] (no cut). n<1 and <2 points throw.
+assert st.quantiles([1, 2, 3, 4, 5]) == [1.5, 3.0, 4.5], "quantiles default n=4"
+assert st.quantiles([1, 2, 3, 4], 2) == [2.5], "quantiles n=2 (median cut)"
+assert len(st.quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 10)) == 9, "quantiles n=10 -> 9 cut points"
+assert st.quantiles([1, 2, 3, 4, 5], 1) == [], "quantiles n=1 -> no cut points"
+assert raises_msg(Function(): return st.quantiles([5]), "at least two data points"), "quantiles single throws"
+assert raises_msg(Function(): return st.quantiles([1, 2], 0), "n must be at least 1"), "quantiles n=0 throws"
+# The size guard runs BEFORE the n guard: quantiles([1], 0) reports the size message, not the n one.
+assert raises_msg(Function(): return st.quantiles([1], 0), "at least two data points"), "PIN: size guard precedes n guard"
+# quantiles takes only (data, n) -- there is NO `method` parameter (exclusive method only).
+assert raises(Function(): return st.quantiles([1, 2, 3, 4], 4, "inclusive")), "quantiles has no method arg"
+
+# ==================================================================== tabular: Series edges
+# index-length mismatch throws at construction.
+assert raises_msg(Function(): return tb.Series([1, 2, 3], [0, 1]), "index length does not match"), "Series idx-len mismatch"
+
+# _getitem_ is LABEL-first, position-fallback: with Integer labels this is a footgun.
+var slab = tb.Series(["x", "y", "z"], [2, 0, 1])
+assert slab[0] == "y", "PIN: s[0] resolves label 0 (position 1), not position 0"
+assert slab[2] == "x", "PIN: s[2] resolves label 2 (position 0)"
+assert slab.iat(0) == "x", "iat is strictly positional"
+# out-of-range key (not a label) falls through to position and raises.
+assert raises(Function(): return tb.Series([1, 2])[9]), "Series out-of-range index raises"
+
+# Series-Series ops align by POSITION, not by index label (equal length required).
+var a = tb.Series([1, 2, 3], ["a", "b", "c"])
+var b = tb.Series([10, 20, 30], ["c", "b", "a"])
+assert (a + b).tolist() == [11, 22, 33], "PIN: Series+Series aligns by position, ignores labels"
+# length mismatch throws consistently in BOTH orders (no silent truncation).
+var short = tb.Series([1, 2])
+assert raises_msg(Function(): return a + short, "length mismatch (3 vs 2)"), "Series len mismatch a+short"
+assert raises_msg(Function(): return short + a, "length mismatch (2 vs 3)"), "Series len mismatch short+a"
+assert raises(Function(): return (a > short)), "Series comparison len mismatch raises too"
+
+# astype: documented conversions work; an UNKNOWN typename SILENTLY falls back to String.
+assert tb.Series([1, 2]).astype("String").tolist() == ["1", "2"], "astype String"
+assert tb.Series(["3", "4"]).astype("Integer").tolist() == [3, 4], "astype Integer"
+assert tb.Series([1.9, 2.1]).astype("Integer").tolist() == [1, 2], "astype Integer truncates Float"
+assert tb.Series([0, 5]).astype("Bool").tolist() == [False, True], "astype Bool"
+assert tb.Series([1, 2]).astype("Nonsense").tolist() == ["1", "2"], "PIN: astype unknown typename -> String silently"
+
+# aggregations on all-missing / empty return None (Series) -- NOT a throw (contrast statistics.mean).
+var allna = tb.Series([None, None])
+assert allna.mean() == None and allna.min() == None and allna.median() == None, "all-missing Series reductions -> None"
+assert allna.sum() == 0 and allna.prod() == 1, "all-missing sum=0 prod=1"
+assert tb.Series([]).mean() == None, "empty Series mean -> None (no throw)"
+assert tb.Series([5]).variance() == None and tb.Series([5]).std() == None, "single-element variance/std -> None"
+
+# Bool counts as 0/1 in numeric reductions.
+var sb = tb.Series([True, False, True, True])
+assert sb.sum() == 3 and sb.mean().compare(0.75), "Bool sum/mean 0/1"
+
+# nunique/unique treat None as one distinct value; valuecounts SKIPS missing, descending by count.
+assert tb.Series([1, 1, None, 2, None]).nunique() == 3, "nunique keeps None as one distinct value"
+var vc = tb.Series([1, 1, 1, 2, 2, None, 3]).valuecounts()
+assert vc.tolist() == [3, 2, 1], "valuecounts descending, skips None"
+assert vc.index == [1, 2, 3], "valuecounts indexed by value"
+
+# fillna/dropna keep the name; sortvalues is stable and pushes missing LAST regardless of direction.
+var sm = tb.Series([1, None, 3], ["a", "b", "c"], "n")
+assert sm.fillna(0).name == "n" and sm.fillna(0).tolist() == [1, 0, 3], "fillna keeps name"
+assert sm.dropna().index == ["a", "c"], "dropna preserves index"
+var stab = tb.Series([1, 1, 1, 2], ["p", "q", "r", "s"])
+assert stab.sortvalues().index == ["p", "q", "r", "s"], "sortvalues stable on equal keys"
+var na = tb.Series([30, None, 10, 20], ["a", "b", "c", "d"])
+assert na.sortvalues().tolist() == [10, 20, 30, None], "sortvalues asc, missing last"
+assert na.sortvalues(ascending = False).tolist() == [30, 20, 10, None], "sortvalues desc, missing STILL last"
+
+# ==================================================================== tabular: readcsv inference
+var df = tb.readcsv("i,f,b,s,blank\n1,1.5,True,hello,\n2,2.5,false,world,x")
+assert type(df["i"][0]) == "Integer", "readcsv infers Integer"
+assert type(df["f"][0]) == "Float", "readcsv infers Float"
+assert df["b"].tolist() == [True, False], "readcsv infers Bool (True/false)"
+assert type(df["s"][0]) == "String", "readcsv keeps text as String"
+assert df["blank"][0] == None, "readcsv empty cell -> None"
+# a column with MIXED types stays as-is and is excluded from numeric frame reductions.
+var mx = tb.readcsv("x\n1\nhello\n3")
+assert mx["x"].tolist() == [1, "hello", 3], "mixed-type column preserved verbatim"
+assert mx.sum().index == [], "mixed column is not numeric -> excluded from df.sum"
+# hex/whitespace-looking cells are NOT inferred (stay String).
+assert type(tb.readcsv("id\n0xFF")["id"][0]) == "String", "hex-looking cell stays String"
+# short row pads with None; a row with MORE fields than the header THROWS.
+assert tb.readcsv("a,b\n1")["b"].tolist() == [None], "short row -> None"
+assert raises_msg(Function(): return tb.readcsv("a,b\n1,2,3"), "expected 2"), "over-long row throws"
+# blank interior/trailing lines are skipped, not turned into all-None rows.
+assert tb.readcsv("x\n1\n\n2")["x"].tolist() == [1, 2], "blank line skipped"
+
+# ==================================================================== tabular: DataFrame edges
+var emp = tb.DataFrame({})
+assert emp.shape() == [0, 0] and emp.sum().tolist() == [], "empty frame shape + empty reductions"
+# assigning the first column to an empty frame syncs the index.
+emp["c"] = [1, 2, 3]
+assert emp.shape() == [3, 1] and emp.index == [0, 1, 2], "first-column assign syncs index"
+# dict of unequal-length columns throws.
+assert raises_msg(Function(): return tb.DataFrame({"a": [1, 2], "b": [3]}), "same length"), "unequal columns throw"
+# wrong-length column assignment on a non-empty frame throws.
+var g = tb.readcsv("name,dept,salary\nAda,eng,120\nAlan,eng,110\nGrace,ops,95\nEdsger,ops,130")
+assert raises_msg(Function(): g["bad"] = [1, 2], "match row count"), "wrong-length column assign throws"
+
+# loc/iloc out of range raise; a wrong-length boolean mask raises (no silent row drop).
+assert raises(Function(): return g.iloc[99]), "iloc out of range raises"
+assert raises(Function(): return g.loc["Nobody"]), "loc unknown label raises"
+assert raises_msg(Function(): return g[tb.Series([True, False, True])], "boolean mask length"), "short mask raises"
+assert raises(Function(): return g["nonexistent"]), "missing column raises"
+
+# describe: only numeric columns; fixed six stat rows.
+var desc = g.describe()
+assert desc.columns == ["salary"], "describe skips non-numeric columns"
+assert desc.index == ["count", "mean", "std", "min", "median", "max"], "describe six stat rows"
+assert desc["salary"]["count"] == 4 and desc["salary"]["median"].compare(115.0), "describe values"
+
+# count spans EVERY column (non-null tally); numeric reductions only numeric columns.
+assert g.count().index == ["name", "dept", "salary"], "count over all columns"
+assert g.mean().index == ["salary"], "mean numeric-only"
+assert g.mean()["salary"].compare(113.75), "frame mean value"
+
+# apply maps over numeric column Series -> a Series indexed by column.
+assert g.apply(Function(col): return col.max())["salary"] == 130, "df.apply over numeric columns"
+
+# ==================================================================== groupby + agg
+var gb = g.groupby("dept")
+assert gb.size().index == ["eng", "ops"], "groupby keys in first-seen order"
+assert gb.mean()["salary"].tolist() == [115.0, 112.5], "groupby.mean"
+assert gb.sum()["salary"].tolist() == [230, 225], "groupby.sum"
+assert gb.max()["salary"].tolist() == [120, 130], "groupby.max"
+assert gb.count()["salary"].tolist() == [2, 2], "groupby.count is row count per group"
+assert gb.agg({"salary": "median"})["salary"].tolist() == [115.0, 112.5], "groupby.agg median"
+assert gb.agg({"salary": "min"})["salary"].tolist() == [110, 95], "groupby.agg min"
+assert raises(Function(): return gb.agg({"salary": "bogus"})), "unknown agg reducer raises"
+assert gb.apply(Function(sub): return sub.nrows()).tolist() == [2, 2], "groupby.apply gets sub-DataFrame"
+
+# ==================================================================== merge inner/left/right/outer
+var L = tb.DataFrame([[1, "p"], [2, "q"], [3, "r"]], columns=["id", "lv"])
+var R = tb.DataFrame([[2, "x"], [3, "y"], [4, "z"]], columns=["id", "rv"])
+assert tb.merge(L, R, on="id").nrows() == 2, "inner keeps only matched keys (2, 3)"
+assert tb.merge(L, R, on="id")["id"].tolist() == [2, 3], "inner matched ids"
+var jl = tb.merge(L, R, on="id", how="left")
+assert jl.nrows() == 3 and jl["rv"].tolist() == [None, "x", "y"], "left keeps all left, None fill"
+var jr = tb.merge(L, R, on="id", how="right")
+assert jr.nrows() == 3 and jr["lv"].tolist() == ["q", "r", None], "right keeps all right, None fill"
+var jo = tb.merge(L, R, on="id", how="outer")
+assert jo.nrows() == 4, "outer union of keys 1,2,3,4"
+assert raises_msg(Function(): return tb.merge(L, R, on="id", how="cross"), "how must be one of"), "bad how throws"
+# one-to-many merge -> cartesian expansion (a right key with two rows doubles the left row).
+var L2 = tb.DataFrame([[1, "a"], [2, "b"]], columns=["id", "lv"])
+var R2 = tb.DataFrame([[1, "p"], [1, "q"]], columns=["id", "rv"])
+assert tb.merge(L2, R2, on="id").nrows() == 2, "one-to-many merge cartesian (1x2)"
+assert tb.merge(L2, R2, on="id")["rv"].tolist() == ["p", "q"], "cartesian expands the matching key"
+# a non-key column present in BOTH frames gets _x/_y suffixes.
+var Lc = tb.DataFrame([[1, "L"]], columns=["id", "v"])
+var Rc = tb.DataFrame([[1, "R"]], columns=["id", "v"])
+var jc = tb.merge(Lc, Rc, on="id")
+assert "v_x" in jc.columns and "v_y" in jc.columns, "merge suffixes colliding column"
+assert jc["v_x"].tolist() == ["L"] and jc["v_y"].tolist() == ["R"], "merge suffix values"
+
+# ==================================================================== concat + missing data
+var cc = tb.concat([tb.DataFrame({"a": [1, 2], "b": [3, 4]}), tb.DataFrame({"a": [5], "c": [6]})])
+assert cc.nrows() == 3 and cc.index == [0, 1, 2], "concat stacks + resets index"
+assert cc["b"].tolist() == [3, 4, None] and cc["c"].tolist() == [None, None, 6], "concat fills missing with None"
+var mdf = tb.readcsv("name,age\nAda,36\nBjarne,\nGrace,85")
+assert mdf["age"].count() == 2, "count skips the blank cell"
+assert mdf["age"].mean().compare(60.5), "mean skips missing"
+assert mdf.dropna()["name"].tolist() == ["Ada", "Grace"], "df.dropna drops the None row"
+assert mdf.fillna(0)["age"].tolist() == [36, 0, 85], "df.fillna fills missing"
+
+# ==================================================================== tocsv round-trip + type drift
+var rt = tb.readcsv(g.tocsv())
+assert rt.columns == g.columns and rt["salary"].tolist() == [120, 110, 95, 130], "tocsv/readcsv round-trip data"
+# ROUND-TRIP TYPE DRIFT: a String cell whose text looks numeric/bool is re-inferred on read-back.
+var drift = tb.DataFrame({"code": ["123", "abc", "True"]}, columns=["code"])
+var back = tb.readcsv(drift.tocsv())
+assert back["code"].tolist() == [123, "abc", True], "PIN: tocsv round-trip re-infers text -> Integer/Bool"
+assert type(back["code"][0]) == "Integer" and type(back["code"][2]) == "Bool", "PIN: type drift on round-trip"
+# A None cell in a SINGLE-column frame serialises to a fully blank line; readcsv skips blank lines
+# (pandas skip_blank_lines=True parity), so that row is dropped on the round-trip. Pin the real behavior.
+var nrt = tb.readcsv(tb.DataFrame({"x": [1, None, 3]}, columns=["x"]).tocsv())
+assert nrt["x"].tolist() == [1, 3], "PIN: all-None 1-col row is a blank line, dropped by readcsv (pandas parity)"
+# In a MULTI-column frame the None is a real empty field (comma-delimited), so the row survives as None.
+var mc = tb.readcsv(tb.DataFrame({"a": [1, 2], "b": [None, 5]}, columns=["a", "b"]).tocsv())
+assert mc["a"].tolist() == [1, 2] and mc["b"].tolist() == [None, 5], "PIN: None empty-field survives in a multi-col row"
+
+io.print("OK stats_tabular")

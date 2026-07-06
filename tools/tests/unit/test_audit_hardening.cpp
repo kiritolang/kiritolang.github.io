@@ -132,6 +132,59 @@ var seen = st
 seen.add(RS())
 seen.add(RS())
 )KI", 1), "Set changed size"));
+        // A08-1 (v1.14): clear()/pop() were the ONE pair of mutators that skipped the probing_
+        // guard, so a reentrant _eq_ that cleared the container mid-probe freed the bucket a live
+        // C++ probe loop held by reference -> double-free (reproduced as a hard abort on a plain
+        // build). They must now throw the same clean, catchable error as add/remove/discard.
+        CHECK(has(errOf(R"KI(
+var s = Set()
+class KC:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self): return 0
+    var _eq_ = Function(self, other):
+        s.clear()
+        return False
+s.add(KC())
+s.add(KC())
+)KI", 1), "Set changed size"));
+        CHECK(has(errOf(R"KI(
+var s = Set()
+class KP:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self): return 0
+    var _eq_ = Function(self, other):
+        discard s.pop()
+        return False
+s.add(KP())
+s.add(KP())
+)KI", 1), "Set changed size"));
+        CHECK(has(errOf(R"KI(
+var d = {}
+class KDC:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self): return 0
+    var _eq_ = Function(self, other):
+        d.clear()
+        return False
+d[KDC()] = 1
+d[KDC()] = 2
+)KI", 1), "Dict changed size"));
+        // Set == Set routes through the live-iterating SetVal::equals (kiEquals has no Set==Set
+        // fast path). A member whose _eq_ clears the LEFT set mid-compare must be rejected, not
+        // corrupt the bucket equals() is iterating.
+        CHECK(has(errOf(R"KI(
+var a = Set()
+class KE:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self): return 0
+    var _eq_ = Function(self, other):
+        a.clear()
+        return False
+a.add(KE())
+var b = Set()
+b.add(KE())
+var r = a == b
+)KI", 1), "changed size"));
     }
 
     // ============================================================================================

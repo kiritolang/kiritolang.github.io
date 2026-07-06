@@ -367,7 +367,12 @@ public:
             Args args(vm, a, "json.stringify");
             std::string out;
             fum::unordered_set<const Object*> active;
-            int indent = args.size() > 1 ? static_cast<int>(args[1].asInt("json.stringify indent")) : 0;
+            // Validate indent BEFORE narrowing to int: a huge value would overflow the
+            // `(depth+1)*indent` pad-width arithmetic (signed UB) and, short of that, OOM with a raw
+            // std::string allocator error. Cap it to a sane maximum with a clear message.
+            int64_t indent64 = args.size() > 1 ? args[1].asInt("json.stringify indent") : 0;
+            if (indent64 > 100) throw KiritoError("json.stringify: indent too large (maximum 100)");
+            int indent = indent64 > 0 ? static_cast<int>(indent64) : 0;
             if (indent > 0) json::writeIndented(vm, args[0], out, active, indent, 0);
             else json::write(vm, args[0], out, active);
             return Value(vm, std::move(out));

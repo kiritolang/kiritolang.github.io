@@ -783,9 +783,7 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
         });
     if (name == "clear")
         return bind("clear", {}, [self, dict](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            auto& d = dict(vm, self);
-            d.buckets.clear();
-            d.count = 0;
+            dict(vm, self).clear();  // guarded: rejects a reentrant clear mid-probe (double-free)
             return vm.none();
         });
     if (name == "update")
@@ -884,7 +882,11 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             auto it = s.buckets.find(h);
             if (it != s.buckets.end()) {
                 auto i = probeBucket(vm.arena(), it->second, v, setKeyOf);
-                if (i >= 0) { it->second.erase(it->second.begin() + i); --s.count; return vm.none(); }
+                if (i >= 0) {
+                    it->second.erase(it->second.begin() + i); --s.count;
+                    if (it->second.empty()) s.buckets.erase(it);   // reclaim the emptied bucket (A08-4)
+                    return vm.none();
+                }
             }
             throw KiritoError("remove: value not in Set");
         });
@@ -907,28 +909,21 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             auto it = s.buckets.find(h);
             if (it != s.buckets.end()) {
                 auto i = probeBucket(vm.arena(), it->second, v, setKeyOf);
-                if (i >= 0) { it->second.erase(it->second.begin() + i); --s.count; }
+                if (i >= 0) {
+                    it->second.erase(it->second.begin() + i); --s.count;
+                    if (it->second.empty()) s.buckets.erase(it);   // reclaim the emptied bucket (A08-4)
+                }
             }
             return vm.none();
         });
     if (name == "clear")
         return bind("clear", {}, [self, set_of](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            auto& s = set_of(vm, self);
-            s.buckets.clear();
-            s.count = 0;
+            set_of(vm, self).clear();  // guarded: rejects a reentrant clear mid-probe (double-free)
             return vm.none();
         });
     if (name == "pop")  // remove and return an arbitrary element
         return bind("pop", {}, [self, set_of](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            auto& s = set_of(vm, self);
-            for (auto& [h, bucket] : s.buckets)
-                if (!bucket.empty()) {
-                    Handle v = bucket.back();
-                    bucket.pop_back();
-                    --s.count;
-                    return v;
-                }
-            throw KiritoError("pop from an empty Set");
+            return set_of(vm, self).popArbitrary();  // guarded like clear()
         });
     if (name == "union" || name == "intersection" || name == "difference" ||
         name == "symmetricdifference") {
@@ -971,6 +966,12 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             auto& s = set_of(vm, self);
             auto other = vm.arena().deref(a[0]).iterate(vm);
             if (!other) throw KiritoError(op + " expects an iterable");
+            // Root `other`'s elements: iterating a String/Bytes/range yields FRESHLY allocated handles
+            // reachable from no GC root, and `otherSet.add` can collect (a user _hash_/_eq_, or the
+            // pool) between adds — the same rooting the union family does (A08-5). `otherSet` is a
+            // stack local invisible to the GC, so the elements live in `rs` for the branch's duration.
+            RootScope rs(vm);
+            for (Handle e : other.value()) rs.add(e);
             SetVal otherSet;
             for (Handle e : other.value()) otherSet.add(vm.arena(), e);
             if (op == "issubset") {
@@ -1920,9 +1921,19 @@ inline std::string InstanceValue::str(StringifyCtx& ctx) const {
             Handle r = rs.add(ctx.vm->arena().deref(*m).call(*ctx.vm, full));
             const Object& o = ctx.vm->arena().deref(r);
             if (o.kind() == ValueKind::String) return static_cast<const StrVal&>(o).value();
+            // `_str_` returned a non-String (another object we must stringify). `ctx.active` only
+            // catches a _str_ that returns SELF (or a back-reference); a chain of DISTINCT instances
+            // (a._str_ -> b, b._str_ -> c, ...) never repeats, so bound ctx.depth like the container
+            // stringifier does, else deep native recursion overflows the C++ stack (a hard crash).
+            if (++ctx.depth > 1000) {
+                --ctx.depth;
+                throw KiritoError("'" + className + "' _str_ recurses too deeply (does _str_ return "
+                                  "self or a cycle of objects?)");
+            }
             ctx.active.insert(this);
             std::string s = o.str(ctx);
             ctx.active.erase(this);
+            --ctx.depth;
             return s;
         }
     }
@@ -2154,7 +2165,9 @@ inline void checkPrivateAccess(KiritoVM& vm, Handle obj, const std::string& name
 
 inline Handle applyUnaryOp(KiritoVM& vm, UnOp op, Handle operand) {
     if (op == UnOp::Not) {
-        // An instance may override `not` via _not_; otherwise negate truthiness.
+        // An instance may override `not` via _not_; otherwise negate truthiness. Like `_neg_` (and
+        // unlike `_bool_`), `_not_`'s return value is NOT coerced to a Bool — `not <instance>` yields
+        // the raw _not_ result (a documented, tested behaviour: r7_types.ki "returns the raw value").
         Object& o = vm.arena().deref(operand);
         if (o.kind() == ValueKind::Instance && dynamic_cast<InstanceValue*>(&o) &&
             static_cast<InstanceValue&>(o).findMethod(vm.arena(), "_not_"))
@@ -3291,6 +3304,10 @@ inline void KiritoVM::installBuiltins() {
             if (s.kind() != ValueKind::String) throw KiritoError("format spec must be a String");
             spec = static_cast<const StrVal&>(s).value();
         }
+        // No spec == String(): route through stringify exactly like the f-string path
+        // (bytecode_vm.hpp) so `format(2.0)` is `"2.0"`, not the `'g'`-lossy `"2"` that
+        // applyFormatSpec's default would give (which doesn't round-trip a Float).
+        if (spec.empty()) return vm.makeString(vm.stringify(a[0]));
         return vm.makeString(applyFormatSpec(vm, a[0], spec));
     });
 
@@ -3354,7 +3371,10 @@ inline void KiritoVM::installBuiltins() {
         try {
             (void)vm.arena().deref(a[0]).getAttr(vm, a[0], name);
             return vm.makeBool(true);
-        } catch (const KiritoError&) {
+        } catch (const std::exception&) {
+            // Any failure to resolve the member is "does not exist" -> False. Catch std::exception,
+            // not just KiritoError, so a native getAttr that throws a plain std::exception (crossing
+            // the C++ boundary like a bare `catch` would absorb) reports absence instead of escaping.
             return vm.makeBool(false);
         }
     });
