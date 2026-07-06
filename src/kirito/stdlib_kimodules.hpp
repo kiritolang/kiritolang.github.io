@@ -48,6 +48,8 @@ var chain = Function(lists):
 var islice = Function(iterable, start, stop, step = 1):
     if step <= 0:
         throw "step for islice() must be a positive integer"
+    if start < 0 or stop < 0:
+        throw "start and stop for islice() must be non-negative"
     var out = []
     var i = 0
     for x in iterable:

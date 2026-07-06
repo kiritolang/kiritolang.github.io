@@ -415,7 +415,7 @@ Returned by `io.open`. Iterating a file yields its remaining lines.
 - `repeat(value, times) → List` — `value` repeated `times` times.
 - `cycle(iterable, times) → List` — the iterable repeated `times` times.
 - `chain(lists) → List` — concatenate the iterables in a list-of-iterables (`chain([[1,2],[3,4]])`).
-- `islice(iterable, start, stop[, step]) → List` — a slice of an iterable. `step` must be a positive integer (a non-positive `step` raises).
+- `islice(iterable, start, stop[, step]) → List` — a slice of an iterable. `start`/`stop` must be non-negative and `step` a positive integer (a negative index or a non-positive `step` raises), matching Python's `islice`.
 - `accumulate(iterable[, func]) → List` — running totals (or running `func` reductions).
 - `product(lists) → List` — Cartesian product of a list-of-iterables (`product([[1,2],[3,4]])`).
 - `permutations(items[, r]) → List` — r-length orderings.
@@ -1429,7 +1429,7 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
 - `t.argmin(axis = None)`, `t.argmax(axis = None)` — index of the extreme.
 - `t.std(axis = None, ddof = 0)`, `t.var(axis = None, ddof = 0)` — standard deviation / variance.
 - `t.all(axis = None)`, `t.any(axis = None)` — truth reductions.
-- `t.ptp(axis = None)` — max − min; `t.median(axis = None)`.
+- `t.ptp(axis = None)` — max − min; `t.median(axis = None)` — returns `NaN` for any line containing a `NaN` (NumPy parity, consistent with `min`/`max`/`mean` NaN-propagation).
 - `t.cumsum(axis = None)` (differentiable) / `t.cumprod(axis = None)` — cumulative scans
   (`axis = None` flattens first).
 

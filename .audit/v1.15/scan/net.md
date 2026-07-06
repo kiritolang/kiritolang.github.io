@@ -51,3 +51,4 @@ Probe: `./build-debug/ki`. CI has NO external network — loopback (127.0.0.1) o
 - Probed injection (CRLF/NUL/tab/DEL in URL, CRLF in headers/cookies, bad ports/schemes): all correctly rejected.
 - Probed malformed responses, dup headers, Set-Cookie folding (multi + '=' in value), getaddrinfo numeric, binary content byte-exactness, userinfo URLs.
 - DONE. 3 findings (F1 MED unquote+, F2 MED userinfo, F3 LOW dup-header collapse). Core socket + HTTP + injection surface is robust.
+NET F1 = FALSE POSITIVE (by-design, documented): net.unquote decodes + to space because it follows urllib.parse.unquote_plus, per docs/pages/10-stdlib.md:631. NOT a bug.

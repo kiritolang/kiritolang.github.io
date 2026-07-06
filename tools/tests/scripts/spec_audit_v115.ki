@@ -70,4 +70,40 @@ assert parts[0].tolist() == [1.0] and parts[1].tolist() == [2.0, 3.0, 4.0], "val
 var eq = T.split(T.Tensor([1.0, 2.0, 3.0, 4.0]), 2)
 assert eq[0].tolist() == [1.0, 2.0] and eq[1].tolist() == [3.0, 4.0], "equal-parts split unchanged"
 
+# --- dunder ownerClass: method ownership is per-(class,method) BINDING, not stamped on a shared
+#     function object (was: last class to reference a shared fn won -> _super_ climbs wrong base, and
+#     privacy was both falsely-denied AND bypassable from external scope). ---
+class Base1:
+    var who = Function(self): return "Base1"
+class Base2:
+    var who = Function(self): return "Base2"
+var callsuper = Function(self): return self._super_().who()
+class D1(Base1):
+    var m = callsuper
+class D2(Base2):
+    var m = callsuper
+assert D1().m() == "Base1" and D2().m() == "Base2", "shared method resolves _super_ against its OWN class"
+# a module-level function adopted as a method must NOT let external code bypass privacy
+var readpriv = Function(obj): return obj._secret
+class Secret:
+    var _init_ = Function(self): self._secret = "s"
+    var use = readpriv
+assert Secret().use() == "s", "the class's own method can read its private"
+assert raises_msg(Function(): return readpriv(Secret()), "private"), "external call to the raw fn is denied (no bypass)"
+# a method calling a sibling as a free variable (through the class scope) still reaches privates
+class FV:
+    var _init_ = Function(self): self._x = 7
+    var helper = Function(self): return self._x
+    var use = Function(self): return helper(self)
+assert FV().use() == 7, "free-var sibling call still accesses privates"
+# a shared method resolves each instance's own class
+var tagof = Function(self): return self._tag
+class P:
+    var _init_ = Function(self): self._tag = "P"
+    var m = tagof
+class Q:
+    var _init_ = Function(self): self._tag = "Q"
+    var m = tagof
+assert P().m() == "P" and Q().m() == "Q", "shared method reads each class's own private"
+
 io.print("OK audit-v115")

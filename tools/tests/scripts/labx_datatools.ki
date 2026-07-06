@@ -25,15 +25,14 @@ var raises_msg = Function(fn, needle) -> Bool:
         return needle in e
 
 # ============================================================ itertools: islice negative/zero args
-# islice validates the STEP (must be a positive integer, Python parity) but not start/stop; negative
-# start/stop fall through the raw `i >= start` / `i >= stop` logic — assert that ACTUAL behavior.
-# A non-positive STEP is rejected up front (was a silent "keep all" via floor-modulo before the guard).
+# islice validates the STEP (positive integer) AND start/stop (non-negative), Python parity — a
+# negative index is rejected up front rather than silently keeping/dropping the wrong window.
 assert raises_msg(Function(): return it.islice([0, 1, 2, 3, 4], 0, 5, -1), "positive integer"), "islice negative step raises"
 assert raises_msg(Function(): return it.islice([1, 2, 3], 0, 3, 0), "positive integer"), "islice step 0 raises"
-# A negative START makes `i >= start` always true from i=0 -> keeps all up to stop.
-assert it.islice([0, 1, 2, 3, 4], -2, 5) == [0, 1, 2, 3, 4], "islice negative start keeps all"
-# A negative STOP makes `i >= stop` true immediately -> empty.
-assert it.islice([0, 1, 2, 3, 4], 0, -1) == [], "islice negative stop -> empty"
+assert raises_msg(Function(): return it.islice([0, 1, 2, 3, 4], -2, 5), "non-negative"), "islice negative start raises"
+assert raises_msg(Function(): return it.islice([0, 1, 2, 3, 4], 0, -1), "non-negative"), "islice negative stop raises"
+# a valid window still works
+assert it.islice([0, 1, 2, 3, 4], 1, 4) == [1, 2, 3], "islice valid window unchanged"
 
 # ============================================================ itertools: accumulate has NO initial
 # Doc signature is accumulate(iterable[, func]) — there is NO 3rd `initial` parameter (unlike Python).
