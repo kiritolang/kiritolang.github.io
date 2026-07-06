@@ -12,7 +12,7 @@ Probe binary: `./build-debug/ki`
 ## FINDINGS
 (appending as confirmed)
 
-### F1 [MED] Counter.mostcommon(n) with negative n returns wrong slice instead of []
+### F1 [SUSPECT / BY-DESIGN] Counter.mostcommon(n) with negative n returns an end-slice, not []
 - where: src/kirito/stdlib_kimodules.hpp:339-343 (`mostcommon`)
 - repro:
 ```
@@ -23,6 +23,10 @@ io.print(cnt.mostcommon(-1))   # => [['c',3],['a',2]]  (drops last)
 - actual: `pairs[0:n]` with n=-1 -> `pairs[0:-1]` drops the LAST element, returning all-but-least-common.
   expected: Python `most_common(-1)` returns `[]` (negative n yields nothing, like heapq.nlargest).
 - fix idea: clamp `if n <= 0: return []` before slicing (mirrors heapq.nlargest guard at line 822).
+- NOTE: docs/pages/10-stdlib.md:108-110 EXPLICITLY document this end-slice behavior ("don't pass a
+  negative `n` expecting an empty list"). So it is deliberate + documented, NOT a defect. Diverges from
+  Python (which returns []); a footgun, but by-design. Left here only as a design-consistency flag —
+  do NOT "fix" unless the design decision is being revisited.
 
 ### F2 [MED] itertools.islice with negative start silently returns wrong window
 - where: src/kirito/stdlib_kimodules.hpp:48-59 (`islice`)

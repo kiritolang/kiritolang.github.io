@@ -69,3 +69,21 @@ Integer("99999999999999999999999") # THROW: cannot convert String to Integer
   silent decimal wrap is a scripting footgun and the >=2^64 cliff is inconsistent.
 - fix idea: leave as-is (design) OR make plain-decimal overflow throw while keeping hex/oct/bin
   full-width. Flagging for triage, not asserting a bug.
+
+## MORE RULED OUT
+- Division/modulo by zero: all paths throw clean messages ("division by zero" for `/`; "integer/float
+  division/modulo by zero" for `//`/`%`). Minor cosmetic: `/` message doesn't distinguish int/float.
+- round(): half-away-from-zero (2.5->3, -2.5->-3, 0.5->1), round(2.675,2)==2.67 (long double), neg
+  ndigits, out-of-range/NaN/inf throw. Correct.
+- pow overflow to inf allowed (not a domain error, per docs); (-2.0)**3.0==-8.0 (integral float exp
+  on neg base OK); ipow O(log exp) no hang on 2**(10**18).
+- NaN in min/max/sort/contains: unordered semantics, `nan in [nan]` False, `[nan]==[nan]` False —
+  all consistent with exact-== design.
+- trichotomy int/float at 2^63 and 2^53 boundaries: <,==,> mutually exclusive & correct (compareIntFloat exact).
+- json.dumps(nan)=="NaN", dumps(inf)=="Infinity" — json NORMALIZES the sign (capital canonical),
+  confirming F1's `-nan` leak is confined to the DISPLAY path (print/String/floatToString), not json.
+
+## SUMMARY
+Numeric core is very solid. 1 confirmed LOW finding (F1: NaN "-nan" display leak), 1 suspect
+(F2: silent decimal-string overflow wrap, likely by-design). No fast/slow-path divergence exists
+(structurally impossible — both call numericBinary). No memory-safety or resource-exhaustion issues found.
