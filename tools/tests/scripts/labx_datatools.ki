@@ -163,4 +163,41 @@ var e = en.Enum(["X", "Y"])
 assert e.nameof(0) == "X" and e.nameof(1) == "Y", "enum nameof valid values"
 assert raises(Function(): return e.nameof(5)), "enum nameof unknown value throws (not silent)"
 
+# ============================================================ itertools predicate/spread family
+var isodd = Function(x): return x % 2 == 1
+assert it.takewhile(isodd, [1, 3, 5, 2, 7]) == [1, 3, 5], "takewhile stops at the first False"
+assert it.takewhile(isodd, [2, 4]) == [], "takewhile empty when the head fails"
+assert it.dropwhile(isodd, [1, 3, 2, 5]) == [2, 5], "dropwhile drops the leading run then keeps the rest"
+assert it.dropwhile(isodd, [1, 3]) == [], "dropwhile drops everything when all match"
+assert it.filterfalse(isodd, [1, 2, 3, 4]) == [2, 4], "filterfalse keeps where pred is False"
+assert it.pairwise([1, 2, 3, 4]) == [[1, 2], [2, 3], [3, 4]], "pairwise consecutive pairs"
+assert it.pairwise([1]) == [], "pairwise of one element is empty"
+# starmap passes the WHOLE tuple as a single List arg (Kirito has no *args spread) — see the doc.
+assert it.starmap(Function(t): return t[0] + t[1], [[1, 2], [3, 4]]) == [3, 7], "starmap single-List-arg contract"
+assert it.ziplongest([[1, 2], [3]], 0) == [[1, 3], [2, 0]], "ziplongest pads the short iterable with fillvalue"
+
+# ============================================================ heapq push/pop invariant
+# heapify returns a NEW heap-ordered List and does NOT mutate its argument (per the doc); heappush/pop
+# are in place. Verify both contracts.
+var src = [5, 3, 8, 1, 9, 2]
+var h = hq.heapify(src)
+assert src == [5, 3, 8, 1, 9, 2], "heapify does not mutate its argument (returns a new List)"
+hq.heappush(h, 0)
+var drained = []
+while len(h) > 0:
+    drained.append(hq.heappop(h))
+assert drained == [0, 1, 2, 3, 5, 8, 9], "heappush/heappop drain yields ascending order"
+
+# ============================================================ bisect *right + deque *left ends
+assert bs.bisectright([1, 2, 2, 3], 2) == 3, "bisectright lands after equal elements"
+assert bs.bisectleft([1, 2, 2, 3], 2) == 1, "bisectleft lands before equal elements"
+var sr = [1, 3, 5]
+bs.insortright(sr, 3)
+assert sr == [1, 3, 3, 5], "insortright inserts after an equal element"
+var dqe = coll.deque([1, 2, 3])
+dqe.appendleft(0)
+assert dqe.popleft() == 0 and List(dqe) == [1, 2, 3], "deque appendleft/popleft at the front"
+assert dqe.pop() == 3 and List(dqe) == [1, 2], "deque pop at the back"
+assert raises(Function(): return coll.deque([]).popleft()), "popleft on an empty deque throws"
+
 io.print("OK datatools")
