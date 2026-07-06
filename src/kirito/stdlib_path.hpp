@@ -200,6 +200,23 @@ public:
             auto p = std::filesystem::temp_directory_path(ec);
             return Value(vm, ec ? std::string("/tmp") : p.string());
         });
+        // fasttemp() -> the FASTEST available scratch directory: a RAM-backed tmpfs where the OS
+        // publishes one (Linux `/dev/shm`), otherwise the ordinary system temp dir. Portable and
+        // best-effort — you get memory-speed temp I/O (useful for large intermediate files, e.g.
+        // feeding a subprocess) without leaving the process, and it degrades transparently to
+        // gettempdir() on macOS/Windows, which expose no public RAM disk. Same usage as gettempdir:
+        // build a path with path.join(path.fasttemp(), name).
+        m.fn("fasttemp", {}, "String", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
+            std::error_code ec;
+#if !defined(_WIN32)
+            // Linux exposes a world-writable tmpfs at /dev/shm; prefer it when it is a real directory.
+            if (std::filesystem::is_directory("/dev/shm", ec) && !ec)
+                return Value(vm, std::string("/dev/shm"));
+            ec.clear();
+#endif
+            auto p = std::filesystem::temp_directory_path(ec);
+            return Value(vm, ec ? std::string("/tmp") : p.string());
+        });
         // executable: absolute path of the running `ki` binary ("" if undeterminable) — a filesystem
         // location, used e.g. by kpm for self-replacement.
         m.value("executable", vm.makeString(currentExecutablePath()));

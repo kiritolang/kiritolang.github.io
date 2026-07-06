@@ -297,8 +297,9 @@ a stability fuzzer, and a benchmark). Working today:
     dir exists; `remove`/`rmtree(missing_ok=False)` throw if the target is absent; `rmtree` is the
     recursive `rm -rf`. `mkdir`/`remove`/`rmtree` return a Bool (True=did it, False=lenient no-op),
     `rename` returns None, `chmod` is lenient (Bool). `path` also owns the filesystem *locations*
-    `gettempdir()` (system temp dir) and `executable` (absolute path of the running `ki` binary) —
-    moved here from `sys`, since they name a place on disk.
+    `gettempdir()` (system temp dir), `fasttemp()` (the fastest scratch dir — a RAM tmpfs `/dev/shm`
+    on Linux, else `gettempdir()`; best-effort, degrades on macOS/Windows), and `executable` (absolute
+    path of the running `ki` binary) — moved here from `sys`, since they name a place on disk.
   - `math` — constants and the usual functions (trig/hyperbolic, exp/log, gamma/erf/erfc, floor/ceil/
     trunc, gcd/lcm, factorial, isnan/isinf, prod/comb/perm, ...). **Domain errors THROW** a clear `math
     domain error` rather than returning silent `NaN`/`inf` rubbish (`sqrt(-1)`, `log(0)`, `asin(2)`,

@@ -857,6 +857,11 @@ if path.exists(full) and path.isfile(full):
 - `getcwd() → String` — the current working directory.
 - `gettempdir() → String` — the system temp directory (honors `TMPDIR`/`TMP`/`TEMP`, falls back to
   `/tmp`) — a stable scratch location to build temp file paths with `path.join`.
+- `fasttemp() → String` — the **fastest available** scratch directory: a RAM-backed tmpfs where the
+  OS publishes one (Linux `/dev/shm`), otherwise `gettempdir()`. Best-effort and portable — you get
+  memory-speed temp I/O (handy for large intermediate files, e.g. staging data for a subprocess)
+  without leaving the process, and it degrades transparently on macOS/Windows, which expose no public
+  RAM disk. Use it exactly like `gettempdir()`: `path.join(path.fasttemp(), name)`.
 - `executable` — the absolute path of the running `ki` interpreter binary (a `String`, `""` if it
   can't be determined). A filesystem location, so it lives here in `path`; used e.g. by `kpm` to
   locate the binary it self-replaces.
