@@ -9,6 +9,7 @@
 #include <string>
 
 #include "builtins.hpp"
+#include "bytes.hpp"      // argStringOrBytes / Bytes — binary stdin/stdout for createprocess/shell
 #include "collections.hpp"
 #include "native.hpp"
 #include "proc_compat.hpp"
@@ -38,9 +39,13 @@ inline std::mutex& envMutex() { static std::mutex m; return m; }
 // {code, stdout, stderr}. Shared by sys.createprocess (argv directly) and sys.shell (argv wrapping a
 // shell). A spawn failure or timeout becomes a clean catchable KiritoError.
 inline Handle runExternalProcess(KiritoVM& vm, const std::vector<std::string>& argv,
-                                 Value cwdV, Value inputV, Value timeoutV) {
+                                 Value cwdV, Value inputV, Value timeoutV, bool binary) {
     std::string cwd = cwdV.isNone() ? std::string() : cwdV.asStringRef("cwd");
-    std::string input = inputV.isNone() ? std::string() : inputV.asStringRef("input");
+    // `input` accepts a String OR Bytes. A String is fed as its UTF-8 encoding (unchanged); a Bytes
+    // is fed VERBATIM — the only way to hand a subprocess arbitrary binary (a String built from
+    // Bytes.decode() would re-encode high bytes into multi-byte UTF-8 and corrupt a binary consumer
+    // like ffmpeg). `binary=True` likewise returns stdout/stderr as raw Bytes instead of a String.
+    std::string input = inputV.isNone() ? std::string() : argStringOrBytes(vm, inputV.handle(), "input");
     double timeout = timeoutV.isNone() ? 0.0 : timeoutV.asFloat("timeout");
     proccompat::ProcResult r;
     try {
@@ -52,8 +57,13 @@ inline Handle runExternalProcess(KiritoVM& vm, const std::vector<std::string>& a
         throw KiritoError("process produced more than 256 MiB of output (capture limit exceeded)");
     Dict d(vm);
     d.set("code", vm.makeInt(r.code));
-    d.set("stdout", Value(vm, r.out));
-    d.set("stderr", Value(vm, r.err));
+    if (binary) {   // raw, byte-exact — the process's stdout/stderr bytes are preserved unmangled
+        d.set("stdout", Bytes(vm, r.out));
+        d.set("stderr", Bytes(vm, r.err));
+    } else {        // default: a String (UTF-8 storage) — back-compat with every existing caller
+        d.set("stdout", Value(vm, r.out));
+        d.set("stderr", Value(vm, r.err));
+    }
     return d;
 }
 
@@ -194,12 +204,15 @@ public:
         });
 
         // --- running external programs (NOT the `parallel` worker-VM model) -----------------------
-        // createprocess(args, cwd=None, input="", timeout=None) -> {code, stdout, stderr}. Runs a
-        // program DIRECTLY by its argument vector (args[0] is the program, found on PATH) — no shell,
-        // so arguments are passed verbatim with no quoting/expansion/injection. stdout & stderr are
-        // captured; `input` is fed on stdin; a positive `timeout` (seconds) kills it and throws.
+        // createprocess(args, cwd=None, input="", timeout=None, binary=False) -> {code, stdout,
+        // stderr}. Runs a program DIRECTLY by its argument vector (args[0] is the program, found on
+        // PATH) — no shell, so arguments are passed verbatim with no quoting/expansion/injection.
+        // stdout & stderr are captured; `input` (a String OR Bytes) is fed on stdin; a positive
+        // `timeout` (seconds) kills it and throws. `binary=True` returns stdout/stderr as raw Bytes
+        // (byte-exact) instead of a String — pass a Bytes `input` + binary=True for binary pipelines.
         m.fn("createprocess",
-             {{"args", "List"}, {"cwd", "", vm.none()}, {"input", "", vm.makeString("")}, {"timeout", "", vm.none()}},
+             {{"args", "List"}, {"cwd", "", vm.none()}, {"input", "", vm.makeString("")}, {"timeout", "", vm.none()},
+              {"binary", "Bool", vm.makeBool(false)}},
              "Dict", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "createprocess");
             if (!args[0].isList())
@@ -207,14 +220,16 @@ public:
             std::vector<std::string> argv;
             for (Value e : args[0].items()) argv.push_back(e.asStringRef("createprocess: each argument must be a String"));
             if (argv.empty()) throw KiritoError("createprocess: args must be a non-empty List (the program and its arguments)");
-            return runExternalProcess(vm, argv, args.opt(1, Value::None(vm)), args.opt(2, Value(vm, "")), args.opt(3, Value::None(vm)));
+            return runExternalProcess(vm, argv, args.opt(1, Value::None(vm)), args.opt(2, Value(vm, "")),
+                                      args.opt(3, Value::None(vm)), args.opt(4, Value(vm, false)).truthy());
         });
 
         // shell(command, cwd=None, input="", timeout=None) -> {code, stdout, stderr}. Runs `command`
         // through the system shell (/bin/sh -c on POSIX, cmd.exe /c on Windows), so shell features
         // (pipes, redirection, globbing, scripts) work. Capture the output with sys.shell(cmd)["stdout"].
         m.fn("shell",
-             {{"command", "String"}, {"cwd", "", vm.none()}, {"input", "", vm.makeString("")}, {"timeout", "", vm.none()}},
+             {{"command", "String"}, {"cwd", "", vm.none()}, {"input", "", vm.makeString("")}, {"timeout", "", vm.none()},
+              {"binary", "Bool", vm.makeBool(false)}},
              "Dict", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "shell");
             std::string cmd = args[0].asStringRef("shell");
@@ -224,7 +239,8 @@ public:
 #else
             argv = {"/bin/sh", "-c", cmd};
 #endif
-            return runExternalProcess(vm, argv, args.opt(1, Value::None(vm)), args.opt(2, Value(vm, "")), args.opt(3, Value::None(vm)));
+            return runExternalProcess(vm, argv, args.opt(1, Value::None(vm)), args.opt(2, Value(vm, "")),
+                                      args.opt(3, Value::None(vm)), args.opt(4, Value(vm, false)).truthy());
         });
     }
 };

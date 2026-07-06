@@ -439,11 +439,15 @@ a stability fuzzer, and a benchmark). Working today:
   - `sys` — environment (getenv/setenv/unsetenv/environ), `platform`, `arch` (x64/arm64/x86), `version`
     (the interpreter's semver string, == `ki --version`), `traceback`, `exit`, and **external-process
     execution** (the running binary's own path is `path.executable`, a filesystem location):
-    `createprocess(args, cwd, input, timeout)` runs a program by argv (no shell) and `shell(command,
-    cwd, input, timeout)` runs it through `/bin/sh -c` (POSIX) / `cmd.exe /c` (Windows) — both block,
-    capture, and return `{code, stdout, stderr}` (stdout/stderr drained on their own threads so a
-    chatty child can't deadlock; positive `timeout` kills+throws). This is for EXTERNAL programs
-    (ffmpeg, git, …), distinct from `parallel`'s worker-VM model. The platform split (fork+execvp+pipe
+    `createprocess(args, cwd, input, timeout, binary)` runs a program by argv (no shell) and
+    `shell(command, cwd, input, timeout, binary)` runs it through `/bin/sh -c` (POSIX) / `cmd.exe /c`
+    (Windows) — both block, capture, and return `{code, stdout, stderr}` (stdout/stderr drained on
+    their own threads so a chatty child can't deadlock; positive `timeout` kills+throws). `input`
+    accepts a **String or Bytes** (a Bytes is fed to stdin VERBATIM — a String is UTF-8-encoded, which
+    would balloon high bytes into multi-byte sequences and corrupt a binary consumer), and
+    **`binary=True`** returns stdout/stderr as raw `Bytes` instead of a String — so a Bytes-in +
+    binary-out pipeline is byte-exact through a non-Kirito tool (e.g. piping to ffmpeg/pngquant without
+    temp files). This is for EXTERNAL programs (ffmpeg, git, …), distinct from `parallel`'s worker-VM model. The platform split (fork+execvp+pipe
     on POSIX, CreateProcessW+CreatePipe on Windows, incl. the Windows argv-quoting) lives in
     `proc_compat.hpp`, mirroring `net_compat.hpp`; the Kirito API is identical on every platform.
   - `time` — high-precision clocks (time/timens/monotonic/perfcounterns), sleep, and calendar

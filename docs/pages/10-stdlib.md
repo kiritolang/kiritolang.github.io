@@ -1166,24 +1166,35 @@ child that produces a lot on either stream can't deadlock. **This is for externa
 `parallel` worker-VM model** (which runs Kirito functions, not other executables). The Kirito API is
 identical on Linux, macOS and Windows.
 
-- `createprocess(args: List, cwd = None, input = "", timeout = None) → Dict` — run a program
-  **directly** by its argument vector. `args[0]` is the program (looked up on `PATH`); the remaining
-  items are passed to it **verbatim** — there is no shell, so no quoting, globbing or injection.
+- `createprocess(args: List, cwd = None, input = "", timeout = None, binary = False) → Dict` — run a
+  program **directly** by its argument vector. `args[0]` is the program (looked up on `PATH`); the
+  remaining items are passed to it **verbatim** — there is no shell, so no quoting, globbing or injection.
   - `cwd` — working directory for the child (`None` = inherit the parent's).
-  - `input` — a String written to the child's stdin (then closed); `""` sends nothing.
+  - `input` — a **String or Bytes** written to the child's stdin (then closed); `""` sends nothing. A
+    String is written as its UTF-8 encoding; a **Bytes is written verbatim** — use Bytes to send
+    arbitrary binary, since a String built from `Bytes.decode()` would re-encode every byte ≥ 0x80 into
+    a multi-byte UTF-8 sequence and corrupt a binary consumer.
   - `timeout` — seconds (a number); if the child is still running when it elapses, it is killed and a
     catchable error is thrown. `None` waits indefinitely.
+  - `binary` — when `True`, `stdout`/`stderr` come back as raw **Bytes** (byte-exact) instead of a
+    String. Pair a Bytes `input` with `binary = True` for a fully byte-faithful binary pipeline.
   - A program that can't be started (not found, etc.) throws a clear catchable error.
 
+  <!--norun (needs ffmpeg/pngquant + a network URL; illustrative)-->
   ```kirito
   var r = sys.createprocess(["ffmpeg", "-i", "in.mov", "out.mp4"], timeout = 60)
   if r["code"] != 0:
       io.eprint(r["stderr"])
+
+  # pipe raw bytes through a tool without touching disk:
+  var png = net.get(url).content                       # a Bytes
+  var out = sys.createprocess(["pngquant", "-"], input = png, binary = True)["stdout"]  # a Bytes
   ```
 
-- `shell(command: String, cwd = None, input = "", timeout = None) → Dict` — run `command` through the
-  **system shell** (`/bin/sh -c` on POSIX, `cmd.exe /c` on Windows), so pipes, redirection, globbing
-  and shell scripts work. Same `cwd`/`input`/`timeout` options. Capture the output with:
+- `shell(command: String, cwd = None, input = "", timeout = None, binary = False) → Dict` — run
+  `command` through the **system shell** (`/bin/sh -c` on POSIX, `cmd.exe /c` on Windows), so pipes,
+  redirection, globbing and shell scripts work. Same `cwd`/`input`/`timeout`/`binary` options (a Bytes
+  `input` and `binary = True` give byte-exact binary I/O). Capture the output with:
 
   ```kirito
   var head = sys.shell("git rev-parse HEAD")["stdout"].strip()

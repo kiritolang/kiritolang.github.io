@@ -153,5 +153,29 @@ ok(echo("") == "", "empty stdin -> empty stdout")
 var both = sys.createprocess([KI, helper, "echo"], input = "p" + chr(0) + "q")
 ok(both["stdout"] == "p" + chr(0) + "q" and both["code"] == 0, "binary stdout captured alongside the exit code")
 
+# ============================================================ RAW BYTES: Bytes input + binary=True output
+# A `Bytes` input is fed to stdin VERBATIM (not UTF-8-re-encoded the way a String is), and
+# `binary=True` returns stdout/stderr as raw `Bytes`. This is the ONLY faithful path for arbitrary
+# binary through a NON-Kirito tool: a String built from `Bytes.decode()` would balloon every byte
+# >= 0x80 into a multi-byte UTF-8 sequence and corrupt a binary consumer. The `ki` echo helper is
+# byte-transparent, so a Bytes -> Bytes round-trip is exact even here.
+var rawEcho = Function(b):
+    return sys.createprocess([KI, helper, "echo"], input = b, binary = True)["stdout"]
+var rawEchoErr = Function(b):
+    return sys.createprocess([KI, helper, "echoerr"], input = b, binary = True)["stderr"]
+# high bytes (0x80-0xFF) + control bytes + invalid-UTF-8 sequences that String mode would mangle
+var binpayload = Bytes([255, 128, 195, 40, 0, 65, 10, 13, 26, 254, 192, 191])
+ok(type(rawEcho(binpayload)) == "Bytes", "binary=True returns Bytes")
+ok(rawEcho(binpayload) == binpayload, "Bytes input + binary output round-trips byte-exact")
+ok(rawEcho(Bytes([])) == Bytes([]), "empty Bytes round-trips")
+ok(rawEchoErr(binpayload) == binpayload, "binary stderr is byte-exact too")
+# a String input with binary output comes back as its UTF-8 storage bytes (pure ASCII: same bytes)
+ok(sys.createprocess([KI, helper, "echo"], input = "AB", binary = True)["stdout"] == Bytes([65, 66]), "String input + binary output = its UTF-8 bytes")
+# a large binary payload (a PNG signature, repeated) survives exactly
+var bigbin = Bytes([137, 80, 78, 71, 13, 10, 26, 10]) * 10000
+ok(rawEcho(bigbin) == bigbin, "80k-byte binary payload round-trips exactly")
+# default (no binary=) still returns a String — back-compat
+ok(type(sys.createprocess([KI, helper, "echo"], input = "z")["stdout"]) == "String", "default output stays a String")
+
 discard path.remove(helper, missing_ok = True)
 io.print("sys_proc_encoding: " + String(n) + " checks passed")
