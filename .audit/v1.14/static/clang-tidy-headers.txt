@@ -1,0 +1,617 @@
+44492 warnings generated.
+src/kirito/analyzer.hpp:322:9: warning: 'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop [performance-inefficient-vector-operation]
+  321 |     for (const auto& w : warnings)
+  322 |         out.push_back(file + ":" + std::to_string(w.span.line) + ":" + std::to_string(w.span.col) +
+      |         ^
+src/kirito/ast.hpp:60:12: warning: enum 'ExprKind' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   60 | enum class ExprKind { Other, Name, Index, Member, Tuple, Star };
+      |            ^
+src/kirito/ast.hpp:82:8: warning: constructor does not initialize these fields: op [cppcoreguidelines-pro-type-member-init]
+   82 | struct UnaryExpr : Expr {
+      |        ^
+src/kirito/ast.hpp:88:8: warning: constructor does not initialize these fields: op [cppcoreguidelines-pro-type-member-init]
+   88 | struct BinaryExpr : Expr {
+      |        ^
+src/kirito/ast.hpp:96:8: warning: constructor does not initialize these fields: isAnd [cppcoreguidelines-pro-type-member-init]
+   96 | struct LogicalExpr : Expr {
+      |        ^
+   97 |     bool isAnd;  // true == `and`, false == `or`
+      |               
+      |               {}
+src/kirito/bytecode_vm.hpp:313:51: warning: unchecked access to optional value [bugprone-unchecked-optional-access]
+  313 |                         cursor->items = std::move(items.value());
+      |                                                   ^
+src/kirito/common.hpp:37:12: warning: enum 'BinOp' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   37 | enum class BinOp { Add, Sub, Mul, Div, FloorDiv, Mod, Pow, Eq, Ne, Lt, Le, Gt, Ge, In, NotIn };
+      |            ^
+src/kirito/common.hpp:38:12: warning: enum 'UnOp' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   38 | enum class UnOp { Neg, Not };
+      |            ^
+src/kirito/compiler.hpp:705:14: warning: enum 'Kind' uses a larger base type ('unsigned int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+  705 |         enum Kind { Loop, Block } kind;
+      |              ^
+src/kirito/control.hpp:10:12: warning: enum 'Flow' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   10 | enum class Flow { Normal, Break, Continue, Return };
+      |            ^
+src/kirito/dispatcher.hpp:45:12: warning: enum 'WaitResult' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   45 | enum class WaitResult { Ok, TimedOut, Closed, Aborted, Reentrant, Broken };
+      |            ^
+src/kirito/environment.hpp:70:11: warning: constructor does not initialize these fields: storage_ [cppcoreguidelines-pro-type-member-init]
+   70 |     class SmallVec {
+      |           ^
+src/kirito/environment.hpp:72:9: warning: constructor does not initialize these fields: storage_ [cppcoreguidelines-pro-type-member-init]
+   72 |         SmallVec() = default;
+      |         ^
+src/kirito/environment.hpp:73:9: warning: constructor does not initialize these fields: storage_ [cppcoreguidelines-pro-type-member-init]
+   73 |         SmallVec(const SmallVec& o) { for (std::size_t i = 0; i < o.size_; ++i) push(o[i].first, o[i].second); }
+      |         ^
+src/kirito/hashing.hpp:49:52: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+   49 |             M[i] = static_cast<uint8_t>(data[off + i * 4]) |
+      |                                                    ^
+src/kirito/hashing.hpp:49:52: note: make conversion explicit to silence this warning
+    7 |             M[i] = static_cast<uint8_t>(data[off + i * 4]) |
+      |                                                    ^~~~~
+      |                                                    static_cast<std::size_t>( )
+src/kirito/hashing.hpp:49:52: note: perform multiplication in a wider type
+   49 |             M[i] = static_cast<uint8_t>(data[off + i * 4]) |
+      |                                                    ^
+      |                                                    static_cast<long>( )
+src/kirito/hashing.hpp:50:53: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+   50 |                    (static_cast<uint8_t>(data[off + i * 4 + 1]) << 8) |
+      |                                                     ^
+src/kirito/hashing.hpp:50:53: note: make conversion explicit to silence this warning
+   50 |                    (static_cast<uint8_t>(data[off + i * 4 + 1]) << 8) |
+      |                                                     ^~~~~
+      |                                                     static_cast<std::size_t>( )
+src/kirito/hashing.hpp:50:53: note: perform multiplication in a wider type
+   50 |                    (static_cast<uint8_t>(data[off + i * 4 + 1]) << 8) |
+      |                                                     ^
+      |                                                     static_cast<long>( )
+src/kirito/hashing.hpp:51:53: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+   51 |                    (static_cast<uint8_t>(data[off + i * 4 + 2]) << 16) |
+      |                                                     ^
+src/kirito/hashing.hpp:51:53: note: make conversion explicit to silence this warning
+   51 |                    (static_cast<uint8_t>(data[off + i * 4 + 2]) << 16) |
+      |                                                     ^~~~~
+      |                                                     static_cast<std::size_t>( )
+src/kirito/hashing.hpp:51:53: note: perform multiplication in a wider type
+   51 |                    (static_cast<uint8_t>(data[off + i * 4 + 2]) << 16) |
+      |                                                     ^
+      |                                                     static_cast<long>( )
+src/kirito/hashing.hpp:52:75: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+   52 |                    (static_cast<uint32_t>(static_cast<uint8_t>(data[off + i * 4 + 3])) << 24);
+      |                                                                           ^
+src/kirito/hashing.hpp:52:75: note: make conversion explicit to silence this warning
+   52 |                    (static_cast<uint32_t>(static_cast<uint8_t>(data[off + i * 4 + 3])) << 24);
+      |                                                                           ^~~~~
+      |                                                                           static_cast<std::size_t>( )
+src/kirito/hashing.hpp:52:75: note: perform multiplication in a wider type
+   52 |                    (static_cast<uint32_t>(static_cast<uint8_t>(data[off + i * 4 + 3])) << 24);
+      |                                                                           ^
+      |                                                                           static_cast<long>( )
+src/kirito/hashing.hpp:96:53: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+   96 |             w[i] = (static_cast<uint8_t>(data[off + i * 4]) << 24) |
+      |                                                     ^
+src/kirito/hashing.hpp:96:53: note: make conversion explicit to silence this warning
+   96 |             w[i] = (static_cast<uint8_t>(data[off + i * 4]) << 24) |
+      |                                                     ^~~~~
+      |                                                     static_cast<std::size_t>( )
+src/kirito/hashing.hpp:96:53: note: perform multiplication in a wider type
+   96 |             w[i] = (static_cast<uint8_t>(data[off + i * 4]) << 24) |
+      |                                                     ^
+      |                                                     static_cast<long>( )
+src/kirito/hashing.hpp:97:53: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+   97 |                    (static_cast<uint8_t>(data[off + i * 4 + 1]) << 16) |
+      |                                                     ^
+src/kirito/hashing.hpp:97:53: note: make conversion explicit to silence this warning
+   97 |                    (static_cast<uint8_t>(data[off + i * 4 + 1]) << 16) |
+      |                                                     ^~~~~
+      |                                                     static_cast<std::size_t>( )
+src/kirito/hashing.hpp:97:53: note: perform multiplication in a wider type
+   97 |                    (static_cast<uint8_t>(data[off + i * 4 + 1]) << 16) |
+      |                                                     ^
+      |                                                     static_cast<long>( )
+src/kirito/hashing.hpp:98:53: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+   98 |                    (static_cast<uint8_t>(data[off + i * 4 + 2]) << 8) |
+      |                                                     ^
+src/kirito/hashing.hpp:98:53: note: make conversion explicit to silence this warning
+   98 |                    (static_cast<uint8_t>(data[off + i * 4 + 2]) << 8) |
+      |                                                     ^~~~~
+      |                                                     static_cast<std::size_t>( )
+src/kirito/hashing.hpp:98:53: note: perform multiplication in a wider type
+   98 |                    (static_cast<uint8_t>(data[off + i * 4 + 2]) << 8) |
+      |                                                     ^
+      |                                                     static_cast<long>( )
+src/kirito/hashing.hpp:99:52: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+   99 |                    static_cast<uint8_t>(data[off + i * 4 + 3]);
+      |                                                    ^
+src/kirito/hashing.hpp:99:52: note: make conversion explicit to silence this warning
+   99 |                    static_cast<uint8_t>(data[off + i * 4 + 3]);
+      |                                                    ^~~~~
+      |                                                    static_cast<std::size_t>( )
+src/kirito/hashing.hpp:99:52: note: perform multiplication in a wider type
+   99 |                    static_cast<uint8_t>(data[off + i * 4 + 3]);
+      |                                                    ^
+      |                                                    static_cast<long>( )
+src/kirito/hashing.hpp:135:53: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  135 |             w[i] = (static_cast<uint8_t>(data[off + i * 4]) << 24) |
+      |                                                     ^
+src/kirito/hashing.hpp:135:53: note: make conversion explicit to silence this warning
+  135 |             w[i] = (static_cast<uint8_t>(data[off + i * 4]) << 24) |
+      |                                                     ^~~~~
+      |                                                     static_cast<std::size_t>( )
+src/kirito/hashing.hpp:135:53: note: perform multiplication in a wider type
+  135 |             w[i] = (static_cast<uint8_t>(data[off + i * 4]) << 24) |
+      |                                                     ^
+      |                                                     static_cast<long>( )
+src/kirito/hashing.hpp:136:53: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  136 |                    (static_cast<uint8_t>(data[off + i * 4 + 1]) << 16) |
+      |                                                     ^
+src/kirito/hashing.hpp:136:53: note: make conversion explicit to silence this warning
+  136 |                    (static_cast<uint8_t>(data[off + i * 4 + 1]) << 16) |
+      |                                                     ^~~~~
+      |                                                     static_cast<std::size_t>( )
+src/kirito/hashing.hpp:136:53: note: perform multiplication in a wider type
+  136 |                    (static_cast<uint8_t>(data[off + i * 4 + 1]) << 16) |
+      |                                                     ^
+      |                                                     static_cast<long>( )
+src/kirito/hashing.hpp:137:53: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  137 |                    (static_cast<uint8_t>(data[off + i * 4 + 2]) << 8) |
+      |                                                     ^
+src/kirito/hashing.hpp:137:53: note: make conversion explicit to silence this warning
+  137 |                    (static_cast<uint8_t>(data[off + i * 4 + 2]) << 8) |
+      |                                                     ^~~~~
+      |                                                     static_cast<std::size_t>( )
+src/kirito/hashing.hpp:137:53: note: perform multiplication in a wider type
+  137 |                    (static_cast<uint8_t>(data[off + i * 4 + 2]) << 8) |
+      |                                                     ^
+      |                                                     static_cast<long>( )
+src/kirito/hashing.hpp:138:52: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  138 |                    static_cast<uint8_t>(data[off + i * 4 + 3]);
+      |                                                    ^
+src/kirito/hashing.hpp:138:52: note: make conversion explicit to silence this warning
+  138 |                    static_cast<uint8_t>(data[off + i * 4 + 3]);
+      |                                                    ^~~~~
+      |                                                    static_cast<std::size_t>( )
+src/kirito/hashing.hpp:138:52: note: perform multiplication in a wider type
+  138 |                    static_cast<uint8_t>(data[off + i * 4 + 3]);
+      |                                                    ^
+      |                                                    static_cast<long>( )
+src/kirito/lexer.hpp:13:12: warning: enum 'TokenType' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   13 | enum class TokenType {
+      |            ^
+src/kirito/native.hpp:102:35: warning: the parameter 'name' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+  102 |     ModuleBuilder& fn(std::string name, NativeFn impl) {
+      |                                   ^
+      |                       const      &
+src/kirito/native.hpp:109:35: warning: the parameter 'name' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+  109 |     ModuleBuilder& fn(std::string name, std::vector<NativeParam> sig, std::string returnType, NativeFn impl) {
+      |                                   ^
+      |                       const      &
+src/kirito/native.hpp:115:37: warning: the parameter 'name' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+  115 |     ModuleBuilder& kwfn(std::string name, NativeFnKw impl) {
+      |                                     ^
+      |                         const      &
+src/kirito/native.hpp:168:83: warning: the parameter 'params' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+  168 | inline Handle makeMethod(KiritoVM& vm, std::string name, std::vector<std::string> params,
+      |                                                                                   ^
+      |                                                          const                   &
+src/kirito/native.hpp:169:35: warning: the parameter 'impl' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+  169 |                          NativeFn impl, std::vector<Handle> captures = {}, std::size_t minArgs = 0) {
+      |                                   ^
+      |                          const   &
+src/kirito/net_compat.hpp:160:5: warning: uninitialized record type: 'tv' [cppcoreguidelines-pro-type-member-init]
+  160 |     struct timeval tv;
+      |     ^                
+      |                      {}
+src/kirito/object.hpp:21:12: warning: enum 'ValueKind' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   21 | enum class ValueKind {
+      |            ^
+src/kirito/regex_engine.hpp:31:6: warning: enum 'Flags' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   31 | enum Flags : int { IGNORECASE = 1, MULTILINE = 2, DOTALL = 4 };
+      |      ^
+src/kirito/regex_engine.hpp:42:10: warning: enum 'Op' uses a larger base type ('unsigned int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   42 |     enum Op { Char, Any, Class, Match, Jmp, Split, Save, Assert } op;
+      |          ^
+src/kirito/regex_engine.hpp:50:6: warning: enum 'AssertKind' uses a larger base type ('unsigned int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   50 | enum AssertKind { ABeginText, AEndText, ABeginLine, AEndLine, AWordBoundary, ANotWordBoundary };
+      |      ^
+src/kirito/regex_engine.hpp:89:8: warning: constructor does not initialize these fields: kind [cppcoreguidelines-pro-type-member-init]
+   89 | struct Node {
+      |        ^
+src/kirito/regex_engine.hpp:90:10: warning: enum 'Kind' uses a larger base type ('unsigned int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+   90 |     enum Kind { Empty, Lit, Any, Class, Concat, Alt, Star, Plus, Quest, Repeat, Group, Anchor } kind;
+      |          ^
+src/kirito/regex_engine.hpp:561:5: warning: switching on non-enum value without default case may not cover all cases [bugprone-switch-missing-default-case]
+  561 |     switch (kind) {
+      |     ^
+src/kirito/runtime.hpp:618:63: warning: narrowing conversion from 'std::size_t' (aka 'unsigned long') to signed type 'difference_type' (aka 'long') is implementation-defined [cppcoreguidelines-narrowing-conversions]
+  618 |                         if (i < e.size()) e.erase(e.begin() + i);
+      |                                                               ^
+src/kirito/runtime.hpp:1133:36: warning: the parameter 'nm' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+ 1133 |     auto bindReq = [&](std::string nm, std::size_t minArgs, std::vector<std::string> params, NativeFn fn) {
+      |                                    ^
+      |                        const      &
+src/kirito/runtime.hpp:1133:103: warning: the parameter 'fn' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+ 1133 |     auto bindReq = [&](std::string nm, std::size_t minArgs, std::vector<std::string> params, NativeFn fn) {
+      |                                                                                                       ^
+      |                                                                                              const   &
+src/kirito/runtime.hpp:1183:25: warning: the variable 's' is copy-constructed from a const reference but is only used as const reference; consider making it a const reference [performance-unnecessary-copy-initialization]
+ 1183 |             std::string s = recv(vm, self);                  // copy: immutable, GC-safe across calls
+      |                         ^
+      |             const      &
+src/kirito/stdlib_complex.hpp:500:20: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  500 |         for (Value e : items[2].items()) {
+      |                    ^
+      |              const  &
+src/kirito/stdlib_complex.hpp:619:24: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  619 |             for (Value row : args[0].items()) {
+      |                        ^
+      |                  const  &
+src/kirito/stdlib_complex.hpp:621:28: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  621 |                 for (Value cell : row.items()) r.push_back(cpx::asComplex(vm, cell.handle(), "Matrix element"));
+      |                            ^
+      |                      const  &
+src/kirito/stdlib_complex.hpp:655:24: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  655 |             for (Value e : Args(vm, a, "vector")[0].items()) xs.push_back(cpx::asComplex(vm, e.handle(), "vector element"));
+      |                        ^
+      |                  const  &
+src/kirito/stdlib_io.hpp:381:16: warning: enum 'Dir' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+  381 |     enum class Dir { Out, Err, In };
+      |                ^
+src/kirito/stdlib_json.hpp:320:21: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  320 |     std::string pad((depth + 1) * indent, ' '), padEnd(depth * indent, ' ');
+      |                     ^
+src/kirito/stdlib_json.hpp:320:21: note: make conversion explicit to silence this warning
+    5 |     std::string pad((depth + 1) * indent, ' '), padEnd(depth * indent, ' ');
+      |                     ^~~~~~~~~~~~~~~~~~~~
+      |                     static_cast<size_type>( )
+src/kirito/stdlib_json.hpp:320:21: note: perform multiplication in a wider type
+  320 |     std::string pad((depth + 1) * indent, ' '), padEnd(depth * indent, ' ');
+      |                     ^~~~~~~~~~
+      |                      static_cast<long>( )
+src/kirito/stdlib_json.hpp:320:56: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  320 |     std::string pad((depth + 1) * indent, ' '), padEnd(depth * indent, ' ');
+      |                                                        ^
+src/kirito/stdlib_json.hpp:320:56: note: make conversion explicit to silence this warning
+  320 |     std::string pad((depth + 1) * indent, ' '), padEnd(depth * indent, ' ');
+      |                                                        ^~~~~~~~~~~~~~
+      |                                                        static_cast<size_type>( )
+src/kirito/stdlib_json.hpp:320:56: note: perform multiplication in a wider type
+  320 |     std::string pad((depth + 1) * indent, ' '), padEnd(depth * indent, ' ');
+      |                                                        ^~~~~
+      |                                                        static_cast<long>( )
+src/kirito/stdlib_matrix.hpp:310:20: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  310 |         for (Value e : items[2].items()) data.push_back(e.asFloat("element"));
+      |                    ^
+      |              const  &
+src/kirito/stdlib_matrix.hpp:345:24: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  345 |             for (Value row : args[0].items()) {
+      |                        ^
+      |                  const  &
+src/kirito/stdlib_matrix.hpp:347:28: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  347 |                 for (Value cell : row.items()) r.push_back(cell.asFloat("Matrix element"));
+      |                            ^
+      |                      const  &
+src/kirito/stdlib_matrix.hpp:381:24: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  381 |             for (Value e : Args(vm, a, "vector")[0].items()) xs.push_back(e.asFloat("vector element"));
+      |                        ^
+      |                  const  &
+src/kirito/stdlib_net.hpp:235:5: warning: uninitialized record type: 'tv' [cppcoreguidelines-pro-type-member-init]
+  235 |     struct timeval tv;
+      |     ^                
+      |                      {}
+src/kirito/stdlib_net.hpp:524:47: warning: empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether [bugprone-empty-catch]
+  524 |         try { body = decodeBody(body, enc); } catch (...) { /* leave body as-is on decode failure */ }
+      |                                               ^
+src/kirito/stdlib_net.hpp:809:83: warning: string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead [performance-inefficient-string-concatenation]
+  809 |             mp += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + field +
+      |                                                                                   ^
+src/kirito/stdlib_net.hpp:810:37: warning: string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead [performance-inefficient-string-concatenation]
+  810 |                   "\"; filename=\"" + filename + "\"\r\nContent-Type: application/octet-stream\r\n\r\n" +
+      |                                     ^
+src/kirito/stdlib_net.hpp:810:105: warning: string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead [performance-inefficient-string-concatenation]
+  810 |                   "\"; filename=\"" + filename + "\"\r\nContent-Type: application/octet-stream\r\n\r\n" +
+      |                                                                                                         ^
+src/kirito/stdlib_net.hpp:884:40: warning: string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead [performance-inefficient-string-concatenation]
+  884 |         std::string req = method + " " + target + " HTTP/1.1\r\nHost: " + u.host + "\r\n";
+      |                                        ^
+src/kirito/stdlib_net.hpp:886:105: warning: string concatenation results in allocation of unnecessary temporary strings; consider using 'operator+=' or 'string::append()' instead [performance-inefficient-string-concatenation]
+  886 |             if (net::asciiLower(k) != "host" && net::asciiLower(k) != "content-length") req += k + ": " + v + "\r\n";
+      |                                                                                                         ^
+src/kirito/stdlib_net.hpp:1008:36: warning: the parameter 'nm' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+ 1008 |     auto bindReq = [&](std::string nm, std::size_t minArgs, std::vector<std::string> params, NativeFn fn) {
+      |                                    ^
+      |                        const      &
+src/kirito/stdlib_net.hpp:1008:103: warning: the parameter 'fn' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+ 1008 |     auto bindReq = [&](std::string nm, std::size_t minArgs, std::vector<std::string> params, NativeFn fn) {
+      |                                                                                                       ^
+      |                                                                                              const   &
+src/kirito/stdlib_net.hpp:1180:13: warning: uninitialized record type: 'so' [cppcoreguidelines-pro-type-member-init]
+ 1180 |             net::SockOpt so;
+      |             ^              
+      |                            {}
+src/kirito/stdlib_net.hpp:1190:13: warning: uninitialized record type: 'so' [cppcoreguidelines-pro-type-member-init]
+ 1190 |             net::SockOpt so;
+      |             ^              
+      |                            {}
+src/kirito/stdlib_regex.hpp:77:19: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+   77 |         if (slots[2 * g] < 0) return vm.none();       // group didn't participate
+      |                   ^
+src/kirito/stdlib_regex.hpp:77:19: note: make conversion explicit to silence this warning
+    4 |         if (slots[2 * g] < 0) return vm.none();       // group didn't participate
+      |                   ^~~~~
+      |                   static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:77:19: note: perform multiplication in a wider type
+   77 |         if (slots[2 * g] < 0) return vm.none();       // group didn't participate
+      |                   ^
+      |                   static_cast<long>( )
+src/kirito/stdlib_regex.hpp:79:80: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+   79 |         return vm.makeString(cpSlice(sv.value(), utf8Starts(sv.value()), slots[2 * g], slots[2 * g + 1]));
+      |                                                                                ^
+src/kirito/stdlib_regex.hpp:79:80: note: make conversion explicit to silence this warning
+   79 |         return vm.makeString(cpSlice(sv.value(), utf8Starts(sv.value()), slots[2 * g], slots[2 * g + 1]));
+      |                                                                                ^~~~~
+      |                                                                                static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:79:80: note: perform multiplication in a wider type
+   79 |         return vm.makeString(cpSlice(sv.value(), utf8Starts(sv.value()), slots[2 * g], slots[2 * g + 1]));
+      |                                                                                ^
+      |                                                                                static_cast<long>( )
+src/kirito/stdlib_regex.hpp:105:38: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  105 |                     out.push(M.slots[2 * g] < 0 ? dflt : M.groupString(vm, g));
+      |                                      ^
+src/kirito/stdlib_regex.hpp:105:38: note: make conversion explicit to silence this warning
+  105 |                     out.push(M.slots[2 * g] < 0 ? dflt : M.groupString(vm, g));
+      |                                      ^~~~~
+      |                                      static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:105:38: note: perform multiplication in a wider type
+  105 |                     out.push(M.slots[2 * g] < 0 ? dflt : M.groupString(vm, g));
+      |                                      ^
+      |                                      static_cast<long>( )
+src/kirito/stdlib_regex.hpp:115:53: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  115 |                         out.set(M.names[g], M.slots[2 * g] < 0 ? dflt : M.groupString(vm, g));
+      |                                                     ^
+src/kirito/stdlib_regex.hpp:115:53: note: make conversion explicit to silence this warning
+  115 |                         out.set(M.names[g], M.slots[2 * g] < 0 ? dflt : M.groupString(vm, g));
+      |                                                     ^~~~~
+      |                                                     static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:115:53: note: perform multiplication in a wider type
+  115 |                         out.set(M.names[g], M.slots[2 * g] < 0 ? dflt : M.groupString(vm, g));
+      |                                                     ^
+      |                                                     static_cast<long>( )
+src/kirito/stdlib_regex.hpp:122:43: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  122 |                 return vm.makeInt(M.slots[2 * g]);
+      |                                           ^
+src/kirito/stdlib_regex.hpp:122:43: note: make conversion explicit to silence this warning
+  122 |                 return vm.makeInt(M.slots[2 * g]);
+      |                                           ^~~~~
+      |                                           static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:122:43: note: perform multiplication in a wider type
+  122 |                 return vm.makeInt(M.slots[2 * g]);
+      |                                           ^
+      |                                           static_cast<long>( )
+src/kirito/stdlib_regex.hpp:134:59: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  134 |                 List out(vm); out.push(vm.makeInt(M.slots[2 * g])).push(vm.makeInt(M.slots[2 * g + 1]));
+      |                                                           ^
+src/kirito/stdlib_regex.hpp:134:59: note: make conversion explicit to silence this warning
+  134 |                 List out(vm); out.push(vm.makeInt(M.slots[2 * g])).push(vm.makeInt(M.slots[2 * g + 1]));
+      |                                                           ^~~~~
+      |                                                           static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:134:59: note: perform multiplication in a wider type
+  134 |                 List out(vm); out.push(vm.makeInt(M.slots[2 * g])).push(vm.makeInt(M.slots[2 * g + 1]));
+      |                                                           ^
+      |                                                           static_cast<long>( )
+src/kirito/stdlib_regex.hpp:174:21: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  174 |         if (m.slots[2 * g] < 0) return "";
+      |                     ^
+src/kirito/stdlib_regex.hpp:174:21: note: make conversion explicit to silence this warning
+  174 |         if (m.slots[2 * g] < 0) return "";
+      |                     ^~~~~
+      |                     static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:174:21: note: perform multiplication in a wider type
+  174 |         if (m.slots[2 * g] < 0) return "";
+      |                     ^
+      |                     static_cast<long>( )
+src/kirito/stdlib_regex.hpp:175:46: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  175 |         return cpSlice(subj, starts, m.slots[2 * g], m.slots[2 * g + 1]);
+      |                                              ^
+src/kirito/stdlib_regex.hpp:175:46: note: make conversion explicit to silence this warning
+  175 |         return cpSlice(subj, starts, m.slots[2 * g], m.slots[2 * g + 1]);
+      |                                              ^~~~~
+      |                                              static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:175:46: note: perform multiplication in a wider type
+  175 |         return cpSlice(subj, starts, m.slots[2 * g], m.slots[2 * g + 1]);
+      |                                              ^
+      |                                              static_cast<long>( )
+src/kirito/stdlib_regex.hpp:305:62: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  305 |                     auto gtext = [&](int g) { return r.slots[2 * g] < 0 ? std::string("")
+      |                                                              ^
+src/kirito/stdlib_regex.hpp:305:62: note: make conversion explicit to silence this warning
+  305 |                     auto gtext = [&](int g) { return r.slots[2 * g] < 0 ? std::string("")
+      |                                                              ^~~~~
+      |                                                              static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:305:62: note: perform multiplication in a wider type
+  305 |                     auto gtext = [&](int g) { return r.slots[2 * g] < 0 ? std::string("")
+      |                                                              ^
+      |                                                              static_cast<long>( )
+src/kirito/stdlib_regex.hpp:306:76: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  306 |                                               : cpSlice(s, starts, r.slots[2 * g], r.slots[2 * g + 1]); };
+      |                                                                            ^
+src/kirito/stdlib_regex.hpp:306:76: note: make conversion explicit to silence this warning
+  306 |                                               : cpSlice(s, starts, r.slots[2 * g], r.slots[2 * g + 1]); };
+      |                                                                            ^~~~~
+      |                                                                            static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:306:76: note: perform multiplication in a wider type
+  306 |                                               : cpSlice(s, starts, r.slots[2 * g], r.slots[2 * g + 1]); };
+      |                                                                            ^
+      |                                                                            static_cast<long>( )
+src/kirito/stdlib_regex.hpp:372:42: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  372 |                         out.push(r.slots[2 * g] < 0 ? vm.none()
+      |                                          ^
+src/kirito/stdlib_regex.hpp:372:42: note: make conversion explicit to silence this warning
+  372 |                         out.push(r.slots[2 * g] < 0 ? vm.none()
+      |                                          ^~~~~
+      |                                          static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:372:42: note: perform multiplication in a wider type
+  372 |                         out.push(r.slots[2 * g] < 0 ? vm.none()
+      |                                          ^
+      |                                          static_cast<long>( )
+src/kirito/stdlib_regex.hpp:373:76: warning: performing an implicit widening conversion to type 'size_type' (aka 'unsigned long') of a multiplication performed in type 'int' [bugprone-implicit-widening-of-multiplication-result]
+  373 |                                 : vm.makeString(cpSlice(s, starts, r.slots[2 * g], r.slots[2 * g + 1])));
+      |                                                                            ^
+src/kirito/stdlib_regex.hpp:373:76: note: make conversion explicit to silence this warning
+  373 |                                 : vm.makeString(cpSlice(s, starts, r.slots[2 * g], r.slots[2 * g + 1])));
+      |                                                                            ^~~~~
+      |                                                                            static_cast<size_type>( )
+src/kirito/stdlib_regex.hpp:373:76: note: perform multiplication in a wider type
+  373 |                                 : vm.makeString(cpSlice(s, starts, r.slots[2 * g], r.slots[2 * g + 1])));
+      |                                                                            ^
+      |                                                                            static_cast<long>( )
+src/kirito/stdlib_serde.hpp:61:7: warning: empty catch statements hide issues; to handle exceptions appropriately, consider re-throwing, handling, or avoiding catch altogether [bugprone-empty-catch]
+   61 |     } catch (const KiritoError&) {
+      |       ^
+src/kirito/stdlib_sys.hpp:41:40: warning: the parameter 'cwdV' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+   41 |                                  Value cwdV, Value inputV, Value timeoutV) {
+      |                                        ^
+      |                                  const  &
+src/kirito/stdlib_sys.hpp:41:52: warning: the parameter 'inputV' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+   41 |                                  Value cwdV, Value inputV, Value timeoutV) {
+      |                                                    ^
+      |                                              const  &
+src/kirito/stdlib_sys.hpp:41:66: warning: the parameter 'timeoutV' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+   41 |                                  Value cwdV, Value inputV, Value timeoutV) {
+      |                                                                  ^
+      |                                                            const  &
+src/kirito/stdlib_sys.hpp:208:24: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  208 |             for (Value e : args[0].items()) argv.push_back(e.asStringRef("createprocess: each argument must be a String"));
+      |                        ^
+      |                  const  &
+src/kirito/stdlib_tensor.hpp:179:12: warning: enum 'MathOp' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size [performance-enum-size]
+  179 | enum class MathOp {
+      |            ^
+src/kirito/stdlib_tensor.hpp:222:38: warning: the parameter 'v' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+  222 | inline tensor::Shape readShape(Value v) {
+      |                                      ^
+      |                                const  &
+src/kirito/stdlib_tensor.hpp:224:16: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  224 |     for (Value e : v.items()) {
+      |                ^
+      |          const  &
+src/kirito/stdlib_tensor.hpp:422:64: warning: the parameter 'ns' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+  422 | inline Handle g_reshape(KiritoVM& vm, Handle ah, tensor::Shape ns) {
+      |                                                                ^
+      |                                                  const        &
+src/kirito/stdlib_tensor.hpp:754:48: warning: the parameter 'v' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+  754 | inline std::vector<int64_t> readAxisList(Value v) {
+      |                                                ^
+      |                                          const  &
+src/kirito/stdlib_tensor.hpp:757:34: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+  757 |     if (v.isList()) { for (Value e : v.items()) out.push_back(e.asInt("axis")); return out; }
+      |                                  ^
+      |                            const  &
+src/kirito/stdlib_tensor.hpp:999:73: warning: the parameter 'target' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+  999 | inline Handle g_broadcastToShape(KiritoVM& vm, Handle ah, tensor::Shape target) {
+      |                                                                         ^
+      |                                                           const        &
+src/kirito/stdlib_tensor.hpp:1024:60: warning: 'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop [performance-inefficient-vector-operation]
+ 1024 |         std::vector<const CT*> ptrs; for (auto& p : parts) ptrs.push_back(&p);
+      |                                                            ^
+src/kirito/stdlib_tensor.hpp:1028:25: warning: 'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop [performance-inefficient-vector-operation]
+ 1028 |     for (Handle h : hs) ptrs.push_back(&std::get<FT>(asT(vm, h).store));
+      |                         ^
+src/kirito/stdlib_tensor.hpp:1051:25: warning: 'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop [performance-inefficient-vector-operation]
+ 1051 |     for (Handle h : hs) expanded.push_back(rs.add(g_expandDims(vm, h, axis)));
+      |                         ^
+src/kirito/stdlib_tensor.hpp:1416:58: warning: 'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop [performance-inefficient-vector-operation]
+ 1416 |     std::vector<std::size_t> lsz; for (char ch : labels) lsz.push_back(sz[ch]);
+      |                                                          ^
+src/kirito/stdlib_tensor.hpp:1421:60: warning: 'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop [performance-inefficient-vector-operation]
+ 1421 |     std::vector<tensor::Shape> ists; for (auto& sh : shps) ists.push_back(tensor::rowMajorStrides(sh));
+      |                                                            ^
+src/kirito/stdlib_tensor.hpp:1511:43: warning: narrowing conversion from 'int' to signed type 'char' is implementation-defined [cppcoreguidelines-narrowing-conversions]
+ 1511 |         char c = op == BinOp::Add ? '+' : op == BinOp::Sub ? '-' : op == BinOp::Mul ? '*' : op == BinOp::Div ? '/' : 0;
+      |                                           ^
+src/kirito/stdlib_tensor.hpp:1573:24: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+ 1573 |             for (Value e : Value(vm, keys[0]).items()) idxs.push_back(static_cast<std::ptrdiff_t>(e.asInt("index")));
+      |                        ^
+      |                  const  &
+src/kirito/stdlib_tensor.hpp:1948:20: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+ 1948 |         for (Value e : Value(vm, a[0]).items()) idxs.push_back(static_cast<std::ptrdiff_t>(e.asInt("index")));
+      |                    ^
+      |              const  &
+src/kirito/stdlib_tensor.hpp:2052:20: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+ 2052 |         for (Value e : items[1].items()) shape.push_back(static_cast<std::size_t>(e.asInt("dim")));
+      |                    ^
+      |              const  &
+src/kirito/stdlib_tensor.hpp:2056:24: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+ 2056 |             for (Value e : items[2].items()) {
+      |                        ^
+      |                  const  &
+src/kirito/stdlib_tensor.hpp:2064:24: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+ 2064 |             for (Value e : items[2].items()) data.push_back(e.asFloat("x"));
+      |                        ^
+      |                  const  &
+src/kirito/stdlib_tensor.hpp:2151:69: warning: the parameter 'v' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+ 2151 |             std::function<void(Value, std::size_t)> rec = [&](Value v, std::size_t d) {
+      |                                                                     ^
+      |                                                               const  &
+src/kirito/stdlib_tensor.hpp:2156:28: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+ 2156 |                 for (Value e : it) rec(e, d + 1);
+      |                            ^
+      |                      const  &
+src/kirito/stdlib_tensor.hpp:2162:40: warning: 'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop [performance-inefficient-vector-operation]
+ 2162 |                 for (Handle hh : flat) data.push_back(cpx::asComplex(vm, hh, "Tensor element"));
+      |                                        ^
+src/kirito/stdlib_tensor.hpp:2166:40: warning: 'push_back' is called inside a loop; consider pre-allocating the container capacity before the loop [performance-inefficient-vector-operation]
+ 2166 |                 for (Handle hh : flat) data.push_back(Value(vm, hh).asFloat("Tensor element"));
+      |                                        ^
+src/kirito/stdlib_tensor.hpp:2258:27: warning: Variable 'x' with floating point type 'double' should not be used as a loop counter [clang-analyzer-security.FloatLoopCounter]
+ 2258 |             if (step > 0) for (double x = start; x < stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
+      |                           ^                      ~         ~
+src/kirito/stdlib_tensor.hpp:2258:27: note: Variable 'x' with floating point type 'double' should not be used as a loop counter
+ 2258 |             if (step > 0) for (double x = start; x < stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
+      |                           ^                      ~         ~
+src/kirito/stdlib_tensor.hpp:2259:18: warning: Variable 'x' with floating point type 'double' should not be used as a loop counter [clang-analyzer-security.FloatLoopCounter]
+ 2259 |             else for (double x = start; x > stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
+      |                  ^                      ~         ~
+src/kirito/stdlib_tensor.hpp:2259:18: note: Variable 'x' with floating point type 'double' should not be used as a loop counter
+ 2259 |             else for (double x = start; x > stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
+      |                  ^                      ~         ~
+src/kirito/stdlib_tensor.hpp:2389:24: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+ 2389 |             for (Value e : Value(vm, h).items()) {
+      |                        ^
+      |                  const  &
+src/kirito/stdlib_tensor.hpp:2424:28: warning: loop variable is copied but only used as const reference; consider making it a const reference [performance-for-range-copy]
+ 2424 |                 for (Value e : secs.items()) { std::size_t s = static_cast<std::size_t>(e.asInt("section")); sizes.push_back(s); total += s; }
+      |                            ^
+      |                      const  &
+src/kirito/tensor.hpp:214:9: warning: switching on non-enum value without default case may not cover all cases [bugprone-switch-missing-default-case]
+  214 |         switch (op) {
+      |         ^
+src/kirito/value.hpp:662:38: warning: parameter 'dflt' is passed by value and only copied once; consider moving it to avoid unnecessary copies [performance-unnecessary-value-param]
+  662 |         return v ? Value(*vm_, *v) : dflt;
+      |                                      ^   
+      |                                      std::move( )
+src/kirito/value.hpp:664:84: warning: parameter 'dflt' is passed by value and only copied once; consider moving it to avoid unnecessary copies [performance-unnecessary-value-param]
+  664 |     Value get(std::string_view sk, Value dflt) const { return get(Value(*vm_, sk), dflt); }
+      |                                                                                    ^   
+      |                                                                                    std::move( )
+src/kirito/value.hpp:850:86: warning: parameter 'dflt' is passed by value and only copied once; consider moving it to avoid unnecessary copies [performance-unnecessary-value-param]
+  850 |     Value opt(std::size_t i, Value dflt) const { return i < a_.size() ? (*this)[i] : dflt; }
+      |                                                                                      ^   
+      |                                                                                      std::move( )
+src/kirito/value.hpp:980:93: warning: parameter 'dflt' is passed by value and only copied once; consider moving it to avoid unnecessary copies [performance-unnecessary-value-param]
+  980 | inline Value Value::get(std::string_view k, Value dflt) const { return asDict("get").get(k, dflt); }
+      |                                                                                             ^   
+      |                                                                                             std::move( )
+src/kirito/vm.hpp:379:34: warning: performing an implicit widening conversion to type 'std::size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int' [bugprone-implicit-widening-of-multiplication-result]
+  379 |     std::size_t maxStackBytes_ = 6u * 1024 * 1024;
+      |                                  ^
+src/kirito/vm.hpp:379:34: note: make conversion explicit to silence this warning
+    4 |     std::size_t maxStackBytes_ = 6u * 1024 * 1024;
+      |                                  ^~~~~~~~~~~~~~~~
+      |                                  static_cast<std::size_t>( )
+src/kirito/vm.hpp:379:34: note: perform multiplication in a wider type
+  379 |     std::size_t maxStackBytes_ = 6u * 1024 * 1024;
+      |                                  ^~~~~~~~~
+      |                                  static_cast<std::size_t>( )
