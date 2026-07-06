@@ -414,6 +414,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 |---|---|---|
 | `open expected 1 or 2 arguments` | `io.open` called with 0 or >2 args | Pass `open(path[, mode])` |
 | `open path must be a String` / `open mode must be a String` | Non-String path/mode to `open` | Pass Strings |
+| `open: embedded NUL byte in path` | A String path containing a `\0` (the OS truncates at it — a validation bypass) | Remove the NUL byte |
 | `unsupported file mode '<mode>'` | Mode not in the r/w/a[+][b] set | Use `"r"`/`"w"`/`"a"`/`"r+"` + optional `b` |
 | `could not open file '<path>'` | OS could not open the path (missing dir, permission) | Check the path exists / is accessible |
 
@@ -434,7 +435,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `seek expects an offset` | `seek()` with no offset | Pass an integer offset |
 | `seek: whence must be 0 (set), 1 (cur), or 2 (end)` | Out-of-range `whence` | Use 0, 1, or 2 |
 | `seek: resulting position is out of range` / `seek: resulting position is negative` | Offset over/underflows the stream | Seek to a valid non-negative position |
-| `BytesIO too large` | The in-memory buffer grew past the cap | Stream to a file instead |
+| `BytesIO too large` | The in-memory buffer grew past the 256 MiB cap (via `write` or a `truncate` that extends after a large `seek`) | Stream to a file instead |
 | `BytesIO expects a byte String` | Non-String passed to `BytesIO(...)` | Pass a (byte-transparent) String |
 
 ### path — pure paths & queries
@@ -442,6 +443,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `join expected at least one path component` | `path.join()` with zero args | Pass ≥1 component |
+| `path: embedded NUL byte in path` | A filesystem query/mutation on a String path containing a `\0` (the OS truncates at it) | Remove the NUL byte |
 | `getsize: <reason>` | `getsize` on a missing/non-regular path | Ensure the file exists |
 
 ### path — mutation (strict by default)
@@ -474,6 +476,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `add/sub: cannot convert NaN/infinity to Integer` / `add/sub: result out of Integer range` / `DateTime arithmetic overflow` | Non-finite/huge delta or epoch overflow | Pass a finite, in-range delta |
 | `diff expects 1 argument (a DateTime)` / `diff expects a DateTime` | Bad arg to `diff` | Pass a DateTime |
 | `format expects a String` | Non-String format to `format` | Pass a format String |
+| `sleep: seconds must be a finite number` / `sleep: seconds too large (maximum 1e9)` | `time.sleep(inf/nan)` or an absurdly large duration | Pass a finite, in-range number of seconds |
 
 ### net — TCP sockets
 
@@ -525,8 +528,9 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 |---|---|---|
 | `Random: unknown generator '<name>' …` | Bad `generator=` kwarg | Use `"xoshiro"` or `"mersenne_twister"` |
 | `expected a number` / `uniform expects (a, b)` / `randint expects (a, b)` / `randrange expects 1 to 3 arguments` | Bad arity/type to a distribution | Pass the expected numeric args |
-| `expovariate: lambda must be positive` | λ ≤ 0 | Pass λ > 0 |
-| `gauss: sigma must be non-negative` | A negative standard deviation to `gauss`/`normalvariate` | Pass `sigma ≥ 0` |
+| `expovariate: lambda must be positive and finite` | λ ≤ 0 or a non-finite λ (a NaN slips past `≤`) | Pass a finite λ > 0 |
+| `gauss: sigma must be non-negative` / `gauss: mu and sigma must be finite numbers` | A negative or non-finite param to `gauss`/`normalvariate` | Pass a finite `sigma ≥ 0` |
+| `uniform: a and b must be finite numbers` | A NaN/inf bound to `uniform` | Pass finite bounds |
 | `randint: empty range` / `randrange: empty range` / `randrange: step must not be zero` / `randrange: range too large to sample` | A degenerate integer range | Widen the range / use a non-zero step |
 | `choice/choices from empty sequence/population` | Sampling an empty population | Provide items |
 | `choices: k must be non-negative` / `choices: k too large` | Bad `k` for `choices` | Pass 0 ≤ k ≤ cap |
@@ -557,7 +561,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `complex division by zero` | `z / 0` | Use a non-zero divisor |
 | `complex pow: zero to a negative or complex power` | `0j ** -1` / `0j ** 1j` | Avoid the singularity |
 | `complex.pow expects 2 arguments` | Wrong arity to `complex.pow` | Pass two arguments |
-| `<fn>: math domain error (logarithm of zero)` / `(atanh of ±1)` | `complex.log`/`log10` of 0, or `atanh(±1)` | Keep the argument in domain |
+| `<fn>: math domain error (logarithm of zero)` / `(atanh of ±1)` / `(atan of ±i)` | `complex.log`/`log10` of 0, `atanh(±1)`, or `atan(±i)` (each a pole) | Keep the argument in domain |
 
 ### matrix / ComplexMatrix
 
@@ -570,6 +574,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `determinant/inverse/trace requires a square Matrix/ComplexMatrix` | A square-only op on a non-square matrix | Use a square matrix |
 | `dot/cross expects a … vector` / `dot requires vectors of equal length` / `cross is only defined for two 3-element vectors` | Malformed vector operands | Use conforming 1×n / n×1 vectors |
 | `Matrix rows must have equal length` / `Matrix expects a nested list …` / `… dimensions must be non-negative` | Bad constructor/factory input | Pass a rectangular nested list / valid dims |
+| `Matrix _setstate_: negative dimension` / `… malformed state` / `… data size does not match shape` | Corrupt/hostile serialized Matrix state (a negative dim would otherwise build a garbage matrix) | Deserialize only trusted data |
 | `Matrix() got an unexpected keyword argument '<name>'` / `got multiple values for 'rows'` | Bad keyword to `Matrix()` | Use `rows=`/`cols=` once each |
 
 ### tensor
@@ -615,6 +620,7 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `JSON parse error: unterminated string` / `bad escape` / `bad \u escape` / `invalid \u escape …` / `invalid low surrogate …` | Malformed string/escape | Fix the string escaping |
 | `cannot serialize a cyclic structure to JSON` / `structure too deeply nested to serialize to JSON` | `json.stringify` hit a cycle / >1000 depth | Break the cycle / flatten |
 | `cannot serialize '<T>' to JSON` | A Set/Function/native in the graph | Convert to JSON-native types (List/Dict/scalars) |
+| `json.stringify: indent too large (maximum 100)` | A huge `indent=` to `stringify` (would overflow/OOM the pad) | Use an indent ≤ 100 |
 
 ### serialize / dump — text (KSER1) & binary (KDMP)
 
