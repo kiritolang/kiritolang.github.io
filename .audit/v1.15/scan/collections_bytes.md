@@ -45,3 +45,44 @@ Probe binary: `./build-debug/ki`.
   "key not found". Flagging as SUSPECT for maintainer decision.
 - fix idea: make the user-facing `x in set` throw on unhashable (mirror Dict), keeping the internal
   arena-only contains lenient; or document the intentional divergence.
+
+### F2 [HIGH] Heap-use-after-free: reentrant mutation during Dict/Set stringify (str() not probing_-guarded)
+- where: src/kirito/collections.hpp:178-192 (DictVal::str) and 314-326 (SetVal::str)
+- root cause: `equals()` and every mutator take a `ProbeScope guard(probing_)` so a reentrant
+  `_hash_`/`_eq_` that mutates the SAME container throws instead of reallocating a live bucket. But
+  `str()` sets NO probing_ guard, yet it CAN run arbitrary user code: a contained value that is an
+  instance with `_str_` (InstanceValue::str, runtime.hpp:1914) executes during `stringifyChild`. That
+  `_str_` can call `d[...] = v` / `s.add(...)`, which reallocates the bucket `std::vector` (or the
+  `fum::unordered_map`) that `str()`'s range-for is iterating -> UAF / heap corruption.
+- repro (Dict), CONFIRMED under build-asan (heap-use-after-free at collections.hpp:186):
+  ```
+  var io = import("io")
+  var d = {}
+  class Key:
+      var _init_ = Function(self, n): self._n = n
+      var _hash_ = Function(self): return 5          # force one shared bucket vector
+      var _eq_ = Function(self, o): return self._n == o._n
+      var _str_ = Function(self): return "K" + String(self._n)
+  class Bomb:
+      var _str_ = Function(self):
+          var i = 100
+          while i < 400:
+              d[Key(i)] = i                          # grow the hash-5 bucket mid-stringify
+              i = i + 1
+          return "boom"
+  d[Key(0)] = Bomb()
+  d[Key(1)] = 1
+  d[Key(2)] = 2
+  var s = String(d)                                  # ASan: heap-use-after-free
+  ```
+  Set version (build-asan, UAF at collections.hpp:319): same shape with `g.add(E(i))` inside a
+  contained element's `_str_` (all elems `_hash_`=7 into one bucket).
+- actual: AddressSanitizer heap-use-after-free (freed by DictVal::set's vector _M_realloc_insert,
+  read by DictVal::str). On the plain debug build it silently "survives" printing garbage (UB).
+- expected: like a reentrant mutation during a key comparison, this should throw a clean catchable
+  "Dict/Set changed size during stringify" error (or stringify a snapshot), never corrupt the heap.
+- fix idea: wrap the DictVal::str / SetVal::str body in `ProbeScope guard(probing_)` (mutators already
+  reject when probing_ is set — gives the same catchable error as equals). Alternatively stringify a
+  handle SNAPSHOT (`pairs()`/`items()` copy the handles before any _str_ runs). Note: ListVal::str is
+  NOT affected — it re-indexes `elems[i]` with `i < elems.size()` each iteration and copies the Handle
+  before the call, so append/clear can't dangle it (worst case: a clear ends the loop early).
