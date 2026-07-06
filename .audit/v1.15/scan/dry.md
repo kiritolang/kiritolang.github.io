@@ -98,3 +98,29 @@ multiple places; parallel implementations that should share a helper.
 - `"'<className>' is not iterable"` (no leading "type "): runtime.hpp:1909 (user-class _iter_ path)
 - Semi-intentional (class name vs builtin typeName) but the two spellings mean a user sees different
   phrasings for the same failure depending on whether the value is a builtin or a class instance.
+
+### F9 [LOW] The bound-method-maker lambda is copy-pasted verbatim in ~20 sites across 8 files
+- identical snippet:
+    auto bind = [&](const char* nm, std::vector<std::string> params, NativeFn fn) {
+        return makeMethod(vm, nm, std::move(params), std::move(fn), std::vector<Handle>{self}); };
+- sites: runtime.hpp:695,870,1127; stdlib_io.hpp:156,306,459; stdlib_net.hpp:1001,1258;
+  stdlib_matrix.hpp:165; stdlib_complex.hpp:346 (and a params-less variant :148); stdlib_tensor.hpp:1640;
+  stdlib_regex.hpp:83,257; stdlib_random.hpp:116; stdlib_parallel.hpp:91,196,238,302,358,417.
+- drift risk: LOW (trivial forwarding, unlikely to diverge) but it's the most-duplicated snippet in
+  the codebase. A single `native.hpp` helper (`auto methodBinder(KiritoVM&, Handle self)`) would
+  remove ~20 copies. Note two subtle variants already exist: some sites add a `req`/`minArgs`
+  min-arity arg (runtime.hpp:701,1143; net.hpp:1014) — a would-be shared helper must cover that.
+
+### F10 [LOW] zlib/gzip/hash codec wrapper lambda duplicated (prior-audit nit, still present)
+- stdlib_zlib.hpp:27-36 `codec`, stdlib_gzip.hpp:103-113 `codec`, stdlib_hash.hpp:37-52 `digest`/
+  `checksum32` — same shape: Args -> makeStringOrBytes(argStringOrBytes(...)) with DeflateError->
+  KiritoError translation. Differ only in error prefix (zlib always "zlib: ", gzip conditional, hash
+  none). Not drifted; flagged in v1.12 audit as a nit. A shared helper taking a prefix would unify.
+
+### F11 [LOW] Matrix and ComplexMatrix native wrappers are parallel copies (math IS shared, glue is not)
+- The numeric core (determinant/inverse/trace/transpose) correctly delegates to the shared
+  `tensor::` engine in BOTH stdlib_matrix.hpp:217-235 and stdlib_complex.hpp:282-430 — good DRY.
+- But the Kirito-facing NativeClass glue is duplicated: the `fromTensor` helper, the
+  "requires a square Matrix/ComplexMatrix" guards (matrix.hpp:222/227/234 vs complex.hpp:283/287/430),
+  the element cap (F3), the shape/index-bounds guards, and the factory set (zeros/ones/identity/vector).
+  Two ~parallel wrappers that must be kept in step for any new shared-matrix method.

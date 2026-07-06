@@ -54,3 +54,18 @@ B().reveal()   # "B-secret" (works — B was the last class defined)
 - actual: the LAST class to reference the shared function wins; every earlier class's method now has the wrong `ownerClass`, so `self._super_()` climbs from the wrong base and `checkPrivateAccess` uses the wrong `currentClass` (legit access wrongly denied; and in inheritance-related cases could mis-permit).
 - expected: each class's method should resolve `_super_`/privacy against the class it is a member of, regardless of function-object identity.
 - fix idea: `ownerClass` cannot live on the shared function. Either (a) detect an already-owned KiFunction and clone it when it is adopted as a method by a second class, or (b) resolve the owning class from the call site (the class through whose `methods` map the bound method was found) rather than from a field stashed on the function. Note: normal inline `var m = Function(self): ...` bodies are unaffected because each is a distinct object; only a function object shared between classes triggers it.
+
+### F2 [HIGH — security] Privacy bypass: a free function adopted as a method reads private members when called directly from external scope
+- where: same root cause as F1 (ownerClass stashed on KiFunction: bytecode_vm.hpp:186-192) + checkPrivateAccess reading the running frame's `ownerClass()` (runtime.hpp:2151-2164).
+- repro:
+```
+var readpriv = Function(obj): return obj._secret     # plain module-level function
+class A:
+    var _init_ = Function(self): self._secret = "TOP-SECRET"
+    var use = readpriv                                # ...also adopted as a method of A
+var a = A()
+readpriv(a)   # => "TOP-SECRET"  — external code reads A's private member
+```
+- actual: because `readpriv` was adopted as a method of A, its KiFunction has `hasOwner=true, ownerClass=A`. Calling it directly from module scope still runs its body with frame ownerClass=A, so `checkPrivateAccess` sees currentClass=A, receiver is an A instance -> access ALLOWED. Fully external code reads/writes `_secret`.
+- expected: privacy should be bypassable only from inside code lexically belonging to the class chain, not from any external call site that happens to invoke a function object which was also registered as a method.
+- fix idea: same as F1 — ownership/privacy scope must be tied to the syntactic method definition site, not carried on a first-class function value that external code can also hold and invoke.

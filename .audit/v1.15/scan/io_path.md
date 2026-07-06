@@ -31,7 +31,7 @@ io.print(g.seek(-5))          # THROW: seek: resulting position is negative
 var io = import("io"); var path = import("path")
 var d = path.gettempdir()
 var f = io.open(d, "r")       # => <File> (no error)
-io.print(repr(f.read()))      # => ""  (silent)
+io.print(len(f.read()))       # => 0  (silent; Python would IsADirectoryError)
 ```
 - actual: `io.open(<dir>, "r")` returns a File and `read()` returns "" (glibc fstream opens a directory for input). Opening a dir for write DOES throw. Python raises IsADirectoryError.
 - expected: opening a directory as a file should raise (a case that should error but silently succeeds).
