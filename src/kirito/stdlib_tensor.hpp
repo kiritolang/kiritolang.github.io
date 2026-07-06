@@ -1115,7 +1115,10 @@ inline Handle reduceMinMax(KiritoVM& vm, Handle ah, int64_t axis, bool isMax) {
     const FT& a = reqFloat(asT(vm, ah), "min/max");
     if (axis < 0) return vm.makeFloat(isMax ? tensor::maxAll(a) : tensor::minAll(a));
     std::size_t ax = static_cast<std::size_t>(axis);
-    return make(vm, tensor::reduceAxis(a, ax, [isMax](double x, double y) { return isMax ? std::max(x, y) : std::min(x, y); }));
+    // NaN-propagating combiners (numpy amax/amin): a NaN anywhere in the reduced axis -> NaN, so the
+    // per-axis result matches maxAll/minAll and is independent of the NaN's position (A13-1).
+    return make(vm, tensor::reduceAxis(a, ax, [isMax](double x, double y) {
+        return isMax ? tensor::nanpropMax(x, y) : tensor::nanpropMin(x, y); }));
 }
 // iterate over each 1-D line along `axis`, calling fn(baseOffset, step, len).
 template <class LineFn>
@@ -1135,9 +1138,15 @@ inline Handle argMinMax(KiritoVM& vm, Handle ah, int64_t axis, bool isMax) {
     warnDetach(vm, isMax ? "argmax()" : "argmin()", asT(vm, ah));
     const FT& a = reqFloat(asT(vm, ah), "argmin/argmax");
     if (a.data.empty()) throw KiritoError("argmin/argmax of an empty tensor");
+    // NaN handling matches numpy: a NaN is "larger" than everything, so argmax/argmin both return
+    // the index of the FIRST NaN when one is present (order-independent in the same sense max/min
+    // are now NaN-propagating; A13-1). A bare >/< comparison would silently SKIP a non-seed NaN.
     if (axis < 0) {
-        std::size_t best = 0;
-        for (std::size_t i = 1; i < a.data.size(); ++i) if (isMax ? a.data[i] > a.data[best] : a.data[i] < a.data[best]) best = i;
+        std::size_t best = 0; double bv = a.data[0];
+        for (std::size_t i = 0; i < a.data.size(); ++i) {
+            if (std::isnan(a.data[i])) { best = i; break; }
+            if (i > 0 && (isMax ? a.data[i] > bv : a.data[i] < bv)) { bv = a.data[i]; best = i; }
+        }
         return vm.makeInt(static_cast<int64_t>(best));
     }
     std::size_t ax = static_cast<std::size_t>(axis);
@@ -1147,7 +1156,11 @@ inline Handle argMinMax(KiritoVM& vm, Handle ah, int64_t axis, bool isMax) {
     std::size_t olin = 0;
     forEachLine(a.shape, ax, [&](std::size_t base, std::size_t step, std::size_t len) {
         std::size_t best = 0; double bv = a.data[base];
-        for (std::size_t k = 1; k < len; ++k) { double v = a.data[base + k * step]; if (isMax ? v > bv : v < bv) { bv = v; best = k; } }
+        for (std::size_t k = 0; k < len; ++k) {
+            double v = a.data[base + k * step];
+            if (std::isnan(v)) { best = k; break; }
+            if (k > 0 && (isMax ? v > bv : v < bv)) { bv = v; best = k; }
+        }
         out.data[olin++] = static_cast<double>(best);
     });
     return make(vm, std::move(out));
@@ -1195,8 +1208,8 @@ inline Handle ptpT(KiritoVM& vm, Handle ah, int64_t axis) {
     const FT& a = reqFloat(asT(vm, ah), "ptp");
     if (axis < 0) return vm.makeFloat(tensor::maxAll(a) - tensor::minAll(a));
     std::size_t ax = static_cast<std::size_t>(axis);
-    FT mx = tensor::reduceAxis(a, ax, [](double x, double y) { return std::max(x, y); });
-    FT mn = tensor::reduceAxis(a, ax, [](double x, double y) { return std::min(x, y); });
+    FT mx = tensor::reduceAxis(a, ax, [](double x, double y) { return tensor::nanpropMax(x, y); });
+    FT mn = tensor::reduceAxis(a, ax, [](double x, double y) { return tensor::nanpropMin(x, y); });
     return make(vm, tensor::sub(mx, mn));
 }
 inline Handle medianT(KiritoVM& vm, Handle ah, int64_t axis) {

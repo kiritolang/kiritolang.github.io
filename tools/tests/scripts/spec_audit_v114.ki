@@ -86,4 +86,24 @@ var makeCycle = Function():
     return c
 assert throws(Function(): return makeCycle() < makeCycle()), "A04-2: ordering a cyclic list throws (bounded)"
 
+# --- A13-1: tensor max/min propagate NaN (position-independent); argmax/argmin return first-NaN index ---
+var tensor = import("tensor")
+assert math.isnan(tensor.Tensor([math.nan, 1.0, 3.0]).max()), "A13-1: max with NaN as seed -> NaN"
+assert math.isnan(tensor.Tensor([1.0, math.nan, 3.0]).max()), "A13-1: max with NaN in middle -> NaN (was 3.0)"
+assert math.isnan(tensor.Tensor([1.0, 3.0, math.nan]).min()), "A13-1: min with trailing NaN -> NaN"
+var noNan = tensor.Tensor([1.0, 5.0, 3.0])
+assert noNan.max() == 5.0 and noNan.min() == 1.0, "A13-1: no-NaN max/min unchanged"
+assert noNan.argmax() == 1 and noNan.argmin() == 0, "A13-1: no-NaN argmax/argmin unchanged"
+assert tensor.Tensor([1.0, math.nan, 3.0]).argmax() == 1, "A13-1: argmax returns the first-NaN index"
+assert tensor.Tensor([1.0, 3.0, math.nan]).argmax() == 2, "A13-1: argmax first-NaN index (trailing)"
+
+# --- A13-2: complex.atan(±i) throws a domain error (poles), like atanh(±1) ---
+var complex = import("complex")
+assert throws(Function(): return complex.atan(complex.i)), "A13-2: atan(i) must throw"
+assert complex.atan(complex.real(0.5)).re > 0.4, "A13-2: atan of an in-domain value still works"
+
+# --- A13-3: Matrix._setstate_ rejects a negative dimension (was a garbage rows()==-1 from untrusted state) ---
+var matrix = import("matrix")
+assert throws(Function(): return matrix.zeros(1, 1)._setstate_([-1, 0, []])), "A13-3: negative dim rejected"
+
 io.print("OK audit-v114")

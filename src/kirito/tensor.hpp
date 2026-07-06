@@ -6,6 +6,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -276,11 +277,26 @@ T dot(const Tensor<T>& a, const Tensor<T>& b) {
 template <class T> T sumAll(const Tensor<T>& t) { T s = T{}; for (const T& x : t.data) s += x; return s; }
 template <class T> T prodAll(const Tensor<T>& t) { T p = T{1}; for (const T& x : t.data) p *= x; return p; }
 
+// max/min combiners that PROPAGATE NaN (numpy amax/amin semantics): if either operand is NaN the
+// result is NaN. std::max/std::min and a bare `x < m` do NOT — `max(x, NaN)` keeps x but
+// `max(NaN, x)` keeps NaN — so a reduction seeded by the first element gives a DIFFERENT answer for
+// the same multiset depending on where the NaN sits (a03 A13-1). Integer T has no NaN: plain max/min.
+template <class T> T nanpropMax(T a, T b) {
+    if constexpr (std::is_floating_point_v<T>)
+        if (std::isnan(a) || std::isnan(b)) return std::numeric_limits<T>::quiet_NaN();
+    return a < b ? b : a;
+}
+template <class T> T nanpropMin(T a, T b) {
+    if constexpr (std::is_floating_point_v<T>)
+        if (std::isnan(a) || std::isnan(b)) return std::numeric_limits<T>::quiet_NaN();
+    return b < a ? b : a;
+}
+
 template <class T> T minAll(const Tensor<T>& t) {
     if constexpr (std::is_arithmetic_v<T>) {
         if (t.data.empty()) throw TensorError("min of an empty tensor");
         T m = t.data[0];
-        for (const T& x : t.data) if (x < m) m = x;
+        for (const T& x : t.data) m = nanpropMin(m, x);
         return m;
     } else {
         throw TensorError("min is not defined for this dtype (it is not ordered)");
@@ -290,7 +306,7 @@ template <class T> T maxAll(const Tensor<T>& t) {
     if constexpr (std::is_arithmetic_v<T>) {
         if (t.data.empty()) throw TensorError("max of an empty tensor");
         T m = t.data[0];
-        for (const T& x : t.data) if (m < x) m = x;
+        for (const T& x : t.data) m = nanpropMax(m, x);
         return m;
     } else {
         throw TensorError("max is not defined for this dtype (it is not ordered)");

@@ -113,5 +113,37 @@ int main() {
     CHECK(has(err("var a = [1]\na.append(a)\nvar b = [1]\nb.append(b)\na == b"),
               "comparison recursion depth"));
 
+    // === A13-1 (MEDIUM): tensor max/min/argmax/argmin were order-dependent under NaN
+    // (max([nan,1,3])->nan but max([1,nan,3])->3.0). max/min now PROPAGATE NaN (numpy amax/amin)
+    // so the value is position-independent; argmax/argmin return the first-NaN index. ===
+    CHECK(ok("var t = import(\"tensor\")\nvar m = import(\"math\")\n"
+             "String(m.isnan(t.Tensor([m.nan, 1.0, 3.0]).max())) + "
+             "String(m.isnan(t.Tensor([1.0, m.nan, 3.0]).max())) + "
+             "String(m.isnan(t.Tensor([1.0, 3.0, m.nan]).max()))") == "TrueTrueTrue");
+    CHECK(ok("var t = import(\"tensor\")\nvar m = import(\"math\")\n"
+             "String(m.isnan(t.Tensor([m.nan, 1.0]).min())) + String(m.isnan(t.Tensor([1.0, m.nan]).min()))")
+          == "TrueTrue");
+    // no NaN: ordinary max/min/argmax/argmin unchanged
+    CHECK(ok("var t = import(\"tensor\")\nvar d = t.Tensor([1.0, 5.0, 3.0])\n"
+             "String(d.max()) + \",\" + String(d.min()) + \",\" + String(d.argmax()) + \",\" + String(d.argmin())")
+          == "5.0,1.0,1,0");
+    // argmax/argmin with a NaN return the FIRST NaN index (numpy semantics), position-consistent
+    CHECK(ok("var t = import(\"tensor\")\nvar m = import(\"math\")\n"
+             "String(t.Tensor([1.0, m.nan, 3.0]).argmax()) + String(t.Tensor([1.0, 3.0, m.nan]).argmax())")
+          == "12");
+    // per-axis matches the whole-tensor rule: a NaN in the reduced line -> NaN
+    CHECK(ok("var t = import(\"tensor\")\nvar m = import(\"math\")\n"
+             "var r = t.Tensor([[m.nan, 1.0], [2.0, 3.0]]).max(axis = 1)\n"
+             "String(m.isnan(r.tolist()[0])) + String(r.tolist()[1])") == "True3.0");
+
+    // === A13-2 (LOW): complex.atan(±i) has poles there; it now throws a domain error like its
+    // mirror atanh(±1), instead of returning 0.0+infi silently. ===
+    CHECK(has(err("import(\"complex\").atan(import(\"complex\").i)"), "domain error"));
+    CHECK(ok("import(\"complex\").atan(import(\"complex\").real(0.5)).re > 0.4") == "True");
+
+    // === A13-3 (LOW): Matrix._setstate_ with a negative dimension cast to a huge size_t and slipped
+    // past the element guard (c==0), yielding rows()==-1 from untrusted state. Reject it. ===
+    CHECK(has(err("import(\"matrix\").zeros(1, 1)._setstate_([-1, 0, []])"), "negative dimension"));
+
     return RUN_TESTS();
 }
