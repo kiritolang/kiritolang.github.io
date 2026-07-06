@@ -1,0 +1,57 @@
+# Regression golden for the v1.14 audit — the observable fixes, driven from Kirito.
+# (The HIGH heap-corruption fix A08-1 is pinned in spec_reentrant_clear.ki + test_audit_hardening;
+# the C++/embedding item A19-1 is a C++ test. Here we pin the language/stdlib-visible ones.)
+var io = import("io")
+var math = import("math")
+var time = import("time")
+var json = import("json")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+# --- A09-1: format(x) with NO spec must match String(x) — Floats no longer go 'g'-lossy ---
+assert format(2.0) == "2.0", "A09-1: format(2.0) is '2.0', not the lossy '2'"
+assert format(1234567.0) == "1234567.0", "A09-1: 7-digit float round-trips, not '1.23457e+06'"
+assert format(0.1) == "0.1", "A09-1: format(0.1) is exact '0.1'"
+assert format(2.0) == String(2.0), "A09-1: no-spec format equals String() for a Float"
+assert format(42) == "42", "A09-1: Integer format unchanged"
+assert format(2.0, ".2f") == "2.00", "A09-1: a real spec still applies the mini-format-spec"
+assert format(255, "x") == "ff", "A09-1: base spec unaffected"
+
+# --- A06-1: a _str_ that returns a deep chain of DISTINCT instances throws, never crashes ---
+class N:
+    var _init_ = Function(self, nxt): self.nxt = nxt
+    var _str_ = Function(self): return self.nxt
+var build = Function(depth):
+    var head = None
+    var i = 0
+    while i < depth:
+        head = N(head)
+        i = i + 1
+    return head
+var deep = build(5000)
+assert throws(Function(): String(deep)), "A06-1: deep _str_-returns-instance chain must throw, not segfault"
+# a shallow chain still stringifies fine (the guard doesn't over-reject)
+class W:
+    var _init_ = Function(self, v): self.v = v
+    var _str_ = Function(self): return self.v
+assert String(W(W("deep"))) == "deep", "A06-1: a shallow _str_-returns-instance chain still works"
+
+# --- A16-1: time.sleep() rejects non-finite / absurd values (was float-cast UB / effective hang) ---
+assert throws(Function(): time.sleep(math.nan)), "A16-1: sleep(nan) must throw"
+assert throws(Function(): time.sleep(math.inf)), "A16-1: sleep(inf) must throw"
+assert throws(Function(): time.sleep(1e18)), "A16-1: sleep(1e18) must throw (would hang)"
+time.sleep(0.0)                                   # <= 0 is a clean no-op
+time.sleep(-3.0)
+assert True, "A16-1: sleep(<=0) is a no-op"
+
+# --- A14-2: json.stringify rejects a too-large indent (was signed-overflow UB / raw OOM message) ---
+assert throws(Function(): json.stringify([1, 2], indent = 99999999)), "A14-2: huge indent must throw"
+assert json.stringify([1, 2], indent = 2) == "[\n  1,\n  2\n]", "A14-2: a sane indent still pretty-prints"
+assert json.stringify([1, 2]) == "[1, 2]", "A14-2: compact default unaffected"
+
+io.print("OK audit-v114")

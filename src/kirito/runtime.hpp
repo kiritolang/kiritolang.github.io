@@ -1908,9 +1908,19 @@ inline std::string InstanceValue::str(StringifyCtx& ctx) const {
             Handle r = rs.add(ctx.vm->arena().deref(*m).call(*ctx.vm, full));
             const Object& o = ctx.vm->arena().deref(r);
             if (o.kind() == ValueKind::String) return static_cast<const StrVal&>(o).value();
+            // `_str_` returned a non-String (another object we must stringify). `ctx.active` only
+            // catches a _str_ that returns SELF (or a back-reference); a chain of DISTINCT instances
+            // (a._str_ -> b, b._str_ -> c, ...) never repeats, so bound ctx.depth like the container
+            // stringifier does, else deep native recursion overflows the C++ stack (a hard crash).
+            if (++ctx.depth > 1000) {
+                --ctx.depth;
+                throw KiritoError("'" + className + "' _str_ recurses too deeply (does _str_ return "
+                                  "self or a cycle of objects?)");
+            }
             ctx.active.insert(this);
             std::string s = o.str(ctx);
             ctx.active.erase(this);
+            --ctx.depth;
             return s;
         }
     }
@@ -3279,6 +3289,10 @@ inline void KiritoVM::installBuiltins() {
             if (s.kind() != ValueKind::String) throw KiritoError("format spec must be a String");
             spec = static_cast<const StrVal&>(s).value();
         }
+        // No spec == String(): route through stringify exactly like the f-string path
+        // (bytecode_vm.hpp) so `format(2.0)` is `"2.0"`, not the `'g'`-lossy `"2"` that
+        // applyFormatSpec's default would give (which doesn't round-trip a Float).
+        if (spec.empty()) return vm.makeString(vm.stringify(a[0]));
         return vm.makeString(applyFormatSpec(vm, a[0], spec));
     });
 
