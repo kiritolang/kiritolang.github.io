@@ -1,0 +1,215 @@
+# Doc-vs-impl verification for the `random` stdlib module (docs/pages/10-stdlib.md `## random`).
+# The RNG is SEEDED and DETERMINISTIC: a fixed seed reproduces an exact stream. Functioning cases,
+# range/permutation invariants, edge cases (k=0 / k=len / k>len / single-element), and HARDENING
+# (bad input must raise the RIGHT message; anything that SHOULD raise but doesn't is a silent bug).
+# Prints "OK random".
+var io = import("io")
+var random = import("random")
+var serialize = import("serialize")
+var dump = import("dump")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ constructor / generator kwarg / attr
+assert type(random.Random(42)) == "Random", "Random() constructs"
+assert random.Random(42).generator == "xoshiro", "default engine is xoshiro"
+assert random.Random(42, generator = "xoshiro").generator == "xoshiro", "generator=xoshiro"
+assert random.Random(42, generator = "mersenne_twister").generator == "mersenne_twister", "generator=mersenne_twister"
+assert random.Random(42, generator = "xoshiro256").generator == "xoshiro", "generator=xoshiro256 alias -> xoshiro"
+assert random.Random(42, generator = "mt19937_64").generator == "mersenne_twister", "generator=mt19937_64 alias -> mersenne_twister"
+# unseeded (None) still constructs, from the OS
+assert type(random.Random()) == "Random", "Random() unseeded (OS-seeded)"
+assert random.Random(seed = 42).generator == "xoshiro", "seed keyword"
+# generator attribute is read-only
+assert raises(Function(): random.Random(42).generator = "mersenne_twister"), "generator is read-only"
+# unknown generator throws with the right message
+assert raises_msg(Function(): return random.Random(42, generator = "foo"), "unknown generator"), "unknown generator throws"
+# a float seed is rejected (seeds are Integer)
+assert raises(Function(): return random.Random(1.5)), "float seed raises"
+
+# ============================================================ DETERMINISM / reproducibility
+# Two generators with the SAME seed produce the IDENTICAL stream.
+assert random.Random(1).randint(0, 100) == random.Random(1).randint(0, 100), "same seed -> same randint (xoshiro)"
+assert random.Random(1).random() == random.Random(1).random(), "same seed -> same random()"
+var mt_a = random.Random(1, generator = "mersenne_twister").randint(0, 10000)
+var mt_b = random.Random(1, generator = "mersenne_twister").randint(0, 10000)
+assert mt_a == mt_b, "same seed -> same randint (mersenne)"
+# Reproducibility holds across a run of draws.
+var g1 = random.Random(123)
+var g2 = random.Random(123)
+var seqa = []
+var seqb = []
+for i in range(20):
+    seqa.append(g1.randint(0, 1000000))
+    seqb.append(g2.randint(0, 1000000))
+assert seqa == seqb, "reproducible across 20 draws"
+# Different engines with the same seed differ (independent streams).
+var xo_draw = random.Random(1).randint(0, 1000000000)
+var mt_draw = random.Random(1, generator = "mersenne_twister").randint(0, 1000000000)
+assert xo_draw != mt_draw, "engines produce different streams"
+# .seed(a) reseeds the current engine to reproduce a stream.
+var gs = random.Random(999)
+gs.seed(1)
+var s1 = gs.randint(0, 1000)
+gs.seed(1)
+var s2 = gs.randint(0, 1000)
+assert s1 == s2, "seed() reseeds to reproduce"
+assert gs.generator == "xoshiro", "seed() does not switch engine kind"
+assert raises(Function(): return random.Random(5).seed()), "seed() with no arg raises"
+
+# ============================================================ random() / uniform() ranges
+var r = random.Random(42)
+var okf = True
+for i in range(500):
+    var f = r.random()
+    if f < 0.0 or f >= 1.0:
+        okf = False
+assert okf, "random() in [0.0, 1.0)"
+var oku = True
+for i in range(500):
+    var u = r.uniform(10.0, 20.0)
+    if u < 10.0 or u >= 20.0:
+        oku = False
+assert oku, "uniform(a, b) in [a, b)"
+assert type(r.random()) == "Float" and type(r.uniform(0, 1)) == "Float", "random/uniform return Float"
+
+# ============================================================ randint / randrange invariants
+var okri = True
+for i in range(500):
+    var v = r.randint(-5, 5)
+    if v < -5 or v > 5:
+        okri = False
+assert okri, "randint stays within [a, b] inclusive"
+assert random.Random(3).randint(7, 7) == 7, "randint singleton [7,7] == 7"
+assert type(r.randint(0, 10)) == "Integer", "randint returns Integer"
+# randrange like range: single arg is the stop; a member of range(...)
+var okrr = True
+for i in range(300):
+    var v = r.randrange(10)
+    if not (v in range(10)):
+        okrr = False
+assert okrr, "randrange(stop) in range(stop)"
+assert r.randrange(5, 8) in [5, 6, 7], "randrange(start, stop)"
+assert r.randrange(0, 10, 2) in [0, 2, 4, 6, 8], "randrange(start, stop, step)"
+assert r.randrange(10, 0, -2) in [10, 8, 6, 4, 2], "randrange negative step"
+
+# ============================================================ choice / choices / sample / shuffle
+var pop = [10, 20, 30, 40, 50]
+# choice returns a member
+var okch = True
+for i in range(200):
+    if not (r.choice(pop) in pop):
+        okch = False
+assert okch, "choice returns a member"
+assert r.choice([42]) == 42, "choice single-element sequence"
+# choices: k with replacement, right length, all members, k defaults to 1
+assert len(r.choices(pop, 7)) == 7, "choices(k=7) length 7"
+assert len(r.choices(pop)) == 1, "choices default k = 1 -> 1-element List"
+assert len(r.choices(pop, 1)) == 1, "choices k=1 length 1"
+assert r.choices(pop, 0) == [], "choices k=0 -> []"
+assert len(r.choices([1, 2], 5)) == 5, "choices k may exceed len (with replacement)"
+assert r.choices([7], 3) == [7, 7, 7], "choices single-element population repeats"
+var okchs = True
+for x in r.choices(pop, 30):
+    if not (x in pop):
+        okchs = False
+assert okchs, "choices members are drawn from population"
+# sample: distinct, right length, subset
+var s5 = r.sample(pop, 5)
+assert sorted(s5) == sorted(pop), "sample k=len is a permutation"
+assert len(Set(s5)) == 5, "sample k=len distinct"
+var s3 = r.sample(pop, 3)
+assert len(s3) == 3 and len(Set(s3)) == 3, "sample k=3 distinct"
+var oksm = True
+for x in s3:
+    if not (x in pop):
+        oksm = False
+assert oksm, "sample members drawn from population"
+assert r.sample(pop, 0) == [], "sample k=0 -> []"
+assert r.sample([], 0) == [], "sample from empty with k=0 -> []"
+assert r.sample([99], 1) == [99], "sample single-element"
+# shuffle: in place, a permutation, requires a List
+var xs = [1, 2, 3, 4, 5, 6, 7]
+r.shuffle(xs)
+assert sorted(xs) == [1, 2, 3, 4, 5, 6, 7], "shuffle is a permutation (sorted equal)"
+assert len(xs) == 7, "shuffle preserves length"
+var empty = []
+r.shuffle(empty)
+assert empty == [], "shuffle empty List no-op"
+
+# ============================================================ gauss / normalvariate / expovariate
+assert type(r.gauss(0.0, 1.0)) == "Float", "gauss returns Float"
+assert type(r.normalvariate(0.0, 1.0)) == "Float", "normalvariate returns Float (alias)"
+assert r.gauss(5.0, 0.0) == 5.0, "gauss sigma=0 collapses to mu"
+# both args default; gauss() and keyword-only sigma must WORK (not throw)
+assert type(r.gauss()) == "Float", "gauss() with all defaults works"
+assert type(r.gauss(sigma = 2.0)) == "Float", "gauss(sigma=2.0) keyword-only works"
+assert type(r.gauss(mu = 3.0)) == "Float", "gauss(mu=3.0) keyword-only works"
+assert type(r.expovariate(1.5)) == "Float", "expovariate returns Float"
+assert r.expovariate(2.0) >= 0.0, "expovariate is non-negative"
+
+# ============================================================ HARDENING (right messages)
+assert raises_msg(Function(): return r.randint(5, 1), "empty range"), "randint empty range (a>b)"
+assert raises_msg(Function(): return r.randrange(0, 10, 0), "step must not be zero"), "randrange step 0"
+assert raises_msg(Function(): return r.randrange(5, 5), "empty range"), "randrange empty range"
+assert raises_msg(Function(): return r.randrange(0), "empty range"), "randrange(0) empty"
+assert raises_msg(Function(): return r.sample([1, 2, 3], 5), "k out of range"), "sample k>len"
+assert raises_msg(Function(): return r.sample([1, 2, 3], -1), "k out of range"), "sample k negative"
+assert raises_msg(Function(): return r.choice([]), "empty sequence"), "choice from empty"
+assert raises_msg(Function(): return r.choices([], 2), "empty population"), "choices from empty"
+assert raises_msg(Function(): return r.sample([], 1), "k out of range"), "sample from empty k>0"
+assert raises_msg(Function(): return r.choices([1, 2], -1), "non-negative"), "choices k negative"
+assert raises_msg(Function(): return r.shuffle("abc"), "requires a List"), "shuffle non-List"
+assert raises_msg(Function(): return r.shuffle({1, 2}), "requires a List"), "shuffle Set (non-List)"
+assert raises_msg(Function(): return r.expovariate(0), "must be positive"), "expovariate lambda == 0"
+assert raises_msg(Function(): return r.expovariate(-1), "must be positive"), "expovariate lambda < 0"
+assert raises_msg(Function(): return r.gauss(0, -1), "sigma"), "gauss sigma < 0"
+assert raises_msg(Function(): return r.normalvariate(0, -2), "sigma"), "normalvariate sigma < 0"
+
+# ============================================================ serialize / dump round-trip (exact stream)
+# serialize (text): restores the exact stream on the same engine.
+var sa = random.Random(7777)
+discard sa.randint(0, 1000000)   # advance the state so a fresh Random(7777) would differ
+var txt = serialize.dumps(sa)
+var sb = serialize.loads(txt)
+assert sb.generator == "xoshiro", "serialize preserves engine kind"
+assert sa.randint(0, 1000000000) == sb.randint(0, 1000000000), "serialize restores the exact stream"
+# and again across several draws
+var okser = True
+for i in range(10):
+    if sa.random() != sb.random():
+        okser = False
+assert okser, "serialize round-trip stays in lockstep"
+# mersenne engine round-trips too, tagged with its kind
+var ma = random.Random(31, generator = "mersenne_twister")
+discard ma.random()
+var mb = serialize.loads(serialize.dumps(ma))
+assert mb.generator == "mersenne_twister", "serialize preserves mersenne kind"
+assert ma.randint(0, 1000000) == mb.randint(0, 1000000), "serialize restores mersenne stream"
+
+# dump (binary): same guarantee.
+var da = random.Random(2024)
+discard da.random()
+var blob = dump.dumps(da)
+assert type(blob) == "Bytes", "dump.dumps returns Bytes"
+var db = dump.loads(blob)
+assert db.generator == "xoshiro", "dump preserves engine kind"
+assert da.random() == db.random(), "dump restores the exact stream"
+
+# ============================================================ inspect
+var members = inspect(r)
+assert "randint" in members and "random" in members and "sample" in members, "inspect lists methods"
+assert "generator" in members, "inspect lists the generator attribute"
+
+io.print("OK random")

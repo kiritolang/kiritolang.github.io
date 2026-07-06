@@ -214,6 +214,28 @@ inline std::string expandTemplate(KiritoVM& vm, const std::string& tmpl, const M
     return out;
 }
 
+// Resolve the optional pos / endpos slots (arg indices 1 and 2 of match/search/finditer/findall).
+// Two hazards handled here: (a) makeMethod fills a SKIPPED leading optional with None when a LATER
+// arg is passed by keyword (e.g. `re.match(string=s, endpos=2)` leaves pos = None) — a None slot means
+// "use the default", not a type error; (b) the int64 value is clamped to [0, len] BEFORE narrowing to
+// int, so a huge pos/endpos can't misbehave. `endpos` truncates `text` in place (so `$`/`\b` anchor
+// there); the returned start position is clamped to the post-truncation length.
+inline int resolvePosEndpos(KiritoVM& vm, Args& args, std::span<const Handle> a,
+                            std::vector<int32_t>& text) {
+    auto slotVal = [&](std::size_t i, const char* nm) -> std::optional<int64_t> {
+        if (i >= a.size() || vm.arena().deref(a[i]).kind() == ValueKind::None) return std::nullopt;
+        return args[i].asInt(nm);
+    };
+    int64_t n = static_cast<int64_t>(text.size());
+    if (auto e = slotVal(2, "endpos")) {
+        int64_t endpos = std::clamp<int64_t>(*e, 0, n);
+        if (endpos < n) { text.resize(static_cast<std::size_t>(endpos)); n = endpos; }
+    }
+    int64_t pos = 0;
+    if (auto p = slotVal(1, "pos")) pos = std::clamp<int64_t>(*p, 0, n);
+    return static_cast<int>(pos);
+}
+
 }  // namespace redetail
 
 // ============================================================================ Regex object
@@ -250,16 +272,7 @@ public:
                 Args args(vm, a, name.c_str());
                 std::string s = args.at(0).asStringRef(name.c_str());
                 auto text = reng::toCodepoints(s);
-                int pos = (a.size() > 1) ? static_cast<int>(args[1].asInt("pos")) : 0;
-                if (pos < 0) pos = 0;
-                // endpos makes the subject look exactly `endpos` code points long (so `$`/`\b` anchor
-                // there) — implemented by truncating the searched view; group offsets stay valid.
-                if (a.size() > 2) {
-                    int endpos = static_cast<int>(args[2].asInt("endpos"));
-                    if (endpos < 0) endpos = 0;
-                    if (endpos < static_cast<int>(text.size())) text.resize(static_cast<std::size_t>(endpos));
-                }
-                if (pos > static_cast<int>(text.size())) pos = static_cast<int>(text.size());  // a past-end start matches nothing (no OOB)
+                int pos = redetail::resolvePosEndpos(vm, args, a, text);  // None-safe, clamped, applies endpos
                 bool anchored = (name != "search");
                 bool requireEnd = (name == "fullmatch");
                 reng::MatchResult r = reng::run(R.prog, text, pos, anchored, requireEnd);
@@ -272,13 +285,7 @@ public:
                 Args args(vm, a, "finditer");
                 std::string s = args.at(0).asStringRef("finditer");
                 auto text = reng::toCodepoints(s);
-                int pos = (a.size() > 1) ? static_cast<int>(args[1].asInt("pos")) : 0;
-                if (pos < 0) pos = 0;
-                if (a.size() > 2) {
-                    int endpos = static_cast<int>(args[2].asInt("endpos"));
-                    if (endpos < 0) endpos = 0;
-                    if (endpos < static_cast<int>(text.size())) text.resize(static_cast<std::size_t>(endpos));
-                }
+                int pos = redetail::resolvePosEndpos(vm, args, a, text);
                 RootScope rs(vm);
                 List out(vm);
                 for (auto& r : redetail::allMatches(R.prog, text, -1, pos))
@@ -292,13 +299,7 @@ public:
                 std::string s = args.at(0).asStringRef("findall");
                 auto text = reng::toCodepoints(s);
                 auto starts = utf8Starts(s);
-                int pos = (a.size() > 1) ? static_cast<int>(args[1].asInt("pos")) : 0;
-                if (pos < 0) pos = 0;
-                if (a.size() > 2) {
-                    int endpos = static_cast<int>(args[2].asInt("endpos"));
-                    if (endpos < 0) endpos = 0;
-                    if (endpos < static_cast<int>(text.size())) text.resize(static_cast<std::size_t>(endpos));
-                }
+                int pos = redetail::resolvePosEndpos(vm, args, a, text);
                 List out(vm);
                 for (auto& r : redetail::allMatches(R.prog, text, -1, pos)) {
                     auto gtext = [&](int g) { return r.slots[2 * g] < 0 ? std::string("")

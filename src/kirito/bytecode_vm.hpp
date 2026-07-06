@@ -296,6 +296,12 @@ public:
                     // not buffered to EOF (A10-5). Fall back to eager iterate() for everything else.
                     auto lazy = located(in.span, [&] { return vm_.arena().deref(iterable).lazyIterate(vm_, iterable); });
                     auto cursor = std::make_unique<IterCursor>();
+                    // Root freshly-materialised items across the alloc(cursor) below — alloc() runs a GC
+                    // *before* it inserts the cursor, so the not-yet-rooted cursor's items would be swept
+                    // (A05-1). The scope must outlive alloc, so it is hoisted here (not scoped to `else`);
+                    // items produced by iterate() (fresh 1-char Strings, per-byte Integers, user _iter_
+                    // results) are not the iterable's children(), so `iterable` on the stack can't protect them.
+                    RootScope rs(vm_);
                     if (lazy) {
                         cursor->lazy = std::move(lazy);
                         cursor->source = iterable;   // keep the stream rooted for the loop's duration
@@ -303,11 +309,10 @@ public:
                         auto items = located(in.span, [&] { return vm_.arena().deref(iterable).iterate(vm_); });
                         if (!items)
                             throw KiritoError("type '" + vm_.arena().deref(iterable).typeName() + "' is not iterable", in.span);
-                        RootScope rs(vm_);  // root freshly-materialised items until the cursor (a GC root) holds them
                         for (Handle it : items.value()) rs.add(it);
                         cursor->items = std::move(items.value());
                     }
-                    Handle r = vm_.alloc(std::move(cursor));
+                    Handle r = vm_.alloc(std::move(cursor));  // rs still alive here → items survive the GC
                     pop();
                     push(r);
                 } break;

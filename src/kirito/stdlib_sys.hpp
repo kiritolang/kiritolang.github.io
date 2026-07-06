@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <span>
 #include <string>
 
@@ -26,6 +27,12 @@ extern "C" char** environ;
 #endif
 
 namespace kirito {
+
+// The process environment is a single global shared by ALL worker VMs (parallel runs one VM per OS
+// thread). getenv returns a pointer that a concurrent setenv/unsetenv in another thread can free or
+// rewrite — a data race / use-after-free. This one process-wide mutex serializes the four env entry
+// points; env is the one legitimately-shared global (it is process-scoped, not VM-local).
+inline std::mutex& envMutex() { static std::mutex m; return m; }
 
 // Run an external program (argv) with optional cwd / stdin / timeout, returning a Dict
 // {code, stdout, stderr}. Shared by sys.createprocess (argv directly) and sys.shell (argv wrapping a
@@ -94,7 +101,9 @@ public:
         m.fn("getenv", {{"name", "String"}, {"default", "", vm.none()}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             // getenv(name[, default]) -> String, or default/None if unset.
             Args args(vm, a, "getenv");
-            const char* v = std::getenv(args[0].asStringRef("getenv").c_str());
+            std::string name = args[0].asStringRef("getenv");
+            std::lock_guard<std::mutex> lk(envMutex());  // copy the value before another thread frees it
+            const char* v = std::getenv(name.c_str());
             if (v) return Value(vm, v);
             return args.opt(1, Value::None(vm));
         });
@@ -103,6 +112,7 @@ public:
             Args args(vm, a, "setenv");
             std::string name = args[0].asStringRef("setenv");
             std::string value = args[1].asStringRef("setenv");
+            std::lock_guard<std::mutex> lk(envMutex());
 #if defined(_WIN32)
             bool ok = ::SetEnvironmentVariableA(name.c_str(), value.c_str()) != 0;
             ::_putenv_s(name.c_str(), value.c_str());  // keep the CRT view (getenv) consistent too
@@ -115,6 +125,7 @@ public:
 
         m.fn("unsetenv", {{"name", "String"}}, "", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::string name = Args(vm, a, "unsetenv")[0].asStringRef("unsetenv");
+            std::lock_guard<std::mutex> lk(envMutex());
 #if defined(_WIN32)
             ::SetEnvironmentVariableA(name.c_str(), nullptr);
             ::_putenv_s(name.c_str(), "");
@@ -127,6 +138,7 @@ public:
         // environ() -> Dict of all environment variables.
         m.fn("environ", {}, "Dict", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
             Dict d(vm);
+            std::lock_guard<std::mutex> lk(envMutex());  // a concurrent setenv must not rewrite mid-walk
 #if defined(_WIN32)
             LPCH block = ::GetEnvironmentStringsA();
             if (block) {

@@ -1,0 +1,144 @@
+# Doc-vs-impl verification for the `matrix` stdlib module (docs/pages/10-stdlib.md "## matrix").
+# Functioning cases (exact results where integer-valued, tolerant .compare for computed floats),
+# edge cases (1x1, non-square, identity, singular), and HARDENING (bad input must raise the RIGHT
+# error; anything that SHOULD raise but doesn't is a silent bug). Prints "OK matrix".
+var io = import("io")
+var m = import("matrix")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ construction
+var A = m.Matrix([[1, 2], [3, 4]])
+assert type(A) == "Matrix", "Matrix type name"
+assert A.rows() == 2 and A.cols() == 2 and A.shape() == [2, 2], "rows/cols/shape"
+assert A[0, 0] == 1.0 and A[1, 1] == 4.0, "element access via m[i,j]"
+assert type(A[0, 0]) == "Float", "element is Float"
+assert A[0] == [1.0, 2.0] and type(A[0]) == "List", "row via m[i] is List of Floats"
+assert A.row(1) == [3.0, 4.0], "row(i)"
+assert A.get(0, 1) == 2.0, "get(i,j)"
+
+# Matrix(rows, cols) -> zero matrix (also rows=/cols= keywords)
+assert m.Matrix(2, 3).shape() == [2, 3] and m.Matrix(2, 3) == m.zeros(2, 3), "Matrix(rows,cols) zero form"
+assert m.Matrix(rows = 2, cols = 3).shape() == [2, 3], "Matrix rows=/cols= keywords"
+
+# non-square shapes are fine
+var R = m.Matrix([[1, 2, 3], [4, 5, 6]])
+assert R.shape() == [2, 3], "non-square shape"
+
+# ============================================================ factories
+assert m.zeros(2, 2) == m.Matrix([[0, 0], [0, 0]]), "zeros"
+assert m.ones(2, 2) == m.Matrix([[1, 1], [1, 1]]), "ones"
+assert m.identity(3) == m.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), "identity"
+assert m.identity(1) == m.Matrix([[1]]), "identity 1x1"
+assert m.zeros(0, 0).shape() == [0, 0], "zeros 0x0 edge"
+
+# ============================================================ element assignment
+var B = m.zeros(2, 2)
+B[0, 1] = 7
+B.set(1, 0, 9)
+assert B[0, 1] == 7.0 and B[1, 0] == 9.0, "m[i,j]= and set()"
+assert B == m.Matrix([[0, 7], [9, 0]]), "assignment result"
+
+# ============================================================ arithmetic (exact ==, integer-valued)
+assert m.Matrix([[1, 2], [3, 4]]) + m.Matrix([[5, 6], [7, 8]]) == m.Matrix([[6, 8], [10, 12]]), "add"
+assert m.Matrix([[5, 6], [7, 8]]) - m.Matrix([[1, 2], [3, 4]]) == m.Matrix([[4, 4], [4, 4]]), "sub"
+assert m.Matrix([[1, 2], [3, 4]]) * m.Matrix([[5, 6], [7, 8]]) == m.Matrix([[19, 22], [43, 50]]), "matmul"
+assert A * 2 == m.Matrix([[2, 4], [6, 8]]), "scalar multiply (scalar on right)"
+assert A * 2.5 == m.Matrix([[2.5, 5.0], [7.5, 10.0]]), "scalar multiply float coerces"
+# `*` is matrix multiply against a conformable matrix, identity is neutral
+assert A * m.identity(2) == A and m.identity(2) * A == A, "identity is multiplicative neutral"
+
+# ============================================================ transpose / determinant / trace / sum
+assert A.transpose() == m.Matrix([[1, 3], [2, 4]]), "transpose"
+assert m.Matrix([[1, 2, 3], [4, 5, 6]]).transpose() == m.Matrix([[1, 4], [2, 5], [3, 6]]), "transpose non-square"
+assert A.determinant() == -2.0, "determinant 2x2"
+assert A.trace() == 5.0, "trace"
+assert A.sum() == 10.0, "sum of all elements"
+assert m.Matrix([[5]]).determinant() == 5.0, "determinant 1x1"
+assert m.Matrix([[5]]).trace() == 5.0, "trace 1x1"
+assert m.identity(3).determinant() == 1.0, "identity determinant"
+# singular: determinant reported as 0.0 (conservative), while inverse throws
+assert m.Matrix([[1, 2], [2, 4]]).determinant() == 0.0, "singular determinant is 0.0"
+
+# ============================================================ inverse (tolerant compare; abs_tol for exact zeros)
+var C = m.Matrix([[4, 7], [2, 6]])
+assert C.inverse().compare(m.Matrix([[0.6, -0.7], [-0.2, 0.4]]), abs_tol = 1e-12), "inverse 2x2 value"
+assert (C * C.inverse()).compare(m.identity(2), abs_tol = 1e-9), "A * A^-1 ~ I (abs_tol for exact zeros)"
+assert m.Matrix([[5]]).inverse().compare(m.Matrix([[0.2]]), abs_tol = 1e-12), "inverse 1x1"
+
+# ============================================================ apply
+assert A.apply(Function(x): return x * 2) == m.Matrix([[2, 4], [6, 8]]), "apply doubling"
+assert A.apply(Function(x): return x + 1) == m.Matrix([[2, 3], [4, 5]]), "apply increment"
+
+# ============================================================ == exactness / compare
+assert m.identity(2) == m.identity(2), "== identical matrices"
+assert not (A == m.Matrix([[1, 2], [3, 5]])), "== differs on one element"
+assert not (A == m.Matrix([[1, 2, 0], [3, 4, 0]])), "== differs on shape"
+assert not (A == m.Matrix([[1, 2]])), "== differs on shape (rows)"
+# compare is tolerant; a tiny perturbation is equal under rel_tol but not under ==
+var near = m.Matrix([[1.0 + 1e-12, 2], [3, 4]])
+assert not (A == near), "== is exact (tiny perturbation not equal)"
+assert A.compare(near), "compare tolerant (default rel_tol)"
+assert not A.compare(m.Matrix([[1, 2], [3, 5]])), "compare distinguishes real difference"
+assert not A.compare(m.identity(3)), "compare shape mismatch -> False"
+
+# ============================================================ vectors
+var u = m.vector([3, 4])
+assert u.shape() == [1, 2], "vector is 1xn"
+assert u.norm() == 5.0, "norm (Euclidean length)"
+assert m.vector([1, 2, 3]).dot(m.vector([4, 5, 6])) == 32.0, "dot product"
+assert m.vector([1, 0, 0]).cross(m.vector([0, 1, 0])) == m.vector([0, 0, 1]), "cross product i x j = k"
+# dot works on any orientation (row . column)
+assert m.vector([1, 2]).dot(m.Matrix([[3], [4]])) == 11.0, "dot mixed orientation"
+# Frobenius norm of a full matrix: sqrt(1+4+9+16) = sqrt(30)  (Float.compare tolerance)
+assert A.norm().compare(30 ** 0.5), "matrix Frobenius norm"
+
+# ============================================================ HARDENING (bad input -> RIGHT error)
+# non-square shape ops
+assert raises_msg(Function(): return R.determinant(), "determinant requires a square Matrix"), "determinant non-square throws"
+assert raises_msg(Function(): return R.inverse(), "inverse requires a square Matrix"), "inverse non-square throws"
+assert raises_msg(Function(): return R.trace(), "trace requires a square Matrix"), "trace non-square throws"
+# singular inverse
+assert raises_msg(Function(): return m.Matrix([[1, 2], [2, 4]]).inverse(), "singular"), "inverse of singular throws 'singular'"
+# shape mismatch in + / -
+assert raises_msg(Function(): return m.identity(2) + m.identity(3), "equal shape"), "add shape mismatch throws"
+assert raises_msg(Function(): return m.identity(2) - m.identity(3), "equal shape"), "sub shape mismatch throws"
+# non-conformable multiply
+assert raises_msg(Function(): return m.Matrix([[1, 2]]) * m.Matrix([[1, 2]]), "inner dimensions differ"), "matmul inner mismatch throws"
+# element indexing
+assert raises_msg(Function(): return m.identity(2)[5, 0], "Matrix index out of range"), "element index OOB throws"
+assert raises_msg(Function(): return m.identity(2)[5], "row index out of range"), "row index OOB throws"
+assert raises_msg(Function(): return m.identity(2)[-1, 0], "out of range"), "negative index throws"
+assert raises_msg(Function(): return m.identity(2)[0, 0, 0], "needs 1 (row) or 2 (element)"), "3 indices throws"
+# element assignment needs two indices
+var eq = m.identity(2)
+assert raises_msg(Function(): eq[0] = 5, "needs two indices"), "single-index element assignment throws"
+# vector op hardening
+assert raises_msg(Function(): return m.vector([1, 2]).dot(m.vector([1, 2, 3])), "equal length"), "dot mismatched lengths throws"
+assert raises_msg(Function(): return m.identity(2).dot(m.identity(2)), "requires vectors"), "dot on non-vector throws"
+assert raises_msg(Function(): return m.vector([1, 2]).cross(m.vector([3, 4])), "3-element vectors"), "cross on non-3-vectors throws"
+# ragged / bad ctor
+assert raises_msg(Function(): return m.Matrix([[1, 2], [3]]), "Matrix rows must have equal length"), "ragged nested-list ctor throws"
+assert raises_msg(Function(): return m.Matrix([["a"]]), "number"), "non-number cell throws"
+assert raises(Function(): return m.zeros(-1, 2)), "negative dimension throws"
+# compare argument type
+assert raises_msg(Function(): return A.compare(5), "expects a Matrix"), "compare against non-Matrix throws"
+
+# ============================================================ SILENT-ERROR probes (documented constraints raise, not silent)
+# scalar must be the RIGHT operand: 2 * A must NOT silently work
+assert raises(Function(): return 2 * m.identity(2)), "scalar on left raises (not silent)"
+# dot expects a Matrix, not a plain list
+assert raises_msg(Function(): return m.vector([1, 2]).dot([1, 2]), "expects a Matrix vector"), "dot on non-Matrix arg throws"
+
+io.print("OK matrix")

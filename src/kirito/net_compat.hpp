@@ -22,8 +22,10 @@
 #  endif
 #else
 #  include <arpa/inet.h>
+#  include <fcntl.h>
 #  include <netdb.h>
 #  include <netinet/in.h>
+#  include <netinet/tcp.h>   // TCP_NODELAY
 #  include <sys/socket.h>
 #  include <unistd.h>
 #  include <cerrno>
@@ -81,6 +83,148 @@ inline long long sendBytes(socket_t s, const char* buf, std::size_t n) {
 inline long long recvBytes(socket_t s, char* buf, std::size_t n) {
     if (n > kIoChunk) n = kIoChunk;
     return static_cast<long long>(::recv(s, buf, static_cast<int>(n), 0));
+}
+
+// Datagram send/recv. Same int/size_t normalization as sendBytes/recvBytes; a datagram never
+// partials, so the (never-triggered for real UDP) 16 MiB clamp is only an overflow guard.
+inline long long sendTo(socket_t s, const char* buf, std::size_t n, const sockaddr* to, socklen_t tolen) {
+    if (n > kIoChunk) n = kIoChunk;
+    return static_cast<long long>(::sendto(s, buf, static_cast<int>(n), MSG_NOSIGNAL, to, tolen));
+}
+inline long long recvFrom(socket_t s, char* buf, std::size_t n, sockaddr* from, socklen_t* fromlen) {
+    if (n > kIoChunk) n = kIoChunk;
+    return static_cast<long long>(::recvfrom(s, buf, static_cast<int>(n), 0, from, fromlen));
+}
+
+// --- socket-foundation primitives (UDP/options/half-close/blocking/pairs) -------------------------
+// setsockopt/getsockopt for an int-valued option. POSIX takes `const void*`/`void*`, Winsock `const
+// char*`/`char*`; the char* cast satisfies both. `socklen_t` is `int` on Windows (ws2tcpip.h).
+inline bool setSockOptInt(socket_t s, int level, int opt, int val) {
+    return ::setsockopt(s, level, opt, reinterpret_cast<const char*>(&val),
+                        static_cast<socklen_t>(sizeof(val))) == 0;
+}
+inline bool getSockOptInt(socket_t s, int level, int opt, int& val) {
+    socklen_t len = static_cast<socklen_t>(sizeof(val));
+    return ::getsockopt(s, level, opt, reinterpret_cast<char*>(&val), &len) == 0;
+}
+
+// Half-close a socket. POSIX SHUT_RD/WR/RDWR and Winsock SD_RECEIVE/SD_SEND/SD_BOTH share the
+// numeric values 0/1/2, so `how` (0=read, 1=write, 2=both) maps straight through.
+inline int shutdownSocket(socket_t s, int how) { return ::shutdown(s, how); }
+
+// Put a socket into blocking or non-blocking mode.
+inline bool setBlocking(socket_t s, bool blocking) {
+#if defined(_WIN32)
+    u_long mode = blocking ? 0 : 1;
+    return ::ioctlsocket(s, FIONBIO, &mode) == 0;
+#else
+    int flags = ::fcntl(s, F_GETFL, 0);
+    if (flags < 0) return false;
+    flags = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
+    return ::fcntl(s, F_SETFL, flags) == 0;
+#endif
+}
+
+// Connect with a bounded wait. A plain blocking ::connect() to a black-hole host (silently dropped
+// SYNs) hangs for the OS default (tens of seconds to minutes) regardless of any SO_*TIMEO — those
+// only bound send/recv. When `seconds > 0` this switches to non-blocking connect + select on
+// writability, so the wait is capped. Returns 0 on success, -1 on error/timeout (errno/WSA set as
+// usual; a timeout reports ETIMEDOUT / WSAETIMEDOUT). Restores the socket's blocking mode on return.
+inline int connectWithTimeout(socket_t s, const sockaddr* addr, socklen_t addrlen, double seconds) {
+    if (seconds <= 0) return ::connect(s, addr, addrlen);
+    if (!setBlocking(s, false)) return ::connect(s, addr, addrlen);  // fall back to blocking
+    int rc = ::connect(s, addr, addrlen);
+#if defined(_WIN32)
+    bool inProgress = (rc != 0) && (::WSAGetLastError() == WSAEWOULDBLOCK);
+#else
+    bool inProgress = (rc != 0) && (errno == EINPROGRESS);
+#endif
+    if (rc == 0) { setBlocking(s, true); return 0; }          // connected immediately
+    if (!inProgress) { int e =
+#if defined(_WIN32)
+        ::WSAGetLastError();
+#else
+        errno;
+#endif
+        setBlocking(s, true);
+#if defined(_WIN32)
+        ::WSASetLastError(e);
+#else
+        errno = e;
+#endif
+        return -1;
+    }
+    fd_set wset;
+    FD_ZERO(&wset);
+    FD_SET(s, &wset);
+    struct timeval tv;
+    tv.tv_sec = static_cast<long>(seconds);
+    tv.tv_usec = static_cast<long>((seconds - static_cast<double>(tv.tv_sec)) * 1e6);
+    int sel = ::select(static_cast<int>(s) + 1, nullptr, &wset, nullptr, &tv);
+    if (sel <= 0) {                                            // 0 = timeout, <0 = select error
+        setBlocking(s, true);
+#if defined(_WIN32)
+        ::WSASetLastError(WSAETIMEDOUT);
+#else
+        errno = (sel == 0) ? ETIMEDOUT : errno;
+#endif
+        return -1;
+    }
+    int soerr = 0;
+    if (!getSockOptInt(s, SOL_SOCKET, SO_ERROR, soerr) || soerr != 0) {  // connect's real result
+        setBlocking(s, true);
+#if defined(_WIN32)
+        ::WSASetLastError(soerr ? soerr : WSAETIMEDOUT);
+#else
+        errno = soerr ? soerr : ETIMEDOUT;
+#endif
+        return -1;
+    }
+    setBlocking(s, true);
+    return 0;
+}
+
+// A connected pair of sockets (like Python socket.socketpair). POSIX has a native socketpair() over
+// AF_UNIX. Windows has none, so emulate a STREAM pair over a 127.0.0.1 loopback listener; a datagram
+// pair is unsupported there (returns false → the net module throws a clear error).
+#if defined(_WIN32)
+inline bool socketPair(int type, socket_t out[2]) {
+    if (type != SOCK_STREAM) return false;
+    startup();
+    socket_t listener = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (!isValid(listener)) return false;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    int namelen = static_cast<int>(sizeof(addr));
+    if (::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+        ::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &namelen) != 0 ||
+        ::listen(listener, 1) != 0) { closeSocket(listener); return false; }
+    socket_t client = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (!isValid(client)) { closeSocket(listener); return false; }
+    if (::connect(client, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        closeSocket(listener); closeSocket(client); return false;
+    }
+    socket_t server = ::accept(listener, nullptr, nullptr);
+    closeSocket(listener);
+    if (!isValid(server)) { closeSocket(client); return false; }
+    out[0] = client; out[1] = server;
+    return true;
+}
+#else
+inline bool socketPair(int type, socket_t out[2]) {
+    return ::socketpair(AF_UNIX, type, 0, out) == 0;
+}
+#endif
+
+// The local hostname (gethostname), or empty on failure.
+inline std::string hostName() {
+    startup();
+    char buf[256];
+    if (::gethostname(buf, sizeof(buf)) != 0) return "";
+    buf[sizeof(buf) - 1] = '\0';
+    return std::string(buf);
 }
 
 }  // namespace kirito::netcompat

@@ -332,47 +332,13 @@ private:
     // Decode one backslash escape of a cooked (non-raw) plain string, with the backslash at peek().
     // Returns the decoded text (usually one char; possibly more for future multi-char escapes).
     std::string decodeEscape() {
-        advance();  // backslash
-        char e = peek();
-        if (e == 'x') {
-            advance();  // 'x'
-            int hi = hexDigitValue(peek());
-            if (hi < 0) throw KiritoError("invalid \\x escape (expected hex digit)", SourceSpan{line_, col_, 1});
-            advance();
-            int lo = hexDigitValue(peek());
-            if (lo < 0) throw KiritoError("invalid \\x escape (expected hex digit)", SourceSpan{line_, col_, 1});
-            advance();
-            // A String is a sequence of Unicode CODE POINTS (stored UTF-8), so `\xHH` is code point
-            // U+00HH — emit its UTF-8 encoding, not a raw byte. A raw high byte (HH >= 0x80) would
-            // merge with the following byte(s) under the code-point layer and mangle the string
-            // (A01-1: len("\xC3\x28") was 1, not 2). cp is 0..255 -> 1 or 2 UTF-8 bytes. For byte-exact
-            // data use Bytes, which is byte-addressed.
-            int cp = hi * 16 + lo;
-            std::string out;
-            if (cp < 0x80) {
-                out.push_back(static_cast<char>(cp));
-            } else {
-                out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-                out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            }
-            return out;
-        }
-        char out;
-        switch (e) {
-            case 'n': { out = '\n'; } break;
-            case 't': { out = '\t'; } break;
-            case 'r': { out = '\r'; } break;
-            case '0': { out = '\0'; } break;
-            case '\\': { out = '\\'; } break;
-            case '"': { out = '"'; } break;
-            case '\'': { out = '\''; } break;
-            default: {
-                throw KiritoError(std::string("invalid escape '\\") + e + "'",
-                                  SourceSpan{line_, col_, 1});
-            } break;
-        }
-        advance();
-        return std::string(1, out);
+        // Delegate to the single shared cooked-escape decoder (common.hpp) so the plain-string and
+        // f-string spellings can never diverge; attach this lexer's span on error.
+        std::string out, err;
+        std::size_t consumed = decodeCookedEscape(src_, pos_, out, err);
+        if (consumed == 0) throw KiritoError(err, SourceSpan{line_, col_, 1});
+        for (std::size_t k = 0; k < consumed; ++k) advance();
+        return out;
     }
 
     Token op() {

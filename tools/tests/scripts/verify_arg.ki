@@ -1,0 +1,152 @@
+# Doc-vs-impl verification for the `arg` module (docs/pages/10-stdlib.md "## arg",
+# docs/pages/27-bonus-02-cli.md). An argparse-style Parser: declare positionals/options/flags
+# (chainable), then parse(args) -> Dict (or None on -h/--help). Options convert to their default's
+# type. Functioning + edge + hardening (raises_msg) + silent-error probes. Arglists are passed
+# directly (never real argv); -h output is captured into a BytesIO so stdout stays deterministic.
+# Prints "OK arg".
+var io = import("io")
+var arg = import("arg")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ functioning: declare + parse
+var p = arg.Parser("greet someone")
+# --- declaration methods are chainable (each returns the parser) ---
+var same = p.positional("name").option("count", 1).flag("loud")
+assert same == p, "declaration methods return self (chainable)"
+
+var opts = p.parse(["Ada", "--loud"])
+assert opts["name"] == "Ada", "positional bound"
+assert opts["loud"] == True, "flag present -> True"
+assert opts["count"] == 1, "option absent -> default"
+assert type(opts["count"]) == "Integer", "default preserved (Integer)"
+assert opts["rest"] == [], "no extra positionals -> empty rest"
+
+# --- option value present: --name value, and converted to the default's type ---
+var o2 = p.parse(["Bob", "--count", "5"])
+assert o2["count"] == 5 and type(o2["count"]) == "Integer", "--count 5 -> Integer 5"
+# --- --name=value form ---
+var o3 = p.parse(["Cid", "--count=7"])
+assert o3["count"] == 7 and type(o3["count"]) == "Integer", "--count=7 (inline) -> Integer 7"
+# --- flag absent -> False ---
+assert p.parse(["X"])["loud"] == False, "flag absent -> False"
+
+# --- short options: -n value (option) and -f (flag), matched by first letter ---
+var os = p.parse(["Ada", "-c", "3", "-l"])
+assert os["count"] == 3 and os["loud"] == True, "short -c value / -l flag"
+
+# --- extra positionals collected under 'rest' ---
+var rr = p.parse(["Ada", "extra1", "extra2"])
+assert rr["name"] == "Ada" and rr["rest"] == ["extra1", "extra2"], "extra positionals -> rest"
+
+# ============================================================ type conversion by default type
+var pf = arg.Parser()
+pf.option("ratio", 1.0)              # Float default
+pf.option("count", 0)                # Integer default
+pf.option("label", "x")              # String default
+var cf = pf.parse(["--ratio", "2.5", "--count", "-3", "--label", "hi"])
+assert cf["ratio"] == 2.5 and type(cf["ratio"]) == "Float", "Float default converts value to Float"
+assert cf["count"] == -3 and type(cf["count"]) == "Integer", "negative number is a valid option value"
+assert cf["label"] == "hi" and type(cf["label"]) == "String", "String default keeps value a String"
+# --- absent options fall back to their (typed) defaults ---
+var df = pf.parse([])
+assert df["ratio"] == 1.0 and df["count"] == 0 and df["label"] == "x", "absent options -> defaults"
+# --- PIN: an option whose default is None stays a String (None is neither Integer nor Float) ---
+var pn = arg.Parser()
+pn.option("who")                     # default None -> value stays String
+assert pn.parse(["--who", "42"])["who"] == "42", "None default keeps value a String"
+assert type(pn.parse(["--who", "42"])["who"]) == "String", "None-default value type is String"
+
+# ============================================================ usage() text
+var usage = p.usage()
+assert "usage:" in usage, "usage() has a usage line"
+assert "<name>" in usage and "--count" in usage and "--loud" in usage, "usage() lists all args"
+assert "(default 1)" in usage, "usage() shows the option default"
+assert "-h, --help" in usage, "usage() documents -h/--help"
+
+# ============================================================ -h / --help returns None (captured)
+# parse() prints usage() to io.stdout then returns None; capture so this file's stdout stays clean.
+var buf = io.BytesIO()
+io.stdout = buf
+var hr = p.parse(["-h"])
+io.stdout = io.__stdout__
+assert hr == None, "-h returns None"
+assert "usage:" in buf.getvalue(), "-h printed the usage text"
+
+var buf2 = io.BytesIO()
+io.stdout = buf2
+var hr2 = p.parse(["--help", "ignored"])   # --help short-circuits before the missing positional
+io.stdout = io.__stdout__
+assert hr2 == None, "--help returns None"
+assert "usage:" in buf2.getvalue(), "--help printed the usage text"
+
+# ============================================================ hardening via raises_msg
+# --- missing required positional ---
+assert raises_msg(Function(): return p.parse([]), "missing required argument: <name>"), "missing positional"
+# --- unknown long option ---
+assert raises_msg(Function(): return p.parse(["X", "--nope"]), "unknown option: --nope"), "unknown long option"
+# --- unknown short option ---
+assert raises_msg(Function(): return p.parse(["X", "-z"]), "unknown option: -z"), "unknown short option"
+# --- bad numeric conversion (Integer default) ---
+assert raises_msg(Function(): return p.parse(["X", "--count", "notanum"]), "expects an integer"), "bad Integer value"
+# --- bad numeric conversion (Float default) ---
+assert raises_msg(Function(): return pf.parse(["--ratio", "abc"]), "expects a number"), "bad Float value"
+# --- option at end with no value ---
+assert raises_msg(Function(): return p.parse(["X", "--count"]), "requires a value"), "long option needs a value"
+assert raises_msg(Function(): return p.parse(["X", "-c"]), "requires a value"), "short option needs a value"
+
+# ============================================================ silent-error probes (PIN behaviour)
+# --- PIN: `--flag=value` sets the flag True and SILENTLY DISCARDS the inline value (no error). ---
+assert p.parse(["X", "--loud=whatever"])["loud"] == True, "flag=value sets the flag True"
+
+# --- PIN: `-5` (a dash + digit, len 2, not a letter) is a POSITIONAL, not a short option — so a
+# negative number survives as a positional argument. ---
+var pd = arg.Parser()
+pd.positional("a")
+var rd = pd.parse(["-5"])
+assert rd["a"] == "-5", "-5 stays a positional (negative-number-friendly)"
+
+# --- PIN: `-ab` (len 3) does NOT expand to -a -b; it falls through as a POSITIONAL (no bundling). ---
+var pb = arg.Parser()
+pb.positional("a")
+pb.flag("alpha")
+var rb = pb.parse(["-ab"])
+assert rb["a"] == "-ab" and rb["alpha"] == False, "-ab is a single positional, not bundled short flags"
+
+# --- PIN: `--` alone is treated as an unknown option (empty name), not an end-of-options marker. ---
+assert raises_msg(Function(): return arg.Parser().parse(["--"]), "unknown option: --"), "bare -- is an unknown option"
+# --- PIN: `-` alone is a positional (len 1, not a short option). ---
+var ps = arg.Parser()
+ps.positional("a")
+assert ps.parse(["-"])["a"] == "-", "bare - is a positional"
+
+# --- PIN: ambiguous short option — two options sharing a first letter: the FIRST declared wins. ---
+var pa = arg.Parser()
+pa.option("count", 1)
+pa.option("colour", "red")
+var ra = pa.parse(["-c", "9"])
+assert ra["count"] == 9 and ra["colour"] == "red", "ambiguous -c binds the first-declared option"
+
+# --- PIN: _byshort checks flags before options, so a flag wins a first-letter tie over an option. ---
+var pt = arg.Parser()
+pt.option("count", 1)
+pt.flag("check")
+var rt = pt.parse(["-c"])
+assert rt["check"] == True and rt["count"] == 1, "short first-letter tie resolves to the flag"
+
+# --- Parser() with no args: description defaults to "" (usage has no blank description body). ---
+var pe = arg.Parser()
+assert "usage:" in pe.usage(), "empty parser still produces usage"
+
+io.print("OK arg")

@@ -1,0 +1,195 @@
+# Doc-vs-impl verification for the `tee` module (docs/pages/10-stdlib.md "## tee").
+# A Tee fans every write out to its copy streams first, then the primary; it is a stream (write/
+# writelines/flush/close) and a context manager, and tee_stdout/tee_stderr hook the std streams.
+# Functioning + edge (empty/multiple/nested/unicode) + hardening + silent-error probes. All output is
+# captured into BytesIO buffers so this file's own stdout stays deterministic; prints "OK tee".
+var io = import("io")
+var tee = import("tee")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ functioning: fan-out to copies
+var p = io.BytesIO()
+var a = io.BytesIO()
+var b = io.BytesIO()
+var t = tee.Tee(p, [a, b])
+assert t.write("hello ") == 6, "write returns len(data)"
+discard t.write("world")
+assert p.getvalue() == "hello world", "primary received all"
+assert a.getvalue() == "hello world" and b.getvalue() == "hello world", "both copies received all"
+
+# --- write ORDER: copies first, then primary (documented) ---
+assert t.streams() == [a, b, p], "streams() = copies first, then primary"
+assert len(t.streams()) == 3, "streams() count"
+
+# --- copies as a single stream (not a List) ---
+var p2 = io.BytesIO()
+var c = io.BytesIO()
+var t2 = tee.Tee(p2, c)
+discard t2.write("solo")
+assert p2.getvalue() == "solo" and c.getvalue() == "solo", "single-copy form"
+assert t2.streams() == [c, p2], "single-copy streams()"
+
+# --- no copies (copies defaults to None): behaves like the primary ---
+var p3 = io.BytesIO()
+var t3 = tee.Tee(p3)
+discard t3.write("just primary")
+assert p3.getvalue() == "just primary", "no-copy Tee writes only primary"
+assert t3.streams() == [p3], "no-copy streams() is just primary"
+
+# --- primary = None: a pure fan-out sink ---
+var d1 = io.BytesIO()
+var d2 = io.BytesIO()
+var sink = tee.Tee(None, [d1, d2])
+discard sink.write("sink")
+assert d1.getvalue() == "sink" and d2.getvalue() == "sink", "primary=None fan-out"
+assert sink.streams() == [d1, d2], "primary=None omitted from streams()"
+
+# --- writelines writes each String to every stream ---
+var p4 = io.BytesIO()
+var co = io.BytesIO()
+var t4 = tee.Tee(p4, co)
+assert t4.writelines(["a", "b", "c"]) == None, "writelines returns None"
+assert p4.getvalue() == "abc" and co.getvalue() == "abc", "writelines to every stream"
+
+# --- flush / close return None, do not throw ---
+assert t4.flush() == None, "flush returns None"
+assert t4.close() == None, "close returns None"
+# PIN: close only flushes; it does NOT close the underlying streams -> still writable afterward.
+discard t4.write("d")
+assert p4.getvalue() == "abcd", "close does not close underlying streams"
+
+# ============================================================ edge cases
+# --- empty write returns 0, changes nothing ---
+var pe = io.BytesIO()
+var ce = io.BytesIO()
+var te = tee.Tee(pe, ce)
+assert te.write("") == 0, "empty write returns 0"
+assert pe.getvalue() == "" and ce.getvalue() == "", "empty write leaves buffers empty"
+
+# --- PIN: write returns len(data) = String CODE-POINT count, NOT the UTF-8 byte count ---
+# The module comment/docs call it a "byte count", but multi-byte code points return the code-point
+# count. "café" is 4 code points / 5 UTF-8 bytes -> write returns 4.
+assert te.write("café") == 4, "write returns code-point count (not 5 UTF-8 bytes)"
+
+# --- unicode + large payload stay byte-identical across primary and copy ---
+discard te.write("café 实现 \t\n")
+discard te.write("Z" * 100000)
+assert pe.getvalue() == ce.getvalue(), "primary and copy stay identical"
+assert len(pe.getvalue()) == 4 + len("café 实现 \t\n") + 100000, "all data through"
+
+# --- multiple sinks (3 copies) all receive ---
+var m0 = io.BytesIO()
+var m1 = io.BytesIO()
+var m2 = io.BytesIO()
+var m3 = io.BytesIO()
+var tm = tee.Tee(m0, [m1, m2, m3])
+discard tm.write("multi")
+assert m0.getvalue() == "multi" and m1.getvalue() == "multi", "sink 0/1"
+assert m2.getvalue() == "multi" and m3.getvalue() == "multi", "sink 2/3"
+
+# --- nested Tee (a Tee whose primary is another Tee) reaches every leaf ---
+var leaf1 = io.BytesIO()
+var leaf2 = io.BytesIO()
+var inner = tee.Tee(leaf1, leaf2)
+var outerCopy = io.BytesIO()
+var outer = tee.Tee(inner, outerCopy)
+discard outer.write("nested")
+assert leaf1.getvalue() == "nested" and leaf2.getvalue() == "nested", "nested reaches inner leaves"
+assert outerCopy.getvalue() == "nested", "nested reaches outer copy"
+
+# --- flush is TOLERANT: a copy stream without a flush() method does not throw ---
+class NoFlush:
+    var data = ""
+    var write = Function(self, dta):
+        self.data = self.data + dta
+        return len(dta)
+var nf = NoFlush()
+var tnf = tee.Tee(nf)
+discard tnf.write("hi")
+assert tnf.flush() == None, "flush tolerant of a stream without flush()"
+assert nf.data == "hi", "duck-typed write target still received data"
+
+# ============================================================ Tee as a context manager
+# _enter_ returns self; _exit_ flushes. Verify the with-block writes reach the streams.
+var pcm = io.BytesIO()
+var ccm = io.BytesIO()
+with tee.Tee(pcm, ccm) as tw:
+    discard tw.write("ctx")
+assert pcm.getvalue() == "ctx" and ccm.getvalue() == "ctx", "Tee usable as a with-context"
+
+# ============================================================ tee_stdout / tee_stderr
+# The arg/tee modules share this VM's single io module, so io.stdout is the hooked slot.
+# --- tee_stdout: console + logfile both get the prints; original restored on exit ---
+var console = io.BytesIO()
+io.stdout = console
+var logbuf = io.BytesIO()
+with tee.tee_stdout(logbuf):
+    io.print("one")
+    io.write("two")
+io.stdout = io.__stdout__
+assert console.getvalue() == "one\ntwo", "console saw print + write"
+assert logbuf.getvalue() == "one\ntwo", "logfile cloned print + write"
+
+# --- tee_stdout restores stdout even when the block throws ---
+var console2 = io.BytesIO()
+io.stdout = console2
+var log2 = io.BytesIO()
+var threw = False
+try:
+    with tee.tee_stdout(log2):
+        io.print("before")
+        throw "boom"
+catch as e:
+    threw = True
+io.print("after")            # must go to console2 (restored), NOT the Tee/log2
+io.stdout = io.__stdout__
+assert threw, "exception propagated out of the with block"
+assert "before" in console2.getvalue() and "before" in log2.getvalue(), "pre-throw data reached both"
+assert "after" in console2.getvalue() and not ("after" in log2.getvalue()), "stdout restored after block"
+
+# --- tee_stderr: mirror stderr into a capture buffer ---
+var err0 = io.BytesIO()
+io.stderr = err0
+var errlog = io.BytesIO()
+with tee.tee_stderr(errlog):
+    io.eprint("problem")
+io.stderr = io.__stderr__
+assert err0.getvalue() == "problem\n", "stderr saw eprint"
+assert errlog.getvalue() == "problem\n", "stderr log cloned eprint"
+
+# ============================================================ hardening + silent-error probes
+# --- a copy stream that fails on write surfaces a catchable error ---
+class Broken:
+    var write = Function(self, dta):
+        throw "disk full"
+var okBuf = io.BytesIO()
+assert raises_msg(Function(): return tee.Tee(okBuf, Broken()).write("x"), "disk full"), "failing copy throws"
+
+# --- PIN: copies are written BEFORE the primary, so a failing copy means the primary is NOT written
+# (a partial write, not all-or-nothing). ---
+var primPartial = io.BytesIO()
+var partialThrew = False
+try:
+    discard tee.Tee(primPartial, Broken()).write("x")
+catch as e:
+    partialThrew = True
+assert partialThrew and primPartial.getvalue() == "", "failing copy short-circuits before the primary"
+
+# --- a non-stream copy (no write method) throws ---
+assert raises(Function(): return tee.Tee(io.BytesIO(), 42).write("y")), "non-stream copy throws"
+# --- write() itself calls len(data): a data value with no length throws ---
+assert raises(Function(): return tee.Tee(io.BytesIO()).write(5)), "write of a non-sequence throws"
+
+io.print("OK tee")

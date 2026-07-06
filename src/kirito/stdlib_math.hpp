@@ -100,7 +100,13 @@ public:
         });
         m.fn("fmod", {{"x", "Number"}, {"y", "Number"}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             double x = mathNum(vm, a[0]), y = mathNum(vm, a[1]);
-            if (!std::isnan(y) && y == 0.0) throw KiritoError("fmod: math domain error (divisor is zero)");
+            // Domain errors THROW rather than returning a silent NaN (the module-wide policy). fmod is a
+            // domain error when the divisor is 0 or the dividend is infinite (both yield NaN in libm);
+            // NaN inputs pass through, and fmod(finite, inf)=finite is fine (A13-1).
+            if (!std::isnan(x) && !std::isnan(y)) {
+                if (y == 0.0) throw KiritoError("fmod: math domain error (divisor is zero)");
+                if (std::isinf(x)) throw KiritoError("fmod: math domain error (infinite dividend)");
+            }
             return Value(vm, std::fmod(x, y));
         });
         m.fn("lcm", {{"a", "Integer"}, {"b", "Integer"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {

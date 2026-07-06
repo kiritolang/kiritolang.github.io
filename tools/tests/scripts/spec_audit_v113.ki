@@ -1,0 +1,153 @@
+# Regression golden for the v1.13 audit — the observable core-engine fixes, driven from Kirito.
+# (The memory-safety fixes A05-1 / A09-1 are gated as C++/ASan tests in test_audit_v113.cpp; here we
+# pin their observable, no-crash behaviour too.)
+var io = import("io")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+# --- A03-1: a nested function's parameter default captures the ENCLOSING function's local ---
+var z = 100
+var make = Function():
+    var z = 10
+    var g = Function(x, y = z): return x + y   # y default must see F's z = 10, not module z = 100
+    return g
+assert make()(5) == 15, "A03-1: nested default captures enclosing local (15, not 105)"
+# no outer shadow (the bug threw a spurious NameError)
+var make2 = Function():
+    var q = 7
+    var g = Function(x, y = q): return x + y
+    return g
+assert make2()(3) == 10, "A03-1: nested default, no outer shadow (no NameError)"
+# a default referencing an EARLIER nested param still binds to the param
+var addparam = Function(a, b = a): return a + b
+assert addparam(6) == 12, "A03-1: default referencing an earlier param binds to it"
+
+# --- A04-1: `return` crossing a finally that break/continues must not corrupt an enclosing loop ---
+var g1 = Function():
+    var out = []
+    for i in [1, 2]:
+        for j in [10, 20, 30]:
+            try:
+                return 99
+            finally:
+                break        # abandons the return, breaks the inner loop
+        out.append(i)
+    return out
+assert g1() == [1, 2], "A04-1: return in try + break in finally preserves the enclosing loop"
+var g2 = Function():
+    var n = 0
+    for i in [1, 2, 3]:
+        try:
+            return 99
+        finally:
+            continue         # abandons each return; falls through to `return n`
+    return n
+assert g2() == 0, "A04-1: return in try + continue in finally"
+var g3 = Function():
+    for i in [1]:
+        try:
+            return 42
+        finally:
+            pass             # a normal finally must still let the return return its value
+    return -1
+assert g3() == 42, "A04-1: normal finally still returns the value"
+
+# --- A05-1: iterating a String / Bytes materialises fresh handles — none lost under GC ---
+var s = ""
+for c in "hello":
+    s = s + c
+assert s == "hello", "A05-1: for over String round-trips"
+var bs = []
+for b in Bytes([65, 66, 67]):
+    bs.append(b)
+assert bs == [65, 66, 67], "A05-1: for over Bytes round-trips"
+
+# --- A09-1: a hostile _eq_ mutating the list mid-search must not crash; result stays sane ---
+var xs = [1, 2, 3, 4, 5]
+class Evil:
+    var _eq_ = Function(self, o):
+        xs.append(0)         # realloc xs mid-search
+        return False
+assert not (Evil() in xs), "A09-1: reentrant _eq_ during `in` search — no crash"
+assert throws(Function(): return xs.remove(Evil())), "A09-1: remove(no-match) throws cleanly"
+assert [1, 2, 3, 2].index(2) == 1, "A09-1: index normal behaviour intact"
+assert [1, 2, 3, 2].count(2) == 2, "A09-1: count normal behaviour intact"
+
+# --- A15-1: a second backward() through a RETAINED intermediate must not double the leaf gradient ---
+var T = import("tensor")
+var x = T.Tensor([1.0, 2.0], requiresgrad = True)
+var y = x * x                      # intermediate (non-leaf) — its .grad must not persist across passes
+y.sum().backward()
+x.zerograd()
+y.sum().backward()
+assert x.grad.tolist() == [2.0, 4.0], "A15-1: retained-intermediate double backward not doubled"
+
+# --- A25-1 / A25-2: a Float NaN group/merge key must not crash (write-only NaN Dict); None keys kept ---
+var pd = import("tabular")
+var mm = import("math")
+var gdf = pd.DataFrame({"k": [1.0, mm.nan, 2.0, 1.0], "v": [10, 20, 30, 40]})
+assert len(gdf.groupby("k").agg({"v": "sum"})) == 2, "A25-1: NaN group key dropped, no crash"
+var ndf = pd.DataFrame({"k": [None, 5.0, None], "v": [1, 2, 3]})
+assert len(ndf.groupby("k").agg({"v": "sum"})) == 2, "A25-1: None kept as a group key"
+var ml = pd.DataFrame({"k": [1.0, 2.0], "a": [10, 20]})
+var mr = pd.DataFrame({"k": [1.0, mm.nan], "b": [100, 200]})
+assert pd.merge(ml, mr, "k", "left").nrows() == 2, "A25-2: NaN merge key non-matching, no crash"
+
+# --- A26-1: an XML surrogate numeric entity is kept verbatim, never crashes the lenient parser ---
+var xml = import("xml")
+assert xml.fromstring("<x>&#xD800;</x>").text == "&#xD800;", "A26-1: surrogate entity kept verbatim"
+
+# --- A26-2: partial `>`/`<=` comparators round up per node-semver (>1 -> >=2.0.0, <=1 -> <2.0.0) ---
+var sv = import("semver")
+assert not sv.satisfies("1.5.0", ">1"), "A26-2: >1 excludes 1.5.0"
+assert sv.satisfies("2.0.0", ">1"), "A26-2: >1 includes 2.0.0"
+assert not sv.satisfies("1.2.5", ">1.2"), "A26-2: >1.2 excludes 1.2.5"
+assert sv.satisfies("1.3.0", ">1.2"), "A26-2: >1.2 includes 1.3.0"
+assert sv.satisfies("1.9.9", "<=1"), "A26-2: <=1 includes 1.9.9 (<2.0.0)"
+assert not sv.satisfies("2.0.0", "<=1"), "A26-2: <=1 excludes 2.0.0"
+
+# --- A21-2: regex endpos with pos omitted (keyword hole-fill) must not throw ---
+var re = import("regex")
+assert re.compile("a+").search("aaa", endpos = 2).group() == "aa", "A21-2: endpos-only keyword"
+
+# --- A14-1: random.gauss with sigma keyword only (mu hole-filled None) must run ---
+var rr = import("random").Random(7)
+discard rr.gauss(sigma = 2.0)   # a throw here would fail the script
+
+# --- A09-2: sorting/min/max with a NaN operand is well-defined (NaN sorts last), never crashes ---
+var srt = sorted([3.0, mm.nan, 1.0, 2.0])
+assert srt[0] == 1.0 and srt[1] == 2.0 and srt[2] == 3.0, "A09-2: reals sort before NaN"
+assert srt[3] != srt[3], "A09-2: NaN sorts to the end"
+assert min([5.0, 2.0, 9.0]) == 2.0 and max([5.0, 2.0, 9.0]) == 9.0, "A09-2: min/max intact"
+
+# --- A23-5: combinatorial explosion (product/permutations/combinations) throws, doesn't OOM/hang ---
+var itt = import("itertools")
+assert len(itt.product([[1, 2], [3, 4]])) == 4, "A23-5: product normal case"
+assert len(itt.permutations([1, 2, 3])) == 6, "A23-5: permutations normal case"
+assert len(itt.combinations([1, 2, 3, 4], 2)) == 6, "A23-5: combinations normal case"
+assert throws(Function(): return itt.product([range(0, 4000), range(0, 4000)])), "A23-5: huge product throws"
+assert throws(Function(): return itt.permutations(range(0, 15))), "A23-5: huge permutations throws"
+assert throws(Function(): return itt.combinations(range(0, 40), 20)), "A23-5: huge combinations throws"
+
+# --- A01-1/A01-2: f-string escapes now match plain strings (shared cooked-escape decoder) ---
+assert f"\xff" == "\xff", "A01-1: f-string \\xHH is a code point, not a raw byte"
+assert len(f"\xe9") == 1, "A01-1: f-string \\xe9 is one code point"
+# a bad escape inside an f-string is a lex error (can't be caught at run time — it's a parse error),
+# so it's pinned in the C++ test; here just confirm the good escapes behave.
+assert f"a\tb" == "a\tb", "A01: ordinary f-string escapes unchanged"
+
+# --- A17-1: a Set of user-class instances with an attribute-based _hash_ round-trips (correct bucket) ---
+var dmp = import("dump")
+class Kv:
+    var _init_ = Function(self, v): self.v = v
+    var _hash_ = Function(self): return self.v
+    var _eq_ = Function(self, o): return self.v == o.v
+var kback = dmp.loads(dmp.dumps({Kv(5), Kv(7)}))
+assert kback.contains(Kv(5)) and kback.contains(Kv(7)), "A17-1: attr-hashed Set members bucket correctly"
+
+io.print("OK audit_v113")

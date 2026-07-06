@@ -240,7 +240,8 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         auto& m = self_m(vm, self);
         auto out = mat::make(m.rows(), m.cols());
         for (std::size_t i = 0; i < m.data().size(); ++i) {
-            std::array<Handle, 1> args{vm.makeFloat(m.data()[i])};
+            RootScope rs(vm);  // root the arg across the callback — call() allocates a scope, so an
+            std::array<Handle, 1> args{rs.add(vm.makeFloat(m.data()[i]))};  // un-rooted arg could be swept (A16-1)
             out->data()[i] = mat::numOf(vm, vm.arena().deref(fn).call(vm, args));
         }
         return vm.alloc(std::move(out));

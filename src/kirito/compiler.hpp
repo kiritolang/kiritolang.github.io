@@ -160,6 +160,26 @@ private:
         if (std::holds_alternative<std::string>(lit.value)) return "S" + std::get<std::string>(lit.value);
         return std::nullopt;
     }
+    // The switch key for a case-label EXPRESSION: a literal scalar, OR a unary minus applied to a
+    // numeric literal. A negative label like `-1` parses as UnaryExpr(Neg, Literal 1), NOT a
+    // LiteralExpr — so without folding it here it (a) escaped duplicate detection (`case -1` twice was
+    // accepted) and (b) silently dropped the whole switch off the O(1) dispatch to the O(n) chain.
+    // The folded key must match what scalarSwitchKey computes for the negated value at run time.
+    static std::optional<std::string> constSwitchKey(const ast::Expr& e) {
+        if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(&e)) return literalSwitchKey(*lit);
+        if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&e); un && un->op == UnOp::Neg)
+            if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(un->operand.get())) {
+                if (std::holds_alternative<int64_t>(lit->value))
+                    return "I" + std::to_string(-std::get<int64_t>(lit->value));
+                if (std::holds_alternative<double>(lit->value)) {
+                    double d = -std::get<double>(lit->value);
+                    if (std::isnan(d)) return std::nullopt;
+                    if (d == 0.0) d = 0.0;
+                    return "F" + floatToRoundtrip(d);
+                }
+            }
+        return std::nullopt;
+    }
 
     // --- recursion with a depth guard (matching the parser's nesting bound) so a pathologically deep
     // AST throws a clean error (with the node's span) instead of overflowing the compiler's stack. ---
@@ -313,7 +333,23 @@ private:
     void visit(const ast::ReturnStmt& s) override {
         if (s.value) compileExpr(*s.value);
         else emit(Op::LoadNone);
-        unwindFramesAbove(0);  // run every enclosing finally/with cleanup before returning (value on stack)
+        // If this return crosses any try-finally / with whose cleanup runs here, park the return value
+        // in a hidden local so those cleanups run at a CLEAN operand height and are reloaded after —
+        // exactly as emitFinallyExc parks the in-flight exception. Otherwise a break/continue inside a
+        // crossed finally would Pop the return value (top of stack) instead of a loop cursor, orphaning
+        // the cursor and corrupting an enclosing loop's iteration (A04-1).
+        bool crossesCleanup = false;
+        for (const auto& f : frames_)
+            if (f.kind == CFrame::Block && f.cleanup) { crossesCleanup = true; break; }
+        if (crossesCleanup) {
+            std::string retName = "$ret" + std::to_string(retCounter_++);
+            ensureHiddenSlot(retName);
+            emitStore(retName, s.span);
+            unwindFramesAbove(0);
+            emitLoad(retName, s.span);
+        } else {
+            unwindFramesAbove(0);  // no cleanup to run at height — the value can ride the stack
+        }
         emit(Op::Return, 0, s.span);
     }
 
@@ -335,8 +371,7 @@ private:
             fum::unordered_set<std::string> seen;
             for (const auto& c : s.cases)
                 for (const auto& valExpr : c.values)
-                    if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(valExpr.get()))
-                        if (auto key = literalSwitchKey(*lit); key && !seen.insert(*key).second) {
+                    if (auto key = constSwitchKey(*valExpr); key && !seen.insert(*key).second) {
                             compileExpr(*s.subject);
                             emit(Op::Pop);
                             emit(Op::LoadConst, addConst(vm_.makeString("duplicate switch case value")));
@@ -345,11 +380,9 @@ private:
                             return;
                         }
         }
-        // Fast path: all case values are literal scalars -> one O(1) hash dispatch built at compile time.
-        auto litKey = [](const ast::Expr& e) -> std::optional<std::string> {
-            if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(&e)) return literalSwitchKey(*lit);
-            return std::nullopt;
-        };
+        // Fast path: all case values are compile-time constant scalars (incl. negated numeric literals)
+        // -> one O(1) hash dispatch built at compile time.
+        auto litKey = [](const ast::Expr& e) { return constSwitchKey(e); };
         bool allLiteral = true;
         for (const auto& c : s.cases)
             for (const auto& v : c.values)
@@ -703,6 +736,7 @@ private:
     std::vector<CFrame> frames_;
     int withCounter_ = 0;  // unique hidden-local index per `with` (holds the context manager)
     int tryCounter_ = 0;   // unique hidden-local index per `try` (parks the in-flight exception)
+    int retCounter_ = 0;   // unique hidden-local index per value-parking `return` crossing a cleanup
     int depth_ = 0;
     bool slotsEnabled_ = false;                      // true only when compiling a true function body
     fum::unordered_map<std::string, uint32_t> slotOf_;  // slotted local name -> frame slot index

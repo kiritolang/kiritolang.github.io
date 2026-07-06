@@ -209,16 +209,37 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             } break;
         }
     }
+    // A Set element / Dict KEY that is a Stateful node (Bytes/DateTime/Matrix/…) or an Object instance
+    // has a CONTENT-based hash whose payload/attributes are only restored later (pass 3 for Stateful,
+    // this pass at the member's own higher index for an Object). Hashing it now — while it is still
+    // empty — would bucket it wrong (and an Object's _hash_ reading a not-yet-set attribute even
+    // throws). So a Set/Dict with any such member is DEFERRED to pass 4 and wired after everything is
+    // materialised (A17-1). Scalar/String-keyed containers wire here in pass 2, so a _setstate_ that
+    // reads its state Dict still sees it populated.
+    auto contentHashedMember = [&](const Node& nd) {
+        if (nd.tag == Tag::Set) {
+            for (uint32_t id : nd.links) {
+                Tag tg = nodes[checkId(id)].tag;
+                if (tg == Tag::Stateful || tg == Tag::Object) return true;
+            }
+        } else if (nd.tag == Tag::Dict) {
+            for (std::size_t k = 0; k + 1 < nd.links.size(); k += 2) {
+                Tag tg = nodes[checkId(nd.links[k])].tag;
+                if (tg == Tag::Stateful || tg == Tag::Object) return true;
+            }
+        }
+        return false;
+    };
     // Pass 2: wire containers and instance attributes (handles only — contents finish filling here).
     for (uint32_t i = 0; i < n; ++i) {
         const Node& nd = nodes[i];
         if (nd.tag == Tag::List) {
             auto& l = static_cast<ListVal&>(vm.arena().deref(objs[i]));
             for (uint32_t id : nd.links) l.elems.push_back(objs[checkId(id)]);
-        } else if (nd.tag == Tag::Set) {
+        } else if (nd.tag == Tag::Set && !contentHashedMember(nd)) {
             auto& s = static_cast<SetVal&>(vm.arena().deref(objs[i]));
             for (uint32_t id : nd.links) s.add(vm.arena(), objs[checkId(id)]);
-        } else if (nd.tag == Tag::Dict) {
+        } else if (nd.tag == Tag::Dict && !contentHashedMember(nd)) {
             auto& d = static_cast<DictVal&>(vm.arena().deref(objs[i]));
             for (std::size_t k = 0; k + 1 < nd.links.size(); k += 2)
                 d.set(vm.arena(), objs[checkId(nd.links[k])], objs[checkId(nd.links[k + 1])]);
@@ -243,6 +264,20 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             throw KiritoError("cannot deserialize '" + nd.s + "': it defines _getstate_ but no _setstate_");
         std::array<Handle, 1> args{state};
         vm.arena().deref(*setm).call(vm, args);
+    }
+    // Pass 4: wire the Sets/Dicts deferred from pass 2 (those with a content-hashed member), now that
+    // every element/key is fully materialised so it buckets under its final hash (A17-1).
+    for (uint32_t i = 0; i < n; ++i) {
+        const Node& nd = nodes[i];
+        if (!contentHashedMember(nd)) continue;
+        if (nd.tag == Tag::Set) {
+            auto& s = static_cast<SetVal&>(vm.arena().deref(objs[i]));
+            for (uint32_t id : nd.links) s.add(vm.arena(), objs[checkId(id)]);
+        } else if (nd.tag == Tag::Dict) {
+            auto& d = static_cast<DictVal&>(vm.arena().deref(objs[i]));
+            for (std::size_t k = 0; k + 1 < nd.links.size(); k += 2)
+                d.set(vm.arena(), objs[checkId(nd.links[k])], objs[checkId(nd.links[k + 1])]);
+        }
     }
     return objs[rootId];
 }

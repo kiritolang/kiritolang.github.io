@@ -1,0 +1,71 @@
+# Doc-vs-impl verification for the csv stdlib module (docs/pages/10-stdlib.md "## csv").
+# parse / parserow / format / formatrow with RFC-4180-style quoting. Prints "OK csv".
+var io = import("io")
+var csv = import("csv")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ parserow (one line -> fields)
+assert csv.parserow("x,y,z") == ["x", "y", "z"], "parserow simple"
+assert csv.parserow("") == [""], "parserow empty -> one empty field"
+assert csv.parserow("a") == ["a"], "parserow single column"
+assert csv.parserow(",,") == ["", "", ""], "parserow empty fields"
+assert csv.parserow("a,") == ["a", ""], "parserow trailing comma"
+assert csv.parserow(",b") == ["", "b"], "parserow leading comma"
+assert csv.parserow("\"a,b\",c") == ["a,b", "c"], "parserow quoted comma"
+assert csv.parserow("\"a\"\"b\"") == ["a\"b"], "parserow escaped quote (doubled)"
+assert csv.parserow("\"hi\"") == ["hi"], "parserow fully quoted"
+
+# ============================================================ formatrow (fields -> one line)
+assert csv.formatrow(["x", "y", "z"]) == "x,y,z", "formatrow simple"
+assert csv.formatrow([]) == "", "formatrow empty row"
+assert csv.formatrow(["a"]) == "a", "formatrow single"
+assert csv.formatrow([1, 2.5, True]) == "1,2.5,True", "formatrow stringifies non-strings"
+# quoting only when needed: comma, quote, newline, CR
+assert csv.formatrow(["b,c"]) == "\"b,c\"", "formatrow quotes comma"
+assert csv.formatrow(["d\"e"]) == "\"d\"\"e\"", "formatrow doubles embedded quote"
+assert csv.formatrow(["a\nb"]) == "\"a\nb\"", "formatrow quotes newline"
+assert csv.formatrow(["a\rb"]) == "\"a\rb\"", "formatrow quotes CR"
+assert csv.formatrow(["plain"]) == "plain", "formatrow no needless quoting"
+
+# ============================================================ parse (whole text -> rows)
+assert csv.parse("a,b\nc,d") == [["a", "b"], ["c", "d"]], "parse two rows"
+assert csv.parse("") == [], "parse empty -> no rows"
+assert csv.parse("a\nb") == [["a"], ["b"]], "parse single-column rows"
+assert csv.parse(",,") == [["", "", ""]], "parse empty fields"
+# trailing newline does NOT create a spurious empty row
+assert csv.parse("a,b\n") == [["a", "b"]], "parse trailing newline"
+assert csv.parse("a,b\nc,d\n") == [["a", "b"], ["c", "d"]], "parse trailing newline multi-row"
+# lone CR is skipped (CRLF treated as LF); a bare \r does not split
+assert csv.parse("a\rb") == [["ab"]], "parse lone CR skipped"
+assert csv.parse("a,b\r\nc,d") == [["a", "b"], ["c", "d"]], "parse CRLF row terminator"
+# quoted fields: embedded comma, newline, doubled quote span correctly across the whole text
+assert csv.parse("\"a,b\",c") == [["a,b", "c"]], "parse quoted comma stays one field"
+assert csv.parse("\"a\nb\",c") == [["a\nb", "c"]], "parse quoted newline stays one row"
+assert csv.parse("\"a\"\"b\"") == [["a\"b"]], "parse doubled quote"
+assert csv.parse("a,") == [["a", ""]], "parse trailing empty field (no newline)"
+
+# ============================================================ round-trip: format . parse == id (for quotable data)
+var rows = [["a", "b,c", "d\"e"], ["1", "2", "with\nnewline"], ["", "x", ""]]
+assert csv.parse(csv.format(rows)) == rows, "round-trip format/parse"
+assert csv.format([["a", "b"], ["c", "d"]]) == "a,b\nc,d", "format joins rows with newline"
+assert csv.format([]) == "", "format empty rows"
+
+# ============================================================ hardening / degenerate
+# format/formatrow tolerate mixed types via String(); a nested container stringifies (no throw)
+assert csv.formatrow([[1, 2]]) == "\"[1, 2]\"", "formatrow nested list stringified+quoted"
+# parse never throws on malformed quoting; an unterminated quote just absorbs the rest
+assert csv.parse("\"unterminated") == [["unterminated"]], "parse unterminated quote is lenient"
+
+io.print("OK csv")

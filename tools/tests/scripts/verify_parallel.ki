@@ -1,0 +1,293 @@
+# Doc-vs-impl verification for the `parallel` stdlib module (docs/pages/10-stdlib.md `## parallel`
+# and docs/pages/31-bonus-06-concurrency.md). Confirms spawn/Task, Queue, Lock/Event/Semaphore/
+# Barrier, and cpucount behave as documented, plus edge cases and HARDENING (bad input must raise the
+# RIGHT message; anything that SHOULD raise but doesn't is a silent bug).
+#
+# `parallel` is installed ONLY by the `ki` CLI (it runs every VM under a KiritoDispatcher), so run this
+# through `ki`, not an embedded VM. Cross-thread facts are asserted on AGGREGATES (sum/set/sorted),
+# never on timing or arrival order, so the test is deterministic. Every blocking call carries a timeout
+# so a bug fails loudly instead of hanging. Prints "OK parallel".
+var io = import("io")
+var parallel = import("parallel")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# --- spawnable workers MUST be module-level: a worker re-evaluates THIS file with argmain False, so it
+#     only DEFINES these functions (the driver below is skipped). Closures don't cross VMs. ---
+var w_square = Function(x):
+    return x * x
+var w_ident = Function(x):
+    return x
+var w_add = Function(a, b = 10):        # default + keyword args across the VM boundary
+    return a + b
+var w_container = Function(n):          # returns a nested value graph
+    var xs = []
+    var i = 0
+    while i < n:
+        xs.append(i * i)
+        i = i + 1
+    return {"squares": xs, "n": n}
+var w_boom = Function():                # worker fault -> surfaced at join
+    throw "kaboom"
+var make_closure = Function():          # a real closure: 'inner' captures the enclosing local 'captured'
+    var captured = 100
+    var inner = Function(y):
+        return y + captured
+    return inner
+var w_produce = Function(out, n):       # cross-VM Queue: producer side
+    var i = 0
+    while i < n:
+        out.put(i * i)
+        i = i + 1
+    out.close()
+var w_sum_queue = Function(inq, outq):  # cross-VM Queue passed THROUGH spawn (same queue by identity)
+    var total = 0
+    var go = True
+    while go:
+        try:
+            total = total + inq.get(True, 5)
+        catch as e:
+            go = False
+    outq.put(total)
+var w_event_wait = Function(ev, out, tag):   # Event broadcast across workers (set is sticky -> no race)
+    discard ev.wait(5)
+    out.put(tag)
+var w_barrier = Function(bar, out, tag):     # Barrier rendezvous across workers
+    discard bar.wait(5)
+    out.put(tag)
+
+if argmain:
+    # ======================================================== cpucount
+    assert type(parallel.cpucount()) == "Integer", "cpucount is Integer"
+    assert parallel.cpucount() >= 1, "cpucount >= 1"
+
+    # ======================================================== spawn -> Task -> join/done (determinism)
+    assert parallel.spawn(w_square, 9).join() == 81, "spawn pure fn returns f(args)"
+    assert parallel.spawn(w_ident, -42).join() == -42, "spawn identity Integer"
+    assert parallel.spawn(w_ident, "héllo ✓").join() == "héllo ✓", "spawn identity Unicode String"
+    assert parallel.spawn(w_ident, None).join() == None, "spawn identity None"
+    assert parallel.spawn(w_ident, True).join() == True, "spawn identity Bool"
+    assert parallel.spawn(w_ident, 3.5).join() == 3.5, "spawn identity Float"
+
+    # a worker returning a container -> rebuilt in the caller's VM
+    var rc = parallel.spawn(w_container, 4).join()
+    assert rc["squares"] == [0, 1, 4, 9] and rc["n"] == 4, "spawn worker returns a container graph"
+    assert parallel.spawn(w_ident, {1, 2, 3}).join() == {3, 2, 1}, "spawn round-trips a Set"
+
+    # spawn with kwargs / defaults (uniform keyword-argument protocol crosses the VM boundary)
+    assert parallel.spawn(w_add, 5).join() == 15, "spawn uses the default b = 10"
+    assert parallel.spawn(w_add, 5, 6).join() == 11, "spawn positional overrides default"
+    assert parallel.spawn(w_add, b = 3, a = 2).join() == 5, "spawn keyword args, any order"
+    assert parallel.spawn(w_add, 7, b = 3).join() == 10, "spawn mixed positional + keyword"
+
+    # done(): a definitely-finished task reports done; join is idempotent (second call = cached result)
+    var t = parallel.spawn(w_square, 6)
+    assert t.join() == 36, "join once"
+    assert t.join() == 36, "join twice -> cached, same value"
+    assert t.done() == True, "done True after join"
+    assert type(parallel.spawn(w_ident, 1).done()) == "Bool", "done returns a Bool"
+
+    # a worker fault is isolated and re-thrown at join; the host VM keeps running
+    assert raises_msg(Function(): return parallel.spawn(w_boom).join(), "worker thrown"), "worker throw -> join re-throws"
+    assert raises_msg(Function(): return parallel.spawn(w_boom).join(), "kaboom"), "join carries the worker's message"
+    assert 2 + 2 == 4, "host VM unaffected by a worker fault"
+
+    # a map-reduce: N workers each square a number, join all, sum == expected
+    var tasks = []
+    var m = 0
+    while m < 4:
+        tasks.append(parallel.spawn(w_square, m))
+        m = m + 1
+    var total = 0
+    for tk in tasks:
+        total = total + tk.join()
+    assert total == 0 + 1 + 4 + 9, "map-reduce: sum of squared workers == 14"
+
+    # ======================================================== spawn HARDENING
+    # not a Kirito function
+    assert raises_msg(Function(): return parallel.spawn(42), "must be a Kirito function"), "spawn non-function raises"
+    # a native builtin is not spawnable (no .ki source span)
+    assert raises_msg(Function(): return parallel.spawn(len, [1]), "must be a Kirito function"), "spawn native fn raises"
+    # missing function argument
+    assert raises_msg(Function(): return parallel.spawn(), "missing function"), "spawn no args raises"
+    # a non-serializable ARGUMENT is caught synchronously at spawn
+    var net = import("net")
+    var sock = net.Socket()
+    assert raises_msg(Function(): return parallel.spawn(w_ident, sock), "cannot dump"), "spawn unserializable arg raises at spawn"
+    sock.close()
+    # a closure that reaches an enclosing local does NOT cross: the worker fails to resolve the name,
+    # surfacing at join (share-nothing rule).
+    var closurefn = make_closure()
+    assert raises_msg(Function(): return parallel.spawn(closurefn, 1).join(), "not defined"), "captured-name closure fails in worker"
+
+    # ======================================================== Queue: deterministic single-VM mechanics
+    var q = parallel.Queue()
+    assert q.empty() == True and q.qsize() == 0 and q.full() == False, "new unbounded Queue is empty"
+    q.put(1)
+    q.put("two")
+    q.put([3])
+    assert q.qsize() == 3 and q.empty() == False, "put increments qsize"
+    assert q.get() == 1 and q.get() == "two" and q.get()[0] == 3, "get is FIFO"
+    assert q.empty() == True, "drained Queue is empty"
+    q.putnowait(7)
+    assert q.getnowait() == 7, "putnowait / getnowait round-trip"
+
+    # bounded queue: full() and back-pressure via putnowait
+    var bq = parallel.Queue(2)
+    assert bq.full() == False, "bounded Queue starts not full"
+    bq.put(1)
+    bq.put(2)
+    assert bq.full() == True, "bounded Queue reports full at maxsize"
+    assert raises_msg(Function(): return bq.putnowait(3), "put to a full queue"), "putnowait on full raises"
+    assert bq.get() == 1, "get frees a bounded slot"
+    bq.put(3)
+    assert bq.get() == 2 and bq.get() == 3, "bounded FIFO order preserved"
+
+    # close(): drains remaining, then get/put throw
+    var cq = parallel.Queue()
+    cq.put(9)
+    cq.close()
+    assert cq.get() == 9, "close still drains buffered items"
+    assert raises_msg(Function(): return cq.get(), "queue is closed"), "get on closed+drained raises"
+    assert raises_msg(Function(): return cq.put(1), "queue is closed"), "put on closed raises"
+
+    # Queue HARDENING: getnowait/get-timeout on empty, negative maxsize, bad timeout type
+    var eq = parallel.Queue()
+    assert raises_msg(Function(): return eq.getnowait(), "get from an empty queue"), "getnowait on empty raises"
+    assert raises_msg(Function(): return eq.get(True, 0.02), "get from an empty queue"), "get timeout on empty raises"
+    assert raises_msg(Function(): return parallel.Queue(-1), "maxsize must be >= 0"), "negative maxsize raises"
+    assert raises_msg(Function(): return eq.get(True, "soon"), "timeout must be a number"), "non-numeric timeout raises"
+
+    # ======================================================== cross-VM Queue transfer (aggregate, not order)
+    # producer worker + main consumer, close ends the loop
+    var pq = parallel.Queue()
+    var pt = parallel.spawn(w_produce, pq, 6)
+    var got = []
+    var go = True
+    while go:
+        try:
+            got.append(pq.get(True, 5))
+        catch as e:
+            go = False
+    discard pt.join()
+    got.sort()
+    assert got == [0, 1, 4, 9, 16, 25], "cross-VM producer/consumer round-trip (sorted aggregate)"
+
+    # a Queue passed THROUGH spawn is the SAME queue by identity (request/response round-trip)
+    var inq = parallel.Queue()
+    var outq = parallel.Queue()
+    var st = parallel.spawn(w_sum_queue, inq, outq)
+    var kk = 0
+    while kk < 5:
+        inq.put(kk * 2)
+        kk = kk + 1
+    inq.close()
+    assert outq.get(True, 5) == 20, "Queue crosses spawn by identity (0+2+4+6+8)"
+    discard st.join()
+
+    # non-serializable value rejected at the Queue boundary too
+    var sock2 = net.Socket()
+    assert raises_msg(Function(): return parallel.Queue().put(sock2), "cannot dump"), "Queue.put rejects unserializable"
+    sock2.close()
+
+    # ======================================================== Lock (acquire/release/locked, timeout, ctx)
+    var lock = parallel.Lock()
+    assert lock.locked() == False, "new Lock is unlocked"
+    assert lock.acquire() == True, "acquire returns True"
+    assert lock.locked() == True, "Lock reports locked"
+    # non-reentrant: the SAME worker re-acquiring throws
+    assert raises_msg(Function(): return lock.acquire(False), "not reentrant"), "re-acquire same-worker raises"
+    lock.release()
+    assert lock.locked() == False, "release clears locked"
+    assert raises_msg(Function(): return lock.release(), "release of an unlocked lock"), "release of unheld raises"
+    assert lock.acquire(True, 1) == True, "acquire with timeout returns True when free"
+    lock.release()
+    with lock:                                        # context manager always releases
+        assert lock.locked() == True, "with-lock acquires"
+    assert lock.locked() == False, "with-lock releases on exit"
+
+    # ======================================================== Event (set/clear/isset/wait, timeout)
+    var ev = parallel.Event()
+    assert ev.isset() == False, "new Event is clear"
+    assert ev.wait(0.02) == False, "wait times out while unset (returns False, no throw)"
+    ev.set()
+    assert ev.isset() == True, "set flips isset"
+    assert ev.wait() == True, "wait returns True once set"
+    assert ev.wait(0.02) == True, "wait with timeout still True when set"
+    ev.clear()
+    assert ev.isset() == False, "clear resets"
+    assert ev.wait(0.02) == False, "wait times out again after clear"
+    # broadcast to workers (sticky set -> deterministic count regardless of timing)
+    var bev = parallel.Event()
+    var bout = parallel.Queue()
+    var e = 0
+    while e < 3:
+        discard parallel.spawn(w_event_wait, bev, bout, e)
+        e = e + 1
+    bev.set()
+    var etags = []
+    while len(etags) < 3:
+        etags.append(bout.get(True, 5))
+    etags.sort()
+    assert etags == [0, 1, 2], "Event broadcast releases every worker (sorted tags)"
+
+    # ======================================================== Semaphore (permits, timeout, ctx)
+    var sem = parallel.Semaphore(2)
+    assert sem.acquire() == True, "semaphore permit 1"
+    assert sem.acquire() == True, "semaphore permit 2"
+    assert sem.acquire(False) == False, "semaphore exhausted -> non-blocking acquire False"
+    assert sem.acquire(True, 0.02) == False, "semaphore exhausted -> timed acquire False"
+    sem.release()
+    assert sem.acquire() == True, "release restores a permit"
+    var sem1 = parallel.Semaphore(1)
+    with sem1:                                        # context manager acquires+releases
+        assert sem1.acquire(False) == False, "with-sem holds the only permit"
+    assert sem1.acquire(False) == True, "with-sem released on exit"
+    assert raises_msg(Function(): return parallel.Semaphore(-1), "value must be >= 0"), "negative Semaphore value raises"
+
+    # ======================================================== Barrier (parties/nwaiting/wait/reset/abort)
+    var b1 = parallel.Barrier(1)
+    assert b1.parties() == 1 and b1.nwaiting() == 0, "Barrier parties/nwaiting"
+    assert b1.wait() == 0, "single-party Barrier releases immediately (index 0)"
+    b1.reset()
+    assert b1.wait() == 0, "reset keeps a Barrier reusable"
+    var b2 = parallel.Barrier(3)
+    assert b2.parties() == 3, "Barrier parties reported"
+    # under-filled wait -> timeout BREAKS the barrier (throws, unlike Event/Lock/Semaphore)
+    assert raises_msg(Function(): return b2.wait(0.02), "barrier is broken"), "Barrier wait timeout throws (broken)"
+    assert raises_msg(Function(): return parallel.Barrier(0), "parties must be >= 1"), "Barrier parties < 1 raises"
+    # abort() is permanent: every later wait throws
+    var b3 = parallel.Barrier(2)
+    b3.abort()
+    assert raises(Function(): return b3.wait(0.02)), "aborted Barrier: wait throws forever"
+    # full rendezvous across workers -> every worker proceeds (aggregate)
+    var bar = parallel.Barrier(3)
+    var brq = parallel.Queue()
+    var bi = 0
+    while bi < 3:
+        discard parallel.spawn(w_barrier, bar, brq, bi)
+        bi = bi + 1
+    var btags = []
+    while len(btags) < 3:
+        btags.append(brq.get(True, 5))
+    btags.sort()
+    assert btags == [0, 1, 2], "Barrier rendezvous releases all workers (sorted tags)"
+
+    # ======================================================== identity & unhashability (docs: no value ==)
+    var iq = parallel.Queue()
+    assert (iq == iq) == True, "a primitive compares == to itself (identity)"
+    assert (iq == parallel.Queue()) == False, "two separate Queues are not =="
+    assert raises_msg(Function(): return {iq}, "unhashable"), "a primitive is unhashable (no Set/Dict key)"
+
+    io.print("OK parallel")

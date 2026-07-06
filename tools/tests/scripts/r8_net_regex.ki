@@ -485,7 +485,7 @@ if argmain:
     ok("get(url, opts) -> Response" in insSess and "post(url, opts) -> Response" in insSess, "inspect Session lists get/post")
     ok("delete(url, opts) -> Response" in insSess and "options(url, opts) -> Response" in insSess, "inspect Session lists delete/options")
     var insNet = inspect(net)
-    ok("fromfd(fd: Integer) -> Socket" in insNet, "inspect net lists fromfd")
+    ok('fromfd(fd: Integer, family: String = "inet", type: String = "stream") -> Socket' in insNet, "inspect net lists fromfd")
     ok("Session() -> Session" in insNet and "Socket() -> Socket" in insNet, "inspect net lists the Session/Socket constructors")
     ok("parseqs(query: String) -> Dict" in insNet and "urlencode(params: Dict) -> String" in insNet, "inspect net lists parseqs/urlencode signatures")
 

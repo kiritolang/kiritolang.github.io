@@ -352,11 +352,9 @@ assert throws(Function(): return Color.nameof(99)), "FINDING: nameof of an unkno
 # --- empty enum; and the SILENT-CORRUPTION on duplicate names. ------------------------------------
 var Empty = en.Enum([])
 assert Empty.names() == [] and (("X" in Empty) == False), "empty enum has no members"
-# FINDING: duplicate names silently corrupt the reverse map -- get('A') returns the LAST index, but
-# BOTH ordinals map back to 'A' via nameof. No error is thrown on the duplicate.
-var Dup = en.Enum(["A", "A"])
-assert Dup.get("A") == 1, "FINDING: duplicate name -> get returns the LAST ordinal (1), shadowing the first"
-assert Dup.nameof(0) == "A" and Dup.nameof(1) == "A", "FINDING: both ordinals map back to the duplicated name"
+# FIXED: duplicate names are now rejected at construction (previously they silently corrupted the
+# reverse map — get returned the last ordinal while both ordinals mapped back to the same name).
+assert throws(Function(): return en.Enum(["A", "A"])), "duplicate enum member is rejected"
 
 io.print("ok enum")
 

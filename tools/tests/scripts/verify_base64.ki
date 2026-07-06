@@ -1,0 +1,85 @@
+# Doc-vs-impl verification for the base64 stdlib module (docs/pages/10-stdlib.md "## base64").
+# Functioning (exact known vectors) + edge (padding/empty/binary) + hardening (invalid input).
+# Prints "OK base64".
+var io = import("io")
+var base64 = import("base64")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ encode: exact RFC-4648 vectors
+assert base64.encode("") == "", "encode empty"
+assert base64.encode("f") == "Zg==", "encode f (1-byte -> two pad)"
+assert base64.encode("fo") == "Zm8=", "encode fo (2-byte -> one pad)"
+assert base64.encode("foo") == "Zm9v", "encode foo (3-byte -> no pad)"
+assert base64.encode("foob") == "Zm9vYg==", "encode foob"
+assert base64.encode("fooba") == "Zm9vYmE=", "encode fooba"
+assert base64.encode("foobar") == "Zm9vYmFy", "encode foobar"
+assert base64.encode("Hi") == "SGk=", "encode Hi"
+assert base64.encode("M") == "TQ==" and base64.encode("Ma") == "TWE=" and base64.encode("Man") == "TWFu", "encode M/Ma/Man remainders"
+assert type(base64.encode("x")) == "String", "encode returns String"
+
+# encode accepts List of byte values and Bytes, identical to the String's UTF-8 bytes
+assert base64.encode([77, 97, 110]) == "TWFu", "encode List of bytes"
+assert base64.encode(Bytes([77, 97, 110])) == "TWFu", "encode Bytes"
+assert base64.encode(Bytes("Man")) == base64.encode("Man"), "encode Bytes==String"
+
+# ============================================================ decode: exact + returns List of bytes
+assert base64.decode("") == [], "decode empty -> []"
+assert base64.decode("SGk=") == [72, 105], "decode padded"
+assert base64.decode("TQ==") == [77], "decode 1-byte"
+assert base64.decode("Zm8=") == [102, 111], "decode 2-byte"
+assert base64.decode("TWFu") == [77, 97, 110], "decode 3-byte"
+assert type(base64.decode("TQ==")) == "List", "decode returns List"
+# padding-less but otherwise valid input decodes (zero leftover bits)
+assert base64.decode("SGk") == [72, 105], "decode without padding"
+
+# ============================================================ round-trip strings, unicode, binary
+var samples = ["", "a", "ab", "abc", "abcd", "hello world", "héllo", "\n\t\r", "\x00\x01\x02\xff"]
+for smp in samples:
+    var enc = base64.encode(smp)
+    assert Bytes(base64.decode(enc)) == smp.encode(), "round-trip sample"
+
+# binary (all byte values 0..255) round-trips exactly through Bytes
+var allbytes = Bytes(range(256))
+assert Bytes(base64.decode(base64.encode(allbytes))) == allbytes, "binary 0..255 round-trip"
+
+# ============================================================ url-safe variant: differs on + and /
+# Standard alphabet uses '+' (62) and '/' (63); URL-safe uses '-' and '_'.
+assert base64.encode(Bytes([255, 255])) == "//8=", "std alphabet uses /"
+assert base64.urlsafeencode(Bytes([255, 255])) == "__8=", "urlsafe maps / -> _"
+assert base64.encode(Bytes([251])) == "+w==", "std alphabet uses +"
+assert base64.urlsafeencode(Bytes([251])) == "-w==", "urlsafe maps + -> -"
+assert base64.urlsafedecode("__8=") == [255, 255], "urlsafe decode _"
+assert base64.urlsafedecode("-w==") == [251], "urlsafe decode -"
+# url-safe round-trips; standard encode/urlsafe agree when no +/-  is produced
+assert base64.urlsafeencode("foobar") == base64.encode("foobar"), "urlsafe==std when no +//"
+assert Bytes(base64.urlsafedecode(base64.urlsafeencode(allbytes))) == allbytes, "urlsafe binary round-trip"
+
+# ============================================================ hardening
+# decode stops at the first '=' (padding), ignoring anything after it
+assert base64.decode("SGk=extra") == [72, 105], "decode stops at first '='"
+# invalid characters throw (whitespace is NOT allowed by this decoder)
+assert raises_msg(Function(): return base64.decode("SG k="), "invalid base64 character"), "decode rejects space"
+assert raises_msg(Function(): return base64.decode("!!!!"), "invalid base64 character"), "decode rejects punctuation"
+# standard '/'+ '+' are invalid in the url-safe decoder path (translated to nothing meaningful);
+# but plain std decode accepts them — the url-safe alphabet swap means a '-'/'_' is rejected by std decode
+assert raises_msg(Function(): return base64.decode("-w=="), "invalid base64 character"), "std decode rejects '-'"
+assert raises_msg(Function(): return base64.decode("__8="), "invalid base64 character"), "std decode rejects '_'"
+# invalid length: a lone trailing character = 6 leftover bits
+assert raises_msg(Function(): return base64.decode("S"), "lone trailing character"), "decode lone char (invalid length)"
+# truncated/corrupted: non-zero leftover bits
+assert raises_msg(Function(): return base64.decode("SB"), "truncated or corrupted"), "decode truncated leftover bits"
+assert raises_msg(Function(): return base64.decode("SG="), "truncated or corrupted"), "decode SG= leftover bits"
+
+io.print("OK base64")

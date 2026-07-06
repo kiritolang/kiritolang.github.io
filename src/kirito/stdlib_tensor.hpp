@@ -734,6 +734,12 @@ inline void runBackward(KiritoVM& vm, Handle root, std::optional<FT> seed) {
         order.push_back(h);                           // all parents emitted -> emit node, pop
         stk.pop_back();
     }
+    // Non-leaf nodes use their own `.grad` as the reverse-mode accumulator, so a stale value from a
+    // prior backward() through a retained intermediate would be re-seeded and re-propagated (doubling
+    // the leaf gradient). Clear grad on every node that HAS a node (all non-leaves, incl. a non-leaf
+    // root) before seeding — PyTorch semantics: non-leaves don't retain grad. Leaf tensors (node ==
+    // null) are left untouched, so leaf accumulation across calls (relied on by the tests) is intact.
+    for (Handle h : order) { TensorVal& tv = asT(vm, h); if (tv.node) tv.grad.reset(); }
     accumulateGrad(R, s);
     for (auto it = order.rbegin(); it != order.rend(); ++it) {
         TensorVal& tv = asT(vm, *it);

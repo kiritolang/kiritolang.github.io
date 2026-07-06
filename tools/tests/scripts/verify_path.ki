@@ -1,0 +1,168 @@
+# Doc-vs-impl verification for the `path` stdlib module (docs/pages/10-stdlib.md ## path).
+# Pure path-string ops (join/dirname/basename/splitext), read-only queries (exists/isfile/isdir/
+# getsize/listdir/walk/getcwd/gettempdir/executable), and mutation (mkdir/remove/rmtree/rename/chmod).
+# Functioning (exact values), edge cases, HARDENING (bad input must raise the RIGHT error), and
+# SILENT-error probes. Prints "OK path". Creates a unique scratch dir under gettempdir() and rmtrees
+# it (cleanup!) at the end.
+var path = import("path")
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ join (variadic, absolute-reset)
+assert path.join("a", "b", "c") == "a/b/c", "join basic"
+assert path.join("a/", "b") == "a/b", "join no double separator"
+assert path.join("a", "/b") == "/b", "join absolute component resets"
+assert path.join("a", "b", "/c", "d") == "/c/d", "join absolute mid resets"
+assert path.join("a", "") == "a/", "join empty component emits separator"
+assert path.join("a", "", "b") == "a/b", "join empty then component"
+assert path.join("solo") == "solo", "join single component"
+assert path.join("", "b") == "b", "join leading empty"
+# A leading backslash is NOT absolute (only '/' resets).
+assert path.join("a", "\\b") == "a/\\b", "join backslash not absolute"
+
+# ============================================================ dirname / basename / splitext
+assert path.dirname("/a/b/c") == "/a/b", "dirname nested"
+assert path.dirname("/a") == "/", "dirname keeps root"
+assert path.dirname("a") == "", "dirname no separator -> empty"
+assert path.dirname("/a/b/") == "/a/b", "dirname trailing slash"
+assert path.basename("/a/b/c") == "c", "basename final component"
+assert path.basename("/a/b/") == "", "basename trailing slash -> empty"
+assert path.basename("solo") == "solo", "basename no separator"
+assert path.splitext("archive.tar.gz") == ["archive.tar", ".gz"], "splitext last ext only"
+assert path.splitext("noext") == ["noext", ""], "splitext no extension"
+assert path.splitext("/a/b.c/d") == ["/a/b.c/d", ""], "splitext dot in dir not ext"
+# Leading run of dots is protected (dotfiles/.. have no extension), matching os.path.splitext.
+assert path.splitext(".bashrc") == [".bashrc", ""], "splitext dotfile no ext"
+assert path.splitext("..") == ["..", ""], "splitext .. no ext"
+assert path.splitext("...x") == ["...x", ""], "splitext leading-dot run"
+assert path.splitext(".a.b") == [".a", ".b"], "splitext dotfile with ext"
+
+# ============================================================ scratch dir setup
+var base = path.join(path.gettempdir(), "kirito_verify_path")
+discard path.rmtree(base, missing_ok = True)         # start clean even if a prior run crashed
+assert not path.exists(base), "scratch dir absent before setup"
+
+# ============================================================ mkdir (strict + exist_ok)
+assert path.mkdir(base) == True, "mkdir creates -> True"
+assert path.isdir(base) and path.exists(base), "mkdir made a directory"
+# mkdir also creates missing parents.
+var nested = path.join(base, "x", "y", "z")
+assert path.mkdir(nested) == True, "mkdir creates parents"
+assert path.isdir(nested), "nested dir exists"
+# exist_ok = True on an existing dir is a lenient no-op returning False.
+assert path.mkdir(base, exist_ok = True) == False, "mkdir exist_ok existing -> False"
+
+# ============================================================ file queries
+var fpath = path.join(base, "note.txt")
+with io.open(fpath, "w") as f:
+    f.write("hello")
+assert path.exists(fpath) and path.isfile(fpath), "file exists + isfile"
+assert not path.isdir(fpath), "file is not a dir"
+assert path.getsize(fpath) == 5, "getsize counts bytes"
+assert not path.isfile(base), "dir is not a file"
+assert path.getsize == path.getsize, "getsize is a callable member"      # sanity of member access
+
+# ============================================================ listdir / walk
+# put a couple more files at top level to list.
+with io.open(path.join(base, "a.dat"), "w") as f:
+    f.write("1")
+with io.open(path.join(base, "b.dat"), "w") as f:
+    f.write("22")
+var entries = path.listdir(base)
+assert type(entries) == "List", "listdir returns a List"
+assert "note.txt" in entries and "a.dat" in entries and "b.dat" in entries, "listdir names"
+assert "x" in entries, "listdir includes subdir"
+# walk lists every file recursively (flattened full paths).
+with io.open(path.join(nested, "deep.txt"), "w") as f:
+    f.write("d")
+var files = path.walk(base)
+assert type(files) == "List", "walk returns a List"
+var deepfound = False
+for p in files:
+    if path.basename(p) == "deep.txt":
+        deepfound = True
+assert deepfound, "walk found nested file"
+# walk yields only regular files, not directories.
+for p in files:
+    assert path.isfile(p), "walk yields files only"
+# empty dir edge case: listdir([]) and walk([]) of an empty dir.
+var emptyd = path.join(base, "empty")
+discard path.mkdir(emptyd)
+assert path.listdir(emptyd) == [], "listdir of empty dir -> []"
+assert path.walk(emptyd) == [], "walk of empty dir -> []"
+
+# ============================================================ getcwd / gettempdir / executable
+assert type(path.getcwd()) == "String" and len(path.getcwd()) > 0, "getcwd is a non-empty String"
+assert type(path.gettempdir()) == "String" and len(path.gettempdir()) > 0, "gettempdir is a non-empty String"
+assert type(path.executable) == "String", "executable is a String"
+assert path.executable == "" or path.exists(path.executable), "executable is empty or a real path"
+
+# ============================================================ rename
+var renamed = path.join(base, "renamed.txt")
+assert path.rename(fpath, renamed) == None, "rename returns None"
+assert not path.exists(fpath) and path.exists(renamed), "rename moved the file"
+assert path.getsize(renamed) == 5, "renamed file kept content"
+
+# ============================================================ remove (strict + missing_ok)
+assert path.remove(renamed) == True, "remove file -> True"
+assert not path.exists(renamed), "removed file gone"
+# removing an empty dir works; a non-empty dir throws (use rmtree).
+assert path.remove(emptyd) == True, "remove empty dir -> True"
+assert path.remove(fpath, missing_ok = True) == False, "remove missing missing_ok -> False"
+
+# ============================================================ chmod (lenient)
+var cfile = path.join(base, "perm.txt")
+with io.open(cfile, "w") as f:
+    f.write("p")
+assert path.chmod(cfile, 0o644) == True, "chmod existing -> True"
+assert path.chmod(path.join(base, "nope.txt"), 0o644) == False, "chmod missing -> False (lenient, no throw)"
+
+# ============================================================ HARDENING (bad input -> RIGHT error)
+# getsize throws on a missing path (unlike the tolerant predicates).
+assert raises_msg(Function(): return path.getsize(path.join(base, "gone.txt")), "getsize"), "getsize missing raises"
+# getsize on a directory (non-regular) throws.
+assert raises(Function(): return path.getsize(base)), "getsize on dir raises"
+# mkdir on an existing path without exist_ok throws.
+assert raises_msg(Function(): return path.mkdir(base), "already exists"), "mkdir existing raises"
+# remove of a missing path without missing_ok throws.
+assert raises_msg(Function(): return path.remove(path.join(base, "gone.txt")), "does not exist"), "remove missing raises"
+# rmtree of a missing path without missing_ok throws.
+assert raises_msg(Function(): return path.rmtree(path.join(base, "gone")), "does not exist"), "rmtree missing raises"
+# remove of a non-empty directory throws (must use rmtree).
+assert raises(Function(): return path.remove(base)), "remove non-empty dir raises"
+# rename of a missing source throws.
+assert raises_msg(Function(): return path.rename(path.join(base, "gone.txt"), path.join(base, "x")), "rename failed"), "rename missing src raises"
+# join with zero args throws.
+assert raises_msg(Function(): return path.join(), "at least one path component"), "join() zero args raises"
+# a non-String argument to the string ops throws.
+assert raises_msg(Function(): return path.dirname(5), "expected String"), "dirname non-String raises"
+assert raises_msg(Function(): return path.basename([1]), "expected String"), "basename non-String raises"
+assert raises_msg(Function(): return path.splitext(5), "expected String"), "splitext non-String raises"
+
+# ============================================================ SILENT-error probes (should NOT raise)
+# The read-only queries are tolerant: a missing path is False/[] , never a throw.
+assert path.exists(path.join(base, "nope")) == False, "exists missing -> False (no throw)"
+assert path.isfile(path.join(base, "nope")) == False, "isfile missing -> False (no throw)"
+assert path.isdir(path.join(base, "nope")) == False, "isdir missing -> False (no throw)"
+assert path.listdir(path.join(base, "nope")) == [], "listdir missing -> [] (no throw)"
+assert path.walk(path.join(base, "nope")) == [], "walk missing -> [] (no throw)"
+
+# ============================================================ rmtree (recursive) + CLEAN UP
+# base still has nested x/y/z + files; rmtree removes it all recursively.
+assert path.rmtree(base) == True, "rmtree removes the whole tree -> True"
+assert not path.exists(base), "scratch dir removed"
+assert path.rmtree(base, missing_ok = True) == False, "rmtree missing missing_ok -> False"
+
+io.print("OK path")

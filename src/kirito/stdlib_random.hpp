@@ -81,6 +81,13 @@ public:
         if (o.kind() == ValueKind::Float) return static_cast<const FloatVal&>(o).value();
         throw KiritoError("expected a number");
     }
+    // A number argument that may be absent OR hole-filled with None (makeMethod fills a skipped leading
+    // optional slot with None when a LATER argument is passed by keyword — e.g. gauss(sigma = 2)). A
+    // None slot means "use the default", not a type error.
+    static double optNum(KiritoVM& vm, std::span<const Handle> a, std::size_t i, double dflt) {
+        if (i >= a.size() || vm.arena().deref(a[i]).kind() == ValueKind::None) return dflt;
+        return asNum(vm, a[i]);
+    }
 
     // Draw one element uniformly from `pool` WITH replacement — the shared primitive behind `choice`
     // (the k = 1 case, unwrapped to the element) and `choices` (k draws collected into a List).
@@ -141,8 +148,9 @@ public:
             });
         if (name == "gauss" || name == "normalvariate")
             return bind(std::string(name).c_str(), {"mu", "sigma"}, [self, rng](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                double mu = a.size() > 0 ? asNum(vm, a[0]) : 0.0;
-                double sigma = a.size() > 1 ? asNum(vm, a[1]) : 1.0;
+                double mu = optNum(vm, a, 0, 0.0);      // mu default 0; a None slot (keyword sigma) is "absent"
+                double sigma = optNum(vm, a, 1, 1.0);
+                if (sigma < 0.0) throw KiritoError("gauss: sigma must be non-negative");
                 double x = std::visit(
                     [mu, sigma](auto& e) { return std::normal_distribution<double>(mu, sigma)(e); },
                     rng(vm, self).engine);

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -396,9 +397,25 @@ inline bool kiLessThan(KiritoVM& vm, Handle a, Handle b) {
     const Object& y = vm.arena().deref(b);
     // Numbers compare EXACTLY (Integer↔Integer and Integer↔Float both avoid the lossy double round-trip
     // that would collapse int64 magnitudes beyond 2^53 and mis-order sort/sorted/min/max + List compares).
-    if (isNumeric(x) && isNumeric(y)) return numericCompare(x, y) == -1;
+    if (isNumeric(x) && isNumeric(y)) {
+        int c = numericCompare(x, y);
+        if (c != 2) return c == -1;
+        // A NaN operand makes numericCompare "unordered". Returning false both ways would make NaN
+        // equivalent to EVERY number (NaN~1, NaN~2 but 1<2) — not a strict weak ordering, so
+        // std::sort / min / max are undefined. Impose a total order: NaN sorts as the largest value
+        // (after every real, incl. +inf) and NaN is not less than NaN. So x<y iff only y is NaN.
+        auto isNan = [](const Object& o) { return o.kind() == ValueKind::Float &&
+                                                  static_cast<const FloatVal&>(o).value() != static_cast<const FloatVal&>(o).value(); };
+        return isNan(y) && !isNan(x);
+    }
     if (x.kind() == ValueKind::String && y.kind() == ValueKind::String)
         return static_cast<const StrVal&>(x).value() < static_cast<const StrVal&>(y).value();
+    // Bytes order lexicographically by unsigned byte (as the `< <= > >=` operators already do) — so
+    // sorted()/min()/max() work on Bytes too. std::string's `<` is char_traits<char> = unsigned-byte
+    // memcmp order, exactly the byte order we want. (Bytes is a NativeClass, so kind() == Instance.)
+    if (auto* xb = dynamic_cast<const BytesVal*>(&x))
+        if (auto* yb = dynamic_cast<const BytesVal*>(&y))
+            return xb->data < yb->data;
     if ((x.kind() == ValueKind::List || x.kind() == ValueKind::Array) &&
         (y.kind() == ValueKind::List || y.kind() == ValueKind::Array)) {
         const auto& xe = static_cast<const ListVal&>(x).elems;
@@ -590,18 +607,28 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
         return makeMethod(vm,
             "remove", {"value"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.empty()) throw KiritoError("remove expects a value");
-                auto& e = self_list(vm, self).elems;
-                for (std::size_t i = 0; i < e.size(); ++i)
-                    if (kiEquals(vm, e[i], a[0])) { e.erase(e.begin() + i); return vm.none(); }
+                // Find in a GC-rooted snapshot: kiEquals may run a user _eq_ that reallocs/mutates this
+                // List, dangling a live `elems` reference (A09-1). Erase from the LIVE list, bounds-checked.
+                RootScope rs(vm);
+                std::vector<Handle> snap = self_list(vm, self).elems;
+                for (Handle h : snap) rs.add(h);
+                for (std::size_t i = 0; i < snap.size(); ++i)
+                    if (kiEquals(vm, snap[i], a[0])) {
+                        auto& e = self_list(vm, self).elems;
+                        if (i < e.size()) e.erase(e.begin() + i);
+                        return vm.none();
+                    }
                 throw KiritoError("remove: value not in List");
             }, std::vector<Handle>{self});
     if (name == "index")
         return makeMethod(vm,
             "index", {"value", "start", "end"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.empty()) throw KiritoError("index expects a value");
-                auto& e = self_list(vm, self).elems;
+                RootScope rs(vm);                                    // search a rooted snapshot (A09-1)
+                std::vector<Handle> snap = self_list(vm, self).elems;
+                for (Handle h : snap) rs.add(h);
                 // Optional [start[, end]] search window (negatives count from the end).
-                int64_t n = static_cast<int64_t>(e.size()), start = 0, end = n;
+                int64_t n = static_cast<int64_t>(snap.size()), start = 0, end = n;
                 auto clampIdx = [&](Handle h, int64_t dflt) {
                     if (vm.arena().deref(h).kind() == ValueKind::None) return dflt;
                     int64_t k = argInt(vm, h, "index");
@@ -611,7 +638,7 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                 if (a.size() > 1) start = clampIdx(a[1], 0);
                 if (a.size() > 2) end = clampIdx(a[2], n);
                 for (int64_t i = start; i < end; ++i)
-                    if (kiEquals(vm, e[static_cast<std::size_t>(i)], a[0]))
+                    if (kiEquals(vm, snap[static_cast<std::size_t>(i)], a[0]))
                         return vm.makeInt(i);
                 throw KiritoError("index: value not in List");
             }, std::vector<Handle>{self});
@@ -643,9 +670,11 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
         return makeMethod(vm,
             "count", {"value"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.size() != 1) throw KiritoError("count expected 1 argument");
-                auto& e = self_list(vm, self).elems;
+                RootScope rs(vm);                                    // count over a rooted snapshot (A09-1)
+                std::vector<Handle> snap = self_list(vm, self).elems;
+                for (Handle h : snap) rs.add(h);
                 int64_t n = 0;
-                for (Handle h : e)
+                for (Handle h : snap)
                     if (kiEquals(vm, h, a[0])) ++n;
                 return vm.makeInt(n);
             }, std::vector<Handle>{self});
@@ -1607,8 +1636,14 @@ inline bool kiEquals(KiritoVM& vm, Handle a, Handle b) {
 }
 
 inline bool ListVal::contains(KiritoVM& vm, Handle value) {
-    for (Handle e : elems)
-        if (kiEquals(vm, e, value)) return true;
+    // Search a GC-rooted snapshot: kiEquals may run a user _eq_ that reallocs/mutates this List, which
+    // would dangle a live iterator over `elems` (A09-1); rooting keeps the handles alive if a reentrant
+    // clear()+GC drops them.
+    RootScope rs(vm);
+    std::vector<Handle> snap = elems;
+    for (Handle h : snap) rs.add(h);
+    for (Handle h : snap)
+        if (kiEquals(vm, h, value)) return true;
     return false;
 }
 inline bool DictVal::contains(KiritoVM& vm, Handle key) {
@@ -1860,6 +1895,16 @@ inline bool InstanceValue::contains(KiritoVM& vm, Handle value) {
 inline std::optional<std::vector<Handle>> InstanceValue::iterate(KiritoVM& vm) {
     // A class becomes iterable by defining _iter_(self) returning any iterable (commonly a List).
     if (!findMethod(vm.arena(), "_iter_")) return std::nullopt;
+    // Guard against `_iter_` returning `self` (or a mutually-referential instance): the result is
+    // re-dispatched through iterate(), and a self/cyclic return recurses in native C++ — each level's
+    // `_iter_` call keeps the call-depth guard balanced, so it never trips → native stack overflow
+    // (A07-1). Bound the re-dispatch depth and throw a catchable error; a legitimate `_iter_` chain
+    // (A -> B -> List) is only a few levels deep. One OS thread == one VM, so thread_local is VM-scoped.
+    static thread_local int iterDepth = 0;
+    if (iterDepth >= 100)
+        throw KiritoError("'" + className + "' _iter_ recurses too deeply (does _iter_ return self or a cycle?)");
+    ++iterDepth;
+    struct DepthGuard { int& d; ~DepthGuard() { --d; } } depthGuard{iterDepth};
     Handle r = invokeOp(vm, *this, "_iter_", {}, "'" + className + "' is not iterable");
     RootScope rs(vm);
     rs.add(r);
@@ -2979,8 +3024,25 @@ inline void KiritoVM::installBuiltins() {
             // Scale with long double so the intermediate x*f doesn't double-round (e.g. 2.675*100 in
             // plain double becomes 267.5 -> 268; in extended precision it stays 267.4999... -> 267,
             // i.e. round(2.675, 2) == 2.67). Keeps Kirito's documented half-away-from-zero rounding.
+#if LDBL_MANT_DIG > DBL_MANT_DIG
             long double f = std::pow(10.0L, static_cast<long double>(nd));
             return vm.makeFloat(static_cast<double>(std::round(static_cast<long double>(x) * f) / f));
+#else
+            // No extended precision here (e.g. MSVC, where long double == double): the extended-precision
+            // scaling trick above is a no-op, so `x * 10^nd` double-rounds and round(2.675, 2) would be
+            // wrong. Fall back to the C library's correctly-rounded decimal conversion (platform-
+            // independent) for nd >= 0; for negative nd, scaling in double is exact enough (10^|nd| is a
+            // power of ten within double's integer range for the reachable |nd| <= 323).
+            if (nd >= 0) {
+                char buf[512];
+                std::snprintf(buf, sizeof(buf), "%.*f", static_cast<int>(nd), x);
+                return vm.makeFloat(std::strtod(buf, nullptr));
+            }
+            double f = std::pow(10.0, static_cast<double>(nd));
+            double scaled = x * f;
+            double r = (scaled >= 0.0) ? std::floor(scaled + 0.5) : std::ceil(scaled - 0.5);
+            return vm.makeFloat(r / f);
+#endif
         }
         if (std::isnan(x)) throw KiritoError("cannot round NaN to Integer");
         if (std::isinf(x)) throw KiritoError("cannot round infinity to Integer");

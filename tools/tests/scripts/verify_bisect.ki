@@ -1,0 +1,100 @@
+# Doc-vs-impl verification for the `bisect` module (docs/pages/10-stdlib.md "## bisect").
+# Binary search / ordered insertion into a sorted List. Functioning (correct insertion points,
+# duplicates left vs right), edge (empty / before-all / after-all / boundaries), HARDENING.
+# Prints "OK bisect". NOTE: Kirito names have NO underscores (bisectleft, not bisect_left).
+var io = import("io")
+var bisect = import("bisect")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ bisectleft / bisectright
+var a = [1, 2, 2, 2, 3, 5]
+# left = leftmost valid index; right = rightmost valid index; they differ across a run of duplicates
+assert bisect.bisectleft(a, 2) == 1, "bisectleft on a duplicate run"
+assert bisect.bisectright(a, 2) == 4, "bisectright on a duplicate run"
+assert bisect.bisectleft(a, 1) == 0 and bisect.bisectright(a, 1) == 1, "bisect around single value"
+assert bisect.bisectleft(a, 3) == 4 and bisect.bisectright(a, 3) == 5, "bisect middle value"
+
+# --- a value in a gap: both give the same index (no run to straddle) ---
+assert bisect.bisectleft(a, 4) == 5 and bisect.bisectright(a, 4) == 5, "bisect value in a gap"
+
+# --- edge: before all / after all ---
+assert bisect.bisectleft(a, 0) == 0 and bisect.bisectright(a, 0) == 0, "bisect before all -> 0"
+assert bisect.bisectleft(a, 9) == 6 and bisect.bisectright(a, 9) == 6, "bisect after all -> len"
+
+# --- edge: empty list ---
+assert bisect.bisectleft([], 5) == 0 and bisect.bisectright([], 5) == 0, "bisect empty list -> 0"
+
+# --- edge: single-element list, boundaries ---
+assert bisect.bisectleft([5], 5) == 0 and bisect.bisectright([5], 5) == 1, "bisect single equal"
+assert bisect.bisectleft([5], 3) == 0 and bisect.bisectleft([5], 9) == 1, "bisect single below/above"
+
+# --- aliases: bisect == bisectright ---
+assert bisect.bisect(a, 2) == bisect.bisectright(a, 2), "bisect alias == bisectright"
+assert bisect.bisect(a, 2) == 4, "bisect alias value"
+
+# ============================================================ insortleft / insortright
+# left inserts before the existing run; right inserts after — both keep the list sorted
+var xs = [1, 3, 5]
+bisect.insortleft(xs, 4)
+assert xs == [1, 3, 4, 5], "insortleft into a gap"
+
+var l = [10, 20, 30]
+var r = [10, 20, 30]
+bisect.insortleft(l, 20)
+bisect.insortright(r, 20)
+assert l == [10, 20, 20, 30] and r == [10, 20, 20, 30], "insort left/right both keep sorted"
+
+# demonstrate left-vs-right placement differs by tagging equal keys via index probe
+var seq = [1, 2, 2, 3]
+assert bisect.bisectleft(seq, 2) == 1, "insertion point (left) before run"
+assert bisect.bisectright(seq, 2) == 3, "insertion point (right) after run"
+
+# --- edge: insort into empty ---
+var e = []
+bisect.insortleft(e, 7)
+assert e == [7], "insortleft into empty"
+var e2 = []
+bisect.insortright(e2, 7)
+assert e2 == [7], "insortright into empty"
+
+# --- edge: insort before all / after all ---
+var bnd = [2, 4, 6]
+bisect.insortleft(bnd, 1)
+assert bnd == [1, 2, 4, 6], "insort before all"
+bisect.insortright(bnd, 9)
+assert bnd == [1, 2, 4, 6, 9], "insort after all"
+
+# --- aliases: insort == insortright ---
+var al = [1, 2, 3]
+bisect.insort(al, 2)
+assert al == [1, 2, 2, 3], "insort alias inserts right"
+
+# --- string keys (comparison-ordered) ---
+var words = ["ant", "cat", "dog"]
+assert bisect.bisectleft(words, "bee") == 1, "bisect works on Strings"
+bisect.insortright(words, "bee")
+assert words == ["ant", "bee", "cat", "dog"], "insort works on Strings"
+
+# ============================================================ HARDENING
+# comparing incompatible element/target types must raise
+assert raises_msg(Function(): return bisect.bisectleft([1, 2, 3], "x"), "comparison"), "bisect mixed types raises"
+assert raises_msg(Function(): return bisect.insortright([1, 2, 3], "x"), "operator"), "insort mixed types raises"
+
+# ============================================================ documented surface: no underscored aliases
+assert not hasattr(bisect, "bisect_left"), "no underscored bisect_left (Kirito uses bisectleft)"
+assert not hasattr(bisect, "insort_right"), "no underscored insort_right (Kirito uses insortright)"
+assert hasattr(bisect, "bisectleft") and hasattr(bisect, "insortright"), "documented no-underscore names present"
+
+io.print("OK bisect")

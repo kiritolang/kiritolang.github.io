@@ -43,6 +43,7 @@ kirito_test(test_audit_round2 unit/test_audit_round2.cpp)
 kirito_test(test_audit_regressions unit/test_audit_regressions.cpp)
 kirito_test(test_domain_guards unit/test_domain_guards.cpp)
 kirito_test(test_audit_v112 unit/test_audit_v112.cpp)
+kirito_test(test_audit_v113 unit/test_audit_v113.cpp)
 kirito_test(test_vm_serialization unit/test_vm_serialization.cpp)
 kirito_test(test_audit_hardening unit/test_audit_hardening.cpp)
 # CLI argument-handling test: drives the built ki as a subprocess (popen). The actual ki binary
@@ -83,6 +84,10 @@ kirito_test(test_multi_index unit/test_multi_index.cpp)
 kirito_test(test_class_ops unit/test_class_ops.cpp)
 kirito_test(test_json unit/test_json.cpp)
 kirito_test(test_net unit/test_net.cpp)
+kirito_test(test_net_primitives unit/test_net_primitives.cpp)
+# Deep TLS tests: an in-process OpenSSL server. The body only runs when KIRITO_ENABLE_TLS is defined
+# (the debug/release presets turn it on); otherwise the TU compiles to an empty main.
+kirito_test(test_net_tls unit/test_net_tls.cpp)
 kirito_test(test_serialize unit/test_serialize.cpp)
 kirito_test(test_sys unit/test_sys.cpp)
 kirito_test(test_time unit/test_time.cpp)
@@ -242,8 +247,9 @@ foreach(script ${ki_scripts})
 endforeach()
 
 # The parallel golden scripts can block on a real bug; cap them so a regression fails rather than
-# stalling CI (the watchdog backstop, mirroring the parallel unit tests' TIMEOUT).
-foreach(nm parallel_basic parallel_sync probe_parallel probe_parallel_adversarial parallel_forkbomb_guard)
+# stalling CI (the watchdog backstop, mirroring the parallel unit tests' TIMEOUT). spec_net_tls spawns
+# a Python TLS server subprocess, so it gets the same watchdog in case the server ever hangs.
+foreach(nm parallel_basic parallel_sync probe_parallel probe_parallel_adversarial parallel_forkbomb_guard spec_net_tls)
     if(TEST script_${nm})
         set_tests_properties(script_${nm} PROPERTIES TIMEOUT 60)
     endif()

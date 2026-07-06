@@ -221,7 +221,11 @@ a stability fuzzer, and a benchmark). Working today:
 - **f-strings** `f"{expr}"` (with optional `:format-spec` — `f"{x:05d}"`, `f"{pi:.2f}"` — and
   surrounding whitespace allowed inside the braces) in any quote style/flavour (`f'…'`, `f"""…"""`,
   raw `rf"…"`); because `'…'` strings exist, an f-string can hold a single-quoted key:
-  `f"{d['k']}"`. Inline anonymous functions `Function(x): return x*x`.
+  `f"{d['k']}"`. Inline anonymous functions `Function(x): return x*x` (a single same-line statement;
+  an inline body does NOT comma-pack — `var f = Function(): return a, b` is rejected as ambiguous
+  rather than silently binding `f` to `[<function>, b]`; use an indented block body to pack, or wrap
+  the function in `[ ]`. A comma after an inline function in a call-argument or bracketed-list position
+  still delimits normally).
 - **Static warnings + `discard`**: a non-fatal analysis pass (`analyzer.hpp`) run before execution
   flags: function-local variables assigned-but-never-used; bare expression statements whose
   non-`None` value is dropped; a `var` re-declared in the same block; unreachable code after a
@@ -388,10 +392,32 @@ a stability fuzzer, and a benchmark). Working today:
     (`tensor`). Resource-like natives that wrap live state (`Socket`/`Session`, open files/`BytesIO`/
     streams, compiled regex `Regex`/`Match`) are intentionally **not** serializable and throw a
     clear, catchable error.
-  - `net` — TCP sockets (connect/bind/listen/accept/send/recv/recvall/settimeout; `recv`/`recvall`
-    return **`Bytes`** so binary streams stay byte-exact — `.decode()` for text — and `send` accepts a
-    String or Bytes) **and** a
-    full-fledged HTTP/1.1 client (requests-style): `request(method, url[, opts])` plus
+  - `net` — a complete **socket foundation** plus a full-fledged HTTP/1.1 client. The **`Socket`**
+    spans TCP and UDP over IPv4 and IPv6: create with `Socket()` (the historical TCP/IPv4 default),
+    the general `socket(family, type)` (`family` `"inet"`/`"inet6"`, `type` `"stream"`/`"dgram"`), or
+    the shortcuts `tcpsocket([family])` / `udpsocket([family])`; `socketpair([type])` returns a
+    connected, share-nothing `[Socket, Socket]` pair (native `AF_UNIX` on POSIX, a loopback stream
+    pair emulated on Windows). Stream methods `connect`/`bind`/`listen`/`accept`/`send`/`recv`/
+    `recvall`; datagram methods `sendto(data, host, port)` / `recvfrom([n]) -> [Bytes, [host, port]]`
+    (`connect` on a UDP socket sets the default peer, then plain `send`/`recv` work). `recv`/`recvall`/
+    `recvfrom` return **`Bytes`** so binary streams stay byte-exact (`.decode()` for text); `send`/
+    `sendto` accept a String or Bytes. Half-close via `shutdown([how])` (`"read"`/`"write"`/`"both"`);
+    introspect with `getsockname()` / `getpeername()` (→ `[host, port]`), the read-only `family` /
+    `type` attributes, and `fileno()` (the raw fd, non-destructive — cf. `detach()`, which relinquishes
+    ownership and clears the fd; `fileno()` returns `-1` on a closed/detached socket, and a second
+    `detach()` throws rather than handing out a stale fd). Options are **string-keyed**:
+    `setsockopt(option, value)` / `getsockopt(option)` over
+    `reuseaddr`/`broadcast`/`keepalive`/`rcvbuf`/`sndbuf`/`nodelay` (+ read-only `error`/`type`/
+    `acceptconn`; `reuseport` where the OS has it), with named conveniences `setreuseaddr`/`setnodelay`/
+    `setbroadcast`/`setkeepalive`, plus `setblocking(flag)` and `settimeout(seconds)` (which bounds a
+    subsequent `connect()` too — via a non-blocking connect + `select` — not only send/recv, so a
+    black-hole host can't hang past the timeout). Name resolution:
+    `gethostname()`, `gethostbyname(host)` (first IPv4), `getaddrinfo(host[, port[, family[, type]]])`
+    (→ a List of `{family, type, host, port}` dicts). `fromfd(fd[, family, type])` adopts an existing
+    fd (e.g. one handed over by `socket.detach()` to a worker VM). Every entry point validates its
+    input (family/type/option strings, the 0–65535 port range, non-negative sizes) and a
+    use-after-close throws a clean `"… : socket is closed"` rather than a raw errno. The HTTP client
+    (requests-style): `request(method, url[, opts])` plus
     `get/post/put/delete/patch/head/options` returning a rich
     `Response` (`status`/`statuscode`/`reason`/`ok`/`url`/`text` [decoded String]/`content` [raw
     `Bytes`, for binary downloads]/`headers`/`cookies`, `json()`,
@@ -403,7 +429,13 @@ a stability fuzzer, and a benchmark). Working today:
     headers across calls. HTTPS via `-DKIRITO_ENABLE_TLS=ON` (links OpenSSL; verifies the peer cert
     by default — trust roots come from the OS: OpenSSL's default paths/`SSL_CERT_FILE` on Unix and the
     **Windows system "ROOT" store** via CryptoAPI, since OpenSSL ships no default CA bundle there; a
-    verify failure reports the actual reason). URL helpers: quote/unquote/urlencode/parseqs/urlsplit.
+    verify failure reports the actual reason). **`net.tlsenabled`** is a Bool reporting whether this
+    build has HTTPS; the **`debug` and `release` CMake presets now enable TLS** so the HTTPS + deep-TLS
+    tests (`test_net_tls`, `spec_net_tls.ki` against an in-process OpenSSL server) run in the ordinary
+    build — `asan`/`tsan` stay TLS-off to avoid OpenSSL's still-reachable allocations tripping LSan.
+    Deliberately **not** included (out of scope, by design): asyncio/event loops and a built-in HTTP
+    server — servers are built on the raw sockets (see the `webserver` example). URL helpers:
+    quote/unquote/urlencode/parseqs/urlsplit.
   - `sys` — environment (getenv/setenv/unsetenv/environ), `platform`, `arch` (x64/arm64/x86), `version`
     (the interpreter's semver string, == `ki --version`), `traceback`, `exit`, and **external-process
     execution** (the running binary's own path is `path.executable`, a filesystem location):

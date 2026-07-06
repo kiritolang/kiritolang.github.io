@@ -79,3 +79,4 @@ build-tls/
 
 # Python bytecode cache (docs/build_docs.py)
 __pycache__/
+blob.bin

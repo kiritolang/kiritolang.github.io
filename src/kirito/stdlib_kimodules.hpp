@@ -73,10 +73,19 @@ var accumulate = Function(iterable, func = None):
         out.append(total)
     return out
 
+# Guard the eager combinators (product/permutations/combinations) so a huge request throws a clean,
+# catchable error instead of OOMing/hanging the VM — matching the native range/repetition resource
+# policy. ~10M rows is far past any realistic materialised result.
+var _MAXCOMBINATIONS = 10000000
+
 var product = Function(lists):
     # Cartesian product of a list of lists -> list of lists.
     var out = [[]]
     for pool in lists:
+        # Check the PROJECTED size before building this pool's multiply, so an oversized product throws
+        # up front instead of first materialising 10^8 rows.
+        if len(out) * len(pool) > _MAXCOMBINATIONS:
+            throw "product: result too large (> " + String(_MAXCOMBINATIONS) + " combinations)"
         var nxt = []
         for prefix in out:
             for item in pool:
@@ -94,6 +103,15 @@ var permutations = Function(items, r = None):
     var result = []
     if k > n or k < 0:
         return result
+    # Guard the eager result up front: the count is n*(n-1)*...*(n-k+1). Throw a clean error rather
+    # than OOMing/hanging on a huge request (mirrors the native range/repetition resource policy).
+    var pcount = 1
+    var pj = 0
+    while pj < k:
+        pcount = pcount * (n - pj)
+        if pcount > _MAXCOMBINATIONS:
+            throw "permutations: result too large (> " + String(_MAXCOMBINATIONS) + " permutations)"
+        pj = pj + 1
     # Iterative DFS (recursion is discouraged in Kirito): each frame is a list of chosen indices.
     # Pushing candidate indices in descending order makes the smallest pop first, so the emission
     # order matches the classic recursive enumeration exactly.
@@ -118,6 +136,15 @@ var combinations = Function(items, r):
     var result = []
     if r > n or r < 0:
         return result
+    # Guard the eager result up front: the count is C(n, r), built with the exact multiplicative
+    # binomial recurrence so it stays integer at each step. Throw rather than OOM on a huge request.
+    var ccount = 1
+    var cj = 0
+    while cj < r:
+        ccount = ccount * (n - cj) // (cj + 1)
+        if ccount > _MAXCOMBINATIONS:
+            throw "combinations: result too large (> " + String(_MAXCOMBINATIONS) + " combinations)"
+        cj = cj + 1
     # Iterative DFS (no recursion): each frame is [chosen indices, next-start]. Pushing the next
     # candidate indices in descending order keeps emission in ascending lexicographic order.
     var stack = [[[], 0]]
@@ -346,7 +373,13 @@ var _math = import("math")
 var mean = Function(data) -> Float:
     if len(data) == 0:
         throw "mean requires at least one data point"
-    return Float(sum(data)) / Float(len(data))
+    # Accumulate in Float space: Float(sum(data)) would sum all-Integer data in int64 FIRST, so a
+    # large-integer dataset wraps (two's-complement) before the conversion. Adding each element to a
+    # Float running total promotes per-element and can't overflow. (variance/stdev inherit this.)
+    var total = 0.0
+    for v in data:
+        total = total + v
+    return total / Float(len(data))
 
 var median = Function(data) -> Float:
     var s = sorted(data)
@@ -940,6 +973,10 @@ class Enum:
         self._order = []                 # definition order (a Dict's keys() is unordered)
         var i = 0
         for name in names:
+            # Reject a duplicate name: without this the second entry would silently overwrite the
+            # first's value, leaving get()/nameof() disagreeing and values() no longer 0..n-1.
+            if name in self._byName:
+                throw "duplicate enum member: " + name
             self._byName[name] = i
             self._byValue[i] = name
             self._order.append(name)
@@ -1423,6 +1460,19 @@ class Series:
             if not _isnan(v):
                 c = c + 1
         return c
+    var all = Function(self) -> Bool:
+        # truth reduction of a (boolean) Series: True iff every non-missing value is truthy (vacuously
+        # True when empty / all-missing) — the documented way to collapse a boolean mask to a scalar.
+        for v in self.values:
+            if not _isnan(v) and not Bool(v):
+                return False
+        return True
+    var any = Function(self) -> Bool:
+        # True iff at least one non-missing value is truthy.
+        for v in self.values:
+            if not _isnan(v) and Bool(v):
+                return True
+        return False
     var mean = Function(self):
         var nums = _numeric(self.values)
         if len(nums) == 0:
@@ -1963,10 +2013,14 @@ class GroupBy:
         var i = 0
         while i < frame.nrows():
             var k = col[i]
-            if k not in self.groups:
-                self.keys.append(k)
-                self.groups[k] = []
-            self.groups[k].append(i)
+            # Drop a Float NaN key: it is write-only in a Kirito Dict (NaN != NaN, so `k not in groups`
+            # is always true and the immediate read-back throws) — matches pandas' dropna=True for NaN.
+            # None keys are KEPT (None == None works and is a valid first-seen group, per the contract).
+            if not (isinstance(k, "Float") and k != k):
+                if k not in self.groups:
+                    self.keys.append(k)
+                    self.groups[k] = []
+                self.groups[k].append(i)
             i = i + 1
 
     var _valuecols = Function(self):
@@ -2062,9 +2116,14 @@ var _merge = Function(left, right, on, how):
     var rpos = 0
     while rpos < right.nrows():
         var k = right.data[on][rpos]
-        if k not in rightidx:
-            rightidx[k] = []
-        rightidx[k].append(rpos)
+        # A Float NaN key is write-only in a Kirito Dict (NaN != NaN) — indexing it throws on read-back.
+        # Skip it so a NaN join key is simply non-matching (an unmatched-right row under right/outer),
+        # never a crash; a NaN left key likewise fails `k in rightidx` and is unmatched. None keys are
+        # kept (None == None), so a None join key still matches as usual.
+        if not (isinstance(k, "Float") and k != k):
+            if k not in rightidx:
+                rightidx[k] = []
+            rightidx[k].append(rpos)
         rpos = rpos + 1
     var leftcols = left.columns
     var rightvalcols = []
@@ -2225,6 +2284,10 @@ var _parsehex = Function(s):
         v = v * 16 + d
         if v > 1114111:
             return -1
+    # Surrogate code points (0xD800-0xDFFF) are not valid scalar values; chr() throws on them, which
+    # would break the lenient parser's never-crash contract. Reject -> the ref is kept verbatim.
+    if v >= 55296 and v <= 57343:
+        return -1
     return v
 
 var _parsedec = Function(s):
@@ -2237,6 +2300,9 @@ var _parsedec = Function(s):
         v = v * 10 + (ord(c) - ord("0"))
         if v > 1114111:
             return -1
+    # Surrogate code points (0xD800-0xDFFF) would throw in chr(); reject so the ref is kept verbatim.
+    if v >= 55296 and v <= 57343:
+        return -1
     return v
 
 var _decode = Function(s):
@@ -2740,7 +2806,32 @@ var _expand = Function(tok):
         if xpt:
             return [{"op": ">=", "v": _mkver(mj, mn, 0, [])}, {"op": "<", "v": _mkver(mj, mn + 1, 0, [])}]
         return [{"op": "=", "v": _mkver(mj, mn, pt, prepart)}]
-    # explicit comparator (>, >=, <, <=): fill missing parts with 0
+    # explicit comparator (>, >=, <, <=) on a PARTIAL/x version. node-semver rounds up the two
+    # "open at the top" operators — `>` and `<=` — but fills with 0 for `>=` and `<`:
+    #   >1    -> >=2.0.0    >1.2  -> >=1.3.0        <=1  -> <2.0.0     <=1.2 -> <1.3.0
+    #   >=1   -> >=1.0.0    <1    -> <1.0.0         (0-fill is already correct for these two)
+    # An x-major (`>x`/`>*`) degenerates: `>*`/`<*` match nothing, `>=*`/`<=*` match everything.
+    if op == ">":
+        if xmj:
+            return [{"op": "<", "v": _mkver(0, 0, 0, [])}]           # >* -> nothing
+        if xmn:
+            return [{"op": ">=", "v": _mkver(mj + 1, 0, 0, [])}]
+        if xpt:
+            return [{"op": ">=", "v": _mkver(mj, mn + 1, 0, [])}]
+        return [{"op": ">", "v": _mkver(mj, mn, pt, prepart)}]
+    if op == "<=":
+        if xmj:
+            return [{"op": ">=", "v": _mkver(0, 0, 0, [])}]          # <=* -> everything
+        if xmn:
+            return [{"op": "<", "v": _mkver(mj + 1, 0, 0, [])}]
+        if xpt:
+            return [{"op": "<", "v": _mkver(mj, mn + 1, 0, [])}]
+        return [{"op": "<=", "v": _mkver(mj, mn, pt, prepart)}]
+    # >= and < : fill missing parts with 0 (already correct)
+    if xmj:
+        if op == "<":
+            return [{"op": "<", "v": _mkver(0, 0, 0, [])}]           # <* -> nothing
+        return [{"op": ">=", "v": _mkver(0, 0, 0, [])}]              # >=* -> everything
     return [{"op": op, "v": _mkver(mj, mn, pt, prepart)}]
 
 # Parse a range string into a List of comparator sets (OR of ANDs).

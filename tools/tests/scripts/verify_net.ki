@@ -1,0 +1,303 @@
+# Doc-vs-impl verification for the `net` stdlib module (docs/pages/10-stdlib.md `## net`).
+# Loopback / socketpair / URL-helper surface ONLY — NO external network access. Functioning cases,
+# edge cases, and HARDENING (bad input must raise the right error; a case that SHOULD raise but does
+# not is a silent bug). Prints "OK net". Impl: src/kirito/stdlib_net.hpp (+ net_compat.hpp).
+var net = import("net")
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ build flags
+assert type(net.tlsenabled) == "Bool", "tlsenabled is a Bool"
+
+# ============================================================ URL helpers (exact round-trips)
+# quote percent-encodes all but the RFC-3986 unreserved set; space -> %20, literal + -> %2B.
+assert net.quote("hello") == "hello", "quote passes unreserved"
+assert net.quote("a-b_c.d~e") == "a-b_c.d~e", "quote unreserved set untouched"
+assert net.quote("a b") == "a%20b", "quote space -> %20"
+assert net.quote("a+b") == "a%2Bb", "quote literal + -> %2B"
+assert net.quote("/?=&#") == "%2F%3F%3D%26%23", "quote reserved chars"
+assert net.quote("café") == "caf%C3%A9", "quote UTF-8 multi-byte"
+assert net.quote("") == "", "quote empty"
+# unquote percent-decodes (UTF-8) and, like unquote_plus, + -> space.
+assert net.unquote("a%20b") == "a b", "unquote %20 -> space"
+assert net.unquote("a+b") == "a b", "unquote + -> space"
+assert net.unquote("a%2Bb") == "a+b", "unquote %2B -> literal +"
+assert net.unquote("caf%C3%A9") == "café", "unquote UTF-8"
+assert net.unquote("nada") == "nada", "unquote passthrough"
+assert net.unquote("%zz") == "%zz", "unquote malformed escape passes through literally"
+# quote/unquote round-trip a payload that mixes spaces and pluses.
+assert net.unquote(net.quote("x y+z")) == "x y+z", "quote/unquote round-trip"
+# urlencode: k=v&... with keys and values percent-encoded.
+assert net.urlencode({"a": "1"}) == "a=1", "urlencode single"
+assert net.urlencode({"q": "x y", "n": "1+2"}) == "q=x%20y&n=1%2B2", "urlencode encodes values"
+assert net.urlencode({}) == "", "urlencode empty Dict"
+# parseqs: decode k=v&...; duplicate keys last-wins; empty-key pair dropped; a bare key -> "".
+var pq = net.parseqs("a=1&b=x%20y&a=2&=drop&flag")
+assert pq["a"] == "2", "parseqs duplicate keys last-wins"
+assert pq["b"] == "x y", "parseqs decodes value"
+assert pq["flag"] == "", "parseqs bare key -> empty value"
+assert not ("" in pq), "parseqs drops the empty-key pair"
+assert net.parseqs("") == {}, "parseqs empty query -> empty Dict"
+# urlencode -> parseqs round-trip.
+var rt = net.parseqs(net.urlencode({"k": "a b", "n": "v"}))
+assert rt["k"] == "a b" and rt["n"] == "v", "urlencode/parseqs round-trip"
+# urlsplit: scheme/host/port/path/query/fragment, all String; port is textual digits (empty absent).
+var us = net.urlsplit("http://example.com:8080/a/b?x=1&y=2#frag")
+assert us["scheme"] == "http", "urlsplit scheme"
+assert us["host"] == "example.com", "urlsplit host"
+assert us["port"] == "8080", "urlsplit port (textual)"
+assert us["path"] == "/a/b", "urlsplit path"
+assert us["query"] == "x=1&y=2", "urlsplit query"
+assert us["fragment"] == "frag", "urlsplit fragment"
+assert type(us["port"]) == "String", "urlsplit port is a String"
+var us2 = net.urlsplit("https://host/p")
+assert us2["port"] == "" and us2["query"] == "" and us2["fragment"] == "", "urlsplit omitted parts are empty"
+# userinfo (user:pass@) is excluded from host/port.
+var us3 = net.urlsplit("http://user:pass@host:99/p")
+assert us3["host"] == "host" and us3["port"] == "99", "urlsplit strips userinfo"
+# a bracketed IPv6 literal keeps its brackets; the :port follows ']'.
+var us6 = net.urlsplit("http://[::1]:8080/p")
+assert us6["host"] == "[::1]", "urlsplit preserves IPv6 brackets"
+assert us6["port"] == "8080", "urlsplit IPv6 port after ]:"
+
+# ============================================================ socket constructors + attributes
+# Socket() is the historical TCP/IPv4 default.
+var s0 = net.Socket()
+assert s0.family == "inet" and s0.type == "stream", "Socket() defaults inet/stream"
+s0.close()
+# socket(family, type) general form.
+var s1 = net.socket("inet", "stream")
+assert s1.family == "inet" and s1.type == "stream", "socket(inet, stream)"
+s1.close()
+var s2 = net.socket("inet", "dgram")
+assert s2.type == "dgram", "socket(inet, dgram)"
+s2.close()
+var s3 = net.socket(family = "inet", type = "dgram")
+assert s3.type == "dgram", "socket() keyword args"
+s3.close()
+# tcpsocket / udpsocket shortcuts.
+var t0 = net.tcpsocket()
+assert t0.family == "inet" and t0.type == "stream", "tcpsocket() -> inet/stream"
+t0.close()
+var u0 = net.udpsocket()
+assert u0.type == "dgram", "udpsocket() -> dgram"
+u0.close()
+# .family / .type are read-only attributes (assignment throws).
+var ro = net.tcpsocket()
+assert raises(Function(): ro.family = "inet6"), ".family is read-only"
+ro.close()
+# IPv6 is documented but not always available on the host; assert only when supported.
+var ipv6ok = Function() -> Bool:
+    try:
+        var s = net.tcpsocket("inet6")
+        s.close()
+        return True
+    catch:
+        return False
+if ipv6ok():
+    var s6 = net.socket("inet6", "dgram")
+    assert s6.family == "inet6" and s6.type == "dgram", "socket(inet6, dgram)"
+    s6.close()
+    var t6 = net.tcpsocket("inet6")
+    assert t6.family == "inet6", "tcpsocket(inet6)"
+    t6.close()
+
+# ============================================================ socketpair (connected pair)
+var pair = net.socketpair()
+assert type(pair) == "List" and len(pair) == 2, "socketpair() -> [Socket, Socket]"
+assert pair[0].type == "stream", "socketpair default type stream"
+assert pair[0].send("ab") == 2, "socketpair send returns byte count"
+assert pair[1].recv(2).decode() == "ab", "socketpair a -> b"
+discard pair[1].send("BA")
+assert pair[0].recv(2).decode() == "BA", "socketpair b -> a"
+# FIXED: recv(0) returns empty Bytes immediately (Python semantics) instead of blocking on ::recv.
+assert pair[0].recv(0) == Bytes([]) and len(pair[0].recv(0)) == 0, "recv(0) -> empty Bytes, no block"
+pair[0].close()
+pair[1].close()
+# recv(0) on a CLOSED socket still errors (not silently empty)
+assert raises_msg(Function(): return pair[0].recv(0), "socket is closed"), "recv(0) on closed socket throws"
+# datagram socketpair (POSIX); tolerate a platform that lacks it.
+if not raises(Function(): return net.socketpair("dgram")):
+    var dp = net.socketpair("dgram")
+    discard dp[0].send("d")
+    assert dp[1].recv(8).decode() == "d", "dgram socketpair send/recv"
+    dp[0].close()
+    dp[1].close()
+
+# ============================================================ TCP loopback echo (single process)
+var srv = net.tcpsocket()
+srv.bind("127.0.0.1", 0)             # ephemeral port
+srv.listen(1)
+srv.settimeout(5)
+var port = srv.getsockname()[1]
+assert port > 0, "getsockname reports the bound ephemeral port"
+var cli = net.tcpsocket()
+cli.settimeout(5)
+cli.connect("127.0.0.1", port)
+var conn = srv.accept()
+conn.settimeout(5)
+assert conn.family == "inet" and conn.type == "stream", "accepted socket inherits family/type"
+# getpeername/getsockname agree across the connection.
+assert conn.getpeername()[1] == cli.getsockname()[1], "conn peer port == client local port"
+assert cli.getpeername()[0] == "127.0.0.1", "client peer host is loopback"
+# request -> echo
+assert cli.send("hello") == 5, "send byte count"
+var req = conn.recv(1024)
+assert type(req) == "Bytes" and req.decode() == "hello", "server recv -> Bytes"
+discard conn.send(req)
+assert cli.recv(1024).decode() == "hello", "client receives the echo"
+# half-close write, peer reads EOF (empty recv).
+cli.shutdown("write")
+assert len(conn.recv(8)) == 0, "shutdown(write) surfaces as EOF"
+cli.close()
+conn.close()
+srv.close()
+# recvall drains until the peer closes.
+var rp = net.socketpair()
+discard rp[0].send("streamed-payload")
+rp[0].shutdown("write")
+assert rp[1].recvall().decode() == "streamed-payload", "recvall reads until peer half-closes"
+rp[0].close()
+rp[1].close()
+
+# ============================================================ UDP loopback sendto/recvfrom
+var rx = net.udpsocket()
+rx.bind("127.0.0.1", 0)
+rx.settimeout(5)
+var uport = rx.getsockname()[1]
+var tx = net.udpsocket()
+assert tx.sendto("ping", "127.0.0.1", uport) == 4, "sendto returns byte count"
+var got = rx.recvfrom(64)
+assert type(got) == "List" and len(got) == 2, "recvfrom -> [Bytes, [host, port]]"
+assert got[0].decode() == "ping", "recvfrom payload (Bytes)"
+assert got[1][0] == "127.0.0.1", "recvfrom sender host"
+assert got[1][1] > 0, "recvfrom sender port"
+# binary-safe: NUL / 0xFF / CR-LF round-trip byte-exact.
+var blob = Bytes([0, 255, 128, 13, 10, 0])
+discard tx.sendto(blob, "127.0.0.1", uport)
+assert rx.recvfrom(64)[0] == blob, "datagram is binary-exact"
+# connect() on a UDP socket sets the default peer -> plain send/recv work.
+var cu = net.udpsocket()
+cu.connect("127.0.0.1", uport)
+assert cu.send("conn") == 4, "udp send after connect"
+assert rx.recvfrom(64)[0].decode() == "conn", "udp recv after peer connect"
+rx.close()
+tx.close()
+cu.close()
+
+# ============================================================ socket options
+var opt = net.tcpsocket()
+opt.setsockopt("reuseaddr", 1)
+assert opt.getsockopt("reuseaddr") != 0, "setsockopt/getsockopt reuseaddr"
+opt.setsockopt("rcvbuf", 8192)
+assert opt.getsockopt("rcvbuf") > 0, "setsockopt rcvbuf"
+opt.setsockopt("sndbuf", 8192)
+assert opt.getsockopt("sndbuf") > 0, "setsockopt sndbuf"
+# named conveniences.
+opt.setnodelay(True)
+assert opt.getsockopt("nodelay") != 0, "setnodelay -> nodelay set"
+opt.setkeepalive(True)
+assert opt.getsockopt("keepalive") != 0, "setkeepalive -> keepalive set"
+opt.setreuseaddr(True)
+assert opt.getsockopt("reuseaddr") != 0, "setreuseaddr"
+# getsockopt-only introspection options.
+assert opt.getsockopt("type") == 1, "getsockopt type -> SOCK_STREAM (1)"
+assert opt.getsockopt("error") == 0, "getsockopt error is 0 on a fresh socket"
+assert opt.getsockopt("acceptconn") == 0, "getsockopt acceptconn is 0 before listen"
+opt.setblocking(False)
+opt.setblocking(True)
+opt.settimeout(1)
+opt.close()
+var ub = net.udpsocket()
+ub.setbroadcast(True)
+assert ub.getsockopt("broadcast") != 0, "setbroadcast on UDP"
+assert ub.getsockopt("type") == 2, "getsockopt type -> SOCK_DGRAM (2)"
+ub.close()
+
+# ============================================================ fileno / detach / fromfd lifecycle
+var lf = net.tcpsocket()
+assert lf.fileno() >= 0, "fileno >= 0 on an open socket"
+lf.close()
+assert lf.fileno() == -1, "fileno -> -1 after close"
+# detach surrenders the fd (non-destructive fileno then reports -1).
+var de = net.tcpsocket()
+var dfd = de.detach()
+assert dfd >= 0, "detach returns the raw fd"
+assert de.fileno() == -1, "fileno -> -1 after detach"
+# fromfd adopts the detached fd within the same process.
+var ad = net.fromfd(dfd)
+assert ad.type == "stream" and ad.family == "inet", "fromfd adopts with given family/type"
+assert ad.fileno() >= 0, "adopted socket has a live fd"
+ad.close()
+
+# ============================================================ name resolution (numeric, no DNS)
+assert len(net.gethostname()) > 0, "gethostname is non-empty"
+assert net.gethostbyname("127.0.0.1") == "127.0.0.1", "gethostbyname of a literal is identity"
+assert net.gethostbyname("localhost") == "127.0.0.1", "gethostbyname localhost -> 127.0.0.1"
+var ai = net.getaddrinfo("127.0.0.1", 80)
+assert type(ai) == "List" and len(ai) > 0, "getaddrinfo -> non-empty List"
+assert ai[0]["host"] == "127.0.0.1", "getaddrinfo host"
+assert ai[0]["port"] == 80, "getaddrinfo port"
+assert ai[0]["family"] == "inet", "getaddrinfo family"
+assert ai[0]["type"] in ["stream", "dgram"], "getaddrinfo type"
+# family/type filters narrow the result set.
+var aif = net.getaddrinfo("127.0.0.1", 80, "inet", "stream")
+assert aif[0]["family"] == "inet" and aif[0]["type"] == "stream", "getaddrinfo family/type filter"
+# port may be a service-name String.
+assert len(net.getaddrinfo("localhost")) > 0, "getaddrinfo without port"
+
+# ============================================================ with-context manager
+with net.Socket() as wsk:
+    assert wsk.type == "stream", "Socket usable as a with-context manager"
+assert wsk.fileno() == -1, "with-block exit closes the socket"
+
+# ============================================================ HARDENING (right message, PINNED)
+# constructor validation
+assert raises_msg(Function(): return net.socket("bogus", "stream"), "unknown address family"), "bad family message"
+assert raises_msg(Function(): return net.socket("inet", "raw"), "unknown socket type"), "bad type message"
+assert raises_msg(Function(): return net.socketpair("nope"), "unknown socket type"), "socketpair bad type"
+# option validation
+assert raises_msg(Function(): return net.tcpsocket().setsockopt("nope", 1), "unknown option"), "unknown setsockopt option"
+assert raises_msg(Function(): return net.tcpsocket().getsockopt("nope"), "unknown option"), "unknown getsockopt option"
+# port range (0-65535)
+assert raises_msg(Function(): return net.tcpsocket().connect("127.0.0.1", 99999), "port out of range"), "connect port > 65535"
+assert raises_msg(Function(): return net.tcpsocket().connect("127.0.0.1", -1), "port out of range"), "connect negative port"
+assert raises_msg(Function(): return net.udpsocket().sendto("x", "127.0.0.1", 70000), "port out of range"), "sendto port out of range"
+assert raises_msg(Function(): return net.tcpsocket().bind("127.0.0.1", 99999), "port out of range"), "bind port out of range"
+# negative sizes
+assert raises_msg(Function(): return net.tcpsocket().recv(-1), "non-negative"), "recv negative size"
+assert raises_msg(Function(): return net.udpsocket().recvfrom(-1), "non-negative"), "recvfrom negative size"
+# bad shutdown direction
+assert raises_msg(Function(): return net.tcpsocket().shutdown("sideways"), "how must be"), "bad shutdown how"
+# use-after-close (all ops share "socket is closed")
+var dead = net.tcpsocket()
+dead.close()
+assert raises_msg(Function(): return dead.recv(4), "socket is closed"), "recv after close"
+assert raises_msg(Function(): return dead.send("x"), "socket is closed"), "send after close"
+assert raises_msg(Function(): return dead.getsockname(), "socket is closed"), "getsockname after close"
+assert raises_msg(Function(): return dead.setsockopt("reuseaddr", 1), "socket is closed"), "setsockopt after close"
+# detach twice throws (never hands out the same fd twice)
+var dd = net.tcpsocket()
+discard dd.detach()
+assert raises_msg(Function(): return dd.detach(), "socket is closed"), "second detach throws"
+# getpeername on an unconnected socket throws
+assert raises(Function(): return net.tcpsocket().getpeername()), "getpeername unconnected throws"
+# send requires String or Bytes
+assert raises(Function(): return net.socketpair()[0].send(123)), "send non-str/bytes throws"
+# missing required args on a socket method are a clean error (arity guard), not UB
+assert raises(Function(): return net.tcpsocket().connect("127.0.0.1")), "connect missing port throws"
+assert raises(Function(): return net.tcpsocket().send()), "send missing data throws"
+
+io.print("OK net")
