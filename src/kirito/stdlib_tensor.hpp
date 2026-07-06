@@ -2434,7 +2434,14 @@ public:
                 for (int64_t i = 0; i < n; ++i) sizes.push_back(each);
             } else {
                 std::size_t total = 0;
-                for (Value e : secs.items()) { std::size_t s = static_cast<std::size_t>(e.asInt("section")); sizes.push_back(s); total += s; }
+                for (Value e : secs.items()) {
+                    int64_t si = e.asInt("section");
+                    if (si < 0) throw KiritoError("split: section sizes must be non-negative");  // else the
+                        // size_t cast wraps to ~SIZE_MAX, the sum overflows past the axis length, and
+                        // g_split reads out of bounds (heap-buffer-overflow).
+                    std::size_t s = static_cast<std::size_t>(si);
+                    sizes.push_back(s); total += s;
+                }
                 if (total != t->shape()[axis]) throw KiritoError("split: section sizes must sum to the axis length");
             }
             return tns::wrap([&]() { return tns::g_split(vm, a[0], sizes, axis); });

@@ -177,6 +177,9 @@ public:
 
     std::string str(StringifyCtx& ctx) const override {
         return stringifyGuarded(this, ctx, "{", "}", [&] {
+            ProbeScope pguard(probing_);  // stringifyChild runs a contained value's _str_, which can
+                                          // mutate THIS dict and realloc the bucket we're iterating —
+                                          // reject it (catchable) instead of a heap-use-after-free.
             std::string s;
             bool first = true;
             for (const auto& [h, bucket] : buckets)
@@ -313,6 +316,8 @@ public:
 
     std::string str(StringifyCtx& ctx) const override {
         return stringifyGuarded(this, ctx, "{", "}", [&] {
+            ProbeScope pguard(probing_);  // a contained value's _str_ can mutate THIS set and realloc
+                                          // the bucket we're iterating — reject it, don't UAF.
             std::string s;
             bool first = true;
             for (const auto& [h, bucket] : buckets)

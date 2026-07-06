@@ -43,4 +43,44 @@ cases, resource guards, DRY/single-source-of-truth, static analysis, test-covera
 - [ ] scan/static_analysis.md — clang-tidy/cppcheck/max-warnings + perf-variance measurement
 
 ## Triage / fix log
-(orchestrator fills this after the scan waves — confirmed bugs, fixes, tests, DRY consolidations, perf.)
+
+Scan status: 27 scanners dispatched; ~10 finished cleanly, the rest were force-stopped by an account
+session-limit mid-work but had already written substantial findings to their `.md` (all committed+pushed).
+Findings skew LOW (much-audited codebase) with a handful of HIGH/MED. Full per-file detail in `scan/*.md`.
+
+### FIXED (with regression tests in spec_audit_v115.ki, ASan-validated via the asan ki)
+- **[HIGH] collections UAF** (scan/collections_bytes.md F2): `DictVal::str`/`SetVal::str` ran a contained
+  value's `_str_` (arbitrary user code) with NO `probing_` guard, so a reentrant mutation reallocated the
+  live bucket mid-iteration → heap-use-after-free (ASan-confirmed). Fixed: wrap both `str()` bodies in
+  `ProbeScope pguard(probing_)`, mirroring `equals()`. Now a clean catchable "changed size" error.
+- **[HIGH] tensor.split OOB** (scan/tensor.md F3): a negative section size cast to `size_t` (~SIZE_MAX),
+  the sum check overflowed past the axis length, and g_split read out of bounds. Fixed: reject `si < 0`
+  before the cast (mirrors the integer-branch `n <= 0` guard).
+- **[HIGH] deep-import segfault** (scan/cli_import.md F1): an unbounded deep import chain (a→b→c…)
+  recursed the native stack to an uncatchable SIGSEGV. Fixed: cap `importStack_` depth at 500 (wide
+  graphs unaffected since it pops on return) → catchable "maximum import nesting depth exceeded".
+
+### CONFIRMED, PENDING (prioritized for the next pass; delicate or lower severity)
+- **[HIGH x2 — dunder ownerClass]** (scan/classes_dunders.md F1/F2): `ownerClass` is a single mutable
+  field on `KiFunction`; a function object shared as a method across classes (or a module-level function
+  adopted as a method) gets the field overwritten → `_super_` climbs the wrong base, and privacy is both
+  falsely-denied AND bypassable from external scope (security). Repro CONFIRMED. Fix is delicate (touches
+  core method binding — clone-on-adopt vs resolve-owner-from-call-site); needs careful full-suite
+  validation. **Deferred to a focused change.**
+- [MED] value.hpp comparison operators unchecked `static_cast<BoolVal&>` on a non-Bool dunder result — UB,
+  embedding-only (objectmodel_gc.md F1); coverage_cpp.md F1 `Value::str()` on an unbound Value segfaults.
+- [MED] lexer trailing-comma inconsistency (lexer_parser.md F1); net.unquote '+'→space + userinfo URL
+  reject (net.md F1/F2); io File/BytesIO seek-negative disagreement (io_path.md F1); tabular DataFrame
+  index/ragged-row/head-tail validation (kimods_tabular_xml.md F1/F2/F5); semver under-validation
+  (kimods_text.md F1); islice negative start (kimods_data.md F2); tensor median NaN + per-axis empty-axis
+  identity (tensor.md F1/F4).
+- [LOW] NaN prints "-nan" not "nan" (numeric.md F1); complex.polar UB on bad args (matrix_complex.md F1);
+  repr DEL, format lone-`}`/comma-zero-pad/empty-precision (string_format.md); DateTime.iso neg-year pad,
+  NUL-in-argv truncation (sys_time_proc.md); regex class-range shorthand endpoint (regex.md F1); many more.
+- **DRY** (scan/dry.md): F7 the "unhashable type" message HAS ALREADY DRIFTED (Set.remove drops the type
+  name) — a real inconsistency; plus String-or-Bytes helper trio, the 256 MiB cap re-declared 7+ places,
+  two integer-string parsers, duplicated hex codecs, bound-method-maker copy-pasted ~20×. Consolidate.
+- **coverage** (scan/coverage_cpp.md, coverage_ki.md — both partial): gap lists for extending C++ and .ki
+  tests to every symbol/angle.
+- **perf-variance** (scan/static_analysis.md — thin, agent killed early): needs a re-run to diagnose the
+  high-stddev source (likely the adaptive-GC floor) and propose low-risk stabilization.

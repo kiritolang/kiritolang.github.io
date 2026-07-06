@@ -2428,6 +2428,13 @@ inline Handle KiritoVM::importModule(const std::string& name) {
     };
     if (importing_.count(name)) throw cycleError(name);
 
+    // Bound the import-nesting DEPTH. importStack_ holds only the current in-progress chain (LoadGuard
+    // pops on return), so a wide import graph never trips this; only an unbounded deep chain
+    // (a imports b imports c ...) does, which would otherwise recurse importModule -> run -> import
+    // until the native stack overflows (an uncatchable segfault). 500 is far beyond any real graph.
+    if (importStack_.size() >= 500)
+        throw KiritoError("maximum import nesting depth exceeded (deeply chained imports)");
+
     // RAII: mark `name` (and, for a .ki file, its resolved path) in-progress for the duration of the
     // load; always unwound on return/throw so a failed import never poisons a later one. References
     // are passed in so the local type needs no access to KiritoVM's private members.
