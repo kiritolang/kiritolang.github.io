@@ -157,6 +157,28 @@ int main() {
     CHECK(ok("import(\"regex\").search(\"(\\\\d+)-(\\\\d+)\", \"x 12-34 y\").group(2)") == "34");
     CHECK(ok("String(import(\"regex\").findall(\"\\\\w+\", \"a bb ccc\") == [\"a\", \"bb\", \"ccc\"])") == "True");
 
+    // === A14-1 (MEDIUM, silent data corruption): a class whose _getstate_ returns a Dict/Set keyed
+    // by a content-hashed member (Bytes/Matrix/instance) and whose _setstate_ READS THROUGH that
+    // container saw it EMPTY — the container was deferred (A17-1) to a pass AFTER _setstate_ ran, so
+    // it summed to 0 not 42. Native-Stateful members are now restored, and their containers wired,
+    // BEFORE the user _setstate_ pass. Both text and binary codecs. ===
+    CHECK(ok("var ser = import(\"serialize\")\n"
+             "class C:\n    var _init_ = Function(self): self.total = 0\n"
+             "    var _getstate_ = Function(self): return {Bytes([9]): 42}\n"
+             "    var _setstate_ = Function(self, s):\n        var t = 0\n"
+             "        for k in s:\n            t = t + s[k]\n        self.total = t\n"
+             "ser.loads(ser.dumps(C())).total") == "42");
+    CHECK(ok("var d = import(\"dump\")\n"
+             "class C:\n    var _init_ = Function(self): self.total = 0\n"
+             "    var _getstate_ = Function(self): return {Bytes([9]): 42}\n"
+             "    var _setstate_ = Function(self, s):\n        var t = 0\n"
+             "        for k in s:\n            t = t + s[k]\n        self.total = t\n"
+             "d.loads(d.dumps(C())).total") == "42");
+    // A17-1 must still hold: a plain Bytes-keyed Dict/Set round-trips with correct buckets
+    CHECK(ok("var ser = import(\"serialize\")\n"
+             "var d2 = ser.loads(ser.dumps({Bytes([1, 2]): \"x\", Bytes([3]): \"y\"}))\n"
+             "d2[Bytes([1, 2])] + d2[Bytes([3])] + String(len(d2))") == "xy2");
+
     // === A19-1 / A19-2 (MEDIUM, embedding memory): Value's arithmetic/unary operators, call,
     // getAttr, at (getItem) and List::pop wrapped their fresh, not-yet-rooted result in the
     // NON-pinning Value(vm, Handle) ctor, so a GC between the op and first use swept it (dangling

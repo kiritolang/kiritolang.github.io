@@ -253,10 +253,33 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             }
         }
     }
-    // Pass 3: now that every state value is fully wired, restore _setstate_ objects.
-    for (uint32_t i = 0; i < n; ++i) {
+    // A Stateful node is either a NATIVE type (built by a registered factory: Bytes/Matrix/DateTime/
+    // Random/Tensor) or a USER class (its _getstate_/_setstate_). The distinction drives the restore
+    // order: a native _setstate_ reconstructs from its own List/scalar state and NEVER reads a shared
+    // container, so it can run first (before any deferred container is wired). A user _setstate_ MAY
+    // read a state container, so it must run AFTER the container it reads is wired — but a container
+    // keyed by a still-empty content-hashed member can't be wired until that member is restored. The
+    // resolution: native first, then wire the deferred containers whose content-hashed members are all
+    // early-restorable (native-Stateful [now done] or an Object instance [attrs set in pass 2]), then
+    // the user _setstate_s (which can now read those containers — A14-1), and finally the containers
+    // keyed by a user-Stateful member (whose content only exists after the user pass — keeps A17-1).
+    std::vector<char> userStateful(n, 0);
+    for (uint32_t i = 0; i < n; ++i)
+        if (nodes[i].tag == Tag::Stateful) {
+            const Handle* cls = vm.findClass(nodes[i].s);
+            userStateful[i] = (cls && vm.arena().deref(*cls).kind() == ValueKind::Class) ? 1 : 0;
+        }
+    auto hasUserStatefulMember = [&](const Node& nd) {
+        if (nd.tag == Tag::Set) {
+            for (uint32_t id : nd.links) if (userStateful[checkId(id)]) return true;
+        } else if (nd.tag == Tag::Dict) {
+            for (std::size_t k = 0; k + 1 < nd.links.size(); k += 2)
+                if (userStateful[checkId(nd.links[k])]) return true;
+        }
+        return false;
+    };
+    auto restoreStateful = [&](uint32_t i) {
         const Node& nd = nodes[i];
-        if (nd.tag != Tag::Stateful) continue;
         if (nd.links.empty()) throw KiritoError("cannot deserialize '" + nd.s + "': missing state");
         Handle state = objs[checkId(nd.links[0])];
         auto setm = serdeMethod(vm, objs[i], "_setstate_");
@@ -264,12 +287,9 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             throw KiritoError("cannot deserialize '" + nd.s + "': it defines _getstate_ but no _setstate_");
         std::array<Handle, 1> args{state};
         vm.arena().deref(*setm).call(vm, args);
-    }
-    // Pass 4: wire the Sets/Dicts deferred from pass 2 (those with a content-hashed member), now that
-    // every element/key is fully materialised so it buckets under its final hash (A17-1).
-    for (uint32_t i = 0; i < n; ++i) {
+    };
+    auto wireDeferredContainer = [&](uint32_t i) {
         const Node& nd = nodes[i];
-        if (!contentHashedMember(nd)) continue;
         if (nd.tag == Tag::Set) {
             auto& s = static_cast<SetVal&>(vm.arena().deref(objs[i]));
             for (uint32_t id : nd.links) s.add(vm.arena(), objs[checkId(id)]);
@@ -278,7 +298,21 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             for (std::size_t k = 0; k + 1 < nd.links.size(); k += 2)
                 d.set(vm.arena(), objs[checkId(nd.links[k])], objs[checkId(nd.links[k + 1])]);
         }
-    }
+    };
+    // Pass 3a: restore NATIVE stateful objects (leaf content; they never read a container).
+    for (uint32_t i = 0; i < n; ++i)
+        if (nodes[i].tag == Tag::Stateful && !userStateful[i]) restoreStateful(i);
+    // Pass 3b: wire deferred containers whose content-hashed members are now all restored (native
+    // key/Object key), so a user _setstate_ in pass 3c can read through them.
+    for (uint32_t i = 0; i < n; ++i)
+        if (contentHashedMember(nodes[i]) && !hasUserStatefulMember(nodes[i])) wireDeferredContainer(i);
+    // Pass 3c: restore USER stateful objects (may read the containers wired in 3b).
+    for (uint32_t i = 0; i < n; ++i)
+        if (nodes[i].tag == Tag::Stateful && userStateful[i]) restoreStateful(i);
+    // Pass 4: wire the remaining deferred containers — those keyed by a user-Stateful member, whose
+    // content only became available in pass 3c (so they bucket under the final hash — A17-1).
+    for (uint32_t i = 0; i < n; ++i)
+        if (contentHashedMember(nodes[i]) && hasUserStatefulMember(nodes[i])) wireDeferredContainer(i);
     return objs[rootId];
 }
 

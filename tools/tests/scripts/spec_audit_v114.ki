@@ -120,4 +120,23 @@ assert throws(Function(): return regex.search(buildPat(), "a" * 10000)), "A17-1:
 assert regex.search(r"(\d+)-(\d+)", "x 12-34 y").group(2) == "34", "A17-1: an ordinary regex still matches"
 assert regex.findall(r"\w+", "a bb ccc") == ["a", "bb", "ccc"], "A17-1: findall unaffected"
 
+# --- A14-1: a _setstate_ that READS THROUGH a state Dict keyed by a content-hashed member (Bytes) ---
+var serialize = import("serialize")
+var dump = import("dump")
+class Summing:
+    var _init_ = Function(self): self.total = 0
+    var _getstate_ = Function(self): return {Bytes([9]): 42, Bytes([1]): 8}
+    var _setstate_ = Function(self, state):
+        var t = 0
+        for k in state:
+            t = t + state[k]
+        self.total = t
+assert serialize.loads(serialize.dumps(Summing())).total == 50, "A14-1: text _setstate_ reads through Bytes-keyed state"
+assert dump.loads(dump.dumps(Summing())).total == 50, "A14-1: binary _setstate_ reads through Bytes-keyed state"
+# A17-1 must still hold: a plain Bytes-keyed Dict/Set buckets correctly after a round-trip
+var bd = serialize.loads(serialize.dumps({Bytes([1, 2]): "x", Bytes([3]): "y"}))
+assert bd[Bytes([1, 2])] == "x" and bd[Bytes([3])] == "y" and len(bd) == 2, "A17-1: Bytes-keyed Dict round-trips"
+var bs = dump.loads(dump.dumps(Set([Bytes([5]), Bytes([6])])))
+assert Bytes([5]) in bs and Bytes([6]) in bs and len(bs) == 2, "A17-1: Bytes Set round-trips"
+
 io.print("OK audit-v114")
