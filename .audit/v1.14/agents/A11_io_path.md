@@ -127,3 +127,13 @@ Status: IN PROGRESS.
 - **A11-16**: no test calls io stream methods by keyword (`f.read(size=)`, `f.seek(offset=,whence=)`, `b.write(data=)`) though they WORK (P24) — the uniform-kwargs guarantee is unverified for io streams (A12-9 carried).
 - **A11-17**: no test for duck-typed stdout flush (A11-3), `stream=None` diagnostic (A11-4), append-mode seek/tell (A11-9), read(None) divergence (A11-7), `io.write(Bytes)` repr (A11-2).
 - **A11-18**: no test for the BytesIO 256 MiB guard at the .ki level (P20 confirms it fires) or File seek-overflow no-op (A11-11).
+
+### A11-19: `BytesIO.truncate()` after a large seek bypasses the 256 MiB write guard and EXTENDS the buffer
+- **severity**: MEDIUM
+- **location**: `stdlib_io.hpp:361-366` `truncate` — `b.buf.resize(b.pos)` with NO size cap; `seek` (342-356) lets `pos` grow to any non-negative int64 without allocating.
+- **category**: resource-limit / guard-bypass
+- **description**: `streamWrite` enforces `kMaxBuf = 256 MiB`, but `truncate()` calls `buf.resize(pos)` unguarded. CONFIRMED: `b = BytesIO(); b.seek(400000000); b.truncate()` allocates a 400 MB buffer (getvalue len == 400000000) — well past the 256 MiB cap the write path refuses. Two problems: (1) the documented BytesIO size cap is bypassed; (2) when `pos > buf.size()`, `truncate()` GROWS the buffer (fills with NUL) rather than truncating — "truncate" that extends is surprising (Python's truncate to a larger size also extends, but Kirito exposes no size arg so the only way to hit it is a seek-then-truncate, and it silently dodges the guard). An extreme `seek(9e18); truncate()` throws bad_alloc (catchable), so no crash, but any value between 256 MiB and available RAM OOMs the process silently.
+- **failure-scenario**: `b.seek(n); b.truncate()` with a large n materializes an n-byte buffer, defeating the resource guard that protects every other BytesIO write path.
+- **proposed-test**: `b.seek(300*1024*1024); b.truncate()` must throw "BytesIO too large".
+- **proposed-fix**: apply the same `kMaxBuf` check in `truncate` before `resize` (and consider only ever shrinking, i.e. `resize(min(pos, buf.size()))`, plus an explicit optional size arg per A11-10).
+- **confidence**: CONFIRMED
