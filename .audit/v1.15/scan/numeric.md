@@ -13,5 +13,59 @@ Source: src/kirito/runtime.hpp (numericBinary L155, applyBinaryOp L2180, makeNum
   L2189 requires BOTH numeric, so Integer*List never hits fast path -> goes virtual -> IntVal::binary
   handles seq. OK consistent.
 
+## RULED OUT / BY-DESIGN
+- INT64_MIN wraparound: -IMIN, IMIN//-1, IMIN%-1(=0), abs(IMIN)=IMIN, divmod(IMIN,-1)=[IMIN,0],
+  IMAX+1, 2**63, 2**64=0 — all defined two's-complement wrap. Correct & documented (fixed int64).
+- floor-div/mod signs across all 4 combos (int + float): result carries divisor sign. Correct.
+- identity a==(a//b)*b+a%b holds for floats tested (7.5,2.1 etc).
+- pow: 0**-1 throws, (-2)**0.5 throws, (-8)**(1/3) throws, int neg-exp -> Float, right-assoc
+  2**3**2=512. pow(base,exp,mod) uses __int128, guards neg mod / zero mod / neg exp. Correct.
+- exact IEEE-754 ==: 0.1+0.2!=0.3, NaN!=NaN, inf==inf, 0.0==-0.0, hashing agrees (close floats
+  distinct Set keys; {0.0,-0.0} len 1; {1,1.0} len 1; 2^53+1 != float 2^53). All correct.
+- .compare formula: boundary inclusive (<=), abs_tol path, NaN never close, inf==inf close,
+  negative tol short-circuits on exact ==, Bool rejected ("expects a number"), rel_tol=Bool rejected.
+- FAST PATH vs SLOW PATH: NO divergence possible. applyBinaryOp L2189 fast path calls numericBinary;
+  IntVal/FloatVal::binary ALSO call numericBinary. Single BinaryOp opcode. Compiler does NOT
+  constant-fold arithmetic (only switch-case keys). Confirmed identical.
+- Bool is NOT numeric in Kirito: True+True THROWS, True==1 is False, {True,1} len 2. This is
+  strong-typing by design (Bool distinct from Integer), contra the briefing's Python assumption.
+  NOT a bug.
+- divmod uses numericBinary for both q and r (rooted). Correct.
+- Integer literal & Integer(str) full-width two's-complement: 0xFFFF..=−1, decimal 2^63 wraps to
+  INT64_MIN (matches lexer). By design (comment L2894-2897).
+
 ## FINDINGS
-(none yet)
+
+### F1 [LOW] NaN stringifies as "-nan" (sign-bit leak) instead of canonical "nan"
+- where: src/kirito/builtins.hpp:99 floatToString (`%.15g`) — sign bit of NaN passes through glibc's %g
+- repro:
+```
+var inf = 1e308*10.0
+var nan = inf - inf          # inf-inf yields a NEGATIVE-sign NaN on x86
+io.print(nan)                # => -nan   (expected: nan)
+io.print(-nan)               # => nan    (sign flips — nonsense for NaN)
+io.print(String(nan))        # => -nan
+io.print(0.0*inf)            # => -nan
+io.print(inf % 1.0)          # => -nan
+```
+- actual: NaN prints as `-nan` or `nan` depending on its (meaningless) sign bit.
+  expected: canonical `nan` regardless of sign, as Python/most languages do.
+- impact: display/serialization inconsistency; `String(nan)` non-canonical; two NaNs print differently.
+  Note json rejects nan separately (should confirm), but print/String/repr leak it.
+- fix idea: in floatToString, special-case `std::isnan(d)` -> return "nan" (and keep "inf"/"-inf" for
+  infinities, which ARE signed meaningfully). One-line guard before the snprintf.
+
+### F2 [SUSPECT/LOW] Integer(str) silently wraps in [2^63, 2^64) but throws >= 2^64 — surprising cliff
+- where: src/kirito/runtime.hpp:2898-2903
+- repro:
+```
+Integer("9223372036854775808")     # => -9223372036854775808  (silent wrap to INT64_MIN)
+Integer("18446744073709551615")    # => -1
+Integer("99999999999999999999999") # THROW: cannot convert String to Integer
+```
+- actual: a decimal string just past INT64_MAX silently wraps negative; a bigger one throws.
+- expected(?): consistency — either both wrap or both throw. Matches lexer's full-width two's-comp
+  design (comment says intentional, mirrors hex(-1) round-trip), so likely BY DESIGN, but the
+  silent decimal wrap is a scripting footgun and the >=2^64 cliff is inconsistent.
+- fix idea: leave as-is (design) OR make plain-decimal overflow throw while keeping hex/oct/bin
+  full-width. Flagging for triage, not asserting a bug.

@@ -26,3 +26,22 @@ Probe binary: `./build-debug/ki`.
   - Set operators `-`/`<`/`<=`/`>`/`>=` require Set on RHS (documented); methods take any iterable.
 
 ## FINDINGS
+
+### F1 [MED/SUSPECT] `x in <Set>` returns False for unhashable x, but `x in <Dict>` throws — inconsistent
+- where: src/kirito/collections.hpp:275-283 (SetVal::contains) vs DictVal::find (collections.hpp:152-161, via DictVal::contains runtime.hpp:1650)
+- repro:
+  ```
+  [1] in Set()   # => False
+  [1] in {}      # => THROW: unhashable type 'List'
+  ```
+- actual: Set membership of an unhashable value silently returns False; Dict membership throws.
+  expected: consistent behavior. Python raises TypeError for BOTH. Given Kirito's stated principle of
+  rejecting unhashable keys with a clear error (and Dict already does), Set silently returning False masks
+  a likely programming bug and diverges from Dict.
+- note: SetVal::contains(arena,Handle) returning false is deliberately relied on by internal set algebra
+  (issubset etc.) where you don't want to throw — so the fix should distinguish the user-facing `in`
+  (SetVal::contains(KiritoVM&,...) at runtime.hpp:1653) from the internal helper, OR accept it as by-design.
+  Same asymmetry in remove/discard: Set.remove throws "unhashable type", Dict.remove(unhashable) reports
+  "key not found". Flagging as SUSPECT for maintainer decision.
+- fix idea: make the user-facing `x in set` throw on unhashable (mirror Dict), keeping the internal
+  arena-only contains lenient; or document the intentional divergence.

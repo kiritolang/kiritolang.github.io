@@ -49,3 +49,32 @@ multiple places; parallel implementations that should share a helper.
   tensor.hpp:49). Same value, same intent, two copies + duplicated guard code
   (matrix.hpp:106/110/313 vs complex.hpp:271/275/498 are structurally identical guards).
 - drift: if one is bumped the two matrix families diverge silently. Low sev (correctness unaffected).
+
+### F4 [LOW] bytes.hpp fromHex re-rolls hex-digit parsing that common.hpp claims to single-source
+- src/kirito/common.hpp:93 `hexDigitValue` — comment: "The single source of truth for hex parsing —
+  reused by the lexer's \xHH escape, the parser's f-string escapes, and the JSON \uXXXX decoder,
+  which each used to hand-roll the same three-range check."
+- src/kirito/bytes.hpp:247 `fromHex`'s local `nib` lambda hand-rolls the EXACT same three-range
+  check (0-9 / a-f / A-F -> value, else -1). bytes.hpp already includes common.hpp (uses kMaxRepeat).
+- drift: none today (identical), but it's precisely the pattern the SSOT comment says was eliminated.
+  fix: bytes.hpp::fromHex should call common.hpp::hexDigitValue.
+
+### F5 [LOW] Two independent toHex(...) encoders + the "0123456789abcdef" literal scattered
+- src/kirito/bytes.hpp:238 `bytesutil::toHex(std::string)` and src/kirito/hashing.hpp:13
+  `hashing::toHex(const unsigned char*, n)` are two separate hex encoders. Plus the bare literal
+  "0123456789abcdef" recurs at bytes.hpp:51, bytes.hpp:214, bytes.hpp:239, hashing.hpp:14,
+  stdlib_json.hpp:233, runtime.hpp:2749/3410. Trivial, but no single hex-encode helper.
+
+### F6 [MED] Two independent integer-string parsers (lexer literal vs Integer() converter) must stay in sync
+- src/kirito/parser.hpp:1017 `intLiteral` — decodes a lexer-validated literal (0x/0b/0o/decimal),
+  accumulates in uint64 with two's-complement wrap, never throws.
+- src/kirito/runtime.hpp:2860-2907 `Integer()` string converter — its OWN base-prefix detection
+  (0x/0o/0b at :2870-2875), digit validation, sign handling, and uint64 wrap via std::stoull.
+- Both re-implement base-prefix detection + the "parse magnitude as unsigned, bit-cast for
+  two's-complement round-trip" invariant. runtime.hpp:2895 comment even says "mirroring the lexer's
+  intLiteral" — an explicit acknowledgement they are parallel copies.
+- drift risk: MED. Any lexer change (digit separators `1_000`, a new base, uppercase-only tweak)
+  must be mirrored by hand in the converter or `Integer(str(literal))` stops round-tripping. Not
+  drifted TODAY (spot-checked 0x/0o/0b/decimal/wrap agree), but there is no shared helper.
+- fix idea: factor a shared `parseIntMagnitude(sv, base) -> uint64` used by both; the converter adds
+  only the sign/whitespace/trailing-garbage wrapper.
