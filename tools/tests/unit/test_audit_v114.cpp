@@ -145,5 +145,39 @@ int main() {
     // past the element guard (c==0), yielding rows()==-1 from untrusted state. Reject it. ===
     CHECK(has(err("import(\"matrix\").zeros(1, 1)._setstate_([-1, 0, []])"), "negative dimension"));
 
+    // === A19-1 / A19-2 (MEDIUM, embedding memory): Value's arithmetic/unary operators, call,
+    // getAttr, at (getItem) and List::pop wrapped their fresh, not-yet-rooted result in the
+    // NON-pinning Value(vm, Handle) ctor, so a GC between the op and first use swept it (dangling
+    // handle / ASan UAF). They now `adopting`-pin the result. Force GC on every allocation and use
+    // each result AFTER many intervening allocations — under ASan this is the real gate. ===
+    {
+        KiritoVM vm;
+        vm.installStandardLibrary();
+        vm.setGcThreshold(1);                       // collect on every allocation
+        auto churn = [&] { for (int i = 0; i < 64; ++i) vm.makeString("gc-churn-padding-string"); };
+
+        Value a(vm, 2.5), b(vm, 4.0);
+        Value sum = a + b;                          // fresh Float (A19-1)
+        Value neg = -a;                             // fresh Float, unary (A19-1)
+        churn();
+        CHECK(sum.asFloat() == 6.5);                // swept-and-reused if unpinned
+        CHECK(neg.asFloat() == -2.5);
+
+        String s1(vm, "foo"), s2(vm, "bar");
+        Value cat = s1 + s2;                        // fresh String concat
+        churn();
+        CHECK(cat.str() == "foobar");
+
+        List xs(vm, {10, 20, 30});
+        Value popped = xs.pop();                    // orphaned element (A19-2)
+        churn();
+        CHECK(popped.asInt() == 30);
+
+        String hello(vm, "hello");
+        Value ch = hello.at(1);                     // fresh 1-char String via getItem (A19-2)
+        churn();
+        CHECK(ch.str() == "e");
+    }
+
     return RUN_TESTS();
 }
