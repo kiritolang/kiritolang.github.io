@@ -179,6 +179,22 @@ int main() {
              "var d2 = ser.loads(ser.dumps({Bytes([1, 2]): \"x\", Bytes([3]): \"y\"}))\n"
              "d2[Bytes([1, 2])] + d2[Bytes([3])] + String(len(d2))") == "xy2");
 
+    // === A12-1 (LOW): random gauss/uniform/expovariate param validation used </<=  which a NaN
+    // slips past (NaN compares false), so gauss(0, nan) returned a quiet NaN instead of erroring.
+    // Reject non-finite params, consistent with the strict sigma<0 / lambda<=0 guards. ===
+    CHECK(has(err("import(\"random\").Random(1).gauss(0, import(\"math\").nan)"), "finite"));
+    CHECK(has(err("import(\"random\").Random(1).uniform(0, import(\"math\").inf)"), "finite"));
+    CHECK(has(err("import(\"random\").Random(1).expovariate(import(\"math\").nan)"), "finite"));
+    CHECK(has(err("import(\"random\").Random(1).gauss(0, -1)"), "non-negative"));  // existing guard intact
+    // ordinary params still work
+    CHECK(ok("var x = import(\"random\").Random(1).uniform(0, 1)\nx >= 0.0 and x <= 1.0") == "True");
+
+    // === A10-2 (LOW): hasattr's probe caught only KiritoError, so a native getAttr throwing a plain
+    // std::exception would escape. It now catches std::exception (like the try/catch boundary), so a
+    // missing member is reported as False. (Positive/negative existence is the observable behaviour.) ===
+    CHECK(ok("String(hasattr(\"hi\", \"upper\")) + String(hasattr([1], \"append\")) + "
+             "String(hasattr(5, \"definitely_not_a_method\"))") == "TrueTrueFalse");
+
     // === A19-1 / A19-2 (MEDIUM, embedding memory): Value's arithmetic/unary operators, call,
     // getAttr, at (getItem) and List::pop wrapped their fresh, not-yet-rooted result in the
     // NON-pinning Value(vm, Handle) ctor, so a GC between the op and first use swept it (dangling

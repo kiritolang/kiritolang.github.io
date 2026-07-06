@@ -139,4 +139,17 @@ assert bd[Bytes([1, 2])] == "x" and bd[Bytes([3])] == "y" and len(bd) == 2, "A17
 var bs = dump.loads(dump.dumps(Set([Bytes([5]), Bytes([6])])))
 assert Bytes([5]) in bs and Bytes([6]) in bs and len(bs) == 2, "A17-1: Bytes Set round-trips"
 
+# --- A12-1: random distribution params reject non-finite values (NaN slipped past </<= guards) ---
+var random = import("random")
+assert throws(Function(): return random.Random(1).gauss(0, math.nan)), "A12-1: gauss(0, nan) throws"
+assert throws(Function(): return random.Random(1).uniform(0, math.inf)), "A12-1: uniform(0, inf) throws"
+assert throws(Function(): return random.Random(1).expovariate(math.nan)), "A12-1: expovariate(nan) throws"
+var ux = random.Random(1).uniform(0.0, 1.0)
+assert ux >= 0.0 and ux <= 1.0, "A12-1: ordinary uniform still works"
+
+# --- A10-2: hasattr existence probe (widened to catch std::exception, so a member is never "escapes") ---
+assert hasattr("hi", "upper") == True, "A10-2: hasattr finds a String method"
+assert hasattr([1], "append") == True, "A10-2: hasattr finds a List method"
+assert hasattr(5, "definitely_not_a_method") == False, "A10-2: hasattr returns False for an absent member"
+
 io.print("OK audit-v114")

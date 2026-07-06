@@ -3364,7 +3364,10 @@ inline void KiritoVM::installBuiltins() {
         try {
             (void)vm.arena().deref(a[0]).getAttr(vm, a[0], name);
             return vm.makeBool(true);
-        } catch (const KiritoError&) {
+        } catch (const std::exception&) {
+            // Any failure to resolve the member is "does not exist" -> False. Catch std::exception,
+            // not just KiritoError, so a native getAttr that throws a plain std::exception (crossing
+            // the C++ boundary like a bare `catch` would absorb) reports absence instead of escaping.
             return vm.makeBool(false);
         }
     });

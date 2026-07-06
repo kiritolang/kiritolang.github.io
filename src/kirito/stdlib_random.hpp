@@ -1,6 +1,7 @@
 #ifndef KIRITO_STDLIB_RANDOM_HPP
 #define KIRITO_STDLIB_RANDOM_HPP
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <random>
@@ -141,6 +142,8 @@ public:
             return bind("uniform", {"a", "b"}, [self, rng](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.size() < 2) throw KiritoError("uniform expects (a, b)");
                 double lo = asNum(vm, a[0]), hi = asNum(vm, a[1]);
+                if (!std::isfinite(lo) || !std::isfinite(hi))
+                    throw KiritoError("uniform: a and b must be finite numbers");
                 double x = std::visit(
                     [lo, hi](auto& e) { return std::uniform_real_distribution<double>(lo, hi)(e); },
                     rng(vm, self).engine);
@@ -150,6 +153,10 @@ public:
             return bind(std::string(name).c_str(), {"mu", "sigma"}, [self, rng](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 double mu = optNum(vm, a, 0, 0.0);      // mu default 0; a None slot (keyword sigma) is "absent"
                 double sigma = optNum(vm, a, 1, 1.0);
+                // Reject non-finite params too: a NaN slips past `sigma < 0` (NaN compares false),
+                // so `gauss(0, nan)` silently returned a quiet NaN instead of a clear error.
+                if (!std::isfinite(mu) || !std::isfinite(sigma))
+                    throw KiritoError("gauss: mu and sigma must be finite numbers");
                 if (sigma < 0.0) throw KiritoError("gauss: sigma must be non-negative");
                 double x = std::visit(
                     [mu, sigma](auto& e) { return std::normal_distribution<double>(mu, sigma)(e); },
@@ -159,7 +166,8 @@ public:
         if (name == "expovariate")
             return bind("expovariate", {"lambd"}, [self, rng](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 double lambda = a.size() > 0 ? asNum(vm, a[0]) : 1.0;
-                if (lambda <= 0.0) throw KiritoError("expovariate: lambda must be positive");
+                if (!std::isfinite(lambda) || lambda <= 0.0)
+                    throw KiritoError("expovariate: lambda must be a positive finite number");
                 double x = std::visit(
                     [lambda](auto& e) { return std::exponential_distribution<double>(lambda)(e); },
                     rng(vm, self).engine);
