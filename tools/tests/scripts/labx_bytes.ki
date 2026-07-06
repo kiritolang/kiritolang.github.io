@@ -1,0 +1,133 @@
+# labx: deep edge/hardening pass on the Bytes type (docs/pages/09-types.md "Bytes"), going BEYOND
+# verify_types_bytes.ki / spec_bytes.ki / probe_bytes_fuzz.ki / probe_binary_adversarial.ki.
+# Fresh energy on: cross-type ordering/arithmetic (must raise, no silent result), construction from
+# arbitrary iterables + enc-ignored-for-non-String, encoding-name normalisation, deep slicing corners,
+# fromhex case/whitespace variants, None-encoding defaults, and exact codec/construction error text.
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ construction from arbitrary iterables
+# The impl accepts ANY iterable of Integers (not just a literal List) — range is the deterministic one.
+assert Bytes(range(4)) == Bytes([0, 1, 2, 3]), "Bytes(range) builds from an iterable of Integers"
+assert len(Bytes(range(256))) == 256, "Bytes(range(256)) has 256 bytes"
+# the encoding argument is only meaningful for a String source; it is ignored (no throw) otherwise
+assert Bytes([70, 71], "ascii") == Bytes([70, 71]), "encoding ignored for a List source"
+assert Bytes(Bytes([200]), "ascii") == Bytes([200]), "encoding ignored when copying a Bytes"
+assert Bytes(5, "utf-8") == Bytes([0, 0, 0, 0, 0]), "encoding ignored for an Integer-count source"
+# non-iterable / wrong-kind sources must raise, not silently produce something
+assert raises(Function(): return Bytes(True)), "Bytes(Bool) raises (Bool is not an Integer/iterable)"
+assert raises(Function(): return Bytes(1.5)), "Bytes(Float) raises"
+assert raises_msg(Function(): return Bytes([1.5]), "list elements must be Integers"), "float element raises"
+assert raises_msg(Function(): return Bytes([256]), "element out of range (0..255)"), "256 raises with range msg"
+assert raises_msg(Function(): return Bytes([-1]), "element out of range (0..255)"), "-1 raises with range msg"
+assert raises_msg(Function(): return Bytes(-1), "negative count"), "negative count message"
+assert raises_msg(Function(): return Bytes(9999999999), "Bytes too large"), "huge n guarded with message"
+
+# ============================================================ cross-type equality & ordering (silent-error hunt)
+# A Bytes is never == a String or Integer, even with matching byte values — and != is True.
+assert not (Bytes([65]) == "A"), "Bytes != String (value coincidence does not matter)"
+assert Bytes([65]) != "A", "Bytes != String -> !="
+assert not (Bytes([65]) == 65), "Bytes != Integer"
+assert Bytes([65]) != 65, "Bytes != Integer -> !="
+# ordering operators against a non-Bytes MUST raise (they are not comparable) — not silently return.
+assert raises(Function(): return Bytes([65]) < "A"), "Bytes < String raises"
+assert raises(Function(): return Bytes([65]) > "A"), "Bytes > String raises"
+assert raises(Function(): return Bytes([65]) <= 5), "Bytes <= Integer raises"
+assert raises(Function(): return Bytes([65]) >= 5), "Bytes >= Integer raises"
+# unsupported arithmetic operators must raise (only + concat and * repeat exist)
+assert raises(Function(): return Bytes([1]) - Bytes([1])), "Bytes - Bytes raises (no difference op)"
+assert raises(Function(): return Bytes([1]) / Bytes([1])), "Bytes / Bytes raises"
+assert raises(Function(): return Bytes([1]) % 2), "Bytes % raises"
+assert raises(Function(): return Bytes([1]) ** 2), "Bytes ** raises"
+assert raises(Function(): return -Bytes([1])), "unary -Bytes raises"
+
+# ============================================================ deep slicing corners
+var q = Bytes([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+assert q[-2:] == Bytes([8, 9]), "negative start slice"
+assert q[:-1] == Bytes([0, 1, 2, 3, 4, 5, 6, 7, 8]), "negative stop slice"
+assert q[-3:-1] == Bytes([7, 8]), "both bounds negative"
+assert q[::-2] == Bytes([9, 7, 5, 3, 1]), "reversed step 2"
+assert q[4:0:-1] == Bytes([4, 3, 2, 1]), "explicit reversed range"
+assert q[::100] == Bytes([0]), "step larger than length keeps just the first"
+assert q[100:] == Bytes([]) and q[:-100] == Bytes([]), "over-far bounds clamp to empty"
+assert type(q[0:0]) == "Bytes", "empty slice is still Bytes"
+assert raises(Function(): return q[0:3:0]), "slice step 0 raises"
+assert Bytes([])[::-1] == Bytes([]), "reversed empty slice is empty"
+
+# ============================================================ membership corners
+assert Bytes([]) in Bytes([]), "empty is a subsequence of empty"
+assert Bytes([]) in q, "empty is a subsequence of anything"
+assert 0 in Bytes([0]), "byte value 0 is found"
+assert Bytes([0, 1]) in q and Bytes([8, 9]) in q, "subsequence at both boundaries"
+assert not (Bytes([9, 8]) in q), "reversed pair is not a subsequence"
+assert not (256 in q) and not (-1 in q), "out-of-byte-range Integer is never contained (no throw)"
+assert raises_msg(Function(): return 1.5 in q, "requires an Integer byte or a Bytes"), "Float membership raises"
+
+# ============================================================ encode/decode: None defaults, name normalisation
+assert Bytes([72, 105]).decode(None) == "Hi", "decode(None) falls back to utf-8"
+assert "Hi".encode(None) == Bytes([72, 105]), "encode(None) falls back to utf-8"
+assert Bytes([233]).decode("ISO-8859-1") == chr(233), "ISO-8859-1 is latin-1"
+assert "é".encode("Latin_1") == Bytes([233]), "underscore/case-insensitive encoding name"
+assert Bytes([72]).decode("UTF-8") == "H" and "H".encode("utf8") == Bytes([72]), "utf8 name variants"
+assert Bytes([127]).decode("ascii") == chr(127), "ascii accepts exactly 0x7f"
+assert raises_msg(Function(): return Bytes([128]).decode("ascii"), "codec can't decode byte 0x80"), "0x80 is the first ascii-illegal byte"
+assert raises(Function(): return Bytes([65]).decode(5)), "non-String encoding argument raises"
+# exact codec error text (the U+ label is 4-digit uppercase hex)
+assert raises_msg(Function(): return chr(8364).encode("latin-1"), "codec can't encode code point U+20AC"), "latin-1 >255 exact msg"
+assert raises_msg(Function(): return chr(256).encode("latin-1"), "code point U+0100"), "latin-1 boundary 256 rejected"
+assert raises_msg(Function(): return Bytes([0xff]).decode("utf-8"), "invalid UTF-8 byte sequence"), "invalid utf-8 exact msg"
+assert raises_msg(Function(): return Bytes([0xed, 0xa0, 0x80]).decode("utf-8"), "invalid UTF-8 byte sequence"), "surrogate-encoded utf-8 rejected"
+assert raises_msg(Function(): return Bytes([0xc0, 0x80]).decode("utf-8"), "invalid UTF-8 byte sequence"), "overlong utf-8 rejected"
+
+# ============================================================ latin-1 full-range lossless + hex round-trip
+var allbytes = Bytes(range(256))
+assert allbytes.decode("latin-1").encode("latin-1") == allbytes, "latin-1 lossless for all 0..255"
+assert fromhex(allbytes.hex()) == allbytes, "hex()/fromhex round-trips the whole byte range"
+assert len(allbytes.hex()) == 512, "hex is two chars per byte"
+
+# ============================================================ fromhex case & whitespace variants
+assert fromhex("FF0A") == Bytes([255, 10]), "uppercase hex"
+assert fromhex("aBcD") == Bytes([171, 205]), "mixed-case hex"
+assert fromhex("48\t69\n0a") == Bytes([72, 105, 10]), "tab/newline whitespace ignored"
+assert fromhex("  48  69  ") == Bytes([72, 105]), "leading/trailing/interior spaces ignored"
+assert fromhex("") == Bytes([]), "empty hex -> empty Bytes"
+assert raises_msg(Function(): return fromhex("abc"), "odd-length hex string"), "odd length exact msg"
+assert raises_msg(Function(): return fromhex("zz"), "non-hex digit"), "non-hex exact msg"
+# whitespace is ignored only BETWEEN byte pairs, not between the two nibbles of one byte
+assert raises_msg(Function(): return fromhex("4 8"), "non-hex digit"), "space splitting a byte pair is a non-hex digit"
+
+# ============================================================ Bytes vs String as distinct Dict keys
+var mixed = {Bytes([65]): "bytes", "A": "string"}
+assert len(mixed) == 2, "Bytes([65]) and \"A\" are distinct keys"
+assert mixed[Bytes([65])] == "bytes" and mixed["A"] == "string", "each key resolves to its own value"
+# equal Bytes hash equal (dedup); a fresh equal Bytes finds the same bucket
+var seen = {}
+seen[Bytes([1, 2, 3])] = 1
+seen[Bytes([1, 2, 3])] = 2
+assert len(seen) == 1 and seen[Bytes([1, 2, 3])] == 2, "equal Bytes are one key"
+
+# ============================================================ apply boundary results
+assert Bytes([254, 255]).apply(Function(x): return (x + 1) % 256) == Bytes([255, 0]), "apply may return 0 and 255"
+assert Bytes([0]).apply(Function(x): return 255) == Bytes([255]), "apply result 255 is valid"
+assert Bytes([255]).apply(Function(x): return 0) == Bytes([0]), "apply result 0 is valid"
+assert raises_msg(Function(): return Bytes([1]).apply(Function(x): return 256), "must be a byte (0..255)"), "apply 256 raises"
+assert raises(Function(): return Bytes([1]).apply(Function(x): return 1.5)), "apply non-Integer result raises"
+
+# ============================================================ * repeat boundary/guard
+assert Bytes([1, 2]) * 0 == Bytes([]) and Bytes([1, 2]) * -5 == Bytes([]), "repeat <= 0 is empty"
+assert Bytes([]) * 1000000 == Bytes([]), "repeat of empty is empty regardless of count"
+assert raises_msg(Function(): return Bytes([1, 2, 3]) * 9999999999, "repeated Bytes too large"), "huge repeat guarded"
+
+io.print("OK bytes")

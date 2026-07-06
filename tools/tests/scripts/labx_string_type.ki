@@ -1,0 +1,314 @@
+# labx_string_type.ki — deep edge / hardening tests for the String type.
+# Covers: methods, indexing/slicing (code points), *, +, ordering, in, str-vs-repr,
+# .format() mini-spec, f-strings. Goes beyond spec_strings / spec_fstrings / verify_types_string.
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================================
+# Indexing & slicing (by CODE POINT), bounds behavior
+# ============================================================================
+var cafe = "caf" + chr(233)                       # café, 4 code points, 5 bytes
+assert len(cafe) == 4, "len counts code points"
+assert cafe[3] == chr(233), "index a multibyte char"
+assert cafe[-1] == chr(233), "negative index from end"
+assert cafe[0] == "c", "index first"
+# Out-of-range scalar index THROWS (does not clamp)
+assert raises_msg(Function(): return cafe[4], "index out of range"), "index >= len throws"
+assert raises_msg(Function(): return cafe[-5], "index out of range"), "index too negative throws"
+assert raises_msg(Function(): return ""[0], "index out of range"), "empty string index throws"
+# Slicing CLAMPS out-of-range bounds (never throws)
+assert cafe[0:100] == cafe, "slice end past len clamps"
+assert cafe[-100:2] == "ca", "slice start too negative clamps to 0"
+assert cafe[100:200] == "", "slice fully past end is empty"
+assert cafe[2:1] == "", "start>end slice is empty"
+assert cafe[::-1] == chr(233) + "fac", "reverse slice, multibyte"
+assert "abcdef"[::2] == "ace", "step-2 slice"
+assert "abcdef"[5:1:-2] == "fd", "negative step slice"
+assert "hello"[-3:-1] == "ll", "negative bound slice"
+# step 0 throws
+assert raises_msg(Function(): return "hi"[0:2:0], "slice step cannot be zero"), "slice step 0 throws"
+# slice() method does NOT exist on String (there is no _slice_)
+assert raises_msg(Function(): return "abc".slice(0, 2), "has no attribute"), "String has no slice() method"
+
+# ============================================================================
+# + concatenation and its type strictness
+# ============================================================================
+assert "ab" + "cd" == "abcd", "concat"
+assert "" + "x" == "x", "concat empty"
+assert raises_msg(Function(): return "a" + 1, "can only concatenate String to String, not 'Integer'"), "concat non-String throws"
+assert raises_msg(Function(): return "a" + ["x"], "can only concatenate"), "concat with List throws"
+
+# ============================================================================
+# * repetition: 0, negative, huge-count guard
+# ============================================================================
+assert "ab" * 3 == "ababab", "repeat"
+assert "ab" * 0 == "", "repeat 0 -> empty"
+assert "ab" * -5 == "", "repeat negative -> empty"
+assert "" * 1000 == "", "repeat empty string"
+assert raises_msg(Function(): return "x" * (10 ** 12), "repeated String too large"), "huge repeat guarded"
+assert raises_msg(Function(): return "x" * "y", "can only repeat String by an Integer"), "repeat by non-Integer throws"
+
+# ============================================================================
+# in / contains
+# ============================================================================
+assert "ell" in "hello", "substring in"
+assert "" in "hello", "empty string is a substring"
+assert not ("z" in "hello"), "absent substring"
+assert raises_msg(Function(): return 1 in "abc", "'in <String>' requires a String, not 'Integer'"), "in with non-String throws"
+
+# ============================================================================
+# Lexicographic ordering
+# ============================================================================
+assert "abc" < "abd", "less-than"
+assert "ab" < "abc", "prefix is less"
+assert "abc" <= "abc" and "abc" >= "abc", "le/ge equal"
+assert "b" > "abc", "gt by first char"
+assert sorted(["banana", "apple", "cherry"]) == ["apple", "banana", "cherry"], "sorted strings"
+
+# ============================================================================
+# upper / lower  (1:1 code-point map; out-of-range scripts pass through)
+# ============================================================================
+assert "hello".upper() == "HELLO", "upper ascii"
+assert "HELLO".lower() == "hello", "lower ascii"
+assert chr(233).upper() == chr(201), "é -> É (Latin-1 aware)"     # é U+00E9 -> É U+00C9
+assert "ß".upper() == "ß", "sharp-s stays (no 1:many folding)"
+# Greek (out of the supported ASCII/Latin-1/Latin-Extended-A range) passes through unchanged
+var beta = chr(946)                                                # β
+assert beta.upper() == beta, "out-of-range script passes through unchanged"
+
+# ============================================================================
+# strip / lstrip / rstrip — chars set (dupes + Unicode), matched by code point
+# ============================================================================
+assert "  hi  ".strip() == "hi", "default whitespace strip"
+assert "xxhixx".strip("x") == "hi", "strip chars"
+assert "  x  ".strip("x ") == "", "strip chars with duplicates in set unaffected"
+assert "aabbccbbaa".strip("ab") == "cc", "strip a multichar set"
+assert "  hi  ".lstrip() == "hi  ", "lstrip keeps right"
+assert "  hi  ".rstrip() == "  hi", "rstrip keeps left"
+# Unicode strip by code point (must not corrupt UTF-8)
+var wrapped = chr(233) + "core" + chr(233)
+assert wrapped.strip(chr(233)) == "core", "strip a multibyte char"
+assert (chr(233) + "ax").rstrip("xa" + chr(233)) == "", "rstrip mixed unicode+ascii set"
+
+# ============================================================================
+# split — default whitespace, sep, empty-sep raise, maxsplit 0 / negative
+# ============================================================================
+assert "a b  c".split() == ["a", "b", "c"], "default split collapses whitespace runs"
+assert "  a  b  ".split() == ["a", "b"], "default split trims ends"
+assert "".split() == [], "empty string default-split -> empty list"
+assert "a,b,c".split(",") == ["a", "b", "c"], "split on sep"
+assert "".split(",") == [""], "empty string sep-split -> ['']"
+assert "a,,b".split(",") == ["a", "", "b"], "adjacent seps yield empty fields"
+assert "a,b,c".split(",", 0) == ["a,b,c"], "maxsplit 0 -> whole string"
+assert "a,b,c".split(",", 1) == ["a", "b,c"], "maxsplit 1"
+assert "a,b,c".split(",", -1) == ["a", "b", "c"], "negative maxsplit -> unlimited"
+assert "a b c d".split(maxsplit=1) == ["a", "b c d"], "keyword maxsplit, default sep"
+assert raises_msg(Function(): return "abc".split(""), "empty separator"), "empty separator raises"
+
+# ============================================================================
+# join
+# ============================================================================
+assert "-".join(["a", "b", "c"]) == "a-b-c", "join"
+assert "".join(["a", "b"]) == "ab", "join with empty sep"
+assert ",".join([]) == "", "join empty iterable"
+assert ",".join(["solo"]) == "solo", "join single"
+assert "-".join("abc") == "a-b-c", "join over a String's characters"
+assert raises(Function(): return ",".join([1, 2])), "join non-String elements raises"
+
+# ============================================================================
+# replace — count, empty old, count 0
+# ============================================================================
+assert "banana".replace("a", "*") == "b*n*n*", "replace all"
+assert "banana".replace("a", "*", 2) == "b*n*na", "replace count 2"
+assert "banana".replace("a", "*", 0) == "banana", "replace count 0 -> unchanged"
+assert "aaa".replace("a", "bb") == "bbbbbb", "replace grows"
+assert "abc".replace("", "-") == "-a-b-c-", "empty old interleaves at every boundary"
+assert "abc".replace("", "-", 2) == "-a-bc", "empty old with count"
+assert "abc".replace("", "-", 0) == "abc", "empty old count 0 -> unchanged"
+assert "abc".replace("z", "Q") == "abc", "replace absent -> unchanged"
+
+# ============================================================================
+# startswith / endswith with optional window
+# ============================================================================
+assert "hello".startswith("he"), "startswith"
+assert "hello".endswith("lo"), "endswith"
+assert "hello".startswith(""), "startswith empty -> True"
+assert "".startswith(""), "empty startswith empty -> True"
+assert "abcdef".startswith("cd", 2), "startswith within window from start"
+assert not "abcdef".startswith("cd", 3), "startswith wrong offset"
+assert "abcdef".endswith("cd", 0, 4), "endswith within end window"
+assert not "abcdef".endswith("ef", 0, 4), "endswith outside window"
+
+# ============================================================================
+# find / rfind / index / rindex / count — with windows and boundaries
+# ============================================================================
+assert "banana".find("a") == 1, "find first"
+assert "banana".find("z") == -1, "find absent -> -1"
+assert "banana".rfind("a") == 5, "rfind last"
+assert "banana".rfind("z") == -1, "rfind absent -> -1"
+assert "banana".find("a", 2) == 3, "find with start"
+assert "banana".find("na", 0, 4) == 2, "find within window"
+assert "banana".find("na", 0, 3) == -1, "find window too small -> -1"
+assert "banana".rfind("a", 0, 3) == 1, "rfind within window"
+assert "abc".find("", 0, 100) == 0, "find empty string -> 0"
+assert "banana".index("n") == 2, "index found"
+assert "banana".rindex("n") == 4, "rindex found"
+assert raises_msg(Function(): return "banana".index("z"), "substring not found"), "index absent raises"
+assert raises_msg(Function(): return "banana".rindex("z"), "substring not found"), "rindex absent raises"
+# start>end window collapses to empty (index must then raise; find returns -1)
+assert "banana".find("a", 4, 2) == -1, "find with start>end -> -1"
+assert raises_msg(Function(): return "abc".index("b", 2, 1), "substring not found"), "index start>end raises"
+assert "abcabc".count("a") == 2, "count"
+assert "aaaa".count("aa") == 2, "count is non-overlapping"
+assert "abc".count("") == 4, "count empty -> len+1 (every boundary)"
+assert "banana".count("a", 0, 3) == 1, "count within window"
+assert "hello".count("z") == 0, "count absent -> 0"
+
+# ============================================================================
+# is* predicates — empty string, mixed, Unicode
+# ============================================================================
+assert "".isdigit() == False and "".isalpha() == False, "empty string -> False for is-checks"
+assert "".isspace() == False and "".islower() == False and "".isupper() == False, "empty -> False (need >=1)"
+assert "42".isdigit() and not "4.2".isdigit(), "isdigit ASCII only"
+assert not "²".isdigit(), "superscript two is NOT a digit (ASCII-only)"
+assert "abc".isalpha() and not "ab1".isalpha(), "isalpha"
+assert chr(233).isalpha(), "é counts as a letter (>= U+0080)"
+assert beta.isalpha(), "Greek beta counts as a letter (>= U+0080)"
+assert "abc123".isalnum() and not "ab c".isalnum(), "isalnum"
+assert "   ".isspace() and "\t\n\r".isspace(), "ASCII whitespace is space"
+assert not (chr(160)).isspace(), "NBSP is NOT isspace"
+assert "hello".islower() and not "Hello".islower(), "islower"
+assert "HELLO".isupper() and not "Hello".isupper(), "isupper"
+assert "abc123".islower(), "digits are uncased, islower true when cased are lower"
+assert not "123".islower() and not "123".isupper(), "no cased chars -> both False"
+assert "MiXeD".islower() == False and "MiXeD".isupper() == False, "mixed case -> both False"
+
+# ============================================================================
+# removeprefix / removesuffix
+# ============================================================================
+assert "unhappy".removeprefix("un") == "happy", "removeprefix present"
+assert "unhappy".removeprefix("xx") == "unhappy", "removeprefix absent -> unchanged"
+assert "filename.txt".removesuffix(".txt") == "filename", "removesuffix present"
+assert "filename".removesuffix(".txt") == "filename", "removesuffix absent -> unchanged"
+assert "abc".removeprefix("") == "abc", "removeprefix empty -> unchanged"
+assert "abc".removesuffix("") == "abc", "removesuffix empty -> unchanged"
+
+# ============================================================================
+# ljust / rjust / center / zfill — width<len, multichar fill error, sign
+# ============================================================================
+assert "hi".ljust(5) == "hi   ", "ljust default space"
+assert "hi".rjust(5) == "   hi", "rjust default space"
+assert "hi".center(6, "*") == "**hi**", "center custom fill"
+assert "hi".center(5) == " hi  ", "center odd width (extra on right)"
+assert "hi".ljust(1) == "hi", "width<len -> unchanged (ljust)"
+assert "hi".rjust(0) == "hi", "width 0 -> unchanged"
+assert "hi".center(-3) == "hi", "negative width -> unchanged"
+assert "5".zfill(3) == "005", "zfill"
+assert "-5".zfill(5) == "-0005", "zfill sign-aware negative"
+assert "+5".zfill(5) == "+0005", "zfill sign-aware positive"
+assert "12".zfill(1) == "12", "zfill width<len -> unchanged"
+assert cafe.zfill(6) == "00" + cafe, "zfill counts code points"
+assert raises_msg(Function(): return "hi".ljust(5, "ab"), "ljust fill must be a single character"), "ljust multichar fill raises"
+assert raises_msg(Function(): return "hi".center(5, ""), "center fill must be a single character"), "center empty fill raises"
+assert raises_msg(Function(): return "hi".zfill("x"), "zfill expects an Integer width"), "zfill non-Integer raises"
+assert raises_msg(Function(): return "hi".ljust("x"), "ljust expects an Integer width"), "ljust non-Integer raises"
+
+# ============================================================================
+# partition / rpartition
+# ============================================================================
+assert "a.b.c".partition(".") == ["a", ".", "b.c"], "partition at first"
+assert "a.b.c".rpartition(".") == ["a.b", ".", "c"], "rpartition at last"
+assert "abc".partition("x") == ["abc", "", ""], "partition absent -> head only"
+assert "abc".rpartition("x") == ["", "", "abc"], "rpartition absent -> tail only"
+assert "a.b".partition(".b") == ["a", ".b", ""], "partition sep at end"
+assert raises_msg(Function(): return "abc".partition(""), "empty separator"), "partition empty sep raises"
+assert raises_msg(Function(): return "abc".rpartition(""), "empty separator"), "rpartition empty sep raises"
+
+# ============================================================================
+# levenshtein
+# ============================================================================
+assert "kitten".levenshtein("sitting") == 3, "classic levenshtein"
+assert "abc".levenshtein("abc") == 0, "identical -> 0"
+assert "".levenshtein("abc") == 3, "empty vs 3 -> 3"
+assert "abc".levenshtein("") == 3, "3 vs empty -> 3"
+assert (chr(233) + "a").levenshtein("a") == 1, "levenshtein by code point (not byte)"
+assert "cat".levenshtein(["bat", "cat", "cart"]) == [1, 0, 1], "levenshtein over a List"
+assert raises(Function(): return "cat".levenshtein(["ok", 5])), "levenshtein List of non-Strings raises"
+assert raises(Function(): return "cat".levenshtein(5)), "levenshtein non-String/List raises"
+
+# ============================================================================
+# encode
+# ============================================================================
+assert cafe.encode().hex() == "636166c3a9", "utf-8 encode (é is 2 bytes)"
+assert cafe.encode("latin-1").hex() == "636166e9", "latin-1 encode (é is 1 byte)"
+assert "abc".encode("ascii").hex() == "616263", "ascii encode"
+assert raises_msg(Function(): return chr(233).encode("ascii"), "codec can't encode"), "ascii encode of non-ascii raises"
+assert raises_msg(Function(): return "x".encode("bogus"), "unknown encoding"), "unknown encoding raises"
+
+# ============================================================================
+# apply — flat-map over characters
+# ============================================================================
+assert "ab".apply(Function(c): return c + c) == "aabb", "apply expands"
+assert "abc".apply(Function(c): return "") == "", "apply dropping all -> empty"
+assert "abc".apply(Function(c): return c.upper()) == "ABC", "apply transform"
+assert raises_msg(Function(): return "ab".apply(Function(c): return 1), "result must be a String"), "apply non-String result raises"
+
+# ============================================================================
+# .format() — positional {} and {N} only, {{ }} escapes, error paths
+# ============================================================================
+assert "{} {}".format("a", "b") == "a b", "sequential fields"
+assert "{1} {0}".format("a", "b") == "b a", "indexed fields, reordered"
+assert "{0}{0}{1}".format("x", "y") == "xxy", "repeat an indexed field"
+assert "{{literal}}".format() == "{literal}", "escaped braces"
+assert "no fields".format() == "no fields", "no fields"
+assert "{}".format(42) == "42", "non-String arg stringified"
+assert "{}".format([1, "a"]) == "[1, 'a']", "container arg uses repr for its String elements"
+assert raises_msg(Function(): return "{}".format(), "format index out of range"), "too few args raises"
+assert raises_msg(Function(): return "{2}".format("a"), "format index out of range"), "index out of range raises"
+assert raises_msg(Function(): return "{x}".format(1), "format field must be an index"), "named field rejected"
+assert raises_msg(Function(): return "{".format(), "unmatched '{'"), "unmatched brace raises"
+
+# ============================================================================
+# f-strings — format-spec edge cases, {{ / }} escaping
+# ============================================================================
+var n = 7
+var pi = 3.14159
+assert f"{n:05d}" == "00007", "f-string zero-pad width"
+assert f"{pi:.2f}" == "3.14", "f-string float precision"
+assert f"{255:#x}" == "0xff", "f-string alternate hex form"
+assert f"{'hi':>5}" == "   hi", "f-string right-align a String"
+assert f"{'hi':.<5}" == "hi...", "f-string custom fill + left align"
+assert f"{{literal}}" == "{literal}", "f-string escaped braces"
+assert f"{{{n}}}" == "{7}", "f-string escaped braces around a field"
+assert f"{{{{}}}}" == "{{}}", "f-string doubled escaped braces"
+assert f"{ n + 1 }" == "8", "f-string whitespace inside braces"
+assert raises_msg(Function(): return f"{'x':+}", "sign not allowed in string"), "sign on a string spec raises"
+assert raises_msg(Function(): return f"{42:z}", "unknown format type"), "unknown format type raises"
+
+# ============================================================================
+# str-vs-repr distinction: String bare vs nested in a container
+# ============================================================================
+assert String("hi") == "hi", "bare String() -> raw text"
+assert String(["a", "b"]) == "['a', 'b']", "nested Strings show in repr (single-quoted)"
+assert String({"k": "v"}) == "{'k': 'v'}", "Dict String values show in repr"
+assert String([""]) == "['']", "empty String element visibly distinct from []"
+# repr chooses the quote and escapes appropriately
+assert String(["it's"]) == "[\"it's\"]", "apostrophe -> use double quotes"
+assert String(['say "hi"']) == "['say \"hi\"']", "double quote -> use single quotes"
+assert String(["both ' and \""]) == "['both \\' and \"']", "both quotes -> single quote, escape apostrophe"
+assert String(["a\nb\tc"]) == "['a\\nb\\tc']", "newline/tab escaped in container repr"
+assert String(["\x00"]) == "['\\x00']", "control char shown as \\xNN in repr"
+
+io.print("OK string_type")

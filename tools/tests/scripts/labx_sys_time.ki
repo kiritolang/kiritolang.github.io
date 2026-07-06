@@ -1,0 +1,220 @@
+# labx_sys_time.ki — deep edge/hardening pass over the `sys` and `time` stdlib modules
+# (docs/pages/10-stdlib.md "## sys" / "## time"). Goes BEYOND verify_sys/verify_time/spec_time/
+# audit_sys/audit_time/sys_proc*/spec_proc_binary: focuses on the corners those skipped —
+#   * time.sleep(nan/inf/1e18) MUST throw; sleep(0)/sleep(-1) are silent no-ops;
+#   * DateTime add/sub/diff exactness + purity + == / hash-by-instant used as Dict/Set keys;
+#   * strptime<->format round-trip; make() C-mktime normalization on negative/zero components;
+#   * subprocess: nonzero exit reflected (no throw), nonexistent program raises, shell-vs-argv,
+#     Bytes-in-verbatim + binary=True byte-exact through a FOREIGN tool (`cat`), timeout kills+throws.
+# Deterministic: NO wall-clock values / elapsed durations / network are asserted. Portable POSIX
+# commands only (cat/true/false/printf/sleep). Prints exactly "OK sys_time".
+var io = import("io")
+var sys = import("sys")
+var time = import("time")
+var serialize = import("serialize")
+var dump = import("dump")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ time.sleep guard (CRITICAL)
+# The one float entry point that reaches an int64 duration_cast: non-finite / absurd MUST throw
+# (else UB or a multi-billion-year hang), and a non-positive value is a silent no-op.
+assert raises_msg(Function(): return time.sleep(Float("nan")), "finite"), "sleep(NaN) throws (finite)"
+assert raises_msg(Function(): return time.sleep(Float("inf")), "finite"), "sleep(inf) throws (finite)"
+assert raises_msg(Function(): return time.sleep(Float("-inf")), "finite"), "sleep(-inf) throws (finite)"
+assert raises_msg(Function(): return time.sleep(1e18), "too large"), "sleep(1e18) throws (too large)"
+assert raises_msg(Function(): return time.sleep(1e9 + 1.0), "too large"), "sleep just over 1e9 throws"
+assert raises(Function(): return time.sleep("x")), "sleep non-number raises"
+# non-positive -> no-op, returns None, does NOT block
+assert time.sleep(0) == None, "sleep(0) is a no-op returning None"
+assert time.sleep(0.0) == None, "sleep(0.0) is a no-op"
+assert time.sleep(-1) == None, "sleep(-1) is a no-op (not an error)"
+assert time.sleep(-1e18) == None, "sleep(hugely negative) is a no-op (magnitude never scaled)"
+# a tiny positive sleep runs (kept < 0.02s to stay fast) and returns None
+assert time.sleep(0.005) == None, "a tiny positive sleep returns None"
+
+# ============================================================ clocks: non-decreasing across calls
+var mo0 = time.monotonic()
+var mo1 = time.monotonic()
+assert mo1 >= mo0, "monotonic() never goes backwards across two reads"
+var pc0 = time.perfcounterns()
+var pc1 = time.perfcounterns()
+assert pc1 >= pc0, "perfcounterns() never goes backwards across two reads"
+assert type(time.monotonic()) == "Float" and type(time.perfcounterns()) == "Integer", "clock return types"
+assert type(time.time()) == "Float" and type(time.timens()) == "Integer", "wall-clock return types"
+
+# ============================================================ iso / format for a FIXED constructed instant
+var dt = time.make(2023, 3, 9, 14, 5, 6)     # 2023-03-09 is a Thursday
+assert dt.iso() == "2023-03-09T14:05:06", "iso() of a fixed instant"
+assert dt.iso() == dt.isoformat(), "isoformat() aliases iso()"
+assert dt.format("%Y-%m-%d") == "2023-03-09", "format %Y-%m-%d"
+assert dt.format("%H:%M:%S") == "14:05:06", "format %H:%M:%S"
+assert dt.format("%Y/%m/%d %H:%M:%S") == "2023/03/09 14:05:06", "format with literal separators"
+assert dt.format("literal only") == "literal only", "format literal text passes through"
+assert dt.format("") == "", "format empty -> empty"
+# fields are Integer ATTRIBUTES (no parens)
+assert dt.year == 2023 and dt.month == 3 and dt.day == 9, "date field attributes"
+assert dt.hour == 14 and dt.minute == 5 and dt.second == 6, "time field attributes"
+assert dt.weekday == 4, "2023-03-09 is Thursday (weekday 4, Sunday=0)"
+assert dt.yearday == 68, "2023-03-09 is day 68 of 2023 (Jan31+Feb28+9)"
+assert type(dt.timestamp) == "Integer", "timestamp is an Integer attribute"
+assert time.make(1970, 1, 1).timestamp == 0 and time.make(2020, 1, 1).timestamp == 1577836800, "known epochs"
+
+# ============================================================ DateTime add/sub/diff: exact, pure, typed
+var base = time.make(2021, 6, 15, 12, 0, 0)
+var plus = base.add(3600)
+var minus = base.sub(3600)
+assert type(plus) == "DateTime" and type(minus) == "DateTime", "add/sub yield DateTime"
+assert plus.iso() == "2021-06-15T13:00:00", "add(3600) is +1h"
+assert minus.iso() == "2021-06-15T11:00:00", "sub(3600) is -1h"
+assert base.iso() == "2021-06-15T12:00:00", "add/sub are PURE: base is unchanged"
+assert base.add(-3600).iso() == minus.iso(), "add(-n) equals sub(n)"
+assert base.add(0) == base, "add(0) equals the original instant"
+# diff is self - other, an Integer, signed
+assert type(plus.diff(base)) == "Integer", "diff returns an Integer"
+assert plus.diff(base) == 3600 and base.diff(plus) == -3600, "diff is signed self-other"
+assert base.diff(base) == 0, "diff of equal instants is 0"
+# a Float delta truncates toward zero (via a range-checked cast), never rounds
+assert base.add(1.9).second == 1, "add(1.9) truncates to +1s (no rounding)"
+assert base.add(-1.9).second == 59 and base.add(-1.9).minute == 59, "add(-1.9) truncates toward zero"
+
+# ============================================================ value equality + hash-by-instant (Dict/Set keys)
+var x = time.make(2022, 2, 22, 22, 22, 22)
+var y = time.make(2022, 2, 22, 22, 22, 22)   # same instant, distinct object
+var z = time.make(2022, 2, 22, 22, 22, 23)   # 1s later
+assert x == y and not (x == z), "two DateTimes for the same instant are =="
+assert x.diff(y) == 0, "equal DateTimes have zero diff"
+var byday = {}
+byday[x] = "hit"
+assert byday[y] == "hit", "an equal-instant DateTime hits the same Dict slot (hash by epoch)"
+assert not (z in byday), "a 1s-later DateTime is a distinct Dict key"
+var setd = {x, y, z}
+assert len(setd) == 2, "a Set dedups equal-instant DateTimes (x==y, z distinct)"
+
+# ============================================================ strptime <-> format round-trip + strictness
+var src = time.make(2019, 11, 30, 23, 59, 58)
+var text = src.format("%Y-%m-%d %H:%M:%S")
+assert time.strptime(text, "%Y-%m-%d %H:%M:%S") == src, "format -> strptime round-trips to the same instant"
+assert time.strptime("2020", "%Y").iso() == "2020-01-01T00:00:00", "strptime partial year (defaults)"
+assert time.strptime("2020%07", "%Y%%%m").month == 7, "strptime literal %% directive"
+# strict: mismatch / out-of-range field / trailing junk / unsupported directive all throw
+assert raises_msg(Function(): return time.strptime("2024-13-01", "%Y-%m-%d"), "does not match"), "strptime month 13 is strict (throws)"
+assert raises_msg(Function(): return time.strptime("2024-02-30", "%Y-%m-%d"), "does not match"), "strptime Feb 30 throws (day-in-month checked)"
+assert raises_msg(Function(): return time.strptime("2024-01-01 25:00:00", "%Y-%m-%d %H:%M:%S"), "does not match"), "strptime hour 25 throws"
+assert raises_msg(Function(): return time.strptime("2024-01-01XYZ", "%Y-%m-%d"), "does not match"), "strptime trailing input throws"
+assert raises_msg(Function(): return time.strptime("2024-01-01", "%Y/%m/%d"), "does not match"), "strptime literal mismatch throws"
+assert raises_msg(Function(): return time.strptime("2024", "%Q"), "does not match"), "strptime unsupported directive throws"
+
+# ============================================================ make(): C-mktime normalization (out-of-range wraps, no throw)
+assert time.make(2020, 13, 1).iso() == "2021-01-01T00:00:00", "month 13 -> next January"
+assert time.make(2020, 0, 1).iso() == "2019-12-01T00:00:00", "month 0 -> previous December"
+assert time.make(2020, 1, 32).iso() == "2020-02-01T00:00:00", "day 32 -> next month's 1st"
+assert time.make(2020, 3, 0).iso() == "2020-02-29T00:00:00", "day 0 -> last day of previous month (2020 leap: Feb 29)"
+assert time.make(2020, 1, 1, 24).iso() == "2020-01-02T00:00:00", "hour 24 -> next day"
+assert time.make(2020, 1, 1, 0, 0, -1).iso() == "2019-12-31T23:59:59", "second -1 rolls back across the year"
+assert time.make(year = 2021, month = 6, day = 15).iso() == "2021-06-15T00:00:00", "make keyword args + H/M/S default 0"
+# but an epoch outside the representable [-9999,9999] year range still throws (constructor guard)
+assert raises_msg(Function(): return time.make(20000, 1, 1), "out of representable range"), "make year 20000 -> out of range"
+assert raises_msg(Function(): return time.make(3000000000, 1, 1), "date component out of range"), "make wildly huge component throws early"
+
+# ============================================================ datetime()/now() + hardening
+assert type(time.now()) == "DateTime" and type(time.datetime()) == "DateTime", "now()/datetime() -> DateTime"
+assert time.datetime(0).iso() == "1970-01-01T00:00:00", "datetime(0) is the epoch"
+assert time.datetime(1577836800).iso() == "2020-01-01T00:00:00", "datetime(int epoch) exact"
+assert raises_msg(Function(): return time.datetime(Float("nan")), "NaN"), "datetime(NaN) throws"
+assert raises_msg(Function(): return time.datetime(Float("inf")), "infinity"), "datetime(inf) throws"
+assert raises_msg(Function(): return time.datetime(253402300800), "out of representable range"), "datetime(year>9999 epoch) throws"
+# DateTime method-arg hardening
+assert raises_msg(Function(): return base.add("x"), "number of seconds"), "add(non-number) throws"
+assert raises_msg(Function(): return base.add(Float("nan")), "add/sub"), "add(NaN) throws"
+assert raises_msg(Function(): return base.diff(5), "expects a DateTime"), "diff(non-DateTime) throws"
+assert raises_msg(Function(): return base.format(5), "expects a String"), "format(non-String) throws"
+
+# ============================================================ serialization round-trip (serialize + dump)
+assert serialize.loads(serialize.dumps(base)) == base, "DateTime round-trips through serialize (text)"
+assert dump.loads(dump.dumps(base)) == base, "DateTime round-trips through dump (binary)"
+assert dump.loads(dump.dumps(base)).timestamp == base.timestamp, "dump preserves the exact epoch"
+
+# ============================================================ sys constants
+assert sys.platform in {"linux", "darwin", "windows"}, "platform is a known value"
+assert sys.arch in {"x64", "arm64", "x86", "unknown"}, "arch is a known value"
+assert type(sys.version) == "String" and len(sys.version.split(".")) >= 3, "version is a semver-shaped String"
+assert type(sys.traceback()) == "String", "traceback() returns a String"
+
+# ============================================================ sys.getenv / setenv / unsetenv / environ
+var K = "KIRITO_LABX_SYSTIME_UNIQUE_9Z2Q"
+sys.unsetenv(K)
+assert sys.getenv(K) == None, "getenv of an unset var -> None"
+assert sys.getenv(K, "fallback") == "fallback", "getenv unset -> default"
+assert sys.getenv(name = K, default = 7) == 7, "getenv keyword args + non-String default passes through"
+assert sys.setenv(K, "value1") == None, "setenv returns None"
+assert sys.getenv(K) == "value1", "getenv reads the value just set"
+sys.setenv(K, "value2")
+assert sys.getenv(K) == "value2", "setenv overwrites"
+assert K in sys.environ() and sys.environ()[K] == "value2", "environ() reflects a set var"
+assert sys.unsetenv(K) == None, "unsetenv returns None"
+assert sys.getenv(K) == None and not (K in sys.environ()), "after unsetenv the var is gone"
+# hardening: non-String name throws
+assert raises(Function(): return sys.getenv(5)), "getenv non-String name raises"
+assert raises(Function(): return sys.setenv(1, "v")), "setenv non-String name raises"
+
+# ============================================================ subprocess: exit codes (no throw on nonzero)
+assert sys.createprocess(["true"])["code"] == 0, "createprocess true -> code 0"
+var falseR = sys.createprocess(["false"])
+assert falseR["code"] == 1, "createprocess false -> code 1 (no throw)"
+assert type(falseR["code"]) == "Integer", "code is an Integer"
+assert "code" in falseR and "stdout" in falseR and "stderr" in falseR, "result Dict has code/stdout/stderr"
+# printf writes verbatim to stdout as a String by default
+assert sys.createprocess(["printf", "%s", "hello"])["stdout"] == "hello", "createprocess argv is verbatim (no shell)"
+assert sys.createprocess(["printf", "%s", "hello"])["stderr"] == "", "clean run has empty stderr"
+
+# ============================================================ subprocess: shell vs argv semantics
+# shell INTERPRETS the string (a pipe here); createprocess would treat '|' as a literal argument.
+assert sys.shell("printf 'abc' | wc -c")["stdout"].strip() == "3", "shell interprets a pipe"
+assert sys.shell("exit 7")["code"] == 7, "shell propagates the command's exit code"
+assert sys.shell("exit 300")["code"] == 44, "shell exit code wraps mod 256 (300 -> 44)"
+# a nonexistent program: createprocess RAISES (can't spawn) but shell returns code 127 (shell ran, cmd not found)
+assert raises(Function(): return sys.createprocess(["no_such_prog_labx_zzz"])), "createprocess of a missing program raises"
+assert sys.shell("no_such_prog_labx_zzz")["code"] == 127, "shell of a missing command returns 127 (no throw)"
+# result-type hardening
+assert raises_msg(Function(): return sys.createprocess("notalist"), "must be a List"), "createprocess non-List args throws"
+assert raises(Function(): return sys.createprocess([])), "createprocess empty args throws"
+assert raises(Function(): return sys.shell(5)), "shell non-String command throws"
+
+# ============================================================ subprocess: Bytes-in-verbatim + binary byte-exact (through `cat`)
+# `cat` is a foreign byte-transparent tool: whatever bytes go in on stdin come out on stdout. Feeding a
+# Bytes and reading with binary=True proves (a) the Bytes is fed VERBATIM (a high byte is NOT UTF-8
+# ballooned) and (b) stdout comes back byte-exact. 0xFF alone: a String would balloon to [0xC3,0xBF];
+# a Bytes stays one byte, so length 1 is the no-ballooning proof.
+var payload = Bytes([0, 1, 127, 128, 200, 255, 254, 195, 40, 10])
+var echoed = sys.createprocess(["cat"], input = payload, binary = True)["stdout"]
+assert type(echoed) == "Bytes", "binary=True returns Bytes"
+assert echoed == payload and len(echoed) == 10, "Bytes fed verbatim + byte-exact stdout through cat"
+assert sys.createprocess(["cat"], input = Bytes([255]), binary = True)["stdout"] == Bytes([255]), "a lone 0xFF stays one byte"
+assert len(sys.createprocess(["cat"], input = Bytes([255]), binary = True)["stdout"]) == 1, "...length 1 (no UTF-8 ballooning)"
+assert sys.createprocess(["cat"], input = Bytes([]), binary = True)["stdout"] == Bytes([]), "empty Bytes -> empty Bytes"
+# default (non-binary) output is a String even for a Bytes input; a String input is UTF-8 encoded
+assert type(sys.createprocess(["cat"], input = Bytes([65, 66]))["stdout"]) == "String", "default output is a String"
+assert sys.createprocess(["cat"], input = "hello-str")["stdout"] == "hello-str", "String input round-trips as a String"
+
+# ============================================================ subprocess: cwd + timeout
+# cwd changes the child's working directory (pwd prints it); a different cwd yields different output.
+var homeC = sys.shell("pwd")["stdout"].strip()
+var tmpC = sys.shell("pwd", cwd = "/")["stdout"].strip()
+assert tmpC == "/" and tmpC != homeC or homeC == "/", "cwd changes the child's working directory"
+# a positive timeout on a slow command kills it and throws (kept short: 0.3s over a 5s sleep)
+assert raises(Function(): return sys.createprocess(["sleep", "5"], timeout = 0.3)), "timeout kills a slow command and throws"
+assert raises(Function(): return sys.shell("sleep 5", timeout = 0.3)), "shell timeout kills + throws too"
+
+io.print("OK sys_time")

@@ -1,0 +1,254 @@
+# labx: deep verification of the zlib / gzip / hash stdlib modules (docs/pages/10-stdlib.md).
+# Goes BEYOND verify_compress / verify_hash / spec_gzip / deep_compress / probe_compress_fuzz:
+#  - format-level assertions the round-trip tests skip: the zlib header magic (0x78 0x9c) and the
+#    fact that zlib's Adler-32 trailer and gzip's CRC-32 + ISIZE trailers are exactly what the `hash`
+#    module computes (a cross-module link),
+#  - the gzip FLG optional-field skipping (hand-built FEXTRA/FNAME/FCOMMENT/FHCRC members),
+#  - the specific zlib-header rejection messages (bad method / window / header-check / preset dict),
+#  - many more known-answer digest/checksum vectors incl. crc64 and non-UTF-8 high bytes,
+#  - the String-in->String-out vs Bytes-in->Bytes-out RETURN-TYPE contract checked with type() for
+#    every function.
+# Deterministic; ends with the single sentinel line "OK compress_hash".
+var io = import("io")
+var zlib = import("zlib")
+var gzip = import("gzip")
+var hash = import("hash")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# little-/big-endian 4-byte readers over a Bytes value
+var u32le = Function(b, i) -> Integer:
+    return b[i] + b[i + 1] * 256 + b[i + 2] * 65536 + b[i + 3] * 16777216
+var u32be = Function(b, i) -> Integer:
+    return b[i] * 16777216 + b[i + 1] * 65536 + b[i + 2] * 256 + b[i + 3]
+
+# ============================================================ hash: known-answer digest vectors
+# md5 / sha1 / sha256 of "" , "abc" , the alphabet, and the NIST 448-bit two-block message.
+assert hash.md5("") == "d41d8cd98f00b204e9800998ecf8427e", "md5 empty"
+assert hash.md5("abc") == "900150983cd24fb0d6963f7d28e17f72", "md5 abc"
+assert hash.md5("abcdefghijklmnopqrstuvwxyz") == "c3fcd3d76192e4007dfb496cca67e13b", "md5 alphabet"
+assert hash.sha1("") == "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha1 empty"
+assert hash.sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d", "sha1 abc"
+var nist2 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+assert hash.sha1(nist2) == "84983e441c3bd26ebaae4aa1f95129e5e54670f1", "sha1 nist two-block"
+assert hash.sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 empty"
+assert hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc"
+assert hash.sha256(nist2) == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", "sha256 nist two-block"
+assert hash.sha256("The quick brown fox jumps over the lazy dog") == "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592", "sha256 quick fox"
+
+# ============================================================ hash: checksum known vectors
+assert hash.crc32("") == 0, "crc32 empty"
+assert hash.crc32("abc") == 891568578, "crc32 abc"
+assert hash.crc32("123456789") == 3421780262, "crc32 check value 0xCBF43926"
+assert hash.adler32("") == 1, "adler32 empty"
+assert hash.adler32("abc") == 38600999, "adler32 abc"
+assert hash.adler32("Wikipedia") == 300286872, "adler32 Wikipedia"
+assert hash.crc64("") == 0, "crc64 empty"
+assert hash.crc64("abc") == 3231342946509354535, "crc64/XZ abc"
+assert hash.crc64("123456789") == -7395533204333446662, "crc64/XZ check value (signed)"
+assert hash.crc64("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") == -6970327073967801269, "crc64/XZ nist two-block (signed, negative)"
+
+# ============================================================ hash: RETURN-TYPE contract via type()
+assert type(hash.md5("x")) == "String" and len(hash.md5("x")) == 32, "md5 -> 32-hex String"
+assert type(hash.sha1("x")) == "String" and len(hash.sha1("x")) == 40, "sha1 -> 40-hex String"
+assert type(hash.sha256("x")) == "String" and len(hash.sha256("x")) == 64, "sha256 -> 64-hex String"
+assert type(hash.crc32("x")) == "Integer", "crc32 -> Integer"
+assert type(hash.adler32("x")) == "Integer", "adler32 -> Integer"
+assert type(hash.crc64("x")) == "Integer", "crc64 -> Integer"
+# digests are lowercase hex, so equal to their own .lower()
+assert hash.sha256("abc") == hash.sha256("abc").lower(), "digest is lowercase hex"
+
+# ============================================================ hash: String OR Bytes, same digest
+assert hash.md5("abc") == hash.md5(Bytes("abc")), "md5 String == Bytes"
+assert hash.sha1("abc") == hash.sha1("abc".encode()), "sha1 String == encoded"
+assert hash.sha256("abc") == hash.sha256(Bytes("abc")), "sha256 String == Bytes"
+assert hash.crc32("abc") == hash.crc32(Bytes("abc")), "crc32 String == Bytes"
+assert hash.adler32("abc") == hash.adler32(Bytes("abc")), "adler32 String == Bytes"
+assert hash.crc64("abc") == hash.crc64(Bytes("abc")), "crc64 String == Bytes"
+
+# ============================================================ hash: non-UTF-8 high bytes are byte-exact
+# A Bytes holding byte 0xFF must hash to its TRUE binary digest, not a UTF-8-mangled one. (chr(255)
+# encoded as UTF-8 is TWO bytes 0xC3 0xBF -> a different digest, which is the whole point of Bytes.)
+assert hash.md5(Bytes([255])) == "00594fd4f42ba43fc1ca0427a0576295", "md5 of one 0xFF byte (true binary)"
+assert hash.sha256(Bytes([255])) == "a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89", "sha256 of one 0xFF byte (true binary)"
+# and the UTF-8 String chr(255) is genuinely a DIFFERENT (2-byte) input, so a different digest.
+assert hash.md5(chr(255)) != hash.md5(Bytes([255])), "String chr(255) (2 UTF-8 bytes) != raw byte 0xFF"
+assert hash.md5(chr(255)) == hash.md5(Bytes([195, 191])), "chr(255) is the UTF-8 pair 0xC3 0xBF"
+var bin = Bytes([0, 1, 2, 255, 254, 128, 0])
+assert hash.sha256(bin) == "f4d8c4eb78981771b703305d7c5b5b62e312789c73da153afb447d960670e615", "sha256 of arbitrary binary Bytes"
+assert hash.md5(bin) == "8f57173e0e5af665426f3e8a1d76fdb1", "md5 of arbitrary binary Bytes"
+assert hash.crc32(bin) == 1982635995, "crc32 of arbitrary binary Bytes"
+
+# ============================================================ hash.hash(value) — the Dict/Set key hasher
+assert hash.hash(42) == 42 and hash.hash(0) == 0 and hash.hash(-1) == -1, "hash(Integer) identity (signed)"
+assert type(hash.hash(42)) == "Integer", "hash(value) -> Integer"
+assert hash.hash("abc") == hash.hash(String("abc")), "hash(String) content-based & stable"
+assert hash.hash(Bytes("abc")) == hash.hash(Bytes("abc")), "hash(Bytes) stable"
+assert hash.hash(1.5) == hash.hash(1.5) and hash.hash(0.0) == hash.hash(0.0), "hash(Float) stable"
+assert hash.hash(True) == hash.hash(True) and hash.hash(None) == hash.hash(None), "hash Bool/None stable"
+# 0.0 == -0.0 (exact IEEE-754), so they must bucket identically to be usable as one Dict key.
+assert hash.hash(0.0) == hash.hash(-0.0), "hash(0.0) == hash(-0.0) (== agrees with hash)"
+# a user class whose _hash_ folds via hash.hash
+class Email:
+    var _init_ = Function(self, addr): self.addr = addr
+    var _hash_ = Function(self): return hash.hash(self.addr)
+assert hash.hash(Email("a@b")) == hash.hash("a@b"), "hash composes user _hash_"
+
+# ============================================================ hash: HARDENING
+assert raises_msg(Function(): return hash.hash([1, 2]), "unhashable type 'List'"), "hash(List) throws unhashable"
+assert raises_msg(Function(): return hash.hash({"a": 1}), "unhashable type 'Dict'"), "hash(Dict) throws unhashable"
+assert raises_msg(Function(): return hash.hash({1, 2}), "unhashable type 'Set'"), "hash(Set) throws unhashable"
+assert raises(Function(): return hash.md5(123)), "md5(Integer) rejected"
+assert raises(Function(): return hash.crc32([1])), "crc32(List) rejected"
+assert raises(Function(): return hash.sha256(None)), "sha256(None) rejected"
+assert raises(Function(): return hash.crc64(3.14)), "crc64(Float) rejected"
+
+# ============================================================ zlib: header magic + trailer cross-check
+# The zlib stream (RFC 1950) begins 0x78 0x9c (CM=deflate/32K window, default level) — NOT asserted by
+# any existing test (they only check gzip's 1f 8b).
+var payload = "cross-check the zlib framing bytes against the hash module"
+var zc = Bytes(zlib.compress(payload))
+assert zc[0] == 120 and zc[1] == 156, "zlib header magic 0x78 0x9c"
+# the last 4 bytes are the Adler-32 of the payload, big-endian — exactly hash.adler32(payload).
+var n = len(zc)
+assert u32be(zc, n - 4) == hash.adler32(payload), "zlib Adler-32 trailer == hash.adler32(data)"
+# raw deflate has NO header/trailer, so it does not start with the zlib magic.
+var dfl = Bytes(zlib.deflate(payload))
+assert not (dfl[0] == 120 and dfl[1] == 156), "raw deflate has no zlib header"
+
+# ============================================================ zlib: RETURN-TYPE contract
+assert type(zlib.compress("x")) == "String" and type(zlib.compress(Bytes([1]))) == "Bytes", "zlib.compress keeps type"
+assert type(zlib.decompress(zlib.compress("x"))) == "String", "zlib.decompress(String) -> String"
+assert type(zlib.decompress(zlib.compress(Bytes([1])))) == "Bytes", "zlib.decompress(Bytes) -> Bytes"
+assert type(zlib.deflate("x")) == "String" and type(zlib.inflate(zlib.deflate(Bytes([1])))) == "Bytes", "deflate/inflate keep type"
+
+# ============================================================ zlib: round-trips (empty / repetitive / binary)
+assert zlib.decompress(zlib.compress("")) == "", "zlib empty String round-trip"
+assert zlib.decompress(zlib.compress(Bytes())) == Bytes(), "zlib empty Bytes round-trip"
+assert zlib.inflate(zlib.deflate("")) == "", "raw deflate empty round-trip"
+var rep = "abc123" * 500
+assert zlib.decompress(zlib.compress(rep)) == rep and len(zlib.compress(rep)) < len(rep), "zlib repetitive shrinks + round-trips"
+var allb = []
+var bi = 0
+while bi < 256:
+    allb.append(bi)
+    bi = bi + 1
+var full = Bytes(allb) * 4
+assert zlib.decompress(zlib.compress(full)) == full, "zlib all-256-byte-values round-trip"
+assert zlib.inflate(zlib.deflate(full)) == full, "raw deflate all-256 round-trip"
+
+# ============================================================ zlib: HARDENING (specific header messages)
+# bad compression method (low nibble of byte 0 != 8): flip 0x78 -> 0x79
+var badcm = Bytes([121]) + zc[1:n]
+assert raises_msg(Function(): return zlib.decompress(badcm), "unsupported zlib compression method"), "zlib rejects bad CM"
+# invalid window size (high nibble of byte 0 > 7): 0x88 keeps CM=8 but CINFO=8
+var badwin = Bytes([136, 156]) + zc[2:n]
+assert raises_msg(Function(): return zlib.decompress(badwin), "invalid zlib window size"), "zlib rejects bad window"
+# header check failure: 0x78 0x9d is not a multiple of 31 (and FDICT is off)
+var badcheck = Bytes([120, 157]) + zc[2:n]
+assert raises_msg(Function(): return zlib.decompress(badcheck), "invalid zlib header check"), "zlib rejects bad FCHECK"
+# preset dictionary (FDICT = FLG bit 5) is unsupported -> a clear message before FCHECK
+assert raises_msg(Function(): return zlib.decompress(Bytes([120, 32, 0, 0, 0, 0])), "preset dictionary"), "zlib rejects preset dict"
+# generic garbage / truncation / too-short, all prefixed "zlib:"
+assert raises_msg(Function(): return zlib.decompress("not compressed at all really"), "zlib:"), "zlib garbage throws"
+assert raises_msg(Function(): return zlib.decompress(""), "zlib:"), "zlib empty-stream throws"
+assert raises_msg(Function(): return zlib.decompress(zc[0:n - 2]), "zlib:"), "zlib truncated throws"
+assert raises(Function(): return zlib.inflate(zlib.compress("abc"))), "raw inflate rejects a zlib stream"
+assert raises(Function(): return zlib.compress(42)), "zlib.compress rejects Integer"
+
+# ============================================================ gzip: header layout + trailer cross-check
+# The gzip container (RFC 1952): magic 1f 8b, CM=08, FLG=0, MTIME=0 (4 bytes), then body, then a
+# CRC-32 + ISIZE little-endian trailer. Cross-check the trailers against the hash module.
+var gdata = Bytes("gzip trailer cross-check payload with some length".encode())
+var gc = Bytes(gzip.compress(gdata))
+assert gc[0] == 31 and gc[1] == 139 and gc[2] == 8, "gzip magic 1f 8b + CM=deflate"
+assert gc[3] == 0, "gzip FLG = 0 (no optional fields)"
+assert gc[4] == 0 and gc[5] == 0 and gc[6] == 0 and gc[7] == 0, "gzip MTIME = 0"
+var gn = len(gc)
+assert u32le(gc, gn - 8) == hash.crc32(gdata), "gzip CRC-32 trailer (LE) == hash.crc32(data)"
+assert u32le(gc, gn - 4) == len(gdata), "gzip ISIZE trailer (LE) == uncompressed byte length"
+
+# a String input's ISIZE is the UTF-8 BYTE length, not the code-point count.
+var us = "café ☃ 日本"
+var guc = Bytes(gzip.compress(us))
+assert u32le(guc, len(guc) - 4) == len(us.encode()), "gzip ISIZE of a String == its UTF-8 byte length"
+assert gzip.decompress(gzip.compress(us)) == us, "gzip unicode String round-trip"
+
+# ============================================================ gzip: RETURN-TYPE contract + aliases
+assert type(gzip.compress("x")) == "String" and type(gzip.compress(Bytes([1]))) == "Bytes", "gzip.compress keeps type"
+assert type(gzip.decompress(gzip.compress(Bytes([1])))) == "Bytes", "gzip.decompress(Bytes) -> Bytes"
+assert type(gzip.gzip("x")) == "String" and type(gzip.gunzip(gzip.gzip(Bytes([1])))) == "Bytes", "gzip/gunzip aliases keep type"
+assert gzip.gzip("hi") == gzip.compress("hi") and gzip.gunzip(gzip.gzip("hi")) == "hi", "aliases == compress/decompress"
+
+# ============================================================ gzip: FLG optional-field skipping
+# Hand-build a gzip member that carries FEXTRA + FNAME + FCOMMENT + FHCRC (FLG bits 0x04|0x08|0x10|0x02
+# = 0x1e). The decoder must SKIP all of them and still return the body. No existing test exercises this.
+var mkgz_with_flags = Function(text):
+    var base = Bytes(gzip.compress(text))        # a clean single member: 10-byte header + body + 8 trailer
+    var body_and_trailer = base[10:len(base)]
+    var header = Bytes([31, 139, 8, 30, 0, 0, 0, 0, 0, 255])   # FLG = 0x1e
+    # optional fields, IN THE ORDER the decoder reads them: FEXTRA, FNAME, FCOMMENT, FHCRC
+    var fextra = Bytes([3, 0]) + Bytes([1, 2, 3])              # XLEN=3 (LE) + 3 subfield bytes
+    var fname = Bytes("orig.txt".encode()) + Bytes([0])       # NUL-terminated filename
+    var fcomment = Bytes("a comment".encode()) + Bytes([0])   # NUL-terminated comment
+    var fhcrc = Bytes([170, 187])                             # 2 header-CRC bytes (skipped, not verified)
+    return header + fextra + fname + fcomment + fhcrc + body_and_trailer
+var flagged = mkgz_with_flags("payload behind FEXTRA/FNAME/FCOMMENT/FHCRC")
+# flagged is a Bytes, so decompress yields Bytes (the type contract) -> decode to compare text.
+assert gzip.decompress(flagged).decode() == "payload behind FEXTRA/FNAME/FCOMMENT/FHCRC", "gzip skips FEXTRA/FNAME/FCOMMENT/FHCRC fields"
+assert type(gzip.decompress(flagged)) == "Bytes", "gzip flagged Bytes-in -> Bytes-out"
+
+# concatenated members (cat a.gz b.gz) all decode + join, including a flagged member in the mix.
+var a = gzip.compress("AAA")
+var b = gzip.compress("BBB")
+assert gzip.decompress(a + b) == "AAABBB", "gzip two concatenated members join"
+assert gzip.decompress(mkgz_with_flags("XX") + Bytes(gzip.compress("YY"))).decode() == "XXYY", "flagged member + plain member join"
+
+# ============================================================ gzip: round-trips (empty / binary)
+assert gzip.decompress(gzip.compress("")) == "", "gzip empty String round-trip"
+assert gzip.decompress(gzip.compress(Bytes())) == Bytes(), "gzip empty Bytes round-trip"
+assert len(gzip.compress(Bytes())) == 20, "gzip of empty is 20 bytes (10 header + 2 body + 8 trailer)"
+assert gzip.decompress(gzip.compress(full)) == full, "gzip all-256-byte-values round-trip"
+
+# ============================================================ gzip: HARDENING (corrupt / truncated)
+assert raises_msg(Function(): return gzip.decompress("not a gzip stream at all here"), "magic"), "gzip bad-magic message"
+assert raises_msg(Function(): return gzip.decompress("short"), "too short"), "gzip too-short message"
+# unsupported CM (byte 2 != 8)
+var badmethod = Bytes([31, 139, 9]) + gc[3:gn]
+assert raises_msg(Function(): return gzip.decompress(badmethod), "unsupported compression method"), "gzip rejects CM != deflate"
+# corrupt body -> CRC-32 mismatch
+var flip = List(gc)
+flip[15] = bitxor(flip[15], 255)
+assert raises_msg(Function(): return gzip.decompress(Bytes(flip)), "CRC-32"), "gzip CRC-32 mismatch detected"
+# corrupt ISIZE trailer (last 4 bytes) but leave CRC intact -> ISIZE mismatch
+var badisize = gc[0:gn - 4] + Bytes([255, 255, 255, 255])
+assert raises_msg(Function(): return gzip.decompress(badisize), "ISIZE"), "gzip ISIZE mismatch detected"
+# truncated stream
+assert raises_msg(Function(): return gzip.decompress(gc[0:gn - 1]), "truncated"), "gzip truncated stream throws"
+# trailing junk after a complete member -> rejected (not silently ignored)
+assert raises_msg(Function(): return gzip.decompress(gc + Bytes([0, 1, 2])), "trailing"), "gzip trailing junk after member rejected"
+assert raises(Function(): return gzip.compress(3.14)), "gzip.compress rejects Float"
+
+# ============================================================ cross-format: the two containers differ
+assert zlib.compress("payload") != gzip.compress("payload"), "zlib stream != gzip container"
+assert raises(Function(): return zlib.decompress(gzip.compress("payload"))), "zlib.decompress rejects a gzip stream"
+assert raises(Function(): return gzip.decompress(zlib.compress("payload"))), "gzip.decompress rejects a zlib stream"
+
+# full pipeline sanity: text -> gzip -> hash the packed bytes -> gunzip -> equal
+var text = "the pipeline payload " * 50
+var packed = gzip.compress(text)
+assert type(hash.sha256(packed)) == "String" and len(hash.sha256(packed)) == 64, "sha256 over gzip output"
+assert gzip.decompress(packed) == text, "gzip pipeline round-trips"
+
+io.print("OK compress_hash")

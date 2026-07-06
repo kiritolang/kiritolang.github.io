@@ -1,0 +1,173 @@
+# labx_linalg.ki — deep verification of the `matrix` and `complex` modules.
+# Goes beyond verify_/spec_/audit_: singular det/inverse, dimension-mismatch hardening,
+# analytic domain errors, unordered-complex guards, cross-type equality, unhashable Complex.
+var io = import("io")
+var m = import("matrix")
+var C = import("complex")
+var math = import("math")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# =============================================================== real matrices: positive path
+var A = m.Matrix([[1, 2], [3, 4]])
+var B = m.Matrix([[5, 6], [7, 8]])
+assert A.shape() == [2, 2], "shape"
+assert A[0, 1] == 2.0, "elem"
+assert A[0] == [1.0, 2.0], "row via index"
+assert A.row(1) == [3.0, 4.0], "row method"
+assert (A + B)[1, 1] == 12.0, "add"
+assert (B - A)[0, 0] == 4.0, "sub"
+assert (A * 2)[1, 1] == 8.0, "scalar mul"
+assert (A * B)[0, 0] == 19.0 and (A * B)[1, 0] == 43.0, "matmul"
+assert A.transpose()[0, 1] == 3.0, "transpose"
+assert A.determinant() == -2.0, "det"
+assert A.trace() == 5.0, "trace"
+assert A.sum() == 10.0, "sum"
+assert A.apply(Function(x): return x * x)[1, 1] == 16.0, "apply"
+
+# factories + non-negative-dim edges
+assert m.zeros(2, 3).shape() == [2, 3], "zeros shape"
+assert m.ones(2, 2)[1, 1] == 1.0, "ones"
+assert m.identity(3)[2, 2] == 1.0 and m.identity(3)[0, 2] == 0.0, "identity"
+assert m.Matrix(3, 4)[2, 3] == 0.0, "(rows,cols) ctor"
+assert m.identity(0).shape() == [0, 0], "0x0 identity edge"
+assert m.Matrix(0, 0).determinant() == 1.0, "det of empty matrix is 1 (convention)"
+
+# inverse correctness via compare (NOT exact float text); exact == catches roundoff -> False
+assert (A * A.inverse()).compare(m.identity(2), abs_tol = 1e-9), "A*inv ~= I"
+assert (A * A.inverse() == m.identity(2)) == False, "exact == is False (roundoff)"
+
+# ------- singular matrix: determinant reports 0.0, inverse THROWS "singular"
+var SING = m.Matrix([[1, 2], [2, 4]])
+assert SING.determinant() == 0.0, "singular det is 0.0"
+assert raises_msg(Function(): return SING.inverse(), "singular"), "singular inverse throws"
+
+# ------- real-matrix hardening: dimension / shape / index / operator errors
+assert raises_msg(Function(): return m.Matrix([[1, 2]]) + m.Matrix([[1], [2]]), "equal shape"), "add mismatch"
+assert raises_msg(Function(): return m.Matrix([[1, 2]]) * m.Matrix([[1, 2]]), "inner dimensions"), "matmul mismatch"
+assert raises_msg(Function(): return A[5, 0], "out of range"), "row index OOR"
+assert raises_msg(Function(): return A[0, 5], "out of range"), "col index OOR"
+assert raises_msg(Function(): return A[-1, 0], "out of range"), "negative index OOR"
+assert raises(Function(): return m.Matrix([[1, 2], [3]])), "ragged rows reject"
+assert raises_msg(Function(): return m.Matrix([[1, 2, 3]]).determinant(), "square"), "non-square det"
+assert raises_msg(Function(): return m.Matrix([[1, 2, 3]]).inverse(), "square"), "non-square inverse"
+assert raises_msg(Function(): return m.Matrix([[1, 2, 3]]).trace(), "square"), "non-square trace"
+assert raises(Function(): return -A), "unary neg unsupported"
+assert raises(Function(): return A / 2), "matrix / unsupported"
+assert raises(Function(): return A ** 2), "matrix ** unsupported"
+assert raises(Function(): return 2 * A), "scalar must be right operand"
+
+# =============================================================== vectors
+var u = m.vector([1, 2, 3])
+var v = m.vector([4, 5, 6])
+assert u.dot(v) == 32.0, "dot"
+assert u.cross(v)[0, 1] == 6.0, "cross"
+assert m.vector([3, 4]).norm() == 5.0, "norm"
+assert u.apply(Function(x): return x * 10)[0, 2] == 30.0, "vector apply"
+# vector hardening: mismatched dot, non-3 cross, dot on a non-vector
+assert raises_msg(Function(): return m.vector([1, 2]).dot(m.vector([1, 2, 3])), "equal length"), "dot len mismatch"
+assert raises_msg(Function(): return m.vector([1, 2]).cross(m.vector([1, 2])), "3-element"), "cross needs 3-vectors"
+assert raises_msg(Function(): return A.dot(A), "vectors"), "dot on non-vector"
+
+# =============================================================== complex numbers: positive path
+var z = C.of(3, 4)
+assert z.re == 3.0 and z.im == 4.0, "re/im"
+assert z.real == 3.0 and z.imag == 4.0, "real/imag aliases"
+assert z.modulus() == 5.0 and z.abs() == 5.0 and z.magnitude() == 5.0, "modulus aliases"
+assert z.norm2() == 25.0, "norm2"
+assert z.conjugate() == C.of(3, -4), "conjugate"
+assert C.Complex(7).im == 0.0, "Complex default im"
+assert C.real(5) == C.of(5, 0), "real ctor"
+assert C.zero == C.of(0, 0) and C.one == C.of(1, 0) and C.i == C.of(0, 1), "constants"
+assert (z * C.i).compare(C.of(-4, 3)), "z*i"
+assert C.sqrt(C.of(-1, 0)).compare(C.i), "sqrt(-1)==i"
+assert C.log(C.of(-1, 0)).compare(C.of(0, math.pi)), "log(-1)==i*pi (valid, no throw)"
+assert C.exp(C.of(0, math.pi)).compare(C.of(-1, 0), abs_tol = 1e-9), "euler"
+
+# valid-but-extreme analytic inputs must NOT throw (only true singularities do)
+assert raises(Function(): return C.asin(C.of(2, 0))) == False, "asin(2) is valid"
+assert raises(Function(): return C.acosh(C.of(0, 0))) == False, "acosh(0) is valid"
+
+# ------- cross-type real equality (both directions), and Complex is unhashable
+assert C.of(2, 0) == 2 and C.of(2, 0) == 2.0, "Complex(2,0)==real"
+assert 2 == C.of(2, 0), "real==Complex(2,0) (reverse also holds)"
+assert C.of(2, 1) != 2, "nonzero imag != real"
+assert raises_msg(Function(): return {C.i}, "unhashable"), "Complex unhashable in Set"
+
+# ------- is_zero tolerance (tiny-but-nonzero counts as zero below magnitude 1e-10)
+assert C.of(1e-12, 0).is_zero(), "1e-12 is_zero"
+assert C.zero.is_zero(), "zero is_zero"
+assert C.of(1e-9, 0).is_zero() == False, "1e-9 not is_zero"
+
+# ------- polar / argument round trips
+assert z.argument().compare(math.atan2(4.0, 3.0)), "argument"
+assert C.polar(z.modulus(), z.argument()).compare(z), "polar/arg round trip"
+assert C.polar(2.0, 0.0).compare(C.of(2, 0)), "polar theta=0"
+
+# ------- unordered: <, <=, >, >= all throw
+assert raises_msg(Function(): return C.i < C.one, "not ordered"), "< throws"
+assert raises_msg(Function(): return C.i > C.one, "not ordered"), "> throws"
+assert raises_msg(Function(): return C.i <= C.one, "not ordered"), "<= throws"
+assert raises_msg(Function(): return C.i >= C.one, "not ordered"), ">= throws"
+
+# ------- analytic domain errors THROW (every documented singularity)
+assert raises_msg(Function(): return C.log(C.zero), "domain error"), "log(0) throws"
+assert raises_msg(Function(): return C.log10(C.zero), "domain error"), "log10(0) throws"
+assert raises_msg(Function(): return C.atanh(C.one), "domain error"), "atanh(1) throws"
+assert raises_msg(Function(): return C.atanh(C.of(-1, 0)), "domain error"), "atanh(-1) throws"
+assert raises_msg(Function(): return C.atan(C.i), "domain error"), "atan(i) throws"
+assert raises_msg(Function(): return C.atan(C.of(0, -1)), "domain error"), "atan(-i) throws"
+assert raises_msg(Function(): return C.pow(C.zero, C.of(-1, 0)), "negative or complex power"), "pow(0,-1) throws"
+assert raises_msg(Function(): return C.pow(C.zero, C.i), "negative or complex power"), "pow(0,i) throws"
+assert raises_msg(Function(): return C.zero ** C.of(-1, 0), "negative or complex power"), "0**-1 operator throws"
+assert C.pow(C.zero, C.zero).compare(C.one), "0**0 == 1 (not a domain error)"
+assert raises_msg(Function(): return C.i / C.zero, "division by zero"), "complex /0 throws"
+assert raises(Function(): return 2 + C.i), "number-left arithmetic unsupported"
+
+# =============================================================== complex matrices
+var M = C.Matrix([[C.of(1, 1), C.of(2, 0)], [C.of(0, 1), C.of(1, -1)]])
+assert M.determinant().compare(C.of(2, -2)), "cm determinant (Gaussian)"
+assert (M * M.inverse()).compare(C.identity(2), abs_tol = 1e-9), "cm inverse"
+assert M[0, 1] == C.of(2, 0), "cm element"
+assert M.trace().compare(C.of(2, 0)), "cm trace"
+assert C.identity(2)[0, 0] == C.one, "cm identity"
+assert C.ones(2, 2)[1, 1] == C.one, "cm ones"
+assert C.zeros(2, 2)[0, 0] == C.zero, "cm zeros"
+
+# hermitian is the CONJUGATE transpose; transpose leaves signs alone
+var H = C.Matrix([[C.of(1, 2), C.of(3, 4)]])
+assert H.transpose()[0, 0] == C.of(1, 2) and H.transpose()[1, 0] == C.of(3, 4), "cm transpose"
+assert H.hermitian()[0, 0] == C.of(1, -2) and H.hermitian()[1, 0] == C.of(3, -4), "cm hermitian conjugates"
+assert H.conjugatetranspose()[0, 0] == C.of(1, -2), "conjugatetranspose alias"
+assert M.conjugate()[0, 0] == C.of(1, -1), "cm conjugate"
+assert M.apply(Function(w): return C.conjugate(w))[0, 0] == C.of(1, -1), "cm apply"
+
+# complex vectors: dot is the Hermitian inner product -> real, >= 0
+var w = C.vector([C.of(1, 1), C.of(2, 0)])
+assert w.dot(w).compare(C.of(6, 0)), "hermitian dot |1+i|^2+|2|^2 = 6"
+assert w.norm().compare(math.sqrt(6.0)), "complex vector norm sqrt(6)"
+
+# complex-matrix hardening
+assert raises_msg(Function(): return C.Matrix([[C.of(1, 1), C.of(2, 0)]]).determinant(), "square"), "cm non-square det"
+assert raises_msg(Function(): return C.Matrix([[C.of(1, 1), C.of(2, 0)]]).inverse(), "square"), "cm non-square inverse"
+assert raises_msg(Function(): return C.Matrix([[C.of(1, 1), C.of(2, 0)]]).trace(), "square"), "cm non-square trace"
+assert raises_msg(Function(): return C.Matrix([[C.of(1, 0)]]) + C.identity(2), "equal shape"), "cm add mismatch"
+assert raises_msg(Function(): return C.Matrix([[C.of(1, 0), C.of(2, 0)]]) * C.Matrix([[C.of(1, 0), C.of(2, 0)]]), "inner dimensions"), "cm matmul mismatch"
+assert raises_msg(Function(): return C.identity(2)[5, 0], "out of range"), "cm index OOR"
+assert raises_msg(Function(): return C.vector([C.of(1, 0)]).cross(C.vector([C.of(1, 0)])), "3-element"), "cm cross needs 3-vectors"
+# singular complex matrix inverse throws
+assert raises(Function(): return C.Matrix([[C.of(1, 0), C.of(2, 0)], [C.of(2, 0), C.of(4, 0)]]).inverse()), "cm singular inverse throws"
+assert C.Matrix([[C.of(1, 0), C.of(2, 0)], [C.of(2, 0), C.of(4, 0)]]).determinant().compare(C.zero, abs_tol = 1e-12), "cm singular det ~0"
+
+io.print("OK linalg")

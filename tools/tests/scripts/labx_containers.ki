@@ -1,0 +1,287 @@
+# labx_containers.ki — deep edge/hardening coverage for List / Set / Dict (docs/pages/09-types.md).
+# Goes beyond verify_collections.ki / spec_collections.ki / r4_collections.ki / spec_iter_mutation.ki:
+# clamping/negative/out-of-range indices, empty-container errors, unhashable keys/elements, sort
+# with a throwing key / reverse / stability, the repetition guard, cross-type key identity
+# (Integer/Float/Bool), set-operator vs set-method operand rules, and NaN "write-only" keys.
+var io = import("io")
+var math = import("math")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ LIST — indexing / slicing / ordering
+var xs = [10, 20, 30, 40, 50]
+assert xs[0] == 10 and xs[-1] == 50 and xs[-5] == 10, "index + negative index"
+assert xs[1:3] == [20, 30], "slice"
+assert xs[::-1] == [50, 40, 30, 20, 10], "reversed slice"
+assert xs[::2] == [10, 30, 50], "step slice"
+assert xs[10:20] == [], "out-of-range slice is empty, not an error"
+assert raises(Function(): return [1, 2, 3][5]), "scalar index out of range raises"
+assert raises(Function(): return [1, 2, 3][-4]), "negative index out of range raises"
+
+# lexicographic ordering: element-by-element, then by length
+assert [1, 2] < [1, 2, 3], "prefix is less"
+assert [1, 3] > [1, 2], "element compare wins over length"
+assert [1, 2, 3] >= [1, 2, 3] and [1, 2] <= [1, 2], "non-strict on equal"
+assert not ([1, 2, 3] < [1, 2]), "longer-but-greater-prefix is not less"
+assert raises_msg(Function(): return [1] < "x", "cannot order"), "ordering List vs non-List raises"
+
+# `in`, `+`, `*`
+assert 30 in xs and 99 not in xs, "membership"
+assert [1, 2] + [3, 4] == [1, 2, 3, 4], "concat"
+assert [1, 2] * 3 == [1, 2, 1, 2, 1, 2], "repeat"
+assert [1, 2] * 0 == [] and [1, 2] * -5 == [], "zero / negative repeat is empty"
+assert raises_msg(Function(): return [1, 2] + 3, "concatenate"), "list + non-list raises"
+assert raises_msg(Function(): return [1] * [2], "repeat List by an Integer"), "list * non-int raises"
+assert raises_msg(Function(): return [1, 2, 3] * 999999999, "too large"), "repetition guard fires"
+
+# ============================================================ LIST — mutators & their error paths
+var ap = [1]
+ap.append(2)
+assert ap == [1, 2], "append"
+
+# insert CLAMPS out-of-range indices (Python-like) rather than throwing
+var ins = [1, 2, 3]
+ins.insert(100, 99)
+assert ins == [1, 2, 3, 99], "insert past the end clamps to the end"
+ins.insert(-100, 0)
+assert ins == [0, 1, 2, 3, 99], "insert before the front clamps to 0"
+ins.insert(-1, 88)
+assert ins == [0, 1, 2, 3, 88, 99], "insert at -1 goes before the last element"
+assert raises_msg(Function(): return [1].insert("x", 9), "Integer"), "insert non-Integer index raises"
+
+# pop: default last, indexed, negative; empty & bad index raise
+var pp = [1, 2, 3]
+assert pp.pop() == 3 and pp == [1, 2], "pop() removes+returns last"
+assert pp.pop(0) == 1 and pp == [2], "pop(i)"
+assert [1, 2, 3].pop(-1) == 3, "pop(-1) is the last"
+assert raises_msg(Function(): return [].pop(), "empty List"), "pop from empty raises"
+assert raises_msg(Function(): return [1, 2].pop(9), "out of range"), "pop bad index raises"
+assert raises_msg(Function(): return [1, 2].pop("x"), "Integer"), "pop non-Integer index raises"
+
+# remove: first equal; absent raises. index: first equal (windowed); absent raises. count: 0 if absent.
+var rm = [1, 2, 2, 3]
+rm.remove(2)
+assert rm == [1, 2, 3], "remove first equal"
+assert raises_msg(Function(): return [1, 2].remove(9), "not in List"), "remove absent raises"
+assert [5, 6, 5, 6].index(6) == 1, "index first"
+assert [5, 6, 5, 6].index(6, 2) == 3, "index with a start window"
+assert raises_msg(Function(): return [1, 2].index(9), "not in List"), "index absent raises"
+assert [1, 2, 2, 2].count(2) == 3 and [1, 2].count(9) == 0, "count present / absent(0)"
+
+# reverse / extend / clear / copy
+var rv = [1, 2, 3]
+rv.reverse()
+assert rv == [3, 2, 1], "reverse in place"
+var ex = [1]
+ex.extend([2, 3])
+ex.extend("ab")            # any iterable
+assert ex == [1, 2, 3, "a", "b"], "extend an iterable (List, then String chars)"
+assert raises(Function(): return [1].extend(5)), "extend a non-iterable raises"
+
+# copy is SHALLOW: element handles are shared, so a nested mutation shows through
+var innerL = [1]
+var cp = [innerL, 2].copy()
+innerL.append(9)
+assert cp == [[1, 9], 2], "copy is shallow — shared nested element mutates through"
+var cl = [1, 2, 3]
+cl.clear()
+assert cl == [] and len(cl) == 0, "clear empties"
+
+# ============================================================ LIST — sort: stability, reverse, key
+var so = [3, 1, 2, 1]
+so.sort()
+assert so == [1, 1, 2, 3], "sort ascending in place"
+var sr = [3, 1, 2]
+sr.sort(reverse = True)
+assert sr == [3, 2, 1], "sort reverse"
+# stability: equal keys keep their original relative order
+var pairs = [[1, "a"], [1, "b"], [0, "c"], [1, "d"]]
+pairs.sort(key = Function(p): return p[0])
+assert pairs == [[0, "c"], [1, "a"], [1, "b"], [1, "d"]], "stable sort preserves input order of equal keys"
+# a throwing key aborts the sort and leaves the list UNCHANGED (result written back only after all
+# user code runs)
+var st = [1, 2, 3]
+assert raises(Function(): return st.sort(key = Function(x): return x + "!")), "throwing key raises"
+assert st == [1, 2, 3], "list is unchanged after a sort whose key threw"
+# multi-key sort via a list-returning key (lexicographic list ordering)
+var mk = [[2, 1], [1, 2], [1, 1], [2, 0]]
+mk.sort(key = Function(p): return p)
+assert mk == [[1, 1], [1, 2], [2, 0], [2, 1]], "multi-key sort via list-returning key"
+
+# apply: a new List, original untouched
+var base = [1, 2, 3]
+assert base.apply(Function(x): return x * x) == [1, 4, 9], "apply maps into a new List"
+assert base == [1, 2, 3], "apply does not mutate the source"
+
+# ============================================================ DICT — get/set/indexing & errors
+var d = {"a": 1, "b": 2}
+d["c"] = 3
+assert d["a"] == 1 and len(d) == 3, "index get + set + len"
+assert raises_msg(Function(): return {"a": 1}["z"], "key not found"), "missing-key index raises"
+assert d.get("z") == None, "get missing without default -> None"
+assert d.get("z", -1) == -1 and d.get("a", -1) == 1, "get with default"
+
+# keys/values/items are Lists
+assert type(d.keys()) == "List" and type(d.values()) == "List" and type(d.items()) == "List", "views are Lists"
+assert len(d.items()) == 3, "items count"
+# reconstruct via items (order-independent)
+var rebuilt = {}
+for pair in d.items():
+    rebuilt[pair[0]] = pair[1]
+assert rebuilt == d, "items round-trips the whole dict"
+
+# pop / remove: missing raises unless a default is given; remove returns None
+var dp = {"a": 1, "b": 2}
+assert dp.pop("a") == 1 and "a" not in dp, "pop removes+returns"
+assert dp.pop("zzz", -7) == -7, "pop missing with default"
+assert raises_msg(Function(): return {"a": 1}.pop("z"), "key not found"), "pop missing no default raises"
+assert {"a": 1}.remove("a") == None, "remove returns None"
+assert raises_msg(Function(): return {"a": 1}.remove("z"), "key not found"), "remove missing raises"
+
+# setdefault: returns existing OR inserts+returns the default
+var sd = {"x": 1}
+assert sd.setdefault("x", 99) == 1, "setdefault existing returns existing value (no overwrite)"
+assert sd.setdefault("y", 5) == 5 and sd["y"] == 5, "setdefault missing inserts + returns default"
+assert sd.setdefault("z") == None and "z" in sd, "setdefault with no default inserts None"
+
+# update: merge a Dict OR an iterable of [k, v] pairs; a mis-sized pair raises
+var up = {"a": 1}
+up.update({"b": 2})
+up.update([["c", 3], ["a", 10]])
+assert up == {"a": 10, "b": 2, "c": 3}, "update merges (later entries override)"
+assert raises_msg(Function(): return {}.update([[1, 2, 3]]), "exactly 2 elements"), "bad pair in update raises"
+
+# popitem: removes an existing entry, shrinks the dict; empty raises. (Order is unspecified per the
+# docs — assert only that a valid pair comes back and the size drops, not WHICH pair.)
+var pi = {"a": 1, "b": 2}
+var got = pi.popitem()
+assert len(got) == 2 and got[0] in {"a", "b"} and len(pi) == 1, "popitem returns a valid [k,v], size shrinks"
+assert raises_msg(Function(): return {}.popitem(), "empty"), "popitem on empty raises"
+
+# apply: same keys, fn over values; shallow copy shares nested handles
+assert {"a": 1, "b": 2}.apply(Function(v): return v + 10) == {"a": 11, "b": 12}, "apply over values"
+var dinner = [1]
+var dcopy = {"k": dinner}.copy()
+dinner.append(2)
+assert dcopy == {"k": [1, 2]}, "dict copy is shallow"
+var dclr = {"a": 1}
+dclr.clear()
+assert len(dclr) == 0, "clear empties the dict"
+
+# ============================================================ SET — algebra (methods & operators)
+var A = {1, 2, 3}
+var B = {3, 4}
+assert A.union(B) == {1, 2, 3, 4}, "union"
+assert A.intersection(B) == {3}, "intersection"
+assert A.difference(B) == {1, 2}, "difference"
+assert A.symmetricdifference(B) == {1, 2, 4}, "symmetric difference"
+assert {1, 2}.issubset({1, 2, 3}) and not {1, 2, 3}.issubset({1, 2}), "issubset"
+assert {1, 2, 3}.issuperset({1, 2}), "issuperset"
+assert {1, 2}.isdisjoint({3, 4}) and not {1, 2}.isdisjoint({2, 3}), "isdisjoint"
+
+# the METHODS accept any iterable (List / Dict-keys / String-chars); the OPERATORS require a Set RHS
+assert {1, 2}.union([2, 3]) == {1, 2, 3}, "union accepts a List"
+assert {1, 2}.intersection({2: 0, 9: 0}) == {2}, "intersection accepts a Dict (its keys)"
+assert {"a", "b"}.union("bc") == {"a", "b", "c"}, "union accepts a String (its chars)"
+assert {1, 2, 3, 4}.symmetricdifference([2, 3, 5]) == {1, 4, 5}, "symmetricdifference accepts a List"
+# operator forms: `-` difference, `<`/`<=`/`>`/`>=` proper-/sub-/superset
+assert ({1, 2, 3} - {2}) == {1, 3}, "operator - is difference"
+assert ({1, 2} < {1, 2, 3}) and not ({1, 2} < {1, 2}), "< is PROPER subset"
+assert ({1, 2} <= {1, 2}) and ({1, 2, 3} >= {1, 2}) and ({1, 2, 3} > {1, 2}), "<= >= > subset/superset"
+# operators reject a non-Set RHS (methods would have accepted the List)
+assert raises_msg(Function(): return {1, 2} - [1], "does not support"), "operator - with a List raises"
+assert raises_msg(Function(): return {1} < [1], "does not support"), "operator < with a List raises"
+assert raises_msg(Function(): return {1} >= [1], "does not support"), "operator >= with a List raises"
+# set equality is by membership, independent of insertion order
+assert {1, 2, 3} == {3, 2, 1} and {1, 2} != {1, 2, 3}, "set equality by membership"
+
+# ============================================================ SET — mutators & error paths
+var s = {1, 2}
+s.add(2)                    # duplicate: no-op
+s.add(3)
+assert s == {1, 2, 3}, "add (dedup)"
+assert s.contains(2) and (2 in s) and not (9 in s), "contains / in"
+s.discard(9)                # absent: silent
+s.discard(2)
+assert s == {1, 3}, "discard present removes, absent is silent"
+assert raises_msg(Function(): return {1, 2}.remove(9), "not in Set"), "remove absent raises"
+assert raises_msg(Function(): return {1}.remove([1]), "unhashable"), "remove an unhashable raises unhashable"
+# pop returns an existing element and shrinks; empty raises
+var sp = {7, 8}
+var pv = sp.pop()
+assert pv in {7, 8} and len(sp) == 1, "pop returns a member, size drops"
+assert raises_msg(Function(): return Set().pop(), "empty Set"), "pop from empty set raises"
+# copy is shallow, clear empties
+var sinner = [1]
+var scopy = {1, 2}.copy()
+scopy.add(3)
+assert scopy == {1, 2, 3} and len(sinner) == 1, "set copy is independent of the original"
+var sclr = {1, 2}
+sclr.clear()
+assert len(sclr) == 0, "clear empties the set"
+# apply builds a new Set; colliding results collapse
+assert {1, 2, 3}.apply(Function(x): return x * x) == {1, 4, 9}, "set apply"
+assert len({1, 2, 3}.apply(Function(x): return 0)) == 1, "colliding apply results collapse to one"
+
+# ============================================================ HASHABILITY & KEY IDENTITY
+# an unhashable value (a List) can be neither a Set element nor a Dict key
+assert raises_msg(Function(): return {[1]}, "unhashable type 'List'"), "List as a Set element raises"
+var badKey = Function():
+    var dd = {}
+    dd[[1]] = 5
+    return dd
+assert raises_msg(badKey, "unhashable type 'List'"), "List as a Dict key raises"
+assert raises_msg(Function(): return {1}.union([{1: 2}]), "unhashable type 'Dict'"), "Dict as a Set element raises"
+# `[] in dict` RAISES (membership hashes the key) but `[] in set` is False (unhashable can't be present)
+assert ([] in {1, 2, 3}) == False, "[] in Set is False (never present), not an error"
+assert raises_msg(Function(): return [] in {"a": 1}, "unhashable type 'List'"), "[] in Dict raises"
+
+# cross-type key identity: Integer 1 and Float 1.0 are the SAME key (1.0 == 1, shared hash);
+# Bool True is a DISTINCT key (strong typing: True != 1)
+assert {1: "a"}.get(1.0, "MISS") == "a", "Float 1.0 finds Integer key 1"
+assert len({1, 1.0}) == 1, "1 and 1.0 collapse to one Set element"
+assert len({1, 1.0, True}) == 2, "True is distinct from 1 / 1.0"
+assert {True: "t"}.get(1, "MISS") == "MISS", "True and 1 are different Dict keys"
+var mixKey = {}
+mixKey[1] = "int"
+mixKey[1.0] = "float"       # overwrites the same slot
+assert mixKey == {1: "float"} and len(mixKey) == 1, "assigning 1.0 overwrites key 1"
+
+# NaN is a WRITE-ONLY key: insertable (NaN != NaN so it never collides) but never findable
+var nanD = {}
+nanD[math.nan] = 99
+assert len(nanD) == 1 and (math.nan in nanD) == False, "NaN key is insertable but not findable"
+assert len({math.nan, math.nan}) == 2, "two NaNs are two distinct Set elements"
+
+# ============================================================ len / iteration / snapshot semantics
+assert len([]) == 0 and len({}) == 0 and len(Set()) == 0, "empty len"
+assert len([1, 2, 3]) == 3 and len({1: 0, 2: 0}) == 2 and len({1, 2, 3}) == 3, "len"
+# iteration yields elements (List) / keys (Dict) / members (Set)
+var acc = 0
+for v in [1, 2, 3]:
+    acc = acc + v
+assert acc == 6, "list iteration"
+var ksum = ""
+for k in {"a": 1}:
+    ksum = ksum + k
+assert ksum == "a", "dict iterates over keys"
+# mutation during iteration is SAFE (snapshot at loop start) — it does NOT raise "changed size"
+var grow = [1, 2, 3]
+var visited = []
+for e in grow:
+    visited.append(e)
+    grow.append(99)         # snapshot fixed; no error, appended item not visited
+assert visited == [1, 2, 3] and grow == [1, 2, 3, 99, 99, 99], "iteration snapshots — mutation is safe, not an error"
+
+io.print("OK containers")

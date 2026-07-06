@@ -1,0 +1,293 @@
+# labx_tensor.ki — deep edge/hardening pass over the `tensor` module.
+# Goes BEYOND verify_tensor / spec_tensor / audit_tensor: shape-mismatch errors, broadcasting
+# corners, div/floordiv/mod-by-zero (scalar AND tensor-with-zero), element-wise math domain errors,
+# item()/reshape/backward failure modes, det/inv/solve on non-square/singular, argmin/argmax NaN
+# handling, whole-tensor == bit-exactness (NaN-never-equal) vs .compare tolerance, autograd edges,
+# and functional-update purity. All real checking via assert; one sentinel line of output.
+var io = import("io")
+var math = import("math")
+var T = import("tensor")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ================================================================= 1. construction & factories
+assert T.Tensor([[1, 2, 3], [4, 5, 6]]).shape() == [2, 3], "shape"
+assert T.Tensor([[1, 2, 3], [4, 5, 6]]).ndim() == 2, "ndim"
+assert T.Tensor([[1, 2, 3], [4, 5, 6]]).size() == 6, "size"
+assert T.Tensor([1, 2, 3]).dtype() == "Float", "default dtype"
+# rank-0 scalar tensor
+assert T.Tensor(5.0).shape() == [], "rank-0 shape"
+assert T.Tensor(5.0).ndim() == 0, "rank-0 ndim"
+assert T.Tensor(5.0).size() == 1, "rank-0 size"
+assert T.Tensor(5.0).item() == 5.0, "rank-0 item"
+# factories
+assert T.zeros([2, 2]) == T.Tensor([[0.0, 0.0], [0.0, 0.0]]), "zeros"
+assert T.ones([3]) == T.Tensor([1.0, 1.0, 1.0]), "ones"
+assert T.full([2], 9) == T.Tensor([9.0, 9.0]), "full"
+assert T.eye(3) == T.Tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), "eye"
+assert T.arange(0, 6, 2) == T.Tensor([0.0, 2.0, 4.0]), "arange step"
+assert T.arange(3) == T.Tensor([0.0, 1.0, 2.0]), "arange(stop)"
+assert T.linspace(0, 1, 5) == T.Tensor([0.0, 0.25, 0.5, 0.75, 1.0]), "linspace"
+# diag both directions
+assert T.diag(T.Tensor([1, 2, 3])) == T.Tensor([[1, 0, 0], [0, 2, 0], [0, 0, 3]]), "diag vec->mat"
+assert T.diag(T.Tensor([[1, 2], [3, 4]])) == T.Tensor([1.0, 4.0]), "diag mat->vec"
+assert T.zeroslike(T.Tensor([[1, 2], [3, 4]])) == T.zeros([2, 2]), "zeroslike"
+# construction hardening
+assert raises(Function(): return T.Tensor([[1, 2], [3]])), "ragged nested list rejected"
+assert raises(Function(): return T.zeros([-1])), "negative shape rejected"
+assert raises_msg(Function(): return T.arange(0, 10, 0), "step"), "arange zero step rejected"
+assert raises(Function(): return T.eye(-1)), "eye negative rejected"
+
+# ================================================================= 2. indexing / slicing
+var cube = T.Tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
+assert cube[1, 0, 1] == 6.0, "full index"
+assert cube[0] == T.Tensor([[1.0, 2.0], [3.0, 4.0]]), "partial index -> sub-tensor"
+assert cube[-1] == T.Tensor([[5.0, 6.0], [7.0, 8.0]]), "negative partial index"
+assert cube[-1, -1, -1] == 8.0, "all-negative full index"
+var v = T.Tensor([10, 20, 30, 40, 50])
+assert v[1:4] == T.Tensor([20.0, 30.0, 40.0]), "slice a:b"
+assert v[:2] == T.Tensor([10.0, 20.0]), "slice :b"
+assert v[-2:] == T.Tensor([40.0, 50.0]), "slice -a:"
+assert v[::2] == T.Tensor([10.0, 30.0, 50.0]), "slice step"
+assert v[::-1] == T.Tensor([50.0, 40.0, 30.0, 20.0, 10.0]), "slice reverse"
+# fancy index (incl negative) + boolean mask
+var a = T.Tensor([[1, 2, 3], [4, 5, 6]])
+assert a[[1, 0]] == T.Tensor([[4.0, 5.0, 6.0], [1.0, 2.0, 3.0]]), "fancy index"
+assert a[[-1]] == T.Tensor([[4.0, 5.0, 6.0]]), "fancy index negative"
+assert a[a.gt(3)] == T.Tensor([4.0, 5.0, 6.0]), "boolean mask"
+# indexing hardening
+assert raises_msg(Function(): return cube[9, 0, 0], "out of range"), "index OOB raises"
+assert raises_msg(Function(): return T.Tensor(1.0)[0:1], "0-D"), "slice 0-D raises"
+assert raises_msg(Function(): return a[a.gt(3).reshape([3, 2])], "mask"), "mask wrong shape raises"
+assert raises(Function(): return a[[9]]), "fancy index OOB raises"
+
+# ================================================================= 3. element-wise & broadcasting
+var m = T.Tensor([[1, 2, 3], [4, 5, 6]])
+assert m + m == T.Tensor([[2, 4, 6], [8, 10, 12]]), "add"
+assert m * m == T.Tensor([[1, 4, 9], [16, 25, 36]]), "hadamard mul (not matmul)"
+assert m * 2 == T.Tensor([[2, 4, 6], [8, 10, 12]]), "scalar mul"
+assert -m == T.Tensor([[-1, -2, -3], [-4, -5, -6]]), "negate"
+assert T.Tensor([2, 3, 4]) ** 2 == T.Tensor([4.0, 9.0, 16.0]), "pow op"
+# broadcasting: row over rows, col over cols
+assert m + T.Tensor([[10, 20, 30]]) == T.Tensor([[11, 22, 33], [14, 25, 36]]), "broadcast [1,3]"
+assert m + T.Tensor([[100], [200]]) == T.Tensor([[101, 102, 103], [204, 205, 206]]), "broadcast [2,1]"
+# rank-0 scalar tensor broadcasts against everything
+assert T.Tensor([1.0, 2.0]) + T.Tensor(10.0) == T.Tensor([11.0, 12.0]), "rank-0 broadcast"
+# mixed Float/Complex promotes to Complex
+assert (T.Tensor([1, 2]) + T.Tensor([1, 1], dtype = "Complex")).dtype() == "Complex", "promote"
+# purity: arithmetic never mutates its operands; only element-assign does
+var p = T.Tensor([1.0, 2.0, 3.0])
+discard p + p
+discard p * 5
+discard -p
+assert p == T.Tensor([1.0, 2.0, 3.0]), "arithmetic leaves operand unchanged"
+p[0] = 99.0
+assert p == T.Tensor([99.0, 2.0, 3.0]), "element assign is the one in-place op"
+# broadcasting hardening
+assert raises_msg(Function(): return T.eye(2) + T.eye(3), "broadcastable"), "non-broadcastable raises"
+assert raises_msg(Function(): return T.Tensor([1, 2, 3]) + T.Tensor([1, 2]), "broadcastable"), "len mismatch raises"
+
+# ================================================================= 4. divide / mod / floordiv by zero
+assert T.Tensor([6.0, 9.0]) / 3 == T.Tensor([2.0, 3.0]), "scalar div ok"
+assert T.Tensor([5, 7, 9]) % 3 == T.Tensor([2.0, 1.0, 0.0]), "mod ok"
+assert T.Tensor([5, 7, 9]) // 3 == T.Tensor([1.0, 2.0, 3.0]), "floordiv ok"
+# by a zero SCALAR
+assert raises_msg(Function(): return T.Tensor([1.0, 2.0]) / 0, "division by zero"), "/ zero scalar raises"
+assert raises_msg(Function(): return T.Tensor([1.0, 2.0]) % 0, "modulo by zero"), "% zero scalar raises"
+assert raises_msg(Function(): return T.Tensor([1.0, 2.0]) // 0, "floor-division by zero"), "// zero scalar raises"
+# by a TENSOR that contains a zero element
+assert raises_msg(Function(): return T.Tensor([1.0, 2.0]) / T.Tensor([1.0, 0.0]), "division by zero"), "/ zero-in-tensor raises"
+assert raises_msg(Function(): return T.Tensor([1.0, 2.0]) % T.Tensor([2.0, 0.0]), "modulo by zero"), "% zero-in-tensor raises"
+assert raises_msg(Function(): return T.Tensor([1.0, 2.0]) // T.Tensor([2.0, 0.0]), "floor-division by zero"), "// zero-in-tensor raises"
+# % and // are Float-only
+var zc = T.Tensor([1, 2], dtype = "Complex")
+assert raises_msg(Function(): return zc % 2, "Float-only"), "% complex raises"
+assert raises_msg(Function(): return zc // 2, "Float-only"), "// complex raises"
+
+# ================================================================= 5. comparisons / whole-tensor ==
+var c = T.Tensor([1, 2, 3, 4])
+assert c.gt(2) == T.Tensor([0.0, 0.0, 1.0, 1.0]), "gt mask"
+assert (c > 2) == T.Tensor([0.0, 0.0, 1.0, 1.0]), "> operator mask"
+assert c.eq(T.Tensor([1, 9, 3, 9])) == T.Tensor([1.0, 0.0, 1.0, 0.0]), "eq mask"
+assert c.gt(1).logicaland(c.lt(4)) == T.Tensor([0.0, 1.0, 1.0, 0.0]), "logicaland"
+assert c.gt(1).logicalnot() == T.Tensor([1.0, 0.0, 0.0, 0.0]), "logicalnot"
+# whole-tensor == : shape-sensitive, bit-exact
+assert (T.Tensor([1.0, 2.0]) == T.Tensor([1.0, 2.0])) == True, "== equal"
+assert (T.Tensor([1.0, 2.0]) == T.Tensor([[1.0, 2.0]])) == False, "== shape differs"
+assert (T.Tensor([1.0]) == T.Tensor([1.0000000001])) == False, "== is exact, not tolerant"
+# NaN never equal; inf equals inf; -0.0 == 0.0
+var nanT = T.full([2], math.nan)
+var infT = T.full([2], math.inf)
+assert (nanT == nanT) == False, "NaN never equal"
+assert (infT == infT) == True, "inf == inf"
+assert (T.Tensor([-0.0]) == T.Tensor([0.0])) == True, "-0.0 == 0.0"
+# .compare is the tolerant whole-tensor check
+assert T.Tensor([1.0]).compare(T.Tensor([1.0000000001])) == True, "compare tolerant"
+assert T.Tensor([1.0]).compare(T.Tensor([2.0])) == False, "compare rejects far"
+assert nanT.compare(nanT, abs_tol = 1.0) == False, "compare treats NaN as not-close"
+# ordering undefined for Complex
+assert raises_msg(Function(): return zc < zc, "unordered"), "complex < operator raises"
+assert raises_msg(Function(): return zc.lt(zc), "Complex"), "complex .lt() method raises"
+
+# ================================================================= 6. matmul / dot / tensordot / einsum
+assert T.Tensor([[1, 2], [3, 4]]).matmul(T.Tensor([[5, 6], [7, 8]])) == T.Tensor([[19, 22], [43, 50]]), "matmul"
+assert T.Tensor([1, 2, 3]).dot(T.Tensor([4, 5, 6])) == 32.0, "dot"
+assert T.tensordot(T.Tensor([[1, 2], [3, 4]]), T.Tensor([[5, 6], [7, 8]]), 1) == T.Tensor([[19, 22], [43, 50]]), "tensordot N=1"
+assert T.tensordot(T.Tensor([[1, 2], [3, 4]]), T.Tensor([[5, 6], [7, 8]]), 2).item() == 70.0, "tensordot N=2 scalar"
+assert T.contract(T.full([2, 3, 4], 1), T.full([4, 3, 5], 2), [1, 2], [1, 0]).shape() == [2, 5], "contract shape"
+assert T.einsum("ii->", T.Tensor([[1, 2], [3, 4]])).item() == 5.0, "einsum trace"
+assert T.einsum("ij->ji", T.Tensor([[1, 2], [3, 4]])) == T.Tensor([[1.0, 3.0], [2.0, 4.0]]), "einsum transpose"
+# matmul / dot / einsum / kron hardening
+assert raises_msg(Function(): return T.Tensor([[1, 2, 3]]).matmul(T.Tensor([[1, 2]])), "inner dimensions"), "matmul inner mismatch raises"
+assert raises_msg(Function(): return T.Tensor([1, 2, 3]).matmul(T.eye(3)), "rank"), "matmul rank<2 raises"
+assert raises_msg(Function(): return T.Tensor([1, 2]).dot(T.Tensor([1, 2, 3])), "equal length"), "dot length mismatch raises"
+assert raises_msg(Function(): return T.einsum("ii->ii", T.eye(2)), "more than once"), "einsum repeated output label raises"
+assert raises_msg(Function(): return T.kron(T.Tensor([1, 2]), T.Tensor([3, 4])), "2-D"), "kron requires 2-D"
+
+# ================================================================= 7. reductions
+var r = T.Tensor([[1, 2, 3], [4, 5, 6]])
+assert r.sum() == 21.0, "sum whole"
+assert r.sum(0) == T.Tensor([5.0, 7.0, 9.0]), "sum axis 0"
+assert r.sum(1) == T.Tensor([6.0, 15.0]), "sum axis 1"
+assert r.sum(-1) == T.Tensor([6.0, 15.0]), "sum negative axis"
+assert r.mean() == 3.5, "mean"
+assert r.prod() == 720.0, "prod"
+assert r.argmax(1) == T.Tensor([2.0, 2.0]), "argmax per row"
+assert T.Tensor([1, 2, 3, 4]).cumsum() == T.Tensor([1.0, 3.0, 6.0, 10.0]), "cumsum"
+assert T.Tensor([1, 2, 3, 4]).cumprod() == T.Tensor([1.0, 2.0, 6.0, 24.0]), "cumprod"
+assert T.Tensor([1, 2, 3, 4]).median() == 2.5, "median even"
+assert T.Tensor([3, 1, 2]).ptp() == 2.0, "ptp"
+assert T.Tensor([1, 0, 3]).all() == False, "all with a zero"
+assert T.Tensor([0, 0, 1]).any() == True, "any with a one"
+assert T.Tensor([1, 1, 1]).all() == True, "all nonzero"
+# argmin/argmax NaN -> index of FIRST NaN
+var withnan = T.Tensor([1.0, 5.0, math.nan, 3.0])
+assert withnan.argmax() == 2, "argmax first-NaN index"
+assert withnan.argmin() == 2, "argmin first-NaN index"
+assert nanT.argmax() == 0, "argmax all-NaN -> 0"
+# reduction hardening
+assert raises_msg(Function(): return r.sum(5), "axis out of range"), "sum axis OOB raises"
+assert T.Tensor([1.0]).std() == 0.0, "std of one element (ddof=0) is 0"
+assert raises_msg(Function(): return T.Tensor([1.0, 2.0]).std(ddof = 2), "ddof"), "std ddof too large raises"
+assert raises_msg(Function(): return T.Tensor([1.0, 2.0]).var(ddof = 2), "ddof"), "var ddof too large raises"
+
+# ================================================================= 8. reshaping / structural
+assert r.transpose() == T.Tensor([[1, 4], [2, 5], [3, 6]]), "transpose"
+assert r.reshape([3, 2]) == T.Tensor([[1, 2], [3, 4], [5, 6]]), "reshape"
+assert r.flatten() == T.Tensor([1, 2, 3, 4, 5, 6]), "flatten"
+assert r.permute([1, 0]) == r.transpose(), "permute == transpose here"
+assert r.swapaxes(0, 1) == r.transpose(), "swapaxes"
+assert T.zeros([1, 3, 1]).squeeze().shape() == [3], "squeeze all size-1"
+assert T.Tensor([1, 2]).expanddims(0).shape() == [1, 2], "expanddims"
+assert T.Tensor([[1], [2]]).broadcastto([2, 3]) == T.Tensor([[1, 1, 1], [2, 2, 2]]), "broadcastto"
+assert T.concatenate([r, r], 0).shape() == [4, 3], "concatenate rows"
+assert T.stack([T.Tensor([1, 2]), T.Tensor([3, 4])], 0) == T.Tensor([[1, 2], [3, 4]]), "stack"
+assert len(T.split(r, 2, 0)) == 2, "split into 2"
+# structural hardening
+assert raises_msg(Function(): return T.Tensor([1, 2, 3]).reshape([2, 2]), "unchanged"), "reshape wrong size raises"
+assert raises_msg(Function(): return r.permute([0, 0]), "permutation"), "permute non-permutation raises"
+assert raises_msg(Function(): return T.Tensor([1, 2, 3]).squeeze(0), "not 1"), "squeeze non-1 axis raises"
+assert raises_msg(Function(): return T.Tensor([1, 2]).broadcastto([3, 3]), "broadcast"), "bad broadcastto raises"
+assert raises(Function(): return T.split(T.Tensor([1, 2, 3]), 2, 0)), "split uneven raises"
+assert raises(Function(): return T.concatenate([r, T.eye(2)], 0)), "concat off-axis mismatch raises"
+
+# ================================================================= 9. linear algebra
+var M = T.Tensor([[4, 3], [6, 3]])
+assert T.det(M) == -6.0, "det"
+assert T.trace(M) == 7.0, "trace"
+assert T.inv(M).matmul(M).compare(T.eye(2), abs_tol = 1e-9), "inv M = I"
+assert T.solve(M, T.Tensor([[1], [1]])).compare(T.Tensor([[0.0], [1.0 / 3.0]]), abs_tol = 1e-9), "solve"
+assert T.norm(T.Tensor([3, 4])) == 5.0, "norm"
+assert T.outer(T.Tensor([1, 2]), T.Tensor([3, 4])) == T.Tensor([[3, 4], [6, 8]]), "outer"
+assert T.cross(T.Tensor([1, 0, 0]), T.Tensor([0, 1, 0])) == T.Tensor([0.0, 0.0, 1.0]), "cross"
+# a singular matrix: det == 0, but inv/solve THROW
+var sing = T.Tensor([[1, 2], [2, 4]])
+assert T.det(sing) == 0.0, "singular det is 0"
+assert raises_msg(Function(): return T.inv(sing), "singular"), "inv singular raises"
+assert raises_msg(Function(): return T.solve(sing, T.Tensor([[1], [1]])), "singular"), "solve singular raises"
+# non-square rejected
+assert raises_msg(Function(): return T.det(T.Tensor([[1, 2, 3], [4, 5, 6]])), "square"), "det non-square raises"
+assert raises_msg(Function(): return T.inv(T.Tensor([[1, 2, 3], [4, 5, 6]])), "square"), "inv non-square raises"
+assert raises_msg(Function(): return T.solve(T.Tensor([[1, 2, 3], [4, 5, 6]]), T.Tensor([[1], [2]])), "square"), "solve non-square raises"
+assert raises_msg(Function(): return T.trace(T.Tensor([[1, 2, 3]])), "square"), "trace non-square raises"
+
+# ================================================================= 10. element-wise math domain errors
+assert T.Tensor([1.0, 4.0, 9.0]).sqrt() == T.Tensor([1.0, 2.0, 3.0]), "sqrt ok"
+assert T.Tensor([0.0]).exp() == T.Tensor([1.0]), "exp ok"
+# each out-of-domain ELEMENT throws (consistent with the scalar math module)
+assert raises_msg(Function(): return T.Tensor([1.0, -1.0]).sqrt(), "math domain error"), "sqrt negative element raises"
+assert raises_msg(Function(): return T.Tensor([1.0, -1.0]).log(), "math domain error"), "log negative element raises"
+assert raises_msg(Function(): return T.Tensor([0.0]).log(), "math domain error"), "log 0 raises"
+assert raises_msg(Function(): return T.Tensor([2.0]).asin(), "math domain error"), "asin >1 raises"
+assert raises_msg(Function(): return T.Tensor([2.0]).acos(), "math domain error"), "acos >1 raises"
+assert raises_msg(Function(): return T.Tensor([0.5]).acosh(), "math domain error"), "acosh <1 raises"
+assert raises_msg(Function(): return T.Tensor([1.0]).atanh(), "math domain error"), "atanh at 1 raises"
+assert raises_msg(Function(): return T.Tensor([0.0]).reciprocal(), "division by zero"), "reciprocal 0 raises"
+assert raises_msg(Function(): return T.Tensor([-2.0]) ** 0.5, "math domain error"), "pow negative base non-int raises"
+assert raises_msg(Function(): return T.Tensor([0.0]) ** (-1.0), "math domain error"), "pow zero to negative raises"
+# a NaN element passes through math ops (not a domain error)
+assert T.full([1], math.nan).sqrt().shape() == [1], "NaN passes through sqrt"
+
+# ================================================================= 11. complex tensors
+var z = T.Tensor([[1, 2], [3, 4]], dtype = "Complex")
+assert z.dtype() == "Complex", "complex dtype"
+assert z.conj().dtype() == "Complex", "conj stays complex"
+assert z.astype("Float") == T.Tensor([[1, 2], [3, 4]]), "astype complex->float keeps real"
+assert T.Tensor([1, 2]).astype("Complex").dtype() == "Complex", "astype float->complex"
+# autograd is Float-only: complex cannot require grad, min/max/**/math throw
+assert raises_msg(Function(): return T.Tensor([1, 2], dtype = "Complex", requiresgrad = True), "Float-only"), "complex requiresgrad ctor raises"
+assert raises_msg(Function(): return z.requiresgrad(True), "Float-only"), "complex requiresgrad() raises"
+assert raises_msg(Function(): return z.max(), "Complex"), "complex max raises"
+assert raises_msg(Function(): return z.min(), "Complex"), "complex min raises"
+assert raises_msg(Function(): return z ** 2, "Float-only"), "complex ** raises"
+assert raises_msg(Function(): return z.log(), "Float-only"), "complex math raises"
+
+# ================================================================= 12. autograd
+# d(x^2)/dx = 2x
+var xg = T.Tensor([1, 2, 3], requiresgrad = True)
+var yg = xg.square().sum()
+yg.backward()
+assert xg.grad == T.Tensor([2.0, 4.0, 6.0]), "square.sum backward"
+# non-scalar needs a seed
+var xs = T.Tensor([2, 3], requiresgrad = True)
+var prod = xs * xs
+prod.backward(T.ones([2]))
+assert xs.grad == T.Tensor([4.0, 6.0]), "non-scalar backward with seed"
+# gradients accumulate; zerograd clears
+var acc = T.Tensor([1, 1], requiresgrad = True)
+acc.sum().backward()
+acc.sum().backward()
+assert acc.grad == T.Tensor([2.0, 2.0]), "grad accumulates"
+acc.zerograd()
+assert acc.grad == None, "zerograd -> None"
+# detach stops flow; nograd disables tracking
+var w = T.Tensor([1.0, 2.0], requiresgrad = True)
+assert w.detach().requiresgrad() == False, "detach not tracked"
+var tracked = None
+with T.nograd():
+    tracked = (w * 2).requiresgrad()
+assert tracked == False, "nograd block disables tracking"
+# grad-aware take: gradient scatters back to selected rows
+var g4 = T.Tensor([1.0, 2.0, 3.0, 4.0], requiresgrad = True)
+g4.take([0, 2]).sum().backward()
+assert g4.grad == T.Tensor([1.0, 0.0, 1.0, 0.0]), "take grad scatters"
+# purity holds under grad, too: operand's value is unchanged after an op records the graph
+var pw = T.Tensor([3.0, 4.0], requiresgrad = True)
+discard (pw * pw).sum()
+assert pw.detach() == T.Tensor([3.0, 4.0]), "grad op leaves operand value unchanged"
+# autograd hardening
+assert raises_msg(Function(): return T.zeros([2]).backward(), "does not require grad"), "backward on non-grad raises"
+assert raises_msg(Function(): return T.zeros([2], requiresgrad = True).backward(), "seed"), "non-scalar backward no seed raises"
+
+io.print("OK tensor")
