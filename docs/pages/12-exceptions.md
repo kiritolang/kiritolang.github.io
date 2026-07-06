@@ -315,7 +315,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `maximum recursion depth exceeded` | Native call depth exceeds the call-depth guard (deep/infinite recursion) | Reduce recursion / raise the configured limit |
-| `maximum equality recursion depth exceeded (cyclic structure?)` | A deep/cyclic structure compared with `==` | Avoid comparing cyclic structures |
+| `maximum comparison recursion depth exceeded (cyclic structure?)` | A deep/cyclic structure compared with `==`/`<`/`sort`/`min`/`max` | Avoid comparing cyclic structures |
 | `structure too deeply nested to stringify` | `str()`/print of a structure >1000 deep | Flatten the structure |
 | `expression too deeply nested to evaluate` / `expression nested too deeply` | Pathologically nested source | Simplify the expression nesting |
 | `'<Class>' _iter_ recurses too deeply (does _iter_ return self or a cycle?)` | A user `_iter_` that returns `self` (or forms an `_iter_` cycle), so iteration re-dispatches without bottoming out | Return a genuine iterable (a List / built-in iterator), not `self` |

@@ -2155,8 +2155,16 @@ inline Handle applyUnaryOp(KiritoVM& vm, UnOp op, Handle operand) {
         // An instance may override `not` via _not_; otherwise negate truthiness.
         Object& o = vm.arena().deref(operand);
         if (o.kind() == ValueKind::Instance && dynamic_cast<InstanceValue*>(&o) &&
-            static_cast<InstanceValue&>(o).findMethod(vm.arena(), "_not_"))
-            return o.unary(vm, op, operand);
+            static_cast<InstanceValue&>(o).findMethod(vm.arena(), "_not_")) {
+            Handle r = o.unary(vm, op, operand);
+            // `not` is a logical operator: it must yield a Bool. Enforce it like _bool_ does (an
+            // unchecked _not_ that returns e.g. a String silently breaks the truth-value contract).
+            const Object& ro = vm.arena().deref(r);
+            if (ro.kind() != ValueKind::Bool)
+                throw KiritoError("'" + static_cast<InstanceValue&>(o).className +
+                                  "'._not_ must return a Bool, got '" + ro.typeName() + "'");
+            return r;
+        }
         return vm.makeBool(!vm.arena().deref(operand).truthy());
     }
     return vm.arena().deref(operand).unary(vm, op, operand);

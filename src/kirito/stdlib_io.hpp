@@ -257,6 +257,7 @@ public:
 class BytesIO : public NativeClass<BytesIO>, public IoStream {
 public:
     static constexpr const char* kTypeName = "BytesIO";
+    static constexpr std::size_t kMaxBuf = 256ull * 1024 * 1024;  // bound the in-memory buffer (matches Bytes)
     std::string buf;
     std::size_t pos = 0;
 
@@ -268,7 +269,6 @@ public:
     }
 
     void streamWrite(const std::string& data) override {
-        constexpr std::size_t kMaxBuf = 256ull * 1024 * 1024;   // bound the in-memory buffer (matches Bytes)
         if (pos > kMaxBuf || data.size() > kMaxBuf - pos)       // e.g. write after seek(9e18): overflow-safe
             throw KiritoError("BytesIO too large");
         if (pos + data.size() > buf.size()) buf.resize(pos + data.size());  // overwrite-at-cursor
@@ -361,6 +361,10 @@ public:
         if (name == "truncate")
             return bind("truncate", {}, [self, io](KiritoVM& vm, std::span<const Handle>) -> Handle {
                 auto& b = io(vm, self);
+                // truncate() to the cursor. A truncate-that-EXTENDS (after a large seek) would
+                // materialize the whole buffer, so it honours the same size cap as streamWrite —
+                // else `b.seek(4e8); b.truncate()` silently allocated 400 MB past the write guard.
+                if (b.pos > BytesIO::kMaxBuf) throw KiritoError("BytesIO too large");
                 b.buf.resize(b.pos);
                 return vm.makeInt(static_cast<int64_t>(b.buf.size()));
             });
@@ -622,6 +626,7 @@ public:
             const Object& po = vm.arena().deref(a[0]);
             if (po.kind() != ValueKind::String) throw KiritoError("open path must be a String");
             std::string path = static_cast<const StrVal&>(po).value();
+            requireNoNulPath(path, "open");  // a NUL would truncate the path (validation bypass)
             std::string mode = "r";
             if (a.size() == 2) {
                 const Object& mo = vm.arena().deref(a[1]);

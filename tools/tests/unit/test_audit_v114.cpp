@@ -83,5 +83,35 @@ int main() {
     CHECK(has(err("var s = import(\"net\").tcpsocket()\ns.close()\ns.listen(16)"),
               "listen: socket is closed"));
 
+    // === A11-1 (MEDIUM, security): a Kirito String is byte-transparent, so it can hold a NUL; the
+    // OS filesystem APIs truncate at the first NUL, so "safe.txt\0.sh" opened "safe.txt" — a
+    // suffix-validation / sandbox bypass. Every filesystem-touching path entry now rejects it. ===
+    CHECK(has(err("import(\"io\").open(\"safe\" + chr(0) + \".sh\", \"w\")"), "embedded NUL"));
+    CHECK(has(err("import(\"path\").exists(\"a\" + chr(0) + \"b\")"), "embedded NUL"));
+    CHECK(has(err("import(\"path\").getsize(\"x\" + chr(0))"), "embedded NUL"));
+    // the pure path-string builder join() doesn't touch the filesystem, so it still works normally
+    CHECK(ok("import(\"path\").join(\"a\", \"b\")") == "a/b");
+
+    // === A11-19 (MEDIUM): BytesIO.truncate() after a large seek materialized the whole buffer,
+    // bypassing the 256 MiB write guard. It now honours the same cap. ===
+    CHECK(has(err("var b = import(\"io\").BytesIO()\nb.seek(400000000)\nb.truncate()"),
+              "BytesIO too large"));
+    CHECK(ok("var b = import(\"io\").BytesIO()\nb.write(\"hello world\")\nb.seek(5)\nb.truncate()") == "5");
+
+    // === A04-1 (LOW): `not instance` dispatches _not_, whose result must be a Bool (like _bool_).
+    // An unchecked _not_ returning e.g. a String silently broke the logical-not truth contract. ===
+    CHECK(has(err("class B:\n    var _not_ = Function(self): return \"nope\"\nnot B()"),
+              "_not_ must return a Bool"));
+    CHECK(ok("class G:\n    var _init_ = Function(self, v): self.v = v\n"
+             "    var _not_ = Function(self): return self.v == 0\n"
+             "String(not G(0)) + String(not G(5))") == "TrueFalse");
+
+    // === A04-2 (LOW): the cyclic-structure recursion guard is shared by == AND </sort/min/max, so
+    // its message now says "comparison", not "equality". ===
+    CHECK(has(err("var a = [1]\na.append(a)\nvar b = [1]\nb.append(b)\na < b"),
+              "comparison recursion depth"));
+    CHECK(has(err("var a = [1]\na.append(a)\nvar b = [1]\nb.append(b)\na == b"),
+              "comparison recursion depth"));
+
     return RUN_TESTS();
 }

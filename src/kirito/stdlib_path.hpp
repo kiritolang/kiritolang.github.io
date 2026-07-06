@@ -81,7 +81,14 @@ public:
 
     void setup(ModuleBuilder& m) override {
         KiritoVM& vm = m.vm();
-        auto pathArg = [](KiritoVM& vm, Handle h) -> std::string { return Value(vm, h).asStringRef("path"); };
+        // Funnel for every filesystem-touching entry (exists/isfile/getsize/mkdir/remove/...): a NUL
+        // in the String would truncate the path at the OS boundary, so reject it here. (The pure
+        // string ops join/dirname/basename/splitext don't hit the filesystem and keep asStringRef.)
+        auto pathArg = [](KiritoVM& vm, Handle h) -> std::string {
+            std::string p = Value(vm, h).asStringRef("path");
+            requireNoNulPath(p, "path");
+            return p;
+        };
 
         // join(parts...) -> the parts joined with '/'. A later component that is absolute (starts
         // with '/') resets the result. Like os.path.join it needs at least one component (throws
