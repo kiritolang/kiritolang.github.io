@@ -40,3 +40,14 @@ Subsystem: main.cpp, src/kirito/cli_paths.hpp, module loader / import machinery
 - expected: comment at line 2454-2455 says import("io") and import("io.ki") both resolve.
 - fix idea: strip a trailing ".ki" from `name` before the moduleFactories_ lookup too
   (or lookup both name and fileBase).
+
+### F3 [MED] .ki-file modules leak top-level `_private` names as members; frozen modules hide them (inconsistent)
+- where: src/kirito/runtime.hpp:2488-2490 (.ki path) vs 2399-2402 (frozen path)
+- repro: privmod.ki: `var _secret = "x"` ; importer reads `m._secret` -> works and prints it.
+  A frozen (registerSourceModule) module filters `k.front() != '_'` so its `_names` are hidden.
+- actual: .ki module export loop only excludes "arglist"/"argmain"; it does NOT skip leading-`_`
+  names, so a .ki module cannot keep private top-level helpers and they leak to importers.
+- expected: same export policy for both loaders — top-level `_name` should be a private module
+  internal (as the frozen path already treats it and its comment states).
+- fix idea: apply the same `!k.empty() && k.front() != '_'` filter in the .ki export loop.
+- note: DRY — the two export-filter loops duplicate logic and have already drifted.
