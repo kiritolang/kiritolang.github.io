@@ -86,7 +86,7 @@ ok(it.islice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 2, 10, 3) == [2, 5, 8], "islice sta
 ok(it.islice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 0, 10, 4) == [0, 4, 8], "islice start=0 step=4")
 ok(it.islice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 3, 9, 2) == [3, 5, 7], "islice odd offset, even step")
 ok(it.islice([0, 1, 2, 3], 1, 100) == [1, 2, 3], "islice stop beyond length caps")
-ok(throws(Function(): return it.islice([1, 2, 3], 0, 3, 0)), "islice step=0 throws (mod by zero)")
+ok(throws(Function(): return it.islice([1, 2, 3], 0, 3, 0)), "islice step=0 throws (step must be positive)")
 # accumulate: a custom binary op AND the leading-None semantics (folds, not 'not started').
 ok(it.accumulate([3, 1, 4, 1, 5], Function(a, b): return a if a > b else b) == [3, 3, 4, 4, 5], "accumulate running max")
 ok(it.accumulate(["a", "b", "c"]) == ["a", "ab", "abc"], "accumulate concatenates Strings via +")
