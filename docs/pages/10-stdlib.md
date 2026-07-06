@@ -415,7 +415,7 @@ Returned by `io.open`. Iterating a file yields its remaining lines.
 - `repeat(value, times) → List` — `value` repeated `times` times.
 - `cycle(iterable, times) → List` — the iterable repeated `times` times.
 - `chain(lists) → List` — concatenate the iterables in a list-of-iterables (`chain([[1,2],[3,4]])`).
-- `islice(iterable, start, stop[, step]) → List` — a slice of an iterable.
+- `islice(iterable, start, stop[, step]) → List` — a slice of an iterable. `step` must be a positive integer (a non-positive `step` raises).
 - `accumulate(iterable[, func]) → List` — running totals (or running `func` reductions).
 - `product(lists) → List` — Cartesian product of a list-of-iterables (`product([[1,2],[3,4]])`).
 - `permutations(items[, r]) → List` — r-length orderings.
@@ -446,6 +446,17 @@ is **not** strict RFC-8259, so such output may be rejected by other JSON readers
 
 Floats **round-trip exactly**: `loads(dumps(x))` recovers the identical double for any Float `x`
 (`dumps` emits enough digits, e.g. `0.1 + 0.2` → `"0.30000000000000004"`).
+
+**Parsing is lenient about number spelling and duplicate keys.** A leading-zero integer (`012` → `12`)
+and a trailing-dot float (`1.` → `1.0`) are accepted; a duplicate object key keeps the **last** value
+(`{"a":1,"a":2}` → `{'a': 2}`); a lone/unpaired `\u` surrogate decodes to the replacement character
+`U+FFFD` rather than throwing; and an integer literal too large for int64 widens to a `Float` (which may
+become `Infinity` if it also overflows a double).
+
+**`stringify` only serializes JSON-representable values, and the indent is capped.** A value that has no
+JSON form — a `Set`, a function, a class/instance without a JSON mapping, or a structure containing a
+**cycle** — throws `cannot serialize '<Type>' to JSON`. The `indent` width has a hard maximum of 100;
+a larger value throws `json.stringify: indent too large (maximum 100)`.
 
 ---
 
@@ -984,7 +995,7 @@ count), `r.groupindex` (name → group number).
 - `r.match(string[, pos[, endpos]]) → Match` — anchored match at `pos`, or `None`.
 - `r.search(string[, pos[, endpos]]) → Match` — first match at/after `pos`, or `None`.
 - `r.fullmatch(string[, pos[, endpos]]) → Match` — whole-(sub)string match, or `None`.
-- `r.findall(string[, pos[, endpos]]) → List` — with **0** groups: a List of the matched Strings; with **1** group: a List of that group's Strings; with **2+** groups: a List of per-match group Lists.
+- `r.findall(string[, pos[, endpos]]) → List` — with **0** groups: a List of the matched Strings; with **1** group: a List of that group's Strings; with **2+** groups: a List of per-match group Lists. A group that did not participate in a match renders as the empty String `""` here (unlike `Match.group(n)`/`Match.groups()`, which give `None` for the same absent group).
 - `r.finditer(string[, pos[, endpos]]) → List` — a List of `Match` objects, one per non-overlapping match.
 - `r.sub(repl, string[, count]) → String` — replace matches. `repl` is either a template String (`\1`, `\g<name>`, `\g<0>`, `\\`) or a **function** taking a `Match` and returning a String. `count = 0` replaces all.
 - `r.split(string[, maxsplit]) → List` — split around matches; any captured groups are interleaved into the result.
@@ -1235,6 +1246,9 @@ Public names follow Kirito's lowercase-no-underscore convention (`readcsv`, `sor
 - `readcsv(source, header = True, infer = True)` — build a DataFrame from CSV text (or a filename).
   With `infer`, each cell becomes Integer/Float/Bool/None/String; a short row's missing trailing cells
   are `None`, but a row with **more** fields than the header throws (no silent data loss, like pandas).
+  Fully **blank lines are skipped** (pandas `skip_blank_lines=True` parity) — so a single-column frame
+  whose only value on a row is `None` serialises to a blank line via `tocsv` and that row is dropped on
+  re-read; in a multi-column frame a `None` is a real empty field (`a,,c`) and survives the round-trip.
 - `merge(left, right, on, how = "inner")` — join two DataFrames on a key column; `how` is
   `"inner"`/`"left"`/`"right"`/`"outer"`. A non-key column present in **both** frames is disambiguated
   pandas-style: the left copy becomes `<name>_x` and the right `<name>_y`.
@@ -1573,7 +1587,7 @@ Clocks and calendar time.
 - `timens() → Integer` — nanoseconds since the epoch.
 - `monotonic() → Float` — seconds from a steady clock (for measuring intervals).
 - `perfcounterns() → Integer` — nanoseconds from the highest-resolution clock.
-- `sleep(seconds: Number) → None` — pause execution.
+- `sleep(seconds: Number) → None` — pause execution. `seconds ≤ 0` is a clean no-op; a non-finite value (`NaN`/`Infinity`) or one larger than `1e9` throws (`sleep: seconds too large (maximum 1e9)`) rather than hanging.
 - `now() → DateTime` — current UTC time.
 - `datetime([timestamp: Number]) → DateTime` — a `DateTime` from epoch seconds (current time if omitted).
 - `make(year, month, day, hour = 0, minute = 0, second = 0) → DateTime` — build from UTC components.

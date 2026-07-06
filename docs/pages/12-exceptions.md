@@ -193,14 +193,14 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 
 | Message | Cause | Fix |
 |---|---|---|
-| `unsupported operand type '<T>' for <op>` | Numeric binary op given a non-numeric operand (`1 + "x"`) | Convert operands to compatible numeric types |
+| `unsupported operand type '<T>' for arithmetic with '<U>'` / `… for comparison with '<U>'` | Numeric binary op or `<`/`>`/`<=`/`>=` given a non-numeric operand (`1 + "x"`, `1 < "x"`) — `<T>` is the offending operand, `<U>` the other | Convert operands to compatible numeric types |
 | `type '<T>' does not support this binary operator` | A type with no such operator | Use a supported type/operator, or define the dunder |
 | `type '<T>' does not support this unary operator` | Unary `-`/`not` on a type lacking it | Use a supporting type |
 | `type 'String' does not support this operator` | Operator on String outside `+`/`*`/comparisons | Use a valid String operator |
 | `can only concatenate String to String, not '<T>'` | `"a" + <non-String>` | Concatenate only Strings (convert with `String(x)`) |
 | `can only concatenate List to List, not '<T>'` | `[...] + <non-List>` | Concatenate only Lists |
 | `can only repeat String by an Integer` / `can only repeat List by an Integer` | `"x" * "y"` / `[1] * 2.0` | Repeat by an Integer count |
-| `cannot order '<X>' and '<Y>'` | `<`/`>`/… between unorderable types | Compare only ordered/like types |
+| `cannot order '<X>' and '<Y>'` | `sorted`/`sort`/`min`/`max` (or List-vs-List element ordering) hitting two unorderable types — a *direct* `a < b` on incompatible types instead raises the `unsupported operand`/`does not support this operator` message above | Compare only ordered/like types |
 | `cannot order 'List' and '<T>'` | List ordered against a non-List | Compare List to List |
 | `compare() expects a number, not '<T>'` | `n.compare(other)` with non-numeric `other` | Pass a number |
 | `compare() rel_tol and abs_tol must be numbers` | Non-numeric tolerance kwarg to `.compare` | Pass numeric `rel_tol`/`abs_tol` |
