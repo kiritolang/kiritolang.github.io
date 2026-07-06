@@ -167,7 +167,7 @@ public:
             return bind("expovariate", {"lambd"}, [self, rng](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 double lambda = a.size() > 0 ? asNum(vm, a[0]) : 1.0;
                 if (!std::isfinite(lambda) || lambda <= 0.0)
-                    throw KiritoError("expovariate: lambda must be a positive finite number");
+                    throw KiritoError("expovariate: lambda must be positive and finite");
                 double x = std::visit(
                     [lambda](auto& e) { return std::exponential_distribution<double>(lambda)(e); },
                     rng(vm, self).engine);

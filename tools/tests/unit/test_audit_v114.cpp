@@ -98,13 +98,8 @@ int main() {
               "BytesIO too large"));
     CHECK(ok("var b = import(\"io\").BytesIO()\nb.write(\"hello world\")\nb.seek(5)\nb.truncate()") == "5");
 
-    // === A04-1 (LOW): `not instance` dispatches _not_, whose result must be a Bool (like _bool_).
-    // An unchecked _not_ returning e.g. a String silently broke the logical-not truth contract. ===
-    CHECK(has(err("class B:\n    var _not_ = Function(self): return \"nope\"\nnot B()"),
-              "_not_ must return a Bool"));
-    CHECK(ok("class G:\n    var _init_ = Function(self, v): self.v = v\n"
-             "    var _not_ = Function(self): return self.v == 0\n"
-             "String(not G(0)) + String(not G(5))") == "TrueFalse");
+    // (A04-1 was a FALSE POSITIVE: `not <instance>` intentionally returns the RAW _not_ result,
+    // uncoerced — like _neg_, unlike _bool_ — a documented, tested contract [r7_types.ki]. No change.)
 
     // === A04-2 (LOW): the cyclic-structure recursion guard is shared by == AND </sort/min/max, so
     // its message now says "comparison", not "equality". ===

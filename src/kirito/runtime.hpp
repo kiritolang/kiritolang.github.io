@@ -2152,19 +2152,13 @@ inline void checkPrivateAccess(KiritoVM& vm, Handle obj, const std::string& name
 
 inline Handle applyUnaryOp(KiritoVM& vm, UnOp op, Handle operand) {
     if (op == UnOp::Not) {
-        // An instance may override `not` via _not_; otherwise negate truthiness.
+        // An instance may override `not` via _not_; otherwise negate truthiness. Like `_neg_` (and
+        // unlike `_bool_`), `_not_`'s return value is NOT coerced to a Bool — `not <instance>` yields
+        // the raw _not_ result (a documented, tested behaviour: r7_types.ki "returns the raw value").
         Object& o = vm.arena().deref(operand);
         if (o.kind() == ValueKind::Instance && dynamic_cast<InstanceValue*>(&o) &&
-            static_cast<InstanceValue&>(o).findMethod(vm.arena(), "_not_")) {
-            Handle r = o.unary(vm, op, operand);
-            // `not` is a logical operator: it must yield a Bool. Enforce it like _bool_ does (an
-            // unchecked _not_ that returns e.g. a String silently breaks the truth-value contract).
-            const Object& ro = vm.arena().deref(r);
-            if (ro.kind() != ValueKind::Bool)
-                throw KiritoError("'" + static_cast<InstanceValue&>(o).className +
-                                  "'._not_ must return a Bool, got '" + ro.typeName() + "'");
-            return r;
-        }
+            static_cast<InstanceValue&>(o).findMethod(vm.arena(), "_not_"))
+            return o.unary(vm, op, operand);
         return vm.makeBool(!vm.arena().deref(operand).truthy());
     }
     return vm.arena().deref(operand).unary(vm, op, operand);

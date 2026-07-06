@@ -69,15 +69,8 @@ sm.write("hello world")
 sm.seek(5)
 assert sm.truncate() == 5, "A11-19: a normal truncate still works"
 
-# --- A04-1: `not instance` via _not_ must return a Bool (like _bool_) ---
-class NotBad:
-    var _not_ = Function(self): return "nope"
-assert throws(Function(): return not NotBad()), "A04-1: _not_ returning non-Bool must throw"
-class NotGood:
-    var _init_ = Function(self, v): self.v = v
-    var _not_ = Function(self): return self.v == 0
-assert (not NotGood(0)) == True, "A04-1: _not_ returning True works"
-assert (not NotGood(9)) == False, "A04-1: _not_ returning False works"
+# (A04-1 was a false positive: `not <instance>` returns the RAW _not_ result, uncoerced — like
+#  _neg_, unlike _bool_ — a documented, tested contract [r7_types.ki]. No change here.)
 
 # --- A04-2: the cyclic-structure guard message says "comparison" for </sort/min/max, not "equality" ---
 var makeCycle = Function():
