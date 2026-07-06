@@ -78,3 +78,23 @@ multiple places; parallel implementations that should share a helper.
   drifted TODAY (spot-checked 0x/0o/0b/decimal/wrap agree), but there is no shared helper.
 - fix idea: factor a shared `parseIntMagnitude(sv, base) -> uint64` used by both; the converter adds
   only the sign/whitespace/trailing-garbage wrapper.
+
+### F7 [MED] "unhashable type" message ALREADY DRIFTED — Set.remove drops the type name
+- canonical form everywhere: `"unhashable type '<T>'"`
+  - object.hpp:106, collections.hpp:20, value.hpp:275, runtime.hpp:1784 (all include the typeName)
+- DRIFTED: src/kirito/runtime.hpp:878 (`Set.remove`) throws bare `"unhashable type"` (NO type name).
+- repro (confirmed on build-debug/ki):
+    s.remove([1])  => "unhashable type"
+    s.add([1])     => "unhashable type 'List'"
+    d[[1]] = 5     => "unhashable type 'List'"
+- actual: Set.remove's diagnostic is less informative than every sibling. expected: uniform message.
+- fix idea: `throw KiritoError("unhashable type '" + v.typeName() + "'")` at runtime.hpp:878, or route
+  all four through a shared `requireHashable(obj)` helper.
+- ASIDE (separate, not DRY): Set.discard([1]) at runtime.hpp:905 silently no-ops on an unhashable
+  arg (returns None) while add/remove throw — inconsistent with add/remove and with Python semantics.
+
+### F8 [LOW] "not iterable" message has two formats (type-name vs class-name), can read inconsistently
+- `"type '<T>' is not iterable"`: object.hpp:167, bytecode_vm.hpp:311, value.hpp:229
+- `"'<className>' is not iterable"` (no leading "type "): runtime.hpp:1909 (user-class _iter_ path)
+- Semi-intentional (class name vs builtin typeName) but the two spellings mean a user sees different
+  phrasings for the same failure depending on whether the value is a builtin or a class instance.

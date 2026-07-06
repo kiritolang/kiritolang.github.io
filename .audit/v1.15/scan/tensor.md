@@ -27,3 +27,9 @@ Probe: `./build-debug/ki`.
 - mechanism: `-1` casts to SIZE_MAX; sizes=[SIZE_MAX,5]; `total = SIZE_MAX+5` wraps to 4 == axis length, so `if (total != len)` passes. g_split then builds SliceRange with base += SIZE_MAX (ptrdiff -1), and slicePicks(-1, 4, 1) yields picks {-1,0,1,2,3}; index -1 -> `static_cast<size_t>(-1)` -> reads t.data[huge] out of bounds.
 - actual: silent OOB read (heap-buffer-overflow under ASan). expected: reject negative section sizes with a clear error.
 - fix idea: in the module `split` list branch, require each `e.asInt("section") >= 0` before the size_t cast (and use a checked/overflow-safe sum), mirroring the `n <= 0` guard on the integer branch.
+
+### F4 [MED/SUSPECT] `median` silently ignores NaN in larger arrays but propagates it in others (position-dependent), unlike max/min which uniformly propagate NaN
+- where: src/kirito/stdlib_tensor.hpp:1218 (`medianT`'s `med` lambda sorts NaN last, then averages the middle element(s))
+- repro: `T.Tensor([1.0,nan]).median()` -> nan ; `T.Tensor([1.0,nan,3.0,2.0]).median()` -> 2.5 (NaN ignored)
+- actual: result depends on size/position of NaN after the "NaN sorts last" sort. expected: numpy.median returns NaN whenever any element is NaN. This is exactly the A13-1 inconsistency that was deliberately fixed for max/min/argmax (they now propagate NaN), but median still has it. mean/std also naturally propagate NaN, so median is the odd one out.
+- fix idea: in medianT, if any element in the line is NaN, yield NaN (mirror the max/min NaN-propagation policy).
