@@ -4,7 +4,7 @@ Scope: `src/kirito/stdlib_io.hpp`, `src/kirito/stdlib_path.hpp`.
 Prior: v1.13 A12 (merged — hunting NEW angles). READ-ONLY on src/.
 Probe binary: /home/user/kiritolang.github.io/build-debug/ki
 
-Status: IN PROGRESS.
+Status: COMPLETE.
 
 ---
 
@@ -137,3 +137,20 @@ Status: IN PROGRESS.
 - **proposed-test**: `b.seek(300*1024*1024); b.truncate()` must throw "BytesIO too large".
 - **proposed-fix**: apply the same `kMaxBuf` check in `truncate` before `resize` (and consider only ever shrinking, i.e. `resize(min(pos, buf.size()))`, plus an explicit optional size arg per A11-10).
 - **confidence**: CONFIRMED
+
+## Summary
+Confirmed defects (all reproduced on build-debug/ki): **2 MEDIUM**, **1 LOW-MEDIUM**, **10 LOW**.
+- **MEDIUM**: A11-1 (embedded-NUL path truncation → sandbox/validation bypass, write confirmed),
+  A11-19 (`BytesIO.truncate()` after a large seek bypasses the 256 MiB guard and extends the buffer).
+- **LOW-MEDIUM**: A11-5 (`io.open(dir,"r")` silently succeeds, read()=="", no IsADirectoryError).
+- **LOW**: A11-2 (io.write/print stringify Bytes to repr), A11-3 (duck-typed stdout never flushed),
+  A11-4 (opaque stream= diagnostic), A11-6 (File/StdStream.write return None vs BytesIO count),
+  A11-7 (read(None) divergence), A11-8 (readline blank-vs-EOF ambiguity), A11-9 (append-mode seek/tell
+  misleading), A11-10 (truncate(size) arg ignored), A11-11 (File.seek out-of-range silent no-op vs
+  BytesIO), A11-12 (unbounded read-all OOM, carried).
+- **Coverage gaps**: A11-13..18 (NUL path, open-dir, write-return, kwarg stream methods, duck flush /
+  append seek / read(None) / io.write(Bytes), BytesIO guard + seek-overflow — none automated).
+- **Fixed since v1.13**: A12-1 (walk/listdir tolerance), A12-2 (writelines non-iterable message).
+
+Top priority: **A11-1** (NUL-byte path injection — the only security-class defect) and **A11-19**
+(guard bypass, single-line fix). A11-5 (open-on-dir) is the next behavioural correctness gap.
