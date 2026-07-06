@@ -29,3 +29,18 @@ Findings appended incrementally below.
 - proposed-test: a `.ki` golden asserting the module-shadow case prints the OUTER value (pins current behavior), plus an errors/*.ki asserting the no-outer case throws at the read line. If the design intent is UnboundLocalError semantics, that is a larger compiler change (track first-assignment dominance) — flag for a design decision.
 - proposed-fix: design decision required. Option A: document + test current membership/fallback semantics as intentional. Option B: have the compiler emit an "unbound local" check for a local read that is not dominated by an assignment (Python-style). Given reference-assignment + membership scoping, Option A is likely intended; the risk is undocumented masking of shadow bugs.
 - confidence: high (behavior), medium (whether it's considered a bug vs by-design)
+
+### A02-2: Unused-result false positive on the short-circuit / conditional-expression side-effect idiom
+- severity: low
+- location: src/kirito/analyzer.hpp:239-240 (`producesUnusedValue`: `LogicalExpr` and `ConditionalExpr` unconditionally return true)
+- category: analyzer false positive
+- description: `producesUnusedValue` is deliberately smart for a bare CALL — it only flags a call whose callee is a locally-defined function that ALWAYS returns a value (`alwaysReturnsValue`), so a bare `doThing()` where `doThing` returns None is (correctly) NOT flagged. But when that same side-effecting call is an operand of a `LogicalExpr` (`cond and doThing()`) or a `ConditionalExpr` (`log(x) if c else warn(x)`), `producesUnusedValue` returns true unconditionally, flagging the statement — even though these are the idiomatic short-circuit / conditional-dispatch forms whose value is legitimately discarded. The rule is inconsistent: `doThing()` is fine, `c and doThing()` is not.
+- failure-scenario:
+  ```
+  c and doThing()               # warns "result of expression is unused"
+  log(x) if c else warn(x)      # warns "result of expression is unused"
+  ```
+  where doThing/log/warn are None-returning (side-effecting). A bare `doThing()` is not warned, so the wrapping is the only difference.
+- proposed-test: test_warnings.cpp — assert `c and f()` and `f() if c else g()` (f/g None-returning locals) do NOT warn unused-result; keep flagging `a + b`, bare `x`, and a value-returning-local call.
+- proposed-fix: for Logical/Conditional, recurse into the value-producing operands (the two branches / RHS) and flag only when those would themselves be flagged (i.e. treat a side-effecting call leaf as "used"). Or, more simply, exempt Logical/Conditional whose relevant leaves are CallExprs.
+- confidence: high (reproduced)
