@@ -1,0 +1,333 @@
+# labx_io_path.ki — deep edge/hardening pass for the `io` and `path` stdlib modules
+# (docs/pages/10-stdlib.md ## io / ## path, docs/pages/23-course-13-files-io.md).
+# Goes BEYOND verify_io / verify_path / spec_io / spec_io_stream / r4_io / path_module: it targets
+# the corners those skipped — Unicode text-mode round-trips and the byte-vs-character read(n)
+# semantics, CRLF line splitting, seek-past-end gap-fill, r+b vs rb+ mode parsing, NUL-in-path
+# rejection, duck-typed streams, writelines over a String, and the Bool return contracts of the
+# strict-by-default mutators. Deterministic: all scratch state lives under a unique dir in the system
+# temp dir and is rmtree'd at the end. Final sentinel: "OK io_path".
+var io = import("io")
+var path = import("path")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# A unique private scratch dir; start clean even if a prior run crashed.
+var root = path.join(path.gettempdir(), "kirito_labx_io_path")
+discard path.rmtree(root, missing_ok = True)
+assert path.mkdir(root) == True, "scratch dir created"
+var P = Function(name): return path.join(root, name)
+
+# ============================================================ text mode: Unicode round-trip
+# A String is UTF-8; a text-mode write emits its bytes and a read reassembles the identical String —
+# so the byte SIZE differs from the code-point length ('é' is 2 bytes, 1 code point).
+var uni = "h" + chr(233) + "ll" + chr(246)          # "héllö": 5 code points, 7 bytes
+var uf = P("uni.txt")
+with io.open(uf, "w") as f:
+    f.write(uni)
+assert len(uni) == 5, "5 code points"
+assert path.getsize(uf) == 7, "7 UTF-8 bytes on disk (é and ö are 2 bytes each)"
+with io.open(uf, "r") as f:
+    var back = f.read()
+assert back == uni, "text-mode Unicode round-trips byte-for-byte"
+assert len(back) == 5, "read-back is 5 code points"
+
+# read(n) in TEXT mode counts BYTES, not code points: reading 1 unit off a 2-byte 'é' yields a single
+# raw byte (0xc3), and the remaining reads reassemble the original. (The doc phrases this as
+# "characters"; the implementation reads bytes — see the report.)
+with io.open(uf, "r") as f:
+    var c1 = f.read(1)
+    var c2 = f.read(1)
+    assert c1 == "h", "read(1) is the ASCII 'h'"
+    assert c2.encode("latin-1") == Bytes([0xc3]), "read(1) returns ONE byte (the lead byte of 'é')"
+    assert len(c2) == 1, "a single raw byte is length 1"
+with io.open(uf, "r") as f:
+    var head = f.read(1)
+    var tail = f.read()
+    assert head + tail == uni, "a byte-split read still reassembles the whole String"
+
+# ============================================================ CRLF / bare-CR line splitting
+# The lexer normalizes CRLF for SOURCE, but file reads do not: readline splits on '\n' only, so a
+# CRLF line keeps its trailing '\r' (POSIX getline semantics). No trailing newline -> last chunk as-is.
+var crf = P("crlf.bin")
+with io.open(crf, "wb") as f:
+    f.write(Bytes([97, 13, 10, 98, 10, 99]))        # "a\r\nb\nc"  (c has no line terminator)
+with io.open(crf, "r") as f:
+    var la = f.readline()
+    var lb = f.readline()
+    var lc = f.readline()
+    var ld = f.readline()
+    assert la == "a" + chr(13), "CRLF line keeps the trailing CR"
+    assert lb == "b", "LF line has no CR"
+    assert lc == "c", "final unterminated chunk is returned verbatim"
+    assert ld == "", "readline at EOF is empty"
+# readlines / iteration split the same way (CR retained on the CRLF line).
+with io.open(crf, "r") as f:
+    assert f.readlines() == ["a" + chr(13), "b", "c"], "readlines keeps the CR"
+var itlines = []
+with io.open(crf, "r") as f:
+    for ln in f:
+        itlines.append(ln)
+assert itlines == ["a" + chr(13), "b", "c"], "iteration keeps the CR"
+
+# ============================================================ seek past end + gap fill (File)
+# Seeking a writable File past the end and writing zero-fills the gap (like BytesIO), rather than
+# leaving garbage or failing.
+var gf = P("gap.bin")
+with io.open(gf, "w") as f:
+    f.write("ab")
+    assert f.seek(5) == 5, "seek beyond end returns the requested position"
+    f.write("Z")
+assert path.getsize(gf) == 6, "gap-write extended the file to 6 bytes"
+with io.open(gf, "rb") as f:
+    assert f.read() == Bytes([97, 98, 0, 0, 0, 90]), "the gap between 'ab' and 'Z' is zero-filled"
+
+# reading past end on a File is empty (safe); tell after an over-long read reports the length, not -1.
+with io.open(gf, "r") as f:
+    discard f.read(1000)
+    assert f.read() == "", "read at EOF is empty"
+    assert f.tell() == 6, "tell after an over-long read is the byte length (EOF bit cleared)"
+
+# ============================================================ mode parsing: r+b vs rb+, read(0)
+# The trailing 'b' marks binary, so "r+b" is a binary read/write mode but "rb+" is unsupported
+# (its last char is '+', so the mode string parses to "rb+", which is not r/w/a/r+).
+io.open(gf, "w").close()
+var rpb = io.open(gf, "r+b")                         # binary read/write: opens fine
+assert type(rpb.read()) == "Bytes", "r+b reads Bytes (binary mode)"
+rpb.close()
+assert raises_msg(Function(): return io.open(gf, "rb+"), "unsupported file mode"), "rb+ is unsupported"
+# read(0) reads nothing and does not advance the cursor.
+with io.open(gf, "w") as f:
+    f.write("hello")
+with io.open(gf, "r") as f:
+    assert f.read(0) == "", "File.read(0) is empty"
+    assert f.tell() == 0, "File.read(0) does not advance"
+    assert f.read() == "hello", "the rest is still readable after read(0)"
+var b0 = io.BytesIO("hello")
+assert b0.read(0) == "", "BytesIO.read(0) is empty"
+assert b0.tell() == 0, "BytesIO.read(0) does not advance the cursor"
+
+# ============================================================ NUL-in-path rejection (io.open + path)
+# A NUL byte would truncate the path at the OS boundary, so it is rejected up front (not silently
+# opening a shorter path). Same guard on the filesystem-touching path.* entries.
+var nul = "a" + chr(0) + "b"
+assert raises(Function(): return io.open(nul, "r")), "io.open rejects a NUL in the path"
+assert raises(Function(): return path.exists(nul)), "path.exists rejects a NUL"
+assert raises(Function(): return path.getsize(nul)), "path.getsize rejects a NUL"
+assert raises(Function(): return path.splitext(nul)), "path.splitext rejects a NUL"
+
+# ============================================================ open() of a missing file for read
+var ghost = P("does_not_exist_zzz.txt")
+discard path.remove(ghost, missing_ok = True)
+assert raises_msg(Function(): return io.open(ghost, "r"), "could not open file"), "open missing (r) raises"
+# r+ does NOT create a missing file (in|out without trunc) and leaves nothing behind.
+assert raises(Function(): return io.open(ghost, "r+")), "open missing (r+) raises"
+assert not path.exists(ghost), "a failed r+ open created nothing"
+
+# ============================================================ duck-typed streams (write / readline)
+# io.print/write route through whatever io.stdout holds; a plain user class with a write() method
+# serves as a sink (duck typing), no built-in stream type required.
+class Collector:
+    var _init_ = Function(self):
+        self.data = ""
+    var write = Function(self, s):
+        self.data = self.data + s
+var col = Collector()
+io.print("hi", 1, stream = col)
+io.write("raw", stream = col)
+assert col.data == "hi 1\nraw", "a duck-typed write() object captures print + write"
+
+# A duck-typed readline() source feeds io.input. Unlike the built-in streams (which strip the
+# newline via getline), a duck-typed readline is returned VERBATIM — whatever the object yields.
+class Feeder:
+    var _init_ = Function(self):
+        self.lines = ["one\n", "two"]
+        self.i = 0
+    var readline = Function(self):
+        if self.i >= len(self.lines):
+            return ""
+        var r = self.lines[self.i]
+        self.i = self.i + 1
+        return r
+var fd = Feeder()
+assert io.input(stream = fd) == "one\n", "duck-typed input returns readline() verbatim (newline kept)"
+assert io.input(stream = fd) == "two", "duck-typed input, second line (no newline in the source)"
+
+# ============================================================ writelines over a String / iterables
+# writelines takes any iterable of String/Bytes; a String iterates to its characters, so each is
+# written (no separators). It rejects a non-iterable and non-String/Bytes items.
+var wl = P("wl.txt")
+with io.open(wl, "w") as f:
+    f.writelines("abc")                              # each character is a 1-char String
+with io.open(wl, "r") as f:
+    assert f.read() == "abc", "writelines over a String writes each character"
+with io.open(wl, "w") as f:
+    assert raises(Function(): return f.writelines(42)), "writelines rejects a non-iterable"
+    assert raises(Function(): return f.writelines([1, 2])), "writelines rejects non-String/Bytes items"
+
+# ============================================================ binary round-trip incl. NUL + high bytes
+var bin = P("blob.bin")
+var payload = Bytes([0, 255, 13, 10, 127, 128, 0, 200])
+with io.open(bin, "wb") as f:
+    f.write(payload)
+with io.open(bin, "rb") as f:
+    var got = f.read()
+    assert type(got) == "Bytes", "binary read yields Bytes"
+    assert got == payload, "arbitrary bytes (NUL, 0xFF, CR/LF, 0x80) round-trip exactly"
+# ab (binary append) grows the file; write in binary mode also accepts a plain String (byte-transparent).
+with io.open(bin, "ab") as f:
+    f.write("XY")
+assert path.getsize(bin) == 10, "binary append grew the file by 2"
+
+# ============================================================ BytesIO cursor: overwrite + zero-fill gap
+var b = io.BytesIO("0123456789")
+discard b.seek(3)
+assert b.write("XY") == 2, "BytesIO.write returns the byte count"
+assert b.getvalue() == "012XY56789", "write overwrites in place at the cursor"
+assert b.tell() == 5, "cursor advanced past the written bytes"
+var bgap = io.BytesIO("ab")
+discard bgap.seek(5)
+discard bgap.write("Z")
+assert bgap.getvalue().encode("latin-1") == Bytes([97, 98, 0, 0, 0, 90]), "BytesIO gap is zero-filled"
+# read returns String even for a byte buffer; getvalue is non-consuming.
+var bs = io.BytesIO("keep")
+assert type(bs.read()) == "String", "BytesIO.read returns a String"
+assert bs.getvalue() == "keep" and bs.getvalue() == "keep", "getvalue is non-consuming"
+# seek clamps negative to 0 (unlike File.seek which throws); bad whence throws on both.
+var bc = io.BytesIO("xyz")
+assert bc.seek(-100) == 0, "BytesIO negative seek clamps to 0"
+assert raises_msg(Function(): return bc.seek(0, 9), "whence must be"), "BytesIO bad whence throws"
+var skf = P("seek.txt")
+with io.open(skf, "w") as f:
+    f.write("abcdef")
+with io.open(skf, "r") as f:
+    assert raises_msg(Function(): return f.seek(-1), "position is negative"), "File negative seek throws"
+    assert raises_msg(Function(): return f.seek(0, 7), "whence must be"), "File bad whence throws"
+
+# ============================================================ closed / wrong-mode file contract
+var wo = io.open(skf, "w")
+assert raises_msg(Function(): return wo.read(), "not open for reading"), "read a write-only file throws"
+wo.close()
+var ro = io.open(skf, "r")
+assert raises_msg(Function(): return ro.write("z"), "not open for writing"), "write a read-only file throws"
+ro.close()
+var cl = io.open(skf, "r")
+cl.close()
+cl.close()                                           # idempotent double close
+assert raises_msg(Function(): return cl.read(), "closed file"), "read a closed file throws"
+assert raises_msg(Function(): return cl.tell(), "closed file"), "tell a closed file throws"
+
+# ============================================================ path.join: absolute reset + separators
+assert path.join("a", "/") == "/", "an absolute '/' component resets to root"
+assert path.join("/", "b") == "/b", "join onto root adds no double separator"
+assert path.join("a", "b", "/c", "d") == "/c/d", "a later absolute component discards the prefix"
+assert path.join("a", "") == "a/", "a trailing empty component still emits one separator"
+assert path.join("a", "", "b") == "a/b", "an empty middle component collapses"
+assert path.join("solo") == "solo", "a single component is itself"
+assert raises_msg(Function(): return path.join(), "at least one"), "join() with no parts throws"
+assert raises(Function(): return path.join("a", 5)), "join rejects a non-String part"
+
+# ============================================================ splitext: dotfiles + trailing dot
+assert path.splitext("archive.tar.gz") == ["archive.tar", ".gz"], "splitext takes only the last ext"
+assert path.splitext("noext") == ["noext", ""], "no extension -> empty ext"
+assert path.splitext(".bashrc") == [".bashrc", ""], "a leading-dot dotfile has no extension"
+assert path.splitext("..") == ["..", ""], "an all-dots name has no extension"
+assert path.splitext("...x") == ["...x", ""], "a leading run of dots is protected"
+assert path.splitext(".a.b") == [".a", ".b"], "an extension after a dotfile name"
+assert path.splitext("file.") == ["file", "."], "a trailing dot is an empty extension"
+assert path.splitext("dir.x/base") == ["dir.x/base", ""], "a dot in a directory is not an extension"
+
+# ============================================================ queries: tolerant vs strict
+var qf = P("q.txt")
+with io.open(qf, "w") as f:
+    f.write("abcde")
+assert path.exists(qf) and path.isfile(qf) and not path.isdir(qf), "exists/isfile/isdir on a file"
+assert path.getsize(qf) == 5, "getsize is the byte length"
+# tolerant predicates on a missing path never throw; getsize on missing / a directory throws.
+assert path.exists(ghost) == False, "exists is tolerant (missing -> False)"
+assert path.isfile(ghost) == False, "isfile is tolerant"
+assert path.isdir(ghost) == False, "isdir is tolerant"
+assert raises_msg(Function(): return path.getsize(ghost), "getsize"), "getsize on a missing path throws"
+assert raises(Function(): return path.getsize(root)), "getsize on a directory throws (not a regular file)"
+# listdir / walk are tolerant on a missing dir AND on a plain file (a non-directory lists as []).
+assert path.listdir(ghost) == [], "listdir of a missing dir is []"
+assert path.listdir(qf) == [], "listdir of a file (not a dir) is [] (tolerant)"
+assert path.walk(ghost) == [], "walk of a missing dir is []"
+assert path.walk(qf) == [], "walk of a file is []"
+
+# ============================================================ mutation: strict/lenient + Bool contract
+var md = P("made")
+assert path.mkdir(md) == True, "mkdir creates -> True"
+assert path.isdir(md), "the directory now exists"
+assert raises_msg(Function(): return path.mkdir(md), "already exists"), "mkdir on an existing dir throws"
+assert path.mkdir(md, exist_ok = True) == False, "mkdir(exist_ok=True) on an existing dir -> False (no-op)"
+assert path.mkdir(P("deep/nested/leaf")) == True, "mkdir creates missing parents"
+assert path.isdir(P("deep/nested/leaf")), "the nested tree exists"
+# mkdir under a FILE parent throws (the parent isn't a directory).
+var afile = P("afile")
+io.open(afile, "w").close()
+assert raises(Function(): return path.mkdir(path.join(afile, "sub"))), "mkdir under a file parent throws"
+
+# remove: strict by default, deletes a file OR an empty directory, returns the did-it Bool.
+var rmf = path.join(md, "gone.txt")
+io.open(rmf, "w").close()
+assert path.remove(rmf) == True, "remove a file -> True"
+assert not path.exists(rmf), "the file is gone"
+assert raises_msg(Function(): return path.remove(rmf), "does not exist"), "remove a missing path throws"
+assert path.remove(rmf, missing_ok = True) == False, "remove(missing_ok=True) of a missing path -> False"
+var emptyd = P("emptydir")
+discard path.mkdir(emptyd)
+assert path.remove(emptyd) == True, "remove of an EMPTY directory -> True"
+assert not path.exists(emptyd), "the empty directory is gone"
+# remove of a NON-EMPTY directory throws (that's rmtree's job).
+var full = P("fulldir")
+discard path.mkdir(full)
+io.open(path.join(full, "x"), "w").close()
+assert raises(Function(): return path.remove(full)), "remove of a non-empty directory throws"
+
+# rmtree: recursive delete of a tree OR a single file; same strict/missing_ok/Bool contract.
+assert path.rmtree(full) == True, "rmtree a non-empty tree -> True"
+assert not path.exists(full), "the whole tree is gone"
+var lonefile = P("lone.txt")
+io.open(lonefile, "w").close()
+assert path.rmtree(lonefile) == True, "rmtree a single file -> True"
+assert not path.exists(lonefile), "the lone file is gone"
+assert raises_msg(Function(): return path.rmtree(full), "does not exist"), "rmtree a missing path throws"
+assert path.rmtree(full, missing_ok = True) == False, "rmtree(missing_ok=True) of a missing path -> False"
+
+# rename returns None and moves (overwriting the destination); a missing source throws.
+var ra = P("ra.txt")
+var rb = P("rb.txt")
+with io.open(ra, "w") as f:
+    f.write("A")
+with io.open(rb, "w") as f:
+    f.write("BBB")
+assert path.rename(ra, rb) == None, "rename returns None"
+assert path.getsize(rb) == 1 and not path.exists(ra), "rename overwrote the destination and consumed the source"
+assert raises_msg(Function(): return path.rename(ghost, rb), "rename"), "rename of a missing source throws"
+
+# chmod is lenient: True on success, False (no throw) on a missing path.
+assert path.chmod(rb, 0o600) == True, "chmod returns True on success"
+assert path.chmod(ghost, 0o644) == False, "chmod is lenient on a missing path (False, no throw)"
+
+# ============================================================ locations are non-empty existing dirs
+assert type(path.getcwd()) == "String" and len(path.getcwd()) > 0, "getcwd is a non-empty String"
+assert path.isdir(path.gettempdir()), "gettempdir() is an existing directory"
+assert path.isdir(path.fasttemp()), "fasttemp() is an existing directory"
+assert type(path.executable) == "String", "path.executable is a String"
+
+# ============================================================ CLEAN UP
+discard path.rmtree(root, missing_ok = True)
+assert not path.exists(root), "scratch dir removed recursively"
+
+io.print("OK io_path")

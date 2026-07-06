@@ -1,0 +1,186 @@
+# labx_regex — deep edge/hardening pass for the `regex` module, going BEYOND verify_regex.ki /
+# spec_regex*.ki / probe_regex_conformance.ki / audit_regex.ki. Focus: anchoring differences,
+# findall group shapes, named-group duplicates, sub/split empty-match + capture behavior, flag
+# corner cases, class/quantifier lexer fallbacks, and the linear-time pathological guarantee.
+# All real checking via assert; the only stdout is the sentinel "OK regex".
+var io = import("io")
+var re = import("regex")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ match vs fullmatch vs search
+# Same input, three anchoring behaviors laid out side by side.
+assert re.match(r"\d+", "12ab").group() == "12", "match: anchored at 0, partial ok"
+assert re.fullmatch(r"\d+", "12ab") == None, "fullmatch: must cover whole string -> None"
+assert re.search(r"\d+", "ab12").group() == "12", "search: finds anywhere"
+assert re.match(r"\d+", "ab12") == None, "match: not at start -> None"
+assert re.search(r"\d+", "ab12").span() == [2, 4], "search span is code-point index"
+# search prefers the LEFTMOST start, then longest at that start
+assert re.search("a|ab", "xab").group() == "a", "leftmost-longest: alt picks first-at-position"
+assert re.search("aa|a", "aaa").group() == "aa", "alternation prefers first branch that fits"
+
+# ============================================================ findall group-shape contract
+assert re.findall(r"\d+", "a1 b22 c333") == ["1", "22", "333"], "0 groups -> matched strings"
+assert re.findall(r"(\w)\d", "a1 b2") == ["a", "b"], "1 group -> that group's strings"
+assert re.findall(r"(\w)(\d)", "a1 b2") == [["a", "1"], ["b", "2"]], "2+ groups -> per-match lists"
+# a non-participating group renders as "" in findall (NOT None as group()/groups() would give)
+assert re.findall(r"(\d)?(x)", "x5x") == [["", "x"], ["5", "x"]], "findall: absent group -> '' string"
+
+# ============================================================ named groups + duplicate detection
+var who = re.search(r"(?P<user>\w+)@(?P<host>[\w.]+)", "ping ada@kirito.dev now")
+assert who.group("user") == "ada" and who.group("host") == "kirito.dev", "named access by name"
+assert who.groupdict() == {"user": "ada", "host": "kirito.dev"}, "groupdict"
+assert re.search(r"(?<n>\d+)", "x42").group("n") == "42", "(?<name>) alternate spelling"
+# groupdict default applies to a non-participating named group
+assert re.search(r"(?P<a>x)?(?P<b>y)", "y").groupdict("Z") == {"a": "Z", "b": "y"}, "groupdict default"
+# duplicate names rejected — same spelling AND across the two spellings
+assert raises_msg(Function(): return re.compile(r"(?P<x>a)(?P<x>b)"), "duplicate group name 'x'"), "dup name same spelling"
+assert raises_msg(Function(): return re.compile(r"(?P<x>a)(?<x>b)"), "duplicate group name 'x'"), "dup name cross spelling"
+
+# ============================================================ greedy vs lazy
+assert re.search("<.*>", "<a><b>").group() == "<a><b>", "greedy .* takes all"
+assert re.search("<.*?>", "<a><b>").group() == "<a>", "lazy .*? takes least"
+assert re.search("a+?", "aaa").group() == "a", "lazy +?"
+assert re.search("a??", "aaa").span() == [0, 0], "lazy ?? prefers empty"
+assert re.search("a{2,4}?", "aaaa").group() == "aa", "lazy {n,m}? prefers minimum"
+
+# ============================================================ sub: templates + callable + refs
+assert re.sub(r"(\w+)@(\w+)", r"\2.\1", "user@host") == "host.user", "sub numeric backrefs"
+assert re.sub(r"\d+", r"[\g<0>]", "a1b2") == "a[1]b[2]", "sub \\g<0> whole match"
+assert re.sub(r"\d", r"[\0]", "a1") == "a[1]", "sub \\0 whole match"
+assert re.sub(r"(?P<w>\w+)", r"<\g<w>>", "hi") == "<hi>", "sub \\g<name>"
+assert re.sub(r"(a)(b)", r"\g<01>", "ab") == "a", "sub \\g<01> leading-zero numeric"
+assert re.sub("a", r"\n", "a") == "\n", "sub template cooked escape \\n"
+var upper = Function(mm):
+    return mm.group().upper()
+assert re.sub(r"[a-z]+", upper, "aB cD") == "AB CD", "sub callable"
+assert re.sub("a", "X", "aaaa", count = 2) == "XXaa", "sub count keyword"
+assert re.sub("a", "X", "aaaa", -1) == "XXXX", "sub negative count = replace all"
+
+# ============================================================ split: captures, maxsplit, empties
+assert re.split(r"\s*,\s*", "a , b,c") == ["a", "b", "c"], "split strips around sep"
+assert re.split(r"(\s+)", "one two three") == ["one", " ", "two", " ", "three"], "split keeps captured sep"
+assert re.split("(,)", "a,b,c", 1) == ["a", ",", "b,c"], "split maxsplit + capture"
+assert re.split(",", "a,b,c", -1) == ["a", "b", "c"], "split negative maxsplit = split all"
+assert re.split(",", "a,b,,c") == ["a", "b", "", "c"], "split keeps empty fields"
+assert re.split("x", "abc") == ["abc"], "split no match -> whole string"
+
+# ============================================================ empty-match handling (no infinite loop)
+assert re.findall("a*", "abc") == ["a", "", "", ""], "empty-capable findall advances"
+assert re.findall("", "ab") == ["", "", ""], "empty pattern: one match per position + end"
+assert re.sub("x*", "-", "abc") == "-a-b-c-", "sub over empty matches advances one per position"
+assert re.split("", "ab") == ["", "a", "b", ""], "split on empty pattern"
+# finditer over an empty pattern reports one zero-width match per position
+var spans = []
+for h in re.finditer("", "ab"):
+    spans.append(h.span())
+assert spans == [[0, 0], [1, 1], [2, 2]], "finditer empty-match spans"
+
+# ============================================================ flags each change the outcome
+# IGNORECASE folds BOTH directions, including Latin-1 accented letters (É <-> é).
+assert re.search(chr(201), "caf" + chr(233), re.IGNORECASE).span() == [3, 4], "IGNORECASE unicode É~é"
+assert re.findall("cat", "Cat CAT cat", re.I) == ["Cat", "CAT", "cat"], "IGNORECASE ascii"
+assert re.search("cat", "CAT") == None, "without IGNORECASE: no fold"
+# MULTILINE changes ^ AND $.
+assert re.findall(r"^\w+", "one\ntwo\nthree", re.M) == ["one", "two", "three"], "MULTILINE ^"
+assert re.findall(r"\w+$", "aa\nbb\ncc", re.M) == ["aa", "bb", "cc"], "MULTILINE $"
+assert re.findall(r"^\w+", "one\ntwo") == ["one"], "without MULTILINE: only first line"
+# DOTALL changes '.'.
+assert re.findall(".", "a\nb", re.S) == ["a", "\n", "b"], "DOTALL: dot matches newline"
+assert re.findall(".", "a\nb") == ["a", "b"], "without DOTALL: dot skips newline"
+# combine flags with +, and inline (?i) applies to the whole pattern regardless of position
+assert re.findall("^cat", "cat\nCAT", re.M + re.I) == ["cat", "CAT"], "combined M+I"
+assert re.search("a(?i)b", "AB").group() == "AB", "inline (?i) mid-pattern is global"
+
+# ============================================================ anchors / boundaries on code points
+assert re.findall(r"\bcat\b", "cat scatter cat") == ["cat", "cat"], "\\b whole word"
+assert re.search(r"\Bcat", "scatter").group() == "cat", "\\B inside a word"
+assert re.search("c$", "abc\n").span() == [2, 3], "$ matches before a single trailing newline"
+assert re.search(r"c\z", "abc\n") == None, "\\z is the ABSOLUTE end (after the newline)"
+# \w is ASCII-only, so an accented letter is a non-word char -> it forms word boundaries
+assert re.findall(r"\w+", "a" + chr(239) + "b") == ["a", "b"], "\\w ASCII: accent splits words"
+
+# ============================================================ negated class + literal fallbacks
+assert re.search("[^x]", "\n").group() == "\n", "negated class matches newline (unlike .)"
+assert re.findall("[a-]", "a-b") == ["a", "-"], "trailing '-' in class is literal"
+assert re.findall("[a^]", "a^b") == ["a", "^"], "'^' not first is literal"
+assert re.search("[]]", "x]y").group() == "]", "']' right after '[' is literal"
+# an invalid {..} is treated leniently as a literal brace run
+assert re.search("a{,3}", "za{,3}z").group() == "a{,3}", "{,3} (no lower bound) -> literal"
+assert re.search("a{}", "a{}").group() == "a{}", "empty {} -> literal"
+
+# ============================================================ pos / endpos
+var p = re.compile("a+")
+assert p.search("aaa", 1).group() == "aa", "search from pos"
+assert p.search("aaa", endpos = 2).group() == "aa", "endpos with pos omitted (keyword hole-fill)"
+assert p.search("aaa", 99) == None, "pos past end -> None"
+assert re.compile("b$").search("abc", 0, 2).group() == "b", "endpos re-anchors $"
+
+# ============================================================ group() multi-key / span math
+var d = re.search(r"(\d{4})-(\d{2})-(\d{2})", "on 2024-06-07!")
+assert d.group(1, 0, 2) == ["2024", "2024-06-07", "06"], "group multi-key incl 0"
+assert d.groups() == ["2024", "06", "07"], "groups() tuple"
+assert [d.start(), d.end()] == [3, 13], "whole start/end"
+assert d.span(3) == [11, 13], "group span math"
+
+# ============================================================ escape round-trips as a literal
+assert re.escape("a.b*c+d?") == r"a\.b\*c\+d\?", "escape metachars"
+assert re.search(re.escape("3.14?"), "pi=3.14? yes").group() == "3.14?", "escaped literal matches"
+assert re.escape("word_09") == "word_09", "word chars unescaped"
+assert re.escape("café") == "café", "non-ascii left intact"
+
+# ============================================================ HARDENING: rejected constructs
+assert raises_msg(Function(): return re.compile(r"(a)\1"), "backreferences are not supported"), "backref \\1"
+assert raises_msg(Function(): return re.compile(r"\7"), "backreferences are not supported"), "bare \\7 = backref"
+assert raises_msg(Function(): return re.compile("(?P=user)"), "named backreferences are not supported"), "named backref"
+assert raises_msg(Function(): return re.compile("a(?=b)"), "lookahead"), "lookahead (?="
+assert raises_msg(Function(): return re.compile("a(?!b)"), "lookahead"), "negative lookahead (?!"
+assert raises_msg(Function(): return re.compile("(?<=a)b"), "lookbehind"), "lookbehind (?<="
+assert raises_msg(Function(): return re.compile("(?<!a)b"), "lookbehind"), "negative lookbehind (?<!"
+# malformed structure
+assert raises_msg(Function(): return re.compile("(a"), "missing ) in pattern"), "unbalanced ("
+assert raises_msg(Function(): return re.compile("a)"), "unbalanced ')'"), "unbalanced )"
+assert raises_msg(Function(): return re.compile("+a"), "nothing to repeat"), "leading +"
+assert raises_msg(Function(): return re.compile("a**"), "nothing to repeat"), "double quantifier"
+assert raises_msg(Function(): return re.compile("[a-"), "unterminated character class"), "unterminated class"
+assert raises_msg(Function(): return re.compile("[z-a]"), "bad character range"), "reversed class range"
+assert raises_msg(Function(): return re.compile("a{5,2}"), "bad repetition bounds"), "reversed {n,m}"
+assert raises_msg(Function(): return re.compile("(?P<>a)"), "empty group name"), "empty group name"
+assert raises_msg(Function(): return re.compile("(?P<9a>x)"), "bad group name"), "bad group name (leading digit)"
+assert raises_msg(Function(): return re.compile(r"\x2"), "incomplete"), "incomplete \\x"
+assert raises_msg(Function(): return re.compile(r"\U00110000"), "out of range"), "escape above U+10FFFF"
+assert raises_msg(Function(): return re.compile(r"\uD83D"), "surrogate"), "lone surrogate escape"
+# resource caps
+assert raises_msg(Function(): return re.compile("a{1001}"), "repetition count too large"), "repetition cap"
+assert raises_msg(Function(): return re.compile("()" * 1001), "too many capture groups"), "group-count cap"
+
+# ============================================================ HARDENING: Match / sub misuse
+var mm = re.search("(a)(b)", "ab")
+assert raises_msg(Function(): return mm.group(9), "no such group: 9"), "group index out of range"
+assert raises_msg(Function(): return who.group("nope"), "no such group: 'nope'"), "group unknown name"
+assert raises_msg(Function(): return mm.group([1]), "group key must be an Integer index or a String name"), "bad group key type"
+assert raises_msg(Function(): return mm.start(9), "no such group: 9"), "start out of range"
+assert raises_msg(Function(): return re.sub("(a)", r"\2", "a"), "invalid group reference"), "sub template group out of range"
+assert raises_msg(Function(): return re.sub("(a)", r"\g<none>", "a"), "no group named"), "sub template bad name"
+assert raises_msg(Function(): return re.sub("a", Function(x): return 5, "a"), "must return a String"), "sub callable non-String"
+assert raises_msg(Function(): return re.sub("a", 5, "aa"), "must be a String or a function"), "sub bad repl type"
+
+# ============================================================ LINEAR-TIME guarantee
+# A backtracking engine hangs on these over a run of a's; the Thompson-NFA engine returns instantly.
+# (If it were catastrophic the test would hang and CI would time out — asserting the value suffices.)
+assert re.search("(a+)+b", "a" * 60 + "c") == None, "(a+)+b pathological -> None, no blow-up"
+assert re.search("(a*)*b", "a" * 60 + "c") == None, "(a*)*b nested star -> None"
+assert re.fullmatch("(a|a|a)*b", "a" * 60 + "b").group() == "a" * 60 + "b", "ambiguous alt still linear"
+
+io.print("OK regex")

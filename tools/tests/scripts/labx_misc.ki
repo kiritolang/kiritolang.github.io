@@ -1,0 +1,304 @@
+# labx_misc — deep edge/hardening coverage for xml, semver, arg, tee.
+# Green sentinel: prints exactly "OK misc". All real checks are asserts.
+
+var io = import("io")
+var xml = import("xml")
+var s = import("semver")
+var arg = import("arg")
+var tee = import("tee")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# =============================================================== xml =============================
+# entities: named
+var r = xml.parse("<a>x &amp; y &lt; z &gt; w &quot;q&quot; &apos;p&apos;</a>")
+assert r.text == "x & y < z > w \"q\" 'p'", "named entities"
+# numeric decimal + hex (both cases) — &#65; and &#x41; both 'A'
+var r2 = xml.parse("<a>&#65;&#x41;&#x61;&#X42;</a>")
+assert r2.text == "AAaB", "numeric entities"
+# double-escaped: &amp;amp; -> &amp; (only the first is a real entity)
+assert xml.parse("<a>&amp;amp;</a>").text == "&amp;", "double-escaped amp"
+# malformed numeric entity kept verbatim (lenient, never crashes)
+assert xml.parse("<a>&#zz;</a>").text == "&#zz;", "bad numeric kept"
+assert xml.parse("<a>&#;</a>").text == "&#;", "empty numeric kept"
+# out-of-range / surrogate numeric refs kept verbatim (chr would throw otherwise)
+assert xml.parse("<a>&#x110000;</a>").text == "&#x110000;", "over max kept"
+assert xml.parse("<a>&#xD800;</a>").text == "&#xD800;", "surrogate kept"
+# unknown named entity kept verbatim
+assert xml.parse("<a>&foo;</a>").text == "&foo;", "unknown entity kept"
+# bare ampersand with no semicolon kept
+assert xml.parse("<a>a & b</a>").text == "a & b", "bare amp"
+
+# CDATA: contents are raw (no entity decoding, angle brackets literal)
+assert xml.parse("<a><![CDATA[<b>&raw;</b>]]></a>").text == "<b>&raw;</b>", "cdata raw"
+# unterminated CDATA still parses leniently to end
+assert xml.parse("<a><![CDATA[tail").text == "tail", "cdata unterminated"
+
+# comments are dropped; surrounding text merges
+assert xml.parse("<a>x<!-- c -->y</a>").text == "xy", "comment dropped"
+# xml decl and doctype are skipped
+assert xml.parse("<?xml version='1.0'?><r>hi</r>").text == "hi", "xml decl skipped"
+assert xml.parse("<!DOCTYPE r><r>hi</r>").text == "hi", "doctype skipped"
+
+# tail text: character data after a child's end tag belongs to that child's .tail
+var rt = xml.parse("<a><b/>tail<c/>more</a>")
+assert rt.text == "", "no leading text"
+assert rt.children[0].tag == "b" and rt.children[0].tail == "tail", "b tail"
+assert rt.children[1].tag == "c" and rt.children[1].tail == "more", "c tail"
+
+# both attribute quote styles, entities decoded inside attrs
+var ra = xml.parse("<a x='1' y=\"2 &amp; 3\"/>")
+assert ra.get("x") == "1", "single-quoted attr"
+assert ra.get("y") == "2 & 3", "double-quoted attr decoded"
+assert ra.get("z") == None, "missing attr -> None default"
+assert ra.get("z", "d") == "d", "missing attr -> explicit default"
+
+# find / findall / findtext — over direct children only
+var doc = xml.parse("<lib><book id='1'/><book id='2'/><mag/></lib>")
+assert len(doc.findall("book")) == 2, "findall count"
+assert doc.find("book").get("id") == "1", "find first"
+assert doc.find("nope") == None, "find missing"
+assert doc.findall("nope") == [], "findall missing empty"
+var doc2 = xml.parse("<r><t>hello</t></r>")
+assert doc2.findtext("t") == "hello", "findtext hit"
+assert doc2.findtext("x") == "", "findtext default empty"
+assert doc2.findtext("x", "def") == "def", "findtext explicit default"
+
+# itertext — whole subtree in document order (text + each child text+tail)
+var doc3 = xml.parse("<r>a<b>c</b>d<e>f</e>g</r>")
+assert "".join(doc3.itertext()) == "acdfg", "itertext order"
+# len / index / iteration protocol
+assert len(doc3) == 2, "len == child count"
+assert doc3[0].tag == "b", "index child"
+var tags = []
+for ch in doc3:
+    tags.append(ch.tag)
+assert tags == ["b", "e"], "iterate children"
+
+# tostring round-trip, escaping, and self-closing empty elements
+var built = xml.Element("root")
+built.text = "hi & bye"
+var child = xml.Element("c", {"k": "v<>"})
+built.children.append(child)
+var out = xml.tostring(built)
+assert out == "<root>hi &amp; bye<c k=\"v&lt;&gt;\" /></root>", "tostring escaping + self-close"
+var back = xml.parse(out)
+assert back.text == "hi & bye", "round-trip text decoded"
+assert back.children[0].get("k") == "v<>", "round-trip attr decoded"
+# _str_ equals tostring
+assert String(back) == out, "_str_ == tostring"
+
+# lenient recovery: mismatched close tag does not crash; multiple top-level siblings -> LAST is root
+assert xml.parse("<a><b></a>").tag == "a", "mismatched close tolerated"
+assert xml.parse("<a/><b/>").tag == "b", "last sibling is root"
+# no element at all -> None
+assert xml.parse("") == None, "empty -> None"
+assert xml.parse("just text") == None, "text-only -> None"
+assert xml.parse("<!-- only -->") == None, "comment-only -> None"
+# type-enforced parameter: non-String argument raises
+assert raises(Function(): return xml.parse(123)), "parse rejects non-String"
+
+# =============================================================== semver =========================
+# parse: full decomposition
+var pv = s.parse("1.2.3-alpha.1+build.5")
+assert pv["major"] == 1 and pv["minor"] == 2 and pv["patch"] == 3, "parse core"
+assert pv["prerelease"] == ["alpha", "1"], "parse prerelease list"
+assert pv["build"] == ["build", "5"], "parse build list"
+assert pv["raw"] == "1.2.3-alpha.1+build.5", "parse raw"
+# clean tolerates v/=/whitespace
+assert s.clean("  v1.2.3  ") == "1.2.3", "clean v-prefix"
+assert s.clean("=1.0.0") == "1.0.0", "clean = prefix"
+# valid returns cleaned string or None (never throws)
+assert s.valid("1.2.3") == "1.2.3", "valid ok"
+assert s.valid("v2.0.0") == "2.0.0", "valid cleans"
+assert s.valid("1.2") == None, "valid incomplete -> None"
+assert s.valid("a.b.c") == None, "valid non-numeric -> None"
+assert s.valid("1.2.3.4") == None, "valid too many components -> None"
+# parse (unlike valid) THROWS on the same inputs, with the documented messages
+assert raises_msg(Function(): return s.parse("1.2"), "need MAJOR.MINOR.PATCH"), "parse incomplete throws"
+assert raises_msg(Function(): return s.parse("a.b.c"), "non-numeric core"), "parse non-numeric throws"
+assert raises_msg(Function(): return s.parse("1.0.0-"), "empty prerelease identifier"), "parse empty pre throws"
+# component accessors
+assert s.major("1.2.3") == 1 and s.minor("1.2.3") == 2 and s.patch("1.2.3") == 3, "component accessors"
+assert s.prerelease("1.2.3-beta.2") == ["beta", "2"], "prerelease list"
+assert s.prerelease("1.2.3") == None, "no prerelease -> None"
+
+# precedence
+assert s.compare("1.0.0", "2.0.0") == -1, "cmp major"
+assert s.compare("1.0.1", "1.0.0") == 1, "cmp patch"
+assert s.compare("1.0.0", "1.0.0") == 0, "cmp equal"
+assert s.compare("1.0.0-alpha", "1.0.0") == -1, "prerelease sorts before release"
+assert s.compare("1.0.0-alpha", "1.0.0-beta") == -1, "alpha < beta"
+assert s.compare("1.0.0-1", "1.0.0-alpha") == -1, "numeric id < alphanumeric id"
+assert s.compare("1.0.0-alpha", "1.0.0-alpha.1") == -1, "longer prerelease wins"
+assert s.gt("1.0.10", "1.0.9"), "numeric not lexical"
+assert s.compare("1.0.0+a", "1.0.0+b") == 0, "build metadata ignored"
+# comparison shortcuts
+assert s.eq("1.0.0", "1.0.0+build") and s.neq("1.0.0", "1.0.1"), "eq/neq"
+assert s.lt("1.0.0-alpha", "1.0.0") and s.lte("1.0.0", "1.0.0"), "lt/lte"
+assert s.gte("1.0.0", "1.0.0"), "gte"
+# diff
+assert s.diff("1.0.0", "2.0.0") == "major", "diff major"
+assert s.diff("1.0.0", "1.1.0") == "minor", "diff minor"
+assert s.diff("1.0.0", "1.0.1") == "patch", "diff patch"
+assert s.diff("1.0.0-a", "1.0.0-b") == "prerelease", "diff prerelease"
+assert s.diff("1.0.0", "1.0.0") == None, "diff equal -> None"
+assert s.diff("1.0.0", "1.0.0+build") == None, "diff build-only -> None"
+# inc drops prerelease/build
+assert s.inc("1.2.3", "major") == "2.0.0", "inc major"
+assert s.inc("1.2.3", "minor") == "1.3.0", "inc minor"
+assert s.inc("1.2.3", "patch") == "1.2.4", "inc patch"
+assert s.inc("1.2.3-alpha+b", "patch") == "1.2.4", "inc drops pre/build"
+assert raises_msg(Function(): return s.inc("1.2.3", "bad"), "release must be major/minor/patch"), "inc bad release"
+
+# satisfies — every range form
+assert s.satisfies("1.4.0", "^1.2.0"), "caret in"
+assert not s.satisfies("2.0.0", "^1.2.0"), "caret above"
+assert not s.satisfies("1.1.0", "^1.2.0"), "caret below"
+assert s.satisfies("0.2.5", "^0.2.3"), "caret 0.x in"
+assert not s.satisfies("0.3.0", "^0.2.3"), "caret 0.x above"
+assert s.satisfies("1.2.9", "~1.2.3"), "tilde in"
+assert not s.satisfies("1.3.0", "~1.2.3"), "tilde above"
+assert s.satisfies("1.5.0", "~1") and not s.satisfies("2.0.0", "~1"), "tilde partial"
+assert s.satisfies("1.5.0", ">=1.0.0 <2.0.0"), "comparators AND in"
+assert not s.satisfies("2.0.0", ">=1.0.0 <2.0.0"), "comparators AND out"
+assert s.satisfies("1.5.0", ">= 1.2.0"), "space after operator"
+assert s.satisfies("1.2.9", "1.2.x") and not s.satisfies("1.3.0", "1.2.x"), "x-range patch"
+assert s.satisfies("1.9.0", "1.x") and not s.satisfies("2.0.0", "1.x"), "x-range minor"
+assert s.satisfies("3.4.5", "*"), "star matches all"
+assert s.satisfies("1.5.0", "1.0.0 - 2.0.0"), "hyphen in"
+assert s.satisfies("2.0.0", "1.0.0 - 2.0.0"), "hyphen inclusive upper"
+assert not s.satisfies("2.0.1", "1.0.0 - 2.0.0"), "hyphen above upper"
+assert s.satisfies("2.3.9", "1.0.0 - 2.3"), "hyphen partial upper -> <2.4.0"
+assert not s.satisfies("2.4.0", "1.0.0 - 2.3"), "hyphen partial upper boundary"
+assert s.satisfies("1.0.0", "1.0.0 || 2.0.0"), "OR left"
+assert s.satisfies("2.0.0", "1.0.0 || 2.0.0"), "OR right"
+assert not s.satisfies("3.0.0", "1.0.0 || 2.0.0"), "OR miss"
+assert s.satisfies("1.2.3", "1.2.3") and not s.satisfies("1.2.4", "1.2.3"), "exact"
+assert s.satisfies("2.0.0", ">1") and not s.satisfies("1.9.0", ">1"), "> partial rounds up"
+# prerelease gating (node-semver default)
+assert s.satisfies("1.2.3-beta.2", ">=1.2.3-alpha <2.0.0"), "prerelease allowed when pinned"
+assert not s.satisfies("1.2.4-beta", ">=1.2.3-alpha <2.0.0"), "prerelease blocked on different m.m.p"
+assert not s.satisfies("1.2.3-beta", "^1.0.0"), "prerelease blocked without pin"
+# an unparseable range satisfies nothing
+assert not s.satisfies("1.0.0", "main"), "non-range satisfies nothing"
+
+# maxsatisfying / minsatisfying return the ORIGINAL string
+assert s.maxsatisfying(["v1.0.0", "v1.4.2", "v2.0.0"], "^1.0.0") == "v1.4.2", "maxsatisfying"
+assert s.minsatisfying(["1.0.0", "1.4.2", "1.2.0"], "^1.0.0") == "1.0.0", "minsatisfying"
+assert s.maxsatisfying(["1.0.0", "2.0.0"], "^3.0.0") == None, "maxsatisfying none"
+# sort / rsort (invalid versions dropped)
+assert s.sort(["1.10.0", "1.2.0", "1.1.0"]) == ["1.1.0", "1.2.0", "1.10.0"], "sort ascending"
+assert s.rsort(["1.1.0", "1.10.0", "1.2.0"]) == ["1.10.0", "1.2.0", "1.1.0"], "rsort descending"
+assert s.sort(["1.0.0", "bad", "2.0.0"]) == ["1.0.0", "2.0.0"], "sort drops invalid"
+# validrange distinguishes ranges from git refs
+assert s.validrange("^1.2.3") and s.validrange(">=1.0.0 <2.0.0"), "validrange comparators"
+assert s.validrange("1.2.x") and s.validrange("*"), "validrange x-range/star"
+assert not s.validrange("1.2.3.4"), "validrange too many components"
+assert not s.validrange("main"), "validrange rejects a git ref"
+
+# =============================================================== arg =============================
+var p = arg.Parser("demo")
+discard p.positional("name")
+discard p.option("count", 1)
+discard p.flag("loud")
+# full parse with type conversion of the option (default is Integer)
+var ra1 = p.parse(["Ada", "--count", "3", "--loud"])
+assert ra1["name"] == "Ada", "positional bound"
+assert ra1["count"] == 3 and isinstance(ra1["count"], "Integer"), "option Integer-converted"
+assert ra1["loud"] == True, "flag set"
+assert ra1["rest"] == [], "no leftovers"
+# defaults when omitted
+var ra2 = p.parse(["Bob"])
+assert ra2["count"] == 1 and ra2["loud"] == False, "defaults applied"
+# --name=value form, short flag by first letter, and leftover positionals under "rest"
+var p3 = arg.Parser()
+discard p3.positional("cmd")
+discard p3.option("level", 0)
+discard p3.flag("verbose")
+var ra3 = p3.parse(["run", "--level=2", "-v", "extra1", "extra2"])
+assert ra3["cmd"] == "run" and ra3["level"] == 2 and ra3["verbose"] == True, "= form + short flag"
+assert ra3["rest"] == ["extra1", "extra2"], "leftovers collected"
+# short option taking a value
+assert p3.parse(["run", "-l", "5"])["level"] == 5, "short option value"
+# Float and String option typing
+var p2 = arg.Parser()
+discard p2.option("ratio", 1.0)
+discard p2.option("title", "x")
+var ra4 = p2.parse(["--ratio", "2.5", "--title", "hi"])
+assert ra4["ratio"] == 2.5 and isinstance(ra4["ratio"], "Float"), "option Float-converted"
+assert ra4["title"] == "hi" and isinstance(ra4["title"], "String"), "String option stays String"
+# a negative-number token stays a positional (not a short option)
+var pn = arg.Parser()
+discard pn.positional("x")
+assert pn.parse(["-5"])["x"] == "-5", "negative number is positional"
+# usage() text
+var u = p.usage()
+assert "usage:" in u and "<name>" in u and "--count" in u and "--loud" in u and "-h, --help" in u, "usage text"
+
+# -h / --help print usage and return None (capture stdout so it doesn't pollute the sentinel)
+var savedout = io.stdout
+var capbuf = io.BytesIO()
+io.stdout = capbuf
+var h1 = p.parse(["-h"])
+var h2 = p.parse(["--help"])
+io.stdout = savedout
+assert h1 == None and h2 == None, "-h/--help return None"
+assert "usage:" in capbuf.getvalue(), "help printed usage"
+
+# hardening: must-raise cases with message checks
+assert raises_msg(Function(): return p.parse(["Ada", "--bogus"]), "unknown option: --bogus"), "unknown long option"
+assert raises_msg(Function(): return p.parse(["Ada", "-z"]), "unknown option: -z"), "unknown short option"
+assert raises_msg(Function(): return p.parse([]), "missing required argument: <name>"), "missing positional"
+assert raises_msg(Function(): return p.parse(["Ada", "--count"]), "requires a value"), "long option no value"
+assert raises_msg(Function(): return p.parse(["Ada", "-c"]), "requires a value"), "short option no value"
+assert raises_msg(Function(): return p.parse(["Ada", "--count", "abc"]), "expects an integer"), "bad integer"
+assert raises_msg(Function(): return p2.parse(["--ratio", "xyz"]), "expects a number"), "bad float"
+
+# =============================================================== tee =============================
+# fan-out: a Tee writes each chunk to every copy first, then the primary. Confirm BOTH received it.
+var prim = io.BytesIO()
+var cop = io.BytesIO()
+var t = tee.Tee(prim, cop)
+var wrote = t.write("hello")
+assert wrote == 5, "write returns byte count"
+assert prim.getvalue() == "hello", "primary got the write"
+assert cop.getvalue() == "hello", "copy got the write"
+assert len(t.streams()) == 2, "two underlying streams"
+# writelines fans out each line
+t.writelines(["A", "B"])
+assert prim.getvalue() == "helloAB" and cop.getvalue() == "helloAB", "writelines fan-out"
+# a List of copies + a None primary (pure fan-out sink)
+var c1 = io.BytesIO()
+var c2 = io.BytesIO()
+var sink = tee.Tee(None, [c1, c2])
+discard sink.write("xyz")
+assert c1.getvalue() == "xyz" and c2.getvalue() == "xyz", "None-primary fan-out to list"
+assert len(sink.streams()) == 2, "None primary omitted from streams"
+# flush / close are no-crash on BytesIO
+sink.flush()
+sink.close()
+
+# tee_stdout context manager mirrors io.stdout into a log buffer AND the (redirected) primary.
+var capOut = io.BytesIO()
+var logBuf = io.BytesIO()
+var saved2 = io.stdout
+io.stdout = capOut
+with tee.tee_stdout(logBuf):
+    io.print("teed")
+io.stdout = saved2
+assert capOut.getvalue() == "teed\n", "tee_stdout reached primary"
+assert logBuf.getvalue() == "teed\n", "tee_stdout reached copy"
+
+io.print("OK misc")
