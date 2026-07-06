@@ -783,9 +783,7 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
         });
     if (name == "clear")
         return bind("clear", {}, [self, dict](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            auto& d = dict(vm, self);
-            d.buckets.clear();
-            d.count = 0;
+            dict(vm, self).clear();  // guarded: rejects a reentrant clear mid-probe (double-free)
             return vm.none();
         });
     if (name == "update")
@@ -913,22 +911,12 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
         });
     if (name == "clear")
         return bind("clear", {}, [self, set_of](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            auto& s = set_of(vm, self);
-            s.buckets.clear();
-            s.count = 0;
+            set_of(vm, self).clear();  // guarded: rejects a reentrant clear mid-probe (double-free)
             return vm.none();
         });
     if (name == "pop")  // remove and return an arbitrary element
         return bind("pop", {}, [self, set_of](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            auto& s = set_of(vm, self);
-            for (auto& [h, bucket] : s.buckets)
-                if (!bucket.empty()) {
-                    Handle v = bucket.back();
-                    bucket.pop_back();
-                    --s.count;
-                    return v;
-                }
-            throw KiritoError("pop from an empty Set");
+            return set_of(vm, self).popArbitrary();  // guarded like clear()
         });
     if (name == "union" || name == "intersection" || name == "difference" ||
         name == "symmetricdifference") {
