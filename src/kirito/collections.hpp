@@ -225,6 +225,8 @@ public:
         if (i < 0) return false;
         bucket.erase(bucket.begin() + i);
         --count;
+        if (bucket.empty()) buckets.erase(it);   // reclaim the now-empty bucket (A08-4: else the
+                                                  // bucket map grows unbounded across delete-distinct cycles)
         return true;
     }
 
@@ -298,11 +300,12 @@ public:
     // bucket entry mid-probe would corrupt the vector a live probe loop is iterating.
     Handle popArbitrary() {
         if (probing_) throw KiritoError("Set changed size during a value comparison");
-        for (auto& [h, bucket] : buckets)
-            if (!bucket.empty()) {
-                Handle v = bucket.back();
-                bucket.pop_back();
+        for (auto it = buckets.begin(); it != buckets.end(); ++it)
+            if (!it->second.empty()) {
+                Handle v = it->second.back();
+                it->second.pop_back();
                 --count;
+                if (it->second.empty()) buckets.erase(it);   // reclaim the emptied bucket (A08-4)
                 return v;
             }
         throw KiritoError("pop from an empty Set");

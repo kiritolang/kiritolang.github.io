@@ -882,7 +882,11 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             auto it = s.buckets.find(h);
             if (it != s.buckets.end()) {
                 auto i = probeBucket(vm.arena(), it->second, v, setKeyOf);
-                if (i >= 0) { it->second.erase(it->second.begin() + i); --s.count; return vm.none(); }
+                if (i >= 0) {
+                    it->second.erase(it->second.begin() + i); --s.count;
+                    if (it->second.empty()) s.buckets.erase(it);   // reclaim the emptied bucket (A08-4)
+                    return vm.none();
+                }
             }
             throw KiritoError("remove: value not in Set");
         });
@@ -905,7 +909,10 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             auto it = s.buckets.find(h);
             if (it != s.buckets.end()) {
                 auto i = probeBucket(vm.arena(), it->second, v, setKeyOf);
-                if (i >= 0) { it->second.erase(it->second.begin() + i); --s.count; }
+                if (i >= 0) {
+                    it->second.erase(it->second.begin() + i); --s.count;
+                    if (it->second.empty()) s.buckets.erase(it);   // reclaim the emptied bucket (A08-4)
+                }
             }
             return vm.none();
         });
@@ -959,6 +966,12 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             auto& s = set_of(vm, self);
             auto other = vm.arena().deref(a[0]).iterate(vm);
             if (!other) throw KiritoError(op + " expects an iterable");
+            // Root `other`'s elements: iterating a String/Bytes/range yields FRESHLY allocated handles
+            // reachable from no GC root, and `otherSet.add` can collect (a user _hash_/_eq_, or the
+            // pool) between adds — the same rooting the union family does (A08-5). `otherSet` is a
+            // stack local invisible to the GC, so the elements live in `rs` for the branch's duration.
+            RootScope rs(vm);
+            for (Handle e : other.value()) rs.add(e);
             SetVal otherSet;
             for (Handle e : other.value()) otherSet.add(vm.arena(), e);
             if (op == "issubset") {

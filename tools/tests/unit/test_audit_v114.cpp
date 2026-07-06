@@ -1,6 +1,8 @@
 // Regression tests for the v1.14 audit (.audit/v1.14/). Each block pins one confirmed finding so it
 // can never silently regress. Memory-safety items (A06-1 deep-_str_ native recursion) are also a
 // crash gate — run under -fsanitize=address,undefined for the strongest signal.
+#include <cstdint>
+#include <new>
 #include <string>
 
 #include "../check.hpp"
@@ -222,6 +224,46 @@ int main() {
         Value ch = hello.at(1);                     // fresh 1-char String via getItem (A19-2)
         churn();
         CHECK(ch.str() == "e");
+    }
+
+    // === A08-5 (latent GC-safety): issubset/issuperset/isdisjoint built `otherSet` from a possibly
+    // freshly-allocated iterable (String/Bytes/range chars) WITHOUT rooting it, unlike the union
+    // family — a GC between adds could sweep a not-yet-added element. Now rooted. Force GC on every
+    // allocation: the fresh 1-char String handles from "abcde" must survive into the subset check. ===
+    {
+        KiritoVM vm;
+        vm.installStandardLibrary();
+        vm.setGcThreshold(1);
+        CHECK(vm.stringify(vm.runSource("String(Set([\"a\", \"b\"]).issubset(\"abcde\")) + "
+            "String(Set([\"a\", \"z\"]).issubset(\"abcde\")) + "
+            "String(Set([\"a\", \"b\", \"c\"]).issuperset(\"ab\")) + "
+            "String(Set([\"x\", \"y\"]).isdisjoint(\"abcde\"))")) == "TrueFalseTrueTrue");
+    }
+
+    // === A08-4 (resource): an emptied hash bucket is now reclaimed on delete (else the bucket map
+    // grows unbounded across delete-distinct-hash cycles). Correctness must survive the reclamation:
+    // churn many distinct keys through add->remove->re-add and verify lookups stay consistent. ===
+    CHECK(ok("var d = {}\nvar i = 0\nwhile i < 400:\n    d[i] = i\n    i = i + 1\n"
+             "i = 0\nwhile i < 400:\n    discard d.pop(i)\n    i = i + 1\n"
+             "d[42] = 99\nString(len(d)) + \",\" + String(d[42]) + \",\" + String(42 in d)") == "1,99,True");
+    CHECK(ok("var s = Set()\nvar i = 0\nwhile i < 300:\n    s.add(i)\n    i = i + 1\n"
+             "i = 0\nwhile i < 300:\n    s.remove(i)\n    i = i + 1\n"
+             "s.add(7)\nString(len(s)) + \",\" + String(7 in s)") == "1,True");
+    CHECK(ok("var s = Set([1, 2, 3])\ndiscard s.pop()\ndiscard s.pop()\ndiscard s.pop()\n"
+             "s.add(9)\nString(len(s)) + \",\" + String(9 in s)") == "1,True");
+
+    // === A07-1 (MEDIUM, latent UB): declaring a member Object::operator new HID the global aligned
+    // allocation functions, so an over-aligned Object subclass would be routed through the 16-aligned
+    // small-object pool and constructed under-aligned (UB, sanitizer-invisible). The aligned
+    // operator new/delete overloads re-expose the aligned path. This test both COMPILES (the overload
+    // exists) and checks it hands back correctly-aligned storage. ===
+    {
+        void* p = Object::operator new(64, std::align_val_t(32));
+        CHECK((reinterpret_cast<std::uintptr_t>(p) % 32) == 0);
+        Object::operator delete(p, std::align_val_t(32));
+        void* q = Object::operator new(128, std::align_val_t(64));
+        CHECK((reinterpret_cast<std::uintptr_t>(q) % 64) == 0);
+        Object::operator delete(q, 128, std::align_val_t(64));
     }
 
     return RUN_TESTS();

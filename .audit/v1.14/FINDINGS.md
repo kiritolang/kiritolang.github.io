@@ -25,7 +25,12 @@
 | F-20 (A13-4) | DECIDE | **DEFERRED (doc)** | Complex stays unhashable — a consistent hash under the cross-type real equality (`Complex(2,0)==2`) would have to match Integer/Float hashing exactly; getting it subtly wrong corrupts Set/Dict, so unhashable is the safe choice (like write-only NaN keys). |
 | A04-4 (v1.13 A06-1) | — | **NON-BUG (re-verified)** | `!=` for a `_ne_`-only class IS symmetric (`c != 5` and `5 != c` both dispatch the reflected `_ne_` at runtime.hpp:2199). The A04 agent's re-confirmation was mistaken. |
 | A19-5 (v1.13, sys) | — | **DECISION (doc)** | `sys.exit` uses `std::_Exit` (deadlock-safety from a parallel worker) which flushes std streams + C stdio but not open user fstreams — matching Python's `os._exit`. Close files / use `with`. A stream-flush registry is deferred (cross-layer plumbing, narrow case). |
-| A04-3, A08-3/4/5/6 | low/carry | **DEFERRED** | diagnostic-span quality + minor GC-rooting/asymmetry items carried from v1.13; low yield, left as recorded flags. |
+| A07-1 (v1.13, latent UB) | MED | **FIXED** | `Object` gains `align_val_t` operator new/delete overloads so an over-aligned subclass isn't silently under-aligned by the pool (white-box aligned-alloc test). |
+| A08-5 (v1.13 A09-5) | low/latent | **FIXED** | subset/superset/disjoint now root the (possibly fresh) `other` iterable like the union family — GC-safe (setGcThreshold(1) test). |
+| A08-4 (v1.13 A09-4) | low/resource | **FIXED** | emptied hash buckets are reclaimed on Dict/Set delete + Set.pop (no unbounded bucket-map growth); churn-correctness tested. |
+| A08-3 (v1.13 A09-3) | low | **DECISION (doc)** | `[] in dict` throws (unhashable key) but `[] in set` returns False. Kept: a set only holds hashable values, so an unhashable is trivially not a member; changing either side is a semantic break for no correctness gain. |
+| A08-6 (v1.13 A09-6) | dry | **NON-BUG (doc)** | the `ValueKind::Array` branches are dead-but-harmless: `Array` is the reserved internal-array kind (CLAUDE.md), no runtime type returns it today; the `|| ==Array` checks are unreachable, not wrong. Left for a future Array type. |
+| A04-3 (v1.13 A05-2) | low/diagnostic | **DEFERRED** | a nested try inside a `finally` clobbers the reported error *location* (not the error itself). Diagnostic-quality only; recorded flag. |
 
 Below: the original triage detail.
 

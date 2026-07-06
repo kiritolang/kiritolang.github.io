@@ -145,4 +145,35 @@ assert hasattr("hi", "upper") == True, "A10-2: hasattr finds a String method"
 assert hasattr([1], "append") == True, "A10-2: hasattr finds a List method"
 assert hasattr(5, "definitely_not_a_method") == False, "A10-2: hasattr returns False for an absent member"
 
+# --- A08-4: an emptied hash bucket is reclaimed on delete; correctness survives the reclamation ---
+var churn = {}
+var ci = 0
+while ci < 400:
+    churn[ci] = ci
+    ci = ci + 1
+ci = 0
+while ci < 400:
+    discard churn.pop(ci)
+    ci = ci + 1
+assert len(churn) == 0, "A08-4: dict empty after removing every key"
+churn[42] = 99
+assert churn[42] == 99 and 42 in churn, "A08-4: re-add into a reclaimed bucket works"
+var cs = Set()
+ci = 0
+while ci < 300:
+    cs.add(ci)
+    ci = ci + 1
+ci = 0
+while ci < 300:
+    cs.remove(ci)
+    ci = ci + 1
+cs.add(7)
+assert len(cs) == 1 and 7 in cs, "A08-4: set survives add/remove churn + reclamation"
+
+# --- A08-5: subset/superset/disjoint with a fresh-handle iterable (String chars) stays correct ---
+assert Set(["a", "b"]).issubset("abcde"), "A08-5: issubset over a String iterable"
+assert not Set(["a", "z"]).issubset("abcde"), "A08-5: issubset false when a member is absent"
+assert Set(["a", "b", "c"]).issuperset("ab"), "A08-5: issuperset over a String iterable"
+assert Set(["x", "y"]).isdisjoint("abcde"), "A08-5: isdisjoint over a String iterable"
+
 io.print("OK audit-v114")

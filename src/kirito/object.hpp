@@ -83,6 +83,17 @@ public:
     // sanitizers (pool.hpp) so ASan/UBSan still see every allocation.
     static void* operator new(std::size_t n) { return pool::allocate(n); }
     static void operator delete(void* p, std::size_t n) noexcept { pool::deallocate(p, n); }
+    // Declaring a member operator new HIDES the global aligned allocation functions, so an
+    // over-aligned Object subclass (alignof > kAlign, e.g. an `alignas(32)` SIMD member) would
+    // otherwise be routed through the 16-aligned pool and constructed at an under-aligned address
+    // (UB — sanitizer-invisible, since the pool is bypassed there). Re-expose the aligned path: an
+    // over-aligned type bypasses the pool and uses global aligned new/delete, which honours its
+    // alignment. No current type is over-aligned, so this is a defensive guard against a future one.
+    static void* operator new(std::size_t n, std::align_val_t a) { return ::operator new(n, a); }
+    static void operator delete(void* p, std::align_val_t a) noexcept { ::operator delete(p, a); }
+    static void operator delete(void* p, std::size_t n, std::align_val_t a) noexcept {
+        ::operator delete(p, n, a);
+    }
 
     virtual ValueKind kind() const = 0;
     virtual std::string typeName() const = 0;
