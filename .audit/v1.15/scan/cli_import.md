@@ -51,3 +51,16 @@ Subsystem: main.cpp, src/kirito/cli_paths.hpp, module loader / import machinery
   internal (as the frozen path already treats it and its comment states).
 - fix idea: apply the same `!k.empty() && k.front() != '_'` filter in the .ki export loop.
 - note: DRY — the two export-filter loops duplicate logic and have already drifted.
+
+### F4 [MED] Script's own directory is searched LAST — a package/KIRITO_PATH module shadows the script's sibling module
+- where: main.cpp:181-204. Order added: "." (181), --lib (182), KIRITO_PATH+packages (195-197),
+  then script's parent dir (204, LAST). So the script dir has the LOWEST priority.
+- repro: scriptdir/prog.ki imports "foo"; scriptdir/foo.ki says "SCRIPT SIBLING",
+  KIRITO_PATH dir has foo.ki saying "KIRITO_PATH". Run prog.ki from an unrelated cwd:
+  resolves to "KIRITO_PATH", not the script's own sibling.
+- actual: KIRITO_PATH/package module wins over the script's sibling module.
+- expected: CLAUDE.md + cli_paths.hpp doc the order as cwd, script dir, KIRITO_PATH, packages
+  — i.e. the script's directory should outrank KIRITO_PATH and installed packages. A local
+  helper next to the script can be silently hijacked by an installed package of the same name.
+- fix idea: add the script's parent dir to the path BEFORE the environment/package paths
+  (move the addLibPath at main.cpp:204 up above lines 195-197, guarded on !file.empty()).

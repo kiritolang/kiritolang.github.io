@@ -39,3 +39,21 @@ Probe: ./build-debug/ki
 Assessment: this subsystem is unusually hardened. Only one minor inconsistency found (F1).
 
 ## FINDINGS
+### F1 [LOW] json.parse: inconsistent lone-surrogate handling (throws vs U+FFFD substitution)
+- where: src/kirito/stdlib_json.hpp:143-154
+- repro:
+    var json = import("json")
+    json.parse("\"\\uD800\"")        # => len 1 (silently substitutes U+FFFD)   OK
+    json.parse("\"\\uD800\\u0041\"") # => THROW "invalid low surrogate in \u escape"
+    json.parse("\"\\uD800\\uD800\"") # => THROW
+- actual: a lone high surrogate followed by NO `\u` is silently replaced with U+FFFD (per the code
+  comment's stated WHATWG-style leniency), but a high surrogate followed by a `\u` escape that is NOT
+  a valid low surrogate (a normal char like `A`, or another high surrogate) THROWS instead of
+  applying the same U+FFFD substitution.
+- expected: consistent policy. If the design is "always yield well-formed UTF-8 by substituting FFFD"
+  (as the comment at :151-154 says), the high+non-low case should also substitute FFFD for the high
+  surrogate and continue processing the following escape, matching browsers/Python(surrogatepass)/
+  most JSON readers. As-is, `"\uD800X"` (X escaped) is rejected while `"\uD800"` at end is accepted.
+- fix idea: when the paired `\u` low is out of the 0xDC00-0xDFFF range, don't fail — set cp=0xFFFD
+  for the high surrogate, DON'T consume the second escape (rewind the `pos_ += 2`), and let the loop
+  re-read it normally. Low severity: only affects malformed-surrogate JSON, never well-formed input.

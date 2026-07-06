@@ -35,3 +35,42 @@ Conclusion: this subsystem is very well hardened. Only two minor SUSPECT/LOW ite
 HIGH/MED confirmed bugs.
 
 ## FINDINGS
+
+### F1 [LOW/SUSPECT] gzip.decompress rejects trailing NUL padding that zlib/gzip(1)/Python tolerate
+- where: src/kirito/stdlib_gzip.hpp:47-56 (the multi-member loop + "trailing data after the last member" throw)
+- repro: gzip.decompress(gzip.compress("hello") + Bytes([0,0,0,0]))  -> THROW
+  "gzip: trailing data after the last member". Python's gzip.decompress(gc + b"\x00\x00\x00\x00")
+  returns b'hello' (NUL padding ignored); zlib's gzip C reader and gzip(1) also skip trailing
+  zero padding (common with fixed-block/record storage). Non-NUL trailing garbage is correctly
+  rejected by both us and Python.
+- actual: any trailing byte (incl. NUL padding) after the last valid member throws.
+  expected (interop): trailing all-zero padding should be ignored (as libz/gzip(1)/Python do),
+  while non-zero trailing junk stays an error.
+- fix idea: after a member completes, if the remaining bytes are all 0x00, treat them as padding
+  and stop (return result) instead of attempting another member / throwing. Keep the strict
+  rejection for non-zero trailing bytes. This is arguably a deliberate strictness choice (the code
+  comment says "reject, not silently ignore"), hence SUSPECT — flagging only as a real-world
+  interop gap for a genuinely-valid .gz.
+
+### F2 [LOW/SUSPECT] deflate::compress uses `int` for window indices -> UB for inputs > 2 GiB
+- where: src/kirito/deflate.hpp:91,121,138-142,150-151 (`std::vector<int> head/prev`,
+  `head[h] = static_cast<int>(i)`, `j = prev[j]`, `i - static_cast<size_t>(j)`)
+- repro: not practically reachable from Kirito — needs a >2^31-byte input String/Bytes in memory.
+  No .ki repro produced (would need multi-GB allocation).
+- actual: for i > INT_MAX, `static_cast<int>(i)` overflows (signed overflow UB) and the hash-chain
+  indices become negative/garbage. Decompression is capped at 256 MiB (kMaxInflateOut) but
+  COMPRESSION input has no size guard.
+- expected: either cap compressor input size (throw like the other resource guards) or use
+  size_t/int64 for the chain indices.
+- fix idea: change head/prev to `std::vector<std::ptrdiff_t>` (or int64) and the casts accordingly,
+  or add an input-size guard. Theoretical (memory-bound), hence LOW/SUSPECT.
+
+## NON-FINDINGS (checked, ruled out)
+- Huffman over-subscription / incomplete trees: no OOB (index bound proven), decode throws cleanly.
+- Fixed dist codes 30/31, dynamic dsym 30/31, length sym >=29: all rejected.
+- Stored-block LEN/NLEN complement validated; truncation checked; append bounds checked.
+- zlib header: CM!=8, CINFO>7, FDICT, FCHECK%31, adler mismatch all validated.
+- gzip header: magic, CM, FEXTRA/FNAME/FCOMMENT/FHCRC skipping bounds-checked; CRC-32 + ISIZE
+  both verified; truncation at every stage throws.
+- Zip-bomb: single-stream 256 MiB cap + gzip multi-member shrinking aggregate budget both enforced.
+- Return-type contract, high-byte Bytes hashing, all KAT vectors: correct.

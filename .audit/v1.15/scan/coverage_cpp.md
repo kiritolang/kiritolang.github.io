@@ -68,3 +68,10 @@ test_embedding_extra. This is a mature, multi-round-audited suite. Gaps below ar
   guard (kind/typeName/truthy/asX go through ref() which calls requireBound(); str() does not).
 - fix idea: `requireBound(); return vm_->stringify(h_);`. Then add str() to the unbound-accessor
   CHECK_THROWS block. This is BOTH a bug and a test gap (the gap let the bug survive).
+
+### F1 siblings (same root cause) — confirmed
+- `Value::operator+` (and all binary/comparison operators via applyBinaryOp(*vm_,...)) and `Value::at()`
+  (via vm_->makeInt) also SEGFAULT on an unbound Value (confirmed exit 139). `hash()` throws cleanly
+  (uses ref()). So the "every accessor on an unbound Value throws" contract asserted at
+  test_value_ops.cpp:217-225 is only partially real — the operator/at/str/call/setAttr paths that use
+  `*vm_` directly break it. Fix: requireBound() before any `*vm_` use; extend the CHECK_THROWS block.

@@ -65,3 +65,7 @@ io.print(io.BytesIO(Bytes([1,2,3])))   # THROW: BytesIO expects a byte String
 - path mutation: mkdir exist_ok, remove/rmtree missing_ok + return contracts, remove nonempty throws, rename None, chmod Bool(missing->False) => OK.
 - NUL rejected in filesystem ops (exists/open) but not in pure string join (documented) => OK.
 - with-context manager for File => OK.
+- writelines with mixed String/Bytes items to a binary file => OK.
+- Also ruled out (not bugs): File.write returns None while BytesIO.write returns Integer (documented, by inspectMembers); module read()/input() return String even from a binary File via stream= (documented "reads return String"); read() with no arg buffers whole file, eager iterate/readlines/List(f) buffer all lines (documented lazy-vs-eager tradeoff); chmod on negative Integer casts+masks to 0xFFF (harmless edge); CRLF retained on File read (binary-internal by design).
+
+## STATUS: audit complete. 3 findings (1 MED, 2 LOW). io/path subsystem is otherwise robust — extensive guards, clean errors, no UAF/OOM reachable from probes.
