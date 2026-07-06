@@ -75,3 +75,31 @@ test_embedding_extra. This is a mature, multi-round-audited suite. Gaps below ar
   (uses ref()). So the "every accessor on an unbound Value throws" contract asserted at
   test_value_ops.cpp:217-225 is only partially real — the operator/at/str/call/setAttr paths that use
   `*vm_` directly break it. Fix: requireBound() before any `*vm_` use; extend the CHECK_THROWS block.
+
+### G8 [MED] The `adopting`-pin on FRESH results of getAttr / call / at / pop / operators is asserted
+  in comments (A19-1/A19-2) but never tested with a NON-interned result across a forced GC.
+- where: value.hpp:150,288-303,591,983 (adopting), operator defs 997-1044.
+- what's missing: every existing GC-stress test uses either PinnedHandle-kept callees or results that
+  are small interned ints (test_pinned_handle.cpp:162-166 returns 42 — interned, survives even
+  unpinned). No test forces a collection BETWEEN a getAttr/call/at/pop/operator producing a fresh
+  heap object (a String, a big Integer, a list concat) and the caller's first use of it — the exact
+  UAF the `adopting` pin exists to prevent. Add: setGcThreshold(1); Value r = a.call(...) returning a
+  fresh String; allocate churn; then read r. Same for getAttr (a computed String attr), at() (a
+  1-char String slice), pop() (a heap element), and operator+ on Strings.
+
+## LOG
+- Read value.hpp (full), native.hpp (full), vm.hpp (full). Mapped every public symbol.
+- Read test_value.cpp, test_value_ops.cpp, test_value_containers.cpp, test_value_extra.cpp,
+  test_cppref_deep.cpp, test_pinned_handle.cpp, test_r4/r7/r8_embed_api.cpp, test_embedding_extra.cpp.
+  Value facade + NativeModule/NativeClass/makeMethod/bindArgs coverage is near-total.
+- grep-mapped un-called embedding symbols: callKw, registerModule(factory), alias-error, Args::raw,
+  setMaxStackBytes, retainChunk, importModule(C++), programForFile, ChunkFileScope, lastTraceback
+  getter, pinConst, protoGet, undefined() -> G1-G7.
+- Confirmed F1 crash (Value::str() unbound -> SIGSEGV) + siblings (operator+, at()) via compiled probes.
+- Structural check: every stdlib_*.hpp module and every kimodule has a dedicated/importing test file
+  (grep counts 11-22 files each). No wholesale-missing module. Core engine headers (lexer/parser/
+  resolver/analyzer/bytecode/compiler/gc/arena/pool) each have named test files.
+- G8: adopting-pin of fresh call/getAttr/at/pop/operator results not GC-stress-tested with a
+  non-interned result.
+- Ruled out: the Value facade scalar/container/operator surface — thoroughly covered incl. edge +
+  error + Unicode + wraparound + zero-divisor + unbound-throw (except the F1 gaps).

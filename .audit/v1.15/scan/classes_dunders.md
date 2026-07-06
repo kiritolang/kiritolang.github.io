@@ -69,3 +69,21 @@ readpriv(a)   # => "TOP-SECRET"  — external code reads A's private member
 - actual: because `readpriv` was adopted as a method of A, its KiFunction has `hasOwner=true, ownerClass=A`. Calling it directly from module scope still runs its body with frame ownerClass=A, so `checkPrivateAccess` sees currentClass=A, receiver is an A instance -> access ALLOWED. Fully external code reads/writes `_secret`.
 - expected: privacy should be bypassable only from inside code lexically belonging to the class chain, not from any external call site that happens to invoke a function object which was also registered as a method.
 - fix idea: same as F1 — ownership/privacy scope must be tied to the syntactic method definition site, not carried on a first-class function value that external code can also hold and invoke.
+
+### F3 [MED] Asymmetric `!=` when left is a dunder-less instance and right defines only `_ne_`
+- where: src/kirito/runtime.hpp:2209 (reflected-right branch guarded by `l.kind() != ValueKind::Instance`) + kiEquals viaEq only inspects `_eq_`, never `_ne_` (runtime.hpp:1594-1602).
+- repro:
+```
+class Plain:
+    var _init_ = Function(self): self.x = 1
+class NeOnly:
+    var _init_ = Function(self): self.x = 1
+    var _ne_ = Function(self, o): return False
+var a = Plain()
+var b = NeOnly()
+a != b   # => True   (b._ne_ ignored)
+b != a   # => False  (b._ne_ honored)
+```
+- actual: `a != b` returns True (identity fallback), `b != a` returns False (uses b._ne_). Docs assert "==/!= are symmetric".
+- expected: `a != b == b != a`. When the left is an instance lacking the relevant dunder, the right instance's standalone `_ne_` should still be consulted (as it is when the left is a non-instance).
+- fix idea: in applyBinaryOp let the reflected-right branch also fire when the left IS an instance but lacks a usable `_eq_`/`_ne_`; and/or have kiEquals's viaEq fall back to a standalone `_ne_` (negated). Narrow case (right defines `_ne_` but not `_eq_`), but a documented invariant is violated.
