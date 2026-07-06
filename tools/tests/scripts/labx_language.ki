@@ -1,0 +1,428 @@
+# labx_language.ki — deep edge/hardening coverage for Kirito's CORE LANGUAGE CONSTRUCTS:
+# reference-assignment, packing/unpacking (incl. starred + count-mismatch errors), control flow,
+# the conditional expression, and/or/not, switch/case, and functions (defaults/kwargs/annotations/
+# recursion guard). Goes beyond spec_control / spec_conditional / spec_functions / spec_references /
+# spec_scoping. Parse-error cases (return/break outside, duplicate case, second default, empty arm,
+# two stars) live in tools/tests/errors/ — they abort the whole script and can't be probed here.
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# =====================================================================================
+# 1. REFERENCE-ASSIGNMENT SEMANTICS
+# =====================================================================================
+# Assignment binds a name to a value; it never deep-copies. Three names, one value.
+var base = [1, 2]
+var alias1 = base
+var alias2 = alias1
+alias2.append(3)
+assert base == [1, 2, 3] and alias1 == [1, 2, 3], "three names alias one list"
+assert base == alias1 and base == alias2, "aliases are equal"
+
+# `A = B + C` allocates a NEW value; A binds to it, leaving B and C untouched.
+var pieceB = [1]
+var pieceC = [2]
+var joined = pieceB + pieceC
+joined.append(9)
+assert pieceB == [1] and pieceC == [2], "operands of + are not mutated by mutating the result"
+assert joined == [1, 2, 9], "the result is a fresh, independent list"
+
+# Rebinding a name (bare =) points it at a new value; the old value/other aliases are unaffected.
+var box = [5, 6]
+var stillOld = box
+box = [7, 8]
+assert stillOld == [5, 6] and box == [7, 8], "rebinding a name does not touch the aliased value"
+
+# Dict/nested aliasing.
+var cfg = {"k": [1]}
+var view = cfg
+view["k"].append(2)
+assert cfg["k"] == [1, 2], "nested mutation visible through a dict alias"
+
+# =====================================================================================
+# 2. PACKING (bare comma -> List)
+# =====================================================================================
+var packed = 1, 2, 3
+assert packed == [1, 2, 3], "bare comma packs into a List"
+var single = 42
+assert single == 42, "no comma: plain value, not a 1-list"
+# return packing
+var pair = Function():
+    return 10, 20
+assert pair() == [10, 20], "return with comma packs into a List"
+# packing heterogeneous values, including expressions
+var mixed = 1 + 1, "a", [9]
+assert mixed == [2, "a", [9]], "packing evaluates each element"
+
+# =====================================================================================
+# 3. UNPACKING — plain, starred (anywhere), zero-absorb, indices/members, swap, for
+# =====================================================================================
+# plain unpack from a list/pair
+var ua, ub = [1, 2]
+assert ua == 1 and ub == 2, "plain unpack"
+# swap via unpack (no temp)
+var sx = "L"
+var sy = "R"
+sx, sy = sy, sx
+assert sx == "R" and sy == "L", "swap via unpack"
+# unpack any iterable: string, set(size1), dict.items via for
+var ca, cb, cc = "xyz"
+assert ca == "x" and cb == "y" and cc == "z", "unpack a String (code points)"
+
+# starred target at the END absorbs the surplus
+var h1, *rest1 = [1, 2, 3, 4]
+assert h1 == 1 and rest1 == [2, 3, 4], "star at end absorbs tail"
+# starred at the START
+var *init1, last1 = [1, 2, 3, 4]
+assert init1 == [1, 2, 3] and last1 == 4, "star at start absorbs head"
+# starred in the MIDDLE
+var m1, *mid1, m2 = [1, 2, 3, 4, 5]
+assert m1 == 1 and mid1 == [2, 3, 4] and m2 == 5, "star in middle absorbs interior"
+
+# a star absorbing ZERO elements yields []  (exact-boundary cases)
+var z1, *zmid, z2 = [1, 2]
+assert zmid == [] and len(zmid) == 0 and z1 == 1 and z2 == 2, "middle star absorbs zero -> []"
+var zh, *ztail = [9]
+assert zh == 9 and ztail == [], "end star absorbs zero -> []"
+var *zinit, zl = [9]
+assert zinit == [] and zl == 9, "start star absorbs zero -> []"
+# star can even absorb everything, leaving fixed targets empty-side
+var *allx = [1, 2, 3]
+assert allx == [1, 2, 3], "lone star target takes all"
+var *none1, onlyv = [7]
+assert none1 == [] and onlyv == 7, "star head empty, single fixed tail"
+
+# unpack into INDICES and MEMBERS (targets need not be plain names)
+var arr = [0, 0, 0, 0]
+arr[0], arr[3] = 11, 44
+assert arr == [11, 0, 0, 44], "unpack into list indices"
+arr[1], arr[2] = arr[3], arr[0]
+assert arr == [11, 44, 11, 44], "index targets read+write in one unpack"
+class Pt:
+    var _init_ = Function(self):
+        self.x = 0
+        self.y = 0
+var pt = Pt()
+pt.x, pt.y = 3, 4
+assert pt.x == 3 and pt.y == 4, "unpack into object members"
+
+# "nested" unpack via for over a list of rows, star inside the loop target
+var rows = []
+for head, *tail in [[1, 2, 3], [4, 5], [6]]:
+    rows.append([head, tail])
+assert rows == [[1, [2, 3]], [4, [5]], [6, []]], "for-loop starred unpack per row"
+# for over dict.items()
+var d = {"a": 1, "b": 2}
+var kvsum = 0
+var keyset = []
+for k, v in d.items():
+    keyset.append(k)
+    kvsum = kvsum + v
+keyset.sort()
+assert keyset == ["a", "b"] and kvsum == 3, "for k, v in d.items()"
+
+# --- unpack COUNT-MISMATCH errors (runtime, catchable) ---
+# (the surplus targets are referenced in the return so the static analyzer is satisfied; the unpack
+#  still throws at runtime BEFORE the return, so the mismatch is what's being probed)
+var tooFew = Function():
+    var a, b, c = [1, 2]
+    return [a, b, c]
+assert raises_msg(tooFew, "expected 3 values to unpack, got 2"), "too few values"
+var tooMany = Function():
+    var a, b = [1, 2, 3]
+    return [a, b]
+assert raises_msg(tooMany, "expected 2 values to unpack, got 3"), "too many values"
+# with a star: min = number of NON-star targets; below that is an error with 'at least'
+var starFew = Function():
+    var a, *b, c = [1]
+    return [a, b, c]
+assert raises_msg(starFew, "expected at least 2 values to unpack, got 1"), "star: too few"
+# for-loop unpack mismatch also throws
+var forBad = Function():
+    for x, y in [[1, 2], [3]]:
+        discard x
+    return 0
+assert raises_msg(forBad, "expected 2 values to unpack, got 1"), "for-unpack mismatch"
+# unpacking a non-iterable
+var nonIter = Function():
+    var a, b = 42
+    return [a, b]
+assert raises_msg(nonIter, "is not iterable"), "unpack a non-iterable throws"
+
+# =====================================================================================
+# 4. CONTROL FLOW — if/elif/else, while, for, break/continue, pass/todo/discard, return
+# =====================================================================================
+var sign = Function(n):
+    if n > 0:
+        return "+"
+    elif n < 0:
+        return "-"
+    else:
+        return "0"
+assert sign(3) == "+" and sign(-3) == "-" and sign(0) == "0", "if/elif/else"
+
+# while with break + continue interplay
+var acc = 0
+var i = 0
+while True:
+    i = i + 1
+    if i > 100:
+        break
+    if i % 2 == 1:
+        continue
+    acc = acc + i
+assert acc == 2550, "while True with break+continue sums even 2..100"
+
+# break/continue only affect the innermost loop
+var visited = []
+for a in range(3):
+    for b in range(3):
+        if b == 1:
+            continue
+        if b == 2:
+            break
+        visited.append([a, b])
+assert visited == [[0, 0], [1, 0], [2, 0]], "inner continue/break don't escape outer loop"
+
+# function default-return is None; explicit return exits immediately
+var earlyReturn = Function(x):
+    if x:
+        return "yes"
+    # falls off the end -> None
+assert earlyReturn(True) == "yes" and earlyReturn(False) == None, "fall-off returns None"
+
+# pass / todo are no-ops; discard drops a value without a warning
+var noop = Function():
+    pass
+    todo "later"
+    discard 1 + 1
+    return 7
+assert noop() == 7, "pass/todo/discard are transparent"
+
+# =====================================================================================
+# 5. CONDITIONAL EXPRESSION  THEN if COND else ORELSE
+# =====================================================================================
+assert (1 if True else 2) == 1 and (1 if False else 2) == 2, "basic ternary"
+# truthiness drives the condition
+assert ("t" if [] else "f") == "f" and ("t" if [0] else "f") == "t", "ternary uses truthiness"
+# short-circuit: the UNTAKEN branch is never evaluated (would divide by zero / throw otherwise)
+assert (7 if True else (1 // 0)) == 7, "untaken else with a runtime error is skipped"
+assert ((1 // 0) if False else 7) == 7, "untaken then with a runtime error is skipped"
+# side-effect proof: only the taken branch's call fires
+var fires = [0]
+var bump = Function():
+    fires[0] = fires[0] + 1
+    return 1
+discard (bump() if True else bump())
+assert fires[0] == 1, "only the taken branch runs its side effect"
+discard (bump() if False else bump())
+assert fires[0] == 2, "the other branch runs only when taken"
+# right-associative chaining: a if c1 else b if c2 else c
+var n = 5
+assert ("low" if n < 3 else "mid" if n < 8 else "high") == "mid", "3-way chain picks middle"
+assert ("low" if n < 3 else "mid" if n < 4 else "high") == "high", "chain falls to last"
+# a chain never evaluates a would-throw branch that is skipped
+assert ("a" if True else "b" if (1 // 0) else "c") == "a", "skipped chain conditions are not evaluated"
+# usable in a call arg and index position
+assert abs(-9 if n > 0 else 9) == 9, "ternary as call arg"
+assert [10, 20, 30][2 if n > 0 else 0] == 30, "ternary as index"
+
+# =====================================================================================
+# 6. LOGICAL and / or / not — short-circuit + operand return (NOT coerced to Bool)
+# =====================================================================================
+# `or` returns the first truthy operand, else the last
+assert (0 or "" or "hit") == "hit", "or returns first truthy"
+assert (0 or "" or []) == [], "or returns last when all falsy"
+assert (5 or 9) == 5, "or returns first truthy operand value (5, not True)"
+# `and` returns the first falsy operand, else the last
+assert (1 and 2 and 3) == 3, "and returns last when all truthy"
+assert (1 and 0 and 3) == 0, "and returns first falsy operand value (0, not False)"
+assert ("x" and "") == "", "and returns falsy operand (empty string)"
+# `not` always returns a real Bool
+assert (not 0) == True and (not "x") == False and (not []) == True, "not yields Bool"
+# short-circuit avoids the second operand entirely
+var sc = [0]
+var mark = Function():
+    sc[0] = sc[0] + 1
+    return True
+discard (False and mark())
+assert sc[0] == 0, "and short-circuits (second operand not evaluated)"
+discard (True or mark())
+assert sc[0] == 0, "or short-circuits (second operand not evaluated)"
+discard (True and mark())
+assert sc[0] == 1, "and evaluates the second operand when the first is truthy"
+# would-throw second operand is never reached under short-circuit
+assert (False and (1 // 0)) == False, "and short-circuits past a would-throw"
+assert (True or (1 // 0)) == True, "or short-circuits past a would-throw"
+
+# =====================================================================================
+# 7. switch / case — exact type+value match, no fallthrough, multi-value arms, default
+# =====================================================================================
+var classify = Function(v):
+    var out = "none"
+    switch v:
+        case 0:
+            out = "zero"
+        case 1, 2, 3:
+            out = "small"
+        case "hi":
+            out = "greet"
+        default:
+            out = "other"
+    return out
+assert classify(0) == "zero", "switch exact scalar"
+assert classify(2) == "small", "switch multi-value arm"
+assert classify("hi") == "greet", "switch string arm"
+assert classify(99) == "other", "switch default"
+# NO fallthrough: exactly one arm runs (a matched arm never leaks into the next).
+# (a duplicate `case 1: ... case 1:` would be a PARSE error, not usable here — see report.)
+var noFall = Function(v):
+    var hits = []
+    switch v:
+        case 1:
+            hits.append("a")
+        case 2:
+            hits.append("b")
+        default:
+            hits.append("d")
+    return hits
+assert noFall(1) == ["a"], "no fallthrough: only the matching arm runs"
+assert noFall(2) == ["b"], "no fallthrough: second arm alone"
+assert noFall(5) == ["d"], "default alone"
+
+# EXACT type+value: case 1 (Integer) does NOT match subject 1.0 (Float), and vice versa
+var byType = Function(v):
+    switch v:
+        case 1:
+            return "int"
+        case 1.0:
+            return "float"
+        default:
+            return "neither"
+assert byType(1) == "int" and byType(1.0) == "float", "Integer 1 and Float 1.0 are distinct labels"
+# Bool is its own type: case True does not match Integer 1
+var byBool = Function(v):
+    switch v:
+        case True:
+            return "bool"
+        case 1:
+            return "int"
+        default:
+            return "d"
+assert byBool(True) == "bool" and byBool(1) == "int", "True and 1 are distinct switch labels"
+# non-scalar subject reaches ONLY default
+assert classify([1, 2]) == "other", "non-scalar subject -> default only"
+# switch with no matching case and no default is a no-op (subject untouched)
+var keep = "unchanged"
+switch 42:
+    case 7:
+        keep = "changed"
+assert keep == "unchanged", "switch with no match and no default is a no-op"
+# case / default are SOFT keywords: usable as ordinary names outside a switch body
+var default = 100
+var case = 200
+assert default + case == 300, "case/default are usable as identifiers outside a switch"
+
+# =====================================================================================
+# 8. FUNCTIONS — defaults, kwargs, annotations, closures, recursion guard
+# =====================================================================================
+# keyword args in any order + mixing positional/keyword
+var three = Function(a, b, c):
+    return [a, b, c]
+assert three(1, 2, 3) == [1, 2, 3], "positional"
+assert three(c=3, a=1, b=2) == [1, 2, 3], "all keyword, any order"
+assert three(1, c=3, b=2) == [1, 2, 3], "positional then keyword"
+# positional-after-keyword is an error (compile diagnostic surfaced when the body first runs)
+var badCall = Function():
+    return three(1, b=2, 3)
+assert raises(badCall), "positional after keyword is rejected"
+
+# default values: omission uses the default
+var pw = Function(base, exp = 2):
+    return base ** exp
+assert pw(5) == 25 and pw(5, 3) == 125 and pw(base=4) == 16, "defaults + kwargs"
+
+# defaults evaluated at CALL time, once per call, left-to-right; a mutable default is FRESH each call
+var addItem = Function(xs = []):
+    xs.append(1)
+    return xs
+assert addItem() == [1] and addItem() == [1], "mutable default is fresh per call (no shared list)"
+# a default may reference an EARLIER already-bound parameter (and chain)
+var chained = Function(a, b = a + 1, c = b * 2):
+    return [a, b, c]
+assert chained(10) == [10, 11, 22], "default references earlier param"
+assert chained(10, 5) == [10, 5, 10], "explicit middle arg feeds later default"
+# left-to-right, once-per-call evaluation order of defaults
+var seq = []
+var noteAndReturn = Function(tag):
+    seq.append(tag)
+    return tag
+var ordered = Function(p = noteAndReturn("A"), q = noteAndReturn("B")):
+    return [p, q]
+assert ordered() == ["A", "B"] and seq == ["A", "B"], "defaults evaluate left-to-right at call time"
+
+# ENFORCING type annotations — arg must be an instance of the named type; return must match
+var typed = Function(d : Dict) -> Integer:
+    return len(d)
+assert typed({"a": 1}) == 1, "annotation accepts the correct type"
+assert raises_msg(Function(): return typed([1, 2]), "must be Dict"), "wrong arg type throws"
+var badRet = Function() -> Integer:
+    return "nope"
+assert raises_msg(Function(): return badRet(), "must return Integer"), "wrong return type throws"
+# inheritance-aware: a subclass satisfies a base annotation, for both param and return
+class Animal:
+    var _init_ = Function(self):
+        self.kind = "animal"
+class Dog(Animal):
+    var _init_ = Function(self):
+        self.kind = "dog"
+var describe = Function(a : Animal) -> Animal:
+    return a
+assert describe(Dog()).kind == "dog", "subclass satisfies a base-class annotation (param+return)"
+assert raises(Function(): return describe(5)), "base annotation still rejects an unrelated type"
+# Any / no-annotation accept anything
+var anyf = Function(x : Any):
+    return x
+var openf = Function(x):
+    return x
+assert anyf(1) == 1 and anyf("s") == "s" and anyf(None) == None, "Any accepts all types"
+assert openf([1]) == [1] and openf({"k": 1}) == {"k": 1}, "no annotation accepts all types"
+
+# closures capture by reference and stay independent
+var makeCounter = Function():
+    var n = 0
+    return Function():
+        n = n + 1
+        return n
+var c1 = makeCounter()
+var c2 = makeCounter()
+assert c1() == 1 and c1() == 2 and c2() == 1, "closures are independent, capture by reference"
+
+# inline (anonymous) function: single same-line statement
+var sq = Function(x): return x * x
+assert sq(7) == 49, "inline function"
+assert (Function(a, b): return a - b)(9, 4) == 5, "immediately-invoked inline"
+
+# recursion depth guard throws a CATCHABLE error (not a native crash)
+var runaway = Function(n):
+    return runaway(n + 1)
+assert raises(Function(): return runaway(0)), "unbounded recursion throws a catchable error"
+# ... and the VM keeps working afterward (the guard unwinds cleanly)
+var fact = Function(n):
+    if n <= 1:
+        return 1
+    return n * fact(n - 1)
+assert fact(6) == 720, "recursion still works after a guard trip"
+
+io.print("OK language")
