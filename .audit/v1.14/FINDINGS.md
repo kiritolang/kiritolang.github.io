@@ -1,5 +1,37 @@
 # Kirito v1.14 — consolidated findings (triaged)
 
+## Resolution summary (fixes landed)
+
+| ID | Sev | Status | Commit theme |
+|----|-----|--------|--------------|
+| F-1 (A08-1) | HIGH | **FIXED** | Set/Dict.clear() + Set.pop() probe-guard (heap corruption) |
+| F-2 (A06-1) | MED | **FIXED** | InstanceValue::str depth guard (native-recursion crash) |
+| F-3 (A09-1) | MED | **FIXED** | format() empty-spec → stringify (lossy float) |
+| F-4 (A11-1) | MED | **FIXED** | reject embedded NUL in filesystem paths (bypass) |
+| F-5 (A11-19) | MED | **FIXED** | BytesIO.truncate() size guard |
+| F-6 (A13-1) | MED | **FIXED** | tensor max/min/argmax/argmin NaN-propagation |
+| F-7 (A14-1) | MED | **FIXED** | serde native-first restore → _setstate_ read-through |
+| F-8 (A14-2) | MED | **FIXED** | json.stringify indent clamp (overflow UB) |
+| F-9 (A15-1) | MED | **FIXED** | Socket.listen() fdOrThrow |
+| F-10 (A19-1/2) | MED | **FIXED** | pin fresh Value operator/call/getAttr/at/pop results |
+| F-11 (A17-1) | MED | **FIXED** | regex capture-volume budget (DoS) |
+| F-12 (A16-1) | MED | **FIXED** | time.sleep() finite/range guard (UB) |
+| F-13 (A04-1) | LOW | **FIXED** | _not_ must return Bool |
+| F-14 (A04-2) | LOW | **FIXED** | cyclic guard message "comparison" not "equality" |
+| F-15 (A10-2) | LOW | **FIXED** | hasattr catches std::exception |
+| F-16 (A13-2) | LOW | **FIXED** | complex.atan(±i) domain error |
+| F-17 (A13-3) | LOW | **FIXED** | Matrix._setstate_ negative-dim reject |
+| F-18 (A12-1) | LOW | **FIXED** | random gauss/uniform/expovariate NaN-param guard |
+| F-20 (A13-4) | DECIDE | **DEFERRED (doc)** | Complex stays unhashable — a consistent hash under the cross-type real equality (`Complex(2,0)==2`) would have to match Integer/Float hashing exactly; getting it subtly wrong corrupts Set/Dict, so unhashable is the safe choice (like write-only NaN keys). |
+| A04-4 (v1.13 A06-1) | — | **NON-BUG (re-verified)** | `!=` for a `_ne_`-only class IS symmetric (`c != 5` and `5 != c` both dispatch the reflected `_ne_` at runtime.hpp:2199). The A04 agent's re-confirmation was mistaken. |
+| A19-5 (v1.13, sys) | — | **DECISION (doc)** | `sys.exit` uses `std::_Exit` (deadlock-safety from a parallel worker) which flushes std streams + C stdio but not open user fstreams — matching Python's `os._exit`. Close files / use `with`. A stream-flush registry is deferred (cross-layer plumbing, narrow case). |
+| A04-3, A08-3/4/5/6 | low/carry | **DEFERRED** | diagnostic-span quality + minor GC-rooting/asymmetry items carried from v1.13; low yield, left as recorded flags. |
+
+Below: the original triage detail.
+
+---
+
+
 All 19 subsystem agents landed (A01–A19) + clang-tidy static analysis (`static/TRIAGE.md`,
 correctness-clean). This file dedups, ranks, and marks each finding's fix disposition. Detail lives
 in `agents/AXX_*.md`.
