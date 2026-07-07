@@ -594,6 +594,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `complex pow: zero to a negative or complex power` | `0j ** -1` / `0j ** 1j` | Avoid the singularity |
 | `complex.pow expects 2 arguments` | Wrong arity to `complex.pow` | Pass two arguments |
 | `<fn>: math domain error (logarithm of zero)` / `(atanh of ±1)` / `(atan of ±i)` | `complex.log`/`log10` of 0, `atanh(±1)`, or `atan(±i)` (each a pole) | Keep the argument in domain |
+| `math domain error (polar requires finite modulus and angle)` | `complex.polar` with a non-finite `r`/`theta` (would drive `std::polar` to silent NaN) | Pass finite arguments (a negative finite modulus is allowed) |
 | `Complex does not support this operator` / `Complex does not support this unary operator` | An operator outside `+ - * / **` (or unary `-`) on a Complex | Use a supported operator |
 | `Complex _setstate_: malformed state` | Deserializing a corrupt Complex blob | Deserialize only trusted data |
 

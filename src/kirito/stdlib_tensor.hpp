@@ -437,7 +437,7 @@ inline Handle g_sum(KiritoVM& vm, Handle ah, int64_t axis) {
     if (A.isComplex()) {
         const CT& c = std::get<CT>(A.store);
         if (axis < 0) return cpx::make(vm, tensor::sumAll(c));
-        return make(vm, tensor::reduceAxis(c, static_cast<std::size_t>(axis), [](cdouble x, cdouble y) { return x + y; }));
+        return make(vm, tensor::reduceAxis(c, static_cast<std::size_t>(axis), [](cdouble x, cdouble y) { return x + y; }, cdouble(0.0, 0.0)));
     }
     const FT& a = std::get<FT>(A.store);
     tensor::Shape ashape = a.shape;
@@ -451,7 +451,7 @@ inline Handle g_sum(KiritoVM& vm, Handle ah, int64_t axis) {
         return makeAutogradFloat(vm, std::move(out), {ah}, std::move(bw));
     }
     std::size_t ax = static_cast<std::size_t>(axis);
-    FT out = tensor::reduceAxis(a, ax, [](double x, double y) { return x + y; });
+    FT out = tensor::reduceAxis(a, ax, [](double x, double y) { return x + y; }, 0.0);
     if (!wantsGrad(vm, {&A})) return make(vm, std::move(out));
     auto bw = [ashape, ax](const FT& g) -> std::vector<FT> {
         tensor::Shape keep = ashape; keep[ax] = 1;
@@ -1796,8 +1796,8 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
                 return vm.makeFloat(tensor::prodAll(std::get<FT>(t.store)));
             }
             std::size_t ax = static_cast<std::size_t>(axis);
-            if (t.isComplex()) return tns::make(vm, tensor::reduceAxis(std::get<CT>(t.store), ax, [](cdouble x, cdouble y) { return x * y; }));
-            return tns::make(vm, tensor::reduceAxis(std::get<FT>(t.store), ax, [](double x, double y) { return x * y; }));
+            if (t.isComplex()) return tns::make(vm, tensor::reduceAxis(std::get<CT>(t.store), ax, [](cdouble x, cdouble y) { return x * y; }, cdouble(1.0, 0.0)));
+            return tns::make(vm, tensor::reduceAxis(std::get<FT>(t.store), ax, [](double x, double y) { return x * y; }, 1.0));
         });
     });
     if (name == "min" || name == "max") {
@@ -2409,7 +2409,11 @@ public:
         m.fn("concatenate", {{"tensors", "List"}, {"axis", "Integer", m.vm().makeInt(0)}}, "Tensor",
              [readTensorList](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::vector<Handle> hs = readTensorList(vm, a[0]);
-            std::size_t axis = static_cast<std::size_t>(Args(vm, a, "concatenate")[1].asInt("axis"));
+            int64_t axisRaw = Args(vm, a, "concatenate")[1].asInt("axis");
+            std::size_t nd = static_cast<const TensorVal&>(vm.arena().deref(hs[0])).ndim();
+            if (axisRaw < 0) axisRaw += static_cast<int64_t>(nd);  // NumPy-style negative-axis wrap (as stack does)
+            if (axisRaw < 0 || static_cast<std::size_t>(axisRaw) >= nd) throw KiritoError("concatenate axis out of range");
+            std::size_t axis = static_cast<std::size_t>(axisRaw);
             return tns::wrap([&]() { return tns::g_concat(vm, hs, axis); });
         });
         m.alias("concat", "concatenate");
@@ -2423,8 +2427,10 @@ public:
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             const auto* t = dynamic_cast<const TensorVal*>(&vm.arena().deref(a[0]));
             if (!t) throw KiritoError("split expects a Tensor");
-            std::size_t axis = static_cast<std::size_t>(Args(vm, a, "split")[2].asInt("axis"));
-            if (axis >= t->ndim()) throw KiritoError("split axis out of range");
+            int64_t axisRaw = Args(vm, a, "split")[2].asInt("axis");
+            if (axisRaw < 0) axisRaw += static_cast<int64_t>(t->ndim());  // NumPy-style negative-axis wrap (as stack does)
+            if (axisRaw < 0 || static_cast<std::size_t>(axisRaw) >= t->ndim()) throw KiritoError("split axis out of range");
+            std::size_t axis = static_cast<std::size_t>(axisRaw);
             std::vector<std::size_t> sizes;
             Value secs = Value(vm, a[1]);
             if (secs.isInt()) {  // split into N equal parts

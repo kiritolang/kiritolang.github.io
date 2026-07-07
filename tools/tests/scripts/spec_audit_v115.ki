@@ -128,4 +128,28 @@ assert sv.valid("1.0.0-alpha+001") == "1.0.0-alpha+001", "semver tolerates a lea
 # --- repr of a String containing the DEL control byte (U+007F) must be \x-escaped, not emitted raw.
 assert String([chr(0x7f)]) == "['\\x7f']", "repr escapes the DEL control character"
 
+# --- complex.polar: a non-finite modulus/angle drove std::polar to silent NaN (and is UB); reject it.
+#     A negative FINITE modulus is left alone (tested: polar(-1, 0) = -1+0i).
+var cx = import("complex")
+var mth = import("math")
+assert raises(Function(): return cx.polar(1, mth.inf)), "polar rejects a non-finite angle"
+assert raises(Function(): return cx.polar(mth.nan, 0)), "polar rejects a non-finite modulus"
+assert cx.polar(-1, 0).compare(cx.of(-1, 0)), "polar still accepts a negative finite modulus"
+
+# --- tensor: per-axis sum/prod over a length-0 axis returns the identity (0 / 1), matching whole-tensor
+#     and NumPy; min/max still throw (no identity). concatenate/split accept a NumPy negative axis.
+assert T.zeros([2, 0]).sum(1).tolist() == [0.0, 0.0], "sum over an empty axis is 0 (identity)"
+assert T.ones([2, 0]).prod(1).tolist() == [1.0, 1.0], "prod over an empty axis is 1 (identity)"
+assert raises(Function(): return T.zeros([2, 0]).max(1)), "max over an empty axis still throws (no identity)"
+assert T.concatenate([T.zeros([2, 2]), T.zeros([2, 2])], -1).shape() == [2, 4], "concatenate accepts a negative axis"
+assert T.split(T.arange(0, 4), [2, 2], -1)[1].tolist() == [2.0, 3.0], "split accepts a negative axis"
+
+# --- DateTime.iso() for a negative year -1..-999 must keep the sign OUTSIDE the 4-digit pad
+#     ("-0005", not the old "-005" where the sign ate a pad digit). Positive years are unchanged.
+var tm = import("time")
+assert tm.make(-5, 1, 1).iso() == "-0005-01-01T00:00:00", "iso() sign-aware pad for a small negative year"
+assert tm.make(-999, 1, 1).iso() == "-0999-01-01T00:00:00", "iso() 3-digit negative year"
+assert tm.make(-1000, 1, 1).iso() == "-1000-01-01T00:00:00", "iso() 4-digit negative year unchanged"
+assert tm.make(2024, 3, 5).iso() == "2024-03-05T00:00:00", "iso() positive year unchanged"
+
 io.print("OK audit-v115")

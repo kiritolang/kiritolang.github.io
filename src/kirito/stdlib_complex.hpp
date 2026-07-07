@@ -539,10 +539,14 @@ public:
         m.fn("real", {{"re", "Number"}}, "Complex", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             return vm.alloc(std::make_unique<ComplexVal>(Args(vm, a, "real")[0].asFloat("real"), 0.0));
         });
-        // polar(r, theta) -> r·(cos θ + i sin θ); rect == Complex.
+        // polar(r, theta) -> r·(cos θ + i sin θ); rect == Complex. A non-finite rho/theta drives
+        // std::polar to silent NaN garbage (and is UB), so reject those as a domain error. A negative
+        // finite rho is left alone — it yields the natural r·(cosθ, sinθ) and is a tested case.
         m.fn("polar", {{"r", "Number"}, {"theta", "Number"}}, "Complex", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "polar");
-            return cpx::make(vm, std::polar(args[0].asFloat("polar r"), args[1].asFloat("polar theta")));
+            double r = args[0].asFloat("polar r"), theta = args[1].asFloat("polar theta");
+            if (!std::isfinite(r) || !std::isfinite(theta)) throw KiritoError("math domain error (polar requires finite modulus and angle)");
+            return cpx::make(vm, std::polar(r, theta));
         });
         m.value("zero", cpx::make(vm, cdouble(0.0, 0.0)));
         m.value("one", cpx::make(vm, cdouble(1.0, 0.0)));

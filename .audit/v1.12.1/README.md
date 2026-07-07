@@ -113,3 +113,25 @@ Findings skew LOW (much-audited codebase) with a handful of HIGH/MED. Full per-f
   "for consistency with File.seek" overturned a DELIBERATE, explicitly-tested clamp-to-0 (r11_stdlib_gaps
   even documents the File-divergence on purpose: "BytesIO seek clamps at 0 (unlike File.seek which
   throws)"). Reverted to the clamp; recorded in the false-positives table.
+
+### FIX ROUND 4 (complex / tensor / time — genuine fixes; 3 more non-bugs ruled out)
+- **[LOW→UB] complex.polar non-finite input** (matrix_complex.md F1): a non-finite modulus/angle drove
+  `std::polar` to silent NaN garbage (and is UB). Fixed: reject a non-finite `r`/`theta` as a "math
+  domain error". A **negative finite** modulus is left alone (tested `polar(-1,0)` → `-1+0i`) — an
+  initial guard that also rejected it was reverted (false-positive; now in the table).
+- **[MED] tensor per-axis sum/prod over an empty axis** (tensor.md F1): threw instead of returning the
+  identity (0/1), inconsistent with whole-tensor sum/prod and NumPy. Fixed: `reduceAxis` gained an
+  optional identity that sum/prod supply (min/max still throw — no identity).
+- **[LOW] tensor concatenate/split negative axis** (tensor.md F2): rejected a NumPy-style negative axis
+  that `stack` already accepts. Fixed: normalize a negative axis before the size_t cast.
+- **[LOW] DateTime.iso() negative year** (sys_time_proc.md F1): `%04d` put the sign INSIDE the pad
+  ("-005"); fixed to sign-outside-pad ("-0005"), matching the format mini-spec's sign-aware padding.
+- **[REVERTED — NOT bugs] tabular ragged-row + index-length** (kimods_tabular_xml.md F1/F2): adding
+  ragged-row rejection and index/nrows validation broke the PINNED ragged tests (verify_tabular:
+  "ragged long row silently truncated (PINNED)") and the library's own `describe` (which builds a
+  DataFrame with an index but 0 columns). Both reverted; recorded in the false-positives table.
+
+**Pattern noted:** 5 of this loop's "confirmed" findings (BytesIO.seek, semver leading-zero,
+polar-negative, tabular ragged, tabular index) were re-verified as **deliberate / load-bearing** and
+reverted. The heavily-audited base means remaining LOW findings must each be checked against pinned
+tests before touching — recorded in the false-positives table to stop re-litigation.
