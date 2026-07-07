@@ -1,4 +1,4 @@
-# Regex engine audit (v1.15)
+# Regex engine audit (v1.12.1)
 
 Subsystem: `src/kirito/regex_engine.hpp` (parser → bytecode → Pike VM), `src/kirito/stdlib_regex.hpp` (Kirito API).
 

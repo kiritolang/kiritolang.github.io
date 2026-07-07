@@ -1,4 +1,4 @@
-# v1.15 audit — io and path subsystem
+# v1.12.1 (audit loop) — io and path subsystem
 
 Source: `src/kirito/stdlib_io.hpp`, `src/kirito/stdlib_path.hpp`. Probe: `./build-debug/ki`.
 

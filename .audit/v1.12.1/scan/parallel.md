@@ -1,4 +1,4 @@
-# parallel / dispatcher audit — v1.15
+# parallel / dispatcher audit — v1.12.1
 
 Subsystem: parallel (stdlib_parallel.hpp, dispatcher.hpp). Focus: thread-safety, deadlock, data races.
 

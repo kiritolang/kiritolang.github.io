@@ -1,4 +1,4 @@
-# v1.15 audit — numeric core
+# v1.12.1 (audit loop) — numeric core
 
 Subsystem: Integer/Float arithmetic, numericBinary fast path, div/mod/pow, exact IEEE-754 ==, .compare.
 Source: src/kirito/runtime.hpp (numericBinary L155, applyBinaryOp L2180, makeNumericCompare L301).

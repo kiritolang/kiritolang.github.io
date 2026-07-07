@@ -1,4 +1,4 @@
-# v1.15 comprehensive audit — index
+# v1.12.1 comprehensive audit — index
 
 Deep audit of the entire codebase: correctness/semantics/logic, memory-safety/UB, silent errors, edge
 cases, resource guards, DRY/single-source-of-truth, static analysis, test-coverage completeness (C++ and

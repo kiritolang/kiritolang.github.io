@@ -1,4 +1,4 @@
-# v1.15 audit — matrix & complex subsystem
+# v1.12.1 (audit loop) — matrix & complex subsystem
 
 Source: `src/kirito/stdlib_matrix.hpp`, `src/kirito/stdlib_complex.hpp` (both on 2-D `tensor::Tensor`).
 Determinant (Gaussian elim) / inverse (Gauss-Jordan) live in `src/kirito/tensor.hpp:369-435`.

@@ -1,4 +1,4 @@
-# v1.15 audit — C++ test coverage completeness
+# v1.12.1 (audit loop) — C++ test coverage completeness
 
 Subsystem: whether `tools/tests/unit/*.cpp` exercises the whole public C++ surface
 (`value.hpp` Value/wrapper API, `native.hpp` extension points, `vm.hpp`/`kirito.hpp` embedding)

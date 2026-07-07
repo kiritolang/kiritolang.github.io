@@ -1,4 +1,4 @@
-# v1.15 — Static Analysis + Performance Variance
+# v1.12.1 — Static Analysis + Performance Variance
 
 Worker: static_analysis. Two jobs: (A) deep static analysis of C++, (B) perf-variance measurement.
 Repo root: /home/user/kiritolang.github.io

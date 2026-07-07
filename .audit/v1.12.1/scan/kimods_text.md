@@ -1,4 +1,4 @@
-# v1.15 audit — Kirito-authored text/util modules (string, textwrap, base64, csv, tee, arg, semver)
+# v1.12.1 (audit loop) — Kirito-authored text/util modules (string, textwrap, base64, csv, tee, arg, semver)
 
 Subsystem source: `src/kirito/stdlib_kimodules.hpp` (frozen-source Kirito modules).
 Probe binary: `./build-debug/ki`

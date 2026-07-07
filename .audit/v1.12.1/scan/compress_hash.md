@@ -1,4 +1,4 @@
-# v1.15 audit — zlib/DEFLATE, gzip, hash
+# v1.12.1 (audit loop) — zlib/DEFLATE, gzip, hash
 
 Subsystem: `src/kirito/deflate.hpp`, `stdlib_zlib.hpp`, `stdlib_gzip.hpp`, `stdlib_hash.hpp`.
 Probe binary: `./build-debug/ki`

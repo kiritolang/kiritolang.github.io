@@ -1,4 +1,4 @@
-# v1.15 audit — tensor engine & autograd
+# v1.12.1 (audit loop) — tensor engine & autograd
 
 Source: `src/kirito/tensor.hpp` (602 lines), `src/kirito/stdlib_tensor.hpp` (2506 lines).
 Probe: `./build-debug/ki`.

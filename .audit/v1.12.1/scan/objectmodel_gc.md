@@ -1,4 +1,4 @@
-# v1.15 audit — object model, arena, GC, pool, Value/handle API
+# v1.12.1 (audit loop) — object model, arena, GC, pool, Value/handle API
 
 Subsystem source: object.hpp, arena.hpp, pool.hpp, value.hpp, native.hpp, vm.hpp, module.hpp, function.hpp
 

@@ -1,4 +1,4 @@
-# v1.15 audit — user classes, dunders, operator overloading, inheritance, _super_, private members
+# v1.12.1 (audit loop) — user classes, dunders, operator overloading, inheritance, _super_, private members
 
 Worker notebook. Append findings as confirmed.
 

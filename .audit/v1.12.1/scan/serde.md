@@ -1,4 +1,4 @@
-# v1.15 audit — serde subsystem (json, serialize KSER1, dump KDMP, shared serde core)
+# v1.12.1 (audit loop) — serde subsystem (json, serialize KSER1, dump KDMP, shared serde core)
 
 Source: stdlib_json.hpp, stdlib_serialize.hpp, stdlib_dump.hpp, stdlib_serde.hpp
 Probe: ./build-debug/ki

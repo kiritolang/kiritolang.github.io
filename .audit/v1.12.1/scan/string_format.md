@@ -1,4 +1,4 @@
-# v1.15 audit — String type, f-strings, format mini-spec
+# v1.12.1 (audit loop) — String type, f-strings, format mini-spec
 
 Subsystem: String method table (`src/kirito/runtime.hpp` StrVal::getAttr ~L1126-1561),
 format mini-spec (`applyFormatSpec` ~L2660-2802), `format` builtin (~L3297), f-string

@@ -12,12 +12,18 @@ trail of *how* the code got hardened.
 
 ## Rounds (chronological)
 
+**Naming:** an audit loop is a **patch (bugfix) release**, so from `1.12.1` onward each round's directory
+is its target patch version (`v1.12.1`, `v1.12.2`, …). The earlier `v1.12`/`v1.13`/`v1.14` labels predate
+this convention — `v1.12` shipped as the `1.12.0` release; `v1.13`/`v1.14` were minor-style round labels
+for work that remained unreleased and now folds into `1.12.1`.
+
 | Round | Directory | Scope | Entry point |
 |-------|-----------|-------|-------------|
 | **pre-1.12** | [`pre-1.12/`](pre-1.12/) | First full-codebase audit — static analysis (clang `--analyze`) + subsystem agents, kept as one running log. | [`AUDIT_NOTES.md`](pre-1.12/AUDIT_NOTES.md) |
 | **v1.12** | [`v1.12/`](v1.12/) | Optimization & hardening: core-engine + stdlib agents (A01–A22), coverage-gap map, perf-variance analysis. | [`README.md`](v1.12/README.md) · [`FINDINGS.md`](v1.12/FINDINGS.md) · [`agents/`](v1.12/agents/) |
 | **v1.13** | [`v1.13/`](v1.13/) | The most exhaustive round — every builtin/stdlib/type/operator/dunder probed from every angle (A01–A26), DRY consolidation, GC-variance perf work. | [`README.md`](v1.13/README.md) · [`FINDINGS.md`](v1.13/FINDINGS.md) · [`agents/`](v1.13/agents/) |
 | **v1.14** | [`v1.14/`](v1.14/) | Marginal-yield round on the hardened base — clang-tidy static analysis, fresh adversarial re-scan (A01–A19), C++/`.ki` coverage parity, perf-variance re-measure. 18 fixes (1 HIGH heap-corruption + 11 MED + 6 LOW); debug/asan/tsan green. | [`README.md`](v1.14/README.md) · [`FINDINGS.md`](v1.14/FINDINGS.md) · [`agents/`](v1.14/agents/) |
+| **1.12.1** | [`v1.12.1/`](v1.12.1/) | First patch-versioned loop — 27 per-subsystem scanners (own `.md` each). Fixes: 3 HIGH memory-safety (Dict/Set stringify UAF, `tensor.split` OOB, deep-import segfault), 2 HIGH dunder (`_super_` corruption + privacy-bypass), 2 MED (value.hpp comparison UB, "unhashable" message drift), NaN display + islice guards; 1 reverted non-bug (median NaN). debug 797/797 + asan-clean. | [`README.md`](v1.12.1/README.md) · [`scan/`](v1.12.1/scan/) |
 
 Each round's `FINDINGS.md` (or the pre-1.12 `AUDIT_NOTES.md`) is the triaged roll-up; the `agents/*.md`
 are the raw per-subsystem findings that feed it. A finding is only "done" once it is either fixed with

@@ -1,4 +1,4 @@
-# v1.15 audit — .ki test coverage completeness
+# v1.12.1 (audit loop) — .ki test coverage completeness
 
 Subsystem: whether `tools/tests/scripts/*.ki` tests every builtin/type-method/stdlib symbol +
 argument-combination + angle (adversarial/fuzz/edge/typical/malformed/random). Output: GAP LIST.

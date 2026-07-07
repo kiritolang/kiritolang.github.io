@@ -1,4 +1,4 @@
-# v1.15 audit — resolver / analyzer / compiler / locals / bytecode
+# v1.12.1 (audit loop) — resolver / analyzer / compiler / locals / bytecode
 
 Subsystem: name resolver, static analyzer, bytecode compiler.
 Files: src/kirito/resolver.hpp, analyzer.hpp, compiler.hpp, locals.hpp, bytecode.hpp

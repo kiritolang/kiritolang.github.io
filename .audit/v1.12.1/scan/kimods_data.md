@@ -1,4 +1,4 @@
-# v1.15 audit — Kirito-authored data/functional modules
+# v1.12.1 (audit loop) — Kirito-authored data/functional modules
 
 Subsystem: itertools, functools, collections, heapq, bisect, copy, enum
 Source: `src/kirito/stdlib_kimodules.hpp`

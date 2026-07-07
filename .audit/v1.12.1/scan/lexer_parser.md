@@ -1,4 +1,4 @@
-# v1.15 audit — lexer & parser subsystem
+# v1.12.1 (audit loop) — lexer & parser subsystem
 
 Source: src/kirito/lexer.hpp, src/kirito/parser.hpp, src/kirito/common.hpp
 Probe: ./build-debug/ki

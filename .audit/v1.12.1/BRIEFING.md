@@ -1,10 +1,10 @@
-# v1.15 audit — shared worker briefing
+# v1.12.1 (audit loop) — shared worker briefing
 
 You are ONE worker in a deep, comprehensive audit of the **Kirito** interpreter (repo root:
 `/home/user/kiritolang.github.io`). Read this fully, then work your assigned subsystem.
 
 ## THE MOST IMPORTANT RULE — persist as you go
-You are given YOUR OWN `.md` file (path in your task, e.g. `.audit/v1.15/scan/<name>.md`). **Write to it
+You are given YOUR OWN `.md` file (path in your task, e.g. `.audit/v1.12.1/scan/<name>.md`). **Write to it
 INCREMENTALLY — append each finding the moment you confirm it, before moving on.** We may hit usage limits
 and get force-stopped at any time; anything only in your head or your final message is LOST, but anything
 written to your `.md` survives (the orchestrator commits these files). Treat the `.md` as your durable

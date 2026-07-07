@@ -1,4 +1,4 @@
-# v1.15 audit — DRY / single-source-of-truth scan
+# v1.12.1 (audit loop) — DRY / single-source-of-truth scan
 
 Subsystem: duplicated logic across src/kirito/*.hpp that could drift; constants defined in
 multiple places; parallel implementations that should share a helper.

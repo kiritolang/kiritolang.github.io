@@ -1,4 +1,4 @@
-# v1.15 audit — math and random
+# v1.12.1 (audit loop) — math and random
 
 Source: `src/kirito/stdlib_math.hpp` (285 lines), `src/kirito/stdlib_random.hpp` (357 lines).
 Probe binary: `./build-debug/ki`.
