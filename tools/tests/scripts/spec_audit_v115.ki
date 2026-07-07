@@ -114,4 +114,18 @@ assert raises_msg(Function(): return st.add([9]), "unhashable type 'List'"), "Se
 var dd = {}
 assert raises_msg(Function(): return dd.get([9]), "unhashable type 'List'"), "Dict.get names the type"
 
+# --- semver.valid must reject out-of-alphabet prerelease/build identifiers and an empty build
+#     component (a `+` with nothing after it) — these used to silently VALIDATE. Leading zeros in
+#     the numeric core stay tolerated (normalized by Integer()), a deliberate leniency. ---
+var sv = import("semver")
+assert sv.valid("1.2.3-bet@") == None, "semver rejects '@' in a prerelease identifier"
+assert sv.valid("1.2.3+") == None, "semver rejects an empty build identifier"
+assert sv.valid("1.2.3+bu*ild") == None, "semver rejects '*' in a build identifier"
+assert sv.valid("01.2.3") == "01.2.3", "semver still tolerates a leading-zero core (by design)"
+assert sv.valid("1.2.3-01") == "1.2.3-01", "semver still tolerates a leading-zero numeric prerelease"
+assert sv.valid("1.0.0-alpha+001") == "1.0.0-alpha+001", "semver tolerates a leading-zero build id"
+
+# --- repr of a String containing the DEL control byte (U+007F) must be \x-escaped, not emitted raw.
+assert String([chr(0x7f)]) == "['\\x7f']", "repr escapes the DEL control character"
+
 io.print("OK audit-v115")

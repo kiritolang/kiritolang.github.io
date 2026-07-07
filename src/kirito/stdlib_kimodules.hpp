@@ -2579,6 +2579,18 @@ var _isnum = Function(s) -> Bool:
         return False
     return s.isdigit()
 
+# A single identifier char is [0-9A-Za-z-] (strictly ASCII, per semver.org / node-semver). Leading
+# zeros in a numeric identifier are deliberately tolerated here (normalized by Integer()) — see the
+# non-bug note in .audit/README.md; only genuinely out-of-alphabet chars are rejected.
+var _isident = Function(s) -> Bool:
+    if len(s) == 0:
+        return False
+    for c in s:
+        var o = ord(c)
+        if not ((o >= 48 and o <= 57) or (o >= 65 and o <= 90) or (o >= 97 and o <= 122) or o == 45):
+            return False
+    return True
+
 # Strip a leading 'v'/'='/'V' and surrounding whitespace, e.g. "v1.2.3" -> "1.2.3".
 var clean = Function(s) -> String:
     var t = s.strip()
@@ -2606,10 +2618,18 @@ var parse = Function(s):
         throw "invalid version '" + s + "': need MAJOR.MINOR.PATCH"
     if not (_isnum(nums[0]) and _isnum(nums[1]) and _isnum(nums[2])):
         throw "invalid version '" + s + "': non-numeric core"
-    # prerelease identifiers must be non-empty [0-9A-Za-z-]; numeric ones carry no meaning beyond value
+    # prerelease identifiers must be non-empty and drawn from [0-9A-Za-z-]
     for p in pre:
         if len(p) == 0:
             throw "invalid version '" + s + "': empty prerelease identifier"
+        if not _isident(p):
+            throw "invalid version '" + s + "': invalid prerelease identifier '" + p + "'"
+    # build identifiers must be non-empty and drawn from [0-9A-Za-z-]
+    for b in build:
+        if len(b) == 0:
+            throw "invalid version '" + s + "': empty build identifier"
+        if not _isident(b):
+            throw "invalid version '" + s + "': invalid build identifier '" + b + "'"
     return {"major": Integer(nums[0]), "minor": Integer(nums[1]), "patch": Integer(nums[2]),
             "prerelease": pre, "build": build, "raw": raw}
 

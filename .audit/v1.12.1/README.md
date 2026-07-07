@@ -96,3 +96,20 @@ Findings skew LOW (much-audited codebase) with a handful of HIGH/MED. Full per-f
   deliberate prior decision (sort-defined family), pinned in r7_regressions.ki. The propagate-NaN change
   was reverted. (Re-verify per "double-check the fixed error was actually an error".)
 - ASan: spec_audit_v115 (UAF + tensor-split + dunder-clone) + 7 class/collections/tensor tests all clean.
+
+### FIX ROUND 3 (semver / io / repr triage — "double-check it was actually an error")
+- **[LOW] repr DEL escape** (string_format.md): `reprString` escaped `< 0x20` but not `0x7f` (DEL), so a
+  String containing DEL printed the raw control byte inside a container repr. Fixed → `\x7f`. Regression
+  in spec_audit_v115.ki.
+- **[MED] semver silent-validation** (kimods_text.md F1): `semver.valid`/`parse` accepted out-of-alphabet
+  prerelease/build identifier chars (`1.2.3-bet@`) and an EMPTY build component (`1.2.3+`) — garbage that
+  silently validated. Fixed: an `_isident` `[0-9A-Za-z-]` + non-empty check on every prerelease/build id
+  (the original "empty prerelease identifier" message is preserved for labx_misc). Regression added.
+  - **NOT a bug — leading-zero leniency KEPT**: an initial pass also rejected leading-zero numeric cores
+    (`01.2.3`) for strict node-semver conformance, but that leniency is explicitly tested + commented as
+    intentional across two rounds (r7/r8_kimods_b: "normalized by Integer()"). Reverted; recorded in the
+    false-positives table. Only the genuinely-garbage cases are rejected.
+- **[REVERTED — was NOT a bug] BytesIO.seek negative** (io_path.md F1): making `BytesIO.seek(-n)` throw
+  "for consistency with File.seek" overturned a DELIBERATE, explicitly-tested clamp-to-0 (r11_stdlib_gaps
+  even documents the File-divergence on purpose: "BytesIO seek clamps at 0 (unlike File.seek which
+  throws)"). Reverted to the clamp; recorded in the false-positives table.

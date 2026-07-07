@@ -272,7 +272,7 @@ inline std::string reprString(const std::string& s) {
         else if (c == '\n') out += "\\n";
         else if (c == '\t') out += "\\t";
         else if (c == '\r') out += "\\r";
-        else if (uc < 0x20) { char b[8]; std::snprintf(b, sizeof(b), "\\x%02x", uc); out += b; }
+        else if (uc < 0x20 || uc == 0x7f) { char b[8]; std::snprintf(b, sizeof(b), "\\x%02x", uc); out += b; }  // 0x7f = DEL: a lone control byte that a terminal would eat, breaking the read-back-unambiguously contract
         else out += c;
     }
     out += quote;
