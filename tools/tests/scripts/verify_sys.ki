@@ -43,9 +43,11 @@ assert sys.getenv(K) == "hello", "getenv reads back the value just set"
 assert sys.unsetenv(K) == None, "unsetenv returns None"
 assert sys.getenv(K) == None, "getenv after unsetenv -> None"
 assert sys.getenv(K, "dflt") == "dflt", "getenv after unsetenv falls back to default"
-# PIN (POSIX): setting a variable to "" keeps it set with an empty value (Windows treats "" as unset).
+# PIN (POSIX): setting a variable to "" keeps it set with an empty value (Windows treats "" as unset,
+# so this POSIX-specific contract is only asserted off Windows).
 sys.setenv(K, "")
-assert sys.getenv(K) == "" and sys.platform != "windows", "POSIX: empty setenv stays set as ''"
+if sys.platform != "windows":
+    assert sys.getenv(K) == "", "POSIX: empty setenv stays set as ''"
 sys.unsetenv(K)
 
 # ============================================================ environ()
@@ -70,44 +72,45 @@ catch:
 assert len(sys.traceback()) > 0, "traceback() nonempty after an error was unwound"
 assert "Traceback" in sys.traceback(), "traceback() has the expected header"
 
-# ============================================================ shell(command, ...)
-var r = sys.shell("echo hi")
-assert type(r) == "Dict", "shell returns a Dict"
-assert "code" in r and "stdout" in r and "stderr" in r, "shell Dict has code/stdout/stderr"
-assert r["code"] == 0, "shell echo exits 0"
-assert type(r["code"]) == "Integer", "shell code is an Integer"
-assert "hi" in r["stdout"], "shell echo stdout contains 'hi'"
-assert type(r["stdout"]) == "String" and type(r["stderr"]) == "String", "shell out/err are Strings"
-# a failing command reports a nonzero code (not thrown — a nonzero exit is a normal result)
-assert sys.shell("exit 7")["code"] == 7, "shell propagates a nonzero exit code"
-assert sys.shell("exit 1")["code"] == 1, "shell nonzero exit"
-# input is fed on stdin; cwd controls the working directory
-assert sys.shell("cat", input = "piped")["stdout"] == "piped", "shell feeds stdin via input"
-assert sys.shell("pwd", cwd = "/")["stdout"].strip() == "/", "shell honors cwd"
-# hardening: command must be a String
-assert raises(Function(): return sys.shell(5)), "shell non-String command raises"
+if sys.platform != "windows":  # shell/createprocess block uses POSIX-only tools (echo/cat/pwd/false/sleep)
+    # ============================================================ shell(command, ...)
+    var r = sys.shell("echo hi")
+    assert type(r) == "Dict", "shell returns a Dict"
+    assert "code" in r and "stdout" in r and "stderr" in r, "shell Dict has code/stdout/stderr"
+    assert r["code"] == 0, "shell echo exits 0"
+    assert type(r["code"]) == "Integer", "shell code is an Integer"
+    assert "hi" in r["stdout"], "shell echo stdout contains 'hi'"
+    assert type(r["stdout"]) == "String" and type(r["stderr"]) == "String", "shell out/err are Strings"
+    # a failing command reports a nonzero code (not thrown — a nonzero exit is a normal result)
+    assert sys.shell("exit 7")["code"] == 7, "shell propagates a nonzero exit code"
+    assert sys.shell("exit 1")["code"] == 1, "shell nonzero exit"
+    # input is fed on stdin; cwd controls the working directory
+    assert sys.shell("cat", input = "piped")["stdout"] == "piped", "shell feeds stdin via input"
+    assert sys.shell("pwd", cwd = "/")["stdout"].strip() == "/", "shell honors cwd"
+    # hardening: command must be a String
+    assert raises(Function(): return sys.shell(5)), "shell non-String command raises"
 
-# ============================================================ createprocess(args, ...)
-var cp = sys.createprocess(["echo", "hey"])
-assert type(cp) == "Dict" and cp["code"] == 0, "createprocess returns {code,...}, code 0"
-assert "hey" in cp["stdout"], "createprocess captures stdout verbatim (no shell)"
-# no shell: an arg with shell metachars is passed literally, not expanded
-assert sys.createprocess(["echo", "a*b"])["stdout"].strip() == "a*b", "createprocess passes args verbatim"
-assert sys.createprocess(["cat"], input = "raw")["stdout"] == "raw", "createprocess feeds stdin"
-assert sys.createprocess(["false"])["code"] != 0, "createprocess nonzero exit is a normal result"
-# hardening: bogus argv (program not found) throws a clear catchable error
-assert raises_msg(Function(): return sys.createprocess(["no_such_prog_xyz_9z1q"]), "failed to start"), "createprocess missing program throws 'failed to start'"
-# hardening: args must be a non-empty List of Strings
-assert raises_msg(Function(): return sys.createprocess([]), "non-empty List"), "createprocess empty list raises"
-assert raises_msg(Function(): return sys.createprocess("notalist"), "must be a List of Strings"), "createprocess non-List args raises"
-assert raises_msg(Function(): return sys.createprocess([1, 2]), "each argument must be a String"), "createprocess non-String element raises"
-# hardening: a positive timeout kills a long child and throws (kept fast: <2s wall)
-assert raises(Function(): return sys.createprocess(["sleep", "3"], timeout = 0.2)), "createprocess timeout kills+throws"
-assert raises(Function(): return sys.shell("sleep 3", timeout = 0.2)), "shell timeout kills+throws"
+    # ============================================================ createprocess(args, ...)
+    var cp = sys.createprocess(["echo", "hey"])
+    assert type(cp) == "Dict" and cp["code"] == 0, "createprocess returns {code,...}, code 0"
+    assert "hey" in cp["stdout"], "createprocess captures stdout verbatim (no shell)"
+    # no shell: an arg with shell metachars is passed literally, not expanded
+    assert sys.createprocess(["echo", "a*b"])["stdout"].strip() == "a*b", "createprocess passes args verbatim"
+    assert sys.createprocess(["cat"], input = "raw")["stdout"] == "raw", "createprocess feeds stdin"
+    assert sys.createprocess(["false"])["code"] != 0, "createprocess nonzero exit is a normal result"
+    # hardening: bogus argv (program not found) throws a clear catchable error
+    assert raises_msg(Function(): return sys.createprocess(["no_such_prog_xyz_9z1q"]), "failed to start"), "createprocess missing program throws 'failed to start'"
+    # hardening: args must be a non-empty List of Strings
+    assert raises_msg(Function(): return sys.createprocess([]), "non-empty List"), "createprocess empty list raises"
+    assert raises_msg(Function(): return sys.createprocess("notalist"), "must be a List of Strings"), "createprocess non-List args raises"
+    assert raises_msg(Function(): return sys.createprocess([1, 2]), "each argument must be a String"), "createprocess non-String element raises"
+    # hardening: a positive timeout kills a long child and throws (kept fast: <2s wall)
+    assert raises(Function(): return sys.createprocess(["sleep", "3"], timeout = 0.2)), "createprocess timeout kills+throws"
+    assert raises(Function(): return sys.shell("sleep 3", timeout = 0.2)), "shell timeout kills+throws"
 
-# ============================================================ SILENT-error probes (should raise)
-# A malformed createprocess must never silently succeed with an empty/garbage result.
-assert raises(Function(): return sys.createprocess([None])), "createprocess None element raises (not silent)"
-assert raises(Function(): return sys.createprocess([["nested"]])), "createprocess nested-List element raises"
+    # ============================================================ SILENT-error probes (should raise)
+    # A malformed createprocess must never silently succeed with an empty/garbage result.
+    assert raises(Function(): return sys.createprocess([None])), "createprocess None element raises (not silent)"
+    assert raises(Function(): return sys.createprocess([["nested"]])), "createprocess nested-List element raises"
 
 io.print("OK sys")

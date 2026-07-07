@@ -160,9 +160,12 @@ public:
     }
 
     std::string iso() const {
+        int year = tm.tm_year + 1900;
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d",
-                      tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+        // A negative year needs the sign OUTSIDE the 4-digit zero pad ("-0005", not "%04d"'s "-005",
+        // where the sign eats a pad digit) — matching the sign-aware convention of the format mini-spec.
+        std::snprintf(buf, sizeof(buf), "%s%04d-%02d-%02dT%02d:%02d:%02d",
+                      year < 0 ? "-" : "", year < 0 ? -year : year, tm.tm_mon + 1, tm.tm_mday,
                       tm.tm_hour, tm.tm_min, tm.tm_sec);
         return buf;
     }

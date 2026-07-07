@@ -12,12 +12,18 @@ trail of *how* the code got hardened.
 
 ## Rounds (chronological)
 
+**Naming:** an audit loop is a **patch (bugfix) release**, so from `1.12.1` onward each round's directory
+is its target patch version (`v1.12.1`, `v1.12.2`, …). The earlier `v1.12`/`v1.13`/`v1.14` labels predate
+this convention — `v1.12` shipped as the `1.12.0` release; `v1.13`/`v1.14` were minor-style round labels
+for work that remained unreleased and now folds into `1.12.1`.
+
 | Round | Directory | Scope | Entry point |
 |-------|-----------|-------|-------------|
 | **pre-1.12** | [`pre-1.12/`](pre-1.12/) | First full-codebase audit — static analysis (clang `--analyze`) + subsystem agents, kept as one running log. | [`AUDIT_NOTES.md`](pre-1.12/AUDIT_NOTES.md) |
 | **v1.12** | [`v1.12/`](v1.12/) | Optimization & hardening: core-engine + stdlib agents (A01–A22), coverage-gap map, perf-variance analysis. | [`README.md`](v1.12/README.md) · [`FINDINGS.md`](v1.12/FINDINGS.md) · [`agents/`](v1.12/agents/) |
 | **v1.13** | [`v1.13/`](v1.13/) | The most exhaustive round — every builtin/stdlib/type/operator/dunder probed from every angle (A01–A26), DRY consolidation, GC-variance perf work. | [`README.md`](v1.13/README.md) · [`FINDINGS.md`](v1.13/FINDINGS.md) · [`agents/`](v1.13/agents/) |
 | **v1.14** | [`v1.14/`](v1.14/) | Marginal-yield round on the hardened base — clang-tidy static analysis, fresh adversarial re-scan (A01–A19), C++/`.ki` coverage parity, perf-variance re-measure. 18 fixes (1 HIGH heap-corruption + 11 MED + 6 LOW); debug/asan/tsan green. | [`README.md`](v1.14/README.md) · [`FINDINGS.md`](v1.14/FINDINGS.md) · [`agents/`](v1.14/agents/) |
+| **1.12.1** | [`v1.12.1/`](v1.12.1/) | First patch-versioned loop — 27 per-subsystem scanners (own `.md` each). Fixes: 3 HIGH memory-safety (Dict/Set stringify UAF, `tensor.split` OOB, deep-import segfault), 2 HIGH dunder (`_super_` corruption + privacy-bypass), 2 MED (value.hpp comparison UB, "unhashable" message drift), NaN display + islice guards; 1 reverted non-bug (median NaN). debug 797/797 + asan-clean. | [`README.md`](v1.12.1/README.md) · [`scan/`](v1.12.1/scan/) |
 
 Each round's `FINDINGS.md` (or the pre-1.12 `AUDIT_NOTES.md`) is the triaged roll-up; the `agents/*.md`
 are the raw per-subsystem findings that feed it. A finding is only "done" once it is either fixed with
@@ -69,6 +75,10 @@ believe a rejection is wrong, argue it explicitly rather than silently reverting
 | `!=` for a class defining only `_ne_` is symmetric on both sides (v1.14 A04-4, re-flagged as "still open") | non-bug (already fixed) | `c != 5` and `5 != c` both dispatch the reflected `_ne_` (runtime.hpp reflected-Eq/Ne branch). The v1.13 A06-1 fix is in place; the re-confirmation was mistaken. |
 | `Complex` has value equality but is **unhashable** (can't key a Set/Dict) (v1.14 A13-4) | deliberate | `Complex(2,0) == 2` (cross-type real equality) means a consistent hash would have to match Integer/Float hashing exactly; a subtly-wrong hash corrupts Set/Dict (worse than unhashable). Unhashable is the safe choice — same stance as write-only NaN keys. |
 | `sys.exit` flushes std streams + C stdio but **not** open user `fstream`s (v1.14 A19-5) | documented tradeoff | It uses `std::_Exit` for deadlock-safety from a `parallel` worker (matching Python's `os._exit`), which skips fstream destructors. Close files or use `with`. |
+| `io.BytesIO.seek(-n)` **clamps to 0** while `File.seek(-n)` **throws** (1.12.1) | by design | An in-memory buffer's cursor is always valid at 0; the divergence is explicitly tested (`r11_stdlib_gaps.ki`: "BytesIO seek clamps at 0 (unlike File.seek which throws)", `deep_system.ki`, `r7_io_sys.ki`). A 1.12.1 attempt to make BytesIO.seek throw for "consistency" was reverted — it broke those load-bearing tests. |
+| `semver.parse`/`valid` **accept a leading-zero numeric** core/prerelease (`01.2.3`, `1.2.3-01`), normalizing via `Integer()` (1.12.1) | deliberate leniency | Explicitly tested + commented across two rounds (`r7_kimods_b.ki`: "leading zeros are accepted (isdigit) and normalized by Integer()", `r8_kimods_b.ki`). Stricter node-semver conformance was weighed and rejected as cosmetic (no corruption/ambiguity). *But* out-of-alphabet identifier chars and an **empty** build/prerelease id (`1.2.3-bet@`, `1.2.3+`) ARE rejected — those were genuinely silent-validating bugs, fixed in 1.12.1. |
+| `complex.polar` accepts a **negative finite** modulus (`polar(-1, 0)` → `-1+0i`) rather than throwing (1.12.1) | by design | Explicitly tested (`r4_linalg.ki`: "polar negative r") and yields the natural `r·(cosθ, sinθ)`; only a **non-finite** modulus/angle (which drives `std::polar` to silent NaN, and is UB) is rejected. A 1.12.1 attempt to also reject negative rho was reverted after it broke that test. |
+| `tabular.DataFrame` **silently truncates a too-long ragged row** (and a too-short one throws "index out of range"), and does **not** validate that a user `index=`'s length equals the row count (1.12.1) | by design / load-bearing | The ragged behavior is PINNED (`verify_tabular.ki`: "ragged long row silently truncated (PINNED)" / "ragged short row throws (PINNED)"), and the ctor deliberately decouples `index` length from `nrows()` — the library's own `describe` builds a DataFrame with an index but 0 columns (so `nrows()==0`). 1.12.1 fixes that added ragged-row + index-length validation were reverted after they broke the pinned test and `describe`. |
 
 **Evolved case worth noting:** inline-function `return a, b` "doesn't pack" was **rejected as by-design**
 in pre-1.12 and v1.12 (an inline body is a single-expression thunk; the comma belongs to the enclosing

@@ -72,7 +72,9 @@ int main() {
     {
         CHECK(has(err("import(\"tensor\").eye(4294967296)"), "too large"));     // n*n overflowed -> OOB write
         CHECK(has(err("import(\"tensor\").eye(-1)"), "non-negative"));
-        CHECK(has(err("import(\"tensor\").zeros([2, 0]).sum(1)"), "zero-size"));  // empty-axis reduction
+        CHECK(err("import(\"tensor\").zeros([2, 0]).sum(1)") == "");              // empty-axis sum/prod -> identity (0/1), no OOB crash
+        CHECK(err("import(\"tensor\").ones([2, 0]).prod(1)") == "");              // (matches whole-tensor + NumPy)
+        CHECK(has(err("import(\"tensor\").zeros([2, 0]).min(1)"), "zero-size"));  // min/max keep throwing — no identity to seed
         CHECK(has(err("import(\"tensor\").triu(7)"), "expects a Tensor"));        // was SIGABRT (bad downcast)
         CHECK(has(err("import(\"tensor\").tril(7)"), "expects a Tensor"));
         CHECK(has(err("var m = import(\"matrix\")\nimport(\"tensor\").diag(m.identity(3))"), "expects a Tensor"));

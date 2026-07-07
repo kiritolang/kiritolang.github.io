@@ -1,0 +1,164 @@
+# Regression golden for the v1.15 audit — the observable memory-safety fixes, driven from Kirito.
+# (The HIGH heap-UAF fixes are also pinned under ASan by running this script under the asan ki.)
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# --- collections UAF: a contained value's _str_ mutating the SAME Dict/Set mid-stringify must throw
+#     a catchable "changed size" error, never corrupt the heap (was a heap-use-after-free). ---
+var d = {}
+class Key:
+    var _init_ = Function(self, n): self._n = n
+    var _hash_ = Function(self): return 5              # collide into one bucket
+    var _eq_ = Function(self, o): return self._n == o._n
+    var _str_ = Function(self): return "K" + String(self._n)
+class DBomb:
+    var _str_ = Function(self):
+        var i = 100
+        while i < 400:
+            d[Key(i)] = i                              # grow the hash-5 bucket mid-stringify
+            i = i + 1
+        return "boom"
+d[Key(0)] = DBomb()
+d[Key(1)] = 1
+assert raises_msg(Function(): return String(d), "changed size"), "Dict str reentrant-mutation throws (no UAF)"
+assert len(d) == 2, "the rejected mutation left the dict intact"
+
+var g = Set()
+class Elem:
+    var _init_ = Function(self, n): self._n = n
+    var _hash_ = Function(self): return 7
+    var _eq_ = Function(self, o): return self._n == o._n
+    var _str_ = Function(self):
+        var i = 100
+        while i < 400:
+            g.add(Elem(i))
+            i = i + 1
+        return "E"
+g.add(Elem(0))
+g.add(Elem(1))
+assert raises_msg(Function(): return String(g), "changed size"), "Set str reentrant-mutation throws (no UAF)"
+
+# a NON-mutating _str_ inside a container still stringifies fine (the guard doesn't over-reject)
+class Nice:
+    var _init_ = Function(self, v): self._v = v
+    var _str_ = Function(self): return "<" + self._v + ">"
+assert String([Nice("a"), Nice("b")]) == "[<a>, <b>]", "non-mutating contained _str_ still works"
+assert "3" in String({1: Nice("x"), 2: 3}), "ordinary dict stringify unaffected"
+
+# --- tensor.split with a negative section size: a size_t wrap must NOT bypass the sum check and
+#     read out of bounds — it must be rejected up front. ---
+var T = import("tensor")
+assert raises_msg(Function(): return T.split(T.Tensor([1.0, 2.0, 3.0, 4.0]), [-1, 5]),
+    "non-negative"), "tensor.split rejects a negative section size (was an OOB heap read)"
+assert raises_msg(Function(): return T.split(T.Tensor([1.0, 2.0, 3.0, 4.0]), [-1, -1, 6]),
+    "non-negative"), "tensor.split rejects negative sections (multiple)"
+# a valid split still works
+var parts = T.split(T.Tensor([1.0, 2.0, 3.0, 4.0]), [1, 3])
+assert parts[0].tolist() == [1.0] and parts[1].tolist() == [2.0, 3.0, 4.0], "valid explicit split unchanged"
+var eq = T.split(T.Tensor([1.0, 2.0, 3.0, 4.0]), 2)
+assert eq[0].tolist() == [1.0, 2.0] and eq[1].tolist() == [3.0, 4.0], "equal-parts split unchanged"
+
+# --- dunder ownerClass: method ownership is per-(class,method) BINDING, not stamped on a shared
+#     function object (was: last class to reference a shared fn won -> _super_ climbs wrong base, and
+#     privacy was both falsely-denied AND bypassable from external scope). ---
+class Base1:
+    var who = Function(self): return "Base1"
+class Base2:
+    var who = Function(self): return "Base2"
+var callsuper = Function(self): return self._super_().who()
+class D1(Base1):
+    var m = callsuper
+class D2(Base2):
+    var m = callsuper
+assert D1().m() == "Base1" and D2().m() == "Base2", "shared method resolves _super_ against its OWN class"
+# a module-level function adopted as a method must NOT let external code bypass privacy
+var readpriv = Function(obj): return obj._secret
+class Secret:
+    var _init_ = Function(self): self._secret = "s"
+    var use = readpriv
+assert Secret().use() == "s", "the class's own method can read its private"
+assert raises_msg(Function(): return readpriv(Secret()), "private"), "external call to the raw fn is denied (no bypass)"
+# a method calling a sibling as a free variable (through the class scope) still reaches privates
+class FV:
+    var _init_ = Function(self): self._x = 7
+    var helper = Function(self): return self._x
+    var use = Function(self): return helper(self)
+assert FV().use() == 7, "free-var sibling call still accesses privates"
+# a shared method resolves each instance's own class
+var tagof = Function(self): return self._tag
+class P:
+    var _init_ = Function(self): self._tag = "P"
+    var m = tagof
+class Q:
+    var _init_ = Function(self): self._tag = "Q"
+    var m = tagof
+assert P().m() == "P" and Q().m() == "Q", "shared method reads each class's own private"
+
+# --- the "unhashable type '<T>'" message is uniform across Set.add / Set.remove / Dict / hash()
+#     (Set.remove had drifted to a bare "unhashable type" with no type name). ---
+var st = Set([1, 2])
+assert raises_msg(Function(): return st.remove([9]), "unhashable type 'List'"), "Set.remove names the type"
+assert raises_msg(Function(): return st.add([9]), "unhashable type 'List'"), "Set.add names the type"
+var dd = {}
+assert raises_msg(Function(): return dd.get([9]), "unhashable type 'List'"), "Dict.get names the type"
+
+# --- semver.valid must reject out-of-alphabet prerelease/build identifiers and an empty build
+#     component (a `+` with nothing after it) — these used to silently VALIDATE. Leading zeros in
+#     the numeric core stay tolerated (normalized by Integer()), a deliberate leniency. ---
+var sv = import("semver")
+assert sv.valid("1.2.3-bet@") == None, "semver rejects '@' in a prerelease identifier"
+assert sv.valid("1.2.3+") == None, "semver rejects an empty build identifier"
+assert sv.valid("1.2.3+bu*ild") == None, "semver rejects '*' in a build identifier"
+assert sv.valid("01.2.3") == "01.2.3", "semver still tolerates a leading-zero core (by design)"
+assert sv.valid("1.2.3-01") == "1.2.3-01", "semver still tolerates a leading-zero numeric prerelease"
+assert sv.valid("1.0.0-alpha+001") == "1.0.0-alpha+001", "semver tolerates a leading-zero build id"
+
+# --- repr of a String containing the DEL control byte (U+007F) must be \x-escaped, not emitted raw.
+assert String([chr(0x7f)]) == "['\\x7f']", "repr escapes the DEL control character"
+
+# --- complex.polar: a non-finite modulus/angle drove std::polar to silent NaN (and is UB); reject it.
+#     A negative FINITE modulus is left alone (tested: polar(-1, 0) = -1+0i).
+var cx = import("complex")
+var mth = import("math")
+assert raises(Function(): return cx.polar(1, mth.inf)), "polar rejects a non-finite angle"
+assert raises(Function(): return cx.polar(mth.nan, 0)), "polar rejects a non-finite modulus"
+assert cx.polar(-1, 0).compare(cx.of(-1, 0)), "polar still accepts a negative finite modulus"
+
+# --- tensor: per-axis sum/prod over a length-0 axis returns the identity (0 / 1), matching whole-tensor
+#     and NumPy; min/max still throw (no identity). concatenate/split accept a NumPy negative axis.
+assert T.zeros([2, 0]).sum(1).tolist() == [0.0, 0.0], "sum over an empty axis is 0 (identity)"
+assert T.ones([2, 0]).prod(1).tolist() == [1.0, 1.0], "prod over an empty axis is 1 (identity)"
+assert raises(Function(): return T.zeros([2, 0]).max(1)), "max over an empty axis still throws (no identity)"
+assert T.concatenate([T.zeros([2, 2]), T.zeros([2, 2])], -1).shape() == [2, 4], "concatenate accepts a negative axis"
+assert T.split(T.arange(0, 4), [2, 2], -1)[1].tolist() == [2.0, 3.0], "split accepts a negative axis"
+
+# --- DateTime.iso() for a negative year -1..-999 must keep the sign OUTSIDE the 4-digit pad
+#     ("-0005", not the old "-005" where the sign ate a pad digit). Positive years are unchanged.
+var tm = import("time")
+assert tm.make(-5, 1, 1).iso() == "-0005-01-01T00:00:00", "iso() sign-aware pad for a small negative year"
+assert tm.make(-999, 1, 1).iso() == "-0999-01-01T00:00:00", "iso() 3-digit negative year"
+assert tm.make(-1000, 1, 1).iso() == "-1000-01-01T00:00:00", "iso() 4-digit negative year unchanged"
+assert tm.make(2024, 3, 5).iso() == "2024-03-05T00:00:00", "iso() positive year unchanged"
+
+# --- regex: a shorthand class (\d \w \s / negations) as a range HIGH endpoint used to silently
+#     degrade to a literal (`[a-\d]` → the range a..'d'); it must now be rejected (Python parity).
+#     A shorthand as a set MEMBER, and a normal literal range, stay valid.
+var re = import("regex")
+assert raises(Function(): return re.compile(r"[a-\d]")), "regex rejects a shorthand class as a range endpoint"
+assert raises(Function(): return re.compile(r"[\x41-\w]")), "regex rejects \\w as a range endpoint"
+assert re.findall(r"[\w]+", "hi_5!") == ["hi_5"], "regex shorthand as a set member still works"
+assert re.findall(r"[a-d]", "abcde") == ["a", "b", "c", "d"], "regex normal literal range still works"
+
+io.print("OK audit-v115")

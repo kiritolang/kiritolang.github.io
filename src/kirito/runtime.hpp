@@ -875,7 +875,9 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             if (a.empty()) throw KiritoError("remove expects a value");
             auto& s = set_of(vm, self);
             const Object& v = vm.arena().deref(a[0]);
-            if (!v.hashable()) throw KiritoError("unhashable type");
+            if (!v.hashable()) throw KiritoError("unhashable type '" + v.typeName() + "'");  // match the
+                // canonical message used by Set.add / Dict / hash() — Set.remove had drifted to a bare
+                // "unhashable type" with no type name.
             std::size_t h = v.hash();
             if (s.probing_) throw KiritoError("Set changed size during a value comparison");
             ProbeScope guard(s.probing_);  // reentrant _eq_ must not realloc the bucket we hold
@@ -2427,6 +2429,13 @@ inline Handle KiritoVM::importModule(const std::string& name) {
         return KiritoError("circular import detected: " + chain + dup);
     };
     if (importing_.count(name)) throw cycleError(name);
+
+    // Bound the import-nesting DEPTH. importStack_ holds only the current in-progress chain (LoadGuard
+    // pops on return), so a wide import graph never trips this; only an unbounded deep chain
+    // (a imports b imports c ...) does, which would otherwise recurse importModule -> run -> import
+    // until the native stack overflows (an uncatchable segfault). 500 is far beyond any real graph.
+    if (importStack_.size() >= 500)
+        throw KiritoError("maximum import nesting depth exceeded (deeply chained imports)");
 
     // RAII: mark `name` (and, for a .ki file, its resolved path) in-progress for the duration of the
     // load; always unwound on return/throw so a failed import never poisons a later one. References

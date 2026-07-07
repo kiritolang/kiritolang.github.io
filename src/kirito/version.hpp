@@ -10,7 +10,7 @@ namespace kirito {
 // available. Bump it IN THE SAME COMMIT you tag, so the published binary's embedded version matches
 // its release. Release binaries are built locally with `tools/scripts/build_all.sh` and uploaded to
 // the GitHub Release by hand (this project does not use CI).
-inline constexpr const char* kVersion = "1.12.0";
+inline constexpr const char* kVersion = "1.12.1";
 
 }  // namespace kirito
 

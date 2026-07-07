@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -313,16 +314,19 @@ template <class T> T maxAll(const Tensor<T>& t) {
     }
 }
 
-// Reduce one axis with a combiner `comb(acc, x)`, seeded with the first element along the axis.
+// Reduce one axis with a combiner `comb(acc, x)`. Seeded with the first element along the axis, so an
+// empty axis has nothing to seed and throws — EXCEPT when an `identity` is supplied (sum→0, prod→1),
+// in which case the accumulator starts at the identity and an empty axis yields it (NumPy semantics).
 template <class T, class Comb>
-Tensor<T> reduceAxis(const Tensor<T>& t, std::size_t axis, Comb comb) {
+Tensor<T> reduceAxis(const Tensor<T>& t, std::size_t axis, Comb comb,
+                     std::optional<std::type_identity_t<T>> identity = std::nullopt) {
     if (axis >= t.ndim()) throw TensorError("reduction axis out of range");
     Shape outshape;
     for (std::size_t i = 0; i < t.ndim(); ++i) if (i != axis) outshape.push_back(t.shape[i]);
     Tensor<T> out(outshape);
     Shape st = t.strides();
     std::size_t axislen = t.shape[axis], axisstep = st[axis];
-    if (axislen == 0 && out.size() > 0)  // no first element to seed the reduction (numpy throws too)
+    if (axislen == 0 && out.size() > 0 && !identity)  // no first element to seed and no identity to fall back on
         throw TensorError("zero-size reduction: cannot reduce over an empty axis");
     Shape ost = out.strides();
     // For each output cell, walk the reduced axis in the source.
@@ -336,8 +340,10 @@ Tensor<T> reduceAxis(const Tensor<T>& t, std::size_t axis, Comb comb) {
             base += coord * st[i];
             ++oi;
         }
-        T acc = t.data[base];
-        for (std::size_t a = 1; a < axislen; ++a) acc = comb(acc, t.data[base + a * axisstep]);
+        // With an identity, fold every element from it (numerically identical to seeding on the first);
+        // without one, seed on the first element and fold the rest.
+        T acc = identity ? *identity : t.data[base];
+        for (std::size_t a = identity ? 0 : 1; a < axislen; ++a) acc = comb(acc, t.data[base + a * axisstep]);
         out.data[olin] = acc;
     }
     return out;

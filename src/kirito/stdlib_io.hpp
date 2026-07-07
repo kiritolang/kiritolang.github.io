@@ -350,7 +350,7 @@ public:
                              : whence == 2 ? static_cast<int64_t>(b.buf.size()) : 0;
                 int64_t np;
                 if (__builtin_add_overflow(base, off, &np)) throw KiritoError("seek: resulting position is out of range");
-                if (np < 0) np = 0;
+                if (np < 0) np = 0;  // BytesIO clamps a before-start seek to 0 (by design, unlike File.seek which throws)
                 b.pos = static_cast<std::size_t>(np);
                 return vm.makeInt(np);
             });

@@ -594,6 +594,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `complex pow: zero to a negative or complex power` | `0j ** -1` / `0j ** 1j` | Avoid the singularity |
 | `complex.pow expects 2 arguments` | Wrong arity to `complex.pow` | Pass two arguments |
 | `<fn>: math domain error (logarithm of zero)` / `(atanh of ±1)` / `(atan of ±i)` | `complex.log`/`log10` of 0, `atanh(±1)`, or `atan(±i)` (each a pole) | Keep the argument in domain |
+| `math domain error (polar requires finite modulus and angle)` | `complex.polar` with a non-finite `r`/`theta` (would drive `std::polar` to silent NaN) | Pass finite arguments (a negative finite modulus is allowed) |
 | `Complex does not support this operator` / `Complex does not support this unary operator` | An operator outside `+ - * / **` (or unary `-`) on a Complex | Use a supported operator |
 | `Complex _setstate_: malformed state` | Deserializing a corrupt Complex blob | Deserialize only trusted data |
 
@@ -763,7 +764,7 @@ large* — live under [Resource guards](#resource-guards-repetition--padding--ra
 | `boolean mask length does not match row count` | Boolean-mask selection with a wrong-length mask | Match the mask to the frame |
 | `merge: how must be one of inner/left/right/outer, got '<how>'` | Invalid `how` to `tabular.merge` | Use inner/left/right/outer |
 | `readcsv: row <r> has <n> fields, expected <k>` | A CSV row with more fields than the header (no silent data loss) | Fix the row / header |
-| `invalid version '<s>': need MAJOR.MINOR.PATCH` / `non-numeric core` / `empty prerelease identifier` / `invalid version (too many components): <rest>` | `semver.parse`/`clean` of a malformed version (`valid()` returns `None` instead of throwing) | Pass a valid semver, or probe with `valid()` first |
+| `invalid version '<s>': need MAJOR.MINOR.PATCH` / `non-numeric core` / `empty prerelease identifier` / `invalid prerelease identifier '<p>'` / `empty build identifier` / `invalid build identifier '<b>'` / `invalid version (too many components): <rest>` | `semver.parse`/`clean` of a malformed version — a prerelease/build identifier must be non-empty and drawn from `[0-9A-Za-z-]` (`valid()` returns `None` instead of throwing) | Pass a valid semver, or probe with `valid()` first |
 | `inc: release must be major/minor/patch, got '<release>'` | `semver.inc` with an unknown release part | Use major/minor/patch |
 
 ## Concurrency — the `parallel` module

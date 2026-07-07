@@ -45,6 +45,13 @@ imply a tag or a Release, and does NOT authorize either. A release happens only 
 explicitly asks for one (build the binaries, push the tag, upload the GitHub Release). Until then
 `kVersion` is just the label the in-progress work will ship under.
 
+**An audit loop is a PATCH (bugfix) release — bump only the patch component** of `kVersion`
+(`1.12.0` → `1.12.1` → `1.12.2` …), never the minor or major. An audit loop hardens/fixes/tests the
+existing surface; it does not add headline features, so it is a bugfix release by definition. Reserve
+a minor bump for genuinely new user-facing features and a major bump for breaking changes, and only
+when the user asks. (The `.audit/v1.NN` directories are internal round labels, not version numbers —
+don't infer the version from them.)
+
 ## What we are building
 
 **Kirito** — a from-scratch, dynamically-typed, strongly-typed general-purpose scripting language.

@@ -183,13 +183,29 @@ public:
                     Handle clsHandle = rs.add(vm_.alloc(std::move(cls)));
                     auto& klass = static_cast<ClassValue&>(vm_.arena().deref(clsHandle));
                     klass.selfHandle = clsHandle;
-                    for (const auto& [mname, mh] : klass.methods) {     // tag methods so they may touch privates
-                        Object& mo = vm_.arena().deref(mh);
-                        if (mo.kind() == ValueKind::Function) {
+                    // Own the methods so their bodies may touch privates / resolve `_super_` against
+                    // THIS class. Ownership must attach to the (class, method) BINDING, never be stamped
+                    // on the shared function OBJECT: a function reachable elsewhere — a module-level fn
+                    // adopted as a method, or one function assigned as a method of two classes — would
+                    // otherwise have its single `ownerClass` field overwritten by the LAST class to
+                    // reference it (corrupting `_super_`, and both falsely-denying AND letting an
+                    // external call bypass privacy). So install an OWNED CLONE and leave the original
+                    // untouched. Rebind the class-scope local too, so a method that calls a sibling as a
+                    // free variable (through the captured class scope) also reaches the owned clone.
+                    {
+                        auto& classEnv = static_cast<EnvValue&>(vm_.arena().deref(classScope));
+                        std::vector<std::pair<std::string, Handle>> owned;
+                        for (const auto& [mname, mh] : klass.methods) {
+                            Object& mo = vm_.arena().deref(mh);
+                            if (mo.kind() != ValueKind::Function) continue;
                             auto& fn = static_cast<KiFunction&>(mo);
-                            fn.ownerClass = clsHandle;
-                            fn.hasOwner = true;
+                            auto clone = std::make_unique<KiFunction>(&fn.def(), fn.closure());
+                            clone->sourceFile = fn.sourceFile;
+                            clone->ownerClass = clsHandle;
+                            clone->hasOwner = true;
+                            owned.emplace_back(mname, rs.add(vm_.alloc(std::move(clone))));
                         }
+                        for (auto& [mname, ch] : owned) { klass.methods[mname] = ch; classEnv.define(mname, ch); }
                     }
                     static_cast<EnvValue&>(vm_.arena().deref(scope())).define(cs.name, clsHandle);
                     vm_.registerClass(cs.name, clsHandle);  // so serialize/dump can reconstruct instances

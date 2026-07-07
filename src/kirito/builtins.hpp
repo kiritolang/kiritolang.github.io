@@ -97,6 +97,8 @@ inline void utf8Encode(unsigned cp, std::string& out) {
 // Render a double: shortest sensible form, always with a decimal point
 // (so 2.0 prints "2.0", not "2"), while non-finite values pass through.
 inline std::string floatToString(double d) {
+    if (std::isnan(d)) return "nan";  // a NaN's sign bit is meaningless, but glibc %.15g leaks a set
+                                      // one as "-nan" (e.g. inf - inf) — canonicalise every NaN to "nan".
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%.15g", d);
     // Round-trip-overflow guard: %.15g rounds DBL_MAX *up* to 1.79769313486232e+308, which re-parses
@@ -270,7 +272,7 @@ inline std::string reprString(const std::string& s) {
         else if (c == '\n') out += "\\n";
         else if (c == '\t') out += "\\t";
         else if (c == '\r') out += "\\r";
-        else if (uc < 0x20) { char b[8]; std::snprintf(b, sizeof(b), "\\x%02x", uc); out += b; }
+        else if (uc < 0x20 || uc == 0x7f) { char b[8]; std::snprintf(b, sizeof(b), "\\x%02x", uc); out += b; }  // 0x7f = DEL: a lone control byte that a terminal would eat, breaking the read-back-unambiguously contract
         else out += c;
     }
     out += quote;

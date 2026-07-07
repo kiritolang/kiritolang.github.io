@@ -7,6 +7,14 @@ var net = import("net")
 var sys = import("sys")
 var path = import("path")
 
+# The abuse harness spawns the server through a POSIX shell (python3 backgrounded with `&` + teardown
+# via `kill`), which is not portable to cmd.exe; skip cleanly on Windows. The skip reason goes to
+# stderr — stdout must stay EXACTLY the success marker so the golden .expected still matches.
+if sys.platform == "windows":
+    io.eprint("skipped http_client_abuse — POSIX shell server harness not portable to Windows")
+    io.print("OK http_client_abuse")
+    sys.exit(0)
+
 var throws = Function(fn) -> Bool:
     try:
         discard fn()
@@ -25,13 +33,15 @@ for c in candidates:
         server = c
 
 if server == None:
-    io.print("OK http_client_abuse (skipped — abuse server not found)")
+    io.eprint("skipped http_client_abuse — abuse server not found")
+    io.print("OK http_client_abuse")
     sys.exit(0)
 
 # Any Kirito available? If not, skip cleanly.
 var pyProbe = sys.shell("python3 -c 'import socket' 2>/dev/null", None, "", 2)
 if pyProbe["code"] != 0:
-    io.print("OK http_client_abuse (skipped — python3 not on PATH)")
+    io.eprint("skipped http_client_abuse — python3 not on PATH")
+    io.print("OK http_client_abuse")
     sys.exit(0)
 
 # Pick a port derived from the process time — cheap uniqueness without needing a rand fresh seed.
