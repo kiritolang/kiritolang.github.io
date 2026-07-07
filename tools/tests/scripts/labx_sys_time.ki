@@ -169,52 +169,53 @@ assert sys.getenv(K) == None and not (K in sys.environ()), "after unsetenv the v
 assert raises(Function(): return sys.getenv(5)), "getenv non-String name raises"
 assert raises(Function(): return sys.setenv(1, "v")), "setenv non-String name raises"
 
-# ============================================================ subprocess: exit codes (no throw on nonzero)
-assert sys.createprocess(["true"])["code"] == 0, "createprocess true -> code 0"
-var falseR = sys.createprocess(["false"])
-assert falseR["code"] == 1, "createprocess false -> code 1 (no throw)"
-assert type(falseR["code"]) == "Integer", "code is an Integer"
-assert "code" in falseR and "stdout" in falseR and "stderr" in falseR, "result Dict has code/stdout/stderr"
-# printf writes verbatim to stdout as a String by default
-assert sys.createprocess(["printf", "%s", "hello"])["stdout"] == "hello", "createprocess argv is verbatim (no shell)"
-assert sys.createprocess(["printf", "%s", "hello"])["stderr"] == "", "clean run has empty stderr"
+if sys.platform != "windows":  # subprocess block below uses POSIX-only tools (true/false/printf/wc/cat/sleep/pwd)
+    # ============================================================ subprocess: exit codes (no throw on nonzero)
+    assert sys.createprocess(["true"])["code"] == 0, "createprocess true -> code 0"
+    var falseR = sys.createprocess(["false"])
+    assert falseR["code"] == 1, "createprocess false -> code 1 (no throw)"
+    assert type(falseR["code"]) == "Integer", "code is an Integer"
+    assert "code" in falseR and "stdout" in falseR and "stderr" in falseR, "result Dict has code/stdout/stderr"
+    # printf writes verbatim to stdout as a String by default
+    assert sys.createprocess(["printf", "%s", "hello"])["stdout"] == "hello", "createprocess argv is verbatim (no shell)"
+    assert sys.createprocess(["printf", "%s", "hello"])["stderr"] == "", "clean run has empty stderr"
 
-# ============================================================ subprocess: shell vs argv semantics
-# shell INTERPRETS the string (a pipe here); createprocess would treat '|' as a literal argument.
-assert sys.shell("printf 'abc' | wc -c")["stdout"].strip() == "3", "shell interprets a pipe"
-assert sys.shell("exit 7")["code"] == 7, "shell propagates the command's exit code"
-assert sys.shell("exit 300")["code"] == 44, "shell exit code wraps mod 256 (300 -> 44)"
-# a nonexistent program: createprocess RAISES (can't spawn) but shell returns code 127 (shell ran, cmd not found)
-assert raises(Function(): return sys.createprocess(["no_such_prog_labx_zzz"])), "createprocess of a missing program raises"
-assert sys.shell("no_such_prog_labx_zzz")["code"] == 127, "shell of a missing command returns 127 (no throw)"
-# result-type hardening
-assert raises_msg(Function(): return sys.createprocess("notalist"), "must be a List"), "createprocess non-List args throws"
-assert raises(Function(): return sys.createprocess([])), "createprocess empty args throws"
-assert raises(Function(): return sys.shell(5)), "shell non-String command throws"
+    # ============================================================ subprocess: shell vs argv semantics
+    # shell INTERPRETS the string (a pipe here); createprocess would treat '|' as a literal argument.
+    assert sys.shell("printf 'abc' | wc -c")["stdout"].strip() == "3", "shell interprets a pipe"
+    assert sys.shell("exit 7")["code"] == 7, "shell propagates the command's exit code"
+    assert sys.shell("exit 300")["code"] == 44, "shell exit code wraps mod 256 (300 -> 44)"
+    # a nonexistent program: createprocess RAISES (can't spawn) but shell returns code 127 (shell ran, cmd not found)
+    assert raises(Function(): return sys.createprocess(["no_such_prog_labx_zzz"])), "createprocess of a missing program raises"
+    assert sys.shell("no_such_prog_labx_zzz")["code"] == 127, "shell of a missing command returns 127 (no throw)"
+    # result-type hardening
+    assert raises_msg(Function(): return sys.createprocess("notalist"), "must be a List"), "createprocess non-List args throws"
+    assert raises(Function(): return sys.createprocess([])), "createprocess empty args throws"
+    assert raises(Function(): return sys.shell(5)), "shell non-String command throws"
 
-# ============================================================ subprocess: Bytes-in-verbatim + binary byte-exact (through `cat`)
-# `cat` is a foreign byte-transparent tool: whatever bytes go in on stdin come out on stdout. Feeding a
-# Bytes and reading with binary=True proves (a) the Bytes is fed VERBATIM (a high byte is NOT UTF-8
-# ballooned) and (b) stdout comes back byte-exact. 0xFF alone: a String would balloon to [0xC3,0xBF];
-# a Bytes stays one byte, so length 1 is the no-ballooning proof.
-var payload = Bytes([0, 1, 127, 128, 200, 255, 254, 195, 40, 10])
-var echoed = sys.createprocess(["cat"], input = payload, binary = True)["stdout"]
-assert type(echoed) == "Bytes", "binary=True returns Bytes"
-assert echoed == payload and len(echoed) == 10, "Bytes fed verbatim + byte-exact stdout through cat"
-assert sys.createprocess(["cat"], input = Bytes([255]), binary = True)["stdout"] == Bytes([255]), "a lone 0xFF stays one byte"
-assert len(sys.createprocess(["cat"], input = Bytes([255]), binary = True)["stdout"]) == 1, "...length 1 (no UTF-8 ballooning)"
-assert sys.createprocess(["cat"], input = Bytes([]), binary = True)["stdout"] == Bytes([]), "empty Bytes -> empty Bytes"
-# default (non-binary) output is a String even for a Bytes input; a String input is UTF-8 encoded
-assert type(sys.createprocess(["cat"], input = Bytes([65, 66]))["stdout"]) == "String", "default output is a String"
-assert sys.createprocess(["cat"], input = "hello-str")["stdout"] == "hello-str", "String input round-trips as a String"
+    # ============================================================ subprocess: Bytes-in-verbatim + binary byte-exact (through `cat`)
+    # `cat` is a foreign byte-transparent tool: whatever bytes go in on stdin come out on stdout. Feeding a
+    # Bytes and reading with binary=True proves (a) the Bytes is fed VERBATIM (a high byte is NOT UTF-8
+    # ballooned) and (b) stdout comes back byte-exact. 0xFF alone: a String would balloon to [0xC3,0xBF];
+    # a Bytes stays one byte, so length 1 is the no-ballooning proof.
+    var payload = Bytes([0, 1, 127, 128, 200, 255, 254, 195, 40, 10])
+    var echoed = sys.createprocess(["cat"], input = payload, binary = True)["stdout"]
+    assert type(echoed) == "Bytes", "binary=True returns Bytes"
+    assert echoed == payload and len(echoed) == 10, "Bytes fed verbatim + byte-exact stdout through cat"
+    assert sys.createprocess(["cat"], input = Bytes([255]), binary = True)["stdout"] == Bytes([255]), "a lone 0xFF stays one byte"
+    assert len(sys.createprocess(["cat"], input = Bytes([255]), binary = True)["stdout"]) == 1, "...length 1 (no UTF-8 ballooning)"
+    assert sys.createprocess(["cat"], input = Bytes([]), binary = True)["stdout"] == Bytes([]), "empty Bytes -> empty Bytes"
+    # default (non-binary) output is a String even for a Bytes input; a String input is UTF-8 encoded
+    assert type(sys.createprocess(["cat"], input = Bytes([65, 66]))["stdout"]) == "String", "default output is a String"
+    assert sys.createprocess(["cat"], input = "hello-str")["stdout"] == "hello-str", "String input round-trips as a String"
 
-# ============================================================ subprocess: cwd + timeout
-# cwd changes the child's working directory (pwd prints it); a different cwd yields different output.
-var homeC = sys.shell("pwd")["stdout"].strip()
-var tmpC = sys.shell("pwd", cwd = "/")["stdout"].strip()
-assert tmpC == "/" and tmpC != homeC or homeC == "/", "cwd changes the child's working directory"
-# a positive timeout on a slow command kills it and throws (kept short: 0.3s over a 5s sleep)
-assert raises(Function(): return sys.createprocess(["sleep", "5"], timeout = 0.3)), "timeout kills a slow command and throws"
-assert raises(Function(): return sys.shell("sleep 5", timeout = 0.3)), "shell timeout kills + throws too"
+    # ============================================================ subprocess: cwd + timeout
+    # cwd changes the child's working directory (pwd prints it); a different cwd yields different output.
+    var homeC = sys.shell("pwd")["stdout"].strip()
+    var tmpC = sys.shell("pwd", cwd = "/")["stdout"].strip()
+    assert tmpC == "/" and tmpC != homeC or homeC == "/", "cwd changes the child's working directory"
+    # a positive timeout on a slow command kills it and throws (kept short: 0.3s over a 5s sleep)
+    assert raises(Function(): return sys.createprocess(["sleep", "5"], timeout = 0.3)), "timeout kills a slow command and throws"
+    assert raises(Function(): return sys.shell("sleep 5", timeout = 0.3)), "shell timeout kills + throws too"
 
 io.print("OK sys_time")
