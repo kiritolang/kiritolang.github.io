@@ -1429,7 +1429,7 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
 - `t.argmin(axis = None)`, `t.argmax(axis = None)` — index of the extreme.
 - `t.std(axis = None, ddof = 0)`, `t.var(axis = None, ddof = 0)` — standard deviation / variance.
 - `t.all(axis = None)`, `t.any(axis = None)` — truth reductions.
-- `t.ptp(axis = None)` — max − min; `t.median(axis = None)` — returns `NaN` for any line containing a `NaN` (NumPy parity, consistent with `min`/`max`/`mean` NaN-propagation).
+- `t.ptp(axis = None)` — max − min; `t.median(axis = None)` — sorts `NaN` last (like `sort`/`argsort`/`unique`), so a `NaN` only affects the result when it lands at the median position.
 - `t.cumsum(axis = None)` (differentiable) / `t.cumprod(axis = None)` — cumulative scans
   (`axis = None` flattens first).
 

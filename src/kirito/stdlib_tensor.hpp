@@ -1215,7 +1215,7 @@ inline Handle ptpT(KiritoVM& vm, Handle ah, int64_t axis) {
 inline Handle medianT(KiritoVM& vm, Handle ah, int64_t axis) {
     warnDetach(vm, "median()", asT(vm, ah));
     const FT& a = reqFloat(asT(vm, ah), "median");
-    auto med = [](std::vector<double> v) { if (v.empty()) throw KiritoError("median of an empty axis"); for (double x : v) if (x != x) return std::numeric_limits<double>::quiet_NaN(); std::sort(v.begin(), v.end()); std::size_t n = v.size(); return n % 2 ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]); };  // any NaN -> NaN (numpy parity; consistent with max/min/mean NaN-propagation)
+    auto med = [](std::vector<double> v) { if (v.empty()) throw KiritoError("median of an empty axis"); std::sort(v.begin(), v.end(), [](double x, double y) { return x < y || (y != y && x == x); }); std::size_t n = v.size(); return n % 2 ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]); };  // NaN sorts last, like sort/argsort/unique (a deliberate prior decision, pinned in r7_regressions)
     if (axis < 0) { if (a.data.empty()) throw KiritoError("median of an empty tensor"); return vm.makeFloat(med(a.data)); }
     std::size_t ax = static_cast<std::size_t>(axis);
     tensor::Shape os; for (std::size_t i = 0; i < a.ndim(); ++i) if (i != ax) os.push_back(a.shape[i]);

@@ -33,3 +33,4 @@ Probe: `./build-debug/ki`.
 - repro: `T.Tensor([1.0,nan]).median()` -> nan ; `T.Tensor([1.0,nan,3.0,2.0]).median()` -> 2.5 (NaN ignored)
 - actual: result depends on size/position of NaN after the "NaN sorts last" sort. expected: numpy.median returns NaN whenever any element is NaN. This is exactly the A13-1 inconsistency that was deliberately fixed for max/min/argmax (they now propagate NaN), but median still has it. mean/std also naturally propagate NaN, so median is the odd one out.
 - fix idea: in medianT, if any element in the line is NaN, yield NaN (mirror the max/min NaN-propagation policy).
+F4 median-NaN = RE-VERIFIED NON-BUG: median sorting NaN-last is a DELIBERATE prior decision (median is sort-defined; sort/argsort/unique also sort NaN last), pinned in r7_regressions.ki. Reverted the propagate-NaN change. NOT a bug.
