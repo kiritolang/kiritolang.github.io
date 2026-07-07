@@ -549,6 +549,11 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `SSL_write failed` | TLS write error mid-request | Reconnect |
 | `https requires building with KIRITO_ENABLE_TLS (OpenSSL); use http:// otherwise` | HTTPS on a non-TLS build | Rebuild with TLS or use http:// |
 | `SSL_CTX_new failed` | OpenSSL could not create the TLS context | Environment/OpenSSL problem — retry |
+| `starttls: only a stream (TCP) socket can use TLS` | `socket.starttls` on a UDP/datagram socket | TLS needs a stream socket |
+| `starttls: this socket is already using TLS` | `starttls` called twice on the same socket | Upgrade once |
+| `starttls: a server_hostname is required for certificate verification (or pass verify=False)` | `starttls(verify=True)` with no hostname to check (IP-only, never connected) | Pass `server_hostname=` or `verify=False` |
+| `starttls: socket TLS requires building with KIRITO_ENABLE_TLS (OpenSSL); net.tlsenabled is False in this build` | `socket.starttls` on a non-TLS build | Rebuild with TLS (never silently plaintext) |
+| `detach: cannot detach a TLS socket (the TLS session owns the fd)` | `detach()` on a TLS-active socket | Close it instead; the fd is owned by the TLS session |
 | `HTTPS response exceeds the size limit` | A TLS response body grew past the cap | Fetch a smaller resource / stream it |
 
 ### random — RNG construction & sampling

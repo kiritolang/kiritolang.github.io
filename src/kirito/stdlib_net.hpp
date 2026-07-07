@@ -67,6 +67,7 @@ public:
                 "setsockopt(option, value)", "getsockopt(option) -> Integer",
                 "setreuseaddr(flag)", "setnodelay(flag)", "setbroadcast(flag)", "setkeepalive(flag)",
                 "setblocking(flag)", "settimeout(seconds)", "shutdown(how)",
+                "starttls(server_hostname, verify) -> None", "cipher() -> String", "is_tls: Bool",
                 "fileno() -> Integer", "close()", "detach() -> Integer"};
     }
     netcompat::socket_t fd = netcompat::kInvalidSocket;
@@ -74,6 +75,20 @@ public:
     int socktype = SOCK_STREAM;
     bool closed = false;
     double timeout = 0.0;   // settimeout() value (seconds); 0 = blocking. Bounds connect() too.
+    std::string peerHost;   // the host last connect()ed to — starttls uses it as the default SNI/verify name.
+#ifdef KIRITO_ENABLE_TLS
+    // When a TLS session is active (after starttls) send/recv route through it. The Socket owns both
+    // and tears them down before closing the fd. nullptr => plaintext.
+    SSL* ssl_ = nullptr;
+    SSL_CTX* sslCtx_ = nullptr;
+#endif
+    bool isTls() const {
+#ifdef KIRITO_ENABLE_TLS
+        return ssl_ != nullptr;
+#else
+        return false;
+#endif
+    }
 
     SocketVal() : SocketVal(AF_INET, SOCK_STREAM) {}
     SocketVal(int fam, int type) : family(fam), socktype(type) {
@@ -90,8 +105,45 @@ public:
     ~SocketVal() override { closeFd(); }
 
     void closeFd() {
+#ifdef KIRITO_ENABLE_TLS
+        if (ssl_) { SSL_shutdown(ssl_); SSL_free(ssl_); ssl_ = nullptr; }
+        if (sslCtx_) { SSL_CTX_free(sslCtx_); sslCtx_ = nullptr; }
+#endif
         if (netcompat::isValid(fd) && !closed) { netcompat::closeSocket(fd); closed = true; }
     }
+
+#ifdef KIRITO_ENABLE_TLS
+    // TLS byte I/O (only reached when isTls()). SSL_write/SSL_read handle the record framing; a clean
+    // peer close (SSL_ERROR_ZERO_RETURN) is EOF, everything else is a hard error.
+    void tlsSendAll(const std::string& data) {
+        std::size_t sent = 0;
+        while (sent < data.size()) {
+            int n = SSL_write(ssl_, data.data() + sent, static_cast<int>(data.size() - sent));
+            if (n <= 0) throw KiritoError("SSL_write failed: " + netcompat::lastError());
+            sent += static_cast<std::size_t>(n);
+        }
+    }
+    long long tlsRecv(char* buf, std::size_t n) {
+        int got = SSL_read(ssl_, buf, static_cast<int>(n));
+        if (got > 0) return got;
+        int err = SSL_get_error(ssl_, got);
+        if (err == SSL_ERROR_ZERO_RETURN) return 0;   // clean TLS close_notify -> EOF
+        return -1;
+    }
+    // Read to EOF over TLS, bounded by `maxBytes` (the caller passes net::kMaxRecvAll — not visible
+    // from this in-class context, since the `net` namespace opens further down the header).
+    std::string tlsRecvAll(std::size_t maxBytes) {
+        std::string raw;
+        char buf[4096];
+        long long got;
+        while ((got = tlsRecv(buf, sizeof(buf))) > 0) {
+            raw.append(buf, static_cast<std::size_t>(got));
+            if (raw.size() > maxBytes) throw KiritoError("recvall exceeds the size limit");
+        }
+        if (got < 0) throw KiritoError("SSL_read failed");
+        return raw;
+    }
+#endif
     // The fd for a syscall, or a clean error if the socket was closed/detached — so an operation on a
     // dead socket throws "recv: socket is closed" instead of a raw EBADF or touching a stale handle.
     netcompat::socket_t fdOrThrow(const char* op) const {
@@ -579,6 +631,51 @@ inline void addWindowsRootCerts(SSL_CTX* ctx) {
     CertCloseStore(sys, 0);
 }
 #endif
+
+// Perform a CLIENT TLS handshake over an already-connected fd. `host` drives SNI and (when `verify`)
+// hostname verification; pass an empty host to skip both (an IP-only peer with verify=False). On
+// success returns the new SSL + its SSL_CTX via out-params (the caller owns and must free both); on
+// failure it frees whatever it allocated and throws — it never closes `fd` (the caller owns that).
+// Shared by the HTTP/HTTPS client and by Socket.starttls so the two can't drift.
+inline void tlsClientHandshake(netcompat::socket_t fd, const std::string& host, bool verify,
+                               SSL*& sslOut, SSL_CTX*& ctxOut) {
+    static bool inited = [] { SSL_library_init(); SSL_load_error_strings(); return true; }();
+    (void)inited;
+    SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) throw KiritoError("SSL_CTX_new failed");
+    if (verify) {
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+        SSL_CTX_set_default_verify_paths(ctx);   // Unix CA dirs + the SSL_CERT_FILE / SSL_CERT_DIR env vars
+#ifdef _WIN32
+        addWindowsRootCerts(ctx);                // and the Windows system trust store
+#endif
+    }
+    SSL* ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, static_cast<int>(fd));
+    if (!host.empty()) SSL_set_tlsext_host_name(ssl, host.c_str());  // SNI
+    if (verify && !host.empty()) {
+        SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+        SSL_set1_host(ssl, host.c_str());
+    }
+    if (SSL_connect(ssl) != 1) {
+        long vr = SSL_get_verify_result(ssl);
+        unsigned long e = ERR_peek_last_error();
+        std::string why;
+        if (vr != X509_V_OK)
+            why = std::string(": ") + X509_verify_cert_error_string(vr) +
+                  " (no trusted CA found; set the SSL_CERT_FILE env var to a CA bundle, or pass verify=False)";
+        else if (e) { char b[256]; ERR_error_string_n(e, b, sizeof(b)); why = std::string(": ") + b; }
+        SSL_free(ssl); SSL_CTX_free(ctx);
+        throw KiritoError("TLS handshake" + (host.empty() ? std::string() : " with " + host) + " failed" + why);
+    }
+    if (verify && SSL_get_verify_result(ssl) != X509_V_OK) {
+        SSL_shutdown(ssl); SSL_free(ssl); SSL_CTX_free(ctx);
+        throw KiritoError("TLS certificate verification failed" +
+                          (host.empty() ? std::string() : " for " + host) + " (pass verify=False to skip)");
+    }
+    sslOut = ssl; ctxOut = ctx;
+}
+
 inline std::string httpExchange(const Url& u, const std::string& request, double timeout, bool verify) {
     netcompat::socket_t fd = dialTcp(u, timeout);
     setTimeout(fd, timeout);
@@ -589,43 +686,9 @@ inline std::string httpExchange(const Url& u, const std::string& request, double
         netcompat::closeSocket(fd);
         return raw;
     }
-    static bool inited = [] { SSL_library_init(); SSL_load_error_strings(); return true; }();
-    (void)inited;
-    SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
-    if (!ctx) { netcompat::closeSocket(fd); throw KiritoError("SSL_CTX_new failed"); }
-    if (verify) {
-        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
-        SSL_CTX_set_default_verify_paths(ctx);   // Unix CA dirs + the SSL_CERT_FILE / SSL_CERT_DIR env vars
-#ifdef _WIN32
-        addWindowsRootCerts(ctx);                // and the Windows system trust store
-#endif
-    }
-    SSL* ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, static_cast<int>(fd));
-    SSL_set_tlsext_host_name(ssl, u.host.c_str());  // SNI
-    if (verify) {
-        SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-        SSL_set1_host(ssl, u.host.c_str());
-    }
-    if (SSL_connect(ssl) != 1) {
-        // Surface the real reason: a peer-verify failure (the common case — missing/empty CA store)
-        // aborts the handshake here, so report the verify error and the OpenSSL reason rather than a
-        // bare "handshake failed".
-        long vr = SSL_get_verify_result(ssl);
-        unsigned long e = ERR_peek_last_error();
-        std::string why;
-        if (vr != X509_V_OK)
-            why = std::string(": ") + X509_verify_cert_error_string(vr) +
-                  " (no trusted CA found; set the SSL_CERT_FILE env var to a CA bundle, or pass verify=False)";
-        else if (e) { char b[256]; ERR_error_string_n(e, b, sizeof(b)); why = std::string(": ") + b; }
-        SSL_free(ssl); SSL_CTX_free(ctx); netcompat::closeSocket(fd);
-        throw KiritoError("TLS handshake with " + u.host + " failed" + why);
-    }
-    if (verify && SSL_get_verify_result(ssl) != X509_V_OK) {
-        SSL_shutdown(ssl); SSL_free(ssl); SSL_CTX_free(ctx); netcompat::closeSocket(fd);
-        throw KiritoError("TLS certificate verification failed for " + u.host +
-                          " (pass verify=False to skip)");
-    }
+    SSL* ssl = nullptr; SSL_CTX* ctx = nullptr;
+    try { tlsClientHandshake(fd, u.host, verify, ssl, ctx); }
+    catch (...) { netcompat::closeSocket(fd); throw; }
     std::string raw;
     try {
         std::size_t sent = 0;
@@ -1034,6 +1097,7 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
                 throw KiritoError("connect: could not resolve host '" + host + "': " + err);
             if (netcompat::connectWithTimeout(s.fdOrThrow("connect"), reinterpret_cast<sockaddr*>(&ss), sl, s.timeout) != 0)
                 throw KiritoError("connect failed: " + netcompat::lastError());
+            s.peerHost = host;   // remembered as starttls's default SNI / verify name
             return vm.none();
         });
     if (name == "bind")
@@ -1070,7 +1134,12 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     if (name == "send")
         return bindReq("send", 1, {"data"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             std::string data = net::payloadBytes(vm, a[0], "send");   // String or Bytes
-            net::sendAll(sock(vm, self).fdOrThrow("send"), data);
+            auto& s = sock(vm, self);
+            (void)s.fdOrThrow("send");
+#ifdef KIRITO_ENABLE_TLS
+            if (s.ssl_) { s.tlsSendAll(data); return vm.makeInt(static_cast<int64_t>(data.size())); }
+#endif
+            net::sendAll(s.fd, data);
             return vm.makeInt(static_cast<int64_t>(data.size()));
         });
     if (name == "recv")
@@ -1080,17 +1149,29 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
             // recv(0) returns empty Bytes immediately (Python semantics). A raw ::recv(fd, buf, 0)
             // BLOCKS on Linux until data or EOF, which is a surprising hang; short-circuit it. Still
             // validate the socket isn't closed, for a consistent error.
-            if (reqN == 0) { (void)sock(vm, self).fdOrThrow("recv"); return vm.alloc(std::make_unique<BytesVal>(std::string())); }
+            auto& s = sock(vm, self);
+            if (reqN == 0) { (void)s.fdOrThrow("recv"); return vm.alloc(std::make_unique<BytesVal>(std::string())); }
             std::size_t n = static_cast<std::size_t>(std::min<int64_t>(reqN, 64ll * 1024 * 1024));  // cap the buffer; recv returns <= size anyway
             std::vector<char> buf(n);
-            long long got = netcompat::recvBytes(sock(vm, self).fdOrThrow("recv"), buf.data(), n);
+            (void)s.fdOrThrow("recv");
+            long long got;
+#ifdef KIRITO_ENABLE_TLS
+            if (s.ssl_) got = s.tlsRecv(buf.data(), n);
+            else
+#endif
+            got = netcompat::recvBytes(s.fd, buf.data(), n);
             if (got < 0) throw KiritoError("recv failed: " + netcompat::lastError());
             // Bytes, not String: a socket carries raw bytes (binary video, gzip, ...). Decode for text.
             return vm.alloc(std::make_unique<BytesVal>(std::string(buf.data(), static_cast<std::size_t>(got))));
         });
     if (name == "recvall")
         return bind("recvall", {}, [self, sock](KiritoVM& vm, std::span<const Handle>) -> Handle {
-            return vm.alloc(std::make_unique<BytesVal>(net::recvAll(sock(vm, self).fdOrThrow("recvall"))));
+            auto& s = sock(vm, self);
+            (void)s.fdOrThrow("recvall");
+#ifdef KIRITO_ENABLE_TLS
+            if (s.ssl_) return vm.alloc(std::make_unique<BytesVal>(s.tlsRecvAll(net::kMaxRecvAll)));
+#endif
+            return vm.alloc(std::make_unique<BytesVal>(net::recvAll(s.fd)));
         });
     if (name == "settimeout")
         return bindReq("settimeout", 1, {"seconds"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -1236,10 +1317,47 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     if (name == "detach")
         return bind("detach", {}, [self, sock](KiritoVM& vm, std::span<const Handle>) -> Handle {
             auto& s = sock(vm, self);
+            if (s.isTls()) throw KiritoError("detach: cannot detach a TLS socket (the TLS session owns the fd)");
             int64_t fd = static_cast<int64_t>(s.fdOrThrow("detach"));  // detach-twice throws, not a stale fd
             s.closed = true;             // relinquish ownership: ~SocketVal must not close this fd
             s.fd = netcompat::kInvalidSocket;  // and the old number can't leak out via a second detach/fileno
             return vm.makeInt(fd);
+        });
+    // --- TLS: upgrade a connected stream socket to TLS (STARTTLS, or implicit TLS right after connect).
+    if (name == "is_tls") return vm.makeBool(sock(vm, self).isTls());
+    if (name == "starttls")
+        return bind("starttls", {"server_hostname", "verify"}, [self, sock](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            auto& s = sock(vm, self);
+            (void)s.fdOrThrow("starttls");
+            if (s.socktype != SOCK_STREAM) throw KiritoError("starttls: only a stream (TCP) socket can use TLS");
+            if (s.isTls()) throw KiritoError("starttls: this socket is already using TLS");
+            // server_hostname (arg 0) drives SNI + certificate verification; defaults to the connect() host.
+            std::string host = s.peerHost;
+            if (a.size() > 0 && vm.arena().deref(a[0]).kind() != ValueKind::None)
+                host = Value(vm, a[0]).asStringRef("starttls server_hostname");
+            bool verify = a.size() > 1 ? vm.arena().deref(a[1]).truthy() : true;
+#ifdef KIRITO_ENABLE_TLS
+            if (verify && host.empty())
+                throw KiritoError("starttls: a server_hostname is required for certificate verification (or pass verify=False)");
+            SSL* ssl = nullptr; SSL_CTX* ctx = nullptr;
+            net::tlsClientHandshake(s.fd, host, verify, ssl, ctx);  // throws (fd left open) on any failure
+            s.ssl_ = ssl; s.sslCtx_ = ctx;
+            return vm.none();
+#else
+            (void)host; (void)verify;
+            throw KiritoError("starttls: socket TLS requires building with KIRITO_ENABLE_TLS (OpenSSL); "
+                              "net.tlsenabled is False in this build");
+#endif
+        });
+    if (name == "cipher")
+        return bind("cipher", {}, [self, sock](KiritoVM& vm, std::span<const Handle>) -> Handle {
+#ifdef KIRITO_ENABLE_TLS
+            auto& s = sock(vm, self);
+            if (s.ssl_) { const char* c = SSL_get_cipher(s.ssl_); if (c) return vm.makeString(c); }
+#else
+            (void)sock; (void)self;
+#endif
+            return vm.none();   // not a TLS socket (or a non-TLS build) -> None
         });
     if (name == "_enter_")
         return bind("_enter_", {}, [self](KiritoVM&, std::span<const Handle>) { return self; });
