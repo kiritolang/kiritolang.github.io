@@ -1020,27 +1020,45 @@ inline Value Value::pow(const Value& r) const {
 }
 inline bool Value::operator==(const Value& r) const {
     Handle h = applyBinaryOp(*vm_, BinOp::Eq, h_, r.h_);
-    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+    return vm_->arena().deref(h).truthy();  // truthy(), not static_cast<BoolVal&>: a user _eq_/_lt_/…
+                                            // may return a non-Bool (applyBinaryOp hands it back raw),
+                                            // which the cast would type-confuse (UB). truthy() matches
+                                            // how Kirito's own `if a == b` consumes the result.
 }
 inline bool Value::operator!=(const Value& r) const {
     Handle h = applyBinaryOp(*vm_, BinOp::Ne, h_, r.h_);
-    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+    return vm_->arena().deref(h).truthy();  // truthy(), not static_cast<BoolVal&>: a user _eq_/_lt_/…
+                                            // may return a non-Bool (applyBinaryOp hands it back raw),
+                                            // which the cast would type-confuse (UB). truthy() matches
+                                            // how Kirito's own `if a == b` consumes the result.
 }
 inline bool Value::operator<(const Value& r) const {
     Handle h = applyBinaryOp(*vm_, BinOp::Lt, h_, r.h_);
-    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+    return vm_->arena().deref(h).truthy();  // truthy(), not static_cast<BoolVal&>: a user _eq_/_lt_/…
+                                            // may return a non-Bool (applyBinaryOp hands it back raw),
+                                            // which the cast would type-confuse (UB). truthy() matches
+                                            // how Kirito's own `if a == b` consumes the result.
 }
 inline bool Value::operator<=(const Value& r) const {
     Handle h = applyBinaryOp(*vm_, BinOp::Le, h_, r.h_);
-    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+    return vm_->arena().deref(h).truthy();  // truthy(), not static_cast<BoolVal&>: a user _eq_/_lt_/…
+                                            // may return a non-Bool (applyBinaryOp hands it back raw),
+                                            // which the cast would type-confuse (UB). truthy() matches
+                                            // how Kirito's own `if a == b` consumes the result.
 }
 inline bool Value::operator>(const Value& r) const {
     Handle h = applyBinaryOp(*vm_, BinOp::Gt, h_, r.h_);
-    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+    return vm_->arena().deref(h).truthy();  // truthy(), not static_cast<BoolVal&>: a user _eq_/_lt_/…
+                                            // may return a non-Bool (applyBinaryOp hands it back raw),
+                                            // which the cast would type-confuse (UB). truthy() matches
+                                            // how Kirito's own `if a == b` consumes the result.
 }
 inline bool Value::operator>=(const Value& r) const {
     Handle h = applyBinaryOp(*vm_, BinOp::Ge, h_, r.h_);
-    return static_cast<const BoolVal&>(vm_->arena().deref(h)).value();
+    return vm_->arena().deref(h).truthy();  // truthy(), not static_cast<BoolVal&>: a user _eq_/_lt_/…
+                                            // may return a non-Bool (applyBinaryOp hands it back raw),
+                                            // which the cast would type-confuse (UB). truthy() matches
+                                            // how Kirito's own `if a == b` consumes the result.
 }
 
 }  // namespace kirito

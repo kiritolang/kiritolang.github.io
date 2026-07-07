@@ -106,4 +106,12 @@ class Q:
     var m = tagof
 assert P().m() == "P" and Q().m() == "Q", "shared method reads each class's own private"
 
+# --- the "unhashable type '<T>'" message is uniform across Set.add / Set.remove / Dict / hash()
+#     (Set.remove had drifted to a bare "unhashable type" with no type name). ---
+var st = Set([1, 2])
+assert raises_msg(Function(): return st.remove([9]), "unhashable type 'List'"), "Set.remove names the type"
+assert raises_msg(Function(): return st.add([9]), "unhashable type 'List'"), "Set.add names the type"
+var dd = {}
+assert raises_msg(Function(): return dd.get([9]), "unhashable type 'List'"), "Dict.get names the type"
+
 io.print("OK audit-v115")

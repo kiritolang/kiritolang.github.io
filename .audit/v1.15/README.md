@@ -84,3 +84,15 @@ Findings skew LOW (much-audited codebase) with a handful of HIGH/MED. Full per-f
   tests to every symbol/angle.
 - **perf-variance** (scan/static_analysis.md — thin, agent killed early): needs a re-run to diagnose the
   high-stddev source (likely the adaptive-GC floor) and propose low-risk stabilization.
+
+### FIX ROUND 2 (post-restart)
+- **[MED] value.hpp comparison-op UB** (objectmodel_gc.md F1): the 6 `Value::operator==/!=/</<=/>/>=`
+  did an unchecked `static_cast<BoolVal&>` on the `applyBinaryOp` result — UB if a user `_eq_`/`_lt_`/…
+  returns a non-Bool. Fixed: use `.truthy()` (matches how Kirito's own `if a==b` consumes it).
+- **[MED] DRY F7 — "unhashable type" message drift** (dry.md F7): `Set.remove` threw a bare
+  "unhashable type" (no type name) while Set.add/Dict/hash() all name the type. Fixed at runtime.hpp:878
+  → `unhashable type '<T>'`. Regression test in spec_audit_v115.ki.
+- **[REVERTED — was NOT a bug] tensor.median NaN** (tensor.md F4): median sorting NaN-last is a
+  deliberate prior decision (sort-defined family), pinned in r7_regressions.ki. The propagate-NaN change
+  was reverted. (Re-verify per "double-check the fixed error was actually an error".)
+- ASan: spec_audit_v115 (UAF + tensor-split + dunder-clone) + 7 class/collections/tensor tests all clean.

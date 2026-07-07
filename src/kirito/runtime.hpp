@@ -875,7 +875,9 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             if (a.empty()) throw KiritoError("remove expects a value");
             auto& s = set_of(vm, self);
             const Object& v = vm.arena().deref(a[0]);
-            if (!v.hashable()) throw KiritoError("unhashable type");
+            if (!v.hashable()) throw KiritoError("unhashable type '" + v.typeName() + "'");  // match the
+                // canonical message used by Set.add / Dict / hash() — Set.remove had drifted to a bare
+                // "unhashable type" with no type name.
             std::size_t h = v.hash();
             if (s.probing_) throw KiritoError("Set changed size during a value comparison");
             ProbeScope guard(s.probing_);  // reentrant _eq_ must not realloc the bucket we hold
