@@ -152,4 +152,13 @@ assert tm.make(-999, 1, 1).iso() == "-0999-01-01T00:00:00", "iso() 3-digit negat
 assert tm.make(-1000, 1, 1).iso() == "-1000-01-01T00:00:00", "iso() 4-digit negative year unchanged"
 assert tm.make(2024, 3, 5).iso() == "2024-03-05T00:00:00", "iso() positive year unchanged"
 
+# --- regex: a shorthand class (\d \w \s / negations) as a range HIGH endpoint used to silently
+#     degrade to a literal (`[a-\d]` → the range a..'d'); it must now be rejected (Python parity).
+#     A shorthand as a set MEMBER, and a normal literal range, stay valid.
+var re = import("regex")
+assert raises(Function(): return re.compile(r"[a-\d]")), "regex rejects a shorthand class as a range endpoint"
+assert raises(Function(): return re.compile(r"[\x41-\w]")), "regex rejects \\w as a range endpoint"
+assert re.findall(r"[\w]+", "hi_5!") == ["hi_5"], "regex shorthand as a set member still works"
+assert re.findall(r"[a-d]", "abcde") == ["a", "b", "c", "d"], "regex normal literal range still works"
+
 io.print("OK audit-v115")

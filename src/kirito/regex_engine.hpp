@@ -385,7 +385,15 @@ private:
             if (peek() == '-' && pos_ + 1 < s_.size() && s_[pos_ + 1] != ']') {
                 ++pos_;  // consume '-'
                 int32_t hi = peek();
-                if (hi == '\\') { ++pos_; hi = classSingleEscape(next()); }
+                if (hi == '\\') {
+                    ++pos_;
+                    int32_t esc = next();
+                    // a shorthand class (\d \w \s and negations) is a SET, not a scalar, so it cannot be
+                    // a range endpoint — Python raises "bad character range" rather than degrade \d to 'd'.
+                    if (esc == 'd' || esc == 'w' || esc == 's' || esc == 'D' || esc == 'W' || esc == 'S')
+                        throw RegexError("bad character range in class (a shorthand class cannot be a range endpoint)");
+                    hi = classSingleEscape(esc);
+                }
                 else ++pos_;
                 if (hi < c) throw RegexError("bad character range in class");
                 cc.ranges.push_back({c, hi});
