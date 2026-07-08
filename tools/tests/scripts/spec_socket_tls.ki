@@ -1,0 +1,54 @@
+# Socket-level TLS (starttls / is_tls / cipher) — the BUILD-INDEPENDENT surface: input validation and
+# the non-TLS-build behavior. A real TLS handshake needs an in-process OpenSSL server and lives in the
+# C++ test (tools/tests/unit/test_net_tls.cpp, TLS builds only); this file runs under EVERY preset
+# (incl. the TLS-off asan/tsan builds), so it must not require a server or a TLS build.
+var net = import("net")
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# --- is_tls / cipher on a plain socket that was never upgraded ---
+var s = net.Socket()
+assert s.is_tls == False, "a fresh socket is not TLS"
+assert s.cipher() == None, "cipher() is None on a non-TLS socket"
+
+# --- starttls input validation (all rejected BEFORE any handshake, so build-independent) ---
+# a datagram socket cannot carry TLS
+assert raises_msg(Function(): return net.udpsocket().starttls(verify = False), "stream"), "starttls rejects a UDP socket"
+# a closed socket has no fd
+var closed = net.Socket()
+closed.close()
+assert raises_msg(Function(): return closed.starttls(verify = False), "closed"), "starttls on a closed socket throws"
+# a non-String server_hostname is a type error
+assert raises(Function(): return net.Socket().starttls(server_hostname = 123, verify = False)), "non-String server_hostname throws"
+# verify=True with no hostname to check against (never connected, no server_hostname) is refused up front
+# ONLY in a TLS build — a non-TLS build reports the missing-OpenSSL error first (checked below).
+if net.tlsenabled:
+    assert raises_msg(Function(): return net.Socket().starttls(verify = True), "server_hostname"), "verify=True needs a hostname"
+
+# --- TLS availability branch ---
+if net.tlsenabled:
+    # A real upgrade needs a server (see test_net_tls.cpp). Here: the surface exists and is_tls stays
+    # False until a successful handshake; starttls on an UNCONNECTED socket fails cleanly (no crash).
+    assert raises(Function(): return net.Socket().starttls(server_hostname = "example.com", verify = False)), "starttls on an unconnected socket throws"
+    assert net.Socket().is_tls == False, "is_tls is False before any handshake"
+else:
+    # No OpenSSL in this build: starttls must fail LOUDLY (never silently no-op into a plaintext send).
+    assert raises_msg(Function(): return net.Socket().starttls(verify = False), "KIRITO_ENABLE_TLS"), "non-TLS build: starttls explains it needs OpenSSL"
+
+# --- inspect advertises the new surface ---
+var desc = inspect(net.Socket())
+assert "starttls" in desc and "cipher" in desc and "is_tls" in desc, "inspect lists the TLS surface"
+
+io.print("OK socket_tls")

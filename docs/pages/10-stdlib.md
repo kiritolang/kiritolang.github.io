@@ -694,8 +694,21 @@ how the socket was created.
   (a non-blocking connect + `select` under the hood), so a connect to a black-hole host can't hang
   past the timeout.
 - `s.setblocking(flag: Bool) → None` — switch between blocking and non-blocking mode.
+- `s.starttls(server_hostname = None, verify = True) → None` — **upgrade a connected stream socket to
+  TLS** (needs a `net.tlsenabled` build). Works for both **STARTTLS** — do the plaintext protocol
+  handshake first (SMTP `EHLO`/`STARTTLS`, IMAP, FTP), then call `starttls` to encrypt the *same*
+  connection — and **implicit TLS** (SMTPS/IMAPS/HTTPS: `connect` then `starttls` immediately). After
+  it returns, `send`/`recv`/`recvall` are transparently encrypted. `server_hostname` drives SNI and
+  certificate hostname verification, defaulting to the host you `connect`ed to; `verify` (default
+  `True`) checks the peer certificate against the trust store (`SSL_CERT_FILE` / the OS store), exactly
+  like the HTTPS client — pass `verify = False` for a self-signed peer. Throws on a UDP socket, a closed
+  socket, an already-TLS socket, a failed/mismatched handshake, or (in a non-TLS build) a clear
+  "requires KIRITO_ENABLE_TLS" error — it never silently falls back to plaintext.
+- `s.cipher() → String` — the negotiated cipher suite name once TLS is active, else `None`.
+- `s.is_tls → Bool` — whether a TLS session is currently active on this socket.
 - `s.fileno() → Integer` — the raw fd, **non-destructively** (unlike `detach`); returns `-1` on a
-  closed or detached socket (its fd is gone or recycled, so it must not be adopted).
+  closed or detached socket (its fd is gone or recycled, so it must not be adopted). `detach` is
+  refused on a TLS socket (the TLS session owns the fd).
 - `s.close() → None` — close the socket.
 - `s.detach() → Integer` — surrender the raw fd to the caller and stop owning it (the socket's
   destructor will no longer close it), then clear it — a second `detach()` throws rather than handing

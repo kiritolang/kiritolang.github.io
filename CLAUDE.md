@@ -419,7 +419,15 @@ a stability fuzzer, and a benchmark). Working today:
     `acceptconn`; `reuseport` where the OS has it), with named conveniences `setreuseaddr`/`setnodelay`/
     `setbroadcast`/`setkeepalive`, plus `setblocking(flag)` and `settimeout(seconds)` (which bounds a
     subsequent `connect()` too — via a non-blocking connect + `select` — not only send/recv, so a
-    black-hole host can't hang past the timeout). Name resolution:
+    black-hole host can't hang past the timeout). **Socket-level TLS**: `socket.starttls(server_hostname
+    = None, verify = True)` upgrades a **connected stream socket** to TLS in place — covering both
+    **STARTTLS** (speak the plaintext protocol first, then encrypt the same connection: SMTP/IMAP/FTP)
+    and **implicit TLS** (SMTPS/IMAPS: connect, then starttls immediately) — after which `send`/`recv`/
+    `recvall` are transparently encrypted; `socket.cipher()` reports the negotiated suite and
+    `socket.is_tls` whether TLS is active. It shares the HTTP client's TLS handshake helper
+    (`net::tlsClientHandshake` — SNI, trust store incl. the Windows ROOT store, hostname verification),
+    needs a `net.tlsenabled` build (else it throws, never silently plaintext), and refuses a UDP/closed/
+    already-TLS socket or a `detach` while TLS-active. Name resolution:
     `gethostname()`, `gethostbyname(host)` (first IPv4), `getaddrinfo(host[, port[, family[, type]]])`
     (→ a List of `{family, type, host, port}` dicts). `fromfd(fd[, family, type])` adopts an existing
     fd (e.g. one handed over by `socket.detach()` to a worker VM). Every entry point validates its
@@ -440,7 +448,11 @@ a stability fuzzer, and a benchmark). Working today:
     verify failure reports the actual reason). **`net.tlsenabled`** is a Bool reporting whether this
     build has HTTPS; the **`debug` and `release` CMake presets now enable TLS** so the HTTPS + deep-TLS
     tests (`test_net_tls`, `spec_net_tls.ki` against an in-process OpenSSL server) run in the ordinary
-    build — `asan`/`tsan` stay TLS-off to avoid OpenSSL's still-reachable allocations tripping LSan.
+    build — `asan`/`tsan` stay TLS-off for the *full* suite to avoid OpenSSL's still-reachable
+    allocations tripping LSan, but the TLS code (HTTPS client + `socket.starttls`) is still
+    AddressSanitizer/UBSan-validated via a **targeted asan+TLS build of `test_net_tls`** (configure a
+    build dir with `-fsanitize=address,undefined -DKIRITO_ENABLE_TLS=ON`, build+run just that target —
+    OpenSSL's own still-reachable globals are not LSan "leaks", so it runs clean).
     Deliberately **not** included (out of scope, by design): asyncio/event loops and a built-in HTTP
     server — servers are built on the raw sockets (see the `webserver` example). URL helpers:
     quote/unquote/urlencode/parseqs/urlsplit.
