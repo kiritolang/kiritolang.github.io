@@ -325,8 +325,8 @@ a stability fuzzer, and a benchmark). Working today:
     onto the same engine (`choices(population, k=1)` samples WITH replacement into a List; `choice`
     is its k=1 case unwrapped; `sample` is without replacement). Separate from the seedable `Random`
     object, the module also exposes **OS-CSPRNG secure random** (module-level, unpredictable, for
-    tokens/keys/salts): `token_bytes(n = 32)` → Bytes, `token_hex(n = 32)` / `token_urlsafe(n = 32)`
-    (base64url, unpadded) → String, and `randbelow(n)` → a bias-free Integer in `[0, n)` (rejection
+    tokens/keys/salts): `randombytes(n = 32)` → Bytes, `randomhex(n = 32)` / `randomurlsafe(n = 32)`
+    (base64url, unpadded) → String, and `randombelow(n)` → a bias-free Integer in `[0, n)` (rejection
     sampling). The kernel entropy source (getrandom/getentropy/`/dev/urandom`, BCryptGenRandom on
     Windows) lives behind `rand_compat.hpp` (mirrors `net_compat.hpp`); a failure throws, never weak
     bytes.
@@ -491,7 +491,7 @@ a stability fuzzer, and a benchmark). Working today:
     `net.get(url).content` (raw `Bytes`) to fetch and unpack a `.gz` (`gzip.decompress(resp.content)`).
   - `hash` — md5/sha1/sha256/**sha384/sha512** hex digests, **HMAC** (`hmac(key, msg, algo = "sha256")`,
     RFC 2104), **PBKDF2** (`pbkdf2(password, salt, iterations, dklen = 32, algo = "sha256")` → Bytes,
-    RFC 8018), and constant-time **`compare_digest(a, b)`** (for MAC/digest verification without a
+    RFC 8018), and constant-time **`comparedigest(a, b)`** (for MAC/digest verification without a
     timing oracle), plus the non-cryptographic checksums adler32/crc32 (Integer) and crc64 (CRC-64/XZ,
     as a signed Integer). Self-contained (`hashing.hpp` — a `HashAlgo` descriptor table makes HMAC/
     PBKDF2 algorithm-generic), standard-conformant; every function takes a `String` **or** a `Bytes`.
@@ -499,30 +499,30 @@ a stability fuzzer, and a benchmark). Working today:
     HTTPS it needs `-DKIRITO_ENABLE_TLS`; `crypto.enabled` is a Bool and, without OpenSSL, every
     function throws a clear "requires KIRITO_ENABLE_TLS" error instead of silently no-op'ing).
     Keys are **PEM strings** (no native key object to leak): **AES-GCM** authenticated encryption
-    (`aes_gcm_encrypt(key, plaintext, nonce, aad = None)` → `{ciphertext, tag}`, `aes_gcm_decrypt(...)`
+    (`aesencrypt(key, plaintext, iv, aad = None)` → `{ciphertext, tag}`, `aesdecrypt(...)`
     → Bytes; a failed tag throws "authentication failed", never garbage), **RSA**
-    (`rsa_generate(bits = 2048)`, `rsa_sign`/`rsa_verify` [PKCS#1 v1.5], `rsa_encrypt`/`rsa_decrypt`
-    [OAEP-SHA256]), **EC/ECDSA** (`ec_generate(curve = "prime256v1")`, `ec_sign`/`ec_verify`), and
-    **X.509** (`x509_parse(pem)` → `{subject, issuer, serial, not_before, not_after, sans}`). All
+    (`rsagenerate(bits = 2048)`, `rsasign`/`rsaverify` [PKCS#1 v1.5], `rsaencrypt`/`rsadecrypt`
+    [OAEP-SHA256]), **EC/ECDSA** (`ecgenerate(curve = "prime256v1")`, `ecsign`/`ecverify`), and
+    **X.509** (`x509parse(pem)` → `{subject, issuer, serial, not_before, not_after, sans}`). All
     OpenSSL resources are RAII-owned (unique_ptr + `*_free`); the error queue is cleared on entry.
     `stdlib_crypto.hpp`. (The self-contained basics — HMAC/SHA-512/PBKDF2/CSPRNG — deliberately stay
     OUT of this module, in `hash`/`random`, so a no-OpenSSL build still has them.)
   - `int` — **arbitrary-precision integers**: a pure-C++ `BigInt` value type (sign + little-endian
     base-2^32 magnitude; schoolbook add/sub/mul, long division with **floor** `//`/`%` matching native
     Integer, fast exponentiation + modpow — no GMP dependency, `stdlib_int.hpp`) plus the integer math
-    set carried the way `complex` carries its analytic set: `BigInt(x)`/`big(x)`/`from_string(s,
+    set carried the way `complex` carries its analytic set: `BigInt(x)`/`big(x)`/`fromstring(s,
     base = 10)`, `gcd`/`lcm`/`factorial`/`comb`/`perm`/`isqrt`/`abs`/`pow`/`modpow`/`modinv`, and
-    **primality** — deterministic `is_prime(n)` (the naive O(√n) trial division, a tight native uint64
-    loop for values that fit, BigInt fallback beyond) alongside probabilistic `is_probable_prime(n,
-    rounds = 25)` (Miller-Rabin over the OS CSPRNG) and `random_prime(bits, rounds = 25)` — both
+    **primality** — deterministic `isprime(n)` (the naive O(√n) trial division, a tight native uint64
+    loop for values that fit, BigInt fallback beyond) alongside probabilistic `isprobableprime(n,
+    rounds = 25)` (Miller-Rabin over the OS CSPRNG) and `randomprime(bits, rounds = 25)` — both
     **throw** if the OS entropy source is unavailable rather than fall back to a predictable base/prime
-    (the deterministic `is_prime` needs no randomness and still works). BigInt
+    (the deterministic `isprime` needs no randomness and still works). BigInt
     follows the language's **reflected-operator rule** — arithmetic dispatches on the LEFT operand, so
     `BigInt(2)+3` works while `3+BigInt(2)` throws; only `==`/`!=` are symmetric — its **`/` yields a
     Float** (the language-wide true-division rule, lossy beyond double range exactly as Integer/Integer
     is), it hashes equal to an equal native Integer (shared Dict/Set bucket), and it serializes
-    (serialize/dump) as its decimal String. BigInt methods: `modpow`/`is_prime`/`is_probable_prime`/
-    `bit_length`/`to_int`. A `kMaxLimbs` guard makes a runaway mul/pow/factorial throw, not OOM.
+    (serialize/dump) as its decimal String. BigInt methods: `modpow`/`isprime`/`isprobableprime`/
+    `bitlength`/`toint`. A `kMaxLimbs` guard makes a runaway mul/pow/factorial throw, not OOM.
   - `regex` — a from-scratch, **linear-time** regular-expression library (`regex_engine.hpp`: a
     recursive-descent parser → bytecode compiler → Thompson-NFA Pike VM with capture tracking; NO
     `std::regex`, NO backtracking, so `(a+)+b`-style patterns can't blow up). A high-level API:

@@ -77,13 +77,13 @@ public:
             return Bytes(vm, hashing::pbkdf2Raw(*algo, pw, salt,
                                                 static_cast<uint32_t>(iters), static_cast<std::size_t>(dklen)));
         });
-        // compare_digest(a, b) -> Bool: constant-time equality for MACs/digests. Both String-or-Bytes.
+        // comparedigest(a, b) -> Bool: constant-time equality for MACs/digests. Both String-or-Bytes.
         // The equal-length path folds every byte with no early exit (so timing can't localise the first
-        // differing byte); a length mismatch returns False (Python's hmac.compare_digest leaks length too).
-        m.fn("compare_digest", {{"a"}, {"b"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            Args args(vm, a, "compare_digest");
-            const std::string& x = argStringOrBytes(vm, args[0].handle(), "compare_digest a");
-            const std::string& y = argStringOrBytes(vm, args[1].handle(), "compare_digest b");
+        // differing byte); a length mismatch returns False (Python's hmac.comparedigest leaks length too).
+        m.fn("comparedigest", {{"a"}, {"b"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            Args args(vm, a, "comparedigest");
+            const std::string& x = argStringOrBytes(vm, args[0].handle(), "comparedigest a");
+            const std::string& y = argStringOrBytes(vm, args[1].handle(), "comparedigest b");
             if (x.size() != y.size()) {
                 volatile unsigned char sink = 0;
                 for (std::size_t i = 0; i < x.size(); ++i) sink = static_cast<unsigned char>(sink | static_cast<unsigned char>(x[i]));

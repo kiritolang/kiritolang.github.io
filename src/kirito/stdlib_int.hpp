@@ -415,13 +415,13 @@ inline Big comb(int64_t n, int64_t k) {
 // ---- randomness (OS CSPRNG) for primality ----
 // Throws if the OS entropy source is unavailable rather than proceeding with an unfilled buffer —
 // a predictable "random" prime or a fixed Miller-Rabin base would silently defeat both callers, so
-// they fail loudly instead. (The deterministic is_prime needs no randomness and still works.)
+// they fail loudly instead. (The deterministic isprime needs no randomness and still works.)
 inline Big randomBits(int bits) {
     if (bits <= 0) return Big{};
     std::size_t limbs = (static_cast<std::size_t>(bits) + 31) / 32;
     Big n; n.mag.assign(limbs, 0);
     if (!randcompat::fillRandom(n.mag.data(), limbs * 4))
-        throw KiritoError("int: OS secure random source unavailable (needed for primality/random_prime)");
+        throw KiritoError("int: OS secure random source unavailable (needed for primality/randomprime)");
     int top = bits & 31;
     if (top != 0) n.mag[limbs - 1] &= ((1u << top) - 1);
     n.trim();
@@ -492,7 +492,7 @@ inline bool isProbablePrime(const Big& n, int rounds) {
     return true;
 }
 inline Big randomPrime(int bits, int rounds) {
-    if (bits < 2) throw KiritoError("random_prime: bits must be >= 2");
+    if (bits < 2) throw KiritoError("randomprime: bits must be >= 2");
     while (true) {
         Big n = randomBits(bits);
         n.mag.resize((static_cast<std::size_t>(bits) + 31) / 32, 0);
@@ -535,8 +535,8 @@ public:
     }
 
     std::vector<std::string> inspectMembers() const override {
-        return {"modpow(exponent, modulus) -> BigInt", "is_prime() -> Bool",
-                "is_probable_prime(rounds = 25) -> Bool", "bit_length() -> Integer", "to_int() -> Integer"};
+        return {"modpow(exponent, modulus) -> BigInt", "isprime() -> Bool",
+                "isprobableprime(rounds = 25) -> Bool", "bitlength() -> Integer", "toint() -> Integer"};
     }
 
     Handle binary(KiritoVM& vm, BinOp op, Handle self, Handle rhs) override;
@@ -630,33 +630,33 @@ inline Handle BigIntVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
                 return make(vm, modpow(selfVal(vm, self), coerce(vm, a[0], "modpow exponent"),
                                        coerce(vm, a[1], "modpow modulus")));
             }, std::vector<Handle>{self});
-    if (name == "is_prime")
-        return makeMethod(vm, "is_prime", {},
+    if (name == "isprime")
+        return makeMethod(vm, "isprime", {},
             [self, selfVal](KiritoVM& vm, std::span<const Handle>) -> Handle {
                 return vm.makeBool(isPrimeExact(selfVal(vm, self)));
             }, std::vector<Handle>{self});
-    if (name == "is_probable_prime") {
+    if (name == "isprobableprime") {
         std::vector<NativeParam> sig;
         sig.emplace_back("rounds", "Integer", vm.makeInt(25));
         return vm.alloc(std::make_unique<NativeFunction>(
-            "is_probable_prime", std::move(sig), "Bool",
+            "isprobableprime", std::move(sig), "Bool",
             [self, selfVal](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 int64_t rounds = Value(vm, a[0]).asInt("rounds");
-                if (rounds < 1) throw KiritoError("is_probable_prime: rounds must be >= 1");
+                if (rounds < 1) throw KiritoError("isprobableprime: rounds must be >= 1");
                 return vm.makeBool(isProbablePrime(selfVal(vm, self), static_cast<int>(rounds)));
             },
             std::vector<Handle>{self}));
     }
-    if (name == "bit_length")
-        return makeMethod(vm, "bit_length", {},
+    if (name == "bitlength")
+        return makeMethod(vm, "bitlength", {},
             [self, selfVal](KiritoVM& vm, std::span<const Handle>) -> Handle {
                 return vm.makeInt(static_cast<int64_t>(bitLength(selfVal(vm, self))));
             }, std::vector<Handle>{self});
-    if (name == "to_int")
-        return makeMethod(vm, "to_int", {},
+    if (name == "toint")
+        return makeMethod(vm, "toint", {},
             [self, selfVal](KiritoVM& vm, std::span<const Handle>) -> Handle {
                 int64_t v;
-                if (!toInt64(selfVal(vm, self), v)) throw KiritoError("to_int: value does not fit in a native Integer");
+                if (!toInt64(selfVal(vm, self), v)) throw KiritoError("toint: value does not fit in a native Integer");
                 return vm.makeInt(v);
             }, std::vector<Handle>{self});
     // serialization: a BigInt round-trips as its decimal String.
@@ -704,12 +704,12 @@ public:
         m.fn("big", {{"value"}}, "BigInt", [construct](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             return make(vm, construct(vm, Args(vm, a, "big")[0].handle()));
         });
-        m.fn("from_string", {{"s", "String"}, {"base", "Integer", vm.makeInt(10)}}, "BigInt",
+        m.fn("fromstring", {{"s", "String"}, {"base", "Integer", vm.makeInt(10)}}, "BigInt",
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            Args args(vm, a, "from_string");
-            int64_t base = args[1].asInt("from_string base");
-            if (base < 2 || base > 36) throw KiritoError("from_string: base must be between 2 and 36");
-            return make(vm, parseBig(args[0].asStringRef("from_string s"), static_cast<int>(base)));
+            Args args(vm, a, "fromstring");
+            int64_t base = args[1].asInt("fromstring base");
+            if (base < 2 || base > 36) throw KiritoError("fromstring: base must be between 2 and 36");
+            return make(vm, parseBig(args[0].asStringRef("fromstring s"), static_cast<int>(base)));
         });
 
         // Integer math (exact/unbounded analogues of the int64 `math` builtins).
@@ -766,25 +766,25 @@ public:
         });
 
         // Primality.
-        m.fn("is_prime", {{"n"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return vm.makeBool(isPrimeExact(coerce(vm, Args(vm, a, "is_prime")[0].handle(), "is_prime n")));
+        m.fn("isprime", {{"n"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            return vm.makeBool(isPrimeExact(coerce(vm, Args(vm, a, "isprime")[0].handle(), "isprime n")));
         });
-        m.fn("is_probable_prime", {{"n"}, {"rounds", "Integer", vm.makeInt(25)}}, "Bool",
+        m.fn("isprobableprime", {{"n"}, {"rounds", "Integer", vm.makeInt(25)}}, "Bool",
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            Args args(vm, a, "is_probable_prime");
-            int64_t rounds = args[1].asInt("is_probable_prime rounds");
-            if (rounds < 1) throw KiritoError("is_probable_prime: rounds must be >= 1");
-            return vm.makeBool(isProbablePrime(coerce(vm, args[0].handle(), "is_probable_prime n"),
+            Args args(vm, a, "isprobableprime");
+            int64_t rounds = args[1].asInt("isprobableprime rounds");
+            if (rounds < 1) throw KiritoError("isprobableprime: rounds must be >= 1");
+            return vm.makeBool(isProbablePrime(coerce(vm, args[0].handle(), "isprobableprime n"),
                                                static_cast<int>(rounds)));
         });
-        m.fn("random_prime", {{"bits", "Integer"}, {"rounds", "Integer", vm.makeInt(25)}}, "BigInt",
+        m.fn("randomprime", {{"bits", "Integer"}, {"rounds", "Integer", vm.makeInt(25)}}, "BigInt",
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            Args args(vm, a, "random_prime");
-            int64_t bits = args[0].asInt("random_prime bits");
-            int64_t rounds = args[1].asInt("random_prime rounds");
-            if (bits < 2) throw KiritoError("random_prime: bits must be >= 2");
-            if (bits > 1 << 16) throw KiritoError("random_prime: bits too large");
-            if (rounds < 1) throw KiritoError("random_prime: rounds must be >= 1");
+            Args args(vm, a, "randomprime");
+            int64_t bits = args[0].asInt("randomprime bits");
+            int64_t rounds = args[1].asInt("randomprime rounds");
+            if (bits < 2) throw KiritoError("randomprime: bits must be >= 2");
+            if (bits > 1 << 16) throw KiritoError("randomprime: bits too large");
+            if (rounds < 1) throw KiritoError("randomprime: rounds must be >= 1");
             return make(vm, randomPrime(static_cast<int>(bits), static_cast<int>(rounds)));
         });
 

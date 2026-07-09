@@ -21,7 +21,7 @@ assert String(int.factorial(20)) == "2432902008176640000", "factorial 20"
 assert String(int.factorial(50)) == "30414093201713378043612608166064768844377641568960512000000000000", "factorial 50"
 assert String(int.pow(2, 128)) == "340282366920938463463374607431768211456", "2**128"
 assert String(int.BigInt(4).modpow(13, 497)) == "445", "modpow"
-assert String(int.from_string("354224848179261915075")) == "354224848179261915075", "fib100 parse"
+assert String(int.fromstring("354224848179261915075")) == "354224848179261915075", "fib100 parse"
 assert String(int.isqrt(int.pow(2, 200))) == "1267650600228229401496703205376", "isqrt 2**200 = 2**100"
 
 # --- true division is Float ---
@@ -43,8 +43,8 @@ assert len({int.BigInt(9), 9}) == 1, "BigInt/Integer share a Set bucket"
 
 # --- differential fuzz vs native Integer (kept in a no-overflow range) ---
 for i in range(400):
-    var a = random.randbelow(2000000000) - 1000000000
-    var b = random.randbelow(2000000000) - 1000000000
+    var a = random.randombelow(2000000000) - 1000000000
+    var b = random.randombelow(2000000000) - 1000000000
     assert String(int.BigInt(a) + b) == String(a + b), "fuzz +"
     assert String(int.BigInt(a) - b) == String(a - b), "fuzz -"
     assert String(int.BigInt(a) * b) == String(a * b), "fuzz *"
@@ -61,8 +61,8 @@ assert String(int.BigInt(7) // -2) == "-4" and String(int.BigInt(7) % -2) == "-1
 # --- base round-trips ---
 for base in range(2, 37):
     var n = int.pow(int.BigInt(base), 50) + 999
-    assert int.from_string(String(n)) == n, "base10 round-trip"
-assert String(int.BigInt("0xff")) == "255" and String(int.from_string("zz", 36)) == "1295", "prefixes/bases"
+    assert int.fromstring(String(n)) == n, "base10 round-trip"
+assert String(int.BigInt("0xff")) == "255" and String(int.fromstring("zz", 36)) == "1295", "prefixes/bases"
 assert String(int.BigInt("-123456789012345678901234567890")) == "-123456789012345678901234567890", "big negative parse"
 
 # --- int math set: exact analogues of math, and exact where math overflows ---
@@ -74,13 +74,13 @@ assert String(int.perm(15, 4)) == String(math.perm(15, 4)), "perm == math"
 assert String(int.comb(100, 50)) == "100891344545564193334812497256", "comb exact beyond int64"
 # isqrt property
 for i in range(200):
-    var x = random.randbelow(1000000000000000000)
+    var x = random.randombelow(1000000000000000000)
     var r = int.isqrt(x)
     assert r * r <= x and (r + 1) * (r + 1) > x, "isqrt floor property"
 # modinv property
 for i in range(200):
-    var m = 2 + random.randbelow(100000)
-    var a = 1 + random.randbelow(m - 1)
+    var m = 2 + random.randombelow(100000)
+    var a = 1 + random.randombelow(m - 1)
     if int.gcd(int.BigInt(a), m) == 1:
         assert (int.modinv(a, m) * a) % m == 1, "modinv property"
 
@@ -95,22 +95,22 @@ var refprime = Function(n) -> Bool:
         i = i + 1
     return True
 for n in range(0, 1000):
-    assert int.is_prime(n) == refprime(n), "is_prime vs reference"
-    assert int.is_probable_prime(n) == refprime(n), "is_probable_prime vs reference"
+    assert int.isprime(n) == refprime(n), "isprime vs reference"
+    assert int.isprobableprime(n) == refprime(n), "isprobableprime vs reference"
 # Carmichael numbers must be rejected by Miller-Rabin
 for c in [561, 1105, 1729, 2465, 2821, 6601, 8911]:
-    assert int.is_probable_prime(c) == False, "Carmichael rejected"
+    assert int.isprobableprime(c) == False, "Carmichael rejected"
 # Mersenne / large primes recognised
-assert int.is_probable_prime(int.pow(2, 61) - 1), "M61 prime"
-assert int.is_probable_prime(int.pow(2, 127) - 1), "M127 prime"
-# random_prime output is prime with the right bit length (verified with the fast test)
-var p = int.random_prime(48)
-assert int.is_probable_prime(p) and p.bit_length() == 48, "random_prime 48-bit"
+assert int.isprobableprime(int.pow(2, 61) - 1), "M61 prime"
+assert int.isprobableprime(int.pow(2, 127) - 1), "M127 prime"
+# randomprime output is prime with the right bit length (verified with the fast test)
+var p = int.randomprime(48)
+assert int.isprobableprime(p) and p.bitlength() == 48, "randomprime 48-bit"
 
 # --- methods ---
-assert int.pow(2, 100).bit_length() == 101, "bit_length"
-assert int.BigInt(255).to_int() == 255 and type(int.BigInt(255).to_int()) == "Integer", "to_int"
-assert raises(Function(): return int.pow(2, 100).to_int()), "to_int overflow throws"
+assert int.pow(2, 100).bitlength() == 101, "bitlength"
+assert int.BigInt(255).toint() == 255 and type(int.BigInt(255).toint()) == "Integer", "toint"
+assert raises(Function(): return int.pow(2, 100).toint()), "toint overflow throws"
 
 # --- serialize / dump round-trips ---
 var big = int.pow(7, 80) - int.pow(3, 50)
@@ -121,11 +121,11 @@ assert dump.loads(dump.dumps(big)) == big, "dump round-trip"
 assert raises(Function(): return int.BigInt(5) // 0), "div by zero"
 assert raises(Function(): return int.BigInt(5) % 0), "mod by zero"
 assert raises(Function(): return int.modinv(4, 8)), "modinv non-coprime"
-assert raises(Function(): return int.from_string("12x")), "bad digit"
-assert raises(Function(): return int.from_string("7", 40)), "bad base"
+assert raises(Function(): return int.fromstring("12x")), "bad digit"
+assert raises(Function(): return int.fromstring("7", 40)), "bad base"
 assert raises(Function(): return int.BigInt("hello")), "non-numeric string"
 assert raises(Function(): return int.factorial(-1)), "factorial negative"
 assert raises(Function(): return int.BigInt(3.14)), "Float rejected"
-assert int.is_prime(-5) == False and int.is_prime(0) == False and int.is_prime(1) == False, "non-primes"
+assert int.isprime(-5) == False and int.isprime(0) == False and int.isprime(1) == False, "non-primes"
 
 io.print("OK bigint")

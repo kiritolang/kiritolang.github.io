@@ -2,7 +2,7 @@
 #define KIRITO_RAND_COMPAT_HPP
 
 // Cross-platform access to the operating-system CSPRNG, isolated behind one fillRandom() so the
-// `random` module (token_bytes/token_hex/token_urlsafe/randbelow) is identical on every platform.
+// `random` module (randombytes/randomhex/randomurlsafe/randombelow) is identical on every platform.
 // Mirrors net_compat.hpp / proc_compat.hpp. POSIX prefers getrandom(2) (Linux/glibc), falls back to
 // getentropy(3) (BSD/macOS), then to reading /dev/urandom; Windows uses BCryptGenRandom. This is the
 // kernel entropy source — distinct from the `Random` object's userspace PRNGs (xoshiro/MT), which are

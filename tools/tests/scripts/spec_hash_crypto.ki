@@ -1,5 +1,5 @@
 # hash module crypto surface: SHA-384/512, HMAC (RFC 2104), PBKDF2 (RFC 8018), constant-time
-# compare_digest. Runs under EVERY preset (self-contained, no OpenSSL). RFC known-answer vectors
+# comparedigest. Runs under EVERY preset (self-contained, no OpenSSL). RFC known-answer vectors
 # plus structural properties, keyword-arg uniformity, and bad-input rejection.
 var hash = import("hash")
 var io = import("io")
@@ -52,17 +52,17 @@ var big = hash.pbkdf2("pw", "salty", 50, 60, "sha256")
 var small = hash.pbkdf2("pw", "salty", 50, 25, "sha256")
 assert big[0:25] == small, "pbkdf2 prefix stability"
 
-# --- compare_digest ---
-assert hash.compare_digest("abc", "abc") == True, "cd equal"
-assert hash.compare_digest("abc", "abd") == False, "cd one-char diff"
-assert hash.compare_digest("abc", "abcd") == False, "cd length diff"
-assert hash.compare_digest("", "") == True, "cd empty"
-assert hash.compare_digest(Bytes([1, 2, 3]), Bytes([1, 2, 3])) == True, "cd bytes equal"
-assert hash.compare_digest(Bytes([1, 2, 3]), Bytes([1, 2, 4])) == False, "cd bytes diff"
+# --- comparedigest ---
+assert hash.comparedigest("abc", "abc") == True, "cd equal"
+assert hash.comparedigest("abc", "abd") == False, "cd one-char diff"
+assert hash.comparedigest("abc", "abcd") == False, "cd length diff"
+assert hash.comparedigest("", "") == True, "cd empty"
+assert hash.comparedigest(Bytes([1, 2, 3]), Bytes([1, 2, 3])) == True, "cd bytes equal"
+assert hash.comparedigest(Bytes([1, 2, 3]), Bytes([1, 2, 4])) == False, "cd bytes diff"
 # a real MAC-verification use: recompute and compare
 var mac = hash.hmac("secret", "payload", "sha256")
-assert hash.compare_digest(mac, hash.hmac("secret", "payload", "sha256")) == True, "cd verifies MAC"
-assert hash.compare_digest(mac, hash.hmac("secret", "payloaD", "sha256")) == False, "cd rejects tampered"
+assert hash.comparedigest(mac, hash.hmac("secret", "payload", "sha256")) == True, "cd verifies MAC"
+assert hash.comparedigest(mac, hash.hmac("secret", "payloaD", "sha256")) == False, "cd rejects tampered"
 
 # --- adversarial / bad input ---
 assert raises_msg(Function(): return hash.hmac("k", "m", "sha3"), "unknown algorithm"), "hmac unknown algo"
@@ -71,6 +71,6 @@ assert raises_msg(Function(): return hash.pbkdf2("p", "s", -1), "iterations"), "
 assert raises_msg(Function(): return hash.pbkdf2("p", "s", 1, 0), "dklen"), "pbkdf2 dklen=0"
 assert raises_msg(Function(): return hash.pbkdf2("p", "s", 1, 2000000), "too large"), "pbkdf2 dklen too large"
 assert raises(Function(): return hash.hmac(123, "m")), "hmac non-string key"
-assert raises(Function(): return hash.compare_digest(1, 2)), "compare_digest non-string"
+assert raises(Function(): return hash.comparedigest(1, 2)), "comparedigest non-string"
 
 io.print("OK hash_crypto")

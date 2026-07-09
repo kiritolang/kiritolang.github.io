@@ -56,38 +56,38 @@ int main() {
     const std::string CT  = "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e"
                             "21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985";
     const std::string TAG = "4d5c2af327cd64a62cf35abd2ba6fab4";
-    CHECK(evalStr(vm, "var r = c.aes_gcm_encrypt(fromhex(\"" + KEY + "\"), fromhex(\"" + PT +
+    CHECK(evalStr(vm, "var r = c.aesencrypt(fromhex(\"" + KEY + "\"), fromhex(\"" + PT +
                       "\"), fromhex(\"" + IV + "\"))\nr[\"ciphertext\"].hex() + \":\" + r[\"tag\"].hex()") ==
           CT + ":" + TAG);
     // Decrypt the KAT ciphertext back to the plaintext.
-    CHECK(evalStr(vm, "c.aes_gcm_decrypt(fromhex(\"" + KEY + "\"), fromhex(\"" + CT + "\"), fromhex(\"" + IV +
+    CHECK(evalStr(vm, "c.aesdecrypt(fromhex(\"" + KEY + "\"), fromhex(\"" + CT + "\"), fromhex(\"" + IV +
                       "\"), fromhex(\"" + TAG + "\")).hex()") == PT);
 
     // ---- round-trip for every key size, with and without AAD ----
     for (const char* klen : {"16", "24", "32"}) {
         std::string s =
-            "var key = random.token_bytes(" + std::string(klen) + ")\n"
-            "var nonce = random.token_bytes(12)\n"
+            "var key = random.randombytes(" + std::string(klen) + ")\n"
+            "var nonce = random.randombytes(12)\n"
             "var msg = \"attack at dawn\"\n"
-            "var e = c.aes_gcm_encrypt(key, msg, nonce)\n"
-            "c.aes_gcm_decrypt(key, e[\"ciphertext\"], nonce, e[\"tag\"]).decode() == msg";
+            "var e = c.aesencrypt(key, msg, nonce)\n"
+            "c.aesdecrypt(key, e[\"ciphertext\"], nonce, e[\"tag\"]).decode() == msg";
         CHECK(evalStr(vm, "var random = import(\"random\")\n" + s) == "True");
     }
     // AAD must match on decrypt.
     CHECK(evalStr(vm,
         "var random = import(\"random\")\n"
-        "var key = random.token_bytes(32)\nvar nonce = random.token_bytes(12)\n"
-        "var e = c.aes_gcm_encrypt(key, \"body\", nonce, \"hdr\")\n"
-        "c.aes_gcm_decrypt(key, e[\"ciphertext\"], nonce, e[\"tag\"], \"hdr\").decode()") == "body");
+        "var key = random.randombytes(32)\nvar nonce = random.randombytes(12)\n"
+        "var e = c.aesencrypt(key, \"body\", nonce, \"hdr\")\n"
+        "c.aesdecrypt(key, e[\"ciphertext\"], nonce, e[\"tag\"], \"hdr\").decode()") == "body");
 
     // ---- tamper detection: a flipped ciphertext / tag / aad byte fails authentication ----
     auto tamperThrows = [&](const std::string& mutate) {
         std::string s =
             "var random = import(\"random\")\n"
-            "var key = random.token_bytes(32)\nvar nonce = random.token_bytes(12)\n"
-            "var e = c.aes_gcm_encrypt(key, \"secret message\", nonce, \"aad0\")\n"
+            "var key = random.randombytes(32)\nvar nonce = random.randombytes(12)\n"
+            "var e = c.aesencrypt(key, \"secret message\", nonce, \"aad0\")\n"
             "var ct = e[\"ciphertext\"]\nvar tag = e[\"tag\"]\nvar aad = \"aad0\"\n" + mutate +
-            "c.aes_gcm_decrypt(key, ct, nonce, tag, aad)";
+            "c.aesdecrypt(key, ct, nonce, tag, aad)";
         CHECK_THROWS(evalStr(vm, s));
     };
     tamperThrows("ct = ct[0:1] + Bytes([bitxor(ct[1], 1)]) + ct[2:len(ct)]\n");  // flip a ciphertext bit
@@ -96,29 +96,29 @@ int main() {
 
     // ---- RSA sign/verify + OAEP encrypt/decrypt ----
     CHECK(evalStr(vm,
-        "var k = c.rsa_generate(2048)\n"
-        "var sig = c.rsa_sign(k[\"private\"], \"hello world\")\n"
-        "var ok = c.rsa_verify(k[\"public\"], \"hello world\", sig)\n"
-        "var bad = c.rsa_verify(k[\"public\"], \"hello worlx\", sig)\n"
-        "var k2 = c.rsa_generate(2048)\n"
-        "var wrong = c.rsa_verify(k2[\"public\"], \"hello world\", sig)\n"
-        "var ct = c.rsa_encrypt(k[\"public\"], \"top secret\")\n"
-        "var pt = c.rsa_decrypt(k[\"private\"], ct).decode()\n"
+        "var k = c.rsagenerate(2048)\n"
+        "var sig = c.rsasign(k[\"private\"], \"hello world\")\n"
+        "var ok = c.rsaverify(k[\"public\"], \"hello world\", sig)\n"
+        "var bad = c.rsaverify(k[\"public\"], \"hello worlx\", sig)\n"
+        "var k2 = c.rsagenerate(2048)\n"
+        "var wrong = c.rsaverify(k2[\"public\"], \"hello world\", sig)\n"
+        "var ct = c.rsaencrypt(k[\"public\"], \"top secret\")\n"
+        "var pt = c.rsadecrypt(k[\"private\"], ct).decode()\n"
         "String(ok) + \",\" + String(bad) + \",\" + String(wrong) + \",\" + pt") == "True,False,False,top secret");
 
     // ---- EC sign/verify (ECDSA over prime256v1) ----
     CHECK(evalStr(vm,
-        "var e = c.ec_generate()\n"
-        "var sig = c.ec_sign(e[\"private\"], \"ec payload\", \"sha256\")\n"
-        "var ok = c.ec_verify(e[\"public\"], \"ec payload\", sig)\n"
-        "var bad = c.ec_verify(e[\"public\"], \"ec payloax\", sig)\n"
+        "var e = c.ecgenerate()\n"
+        "var sig = c.ecsign(e[\"private\"], \"ec payload\", \"sha256\")\n"
+        "var ok = c.ecverify(e[\"public\"], \"ec payload\", sig)\n"
+        "var bad = c.ecverify(e[\"public\"], \"ec payloax\", sig)\n"
         "String(ok) + \",\" + String(bad)") == "True,False");
-    CHECK(evalStr(vm, "type(c.ec_generate(\"secp384r1\")[\"private\"])") == "String");  // other curve
+    CHECK(evalStr(vm, "type(c.ecgenerate(\"secp384r1\")[\"private\"])") == "String");  // other curve
 
     // ---- X.509 parse ----
     {
         std::string pem(CERT_PEM);
-        std::string src = "var pem = \"\"\"" + pem + "\"\"\"\nvar info = c.x509_parse(pem)\n";
+        std::string src = "var pem = \"\"\"" + pem + "\"\"\"\nvar info = c.x509parse(pem)\n";
         CHECK(evalStr(vm, src + "\"kirito.test\" in info[\"subject\"]") == "True");
         CHECK(evalStr(vm, src + "\"KiritoOrg\" in info[\"subject\"]") == "True");
         CHECK(evalStr(vm, src + "\"kirito.test\" in info[\"issuer\"]") == "True");
@@ -129,24 +129,24 @@ int main() {
     }
 
     // ---- adversarial / bad input ----
-    CHECK_THROWS(evalStr(vm, "c.aes_gcm_encrypt(fromhex(\"0011223344556677\"), \"pt\", fromhex(\"" + IV + "\"))"));  // 8-byte key
-    CHECK_THROWS(evalStr(vm, "var random = import(\"random\")\nc.aes_gcm_encrypt(random.token_bytes(32), \"pt\", Bytes(0))"));  // empty nonce
-    CHECK_THROWS(evalStr(vm, "c.rsa_sign(\"not a valid pem\", \"m\")"));
-    CHECK_THROWS(evalStr(vm, "c.rsa_generate(64)"));                 // too small
-    CHECK_THROWS(evalStr(vm, "c.x509_parse(\"-----BEGIN CERTIFICATE-----\\ngarbage\\n-----END CERTIFICATE-----\")"));
-    CHECK_THROWS(evalStr(vm, "c.ec_generate(\"not-a-curve\")"));
-    CHECK_THROWS(evalStr(vm, "c.rsa_verify(\"bad pem\", \"m\", Bytes([1,2,3]))"));
+    CHECK_THROWS(evalStr(vm, "c.aesencrypt(fromhex(\"0011223344556677\"), \"pt\", fromhex(\"" + IV + "\"))"));  // 8-byte key
+    CHECK_THROWS(evalStr(vm, "var random = import(\"random\")\nc.aesencrypt(random.randombytes(32), \"pt\", Bytes(0))"));  // empty nonce
+    CHECK_THROWS(evalStr(vm, "c.rsasign(\"not a valid pem\", \"m\")"));
+    CHECK_THROWS(evalStr(vm, "c.rsagenerate(64)"));                 // too small
+    CHECK_THROWS(evalStr(vm, "c.x509parse(\"-----BEGIN CERTIFICATE-----\\ngarbage\\n-----END CERTIFICATE-----\")"));
+    CHECK_THROWS(evalStr(vm, "c.ecgenerate(\"not-a-curve\")"));
+    CHECK_THROWS(evalStr(vm, "c.rsaverify(\"bad pem\", \"m\", Bytes([1,2,3]))"));
 
     // ---- randomized AES-GCM fuzz: encrypt->decrypt is the identity; a corrupted tag never decrypts ----
     std::mt19937_64 rng(0xA5A5u);
     for (int t = 0; t < 400; ++t) {
         std::string s =
             "var random = import(\"random\")\n"
-            "var key = random.token_bytes(" + std::string((t % 3 == 0) ? "16" : (t % 3 == 1) ? "24" : "32") + ")\n"
-            "var nonce = random.token_bytes(" + std::to_string(1 + (rng() % 16)) + ")\n"
-            "var msg = random.token_bytes(" + std::to_string(rng() % 200) + ")\n"
-            "var e = c.aes_gcm_encrypt(key, msg, nonce)\n"
-            "c.aes_gcm_decrypt(key, e[\"ciphertext\"], nonce, e[\"tag\"]) == msg";
+            "var key = random.randombytes(" + std::string((t % 3 == 0) ? "16" : (t % 3 == 1) ? "24" : "32") + ")\n"
+            "var nonce = random.randombytes(" + std::to_string(1 + (rng() % 16)) + ")\n"
+            "var msg = random.randombytes(" + std::to_string(rng() % 200) + ")\n"
+            "var e = c.aesencrypt(key, msg, nonce)\n"
+            "c.aesdecrypt(key, e[\"ciphertext\"], nonce, e[\"tag\"]) == msg";
         CHECK(evalStr(vm, s) == "True");
     }
 

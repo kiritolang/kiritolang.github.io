@@ -24,58 +24,58 @@ assert type(crypto.enabled) == "Bool", "crypto.enabled is a Bool"
 
 if not crypto.enabled:
     # --- non-TLS build: every operation must throw a clear, catchable "needs OpenSSL" error ---
-    assert raises_msg(Function(): return crypto.aes_gcm_encrypt(random.token_bytes(32), "x", random.token_bytes(12)), "KIRITO_ENABLE_TLS"), "aes needs TLS"
-    assert raises_msg(Function(): return crypto.rsa_generate(2048), "KIRITO_ENABLE_TLS"), "rsa needs TLS"
-    assert raises_msg(Function(): return crypto.ec_generate(), "KIRITO_ENABLE_TLS"), "ec needs TLS"
-    assert raises_msg(Function(): return crypto.x509_parse("x"), "KIRITO_ENABLE_TLS"), "x509 needs TLS"
+    assert raises_msg(Function(): return crypto.aesencrypt(random.randombytes(32), "x", random.randombytes(12)), "KIRITO_ENABLE_TLS"), "aes needs TLS"
+    assert raises_msg(Function(): return crypto.rsagenerate(2048), "KIRITO_ENABLE_TLS"), "rsa needs TLS"
+    assert raises_msg(Function(): return crypto.ecgenerate(), "KIRITO_ENABLE_TLS"), "ec needs TLS"
+    assert raises_msg(Function(): return crypto.x509parse("x"), "KIRITO_ENABLE_TLS"), "x509 needs TLS"
     io.print("OK crypto (disabled build)")
 else:
     # --- AES-GCM known-answer (GCM spec test case 3: AES-128, 96-bit IV, no AAD) ---
     var key = fromhex("feffe9928665731c6d6a8f9467308308")
     var iv = fromhex("cafebabefacedbaddecaf888")
     var pt = fromhex("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255")
-    var e = crypto.aes_gcm_encrypt(key, pt, iv)
+    var e = crypto.aesencrypt(key, pt, iv)
     assert e["ciphertext"].hex() == "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985", "gcm KAT ciphertext"
     assert e["tag"].hex() == "4d5c2af327cd64a62cf35abd2ba6fab4", "gcm KAT tag"
-    assert crypto.aes_gcm_decrypt(key, e["ciphertext"], iv, e["tag"]) == pt, "gcm KAT decrypt"
+    assert crypto.aesdecrypt(key, e["ciphertext"], iv, e["tag"]) == pt, "gcm KAT decrypt"
 
     # --- round-trip for every key size, with AAD ---
     for ks in [16, 24, 32]:
-        var k = random.token_bytes(ks)
-        var n = random.token_bytes(12)
-        var enc = crypto.aes_gcm_encrypt(k, "hello, kirito", n, "meta")
-        assert crypto.aes_gcm_decrypt(k, enc["ciphertext"], n, enc["tag"], "meta").decode() == "hello, kirito", "gcm round-trip"
+        var k = random.randombytes(ks)
+        var n = random.randombytes(12)
+        var enc = crypto.aesencrypt(k, "hello, kirito", n, "meta")
+        assert crypto.aesdecrypt(k, enc["ciphertext"], n, enc["tag"], "meta").decode() == "hello, kirito", "gcm round-trip"
         # wrong AAD, wrong tag, wrong key all fail authentication
-        assert raises_msg(Function(): return crypto.aes_gcm_decrypt(k, enc["ciphertext"], n, enc["tag"], "META"), "authentication"), "gcm wrong aad"
+        assert raises_msg(Function(): return crypto.aesdecrypt(k, enc["ciphertext"], n, enc["tag"], "META"), "authentication"), "gcm wrong aad"
         var badtag = enc["tag"][0:1] + Bytes([bitxor(enc["tag"][1], 255)]) + enc["tag"][2:len(enc["tag"])]
-        assert raises_msg(Function(): return crypto.aes_gcm_decrypt(k, enc["ciphertext"], n, badtag, "meta"), "authentication"), "gcm tampered tag"
+        assert raises_msg(Function(): return crypto.aesdecrypt(k, enc["ciphertext"], n, badtag, "meta"), "authentication"), "gcm tampered tag"
 
-    # --- AES-GCM fuzz: encrypt->decrypt is identity for random key/nonce/msg ---
+    # --- AES-GCM fuzz: encrypt->decrypt is identity for random key/iv/msg ---
     for i in range(60):
-        var k = random.token_bytes([16, 24, 32][random.randbelow(3)])
-        var n = random.token_bytes(random.randbelow(16) + 1)
-        var m = random.token_bytes(random.randbelow(200))
-        var enc = crypto.aes_gcm_encrypt(k, m, n)
-        assert crypto.aes_gcm_decrypt(k, enc["ciphertext"], n, enc["tag"]) == m, "gcm fuzz round-trip"
+        var k = random.randombytes([16, 24, 32][random.randombelow(3)])
+        var n = random.randombytes(random.randombelow(16) + 1)
+        var m = random.randombytes(random.randombelow(200))
+        var enc = crypto.aesencrypt(k, m, n)
+        assert crypto.aesdecrypt(k, enc["ciphertext"], n, enc["tag"]) == m, "gcm fuzz round-trip"
 
     # --- RSA sign/verify + OAEP ---
-    var rk = crypto.rsa_generate(2048)
+    var rk = crypto.rsagenerate(2048)
     assert type(rk["private"]) == "String" and "BEGIN" in rk["private"], "rsa private PEM"
-    var sig = crypto.rsa_sign(rk["private"], "message to sign")
-    assert crypto.rsa_verify(rk["public"], "message to sign", sig) == True, "rsa verify ok"
-    assert crypto.rsa_verify(rk["public"], "message to sigX", sig) == False, "rsa verify tampered"
-    var rk2 = crypto.rsa_generate(2048)
-    assert crypto.rsa_verify(rk2["public"], "message to sign", sig) == False, "rsa wrong key"
-    var ct = crypto.rsa_encrypt(rk["public"], "confidential")
-    assert crypto.rsa_decrypt(rk["private"], ct).decode() == "confidential", "rsa oaep round-trip"
+    var sig = crypto.rsasign(rk["private"], "message to sign")
+    assert crypto.rsaverify(rk["public"], "message to sign", sig) == True, "rsa verify ok"
+    assert crypto.rsaverify(rk["public"], "message to sigX", sig) == False, "rsa verify tampered"
+    var rk2 = crypto.rsagenerate(2048)
+    assert crypto.rsaverify(rk2["public"], "message to sign", sig) == False, "rsa wrong key"
+    var ct = crypto.rsaencrypt(rk["public"], "confidential")
+    assert crypto.rsadecrypt(rk["private"], ct).decode() == "confidential", "rsa oaep round-trip"
     # different algos
-    assert crypto.rsa_verify(rk["public"], "m", crypto.rsa_sign(rk["private"], "m", "sha512"), "sha512") == True, "rsa sha512"
+    assert crypto.rsaverify(rk["public"], "m", crypto.rsasign(rk["private"], "m", "sha512"), "sha512") == True, "rsa sha512"
 
     # --- EC sign/verify ---
-    var ek = crypto.ec_generate()
-    var esig = crypto.ec_sign(ek["private"], "ec message")
-    assert crypto.ec_verify(ek["public"], "ec message", esig) == True, "ec verify ok"
-    assert crypto.ec_verify(ek["public"], "ec messagE", esig) == False, "ec verify tampered"
+    var ek = crypto.ecgenerate()
+    var esig = crypto.ecsign(ek["private"], "ec message")
+    assert crypto.ecverify(ek["public"], "ec message", esig) == True, "ec verify ok"
+    assert crypto.ecverify(ek["public"], "ec messagE", esig) == False, "ec verify tampered"
 
     # --- X.509 parse (self-signed cert, CN=kirito.test, SAN kirito.test + www.kirito.test) ---
     var pem = """-----BEGIN CERTIFICATE-----
@@ -100,7 +100,7 @@ gkXEYar6uwu4qK0KOJWMTKgASTlKpXCmSJ9TvIs+ICqCrt1YWLpKcTUwlRysfuwU
 NV0=
 -----END CERTIFICATE-----
 """
-    var info = crypto.x509_parse(pem)
+    var info = crypto.x509parse(pem)
     assert "kirito.test" in info["subject"], "x509 subject"
     assert "KiritoOrg" in info["subject"], "x509 org"
     assert "kirito.test" in info["issuer"], "x509 issuer"
@@ -109,11 +109,11 @@ NV0=
     assert len(info["serial"]) > 0, "x509 serial"
 
     # --- adversarial ---
-    assert raises(Function(): return crypto.aes_gcm_encrypt(fromhex("0011223344"), "x", iv)), "bad key length"
-    assert raises_msg(Function(): return crypto.aes_gcm_encrypt(random.token_bytes(32), "x", Bytes(0)), "nonce"), "empty nonce"
-    assert raises(Function(): return crypto.rsa_sign("not a pem", "x")), "bad private pem"
-    assert raises(Function(): return crypto.rsa_generate(64)), "rsa too small"
-    assert raises(Function(): return crypto.x509_parse("garbage")), "bad cert"
-    assert raises(Function(): return crypto.ec_generate("not-a-curve")), "bad curve"
+    assert raises(Function(): return crypto.aesencrypt(fromhex("0011223344"), "x", iv)), "bad key length"
+    assert raises_msg(Function(): return crypto.aesencrypt(random.randombytes(32), "x", Bytes(0)), "iv"), "empty iv"
+    assert raises(Function(): return crypto.rsasign("not a pem", "x")), "bad private pem"
+    assert raises(Function(): return crypto.rsagenerate(64)), "rsa too small"
+    assert raises(Function(): return crypto.x509parse("garbage")), "bad cert"
+    assert raises(Function(): return crypto.ecgenerate("not-a-curve")), "bad curve"
 
     io.print("OK crypto")

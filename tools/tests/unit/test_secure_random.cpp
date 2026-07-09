@@ -1,5 +1,5 @@
-// OS-CSPRNG secure random: random.token_bytes / token_hex / token_urlsafe / randbelow. Covers
-// structural correctness (lengths, alphabets), statistical sanity (distinctness, randbelow range +
+// OS-CSPRNG secure random: random.randombytes / randomhex / randomurlsafe / randombelow. Covers
+// structural correctness (lengths, alphabets), statistical sanity (distinctness, randombelow range +
 // coverage + rough uniformity), and adversarial/bad-input rejection. The kernel entropy source is
 // non-deterministic, so the checks are properties (never fixed vectors).
 #include <cmath>
@@ -35,28 +35,28 @@ int main() {
         CHECK(std::memcmp(a, b, sizeof(a)) != 0);
     }
 
-    // ---- csprng_available ----
-    CHECK(evalStr(vm, "import(\"random\").csprng_available()") == "True");  // available on the test host
+    // ---- hasentropy ----
+    CHECK(evalStr(vm, "import(\"random\").hasentropy()") == "True");  // available on the test host
 
-    // ---- token_bytes ----
-    CHECK(evalStr(vm, "type(import(\"random\").token_bytes())") == "Bytes");
-    CHECK(evalInt(vm, "len(import(\"random\").token_bytes())") == 32);          // default 32
-    CHECK(evalInt(vm, "len(import(\"random\").token_bytes(16))") == 16);
-    CHECK(evalInt(vm, "len(import(\"random\").token_bytes(0))") == 0);
-    CHECK(evalInt(vm, "len(import(\"random\").token_bytes(1000))") == 1000);
+    // ---- randombytes ----
+    CHECK(evalStr(vm, "type(import(\"random\").randombytes())") == "Bytes");
+    CHECK(evalInt(vm, "len(import(\"random\").randombytes())") == 32);          // default 32
+    CHECK(evalInt(vm, "len(import(\"random\").randombytes(16))") == 16);
+    CHECK(evalInt(vm, "len(import(\"random\").randombytes(0))") == 0);
+    CHECK(evalInt(vm, "len(import(\"random\").randombytes(1000))") == 1000);
 
-    // ---- token_hex: 2n lowercase hex chars ----
-    CHECK(evalInt(vm, "len(import(\"random\").token_hex())") == 64);            // 32 bytes -> 64 hex
-    CHECK(evalInt(vm, "len(import(\"random\").token_hex(20))") == 40);
+    // ---- randomhex: 2n lowercase hex chars ----
+    CHECK(evalInt(vm, "len(import(\"random\").randomhex())") == 64);            // 32 bytes -> 64 hex
+    CHECK(evalInt(vm, "len(import(\"random\").randomhex(20))") == 40);
     {
-        std::string h = evalStr(vm, "import(\"random\").token_hex(64)");
+        std::string h = evalStr(vm, "import(\"random\").randomhex(64)");
         CHECK(h.size() == 128);
         for (char c : h) CHECK((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
     }
 
-    // ---- token_urlsafe: base64url alphabet, no padding ----
+    // ---- randomurlsafe: base64url alphabet, no padding ----
     {
-        std::string u = evalStr(vm, "import(\"random\").token_urlsafe(48)");
+        std::string u = evalStr(vm, "import(\"random\").randomurlsafe(48)");
         CHECK(!u.empty());
         for (char c : u)
             CHECK((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_');
@@ -67,18 +67,18 @@ int main() {
     // ---- distinctness: thousands of tokens, no collision (128-bit -> birthday-negligible) ----
     {
         std::set<std::string> seen;
-        for (int i = 0; i < 5000; ++i) seen.insert(evalStr(vm, "import(\"random\").token_hex(16)"));
+        for (int i = 0; i < 5000; ++i) seen.insert(evalStr(vm, "import(\"random\").randomhex(16)"));
         CHECK(seen.size() == 5000);
     }
 
-    // ---- randbelow: range, edge, coverage, rough uniformity ----
-    CHECK(evalInt(vm, "import(\"random\").randbelow(1)") == 0);   // only value in [0,1)
+    // ---- randombelow: range, edge, coverage, rough uniformity ----
+    CHECK(evalInt(vm, "import(\"random\").randombelow(1)") == 0);   // only value in [0,1)
     {
         const int K = 16, N = 32000;
         std::vector<int> counts(K, 0);
         bool inRange = true;
         for (int i = 0; i < N; ++i) {
-            int64_t v = evalInt(vm, "import(\"random\").randbelow(16)");
+            int64_t v = evalInt(vm, "import(\"random\").randombelow(16)");
             if (v < 0 || v >= K) inRange = false;
             else ++counts[static_cast<std::size_t>(v)];
         }
@@ -96,17 +96,17 @@ int main() {
     }
     // A large modulus still stays in range (exercises the rejection loop over the full 64-bit draw).
     for (int i = 0; i < 1000; ++i) {
-        int64_t v = evalInt(vm, "import(\"random\").randbelow(1000000007)");
+        int64_t v = evalInt(vm, "import(\"random\").randombelow(1000000007)");
         CHECK(v >= 0 && v < 1000000007);
     }
 
     // ---- adversarial / bad input ----
-    CHECK_THROWS(evalStr(vm, "import(\"random\").token_bytes(-1)"));
-    CHECK_THROWS(evalStr(vm, "import(\"random\").token_hex(-5)"));
-    CHECK_THROWS(evalStr(vm, "import(\"random\").token_urlsafe(-1)"));
-    CHECK_THROWS(evalStr(vm, "import(\"random\").token_bytes(999999999999)"));  // over the size cap
-    CHECK_THROWS(evalStr(vm, "import(\"random\").randbelow(0)"));
-    CHECK_THROWS(evalStr(vm, "import(\"random\").randbelow(-10)"));
+    CHECK_THROWS(evalStr(vm, "import(\"random\").randombytes(-1)"));
+    CHECK_THROWS(evalStr(vm, "import(\"random\").randomhex(-5)"));
+    CHECK_THROWS(evalStr(vm, "import(\"random\").randomurlsafe(-1)"));
+    CHECK_THROWS(evalStr(vm, "import(\"random\").randombytes(999999999999)"));  // over the size cap
+    CHECK_THROWS(evalStr(vm, "import(\"random\").randombelow(0)"));
+    CHECK_THROWS(evalStr(vm, "import(\"random\").randombelow(-10)"));
 
     if (kitest::failures == 0) std::printf("test_secure_random: all passed\n");
     return RUN_TESTS();
