@@ -35,6 +35,9 @@ int main() {
         CHECK(std::memcmp(a, b, sizeof(a)) != 0);
     }
 
+    // ---- csprng_available ----
+    CHECK(evalStr(vm, "import(\"random\").csprng_available()") == "True");  // available on the test host
+
     // ---- token_bytes ----
     CHECK(evalStr(vm, "type(import(\"random\").token_bytes())") == "Bytes");
     CHECK(evalInt(vm, "len(import(\"random\").token_bytes())") == 32);          // default 32

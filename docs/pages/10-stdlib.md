@@ -1084,6 +1084,9 @@ for tokens, keys, salts and nonces, not a seeded generator's stream.
   no padding) — a compact, URL-safe token.
 - `randbelow(n) → Integer` — a uniform, **bias-free** integer in `[0, n)` (rejection sampling), for a
   secure random index or dice roll (`n` must be positive).
+- `csprng_available() → Bool` — whether the OS cryptographic RNG is usable right now. The functions
+  above (and [`int`](#int)'s `is_probable_prime`/`random_prime`) throw if it isn't — probe this first
+  if you need to degrade gracefully rather than catch the error.
 
 ```kirito
 var random = import("random")

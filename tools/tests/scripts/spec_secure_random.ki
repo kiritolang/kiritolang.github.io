@@ -11,6 +11,10 @@ var raises = Function(fn) -> Bool:
     catch:
         return True
 
+# --- csprng_available ---
+assert type(random.csprng_available()) == "Bool", "csprng_available is a Bool"
+assert random.csprng_available() == True, "OS CSPRNG is available on this system"
+
 # --- token_bytes ---
 assert type(random.token_bytes()) == "Bytes", "token_bytes is Bytes"
 assert len(random.token_bytes()) == 32, "token_bytes default 32"

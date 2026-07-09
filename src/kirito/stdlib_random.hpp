@@ -398,6 +398,13 @@ public:
             } while (r < threshold);
             return Value(vm, static_cast<int64_t>(r % un));
         });
+        // csprng_available() -> Bool: whether the OS cryptographic RNG is currently usable. The secure
+        // functions above (and int's is_probable_prime/random_prime) THROW if it isn't; probe this
+        // first to degrade gracefully. A runtime check (not a build-time flag) — it re-tests each call.
+        m.fn("csprng_available", {}, "Bool", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
+            unsigned char probe = 0;
+            return vm.makeBool(randcompat::fillRandom(&probe, sizeof(probe)));
+        });
     }
 };
 
