@@ -148,9 +148,9 @@ Because `'...'` exists, an f-string can hold a single-quoted string key inside i
 `f"{d['key']}"`. Escapes in cooked (non-raw) strings: `\n \t \r \0 \\ \" \'` and `\xHH` (the code
 point U+00HH from two hex digits — e.g. `"\xff"` is one code point, U+00FF, not a raw byte; use
 [`Bytes`](types.html#bytes) for raw bytes). A single-line string can't span a newline (use a triple-quoted form); an
-unterminated string, an unknown escape in a **plain** string, or a raw string ending in a lone
-backslash is a clear lex error. (One exception: inside an **f-string**, an unrecognized escape is
-lenient — the backslash is dropped, so `f"\q"` yields `"q"`.)
+unterminated string, an unknown escape, or a raw string ending in a lone
+backslash is a clear lex error. An f-string decodes escapes through the **same** decoder as a plain
+string, so `f"\q"` is the same lex error as `"\q"` (and `f"\xHH"` matches `"\xHH"`).
 
 Methods: `upper`, `lower` (Unicode-aware), `strip`/`lstrip`/`rstrip`, `split`, `join`, `replace`,
 `startswith`, `endswith`, `find`/`rfind`, `index`/`rindex`, `count`, `format`, the `is...` predicates

@@ -441,6 +441,11 @@ private:
 
     ast::ExprPtr parseExpr() {
         DepthGuard g(exprDepth_, peek().span);
+        // Clear any stale "a block just closed" flag left by a PRECEDING nested suite (e.g. an if-body
+        // before an `elif` condition, a case body before the next `case`, a try body before `catch`).
+        // A block-bodied Function literal parsed *within* this expression re-sets it, so the
+        // continuation guards still stop a next-line `(`/`,`/`.`/operator from gluing onto it (A02-1).
+        blockJustClosed_ = false;
         return parseConditional();
     }
 

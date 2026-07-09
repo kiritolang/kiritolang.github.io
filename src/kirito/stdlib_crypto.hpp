@@ -256,7 +256,9 @@ public:
             std::string tag = argStringOrBytes(vm, args[3].handle(), "aesdecrypt tag");
             const EVP_CIPHER* cipher = gcmCipher(key.size());
             if (iv.empty()) throw KiritoError("aesdecrypt: iv must be non-empty");
-            if (tag.empty() || tag.size() > 16) throw KiritoError("aesdecrypt: tag must be 1..16 bytes");
+            // Require the full 16-byte GCM tag (what aesencrypt always emits): accepting a truncated
+            // tag would weaken forgery resistance to ~1/256 per byte dropped (A12-2).
+            if (tag.size() != 16) throw KiritoError("aesdecrypt: tag must be 16 bytes");
             bool hasAad = !args[4].isNone();
             std::string aad = hasAad ? argStringOrBytes(vm, args[4].handle(), "aesdecrypt aad") : std::string();
 

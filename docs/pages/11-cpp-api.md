@@ -1017,7 +1017,7 @@ vm.registerGlobal("greet", vm.alloc(std::make_unique<NativeFunction>(
     "String",
     [](KiritoVM& vm, std::span<const Handle> raw) -> Handle {
         Args a(vm, raw, "greet");
-        std::string msg = "Hello, " + a.at(0).asString("name");
+        std::string msg = "Hello, " + a.at(0).asStringRef("name");
         return Value(vm, a.at(1).asBool("loud") ? msg + "!" : msg);
     })));
 // Kirito:  greet("Ada")  /  greet(name="Ada", loud=True)  /  inspect(greet)

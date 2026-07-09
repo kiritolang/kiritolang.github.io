@@ -105,7 +105,9 @@ public:
     Tensor() = default;
     explicit Tensor(Shape s, T fill = T{}) : shape(std::move(s)), data(checkedNumel(shape), fill) {}
     Tensor(Shape s, std::vector<T> d) : shape(std::move(s)), data(std::move(d)) {
-        if (data.size() != numel(shape)) throw TensorError("tensor data size does not match its shape");
+        // checkedNumel (not plain numel) so the data ctor enforces the rank/size caps too — this is
+        // what makes reshape/flatten/expanddims/broadcastto (which route here) actually covered (A11-1).
+        if (data.size() != checkedNumel(shape)) throw TensorError("tensor data size does not match its shape");
     }
 
     std::size_t ndim() const { return shape.size(); }

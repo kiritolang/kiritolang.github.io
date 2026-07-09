@@ -101,10 +101,25 @@ public:
         stream.seekg(0, std::ios::end);               // to allocate n bytes, so clamp `want` to what remains
         std::streampos endp = stream.tellg();         // — including when the cursor is unknown (cur<0) or
         stream.seekg(cur >= 0 ? cur : endp);          // seeked PAST end (cur>endp): both leave 0 available.
-        if (endp >= 0) {
-            std::size_t avail = (cur >= 0 && endp >= cur) ? static_cast<std::size_t>(endp - cur) : 0;
-            want = std::min(want, avail);
+        if (endp < 0) {
+            // Non-seekable (FIFO/device/proc): the size can't be measured, so read in bounded chunks
+            // rather than pre-allocating `want` bytes — a huge read(n) would otherwise bad_alloc.
+            stream.clear();                           // the seekg probes set failbit on a non-seekable stream
+            std::string out;
+            constexpr std::size_t kChunk = 65536;
+            while (out.size() < want) {
+                std::size_t take = std::min(kChunk, want - out.size());
+                std::size_t base = out.size();
+                out.resize(base + take);
+                stream.read(out.data() + base, static_cast<std::streamsize>(take));
+                std::size_t got = static_cast<std::size_t>(stream.gcount());
+                out.resize(base + got);
+                if (got < take) break;                // EOF / short read
+            }
+            return out;
         }
+        std::size_t avail = (cur >= 0 && endp >= cur) ? static_cast<std::size_t>(endp - cur) : 0;
+        want = std::min(want, avail);
         std::string buf(want, '\0');
         stream.read(buf.data(), static_cast<std::streamsize>(want));
         buf.resize(static_cast<std::size_t>(stream.gcount()));

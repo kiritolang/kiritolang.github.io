@@ -646,6 +646,8 @@ var decode = Function(s):
     for ch in s:
         if ch == "=":
             break
+        if ch == " " or ch == "\n" or ch == "\r" or ch == "\t":
+            continue    # skip line-wrap / MIME whitespace (real-world PEM/HTTP base64 is line-wrapped)
         if ch not in _index:
             throw "invalid base64 character: '" + ch + "'"
         buffer = buffer * 64 + _index[ch]

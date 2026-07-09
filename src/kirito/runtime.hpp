@@ -1378,6 +1378,7 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             const std::string& tmpl = recv(vm, self);
             std::string out;
             std::size_t auto_i = 0;
+            bool usedAuto = false, usedManual = false;   // mixing the two is an error, as in Python
             for (std::size_t i = 0; i < tmpl.size(); ++i) {
                 if (tmpl[i] == '{') {
                     if (i + 1 < tmpl.size() && tmpl[i + 1] == '{') { out += '{'; ++i; continue; }
@@ -1386,13 +1387,17 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
                     std::string spec = tmpl.substr(i + 1, close - i - 1);
                     std::size_t idx;
                     if (spec.empty()) {
+                        usedAuto = true;
                         idx = auto_i++;
                     } else {
+                        usedManual = true;
                         for (char ch : spec)
                             if (ch < '0' || ch > '9') throw KiritoError("format field must be an index");
                         try { idx = static_cast<std::size_t>(std::stoull(spec)); }
                         catch (const std::out_of_range&) { throw KiritoError("format index out of range"); }
                     }
+                    if (usedAuto && usedManual)
+                        throw KiritoError("cannot switch between automatic and manual field numbering in format()");
                     if (idx >= a.size()) throw KiritoError("format index out of range");
                     out += vm.stringify(a[idx]);
                     i = close;
