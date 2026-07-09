@@ -28,7 +28,7 @@ if not crypto.enabled:
     assert raises_msg(Function(): return crypto.rsagenerate(2048), "KIRITO_ENABLE_TLS"), "rsa needs TLS"
     assert raises_msg(Function(): return crypto.ecgenerate(), "KIRITO_ENABLE_TLS"), "ec needs TLS"
     assert raises_msg(Function(): return crypto.x509parse("x"), "KIRITO_ENABLE_TLS"), "x509 needs TLS"
-    io.print("OK crypto (disabled build)")
+    io.print("OK crypto")   # same line in both branches so one .expected matches every preset
 else:
     # --- AES-GCM known-answer (GCM spec test case 3: AES-128, 96-bit IV, no AAD) ---
     var key = fromhex("feffe9928665731c6d6a8f9467308308")
