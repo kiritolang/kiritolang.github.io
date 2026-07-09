@@ -111,6 +111,11 @@ NV0=
     # --- adversarial ---
     assert raises(Function(): return crypto.aesencrypt(fromhex("0011223344"), "x", iv)), "bad key length"
     assert raises_msg(Function(): return crypto.aesencrypt(random.randombytes(32), "x", Bytes(0)), "iv"), "empty iv"
+    # a truncated (non-16-byte) GCM tag is rejected outright — accepting one would weaken forgery
+    # resistance (A12-2). aesencrypt always emits a full 16-byte tag.
+    var tge = crypto.aesencrypt(key, "data", iv)
+    assert len(tge["tag"]) == 16, "gcm tag is 16 bytes"
+    assert raises_msg(Function(): return crypto.aesdecrypt(key, tge["ciphertext"], iv, tge["tag"][0:15]), "16 bytes"), "truncated tag rejected"
     assert raises(Function(): return crypto.rsasign("not a pem", "x")), "bad private pem"
     assert raises(Function(): return crypto.rsagenerate(64)), "rsa too small"
     assert raises(Function(): return crypto.x509parse("garbage")), "bad cert"

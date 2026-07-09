@@ -1,0 +1,67 @@
+# Regression tests for the v1.14.1 audit fixes that are reachable from Kirito source.
+# (The C++-embedding-only fixes — GC rooting, Bytes discriminator, multi-VM teardown — are pinned in
+# tools/tests/unit/*.cpp instead.)
+var io = import("io")
+var tensor = import("tensor")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+# ---- A02-1: a block-bodied Function literal self-terminates at its dedent; a following line that
+# begins with a postfix/operator token starts a NEW statement instead of gluing onto the function. ----
+var calls = 0
+var f = Function():
+    calls = calls + 1
+    return 99
+(0)                                  # before the fix this glued as f(0), calling f during binding
+assert calls == 0, "the following (0) did not call f (no glue)"
+assert f() == 99 and calls == 1, "f is the function value, callable"
+
+var g = Function():
+    return "g"
+assert type(g) == "Function", "a following stmt did not comma-pack the function value"
+
+# REGRESSION for the parseExpr stale-flag reset: an elif/else condition parsed AFTER a nested if-body
+# block must not inherit the block's 'just closed' state (that broke every frozen module during dev).
+var classify = Function(n):
+    if n > 0:
+        var s = "pos"
+        return s
+    elif n < 0:
+        return "neg"
+    else:
+        return "zero"
+assert classify(5) == "pos" and classify(-5) == "neg" and classify(0) == "zero", "elif after block parses"
+
+# switch case labels after a case body block, and a catch clause after a try body block — same reset.
+var describe = Function(n):
+    switch n:
+        case 1:
+            var one = "one"
+            return one
+        case 2, 3:
+            return "few"
+        default:
+            return "many"
+assert describe(1) == "one" and describe(3) == "few" and describe(9) == "many", "case after block parses"
+
+# the pre-existing `var x = Function(): ... ` then `if argmain:` idiom still works
+var used = 0
+var h = Function():
+    return 1
+if argmain:
+    used = 1
+assert used == 1, "statement after a block-fn runs independently"
+
+# ---- A11-1: the tensor data ctor enforces the rank cap (kMaxRank=64), so reshape/flatten can't build
+# an over-rank tensor that would overflow the native stack on a recursive traversal. ----
+var base = tensor.zeros([4])
+assert raises(Function(): return base.reshape([1] * 65)), "reshape past rank 64 throws (A11-1)"
+var wide = base.reshape([1] * 63 + [4])
+assert wide.ndim() == 64, "rank 64 reshape is allowed"
+
+io.print("OK audit_1141")
