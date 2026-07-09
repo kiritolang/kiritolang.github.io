@@ -9,6 +9,7 @@
 // round-trips, and real zlib-produced streams decompress correctly.
 
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -87,6 +88,10 @@ inline std::string compress(const std::string& in) {
 
     const int kMinMatch = 3, kMaxMatch = 258, kWindow = 32768;
     const std::size_t n = in.size();
+    // Hash-chain positions are stored as int; a >2 GiB input would wrap `static_cast<int>(i)` negative
+    // and drive an out-of-bounds read on the next match probe. Cap it (A12-1).
+    if (n > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        throw DeflateError("deflate: input too large (max 2 GiB)");
     // hash chains for 3-byte sequences
     std::vector<int> head(1 << 15, -1), prev(n, -1);
     auto hash3 = [&](std::size_t i) -> uint32_t {

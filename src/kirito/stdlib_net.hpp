@@ -445,6 +445,9 @@ inline UrlParts splitUrl(const std::string& url) {
 inline std::string resolveUrl(const std::string& base, const std::string& loc) {
     if (loc.compare(0, 7, "http://") == 0 || loc.compare(0, 8, "https://") == 0) return loc;
     UrlParts b = splitUrl(base);
+    // A protocol-relative (network-path) reference `//host/path` adopts the base scheme and REPLACES
+    // the host — it must be handled before the root-relative `/path` case, which shares a leading '/'.
+    if (loc.compare(0, 2, "//") == 0) return b.scheme + ":" + loc;
     std::string origin = b.scheme + "://" + b.host + (b.port.empty() ? "" : ":" + b.port);
     if (!loc.empty() && loc[0] == '/') return origin + loc;
     // relative to the base path's directory
@@ -858,6 +861,16 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
             if (const auto* b = dynamic_cast<const BytesVal*>(&o)) return b->data;
             return Value(vm, h).str();
         };
+        // A field name / filename is placed inside a quoted Content-Disposition parameter, so a raw CR/LF
+        // would inject part headers and a bare `"` would truncate the value — reject the former, escape
+        // the latter (matches how headers/cookies are CRLF-hardened elsewhere).
+        auto mpParam = [](const std::string& s, const char* what) -> std::string {
+            for (unsigned char c : s)
+                if (c == '\r' || c == '\n') throw KiritoError(std::string("multipart ") + what + " must not contain CR or LF");
+            std::string out;
+            for (char c : s) { if (c == '"' || c == '\\') out += '\\'; out += c; }
+            return out;
+        };
         std::string mp;
         for (const auto& [k, v] : Value(vm, filesH).pairs()) {
             std::string field = k.str(), filename = k.str(), content;
@@ -868,8 +881,8 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
             } else {
                 content = rawContent(v.handle());
             }
-            mp += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + field +
-                  "\"; filename=\"" + filename + "\"\r\nContent-Type: application/octet-stream\r\n\r\n" +
+            mp += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + mpParam(field, "field name") +
+                  "\"; filename=\"" + mpParam(filename, "filename") + "\"\r\nContent-Type: application/octet-stream\r\n\r\n" +
                   content + "\r\n";
         }
         mp += "--" + boundary + "--\r\n";
