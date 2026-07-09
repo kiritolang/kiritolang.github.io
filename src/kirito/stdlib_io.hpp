@@ -532,9 +532,12 @@ public:
         // redirects output to a file (and rebinding back, or to io.stderr, restores it).
         // __stdout__/__stderr__/__stdin__ keep the originals so you can always rebind
         // back to the terminal: `io.stdout = io.__stdout__`.
-        Handle out = vm.alloc(std::make_unique<StdStream>(StdStream::Dir::Out));
-        Handle err = vm.alloc(std::make_unique<StdStream>(StdStream::Dir::Err));
-        Handle in = vm.alloc(std::make_unique<StdStream>(StdStream::Dir::In));
+        // Root all three across the allocations: vm.alloc collects before creating each object, so an
+        // unrooted `out`/`err` held in a C++ local would be swept by the next alloc and stored dangling.
+        RootScope rs(vm);
+        Handle out = rs.add(vm.alloc(std::make_unique<StdStream>(StdStream::Dir::Out)));
+        Handle err = rs.add(vm.alloc(std::make_unique<StdStream>(StdStream::Dir::Err)));
+        Handle in = rs.add(vm.alloc(std::make_unique<StdStream>(StdStream::Dir::In)));
         m.value("stdout", out).value("__stdout__", out);
         m.value("stderr", err).value("__stderr__", err);
         m.value("stdin", in).value("__stdin__", in);

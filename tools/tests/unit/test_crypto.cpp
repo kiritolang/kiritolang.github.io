@@ -140,13 +140,15 @@ int main() {
     // ---- randomized AES-GCM fuzz: encrypt->decrypt is the identity; a corrupted tag never decrypts ----
     std::mt19937_64 rng(0xA5A5u);
     for (int t = 0; t < 400; ++t) {
-        std::string s =
-            "var random = import(\"random\")\n"
-            "var key = random.randombytes(" + std::string((t % 3 == 0) ? "16" : (t % 3 == 1) ? "24" : "32") + ")\n"
-            "var nonce = random.randombytes(" + std::to_string(1 + (rng() % 16)) + ")\n"
-            "var msg = random.randombytes(" + std::to_string(rng() % 200) + ")\n"
-            "var e = c.aesencrypt(key, msg, nonce)\n"
-            "c.aesdecrypt(key, e[\"ciphertext\"], nonce, e[\"tag\"]) == msg";
+        // Built with += (not a `"lit" + str + "lit"` chain): the move-operator+ overload trips a
+        // GCC 13 -O2/-O3 -Warray-bounds false positive on char_traits::copy.
+        const char* ks = (t % 3 == 0) ? "16" : (t % 3 == 1) ? "24" : "32";
+        std::string s = "var random = import(\"random\")\n";
+        s += "var key = random.randombytes("; s += ks; s += ")\n";
+        s += "var nonce = random.randombytes("; s += std::to_string(1 + (rng() % 16)); s += ")\n";
+        s += "var msg = random.randombytes("; s += std::to_string(rng() % 200); s += ")\n";
+        s += "var e = c.aesencrypt(key, msg, nonce)\n";
+        s += "c.aesdecrypt(key, e[\"ciphertext\"], nonce, e[\"tag\"]) == msg";
         CHECK(evalStr(vm, s) == "True");
     }
 

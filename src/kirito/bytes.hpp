@@ -35,6 +35,8 @@ public:
 
     bool truthy() const override { return !data.empty(); }
 
+    bool isBytesValue() const override { return true; }
+
     // repr: b'...' with printable ASCII verbatim and \xHH / \n \t \r \\ \' for the rest.
     std::string str(StringifyCtx&) const override {
         std::string out = "b'";

@@ -33,8 +33,7 @@ public:
         // Object::equals) can reach interpreter services when the value is a user-class instance
         // (`_hash_`, `_eq_`). The share-nothing rule — one OS thread per VM at a time — makes this
         // safe: the pointer is scoped to whichever VM most recently entered on this thread.
-        _prevActiveVM = _activeVM;
-        _activeVM = this;
+        _activeStack().push_back(this);
         tempRoots_.reserve(1024);  // avoid reallocation churn on the hot RootScope path
         none_ = arena_.alloc(std::make_unique<NoneVal>());
         true_ = arena_.alloc(std::make_unique<BoolVal>(true));
@@ -297,11 +296,17 @@ public:
     // The active VM on the current thread — used by the InstanceValue hash/equals slot so a
     // `_hash_` or `_eq_` method defined on a user class can be invoked from const, no-arena
     // protocol methods that Dict/Set call into. `nullptr` outside any live VM.
-    static KiritoVM* activeVM() { return _activeVM; }
+    static KiritoVM* activeVM() { return _activeStack().empty() ? nullptr : _activeStack().back(); }
 
 private:
-    inline static thread_local KiritoVM* _activeVM = nullptr;
-    KiritoVM* _prevActiveVM = nullptr;
+    // A thread-local stack of the live VMs entered on this thread (most-recent at the back is active).
+    // A plain prev/restore pair dangled on non-LIFO teardown — destroying an outer VM before an inner
+    // one restored `_activeVM` to the already-freed outer (A06-1). The stack tolerates any destruction
+    // order: each dtor removes exactly itself, and activeVM() is always a still-live VM (or null).
+    static std::vector<KiritoVM*>& _activeStack() {
+        static thread_local std::vector<KiritoVM*> s;
+        return s;
+    }
     ObjectArena arena_;
     Handle none_;
     Handle true_;

@@ -3540,9 +3540,10 @@ inline void KiritoVM::retainChunk(std::unique_ptr<ast::Program> chunk) {
 }
 
 inline KiritoVM::~KiritoVM() {
-    // Restore whichever VM was active before this one entered on this thread (nullptr in the
-    // common case of a single top-level VM). Handles nested VM lifetime correctly.
-    if (_activeVM == this) _activeVM = _prevActiveVM;
+    // Remove exactly this VM from the thread's active stack, wherever it sits — so any destruction
+    // order (LIFO or not) leaves activeVM() pointing at a still-live VM or null (A06-1).
+    auto& s = _activeStack();
+    s.erase(std::remove(s.begin(), s.end(), this), s.end());
 }
 
 inline Handle KiritoVM::evalIn(std::string_view source, Handle scope, std::string_view chunkName) {

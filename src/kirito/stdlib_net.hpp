@@ -238,7 +238,13 @@ inline const char* sockOptNames() {
 #endif
         ;
 }
-inline std::string getSockOptNames() { return std::string(sockOptNames()) + ", error, type, acceptconn"; }
+inline std::string getSockOptNames() {
+    // Built with += rather than `std::string(...) + const char*`: the move-operator+ overload trips a
+    // GCC 13 -O2/-O3 -Warray-bounds false positive (char_traits::copy bounds on the SSO buffer).
+    std::string names = sockOptNames();
+    names += ", error, type, acceptconn";
+    return names;
+}
 
 // Extract the raw bytes to transmit from a String or Bytes argument (send/sendto accept either).
 inline std::string payloadBytes(KiritoVM& vm, Handle h, const char* who) {
@@ -348,6 +354,13 @@ inline Url parseUrl(const std::string& url) {
         u.port = static_cast<int>(pn);
     }
     return u;
+}
+// The value for the HTTP `Host:` header: the host re-bracketed if it is an IPv6 literal, plus `:port`
+// whenever the port is not the scheme default (80 http / 443 https) — strict vhost routers need both.
+inline std::string hostHeader(const Url& u) {
+    std::string h = u.host.find(':') != std::string::npos ? "[" + u.host + "]" : u.host;
+    if (u.port != (u.tls ? 443 : 80)) h += ":" + std::to_string(u.port);
+    return h;
 }
 
 // --- URL helpers (urllib.parse style) --------------------------------------------------------
@@ -930,7 +943,7 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     for (int redirect = 0;; ++redirect) {
         net::Url u = net::parseUrl(curUrl);
         std::string target = u.path;
-        std::string req = method + " " + target + " HTTP/1.1\r\nHost: " + u.host + "\r\n";
+        std::string req = method + " " + target + " HTTP/1.1\r\nHost: " + net::hostHeader(u) + "\r\n";
         for (const auto& [k, v] : hdrs)
             if (net::asciiLower(k) != "host" && net::asciiLower(k) != "content-length") req += k + ": " + v + "\r\n";
         // Cookie header from the jar
