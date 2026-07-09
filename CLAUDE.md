@@ -540,9 +540,13 @@ a stability fuzzer, and a benchmark). Working today:
     primitive, cross-VM by identity) plus the coordination primitives `Lock`/`Event`/`Semaphore`/
     `Barrier` (all cross-VM by identity, all with timeouts, all woken by shutdown) and `cpucount`. Only
     the `ki` CLI installs it (every VM is built through a dispatcher via `KiritoDispatcher::configureVM`);
-    a bare embedded `KiritoVM` has no `parallel`. **Deadlock-safe by construction:** every blocking op is
-    a `Waitable` with an `aborted_` flag and `shutdown()` aborts them all before joining threads, so a
-    worker blocked anywhere always unwinds (throwing a catchable "operation aborted"). The `net` module
+    a bare embedded `KiritoVM` has no `parallel`. **Deadlock-safe by construction** for the parallel
+    primitives: every one of them blocks on a `Waitable` with an `aborted_` flag, and `shutdown()` aborts
+    them all before joining threads, so a worker blocked in a `Queue`/`Lock`/`Event`/`Semaphore`/`Barrier`
+    always unwinds (throwing a catchable "operation aborted"). A worker blocked in a *bare* blocking
+    syscall that is NOT a parallel primitive — a socket `recv`/`accept`, `io.input`, `sys.shell` with no
+    timeout — is outside that net and can still hang `shutdown()`'s join; give such calls a timeout
+    (`socket.settimeout`) so they unwind. The `net` module
     gains `socket.detach()` / `net.fromfd(fd)` to hand an accepted connection to a worker VM (same OS
     process). The example servers (`sqldb`, `webserver`) are built on this.
   - **Kirito-authored, frozen-source modules** (registered via `vm.registerSourceModule(name, src)`;

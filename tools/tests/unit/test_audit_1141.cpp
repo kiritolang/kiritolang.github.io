@@ -60,8 +60,10 @@ int main() {
     {
         KiritoVM vm;
         vm.setGcThreshold(1);
-        Handle fnH = vm.runSource("Function(a, b):\n    return a + b");
-        Value f(vm, fnH);
+        // Pin the receiver like a real host would (a bare handle is the host's job to root); the fix
+        // under test is that call() roots the ARG handles it materialises internally.
+        PinnedHandle fn(vm, vm.runSource("Function(a, b):\n    return a + b"));
+        Value f = fn.value();
         Value r = f.call({100000, 200000});               // > small-int intern range, freshly allocated
         CHECK(r.asInt() == 300000);
     }

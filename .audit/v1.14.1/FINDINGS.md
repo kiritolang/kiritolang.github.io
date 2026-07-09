@@ -9,6 +9,43 @@ runtime/collections/numeric) is clean of correctness bugs. The real yield is a *
 native-module setup + the C++ embedding API (confirmed under ASan), plus one parser mis-parse and a
 handful of stdlib edge/hardening fixes.
 
+## RESOLUTION (v1.14.1)
+
+**Fixed + regression-tested** (`tools/tests/unit/test_audit_1141.cpp`, `scripts/spec_audit_1141.ki`,
+`scripts/spec_crypto.ki`):
+- BUILD-1 — GCC-13 `std::string operator+` array-bounds false positive (`net::getSockOptNames`,
+  `test_crypto.cpp`) rewritten with `+=` accumulation. **Release build unblocked.**
+- A06-2 / A04-X1 (HIGH) — `io` setup roots stdout/stderr/stdin across allocs (RootScope).
+- A09-1 — signatured-native defaults rooted across the `NativeFunction` alloc.
+- A09-2 — `Object::isBytesValue()` virtual discriminator (no more typeName() Bytes confusion).
+- A09-3 — `Value::call(initializer_list)` roots its arg handles.
+- A06-1 — active-VM thread-local is now a stack (non-LIFO teardown safe).
+- A02-1 — parser: continuation guards + `parseExpr` stale-flag reset (block-fn no longer glues; elif/
+  case/catch after a block still parse).
+- A13-1/2 — HTTP `Host` header carries a non-default port + brackets IPv6.
+- A13-3 — protocol-relative redirect adopts the base scheme.
+- A13-6 — multipart field-name/filename CRLF-sanitised.
+- A10-1 — non-seekable `read(n)` chunks instead of pre-allocating `n`.
+- A11-1 — tensor data ctor routes through `checkedNumel` (rank cap; comment now true).
+- A12-1 — deflate caps input at 2 GiB (int position overflow guard).
+- A12-2 — AES-GCM requires the full 16-byte tag.
+- A15-1 / A15-2 (docs) — stale f-string-escape claim removed; `asStringRef` in the C++ example.
+
+**Reverted as false positives** (deliberate, pinned Kirito design — added to `.audit/README.md` table):
+- A14-2 — `base64.decode` rejecting whitespace is by-design + pinned in 4 tests.
+- A07-1 — `String.format` allowing mixed auto/manual field numbering is by-design + pinned.
+- A14-1 (retracted), A12-3 (by-design lossy division) — also tabled.
+
+**Deferred (not bugs / out of proportion to risk):**
+- A13-4 — shutdown can hang on a worker blocked in a bare syscall (not a parallel primitive). Rather
+  than reshape the tsan-gated shutdown path, the over-broad "unwinds anywhere" claim in CLAUDE.md was
+  narrowed and the `settimeout` mitigation documented.
+- A01-1 (dead `\r`), A08-1 (dead `ValueKind::Array`), A03-1/2/3, A10-2/3/5, A13-5, A14-3..7 — dead
+  code / cosmetic / documented design; no functional bug.
+- A07-2 — docs already correctly document `\xHH` as a code point (no change).
+
+**Version:** `kVersion` bumped 1.14.0 → 1.14.1.
+
 ## External blocker (from user's full-suite run)
 - **BUILD-1 (release build fails)** — `-Werror=array-bounds` in `char_traits.h:435` (`__builtin_memcpy`
   offset [32,108] out of [0,32] of a `std::string`), 3 occurrences, GCC 13 `-O2`/`_FORTIFY_SOURCE=3`.
