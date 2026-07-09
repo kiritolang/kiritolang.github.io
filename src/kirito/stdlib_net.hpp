@@ -441,20 +441,6 @@ inline std::string resolveUrl(const std::string& base, const std::string& loc) {
     return origin + dir + loc;
 }
 
-inline std::string base64Encode(const std::string& in) {
-    static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    int val = 0, bits = -6;
-    for (unsigned char c : in) {
-        val = (val << 8) + c;
-        bits += 8;
-        while (bits >= 0) { out += T[(val >> bits) & 0x3F]; bits -= 6; }
-    }
-    if (bits > -6) out += T[((val << 8) >> (bits + 8)) & 0x3F];
-    while (out.size() % 4) out += '=';
-    return out;
-}
-
 inline std::string asciiLower(std::string s) {
     for (char& c : s) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     return s;
@@ -905,7 +891,7 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     if (vm.arena().deref(authH).kind() == ValueKind::List) {
         const ListVal& l = static_cast<const ListVal&>(vm.arena().deref(authH));
         if (l.elems.size() == 2 && isStr(l.elems[0]) && isStr(l.elems[1]))
-            setHdr("Authorization", "Basic " + net::base64Encode(asStr(l.elems[0]) + ":" + asStr(l.elems[1])));
+            setHdr("Authorization", "Basic " + base64Encode(asStr(l.elems[0]) + ":" + asStr(l.elems[1])));
     }
     Handle headersH = netOpt(vm, opts, "headers");
     if (vm.arena().deref(headersH).kind() == ValueKind::Dict)

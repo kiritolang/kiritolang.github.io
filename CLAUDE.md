@@ -111,8 +111,9 @@ Kirito should support:
   two's-complement), and float literals allow scientific notation (`1e10`, `1.5e3`, `2e-3`).
   **True division** — `/` always yields `Float`, `//` is
   floor division, `%` modulo, `**` right-assoc exponentiation. Integer arithmetic is fixed-width
-  int64 with **well-defined two's-complement wraparound** on overflow (no UB); arbitrary-precision
-  integers are a future enrichment. **Float `==`/`!=` is EXACT IEEE-754**: `0.1 + 0.2
+  int64 with **well-defined two's-complement wraparound** on overflow (no UB); **arbitrary-precision
+  integers** are delivered as the `int` module's `BigInt` value type (see the stdlib list). **Float
+  `==`/`!=` is EXACT IEEE-754**: `0.1 + 0.2
   == 0.3` is `False`, `NaN != NaN`, `inf == inf`, `0.0 == -0.0` — so equality agrees with `<`/`>`
   (trichotomy) and with hashing (distinct-but-close floats are distinct Set/Dict keys). For
   *approximate* comparison every Integer/Float has **`.compare(other, rel_tol = 1e-9, abs_tol = 0.0)
@@ -322,7 +323,13 @@ a stability fuzzer, and a benchmark). Working today:
     DEFAULT) and `std::mt19937_64` (`generator = "mersenne_twister"`). `.generator` exposes the
     active engine's name; serialize/dump tag the state with the kind so a checkpoint round-trips
     onto the same engine (`choices(population, k=1)` samples WITH replacement into a List; `choice`
-    is its k=1 case unwrapped; `sample` is without replacement).
+    is its k=1 case unwrapped; `sample` is without replacement). Separate from the seedable `Random`
+    object, the module also exposes **OS-CSPRNG secure random** (module-level, unpredictable, for
+    tokens/keys/salts): `token_bytes(n = 32)` → Bytes, `token_hex(n = 32)` / `token_urlsafe(n = 32)`
+    (base64url, unpadded) → String, and `randbelow(n)` → a bias-free Integer in `[0, n)` (rejection
+    sampling). The kernel entropy source (getrandom/getentropy/`/dev/urandom`, BCryptGenRandom on
+    Windows) lives behind `rand_compat.hpp` (mirrors `net_compat.hpp`); a failure throws, never weak
+    bytes.
   - `tensor` — dense **N-dimensional** arrays in C++ (`tensor.hpp`, a generic `Tensor<T>` engine;
     CPU-only, GPU-ready single-buffer design). dtype **Float** (default) or **Complex**
     (the engine is generic in T). `Tensor(nested[, dtype][, requiresgrad])`/`zeros`/`ones`/`full`/`eye`/`arange`;
@@ -482,9 +489,38 @@ a stability fuzzer, and a benchmark). Working today:
     module, distinct from the bare zlib stream. `compress`/`decompress` (aliases `gzip`/`gunzip`) —
     `gzip(1)`-compatible, header flags + CRC-32 verified; String-or-Bytes in, same type out. Pair with
     `net.get(url).content` (raw `Bytes`) to fetch and unpack a `.gz` (`gzip.decompress(resp.content)`).
-  - `hash` — md5/sha1/sha256 hex digests, plus the non-cryptographic checksums adler32/crc32 (Integer)
-    and crc64 (CRC-64/XZ, as a signed Integer). Self-contained, standard-conformant; every function
-    takes a `String` **or** a `Bytes` (so binary data hashes correctly).
+  - `hash` — md5/sha1/sha256/**sha384/sha512** hex digests, **HMAC** (`hmac(key, msg, algo = "sha256")`,
+    RFC 2104), **PBKDF2** (`pbkdf2(password, salt, iterations, dklen = 32, algo = "sha256")` → Bytes,
+    RFC 8018), and constant-time **`compare_digest(a, b)`** (for MAC/digest verification without a
+    timing oracle), plus the non-cryptographic checksums adler32/crc32 (Integer) and crc64 (CRC-64/XZ,
+    as a signed Integer). Self-contained (`hashing.hpp` — a `HashAlgo` descriptor table makes HMAC/
+    PBKDF2 algorithm-generic), standard-conformant; every function takes a `String` **or** a `Bytes`.
+  - `crypto` — **OpenSSL-gated** advanced cryptography (built on OpenSSL, so like the `net` module's
+    HTTPS it needs `-DKIRITO_ENABLE_TLS`; `crypto.enabled` is a Bool and, without OpenSSL, every
+    function throws a clear "requires KIRITO_ENABLE_TLS" error instead of silently no-op'ing).
+    Keys are **PEM strings** (no native key object to leak): **AES-GCM** authenticated encryption
+    (`aes_gcm_encrypt(key, plaintext, nonce, aad = None)` → `{ciphertext, tag}`, `aes_gcm_decrypt(...)`
+    → Bytes; a failed tag throws "authentication failed", never garbage), **RSA**
+    (`rsa_generate(bits = 2048)`, `rsa_sign`/`rsa_verify` [PKCS#1 v1.5], `rsa_encrypt`/`rsa_decrypt`
+    [OAEP-SHA256]), **EC/ECDSA** (`ec_generate(curve = "prime256v1")`, `ec_sign`/`ec_verify`), and
+    **X.509** (`x509_parse(pem)` → `{subject, issuer, serial, not_before, not_after, sans}`). All
+    OpenSSL resources are RAII-owned (unique_ptr + `*_free`); the error queue is cleared on entry.
+    `stdlib_crypto.hpp`. (The self-contained basics — HMAC/SHA-512/PBKDF2/CSPRNG — deliberately stay
+    OUT of this module, in `hash`/`random`, so a no-OpenSSL build still has them.)
+  - `int` — **arbitrary-precision integers**: a pure-C++ `BigInt` value type (sign + little-endian
+    base-2^32 magnitude; schoolbook add/sub/mul, long division with **floor** `//`/`%` matching native
+    Integer, fast exponentiation + modpow — no GMP dependency, `stdlib_int.hpp`) plus the integer math
+    set carried the way `complex` carries its analytic set: `BigInt(x)`/`big(x)`/`from_string(s,
+    base = 10)`, `gcd`/`lcm`/`factorial`/`comb`/`perm`/`isqrt`/`abs`/`pow`/`modpow`/`modinv`, and
+    **primality** — deterministic `is_prime(n)` (the naive O(√n) trial division, a tight native uint64
+    loop for values that fit, BigInt fallback beyond) alongside probabilistic `is_probable_prime(n,
+    rounds = 25)` (Miller-Rabin over the OS CSPRNG) and `random_prime(bits, rounds = 25)`. BigInt
+    follows the language's **reflected-operator rule** — arithmetic dispatches on the LEFT operand, so
+    `BigInt(2)+3` works while `3+BigInt(2)` throws; only `==`/`!=` are symmetric — its **`/` yields a
+    Float** (the language-wide true-division rule, lossy beyond double range exactly as Integer/Integer
+    is), it hashes equal to an equal native Integer (shared Dict/Set bucket), and it serializes
+    (serialize/dump) as its decimal String. BigInt methods: `modpow`/`is_prime`/`is_probable_prime`/
+    `bit_length`/`to_int`. A `kMaxLimbs` guard makes a runaway mul/pow/factorial throw, not OOM.
   - `regex` — a from-scratch, **linear-time** regular-expression library (`regex_engine.hpp`: a
     recursive-descent parser → bytecode compiler → Thompson-NFA Pike VM with capture tracking; NO
     `std::regex`, NO backtracking, so `(a+)+b`-style patterns can't blow up). A high-level API:
@@ -651,8 +687,9 @@ renders Markdown indented code fences, multi-line list items, and strips `<!--co
 Documentation is authored in those `.md` files, NOT scraped from code comments.
 
 Not yet done (future enrichment): comprehensions, variadic params,
-generators, arbitrary-precision integers, full-Unicode case folding (current `upper`/`lower` cover
-ASCII + Latin-1 + Latin Extended-A). The **bytecode compiler + stack VM** is done and is the **sole
+generators, full-Unicode case folding (current `upper`/`lower` cover
+ASCII + Latin-1 + Latin Extended-A). (Arbitrary-precision integers ARE done — the `int` module's
+`BigInt`.) The **bytecode compiler + stack VM** is done and is the **sole
 engine** — the tree-walker is gone (`bytecode.hpp` / `compiler.hpp` / `bytecode_vm.hpp`; the
 `Compiler` is a second AST visitor that lowers each body to a `Proto`, executed by the `BytecodeVM`
 with an explicit GC-rooted operand stack instead of native recursion; operator/call/member semantics

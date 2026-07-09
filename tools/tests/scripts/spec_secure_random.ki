@@ -1,0 +1,73 @@
+# OS-CSPRNG secure random: random.token_bytes / token_hex / token_urlsafe / randbelow. The kernel
+# entropy source is non-deterministic, so these assert PROPERTIES (lengths, alphabets, range,
+# coverage, distinctness) rather than fixed values. Runs under every preset (no OpenSSL needed).
+var random = import("random")
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+# --- token_bytes ---
+assert type(random.token_bytes()) == "Bytes", "token_bytes is Bytes"
+assert len(random.token_bytes()) == 32, "token_bytes default 32"
+assert len(random.token_bytes(16)) == 16, "token_bytes(16)"
+assert len(random.token_bytes(0)) == 0, "token_bytes(0)"
+assert len(random.token_bytes(n = 48)) == 48, "token_bytes kwarg"
+# two draws differ (a stuck source would fail)
+assert random.token_bytes(32) != random.token_bytes(32), "token_bytes are random"
+# every byte is a valid 0..255 Integer
+for b in random.token_bytes(64):
+    assert b >= 0 and b <= 255, "token byte in range"
+
+# --- token_hex: 2n lowercase hex chars ---
+assert len(random.token_hex()) == 64, "token_hex default"
+assert len(random.token_hex(20)) == 40, "token_hex(20)"
+var hexchars = "0123456789abcdef"
+for ch in random.token_hex(32):
+    assert ch in hexchars, "token_hex is lowercase hex"
+
+# --- token_urlsafe: base64url alphabet, no padding ---
+var urlok = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+var u = random.token_urlsafe(48)
+assert len(u) > 0, "token_urlsafe non-empty"
+assert "=" not in u, "token_urlsafe unpadded"
+assert "+" not in u and "/" not in u, "token_urlsafe is url-safe"
+for ch in u:
+    assert ch in urlok, "token_urlsafe alphabet"
+
+# --- randbelow: range + coverage + edge ---
+assert random.randbelow(1) == 0, "randbelow(1) is 0"
+var counts = {}
+for i in range(8):
+    counts[i] = 0
+for i in range(8000):
+    var v = random.randbelow(8)
+    assert v >= 0 and v < 8, "randbelow in range"
+    counts[v] = counts[v] + 1
+for i in range(8):
+    assert counts[i] > 0, "randbelow covers every value"
+# a large modulus stays in range (exercises the 64-bit rejection loop)
+for i in range(500):
+    var w = random.randbelow(1000000007)
+    assert w >= 0 and w < 1000000007, "randbelow large modulus in range"
+
+# --- distinctness over many tokens ---
+var seen = {}
+for i in range(2000):
+    var t = random.token_hex(16)
+    assert t not in seen, "token_hex tokens are distinct"
+    seen[t] = True
+
+# --- adversarial / bad input ---
+assert raises(Function(): return random.token_bytes(-1)), "token_bytes(-1) throws"
+assert raises(Function(): return random.token_hex(-5)), "token_hex(-5) throws"
+assert raises(Function(): return random.token_urlsafe(-1)), "token_urlsafe(-1) throws"
+assert raises(Function(): return random.token_bytes(999999999999)), "token_bytes huge throws"
+assert raises(Function(): return random.randbelow(0)), "randbelow(0) throws"
+assert raises(Function(): return random.randbelow(-10)), "randbelow negative throws"
+
+io.print("OK secure_random")

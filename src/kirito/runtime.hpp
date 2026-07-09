@@ -37,6 +37,8 @@
 #include "stdlib_dump.hpp"
 #include "stdlib_zlib.hpp"
 #include "stdlib_hash.hpp"
+#include "stdlib_crypto.hpp"
+#include "stdlib_int.hpp"
 #include "stdlib_regex.hpp"
 #include "stdlib_kimodules.hpp"
 #include "vm.hpp"
@@ -3509,6 +3511,8 @@ inline void KiritoVM::installStandardLibrary() {
     install<ZlibModule>();
     install<GzipModule>();
     install<HashModule>();
+    install<CryptoModule>();
+    install<IntModule>();
     install<RegexModule>();
 
     // Modules authored in Kirito and frozen into the binary (see stdlib_kimodules.hpp).

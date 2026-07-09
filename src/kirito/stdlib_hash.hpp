@@ -44,6 +44,57 @@ public:
         digest("md5", hashing::md5);
         digest("sha1", hashing::sha1);
         digest("sha256", hashing::sha256);
+        digest("sha384", hashing::sha384);
+        digest("sha512", hashing::sha512);
+        // hmac(key, msg, algo="sha256") -> lowercase hex HMAC (RFC 2104). key/msg are String-or-Bytes;
+        // algo is one of md5/sha1/sha256/sha384/sha512 (an unknown name throws, listing the valid set).
+        m.fn("hmac", {{"key"}, {"msg"}, {"algo", "String", m.vm().makeString("sha256")}}, "String",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            Args args(vm, a, "hmac");
+            const std::string& key = argStringOrBytes(vm, args[0].handle(), "hmac key");
+            const std::string& msg = argStringOrBytes(vm, args[1].handle(), "hmac msg");
+            std::string algoName = args[2].asStringRef("hmac algo");
+            const hashing::HashAlgo* algo = hashing::findAlgo(algoName);
+            if (!algo) throw KiritoError("hmac: unknown algorithm '" + algoName + "' (use md5/sha1/sha256/sha384/sha512)");
+            return Value(vm, hashing::toHex(hashing::hmacRaw(*algo, key, msg)));
+        });
+        // pbkdf2(password, salt, iterations, dklen=32, algo="sha256") -> derived key as Bytes
+        // (PBKDF2-HMAC, RFC 8018). password/salt are String-or-Bytes.
+        m.fn("pbkdf2", {{"password"}, {"salt"}, {"iterations", "Integer"},
+                        {"dklen", "Integer", m.vm().makeInt(32)}, {"algo", "String", m.vm().makeString("sha256")}}, "Bytes",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            Args args(vm, a, "pbkdf2");
+            const std::string& pw = argStringOrBytes(vm, args[0].handle(), "pbkdf2 password");
+            const std::string& salt = argStringOrBytes(vm, args[1].handle(), "pbkdf2 salt");
+            int64_t iters = args[2].asInt("pbkdf2 iterations");
+            int64_t dklen = args[3].asInt("pbkdf2 dklen");
+            std::string algoName = args[4].asStringRef("pbkdf2 algo");
+            const hashing::HashAlgo* algo = hashing::findAlgo(algoName);
+            if (!algo) throw KiritoError("pbkdf2: unknown algorithm '" + algoName + "' (use md5/sha1/sha256/sha384/sha512)");
+            if (iters < 1) throw KiritoError("pbkdf2: iterations must be >= 1");
+            if (dklen < 1) throw KiritoError("pbkdf2: dklen must be >= 1");
+            if (dklen > 1024 * 1024) throw KiritoError("pbkdf2: dklen too large (max 1048576)");
+            return Bytes(vm, hashing::pbkdf2Raw(*algo, pw, salt,
+                                                static_cast<uint32_t>(iters), static_cast<std::size_t>(dklen)));
+        });
+        // compare_digest(a, b) -> Bool: constant-time equality for MACs/digests. Both String-or-Bytes.
+        // The equal-length path folds every byte with no early exit (so timing can't localise the first
+        // differing byte); a length mismatch returns False (Python's hmac.compare_digest leaks length too).
+        m.fn("compare_digest", {{"a"}, {"b"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            Args args(vm, a, "compare_digest");
+            const std::string& x = argStringOrBytes(vm, args[0].handle(), "compare_digest a");
+            const std::string& y = argStringOrBytes(vm, args[1].handle(), "compare_digest b");
+            if (x.size() != y.size()) {
+                volatile unsigned char sink = 0;
+                for (std::size_t i = 0; i < x.size(); ++i) sink = static_cast<unsigned char>(sink | static_cast<unsigned char>(x[i]));
+                (void)sink;
+                return vm.makeBool(false);
+            }
+            volatile unsigned char acc = 0;
+            for (std::size_t i = 0; i < x.size(); ++i)
+                acc = static_cast<unsigned char>(acc | static_cast<unsigned char>(x[i] ^ y[i]));
+            return vm.makeBool(acc == 0);
+        });
         // 32-bit checksums (returned as a non-negative Integer).
         auto checksum32 = [&](const char* name, uint32_t (*fn)(const std::string&)) {
             m.fn(name, {{"data"}}, "Integer", [fn, name](KiritoVM& vm, std::span<const Handle> a) -> Handle {

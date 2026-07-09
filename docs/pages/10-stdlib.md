@@ -313,6 +313,57 @@ var csv = gzip.decompress(resp.content).decode("utf-8")   # raw bytes -> text
 
 ---
 
+## crypto
+
+Advanced cryptography — AES-GCM authenticated encryption, RSA/EC signatures and RSA encryption, and
+X.509 certificate parsing. Built on **OpenSSL**, so it is available only when Kirito is compiled with
+`-DKIRITO_ENABLE_TLS` (the `debug`/`release` presets enable it), exactly like the [`net`](#net)
+module's HTTPS. The self-contained basics — HMAC, SHA-512, PBKDF2, secure random — live in
+[`hash`](#hash) and [`random`](#random) instead, so they work in every build.
+
+- `enabled → Bool` — whether this build has OpenSSL. When `False`, every function below throws a clear
+  "requires KIRITO_ENABLE_TLS" error rather than silently doing nothing — branch on it like
+  `net.tlsenabled`.
+
+Keys are **PEM strings** (portable, serializable, printable). Byte arguments accept a String or Bytes;
+byte results are Bytes.
+
+- `aes_gcm_encrypt(key, plaintext, nonce, aad = None) → Dict` — AES-GCM authenticated encryption.
+  `key` is 16/24/32 bytes (AES-128/192/256); `nonce` is a unique per-message value (12 bytes is
+  standard — **never reuse a nonce with the same key**); optional `aad` is authenticated but not
+  encrypted. Returns `{ciphertext: Bytes, tag: Bytes}`.
+- `aes_gcm_decrypt(key, ciphertext, nonce, tag, aad = None) → Bytes` — decrypt and verify. Throws
+  `authentication failed` if the key/nonce/tag/aad don't match (tampered or wrong) — it never returns
+  unauthenticated plaintext.
+- `rsa_generate(bits = 2048) → Dict` — a new RSA keypair as `{private: String, public: String}` (PEM).
+- `rsa_sign(private_pem, message, algo = "sha256") → Bytes` / `rsa_verify(public_pem, message,
+  signature, algo = "sha256") → Bool` — PKCS#1 v1.5 signatures.
+- `rsa_encrypt(public_pem, data) → Bytes` / `rsa_decrypt(private_pem, data) → Bytes` — RSA-OAEP
+  (SHA-256). Encrypts a short payload directly (for bulk data, encrypt with AES-GCM and wrap the AES
+  key with RSA).
+- `ec_generate(curve = "prime256v1") → Dict` — an EC keypair (PEM); other curves e.g. `secp384r1`,
+  `secp521r1`.
+- `ec_sign(private_pem, message, algo = "sha256") → Bytes` / `ec_verify(public_pem, message,
+  signature, algo = "sha256") → Bool` — ECDSA signatures.
+- `x509_parse(pem) → Dict` — parse a certificate to
+  `{subject, issuer, serial, not_before, not_after, sans}` (`sans` is a List of DNS names).
+
+<!--norun (requires an HTTPS/TLS build for OpenSSL)-->
+```kirito
+var crypto = import("crypto")
+if crypto.enabled:
+    var key = import("random").token_bytes(32)      # AES-256 key
+    var nonce = import("random").token_bytes(12)
+    var sealed = crypto.aes_gcm_encrypt(key, "secret", nonce)
+    var plain = crypto.aes_gcm_decrypt(key, sealed["ciphertext"], nonce, sealed["tag"])
+    # sign & verify
+    var k = crypto.rsa_generate(2048)
+    var sig = crypto.rsa_sign(k["private"], "message")
+    assert crypto.rsa_verify(k["public"], "message", sig)
+```
+
+---
+
 ## hash
 
 Digests and checksums of byte data, plus a generic hasher for `Dict`/`Set`-compatible values. The
@@ -322,6 +373,19 @@ correctly; `hash(value)` accepts any hashable value.
 - `md5(data) → String` — MD5 lowercase-hex digest.
 - `sha1(data) → String` — SHA-1 lowercase-hex digest.
 - `sha256(data) → String` — SHA-256 lowercase-hex digest.
+- `sha384(data) → String` — SHA-384 lowercase-hex digest.
+- `sha512(data) → String` — SHA-512 lowercase-hex digest.
+- `hmac(key, msg, algo = "sha256") → String` — the keyed-hash message authentication code (HMAC,
+  RFC 2104), lowercase hex. `key` and `msg` are each a String or Bytes; `algo` is one of
+  `md5`/`sha1`/`sha256`/`sha384`/`sha512` (an unknown name throws). Use it to authenticate a message
+  with a shared secret.
+- `pbkdf2(password, salt, iterations, dklen = 32, algo = "sha256") → Bytes` — derive a key from a
+  password (PBKDF2-HMAC, RFC 8018). `password`/`salt` are String or Bytes; `iterations` ≥ 1 (higher is
+  slower to brute-force); `dklen` is the output length in bytes (1…1048576). Returns Bytes — call
+  `.hex()` for a hex string. This is the right primitive for password storage / key stretching.
+- `compare_digest(a, b) → Bool` — constant-time equality for MACs and digests: the comparison time
+  does not depend on where the first differing byte is, so it can't leak a secret via timing. `a`/`b`
+  are both String or both Bytes. Use it (not `==`) to verify an HMAC or a stored digest.
 - `adler32(data) → Integer` — Adler-32 checksum (as zlib uses).
 - `crc32(data) → Integer` — CRC-32 (IEEE) checksum (as gzip/PNG use).
 - `crc64(data) → Integer` — CRC-64/XZ checksum, returned as a signed Integer (the top bit makes large
@@ -346,6 +410,53 @@ A min-heap maintained inside an ordinary List.
 - `merge(lists) → List` — merge already-sorted inputs (a List of Lists) into one sorted List.
 - `nlargest(n, items) → List` — the `n` largest elements.
 - `nsmallest(n, items) → List` — the `n` smallest elements.
+
+---
+
+## int
+
+Arbitrary-precision integers — a `BigInt` value type that grows past the native `Integer`'s 64-bit
+range, plus the integer-meaningful math functions and primality testing. Pure C++ (no external
+dependency).
+
+`BigInt` follows the language's conventions: arithmetic dispatches on the **left** operand (so
+`BigInt(2) + 3` works but `3 + BigInt(2)` throws — put the BigInt first, or wrap the other side with
+`int.big(x)`), only `==`/`!=` are symmetric across types, and `/` is **true division** yielding a
+`Float` (use `//` for a BigInt floor-quotient). A BigInt hashes equal to an equal native `Integer`, so
+they interchange as `Dict`/`Set` keys, and it serializes through `serialize`/`dump`.
+
+- `BigInt(value) → BigInt` / `big(value) → BigInt` — from an Integer, a String (decimal, or `0x`/`0o`/
+  `0b`-prefixed), or another BigInt.
+- `from_string(s, base = 10) → BigInt` — parse in an explicit base 2…36.
+- `gcd(a, b) → BigInt`, `lcm(a, b) → BigInt` — greatest common divisor / least common multiple.
+- `factorial(n) → BigInt`, `comb(n, k) → BigInt`, `perm(n, k) → BigInt` — exact (unbounded) analogues
+  of the `math` builtins, which stay int64 and throw on overflow.
+- `isqrt(n) → BigInt` — integer square root (floor of √n).
+- `abs(n) → BigInt`.
+- `pow(base, exp) → BigInt` — exact integer power (`exp` ≥ 0).
+- `modpow(base, exp, mod) → BigInt` — modular exponentiation `base**exp % mod` (efficient; `exp` ≥ 0).
+- `modinv(a, m) → BigInt` — modular inverse of `a` mod `m` (throws if `a` and `m` aren't coprime).
+- `is_prime(n) → Bool` — **deterministic** primality by trial division (O(√n); a tight native loop for
+  values that fit int64, exact but slow for very large `n`).
+- `is_probable_prime(n, rounds = 25) → Bool` — **probabilistic** primality (Miller-Rabin with random
+  bases from the OS CSPRNG); fast even for very large `n`, with a false-positive probability below
+  `4^-rounds`.
+- `random_prime(bits, rounds = 25) → BigInt` — a random prime of exactly `bits` bits.
+- `zero`, `one` — BigInt constants.
+
+`BigInt` methods: `n.modpow(exponent, modulus)`, `n.is_prime()`, `n.is_probable_prime(rounds = 25)`,
+`n.bit_length() → Integer`, `n.to_int() → Integer` (throws if it doesn't fit a native Integer).
+
+```kirito
+var int = import("int")
+assert String(int.factorial(30)) == "265252859812191058636308480000000"
+assert int.pow(2, 128) == int.from_string("340282366920938463463374607431768211456")
+assert int.BigInt(10) / int.BigInt(4) == 2.5           # true division -> Float
+assert int.BigInt(10) // int.BigInt(4) == int.BigInt(2)  # floor division -> BigInt
+assert int.gcd(int.factorial(20), int.factorial(15)) == int.factorial(15)
+assert int.is_prime(97) and not int.is_prime(561)      # 561 is a Carmichael number
+assert int.BigInt(4).modpow(13, 497) == 445
+```
 
 ---
 
@@ -955,6 +1066,27 @@ Object-based RNG — no global state; create a generator and call methods on it.
   arguments default (`mu = 0.0`, `sigma = 1.0`) and take keywords, so `r.gauss(sigma = 2.0)` works; a
   negative `sigma` throws.
 - `r.expovariate(lambd) → Float` — exponential distribution.
+
+### Secure random (OS CSPRNG)
+
+Module-level functions that draw from the operating system's cryptographic RNG (getrandom /
+BCryptGenRandom / `/dev/urandom`). Unlike a seeded `Random`, these are **unpredictable** — use them
+for tokens, keys, salts and nonces, not a seeded generator's stream.
+
+- `token_bytes(n = 32) → Bytes` — `n` cryptographically secure random bytes.
+- `token_hex(n = 32) → String` — `n` random bytes as `2n` lowercase hex chars.
+- `token_urlsafe(n = 32) → String` — `n` random bytes as URL-safe base64 (alphabet `A–Za–z0–9-_`,
+  no padding) — a compact, URL-safe token.
+- `randbelow(n) → Integer` — a uniform, **bias-free** integer in `[0, n)` (rejection sampling), for a
+  secure random index or dice roll (`n` must be positive).
+
+```kirito
+var random = import("random")
+var session = random.token_hex(16)         # a 32-char hex session id
+assert len(session) == 32
+var pick = random.randbelow(6)             # a fair die: 0..5
+assert pick >= 0 and pick < 6
+```
 
 ---
 

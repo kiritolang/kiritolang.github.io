@@ -351,6 +351,23 @@ inline Handle makeStringOrBytes(KiritoVM& vm, Handle templateInput, std::string 
     return vm.makeString(std::move(out));
 }
 
+// Base64 (RFC 4648). urlSafe swaps the `+/` alphabet for `-_` (§5); pad toggles the trailing `=`.
+// One source of truth for the codec — HTTP Basic auth (net) and random.token_urlsafe both call it.
+inline std::string base64Encode(const std::string& in, bool urlSafe = false, bool pad = true) {
+    const char* T = urlSafe ? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                            : "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    int val = 0, bits = -6;
+    for (unsigned char c : in) {
+        val = (val << 8) + c;
+        bits += 8;
+        while (bits >= 0) { out += T[(val >> bits) & 0x3F]; bits -= 6; }
+    }
+    if (bits > -6) out += T[((val << 8) >> (bits + 8)) & 0x3F];
+    if (pad) while (out.size() % 4) out += '=';
+    return out;
+}
+
 #if defined(__GNUC__)
 #  pragma GCC diagnostic pop
 #endif

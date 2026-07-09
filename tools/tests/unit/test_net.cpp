@@ -246,7 +246,7 @@ int main() {
         CHECK(r.status == 200);
         server.join();
         CHECK(req.rfind("PUT /x?a=1 ", 0) == 0);
-        CHECK(req.find("Authorization: Basic " + net::base64Encode("user:pass")) != std::string::npos);
+        CHECK(req.find("Authorization: Basic " + base64Encode("user:pass")) != std::string::npos);
         CHECK(req.find("X-Foo: bar") != std::string::npos);
     }
     for (const char* verb : {"post", "delete", "patch", "head", "options"}) {
