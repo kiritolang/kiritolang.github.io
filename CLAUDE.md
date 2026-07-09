@@ -514,7 +514,9 @@ a stability fuzzer, and a benchmark). Working today:
     base = 10)`, `gcd`/`lcm`/`factorial`/`comb`/`perm`/`isqrt`/`abs`/`pow`/`modpow`/`modinv`, and
     **primality** — deterministic `is_prime(n)` (the naive O(√n) trial division, a tight native uint64
     loop for values that fit, BigInt fallback beyond) alongside probabilistic `is_probable_prime(n,
-    rounds = 25)` (Miller-Rabin over the OS CSPRNG) and `random_prime(bits, rounds = 25)`. BigInt
+    rounds = 25)` (Miller-Rabin over the OS CSPRNG) and `random_prime(bits, rounds = 25)` — both
+    **throw** if the OS entropy source is unavailable rather than fall back to a predictable base/prime
+    (the deterministic `is_prime` needs no randomness and still works). BigInt
     follows the language's **reflected-operator rule** — arithmetic dispatches on the LEFT operand, so
     `BigInt(2)+3` works while `3+BigInt(2)` throws; only `==`/`!=` are symmetric — its **`/` yields a
     Float** (the language-wide true-division rule, lossy beyond double range exactly as Integer/Integer

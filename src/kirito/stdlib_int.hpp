@@ -413,11 +413,15 @@ inline Big comb(int64_t n, int64_t k) {
 }
 
 // ---- randomness (OS CSPRNG) for primality ----
+// Throws if the OS entropy source is unavailable rather than proceeding with an unfilled buffer —
+// a predictable "random" prime or a fixed Miller-Rabin base would silently defeat both callers, so
+// they fail loudly instead. (The deterministic is_prime needs no randomness and still works.)
 inline Big randomBits(int bits) {
     if (bits <= 0) return Big{};
     std::size_t limbs = (static_cast<std::size_t>(bits) + 31) / 32;
     Big n; n.mag.assign(limbs, 0);
-    randcompat::fillRandom(n.mag.data(), limbs * 4);
+    if (!randcompat::fillRandom(n.mag.data(), limbs * 4))
+        throw KiritoError("int: OS secure random source unavailable (needed for primality/random_prime)");
     int top = bits & 31;
     if (top != 0) n.mag[limbs - 1] &= ((1u << top) - 1);
     n.trim();

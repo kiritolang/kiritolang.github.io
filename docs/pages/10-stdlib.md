@@ -444,6 +444,11 @@ they interchange as `Dict`/`Set` keys, and it serializes through `serialize`/`du
 - `random_prime(bits, rounds = 25) → BigInt` — a random prime of exactly `bits` bits.
 - `zero`, `one` — BigInt constants.
 
+`is_probable_prime` and `random_prime` draw from the OS cryptographic RNG (see
+[secure random](#random)); if it is unavailable they **throw** rather than fall back to predictable
+values — a fixed Miller-Rabin base or a guessable prime would silently defeat them. The deterministic
+`is_prime` uses no randomness and always works.
+
 `BigInt` methods: `n.modpow(exponent, modulus)`, `n.is_prime()`, `n.is_probable_prime(rounds = 25)`,
 `n.bit_length() → Integer`, `n.to_int() → Integer` (throws if it doesn't fit a native Integer).
 
