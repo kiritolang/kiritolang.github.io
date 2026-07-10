@@ -70,12 +70,23 @@ else:
     assert crypto.rsadecrypt(rk["private"], ct).decode() == "confidential", "rsa oaep round-trip"
     # different algos
     assert crypto.rsaverify(rk["public"], "m", crypto.rsasign(rk["private"], "m", "sha512"), "sha512") == True, "rsa sha512"
+    # Bytes messages/payloads work byte-exact, not just Strings (binary with NUL / high bytes / CR-LF)
+    var binmsg = Bytes([0, 255, 10, 13, 200, 1, 128])
+    var bsig = crypto.rsasign(rk["private"], binmsg)
+    assert crypto.rsaverify(rk["public"], binmsg, bsig) == True, "rsa verify Bytes message"
+    assert crypto.rsaverify(rk["public"], Bytes([0, 255, 10, 13, 200, 1, 129]), bsig) == False, "rsa Bytes tampered"
+    var bct = crypto.rsaencrypt(rk["public"], binmsg)
+    assert crypto.rsadecrypt(rk["private"], bct) == binmsg, "rsa oaep Bytes round-trip"
 
     # --- EC sign/verify ---
     var ek = crypto.ecgenerate()
     var esig = crypto.ecsign(ek["private"], "ec message")
     assert crypto.ecverify(ek["public"], "ec message", esig) == True, "ec verify ok"
     assert crypto.ecverify(ek["public"], "ec messagE", esig) == False, "ec verify tampered"
+    # a Bytes message signs/verifies byte-exact too
+    var becsig = crypto.ecsign(ek["private"], binmsg)
+    assert crypto.ecverify(ek["public"], binmsg, becsig) == True, "ec verify Bytes message"
+    assert crypto.ecverify(ek["public"], Bytes([1, 255, 10, 13, 200, 1, 128]), becsig) == False, "ec Bytes tampered"
 
     # --- X.509 parse (self-signed cert, CN=kirito.test, SAN kirito.test + www.kirito.test) ---
     var pem = """-----BEGIN CERTIFICATE-----
