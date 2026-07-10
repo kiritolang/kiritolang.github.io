@@ -534,6 +534,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 |---|---|---|
 | `could not resolve host '<host>'` / `could not connect to <host>: <reason>` | DNS/connect failed during the exchange | Check the host/reachability |
 | `header contains a control character (CR/LF): '<k>'` / `cookie contains a control character (CR/LF): '<name>'` | A request header/cookie name or value with an embedded CR or LF (a header/response-splitting injection guard) | Strip CR/LF from user-supplied header/cookie data |
+| `multipart field name must not contain CR or LF` / `multipart filename must not contain CR or LF` | A `files=` field name or filename with an embedded CR/LF (a multipart header-injection guard) | Strip CR/LF from the field name/filename |
 | `invalid gzip data` / `truncated gzip data` | The server's gzip body is bad/short | Server bug — retry / disable gzip |
 | `<method>() expected at least <n> argument(s)` | Too few args to `get`/`post`/`request`/… | Pass the required args |
 | `HTTP <status> <reason> for <url>` | `raiseforstatus()` on a ≥400 response | Handle the status yourself |
@@ -573,6 +574,9 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `seed expects a value` | `Random.seed()` called with no argument | Pass a seed value |
 | `Random _setstate_: <malformed engine state / unknown generator '<kind>'>` | Deserializing a corrupt/foreign Random blob | Deserialize only trusted `dump`/`serialize` output |
 | `choice`/`choices`/`sample` `expects a(n) (iterable) sequence/population` | A non-iterable population to `choice`/`choices`/`sample` | Pass a sequence/iterable population |
+| `randombytes: count must be non-negative` / `randombytes: count too large` (also `randomhex`/`randomurlsafe`) | A negative or over-cap `n` to a secure-random helper | Pass `0 ≤ n ≤` cap |
+| `randombelow: n must be positive` | `randombelow(n)` with `n ≤ 0` | Pass `n ≥ 1` |
+| `randombytes: OS secure random source unavailable` / `randombelow: OS secure random source unavailable` | The kernel CSPRNG (getrandom / `/dev/urandom` / BCrypt) failed — no weak fallback is ever used | Fix the OS entropy source |
 
 ### math — domain & Integer requirements
 
@@ -725,6 +729,7 @@ Both throw **DeflateError** internally, re-wrapped with a `zlib:` / `gzip:` pref
 | `zlib: invalid stored block lengths` / `invalid repeat` | A corrupt DEFLATE stored-block header / code-length repeat | Data is corrupt — re-fetch |
 | `zlib: invalid zlib window size` / `zlib preset dictionary is not supported` / `invalid zlib header check` | A malformed or unsupported zlib header (bad window/CMF-FLG check, preset dictionary) | Provide a standard zlib stream |
 | `zlib: decompressed data exceeds the size limit` | Inflate output passed the 256 MiB guard (zip bomb) | Don't decompress the hostile stream |
+| `zlib: deflate: input too large (max 2 GiB)` / `gzip: deflate: input too large (max 2 GiB)` | Compressing an input larger than 2 GiB (the LZ77 hash-chain index is 32-bit) | Compress ≤ 2 GiB, or split the input |
 | `gzip: stream too short` / `bad magic (not a gzip stream)` / `unsupported compression method` | Not a valid gzip stream | Provide a real `.gz` stream |
 | `gzip: truncated FEXTRA/header/stream` / `CRC-32 mismatch …` / `ISIZE mismatch …` | Corrupt/truncated gzip member | Data is corrupt/truncated |
 | `gzip: trailing data after the last member` / `trailing data is not a valid gzip member` | Leftover bytes after the stream | Strip the trailing junk |
@@ -735,6 +740,44 @@ Both throw **DeflateError** internally, re-wrapped with a `zlib:` / `gzip:` pref
 |---|---|---|
 | `unhashable type '<T>'` | `hash(x)` on a value with no hash (a List, or an instance lacking `_hash_`) | Pass a hashable value |
 | `<fn> expects a String or Bytes` | A `hash`/`zlib`/`gzip` function given something other than a `String` or `Bytes` | Pass text or binary data |
+| `hmac: unknown algorithm '<algo>'` | A bad `algo=` to `hmac` | Use `"sha256"`/`"sha512"`/… |
+| `pbkdf2: iterations must be >= 1` / `dklen must be >= 1` / `dklen too large (max 1048576)` / `unknown algorithm '<algo>'` | A bad PBKDF2 parameter | Positive iterations, 1 ≤ dklen ≤ 1 MiB, a known algo |
+
+### crypto (`KIRITO_ENABLE_TLS`)
+
+OpenSSL-gated. On a non-TLS build every function throws the first row below; branch on `crypto.enabled`.
+
+| Message | Cause | Fix |
+|---|---|---|
+| `crypto.<fn> requires building with KIRITO_ENABLE_TLS (OpenSSL)` | Any `crypto` function on a non-TLS build (`crypto.enabled` is `False`) | Rebuild with `-DKIRITO_ENABLE_TLS`, or branch on `crypto.enabled` |
+| `aes: key must be 16, 24 or 32 bytes (AES-128/192/256)` | A wrong-length AES key | Use a 16/24/32-byte key |
+| `aesencrypt: iv must be non-empty` / `aesdecrypt: iv must be non-empty` | An empty IV | Pass a unique per-message IV (12 bytes standard) |
+| `aesdecrypt: tag must be 16 bytes` | A truncated/oversized GCM tag | Pass the full 16-byte tag `aesencrypt` returned |
+| `aesdecrypt: authentication failed (wrong key/iv/tag or tampered data)` | The GCM tag didn't verify — wrong key/iv/aad or tampered ciphertext | Never trust the output; discard it |
+| `rsagenerate: bits must be in [512, 16384]` | An out-of-range RSA key size | Use e.g. 2048/3072/4096 |
+| `crypto: unknown hash '<algo>'` | A bad `algo=` to `rsasign`/`rsaverify`/`ecsign`/`ecverify` | Use `"sha256"`/`"sha384"`/`"sha512"` |
+| an OpenSSL error string | A malformed PEM key, unknown curve, or unparseable certificate to `rsa*`/`ec*`/`x509parse` | Pass a valid PEM key / curve name / certificate |
+
+### int — arbitrary-precision integers
+
+`BigInt` errors `throw` a plain-String message (catch with a bare `catch` or `catch String as e`).
+
+| Message | Cause | Fix |
+|---|---|---|
+| `int: base must be between 2 and 36` / `fromstring: base must be between 2 and 36` | A radix outside 2..36 | Use base 2–36 |
+| `int: invalid integer literal '<s>'` | Non-numeric text (for the chosen base) to `BigInt`/`fromstring` | Pass valid digits |
+| `BigInt expects an Integer, a String, or a BigInt` | `BigInt(x)` on an unsupported type | Pass an Integer/String/BigInt |
+| `int: number too large (exceeds size limit)` / `int: pow result too large …` / `int.pow: exponent too large` / `pow: exponent too large` | A BigInt op would exceed the `kMaxLimbs` guard (runaway mul/pow/factorial) | Reduce the magnitude/exponent |
+| `int.pow: negative exponent (use ** for a Float, or modpow for modular)` | A negative exponent to `int.pow` | Use `**` (Float) or `modpow` |
+| `integer division by zero` / `integer modulo by zero` / `division by zero` | `//` / `%` / `/` a BigInt by zero | Guard the divisor |
+| `modpow: modulus is zero` / `modpow: negative exponent` | Bad `modpow` args | Positive modulus, non-negative exponent |
+| `modinv: modulus must be >= 2` / `modinv: arguments are not coprime (no inverse exists)` | No modular inverse exists | Coprime operands, modulus ≥ 2 |
+| `isqrt: negative operand` | `isqrt` of a negative | Pass n ≥ 0 |
+| `factorial: not defined for negatives` / `comb: requires non-negative integers` / `perm: requires non-negative integers` | A negative to `factorial`/`comb`/`perm` | Pass non-negative integers |
+| `int: OS secure random source unavailable (needed for primality/randomprime)` | `isprobableprime`/`randomprime` when the OS CSPRNG failed (deterministic `isprime` on small n still works) | Fix the OS entropy source |
+| `isprobableprime: rounds must be >= 1` / `randomprime: rounds must be >= 1` / `randomprime: bits must be >= 2` / `randomprime: bits too large` | A bad Miller-Rabin `rounds` or `randomprime` `bits` | rounds ≥ 1, bits ≥ 2 within the cap |
+| `BigInt does not support this operator` / `BigInt does not support this unary operator` | A right-operand-only or unsupported op — BigInt dispatches on the **left** operand, so `3 + BigInt(2)` throws while `BigInt(2) + 3` works | Put the BigInt on the left, or convert |
+| `toint: value does not fit in a native Integer` | `.toint()` on a BigInt beyond int64 range | Keep it a BigInt / check `.bitlength()` |
 
 ### Standard library — Kirito-authored modules
 
