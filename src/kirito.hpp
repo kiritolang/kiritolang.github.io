@@ -42,6 +42,8 @@
 #include "kirito/stdlib_zlib.hpp"
 #include "kirito/stdlib_gzip.hpp"
 #include "kirito/stdlib_hash.hpp"
+#include "kirito/stdlib_crypto.hpp"
+#include "kirito/stdlib_int.hpp"
 #include "kirito/stdlib_regex.hpp"
 #include "kirito/analyzer.hpp"
 #include "kirito/resolver.hpp"

@@ -307,7 +307,9 @@ private:
     ast::ExprPtr parseValueSeq() {
         SourceSpan span = peek().span;
         auto first = parseExpr();
-        if (!at(TokenType::Comma)) return first;
+        // A block-bodied Function literal self-terminates at its dedent (like endSimpleStatement), so a
+        // following `,` begins the NEXT statement and must not comma-pack the function value (A02-1).
+        if (!at(TokenType::Comma) || blockJustClosed_) return first;
         // A bare comma right after an INLINE-bodied function literal reads ambiguously: the `, b` in
         // `var f = Function(): return a, b` was silently absorbed into a top-level pack, binding f to
         // the List [<function>, b] (and the function returning only `a`). Inline functions don't pack —
@@ -439,6 +441,11 @@ private:
 
     ast::ExprPtr parseExpr() {
         DepthGuard g(exprDepth_, peek().span);
+        // Clear any stale "a block just closed" flag left by a PRECEDING nested suite (e.g. an if-body
+        // before an `elif` condition, a case body before the next `case`, a try body before `catch`).
+        // A block-bodied Function literal parsed *within* this expression re-sets it, so the
+        // continuation guards still stop a next-line `(`/`,`/`.`/operator from gluing onto it (A02-1).
+        blockJustClosed_ = false;
         return parseConditional();
     }
 
@@ -466,7 +473,7 @@ private:
     ast::ExprPtr parseOr() {
         ChainDepth cd(exprDepth_);
         auto left = parseAnd();
-        while (at(TokenType::KwOr)) {
+        while (at(TokenType::KwOr) && !blockJustClosed_) {
             cd.step(peek().span);
             SourceSpan span = advance().span;
             left = logical(std::move(left), /*isAnd=*/false, parseAnd(), span);
@@ -477,7 +484,7 @@ private:
     ast::ExprPtr parseAnd() {
         ChainDepth cd(exprDepth_);
         auto left = parseNot();
-        while (at(TokenType::KwAnd)) {
+        while (at(TokenType::KwAnd) && !blockJustClosed_) {
             cd.step(peek().span);
             SourceSpan span = advance().span;
             left = logical(std::move(left), /*isAnd=*/true, parseNot(), span);
@@ -502,6 +509,7 @@ private:
         ChainDepth cd(exprDepth_);
         auto left = parseAdd();
         while (true) {
+            if (blockJustClosed_) return left;  // a block-fn's dedent terminates the statement (A02-1)
             BinOp op;
             SourceSpan span;
             if (at(TokenType::KwIn)) {
@@ -531,7 +539,7 @@ private:
     ast::ExprPtr parseAdd() {
         ChainDepth cd(exprDepth_);
         auto left = parseMul();
-        while (at(TokenType::Plus) || at(TokenType::Minus)) {
+        while ((at(TokenType::Plus) || at(TokenType::Minus)) && !blockJustClosed_) {
             BinOp op = at(TokenType::Plus) ? BinOp::Add : BinOp::Sub;
             SourceSpan span = advance().span;
             cd.step(span);
@@ -543,8 +551,8 @@ private:
     ast::ExprPtr parseMul() {
         ChainDepth cd(exprDepth_);
         auto left = parseUnary();
-        while (at(TokenType::Star) || at(TokenType::Slash) ||
-               at(TokenType::SlashSlash) || at(TokenType::Percent)) {
+        while ((at(TokenType::Star) || at(TokenType::Slash) ||
+                at(TokenType::SlashSlash) || at(TokenType::Percent)) && !blockJustClosed_) {
             BinOp op = at(TokenType::Star)       ? BinOp::Mul
                      : at(TokenType::Slash)      ? BinOp::Div
                      : at(TokenType::SlashSlash) ? BinOp::FloorDiv
@@ -571,7 +579,7 @@ private:
 
     ast::ExprPtr parsePow() {
         auto base = parsePostfix();
-        if (at(TokenType::StarStar)) {
+        if (at(TokenType::StarStar) && !blockJustClosed_) {
             DepthGuard g(exprDepth_, peek().span);  // ** is right-recursive (2**2**2**...): bound it
             SourceSpan span = advance().span;
             // Right-associative, and the exponent may itself be unary (2 ** -1).
@@ -585,6 +593,9 @@ private:
         ChainDepth cd(exprDepth_);
         auto expr = parsePrimary();
         while (true) {
+            // A block-bodied Function literal self-terminates at its dedent, so a leading `(`/`[`/`.` on
+            // the next line begins a NEW statement — don't glue it into a call/index/member (A02-1).
+            if (blockJustClosed_) break;
             if (!at(TokenType::LParen) && !at(TokenType::LBracket) && !at(TokenType::Dot)) break;
             cd.step(peek().span);   // each call/index/member link deepens the tree by one
             if (at(TokenType::LParen)) {

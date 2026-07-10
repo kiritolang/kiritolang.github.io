@@ -35,6 +35,8 @@ public:
 
     bool truthy() const override { return !data.empty(); }
 
+    bool isBytesValue() const override { return true; }
+
     // repr: b'...' with printable ASCII verbatim and \xHH / \n \t \r \\ \' for the rest.
     std::string str(StringifyCtx&) const override {
         std::string out = "b'";
@@ -349,6 +351,23 @@ inline Handle makeStringOrBytes(KiritoVM& vm, Handle templateInput, std::string 
     if (dynamic_cast<BytesVal*>(&vm.arena().deref(templateInput)))
         return vm.alloc(std::make_unique<BytesVal>(std::move(out)));
     return vm.makeString(std::move(out));
+}
+
+// Base64 (RFC 4648). urlSafe swaps the `+/` alphabet for `-_` (§5); pad toggles the trailing `=`.
+// One source of truth for the codec — HTTP Basic auth (net) and random.randomurlsafe both call it.
+inline std::string base64Encode(const std::string& in, bool urlSafe = false, bool pad = true) {
+    const char* T = urlSafe ? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                            : "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    int val = 0, bits = -6;
+    for (unsigned char c : in) {
+        val = (val << 8) + c;
+        bits += 8;
+        while (bits >= 0) { out += T[(val >> bits) & 0x3F]; bits -= 6; }
+    }
+    if (bits > -6) out += T[((val << 8) >> (bits + 8)) & 0x3F];
+    if (pad) while (out.size() % 4) out += '=';
+    return out;
 }
 
 #if defined(__GNUC__)

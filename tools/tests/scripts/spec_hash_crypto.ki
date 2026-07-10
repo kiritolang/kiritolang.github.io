@@ -1,0 +1,76 @@
+# hash module crypto surface: SHA-384/512, HMAC (RFC 2104), PBKDF2 (RFC 8018), constant-time
+# comparedigest. Runs under EVERY preset (self-contained, no OpenSSL). RFC known-answer vectors
+# plus structural properties, keyword-arg uniformity, and bad-input rejection.
+var hash = import("hash")
+var io = import("io")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# --- SHA-384 / SHA-512 NIST vectors ---
+assert hash.sha512("") == "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e", "sha512 empty"
+assert hash.sha512("abc") == "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f", "sha512 abc"
+assert hash.sha384("abc") == "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7", "sha384 abc"
+# str-vs-bytes agreement (Kirito Strings are byte-transparent)
+assert hash.sha512("abc") == hash.sha512(Bytes([97, 98, 99])), "sha512 string==bytes"
+assert len(hash.sha512("x")) == 128 and len(hash.sha384("x")) == 96, "hex digest widths"
+
+# --- HMAC: RFC 4231 / RFC 2202 vectors ---
+assert hash.hmac(Bytes([11]) * 20, "Hi There", "sha256") == "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7", "hmac-sha256 case1"
+assert hash.hmac("Jefe", "what do ya want for nothing?") == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", "hmac-sha256 case2"
+assert hash.hmac("Jefe", "what do ya want for nothing?", "sha512") == "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737", "hmac-sha512 case2"
+assert hash.hmac("Jefe", "what do ya want for nothing?", "md5") == "750c783e6ab0b503eaa86e310a5db738", "hmac-md5 case2"
+# default algo is sha256
+assert hash.hmac("k", "m") == hash.hmac("k", "m", "sha256"), "hmac default algo"
+# determinism + avalanche
+assert hash.hmac("key", "message") == hash.hmac("key", "message"), "hmac deterministic"
+assert hash.hmac("key", "message") != hash.hmac("key", "messagE"), "hmac avalanche"
+assert hash.hmac("key", "message") != hash.hmac("keY", "message"), "hmac key sensitive"
+
+# --- PBKDF2: RFC 6070 (SHA-1) + RFC 7914 (SHA-256) ---
+assert hash.pbkdf2("password", "salt", 1, 20, "sha1").hex() == "0c60c80f961f0e71f3a9b524af6012062fe037a6", "pbkdf2 c=1"
+assert hash.pbkdf2("password", "salt", 2, 20, "sha1").hex() == "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957", "pbkdf2 c=2"
+assert hash.pbkdf2("password", "salt", 4096, 20, "sha1").hex() == "4b007901b765489abead49d926f721d065a429c1", "pbkdf2 c=4096"
+assert hash.pbkdf2("passwd", "salt", 1, 64, "sha256").hex() == "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783", "pbkdf2 sha256"
+# keyword args uniform across the callable
+assert hash.pbkdf2(password = "password", salt = "salt", iterations = 1, dklen = 20, algo = "sha1").hex() == "0c60c80f961f0e71f3a9b524af6012062fe037a6", "pbkdf2 kwargs"
+# result is Bytes of exactly dklen
+assert type(hash.pbkdf2("p", "s", 10)) == "Bytes", "pbkdf2 returns Bytes"
+assert len(hash.pbkdf2("p", "s", 10, 40)) == 40, "pbkdf2 dklen honored"
+# block independence: smaller dklen is a prefix of a larger one
+var big = hash.pbkdf2("pw", "salty", 50, 60, "sha256")
+var small = hash.pbkdf2("pw", "salty", 50, 25, "sha256")
+assert big[0:25] == small, "pbkdf2 prefix stability"
+
+# --- comparedigest ---
+assert hash.comparedigest("abc", "abc") == True, "cd equal"
+assert hash.comparedigest("abc", "abd") == False, "cd one-char diff"
+assert hash.comparedigest("abc", "abcd") == False, "cd length diff"
+assert hash.comparedigest("", "") == True, "cd empty"
+assert hash.comparedigest(Bytes([1, 2, 3]), Bytes([1, 2, 3])) == True, "cd bytes equal"
+assert hash.comparedigest(Bytes([1, 2, 3]), Bytes([1, 2, 4])) == False, "cd bytes diff"
+# a real MAC-verification use: recompute and compare
+var mac = hash.hmac("secret", "payload", "sha256")
+assert hash.comparedigest(mac, hash.hmac("secret", "payload", "sha256")) == True, "cd verifies MAC"
+assert hash.comparedigest(mac, hash.hmac("secret", "payloaD", "sha256")) == False, "cd rejects tampered"
+
+# --- adversarial / bad input ---
+assert raises_msg(Function(): return hash.hmac("k", "m", "sha3"), "unknown algorithm"), "hmac unknown algo"
+assert raises_msg(Function(): return hash.pbkdf2("p", "s", 0), "iterations"), "pbkdf2 iterations=0"
+assert raises_msg(Function(): return hash.pbkdf2("p", "s", -1), "iterations"), "pbkdf2 negative iters"
+assert raises_msg(Function(): return hash.pbkdf2("p", "s", 1, 0), "dklen"), "pbkdf2 dklen=0"
+assert raises_msg(Function(): return hash.pbkdf2("p", "s", 1, 2000000), "too large"), "pbkdf2 dklen too large"
+assert raises(Function(): return hash.hmac(123, "m")), "hmac non-string key"
+assert raises(Function(): return hash.comparedigest(1, 2)), "comparedigest non-string"
+
+io.print("OK hash_crypto")

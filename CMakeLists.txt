@@ -62,7 +62,7 @@ target_include_directories(kirito INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(kirito INTERFACE cxx_std_20)
 target_link_libraries(kirito INTERFACE Threads::Threads)
 if(WIN32)
-    target_link_libraries(kirito INTERFACE ws2_32)  # Winsock
+    target_link_libraries(kirito INTERFACE ws2_32 bcrypt)  # Winsock; bcrypt = BCryptGenRandom (OS CSPRNG)
 endif()
 
 # HTTPS in the `net` module is opt-in (-DKIRITO_ENABLE_TLS). Because src/kirito.hpp itself

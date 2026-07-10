@@ -115,6 +115,11 @@ public:
     // `inspect` shows its parameters/types and return type. Params: {"x"} / {"x","Int"} /
     // {"x","Int", vm().makeInt(0)} (with default).
     ModuleBuilder& fn(std::string name, std::vector<NativeParam> sig, std::string returnType, NativeFn impl) {
+        // Root any heap-allocated parameter defaults across the NativeFunction alloc: the pending
+        // function isn't arena-reachable yet, so a GC during alloc would sweep an unrooted default
+        // (e.g. hash.hmac's "sha256"), leaving the function holding a dangling default handle.
+        RootScope rs(vm_);
+        for (const auto& p : sig) if (p.hasDefault) rs.add(p.defaultValue);
         mod_.members[name] = vm_.alloc(std::make_unique<NativeFunction>(
             name, std::move(sig), std::move(returnType), std::move(impl)));
         return *this;

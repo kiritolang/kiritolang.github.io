@@ -105,6 +105,11 @@ public:
     virtual bool hashable() const { return false; }
     virtual std::size_t hash() const { throw KiritoError("unhashable type '" + typeName() + "'"); }
 
+    // True only for the native Bytes value. Bytes is a ValueKind::Instance (no dedicated kind), so the
+    // embedding API must not discriminate it by typeName()=="Bytes" — a user `class Bytes` would then
+    // be mis-cast to BytesVal. This virtual is the safe discriminator (A09-2).
+    virtual bool isBytesValue() const { return false; }
+
     // Enumerate contained handles for the mark-sweep GC and for serialization.
     virtual void children(std::vector<Handle>&) const {}
 

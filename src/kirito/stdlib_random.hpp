@@ -12,11 +12,25 @@
 #include <vector>
 
 #include "builtins.hpp"
+#include "bytes.hpp"        // Bytes wrapper + base64Encode (randomurlsafe)
 #include "collections.hpp"
 #include "fum/xoshiro256.hpp"
+#include "hashing.hpp"      // toHex (randomhex)
 #include "native.hpp"
+#include "rand_compat.hpp"  // OS CSPRNG (randombytes/randombelow)
 
 namespace kirito {
+
+// Fill a fresh std::string with `n` bytes from the OS CSPRNG (or throw). Shared by randombytes/hex/
+// urlsafe. `n` is validated non-negative and bounded by the module-wide repetition cap.
+inline std::string secureRandomBytes(int64_t n, const char* who) {
+    if (n < 0) throw KiritoError(std::string(who) + ": count must be non-negative");
+    if (static_cast<uint64_t>(n) > kMaxRepeat) throw KiritoError(std::string(who) + ": count too large");
+    std::string out(static_cast<std::size_t>(n), '\0');
+    if (!randcompat::fillRandom(out.data(), out.size()))
+        throw KiritoError(std::string(who) + ": OS secure random source unavailable");
+    return out;
+}
 
 // The native-binding idiom below re-uses `vm`/`self` as bound-method lambda parameters that
 // intentionally shadow the enclosing getAttr/setup `vm`/`self` (same VM, by design). Silence
@@ -326,6 +340,7 @@ class RandomModule : public NativeModule {
 public:
     std::string name() const override { return "random"; }
     void setup(ModuleBuilder& m) override {
+        KiritoVM& vm = m.vm();
         // Let serialize/dump reconstruct a Random: build a default one; _setstate_ replaces its
         // engine (with the correct kind derived from the state prefix) below.
         m.vm().registerDeserializer("Random", [](KiritoVM& vm, Handle) -> Handle {
@@ -346,6 +361,50 @@ public:
                                      : static_cast<uint64_t>(args[0].asInt("Random seed"));
                  return vm.alloc(std::make_unique<RandomState>(seed, useXoshiro));
              });
+
+        // --- OS-CSPRNG secure random (module-level; distinct from the seedable Random object) ---
+        // These draw from the kernel entropy source (getrandom/BCryptGenRandom), so they are
+        // unpredictable and suitable for tokens/keys/salts — unlike a seeded Random's PRNG stream.
+        m.fn("randombytes", {{"n", "Integer", vm.makeInt(32)}}, "Bytes",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            Args args(vm, a, "randombytes");
+            return Bytes(vm, secureRandomBytes(args[0].asInt("randombytes n"), "randombytes"));
+        });
+        m.fn("randomhex", {{"n", "Integer", vm.makeInt(32)}}, "String",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            Args args(vm, a, "randomhex");
+            return Value(vm, hashing::toHex(secureRandomBytes(args[0].asInt("randomhex n"), "randomhex")));
+        });
+        m.fn("randomurlsafe", {{"n", "Integer", vm.makeInt(32)}}, "String",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            Args args(vm, a, "randomurlsafe");
+            // base64url without padding (Python secrets.randomurlsafe semantics).
+            return Value(vm, base64Encode(secureRandomBytes(args[0].asInt("randomurlsafe n"), "randomurlsafe"),
+                                          /*urlSafe=*/true, /*pad=*/false));
+        });
+        // randombelow(n) -> uniform Integer in [0, n) from the OS CSPRNG, bias-free via rejection
+        // sampling (reject the top partial bucket so every residue class is equally likely).
+        m.fn("randombelow", {{"n", "Integer"}}, "Integer",
+             [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            Args args(vm, a, "randombelow");
+            int64_t n = args[0].asInt("randombelow n");
+            if (n <= 0) throw KiritoError("randombelow: n must be positive");
+            uint64_t un = static_cast<uint64_t>(n);
+            uint64_t threshold = (0ULL - un) % un;   // == 2^64 mod n (unsigned wraparound trick)
+            uint64_t r;
+            do {
+                if (!randcompat::fillRandom(&r, sizeof(r)))
+                    throw KiritoError("randombelow: OS secure random source unavailable");
+            } while (r < threshold);
+            return Value(vm, static_cast<int64_t>(r % un));
+        });
+        // hasentropy() -> Bool: whether the OS cryptographic RNG is currently usable. The secure
+        // functions above (and int's isprobableprime/randomprime) THROW if it isn't; probe this
+        // first to degrade gracefully. A runtime check (not a build-time flag) — it re-tests each call.
+        m.fn("hasentropy", {}, "Bool", [](KiritoVM& vm, std::span<const Handle>) -> Handle {
+            unsigned char probe = 0;
+            return vm.makeBool(randcompat::fillRandom(&probe, sizeof(probe)));
+        });
     }
 };
 

@@ -39,7 +39,7 @@ var checkModule = Function(name):
 
 # --- every importable module: native + frozen-Kirito ---
 var modules = ["io", "path", "math", "random", "matrix", "json", "serialize", "dump", "net", "sys",
-               "time", "zlib", "hash", "regex", "parallel",
+               "time", "zlib", "hash", "crypto", "int", "regex", "parallel",
                "itertools", "functools", "collections", "statistics", "string", "textwrap",
                "base64", "csv", "heapq", "bisect", "copy", "enum", "tee", "arg", "tabular", "xml"]
 var totalMembers = 0
@@ -66,6 +66,7 @@ checkObject("Match", import("regex").compile("(.)").search("ab"))
 checkObject("Dump", import("dump").dumps([1, 2]))
 checkObject("Socket", import("net").Socket())
 checkObject("Session", import("net").Session())
+checkObject("BigInt", import("int").BigInt(5))
 
 # --- a File object (open a temp file) ---
 var sys = import("sys")

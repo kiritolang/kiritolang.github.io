@@ -167,7 +167,7 @@ public:
     bool isFloat() const { return kind() == ValueKind::Float; }
     bool isNumber() const { return isInt() || isFloat(); }
     bool isString() const { return kind() == ValueKind::String; }
-    bool isBytes() const { return kind() == ValueKind::Instance && typeName() == "Bytes"; }
+    bool isBytes() const { return ref().isBytesValue(); }
     bool isList() const { return kind() == ValueKind::List || kind() == ValueKind::Array; }
     bool isDict() const { return kind() == ValueKind::Dict; }
     bool isSet() const { return kind() == ValueKind::Set; }
@@ -290,9 +290,12 @@ public:
     }
     // Convenience: call with primitives / Values captured in an initializer list.
     Value call(std::initializer_list<detail::Anything> args) const {
+        // Root each freshly-materialised arg handle: a later toHandle() alloc, or the callee's
+        // newScope prologue, would otherwise sweep an earlier unrooted arg (A09-3).
+        RootScope rs(*vm_);
         std::vector<Handle> hs;
         hs.reserve(args.size());
-        for (const auto& a : args) hs.push_back(a.toHandle(*vm_));
+        for (const auto& a : args) hs.push_back(rs.add(a.toHandle(*vm_)));
         return call(std::span<const Handle>(hs));
     }
 

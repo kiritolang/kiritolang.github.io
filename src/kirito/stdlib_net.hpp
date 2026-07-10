@@ -238,7 +238,13 @@ inline const char* sockOptNames() {
 #endif
         ;
 }
-inline std::string getSockOptNames() { return std::string(sockOptNames()) + ", error, type, acceptconn"; }
+inline std::string getSockOptNames() {
+    // Built with += rather than `std::string(...) + const char*`: the move-operator+ overload trips a
+    // GCC 13 -O2/-O3 -Warray-bounds false positive (char_traits::copy bounds on the SSO buffer).
+    std::string names = sockOptNames();
+    names += ", error, type, acceptconn";
+    return names;
+}
 
 // Extract the raw bytes to transmit from a String or Bytes argument (send/sendto accept either).
 inline std::string payloadBytes(KiritoVM& vm, Handle h, const char* who) {
@@ -349,6 +355,13 @@ inline Url parseUrl(const std::string& url) {
     }
     return u;
 }
+// The value for the HTTP `Host:` header: the host re-bracketed if it is an IPv6 literal, plus `:port`
+// whenever the port is not the scheme default (80 http / 443 https) — strict vhost routers need both.
+inline std::string hostHeader(const Url& u) {
+    std::string h = u.host.find(':') != std::string::npos ? "[" + u.host + "]" : u.host;
+    if (u.port != (u.tls ? 443 : 80)) h += ":" + std::to_string(u.port);
+    return h;
+}
 
 // --- URL helpers (urllib.parse style) --------------------------------------------------------
 // Percent-encode all but the RFC 3986 "unreserved" set (the quote default).
@@ -432,6 +445,9 @@ inline UrlParts splitUrl(const std::string& url) {
 inline std::string resolveUrl(const std::string& base, const std::string& loc) {
     if (loc.compare(0, 7, "http://") == 0 || loc.compare(0, 8, "https://") == 0) return loc;
     UrlParts b = splitUrl(base);
+    // A protocol-relative (network-path) reference `//host/path` adopts the base scheme and REPLACES
+    // the host — it must be handled before the root-relative `/path` case, which shares a leading '/'.
+    if (loc.compare(0, 2, "//") == 0) return b.scheme + ":" + loc;
     std::string origin = b.scheme + "://" + b.host + (b.port.empty() ? "" : ":" + b.port);
     if (!loc.empty() && loc[0] == '/') return origin + loc;
     // relative to the base path's directory
@@ -439,20 +455,6 @@ inline std::string resolveUrl(const std::string& base, const std::string& loc) {
     std::size_t slash = dir.find_last_of('/');
     dir = slash == std::string::npos ? "/" : dir.substr(0, slash + 1);
     return origin + dir + loc;
-}
-
-inline std::string base64Encode(const std::string& in) {
-    static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    int val = 0, bits = -6;
-    for (unsigned char c : in) {
-        val = (val << 8) + c;
-        bits += 8;
-        while (bits >= 0) { out += T[(val >> bits) & 0x3F]; bits -= 6; }
-    }
-    if (bits > -6) out += T[((val << 8) >> (bits + 8)) & 0x3F];
-    while (out.size() % 4) out += '=';
-    return out;
 }
 
 inline std::string asciiLower(std::string s) {
@@ -859,6 +861,16 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
             if (const auto* b = dynamic_cast<const BytesVal*>(&o)) return b->data;
             return Value(vm, h).str();
         };
+        // A field name / filename is placed inside a quoted Content-Disposition parameter, so a raw CR/LF
+        // would inject part headers and a bare `"` would truncate the value — reject the former, escape
+        // the latter (matches how headers/cookies are CRLF-hardened elsewhere).
+        auto mpParam = [](const std::string& s, const char* what) -> std::string {
+            for (unsigned char c : s)
+                if (c == '\r' || c == '\n') throw KiritoError(std::string("multipart ") + what + " must not contain CR or LF");
+            std::string out;
+            for (char c : s) { if (c == '"' || c == '\\') out += '\\'; out += c; }
+            return out;
+        };
         std::string mp;
         for (const auto& [k, v] : Value(vm, filesH).pairs()) {
             std::string field = k.str(), filename = k.str(), content;
@@ -869,8 +881,8 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
             } else {
                 content = rawContent(v.handle());
             }
-            mp += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + field +
-                  "\"; filename=\"" + filename + "\"\r\nContent-Type: application/octet-stream\r\n\r\n" +
+            mp += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + mpParam(field, "field name") +
+                  "\"; filename=\"" + mpParam(filename, "filename") + "\"\r\nContent-Type: application/octet-stream\r\n\r\n" +
                   content + "\r\n";
         }
         mp += "--" + boundary + "--\r\n";
@@ -905,7 +917,7 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     if (vm.arena().deref(authH).kind() == ValueKind::List) {
         const ListVal& l = static_cast<const ListVal&>(vm.arena().deref(authH));
         if (l.elems.size() == 2 && isStr(l.elems[0]) && isStr(l.elems[1]))
-            setHdr("Authorization", "Basic " + net::base64Encode(asStr(l.elems[0]) + ":" + asStr(l.elems[1])));
+            setHdr("Authorization", "Basic " + base64Encode(asStr(l.elems[0]) + ":" + asStr(l.elems[1])));
     }
     Handle headersH = netOpt(vm, opts, "headers");
     if (vm.arena().deref(headersH).kind() == ValueKind::Dict)
@@ -944,7 +956,7 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     for (int redirect = 0;; ++redirect) {
         net::Url u = net::parseUrl(curUrl);
         std::string target = u.path;
-        std::string req = method + " " + target + " HTTP/1.1\r\nHost: " + u.host + "\r\n";
+        std::string req = method + " " + target + " HTTP/1.1\r\nHost: " + net::hostHeader(u) + "\r\n";
         for (const auto& [k, v] : hdrs)
             if (net::asciiLower(k) != "host" && net::asciiLower(k) != "content-length") req += k + ": " + v + "\r\n";
         // Cookie header from the jar
