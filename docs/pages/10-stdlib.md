@@ -236,6 +236,66 @@ square matrix and throw otherwise.
 
 ---
 
+## crypto
+
+Advanced cryptography — AES-GCM authenticated encryption, RSA/EC signatures and RSA encryption, and
+X.509 certificate parsing. Built on **OpenSSL**, so it is available only when Kirito is compiled with
+`-DKIRITO_ENABLE_TLS` (the `debug`/`release` presets enable it), exactly like the [`net`](#net)
+module's HTTPS. The self-contained basics — HMAC, SHA-512, PBKDF2, secure random — live in
+[`hash`](#hash) and [`random`](#random) instead, so they work in every build.
+
+- `enabled → Bool` — whether this build has OpenSSL. When `False`, every function below throws a clear
+  "requires KIRITO_ENABLE_TLS" error rather than silently doing nothing — branch on it like
+  `net.tlsenabled`.
+
+**Argument types** — three kinds, consistent across the module:
+
+- **Byte data** — `key`, `iv`, `aad`, `plaintext`, `message`, `signature`, and the `ciphertext`/`data`
+  payloads accept a **`String` or [`Bytes`](types.html#bytes)**, read byte-exact (a `String` contributes
+  its UTF-8 bytes, a `Bytes` its raw bytes), so binary payloads work directly. Every **byte result**
+  (ciphertext, tag, signature, decrypted plaintext) is returned as **`Bytes`**.
+- **Keys & certificates** — `private_pem`, `public_pem`, and the `x509parse` argument are **PEM
+  `String`s** (the `-----BEGIN … -----` text) — portable, printable, serializable; there is no native
+  key object to leak.
+- **Options** — `bits` is an **`Integer`**; `curve` and `algo` are **`String`s** (`algo` is one of
+  `"sha256"` / `"sha384"` / `"sha512"`, default `"sha256"`).
+
+- `aesencrypt(key, plaintext, iv, aad = None) → Dict` — AES-GCM authenticated encryption.
+  `key` is 16/24/32 bytes (AES-128/192/256); `iv` is a unique per-message value (12 bytes is
+  standard — **never reuse an iv with the same key**); optional `aad` is authenticated but not
+  encrypted. Returns `{ciphertext: Bytes, tag: Bytes}`.
+- `aesdecrypt(key, ciphertext, iv, tag, aad = None) → Bytes` — decrypt and verify. Throws
+  `authentication failed` if the key/iv/tag/aad don't match (tampered or wrong) — it never returns
+  unauthenticated plaintext.
+- `rsagenerate(bits = 2048) → Dict` — a new RSA keypair as `{private: String, public: String}` (PEM).
+- `rsasign(private_pem, message, algo = "sha256") → Bytes` / `rsaverify(public_pem, message,
+  signature, algo = "sha256") → Bool` — PKCS#1 v1.5 signatures.
+- `rsaencrypt(public_pem, data) → Bytes` / `rsadecrypt(private_pem, data) → Bytes` — RSA-OAEP
+  (SHA-256). Encrypts a short payload directly (for bulk data, encrypt with AES-GCM and wrap the AES
+  key with RSA).
+- `ecgenerate(curve = "prime256v1") → Dict` — an EC keypair (PEM); other curves e.g. `secp384r1`,
+  `secp521r1`.
+- `ecsign(private_pem, message, algo = "sha256") → Bytes` / `ecverify(public_pem, message,
+  signature, algo = "sha256") → Bool` — ECDSA signatures.
+- `x509parse(pem) → Dict` — parse a certificate to
+  `{subject, issuer, serial, not_before, not_after, sans}` (`sans` is a List of DNS names).
+
+<!--norun (requires an HTTPS/TLS build for OpenSSL)-->
+```kirito
+var crypto = import("crypto")
+if crypto.enabled:
+    var key = import("random").randombytes(32)      # AES-256 key
+    var iv = import("random").randombytes(12)
+    var sealed = crypto.aesencrypt(key, "secret", iv)
+    var plain = crypto.aesdecrypt(key, sealed["ciphertext"], iv, sealed["tag"])
+    # sign & verify
+    var k = crypto.rsagenerate(2048)
+    var sig = crypto.rsasign(k["private"], "message")
+    assert crypto.rsaverify(k["public"], "message", sig)
+```
+
+---
+
 ## csv
 
 Low-level CSV parsing/formatting (RFC-4180-style quoting). For tabular data analysis, see
@@ -309,57 +369,6 @@ var net = import("net")
 var gzip = import("gzip")
 var resp = net.get("https://example.com/data.csv.gz")
 var csv = gzip.decompress(resp.content).decode("utf-8")   # raw bytes -> text
-```
-
----
-
-## crypto
-
-Advanced cryptography — AES-GCM authenticated encryption, RSA/EC signatures and RSA encryption, and
-X.509 certificate parsing. Built on **OpenSSL**, so it is available only when Kirito is compiled with
-`-DKIRITO_ENABLE_TLS` (the `debug`/`release` presets enable it), exactly like the [`net`](#net)
-module's HTTPS. The self-contained basics — HMAC, SHA-512, PBKDF2, secure random — live in
-[`hash`](#hash) and [`random`](#random) instead, so they work in every build.
-
-- `enabled → Bool` — whether this build has OpenSSL. When `False`, every function below throws a clear
-  "requires KIRITO_ENABLE_TLS" error rather than silently doing nothing — branch on it like
-  `net.tlsenabled`.
-
-Keys are **PEM strings** (portable, serializable, printable). Byte arguments accept a String or Bytes;
-byte results are Bytes.
-
-- `aesencrypt(key, plaintext, iv, aad = None) → Dict` — AES-GCM authenticated encryption.
-  `key` is 16/24/32 bytes (AES-128/192/256); `iv` is a unique per-message value (12 bytes is
-  standard — **never reuse an iv with the same key**); optional `aad` is authenticated but not
-  encrypted. Returns `{ciphertext: Bytes, tag: Bytes}`.
-- `aesdecrypt(key, ciphertext, iv, tag, aad = None) → Bytes` — decrypt and verify. Throws
-  `authentication failed` if the key/iv/tag/aad don't match (tampered or wrong) — it never returns
-  unauthenticated plaintext.
-- `rsagenerate(bits = 2048) → Dict` — a new RSA keypair as `{private: String, public: String}` (PEM).
-- `rsasign(private_pem, message, algo = "sha256") → Bytes` / `rsaverify(public_pem, message,
-  signature, algo = "sha256") → Bool` — PKCS#1 v1.5 signatures.
-- `rsaencrypt(public_pem, data) → Bytes` / `rsadecrypt(private_pem, data) → Bytes` — RSA-OAEP
-  (SHA-256). Encrypts a short payload directly (for bulk data, encrypt with AES-GCM and wrap the AES
-  key with RSA).
-- `ecgenerate(curve = "prime256v1") → Dict` — an EC keypair (PEM); other curves e.g. `secp384r1`,
-  `secp521r1`.
-- `ecsign(private_pem, message, algo = "sha256") → Bytes` / `ecverify(public_pem, message,
-  signature, algo = "sha256") → Bool` — ECDSA signatures.
-- `x509parse(pem) → Dict` — parse a certificate to
-  `{subject, issuer, serial, not_before, not_after, sans}` (`sans` is a List of DNS names).
-
-<!--norun (requires an HTTPS/TLS build for OpenSSL)-->
-```kirito
-var crypto = import("crypto")
-if crypto.enabled:
-    var key = import("random").randombytes(32)      # AES-256 key
-    var iv = import("random").randombytes(12)
-    var sealed = crypto.aesencrypt(key, "secret", iv)
-    var plain = crypto.aesdecrypt(key, sealed["ciphertext"], iv, sealed["tag"])
-    # sign & verify
-    var k = crypto.rsagenerate(2048)
-    var sig = crypto.rsasign(k["private"], "message")
-    assert crypto.rsaverify(k["public"], "message", sig)
 ```
 
 ---
