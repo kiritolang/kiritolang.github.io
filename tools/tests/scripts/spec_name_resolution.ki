@@ -1,0 +1,141 @@
+# ============================================================================
+# Name resolution / lexical scoping — the invariant compile-time lexical
+# addressing must preserve. Self-checking: forward refs, mutual recursion,
+# shadowing precedence, closures/captured vars, seeded fuzz, adversarial cases.
+# ============================================================================
+var io = import("io")
+var random = import("random")
+
+var failures = 0
+var total = 0
+# `check` mutates the module-level counters from inside a function — itself a
+# test that a function captures module scope and a bare `=` rebinds it.
+var check = Function(cond, msg):
+    total = total + 1
+    if not cond:
+        failures = failures + 1
+        io.eprint("FAIL: " + msg)
+
+# ---------- 1. forward references + mutual recursion ----------
+var describe = Function(n) -> String:
+    return String(n) + " is " + classify(n)          # forward ref: classify is defined 4th
+var isEven = Function(n) -> Bool:
+    return True if n == 0 else isOdd(n - 1)           # mutual recursion
+var isOdd = Function(n) -> Bool:
+    return False if n == 0 else isEven(n - 1)
+var classify = Function(n) -> String:
+    return "even" if isEven(n) else "odd"
+var stepA = Function(n): return n if n <= 0 else stepB(n - 1)   # 3-way cycle a->b->c->a
+var stepB = Function(n): return stepC(n - 1)
+var stepC = Function(n): return stepA(n - 1)
+
+check(describe(0) == "0 is even", "earlier fn forward-calls a later fn (even)")
+check(describe(7) == "7 is odd", "forward call + mutual recursion (odd)")
+check(isEven(10) and not isOdd(10), "mutual recursion even")
+check(isOdd(7) and not isEven(7), "mutual recursion odd")
+check(stepA(9) == 0, "3-way mutual recursion terminates")
+
+# ---------- 2. shadowing precedence: local > param > module > builtin ----------
+var usesMax = Function():
+    return max                                       # membership: the module `max` below, NOT builtin max
+var max = 1000
+check(usesMax() == 1000, "module var shadows builtin, referenced from a fn defined above it")
+
+var shadow = Function(len):                          # param `len` shadows builtin len
+    var inner = len + 1
+    var nested = Function():
+        var len = 999                                # local shadows the enclosing param
+        return len
+    return [inner, nested()]
+var sr = shadow(5)
+check(sr[0] == 6, "param shadows builtin len")
+check(sr[1] == 999, "nested local shadows enclosing param")
+check(len([1, 2, 3, 4]) == 4, "unshadowed builtin len still works")
+
+# ---------- 3. closures / captured variables ----------
+var makeCounter = Function(start):                   # `start` captured param; `n` captured local
+    var n = start
+    var next = Function():
+        n = n + 1
+        return n
+    var get = Function(): return n
+    return [next, get]                               # two closures over the SAME cell
+var c = makeCounter(10)
+check(c[0]() == 11 and c[0]() == 12, "closure mutates captured local")
+check(c[1]() == 12, "sibling closure sees the shared cell")
+
+var makeAdder = Function(k):
+    return Function(x): return x + k
+check(makeAdder(3)(10) == 13 and makeAdder(100)(10) == 110, "independent closures capture distinct params")
+
+# ---------- 4. seeded-random fuzz (reproducible) ----------
+var rng = random.Random(20260714)
+var fib = Function(n): return n if n < 2 else fib(n - 1) + fib(n - 2)
+var fibIter = Function(n):
+    var a = 0
+    var b = 1
+    var i = 0
+    while i < n:
+        var t = a + b
+        a = b
+        b = t
+        i = i + 1
+    return a
+var sumTo = Function(n): return 0 if n == 0 else n + sumTo(n - 1)
+
+for iter in range(200):
+    var nf = rng.randint(0, 15)
+    check(fib(nf) == fibIter(nf), "recursive fib == iterative for n=" + String(nf))
+    var ns = rng.randint(0, 40)
+    check(sumTo(ns) == ns * (ns + 1) // 2, "recursive sum == closed form for n=" + String(ns))
+    var ne = rng.randint(0, 60)
+    check(isEven(ne) == (ne % 2 == 0), "mutual-recursion parity == n%2 for n=" + String(ne))
+    var k = rng.randint(-50, 50)
+    var x = rng.randint(-50, 50)
+    check(makeAdder(k)(x) == x + k, "random closure add")
+
+# ---------- 5. adversarial ----------
+var eat = Function(describe):                        # param named like the `describe` FUNCTION above
+    return describe + 1                              # here `describe` is the Integer param, not the fn
+check(eat(41) == 42, "param shadows an outer function name")
+check(describe(0) == "0 is even", "outer function name intact after being shadowed elsewhere")
+
+var scopeX = Function():
+    var v = 1
+    return v
+var scopeY = Function():
+    var v = 2
+    return v
+check(scopeX() == 1 and scopeY() == 2, "sibling-scope same-name locals are independent")
+
+var deep = Function(a):                              # capture across 4 nesting levels
+    var f1 = Function(b):
+        var f2 = Function(cc):
+            var f3 = Function(d):
+                return a + b + cc + d
+            return f3
+        return f2
+    return f1
+check(deep(1)(2)(3)(4) == 10, "closure captures across 4 nested scopes")
+
+var collatzSteps = Function(n):                      # reassign the param inside a loop
+    var steps = 0
+    while n != 1:
+        n = n // 2 if n % 2 == 0 else 3 * n + 1
+        steps = steps + 1
+    return steps
+check(collatzSteps(6) == 8, "param reassignment in a loop (collatz 6 -> 8 steps)")
+
+var late = Function():                               # closure sees a reassignment made AFTER it was created
+    var msg = "start"
+    var show = Function(): return msg
+    msg = "changed"
+    return show
+check(late()() == "changed", "closure captures by reference, sees post-creation change")
+
+# ---------- summary ----------
+if failures == 0:
+    io.print("ALL PASSED (" + String(total) + " checks)")
+else:
+    io.print(String(failures) + " / " + String(total) + " checks FAILED")
+assert failures == 0, "name-resolution test had failures"
