@@ -111,14 +111,23 @@ private:
         checkBlock(fn.body);
         scopes_.pop_back();
     }
-    // A class body is its own membership scope, but its bindings stay name-based (they are harvested by
-    // name into the class's method/attr table); indexing them is Step 4, so it gets no envIndex.
+    // A class body is its own scope. Its bindings are ALSO harvested by name into the class's method/
+    // attr table (so class-body names keep name-based writes), but every one lives at a fixed index in
+    // the class-scope EnvValue — pre-declared at BuildClass in the same order — so a reference to one
+    // (a method reading a sibling method / class var by bare name) compiles to a direct LoadVar.
     void resolveClassScope(const ast::Block& body) {
         scopes_.emplace_back();
         scopes_.back().kind = Scope::Class;
         collectDecls(body);
+        computeClassEnvIndex(scopes_.back(), body);
         checkBlock(body);
         scopes_.pop_back();
+    }
+    // Every class-body name is env-resident at a fixed index, in the shared deterministic order the
+    // compiler records in Proto.envSlots and the runtime pre-declares them.
+    void computeClassEnvIndex(Scope& s, const ast::Block& body) {
+        uint32_t next = 0;
+        for (const auto& name : collectBlockDeclsOrdered(body)) s.envIndex.emplace(name, next++);
     }
 
     // The env layout of a function scope: captured parameters keep their positional slot (callFull
@@ -188,14 +197,15 @@ private:
         int j = lexicalScopeIndexOf(n.name);
         if (j >= 0) {                          // a lexical binding shadows any builtin
             // Resolve to a direct env slot when the owning scope indexes this name: a function scope
-            // always indexes its captured params/locals; the module scope indexes its top-level names
-            // only for a real module/script/REPL scope (indexTopLevel_), never a bare embedder eval. A
-            // frame-slot local (absent from envIndex) stays LoadLocal; a class-body name stays
-            // name-based (Step 4). depth = the EnvValue hops from the referencing frame up to the owning
+            // always indexes its captured params/locals; a class body always indexes its member names;
+            // the module scope indexes its top-level names only for a real module/script/REPL scope
+            // (indexTopLevel_), never a bare embedder eval. A frame-slot local (absent from envIndex)
+            // stays LoadLocal. depth = the EnvValue hops from the referencing frame up to the owning
             // scope (each enclosing function/class body is one hop). Parameter defaults run as their own
             // Proto (a different frame/depth), so references inside them are left name-based.
             const Scope& sj = scopes_[static_cast<std::size_t>(j)];
-            bool indexable = sj.kind == Scope::Function || (sj.kind == Scope::Module && indexTopLevel_);
+            bool indexable = sj.kind == Scope::Function || sj.kind == Scope::Class ||
+                             (sj.kind == Scope::Module && indexTopLevel_);
             if (indexable && inDefault_ == 0) {
                 auto it = sj.envIndex.find(n.name);
                 if (it != sj.envIndex.end()) {

@@ -220,7 +220,8 @@ public:
                     cls->base = base;
                     cls->hasBase = hasBase;
                     for (const auto& [k, v] : static_cast<EnvValue&>(vm_.arena().deref(classScope)).locals())
-                        cls->methods[k] = v;                            // the names the body defined are the methods
+                        if (v != vm_.undefined())                       // skip a pre-declared slot never assigned
+                            cls->methods[k] = v;                        // the names the body defined are the methods
                     Handle clsHandle = rs.add(vm_.alloc(std::move(cls)));
                     auto& klass = static_cast<ClassValue&>(vm_.arena().deref(clsHandle));
                     klass.selfHandle = clsHandle;

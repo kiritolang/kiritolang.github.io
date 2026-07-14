@@ -36,7 +36,8 @@ public:
     // Compile a whole body. isFunction picks the implicit tail: a function falls off the end
     // returning None; the top-level program returns its last expression value (the REPL echo).
     void compile(const ast::Block& body, bool isFunction, const ast::FunctionExpr* fnDef = nullptr) {
-        if (fnDef) assignLocalSlots(*fnDef, body);  // slot-address this function's non-captured locals
+        if (fnDef) assignLocalSlots(*fnDef, body);        // a function: slot-address its non-captured locals
+        else if (isFunction) collectClassEnvSlots(body);  // a class body (isFunction, no fnDef): index its names
         compileBlock(body);
         if (isFunction) { emit(Op::LoadNone); emit(Op::Return); }
         else { emit(Op::LoadResult); emit(Op::Return); }
@@ -132,6 +133,13 @@ private:
         // resolver addressed as index P+i. Read via LoadVar; declared via StoreName into the slot.
         for (const auto& name : collectBlockDeclsOrdered(body))
             if (captured.count(name) && !params.count(name)) proto_.envSlots.push_back(name);
+    }
+    // A class body is not slotted (its names are harvested by name into the class), but every top-level
+    // name it binds lives in the class-scope EnvValue at a fixed index, so a method reading a sibling
+    // method / class var by bare name compiles to a direct LoadVar. Record them in the SAME order the
+    // resolver assigns their indices and the runtime pre-declares them (collectBlockDeclsOrdered).
+    void collectClassEnvSlots(const ast::Block& body) {
+        for (const auto& name : collectBlockDeclsOrdered(body)) proto_.envSlots.push_back(name);
     }
     uint32_t defineSlot(const std::string& name) {
         uint32_t slot = nextSlot_++;
