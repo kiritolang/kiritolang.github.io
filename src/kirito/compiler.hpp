@@ -107,7 +107,15 @@ private:
         slotsEnabled_ = true;
         NameSet captured = capturedLocals(fn.params, body);
         NameSet params;
-        for (const auto& p : fn.params) params.insert(p.name);
+        // Non-captured parameters get frame slots FIRST (slots 0..k-1, in parameter order) so the call
+        // binder can place argument values into them by position. proto_.paramSlots[p] records each
+        // param's slot (or -1 when the param is captured and must stay name-based in the scope env).
+        proto_.paramSlots.reserve(fn.params.size());
+        for (const auto& p : fn.params) {
+            params.insert(p.name);
+            if (!captured.count(p.name)) proto_.paramSlots.push_back(static_cast<int>(defineSlot(p.name)));
+            else proto_.paramSlots.push_back(-1);
+        }
         NameSet decls;
         collectBlockDecls(body, decls);
         for (const auto& name : decls)

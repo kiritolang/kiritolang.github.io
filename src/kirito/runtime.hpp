@@ -2052,14 +2052,15 @@ inline Handle KiFunction::callFull(KiritoVM& vm, std::span<const Handle> positio
     };
 
     // Compile (once) and execute the body on the bytecode engine — the sole execution path.
-    auto runBody = [&](Handle bodyScope) -> Handle {
+    auto runBody = [&](Handle bodyScope, std::span<const Handle> paramValues) -> Handle {
         return runBytecodeBody(vm, bodyScope, def_->body, hasOwner ? ownerClass : Handle{}, hasOwner,
-                               /*isFunction=*/true, def_->name.empty() ? "<function>" : def_->name, def_);
+                               /*isFunction=*/true, def_->name.empty() ? "<function>" : def_->name, def_,
+                               paramValues);
     };
 
     if (named.empty() && positional.size() == params.size() && *def_->fastBindable) {
         for (std::size_t i = 0; i < params.size(); ++i) env.define(params[i].name, positional[i]);
-        return attributed([&] { return runBody(scope); });
+        return attributed([&] { return runBody(scope, positional); });
     }
 
     std::vector<bool> bound(params.size(), false);
@@ -2099,7 +2100,7 @@ inline Handle KiFunction::callFull(KiritoVM& vm, std::span<const Handle> positio
         env.define(params[i].name, values[i]);
     }
 
-    Handle result = attributed([&] { return runBody(scope); });
+    Handle result = attributed([&] { return runBody(scope, values); });
 
     // enforce the return annotation
     if (!def_->returnAnnotation.empty() && !typeMatches(vm, result, def_->returnAnnotation))

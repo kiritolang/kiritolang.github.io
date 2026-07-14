@@ -64,8 +64,13 @@ public:
     BytecodeVM(const BytecodeVM&) = delete;
     BytecodeVM& operator=(const BytecodeVM&) = delete;
 
-    Handle run(const Proto& proto) {
+    Handle run(const Proto& proto, std::span<const Handle> paramValues = {}) {
         for (uint32_t i = 0; i < proto.localCount; ++i) push(vm_.undefined());  // reserve frame slots
+        // Place each non-captured parameter's argument value straight into its frame slot, so a param
+        // read is a direct slot access (no scope-chain name walk / unwritten-slot fallback). Captured
+        // params (paramSlots[i] < 0) are left to the scope env, where the closure can reach them.
+        for (std::size_t i = 0; i < proto.paramSlots.size() && i < paramValues.size(); ++i)
+            if (proto.paramSlots[i] >= 0) setLocal(static_cast<uint32_t>(proto.paramSlots[i]), paramValues[i]);
         const std::vector<Instr>& code = proto.code;
         std::size_t ip = 0;
         while (true) {
@@ -485,7 +490,7 @@ private:
 
 inline Handle runBytecodeBody(KiritoVM& vm, Handle scope, const ast::Block& body, Handle ownerClass,
                               bool hasOwner, bool isFunction, std::string frameLabel,
-                              const ast::FunctionExpr* fnDef) {
+                              const ast::FunctionExpr* fnDef, std::span<const Handle> paramValues) {
     // Root the scope (and owning class) across BOTH compilation and execution: first-run compilation
     // materialises constants and so may trigger GC, and the top-level scope is not otherwise rooted
     // here (unlike a function call scope, which callFull already roots). The BytecodeVM re-roots them
@@ -495,7 +500,7 @@ inline Handle runBytecodeBody(KiritoVM& vm, Handle scope, const ast::Block& body
     if (hasOwner) rs.add(ownerClass);
     const Proto* proto = protoForBody(vm, body, isFunction, fnDef);
     BytecodeVM bc(vm, scope, ownerClass, hasOwner, std::move(frameLabel));
-    return bc.run(*proto);
+    return bc.run(*proto, paramValues);
 }
 
 inline Handle runBytecodeExpr(KiritoVM& vm, Handle scope, const ast::Expr& e) {

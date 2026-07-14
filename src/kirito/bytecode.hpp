@@ -2,6 +2,7 @@
 #define KIRITO_BYTECODE_HPP
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -117,6 +118,7 @@ struct Proto {
     std::vector<SwitchTable> switches;                // SwitchDispatch targets (compile-time case tables)
     uint32_t localCount = 0;                           // frame slots to reserve for slot-addressed locals
     std::vector<std::string> localNames;              // slot -> name (for the LoadLocal fallback + errors)
+    std::vector<int> paramSlots;                       // param i -> its frame slot, or -1 if captured (name-based)
 };
 
 class KiritoVM;
@@ -127,7 +129,8 @@ class KiritoVM;
 // (KiFunction::callFull / KiritoVM::evalIn / the module loaders) only need this declaration.
 Handle runBytecodeBody(KiritoVM& vm, Handle scope, const ast::Block& body, Handle ownerClass,
                        bool hasOwner, bool isFunction, std::string frameLabel = "<module>",
-                       const ast::FunctionExpr* fnDef = nullptr);
+                       const ast::FunctionExpr* fnDef = nullptr,
+                       std::span<const Handle> paramValues = {});
 // Compile and evaluate a single expression against `scope` (a parameter's default value).
 Handle runBytecodeExpr(KiritoVM& vm, Handle scope, const ast::Expr& e);
 
