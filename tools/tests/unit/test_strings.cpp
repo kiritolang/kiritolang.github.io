@@ -55,5 +55,17 @@ n
         CHECK(r.stringify(r.runRepl("x")) == "2");
     }
 
+    // The REPL's persistent scope is a module scope treated exactly like a run file under strict
+    // lexical addressing: a closure defined on an earlier line captures it by handle and observes a
+    // later mutation, and cross-line references resolve to stable (append-only) slots.
+    {
+        KiritoVM r;
+        r.runRepl("var g = 10");
+        r.runRepl("var f = Function(): return g");
+        CHECK(r.stringify(r.runRepl("f()")) == "10");
+        r.runRepl("g = 20");
+        CHECK(r.stringify(r.runRepl("f()")) == "20");   // the closure sees the cross-line rebind
+    }
+
     return RUN_TESTS();
 }

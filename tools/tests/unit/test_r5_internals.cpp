@@ -7,7 +7,7 @@
 //      mark-sweep handles cycles, no leak/dangle (mirrors test_gc.cpp / test_arena.cpp).
 //   2. Bytecode VM / compiler edges: a very deep expression evaluates; the call-depth guard THROWS
 //      (catchable) instead of overflowing the native stack; constant dedup is transparent; and
-//      slot-addressed locals' read-before-assign falls back correctly (rebind-outer vs UnboundLocal).
+//      slot-addressed locals read/rebind-before-assign is a strict "not defined" error (no fallback).
 //   3. Resolver + analyzer from C++: an undefined name is a COMPILE-time error (thrown from
 //      runSource before any code runs); the Analyzer surfaces a representative warning set.
 //   4. serde from C++: a value graph with a SHARED reference AND a CYCLE round-trips through both the
@@ -163,11 +163,11 @@ int main() {
         CHECK(run("0.1 + 0.2 == 0.3") == "False");             // exact float == survives dedup
     }
     {
-        // Slot-addressed locals: read-before-assign behavior is preserved.
-        //  - WITH an enclosing binding, a bare `=` rebinds the outer one; a later `var` shadows locally.
-        CHECK(run("var x = 100\nvar f = Function():\n x = 5\n var x = 7\n return x\nvar r = f()\n[r, x]")
-              == "[7, 5]");
-        //  - WITHOUT any binding, a read-before-assign is an UnboundLocal-style error (slot fallback).
+        // Slot-addressed locals: read/rebind-before-assign is STRICT (no name-walk fallback).
+        //  - a bare `=` to a local before its own `var` runs is a "not defined" error, NOT a walk out
+        //    to an enclosing binding of the same name (the former find-outer-rebind, [7, 5], is gone).
+        CHECK(throws("var x = 100\nvar f = Function():\n x = 5\n var x = 7\n return x\nf()"));
+        //  - a read-before-assign with no binding at all is likewise an UnboundLocal-style error.
         CHECK(throws("var f = Function():\n var y = z\n var z = 1\n return y\nf()"));
         //  - a slotted local read before its own assignment, no outer binding -> throws (not garbage).
         CHECK(throws("var f = Function():\n return q\n var q = 1\nf()"));

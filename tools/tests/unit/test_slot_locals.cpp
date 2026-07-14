@@ -41,9 +41,10 @@ int main() {
     CHECK(run("var outer = Function():\n var x = 1\n var mid = Function():\n  var inner = Function():\n"
               "   x = x + 10\n   return x\n  return inner()\n var r = mid()\n return [r, x]\nouter()") == "[11, 11]");
 
-    // --- read-before-assign WITH an enclosing binding: bare `=` rebinds the outer one, the later
-    //     `var` shadows locally (exactly the pre-slot semantics) ---
-    CHECK(run("var x = 100\nvar f = Function():\n x = 5\n var x = 7\n return x\nvar r = f()\n[r, x]") == "[7, 5]");
+    // --- read/rebind-before-assign is STRICT (no fallback): a bare `=` to a local before its own
+    //     `var` runs is a "not defined" error, NOT a walk out to an enclosing binding of the same
+    //     name. (The former find-outer-rebind, `[7, 5]`, is gone under strict lexical addressing.) ---
+    CHECK(throws("var x = 100\nvar f = Function():\n x = 5\n var x = 7\n return x\nf()"));
     // read-before-assign WITHOUT any binding -> NameError (UnboundLocal-style), like before
     CHECK(throws("var f = Function():\n var y = z\n var z = 1\n return y\nf()"));
 
@@ -77,7 +78,7 @@ int main() {
               "class Dog(Animal):\n var speak = Function(self):\n  var prefix = \"woof: \"\n"
               "  return prefix + self._super_().speak()\n"
               "var d = Dog(\"Rex\")\nd.speak()") == "woof: Rex sound");
-    // a class defined INSIDE a function (class name resolves via the slot fallback)
+    // a class defined INSIDE a function: its name is bound in its frame slot, like `var P = ...`
     CHECK(run("var mk = Function():\n class P:\n  var _init_ = Function(self, x):\n   self.x = x\n"
               " return P(5).x\nmk()") == "5");
 

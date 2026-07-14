@@ -243,8 +243,12 @@ public:
                         }
                         for (auto& [mname, ch] : owned) { klass.methods[mname] = ch; classEnv.define(mname, ch); }
                     }
-                    static_cast<EnvValue&>(vm_.arena().deref(scope())).define(cs.name, clsHandle);
                     vm_.registerClass(cs.name, clsHandle);  // so serialize/dump can reconstruct instances
+                    // Leave the class on the operand stack; the compiler binds cs.name right after via
+                    // StoreLocal/StoreName (exactly like `var Name = ...`), so a non-captured class name
+                    // lands in its frame slot rather than only the scope env — consistent with the slot
+                    // model now that there is no unwritten-slot name-walk fallback to paper over it.
+                    push(clsHandle);
                 } break;
 
                 case Op::GetAttr: {

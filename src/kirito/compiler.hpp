@@ -467,7 +467,8 @@ private:
         protoForBody(vm_, s.body, /*isFunction=*/true);  // compile + cache the body (errors propagate)
         if (s.base) compileExpr(*s.base);
         proto_.classes.push_back(&s);
-        emit(Op::BuildClass, static_cast<uint32_t>(proto_.classes.size() - 1), s.span);
+        emit(Op::BuildClass, static_cast<uint32_t>(proto_.classes.size() - 1), s.span);  // pushes the class
+        emitStore(s.name, s.span);   // bind the class name in its slot (frame or env), like `var Name = ...`
         emit(Op::ClearResult);
     }
 
