@@ -104,7 +104,13 @@ public:
                 case Op::LoadVar: {  // O(1): walk `depth` parents, read slot `index` — no name lookup
                     const EnvVarRef& ref = proto.envVars[in.a];
                     EnvValue& e = envAtDepth(ref.depth);
-                    assert(ref.index < e.size() && e.nameAt(ref.index) == ref.name);  // exact by construction
+                    // The slot is exact by construction, EXCEPT when a closure is placed on a scope
+                    // chain shorter/emptier than it was compiled for — a spawned nested function whose
+                    // enclosing locals do NOT cross to the worker gets empty stand-in scopes, so the
+                    // enclosing slot is out of range. That is a clean "not defined", not a wrong read.
+                    if (ref.index >= e.size())
+                        throw KiritoError("name '" + ref.name + "' is not defined", in.span);
+                    assert(e.nameAt(ref.index) == ref.name);  // otherwise the (depth,index) is exact
                     Handle h = e.at(ref.index);
                     if (h == vm_.undefined())  // declared but not yet assigned (its `var` hasn't run): strict
                         throw KiritoError("name '" + ref.name + "' is not defined", in.span);
@@ -114,7 +120,9 @@ public:
                     Handle v = pop();
                     const EnvVarRef& ref = proto.envVars[in.a];
                     EnvValue& e = envAtDepth(ref.depth);
-                    assert(ref.index < e.size() && e.nameAt(ref.index) == ref.name);
+                    if (ref.index >= e.size())   // an enclosing slot that did not cross (see LoadVar)
+                        throw KiritoError("name '" + ref.name + "' is not defined", in.span);
+                    assert(e.nameAt(ref.index) == ref.name);
                     if (e.at(ref.index) == vm_.undefined())  // rebinding before the var executed
                         throw KiritoError("name '" + ref.name + "' is not defined", in.span);
                     e.setAt(ref.index, v);
