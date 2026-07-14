@@ -126,6 +126,12 @@ private:
         collectBlockDecls(body, decls);
         for (const auto& name : decls)
             if (!captured.count(name) && !params.count(name)) defineSlot(name);
+        // Captured non-param locals live in the scope's EnvValue (a nested closure reaches them), at
+        // fixed indices AFTER the parameters. Record them in the SAME deterministic order the resolver
+        // uses to assign their (depth, index), so the runtime pre-declares slot i for the name the
+        // resolver addressed as index P+i. Read via LoadVar; declared via StoreName into the slot.
+        for (const auto& name : collectBlockDeclsOrdered(body))
+            if (captured.count(name) && !params.count(name)) proto_.envSlots.push_back(name);
     }
     uint32_t defineSlot(const std::string& name) {
         uint32_t slot = nextSlot_++;

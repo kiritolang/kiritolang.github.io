@@ -131,6 +131,7 @@ struct Proto {
     std::vector<const ast::ClassStmt*> classes;       // BuildClass targets (name/base/body)
     std::vector<SwitchTable> switches;                // SwitchDispatch targets (compile-time case tables)
     std::vector<EnvVarRef> envVars;                    // LoadVar/AssignVar targets (depth,index into an env scope)
+    std::vector<std::string> envSlots;                 // captured non-param locals to pre-declare in the scope env
     uint32_t localCount = 0;                           // frame slots to reserve for slot-addressed locals
     std::vector<std::string> localNames;              // slot -> name (for the LoadLocal fallback + errors)
     std::vector<int> paramSlots;                       // param i -> its frame slot, or -1 if captured (name-based)

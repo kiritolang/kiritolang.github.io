@@ -72,6 +72,14 @@ public:
         // params (paramSlots[i] < 0) are left to the scope env, where the closure can reach them.
         for (std::size_t i = 0; i < proto.paramSlots.size() && i < paramValues.size(); ++i)
             if (proto.paramSlots[i] >= 0) setLocal(static_cast<uint32_t>(proto.paramSlots[i]), paramValues[i]);
+        // Pre-declare this function's captured-local env slots, immediately after the parameters that
+        // callFull already defined (so their fixed indices are P, P+1, ...). A closure reaches them by
+        // LoadVar(depth, index); the local's own `var` overwrites the placeholder in place. Empty for
+        // module/class bodies (a module's slots are pre-declared by the resolver into the live scope).
+        if (!proto.envSlots.empty()) {
+            EnvValue& env = static_cast<EnvValue&>(vm_.arena().deref(scope()));
+            for (const auto& name : proto.envSlots) env.define(name, vm_.undefined());
+        }
         const std::vector<Instr>& code = proto.code;
         std::size_t ip = 0;
         while (true) {

@@ -20,39 +20,57 @@ namespace kirito {
 
 using NameSet = fum::unordered_set<std::string>;
 
-inline void collectBlockDecls(const ast::Block& block, NameSet& out);
+template <typename Sink> inline void forEachBlockDecl(const ast::Block& block, Sink&& sink);
 
-// Names a statement binds into the CURRENT scope. Descends into the sub-blocks that share this scope
-// (if/while/for/try/with/switch) but NOT into nested function/class bodies (those are their own scopes).
-inline void collectStmtDecls(const ast::Stmt& s, NameSet& out) {
+// Visit, in source order, every name a statement binds into the CURRENT scope, calling sink(name)
+// for each. Descends into the sub-blocks that share this scope (if/while/for/try/with/switch) but NOT
+// into nested function/class bodies (those are their own scopes). The single traversal behind both
+// collectBlockDecls (membership set) and collectBlockDeclsOrdered (deterministic slot order).
+template <typename Sink>
+inline void forEachStmtDecl(const ast::Stmt& s, Sink&& sink) {
     if (const auto* v = dynamic_cast<const ast::VarDeclStmt*>(&s)) {
-        for (const auto& n : v->names) out.insert(n);
+        for (const auto& n : v->names) sink(n);
     } else if (const auto* f = dynamic_cast<const ast::ForStmt*>(&s)) {
-        for (const auto& n : f->vars) out.insert(n);
-        collectBlockDecls(f->body, out);
+        for (const auto& n : f->vars) sink(n);
+        forEachBlockDecl(f->body, sink);
     } else if (const auto* c = dynamic_cast<const ast::ClassStmt*>(&s)) {
-        out.insert(c->name);  // the class name binds in THIS scope; its body is a separate scope
+        sink(c->name);  // the class name binds in THIS scope; its body is a separate scope
     } else if (const auto* i = dynamic_cast<const ast::IfStmt*>(&s)) {
-        for (const auto& [cond, b] : i->branches) collectBlockDecls(b, out);
-        if (i->orelse) collectBlockDecls(*i->orelse, out);
+        for (const auto& [cond, b] : i->branches) forEachBlockDecl(b, sink);
+        if (i->orelse) forEachBlockDecl(*i->orelse, sink);
     } else if (const auto* w = dynamic_cast<const ast::WhileStmt*>(&s)) {
-        collectBlockDecls(w->body, out);
+        forEachBlockDecl(w->body, sink);
     } else if (const auto* t = dynamic_cast<const ast::TryStmt*>(&s)) {
-        collectBlockDecls(t->body, out);
-        for (const auto& h : t->handlers) { if (!h.name.empty()) out.insert(h.name); collectBlockDecls(h.body, out); }
-        if (t->hasFinally) collectBlockDecls(t->finallyBody, out);
+        forEachBlockDecl(t->body, sink);
+        for (const auto& h : t->handlers) { if (!h.name.empty()) sink(h.name); forEachBlockDecl(h.body, sink); }
+        if (t->hasFinally) forEachBlockDecl(t->finallyBody, sink);
     } else if (const auto* wi = dynamic_cast<const ast::WithStmt*>(&s)) {
-        if (!wi->name.empty()) out.insert(wi->name);
-        collectBlockDecls(wi->body, out);
+        if (!wi->name.empty()) sink(wi->name);
+        forEachBlockDecl(wi->body, sink);
     } else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&s)) {
-        for (const auto& cl : sw->cases) collectBlockDecls(cl.body, out);
-        if (sw->hasDefault) collectBlockDecls(sw->defaultBody, out);
+        for (const auto& cl : sw->cases) forEachBlockDecl(cl.body, sink);
+        if (sw->hasDefault) forEachBlockDecl(sw->defaultBody, sink);
     }
     // ExprStmt/Discard/Assign/Return/Throw/Break/Continue/Pass/Todo/Assert bind nothing.
 }
 
+template <typename Sink>
+inline void forEachBlockDecl(const ast::Block& block, Sink&& sink) {
+    for (const auto& s : block) forEachStmtDecl(*s, sink);
+}
+
 inline void collectBlockDecls(const ast::Block& block, NameSet& out) {
-    for (const auto& s : block) collectStmtDecls(*s, out);
+    forEachBlockDecl(block, [&](const std::string& n) { out.insert(n); });
+}
+
+// The names a scope binds, in deterministic source-declaration order (deduped by first occurrence).
+// Used to lay out a function scope's captured-local env slots identically in the resolver (which
+// assigns each an index) and the runtime (which pre-declares them at frame entry).
+inline std::vector<std::string> collectBlockDeclsOrdered(const ast::Block& block) {
+    std::vector<std::string> out;
+    NameSet seen;
+    forEachBlockDecl(block, [&](const std::string& n) { if (seen.insert(n).second) out.push_back(n); });
+    return out;
 }
 
 namespace detail {
