@@ -571,7 +571,10 @@ private:
             emit(Op::LoadNone);
     }
 
-    void visit(const ast::NameExpr& e) override { emitLoad(e.name, e.span); }
+    void visit(const ast::NameExpr& e) override {
+        if (e.builtinSlot >= 0) emit(Op::LoadGlobal, static_cast<uint32_t>(e.builtinSlot), e.span);
+        else emitLoad(e.name, e.span);
+    }
 
     void visit(const ast::UnaryExpr& e) override {
         compileExpr(*e.operand);

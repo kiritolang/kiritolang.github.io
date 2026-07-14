@@ -86,6 +86,7 @@ public:
                     if (!found) throw KiritoError("name '" + proto.names[in.a] + "' is not defined", in.span);
                     push(*found);
                 } break;
+                case Op::LoadGlobal: { push(vm_.globalSlot(in.a)); } break;  // O(1): no scope-chain walk
                 case Op::StoreName: {
                     Handle v = pop();
                     static_cast<EnvValue&>(vm_.arena().deref(scope())).define(proto.names[in.a], v);

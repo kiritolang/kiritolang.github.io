@@ -47,6 +47,7 @@ public:
             smallInts_.push_back(arena_.alloc(std::make_unique<IntVal>(v)));
         installBuiltins();
         installStandardLibrary();
+        buildBuiltinIndex();  // freeze the global/builtin scope into a name->slot table for LoadGlobal
     }
 
     ObjectArena& arena() { return arena_; }
@@ -73,6 +74,17 @@ public:
     Handle makeString(std::string v) { return alloc(std::make_unique<StrVal>(std::move(v))); }
 
     Handle global() const { return global_; }
+    // Compile-time global resolution: builtinSlot(name) returns a fixed index into the global scope
+    // for a standard builtin (so the compiler can emit LoadGlobal), or -1 for a name that is not an
+    // indexed builtin (an embedder-added global still resolves the slow way via LoadName). globalSlot
+    // reads that slot positionally (O(1)), which is valid because the global scope only grows by append.
+    int builtinSlot(const std::string& name) const {
+        auto it = builtinIndex_.find(name);
+        return it == builtinIndex_.end() ? -1 : static_cast<int>(it->second);
+    }
+    Handle globalSlot(uint32_t i) const {
+        return static_cast<const EnvValue&>(arena_.deref(global_)).at(i);
+    }
     // A fresh scope whose parent is the given one (defaults to a module scope under global).
     Handle newScope(Handle parent) { return alloc(std::make_unique<EnvValue>(parent)); }
     // A module/file scope under global, with the per-file `arglist` and `argmain` bound into it.
@@ -288,6 +300,15 @@ public:
     // Register built-in globals (len, ...). Defined in runtime.hpp; called from the constructor.
     void installBuiltins();
 
+    // Snapshot the global scope's bindings into a name->index table, once, after all builtins are
+    // installed. Every builtin keeps its position (the global scope only ever grows by append), so a
+    // compile-time LoadGlobal(index) reads it in O(1) with no name walk.
+    void buildBuiltinIndex() {
+        const auto& g = static_cast<const EnvValue&>(arena_.deref(global_));
+        uint32_t i = 0;
+        for (const auto& [name, h] : g.locals()) { (void)h; builtinIndex_.emplace(name, i++); }
+    }
+
     // Shared lex->parse->retain->evaluate against a given scope. Defined in runtime.hpp.
     Handle evalIn(std::string_view source, Handle scope, std::string_view chunkName = {});
 
@@ -313,6 +334,7 @@ private:
     Handle false_;
     Handle undefined_;
     Handle global_;
+    fum::unordered_map<std::string, uint32_t> builtinIndex_;  // builtin name -> global slot (LoadGlobal)
     std::vector<std::unique_ptr<ast::Program>> chunks_;
     std::vector<std::unique_ptr<NativeModule>> nativeModules_;
     fum::unordered_map<std::string, ModuleFactory> moduleFactories_;

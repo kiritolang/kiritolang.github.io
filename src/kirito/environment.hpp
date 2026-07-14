@@ -57,6 +57,11 @@ public:
     }
     // Iterable view of the bindings (used to snapshot class methods / module members).
     const auto& locals() const { return vars_; }
+    // Positional access to the i-th binding's value — the O(1) path behind LoadGlobal(index). Valid
+    // for a scope whose bindings only ever grow by append (the global/builtin scope), so index i is
+    // stable once assigned.
+    Handle at(std::size_t i) const { return vars_[i].second; }
+    std::size_t size() const { return vars_.size(); }
 
     void reserve(std::size_t n) { vars_.reserve(n); }
 

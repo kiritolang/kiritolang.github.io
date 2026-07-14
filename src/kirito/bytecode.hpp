@@ -29,6 +29,7 @@ enum class Op : uint8_t {
     LoadConst,        // a: push consts[a]
     LoadNone,         //    push the None singleton
     LoadName,         // a: push the value bound to names[a] (NameError if undefined)
+    LoadGlobal,       // a: push global slot a — a builtin/global resolved at compile time (O(1), no walk)
     StoreName,        // a: define names[a] = pop() in the current scope (var)
     AssignName,       // a: rebind the nearest existing names[a] = pop() (NameError if undefined)
     LoadLocal,        // a: push frame slot a; if unwritten, fall back to LoadName via localNames[a]

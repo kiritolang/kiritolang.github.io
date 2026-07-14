@@ -112,8 +112,12 @@ private:
     }
 
     void checkName(const ast::NameExpr& n) {
-        if (!inLexicalScope(n.name) && !isGlobal(n.name))
+        if (inLexicalScope(n.name)) return;   // a lexical binding shadows any builtin; compile as a name
+        if (!isGlobal(n.name))
             throw KiritoError("name '" + n.name + "' is not defined", n.span);
+        // A genuine builtin/global reference: annotate its fixed global slot so the compiler emits a
+        // direct LoadGlobal. builtinSlot() is -1 for an embedder-added global (still resolves via LoadName).
+        n.builtinSlot = vm_.builtinSlot(n.name);
     }
 
     void checkExpr(const ast::Expr& e) {

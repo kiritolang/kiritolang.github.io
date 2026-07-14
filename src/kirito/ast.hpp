@@ -75,6 +75,10 @@ struct LiteralExpr : Expr {
 
 struct NameExpr : Expr {
     std::string name;
+    // Resolver annotation: >= 0 means this reference binds to a builtin/global at that fixed global
+    // slot, so the compiler lowers it to a direct LoadGlobal(index) instead of a scope-chain name walk.
+    // -1 means "not a fast global" (a lexical name, or an embedder-added global) — compile as before.
+    mutable int builtinSlot = -1;
     ExprKind exprKind() const override { return ExprKind::Name; }
     void accept(ExprVisitor& v) const override { v.visit(*this); }
 };
