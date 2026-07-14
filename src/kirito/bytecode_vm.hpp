@@ -137,24 +137,18 @@ public:
                         throw KiritoError("name '" + proto.names[in.a] + "' is not defined", in.span);
                 } break;
 
-                case Op::LoadLocal: {
+                case Op::LoadLocal: {  // O(1): direct frame slot, no name lookup
                     Handle h = getLocal(in.a);
-                    if (h == vm_.undefined()) {  // unwritten: behave exactly like LoadName (walk the chain)
-                        auto found = envLookup(vm_.arena(), scope(), proto.localNames[in.a]);
-                        if (!found) throw KiritoError("name '" + proto.localNames[in.a] + "' is not defined", in.span);
-                        h = *found;
-                    }
+                    if (h == vm_.undefined())  // read before assignment: strict, no name walk
+                        throw KiritoError("name '" + proto.localNames[in.a] + "' is not defined", in.span);
                     push(h);
                 } break;
                 case Op::StoreLocal: { setLocal(in.a, pop()); } break;
-                case Op::AssignLocal: {
+                case Op::AssignLocal: {  // O(1): direct frame slot, no name lookup
                     Handle v = pop();
-                    if (getLocal(in.a) == vm_.undefined()) {  // no local binding yet: rebind nearest existing
-                        if (!envAssign(vm_.arena(), scope(), proto.localNames[in.a], v))
-                            throw KiritoError("name '" + proto.localNames[in.a] + "' is not defined", in.span);
-                    } else {
-                        setLocal(in.a, v);
-                    }
+                    if (getLocal(in.a) == vm_.undefined())  // rebinding before the var executed: strict
+                        throw KiritoError("name '" + proto.localNames[in.a] + "' is not defined", in.span);
+                    setLocal(in.a, v);
                 } break;
 
                 case Op::UnaryOp: {

@@ -35,9 +35,9 @@ enum class Op : uint8_t {
     AssignVar,        // a: (envVars[a]) rebind the (depth-up, index) env slot = pop() — O(1), no walk
     StoreName,        // a: define names[a] = pop() in the current scope (var)
     AssignName,       // a: rebind the nearest existing names[a] = pop() (NameError if undefined)
-    LoadLocal,        // a: push frame slot a; if unwritten, fall back to LoadName via localNames[a]
+    LoadLocal,        // a: push frame slot a (a non-captured function local); unwritten -> "not defined"
     StoreLocal,       // a: frame slot a = pop()  (a non-captured function local — var/for/with/catch)
-    AssignLocal,      // a: if slot a written, slot a = pop(); else rebind via AssignName(localNames[a])
+    AssignLocal,      // a: frame slot a = pop(); if unwritten (rebind before its var ran) -> "not defined"
     Pop,              //    discard the top of stack
     Dup,              //    push a copy of the top of stack
     UnaryOp,          // a: (UnOp) replace top with op(top)
@@ -133,7 +133,7 @@ struct Proto {
     std::vector<EnvVarRef> envVars;                    // LoadVar/AssignVar targets (depth,index into an env scope)
     std::vector<std::string> envSlots;                 // captured non-param locals to pre-declare in the scope env
     uint32_t localCount = 0;                           // frame slots to reserve for slot-addressed locals
-    std::vector<std::string> localNames;              // slot -> name (for the LoadLocal fallback + errors)
+    std::vector<std::string> localNames;              // slot -> name (for "referenced before assignment" errors)
     std::vector<int> paramSlots;                       // param i -> its frame slot, or -1 if captured (name-based)
 };
 

@@ -74,13 +74,18 @@ public:
     Handle makeString(std::string v) { return alloc(std::make_unique<StrVal>(std::move(v))); }
 
     Handle global() const { return global_; }
-    // Compile-time global resolution: builtinSlot(name) returns a fixed index into the global scope
-    // for a standard builtin (so the compiler can emit LoadGlobal), or -1 for a name that is not an
-    // indexed builtin (an embedder-added global still resolves the slow way via LoadName). globalSlot
-    // reads that slot positionally (O(1)), which is valid because the global scope only grows by append.
+    // Compile-time global resolution: builtinSlot(name) returns a fixed index into the global scope so
+    // the compiler can emit a direct LoadGlobal, or -1 only if the name is not a global at all. A
+    // standard builtin hits the frozen index table; an embedder-added global (registered after the
+    // freeze) is found by its position in the global scope — stable because the scope only ever grows
+    // by append — so it too resolves to LoadGlobal, never a name walk. globalSlot reads it positionally.
     int builtinSlot(const std::string& name) const {
         auto it = builtinIndex_.find(name);
-        return it == builtinIndex_.end() ? -1 : static_cast<int>(it->second);
+        if (it != builtinIndex_.end()) return static_cast<int>(it->second);
+        const auto& g = static_cast<const EnvValue&>(arena_.deref(global_));
+        for (std::size_t i = 0; i < g.size(); ++i)
+            if (g.nameAt(i) == name) return static_cast<int>(i);
+        return -1;
     }
     Handle globalSlot(uint32_t i) const {
         return static_cast<const EnvValue&>(arena_.deref(global_)).at(i);

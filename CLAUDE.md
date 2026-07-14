@@ -597,8 +597,8 @@ a stability fuzzer, and a benchmark). Working today:
   It is thread-local (safe: one OS thread per VM, share-nothing multiprocessing) and **bypassed under
   asan/tsan** so the sanitizers still instrument every allocation. (A runtime *inline-cache* prototype
   for name lookup was rejected — it measured break-even because the flat-vector scopes already make name
-  lookup cheap and the cache itself allocated; v1.9's slot-addressed locals instead resolve slots at
-  COMPILE time with zero added allocation — see the bytecode-VM section below.)
+  lookup cheap and the cache itself allocated; the strict lexical addressing instead resolves EVERY name
+  to a slot/global index at COMPILE time with zero added allocation — see the bytecode-VM section below.)
 - **Sample projects** in `examples/` — single-file pure-Kirito demos:
   `complex_linsolve.ki` (complex linear-system solver on `complex.ComplexMatrix` + a Gauss-Jordan
   solver in `examples/lib/linsolve.ki`), `gen_systems.ki` / `solve_systems.ki` (a producer-consumer
@@ -704,16 +704,31 @@ are shared free functions in `runtime.hpp`). A **compile-time, scope-aware name-
 defined` for any reference bound to no parameter, no `var`/`for`/`class`/`catch`/`with` name in an
 enclosing lexical scope, no run-scope/REPL binding, and no builtin — resolution is by scope
 *membership*, so recursion/mutual-recursion/forward-references resolve, and an undefined name is a
-compile error (not catchable at run time). **Slot-addressed locals are implemented** (v1.9): the
-compiler assigns each function's non-captured body locals (`var`/`for`/`with`/`catch`/unpack targets +
-the hidden `with` manager) a frame slot, lowered to `LoadLocal`/`StoreLocal`/`AssignLocal` — a direct
-index into the call frame's operand stack (`stack_[3 + slot]`, zero added allocation) instead of a name
-lookup. Captured locals (referenced by a nested function/class, found via a free-variable analysis in
-`locals.hpp` shared with the resolver) and **parameters** stay name-based in the scope's `vars_`, where
-closures and the call binder resolve them by name; an unwritten slot transparently falls back to a name
-lookup, so semantics (closures, read-before-assign, the `var`-shadowing rule) are byte-for-byte
-unchanged. Module and class bodies are never slotted (a class body harvests its methods via
-`scope.locals()`; module scopes are dynamic). Two companion v1.9 wins ride along: a **numeric binary
+compile error (not catchable at run time). **Strict lexical addressing** is implemented: EVERY lexical
+name in compiled code resolves at COMPILE time to an O(1) access with **no run-time name comparison and
+no fallback**. Three storage tiers: (1) a function's non-captured locals/params → a **frame slot**
+(`LoadLocal`/`StoreLocal`/`AssignLocal`, a direct index into the call frame's operand stack `stack_[3 +
+slot]`, zero allocation); (2) **captured** locals/params, **enclosing-function**, **module-level**, and
+**class-body** names → an env `(depth, index)` (`LoadVar`/`AssignVar` walk `depth` EnvValue parents and
+index the slot — no scan); (3) builtins/globals, including **embedder-added** ones → an absolute
+`LoadGlobal(index)` into the frozen-then-append-only global scope. The `(depth, index)` is correct **by
+construction**: a module/REPL scope's names are pre-declared into the live `EnvValue` by the resolver,
+which reads their indices straight back; a function/class scope's captured-params (positional) +
+captured-locals/members (after) share ONE deterministic layout helper (`collectBlockDeclsOrdered` +
+capture filter in `locals.hpp`) between the resolver's annotation and the runtime's frame-entry slot
+pre-declaration — so index P+i names the same binding on both sides (a debug-only assertion checks each
+slot's name; compiled out in release). Reading or rebinding an **unwritten** slot is a strict `name 'X'
+is not defined` error (Python's UnboundLocalError shape) — NOT a walk to an outer/builtin binding: the
+former "read-before-write finds an outer" behaviour is gone, so the contract is now purely membership +
+assignment order (`var sorted = sorted(x)`, a self-shadowing initializer, is an error, not the builtin).
+The **REPL's persistent scope is treated exactly like a module scope** (append-only, so slots stay
+stable across lines; a closure defined on an earlier line captures and observes later mutations).
+`LoadName`/`StoreName`/`AssignName` survive ONLY at intentional boundaries — a `var` **declaration**
+writes its pre-declared slot by name, a **parameter default** runs as its own Proto (a different
+frame/depth), and a bare embedder `evalIn` against a **custom (non-module) scope** — never as a
+read-before-write fallback. In the `parallel` share-nothing model a spawned nested function is given
+empty stand-in closure scopes so its (non-crossing) enclosing-local references raise a clean name error
+rather than reading a wrong slot. Two companion v1.9 wins ride along: a **numeric binary
 fast path** (Integer/Float arithmetic in `applyBinaryOp` skips the virtual dispatch, delegating straight
 to the shared `numericBinary` with identical wraparound/true-division/exact-compare semantics) and
 **constant deduplication** (repeated scalar literals share one `consts` slot, floats keyed on exact

@@ -1,0 +1,8 @@
+# Strict lexical addressing: reading a local before its `var` executes is a clean error, NOT a walk
+# out to an outer/builtin binding of the same name (the former find-outer read-before-write is gone).
+var y = 100                      # an OUTER y exists; strict resolution ignores it for the local read
+var f = Function():
+    var z = y + 1                # `y` is f's local (declared below) -> referenced before assignment
+    var y = 5
+    return z
+f()
