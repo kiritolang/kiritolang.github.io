@@ -310,7 +310,10 @@ public:
     }
 
     // Shared lex->parse->retain->evaluate against a given scope. Defined in runtime.hpp.
-    Handle evalIn(std::string_view source, Handle scope, std::string_view chunkName = {});
+    // `indexTopLevel` gives the scope's top-level bindings fixed slots + LoadVar addressing (a real
+    // module/script scope); it is left false for the REPL's persistent dynamic scope and bare evals.
+    Handle evalIn(std::string_view source, Handle scope, std::string_view chunkName = {},
+                  bool indexTopLevel = false);
 
     ~KiritoVM();  // out-of-line so unique_ptr<ast::Program> sees a complete type
 

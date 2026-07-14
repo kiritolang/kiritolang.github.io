@@ -31,6 +31,8 @@ enum class Op : uint8_t {
     LoadNone,         //    push the None singleton
     LoadName,         // a: push the value bound to names[a] (NameError if undefined)
     LoadGlobal,       // a: push global slot a — a builtin/global resolved at compile time (O(1), no walk)
+    LoadVar,          // a: (envVars[a]=depth,index,name) push the (depth-up, index) env slot — O(1), no walk
+    AssignVar,        // a: (envVars[a]) rebind the (depth-up, index) env slot = pop() — O(1), no walk
     StoreName,        // a: define names[a] = pop() in the current scope (var)
     AssignName,       // a: rebind the nearest existing names[a] = pop() (NameError if undefined)
     LoadLocal,        // a: push frame slot a; if unwritten, fall back to LoadName via localNames[a]
@@ -91,6 +93,18 @@ struct SwitchTable {
     uint32_t defaultTarget = 0;                          // arm to run when no case key matches
 };
 
+// A resolved lexical reference into an indexed env scope: how many EnvValue hops up from the running
+// frame's scope to the owning scope, the binding's fixed slot there, and its name (for a clean
+// "referenced before assignment" diagnostic and a debug-only slot-name assertion). Produced by the
+// resolver, which guarantees the (depth, index) by construction — module scopes read the index back
+// from the live scope, function scopes share one ordered-layout helper between annotation and the
+// runtime slot pre-declaration — so no runtime name lookup is ever needed.
+struct EnvVarRef {
+    uint16_t depth = 0;
+    uint32_t index = 0;
+    std::string name;
+};
+
 // A call site's static shape: how many leading positional args, then the names of the trailing
 // keyword args (in the order their values are pushed). Reconstructed into positional span + NamedArg
 // list at run time. Kept out of the instruction so the hot loop stays compact.
@@ -116,6 +130,7 @@ struct Proto {
     std::vector<UnpackSpec> unpacks;                  // Unpack targets
     std::vector<const ast::ClassStmt*> classes;       // BuildClass targets (name/base/body)
     std::vector<SwitchTable> switches;                // SwitchDispatch targets (compile-time case tables)
+    std::vector<EnvVarRef> envVars;                    // LoadVar/AssignVar targets (depth,index into an env scope)
     uint32_t localCount = 0;                           // frame slots to reserve for slot-addressed locals
     std::vector<std::string> localNames;              // slot -> name (for the LoadLocal fallback + errors)
     std::vector<int> paramSlots;                       // param i -> its frame slot, or -1 if captured (name-based)

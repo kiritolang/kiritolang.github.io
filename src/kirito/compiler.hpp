@@ -92,6 +92,12 @@ private:
         proto_.unpacks.push_back(UnpackSpec{count, starIndex});
         return static_cast<uint32_t>(proto_.unpacks.size() - 1);
     }
+    // A resolver-annotated (depth, index) env reference -> a LoadVar/AssignVar operand.
+    uint32_t addEnvVar(const ast::NameExpr& e) {
+        proto_.envVars.push_back(EnvVarRef{static_cast<uint16_t>(e.envDepth),
+                                           static_cast<uint32_t>(e.envIndex), e.name});
+        return static_cast<uint32_t>(proto_.envVars.size() - 1);
+    }
     void emitCall0(SourceSpan span) {  // call the value on top of stack with no arguments
         proto_.calls.push_back(CallSpec{0, {}});
         emit(Op::Call, static_cast<uint32_t>(proto_.calls.size() - 1), span);
@@ -246,7 +252,9 @@ private:
     void compileAssignTarget(const ast::Expr& target, SourceSpan span) {
         switch (target.exprKind()) {
             case ast::ExprKind::Name: {
-                emitAssign(static_cast<const ast::NameExpr&>(target).name, span);
+                const auto& n = static_cast<const ast::NameExpr&>(target);
+                if (n.envIndex >= 0) emit(Op::AssignVar, addEnvVar(n), span);  // rebind an indexed env slot
+                else emitAssign(n.name, span);
             } break;
             case ast::ExprKind::Index: {
                 const auto& idx = static_cast<const ast::IndexExpr&>(target);
@@ -581,6 +589,7 @@ private:
 
     void visit(const ast::NameExpr& e) override {
         if (e.builtinSlot >= 0) emit(Op::LoadGlobal, static_cast<uint32_t>(e.builtinSlot), e.span);
+        else if (e.envIndex >= 0) emit(Op::LoadVar, addEnvVar(e), e.span);
         else emitLoad(e.name, e.span);
     }
 

@@ -2398,12 +2398,13 @@ inline void KiritoVM::registerSourceModule(std::string name, std::string_view so
             auto prog = std::make_unique<ast::Program>(Parser(Lexer(src).tokenize()).parseProgram());
             const ast::Program& program = *prog;
             vm.retainChunk(std::move(prog));
-            Resolver(vm).resolve(program, scope);  // compile-time name resolution
+            Resolver(vm).resolve(program, scope, /*indexTopLevel=*/true);  // compile-time name resolution
             runBytecodeBody(vm, scope, program.stmts, Handle{}, /*hasOwner=*/false, /*isFunction=*/false);
             auto mod = std::make_unique<ModuleValue>(modName);
             for (const auto& [k, v] : static_cast<EnvValue&>(vm.arena().deref(scope)).locals())
-                // hide private top-level names and the injected per-file env (arglist/argmain)
-                if (!k.empty() && k.front() != '_' && k != "arglist" && k != "argmain")
+                // hide private top-level names, the injected per-file env (arglist/argmain), and any
+                // pre-declared slot that was never assigned (still the `undefined()` placeholder)
+                if (!k.empty() && k.front() != '_' && k != "arglist" && k != "argmain" && v != vm.undefined())
                     mod->members[k] = v;
             return vm.alloc(std::move(mod));
         } catch (KiritoError& e) {
@@ -2494,11 +2495,11 @@ inline Handle KiritoVM::importModule(const std::string& name) {
             const ast::Program& program = *prog;
             retainChunk(std::move(prog));
             programByFile_[path.string()] = &program;  // for parallel.spawn span lookup in workers
-            Resolver(*this).resolve(program, scope);  // compile-time name resolution
+            Resolver(*this).resolve(program, scope, /*indexTopLevel=*/true);  // compile-time name resolution
             runBytecodeBody(*this, scope, program.stmts, Handle{}, /*hasOwner=*/false, /*isFunction=*/false);
             auto mod = std::make_unique<ModuleValue>(name);
             for (const auto& [k, v] : static_cast<EnvValue&>(arena_.deref(scope)).locals())
-                if (k != "arglist" && k != "argmain")  // exclude the injected per-file env
+                if (k != "arglist" && k != "argmain" && v != undefined())  // exclude injected env + unwritten slots
                     mod->members[k] = v;
             Handle h = alloc(std::move(mod));
             moduleCache_[name] = h;
@@ -3547,7 +3548,8 @@ inline KiritoVM::~KiritoVM() {
     s.erase(std::remove(s.begin(), s.end(), this), s.end());
 }
 
-inline Handle KiritoVM::evalIn(std::string_view source, Handle scope, std::string_view chunkName) {
+inline Handle KiritoVM::evalIn(std::string_view source, Handle scope, std::string_view chunkName,
+                              bool indexTopLevel) {
     try {
         ChunkFileScope chunkScope(*this, std::string(chunkName));  // functions defined here carry this file
         Lexer lexer(source);
@@ -3556,7 +3558,7 @@ inline Handle KiritoVM::evalIn(std::string_view source, Handle scope, std::strin
         const ast::Program& program = *prog;
         retainChunk(std::move(prog));  // keep the AST alive for the VM's lifetime (closures)
         if (!chunkName.empty()) programByFile_[std::string(chunkName)] = &program;  // for parallel.spawn span lookup
-        Resolver(*this).resolve(program, scope);  // compile-time: every name must resolve, else NameError
+        Resolver(*this).resolve(program, scope, indexTopLevel);  // compile-time: every name must resolve, else NameError
         try {
             return runBytecodeBody(*this, scope, program.stmts, Handle{}, /*hasOwner=*/false,
                                    /*isFunction=*/false);
@@ -3607,7 +3609,8 @@ inline void KiritoVM::setArgs(const std::vector<std::string>& args) {
 }
 
 inline Handle KiritoVM::runSource(std::string_view source, std::string_view chunkName) {
-    return evalIn(source, newModuleScope(/*isMain=*/true), chunkName);
+    // A directly-run file is a genuine module scope: index its top-level bindings (LoadVar).
+    return evalIn(source, newModuleScope(/*isMain=*/true), chunkName, /*indexTopLevel=*/true);
 }
 
 inline Handle KiritoVM::runRepl(std::string_view source) {
@@ -3615,7 +3618,11 @@ inline Handle KiritoVM::runRepl(std::string_view source) {
         replScope_ = newModuleScope(/*isMain=*/true);
         replScopeReady_ = true;
     }
-    return evalIn(source, replScope_);
+    // The REPL's persistent scope is a genuine module scope treated exactly like a run file: it only
+    // ever grows by append, so each line's top-level bindings keep stable slots and references to them
+    // (including from closures defined on an earlier line) compile to direct LoadVar/AssignVar. The
+    // resolver re-seeds its index map from the live scope each line, so cross-line names resolve.
+    return evalIn(source, replScope_, {}, /*indexTopLevel=*/true);
 }
 
 }  // namespace kirito

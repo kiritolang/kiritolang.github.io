@@ -1,6 +1,7 @@
 #ifndef KIRITO_BYTECODE_VM_HPP
 #define KIRITO_BYTECODE_VM_HPP
 
+#include <cassert>
 #include <memory>
 #include <span>
 #include <string>
@@ -92,6 +93,24 @@ public:
                     push(*found);
                 } break;
                 case Op::LoadGlobal: { push(vm_.globalSlot(in.a)); } break;  // O(1): no scope-chain walk
+                case Op::LoadVar: {  // O(1): walk `depth` parents, read slot `index` — no name lookup
+                    const EnvVarRef& ref = proto.envVars[in.a];
+                    EnvValue& e = envAtDepth(ref.depth);
+                    assert(ref.index < e.size() && e.nameAt(ref.index) == ref.name);  // exact by construction
+                    Handle h = e.at(ref.index);
+                    if (h == vm_.undefined())  // declared but not yet assigned (its `var` hasn't run): strict
+                        throw KiritoError("name '" + ref.name + "' is not defined", in.span);
+                    push(h);
+                } break;
+                case Op::AssignVar: {  // O(1) rebind of the (depth, index) env slot — no name lookup
+                    Handle v = pop();
+                    const EnvVarRef& ref = proto.envVars[in.a];
+                    EnvValue& e = envAtDepth(ref.depth);
+                    assert(ref.index < e.size() && e.nameAt(ref.index) == ref.name);
+                    if (e.at(ref.index) == vm_.undefined())  // rebinding before the var executed
+                        throw KiritoError("name '" + ref.name + "' is not defined", in.span);
+                    e.setAt(ref.index, v);
+                } break;
                 case Op::StoreName: {
                     Handle v = pop();
                     static_cast<EnvValue&>(vm_.arena().deref(scope())).define(proto.names[in.a], v);
@@ -441,6 +460,12 @@ private:
     // sits above them); reserved once at frame entry and never popped, so these indices stay valid.
     Handle getLocal(uint32_t i) const { return stack_[kOperandBase + i]; }
     void setLocal(uint32_t i, Handle h) { stack_[kOperandBase + i] = h; }
+    // The EnvValue `depth` hops up the scope chain from this frame — the target of LoadVar/AssignVar.
+    EnvValue& envAtDepth(uint16_t depth) {
+        Handle s = scope();
+        for (uint16_t d = 0; d < depth; ++d) s = static_cast<EnvValue&>(vm_.arena().deref(s)).parent();
+        return static_cast<EnvValue&>(vm_.arena().deref(s));
+    }
 
     template <typename F>
     auto located(SourceSpan span, F&& fn) -> decltype(fn()) {

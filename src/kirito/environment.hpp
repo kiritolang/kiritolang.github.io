@@ -57,10 +57,14 @@ public:
     }
     // Iterable view of the bindings (used to snapshot class methods / module members).
     const auto& locals() const { return vars_; }
-    // Positional access to the i-th binding's value — the O(1) path behind LoadGlobal(index). Valid
-    // for a scope whose bindings only ever grow by append (the global/builtin scope), so index i is
-    // stable once assigned.
+    // Positional access to the i-th binding — the O(1) path behind LoadGlobal/LoadVar(index). Valid
+    // for a scope whose bindings only ever grow by append (global scope, and a module/function scope
+    // once its slots are pre-declared), so index i is stable once assigned. `nameAt` backs the
+    // debug-only slot-name assertion and the compiler's env-index read-back; `setAt` is the O(1)
+    // StoreVar/AssignVar write.
     Handle at(std::size_t i) const { return vars_[i].second; }
+    const std::string& nameAt(std::size_t i) const { return vars_[i].first; }
+    void setAt(std::size_t i, Handle h) { vars_[i].second = h; }
     std::size_t size() const { return vars_.size(); }
 
     void reserve(std::size_t n) { vars_.reserve(n); }

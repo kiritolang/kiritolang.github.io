@@ -79,6 +79,13 @@ struct NameExpr : Expr {
     // slot, so the compiler lowers it to a direct LoadGlobal(index) instead of a scope-chain name walk.
     // -1 means "not a fast global" (a lexical name, or an embedder-added global) — compile as before.
     mutable int builtinSlot = -1;
+    // Resolver annotation for a lexical name that resolves to an INDEXED env scope (a module-level or,
+    // later, captured binding): envDepth = the number of EnvValue hops from the referencing frame's
+    // scope up to the scope that owns the binding, envIndex = the binding's fixed slot in that scope.
+    // Both >= 0 => the compiler emits a direct LoadVar/AssignVar(depth, index) with no name lookup.
+    // -1 => not an indexed env reference (a frame-slot local, or a name-based scope) — compile as before.
+    mutable int envDepth = -1;
+    mutable int envIndex = -1;
     ExprKind exprKind() const override { return ExprKind::Name; }
     void accept(ExprVisitor& v) const override { v.visit(*this); }
 };
