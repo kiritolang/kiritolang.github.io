@@ -39,3 +39,16 @@ flatten's `visit`. Bytes/Matrix/DateTime/Random/Tensor are native `Instance`s se
   (Verified: producer runs clean; `dump.load` throws `type 'None' is not callable`.)
 - **Proposed fix**: bind a function's captured free vars BEFORE any class whose eager initializer transitively needs them — e.g. treat a Function that is an eager free var of a class as needing its own (transitive) class deps ready, and bind function free vars eagerly (real values) rather than deferring all of them to pass 5. Minimal-risk alternative: in pass 0c, before running a class's eager initializer, eagerly bind the free vars of any *function* it captures eagerly (recursively) to their real values. Contract-preserving because a fully-built function value already exists in `objs[]` by pass 0c.
 - **Proposed test**: the repro above as a `.ki` round-trip (dump+loads in one VM already reproduces it — no fresh VM needed since the failure is in rebuild, not registration).
+
+**A10-2 UPDATE (broader + same-VM masks it):** the defect is NOT limited to captured user CLASSES. It
+fires for ANY free variable of the eager-called helper that is deferred to pass 5 — including a captured
+**module**. Repro: `var compute = Function(): return math.sqrt(16.0)` with `class Cfg: var root =
+compute()`. In a **fresh VM** (the headline "loads into a fresh VM" scenario) `dump.load` throws
+`cannot deserialize class 'Cfg': type 'None' has no attribute 'sqrt'` (compute's `math` free var is a
+None placeholder at pass 0c). CRITICAL SECONDARY ISSUE: the **same-VM** round-trip
+`dump.loads(dump.dumps(Cfg))` **succeeds** (prints 4.0) while the **fresh-VM** `dump.save`+`dump.load`
+**fails** — a non-deterministic same-VM-vs-fresh-VM divergence. This means an in-process test
+(`test_vm_serialization.cpp` uses fresh VMs, but a `.ki` round-trip test in the same VM would NOT) can
+pass while real cross-process/parallel transfer fails. Any regression test for this MUST use a fresh VM
+(or `parallel`), not a same-VM round-trip. This raises A10-2 toward HIGH for the module-helper variant
+since eager class-vars computed by a stdlib-using helper are a common config pattern.
