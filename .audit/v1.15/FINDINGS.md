@@ -18,6 +18,10 @@ could reuse the slot instead and return a silently wrong value.
 | `tensor.nonzero` | `nonzero(t)[0]` — each per-axis tensor collected the last |
 | `.shape` on Tensor / Matrix / ComplexMatrix (3) | a dimension **> 255** |
 | `enumerate` | index **> 255** — ordinary code |
+| `tensor.apply` (Float branch) | ANY `t.apply(fn)` — the callback's argument was unrooted while the callback allocated. The Complex branch beside it always rooted correctly. |
+| **`value.hpp` `Dict(vm, {…})` ctor** | ANY native building a Dict from an initializer list (`net.urlsplit`, …) — it materialised the key AND the value before rooting either, so the value's allocation collected the key. `List`/`Set` root one item at a time and were fine. |
+| **`value.hpp` `Dict::set` (all 6 overloads)** | `d.set(key, <fresh Handle>)` — allocating the key collected the caller's value (`regex.groupdict`). A `Value` from a primitive pins itself; a `Value` wrapping a raw Handle does NOT (it trusts the object to be rooted elsewhere — a native returning `vm.makeString(...)` has nothing rooting it). Fixed with `detail::rootArg`. |
+| **every native module's member DEFAULTS** | `net.socket(type = "dgram")` — a default is written as a call-site argument (`{{"family", "String", vm.makeString("inet")}, {"type", …, vm.makeString("stream")}}`), so the second collects the first while the argument list is still evaluating. `ModuleBuilder::fn`'s existing RootScope is TOO LATE — the damage is done before it runs. **Reachable because `install<T>()` registers a FACTORY: `setup()` runs lazily on FIRST IMPORT**, long after an embedder may have set a threshold. Fixed with one `GcPauseScope` around `mod->setup(builder)` — nothing needs collecting while a module installs, and it covers every module and every default at once instead of asking dozens of call sites to remember. |
 
 **Why five rounds missed it:** it needs a GC to land inside a few-instruction window, so it is
 invisible at any normal threshold — and `--gc-threshold 1` makes it deterministic. The scanners ran
@@ -28,16 +32,32 @@ here only because the S3 work ran the soak against `r7_types`/`r7_tensor`, which
 
 Fixed by rooting at the point of creation (`rs.add(...)`), and the four `.compare` signatures now
 share one `native.hpp::toleranceSig` helper rather than four copies of the same trap. Pinned in
-`test_gc_generational.cpp` (all nine, at threshold=1; they fail on the unfixed build). `ModuleBuilder::fn`
-has the same latent hole — it roots defaults only across the final alloc, not while the caller builds
-the signature — but is safe today because modules install during VM construction, before any GC.
+`test_gc_generational.cpp` at threshold=1; they fail on the unfixed build.
+
+## A19-2 [HIGH] — the write barrier is NOT complete: `json.loads` lost nested arrays
+
+Separate bug, same soak. `json`'s `array()` appended with a **raw `l.elems.push_back(...)`**, bypassing
+the barriered `append(arena, h)` its sibling `object()` correctly used for `d.set(...)`. The list is
+rooted across the recursive `value()` call, so a collection PROMOTES it; an old list silently gaining a
+young element is never enrolled in the remembered set, and the next minor frees a nested array that is
+still perfectly reachable. `json.loads("[1, [2]]")` returned a list whose inner list was dead.
+
+This **directly contradicts the A05 verdict** ("every `children()`-traced Handle is either mutated only
+through a barriered mutator or set once at construction while young"). It is the one raw write to a
+container reached via `deref` — the `->elems.push_back` forms elsewhere all write to a still-owned
+`unique_ptr` while young, which is genuinely safe. An audit of every raw container write is worth a
+scanner of its own next round.
+
+Distinctive shape, and why it hid: the value is correct until a GC happens AFTER it is built, so an
+immediate `String(json.loads(...))` looks right and only storing it in a variable and using it later
+fails.
 
 ## Headline verdicts
 
-- **Generational GC write barrier: COMPLETE for the single-VM model** (the shipped/tested config) and
-  the parallel model (A05). Every `children()`-traced Handle is either mutated only through a barriered
-  mutator or set once at construction while young. Serde rebuild wires are all barriered (A10, verified
-  at `KIRITO_GC_THRESHOLD=1`). This is the round's most important result — the new GC is correct.
+- ~~**Generational GC write barrier: COMPLETE**~~ (A05) — **WRONG, see A19-2**: `json`'s `array()`
+  appended raw, so a promoted list gained young elements with no barrier and `json.loads` lost nested
+  arrays to the next minor. The claim held for every site A05 checked; it did not hold for the one it
+  didn't. Serde rebuild wires ARE all barriered (A10, verified at `KIRITO_GC_THRESHOLD=1`).
 - **C++ embedding API: no bugs, barrier-safe** (A15) — but the signatures DID change: A05-1 threaded
   the owning arena into `EnvValue::define`/`assignLocal`/`setAt`, `ClassValue::defineMethod` and
   `ModuleValue::setMember` (source-breaking only for a host reaching past `value.hpp` into those).

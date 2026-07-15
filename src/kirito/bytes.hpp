@@ -288,6 +288,9 @@ inline Handle BytesVal::getAttr(KiritoVM& vm, Handle self, std::string_view name
             std::string out;
             out.reserve(src.size());
             for (unsigned char c : src) {
+                // Safe unrooted only because a byte is 0..255, inside the interned small-int range
+                // (kSmallIntHi = 256) — those live in a permanent VM root, so the allocating user
+                // callback below cannot collect one. Any wider value here would need rs.add().
                 std::array<Handle, 1> args{vm.makeInt(c)};
                 int64_t r = Value(vm, vm.arena().deref(fn).call(vm, args)).asInt("Bytes apply result");
                 if (r < 0 || r > 255) throw KiritoError("Bytes apply: result must be a byte (0..255)");

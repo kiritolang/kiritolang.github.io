@@ -1741,7 +1741,11 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         }
         FT out = std::get<FT>(t.store);
         for (std::size_t i = 0; i < out.data.size(); ++i) {
-            std::array<Handle, 1> args{vm.makeFloat(out.data[i])};
+            // Root the argument: `fn` is user code and will allocate, and an unrooted Float would be
+            // collected out from under the callee. (The Complex branch above always did; this one
+            // didn't. v1.15 A19-1.)
+            RootScope rs(vm);
+            std::array<Handle, 1> args{rs.add(vm.makeFloat(out.data[i]))};
             out.data[i] = Value(vm, vm.arena().deref(fn).call(vm, args)).asFloat("apply result");
         }
         return tns::make(vm, std::move(out));

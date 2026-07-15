@@ -293,6 +293,49 @@ String(keep[0]) + String(keep[1][1]) + String(keep[2]["k"])
         CHECK(vm.stringify(vm.runSource(
             "var T = import(\"tensor\")\nvar nz = T.nonzero(T.Tensor([[0.0, 5.0], [7.0, 0.0]]))\n"
             "String(nz[0].tolist()) + String(nz[1].tolist())")) == "[0.0, 1.0][1.0, 0.0]");
+        // A user callback allocates, so its ARGUMENT must be rooted. The Complex branch of
+        // tensor.apply always did; the Float branch did not.
+        CHECK(vm.stringify(vm.runSource(
+            "var T = import(\"tensor\")\n"
+            "String(T.Tensor([1.0, 4.0, 9.0]).apply(Function(x): return x * 2.0).tolist())"))
+            == "[2.0, 8.0, 18.0]");
+        // Dict(vm, {...}): the value's allocation collected the key. (net.urlsplit, and any native
+        // building a Dict from an initializer list.)
+        CHECK(vm.stringify(vm.runSource(
+            "var net = import(\"net\")\nnet.urlsplit(\"http://example.com:8080/p?q=1#f\")[\"host\"]"))
+            == "example.com");
+        // Dict::set(key, <fresh Handle>): allocating the key collected the caller's value.
+        CHECK(vm.stringify(vm.runSource(
+            "var re = import(\"regex\")\n"
+            "String(re.match(\"(?P<user>[a-z]+)@(?P<host>[a-z.]+)\", \"ada@kirito.dev\").groupdict())"))
+            == "{'user': 'ada', 'host': 'kirito.dev'}");
+        // A module member's DEFAULTS are built as call-site arguments, so they collect each other
+        // while the signature is still being evaluated — and setup() runs lazily, on first import,
+        // by which time a threshold may be set. Only a caller who OMITS the argument sees it.
+        CHECK(vm.stringify(vm.runSource("var net = import(\"net\")\nnet.socket(type = \"dgram\").type"))
+            == "dgram");
+        CHECK(vm.stringify(vm.runSource("var net = import(\"net\")\nlen(inspect(net)) > 0")) == "True");
+    }
+
+    // ===== A19-2: the WRITE BARRIER, not rooting. json's array() appended with a raw
+    // elems.push_back, skipping the barrier. The list is rooted across the recursive parse, so a
+    // collection PROMOTES it; an old list silently gaining a young element is never enrolled in the
+    // remembered set, and the next minor frees a nested array that is still perfectly reachable.
+    // Distinctive shape: the value is fine until a GC happens AFTER it is built — an immediate
+    // `String(json.loads(...))` looked correct, which is how this survived five rounds. =====
+    {
+        KiritoVM vm;
+        vm.installStandardLibrary();
+        vm.setGcThreshold(1);
+        CHECK(vm.stringify(vm.runSource(
+            "var json = import(\"json\")\nvar p = json.loads(\"[1, [2]]\")\nString(p) + String(p[1])"))
+            == "[1, [2]][2]");
+        CHECK(vm.stringify(vm.runSource(
+            "var json = import(\"json\")\njson.loads(\"[1, [2, [3, [4]]]]\") == [1, [2, [3, [4]]]]"))
+            == "True");
+        CHECK(vm.stringify(vm.runSource(
+            "var json = import(\"json\")\nString(json.loads(\"{\\\"a\\\": {\\\"b\\\": [1, 2]}}\"))"))
+            == "{'a': {'b': [1, 2]}}");
     }
 
     return RUN_TESTS();

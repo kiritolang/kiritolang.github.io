@@ -2407,6 +2407,18 @@ void KiritoVM::install() {
         RootScope rs(vm);  // keep the module alive while setup() allocates members (which may GC)
         rs.add(h);
         ModuleBuilder builder(vm, h, static_cast<ModuleValue&>(vm.arena().deref(h)));
+        // No GC while a module installs itself. A member's DEFAULTS are written as arguments at the
+        // call site — `m.fn("socket", {{"family", "String", vm.makeString("inet")}, {"type",
+        // "String", vm.makeString("stream")}}, …)` — so they are unrooted temporaries until the
+        // NativeFunction that traces them exists: allocating the second collects the first, and the
+        // module ships a member whose default is a dangling handle (fires only when a caller omits
+        // that argument). Rooting them inside ModuleBuilder::fn is TOO LATE — the damage is done
+        // while the argument list is still being evaluated. Pausing here fixes every module and
+        // every default at once, instead of asking dozens of call sites to remember. setup() runs
+        // once per module and allocates a bounded amount, so nothing needs collecting during it.
+        // This is reachable: install<T>() registers a FACTORY, so setup() runs lazily on first
+        // import — long after an embedder may have set an aggressive threshold. (v1.15 A19-1.)
+        GcPauseScope noGc(vm);
         mod->setup(builder);
         return h;
     });

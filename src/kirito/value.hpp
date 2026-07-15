@@ -112,6 +112,16 @@ struct Anything {
     }
 };
 
+// Root whatever the CALLER handed us before we materialise anything else. A Handle (or a Value
+// viewing one) may be a fresh, unrooted allocation — a native that just did `vm.makeString(...)` and
+// passed the result straight in — and materialising the other half of a key/value pair allocates,
+// which would collect it. A primitive needs nothing (it is not an object yet); a Value built from a
+// primitive already pins itself. (v1.15 A19-1.)
+template <class T> inline void rootArg(RootScope& rs, const T& x) {
+    if constexpr (std::is_same_v<std::decay_t<T>, Handle>) rs.add(x);
+    else if constexpr (std::is_base_of_v<Value, std::decay_t<T>>) rs.add(x.handle());
+}
+
 }  // namespace detail
 
 // ================================================================================================
@@ -650,8 +660,14 @@ public:
         RootScope roots(vm);
         auto dv = std::make_unique<DictVal>();
         for (const auto& [ka, va] : entries) {
-            Handle kh = ka.toHandle(vm), vh = va.toHandle(vm);
-            roots.add(kh); roots.add(vh);
+            // Root each handle AS IT IS MATERIALISED, not both afterwards: `va.toHandle(vm)`
+            // allocates, and until `dv` is itself arena-reachable (the alloc below) nothing traces
+            // what it holds — so an unrooted `kh` would be collected by the value's allocation, and
+            // the finished Dict would hand out a dangling key. The List/Set ctors already root one
+            // item at a time for the same reason. (v1.15 A19-1: this shipped `net.urlsplit`,
+            // `regex.groupdict`, `json.loads` etc. with dangling members under a GC.)
+            Handle kh = roots.add(ka.toHandle(vm));
+            Handle vh = roots.add(va.toHandle(vm));
             dv->set(vm.arena(), kh, vh);
         }
         adopt(vm, vm.alloc(std::move(dv)));
@@ -690,17 +706,43 @@ public:
         mut().set(vm_->arena(), k.handle(), v.handle());
         return *this;
     }
-    Dict& set(std::string_view sk, const Value& v) { return set(Value(*vm_, sk), v); }
-    Dict& set(std::string_view sk, Handle h) { return set(Value(*vm_, sk), Value(*vm_, h)); }
+    // These two take a value the caller ALREADY materialised and then allocate the key from `sk`.
+    // A Value built from a primitive pins itself, but a Value wrapping a raw Handle does not (it
+    // trusts the object to be rooted elsewhere) — and a native returning a fresh Handle
+    // (`M.groupString(vm, g)`, …) has nothing rooting it yet. So root the incoming value BEFORE
+    // allocating the key, or the key's allocation collects it. (v1.15 A19-1: this is what made
+    // `regex.groupdict` hand back dangling values under a GC.)
+    Dict& set(std::string_view sk, const Value& v) {
+        RootScope rs(*vm_);
+        detail::rootArg(rs, v);
+        return set(Value(*vm_, sk), v);
+    }
+    Dict& set(std::string_view sk, Handle h) {
+        RootScope rs(*vm_);
+        rs.add(h);
+        return set(Value(*vm_, sk), Value(*vm_, h));
+    }
     template <class V> Dict& set(std::string_view sk, V v) {
+        RootScope rs(*vm_);
+        detail::rootArg(rs, v);
         return set(Value(*vm_, sk), Value(*vm_, v));
     }
     template <class K, class V> Dict& set(K k, V v) {
+        RootScope rs(*vm_);
+        detail::rootArg(rs, k); detail::rootArg(rs, v);
         return set(Value(*vm_, k), Value(*vm_, v));
     }
     // Overloads accepting a raw Handle key.
-    Dict& set(Handle k, Handle v) { return set(Value(*vm_, k), Value(*vm_, v)); }
-    Dict& set(Handle k, const Value& v) { return set(Value(*vm_, k), v); }
+    Dict& set(Handle k, Handle v) {
+        RootScope rs(*vm_);
+        rs.add(k); rs.add(v);
+        return set(Value(*vm_, k), Value(*vm_, v));
+    }
+    Dict& set(Handle k, const Value& v) {
+        RootScope rs(*vm_);
+        rs.add(k); detail::rootArg(rs, v);
+        return set(Value(*vm_, k), v);
+    }
 
     // Membership check.
     bool contains(const Value& k) const { return raw().find(vm_->arena(), k.handle()) != nullptr; }
