@@ -120,10 +120,34 @@ inline PKey loadPublic(const std::string& pem) {
     return PKey(k);
 }
 
+inline std::string keyTypeName(int baseId) {
+    switch (baseId) {
+        case EVP_PKEY_RSA: return "RSA";
+        case EVP_PKEY_EC: return "EC";
+        default: {
+            const char* sn = OBJ_nid2sn(baseId);
+            return sn ? sn : "unknown";
+        }
+    }
+}
+
+// EVP_DigestSign/Verify dispatch on the key's ACTUAL type rather than on the function the caller
+// named, so without this rsasign(anEcKey) would quietly return an ECDSA signature (and rsaverify
+// would accept it) — key/algorithm confusion. Each entry point below names the family it means.
+// (rsaencrypt/rsadecrypt need no such guard: their RSA-specific padding ctrls already hard-fail.)
+inline void requireKeyType(EVP_PKEY* key, int want, const char* fn, const char* role) {
+    int got = EVP_PKEY_base_id(key);
+    if (got != want)
+        throw KiritoError(std::string(fn) + ": expected " + keyTypeName(want) + " " + role +
+                          " key, got " + keyTypeName(got));
+}
+
 // EVP_DigestSign one-shot — works for both RSA (PKCS#1 v1.5) and EC (ECDSA), so rsasign / ecsign
-// share it (and rsaverify / ecverify share pkeyVerify).
-inline std::string pkeySign(const std::string& privPem, const std::string& msg, const std::string& algo) {
+// share it (and rsaverify / ecverify share pkeyVerify), each pinning `wantType` to its own family.
+inline std::string pkeySign(const std::string& privPem, const std::string& msg, const std::string& algo,
+                            int wantType, const char* fn) {
     PKey key = loadPrivate(privPem);
+    requireKeyType(key.get(), wantType, fn, "private");
     MdCtx ctx(EVP_MD_CTX_new());
     if (!ctx || EVP_DigestSignInit(ctx.get(), nullptr, mdByName(algo), nullptr, key.get()) != 1)
         throw KiritoError(sslError("sign init"));
@@ -137,8 +161,9 @@ inline std::string pkeySign(const std::string& privPem, const std::string& msg, 
     return sig;
 }
 inline bool pkeyVerify(const std::string& pubPem, const std::string& msg, const std::string& sig,
-                       const std::string& algo) {
+                       const std::string& algo, int wantType, const char* fn) {
     PKey key = loadPublic(pubPem);
+    requireKeyType(key.get(), wantType, fn, "public");
     MdCtx ctx(EVP_MD_CTX_new());
     if (!ctx || EVP_DigestVerifyInit(ctx.get(), nullptr, mdByName(algo), nullptr, key.get()) != 1)
         throw KiritoError(sslError("verify init"));
@@ -318,7 +343,7 @@ public:
             Args args(vm, a, "rsasign");
             std::string pem = args[0].asStringRef("rsasign private_pem");
             const std::string& msg = argStringOrBytes(vm, args[1].handle(), "rsasign message");
-            return Bytes(vm, pkeySign(pem, msg, args[2].asStringRef("rsasign algo")));
+            return Bytes(vm, pkeySign(pem, msg, args[2].asStringRef("rsasign algo"), EVP_PKEY_RSA, "rsasign"));
 #else
             (void)vm; (void)a;
             throw KiritoError("crypto.rsasign requires building with KIRITO_ENABLE_TLS (OpenSSL)");
@@ -333,7 +358,8 @@ public:
             std::string pem = args[0].asStringRef("rsaverify public_pem");
             const std::string& msg = argStringOrBytes(vm, args[1].handle(), "rsaverify message");
             const std::string& sig = argStringOrBytes(vm, args[2].handle(), "rsaverify signature");
-            return vm.makeBool(pkeyVerify(pem, msg, sig, args[3].asStringRef("rsaverify algo")));
+            return vm.makeBool(
+                pkeyVerify(pem, msg, sig, args[3].asStringRef("rsaverify algo"), EVP_PKEY_RSA, "rsaverify"));
 #else
             (void)vm; (void)a;
             throw KiritoError("crypto.rsaverify requires building with KIRITO_ENABLE_TLS (OpenSSL)");
@@ -394,7 +420,7 @@ public:
             Args args(vm, a, "ecsign");
             std::string pem = args[0].asStringRef("ecsign private_pem");
             const std::string& msg = argStringOrBytes(vm, args[1].handle(), "ecsign message");
-            return Bytes(vm, pkeySign(pem, msg, args[2].asStringRef("ecsign algo")));
+            return Bytes(vm, pkeySign(pem, msg, args[2].asStringRef("ecsign algo"), EVP_PKEY_EC, "ecsign"));
 #else
             (void)vm; (void)a;
             throw KiritoError("crypto.ecsign requires building with KIRITO_ENABLE_TLS (OpenSSL)");
@@ -409,7 +435,8 @@ public:
             std::string pem = args[0].asStringRef("ecverify public_pem");
             const std::string& msg = argStringOrBytes(vm, args[1].handle(), "ecverify message");
             const std::string& sig = argStringOrBytes(vm, args[2].handle(), "ecverify signature");
-            return vm.makeBool(pkeyVerify(pem, msg, sig, args[3].asStringRef("ecverify algo")));
+            return vm.makeBool(
+                pkeyVerify(pem, msg, sig, args[3].asStringRef("ecverify algo"), EVP_PKEY_EC, "ecverify"));
 #else
             (void)vm; (void)a;
             throw KiritoError("crypto.ecverify requires building with KIRITO_ENABLE_TLS (OpenSSL)");

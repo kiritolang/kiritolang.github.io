@@ -763,6 +763,7 @@ OpenSSL-gated. On a non-TLS build every function throws the first row below; bra
 | `aesdecrypt: authentication failed (wrong key/iv/tag or tampered data)` | The GCM tag didn't verify — wrong key/iv/aad or tampered ciphertext | Never trust the output; discard it |
 | `rsagenerate: bits must be in [512, 16384]` | An out-of-range RSA key size | Use e.g. 2048/3072/4096 |
 | `crypto: unknown hash '<algo>'` | A bad `algo=` to `rsasign`/`rsaverify`/`ecsign`/`ecverify` | Use `"sha256"`/`"sha384"`/`"sha512"` |
+| `rsasign: expected RSA private key, got EC` | A key of the wrong family — e.g. an `ecgenerate` key passed to `rsasign`/`rsaverify` (or an RSA key to `ecsign`/`ecverify`) | Use the `rsa*` functions with `rsagenerate` keys and the `ec*` functions with `ecgenerate` keys |
 | an OpenSSL error string | A malformed PEM key, unknown curve, or unparseable certificate to `rsa*`/`ec*`/`x509parse` | Pass a valid PEM key / curve name / certificate |
 
 ### int — arbitrary-precision integers

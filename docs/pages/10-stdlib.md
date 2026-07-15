@@ -269,14 +269,16 @@ module's HTTPS. The self-contained basics — HMAC, SHA-512, PBKDF2, secure rand
   unauthenticated plaintext.
 - `rsagenerate(bits = 2048) → Dict` — a new RSA keypair as `{private: String, public: String}` (PEM).
 - `rsasign(private_pem, message, algo = "sha256") → Bytes` / `rsaverify(public_pem, message,
-  signature, algo = "sha256") → Bool` — PKCS#1 v1.5 signatures.
+  signature, algo = "sha256") → Bool` — PKCS#1 v1.5 signatures. The key must actually *be* an RSA
+  key: a key of another family throws rather than silently signing with that family's algorithm.
 - `rsaencrypt(public_pem, data) → Bytes` / `rsadecrypt(private_pem, data) → Bytes` — RSA-OAEP
   (SHA-256). Encrypts a short payload directly (for bulk data, encrypt with AES-GCM and wrap the AES
   key with RSA).
 - `ecgenerate(curve = "prime256v1") → Dict` — an EC keypair (PEM); other curves e.g. `secp384r1`,
   `secp521r1`.
 - `ecsign(private_pem, message, algo = "sha256") → Bytes` / `ecverify(public_pem, message,
-  signature, algo = "sha256") → Bool` — ECDSA signatures.
+  signature, algo = "sha256") → Bool` — ECDSA signatures. As with `rsasign`, the key must be an EC
+  key; an RSA key throws.
 - `x509parse(pem) → Dict` — parse a certificate to
   `{subject, issuer, serial, not_before, not_after, sans}` (`sans` is a List of DNS names).
 

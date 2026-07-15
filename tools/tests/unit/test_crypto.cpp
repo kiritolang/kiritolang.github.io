@@ -137,6 +137,28 @@ int main() {
     CHECK_THROWS(evalStr(vm, "c.ecgenerate(\"not-a-curve\")"));
     CHECK_THROWS(evalStr(vm, "c.rsaverify(\"bad pem\", \"m\", Bytes([1,2,3]))"));
 
+    // ---- key/algorithm confusion: a key of the wrong family is rejected, never silently
+    // re-dispatched. EVP_DigestSign follows the KEY, so without the guard rsasign(ecKey) returns a
+    // valid ECDSA signature under an RSA-named function, and ecverify accepts an RSA signature. ----
+    {
+        const std::string keys = "var e = c.ecgenerate()\nvar r = c.rsagenerate(1024)\n";
+        CHECK_THROWS(evalStr(vm, keys + "c.rsasign(e[\"private\"], \"m\")"));   // EC key -> rsasign
+        CHECK_THROWS(evalStr(vm, keys + "c.ecsign(r[\"private\"], \"m\")"));    // RSA key -> ecsign
+        CHECK_THROWS(evalStr(vm, keys + "c.rsaverify(e[\"public\"], \"m\", c.ecsign(e[\"private\"], \"m\"))"));
+        CHECK_THROWS(evalStr(vm, keys + "c.ecverify(r[\"public\"], \"m\", c.rsasign(r[\"private\"], \"m\"))"));
+        // the message names both the expected and the actual family, so the mistake is actionable
+        try {
+            evalStr(vm, keys + "c.rsasign(e[\"private\"], \"m\")");
+            CHECK(false);
+        } catch (const KiritoError& err) {
+            const std::string what = err.what();
+            CHECK(what.find("rsasign: expected RSA private key, got EC") != std::string::npos);
+        }
+        // the same-family paths still work (the guard rejects only the mismatch)
+        CHECK(evalStr(vm, keys + "c.rsaverify(r[\"public\"], \"m\", c.rsasign(r[\"private\"], \"m\"))") == "True");
+        CHECK(evalStr(vm, keys + "c.ecverify(e[\"public\"], \"m\", c.ecsign(e[\"private\"], \"m\"))") == "True");
+    }
+
     // ---- randomized AES-GCM fuzz: encrypt->decrypt is the identity; a corrupted tag never decrypts ----
     std::mt19937_64 rng(0xA5A5u);
     for (int t = 0; t < 400; ++t) {
