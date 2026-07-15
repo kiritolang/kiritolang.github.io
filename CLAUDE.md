@@ -707,6 +707,16 @@ cases). The **post-work routine** (`tools/scripts/post_work_check.sh`, documente
 **commit+push once both are green**, then `asan` and `tsan` (fix and re-push any failure) — each a clean
 build of the whole auto-discovered CTest suite. Run it before calling a change done.
 
+**Never run two builds at once, and never hand-roll `-j$(nproc)`.** Sequential is a *memory* constraint,
+not a stylistic preference: every test TU includes the whole header-only interpreter, so one compile
+peaks at ~1.7 GB RSS at `-O2` and ~3.2 GB under asan. Peak build RAM is `jobs × that` — it scales with
+CORE COUNT, not with the box's RAM — so a 24-core `-j24` wants ~41 GB (release) or ~78 GB (asan), and two
+variants side by side want ~82 GB. On the WSL2 dev box (24 cores / 47 GB, booted `panic=-1`) that OOMs
+the kernel and **reboots the whole distro**, losing the VM rather than just the build. So: let
+`post_work_check.sh` drive the builds (it sizes `-j` from MemAvailable, default cap `PW_MAX_JOBS=16`,
+and refuses to start beside another build), don't background a second variant to "save time", and don't
+run a bare `cmake --build -j$(nproc)` alongside it.
+
 **Docs:** an expandable HTML site (`docs/`) — hand-authored Markdown in `docs/pages/` rendered by
 the dependency-free `docs/build_docs.py` into `docs/site/` (intro, build, embedding, extending,
 language guide, a built-in **types + special-methods/operator-overloading** reference, builtins
