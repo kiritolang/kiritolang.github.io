@@ -99,6 +99,34 @@ int main() {
     BOTH("var p = Point(1, 1)\nvar graph = [p, Point(2, 2), p]", P,
          "String(id(x[0]) == id(x[2])) + \" \" + String(x[1].norm2())", "True 8");
 
+    // --- a class REBUILT from the blob, whose eager class-var initializer reaches OTHER captured values
+    // Every case here passes an EMPTY prelude on purpose: with a prelude, B already has a same-named
+    // class and merely reconnects to it, so the class body never re-runs and none of this is exercised
+    // — which is exactly what hid these. Without a prelude the class is genuinely reconstructed, and a
+    // class-body `var` initializer RUNS during that rebuild, so everything it can reach must already be
+    // real. Anything still a placeholder surfaces as an operation on None / an empty container.
+    // A captured helper, whose own free variable (`factor`) the initializer needs transitively:
+    BOTH("var factor = 3\n"
+         "var helper = Function(v): return v * factor\n"
+         "class Widget:\n"
+         "    var scaled = helper(10)\n"
+         "var graph = Widget()",
+         "", "String(x.scaled)", "30");
+    // A captured container read directly by the initializer (must be populated, not merely allocated):
+    BOTH("var cfg = [7, 8]\n"
+         "class Sized:\n"
+         "    var total = cfg[0] + cfg[1]\n"
+         "var graph = Sized()",
+         "", "String(x.total)", "15");
+    // A two-level helper chain: the initializer's reach extends through a helper's OWN free variables.
+    BOTH("var base = [2]\n"
+         "var inner = Function(): return base[0]\n"
+         "var outer = Function(): return inner() * 5\n"
+         "class Chained:\n"
+         "    var v = outer()\n"
+         "var graph = Chained()",
+         "", "String(x.v)", "10");
+
     // --- _getstate_ / _setstate_ custom protocol --------------------------------------------------
     const std::string Cnt =
         "class Counter:\n"

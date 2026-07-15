@@ -326,6 +326,31 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             default: break;  // containers/instances/stateful/function/class -> later passes
         }
     }
+    // A class's eager class-variable initializers RUN during its rebuild (pass 0c), so everything they
+    // can reach must be real by then — including through a captured helper's own free variables and
+    // through a captured container. `earlyBuilt` marks the nodes that exist before pass 0c: leaves,
+    // modules, function shells, and containers holding only such nodes. A class, instance or native
+    // stateful is excluded — those are built in pass 0c/1/3 — and a container transitively holding one
+    // is demoted below, so it keeps its original (pass 1/2) build.
+    std::vector<char> earlyBuilt(n, 0);
+    for (uint32_t i = 0; i < n; ++i) {
+        switch (nodes[i].tag) {
+            case Tag::None: case Tag::Bool: case Tag::Integer: case Tag::Float:
+            case Tag::String: case Tag::Module: case Tag::Function:
+            case Tag::List: case Tag::Set: case Tag::Dict: earlyBuilt[i] = 1; break;
+            default: break;
+        }
+    }
+    for (bool changed = true; changed;) {   // a container is early only if every member is
+        changed = false;
+        for (uint32_t i = 0; i < n; ++i) {
+            const Node& nd = nodes[i];
+            if (!earlyBuilt[i] || (nd.tag != Tag::List && nd.tag != Tag::Set && nd.tag != Tag::Dict))
+                continue;
+            for (uint32_t m : nd.links)
+                if (!earlyBuilt[checkId(m)]) { earlyBuilt[i] = 0; changed = true; break; }
+        }
+    }
     // Pass 0b: function shells — re-parse each function's source in a fresh scope whose free variables
     // are pre-declared as placeholders. A body never runs at definition, so real values can wait for the
     // final wiring pass; this is also what lets closure cycles (e.g. self-recursion) reconstruct.
@@ -345,6 +370,34 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         objs[i] = roots.add(*f);
         deserScope[i] = S;
     }
+    // Pass 0b2: the `earlyBuilt` containers — allocated AND wired here, before any class body runs, so
+    // an eager class-variable initializer that reads a captured container (directly or through a helper)
+    // sees it populated rather than empty. Their members are leaves/modules/functions/early containers,
+    // all built above; pass 1/2 skip them.
+    for (uint32_t i = 0; i < n; ++i) {
+        if (!earlyBuilt[i]) continue;
+        switch (nodes[i].tag) {
+            case Tag::List: { objs[i] = roots.add(vm.alloc(std::make_unique<ListVal>())); } break;
+            case Tag::Set:  { objs[i] = roots.add(vm.alloc(std::make_unique<SetVal>()));  } break;
+            case Tag::Dict: { objs[i] = roots.add(vm.alloc(std::make_unique<DictVal>())); } break;
+            default: break;
+        }
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        if (!earlyBuilt[i]) continue;
+        const Node& nd = nodes[i];
+        if (nd.tag == Tag::List) {
+            auto& l = static_cast<ListVal&>(vm.arena().deref(objs[i]));
+            for (uint32_t id : nd.links) l.append(vm.arena(), objs[checkId(id)]);   // barriered
+        } else if (nd.tag == Tag::Set) {
+            auto& s = static_cast<SetVal&>(vm.arena().deref(objs[i]));
+            for (uint32_t id : nd.links) s.add(vm.arena(), objs[checkId(id)]);
+        } else if (nd.tag == Tag::Dict) {
+            auto& d = static_cast<DictVal&>(vm.arena().deref(objs[i]));
+            for (std::size_t k = 0; k + 1 < nd.links.size(); k += 2)
+                d.set(vm.arena(), objs[checkId(nd.links[k])], objs[checkId(nd.links[k + 1])]);
+        }
+    }
     // Pass 0c: classes, in eager-dependency order — a class's base and class-variable initializers run
     // when it is rebuilt, so any user class they reference must exist first. Method references are lazy
     // (placeholders), so mutually recursive classes still deserialize. Re-running the source also
@@ -353,23 +406,80 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         std::vector<uint32_t> pending;
         for (uint32_t i = 0; i < n; ++i) if (nodes[i].tag == Tag::Class) pending.push_back(i);
         std::vector<char> built(n, 0);
-        auto eagerDepsReady = [&](uint32_t i) -> bool {
+        // Clamp the eager count against the real pair count: a corrupt blob could claim more eager free
+        // variables than it carries, and an unclamped loop would read past `links` (deserialize is a
+        // trust boundary). A legitimate blob always has eagerCount <= links.size()/2.
+        auto eagerCountOf = [&](const Node& nd) {
+            return std::min(static_cast<std::size_t>(nd.i), nd.links.size() / 2);
+        };
+        // The ids a class's eager initializers can dereference: its own eager free variables, plus —
+        // transitively — everything reachable through a captured helper's free variables and a captured
+        // container's members. An eagerly-called helper dereferences its OWN free variables, so those
+        // must be real too (A10-2); reachability stops at an instance/native-stateful, which cannot
+        // exist before pass 1/3 either way.
+        auto eagerFrontier = [&](uint32_t start) {
+            std::vector<uint32_t> out;
+            std::vector<char> seen(n, 0);
+            std::vector<uint32_t> stack;
+            auto pushLinks = [&](uint32_t id, bool eagerOnly) {
+                const Node& d = nodes[id];
+                if (d.tag == Tag::Function || d.tag == Tag::Class) {
+                    std::size_t lim = eagerOnly ? eagerCountOf(d) : d.links.size() / 2;
+                    for (std::size_t k = 0; k < lim; ++k) stack.push_back(checkId(d.links[2 * k + 1]));
+                } else if (d.tag == Tag::List || d.tag == Tag::Set || d.tag == Tag::Dict) {
+                    for (uint32_t m : d.links) stack.push_back(checkId(m));
+                }
+            };
+            pushLinks(start, /*eagerOnly=*/true);
+            while (!stack.empty()) {
+                uint32_t id = stack.back();
+                stack.pop_back();
+                if (seen[id]) continue;   // also terminates a capture cycle (self/mutual recursion)
+                seen[id] = 1;
+                out.push_back(id);
+                pushLinks(id, /*eagerOnly=*/false);
+            }
+            return out;
+        };
+        // `strict` orders a class after every class its eager initializers can transitively reach.
+        // That is the ordering A10-2 needs, but it is also more demanding than the historical direct-
+        // link check, so a graph it cannot satisfy falls back to that check rather than failing (below).
+        auto eagerDepsReady = [&](uint32_t i, bool strict) -> bool {
             const Node& nd = nodes[i];
-            // Clamp the eager count against the real pair count: a corrupt blob could claim more eager
-            // free variables than it carries, and an unclamped loop would read past `links` (deserialize
-            // is a trust boundary). A legitimate blob always has eagerCount <= links.size()/2.
-            std::size_t eagerCount = std::min(static_cast<std::size_t>(nd.i), nd.links.size() / 2);
+            if (strict) {
+                for (uint32_t id : eagerFrontier(i))
+                    if (nodes[id].tag == Tag::Class && !built[id]) return false;
+                return true;
+            }
+            std::size_t eagerCount = eagerCountOf(nd);
             for (std::size_t k = 0; k < eagerCount; ++k) {
                 uint32_t valId = checkId(nd.links[2 * k + 1]);
                 if (nodes[valId].tag == Tag::Class && !built[valId]) return false;
             }
             return true;
         };
+        // Bind, for real, the free variables of every function the class's eager initializers can reach.
+        // Pass 0b could only bind None placeholders (their values may not have existed yet) and pass 5
+        // is far too late — the initializers run HERE. Values still unbuilt at this point (an instance,
+        // a native stateful) keep their placeholder, exactly as before; pass 5 finishes the job.
+        auto bindEagerHelpers = [&](uint32_t i) {
+            for (uint32_t id : eagerFrontier(i)) {
+                if (nodes[id].tag != Tag::Function || !deserScope[id].slot) continue;
+                const Node& d = nodes[id];
+                auto& env = static_cast<EnvValue&>(vm.arena().deref(deserScope[id]));
+                std::size_t pairs = d.links.size() / 2;
+                for (std::size_t k = 0; k < pairs; ++k) {
+                    Handle v = objs[checkId(d.links[2 * k + 1])];
+                    if (v.slot) env.define(nameOf(d.links[2 * k]), v);   // barriered
+                }
+            }
+        };
         std::size_t remaining = pending.size();
+        bool strict = true;
         while (remaining > 0) {
             bool progressed = false;
             for (uint32_t i : pending) {
-                if (built[i] || !eagerDepsReady(i)) continue;
+                if (built[i] || !eagerDepsReady(i, strict)) continue;
                 const Node& nd = nodes[i];
                 // Reconnect to a class of this name ALREADY defined in the loading VM rather than
                 // rebuilding it — so deserializing an instance never clobbers the caller's live class of
@@ -385,6 +495,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
                 }
                 Handle S = roots.add(vm.newScope(vm.global()));
                 declareFreeVars(static_cast<EnvValue&>(vm.arena().deref(S)), nd, /*eagerReal=*/true);
+                bindEagerHelpers(i);
                 try {
                     vm.evalIn(nd.s, S, "<deserialized class>", /*indexTopLevel=*/true);
                 } catch (const KiritoError& e) {
@@ -399,9 +510,14 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
                 --remaining;
                 progressed = true;
             }
-            if (!progressed)
+            if (!progressed) {
+                // The transitive order is unsatisfiable (classes reaching one another through captured
+                // helpers). Retry with the direct-link check: such a graph still built before A10-2 —
+                // an eagerly-reached class may just be a placeholder, as it always was.
+                if (strict) { strict = false; continue; }
                 throw KiritoError("cannot deserialize: cyclic class-definition dependency (a base class "
                                   "or class-variable initializer forms a cycle)");
+            }
         }
     }
     // Pass 1: containers (empty) + user instances + native stateful shells, so ids resolve before the
@@ -409,6 +525,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
     // in pass 0c, so it is found. Leaves, modules, functions and classes were built above.
     for (uint32_t i = 0; i < n; ++i) {
         const Node& nd = nodes[i];
+        if (earlyBuilt[i]) continue;   // leaves/modules/functions + the pass-0b2 containers
         switch (nd.tag) {
             case Tag::List: { objs[i] = roots.add(vm.alloc(std::make_unique<ListVal>())); } break;
             case Tag::Dict: { objs[i] = roots.add(vm.alloc(std::make_unique<DictVal>())); } break;
@@ -469,6 +586,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
     // Pass 2: wire containers and instance attributes (handles only — contents finish filling here).
     for (uint32_t i = 0; i < n; ++i) {
         const Node& nd = nodes[i];
+        if (earlyBuilt[i]) continue;   // an early container was already wired in pass 0b2
         if (nd.tag == Tag::List) {
             auto& l = static_cast<ListVal&>(vm.arena().deref(objs[i]));
             for (uint32_t id : nd.links) l.append(vm.arena(), objs[checkId(id)]);  // barriered
