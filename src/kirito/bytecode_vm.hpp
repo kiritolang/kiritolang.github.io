@@ -66,6 +66,7 @@ public:
     BytecodeVM& operator=(const BytecodeVM&) = delete;
 
     Handle run(const Proto& proto, std::span<const Handle> paramValues = {}) {
+        excSpans_.assign(proto.excSpanSlots, SourceSpan{});
         for (uint32_t i = 0; i < proto.localCount; ++i) push(vm_.undefined());  // reserve frame slots
         // Place each non-captured parameter's argument value straight into its frame slot, so a param
         // read is a direct slot access (no scope-chain name walk / unwritten-slot fallback). Captured
@@ -423,6 +424,8 @@ public:
                 case Op::SetupBlock: { blocks_.push_back({in.a, stack_.size()}); } break;
                 case Op::PopBlock: { blocks_.pop_back(); } break;
                 case Op::Reraise: { Handle v = pop(); throw KiritoThrow{v, excSpan_}; } break;  // keep the original site
+                case Op::SaveExcSpan: { excSpans_[in.a] = excSpan_; } break;
+                case Op::RestoreExcSpan: { excSpan_ = excSpans_[in.a]; } break;
                 case Op::ExcMatch: {
                     Handle type = pop(), exc = pop();
                     push(vm_.makeBool(isInstanceOf(vm_, exc, type)));
@@ -526,6 +529,13 @@ private:
     std::vector<Handle> stack_;
     std::vector<Block> blocks_;
     SourceSpan excSpan_{};  // span of the exception currently being unwound (for Reraise)
+    // One slot per try-with-finally in this Proto, holding that try's in-flight exception span across
+    // its finally body — the span's half of the same parking the exception VALUE gets in a hidden
+    // local, and for the same reason: a nested try/catch inside the finally has its own unwind(),
+    // which overwrites excSpan_, and the outer Reraise would then report the inner (already handled)
+    // exception's line. Addressed by slot rather than pushed/popped, so a break/return/throw leaving
+    // the finally early cannot desynchronize it.
+    std::vector<SourceSpan> excSpans_;
     bool hasOwner_;
     std::string frameLabel_;  // function name / "<function>" / "<module>" — for traceback frames
 };

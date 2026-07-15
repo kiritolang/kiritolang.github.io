@@ -72,6 +72,8 @@ enum class Op : uint8_t {
     SetupBlock,       // a: push an exception block (try/with): on a throw, unwind here with the exc value
     PopBlock,         //    pop the innermost exception block (left normally)
     Reraise,          //    pop an exception value -> re-throw it (unmatched catch / after a finally)
+    SaveExcSpan,      // a: excSpans[a] = the in-flight exception's span   (park it across a finally)
+    RestoreExcSpan,   // a: the in-flight exception's span = excSpans[a]   (unpark it, before Reraise)
     ExcMatch,         //    type=pop, exc=pop -> push Bool(exc is an instance of the class `type`)
     Throw,            //    pop -> throw it as a Kirito exception (assert/throw)
     Return,           //    pop -> return it from this frame
@@ -132,6 +134,7 @@ struct Proto {
     std::vector<SwitchTable> switches;                // SwitchDispatch targets (compile-time case tables)
     std::vector<EnvVarRef> envVars;                    // LoadVar/AssignVar targets (depth,index into an env scope)
     std::vector<std::string> envSlots;                 // captured non-param locals to pre-declare in the scope env
+    uint32_t excSpanSlots = 0;                         // Save/RestoreExcSpan slots (one per try-with-finally)
     uint32_t localCount = 0;                           // frame slots to reserve for slot-addressed locals
     std::vector<std::string> localNames;              // slot -> name (for "referenced before assignment" errors)
     std::vector<int> paramSlots;                       // param i -> its frame slot, or -1 if captured (name-based)

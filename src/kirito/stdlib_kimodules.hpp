@@ -1700,6 +1700,12 @@ class DataFrame:
         else:
             var ncols = len(rows[0])
             var cols = columns if columns != None else _defaultcols(ncols)
+            # Say so when the caller's own columns= doesn't fit their rows: too few silently dropped
+            # the trailing fields, too many surfaced a bare "index out of range" from in here. (A
+            # RAGGED later row is a separate, deliberate behavior -- long truncates, short throws --
+            # so this measures only the first row, and never fires on the inferred column names.)
+            if len(cols) != ncols:
+                throw "DataFrame: columns= has " + String(len(cols)) + " names but the rows are " + String(ncols) + " wide"
             var ci = 0
             while ci < len(cols):
                 var col = []

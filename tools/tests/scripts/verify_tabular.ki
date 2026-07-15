@@ -323,6 +323,12 @@ assert dup["a"].tolist() == [2, 4], "duplicate column: last column wins in data 
 assert raises(Function(): return tb.DataFrame([[1, 2], [3]])), "ragged short row throws (PINNED)"
 var rlong = tb.DataFrame([[1, 2], [3, 4, 5]])
 assert rlong.columns == ["col0", "col1"] and rlong.nrows() == 2, "ragged long row silently truncated (PINNED)"
+# ...but a columns= that doesn't fit the rows is the CALLER's own mismatch, not raggedness: say so
+# instead of silently dropping the trailing fields (too few) or leaking "index out of range" (too many)
+assert raises_msg(Function(): return tb.DataFrame([[1, 2, 3], [4, 5, 6]], columns = ["a", "b"]),
+                  "columns= has 2 names but the rows are 3 wide"), "too few column names throws"
+assert raises_msg(Function(): return tb.DataFrame([[1, 2], [3, 4]], columns = ["a", "b", "c"]),
+                  "columns= has 3 names but the rows are 2 wide"), "too many column names throws"
 
 # ============================================================ HARDENING
 assert raises(Function(): return df["nonexistent"]), "missing column raises"

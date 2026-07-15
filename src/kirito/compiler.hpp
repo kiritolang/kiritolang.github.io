@@ -487,12 +487,20 @@ private:
         // finally always runs at the clean operand height. `$` can't appear in a user name.
         std::string excName = hasFin ? "$exc" + std::to_string(tryCounter_++) : std::string();
         if (hasFin) ensureHiddenSlot(excName);
+        // The exception's SPAN needs parking across the finally body just as its value does: a nested
+        // try/catch in that body unwinds too, overwriting the frame's "span currently being unwound",
+        // and the Reraise below would then blame the inner (already handled) exception's line for the
+        // outer one that is genuinely still in flight.
+        uint32_t spanSlot = hasFin ? proto_.excSpanSlots++ : 0;
         auto emitFinally = [this, &s, hasFin] { if (hasFin) compileBlock(s.finallyBody); };
-        // Run the finally on an EXCEPTION path: stash exc (top of stack) -> finally -> reload exc.
-        auto emitFinallyExc = [this, &s, hasFin, &excName] {
+        // Run the finally on an EXCEPTION path: stash exc (top of stack) + its span -> finally ->
+        // reload both.
+        auto emitFinallyExc = [this, &s, hasFin, &excName, spanSlot] {
             if (!hasFin) return;
             emitStore(excName, s.span);
+            emit(Op::SaveExcSpan, spanSlot, s.span);
             compileBlock(s.finallyBody);
+            emit(Op::RestoreExcSpan, spanSlot, s.span);
             emitLoad(excName, s.span);
         };
 

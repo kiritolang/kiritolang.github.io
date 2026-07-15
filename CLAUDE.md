@@ -818,7 +818,11 @@ bits). Measured ~10% on function-local arithmetic loops; no regression on call-h
   per body on the VM and compiled lazily (a nested function literal compiles on first call). The
   `BytecodeVM` (`bytecode_vm.hpp`) executes a `Proto` with an explicit operand stack (a region of the
   VM's GC roots) instead of native recursion. Control flow is jumps; exceptions use a runtime block
-  stack; `finally`/`with`-exit on `return`/`break`/`continue` is compiled inline. Operator/call/member
+  stack; `finally`/`with`-exit on `return`/`break`/`continue` is compiled inline. On the exception
+  path a `finally` body runs with the in-flight exception **parked** — its value in a hidden `$excN`
+  local, its span in a `Proto::excSpanSlots` slot (`Save`/`RestoreExcSpan`) — so a nested try/catch
+  inside that body, which unwinds in the same frame, can neither corrupt the operand stack nor steal
+  the re-raised exception's reported line. Operator/call/member
   semantics live in shared free functions (`applyBinaryOp`/`applyCall`/`evalMemberGet`/… in
   `runtime.hpp`). A genuine program error the compiler finds (deep nest, invalid assignment target,
   positional-after-keyword) is thrown as a `KiritoError`, like a parser diagnostic.
