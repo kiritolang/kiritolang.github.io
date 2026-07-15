@@ -96,6 +96,29 @@ String(loaded["name"]) + ":" + String(loaded["scores"][2]) + ":" + String(loaded
 )") == "Kirito:30:1");
     std::filesystem::remove(std::filesystem::temp_directory_path() / "kirito_dump_test.bin");
 
+    // A user-class instance CARRIES its class: a FRESH VM that never defined the class rebuilds it from
+    // the blob — no import needed. Two independent VMs share only a temp file, so there is no hidden
+    // dependency on VM1's class registry. (Both compute the same process-independent temp path.)
+    {
+        const char* saveScript =
+            "var d = import(\"dump\")\n"
+            "class Carry:\n"
+            " var _init_ = Function(self, n):\n"
+            "  self.n = n\n"
+            " var dbl = Function(self): return self.n * 2\n"
+            "var p = import(\"path\").gettempdir() + \"/kirito_inst_carry.bin\"\n"
+            "d.save(Carry(21), p)\n";
+        { KiritoVM v1; v1.runSource(saveScript); }
+        KiritoVM v2;  // fresh: Carry was never defined here
+        const char* loadScript =
+            "var d = import(\"dump\")\n"
+            "var p = import(\"path\").gettempdir() + \"/kirito_inst_carry.bin\"\n"
+            "var w = d.load(p)\n"
+            "String(w.n) + \":\" + String(w.dbl())\n";
+        CHECK(v2.stringify(v2.runSource(loadScript)) == "21:42");
+        std::filesystem::remove(std::filesystem::temp_directory_path() / "kirito_inst_carry.bin");
+    }
+
     // module-level save(value, path) (symmetric with serialize.save): dumps + write in one step
     CHECK(evalStr(vm, R"(
 var d = import("dump")

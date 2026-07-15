@@ -410,10 +410,12 @@ a stability fuzzer, and a benchmark). Working today:
     (the "std reimport / user travels" rule): a captured **module reconnects by re-`import`** (a
     `Module` node holding its name, NOT copied); a referenced **user function/class travels recursively**;
     a **builtin** re-resolves for free; plain values travel by value. Deserialization needs **no import of
-    the defining module** — a class travels with its instances and **re-registers itself by name** (so
-    `dump.loads(dump.dumps(anInstance))` works in a fresh VM), the base class travels too, closures /
-    self-recursion / mutual recursion are preserved (a final wiring pass binds free vars after every node
-    exists, so cycles resolve; classes rebuild in eager-dependency order). Reconstruction lives in
+    the defining module** — **a user-class instance carries its class** (the flatten walk pulls the class
+    into the graph), so `dump.loads(dump.dumps(anInstance))` works in a **fresh VM**: the class is rebuilt
+    from the blob and re-registered when absent, or **reconnected to an existing same-named class**
+    (rebuild is skipped, so deserializing never clobbers the caller's live class). The base class travels
+    too; closures / self-recursion / mutual recursion are preserved (a final wiring pass binds free vars
+    after every node exists, so cycles resolve; classes rebuild in eager-dependency order). Reconstruction lives in
     `serde::rebuild` (passes: leaves+modules → function shells → classes topologically → containers/
     instances → wire → bind free vars). A **native/built-in function** (e.g. a bound `math.sqrt`) and a
     `Function` literal defined **inside an f-string** (no captured source) are NOT serializable (clear

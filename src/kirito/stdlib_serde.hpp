@@ -209,6 +209,14 @@ inline std::pair<std::vector<Node>, uint32_t> flatten(KiritoVM& vm, Handle root,
                 for (Handle e : static_cast<SetVal&>(o).items()) n.links.push_back(visit(e));
             } break;
             case ValueKind::Instance: {
+                InstanceValue* inst = dynamic_cast<InstanceValue*>(&o);
+                // A USER-class instance pulls its CLASS into the graph too (as a Class node), so the
+                // whole thing round-trips self-contained — a fresh VM rebuilds the class from the blob
+                // and the instance below reconnects to it, needing no import. A NATIVE type that opts in
+                // via _getstate_ (Matrix/DateTime/…) reconnects through its registered factory instead,
+                // so its "class" does not travel. The class id is discarded: reachability alone puts the
+                // Class node in the table, where rebuild's class pass materialises + re-registers it.
+                if (inst) visit(inst->cls);
                 // A `_getstate_` override (user class OR a native type that opts in) wins: serialize
                 // whatever it returns, tagged with the type name so `_setstate_` can restore it.
                 if (auto gs = serdeMethod(vm, h, "_getstate_")) {
@@ -219,7 +227,7 @@ inline std::pair<std::vector<Node>, uint32_t> flatten(KiritoVM& vm, Handle root,
                     break;
                 }
                 // Otherwise a plain user-class instance auto-serializes its attributes.
-                if (auto* inst = dynamic_cast<InstanceValue*>(&o)) {
+                if (inst) {
                     n.tag = Tag::Object;
                     n.s = inst->className;
                     for (const auto& [k, v] : inst->attrs) {
@@ -347,7 +355,10 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         std::vector<char> built(n, 0);
         auto eagerDepsReady = [&](uint32_t i) -> bool {
             const Node& nd = nodes[i];
-            std::size_t eagerCount = static_cast<std::size_t>(nd.i);
+            // Clamp the eager count against the real pair count: a corrupt blob could claim more eager
+            // free variables than it carries, and an unclamped loop would read past `links` (deserialize
+            // is a trust boundary). A legitimate blob always has eagerCount <= links.size()/2.
+            std::size_t eagerCount = std::min(static_cast<std::size_t>(nd.i), nd.links.size() / 2);
             for (std::size_t k = 0; k < eagerCount; ++k) {
                 uint32_t valId = checkId(nd.links[2 * k + 1]);
                 if (nodes[valId].tag == Tag::Class && !built[valId]) return false;
@@ -360,6 +371,18 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             for (uint32_t i : pending) {
                 if (built[i] || !eagerDepsReady(i)) continue;
                 const Node& nd = nodes[i];
+                // Reconnect to a class of this name ALREADY defined in the loading VM rather than
+                // rebuilding it — so deserializing an instance never clobbers the caller's live class of
+                // the same name (and a same-VM round-trip returns the very same class object). The class
+                // still travels in the blob purely so an ABSENT class can be rebuilt here.
+                const Handle* existing = vm.findClass(nd.s2);
+                if (existing && vm.arena().deref(*existing).kind() == ValueKind::Class) {
+                    objs[i] = roots.add(*existing);   // no scope -> pass 5 skips it (nothing to wire)
+                    built[i] = 1;
+                    --remaining;
+                    progressed = true;
+                    continue;
+                }
                 Handle S = roots.add(vm.newScope(vm.global()));
                 declareFreeVars(static_cast<EnvValue&>(vm.arena().deref(S)), nd, /*eagerReal=*/true);
                 try {
@@ -531,6 +554,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
     // forward references — all resolve now that every object in the graph exists.
     for (uint32_t i = 0; i < n; ++i) {
         if (nodes[i].tag != Tag::Function && nodes[i].tag != Tag::Class) continue;
+        if (!deserScope[i].slot) continue;  // a class reconnected to an existing one -> no scope to wire
         const Node& nd = nodes[i];
         auto& env = static_cast<EnvValue&>(vm.arena().deref(deserScope[i]));
         std::size_t pairs = nd.links.size() / 2;

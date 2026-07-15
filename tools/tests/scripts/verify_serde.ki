@@ -214,6 +214,9 @@ assert raises_msg(Function(): return ser.loads("KSER1 5 N"), "unexpected end of 
 assert raises_msg(Function(): return ser.loads("KSER1 1 X 0"), "bad serialization tag"), "text bad tag raises"
 assert raises_msg(Function(): return ser.loads("KSER1 1 N 5"), "root id out of range"), "text root id out of range raises"
 assert raises_msg(Function(): return ser.loads("KSER1 1 O 7 Unknown 0 0"), "class 'Unknown' is not defined"), "text unknown class raises"
+# a Class node whose eager-count exceeds its pair count must NOT read past its links (clamped) — a
+# clean re-parse error, never an out-of-bounds crash. Source "class X" is a deliberate parse error.
+assert raises(Function(): return ser.loads("KSER1 1 C 7 class X 1 X 99 0 0")), "text class bad eager-count raises cleanly (no OOB)"
 # binary (KDMP)
 assert raises_msg(Function(): return dump.loads(Bytes([1, 2, 3, 4])), "bad dump header"), "binary bad header raises"
 assert raises_msg(Function(): return dump.loads(Bytes([1, 2, 3])), "truncated dump data"), "binary sub-magic length truncated raises"
