@@ -127,6 +127,22 @@ int main() {
          "var graph = Chained()",
          "", "String(x.v)", "10");
 
+    // Two classes whose initializers only BIND helpers that name each other — neither helper is called
+    // at init, so the graph is well-founded and must load. This pins rebuild ORDER to what a class body
+    // names directly: order it by what an initializer could transitively REACH instead and each class
+    // appears to need the other (a bound helper is indistinguishable from a called one), so neither is
+    // ever buildable and this fails with "cyclic class-definition dependency" on a valid graph.
+    BOTH("var makeBeta = Function(): return Beta()\n"
+         "class Alpha:\n"
+         "    var maker = makeBeta\n"
+         "    var tag = \"alpha\"\n"
+         "var makeAlpha = Function(): return Alpha()\n"
+         "class Beta:\n"
+         "    var maker = makeAlpha\n"
+         "    var tag = \"beta\"\n"
+         "var graph = [Alpha(), Beta()]",
+         "", "x[0].tag + \",\" + x[1].tag", "alpha,beta");
+
     // --- _getstate_ / _setstate_ custom protocol --------------------------------------------------
     const std::string Cnt =
         "class Counter:\n"

@@ -441,16 +441,17 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             }
             return out;
         };
-        // `strict` orders a class after every class its eager initializers can transitively reach.
-        // That is the ordering A10-2 needs, but it is also more demanding than the historical direct-
-        // link check, so a graph it cannot satisfy falls back to that check rather than failing (below).
-        auto eagerDepsReady = [&](uint32_t i, bool strict) -> bool {
+        // A class waits for the classes its own eager free variables NAME — its base and the classes a
+        // class-variable initializer refers to directly. That is precisely what the body dereferences
+        // by name, so it never demands an order the graph cannot give.
+        // Deliberately NOT transitive: `eagerFreeVariables` cannot tell `var m = helper` (binds it) from
+        // `var v = helper()` (calls it), so ordering a class after everything a captured helper could
+        // reach would invent dependencies. Two classes that merely BIND helpers naming each other would
+        // then each appear to need the other and neither could ever be built — a cycle error on a
+        // perfectly well-founded graph. Reachability still drives bindEagerHelpers below, where
+        // over-approximating is free: binding a value nothing reads costs nothing.
+        auto eagerDepsReady = [&](uint32_t i) -> bool {
             const Node& nd = nodes[i];
-            if (strict) {
-                for (uint32_t id : eagerFrontier(i))
-                    if (nodes[id].tag == Tag::Class && !built[id]) return false;
-                return true;
-            }
             std::size_t eagerCount = eagerCountOf(nd);
             for (std::size_t k = 0; k < eagerCount; ++k) {
                 uint32_t valId = checkId(nd.links[2 * k + 1]);
@@ -475,11 +476,10 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             }
         };
         std::size_t remaining = pending.size();
-        bool strict = true;
         while (remaining > 0) {
             bool progressed = false;
             for (uint32_t i : pending) {
-                if (built[i] || !eagerDepsReady(i, strict)) continue;
+                if (built[i] || !eagerDepsReady(i)) continue;
                 const Node& nd = nodes[i];
                 // Reconnect to a class of this name ALREADY defined in the loading VM rather than
                 // rebuilding it — so deserializing an instance never clobbers the caller's live class of
@@ -510,14 +510,9 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
                 --remaining;
                 progressed = true;
             }
-            if (!progressed) {
-                // The transitive order is unsatisfiable (classes reaching one another through captured
-                // helpers). Retry with the direct-link check: such a graph still built before A10-2 —
-                // an eagerly-reached class may just be a placeholder, as it always was.
-                if (strict) { strict = false; continue; }
+            if (!progressed)
                 throw KiritoError("cannot deserialize: cyclic class-definition dependency (a base class "
                                   "or class-variable initializer forms a cycle)");
-            }
         }
     }
     // Pass 1: containers (empty) + user instances + native stateful shells, so ids resolve before the
