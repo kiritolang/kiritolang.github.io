@@ -722,6 +722,15 @@ sockets below; see the `webserver` example.)
 - `Session() → Session` — a session that persists a cookie jar (`.cookies`) and default headers
   (`.headers`) across requests; has the same `request(method, url[, options])` and verb methods
   (`s.get(url[, options])`, …).
+  **Cookies are scoped to the host that set them**: a cookie a server sends back is remembered with
+  that server's hostname and is sent only to that hostname, so a Session that logs in to one site
+  never hands its session cookie to another. (Scoping is by hostname, not port — matching the cookie
+  RFC and the redirect rule below. The jar is keyed by cookie *name*, so if two hosts set the same
+  name, the last one wins and the cookie follows that host.) A cookie **you** put in the jar yourself
+  (`s.cookies["k"] = "v"`) has no origin and is sent to every host you ask — it is your explicit
+  instruction. `.headers` are likewise sent to every host, so treat a default `Authorization` header
+  as "for anyone this Session talks to" and pass a per-call `headers` option instead when it is meant
+  for one origin only.
 
 The `options` Dict may contain: `headers` (Dict), `params` (Dict → query string), `data` (String, a
 form-Dict, or `Bytes` → sent as `application/octet-stream`), `json` (any value → JSON body +

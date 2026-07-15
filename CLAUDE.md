@@ -482,7 +482,10 @@ a stability fuzzer, and a benchmark). Working today:
     `auth` (`[user, pass]` Basic), `timeout`, `allowredirects`/`maxredirects`, `verify` (TLS cert
     verification, on by default), `cookies`. Follows redirects, decodes chunked transfer-encoding,
     decompresses gzip/deflate, and parses/sends cookies. A `Session()` keeps a cookie jar + default
-    headers across calls. HTTPS via `-DKIRITO_ENABLE_TLS=ON` (links OpenSSL; verifies the peer cert
+    headers across calls; the jar is **host-scoped** (a server-set cookie is remembered with the host
+    that set it and sent only back there — by hostname, as RFC 6265 and the cross-host redirect rule
+    do; a cookie the user sets by hand has no origin and is unscoped), while `.headers` go to every
+    host, as in `requests`. HTTPS via `-DKIRITO_ENABLE_TLS=ON` (links OpenSSL; verifies the peer cert
     by default — trust roots come from the OS: OpenSSL's default paths/`SSL_CERT_FILE` on Unix and the
     **Windows system "ROOT" store** via CryptoAPI, since OpenSSL ships no default CA bundle there; a
     verify failure reports the actual reason). **`net.tlsenabled`** is a Bool reporting whether this

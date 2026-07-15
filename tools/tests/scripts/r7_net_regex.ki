@@ -144,6 +144,26 @@ var cookieServer = Function(portq, reqq):
     srv.close()
     return "served"
 
+# One listener, reached under two different host NAMES (127.0.0.1 and localhost — the client scopes
+# cookies by hostname, as RFC 6265 does and as the redirect path already does). Sets a cookie on the
+# first request, then echoes the next two requests back so the test can see who got the cookie.
+var twoOriginServer = Function(portq, reqq):
+    var bp = bindFree(50800, 90)
+    var srv = bp[0]
+    srv.listen(3)
+    portq.put(bp[1])
+    var c1 = srv.accept()
+    discard c1.recv(8192)
+    discard c1.send("HTTP/1.1 200 OK\r\nSet-Cookie: session=SECRET; Path=/\r\nContent-Length: 2\r\n\r\nok")
+    c1.close()
+    for i in range(2):
+        var c = srv.accept()
+        reqq.put(c.recv(8192).decode())
+        discard c.send("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+        c.close()
+    srv.close()
+    return "served"
+
 # Redirect server: 302 -> /final, then 200 with a marker body. Proves redirect following.
 var redirectServer = Function(portq):
     var bp = bindFree(50700, 90)
@@ -712,5 +732,33 @@ if argmain:
     var skreq2 = skrq.get(True, 5.0)
     ok("token=xyz" in skreq2, "Session re-sends the jar cookie on the next request")
     discard skt.join()
+
+    # A Session's jar is scoped to the host that set each cookie: one origin's session cookie must
+    # not travel to another, exactly as a redirect crossing hosts already drops it.
+    var toq = parallel.Queue()
+    var torq = parallel.Queue()
+    var tot = parallel.spawn(twoOriginServer, toq, torq)
+    var toport = String(toq.get(True, 5.0))
+    var sess2 = net.Session()
+    discard sess2.get("http://127.0.0.1:" + toport + "/login")
+    ok(sess2.cookies["session"] == "SECRET", "Session jar holds the cookie 127.0.0.1 set")
+    discard sess2.get("http://localhost:" + toport + "/track")
+    ok(not ("SECRET" in torq.get(True, 5.0)), "cookie set by 127.0.0.1 is NOT sent to localhost")
+    discard sess2.get("http://127.0.0.1:" + toport + "/again")
+    ok("session=SECRET" in torq.get(True, 5.0), "the setting host still gets its own cookie back")
+    discard tot.join()
+
+    # A cookie the user puts in the jar by hand has no origin, so it is sent wherever they ask.
+    var mq = parallel.Queue()
+    var mrq = parallel.Queue()
+    var mt = parallel.spawn(twoOriginServer, mq, mrq)
+    var mport = String(mq.get(True, 5.0))
+    var sess3 = net.Session()
+    discard sess3.get("http://127.0.0.1:" + mport + "/login")
+    sess3.cookies["manual"] = "mine"
+    discard sess3.get("http://localhost:" + mport + "/x")
+    ok("manual=mine" in mrq.get(True, 5.0), "a user-set cookie is unscoped (sent to any host)")
+    discard sess3.get("http://127.0.0.1:" + mport + "/y")
+    discard mt.join()
 
     io.print("r7_net_regex: " + String(n) + " checks passed")

@@ -7,6 +7,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #ifndef _WIN32
@@ -775,6 +776,11 @@ public:
         return {"headers: Dict", "cookies: Dict", "get(url, opts) -> Response", "post(url, opts) -> Response", "put(url, opts) -> Response", "delete(url, opts) -> Response", "patch(url, opts) -> Response", "head(url, opts) -> Response", "options(url, opts) -> Response", "request(method, url, opts) -> Response"};
     }
     Handle headersH{}, cookiesH{};
+    // The host each jar cookie came from, so a cookie set by one origin is not sent to another
+    // (the jar itself stays the documented flat name->value Dict, so `.cookies["k"]` still works).
+    // A cookie the user put in the jar directly has no entry here and is sent everywhere — that is
+    // an explicit instruction, not something a server slipped us.
+    std::unordered_map<std::string, std::string> cookieOrigin;
     void children(std::vector<Handle>& out) const override { out.push_back(headersH); out.push_back(cookiesH); }
     std::string str(StringifyCtx&) const override { return "<Session>"; }
     Handle getAttr(KiritoVM& vm, Handle self, std::string_view name) override;
@@ -1014,8 +1020,8 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     }
 }
 
-// A Session request: merge the session's default headers + cookie jar into `opts`, perform the
-// request, then fold the response's cookies back into the jar.
+// A Session request: merge the session's default headers + the cookies scoped to this host into
+// `opts`, perform the request, then fold the response's cookies back into the jar.
 inline Handle sessionDo(KiritoVM& vm, Handle self, const std::string& method, const std::string& url, Handle opts) {
     auto& s = static_cast<SessionVal&>(vm.arena().deref(self));
     RootScope rs(vm);
@@ -1029,18 +1035,32 @@ inline Handle sessionDo(KiritoVM& vm, Handle self, const std::string& method, co
     mergeInto(hdr, s.headersH);                        // session defaults...
     mergeInto(hdr, netOpt(vm, opts, "headers"));       // ...overlaid by per-call headers
     eff.set("headers", hdr);
+    // Only this host's cookies travel. Without the origin check, a Session that logged in to one
+    // host would hand that host's session cookie to every other host it later talked to — the same
+    // leak `net::redirectScope` already refuses to allow across a redirect.
+    const std::string host = net::asciiLower(net::parseUrl(url).host);
     Dict ck(vm);
-    mergeInto(ck, s.cookiesH);
-    mergeInto(ck, netOpt(vm, opts, "cookies"));
+    if (vm.arena().deref(s.cookiesH).kind() == ValueKind::Dict)
+        for (const auto& [k, v] : Value(vm, s.cookiesH).pairs()) {
+            auto it = s.cookieOrigin.find(k.str());
+            if (it == s.cookieOrigin.end() || it->second == host) ck.set(k.str(), v.handle());
+        }
+    mergeInto(ck, netOpt(vm, opts, "cookies"));        // a per-call cookie is explicit: always sent
     eff.set("cookies", ck);
     Handle effH = rs.add(eff.handle());
 
     Handle resp = netRequest(vm, method, url, effH);
-    // persist response cookies into the session jar
+    // persist response cookies into the session jar, tagged with the host that actually set them
+    // (the final URL's — netRequest may have followed a redirect, and it clears the jar when one
+    // crosses hosts, so a cookie surviving here belongs to where the exchange ended up)
     auto& r = static_cast<ResponseVal&>(vm.arena().deref(resp));
+    const std::string origin = net::asciiLower(net::parseUrl(r.url).host);
     auto& jar = static_cast<DictVal&>(vm.arena().deref(s.cookiesH));
     const DictVal& rc = static_cast<const DictVal&>(vm.arena().deref(r.cookiesH));
-    for (Handle k : rc.keys()) jar.set(vm.arena(), k, *rc.find(vm.arena(), k));
+    for (Handle k : rc.keys()) {
+        jar.set(vm.arena(), k, *rc.find(vm.arena(), k));
+        s.cookieOrigin[Value(vm, k).str()] = origin;
+    }
     return resp;
 }
 
