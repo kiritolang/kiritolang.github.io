@@ -4,7 +4,14 @@ Round v1.15 (target patch 1.15.1). Scope: `src/kirito/compiler.hpp`, `src/kirito
 `src/kirito/resolver.hpp`, `src/kirito/analyzer.hpp`, `src/kirito/locals.hpp`. Read-only audit +
 empirical checks against `./build-debug/ki`.
 
-Status: IN PROGRESS.
+Status: COMPLETE.
+
+### Severity counts
+- HIGH: 0
+- MED: 0
+- LOW: 2
+- INFO: 1
+- Coverage gaps: 1 (bundled finding, several concrete cases)
 
 Context: this round's headline new subsystem touching my files is the **function/class
 self-serialization** feature (commit `9f0674a`), which added `freeVariables`/`eagerFreeVariables` to
