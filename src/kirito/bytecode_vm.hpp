@@ -213,6 +213,8 @@ public:
                     cls->name = cs.name;
                     cls->base = base;
                     cls->hasBase = hasBase;
+                    cls->def = &cs;               // the AST (verbatim source + body) for serialization
+                    cls->closure = classScope;    // the scope its free variables resolve against
                     for (const auto& [k, v] : static_cast<EnvValue&>(vm_.arena().deref(classScope)).locals())
                         if (v != vm_.undefined())                       // skip a pre-declared slot never assigned
                             cls->methods[k] = v;                        // the names the body defined are the methods

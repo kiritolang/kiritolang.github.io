@@ -76,8 +76,24 @@ String(loaded["name"]) + ":" + String(loaded["scores"][2])
 )") == "Kirito:30");
     std::filesystem::remove(std::filesystem::temp_directory_path() / "kirito_serialize_test.dat");
 
-    // unsupported types throw
-    CHECK_THROWS(vm.runSource("var s = import(\"serialize\")\ns.dumps(Function(x): return x)\n"));
+    // A native/built-in function is not serializable (a Kirito Function now IS — see below).
+    CHECK_THROWS(vm.runSource("var s = import(\"serialize\")\ns.dumps(len)\n"));
+
+    // Kirito functions/classes serialize by default through the text format too: a closure captures its
+    // free variable by value, and an instance round-trips carrying its class (no import needed).
+    CHECK(evalStr(vm, R"(
+var s = import("serialize")
+var k = 7
+var mul = Function(x): return x * k
+s.loads(s.dumps(mul))(6)
+)") == "42");
+    CHECK(evalStr(vm, R"(
+var s = import("serialize")
+class Box:
+ var _init_ = Function(self, v): self.v = v
+ var get = Function(self): return self.v
+s.loads(s.dumps(Box(99))).get()
+)") == "99");
 
     // corrupt / hostile text blobs throw cleanly (never crash) — exercises the shared rebuild's
     // bounds checks and the text decoder's error paths.

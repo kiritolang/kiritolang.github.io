@@ -2395,7 +2395,9 @@ inline void KiritoVM::registerSourceModule(std::string name, std::string_view so
             RootScope guard(vm);
             guard.add(scope);
             KiritoVM::ChunkFileScope chunkScope(vm, "<" + modName + ">");  // frozen-chunk attribution
-            auto prog = std::make_unique<ast::Program>(Parser(Lexer(src).tokenize()).parseProgram());
+            Lexer lex(src);
+            auto toks = lex.tokenize();
+            auto prog = std::make_unique<ast::Program>(Parser(std::move(toks), lex.source()).parseProgram());
             const ast::Program& program = *prog;
             vm.retainChunk(std::move(prog));
             Resolver(vm).resolve(program, scope, /*indexTopLevel=*/true);  // compile-time name resolution
@@ -2490,8 +2492,10 @@ inline Handle KiritoVM::importModule(const std::string& name) {
             RootScope guard(*this);
             guard.add(scope);
             ChunkFileScope chunkScope(*this, path.string());  // functions defined here carry this file
+            Lexer lex(buf.str());
+            auto toks = lex.tokenize();
             auto prog = std::make_unique<ast::Program>(
-                Parser(Lexer(buf.str()).tokenize()).parseProgram());
+                Parser(std::move(toks), lex.source()).parseProgram());
             const ast::Program& program = *prog;
             retainChunk(std::move(prog));
             programByFile_[path.string()] = &program;  // for parallel.spawn span lookup in workers
@@ -3553,7 +3557,8 @@ inline Handle KiritoVM::evalIn(std::string_view source, Handle scope, std::strin
     try {
         ChunkFileScope chunkScope(*this, std::string(chunkName));  // functions defined here carry this file
         Lexer lexer(source);
-        Parser parser(lexer.tokenize());
+        auto toks = lexer.tokenize();
+        Parser parser(std::move(toks), lexer.source());  // source -> functions/classes capture their text
         auto prog = std::make_unique<ast::Program>(parser.parseProgram());
         const ast::Program& program = *prog;
         retainChunk(std::move(prog));  // keep the AST alive for the VM's lifetime (closures)

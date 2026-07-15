@@ -41,7 +41,7 @@ var w_nested = Function():                     # a rich, serializable value grap
 var w_boom = Function():                       # a worker fault -> surfaced at join()
     throw "labx-sentinel-42"
 var w_ret_fn = Function():                     # a non-serializable RETURN value -> surfaces at join()
-    return Function(): return 1
+    return import("io").BytesIO()              # a live resource (a Kirito Function would now serialize)
 var w_produce = Function(out, n):              # cross-VM Queue: producer side
     var i = 0
     while i < n:

@@ -23,6 +23,13 @@ public:
     // resetting to 0 each level and overflowing the native stack.
     explicit Parser(std::vector<Token> tokens, int startDepth = 0)
         : toks_(std::move(tokens)), exprDepth_(startDepth) {}
+    // With the newline-normalized source (from Lexer::source()): the parser then captures the verbatim
+    // source text of every Function/class literal into its AST node (FunctionExpr/ClassStmt::source),
+    // which is what makes those values serializable by default. `startDepth` is as above.
+    Parser(std::vector<Token> tokens, std::string source, int startDepth = 0)
+        : toks_(std::move(tokens)), source_(std::move(source)), exprDepth_(startDepth) {
+        buildLineIndex();
+    }
 
     ast::Program parseProgram() {
         ast::Program prog;
@@ -227,6 +234,7 @@ private:
 
     ast::StmtPtr parseClass() {
         auto node = std::make_unique<ast::ClassStmt>();
+        SourceSpan startSpan = peek().span;             // the 'class' keyword — start of the construct
         node->span = advance().span;  // 'class'
         node->name = expect(TokenType::Identifier, "a class name").text;
         if (at(TokenType::LParen)) {
@@ -235,6 +243,7 @@ private:
             expect(TokenType::RParen, "')' after base class");
         }
         node->body = parseBlock();
+        node->source = captureSource(startSpan, peek().span);  // verbatim text, for serialization
         return node;
     }
 
@@ -718,6 +727,7 @@ private:
 
     ast::ExprPtr parseFunction() {
         auto node = std::make_unique<ast::FunctionExpr>();
+        SourceSpan startSpan = peek().span;             // the 'Function' keyword — start of the literal
         node->span = advance().span;  // 'Function'
         expect(TokenType::LParen, "'(' after Function");
         bool seenDefault = false;
@@ -754,6 +764,7 @@ private:
         }
         --funcDepth_;
         loopDepth_ = savedLoop;
+        node->source = captureSource(startSpan, peek().span);  // verbatim text, for serialization
         return node;
     }
 
@@ -1069,6 +1080,40 @@ private:
         node->lhs = std::move(lhs);
         node->rhs = std::move(rhs);
         return node;
+    }
+
+    // Source-capture support (empty when the parser was constructed without source): the verbatim
+    // newline-normalized source plus the byte offset of each line start, so a token's absolute
+    // (line, col) maps to a byte offset. col counts BYTES (the lexer advances one column per byte), so
+    // byteOf({line,col}) = lineStart_[line-1] + col-1. Used to slice a Function/class construct's exact
+    // source text between the byte offset of its first token and the token that follows it.
+    std::string source_;
+    std::vector<std::size_t> lineStart_;
+    void buildLineIndex() {
+        lineStart_.push_back(0);
+        for (std::size_t i = 0; i < source_.size(); ++i)
+            if (source_[i] == '\n') lineStart_.push_back(i + 1);
+    }
+    std::size_t byteOf(const SourceSpan& s) const {
+        if (lineStart_.empty() || s.line == 0) return 0;
+        std::size_t li = s.line - 1;
+        if (li >= lineStart_.size()) return source_.size();
+        std::size_t off = lineStart_[li] + (s.col == 0 ? 0 : s.col - 1);
+        return off > source_.size() ? source_.size() : off;
+    }
+    // The verbatim source between two tokens' spans, right-trimmed of trailing whitespace/newlines — the
+    // captured text of a construct whose first token is at `startSpan` and whose following token is at
+    // `endSpan` (peek() after the construct is parsed). Empty when no source was supplied.
+    std::string captureSource(const SourceSpan& startSpan, const SourceSpan& endSpan) const {
+        if (source_.empty()) return {};
+        std::size_t a = byteOf(startSpan);
+        std::size_t b = byteOf(endSpan);
+        if (b <= a || b > source_.size()) b = source_.size();
+        std::string text = source_.substr(a, b - a);
+        while (!text.empty() && (text.back() == ' ' || text.back() == '\t' ||
+                                 text.back() == '\n' || text.back() == '\r'))
+            text.pop_back();
+        return text;
     }
 
     std::vector<Token> toks_;

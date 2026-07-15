@@ -1242,11 +1242,34 @@ s.gt("1.0.10", "1.0.9")                 # True  (numeric, not lexical)
 preserves shared references and cycles (a full object snapshot, unlike `json` which is flat data
 interchange with no aliasing). They share one graph walk and reconstruction core and differ only in
 output: **`serialize` is human-readable text**, **`dump` is compact binary**. Supported value types:
-`None`/`Bool`/`Integer`/`Float`/`String`/[`Bytes`](types.html#bytes)/`List`/`Dict`/`Set`, **plus user
-`class` instances**.
+`None`/`Bool`/`Integer`/`Float`/`String`/[`Bytes`](types.html#bytes)/`List`/`Dict`/`Set`, **user
+`class` instances**, and — self-contained — **`Function` and `class` values themselves**.
 
-A class instance is serialized **by its attributes** by default and reconstructed by looking the
-class up by name in the loading VM (so the class must be defined there; `_init_` is *not* re-run). A
+### Functions and classes serialize by default
+
+A **`Function`** value round-trips through both formats with no special work: its source text is stored
+and re-parsed on load, and the free variables it **captures travel with it — by value**. A referenced
+**user function or class travels recursively** (so a function that calls a helper serializes the helper
+too), a **standard/stdlib module reconnects by re-`import`** on load (a closure over `math`/`json`/… is
+not copied — it re-binds to the loading VM's module), and a builtin (`len`, `range`, …) simply
+re-resolves. Self-reference and mutual recursion are preserved, so a recursive `Function` still recurses
+after a round-trip.
+
+A **`class`** value serializes the same way — its source (and its base class, which **travels** with it)
+is re-run on load, which also **re-registers the class by name**. This is the key consequence for
+instances: an **instance now carries its class**, so `dump.loads(dump.dumps(myInstance))` works in a
+fresh VM **with no import of the defining module** — the class is reconstructed from the blob. (An
+instance whose class is already defined in the loading VM still reconnects to it by name, as before.)
+
+Two limitations: a `Function` literal written **inside an f-string** has no captured source, so it
+isn't serializable (define it as a normal binding); and a **native/built-in** function bound to a
+variable (e.g. `var f = math.sqrt`) can't be serialized — wrap it in a Kirito `Function`, or re-`import`
+the module on load. Live-resource natives (below) remain non-serializable.
+
+A class instance is serialized **by its attributes** by default and reconstructed against its class —
+which now **travels in the blob** (re-registered on load), so the loading VM needs no import; if a class
+of that name is already defined there, the instance reconnects to it instead. Either way `_init_` is
+*not* re-run. A
 class can override this with the **`_getstate_`/`_setstate_` protocol**: `_getstate_(self)` returns
 the serializable state to store, and `_setstate_(self, state)` restores it — useful to drop transient
 fields (recomputing them on load) or to reduce a value to plain serializable data. A native (C++)

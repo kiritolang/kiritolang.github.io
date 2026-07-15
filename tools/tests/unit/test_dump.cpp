@@ -120,8 +120,45 @@ len(r) == 1000 and r[999][1] == 998001
     CHECK_THROWS(vm.runSource("import(\"dump\").loads(\"not a dump\")"));
     CHECK_THROWS(vm.runSource("import(\"dump\").loads(\"\")"));
     CHECK_THROWS(vm.runSource("import(\"dump\").loads(\"KDMP\")"));  // header only, truncated
-    CHECK_THROWS(vm.runSource("import(\"dump\").dumps(Function(x): return x)"));  // unsupported type
+    // A native/built-in function is not serializable (a Kirito-defined Function now IS — see below).
+    CHECK_THROWS(vm.runSource("import(\"dump\").dumps(len)"));
     CHECK_THROWS(vm.runSource("import(\"dump\").load(\"/nonexistent/path/xyz.bin\")"));
+
+    // Kirito functions serialize by default: a plain function, a closure (captured value travels by
+    // value), and self-recursion (the function references itself) all round-trip through the binary.
+    CHECK(evalStr(vm, R"(
+var d = import("dump")
+var sq = Function(x): return x * x
+d.loads(d.dumps(sq))(9)
+)") == "81");
+    CHECK(evalStr(vm, R"(
+var d = import("dump")
+var base = 100
+var add = Function(x): return x + base
+d.loads(d.dumps(add))(5)
+)") == "105");
+    CHECK(evalStr(vm, R"(
+var d = import("dump")
+var fib = Function(n): return n if n < 2 else fib(n-1) + fib(n-2)
+d.loads(d.dumps(fib))(10)
+)") == "55");
+    // A class round-trips, and so does an instance — carrying its class, so no import is needed.
+    CHECK(evalStr(vm, R"(
+var d = import("dump")
+class Pt:
+ var _init_ = Function(self, x, y):
+  self.x = x
+  self.y = y
+ var norm2 = Function(self): return self.x*self.x + self.y*self.y
+d.loads(d.dumps(Pt))(x=3, y=4).norm2()
+)") == "25");
+    CHECK(evalStr(vm, R"(
+var d = import("dump")
+class Pt2:
+ var _init_ = Function(self, v): self.v = v
+ var twice = Function(self): return self.v * 2
+d.loads(d.dumps(Pt2(21))).twice()
+)") == "42");
 
     // the binary blob is now Bytes — itself a serializable value, so it round-trips through dump
     // (unlike the old opaque Dump type, which couldn't be re-dumped)

@@ -64,6 +64,11 @@ public:
         return out;
     }
 
+    // The newline-normalized source the lexer worked over. Token line/col are absolute into THIS text,
+    // so the parser can map a token back to a byte offset (see Parser's line-start index) to capture a
+    // construct's verbatim source for serialization.
+    const std::string& source() const { return src_; }
+
     std::vector<Token> tokenize() {
         std::vector<Token> out;
         indent_ = {{0, 0}};

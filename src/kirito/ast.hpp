@@ -294,6 +294,11 @@ struct FunctionExpr : Expr {
     std::string returnAnnotation;  // "" if no `-> Type`
     std::string name;              // binding name (`var NAME = Function`/method), "" if anonymous; used
                                    // only to label tracebacks — name resolution never depends on it
+    // The exact source text of this `Function(...)...` literal, captured verbatim by the parser (empty
+    // if the parser wasn't given the source — e.g. an f-string sub-parse). It is what makes a function
+    // value serializable by default: `serialize`/`dump` store this text and re-parse it on load, so a
+    // function round-trips with no dependency on the original AST or file. See stdlib_serde.hpp.
+    std::string source;
     Block body;
     bool inlineBody = false;        // true for `Function(): STMT` (a single same-line statement), false
                                     // for an indented block. The parser rejects a bare comma-pack right
@@ -361,6 +366,11 @@ struct ThrowStmt : Stmt {
 struct ClassStmt : Stmt {
     std::string name;
     ExprPtr base;  // optional base class
+    // The exact source text of this `class ...:` definition, captured verbatim by the parser (empty if
+    // the parser wasn't given the source). As with FunctionExpr::source, this is what lets a class
+    // value serialize by default — re-parsed on load, so a class (and its instances) round-trips
+    // self-contained, needing no import of the defining module. See stdlib_serde.hpp.
+    std::string source;
     Block body;
     void accept(StmtVisitor& v) const override { v.visit(*this); }
 };

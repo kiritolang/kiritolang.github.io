@@ -39,9 +39,8 @@ var w_boom = Function():
     throw "kirito-boom-42"
 var w_id = Function(x):
     return x
-var w_ret_fn = Function():                 # a worker returning a Function -> result isn't serializable
-    return Function():
-        return 1
+var w_ret_fn = Function():                 # a worker returning a live resource -> result isn't serializable
+    return import("io").BytesIO()          # (a Kirito Function would now serialize and cross back)
 var w_producer = Function(q, k):           # fills a cross-VM Queue, then closes it (drives a drain loop)
     var i = 0
     while i < k:
@@ -85,7 +84,7 @@ if argmain:
     # ============================== spawn hardening ========================================
     ok(throws(Function(): return parallel.spawn(42)), "spawn rejects a non-function")
     ok(throws(Function(): return parallel.spawn(len, [1, 2])), "spawn rejects a native function (not a .ki-defined one)")
-    ok(throws(Function(): return parallel.spawn(w_id, w_id)), "spawn rejects a non-serializable argument (throws at spawn time)")
+    ok(throws(Function(): return parallel.spawn(w_id, len)), "spawn rejects a non-serializable argument (throws at spawn time)")
     # a worker that throws surfaces the error at join(); its message is preserved; done() then True.
     var tBoom = parallel.spawn(w_boom)
     var boomThrew = False

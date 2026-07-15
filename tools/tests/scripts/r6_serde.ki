@@ -11,7 +11,7 @@
 #   - user classes by-attribute AND via the _getstate_/_setstate_ protocol (dropping a transient field)
 #   - native value types that opt in: DateTime, Random (exact-stream checkpoint), Set/Bytes/Dict nested
 #   - serialize(text) and dump(binary) AGREE on the same input
-#   - resources that must NOT serialize (open file, a Function) throw cleanly
+#   - live resources that must NOT serialize (open file, BytesIO) throw cleanly (a Function DOES)
 #   - corrupt/truncated blobs throw a clean diagnostic (never a crash), with bounds-checked ids
 #   - file save/load round-trip (scratch dir, cleaned up); keyword-argument support per inspect
 #
@@ -203,9 +203,10 @@ ok(throws(Function(): return dump.dumps(f)), "dump: an open file throws (resourc
 ok(throws(Function(): return serialize.dumps(f)), "serialize: an open file throws (resource)")
 discard f.close()
 discard path.remove(fpath, missing_ok = True)
-# a Function is not serializable
-ok(throws(Function(): return dump.dumps(throws)), "dump: a Function throws")
-ok(throws(Function(): return serialize.dumps(ok)), "serialize: a Function throws")
+# a Function now serializes by default (its source + captured free variables travel)
+var _sq6 = Function(x): return x * x
+ok(dump.loads(dump.dumps(_sq6))(7) == 49, "dump: a Function round-trips")
+ok(serialize.loads(serialize.dumps(_sq6))(6) == 36, "serialize: a Function round-trips")
 # a BytesIO (a live stream) is not serializable
 var bio = io.BytesIO()
 ok(throws(Function(): return dump.dumps(bio)), "dump: a BytesIO throws (resource)")

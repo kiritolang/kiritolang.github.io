@@ -64,7 +64,7 @@ must_throw("dump loads empty", Function(): return dump.loads(""))
 must_throw("dump loads bad magic", Function(): return dump.loads("XXXX...."))
 must_throw("dump loads truncated header", Function(): return dump.loads("KDMP"))
 must_throw("dump loads truncated bytes", Function(): return dump.loads(dump.dumps([1, 2, 3])[0:8]))
-must_throw("dump unsupported value", Function(): return dump.dumps(Function(x): return x))
+must_throw("dump unsupported value", Function(): return dump.dumps(len))
 # a deeply nested structure must serialize without overflowing (bounded), or throw cleanly
 var deep = []
 var cur = deep

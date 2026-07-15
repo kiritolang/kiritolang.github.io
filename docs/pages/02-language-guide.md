@@ -28,6 +28,21 @@ var b = a          # b and a are independent bindings to the same value
 Reference semantics: `A = B` makes `A` refer to the same value as `B`; mutating a shared mutable
 value (List/Dict/Set/instance) is visible through every name bound to it.
 
+**Scoping is strict and lexical.** A name declared anywhere in a scope (with `var`, or as a
+`for`/`with`/`catch`/parameter/`class` binding) is *that scope's* binding throughout — so reading or
+rebinding it **before its `var` runs** is a `name 'X' is not defined` error, exactly like Python's
+`UnboundLocalError`. Kirito never silently falls back to an outer variable of the same name; if you
+want the outer value, use a different local name or read it before shadowing:
+
+<!--norun (illustrative — demonstrates the error)-->
+```kirito
+var x = 1
+var f = Function():
+    var y = x        # ERROR: x names THIS function's local (declared below), read before its var ran
+    var x = 2
+    return y
+```
+
 ## Types
 
 Dynamically typed, strongly typed. Built-in types:

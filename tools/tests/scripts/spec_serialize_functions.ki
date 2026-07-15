@@ -1,0 +1,120 @@
+# Functions and classes serialize by default, in BOTH representations (text `serialize` and binary
+# `dump`), self-contained — deserialization needs no import of the defining module. This pins that
+# contract: closures travel by value, referenced user functions/classes travel recursively, standard
+# modules reconnect by re-import, and live native resources stay non-serializable.
+
+var io = import("io")
+var serialize = import("serialize")
+var dump = import("dump")
+var math = import("math")
+
+var checks = 0
+var fails = 0
+var check = Function(label, got, want):
+    checks = checks + 1
+    if got != want:
+        fails = fails + 1
+        io.print("FAIL:", label, "got", got, "want", want)
+
+# roundtrip a value through BOTH codecs, returning [textResult, binResult]
+var both = Function(v):
+    return [serialize.loads(serialize.dumps(v)), dump.loads(dump.dumps(v))]
+
+# --- plain function ---
+var square = Function(x): return x * x
+var sq = both(square)
+check("text square", sq[0](9), 81)
+check("dump square", sq[1](7), 49)
+
+# --- closure captures a value BY VALUE ---
+var base = 100
+var adder = Function(x): return x + base
+var ad = both(adder)
+check("text closure", ad[0](5), 105)
+check("dump closure", ad[1](5), 105)
+
+# --- self-recursion (the function refers to itself) ---
+var fib = Function(n): return n if n < 2 else fib(n - 1) + fib(n - 2)
+check("self-recursion", dump.loads(dump.dumps(fib))(10), 55)
+
+# --- mutual recursion between two top-level functions ---
+var isEven = Function(n): return True if n == 0 else isOdd(n - 1)
+var isOdd = Function(n): return False if n == 0 else isEven(n - 1)
+check("mutual recursion", serialize.loads(serialize.dumps(isEven))(10), True)
+
+# --- a referenced helper travels recursively ---
+var dbl = Function(x): return x * 2
+var useHelper = Function(x): return dbl(x) + 1
+check("helper travels", dump.loads(dump.dumps(useHelper))(20), 41)
+
+# --- a standard module reconnects by re-import ---
+var hyp = Function(a, b): return math.sqrt(a * a + b * b)
+check("module reimport", dump.loads(dump.dumps(hyp))(3, 4), 5.0)
+
+# --- a function that returns a function (nested closure) ---
+var makeAdder = Function(n):
+    return Function(x): return x + n
+var add10 = dump.loads(dump.dumps(makeAdder))(10)
+check("nested closure", add10(5), 15)
+
+# --- functions in a container keep shared identity ---
+var g = Function(x): return x + 1
+var repl = serialize.loads(serialize.dumps([g, g]))
+check("container fn", repl[0](41), 42)
+check("shared identity", id(repl[0]) == id(repl[1]), True)
+
+# --- a class value round-trips; the rebuilt class instantiates ---
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var norm2 = Function(self): return self.x * self.x + self.y * self.y
+var P2 = serialize.loads(serialize.dumps(Point))
+check("class value", P2(x = 3, y = 4).norm2(), 25)
+
+# --- an INSTANCE round-trips, carrying its class (no import needed) ---
+var inst = dump.loads(dump.dumps(Point(6, 8)))
+check("instance carries class", inst.norm2(), 100)
+
+# --- inheritance: the base class travels; _super_ works ---
+class Animal:
+    var _init_ = Function(self, name): self.name = name
+    var speak = Function(self): return self.name + " sound"
+class Dog(Animal):
+    var speak = Function(self): return self._super_().speak() + " woof"
+check("inheritance", dump.loads(dump.dumps(Dog))("Rex").speak(), "Rex sound woof")
+
+# --- a class variable (eager initializer) travels by value ---
+var FACTOR = 10
+class Scaler:
+    var factor = FACTOR
+    var scale = Function(self, x): return x * self.factor
+check("class variable", serialize.loads(serialize.dumps(Scaler))().scale(5), 50)
+
+# --- mutually recursive classes (method-level) round-trip ---
+class Ping:
+    var go = Function(self, n): return n if n <= 0 else Pong().go(n - 1)
+class Pong:
+    var go = Function(self, n): return n + 100 if n <= 0 else Ping().go(n - 1)
+check("mutual class recursion", dump.loads(dump.dumps(Ping))().go(5), 100)
+
+# --- a reconstructed function is itself re-serializable (round-trip of a round-trip) ---
+var once = dump.loads(dump.dumps(square))
+check("re-serializable", serialize.loads(serialize.dumps(once))(4), 16)
+
+# --- native/built-in functions and live resources are NOT serializable (clear, catchable error) ---
+var rejected = 0
+try:
+    discard dump.dumps(len)
+catch as e:
+    rejected = rejected + 1
+try:
+    discard serialize.dumps(io.BytesIO())
+catch as e:
+    rejected = rejected + 1
+check("non-serializable rejected", rejected, 2)
+
+if fails == 0:
+    io.print("ALL SERIALIZE TESTS PASSED (" + String(checks) + " checks)")
+else:
+    io.print(String(fails) + " FAILED of " + String(checks))

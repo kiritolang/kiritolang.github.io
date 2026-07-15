@@ -427,9 +427,9 @@ ok(drt(tensor.Tensor([1.0, 2.0], requiresgrad = True).detach()).tolist() == [1.0
 # a container of native values round-trips (shared identity preserved by the graph walk)
 var backM = drt([mx, mx])
 ok(backM[0] == backM[1] and backM[0][2, 2] == 1.0, "dump round-trips a container of natives")
-# reject resource-like natives
-ok(throws(Function(): return dump.dumps(srt)), "reject Function")
-ok(throws(Function(): return serialize.dumps(srt)), "serialize reject Function")
+# a Kirito Function now serializes (source + captured free vars); native functions/resources do not
+ok(dump.loads(dump.dumps(Function(x): return x * 3))(4) == 12, "dump round-trips a Kirito Function")
+ok(throws(Function(): return serialize.dumps(len)), "serialize rejects a native Function")
 ok(throws(Function(): return dump.dumps(io.BytesIO())), "reject BytesIO")
 ok(throws(Function(): return dump.dumps(net.Socket())), "reject Socket")
 ok(throws(Function(): return serialize.dumps(regex.compile("a+"))), "reject compiled regex")

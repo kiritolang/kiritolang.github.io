@@ -473,10 +473,10 @@ ok(throws(Function(): return serialize.dumps(fh)), "serialize rejects an open Fi
 ok(throws(Function(): return dump.dumps(fh)), "dump rejects an open File")
 fh.close()
 discard path.remove(fp, missing_ok = True)
-# a bare Function / Module also reject
-ok(throws(Function(): return dump.dumps(io.print)), "dump rejects a Function")
-ok(throws(Function(): return serialize.dumps(io.print)), "serialize rejects a Function")
-ok(throws(Function(): return dump.dumps(io)), "dump rejects a Module")
+# a bare NATIVE function still rejects; a Module reconnects by re-import (same per-VM singleton)
+ok(throws(Function(): return dump.dumps(io.print)), "dump rejects a native Function")
+ok(throws(Function(): return serialize.dumps(io.print)), "serialize rejects a native Function")
+ok(dump.loads(dump.dumps(io)) == io, "dump round-trips a Module by reimport")
 
 # ============================================================ CROSS-FORMAT structural equivalence
 # The two graph formats reconstruct an IDENTICAL graph shape (shared refs + cycles + instances).

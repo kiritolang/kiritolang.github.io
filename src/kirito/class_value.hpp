@@ -13,6 +13,8 @@
 
 namespace kirito {
 
+namespace ast { struct ClassStmt; }  // the class's definition AST (for source-capture serialization)
+
 // Kirito's special (operator) methods use dunder names with single underscores:
 // _init_, _str_, _add_, _eq_, _getitem_, _call_, ... These map an operator/protocol slot to the
 // method name a class may define.
@@ -53,6 +55,12 @@ public:
     Handle base{};
     bool hasBase = false;
     Handle selfHandle{};  // the class's own arena handle (set by the evaluator after allocation)
+    // Serialization support (both set at definition time by BuildClass). `def` is the class's AST — its
+    // verbatim `source` text and body/base drive the free-variable snapshot; `closure` is the scope the
+    // class body ran in (its parent is the defining scope), where a serialized class's free variables
+    // are looked up. Both null for a class not built from source (none currently). See stdlib_serde.hpp.
+    const ast::ClassStmt* def = nullptr;
+    Handle closure{};
 
     ValueKind kind() const override { return ValueKind::Class; }
     std::string typeName() const override { return name; }
@@ -62,6 +70,7 @@ public:
     void children(std::vector<Handle>& out) const override {
         for (const auto& [k, v] : methods) out.push_back(v);
         if (hasBase) out.push_back(base);
+        if (closure.slot) out.push_back(closure);  // keep the defining scope alive for serialization
     }
 
     // Method resolution walks the base chain.

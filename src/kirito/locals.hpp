@@ -194,6 +194,140 @@ inline NameSet capturedLocals(const std::vector<ast::Param>& params, const ast::
     return captured;
 }
 
+namespace detail {
+// Collects the names referenced FREE within a function/class subtree: every NameExpr whose name is
+// bound by neither the subtree's own scope nor any nested scope enclosing the reference. The dual of
+// CaptureScan — these are exactly the names a serialized function/class must carry from its defining
+// scope (its closure). `bound` is the union of names bound by the subtree and every nested scope on
+// the path to the current reference; a name not in it comes from the outside.
+struct FreeVarScan {
+    NameSet& free;
+
+    void block(const ast::Block& b, const NameSet& bound) { for (const auto& s : b) stmt(*s, bound); }
+
+    void func(const ast::FunctionExpr& fn, const NameSet& outer) {
+        NameSet inner = outer;
+        for (const auto& p : fn.params) {
+            if (p.defaultValue) expr(*p.defaultValue, inner);  // a default sees the earlier params
+            inner.insert(p.name);
+        }
+        collectBlockDecls(fn.body, inner);
+        block(fn.body, inner);
+    }
+    void klass(const ast::ClassStmt& c, const NameSet& outer) {
+        if (c.base) expr(*c.base, outer);            // the base resolves in the enclosing scope
+        NameSet inner = outer;
+        collectBlockDecls(c.body, inner);
+        block(c.body, inner);
+    }
+
+    void expr(const ast::Expr& e, const NameSet& bound) {
+        if (const auto* n = dynamic_cast<const ast::NameExpr*>(&e)) {
+            if (!bound.count(n->name)) free.insert(n->name);
+        } else if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) {
+            expr(*u->operand, bound);
+        } else if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e)) {
+            expr(*b->lhs, bound); expr(*b->rhs, bound);
+        } else if (const auto* l = dynamic_cast<const ast::LogicalExpr*>(&e)) {
+            expr(*l->lhs, bound); expr(*l->rhs, bound);
+        } else if (const auto* cn = dynamic_cast<const ast::ConditionalExpr*>(&e)) {
+            expr(*cn->cond, bound); expr(*cn->then, bound); expr(*cn->orelse, bound);
+        } else if (const auto* c = dynamic_cast<const ast::CallExpr*>(&e)) {
+            expr(*c->callee, bound);
+            for (const auto& a : c->args) expr(*a.value, bound);
+        } else if (const auto* m = dynamic_cast<const ast::MemberExpr*>(&e)) {
+            expr(*m->object, bound);  // .name is a member, not a scope variable
+        } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&e)) {
+            expr(*ix->object, bound);
+            for (const auto& k : ix->indices) expr(*k, bound);
+        } else if (const auto* sl = dynamic_cast<const ast::SliceExpr*>(&e)) {
+            expr(*sl->object, bound);
+            if (sl->start) expr(*sl->start, bound);
+            if (sl->stop) expr(*sl->stop, bound);
+            if (sl->step) expr(*sl->step, bound);
+        } else if (const auto* lst = dynamic_cast<const ast::ListLiteral*>(&e)) {
+            for (const auto& x : lst->elems) expr(*x, bound);
+        } else if (const auto* st = dynamic_cast<const ast::SetLiteral*>(&e)) {
+            for (const auto& x : st->elems) expr(*x, bound);
+        } else if (const auto* dt = dynamic_cast<const ast::DictLiteral*>(&e)) {
+            for (const auto& [k, v] : dt->entries) { expr(*k, bound); expr(*v, bound); }
+        } else if (const auto* fs = dynamic_cast<const ast::FStringExpr*>(&e)) {
+            for (const auto& p : fs->parts) if (p.isExpr) expr(*p.expr, bound);
+        } else if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&e)) {
+            for (const auto& x : tup->elems) expr(*x, bound);
+        } else if (const auto* star = dynamic_cast<const ast::StarExpr*>(&e)) {
+            expr(*star->inner, bound);
+        } else if (const auto* fn = dynamic_cast<const ast::FunctionExpr*>(&e)) {
+            func(*fn, bound);
+        }
+        // LiteralExpr references nothing.
+    }
+
+    void stmt(const ast::Stmt& s, const NameSet& bound) {
+        if (const auto* e = dynamic_cast<const ast::ExprStmt*>(&s)) expr(*e->expr, bound);
+        else if (const auto* d = dynamic_cast<const ast::DiscardStmt*>(&s)) expr(*d->expr, bound);
+        else if (const auto* v = dynamic_cast<const ast::VarDeclStmt*>(&s)) expr(*v->init, bound);
+        else if (const auto* a = dynamic_cast<const ast::AssignStmt*>(&s)) { expr(*a->value, bound); expr(*a->target, bound); }
+        else if (const auto* i = dynamic_cast<const ast::IfStmt*>(&s)) {
+            for (const auto& [cond, b] : i->branches) { expr(*cond, bound); block(b, bound); }
+            if (i->orelse) block(*i->orelse, bound);
+        } else if (const auto* w = dynamic_cast<const ast::WhileStmt*>(&s)) { expr(*w->cond, bound); block(w->body, bound); }
+        else if (const auto* f = dynamic_cast<const ast::ForStmt*>(&s)) { expr(*f->iterable, bound); block(f->body, bound); }
+        else if (const auto* r = dynamic_cast<const ast::ReturnStmt*>(&s)) { if (r->value) expr(*r->value, bound); }
+        else if (const auto* t = dynamic_cast<const ast::TryStmt*>(&s)) {
+            block(t->body, bound);
+            for (const auto& h : t->handlers) { if (h.type) expr(*h.type, bound); block(h.body, bound); }
+            if (t->hasFinally) block(t->finallyBody, bound);
+        } else if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&s)) expr(*th->value, bound);
+        else if (const auto* c = dynamic_cast<const ast::ClassStmt*>(&s)) klass(*c, bound);
+        else if (const auto* wi = dynamic_cast<const ast::WithStmt*>(&s)) { expr(*wi->context, bound); block(wi->body, bound); }
+        else if (const auto* as = dynamic_cast<const ast::AssertStmt*>(&s)) { expr(*as->cond, bound); if (as->message) expr(*as->message, bound); }
+        else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&s)) {
+            expr(*sw->subject, bound);
+            for (const auto& cl : sw->cases) { for (const auto& cv : cl.values) expr(*cv, bound); block(cl.body, bound); }
+            if (sw->hasDefault) block(sw->defaultBody, bound);
+        }
+        // Break/Continue/Pass/Todo reference nothing.
+    }
+};
+}  // namespace detail
+
+// All names a function literal references from its defining (closure) scope — the free-variable
+// snapshot a serializer must carry so the function round-trips self-contained.
+inline NameSet freeVariables(const ast::FunctionExpr& fn) {
+    NameSet free;
+    detail::FreeVarScan scan{free};
+    scan.func(fn, NameSet{});
+    return free;
+}
+// All names a class definition references from its defining scope (its base plus every method/attr
+// body). Superset of eagerFreeVariables.
+inline NameSet freeVariables(const ast::ClassStmt& c) {
+    NameSet free;
+    detail::FreeVarScan scan{free};
+    scan.klass(c, NameSet{});
+    return free;
+}
+// The subset of a class's free variables needed at DEFINITION time — referenced by the base expression
+// or a non-method class-body statement (a class-variable initializer), which run when the class is
+// built. A method (`var name = Function(...)`) is excluded: its body runs only when later called, so
+// its free variables are "lazy" and may be wired after the class exists (this is what lets mutually
+// recursive classes deserialize — see stdlib_serde.hpp). The base + eager refs must be real before the
+// class is rebuilt; lazy ones can be placeholders.
+inline NameSet eagerFreeVariables(const ast::ClassStmt& c) {
+    NameSet free;
+    detail::FreeVarScan scan{free};
+    if (c.base) scan.expr(*c.base, NameSet{});
+    NameSet bound;
+    collectBlockDecls(c.body, bound);  // sibling class-body names are visible to each other's initializers
+    for (const auto& s : c.body) {
+        if (const auto* v = dynamic_cast<const ast::VarDeclStmt*>(s.get()))
+            if (v->init && dynamic_cast<const ast::FunctionExpr*>(v->init.get())) continue;  // a method: lazy
+        scan.stmt(*s, bound);
+    }
+    return free;
+}
+
 }  // namespace kirito
 
 #endif

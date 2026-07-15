@@ -398,10 +398,29 @@ a stability fuzzer, and a benchmark). Working today:
     `stdlib_serde.hpp`) and supply only their byte codec — unlike `json`, which is flat data
     interchange with no reference/cycle preservation. Both handle the built-in value types
     (None/Bool/Integer/Float/String/List/Dict/Set) **and user `class` instances** — serialized by
-    attributes (reconstructed by looking the class up by name; a name→class registry is kept on the
-    VM, set when a class is defined) or via the **`_getstate_`/`_setstate_`** protocol when the class
+    attributes or via the **`_getstate_`/`_setstate_`** protocol when the class
     defines it (a native C++ type opts in the same way + `vm.registerDeserializer(name, factory)`).
-    The native **value** types opt in and round-trip through both formats: **Matrix/Vector**
+    **`Function` and `class` VALUES are serializable BY DEFAULT, self-contained** (v1.16): the parser
+    captures each `Function(...)...` / `class ...:` literal's **verbatim source** (`FunctionExpr::source`
+    / `ClassStmt::source`, derived from token line/col via a parser line-start index — the lexer/AST are
+    otherwise untouched), and serde stores that source plus a **free-variable snapshot** — the names the
+    body references from its defining scope (`freeVariables`/`eagerFreeVariables` in `locals.hpp`, the
+    dual of `capturedLocals`), each captured value recursively serialized. On load the source is re-parsed
+    (`vm.evalIn` into a fresh scope pre-seeded with the free vars) and the closure rebuilt. Boundary
+    (the "std reimport / user travels" rule): a captured **module reconnects by re-`import`** (a
+    `Module` node holding its name, NOT copied); a referenced **user function/class travels recursively**;
+    a **builtin** re-resolves for free; plain values travel by value. Deserialization needs **no import of
+    the defining module** — a class travels with its instances and **re-registers itself by name** (so
+    `dump.loads(dump.dumps(anInstance))` works in a fresh VM), the base class travels too, closures /
+    self-recursion / mutual recursion are preserved (a final wiring pass binds free vars after every node
+    exists, so cycles resolve; classes rebuild in eager-dependency order). Reconstruction lives in
+    `serde::rebuild` (passes: leaves+modules → function shells → classes topologically → containers/
+    instances → wire → bind free vars). A **native/built-in function** (e.g. a bound `math.sqrt`) and a
+    `Function` literal defined **inside an f-string** (no captured source) are NOT serializable (clear
+    error). The recursive `serde::flatten` walk keeps Function/Class flattening in out-of-line helpers so
+    a deeply nested plain-data graph still hits the depth guard (8000 frames; 1500 under sanitizers)
+    before overflowing the native stack. The native **value** types opt in and round-trip through both
+    formats: **Matrix/Vector**
     (`matrix`), **Complex/ComplexMatrix** (`complex`), **DateTime** (`time`), **Random** (`random` —
     restores the generator's exact stream, a reproducible checkpoint), and gradient-free **Tensor**
     (`tensor`). Resource-like natives that wrap live state (`Socket`/`Session`, open files/`BytesIO`/

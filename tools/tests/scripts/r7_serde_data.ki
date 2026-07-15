@@ -306,8 +306,8 @@ var ofh = io.open(tmpFile, "w")
 ok(throws(Function(): return dump.dumps(ofh)), "dump open file throws")
 ofh.close()
 discard path.remove(tmpFile, missing_ok = True)
-# A Function (bare callable) is not serializable.
-ok(throws(Function(): return dump.dumps(Function(): return 1)), "dump Function throws")
+# A Function serializes by default now (source + captured free variables); a native one does not.
+ok(dump.loads(dump.dumps(Function(x): return x + 1))(41) == 42, "dump Function round-trips")
 
 # Corrupt / truncated / malformed blobs throw a CLEAN diagnostic (bounds-checked).
 ok(throws(Function(): return dump.loads(Bytes([1, 2, 3, 4, 5]))), "dump bad magic throws")

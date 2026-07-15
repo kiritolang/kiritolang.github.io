@@ -233,6 +233,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `name '<X>' is not defined` | Load/rebind of an unbound name at run time (also caught earlier by the resolver in most cases) | Declare with `var` or fix the spelling |
+| `name '<X>' is not defined` (read/rebind before its own `var` runs) | A local **read or plain `=` before its `var` executes** — Kirito uses strict lexical addressing (like Python's *UnboundLocalError*): a name declared in a scope is that scope's binding throughout, so it never silently reads an outer variable of the same name | Move the read below the `var`, or use a different name for the local |
 
 ### Indexing & slicing
 
@@ -687,8 +688,14 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `structure too deeply nested to serialize` / `… to dump` | Graph deeper than the guard (10000; 1500 under sanitizers) | Flatten the structure |
 | `cannot serialize/dump type '<T>' (define _getstate_/_setstate_ to make it serializable)` | An instance with no `_getstate_` / a live-resource native | Add `_getstate_`/`_setstate_`, or exclude it |
 | `cannot serialize/dump type '<T>'` | A non-serializable kind (Socket, open file, Regex) | Exclude the resource from the graph |
+| `cannot serialize/dump a native/built-in function '<name>' (only Kirito-defined functions are serializable; a module reconnects by import)` | A bound reference to a builtin/native function (e.g. `var f = math.sqrt`) in the graph | Serialize a Kirito `Function` wrapper, or re-`import` the module on load |
+| `cannot serialize/dump this function: its source text was not captured …` | A `Function` literal defined inside an f-string (its source isn't recorded) | Define the function as a top-level/`var` binding, not inside an f-string |
+| `cannot serialize/dump class '<name>': its source text was not captured` | A class whose defining source wasn't recorded (should not occur for normally-defined classes) | Define the class normally |
 | `serialized root/child id out of range` / `truncated/unexpected end …` / `corrupt … : <what>` | Corrupt/truncated serialized blob | Re-dump; deserialize only trusted data |
-| `cannot deserialize: class '<name>' is not defined in this VM` | Object tag names a user class absent from this VM | Define/import the class before loading |
+| `cannot deserialize: class '<name>' is not defined in this VM` | An instance tag names a user class that neither travels in the blob nor is defined here | Deserialize output produced by this build; the class usually travels with the instance now |
+| `cannot deserialize function: <reason>` / `cannot deserialize class '<name>': <reason>` | A serialized function/class re-parse or re-run failed (corrupt/foreign source, or a free variable that can't be re-bound) | Deserialize only trusted `serialize`/`dump` output |
+| `cannot deserialize: cyclic class-definition dependency (a base class or class-variable initializer forms a cycle)` | A blob whose classes have a definition-time cycle (impossible for validly-serialized source) | Deserialize only trusted data |
+| `cannot deserialize: a free-variable name is not a String` | A corrupt function/class record whose free-variable name slot isn't a String | Deserialize only trusted data |
 | `cannot deserialize '<name>': no class or registered deserializer in this VM` | A stateful native tag with no factory | `vm.registerDeserializer(name, …)` |
 | `cannot deserialize '<name>': it defines _getstate_ but no _setstate_` | Class can serialize but not restore | Add `_setstate_` |
 | `bad serialization header` / `bad dump header` / `unsupported dump version` | Wrong/foreign format header | Feed real `serialize.dumps`/`dump.dumps` output |

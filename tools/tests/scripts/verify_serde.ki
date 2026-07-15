@@ -201,8 +201,9 @@ var gt = tensor.arange(3)
 discard gt.requiresgrad(True)
 assert raises_msg(Function(): return dump.dumps(gt), "requires grad"), "grad Tensor raises without detach"
 assert type(rd(gt.detach())) == "Tensor", "detach()-ed grad Tensor round-trips"
-# a plain Function has no state protocol -> not serializable.
-assert raises_msg(Function(): return ser.dumps(Function(): return 1), "cannot serialize"), "serialize Function raises"
+# a plain Function serializes by default (source + captured free variables); a native one does not.
+assert rs(Function(x): return x + 1)(41) == 42, "serialize Function round-trips"
+assert raises_msg(Function(): return ser.dumps(len), "cannot serialize"), "serialize native Function raises"
 
 # ============================================================ HARDENING: corrupt/truncated blobs
 # text (KSER1)
