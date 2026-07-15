@@ -229,7 +229,8 @@ public:
 
     bool remove(ObjectArena& arena, Handle key) {
         const Object& k = arena.deref(key);
-        if (!k.hashable()) return false;
+        requireHashable(k);   // reject an unhashable key with the SAME message as set/find (A06-1),
+                              // not a silent false that surfaces downstream as a misleading "key not found"
         std::size_t h = k.hash();
         if (probing_) throw KiritoError("Dict changed size during a key comparison");
         ProbeScope guard(probing_);

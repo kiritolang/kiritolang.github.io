@@ -410,7 +410,20 @@ private:
                 return make(TokenType::Gt, line, col);
             } break;
             default: {
-                throw KiritoError(std::string("unexpected character '") + c + "'",
+                // Render the offending byte printably: a raw non-ASCII/control byte (a UTF-8
+                // continuation byte, an embedded NUL) spliced straight into the message corrupts or
+                // truncates the diagnostic (A01-3). Show it as \xHH instead.
+                unsigned char uc = static_cast<unsigned char>(c);
+                std::string shown;
+                if (uc >= 0x20 && uc < 0x7f) {
+                    shown = std::string(1, c);
+                } else {
+                    static const char kHex[] = "0123456789abcdef";
+                    shown = "\\x";
+                    shown += kHex[uc >> 4];
+                    shown += kHex[uc & 0xf];
+                }
+                throw KiritoError("unexpected character '" + shown + "'",
                                   SourceSpan{line, col, 1});
             } break;
         }

@@ -28,6 +28,15 @@ public:
     // object (which would otherwise also be {0,0}). Real generations run [1, UINT32_MAX].
     static constexpr uint32_t kFirstGen = 1;
 
+    // Pre-size the slot/nursery vectors so the ~1.4k objects a VM allocates during construction, plus
+    // early user churn, don't trip a cascade of geometric reallocations (each copying the whole vector)
+    // in the first few hundred microseconds — a measurable early-run timing spike (audit v1.15 A18/S2).
+    // Pure capacity; no semantic effect.
+    ObjectArena() {
+        slots_.reserve(kInitialReserve);
+        young_.reserve(kInitialReserve);
+    }
+
     Handle alloc(std::unique_ptr<Object> obj) {
         uint32_t slot;
         if (!free_.empty()) {
@@ -57,7 +66,13 @@ public:
     const std::vector<Object*>& remembered() const { return remembered_; }
     // Clear the remembered set (reset each object's flag). Sound to clear wholesale after a minor
     // because kGcOldAge == 1 promotes every surviving young object, so every old->young edge became
-    // old->old this cycle (see object.hpp / the minor collector).
+    // old->old this cycle (see object.hpp / the minor collector). If tenuring is ever raised, this
+    // blanket clear becomes UNSOUND (an old object still pointing at a survived-but-still-young child
+    // would be forgotten → next minor frees a live young object) — it must then rescan-retain instead.
+    // The static_assert makes that coupling a compile error, not a latent UAF (A05-2).
+    static_assert(Object::kGcOldAge == 1,
+                  "resetRemembered()'s wholesale clear assumes promote-on-first-survival; raising "
+                  "kGcOldAge requires rescan-retain of old->still-young edges");
     void resetRemembered() {
         for (Object* o : remembered_) o->gcSetRemembered(false);
         remembered_.clear();
@@ -180,6 +195,7 @@ private:
     }
     Slot& at(Handle h) { return const_cast<Slot&>(std::as_const(*this).at(h)); }
 
+    static constexpr std::size_t kInitialReserve = 8192;  // covers VM construction + early churn (S2)
     std::vector<Slot> slots_;
     std::vector<uint32_t> free_;
     std::vector<uint32_t> young_;       // slot indices of the young generation (the nursery)

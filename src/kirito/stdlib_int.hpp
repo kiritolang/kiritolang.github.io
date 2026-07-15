@@ -563,7 +563,12 @@ inline int64_t coerceInt(KiritoVM& vm, Handle h, const char* who) {
     return v;
 }
 inline Handle powOp(KiritoVM& vm, const Big& base, const Big& exp) {
-    if (exp.neg) return vm.makeFloat(std::pow(toDouble(base), toDouble(exp)));   // Float, like Integer**negInt
+    if (exp.neg) {
+        // Mirror native Integer**negInt / Float**neg exactly (runtime.hpp): 0**-n is undefined, throw
+        // the same message rather than letting std::pow return a silent inf (A08-1).
+        if (base.isZero()) throw KiritoError("zero cannot be raised to a negative power");
+        return vm.makeFloat(std::pow(toDouble(base), toDouble(exp)));   // Float, like Integer**negInt
+    }
     uint64_t e;
     if (!toUint64(exp, e)) {
         if (base.isZero()) return make(vm, Big{});
