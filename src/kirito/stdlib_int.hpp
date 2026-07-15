@@ -641,8 +641,9 @@ inline Handle BigIntVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
                 return vm.makeBool(isPrimeExact(selfVal(vm, self)));
             }, std::vector<Handle>{self});
     if (name == "isprobableprime") {
+        RootScope rs(vm);
         std::vector<NativeParam> sig;
-        sig.emplace_back("rounds", "Integer", vm.makeInt(25));
+        sig.emplace_back("rounds", "Integer", rs.add(vm.makeInt(25)));  // interned today; don't rely on it
         return vm.alloc(std::make_unique<NativeFunction>(
             "isprobableprime", std::move(sig), "Bool",
             [self, selfVal](KiritoVM& vm, std::span<const Handle> a) -> Handle {

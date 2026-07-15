@@ -319,12 +319,9 @@ inline Handle FloatVal::unary(KiritoVM& vm, UnOp op, Handle) {
 // shared by Integer and Float, since `==` is now exact IEEE-754. The receiver is captured
 // so the GC keeps it alive while the bound method exists; the signature gives keyword args + inspect.
 inline Handle makeNumericCompare(KiritoVM& vm, Handle self) {
-    std::vector<NativeParam> sig;
-    sig.emplace_back("other");
-    sig.emplace_back("rel_tol", "Float", vm.makeFloat(1e-9));
-    sig.emplace_back("abs_tol", "Float", vm.makeFloat(0.0));
+    RootScope rs(vm);
     return vm.alloc(std::make_unique<NativeFunction>(
-        "compare", std::move(sig), "Bool",
+        "compare", toleranceSig(vm, rs), "Bool",
         [self](KiritoVM& v, std::span<const Handle> a) -> Handle {
             const Object& other = v.arena().deref(a[0]);
             if (!isNumeric(other))
@@ -3283,7 +3280,9 @@ inline void KiritoVM::installBuiltins() {
         auto items = rootedIterate(vm, a[0], rs, "enumerate() argument is not iterable");
         for (Handle h : items) {
             auto pair = std::make_unique<ListVal>();
-            pair->elems.push_back(vm.makeInt(i));
+            // An index past the small-int intern range is a fresh allocation held ONLY by this
+            // not-yet-arena-reachable pair, so vm.alloc(pair) below would collect it. (v1.15 A19-1.)
+            pair->elems.push_back(rs.add(vm.makeInt(i)));
             i = wadd(i, 1);  // two's-complement wrap, no signed-overflow UB at INT64_MAX start
             pair->elems.push_back(h);
             out->elems.push_back(rs.add(vm.alloc(std::move(pair))));

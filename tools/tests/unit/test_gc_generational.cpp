@@ -256,5 +256,44 @@ String(keep[0]) + String(keep[1][1]) + String(keep[2]["k"])
         CHECK(out == "134");
     }
 
+    // ===== A value must be rooted the MOMENT it is made, not once its owner is arena-reachable.
+    // Every case below builds a container (or a method signature) OUTSIDE the arena and allocates
+    // into it: until that container is itself alloc'd, nothing traces what it holds, so the next
+    // allocation collects the previous contents and the finished object hands out a dangling handle.
+    // Each of these threw "dangling handle (stale generation)" before the fix; all are invisible at
+    // any normal threshold, and the shape/index ones only bite past the small-int intern range —
+    // which is why five audit rounds of small-value tests never saw them. (v1.15 A19-1.)
+    {
+        KiritoVM vm;
+        vm.installStandardLibrary();
+        vm.setGcThreshold(1);  // collect on EVERY allocation: makes the race deterministic
+        // A native method's DEFAULTS (compare's rel_tol/abs_tol) — only reachable when a caller
+        // omits the argument, so an all-positional call papered over it.
+        CHECK(vm.stringify(vm.runSource("(5).compare(5)")) == "True");
+        CHECK(vm.stringify(vm.runSource("(5).compare(5, rel_tol = -1.0)")) == "True");
+        CHECK(vm.stringify(vm.runSource("(1.0).compare(1.5, rel_tol = 0.0)")) == "False");
+        CHECK(vm.stringify(vm.runSource(
+            "var T = import(\"tensor\")\nT.ones([2]).compare(T.ones([2]))")) == "True");
+        CHECK(vm.stringify(vm.runSource(
+            "var c = import(\"complex\")\nc.Complex(1, 2).compare(c.Complex(1, 2))")) == "True");
+        CHECK(vm.stringify(vm.runSource(
+            "var m = import(\"matrix\")\nm.identity(2).compare(m.identity(2))")) == "True");
+        // An Integer past the intern range, held only by a not-yet-alloc'd List.
+        CHECK(vm.stringify(vm.runSource(
+            "var T = import(\"tensor\")\nString(T.zeros([300, 2]).shape())")) == "[300, 2]");
+        CHECK(vm.stringify(vm.runSource(
+            "var m = import(\"matrix\")\nString(m.zeros(300, 2).shape())")) == "[300, 2]");
+        CHECK(vm.stringify(vm.runSource(
+            "var c = import(\"complex\")\nString(c.zeros(300, 2).shape())")) == "[300, 2]");
+        // enumerate's index Integer, likewise — ordinary code, past index 255.
+        CHECK(vm.stringify(vm.runSource(
+            "var xs = []\nvar i = 0\nwhile i < 300:\n    xs.append(i)\n    i = i + 1\n"
+            "var last = None\nfor p in enumerate(xs):\n    last = p\nString(last)")) == "[299, 299]");
+        // tensor.nonzero's per-axis tensors: each one collected the last.
+        CHECK(vm.stringify(vm.runSource(
+            "var T = import(\"tensor\")\nvar nz = T.nonzero(T.Tensor([[0.0, 5.0], [7.0, 0.0]]))\n"
+            "String(nz[0].tolist()) + String(nz[1].tolist())")) == "[0.0, 1.0][1.0, 0.0]");
+    }
+
     return RUN_TESTS();
 }

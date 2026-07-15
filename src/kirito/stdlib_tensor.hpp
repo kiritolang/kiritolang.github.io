@@ -1300,8 +1300,11 @@ inline Handle nonzeroT(KiritoVM& vm, Handle ah) {
         bool nz = A.isComplex() ? (A.elemAsComplex(lin) != cdouble(0, 0)) : (std::get<FT>(A.store).data[lin] != 0.0);
         if (nz) { tensor::Shape c = tensor::unravel(lin, sh); for (std::size_t d = 0; d < nd; ++d) coords[d].push_back(static_cast<double>(c[d])); }
     }
+    // The List isn't in the arena until the alloc below, so nothing traces what it holds: root each
+    // per-axis tensor as it is made, or allocating the next one collects the last. (v1.15 A19-1.)
+    RootScope rs(vm);
     auto list = std::make_unique<ListVal>();
-    for (std::size_t d = 0; d < nd; ++d) { std::size_t m = coords[d].size(); list->elems.push_back(make(vm, FT(tensor::Shape{m}, std::move(coords[d])))); }
+    for (std::size_t d = 0; d < nd; ++d) { std::size_t m = coords[d].size(); list->elems.push_back(rs.add(make(vm, FT(tensor::Shape{m}, std::move(coords[d]))))); }
     return vm.alloc(std::move(list));
 }
 inline Handle searchsortedT(KiritoVM& vm, Handle aH, Handle vH) {
@@ -1652,12 +1655,9 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     // shape + every element within tolerance), since `==` is now exact. Signatured for
     // keyword args/defaults + inspect.
     if (name == "compare") {
-        std::vector<NativeParam> sig;
-        sig.emplace_back("other");
-        sig.emplace_back("rel_tol", "Float", vm.makeFloat(1e-9));
-        sig.emplace_back("abs_tol", "Float", vm.makeFloat(0.0));
+        RootScope rs(vm);
         return vm.alloc(std::make_unique<NativeFunction>(
-            "compare", std::move(sig), "Bool",
+            "compare", toleranceSig(vm, rs), "Bool",
             [self](KiritoVM& v, std::span<const Handle> a) -> Handle {
                 auto& t = static_cast<TensorVal&>(v.arena().deref(self));
                 const auto* o = dynamic_cast<const TensorVal*>(&v.arena().deref(a[0]));
@@ -1699,8 +1699,11 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return build(0, 0);
     });
     if (name == "shape") return bind("shape", {}, [self, self_t](KiritoVM& vm, std::span<const Handle>) -> Handle {
+        // A dimension past the small-int intern range is a fresh allocation, and the List is not
+        // arena-reachable yet — so root each one. (Only ever bit shapes with a dim > 255.)
+        RootScope rs(vm);
         auto list = std::make_unique<ListVal>();
-        for (std::size_t d : self_t(vm, self).shape()) list->elems.push_back(vm.makeInt(static_cast<int64_t>(d)));
+        for (std::size_t d : self_t(vm, self).shape()) list->elems.push_back(rs.add(vm.makeInt(static_cast<int64_t>(d))));
         return vm.alloc(std::move(list));
     });
     if (name == "ndim") return bind("ndim", {}, [self, self_t](KiritoVM& vm, std::span<const Handle>) { return vm.makeInt(static_cast<int64_t>(self_t(vm, self).ndim())); });

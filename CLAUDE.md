@@ -235,9 +235,26 @@ a stability fuzzer, and a benchmark). Working today:
   the core value mutators (env bindings, List/Dict/Set/Instance/Module writes, class-method installs)
   records old→young edges in a **remembered set** so a minor never frees a still-reachable young
   object. The barrier fires transparently for both the VM and the C++ API (the `value.hpp` wrappers
-  call the same mutators). Still no `shared_ptr` / no per-value refcount. GC stats are exposed via
+  call the same mutators); each barriered mutator takes the **owning arena** from its caller (there is
+  deliberately no arena-less overload — one existed and misrouted with 2+ VMs on a thread). Still no
+  `shared_ptr` / no per-value refcount.
+  **The two cadences are independent, which is the point of the split**: a minor runs every
+  `kMinorNursery` (32768) allocations — fixed and small, because a minor costs O(young), so the pause
+  stream is many uniform blips and the arena's high-water stays near live+nursery; a major runs every
+  `max(kGcThresholdFloor, live*4)` allocations — proportional to live, because that is what amortizes
+  its O(live) cost. The floor (131072) must stay a comfortable multiple of the nursery or the major
+  trigger fires first and minors never run. Both constants are measured, not guessed (`tools/tests/bench`,
+  per-rep intra-run CV: v1.15 A18/S3 — vs 1.15.0, no workload regressed, sort/string_ops ~25% faster,
+  CV 0.265→0.055 on sum_loop, arena 1.6–6.5× smaller). Known limit: a minor rescans each remembered old
+  container IN FULL, so a growing List re-remembers itself on every append — card marking is the fix and
+  is what would let the nursery shrink further. GC stats are exposed via
   `KiritoVM::gcMinorCount()`/`gcMajorCount()` and the CLI's `--gc-stats`; `--gc-threshold N` (or
-  `KIRITO_GC_THRESHOLD`) pins an aggressive fixed cadence (the write-barrier soak).
+  `KIRITO_GC_THRESHOLD`) pins BOTH cadences to an aggressive fixed value (the write-barrier soak — but
+  note it only proves what the test's VALUES exercise: small integers are interned and permanently
+  rooted, which is how the v1.15 A19-1 dangling-handle class hid from five rounds of it).
+  **Rooting rule for native code:** root a value the moment it is made (`RootScope::add`), not once its
+  owner is arena-reachable — a container built off-arena (`make_unique<ListVal>` + allocate into it) is
+  traced by nothing, so the next allocation collects what it holds.
 - **String literals** in every spelling: **single- or double-quoted** (`'x'` / `"x"` — pick one to
   embed the other quote unescaped), each **triplable** (`'''…'''` / `"""…"""`) for **multiline**
   strings that span newlines and hold lone quotes, with two combinable prefixes — `r` for **raw**

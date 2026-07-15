@@ -60,9 +60,19 @@ public:
     // kMajorEveryMinors-th collection is instead a full MAJOR, which reclaims old-generation garbage
     // and old-spanning dead cycles a minor leaves floating. An explicit collectGarbage() is a major.
     Handle alloc(std::unique_ptr<Object> obj) {
-        if (gcEnabled_ && ++allocsSinceGc_ >= gcThreshold_) {
-            if (minorsSinceMajor_ >= kMajorEveryMinors) collectGarbage();  // resets the minor counter
-            else minorCollect();
+        if (gcEnabled_) {
+            ++allocsSinceMajor_;
+            if (++allocsSinceGc_ >= minorThreshold_) {
+                // Two independent cadences. A minor costs O(young), so it runs on a small FIXED
+                // nursery — often, but each one cheap and the same size every time. A major costs
+                // O(live), so it runs on a live-proportional cadence, which is what keeps its cost
+                // amortized to O(1) per allocation. Sharing one threshold (as this did) forced a
+                // choice between frequent expensive majors and a nursery so large that a "minor"
+                // cost nearly as much as a major — bimodal pauses, and the whole point of the
+                // generational split thrown away.
+                if (allocsSinceMajor_ >= gcThreshold_) collectGarbage();
+                else minorCollect();
+            }
         }
         return arena_.alloc(std::move(obj));
     }
@@ -184,11 +194,14 @@ public:
         }
         arena_.sweep();
         ++majorCount_;
-        minorsSinceMajor_ = 0;
+        allocsSinceMajor_ = 0;
         allocsSinceGc_ = 0;
-        // Adaptive retarget: next collection after ~4× the live set (floored), so pauses stay small
-        // and evenly spaced instead of arriving in fixed 100k-alloc bursts. Pinned off once a caller
-        // sets an explicit threshold.
+        // Adaptive retarget: the next MAJOR after ~4× the live set (floored). Proportional to live is
+        // what amortizes a major's O(live) cost to O(1) per allocation, so this is deliberately NOT
+        // capped: a hard ceiling would make a genuinely large heap pay a full mark+sweep every fixed
+        // number of allocations, which is the one way to turn this quadratic. The nursery bounds the
+        // PAUSE (see kMinorNursery); this bounds the total WORK. Pinned off by setGcThreshold().
+        // Measured after the sweep, so `live` is the true surviving set, not floating garbage.
         if (gcAdaptive_)
             gcThreshold_ = std::max(kGcThresholdFloor, arena_.liveCount() * 4);
     }
@@ -220,13 +233,19 @@ public:
         arena_.sweepYoung();
         arena_.resetRemembered();
         ++minorCount_;
-        ++minorsSinceMajor_;
-        allocsSinceGc_ = 0;
+        allocsSinceGc_ = 0;   // NOT allocsSinceMajor_: a major is spaced by allocation, not by minors
     }
 
     // Pin an explicit collection threshold; disables the adaptive retarget so the value sticks
     // exactly (tests use setGcThreshold(1) to collect on every allocation).
-    void setGcThreshold(std::size_t n) { gcThreshold_ = n; gcAdaptive_ = false; }
+    void setGcThreshold(std::size_t n) {
+        // Pins BOTH cadences, preserving this call's original meaning: a collection every n
+        // allocations, every kMajorEveryMinors-th of them a major. setGcThreshold(1) therefore still
+        // collects on every allocation (the write-barrier soak depends on it).
+        minorThreshold_ = n;
+        gcThreshold_ = n * kMajorEveryMinors;
+        gcAdaptive_ = false;
+    }
     void setGcEnabled(bool on) { gcEnabled_ = on; }
     bool gcEnabled() const { return gcEnabled_; }   // current setting (for a scoped GcPauseScope)
     std::size_t liveCount() const { return arena_.liveCount(); }
@@ -454,32 +473,49 @@ private:
         GcTimer(const GcTimer&) = delete;
         GcTimer& operator=(const GcTimer&) = delete;
     };
-    std::size_t allocsSinceGc_ = 0;
-    std::size_t gcThreshold_ = 100000;
-    // Generational cadence: a minor collection runs when the threshold is crossed; every
-    // kMajorEveryMinors-th collection is promoted to a full major (reclaiming old-gen garbage and
-    // old-spanning dead cycles). Counters are the `--gc-stats` yardstick.
+    std::size_t allocsSinceGc_ = 0;      // since the last collection of either kind (minor trigger)
+    std::size_t gcThreshold_ = 100000;   // allocations between MAJOR collections (adaptive; see below)
+    // The nursery: allocations between MINOR collections. Fixed and small, because a minor costs
+    // O(young) — bounding the nursery bounds the pause, so the pause stream is many uniform blips
+    // instead of a few lumps, and the arena's high-water is bounded near live + this.
+    //
+    // 32768 is the measured knee, not a guess (tools/tests/bench, intra-run per-rep CV — the jitter a
+    // user actually feels, as opposed to whole-run wall time, which averages it away). Sweeping
+    // 16384/32768/65536/131072: smaller keeps steadying dict_ops but costs sum_loop 22% throughput,
+    // because a minor rescans every remembered old container IN FULL, and a growing List re-remembers
+    // itself on every append — so halving the nursery doubles the rescan of the same list. (Card
+    // marking is the real answer to that and is a much larger change.) Larger walks back toward the
+    // old bimodal pauses. At 32768, against 1.15.0: no workload regressed, sort and string_ops each
+    // ~25% faster, per-rep CV 0.265->0.055 (sum_loop) / 0.509->0.374 (dict_ops) / 0.589->0.410
+    // (string_ops), arena high-water 1.6-6.5x smaller.
+    // setGcThreshold() pins BOTH cadences, so setGcThreshold(1) still collects on every allocation.
+    static constexpr std::size_t kMinorNursery = 32768;
+    std::size_t minorThreshold_ = kMinorNursery;
+    // How many minors' worth of allocation a major is spaced by when a threshold is PINNED (the
+    // adaptive path uses the live set instead). Keeps setGcThreshold(n)'s old meaning: a collection
+    // every n allocations, every 8th of them a major.
     static constexpr std::size_t kMajorEveryMinors = 8;
-    std::size_t minorsSinceMajor_ = kMajorEveryMinors;  // start high => the first collection is a major
+    std::size_t allocsSinceMajor_ = 0;
     std::size_t minorCount_ = 0;
     std::size_t majorCount_ = 0;
     uint64_t minorNanos_ = 0;
     uint64_t majorNanos_ = 0;
-    // When adaptive (the default — nobody pinned a threshold via setGcThreshold), each collection
-    // retargets the next trigger to a multiple of the surviving live set. This keeps total GC work
-    // amortized O(1) while spacing collections EVENLY and keeping each pause small — the fixed
-    // 100k-alloc trigger otherwise delivers GC in periodic ~1 ms lumps, the dominant source of the
-    // interpreter's run-to-run timing variance. An explicit setGcThreshold() pins the threshold and
-    // turns this off (tests rely on e.g. setGcThreshold(1) collecting on every allocation).
+    // When adaptive (the default — nobody pinned a threshold via setGcThreshold), each MAJOR retargets
+    // the next one to a multiple of the set that survived it. Proportional to live is what amortizes a
+    // major's O(live) cost to O(1) per allocation. An explicit setGcThreshold() pins it and turns this
+    // off (tests rely on e.g. setGcThreshold(1) collecting on every allocation).
     bool gcAdaptive_ = true;
-    // The floor only binds when the live set is small (< floor/4), i.e. allocation-heavy but low-live
-    // workloads — tight loops and deep recursion (fib), which churn transient boxes while keeping few
-    // live. At the old 20k floor those collected every 20k allocs, and the frequent (cheap) pauses both
-    // slowed the loop and jittered its timing. Raising the floor to 64k cut GC frequency ~3× there:
-    // measured ~10% faster on the in-function numeric loop and ~5% on the module loop, with a tighter
-    // run-to-run spread, for a few MB more transient retention. Larger-live workloads are unaffected
-    // (the adaptive 4× live dominates). setGcThreshold() still pins an exact value (tests use 1).
-    static constexpr std::size_t kGcThresholdFloor = 65536;
+    // The floor only binds when the live set is small (< floor/4): allocation-heavy but low-live
+    // workloads — tight loops and deep recursion (fib) — which churn transient boxes while keeping
+    // almost nothing live. It must stay a comfortable multiple of kMinorNursery, or the major trigger
+    // fires first every time and minors never run at all (measured: a floor at or below the nursery
+    // turns dict_ops major-only and its CV back up to 0.785 — worse than before the generational GC).
+    // 131072 = 4 nurseries. Larger-live workloads never reach it (the adaptive 4x live dominates).
+    // Note majors are NOT rationed beyond this: the floating garbage a promote-on-first-survival
+    // policy leaves behind means rarer majors grow the arena, and a big arena costs more to sweep
+    // than it saves in skipped majors — spacing majors 8x further apart measured WORSE on every
+    // workload (sum_loop 623M vs 483M, arena 18M vs 4M). setGcThreshold() still pins an exact value.
+    static constexpr std::size_t kGcThresholdFloor = 131072;
     bool gcEnabled_ = true;
     std::size_t callDepth_ = 0;
     // Conservative default for an 8 MB stack with deep per-call expression nesting; embedders with

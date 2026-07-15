@@ -173,6 +173,23 @@ public:
 
 // Wrap a member function's positional implementation so it ALSO accepts keyword arguments, without
 // touching the impl. `params` names the positional slots. On a keyword call,
+// The `(other, rel_tol = 1e-9, abs_tol = 0.0)` signature that EVERY native numeric type's `.compare`
+// carries (Integer/Float, Matrix, Complex, ComplexMatrix, Tensor) — the tolerant counterpart to the
+// language's exact `==`. One definition, so the tolerances can't drift apart between types.
+//
+// `rs` must outlive the NativeFunction this signature goes into. A default is an unrooted temporary
+// until the function exists to trace it (NativeFunction::children()), so the very next allocation —
+// the other default, or the function itself — can collect it, leaving a method holding a dangling
+// default that only fires when a caller omits the argument. Hence rooting each one AS it is made,
+// rather than after the fact. (v1.15 A19-1.)
+inline std::vector<NativeParam> toleranceSig(KiritoVM& vm, RootScope& rs) {
+    std::vector<NativeParam> sig;
+    sig.emplace_back("other");
+    sig.emplace_back("rel_tol", "Float", rs.add(vm.makeFloat(1e-9)));
+    sig.emplace_back("abs_tol", "Float", rs.add(vm.makeFloat(0.0)));
+    return sig;
+}
+
 // positionals fill left-to-right, keywords bind by name, any slot left as a hole before the last
 // supplied one is filled with None, and trailing unset slots are dropped — so the impl receives
 // exactly the variable-length span it always did (its own None/arity checks still apply). A

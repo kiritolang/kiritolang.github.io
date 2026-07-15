@@ -153,12 +153,9 @@ inline Handle ComplexVal::getAttr(KiritoVM& vm, Handle self, std::string_view na
     // .compare(other, rel_tol=1e-9, abs_tol=0.0) -> Bool — tolerant comparison (rel/abs tolerance), since
     // `==` is now exact. Signatured so it takes keyword args/defaults and shows under inspect.
     if (name == "compare") {
-        std::vector<NativeParam> sig;
-        sig.emplace_back("other");
-        sig.emplace_back("rel_tol", "Float", vm.makeFloat(1e-9));
-        sig.emplace_back("abs_tol", "Float", vm.makeFloat(0.0));
+        RootScope rs(vm);
         return vm.alloc(std::make_unique<NativeFunction>(
-            "compare", std::move(sig), "Bool",
+            "compare", toleranceSig(vm, rs), "Bool",
             [self](KiritoVM& v, std::span<const Handle> a) -> Handle {
                 cdouble me = static_cast<ComplexVal&>(v.arena().deref(self)).z;
                 cdouble other = cpx::asComplex(v, a[0], "compare");
@@ -351,20 +348,20 @@ inline Handle ComplexMatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_v
     if (name == "cols") return bind("cols", {}, [self, self_m](KiritoVM& vm, std::span<const Handle>) { return vm.makeInt(static_cast<int64_t>(self_m(vm, self).cols())); });
     if (name == "shape") return bind("shape", {}, [self, self_m](KiritoVM& vm, std::span<const Handle>) -> Handle {
         auto& m = self_m(vm, self);
+        // rows()/cols() past the small-int intern range allocate, and the List is not arena-reachable
+        // until the alloc below — root them, or the second collects the first. (v1.15 A19-1.)
+        RootScope rs(vm);
         auto list = std::make_unique<ListVal>();
-        list->elems.push_back(vm.makeInt(static_cast<int64_t>(m.rows())));
-        list->elems.push_back(vm.makeInt(static_cast<int64_t>(m.cols())));
+        list->elems.push_back(rs.add(vm.makeInt(static_cast<int64_t>(m.rows()))));
+        list->elems.push_back(rs.add(vm.makeInt(static_cast<int64_t>(m.cols()))));
         return vm.alloc(std::move(list));
     });
     // compare(other, rel_tol=1e-9, abs_tol=0.0) -> Bool — tolerant whole-matrix comparison (cClose
     // per element), since `==` is now exact. Signatured: keyword args/defaults + inspect.
     if (name == "compare") {
-        std::vector<NativeParam> sig;
-        sig.emplace_back("other");
-        sig.emplace_back("rel_tol", "Float", vm.makeFloat(1e-9));
-        sig.emplace_back("abs_tol", "Float", vm.makeFloat(0.0));
+        RootScope rs(vm);
         return vm.alloc(std::make_unique<NativeFunction>(
-            "compare", std::move(sig), "Bool",
+            "compare", toleranceSig(vm, rs), "Bool",
             [self](KiritoVM& v, std::span<const Handle> a) -> Handle {
                 auto& m = static_cast<ComplexMatrixVal&>(v.arena().deref(self));
                 const auto* o = dynamic_cast<const ComplexMatrixVal*>(&v.arena().deref(a[0]));

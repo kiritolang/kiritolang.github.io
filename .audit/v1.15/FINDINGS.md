@@ -3,16 +3,50 @@
 Full-codebase deep audit on the 1.15.0 base (new generational GC + new function/class serialization).
 18 read-only scanner agents (A01–A18), each owning a `scan/AXX_*.md`. This file is the triaged roll-up.
 
+## A19-1 [HIGH] — found while landing the perf work, NOT by the 18 scanners
+
+**Nine unrooted-temporary sites across five files: a value must be rooted the MOMENT it is made, not
+once its owner is arena-reachable.** Every one built a container (or a native method's signature)
+OUTSIDE the arena and allocated into it — until that container is itself `alloc`'d, nothing traces
+what it holds, so the next allocation collects the previous contents and the finished object hands
+out a dangling handle. All threw `dangling handle (stale generation)`; a different allocation pattern
+could reuse the slot instead and return a silently wrong value.
+
+| Site | Reachable from |
+|---|---|
+| `makeNumericCompare` + `.compare` on Matrix / Complex / ComplexMatrix / Tensor (5) | `(5).compare(5)` — ANY call that omits a default (`rel_tol`/`abs_tol`). An all-positional call papers over it. |
+| `tensor.nonzero` | `nonzero(t)[0]` — each per-axis tensor collected the last |
+| `.shape` on Tensor / Matrix / ComplexMatrix (3) | a dimension **> 255** |
+| `enumerate` | index **> 255** — ordinary code |
+
+**Why five rounds missed it:** it needs a GC to land inside a few-instruction window, so it is
+invisible at any normal threshold — and `--gc-threshold 1` makes it deterministic. The scanners ran
+the soak, but only over tests using *small* values: `makeInt(n)` returns an INTERNED (permanently
+rooted) object for n ≤ 255, so every shape/index in the suite was accidentally immune. It surfaced
+here only because the S3 work ran the soak against `r7_types`/`r7_tensor`, which use int64 bounds and
+300-element shapes. **`--gc-threshold 1` is only as good as the values the tests use.**
+
+Fixed by rooting at the point of creation (`rs.add(...)`), and the four `.compare` signatures now
+share one `native.hpp::toleranceSig` helper rather than four copies of the same trap. Pinned in
+`test_gc_generational.cpp` (all nine, at threshold=1; they fail on the unfixed build). `ModuleBuilder::fn`
+has the same latent hole — it roots defaults only across the final alloc, not while the caller builds
+the signature — but is safe today because modules install during VM construction, before any GC.
+
 ## Headline verdicts
 
 - **Generational GC write barrier: COMPLETE for the single-VM model** (the shipped/tested config) and
   the parallel model (A05). Every `children()`-traced Handle is either mutated only through a barriered
   mutator or set once at construction while young. Serde rebuild wires are all barriered (A10, verified
   at `KIRITO_GC_THRESHOLD=1`). This is the round's most important result — the new GC is correct.
-- **C++ embedding API: no bugs, barrier-safe, signatures unchanged** (A15). The GC change did not
-  degrade the high-level API.
-- **No HIGH memory-safety / corruption findings anywhere.** The codebase is heavily hardened by five
-  prior rounds; this round's findings are correctness/consistency/diagnostics + the two new subsystems.
+- **C++ embedding API: no bugs, barrier-safe** (A15) — but the signatures DID change: A05-1 threaded
+  the owning arena into `EnvValue::define`/`assignLocal`/`setAt`, `ClassValue::defineMethod` and
+  `ModuleValue::setMember` (source-breaking only for a host reaching past `value.hpp` into those).
+- ~~**No HIGH memory-safety / corruption findings anywhere.**~~ **WRONG — see A19-1 above.** Nine
+  unrooted-temporary sites (including `enumerate` past index 255 and every `.compare` that omits a
+  default) hand out dangling handles. The scanners' verdict was drawn from a soak that only ever used
+  small-int-interned values, so the bug class was immune to the very test meant to catch it. The
+  lesson for the next round: `--gc-threshold 1` proves nothing about values the tests never build.
+  The rest of the round's findings ARE correctness/consistency/diagnostics + the two new subsystems.
 - **Function-name coverage is exhaustive** — all 206 public Kirito names have ≥3 test references (A18).
   The only systematic gap is a few modules' error-path (adversarial) coverage.
 
@@ -121,17 +155,40 @@ generational ideal. A premature-promotion ratchet (`kGcOldAge=1` + un-capped `li
 inflates the threshold → inflates the arena. (v1.14's "variance fine 2–4%" measured whole-run wall CV,
 which averages the spikes out; the per-op jitter the user perceives was never measured.)
 
-Ranked low-risk stabilizers:
-- **S2 (DONE this batch)**: reserve arena vectors upfront — kills early-run realloc spikes. Zero risk.
-- **S1**: cap + shrink the adaptive threshold (one constant) — bounds the arena ~2.5× and cuts CV. LOW risk.
-- **S3**: give **minors a small fixed nursery cadence** separate from the major trigger — the real
-  generational win (cheap uniform minor pauses). MED risk; needs benchmark validation (measure intra-run
-  CV via `--gc-stats`), and must keep `setGcThreshold`/`test_gc` counters green.
-- **S4** (`kGcOldAge=2`): rejected — it breaks the `resetRemembered` wholesale-clear invariant (now
-  guarded by the A05-2 static_assert); would require rescan-retain of old→still-young edges.
+### DONE — S3 landed, S1 rejected on measurement
 
-Follow-up: land S1 + S3 behind a benchmark harness that reports intra-run CV, iterating until CV drops
-without a throughput regression vs 1.15.0.
+- **S2 (earlier batch)**: reserve the arena vectors upfront. Zero risk, kept.
+- **S3 (LANDED)**: minors now run on their own small FIXED nursery (`kMinorNursery = 32768`), majors on
+  the live-proportional cadence, counted independently. `setGcThreshold(n)` pins both (so
+  `setGcThreshold(1)` still collects on every allocation, and the soak still works).
+  Measured against 1.15.0 (`tools/tests/bench`, per-rep intra-run CV, release, reproduced twice):
+
+  | workload | throughput | intra CV | arena high-water |
+  |---|---|---|---|
+  | sum_loop | +0.4% (flat) | **0.265 → 0.055** | 26.0M → 4.0M |
+  | dict_ops | −0.5% (flat) | **0.509 → 0.374** | 100.5k → 43.8k |
+  | sort | **25% faster** | 0.019 → 0.014 | 720k → 424k |
+  | string_ops | **25% faster** | 0.589 → 0.410 | 165k → 103k |
+
+  No workload regressed. 32768 is the measured knee: 16384 steadies dict_ops further but costs
+  sum_loop 22%, because **a minor rescans every remembered old container IN FULL** and a growing List
+  re-remembers itself on each append — so halving the nursery doubles the rescan of the same list.
+  Card marking (or per-object dirty ranges) is the real answer to that and is the natural next perf
+  item; it is what would let the nursery go smaller still.
+- **S1 (REJECTED — the measurement contradicted the proposal)**: capping the adaptive threshold is
+  harmful. `kGcThresholdFloor` had to go UP (65536 → 131072), not down: the floor must stay a
+  comfortable multiple of the nursery or the major trigger fires first every time and **minors never
+  run at all** (measured: floor ≤ nursery turns dict_ops major-only, CV 0.785 — worse than 1.15.0).
+  And an upper cap would defeat the live-proportional spacing that amortizes a major's O(live) cost —
+  the one way to make this quadratic on a genuinely large heap. Spacing majors 8× further apart (the
+  pre-split cadence) also measured WORSE everywhere (sum_loop 623M vs 483M, arena 18M vs 4M): with
+  promote-on-first-survival, rarer majors grow the arena, and a big arena costs more to sweep than the
+  skipped majors save.
+- **S4** (`kGcOldAge=2`): still rejected — breaks the `resetRemembered` wholesale-clear invariant
+  (guarded by the A05-2 static_assert); would require rescan-retain of old→still-young edges.
+
+**The soak found more than perf:** running `--gc-threshold 1` over the *numeric* suites to validate S3
+is what surfaced **A19-1** (nine dangling-handle sites) — see the top of this file.
 
 ## False positives / by-design (confirmed, re-checked — do NOT "fix")
 
