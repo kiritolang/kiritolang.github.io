@@ -234,7 +234,7 @@ private:
 
     ast::StmtPtr parseClass() {
         auto node = std::make_unique<ast::ClassStmt>();
-        SourceSpan startSpan = peek().span;             // the 'class' keyword — start of the construct
+        std::size_t startTok = pos_;                    // the 'class' keyword — start of the construct
         node->span = advance().span;  // 'class'
         node->name = expect(TokenType::Identifier, "a class name").text;
         if (at(TokenType::LParen)) {
@@ -243,7 +243,7 @@ private:
             expect(TokenType::RParen, "')' after base class");
         }
         node->body = parseBlock();
-        node->source = captureSource(startSpan, peek().span);  // verbatim text, for serialization
+        node->source = captureSource(startTok);  // verbatim text, for serialization
         return node;
     }
 
@@ -727,7 +727,7 @@ private:
 
     ast::ExprPtr parseFunction() {
         auto node = std::make_unique<ast::FunctionExpr>();
-        SourceSpan startSpan = peek().span;             // the 'Function' keyword — start of the literal
+        std::size_t startTok = pos_;                    // the 'Function' keyword — start of the literal
         node->span = advance().span;  // 'Function'
         expect(TokenType::LParen, "'(' after Function");
         bool seenDefault = false;
@@ -764,7 +764,7 @@ private:
         }
         --funcDepth_;
         loopDepth_ = savedLoop;
-        node->source = captureSource(startSpan, peek().span);  // verbatim text, for serialization
+        node->source = captureSource(startTok);  // verbatim text, for serialization
         return node;
     }
 
@@ -1101,14 +1101,29 @@ private:
         std::size_t off = lineStart_[li] + (s.col == 0 ? 0 : s.col - 1);
         return off > source_.size() ? source_.size() : off;
     }
-    // The verbatim source between two tokens' spans, right-trimmed of trailing whitespace/newlines — the
-    // captured text of a construct whose first token is at `startSpan` and whose following token is at
-    // `endSpan` (peek() after the construct is parsed). Empty when no source was supplied.
-    std::string captureSource(const SourceSpan& startSpan, const SourceSpan& endSpan) const {
+    // Byte offset just past the last content token consumed — the end of a construct whose first token
+    // is `toks_[startTok]` and which has just been fully parsed. The trailing Newline/Indent/Dedent
+    // structure tokens are skipped because they sit at, or past, any comments and blank lines that
+    // follow the body: comments emit no token, so anchoring on the next real token would sweep them in.
+    std::size_t contentEnd(std::size_t startTok) const {
+        std::size_t i = pos_;
+        while (i > startTok + 1 && isStructural(toks_[i - 1].type)) --i;
+        const Token& last = toks_[i - 1];
+        return byteOf(last.span) + last.span.length;
+    }
+    static bool isStructural(TokenType t) {
+        return t == TokenType::Newline || t == TokenType::Indent || t == TokenType::Dedent ||
+               t == TokenType::EndOfFile;
+    }
+
+    // The verbatim source of the just-parsed construct whose first token is `toks_[startTok]`, right-
+    // trimmed of trailing whitespace. Empty when no source was supplied (an f-string's re-parsed
+    // expression) — which is what makes a Function defined there unserializable.
+    std::string captureSource(std::size_t startTok) const {
         if (source_.empty()) return {};
-        std::size_t a = byteOf(startSpan);
-        std::size_t b = byteOf(endSpan);
-        if (b <= a || b > source_.size()) b = source_.size();
+        std::size_t a = byteOf(toks_[startTok].span);
+        std::size_t b = std::min(contentEnd(startTok), source_.size());
+        if (b <= a) return {};
         std::string text = source_.substr(a, b - a);
         while (!text.empty() && (text.back() == ' ' || text.back() == '\t' ||
                                  text.back() == '\n' || text.back() == '\r'))

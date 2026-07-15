@@ -25,6 +25,7 @@ Full-codebase deep audit on the 1.15.0 base (new generational GC + new function/
 | A01-3 | MED | lexer `op()` default spliced a raw non-ASCII/NUL byte into the message → corrupt/truncated diagnostic | render as `\xHH` | `errors/lexer_nonascii_byte.ki` |
 | A05-2 | LOW | `resetRemembered`'s wholesale clear is sound only for `kGcOldAge==1` | `static_assert` guard | compile-time |
 | S2 (A18) | perf | early-run realloc spikes from growing the arena vectors from zero | `ObjectArena` reserves slots_/young_ upfront (zero-risk) | (perf; no behavior change) |
+| A02-1 | MED | source-capture swept trailing comments/blank lines into a serialized Function/class | lexer records each token's extent; capture anchors on the last content token | `spec_serialize_functions.ki` (5 checks) |
 
 ## Deferred — real findings, follow-up batch (documented here so nothing is lost)
 
@@ -32,7 +33,7 @@ Each has a concrete repro + proposed fix in its `scan/AXX_*.md`. Deferred becaus
 than a low-risk one-liner and/or must be double-checked against a by-design behavior first.
 
 **Order to work them in** (the rest of the round; this file is the source of truth for what is left):
-1. **New-code correctness** — ~~A10-2~~ (done), then A02-1. Bugs in surface this round introduced.
+1. **New-code correctness** — ~~A10-2~~ (done), ~~A02-1~~ (done). Bugs in surface this round introduced.
 2. **Security** — A13-1 (key-type confusion), A12-1 (cross-origin cookie/Authorization leak), A10-1
    (loads executes code — docs warning).
 3. **Perf variance** — S1 + S3 together; the user's key ask, see the perf section below. `kGcOldAge`
@@ -56,7 +57,7 @@ changes) and commit in small validated batches.
 | **A13-1** | MED | `crypto.rsasign/rsaverify/ecsign/ecverify` share a generic OpenSSL path with **no key-type check** — an EC key to `rsasign` yields an ECDSA sig; verify cross-accepts wrong family | check `EVP_PKEY_base_id` against the expected type, throw on mismatch | OpenSSL-gated; needs a TLS build to test |
 | **A12-1** | MED | `net.Session` cookie jar + default headers are **not host-scoped** → cookies/Authorization leak across origins (cf. the single-request NET-1 guard) | scope the jar + strip Authorization on cross-host redirect within a Session | net behavior change; needs a two-origin test |
 | **A04-1** | MED | `excSpan_` clobbered when a `finally`/`with`-exit contains a nested resolved `try/catch` → re-raised outer exception reports the **inner** line:col (diagnostics only; value correct). Recurring 3 rounds. | save/restore `excSpan_` across a nested handled exception | needs the exact nested-finally repro pinned |
-| **A02-1** | MED | serialization source-capture (`FunctionExpr::source`/`ClassStmt::source`) **over-captures trailing comments + blank lines** (anchors end on the next real token; comments emit no tokens). Round-trips still work; bloats blobs, can leak comment text. | anchor the end byte to the last **consumed** token's end, not `peek()` | subtle — depends on NEWLINE/DEDENT token positioning vs comments |
+| ~~**A02-1**~~ | MED | **FIXED** — source-capture over-captured trailing comments + blank lines (anchored the end on the next real token; comments emit no tokens). | the lexer now records each token's source extent in the previously-dead `SourceSpan::length`; `captureSource(startTok)` anchors on the last **content** token consumed (`contentEnd` skips the trailing Newline/Indent/Dedent structure tokens, which sit at/past the comments). Also drops an inline trailing comment on the body's last line. | done: 5 checks in `spec_serialize_functions.ki` (3 fail on the unfixed parser) |
 | **A05-1** | MED | the no-arena write-barrier overload resolves its arena via `activeVM()`, which with **2+ VMs on one thread** can misroute to the wrong arena (embedder-only; not reachable single-VM or parallel) | thread the owning arena into the EnvValue/Instance/Module/Class mutators, or a VM-taking barrier overload | not reachable in any shipped config; fix touches several call sites |
 | **A16-1** | MED | `tabular.DataFrame(rows, columns=)` mismatch handling asymmetric (silent drop vs raw "index out of range"); `DataFrame(None, columns=)` ignores columns | clear DataFrame-level shape-mismatch message | **must first confirm** it doesn't collide with the "tabular ragged/index" by-design entry |
 | **A09-6** | LOW-MED | `self._super_()(...)` throws "Super not callable" — `SuperValue` lacks `call`/`callKw` (workaround: `_super_()._call_(x)`) | implement `SuperValue::call`/`callKw` resolving `_call_` from `startClass` | needs runtime dispatch work |
@@ -81,8 +82,11 @@ changes) and commit in small validated batches.
 
 ## Coverage gaps to add (A18 Job 1 + per-agent)
 
-- **HIGH gap**: `crypto.aesdecrypt` bad-tag (`"authentication failed"` — the AEAD integrity contract is
-  entirely untested); `int.modinv` non-coprime (`"not invertible"`).
+- ~~**HIGH gap**: `crypto.aesdecrypt` bad-tag~~ — **A18 was wrong; do not re-add.** The AEAD integrity
+  contract is already well covered in `test_crypto.cpp`: a `tamperThrows` helper asserts a flipped
+  ciphertext bit, a flipped tag bit, and a wrong AAD each throw, and the 400-round randomized AES-GCM
+  fuzz asserts a corrupted tag never decrypts. Remaining real gap here: `int.modinv` non-coprime
+  (`"not invertible"`).
 - **MED**: crypto RSA/EC verify-fail + wrong-key, `x509parse` garbage PEM, `int.fromstring` bad-digit,
   tensor `einsum`/`tensordot`/`searchsorted` bad-axis.
 - Per-type: List `sort`/`apply` callback that `clear()`s the list; `d.update(d)`; Set-algebra with the

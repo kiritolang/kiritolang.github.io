@@ -102,6 +102,25 @@ check("mutual class recursion", dump.loads(dump.dumps(Ping))().go(5), 100)
 var once = dump.loads(dump.dumps(square))
 check("re-serializable", serialize.loads(serialize.dumps(once))(4), 16)
 
+# --- captured source ends at the body's last token: comments and blank lines never travel ---
+var commented = Function(x):
+    return x + 1  # inline note
+# stowaway comment A
+# stowaway comment B
+
+var fblob = dump.dumps(commented).decode("latin-1")
+check("fn source drops trailing comments", "stowaway comment" in fblob, False)
+check("fn source drops inline comment", "inline note" in fblob, False)
+check("commented fn still round-trips", dump.loads(dump.dumps(commented))(41), 42)
+
+class Tagged:
+    var kind = Function(self): return "tag"
+# stowaway comment C
+
+var cblob = dump.dumps(Tagged).decode("latin-1")
+check("class source drops trailing comments", "stowaway comment" in cblob, False)
+check("commented class still round-trips", dump.loads(dump.dumps(Tagged))().kind(), "tag")
+
 # --- native/built-in functions and live resources are NOT serializable (clear, catchable error) ---
 var rejected = 0
 try:

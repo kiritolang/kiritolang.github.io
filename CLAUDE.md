@@ -412,8 +412,10 @@ a stability fuzzer, and a benchmark). Working today:
     defines it (a native C++ type opts in the same way + `vm.registerDeserializer(name, factory)`).
     **`Function` and `class` VALUES are serializable BY DEFAULT, self-contained** (v1.15): the parser
     captures each `Function(...)...` / `class ...:` literal's **verbatim source** (`FunctionExpr::source`
-    / `ClassStmt::source`, derived from token line/col via a parser line-start index — the lexer/AST are
-    otherwise untouched), and serde stores that source plus a **free-variable snapshot** — the names the
+    / `ClassStmt::source`, sliced from the first token's byte offset to the **last token the body
+    consumed** via a parser line-start index + each token's source extent — so trailing comments and
+    blank lines, which emit no tokens, are never swept in; the AST is otherwise untouched), and serde
+    stores that source plus a **free-variable snapshot** — the names the
     body references from its defining scope (`freeVariables`/`eagerFreeVariables` in `locals.hpp`, the
     dual of `capturedLocals`), each captured value recursively serialized. On load the source is re-parsed
     (`vm.evalIn` into a fresh scope pre-seeded with the free vars) and the closure rebuilt. Boundary

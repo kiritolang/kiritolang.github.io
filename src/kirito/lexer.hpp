@@ -80,6 +80,8 @@ public:
                 continue;
             }
             char c = src_[pos_];
+            const std::size_t tokStart = pos_;
+            const std::size_t emitted = out.size();
             if (c == ' ' || c == '\t' || c == '\r') {
                 advance();
             } else if (c == '#') {
@@ -103,6 +105,12 @@ public:
             } else {
                 out.push_back(op());
             }
+            // A token's exact source extent, which the parser needs to slice a Function/class
+            // literal's verbatim source (Parser::captureSource). Whitespace and comments emit no
+            // token, so they are never covered; the zero-width Indent/Dedent markers that
+            // handleIndentation emits above keep length 0.
+            if (out.size() > emitted)
+                out.back().span.length = static_cast<uint32_t>(pos_ - tokStart);
         }
         // Close the final logical line, then unwind any open indentation, then EOF.
         if (!out.empty() && out.back().type != TokenType::Newline)
