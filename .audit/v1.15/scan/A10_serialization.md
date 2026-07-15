@@ -1,6 +1,7 @@
 # A10 Serialization
 
-**Status:** IN PROGRESS. Scanner A10, Kirito v1.15 audit — the NEW function/class value serialization.
+**Status:** COMPLETE. Scanner A10, Kirito v1.15 audit — the NEW function/class value serialization.
+3 findings (2 MED, 1 LOW). One genuine round-trip hole (A10-2, fresh-VM only). Barriers complete.
 
 Files: `src/kirito/stdlib_serde.hpp` (core flatten/rebuild), `stdlib_serialize.hpp` (KSER1 text),
 `stdlib_dump.hpp` (KDMP binary). Cross-ref `locals.hpp` (freeVariables/eagerFreeVariables), parser
@@ -52,3 +53,46 @@ None placeholder at pass 0c). CRITICAL SECONDARY ISSUE: the **same-VM** round-tr
 pass while real cross-process/parallel transfer fails. Any regression test for this MUST use a fresh VM
 (or `parallel`), not a same-VM round-trip. This raises A10-2 toward HIGH for the module-helper variant
 since eager class-vars computed by a stdlib-using helper are a common config pattern.
+
+### A10-3: Binary `dump.loads` does not translate a non-`KiritoError` std::exception from rebuild; text `serialize.loads` does  [severity: LOW] [confidence: likely]
+- **Location**: stdlib_dump.hpp:190-193 (`dumpfmt::read` — no try/catch) vs stdlib_serialize.hpp:209-223 (`serial::loads` wraps rebuild in `catch (const std::exception&)` → `"corrupt serialized data: ..."`).
+- **What**: `serde::rebuild` wraps `vm.evalIn` only for `KiritoError`. A malformed Class/Function source that makes the parser/evaluator throw a *non*-KiritoError `std::exception` (e.g. `std::length_error`/`std::bad_alloc` from a crafted huge token) would be converted to a clean Kirito diagnostic by the TEXT codec but bubble as a raw C++ exception through the BINARY codec. It is still caught at the native-call boundary (so no crash / Kirito `try` can catch it), but the message quality and codec symmetry differ. Byte-flip fuzzing (306 single-flip mutants) surfaced no such escape, so this is latent, not observed.
+- **Repro**: COVERAGE GAP — no crafted-binary test drives a non-KiritoError out of rebuild. Manufacturing one is hard because decode is pure and rebuild's evalIn re-wraps parse errors as KiritoError.
+- **Proposed fix**: give `dumpfmt::read` the same `try { ... } catch (const KiritoError&) { throw; } catch (const std::exception& e) { throw KiritoError("corrupt dump data: " + std::string(e.what())); }` wrapper as `serial::loads`, so both codecs report malformed input identically.
+- **Proposed test**: a fuzz assertion that `dump.loads` of arbitrary random Bytes only ever throws (never escapes) — mirror the text-side expectation.
+
+## Coverage gaps
+- **[HIGH-value] Eager class-var initializer that CALLS a captured helper** (A10-2): no test exists; every serialize test that exercises eager class-vars uses a *direct* value/class reference (`var factor = FACTOR`, `var thing = A()`), never a `helper()` call whose closure has its own free vars. This is exactly the untested shape that hides A10-2.
+- **[HIGH-value] Same-VM vs fresh-VM parity**: `spec_serialize_functions.ki` and most `.ki` serde tests round-trip in the SAME VM. A10-2 PASSES same-VM and FAILS fresh-VM. There is no `.ki`-level fresh-VM (subprocess / `parallel`) round-trip harness, so a same-VM-masked bug ships green. `test_vm_serialization.cpp` DOES use fresh VMs but has no eager-helper case.
+- Enforcing **type annotations** on a serialized function (`Function(x : UserClass) -> UserClass:`) round-trip: works (annotations are name-string checks, not free vars — verified), but untested.
+- Closure capturing an outer name via an **assignment-target-only** rebind (write-only outer `slot = v`, never read): `freeVariables` captures it via the AssignStmt target scan (verified in code), but untested.
+- `_getstate_` returning a **non-serializable** value throwing during `dumps`: verified working, untested.
+- A class defining `_getstate_` but **no `_setstate_`** throwing at load: verified working, untested (code path stdlib_serde.hpp:524).
+- Malformed **Function/Class-tag** blobs (bad eager count > pair count [clamp at :361], out-of-range free-var id, empty function source tag): the eager-count clamp and `checkId` are code-hardened but have no dedicated regression test.
+- Deeply-nested MALICIOUS blob (hand-crafted 100k-node deep chain) into `rebuild`: rebuild is iterative (no per-depth recursion), so it should not overflow — but untested that a blob deeper than the flatten guard (8000) still `loads` without stack overflow.
+
+## Summary
+Findings: **3** (2 MED [A10-1 undocumented pickle-style RCE on class deserialization; A10-2 eager
+class-var helper deserialization failure — module-helper variant leans HIGH], 1 LOW [A10-3 codec
+error-translation asymmetry]).
+
+**Round-trip completeness verdict:** the new Function/Class serialization is remarkably solid across the
+shapes I hammered — plain/closure/self-recursion/mutual-recursion/nested-closure/helper-travels/
+module-reimport/builtin-reresolve/shared-cross-closure-identity/default+freevar/deep-indent-block-body/
+inline-in-list all round-trip in a FRESH VM; classes (value/instance-carries-class/inheritance+_super_/
+class-var/mutual-class-recursion/reconnect-no-clobber/roundtrip-of-roundtrip) all correct; native types
+(Matrix/Complex/Tensor/DateTime/Random/Bytes) and _getstate_/_setstate_ round-trip; live resources
+(Socket/BytesIO/File/Regex/bound-native-fn) correctly throw; A17-1 content-hashed Set/Dict deferral holds
+even for instances whose `_hash_` reads a container attribute; cycles/DAGs preserved under
+`KIRITO_GC_THRESHOLD=1`; byte-flip fuzz (306 mutants) and crafted malicious KSER1 blobs all fail cleanly.
+The ONE genuine round-trip HOLE is A10-2 (eager class-var initializer calling a captured helper that
+dereferences its own free vars — the helper's free vars are None placeholders until pass 5, after pass-0c
+eager initializers run), which SERIALIZES fine but FAILS to deserialize in a fresh VM (the headline
+scenario), and is masked by same-VM tests.
+
+**Barrier completeness in rebuild verdict:** COMPLETE. Every wire is barriered — pass-2 List `append`,
+Set `add`, Dict `set` (barriered mutators), Object attrs via explicit `gcWriteBarrier(arena,&inst,av)`,
+deferred-container wiring (3b/4) via the same `add`/`set`, and free-var binding (pass 0b/0c/5) via
+`EnvValue::define` which calls `gcWriteBarrier`. Every fresh allocation in rebuild is pinned in the
+`RootScope roots` (or is a permanently-rooted singleton — `none()`/`makeBool`), so a mid-rebuild GC
+(verified under threshold=1) cannot free a partially-wired object. No barrier gap found.
