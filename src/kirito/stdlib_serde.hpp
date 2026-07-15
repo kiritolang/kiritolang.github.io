@@ -471,7 +471,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         const Node& nd = nodes[i];
         if (nd.tag == Tag::List) {
             auto& l = static_cast<ListVal&>(vm.arena().deref(objs[i]));
-            for (uint32_t id : nd.links) l.elems.push_back(objs[checkId(id)]);
+            for (uint32_t id : nd.links) l.append(vm.arena(), objs[checkId(id)]);  // barriered
         } else if (nd.tag == Tag::Set && !contentHashedMember(nd)) {
             auto& s = static_cast<SetVal&>(vm.arena().deref(objs[i]));
             for (uint32_t id : nd.links) s.add(vm.arena(), objs[checkId(id)]);
@@ -485,7 +485,9 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
                 Object& key = vm.arena().deref(objs[checkId(nd.links[k])]);
                 if (key.kind() != ValueKind::String)
                     throw KiritoError("cannot deserialize: instance attribute name is not a String");
-                inst.attrs[static_cast<StrVal&>(key).value()] = objs[checkId(nd.links[k + 1])];
+                Handle av = objs[checkId(nd.links[k + 1])];
+                gcWriteBarrier(vm.arena(), &inst, av);   // a promoted instance gaining a young attr mid-rebuild
+                inst.attrs[static_cast<StrVal&>(key).value()] = av;
             }
         }
     }

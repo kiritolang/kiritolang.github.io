@@ -541,6 +541,13 @@ public:
         { std::lock_guard<std::mutex> lk(registryMutex_); maxCallDepth_ = n; }
         if (main_) main_->setMaxCallDepth(n);
     }
+    // Pin an explicit GC threshold on the main VM and every worker VM (via configureVM) — used by the
+    // CLI's --gc-threshold / KIRITO_GC_THRESHOLD to run a whole program under an aggressive collector
+    // (the write-barrier soak). 0 leaves the adaptive default.
+    void setGcThreshold(std::size_t n) {
+        { std::lock_guard<std::mutex> lk(registryMutex_); gcThreshold_ = n; }
+        if (main_ && n) main_->setGcThreshold(n);
+    }
 
     std::shared_ptr<ConcurrentQueue> createQueue(std::size_t maxsize) { return makeWaitable(queues_, maxsize); }
     std::shared_ptr<ConcurrentQueue> queueById(uint64_t id) { return byId(queues_, id); }
@@ -745,6 +752,7 @@ private:
     std::unique_ptr<KiritoVM> main_;
     std::vector<std::string> libPaths_;
     std::size_t maxCallDepth_ = 0;  // 0 == leave the VM default
+    std::size_t gcThreshold_ = 0;   // 0 == leave the VM's adaptive default (see setGcThreshold)
 
     std::mutex registryMutex_;  // guards the maps below; NEVER held across a thread join or VM call
     fum::unordered_map<uint64_t, std::shared_ptr<ConcurrentQueue>> queues_;

@@ -56,6 +56,23 @@ namespace kirito {
 #  pragma GCC diagnostic ignored "-Wshadow"
 #endif
 
+// --- generational write barrier (declared in object.hpp) ------------------------------------
+// Record an old->young edge so a minor GC will not free a still-reachable young object. Placed
+// inside the core value mutators, so it fires for both the interpreter and the C++ API. Hot path:
+// a YOUNG container early-outs on one byte test (fresh call scopes, freshly-built containers). Only
+// an OLD container that gains a YOUNG value enrols in the remembered set — and only once per cycle.
+inline void gcWriteBarrier(ObjectArena& arena, Object* container, Handle value) {
+    if (container->gcYoung() || container->gcRemembered()) return;
+    if (value.generation == 0) return;                  // null/sentinel handle: points to nothing
+    if (arena.deref(value).gcYoung()) arena.remember(container);
+}
+inline void gcWriteBarrier(Object* container, Handle value) {
+    if (container->gcYoung() || container->gcRemembered()) return;   // no arena touched on the hot path
+    if (value.generation == 0) return;
+    if (KiritoVM* vm = KiritoVM::activeVM())
+        if (vm->arena().deref(value).gcYoung()) vm->arena().remember(container);
+}
+
 // kMaxRepeat (the ~256 MB repetition/padding cap) is defined in common.hpp so bytes.hpp shares it.
 
 // Forward decl (defined near installBuiltins): fully iterate `src`, rooting every element in `rs` so
@@ -440,7 +457,7 @@ inline Handle ListVal::getItem(KiritoVM& vm, std::span<const Handle> keys) {
     return elems[sequenceIndex(vm, elems.size(), singleKey(*this, keys))];
 }
 inline void ListVal::setItem(KiritoVM& vm, std::span<const Handle> keys, Handle value) {
-    elems[sequenceIndex(vm, elems.size(), singleKey(*this, keys))] = value;
+    setElem(vm.arena(), sequenceIndex(vm, elems.size(), singleKey(*this, keys)), value);
 }
 inline Handle ListVal::binary(KiritoVM& vm, BinOp op, Handle self, Handle rhs) {
     const Object& b = vm.arena().deref(rhs);
@@ -494,7 +511,7 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
         return makeMethod(vm, "append", {"item"},
             [self](KiritoVM& vm, std::span<const Handle> args) -> Handle {
                 if (args.size() != 1) throw KiritoError("append expected 1 argument");
-                static_cast<ListVal&>(vm.arena().deref(self)).elems.push_back(args[0]);
+                static_cast<ListVal&>(vm.arena().deref(self)).append(vm.arena(), args[0]);
                 return vm.none();
             },
             std::vector<Handle>{self});
@@ -597,12 +614,12 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
         return makeMethod(vm,
             "insert", {"index", "item"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.size() < 2) throw KiritoError("insert expects (index, item)");
-                auto& e = self_list(vm, self).elems;
+                auto& list = self_list(vm, self);
                 int64_t i = argInt(vm, a[0], "insert");  // checked: a non-Integer index is a clean error, not a bad downcast
-                if (i < 0) i += static_cast<int64_t>(e.size());
+                if (i < 0) i += static_cast<int64_t>(list.elems.size());
                 if (i < 0) i = 0;
-                if (i > static_cast<int64_t>(e.size())) i = static_cast<int64_t>(e.size());
-                e.insert(e.begin() + i, a[1]);
+                if (i > static_cast<int64_t>(list.elems.size())) i = static_cast<int64_t>(list.elems.size());
+                list.insertElem(vm.arena(), static_cast<std::size_t>(i), a[1]);
                 return vm.none();
             }, std::vector<Handle>{self}, 2);
     if (name == "remove")
@@ -650,8 +667,8 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                 if (a.empty()) throw KiritoError("extend expects an iterable");
                 auto other = vm.arena().deref(a[0]).iterate(vm);
                 if (!other) throw KiritoError("extend expects an iterable");
-                auto& e = self_list(vm, self).elems;
-                for (Handle h : other.value()) e.push_back(h);
+                auto& list = self_list(vm, self);
+                for (Handle h : other.value()) list.append(vm.arena(), h);
                 return vm.none();
             }, std::vector<Handle>{self});
     if (name == "copy")

@@ -1,6 +1,7 @@
 #ifndef KIRITO_VM_HPP
 #define KIRITO_VM_HPP
 
+#include <chrono>
 #include <cstdlib>
 #include <functional>
 #include <memory>
@@ -55,8 +56,14 @@ public:
 
     // The GC-aware allocator: every Kirito value flows through here, so a collection can be
     // triggered (before the new object exists) when allocation pressure crosses the threshold.
+    // Generational cadence: crossing the threshold runs a cheap MINOR (nursery) collection; every
+    // kMajorEveryMinors-th collection is instead a full MAJOR, which reclaims old-generation garbage
+    // and old-spanning dead cycles a minor leaves floating. An explicit collectGarbage() is a major.
     Handle alloc(std::unique_ptr<Object> obj) {
-        if (gcEnabled_ && ++allocsSinceGc_ >= gcThreshold_) collectGarbage();
+        if (gcEnabled_ && ++allocsSinceGc_ >= gcThreshold_) {
+            if (minorsSinceMajor_ >= kMajorEveryMinors) collectGarbage();  // resets the minor counter
+            else minorCollect();
+        }
         return arena_.alloc(std::move(obj));
     }
 
@@ -139,23 +146,34 @@ public:
     }
     void protoPut(const void* key, std::unique_ptr<Proto> p) { protoCache_[key] = std::move(p); }
 
-    // Mark from every root (singletons, globals, module cache, REPL scope, temp roots), then sweep.
+    // Every GC root, in one place, so the minor and major collectors agree on reachability: interned
+    // singletons, globals, the module/path caches, the REPL scope, `arglist`, the class registry, temp
+    // roots, C++-side pinned wrappers, the pinned bytecode literal pool, and every live operand stack.
+    template <class F>
+    void forEachRoot(F&& f) const {
+        f(none_); f(true_); f(false_); f(undefined_); f(global_);
+        for (Handle h : smallInts_) f(h);
+        if (replScopeReady_) f(replScope_);
+        for (const auto& [name, h] : moduleCache_) f(h);
+        for (const auto& [p, h] : pathCache_) f(h);
+        if (arglist_.slot) f(arglist_);  // the per-file `arglist`, shared by every module scope
+        for (const auto& [name, h] : classRegistry_) f(h);  // keep deserializable classes alive
+        for (Handle h : tempRoots_) f(h);
+        for (const auto& [h, cnt] : pinnedRoots_) { (void)cnt; f(h); }  // C++-side pinned wrappers
+        for (Handle h : bytecodeConsts_) f(h);              // pinned bytecode literal pool
+        for (const std::vector<Handle>* region : auxRoots_)  // live bytecode operand stacks
+            for (Handle h : *region) f(h);
+    }
+
+    // MAJOR collection: the full scan-everything mark-sweep. Reclaims young AND old dead objects,
+    // including old-spanning dead cycles that a minor leaves floating. Explicit collectGarbage() is a
+    // major, and the automatic cadence promotes every kMajorEveryMinors-th collection to one.
     void collectGarbage() {
+        GcTimer timer(majorNanos_);
         arena_.clearMarks();
         std::vector<Handle> work;
         auto enqueue = [&](Handle h) { if (arena_.markIfUnmarked(h)) work.push_back(h); };
-        enqueue(none_); enqueue(true_); enqueue(false_); enqueue(undefined_); enqueue(global_);
-        for (Handle h : smallInts_) enqueue(h);
-        if (replScopeReady_) enqueue(replScope_);
-        for (const auto& [name, h] : moduleCache_) enqueue(h);
-        for (const auto& [p, h] : pathCache_) enqueue(h);
-        if (arglist_.slot) enqueue(arglist_);  // the per-file `arglist`, shared by every module scope
-        for (const auto& [name, h] : classRegistry_) enqueue(h);  // keep deserializable classes alive
-        for (Handle h : tempRoots_) enqueue(h);
-        for (const auto& [h, cnt] : pinnedRoots_) { (void)cnt; enqueue(h); }  // C++-side pinned wrappers
-        for (Handle h : bytecodeConsts_) enqueue(h);              // pinned bytecode literal pool
-        for (const std::vector<Handle>* region : auxRoots_)       // live bytecode operand stacks
-            for (Handle h : *region) enqueue(h);
+        forEachRoot(enqueue);
         std::vector<Handle> childbuf;
         while (!work.empty()) {
             Handle h = work.back();
@@ -165,6 +183,8 @@ public:
             for (Handle c : childbuf) enqueue(c);
         }
         arena_.sweep();
+        ++majorCount_;
+        minorsSinceMajor_ = 0;
         allocsSinceGc_ = 0;
         // Adaptive retarget: next collection after ~4× the live set (floored), so pauses stay small
         // and evenly spaced instead of arriving in fixed 100k-alloc bursts. Pinned off once a caller
@@ -173,12 +193,53 @@ public:
             gcThreshold_ = std::max(kGcThresholdFloor, arena_.liveCount() * 4);
     }
 
+    // MINOR collection: scans only the young generation. Marks young objects reachable from the roots
+    // and from the remembered set (old objects the write barrier flagged as pointing into the nursery),
+    // stopping the trace at old-object boundaries; then frees dead young objects and promotes the
+    // survivors in place. O(young + remembered), not O(heap) — the churn-reclaiming fast path.
+    void minorCollect() {
+        GcTimer timer(minorNanos_);
+        arena_.clearYoungMarks();
+        std::vector<Handle> work;
+        auto enqueue = [&](Handle h) { if (arena_.markIfYoungUnmarked(h)) work.push_back(h); };
+        forEachRoot(enqueue);
+        std::vector<Handle> childbuf;
+        // Seed from the remembered set: an old object's young children are roots for this minor.
+        for (Object* c : arena_.remembered()) {
+            childbuf.clear();
+            c->children(childbuf);
+            for (Handle ch : childbuf) enqueue(ch);
+        }
+        while (!work.empty()) {
+            Handle h = work.back();
+            work.pop_back();
+            childbuf.clear();
+            arena_.deref(h).children(childbuf);
+            for (Handle c : childbuf) enqueue(c);
+        }
+        arena_.sweepYoung();
+        arena_.resetRemembered();
+        ++minorCount_;
+        ++minorsSinceMajor_;
+        allocsSinceGc_ = 0;
+    }
+
     // Pin an explicit collection threshold; disables the adaptive retarget so the value sticks
     // exactly (tests use setGcThreshold(1) to collect on every allocation).
     void setGcThreshold(std::size_t n) { gcThreshold_ = n; gcAdaptive_ = false; }
     void setGcEnabled(bool on) { gcEnabled_ = on; }
     bool gcEnabled() const { return gcEnabled_; }   // current setting (for a scoped GcPauseScope)
     std::size_t liveCount() const { return arena_.liveCount(); }
+
+    // --- GC statistics (the `--gc-stats` yardstick) — counting is free; timing reads a steady clock
+    // twice per collection, immaterial since collections are infrequent. `youngCount` is the current
+    // nursery occupancy; `arenaCapacity` the slot high-water mark. ---
+    std::size_t gcMinorCount() const { return minorCount_; }
+    std::size_t gcMajorCount() const { return majorCount_; }
+    uint64_t gcMinorNanos() const { return minorNanos_; }
+    uint64_t gcMajorNanos() const { return majorNanos_; }
+    std::size_t youngCount() const { return arena_.youngCount(); }
+    std::size_t arenaCapacity() const { return arena_.capacity(); }
 
     // Call-depth guard: the VM still recurses on the native C++ stack (one nested call/compile
     // descends into BytecodeVM::run again), so unbounded Kirito recursion would overflow it and crash
@@ -380,8 +441,30 @@ private:
     std::vector<const std::vector<Handle>*> auxRoots_;   // live operand stacks (GC roots)
     std::vector<Handle> bytecodeConsts_;                 // pinned literal pool of every compiled Proto
     fum::unordered_map<const void*, std::unique_ptr<Proto>> protoCache_;  // per-body compiled cache
+    // RAII: accumulate one collection's wall time into a counter. Two steady-clock reads per GC — GCs
+    // are infrequent, so this never shows up in throughput; it's the yardstick for the churn work.
+    struct GcTimer {
+        uint64_t& sink;
+        std::chrono::steady_clock::time_point t0;
+        explicit GcTimer(uint64_t& s) : sink(s), t0(std::chrono::steady_clock::now()) {}
+        ~GcTimer() {
+            sink += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - t0).count());
+        }
+        GcTimer(const GcTimer&) = delete;
+        GcTimer& operator=(const GcTimer&) = delete;
+    };
     std::size_t allocsSinceGc_ = 0;
     std::size_t gcThreshold_ = 100000;
+    // Generational cadence: a minor collection runs when the threshold is crossed; every
+    // kMajorEveryMinors-th collection is promoted to a full major (reclaiming old-gen garbage and
+    // old-spanning dead cycles). Counters are the `--gc-stats` yardstick.
+    static constexpr std::size_t kMajorEveryMinors = 8;
+    std::size_t minorsSinceMajor_ = kMajorEveryMinors;  // start high => the first collection is a major
+    std::size_t minorCount_ = 0;
+    std::size_t majorCount_ = 0;
+    uint64_t minorNanos_ = 0;
+    uint64_t majorNanos_ = 0;
     // When adaptive (the default — nobody pinned a threshold via setGcThreshold), each collection
     // retargets the next trigger to a multiple of the surviving live set. This keeps total GC work
     // amortized O(1) while spacing collections EVENLY and keeping each pause small — the fixed

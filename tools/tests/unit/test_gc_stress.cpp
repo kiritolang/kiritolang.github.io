@@ -114,6 +114,56 @@ while i < 100000:
         vm.unpinHandle(h);
     }
 
+    // ===== GENERATIONAL: a minor promotes survivors; an old object outlives a minor but not a major =====
+    {
+        KiritoVM vm;
+        vm.setGcEnabled(false);
+        Handle h = vm.makeString("survivor");
+        vm.pinHandle(h);
+        CHECK(vm.youngCount() >= 1);           // born young
+        vm.minorCollect();                     // survives (pinned) -> promoted, nursery drained
+        CHECK(vm.youngCount() == 0);
+        vm.unpinHandle(h);                      // now unreachable, but OLD
+        vm.minorCollect();                      // a minor never touches the old generation
+        CHECK(vm.stringify(h) == "survivor");
+        vm.collectGarbage();                    // a major reclaims it
+        CHECK_THROWS(vm.arena().deref(h));
+    }
+
+    // ===== GENERATIONAL: write barrier holds a cross-generation edge across MANY minors (mutating an
+    // old module-level list every iteration under GC-on-every-alloc — the barrier's whole reason) =====
+    {
+        KiritoVM vm;
+        vm.setGcThreshold(1);                  // collect on every allocation
+        std::string out = vm.stringify(vm.runSource(R"(
+var acc = []
+var i = 0
+while i < 500:
+    acc.append(i * i)              # old list <- fresh young Integer, 500 times, each behind a collection
+    var junk = [i, [i], {"k": i}]  # churn
+    i = i + 1
+String(len(acc)) + ":" + String(acc[499]) + ":" + String(sum(acc))
+)"));
+        CHECK(out == "500:249001:41541750");   // sum(i*i, i=0..499) == 41541750
+    }
+
+    // ===== GENERATIONAL: a cycle spanning both generations is reclaimed by a major, not leaked =====
+    {
+        KiritoVM vm;
+        vm.setGcThreshold(50);
+        vm.runSource(R"(
+var i = 0
+while i < 3000:
+    var a = []
+    var b = []
+    a.append(b)
+    b.append(a)      # a<->b cycle; both die each iteration, some promoted to old before dying
+    i = i + 1
+)");
+        vm.collectGarbage();                    // a major sweeps the old-spanning dead cycles
+        CHECK(vm.liveCount() < 3000);
+    }
+
     // ===== GcPauseScope: suspends auto-GC for its lifetime, restores the PREVIOUS setting =====
     {
         KiritoVM vm;                                                // GC on by default

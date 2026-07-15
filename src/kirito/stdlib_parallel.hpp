@@ -574,10 +574,11 @@ inline void KiritoDispatcher::configureVM(KiritoVM& vm) {
     // Snapshot the config under the registry lock (this runs on a worker thread; the main thread may
     // concurrently addLibPath/setMaxCallDepth). Apply to the worker VM outside the lock.
     std::vector<std::string> paths;
-    std::size_t depth;
-    { std::lock_guard<std::mutex> lk(registryMutex_); paths = libPaths_; depth = maxCallDepth_; }
+    std::size_t depth, gcThresh;
+    { std::lock_guard<std::mutex> lk(registryMutex_); paths = libPaths_; depth = maxCallDepth_; gcThresh = gcThreshold_; }
     for (const auto& p : paths) vm.addLibPath(p);
     if (depth) vm.setMaxCallDepth(depth);
+    if (gcThresh) vm.setGcThreshold(gcThresh);  // propagate the aggressive-GC soak into worker VMs
     vm.install<ParallelModule>();
     vm.importModule("parallel");  // run setup() now -> registers the cross-VM deserializers
 }

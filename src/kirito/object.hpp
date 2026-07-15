@@ -113,6 +113,23 @@ public:
     // Enumerate contained handles for the mark-sweep GC and for serialization.
     virtual void children(std::vector<Handle>&) const {}
 
+    // --- generational GC metadata (managed by ObjectArena + the collector; not part of the value) ---
+    // Every Object is born YOUNG (age 0). Surviving a collection PROMOTES it in place (age reaches
+    // kGcOldAge => old); non-moving, so its Handle never changes. The mark bit is the reachable flag
+    // for one collection cycle. `gcRemembered_` records that this (old) object currently sits in the
+    // collector's remembered set (it holds an old->young edge), so the write barrier enrolls it at
+    // most once per cycle. Pure bookkeeping — never affects a value's identity, equality, hash, or
+    // serialization; the same value is young or old at different times with no observable difference.
+    static constexpr uint8_t kGcOldAge = 1;   // promote-on-first-survival: the nursery is age 0 only
+    bool gcYoung() const { return gcAge_ == 0; }
+    uint8_t gcAge() const { return gcAge_; }
+    void gcSetAge(uint8_t a) { gcAge_ = a; }
+    void gcPromote() { if (gcAge_ < 0xFF) ++gcAge_; }
+    bool gcMarked() const { return gcMarked_; }
+    void gcSetMarked(bool m) { gcMarked_ = m; }
+    bool gcRemembered() const { return gcRemembered_; }
+    void gcSetRemembered(bool r) { gcRemembered_ = r; }
+
     // Public members (methods + attributes) for `inspect`, as formatted one-line descriptions, e.g.
     // "randint(a, b) -> Integer" or "year: Integer". Because a native type's methods are produced
     // on demand in getAttr (there's no list to walk), a NativeClass declares them here so inspect can
@@ -136,7 +153,31 @@ public:
     virtual std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle /*self*/) { return nullptr; }
     virtual std::optional<int64_t> length(KiritoVM&);
     virtual bool contains(KiritoVM&, Handle value);  // the `in` operator
+
+private:
+    // 3 bytes of generational bookkeeping; the vtable pointer already dominates every value's size,
+    // so this stays within the small-object pool's existing size classes.
+    uint8_t gcAge_ = 0;         // 0 = young (nursery); >= kGcOldAge = old (promoted)
+    bool gcMarked_ = false;     // reachable in the current collection cycle
+    bool gcRemembered_ = false; // enrolled in the collector's remembered set this cycle
 };
+
+// ---------------------------------------------------------------------------------------------------
+// Generational write barrier. Storing a (possibly young) handle into a (possibly OLD) container must
+// tell the collector about the resulting old->young edge, or a minor GC would free a still-reachable
+// young object (use-after-free). The barrier lives INSIDE the core value mutators (EnvValue bindings,
+// List/Dict/Set element writes, Instance/Module attribute writes, Class method installs), so it fires
+// transparently for BOTH the interpreter and the high-level C++ API (value.hpp wrappers call the same
+// mutators). It early-outs on the common case (a young container — fresh call scopes, freshly-built
+// containers) with a single byte test and no arena access.
+//
+// Two overloads: one when the arena is already in hand (the collection/Dict/Set/Instance/Module
+// mutators), one for EnvValue (which holds no arena — it reaches the arena via KiritoVM::activeVM()
+// only on the rare old-container path). Declared here (Object is complete); DEFINED in runtime.hpp
+// after KiritoVM is complete. Both are no-ops until the generational machinery is active.
+class ObjectArena;
+inline void gcWriteBarrier(ObjectArena& arena, Object* container, Handle value);
+inline void gcWriteBarrier(Object* container, Handle value);
 
 inline Handle Object::binary(KiritoVM&, BinOp, Handle, Handle) {
     throw KiritoError("type '" + typeName() + "' does not support this binary operator");

@@ -28,6 +28,8 @@ ki script.ki            # run a file
 ki script.ki a b c      # run a file; a b c become arglist
 ki --lib path/to/libs script.ki   # add an import search directory
 ki -w script.ki         # disable static warnings
+ki --gc-stats script.ki           # print generational-GC statistics on exit
+ki --gc-threshold 1 script.ki     # collect on every allocation (GC stress / barrier soak)
 ```
 
 ### The REPL

@@ -577,16 +577,17 @@ public:
 
     // Overwrite (in-place). Uses positive index; negatives supported symmetrically.
     void set(std::ptrdiff_t i, const Value& v) {
-        auto& e = mut().elems;
-        std::ptrdiff_t n = static_cast<std::ptrdiff_t>(e.size());
+        auto& l = mut();
+        std::ptrdiff_t n = static_cast<std::ptrdiff_t>(l.elems.size());
         std::ptrdiff_t k = i < 0 ? i + n : i;
         if (k < 0 || k >= n) throw KiritoError("List index out of range");
-        e[static_cast<std::size_t>(k)] = v.handle();
+        l.setElem(vm_->arena(), static_cast<std::size_t>(k), v.handle());  // barriered element write
     }
 
-    // Append. Chainable for fluent construction.
-    List& push(const Value& v) { mut().elems.push_back(v.handle()); return *this; }
-    List& push(Handle h) { mut().elems.push_back(h); return *this; }
+    // Append. Chainable for fluent construction. (Barriered: the wrapper API sees the write barrier
+    // transparently, so an embedder pushing a young value into a promoted list Just Works.)
+    List& push(const Value& v) { mut().append(vm_->arena(), v.handle()); return *this; }
+    List& push(Handle h) { mut().append(vm_->arena(), h); return *this; }
     template <class T> List& push(T x) { return push(Value(*vm_, x)); }
 
     // Pop and return the last element. Popping removes the list's reference to it, so if nothing

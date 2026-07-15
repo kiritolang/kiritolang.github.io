@@ -218,7 +218,17 @@ a stability fuzzer, and a benchmark). Working today:
   A bare `catch` also catches **any `std::exception`** crossing the native boundary (surfaced as a
   catchable String), so a C++ module that throws can't escape a Kirito `try`.
 - **Context managers**: `with ... as ...` (enter/exit protocol).
-- **Garbage collection**: precise mark-sweep with rooted intermediates (AddressSanitizer-clean).
+- **Garbage collection**: precise, **non-moving generational** mark-sweep with rooted intermediates
+  (AddressSanitizer-clean). Each `Object` carries a young/old age tag; a cheap **minor** collection
+  scans only the young generation (a nursery list, so it is O(young) not O(heap)) and promotes
+  survivors in place (the age flips — handles never move), while an occasional full **major**
+  collection reclaims old-generation garbage and old-spanning dead cycles. A **write barrier** inside
+  the core value mutators (env bindings, List/Dict/Set/Instance/Module writes, class-method installs)
+  records old→young edges in a **remembered set** so a minor never frees a still-reachable young
+  object. The barrier fires transparently for both the VM and the C++ API (the `value.hpp` wrappers
+  call the same mutators). Still no `shared_ptr` / no per-value refcount. GC stats are exposed via
+  `KiritoVM::gcMinorCount()`/`gcMajorCount()` and the CLI's `--gc-stats`; `--gc-threshold N` (or
+  `KIRITO_GC_THRESHOLD`) pins an aggressive fixed cadence (the write-barrier soak).
 - **String literals** in every spelling: **single- or double-quoted** (`'x'` / `"x"` — pick one to
   embed the other quote unescaped), each **triplable** (`'''…'''` / `"""…"""`) for **multiline**
   strings that span newlines and hold lone quotes, with two combinable prefixes — `r` for **raw**
@@ -400,7 +410,7 @@ a stability fuzzer, and a benchmark). Working today:
     (None/Bool/Integer/Float/String/List/Dict/Set) **and user `class` instances** — serialized by
     attributes or via the **`_getstate_`/`_setstate_`** protocol when the class
     defines it (a native C++ type opts in the same way + `vm.registerDeserializer(name, factory)`).
-    **`Function` and `class` VALUES are serializable BY DEFAULT, self-contained** (v1.16): the parser
+    **`Function` and `class` VALUES are serializable BY DEFAULT, self-contained** (v1.15): the parser
     captures each `Function(...)...` / `class ...:` literal's **verbatim source** (`FunctionExpr::source`
     / `ClassStmt::source`, derived from token line/col via a parser line-start index — the lexer/AST are
     otherwise untouched), and serde stores that source plus a **free-variable snapshot** — the names the
@@ -771,8 +781,13 @@ bits). Measured ~10% on function-local arithmetic loops; no regression on call-h
   they exchange only serialized blobs through thread-safe Queues/primitives owned by the dispatcher.
 - **VM-owned value graph + handles.** Every value is an `Object` owned by an arena slot
   (`unique_ptr`); everything else holds lightweight `Handle`s (slot+generation). Reference-assignment
-  = two bindings sharing one handle. No `shared_ptr`, no per-value refcount. Mark-sweep GC is
-  designed-for (`Object::children()`) but deferred — early on, values accumulate until the VM dies.
+  = two bindings sharing one handle. No `shared_ptr`, no per-value refcount. Reclamation is a
+  **non-moving generational mark-sweep GC** (`Object::children()` is the trace oracle for both the
+  minor and major collectors): the arena is never compacted, so a `Handle` stays valid across any
+  collection and its generation still catches use-after-free. Survivors are promoted by flipping an
+  age tag on the `Object` — no copying, no handle rewriting — and a write barrier + remembered set
+  (see the GC bullet above) let a minor collection reclaim the young churn without rescanning the live
+  heap. The whole model stays serializable (the value graph is a pure handle graph).
 - **Unified object protocol.** Built-ins, C++-authored types, and Kirito `class`es all derive
   from one `Object` base exposing the same slots (`truthy/str/equals/hash`, and operation slots
   `binary/unary/call/getAttr/setAttr/getItem/setItem/iterate/length`). The VM dispatches

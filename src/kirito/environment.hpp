@@ -41,13 +41,14 @@ public:
 
     // Define (or overwrite) a binding in this scope.
     void define(const std::string& name, Handle h) {
+        gcWriteBarrier(this, h);   // an old scope (global/module/class-body) gaining a young binding
         for (auto& [k, v] : vars_)
             if (k == name) { v = h; return; }
         vars_.push_back(name, h);
     }
     bool assignLocal(const std::string& name, Handle h) {
         for (auto& [k, v] : vars_)
-            if (k == name) { v = h; return true; }
+            if (k == name) { gcWriteBarrier(this, h); v = h; return true; }
         return false;
     }
     const Handle* findLocal(const std::string& name) const {
@@ -64,7 +65,7 @@ public:
     // StoreVar/AssignVar write.
     Handle at(std::size_t i) const { return vars_[i].second; }
     const std::string& nameAt(std::size_t i) const { return vars_[i].first; }
-    void setAt(std::size_t i, Handle h) { vars_[i].second = h; }
+    void setAt(std::size_t i, Handle h) { gcWriteBarrier(this, h); vars_[i].second = h; }
     std::size_t size() const { return vars_.size(); }
 
     void reserve(std::size_t n) { vars_.reserve(n); }

@@ -45,6 +45,16 @@ class ListVal : public Object {
 public:
     std::vector<Handle> elems;
 
+    // Barriered element writes: inserting a (possibly young) handle into a (possibly old) list records
+    // the old->young edge for the generational collector. Removal/reorder ops (pop/erase/clear/reverse/
+    // sort) never create a new edge, so they touch `elems` directly with no barrier.
+    void append(ObjectArena& arena, Handle h) { gcWriteBarrier(arena, this, h); elems.push_back(h); }
+    void setElem(ObjectArena& arena, std::size_t i, Handle h) { gcWriteBarrier(arena, this, h); elems[i] = h; }
+    void insertElem(ObjectArena& arena, std::size_t i, Handle h) {
+        gcWriteBarrier(arena, this, h);
+        elems.insert(elems.begin() + static_cast<std::ptrdiff_t>(i), h);
+    }
+
     ValueKind kind() const override { return ValueKind::List; }
     std::string typeName() const override { return "List"; }
     bool truthy() const override { return !elems.empty(); }
@@ -145,7 +155,9 @@ public:
         ProbeScope guard(probing_);
         auto& bucket = buckets[h];
         auto i = probeBucket(arena, bucket, k, dictKeyOf);  // may run _eq_ (nested mutation rejected)
+        gcWriteBarrier(arena, this, value);   // an old Dict gaining a young value...
         if (i >= 0) { bucket[static_cast<std::size_t>(i)].second = value; return; }
+        gcWriteBarrier(arena, this, key);     // ...or (on insert) a young key
         bucket.emplace_back(key, value);
         ++count;
     }
@@ -271,6 +283,7 @@ public:
         ProbeScope guard(probing_);
         auto& bucket = buckets[h];
         if (probeBucket(arena, bucket, v, setKeyOf) >= 0) return false;
+        gcWriteBarrier(arena, this, value);   // an old Set gaining a young member
         bucket.push_back(value);
         ++count;
         return true;

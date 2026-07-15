@@ -885,6 +885,13 @@ error. It comes from `ObjectArena::at()` (via the `dangling()` helper).
 The arena's ABA guard (a slot is retired once its generation would wrap past 2³²) means a stale handle
 can **never** silently re-validate against a recycled object — you always get this throw, not wrong data.
 
+Because the collector is **generational** (frequent cheap minor collections over the young generation,
+plus a rarer full major — see the [C++ API](cpp-api.html)), a mis-rooted handle is typically reclaimed
+*sooner* than it would be under a single whole-heap collector, so this diagnostic tends to surface
+quickly during development. The fix is unchanged: root it with `RootScope` / `PinnedHandle`. Rooting is
+identical for both collectors, and the non-moving design means a rooted `Handle` is **never**
+invalidated by promotion — only by actually becoming unreachable.
+
 ### Native functions — argument helpers (`native.hpp`)
 
 When you write a `NativeFunction`/`NativeClass` method, the argument helpers throw `KiritoError` on

@@ -73,6 +73,13 @@ public:
         if (closure.slot) out.push_back(closure);  // keep the defining scope alive for serialization
     }
 
+    // Install a method binding (barriered: an old class value gaining a young method handle). Used by
+    // BuildClass; the raw `methods[...]=` writes it replaces would bypass the generational barrier.
+    void defineMethod(const std::string& name, Handle h) {
+        gcWriteBarrier(this, h);
+        methods[name] = h;
+    }
+
     // Method resolution walks the base chain.
     const Handle* findMethod(const ObjectArena& arena, const std::string& n) const {
         auto it = methods.find(n);
@@ -124,6 +131,7 @@ public:
         for (const auto& [k, v] : attrs) out.push_back(v);
     }
     void setAttr(KiritoVM&, std::string_view name, Handle value) override {
+        gcWriteBarrier(this, value);   // an old instance gaining a young attribute (activeVM == this VM)
         attrs[std::string(name)] = value;
     }
     Handle getAttr(KiritoVM&, Handle self, std::string_view name) override;  // runtime.hpp

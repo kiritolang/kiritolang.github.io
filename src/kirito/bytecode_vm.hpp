@@ -217,7 +217,7 @@ public:
                     cls->closure = classScope;    // the scope its free variables resolve against
                     for (const auto& [k, v] : static_cast<EnvValue&>(vm_.arena().deref(classScope)).locals())
                         if (v != vm_.undefined())                       // skip a pre-declared slot never assigned
-                            cls->methods[k] = v;                        // the names the body defined are the methods
+                            cls->defineMethod(k, v);                    // the names the body defined are the methods
                     Handle clsHandle = rs.add(vm_.alloc(std::move(cls)));
                     auto& klass = static_cast<ClassValue&>(vm_.arena().deref(clsHandle));
                     klass.selfHandle = clsHandle;
@@ -243,7 +243,7 @@ public:
                             clone->hasOwner = true;
                             owned.emplace_back(mname, rs.add(vm_.alloc(std::move(clone))));
                         }
-                        for (auto& [mname, ch] : owned) { klass.methods[mname] = ch; classEnv.define(mname, ch); }
+                        for (auto& [mname, ch] : owned) { klass.defineMethod(mname, ch); classEnv.define(mname, ch); }
                     }
                     vm_.registerClass(cs.name, clsHandle);  // so serialize/dump can reconstruct instances
                     // Leave the class on the operand stack; the compiler binds cs.name right after via

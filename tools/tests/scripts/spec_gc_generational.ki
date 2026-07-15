@@ -1,0 +1,85 @@
+# Generational GC — end-to-end behavioural test. Long-lived (old) structures coexist with heavy
+# young churn and repeated old->young mutation. Under the generational collector the old containers
+# must retain every young value written into them (the write barrier); a missed barrier shows up as a
+# wrong count/sum here (or an ASan use-after-free under the gc-every-alloc soak). Byte-exact output.
+var io = import("io")
+
+# --- an OLD module-level list, filled across a big loop while churning young garbage each step ---
+var data = []
+var i = 0
+while i < 60000:
+    data.append(i)                 # old list <- young Integer  (append barrier)
+    var junk = [i, i + 1, [i, i]]  # young garbage, immediately dead
+    i = i + 1
+io.print(len(data))                # 60000
+io.print(data[0] + data[59999])    # 59999
+io.print(sum(data))                # 1799970000
+
+# --- an OLD Dict and Set grown under churn ---
+var d = {}
+var s = Set()
+var k = 0
+while k < 40000:
+    d[k] = k * 2                    # old Dict <- young key + value  (set barrier)
+    s.add(k)                        # old Set  <- young value        (add barrier)
+    var g = {"a": k, "b": [k, k]}   # young garbage
+    k = k + 1
+io.print(len(d))                   # 40000
+io.print(len(s))                   # 40000
+io.print(d[39999])                 # 79998
+io.print(s.contains(12345))        # True
+
+# --- a closure mutating a CAPTURED module-level var (old EnvValue <- young), under churn ---
+var counter = 0
+var acc = []
+var tick = Function():
+    counter = counter + 1          # rebinds the captured old module binding to a fresh young Integer
+    return counter
+var t = 0
+while t < 30000:
+    var r = tick()
+    if r % 10000 == 0:
+        acc.append(r)
+    var noise = String(t) + "-" + String(t * t)   # young garbage
+    t = t + 1
+io.print(counter)                  # 30000
+io.print(acc)                      # [10000, 20000, 30000]
+
+# --- an OLD instance whose attribute is REASSIGNED every iteration (old Instance <- young) ---
+class Register:
+    var _init_ = Function(self):
+        self.value = 0
+        self.history = []
+    var step = Function(self, x):
+        self.value = self.value + x           # attr reassigned to a fresh young Integer each call
+        if x > 0 and x % 5000 == 0:
+            self.history.append(self.value)   # old list attr <- young value
+
+var reg = Register()
+var j = 0
+while j < 20000:
+    reg.step(j)
+    var tmp = [j, {"n": j}]        # young garbage
+    j = j + 1
+io.print(reg.value)                # 199990000
+io.print(len(reg.history))         # 3  (j = 5000, 10000, 15000)
+
+# --- deeply nested reachable structure grown under aggressive churn (chain of old lists) ---
+var chain = 0
+var c = 0
+while c < 5000:
+    chain = [chain, c]             # each new (young) list references the previous (now old) chain
+    c = c + 1
+io.print(chain[1])                 # 4999  (innermost value intact after promotion)
+
+# --- serialize a graph with shared refs + a cycle, round-trip, verify identity preserved ---
+var dump = import("dump")
+var shared = [1, 2, 3]
+var payload = [shared, shared]     # same object twice
+payload.append(payload)            # a cycle
+var back = dump.loads(dump.dumps(payload))
+back[0].append(4)                  # mutate through the first alias
+io.print(back[1])                  # [1, 2, 3, 4]  (shared identity preserved)
+io.print(back[2] == back)          # True  (cycle preserved)
+
+io.print("ALL GC GENERATIONAL TESTS PASSED")
