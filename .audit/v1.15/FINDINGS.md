@@ -31,6 +31,23 @@ Full-codebase deep audit on the 1.15.0 base (new generational GC + new function/
 Each has a concrete repro + proposed fix in its `scan/AXX_*.md`. Deferred because they need more care
 than a low-risk one-liner and/or must be double-checked against a by-design behavior first.
 
+**Order to work them in** (the rest of the round; this file is the source of truth for what is left):
+1. **New-code correctness** — ~~A10-2~~ (done), then A02-1. Bugs in surface this round introduced.
+2. **Security** — A13-1 (key-type confusion), A12-1 (cross-origin cookie/Authorization leak), A10-1
+   (loads executes code — docs warning).
+3. **Perf variance** — S1 + S3 together; the user's key ask, see the perf section below. `kGcOldAge`
+   must stay 1 (S4 is rejected — a `static_assert` guards `resetRemembered`).
+4. **Diagnostics / other** — A04-1 (recurring 3 rounds), A05-1, A16-1 (confirm against the by-design
+   tabular entry FIRST), A09-6, then the LOWs.
+5. **Coverage gaps** — the A18 list below; `crypto.aesdecrypt` bad-tag is the highest (the AEAD
+   integrity contract is entirely untested).
+6. **Document + pin** — A14-1, A11-1. Accepted tradeoffs: pin the behavior, do NOT "fix" it.
+
+Rules for each: only fix REAL triggerable bugs (check the false-positives table below first), stay
+idiomatic, never break a documented contract, single-source anything reused, and pin every fix with a
+regression test named for the symptom. Validate on debug + release (asan/tsan too for GC/parallel
+changes) and commit in small validated batches.
+
 | ID | Sev | What | Proposed fix | Why deferred |
 |----|-----|------|--------------|--------------|
 | ~~**A10-2**~~ | MED→HIGH | **FIXED** — eager class-var initializer that calls a **captured helper** fails to deserialize in a FRESH VM (helper free-vars are None during pass-0c eager init; bound only at pass 5). Masked by same-VM tests. | bind a helper's free vars before running an eager class-var initializer, or defer eager init past pass 5 | done: `bindEagerHelpers` + early-container pass 0b2; pinned by 4 empty-prelude cases in `test_vm_serialization.cpp` |
