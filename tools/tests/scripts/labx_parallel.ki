@@ -163,6 +163,16 @@ if argmain:
     # Queue construction hardening
     assert raises_msg(Function(): return parallel.Queue(-1), "maxsize must be >= 0"), "negative maxsize raises"
     assert raises_msg(Function(): return parallel.Queue().get(True, "soon"), "timeout must be a number"), "non-numeric timeout raises"
+    # A negative timeout would make cv.wait_for return instantly — indistinguishable from timeout=0,
+    # silently hiding whatever arithmetic produced it. Rejected on EVERY primitive (one argTimeout).
+    assert raises_msg(Function(): return parallel.Queue().get(True, 0 - 1), "timeout must be >= 0"), "negative Queue.get timeout raises"
+    assert raises_msg(Function(): return parallel.Queue().put(1, True, 0 - 0.5), "timeout must be >= 0"), "negative Queue.put timeout raises"
+    assert raises_msg(Function(): return parallel.Lock().acquire(True, 0 - 2.5), "timeout must be >= 0"), "negative Lock.acquire timeout raises"
+    assert raises_msg(Function(): return parallel.Event().wait(0 - 1), "timeout must be >= 0"), "negative Event.wait timeout raises"
+    assert raises_msg(Function(): return parallel.Semaphore(1).acquire(True, 0 - 1), "timeout must be >= 0"), "negative Semaphore timeout raises"
+    # ...but 0 (poll once) and a positive bound still work
+    assert parallel.Lock().acquire(True, 0), "timeout=0 still acquires an uncontended lock"
+    assert not parallel.Event().wait(0.01), "a positive timeout still expires"
 
     # ===================================================== cross-VM Queue (sorted aggregate)
     var pq = parallel.Queue()

@@ -76,6 +76,16 @@ ok(T.arange(0, -3).size() == 0, "arange(0,-3) is empty (positive step, stop belo
 ok(throws(Function(): return emp.mean()), "mean of an empty tensor throws")
 ok(throws(Function(): return emp.median()), "median of an empty tensor throws")
 ok(throws(Function(): return emp.argmax()), "argmax of an empty tensor throws")
+# Reducing a zero-length AXIS follows the same rule as reducing an empty tensor, and for the same
+# reason: a reduction with an identity returns it, one without is a domain error rather than a quiet
+# NaN (the math-module policy). sum/prod have one; mean/max/std do not. Both halves pinned. (A11-1)
+var zax = T.zeros([3, 0])
+ok(zax.sum(axis = 1).tolist() == [0.0, 0.0, 0.0], "sum over an empty axis is the identity 0 (NumPy)")
+ok(zax.prod(axis = 1).tolist() == [1.0, 1.0, 1.0], "prod over an empty axis is the identity 1 (NumPy)")
+ok(throws(Function(): return zax.mean(axis = 1)), "mean over an empty axis throws (no identity: 0/0)")
+ok(throws(Function(): return zax.max(axis = 1)), "max over an empty axis throws (no identity)")
+ok(throws(Function(): return zax.std(axis = 1)), "std over an empty axis throws")
+ok(throws(Function(): return zax.var(axis = 1)), "var over an empty axis throws")
 ok(T.Tensor([]).size() == 0, "Tensor([]) is empty with shape [0]")
 ok(T.Tensor([]).shape() == [0], "Tensor([]) shape [0]")
 

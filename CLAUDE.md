@@ -108,7 +108,9 @@ Kirito should support:
   mismatch); unpack targets may be names, indices, or members (`a[0], a[1] = x, y`).
 - **Numerics**: separate `Integer` (int64) and `Float` (double); integer literals may be decimal,
   hex (`0xFF`), octal (`0o17`), or binary (`0b1010`) (case-insensitive prefix, full-width
-  two's-complement), and float literals allow scientific notation (`1e10`, `1.5e3`, `2e-3`).
+  two's-complement), and float literals allow scientific notation (`1e10`, `1.5e3`, `2e-3`,
+  and `1.e5` — a `.` followed by an exponent; an exponent needs e/E + optional sign + a digit, so
+  `1.compare(x)` stays member access).
   **True division** — `/` always yields `Float`, `//` is
   floor division, `%` modulo, `**` right-assoc exponentiation. Integer arithmetic is fixed-width
   int64 with **well-defined two's-complement wraparound** on overflow (no UB); **arbitrary-precision
@@ -164,7 +166,13 @@ Kirito should support:
   `self._super_()` returns a *parent view*
   of self (method lookup starts at the base of the currently-running method's class) — for extending
   inherited methods/constructors; it climbs one level per call (so multi-level chains compose),
-  throws if the class has no base, and is overridable (but shouldn't be).
+  throws if the class has no base, and is overridable (but shouldn't be). The parent view resolves
+  **named** lookups only, so an inherited special method is extended by its dunder NAME
+  (`self._super_()._call_(x)`, `self._super_()._getitem_(i)`) — operator syntax on the view
+  (`self._super_()(x)`, `self._super_()[i]`) throws "type 'Super' is not callable/indexable". This is
+  uniform across every operator dunder (one rule, no exceptions); giving `SuperValue` a `call` slot
+  alone was rejected in v1.15 (A09-6) precisely because it would make `()` work while `[]`/`+`/… still
+  didn't. Documented in the language guide.
 
 Build the smallest thing that runs end-to-end first (lex+parse+eval an integer
 literal, then arithmetic, then `var`, then functions, then `io`), and grow outward.
@@ -178,7 +186,8 @@ a stability fuzzer, and a benchmark). Working today:
   Tabs and spaces both work but ambiguous mixing is rejected (measured with tab=8
   and tab=1, both must agree). Line endings are universal: the lexer normalizes CRLF and lone CR to
   LF up front, so Windows/WSL-copied (`\r\n`) sources lex identically to Unix `\n` (a stray `\r` on a
-  blank line no longer corrupts the indent/dedent stream).
+  blank line no longer corrupts the indent/dedent stream) and strips a leading UTF-8 BOM (the same
+  editors write one; a mid-file BOM is still a lex error).
 - `switch SUBJECT:` with `case V[, V2...]:` arms and an optional `default:` — **no fallthrough**
   (exactly one arm runs). Case labels are constant scalars (`Integer`/`Float`/`String`/`Bool`/`None`),
   matched exactly by type+value (so `case 1` ≠ `case 1.0`, and float labels match by exact value, not a
@@ -450,7 +459,7 @@ a stability fuzzer, and a benchmark). Working today:
     the general `socket(family, type)` (`family` `"inet"`/`"inet6"`, `type` `"stream"`/`"dgram"`), or
     the shortcuts `tcpsocket([family])` / `udpsocket([family])`; `socketpair([type])` returns a
     connected, share-nothing `[Socket, Socket]` pair (native `AF_UNIX` on POSIX, a loopback stream
-    pair emulated on Windows). Stream methods `connect`/`bind`/`listen`/`accept`/`send`/`recv`/
+    pair emulated on Windows — and `.family` reports which it really got, `"unix"` or `"inet"`). Stream methods `connect`/`bind`/`listen`/`accept`/`send`/`recv`/
     `recvall`; datagram methods `sendto(data, host, port)` / `recvfrom([n]) -> [Bytes, [host, port]]`
     (`connect` on a UDP socket sets the default peer, then plain `send`/`recv` work). `recv`/`recvall`/
     `recvfrom` return **`Bytes`** so binary streams stay byte-exact (`.decode()` for text); `send`/
@@ -464,7 +473,9 @@ a stability fuzzer, and a benchmark). Working today:
     `acceptconn`; `reuseport` where the OS has it), with named conveniences `setreuseaddr`/`setnodelay`/
     `setbroadcast`/`setkeepalive`, plus `setblocking(flag)` and `settimeout(seconds)` (which bounds a
     subsequent `connect()` too — via a non-blocking connect + `select` — not only send/recv, so a
-    black-hole host can't hang past the timeout). **Socket-level TLS**: `socket.starttls(server_hostname
+    black-hole host can't hang past the timeout; `0` means blocking/no timeout and a **negative throws**,
+    as in Python — it used to be read as "stay blocking", the opposite of the ask. `parallel`'s
+    primitives reject a negative `timeout=` the same way). **Socket-level TLS**: `socket.starttls(server_hostname
     = None, verify = True)` upgrades a **connected stream socket** to TLS in place — covering both
     **STARTTLS** (speak the plaintext protocol first, then encrypt the same connection: SMTP/IMAP/FTP)
     and **implicit TLS** (SMTPS/IMAPS: connect, then starttls immediately) — after which `send`/`recv`/

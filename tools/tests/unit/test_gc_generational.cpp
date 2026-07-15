@@ -78,6 +78,31 @@ int main() {
         CHECK(s.contains(777001));
     }
 
+    {
+        // List::set (setElem) — the overwrite path, distinct from push's append.
+        KiritoVM vm;
+        vm.setGcEnabled(false);
+        List xs(vm, {0});
+        vm.minorCollect();                      // old
+        xs.set(0, Value(vm, 313373));           // barriered element overwrite
+        vm.minorCollect();
+        CHECK(xs[0].asInt() == 313373);
+    }
+    {
+        // The C++ API's setAttr, which routes through InstanceValue::setAttr — the same barrier the
+        // interpreter uses, reached from a host instead. (v1.15 A05-1 moved it onto the caller's arena.)
+        KiritoVM vm;
+        vm.setGcEnabled(false);
+        // A host holds the instance the documented way — a PinnedHandle, the owning GC root.
+        PinnedHandle inst(vm, vm.runSource("class B:\n    var _init_ = Function(self): self.v = 0\nB()"));
+        Value box(vm, inst.value());
+        vm.minorCollect();
+        vm.minorCollect();                      // the instance is old now
+        box.setAttr("v", Value(vm, "young attribute value"));
+        vm.minorCollect();                      // the young String survives only if the barrier fired
+        CHECK(box.getAttr("v").asString() == "young attribute value");
+    }
+
     // ===== barrier via the Instance, Module, and EnvValue (global) paths — driven through Kirito, run
     // under GC-on-every-alloc so a promoted container repeatedly gains fresh young members. =====
     {

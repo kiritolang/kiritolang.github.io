@@ -94,7 +94,7 @@ private:
         for (const auto& name : scopes_[0].names) {
             if (idx.count(name)) continue;  // already bound (seeded, or a duplicate declaration)
             uint32_t slot = static_cast<uint32_t>(env.size());
-            env.define(name, vm_.undefined());
+            env.define(vm_.arena(), name, vm_.undefined());
             idx.emplace(name, slot);
         }
     }

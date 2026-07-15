@@ -203,4 +203,19 @@ var r2 = h.heappop(a2)
 h.heappush(a2, 7)
 assert r1 == r2 and sorted(a1) == sorted(a2), "heapreplace == pop+push (same final multiset)"
 
+# heapify builds bottom-up (Floyd, O(n)) rather than pushing one at a time. Same contract, so pin
+# the parts that could quietly change with the algorithm: the invariant on a hostile ordering, the
+# source list left alone, and the any-iterable input the old per-item `for x in items` loop accepted.
+var hf_src = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]      # strictly descending: every node must sift
+var hf_heap = h.heapify(hf_src)
+assert isheap(hf_heap), "bottom-up heapify holds the invariant on descending input"
+assert hf_src == [9, 8, 7, 6, 5, 4, 3, 2, 1, 0], "heapify does not touch its source list"
+assert sorted(hf_heap) == sorted(hf_src), "heapify keeps every element"
+assert h.heapify([]) == [] and h.heapify([5]) == [5], "heapify of empty / single"
+assert isheap(h.heapify(range(20, 0, -1))), "heapify accepts a range"      # not just a List
+assert isheap(h.heapify({5, 3, 9, 1})), "heapify accepts a Set"
+assert h.heapify("cba") == ["a", "b", "c"], "heapify accepts a String"
+var hf_dup = h.heapify([2, 2, 2, 1, 1, 3])
+assert isheap(hf_dup) and hf_dup[0] == 1, "heapify with duplicates keeps the min at the root"
+
 io.print("OK audit-heapq")

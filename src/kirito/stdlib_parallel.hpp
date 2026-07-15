@@ -49,13 +49,21 @@ inline bool argTruthy(KiritoVM& vm, std::span<const Handle> a, std::size_t i, bo
     if (o.kind() == ValueKind::None) return dflt;
     return o.truthy();
 }
+// The one place every primitive's `timeout` argument is read (Lock/Semaphore.acquire, Event.wait,
+// Barrier.wait, Queue.put/get), so the range check lives here rather than in each of them.
 inline std::optional<double> argTimeout(KiritoVM& vm, std::span<const Handle> a, std::size_t i) {
     if (a.size() <= i) return std::nullopt;
     const Object& o = vm.arena().deref(a[i]);
     if (o.kind() == ValueKind::None) return std::nullopt;
-    if (o.kind() == ValueKind::Integer) return static_cast<double>(static_cast<const IntVal&>(o).value());
-    if (o.kind() == ValueKind::Float) return static_cast<const FloatVal&>(o).value();
-    throw KiritoError("parallel: timeout must be a number or None");
+    double secs;
+    if (o.kind() == ValueKind::Integer) secs = static_cast<double>(static_cast<const IntVal&>(o).value());
+    else if (o.kind() == ValueKind::Float) secs = static_cast<const FloatVal&>(o).value();
+    else throw KiritoError("parallel: timeout must be a number or None");
+    // A negative duration makes cv.wait_for return instantly, so it would silently act like
+    // timeout=0 — an instant poll — and hide the upstream arithmetic that produced it. Every other
+    // bound in this module (Queue maxsize, Semaphore value, Barrier parties) is checked; so is this.
+    if (!(secs >= 0)) throw KiritoError("parallel: timeout must be >= 0 (use None to wait forever)");
+    return secs;
 }
 
 // Map a non-Ok wait outcome to a catchable Kirito error. (Ok is handled by the caller.)

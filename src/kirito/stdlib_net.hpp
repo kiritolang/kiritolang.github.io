@@ -207,7 +207,15 @@ inline int parseType(const std::string& s) {
     if (s == "dgram" || s == "udp") return SOCK_DGRAM;
     throw KiritoError("unknown socket type '" + s + "' (expected 'stream' or 'dgram')");
 }
-inline const char* familyName(int f) { return f == AF_INET6 ? "inet6" : "inet"; }
+inline const char* familyName(int f) {
+    if (f == AF_INET6) return "inet6";
+#ifndef _WIN32
+    // What POSIX socketpair() actually returns. Not creatable via socket()/parseFamily — a Socket
+    // only ever reports it, and reporting "inet" for it was simply untrue.
+    if (f == AF_UNIX) return "unix";
+#endif
+    return "inet";
+}
 inline const char* typeName(int t) { return t == SOCK_DGRAM ? "dgram" : "stream"; }
 
 // Socket options addressed by a short lowercase string (so no raw SO_*/IPPROTO_* integers leak into
@@ -1211,6 +1219,10 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
             double secs = t.kind() == ValueKind::Float
                               ? static_cast<const FloatVal&>(t).value()
                               : static_cast<double>(asInt(vm, a[0]));
+            // setTimeout reads "not positive" as "leave it blocking", so a negative would silently
+            // undo the caller's intent — most likely a computed timeout that went negative upstream.
+            // 0 keeps its documented meaning (blocking, no timeout), as in Python.
+            if (!(secs >= 0)) throw KiritoError("settimeout: seconds must be >= 0");
             auto& s = sock(vm, self);
             net::setTimeout(s.fdOrThrow("settimeout"), secs);
             s.timeout = secs;   // also bounds a subsequent connect() (Python semantics)
@@ -1482,8 +1494,9 @@ public:
                  if (!netcompat::socketPair(typ, fds))
                      throw KiritoError("socketpair(" + ts + ") failed: " + netcompat::lastError());
                  RootScope rs(vm);
-                 Handle s0 = rs.add(vm.alloc(std::make_unique<SocketVal>(fds[0], AF_INET, typ)));
-                 Handle s1 = rs.add(vm.alloc(std::make_unique<SocketVal>(fds[1], AF_INET, typ)));
+                 const int fam = netcompat::kSocketPairFamily;  // AF_UNIX on POSIX, AF_INET on Windows
+                 Handle s0 = rs.add(vm.alloc(std::make_unique<SocketVal>(fds[0], fam, typ)));
+                 Handle s1 = rs.add(vm.alloc(std::make_unique<SocketVal>(fds[1], fam, typ)));
                  List out(vm);
                  out.push(s0);
                  out.push(s1);

@@ -131,6 +131,21 @@ if argmain:
         CHECK(q->put("x", true, std::nullopt) == WaitResult::Closed);  // put on closed -> Closed
     });
 
+    // ...but abort() does NOT drain: it outranks a buffered item, exactly as it does in
+    // Lock/Event/Semaphore/Barrier. shutdown() fires abort() to make blocked workers unwind, so a
+    // queue with a backlog must not keep feeding a worker application data through teardown — that
+    // would make "every blocked worker unwinds on abort" hold only to the depth of the queue.
+    // The contrast with "close then drain" above is the point: close is graceful, abort is not.
+    noDeadlock("abort outranks a buffered item", 20.0, [] {
+        KiritoDispatcher disp;
+        auto q = disp.createQueue(0);
+        for (int i = 0; i < 3; ++i) q->put(std::to_string(i), true, std::nullopt);
+        disp.shutdown();  // aborts every primitive
+        std::string out;
+        CHECK(q->get(true, std::nullopt, out) == WaitResult::Aborted);   // NOT Ok with "0"
+        CHECK(q->get(false, std::nullopt, out) == WaitResult::Aborted);  // and a poll agrees
+    });
+
     // A full bounded queue: non-blocking and timed puts fail fast (never hang).
     noDeadlock("full queue fails fast", 20.0, [] {
         KiritoDispatcher disp;

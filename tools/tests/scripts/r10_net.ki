@@ -123,7 +123,10 @@ ok(type(s) == "Socket", "net.Socket() -> Socket")
 ok(s.settimeout(1.0) == None, "settimeout(Float) -> None")
 ok(s.settimeout(2) == None, "settimeout(Integer) -> None")
 ok(s.settimeout(0) == None, "settimeout(0) is a no-op -> None")
-ok(s.settimeout(-1) == None, "settimeout(negative) is a no-op -> None")
+# A negative used to be a silent no-op, which quietly meant "stay blocking" — the opposite of what a
+# caller asking for a timeout wants, and a good way to swallow arithmetic that went negative upstream.
+# It throws now, as in Python. (v1.15 A12-3)
+ok(throws(Function(): return s.settimeout(-1)), "settimeout(negative) throws")
 ok(s.close() == None, "close() -> None")
 ok(s.close() == None, "close() is idempotent")
 

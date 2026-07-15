@@ -576,6 +576,32 @@ catch as e:
     threw = "does not inherit" in e
 assert threw, "_super_() with no base throws"
 
+# Doc claims: the parent view resolves NAMED lookups, so an inherited special method is extended by
+# its dunder name, not by operator syntax on the view. Uniform across every operator (A09-6).
+class SupCallBase:
+    var _call_ = Function(self, x): return x + 1
+    var _getitem_ = Function(self, i): return i * 2
+class SupCallByName(SupCallBase):
+    var _call_ = Function(self, x): return self._super_()._call_(x) * 10
+    var _getitem_ = Function(self, i): return self._super_()._getitem_(i) * 10
+assert SupCallByName()(5) == 60, "_super_()._call_(x) extends the base's _call_"
+assert SupCallByName()[3] == 60, "_super_()._getitem_(i) extends the base's _getitem_"
+class SupCallByOperator(SupCallBase):
+    var _call_ = Function(self, x): return self._super_()(x)
+    var _getitem_ = Function(self, i): return self._super_()[i]
+threw = False
+try:
+    discard SupCallByOperator()(5)
+catch as e:
+    threw = "not callable" in e
+assert threw, "operator call on the parent view throws (use ._call_)"
+threw = False
+try:
+    discard SupCallByOperator()[3]
+catch as e:
+    threw = "not indexable" in e
+assert threw, "operator index on the parent view throws (use ._getitem_)"
+
 # Multi-level _super_ chain composes (one level per call)
 class CA:
     var name = Function(self): return "A"

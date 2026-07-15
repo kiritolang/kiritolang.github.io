@@ -108,7 +108,7 @@ public:
     Handle moduleHandle() const { return module_; }
 
     ModuleBuilder& fn(std::string name, NativeFn impl) {
-        mod_.setMember(name, vm_.alloc(std::make_unique<NativeFunction>(name, std::move(impl))));
+        mod_.setMember(vm_.arena(), name, vm_.alloc(std::make_unique<NativeFunction>(name, std::move(impl))));
         return *this;
     }
     // With a declared signature: the function then accepts keyword arguments and defaults, and
@@ -120,24 +120,24 @@ public:
         // (e.g. hash.hmac's "sha256"), leaving the function holding a dangling default handle.
         RootScope rs(vm_);
         for (const auto& p : sig) if (p.hasDefault) rs.add(p.defaultValue);
-        mod_.setMember(name, vm_.alloc(std::make_unique<NativeFunction>(
+        mod_.setMember(vm_.arena(), name, vm_.alloc(std::make_unique<NativeFunction>(
             name, std::move(sig), std::move(returnType), std::move(impl))));
         return *this;
     }
     // A variadic native that also accepts keyword arguments (impl receives positional args + named).
     ModuleBuilder& kwfn(std::string name, NativeFnKw impl) {
-        mod_.setMember(name, vm_.alloc(std::make_unique<NativeFunction>(name, std::move(impl))));
+        mod_.setMember(vm_.arena(), name, vm_.alloc(std::make_unique<NativeFunction>(name, std::move(impl))));
         return *this;
     }
     ModuleBuilder& value(const std::string& name, Handle h) {
-        mod_.setMember(name, h);
+        mod_.setMember(vm_.arena(), name, h);
         return *this;
     }
     // Bind `name` to the same member as an already-registered `existing` (a second public name).
     ModuleBuilder& alias(const std::string& name, const std::string& existing) {
         auto it = mod_.members.find(existing);
         if (it == mod_.members.end()) throw KiritoError("alias target '" + existing + "' not registered");
-        mod_.setMember(name, it->second);
+        mod_.setMember(vm_.arena(), name, it->second);
         return *this;
     }
     KiritoVM& vm() { return vm_; }

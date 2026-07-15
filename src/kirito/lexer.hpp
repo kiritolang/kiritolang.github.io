@@ -51,6 +51,12 @@ public:
     // alone — without this, a '\r' left on a blank line defeats the blank-line check and corrupts the
     // indent/dedent stream. Universal-newline source handling.
     static std::string normalizeNewlines(std::string_view s) {
+        // A leading UTF-8 BOM is a byte-order marker, not source: the same Windows editors this
+        // function already forgives for CRLF write one by default, and without this the file dies on
+        // its first byte ("unexpected character") though it is otherwise perfectly valid Kirito.
+        if (s.size() >= 3 && static_cast<unsigned char>(s[0]) == 0xEF &&
+            static_cast<unsigned char>(s[1]) == 0xBB && static_cast<unsigned char>(s[2]) == 0xBF)
+            s.remove_prefix(3);
         std::string out;
         out.reserve(s.size());
         for (std::size_t i = 0; i < s.size(); ++i) {
@@ -213,23 +219,30 @@ private:
             return make(TokenType::Integer, line, col, std::move(text));
         }
         while (std::isdigit(static_cast<unsigned char>(peek()))) { text += peek(); advance(); }
-        if (peek() == '.' && std::isdigit(static_cast<unsigned char>(peek(1)))) {
+        // A well-formed exponent at offset k: `e`/`E`, an optional sign, then at least one digit.
+        // Anything less is not an exponent, so a bare identifier after a number (`1 else`) and a
+        // method call on a literal (`1.compare(x)`) are left alone.
+        auto exponentAt = [&](std::size_t k) {
+            if (peek(k) != 'e' && peek(k) != 'E') return false;
+            ++k;
+            if (peek(k) == '+' || peek(k) == '-') ++k;
+            return std::isdigit(static_cast<unsigned char>(peek(k))) != 0;
+        };
+        // The fraction: a digit after the '.' (1.5), or an exponent directly after it (1.e5 — how
+        // every C-family language spells it). Without the latter the '.' would fall through to op(),
+        // and `1.e5` would silently become member access (1).e5, failing only at RUNTIME with
+        // "type 'Integer' has no attribute 'e5'".
+        if (peek() == '.' && (std::isdigit(static_cast<unsigned char>(peek(1))) || exponentAt(1))) {
             isFloat = true;
             text += peek(); advance();
             while (std::isdigit(static_cast<unsigned char>(peek()))) { text += peek(); advance(); }
         }
-        // Scientific notation: an `e`/`E` followed by an optional sign and at least one digit makes
-        // it a Float (1e10, 1.5e3, 2e-3, 1E5). Only consume the exponent if it's well-formed, so a
-        // bare identifier after a number (e.g. `1 else`) isn't swallowed.
-        if (peek() == 'e' || peek() == 'E') {
-            std::size_t k = 1;
-            if (peek(k) == '+' || peek(k) == '-') ++k;
-            if (std::isdigit(static_cast<unsigned char>(peek(k)))) {
-                isFloat = true;
-                text += peek(); advance();                                   // e/E
-                if (peek() == '+' || peek() == '-') { text += peek(); advance(); }
-                while (std::isdigit(static_cast<unsigned char>(peek()))) { text += peek(); advance(); }
-            }
+        // Scientific notation makes it a Float (1e10, 1.5e3, 2e-3, 1E5).
+        if (exponentAt(0)) {
+            isFloat = true;
+            text += peek(); advance();                                   // e/E
+            if (peek() == '+' || peek() == '-') { text += peek(); advance(); }
+            while (std::isdigit(static_cast<unsigned char>(peek()))) { text += peek(); advance(); }
         }
         return make(isFloat ? TokenType::Float : TokenType::Integer, line, col, std::move(text));
     }

@@ -123,4 +123,18 @@ var threw = Function(fn) -> Bool:
 assert threw(Function(): return re.compile("(a)\\1")), "backreference deliberately rejected"
 assert threw(Function(): return re.compile("(?=x)")), "lookahead deliberately rejected"
 
+# --- A repeated NULLABLE group's capture diverges from Python (ACCEPTED, documented) -------------
+# Simulating every alternative at once means threads that reach the same position merge, so "looped
+# again and matched empty" is indistinguishable from "did not loop again". Go's regexp and RE2
+# diverge from the Perl family here for the same reason; it buys the linear-time guarantee. The
+# MATCH is always right — only the captured value of such a group differs. Pinned, not a bug:
+# changing it would mean backtracking. Documented in docs/pages/10-stdlib.md.
+assert re.search("(a*)*", "").groups() == [None], "(a*)* on empty: group did not participate (Python: '')"
+assert re.fullmatch("(a*)*", "aaa").groups() == ["aaa"], "(a*)* on 'aaa': first iteration (Python: '')"
+assert re.fullmatch("(a*)*", "aaa").group(0) == "aaa", "...but the MATCH itself is correct"
+assert re.search("(a*)*", "").group(0) == "", "...and the empty match is correct"
+# Plus, and a non-nullable body, agree with Python — the divergence is specific to Star + nullable.
+assert re.search("(a*)+", "").groups() == [""], "(a*)+ on empty matches Python"
+assert re.fullmatch("(a)*", "aaa").groups() == ["a"], "(a)* keeps the last iteration, as Python does"
+
 io.print("OK regex_conformance")

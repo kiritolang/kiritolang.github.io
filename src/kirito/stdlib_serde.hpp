@@ -308,7 +308,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         for (std::size_t k = 0; k < pairs; ++k) {
             bool eager = k < eagerCount;
             Handle val = (eagerReal && eager) ? objs[checkId(nd.links[2 * k + 1])] : vm.none();
-            env.define(nameOf(nd.links[2 * k]), val);
+            env.define(vm.arena(), nameOf(nd.links[2 * k]), val);
         }
     };
 
@@ -471,7 +471,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
                 std::size_t pairs = d.links.size() / 2;
                 for (std::size_t k = 0; k < pairs; ++k) {
                     Handle v = objs[checkId(d.links[2 * k + 1])];
-                    if (v.slot) env.define(nameOf(d.links[2 * k]), v);   // barriered
+                    if (v.slot) env.define(vm.arena(), nameOf(d.links[2 * k]), v);   // barriered
                 }
             }
         };
@@ -674,7 +674,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         auto& env = static_cast<EnvValue&>(vm.arena().deref(deserScope[i]));
         std::size_t pairs = nd.links.size() / 2;
         for (std::size_t k = 0; k < pairs; ++k)
-            env.define(nameOf(nd.links[2 * k]), objs[checkId(nd.links[2 * k + 1])]);
+            env.define(vm.arena(), nameOf(nd.links[2 * k]), objs[checkId(nd.links[2 * k + 1])]);
     }
     return objs[rootId];
 }

@@ -515,6 +515,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `recvfrom size must be non-negative` | Negative `recvfrom(n)` | Pass n ≥ 0 |
 | `shutdown: how must be 'read', 'write', or 'both'` | Bad `how` to `shutdown` | Use `"read"`/`"write"`/`"both"` |
 | `setsockopt: unknown option '<opt>'` / `getsockopt: unknown option '<opt>'` | An option name outside the supported set | Use a documented option name |
+| `settimeout: seconds must be >= 0` | A negative `socket.settimeout()` | Pass `0` for blocking (no timeout) or a positive number of seconds |
 | `<net op> failed: <err>` | An OS socket syscall failed (setsockopt/getsockopt/shutdown/setblocking/settimeout, the named convenience setters) | Check the socket state / the option value |
 | `socketpair(<type>) failed` | The OS could not create the connected pair | Retry; check resource limits |
 | `gethostbyname: cannot resolve '<host>'` | DNS lookup returned no address | Check the hostname/DNS |
@@ -854,6 +855,7 @@ large* — live under [Resource guards](#resource-guards-repetition--padding--ra
 | `parallel.Queue: put to a full queue` / `get from an empty queue` | Non-blocking put/get with no room/item | Block, or check `full`/`empty` first |
 | `parallel.Lock: release of an unlocked lock` | `release()` without holding it | Only release what you hold |
 | `parallel.Queue: maxsize must be >= 0` / `Semaphore: value must be >= 0` / `Barrier: parties must be >= 1` | A bad constructor argument | Pass a valid initial value |
+| `parallel: timeout must be >= 0 (use None to wait forever)` | A negative `timeout=` to `Queue.get`/`put`, `Lock`/`Semaphore.acquire`, `Event`/`Barrier.wait` — usually a computed duration that went negative | Pass `0` to poll once, a positive number to bound the wait, or `None` to block |
 | `parallel.<Type>: uninitialized …` / `cannot rebind (unknown id…)` | A method on an uninitialized/foreign primitive | Construct it in this dispatcher |
 | `Queue.put: missing item` / `Queue.putnowait: missing item` | `put`/`putnowait` called with no item argument | Pass the item to enqueue |
 

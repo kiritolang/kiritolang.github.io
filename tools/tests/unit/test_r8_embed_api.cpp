@@ -316,7 +316,7 @@ int main() {
         // (a) A name bound DIRECTLY in the passed scope resolves — the supported pattern.
         Handle direct = vm.newScope(vm.global());
         vm.pushTemp(direct);
-        static_cast<EnvValue&>(vm.arena().deref(direct)).define("injected", vm.makeInt(7));
+        static_cast<EnvValue&>(vm.arena().deref(direct)).define(vm.arena(), "injected", vm.makeInt(7));
         CHECK(vm.stringify(vm.evalIn("injected + 1", direct)) == "8");
 
         // (b) A registerGlobal name resolves through a child scope.
@@ -328,7 +328,7 @@ int main() {
         // The FINDING: a name reachable only via a NON-global parent EnvValue is rejected at COMPILE time.
         Handle parent = vm.newScope(vm.global());
         vm.pushTemp(parent);
-        static_cast<EnvValue&>(vm.arena().deref(parent)).define("fromParent", vm.makeInt(123));
+        static_cast<EnvValue&>(vm.arena().deref(parent)).define(vm.arena(), "fromParent", vm.makeInt(123));
         Handle child = vm.newScope(parent);
         vm.pushTemp(child);
         // The runtime chain DOES contain the name (the value graph is correct)...

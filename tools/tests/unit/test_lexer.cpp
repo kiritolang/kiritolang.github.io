@@ -72,5 +72,34 @@ int main() {
         CHECK(toks[1].type == TokenType::Newline);
         CHECK(toks[2].type == TokenType::Integer);
     }
+    {
+        // A leading UTF-8 BOM is stripped, not lexed: editors that write one (the same ones that
+        // write CRLF) must not produce a .ki file that dies on its first byte. (v1.15 A01-1)
+        auto bom = Lexer("\xEF\xBB\xBFvar x = 1\n").tokenize();
+        auto plain = Lexer("var x = 1\n").tokenize();
+        CHECK(bom.size() == plain.size());
+        CHECK(bom[0].type == TokenType::KwVar);
+        CHECK(bom[0].span.col == 1);  // and the BOM does not shift the first token's column
+        // ...only at the START. A BOM in the middle of a file is still a stray character.
+        CHECK_THROWS(Lexer("var x = 1\n\xEF\xBB\xBFvar y = 2\n").tokenize());
+    }
+    {
+        // `1.e5` is a float, as in every C-family language. It used to lex as `1` `.` `e5` — member
+        // access that only failed at RUNTIME with "type 'Integer' has no attribute 'e5'". An
+        // exponent needs e/E + optional sign + a digit, so a real method call on a literal
+        // (`1.compare(x)`) and a following keyword (`1 else`) are untouched. (v1.15 A01-2)
+        auto dotExp = Lexer("1.e5").tokenize();
+        CHECK(dotExp[0].type == TokenType::Float);
+        CHECK(dotExp[0].text == "1.e5");
+        auto signedDotExp = Lexer("2.E-3").tokenize();
+        CHECK(signedDotExp[0].type == TokenType::Float);
+        auto method = Lexer("1.compare(x)").tokenize();  // NOT a float: `.c` is no exponent
+        CHECK(method[0].type == TokenType::Integer);
+        CHECK(method[1].type == TokenType::Dot);
+        CHECK(method[2].type == TokenType::Identifier);
+        auto notExp = Lexer("1.eq").tokenize();          // `.e` with no digit after: still member access
+        CHECK(notExp[0].type == TokenType::Integer);
+        CHECK(notExp[1].type == TokenType::Dot);
+    }
     return RUN_TESTS();
 }

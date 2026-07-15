@@ -272,7 +272,7 @@ public:
 
     // Expose a C++ callable (or any value) as a Kirito global — the simplest extension point.
     void registerGlobal(const std::string& name, Handle value) {
-        static_cast<EnvValue&>(arena_.deref(global_)).define(name, value);
+        static_cast<EnvValue&>(arena_.deref(global_)).define(arena_, name, value);
     }
 
     // --- extension / module API (defined in runtime.hpp) ---

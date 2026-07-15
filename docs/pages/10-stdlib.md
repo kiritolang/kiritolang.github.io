@@ -1147,6 +1147,21 @@ quantifiers `* + ?`, `{n}`, `{n,}`, `{n,m}`, each greedy or **lazy** with a trai
 `\1`–`\9` is **rejected** (it reads as a backreference, which is unsupported) — write an octal
 character as `\0NN`.
 
+### One divergence from Python: a repeated group that can match empty
+
+When a capturing group can match the empty string *and* is itself repeated (`(a*)*`, `(a*){0,}`),
+Kirito's value for that **group** differs from Python's — `search("(a*)*", "")` gives `[None]` where
+Python gives `('',)`, and `fullmatch("(a*)*", "aaa")` gives `['aaa']` (the iteration that consumed the
+text) where Python gives `('',)` (a final empty iteration at the end).
+
+**The match itself is always correct** — `group(0)`, whether the pattern matches, and every span are
+right; only the captured value of such a group differs. This falls out of simulating all alternatives
+at once instead of backtracking: threads that reach the same position are merged, so "looped again and
+matched empty" cannot be kept apart from "did not loop again". Go's `regexp` and RE2 diverge from
+Perl-family engines here for the same reason, and it is part of the price of the linear-time
+guarantee. In practice, write `(a*)` or `(a+)*` when the captured value matters — a repeated nullable
+group is almost always an accident anyway.
+
 The engine is validated against a large, classic regular-expression test corpus (run through
 Kirito in `tools/tests/scripts/spec_regex_corpus.ki`): zero false positives/negatives, and every
 unsupported-feature or invalid pattern is rejected with a clean error rather than crashing.
@@ -1653,6 +1668,13 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
 - `t.ptp(axis = None)` — max − min; `t.median(axis = None)` — sorts `NaN` last (like `sort`/`argsort`/`unique`), so a `NaN` only affects the result when it lands at the median position.
 - `t.cumsum(axis = None)` (differentiable) / `t.cumprod(axis = None)` — cumulative scans
   (`axis = None` flattens first).
+
+**Reducing nothing.** When there is nothing to reduce — a zero-length axis, or an empty tensor — the
+answer depends on whether the reduction has an identity. `sum` and `prod` do, so they return it
+(`zeros([3, 0]).sum(axis = 1)` → `[0.0, 0.0, 0.0]`, `prod` → `[1.0, 1.0, 1.0]`, as in NumPy): the sum
+of no numbers really is 0. `mean`, `min`, `max`, `ptp`, `median`, `std` and `var` have none — the mean
+of nothing is `0/0` and the largest of nothing does not exist — so they **throw**, the same way
+`math.sqrt(-1)` throws instead of handing back a quiet `NaN`. Check `len` first, or reduce with `sum`.
 
 ### Structural ops
 

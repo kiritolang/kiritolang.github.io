@@ -188,8 +188,16 @@ inline std::string write(KiritoVM& vm, Handle root) {
 }
 
 inline Handle read(KiritoVM& vm, const std::string& data) {
-    auto [nodes, rootId] = decode(data);
-    return serde::rebuild(vm, nodes, rootId);
+    try {
+        auto [nodes, rootId] = decode(data);
+        return serde::rebuild(vm, nodes, rootId);
+    } catch (const KiritoError&) {
+        throw;  // already a clean, intentional diagnostic
+    } catch (const std::exception& e) {
+        // Same contract as the text codec's loads: corrupt input yields a clean Kirito error, never a
+        // raw C++ exception. Both codecs share one rebuild, so they must report its failures alike.
+        throw KiritoError("corrupt dump data: " + std::string(e.what()));
+    }
 }
 
 }  // namespace dumpfmt

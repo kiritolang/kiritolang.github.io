@@ -66,12 +66,13 @@ inline void gcWriteBarrier(ObjectArena& arena, Object* container, Handle value) 
     if (value.generation == 0) return;                  // null/sentinel handle: points to nothing
     if (arena.deref(value).gcYoung()) arena.remember(container);
 }
-inline void gcWriteBarrier(Object* container, Handle value) {
-    if (container->gcYoung() || container->gcRemembered()) return;   // no arena touched on the hot path
-    if (value.generation == 0) return;
-    if (KiritoVM* vm = KiritoVM::activeVM())
-        if (vm->arena().deref(value).gcYoung()) vm->arena().remember(container);
-}
+// (There is deliberately NO arena-less overload. One existed, resolving the arena via activeVM() —
+// the most recently CONSTRUCTED live VM on this thread, which is not necessarily the one that owns
+// `container`. With two VMs on one thread — which the embedding API explicitly allows — it would ask
+// VM_B about a handle from VM_A: a spurious "dangling handle"/"stale generation" throw from a plain
+// setAttr, or, when the slot and generation happened to collide, a silently wrong young/old answer
+// that skipped remember() and let VM_A's next minor free a still-reachable value. Every mutator now
+// takes the owning arena from its caller, who alone knows it. v1.15 A05-1.)
 
 // kMaxRepeat (the ~256 MB repetition/padding cap) is defined in common.hpp so bytes.hpp shares it.
 
@@ -1753,6 +1754,19 @@ inline Handle InstanceValue::getAttr(KiritoVM& vm, Handle self, std::string_view
     return makeBoundMethod(vm, std::string(name), self, methodH);
 }
 
+// Attribute writes on an instance / a module: barriered against the arena of the VM doing the write,
+// which is why they live here rather than inline in class_value.hpp / module.hpp (KiritoVM is
+// incomplete there). A module is a per-VM singleton that outlives the values bound into it, so once
+// promoted it is a permanent old->young store site.
+inline void InstanceValue::setAttr(KiritoVM& vm, std::string_view name, Handle value) {
+    gcWriteBarrier(vm.arena(), this, value);
+    attrs[std::string(name)] = value;
+}
+inline void ModuleValue::setAttr(KiritoVM& vm, std::string_view name, Handle value) {
+    gcWriteBarrier(vm.arena(), this, value);
+    members[std::string(name)] = value;
+}
+
 inline Handle SuperValue::getAttr(KiritoVM& vm, Handle, std::string_view name) {
     // Resolve the named method starting at startClass (the base of the current method's class), then
     // bind it to the ORIGINAL instance so the inherited method runs against the real self.
@@ -2076,7 +2090,7 @@ inline Handle KiFunction::callFull(KiritoVM& vm, std::span<const Handle> positio
     };
 
     if (named.empty() && positional.size() == params.size() && *def_->fastBindable) {
-        for (std::size_t i = 0; i < params.size(); ++i) env.define(params[i].name, positional[i]);
+        for (std::size_t i = 0; i < params.size(); ++i) env.define(vm.arena(), params[i].name, positional[i]);
         return attributed([&] { return runBody(scope, positional); });
     }
 
@@ -2114,7 +2128,7 @@ inline Handle KiFunction::callFull(KiritoVM& vm, std::span<const Handle> positio
         if (!params[i].annotation.empty() && !typeMatches(vm, values[i], params[i].annotation))
             throw KiritoError("argument '" + params[i].name + "' must be " + params[i].annotation +
                               ", got " + vm.arena().deref(values[i]).typeName());
-        env.define(params[i].name, values[i]);
+        env.define(vm.arena(), params[i].name, values[i]);
     }
 
     Handle result = attributed([&] { return runBody(scope, values); });
@@ -2854,12 +2868,12 @@ inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs
 inline void KiritoVM::installBuiltins() {
     auto& g = static_cast<EnvValue&>(arena_.deref(global_));
     auto def = [&](const char* name, NativeFn fn) {
-        g.define(name, alloc(std::make_unique<NativeFunction>(name, std::move(fn))));
+        g.define(arena(), name, alloc(std::make_unique<NativeFunction>(name, std::move(fn))));
     };
     // Like def, but with a declared signature so the builtin accepts keyword arguments and defaults
     // and describes itself under `inspect`.
     auto defSig = [&](const char* name, std::vector<NativeParam> sig, std::string ret, NativeFn fn) {
-        g.define(name, alloc(std::make_unique<NativeFunction>(name, std::move(sig), std::move(ret), std::move(fn))));
+        g.define(arena(), name, alloc(std::make_unique<NativeFunction>(name, std::move(sig), std::move(ret), std::move(fn))));
     };
 
     defSig("len", {{"x"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> args) -> Handle {
@@ -3101,7 +3115,7 @@ inline void KiritoVM::installBuiltins() {
     // but also names its three parameters: start, stop (alias end), and step. Positionals bind by the
     // classic count rule; keywords then fill or override any slot a positional didn't claim — a clash
     // (e.g. range(2, 5, start=1)) is an error, as is a missing stop.
-    g.define("range", alloc(std::make_unique<NativeFunction>("range",
+    g.define(arena(), "range", alloc(std::make_unique<NativeFunction>("range",
         NativeFnKw([](KiritoVM& vm, std::span<const Handle> a, std::span<const NamedArg> named) -> Handle {
         auto iv = [&](Handle h) {
             const Object& o = vm.arena().deref(h);
@@ -3227,10 +3241,10 @@ inline void KiritoVM::installBuiltins() {
         }
         return best;
     };
-    g.define("min", alloc(std::make_unique<NativeFunction>("min",
+    g.define(arena(), "min", alloc(std::make_unique<NativeFunction>("min",
         NativeFnKw([extremum](KiritoVM& vm, std::span<const Handle> a, std::span<const NamedArg> n) {
             return extremum(vm, a, n, false, "min"); }))));
-    g.define("max", alloc(std::make_unique<NativeFunction>("max",
+    g.define(arena(), "max", alloc(std::make_unique<NativeFunction>("max",
         NativeFnKw([extremum](KiritoVM& vm, std::span<const Handle> a, std::span<const NamedArg> n) {
             return extremum(vm, a, n, true, "max"); }))));
     defSig("sorted", {{"iterable"}, {"key", "", none()}, {"reverse", "Bool", makeBool(false)}}, "List",
@@ -3616,8 +3630,8 @@ inline Handle KiritoVM::newModuleScope(bool isMain) {
         args = alloc(std::make_unique<ListVal>());  // imported modules don't see the program's args
     }
     auto& env = static_cast<EnvValue&>(arena_.deref(scope));
-    env.define("arglist", args);
-    env.define("argmain", makeBool(isMain));
+    env.define(arena(), "arglist", args);
+    env.define(arena(), "argmain", makeBool(isMain));
     return scope;
 }
 

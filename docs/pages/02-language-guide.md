@@ -365,6 +365,22 @@ class Dog(Animal):
 Because resolution starts at the *current method's* class base, each `_super_()` climbs exactly one
 level, so multi-level chains (`Puppy → Dog → Animal`) compose correctly.
 
+**Reach an inherited special method by its name, not by its operator.** The parent view resolves
+*named* lookups, so operator syntax on it does not work — `self._super_()(x)` and `self._super_()[i]`
+throw (`type 'Super' is not callable` / `is not indexable`), and so on for every operator. Extend the
+base's version by spelling the dunder out:
+
+<!--norun (illustrative class fragment)-->
+```kirito
+class Doubler(Base):
+    var _call_ = Function(self, x): return self._super_()._call_(x) * 2      # not _super_()(x)
+    var _getitem_ = Function(self, i): return self._super_()._getitem_(i)    # not _super_()[i]
+```
+
+This holds uniformly for every operator dunder, so there is one rule to remember rather than a list of
+exceptions. Ordinary methods and attributes are unaffected — `self._super_().describe()` is a named
+lookup and works normally.
+
 `_super_()` is only meaningful when the class inherits — calling it from a class with no base throws
 `_super_() called in 'X', which does not inherit from any class`.
 

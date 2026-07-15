@@ -44,6 +44,12 @@ discard pair[0].send("ab")
 assert pair[1].recv(2).decode() == "ab", "socketpair a -> b"
 discard pair[1].send("ba")
 assert pair[0].recv(2).decode() == "ba", "socketpair b -> a"
+# A socketpair reports the family it REALLY has, which differs by platform: POSIX makes a native
+# AF_UNIX pair, Windows emulates one over a loopback listener. It used to claim "inet" on both.
+var expectedpairfam = "inet" if import("sys").platform == "windows" else "unix"
+assert pair[0].family == expectedpairfam and pair[1].family == expectedpairfam, "socketpair family is honest"
+assert pair[0].type == "stream", "socketpair type"
+assert net.Socket().family == "inet", "an ordinary Socket is still inet"
 pair[0].close()
 pair[1].close()
 
@@ -94,6 +100,11 @@ assert throws(Function(): return net.tcpsocket().setsockopt("nope", 1)), "unknow
 assert throws(Function(): return net.udpsocket().sendto("x", "127.0.0.1", 99999)), "port out of range throws"
 assert throws(Function(): return net.udpsocket().recvfrom(-1)), "negative recvfrom size throws"
 assert throws(Function(): return net.tcpsocket().shutdown("sideways")), "bad shutdown how throws"
+# A negative timeout used to be read as "leave it blocking" — silently the opposite of the caller's
+# intent. 0 keeps its documented meaning (blocking, no timeout), as in Python.
+assert throws(Function(): return net.tcpsocket().settimeout(0 - 1)), "negative settimeout throws"
+assert not throws(Function(): return net.tcpsocket().settimeout(0)), "settimeout(0) is still blocking-mode"
+assert not throws(Function(): return net.tcpsocket().settimeout(1.5)), "a positive settimeout still works"
 assert throws(Function(): return net.tcpsocket().getpeername()), "getpeername on an unconnected socket throws"
 var dead = net.tcpsocket()
 dead.close()

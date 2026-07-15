@@ -282,6 +282,10 @@ inline std::string hmacRaw(const HashAlgo& algo, const std::string& key, const s
 
 inline std::string pbkdf2Raw(const HashAlgo& algo, const std::string& password, const std::string& salt,
                              uint32_t iterations, std::size_t dklen) {
+    // RFC 8018 requires c >= 1, and 0 would silently degrade the KDF to a bare U1 (one HMAC) — a
+    // weaker key that still looks fine. The `hash.pbkdf2` binding rejects it before we get here; this
+    // guards the primitive itself, which is documented as reusable by the next caller.
+    if (iterations < 1) throw KiritoError("pbkdf2: iterations must be >= 1");
     std::string dk;
     dk.reserve(dklen);
     uint32_t block = 1;

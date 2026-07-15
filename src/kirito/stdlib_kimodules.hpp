@@ -774,9 +774,9 @@ var _siftup = Function(heap, pos):
         else:
             break
 
-var _siftdown = Function(heap):
+var _siftdown = Function(heap, pos):
     var n = len(heap)
-    var i = 0
+    var i = pos
     while True:
         var left = 2 * i + 1
         var right = 2 * i + 2
@@ -804,13 +804,18 @@ var heappop = Function(heap):
     var last = heap.pop()
     if len(heap) > 0:
         heap[0] = last
-        _siftdown(heap)
+        _siftdown(heap, 0)
     return top
 
+# Floyd's bottom-up construction: sift down every non-leaf, last to first. O(n), where pushing the
+# items one at a time was O(n log n) -- and heapify is what nsmallest/nlargest/merge all build on.
+# Returns a NEW heap; `items` is left alone (unlike Python's in-place heapq.heapify).
 var heapify = Function(items):
-    var heap = []
-    for x in items:
-        heappush(heap, x)
+    var heap = List(items)
+    var i = len(heap) // 2 - 1
+    while i >= 0:
+        _siftdown(heap, i)
+        i = i - 1
     return heap
 
 var nsmallest = Function(n, items):
@@ -832,7 +837,7 @@ var heapreplace = Function(heap, item):
         throw "heapreplace on empty heap"
     var top = heap[0]
     heap[0] = item
-    _siftdown(heap)
+    _siftdown(heap, 0)
     return top
 
 var merge = Function(lists):

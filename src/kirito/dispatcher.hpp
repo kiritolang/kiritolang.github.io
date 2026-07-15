@@ -27,6 +27,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -82,13 +83,18 @@ public:
         std::unique_lock<std::mutex> lk(m_);
         auto ready = [&] { return aborted_ || closed_ || !q_.empty(); };
         if (!awaitPred(lk, notEmpty_, ready, block, timeout)) return WaitResult::TimedOut;
-        if (!q_.empty()) {  // always drain available items before reporting closed
-            out = std::move(q_.front());
+        // Abort outranks a buffered item, as it does in Lock/Event/Semaphore/Barrier. shutdown()
+        // fires abort() to make every blocked worker unwind; draining first would instead have the
+        // worker run more application code — a whole backlog of it — during teardown, which is the
+        // opposite of what shutdown asked for, and it made "every blocked worker unwinds on abort"
+        // true only up to the depth of the queue.
+        if (aborted_) return WaitResult::Aborted;
+        if (!q_.empty()) {  // a graceful close() still drains: the producer is done, but what it
+            out = std::move(q_.front());  // already produced is not thrown away
             q_.pop_front();
             notFull_.notify_one();
             return WaitResult::Ok;
         }
-        if (aborted_) return WaitResult::Aborted;
         return WaitResult::Closed;
     }
 
@@ -570,8 +576,18 @@ public:
         task->id = id;
         Task* tp = task.get();
         tasks_[id] = std::move(task);
-        tp->thread = std::thread([this, tp, sf = std::move(sourceFile), line, col,
-                                  blob = std::move(argsBlob)]() { runWorker(tp, sf, line, col, blob); });
+        // If the thread can't start (pthread_create EAGAIN under thread/FD exhaustion — realistic
+        // for a long-running server), take the registry entry back out: `spawn()` never returns a
+        // Task for it, so nothing could ever join or erase it, and it would sit there for the life
+        // of the dispatcher. Report it as a Kirito error rather than letting std::system_error cross
+        // the native boundary as a bare "std::exception".
+        try {
+            tp->thread = std::thread([this, tp, sf = std::move(sourceFile), line, col,
+                                      blob = std::move(argsBlob)]() { runWorker(tp, sf, line, col, blob); });
+        } catch (const std::system_error& e) {
+            tasks_.erase(id);
+            throw KiritoError("parallel.spawn: could not start a worker thread: " + std::string(e.what()));
+        }
         return id;
     }
     bool taskDone(uint64_t id) {

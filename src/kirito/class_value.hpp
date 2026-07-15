@@ -75,8 +75,8 @@ public:
 
     // Install a method binding (barriered: an old class value gaining a young method handle). Used by
     // BuildClass; the raw `methods[...]=` writes it replaces would bypass the generational barrier.
-    void defineMethod(const std::string& name, Handle h) {
-        gcWriteBarrier(this, h);
+    void defineMethod(ObjectArena& arena, const std::string& name, Handle h) {
+        gcWriteBarrier(arena, this, h);
         methods[name] = h;
     }
 
@@ -130,10 +130,9 @@ public:
         out.push_back(cls);
         for (const auto& [k, v] : attrs) out.push_back(v);
     }
-    void setAttr(KiritoVM&, std::string_view name, Handle value) override {
-        gcWriteBarrier(this, value);   // an old instance gaining a young attribute (activeVM == this VM)
-        attrs[std::string(name)] = value;
-    }
+    // Barriered (an old instance gaining a young attribute); defined in runtime.hpp, where KiritoVM
+    // is complete, since the barrier needs the arena that owns this instance.
+    void setAttr(KiritoVM& vm, std::string_view name, Handle value) override;
     Handle getAttr(KiritoVM&, Handle self, std::string_view name) override;  // runtime.hpp
 
     // Operator protocol -> _op_ method dispatch (defined in runtime.hpp).

@@ -79,7 +79,7 @@ public:
         // module/class bodies (a module's slots are pre-declared by the resolver into the live scope).
         if (!proto.envSlots.empty()) {
             EnvValue& env = static_cast<EnvValue&>(vm_.arena().deref(scope()));
-            for (const auto& name : proto.envSlots) env.define(name, vm_.undefined());
+            for (const auto& name : proto.envSlots) env.define(vm_.arena(), name, vm_.undefined());
         }
         const std::vector<Instr>& code = proto.code;
         std::size_t ip = 0;
@@ -126,11 +126,11 @@ public:
                     assert(e.nameAt(ref.index) == ref.name);
                     if (e.at(ref.index) == vm_.undefined())  // rebinding before the var executed
                         throw KiritoError("name '" + ref.name + "' is not defined", in.span);
-                    e.setAt(ref.index, v);
+                    e.setAt(vm_.arena(), ref.index, v);
                 } break;
                 case Op::StoreName: {
                     Handle v = pop();
-                    static_cast<EnvValue&>(vm_.arena().deref(scope())).define(proto.names[in.a], v);
+                    static_cast<EnvValue&>(vm_.arena().deref(scope())).define(vm_.arena(), proto.names[in.a], v);
                 } break;
                 case Op::AssignName: {
                     Handle v = pop();
@@ -218,7 +218,7 @@ public:
                     cls->closure = classScope;    // the scope its free variables resolve against
                     for (const auto& [k, v] : static_cast<EnvValue&>(vm_.arena().deref(classScope)).locals())
                         if (v != vm_.undefined())                       // skip a pre-declared slot never assigned
-                            cls->defineMethod(k, v);                    // the names the body defined are the methods
+                            cls->defineMethod(vm_.arena(), k, v);                    // the names the body defined are the methods
                     Handle clsHandle = rs.add(vm_.alloc(std::move(cls)));
                     auto& klass = static_cast<ClassValue&>(vm_.arena().deref(clsHandle));
                     klass.selfHandle = clsHandle;
@@ -244,7 +244,7 @@ public:
                             clone->hasOwner = true;
                             owned.emplace_back(mname, rs.add(vm_.alloc(std::move(clone))));
                         }
-                        for (auto& [mname, ch] : owned) { klass.defineMethod(mname, ch); classEnv.define(mname, ch); }
+                        for (auto& [mname, ch] : owned) { klass.defineMethod(vm_.arena(), mname, ch); classEnv.define(vm_.arena(), mname, ch); }
                     }
                     vm_.registerClass(cs.name, clsHandle);  // so serialize/dump can reconstruct instances
                     // Leave the class on the operand stack; the compiler binds cs.name right after via

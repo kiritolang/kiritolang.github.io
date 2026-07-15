@@ -83,5 +83,48 @@ len(data)
         CHECK(vm.liveCount() <= before);
     }
 
+    // Two VMs on ONE thread: each write barrier must consult the arena that owns the container, not
+    // whichever VM was constructed last. The barrier used to find its arena through activeVM(), so
+    // mutating A's old global while B existed asked B about A's handle — a spurious dangling-handle
+    // throw, or (when the slot and generation happened to collide, which they readily do for low
+    // slots) a wrong young/old answer that skipped remember() and let A's next minor free a value A
+    // could still reach. The embedding API explicitly allows coexisting VMs, so this is reachable.
+    // v1.15 A05-1.
+    {
+        KiritoVM a;
+        a.installStandardLibrary();
+        a.setGcThreshold(1);  // every allocation collects: promote A's globals, then hammer the barrier
+        a.runSource("var seed = 1");
+        a.collectGarbage();
+        a.collectGarbage();  // A's global scope is now OLD (survived a major)
+
+        KiritoVM b;  // ...and now B is the most recently constructed VM on this thread
+        b.installStandardLibrary();
+        b.setGcThreshold(1);
+        b.runSource("var other = 2");
+
+        // Store a FRESH (young) value into A's now-old global scope while B is live. The barrier
+        // must enrol A's scope in A's remembered set, or the next minor reclaims `kept`.
+        for (int i = 0; i < 50; ++i) {
+            a.registerGlobal("kept" + std::to_string(i), a.makeString("value-" + std::to_string(i)));
+            b.registerGlobal("bkept" + std::to_string(i), b.makeString("b-" + std::to_string(i)));
+        }
+        a.collectGarbage();
+        b.collectGarbage();
+        // Every value must still be reachable and intact in ITS OWN VM (no cross-arena confusion).
+        for (int i = 0; i < 50; ++i) {
+            CHECK(a.stringify(a.runSource("kept" + std::to_string(i))) == "value-" + std::to_string(i));
+            CHECK(b.stringify(b.runSource("bkept" + std::to_string(i))) == "b-" + std::to_string(i));
+        }
+        // An instance attribute write (InstanceValue::setAttr) takes the same path. The instance has
+        // to be a global to outlive its runSource's throwaway module scope.
+        a.registerGlobal("box", a.runSource("class Box:\n    var _init_ = Function(self): self.v = 0\nBox()"));
+        a.collectGarbage();
+        a.collectGarbage();  // box is old now
+        CHECK(a.stringify(a.runSource("box.v = \"fresh young string\"\nbox.v")) == "fresh young string");
+        a.collectGarbage();
+        CHECK(a.stringify(a.runSource("box.v")) == "fresh young string");
+    }
+
     return RUN_TESTS();
 }
