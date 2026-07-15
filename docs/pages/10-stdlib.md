@@ -315,6 +315,11 @@ Low-level CSV parsing/formatting (RFC-4180-style quoting). For tabular data anal
 Compact **binary** serialization (the binary counterpart of `serialize`), preserving references and
 cycles. `dumps` returns the blob as [`Bytes`](types.html#bytes); `loads` reconstructs from it.
 
+**Never `loads`/`load` a blob from an untrusted source** — reconstructing a `Function`/`class` value
+re-parses and runs its source, so a blob is a program, not data. See
+[serialize's security note](#security-never-load-a-blob-you-do-not-trust); use [`json`](#json) for
+data that crosses a trust boundary.
+
 - `dumps(value) → Bytes` — serialize to a compact binary blob.
 - `loads(data)` — reconstruct the value graph; pass the **`Bytes`** returned by `dumps` directly (do
   **not** wrap it in `String(...)` — the blob is raw binary, and a String round-trip corrupts it).
@@ -1255,6 +1260,26 @@ interchange with no aliasing). They share one graph walk and reconstruction core
 output: **`serialize` is human-readable text**, **`dump` is compact binary**. Supported value types:
 `None`/`Bool`/`Integer`/`Float`/`String`/[`Bytes`](types.html#bytes)/`List`/`Dict`/`Set`, **user
 `class` instances**, and — self-contained — **`Function` and `class` values themselves**.
+
+### Security: never load a blob you do not trust
+
+**`loads`/`load` runs code.** A `Function`/`class` blob carries the construct's *source text*, and
+reconstructing it re-parses and executes that source — a class body's eager class-variable
+initializers run right there, at load time. A blob is therefore a **program**, not inert data: whoever
+wrote it chooses what runs inside your VM the moment you load it, with your permissions.
+
+<!--norun (illustrates the hazard rather than running it; `blob` is deliberately undefined)-->
+```kirito
+# If `blob` came from somewhere you don't control, this is the same as running their script:
+var value = dump.loads(blob)     # a class body inside the blob executes HERE
+```
+
+This is inherent to the source-reparse design and is exactly the hazard Python's `pickle` carries;
+treat the two the same way. Load blobs only from sources you would equally trust to hand you a `.ki`
+file and let you run it — your own files, your own processes, an authenticated peer. For data that
+crosses a trust boundary, use [`json`](#json) instead: it carries values only, never code. (Kirito's
+deserializer is hardened against *memory-safety* abuse — malformed and byte-flipped blobs fail
+cleanly — but no amount of that stops a well-formed blob whose class body simply asks to run.)
 
 ### Functions and classes serialize by default
 

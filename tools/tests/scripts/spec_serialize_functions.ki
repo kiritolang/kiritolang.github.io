@@ -102,6 +102,14 @@ check("mutual class recursion", dump.loads(dump.dumps(Ping))().go(5), 100)
 var once = dump.loads(dump.dumps(square))
 check("re-serializable", serialize.loads(serialize.dumps(once))(4), 16)
 
+# --- loading a class that ALREADY exists here reconnects to it: the blob's body is not re-run, so a
+# live class is never clobbered. (The fresh-VM case — where the body IS executed, the pickle-style
+# trust boundary — is pinned in test_vm_serialization.cpp, since it needs a second VM.) ---
+class Reconnect:
+    var tag = Function(self): return "original"
+check("loads reconnects to the live class, not a rebuild", dump.loads(dump.dumps(Reconnect))().tag(),
+      "original")
+
 # --- captured source ends at the body's last token: comments and blank lines never travel ---
 var commented = Function(x):
     return x + 1  # inline note

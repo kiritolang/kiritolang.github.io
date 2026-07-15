@@ -406,7 +406,12 @@ a stability fuzzer, and a benchmark). Working today:
     `serialize` (text) and `dump` (binary) are two formats of
     the same feature: they share one graph walk + reconstruction core (`serde::flatten`/`rebuild` in
     `stdlib_serde.hpp`) and supply only their byte codec — unlike `json`, which is flat data
-    interchange with no reference/cycle preservation. Both handle the built-in value types
+    interchange with no reference/cycle preservation. **`loads`/`load` EXECUTES CODE** — rebuilding a
+    `Function`/`class` re-parses its stored source, so a class body's eager class-var initializers run
+    at load time: a blob is a program, the same trust boundary as Python's `pickle` (the deserializer
+    is hardened against malformed/byte-flipped blobs, which is memory safety, not this). Only load
+    blobs you'd trust as a `.ki` file; `json` is the code-free format for untrusted data. Documented
+    under "Security: never load a blob you do not trust" in `docs/pages/10-stdlib.md`. Both handle the built-in value types
     (None/Bool/Integer/Float/String/List/Dict/Set) **and user `class` instances** — serialized by
     attributes or via the **`_getstate_`/`_setstate_`** protocol when the class
     defines it (a native C++ type opts in the same way + `vm.registerDeserializer(name, factory)`).

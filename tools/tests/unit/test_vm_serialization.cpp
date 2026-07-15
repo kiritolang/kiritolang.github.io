@@ -202,5 +202,34 @@ int main() {
         CHECK_THROWS(b.runSource("var s = import(\"serialize\")\ndiscard s.loads(\"not a valid graph !!!\")"));
     }
 
+    // --- loads() EXECUTES a class blob's body in a VM that doesn't already have the class ----------
+    // The pickle-style trust boundary the docs warn about ("Security: never load a blob you do not
+    // trust", docs/pages/10-stdlib.md): rebuilding a class re-runs its source, so an eager class-var
+    // initializer is attacker-chosen code running at load time. Pinned so the hazard cannot change
+    // without this test — and that warning — changing with it. A same-VM load does NOT re-run the
+    // body (it reconnects to the live class instead), which is why this needs a second VM.
+    {
+        std::string blob;
+        {
+            KiritoVM a; a.installStandardLibrary();
+            blob = blobBytes(a, a.runSource(
+                "var d = import(\"dump\")\n"
+                "var sys = import(\"sys\")\n"
+                "class Eager:\n"
+                "    var marker = sys.setenv(\"KIRITO_A10_1_PROBE\", \"ran\")\n"
+                "    var hi = Function(self): return \"hi\"\n"
+                "d.dumps(Eager)\n"));
+        }
+        KiritoVM b; b.installStandardLibrary();
+        b.registerGlobal("blob", b.alloc(std::make_unique<BytesVal>(blob)));
+        b.runSource("var sys = import(\"sys\")\nsys.unsetenv(\"KIRITO_A10_1_PROBE\")");
+        CHECK(b.stringify(b.runSource(
+            "var sys = import(\"sys\")\nsys.getenv(\"KIRITO_A10_1_PROBE\", \"absent\")")) == "absent");
+        CHECK(b.stringify(b.runSource("var d = import(\"dump\")\nd.loads(blob)().hi()")) == "hi");
+        CHECK(b.stringify(b.runSource(
+            "var sys = import(\"sys\")\nsys.getenv(\"KIRITO_A10_1_PROBE\", \"absent\")")) == "ran");
+        b.runSource("var sys = import(\"sys\")\nsys.unsetenv(\"KIRITO_A10_1_PROBE\")");
+    }
+
     return RUN_TESTS();
 }
