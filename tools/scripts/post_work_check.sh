@@ -93,6 +93,35 @@ if ! preflight_retired_api; then
     echo "DO NOT PUSH: retired API present — fix before building." ; exit 1
 fi
 
+# --- pre-flight: host build prerequisites -------------------------------------------------------
+# Fail early with an ACTIONABLE message instead of the cryptic, truncated CMake error a missing
+# toolchain produces ("CMAKE_CXX_COMPILER not set, after EnableLanguage" for a missing compiler;
+# "Could NOT find OpenSSL (OPENSSL_INCLUDE_DIR)" for a missing libssl-dev). The debug/release presets
+# build TLS-on, so OpenSSL's dev headers are a hard prerequisite here (asan/tsan are TLS-off).
+preflight_prereqs() {
+    local missing=()
+    command -v cmake >/dev/null 2>&1 || missing+=("cmake")
+    command -v ninja >/dev/null 2>&1 || missing+=("ninja-build (the presets use the Ninja generator)")
+    { command -v g++ >/dev/null 2>&1 || command -v clang++ >/dev/null 2>&1; } \
+        || missing+=("build-essential (no g++/clang++ on PATH → 'CMAKE_CXX_COMPILER not set')")
+    if ! { pkg-config --exists openssl 2>/dev/null \
+           || ls /usr/include/openssl/ssl.h /usr/include/*/openssl/ssl.h >/dev/null 2>&1; }; then
+        missing+=("libssl-dev (debug/release build TLS-on → find_package(OpenSSL REQUIRED))")
+    fi
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "==================== PRE-FLIGHT: MISSING PREREQUISITES ===================="
+        printf '  - %s\n' "${missing[@]}"
+        echo "Install (Debian/Ubuntu/WSL):"
+        echo "  sudo apt-get update && sudo apt-get install -y build-essential libssl-dev cmake ninja-build"
+        echo "(asan/tsan are TLS-off and don't need OpenSSL; see this script's header comment.)"
+        return 1
+    fi
+    return 0
+}
+if ! preflight_prereqs; then
+    echo "DO NOT PUSH: host build prerequisites missing — install them and re-run." ; exit 1
+fi
+
 declare -A DIR=( [debug]=build-debug [release]=build-release [asan]=build-asan [tsan]=build-tsan )
 FAILED=0
 GREEN_GATE=1   # cleared if debug or release fails
