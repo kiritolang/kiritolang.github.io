@@ -225,7 +225,20 @@ run_variant() {
         # ThreadSanitizer: data races AND lock-order inversions (potential deadlocks) in the dispatcher.
         pre="TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1"
     fi
-    if env $pre ctest --test-dir "$dir" -j"$JOBS" >"/tmp/pw_$name.test.log" 2>&1; then
+    # ThreadSanitizer maps its shadow at FIXED addresses, so a PIE mapping landing in that range kills
+    # the process on startup: "FATAL: ThreadSanitizer: unexpected memory mapping". Modern kernels make
+    # that near-certain — Ubuntu 24.04 ships vm.mmap_rnd_bits=32 — and it hits EVERY tsan binary,
+    # including single-threaded ones, so the variant reports hundreds of instant "failures" that read
+    # like real breakage rather than one environmental fault. Run the tsan suite with randomization off:
+    # the personality is inherited by ctest's children, it needs no root (unlike lowering
+    # vm.mmap_rnd_bits, which is also per-box and lost on reboot), and it costs nothing — TSan hunts
+    # data races, not ASLR robustness, and every other variant still runs with ASLR on.
+    local runner=()
+    if [ "$name" = tsan ] && command -v setarch >/dev/null 2>&1; then
+        runner=(setarch "$(uname -m)" -R)
+    fi
+    if env $pre "${runner[@]}" ctest --test-dir "$dir" -j"$JOBS" --output-on-failure \
+            >"/tmp/pw_$name.test.log" 2>&1; then
         echo "[$name] $(grep -E 'tests passed' "/tmp/pw_$name.test.log" | tail -1)"
         # Tests passed: drop this variant's build dir so the four don't pile up and fill the disk
         # (the next variant builds from scratch anyway). Logs under /tmp/pw_$name.* are kept.
@@ -234,6 +247,13 @@ run_variant() {
     fi
     # Failed: keep the build dir for investigation (re-run failed tests / attach a debugger).
     echo "[$name] TESTS FAILED:"; grep -A8 'The following tests FAILED' "/tmp/pw_$name.test.log" | tail -10
+    # A systemic fault — a sanitizer runtime refusing to start, a missing shared library — fails every
+    # test identically, and then the list above is hundreds of names that say nothing about the cause.
+    # --output-on-failure puts each failure's real output in the log; surface the first diagnostic line.
+    local why
+    why=$(grep -m3 -hE 'FATAL:|ERROR: |terminate called|Assertion .* failed|error while loading' \
+               "/tmp/pw_$name.test.log" 2>/dev/null)
+    [ -n "$why" ] && { echo "[$name] first error reported:"; echo "$why" | sed 's/^/    /'; }
     echo "[$name] build dir kept for debugging: $dir"
     FAILED=1; return 1
 }
