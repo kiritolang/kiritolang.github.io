@@ -403,7 +403,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `'utf-8' codec can't decode: invalid UTF-8 byte sequence` / `'<enc>' codec can't decode byte <hex>` | `bytes.decode(enc)` on invalid bytes | Use the correct encoding / valid data |
 | `unknown encoding: '<enc>'` | Unsupported encoding name | Use utf-8 / latin-1 / ascii |
 | `fromhex: odd-length hex string` / `fromhex: non-hex digit` | Bad `fromhex` input | Pass an even-length hex string |
-| `Bytes() expects a List of Integers, an Integer, a String, or Bytes` / `Bytes() list elements must be Integers` / `Bytes() element out of range (0..255)` | Bad `Bytes(x)` construction | Pass valid 0–255 Integers / supported types |
+| `Bytes() expects an iterable of Integers (0..255), an Integer, a String, or Bytes` / `Bytes() list elements must be Integers` / `Bytes() element out of range (0..255)` | Bad `Bytes(x)` construction | Pass valid 0–255 Integers / supported types |
 | `Bytes too large` | `Bytes(n)` with an oversized n | Use a bounded count |
 | `negative count` | `Bytes(n)` with a negative n (e.g. `Bytes(-1)`) | Pass a non-negative count |
 

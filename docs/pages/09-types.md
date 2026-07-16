@@ -184,8 +184,9 @@ b[0:1]                           # b'H'
 Bytes([0xc3, 0xa9]).decode("utf-8")   # "é"
 ```
 
-Construct with `Bytes(x[, encoding])` — from a List of Integers, an Integer `n` (`n` zero bytes), a
-String (encoded; default `utf-8`), or another Bytes (copied) — or `fromhex("48 69")`.
+Construct with `Bytes(x[, encoding])` — from an iterable of Integers (0..255) — a List, but also a
+Set/`range`/Dict-keys — an Integer `n` (`n` zero bytes), a String (encoded; default `utf-8`), or
+another Bytes (copied) — or `fromhex("48 69")`.
 
 | Method / function | Meaning |
 | --- | --- |

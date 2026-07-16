@@ -237,6 +237,88 @@ assert delivered
 )"));
     }
 
+    // ===== A15-2: an embedded NUL in an argv element / shell command / cwd must be REJECTED (a
+    // poison-NUL truncation lets validation and execution disagree), not silently truncated. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var sys = import("sys")
+var n1 = False
+try:
+    discard sys.createprocess(["/bin/echo", "a\0b"])
+catch as e:
+    n1 = "NUL" in e
+assert n1
+var n2 = False
+try:
+    discard sys.shell("echo a\0b")
+catch as e:
+    n2 = "NUL" in e
+assert n2
+var n3 = False
+try:
+    discard sys.createprocess(["/bin/echo", "hi"], "/tmp\0evil")
+catch as e:
+    n3 = "NUL" in e
+assert n3
+)"));
+    }
+
+    // ===== A15-1: a bad cwd is reported as a DIRECTORY error, not "failed to start '<program>'"
+    // (which blames a program that exists); a genuinely missing program still says "failed to start". =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var sys = import("sys")
+var cwdErr = ""
+try:
+    discard sys.createprocess(["/bin/pwd"], "/no/such/dir/zzz_kirito_a15")
+catch as e:
+    cwdErr = e
+assert "directory" in cwdErr
+assert not ("failed to start" in cwdErr)
+var missErr = ""
+try:
+    discard sys.createprocess(["no_such_prog_xyz_9z1q_a15"])
+catch as e:
+    missErr = e
+assert "failed to start" in missErr
+)"));
+    }
+
+    // ===== A14-4: tensor.arange rejects an oversized/non-finite range up front (not after allocating
+    // ~1 GB); a normal arange still works. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var tensor = import("tensor")
+var threw = False
+try:
+    discard tensor.arange(0.0, 1.0e308 * 10.0, 1.0)     # inf stop
+catch as e:
+    threw = "too large" in e
+assert threw
+assert tensor.arange(5.0).tolist() == [0.0, 1.0, 2.0, 3.0, 4.0]
+)"));
+    }
+
+    // ===== A14-2: Matrix/ComplexMatrix determinant translates an engine error into a catchable
+    // Kirito error (like inverse already does), and a normal determinant still computes. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var matrix = import("matrix")
+assert matrix.Matrix([[1.0, 2.0], [3.0, 4.0]]).determinant().compare(-2.0, 0.0, 1e-9)
+var inf = 1.0e308 * 10.0
+var threw = False
+try:
+    discard matrix.Matrix([[inf, 0.0], [0.0, 1.0]]).determinant()
+catch as e:
+    threw = True
+assert threw
+)"));
+    }
+
     // ===== A02-1: compiler-generated hidden temporaries ($with0/$exc0) must NOT leak into a module's
     // public exports (cosmetic on inspect + a real resource-retention leak — a top-level `with` would
     // otherwise pin its context manager for the module's whole lifetime). =====

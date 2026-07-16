@@ -278,7 +278,8 @@ inline std::unique_ptr<ComplexMatrixVal> fromTensor(tensor::Tensor<cdouble> tt) 
 // these wrappers add the ComplexMatrix-specific square check and translate engine errors.
 inline cdouble determinant(const ComplexMatrixVal& m) {
     if (m.rows() != m.cols()) throw KiritoError("determinant requires a square ComplexMatrix");
-    return tensor::determinant(m.t);
+    try { return tensor::determinant(m.t); }                          // translate the engine error, as `inverse` does
+    catch (const tensor::TensorError& e) { throw KiritoError(e.what()); }
 }
 inline std::unique_ptr<ComplexMatrixVal> inverse(const ComplexMatrixVal& m) {
     if (m.rows() != m.cols()) throw KiritoError("inverse requires a square ComplexMatrix");

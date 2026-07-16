@@ -40,6 +40,18 @@ All verified live; regression cases added to `tools/tests/unit/test_audit_v1151.
 | A08-2 | LOW  | `math.prod` throws "result too large" for a product that is exactly 0 (sticky overflow flag) | a zero factor resets the running state (0 × anything = 0) | stdlib_math.hpp |
 | A16-2 | LOW  | `File.writelines(<write-only stream>)` leaks a raw `bad optional access` | check the `iterate` optional; throw a clear "argument must be iterable" | stdlib_io.hpp |
 
+## FIXED (this session) — batch 3: process-exec safety + tensor error/alloc + doc accuracy
+
+Regression cases in `test_audit_v1151.cpp`; each verified live.
+
+| ID    | Sev  | Symptom | Fix | File(s) |
+|-------|------|---------|-----|---------|
+| A15-2 | MED  | an embedded NUL silently truncates an argv element / shell command / cwd (poison-NUL bypass: validation & execution disagree) | reject a NUL in argv/command/cwd in the single `runExternalProcess` funnel (input stays byte-faithful), as CPython does | stdlib_sys.hpp |
+| A15-1 | MED  | a bad `cwd` was misreported as "failed to start '<program>'", blaming a program that exists | POSIX child sends a stage tag (chdir vs exec) + errno; parent + the Windows branch report a directory error distinctly | proc_compat.hpp |
+| A14-2 | LOW  | `Matrix`/`ComplexMatrix` `determinant()` leaked a raw `tensor::TensorError` (no line:col), unlike `inverse()` | wrap the engine call, matching `inverse` | stdlib_matrix.hpp, stdlib_complex.hpp |
+| A14-4 | LOW  | `tensor.arange` allocated ~1 GB before rejecting an oversized range | bound the element count up front (`ceil((stop-start)/step)`), reject non-finite; keep the in-loop guard as a backstop | stdlib_tensor.hpp |
+| A05-3 | LOW  | `Bytes()` accepts any iterable of Integers but its message + docs said "a List of Integers" | reword the message + docs to "an iterable of Integers (0..255)" (code was correct leniency) | bytes.hpp, docs/pages/09,12 |
+
 ## DEFERRED — needs a maintainer decision (NOT auto-fixed)
 
 **Lesson repeated:** two scan findings (A18-5, A18-1) claimed the behaviour was "untested". It was NOT

@@ -337,7 +337,9 @@ inline Handle makeBytes(KiritoVM& vm, Handle x, const std::string& enc = "utf-8"
         return vm.alloc(std::make_unique<BytesVal>(std::string(static_cast<std::size_t>(n), '\0')));
     }
     auto it = o.iterate(vm);
-    if (!it) throw KiritoError("Bytes() expects a List of Integers, an Integer, a String, or Bytes");
+    // Any iterable of Integers is accepted (Set/range/Dict-keys too), coherent with Kirito's iteration
+    // protocol — so the message says "iterable", not "List", to match what the code actually takes.
+    if (!it) throw KiritoError("Bytes() expects an iterable of Integers (0..255), an Integer, a String, or Bytes");
     std::string out;
     out.reserve(it->size());
     for (Handle h : *it) {

@@ -161,6 +161,10 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
         DWORD e = ::GetLastError();
         if (job) ::CloseHandle(job);
         ::CloseHandle(inW); ::CloseHandle(outR); ::CloseHandle(errR);
+        // A bad `cwd` fails the whole CreateProcessW as ERROR_DIRECTORY / ERROR_PATH_NOT_FOUND; report
+        // it as a directory error rather than blaming the program (mirrors the POSIX chdir/exec split).
+        if (!cwd.empty() && (e == ERROR_DIRECTORY || e == ERROR_PATH_NOT_FOUND))
+            throw ProcError("failed to change directory to '" + cwd + "' (error " + std::to_string(e) + ")");
         throw ProcError("failed to start '" + argv[0] + "' (error " + std::to_string(e) + ")");
     }
     if (job) ::AssignProcessToJobObject(job, pi.hProcess);
@@ -242,6 +246,10 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
     if (::pipe(inP) != 0 || ::pipe(outP) != 0 || ::pipe(errP) != 0 || ::pipe(exP) != 0)
         throw ProcError(std::string("pipe failed: ") + std::strerror(errno));
     ::fcntl(exP[1], F_SETFD, FD_CLOEXEC);    // closes on a successful exec -> parent reads EOF = "started ok"
+    // The exec-error channel carries a stage tag + errno so the parent can tell a chdir(cwd) failure
+    // apart from an execvp failure (a bad cwd used to be misreported as "failed to start '<program>'",
+    // blaming a program that demonstrably exists). One write() of this POD is atomic (< PIPE_BUF).
+    struct ExecErr { char stage; int err; };   // stage: 'c' = chdir, 'x' = exec
 
     std::vector<char*> cargv;
     cargv.reserve(argv.size() + 1);
@@ -264,10 +272,10 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
         ::close(inP[0]); ::close(inP[1]); ::close(outP[0]); ::close(outP[1]);
         ::close(errP[0]); ::close(errP[1]); ::close(exP[0]);
         if (!cwd.empty() && ::chdir(cwd.c_str()) != 0) {
-            int e = errno; ssize_t w = ::write(exP[1], &e, sizeof(e)); (void)w; ::_exit(127);
+            ExecErr ee{'c', errno}; ssize_t w = ::write(exP[1], &ee, sizeof(ee)); (void)w; ::_exit(127);
         }
         ::execvp(cargv[0], cargv.data());
-        int e = errno; ssize_t w = ::write(exP[1], &e, sizeof(e)); (void)w; ::_exit(127);
+        ExecErr ee{'x', errno}; ssize_t w = ::write(exP[1], &ee, sizeof(ee)); (void)w; ::_exit(127);
     }
 
     // PARENT: close the child's ends.
@@ -275,13 +283,15 @@ inline ProcResult run(const std::vector<std::string>& argv, const std::string& c
 
     // The exec-error channel: this read blocks until the child either execs (CLOEXEC closes exP[1] ->
     // EOF here) or fails and writes its errno. This is how "command not found" becomes a clean error.
-    int childErrno = 0;
-    ssize_t got = ::read(exP[0], &childErrno, sizeof(childErrno));
+    ExecErr ee{'x', 0};
+    ssize_t got = ::read(exP[0], &ee, sizeof(ee));
     ::close(exP[0]);
-    if (got == static_cast<ssize_t>(sizeof(childErrno))) {
+    if (got == static_cast<ssize_t>(sizeof(ee))) {
         int st = 0; ::waitpid(pid, &st, 0);
         ::close(inP[1]); ::close(outP[0]); ::close(errP[0]);
-        throw ProcError("failed to start '" + argv[0] + "': " + std::strerror(childErrno));
+        if (ee.stage == 'c')
+            throw ProcError("failed to change directory to '" + cwd + "': " + std::strerror(ee.err));
+        throw ProcError("failed to start '" + argv[0] + "': " + std::strerror(ee.err));
     }
 
     ProcResult res;

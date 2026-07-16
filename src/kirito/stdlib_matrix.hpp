@@ -220,7 +220,8 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     if (name == "determinant") return bind("determinant", {}, [self, self_m](KiritoVM& vm, std::span<const Handle>) -> Handle {
         auto& m = self_m(vm, self);
         if (m.rows() != m.cols()) throw KiritoError("determinant requires a square Matrix");
-        return vm.makeFloat(tensor::determinant(m.t));
+        try { return vm.makeFloat(tensor::determinant(m.t)); }        // translate the engine error, as `inverse` does
+        catch (const tensor::TensorError& e) { throw KiritoError(e.what()); }
     });
     if (name == "inverse") return bind("inverse", {}, [self, self_m](KiritoVM& vm, std::span<const Handle>) -> Handle {
         auto& m = self_m(vm, self);

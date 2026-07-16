@@ -2285,7 +2285,15 @@ public:
             }
             if (!hasStop) throw KiritoError("arange: missing stop");
             if (step == 0) throw KiritoError("arange step must be non-zero");
+            // Bound the element count BEFORE allocating: the old in-loop guard first grew the vector to
+            // ~1 GB. ceil((stop-start)/step) is the count; a non-finite span (inf stop) is rejected
+            // instantly, and a NaN span collapses to 0 (an empty tensor, the existing NaN behaviour).
+            double span = stop - start;
+            double countf = ((span > 0) == (step > 0)) ? std::ceil(span / step) : 0.0;
+            if (!std::isfinite(countf) || countf > static_cast<double>(tns::kMaxElems))
+                throw KiritoError("Tensor too large");
             std::vector<double> data;
+            data.reserve(countf > 0 ? static_cast<std::size_t>(countf) : 0);
             if (step > 0) for (double x = start; x < stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
             else for (double x = start; x > stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
             std::size_t n = data.size();
