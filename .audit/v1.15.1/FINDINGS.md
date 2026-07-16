@@ -111,30 +111,35 @@ scanners: a "no test pins this" claim must be verified with `grep`, not asserted
   output with a justifying comment. Overturning a deliberately-pinned test is a maintainer call, so this
   is flagged, not silently fixed. Recommend: adopt Python-conformant must_advance + update that test.
 
-## STILL OPEN (triaged, not yet fixed) — candidates for the next batch
+## STILL OPEN (triaged, not yet fixed) — for a future session
 
-Higher-value remaining, roughly by severity:
-- A02-3 (HIGH): duplicate parameter name desyncs resolver env layout vs runtime frame layout
-  (debug: assertion abort; release: silent wrong binding). NOTE: check whether the analyzer's
-  "duplicate parameter names" warning already rejects — if so this may be narrower than stated.
-- A10-2 (HIGH, build): `kirito.hpp` doesn't compile under clang++ default flags → documented
-  libFuzzer build dead. Build/portability, not a runtime bug.
-- A14-1 (MED): `Tensor.take()` with no args reads past the argument span (OOB read).
-- A07-1-adjacent / A19.1-1 (MED): `_hash_`/`_eq_`/`_bool_` dispatch via `activeVM()` — misroutes with
-  2+ VMs on a thread. C++ probe written by A19.1 agent, could not compile.
-- A04-2 (MED): a bound method backed by a NATIVE function silently discards keyword arguments.
-- A09-1 / A09-2 (MED): nested function inside a method loses class ownership (can't touch
-  `self._private`, `self._super_()` unavailable).
-- A02-1 (MED): compiler hidden locals (`$with0`/`$exc0`) leak into a module's public exports.
-- A13-1/A10-4, A13-2 (MED): eager class-var initializer cross-class / captured-instance load in a
-  fresh VM.
-- A14-3 (MED): tensor `all`/`any` disagree with themselves over a zero-length axis.
-- A11-1 / A11-2 (MED, perf): xml entity decode and base64.encode are O(n²).
-- A15-1 / A15-2 (MED): bad cwd misreported; embedded NUL truncates argv/shell/cwd.
-- A01-1 / A01-4 (MED): inline Function line-continuation unserializable; inline body rejects
-  `discard` the analyzer recommends.
-- A04-1 (MED): traceback frame line disagrees with `error:` line on `finally`/`with` reraise.
-- Plus the LOW batch (A01-2/3, A05-1..4, A08-1/2/3, A09-3/4, A10-3/4, A13-3, A14-2/4, A18-1, A06-2/3).
+Fixed across batches 1–5: A06-1, A03-1, A08-4, A16-1, A07-1, A14-1, A14-5, A02-1, A04-2, A14-6,
+A08-2, A16-2, A15-1, A15-2, A14-2, A14-4, A05-3, A12-L1, A12-L2, A14-3, A11-1, A11-2 (22 fixes).
+The remaining backlog, roughly by value — each deliberately left because it is either genuinely
+involved (a core resolver/compiler change deserving a fresh, careful session) or a low-value tail:
+
+**Involved — merit a dedicated session, not a tail-of-a-long-run rush:**
+- **A02-3 (HIGH):** a duplicate parameter name desyncs the resolver's env layout from the runtime
+  frame layout → debug assertion abort / release silent wrong binding. The correct fix is the layout
+  math in `computeFunctionEnvIndex` (must handle deduped params, per the finding's shape-map table);
+  promoting the analyzer *warning* to a hard error would be simpler but breaks the warn-and-run tests
+  (`test_warnings.cpp`, `r7_language.ki`) and changes documented behaviour — a maintainer call.
+- A10-2 (HIGH, build): `kirito.hpp` doesn't compile under clang++ default flags → the documented
+  libFuzzer build is dead. Build/portability, not a runtime bug.
+- A09-1 / A09-2 (MED): a nested function inside a method loses class ownership (can't touch
+  `self._private`; `self._super_()` unavailable) — closure/ownership plumbing.
+- A13-1 / A13-2 (MED): an eager class-var initializer that calls across classes / reads a captured
+  instance fails to load in a fresh VM — serde rebuild ordering.
+- A04-1 (MED): traceback frame line disagrees with the `error:` line on a `finally`/`with` reraise.
+- A19.1-1 (MED): `_hash_`/`_eq_`/`_bool_` dispatch via `activeVM()` misroutes with 2+ VMs on one
+  thread (the A05-1 landmine). Needs a C++-level repro the scan agent couldn't compile.
+- A01-1 / A01-4 (MED): an inline `Function` relying on a bracket line-continuation is unserializable;
+  an inline body rejects the `discard` the analyzer recommends.
+
+**LOW tail** (cosmetic / DRY / doc): A01-2 (f-string error col), A01-3 (doc), A05-1/2/4, A08-1
+(`.compare` exact >2^53), A08-3 (FP-table doc), A09-3 (arity counts self), A09-4 (`_setstate_` w/o
+`_getstate_`), A10-3/A10-4 (DRY: dedup the "row index out of range" text + `kMaxRepeat`), A13-3
+(json surrogate), A06-2/3 (vestigial `ValueKind::Array`), A02-2 (export `_private` divergence).
 
 ## Meta findings (not code bugs)
 - A20-0: previous inventory was 22% of the real surface (see `scan/A20_surface_*.txt` for the full map).
