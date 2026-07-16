@@ -90,17 +90,28 @@ fails.
 Each has a concrete repro + proposed fix in its `scan/AXX_*.md`. Deferred because they need more care
 than a low-risk one-liner and/or must be double-checked against a by-design behavior first.
 
-**Order to work them in** (the rest of the round; this file is the source of truth for what is left):
-1. **New-code correctness** — ~~A10-2~~ (done), ~~A02-1~~ (done). Bugs in surface this round introduced.
-2. **Security** — A13-1 (key-type confusion), A12-1 (cross-origin cookie/Authorization leak), A10-1
-   (loads executes code — docs warning).
-3. **Perf variance** — S1 + S3 together; the user's key ask, see the perf section below. `kGcOldAge`
-   must stay 1 (S4 is rejected — a `static_assert` guards `resetRemembered`).
-4. **Diagnostics / other** — A04-1 (recurring 3 rounds), A05-1, A16-1 (confirm against the by-design
-   tabular entry FIRST), A09-6, then the LOWs.
-5. **Coverage gaps** — the A18 list below; `crypto.aesdecrypt` bad-tag is the highest (the AEAD
-   integrity contract is entirely untested).
-6. **Document + pin** — A14-1, A11-1. Accepted tradeoffs: pin the behavior, do NOT "fix" it.
+**ROUND COMPLETE.** Every item below is done; the table is kept for provenance, each row marked with
+what happened and why. Validated on all four presets — debug / release / asan / tsan, 819/819 each.
+
+1. ~~**New-code correctness**~~ — A10-2, A02-1.
+2. ~~**Security**~~ — A13-1 (key-type confusion), A12-1 (cookie leak; the header half is by-design,
+   matching `requests` — see A12-1b), A10-1 (documented; no `allow_code` API — that's a feature).
+3. ~~**Perf variance**~~ — S3 landed, **S1 rejected on measurement** (see the perf section).
+4. ~~**Diagnostics / other**~~ — A04-1 (fixed after 3 rounds), A05-1, A16-1 (confirmed distinct from
+   the by-design ragged entry), A09-6 (documented, deliberately not "fixed"), all LOWs.
+5. ~~**Coverage gaps**~~ — the A18 list, **two of whose claims were wrong** (`crypto.aesdecrypt`
+   bad-tag and the C++ barrier coverage are both already well tested — do NOT re-add).
+6. ~~**Document + pin**~~ — A14-1, A11-1.
+
+**What the next round should start from:**
+- **A19-1/A19-2 are the story.** Fourteen memory-safety sites the 18 scanners missed, found by running
+  the write-barrier soak over suites using values ABOVE the small-int intern range. A soak proves
+  nothing about values the tests never build. Suggested scanner: sweep every `make_unique<XVal>` +
+  allocate-into-it site and every raw container write, rather than trusting a "barrier complete" read.
+- **Card marking** is the clear next perf item: a minor rescans each remembered old container IN FULL,
+  which is the one thing standing between the nursery and a smaller (steadier) size — it cost sum_loop
+  22% at 16384 and is why the knee sits at 32768.
+- **A10-4** (below) is the one genuine round-trip hole left open, with a design sketch.
 
 Rules for each: only fix REAL triggerable bugs (check the false-positives table below first), stay
 idiomatic, never break a documented contract, single-source anything reused, and pin every fix with a
