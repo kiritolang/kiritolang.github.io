@@ -219,7 +219,10 @@ public:
                 if (o.kind() == ValueKind::Float) { isFloat = true; f *= static_cast<const FloatVal&>(o).value(); }
                 else if (o.kind() == ValueKind::Integer) {
                     int64_t v = static_cast<const IntVal&>(o).value();
-                    if (__builtin_mul_overflow(n, v, &n)) intOverflow = true;  // track; only an error if the result stays Integer
+                    // A zero factor makes the exact result 0 (trivially an Integer), so it clears any
+                    // earlier overflow — otherwise prod([2**62, 4, 0]) throws though its answer is 0.
+                    if (v == 0) { n = 0; intOverflow = false; }
+                    else if (__builtin_mul_overflow(n, v, &n)) intOverflow = true;  // track; only an error if the result stays Integer
                     f *= static_cast<double>(v);
                 }
                 else throw KiritoError("prod expects numbers");

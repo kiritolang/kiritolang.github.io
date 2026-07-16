@@ -81,6 +81,12 @@ inline void gcWriteBarrier(ObjectArena& arena, Object* container, Handle value) 
 // type methods (below) and the free builtins, so the rooting is single-sourced.
 inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs, const char* err);
 
+// Forward decl (defined near applyBinaryOp): the single dispatch for calling any callable with
+// already-evaluated positional + named args. makeBoundMethod routes through it so a bound method
+// backed by a NATIVE function still honours keyword args / defaults / arity (not positional-only).
+inline Handle applyCall(KiritoVM& vm, Handle callee, std::span<const Handle> positional,
+                        std::span<const NamedArg> named);
+
 // --- numeric helpers ------------------------------------------------------------------------
 
 inline bool isNumeric(const Object& o) {
@@ -1725,10 +1731,10 @@ inline Handle makeBoundMethod(KiritoVM& vm, std::string name, Handle receiver, H
             full.reserve(args.size() + 1);
             full.push_back(receiver);
             for (Handle a : args) full.push_back(a);
-            Object& m = vm.arena().deref(methodH);
-            if (m.kind() == ValueKind::Function)
-                return static_cast<KiFunction&>(m).callFull(vm, full, named);
-            return m.call(vm, full);  // native method: positional only
+            // Route through applyCall — the ONE call-dispatch — so a native-backed method honours
+            // keyword args, defaults, and arity checks exactly like a direct call, instead of silently
+            // dropping every keyword (the old `m.call(vm, full)` positional-only path).
+            return applyCall(vm, methodH, full, named);
         }},
         std::vector<Handle>{receiver, methodH}));
 }
@@ -2426,6 +2432,17 @@ void KiritoVM::install() {
     });
 }
 
+// The base rule shared by both module-export filters (frozen-source and .ki-file): a top-level
+// binding is exportable unless it is a compiler-generated hidden temporary (`$with0`/`$exc0` — which
+// would otherwise leak into inspect() AND retain a top-level `with`'s context manager for the module's
+// whole lifetime) or the per-file injected env (arglist/argmain). `$` names are unwritable/unreadable
+// from Kirito (the lexer rejects `$`), so filtering them can break no user code. (The two filters still
+// diverge on `_private` top-level names — the frozen filter hides them, the .ki filter does not; that
+// is the separate, lower-severity A02-2 and is left as-is here.)
+inline bool moduleExportBase(const std::string& k) {
+    return !k.empty() && k.front() != '$' && k != "arglist" && k != "argmain";
+}
+
 inline void KiritoVM::registerSourceModule(std::string name, std::string_view source) {
     // A frozen module: the Kirito `source` is compiled and run in a fresh module scope on first
     // import, and its top-level bindings become the module's members. Cached like any module.
@@ -2446,9 +2463,9 @@ inline void KiritoVM::registerSourceModule(std::string name, std::string_view so
             runBytecodeBody(vm, scope, program.stmts, Handle{}, /*hasOwner=*/false, /*isFunction=*/false);
             auto mod = std::make_unique<ModuleValue>(modName);
             for (const auto& [k, v] : static_cast<EnvValue&>(vm.arena().deref(scope)).locals())
-                // hide private top-level names, the injected per-file env (arglist/argmain), and any
-                // pre-declared slot that was never assigned (still the `undefined()` placeholder)
-                if (!k.empty() && k.front() != '_' && k != "arglist" && k != "argmain" && v != vm.undefined())
+                // frozen modules also hide private (`_`) top-level names; the shared base rule drops
+                // `$`-hidden temporaries + the injected env, and undefined() is an unwritten slot.
+                if (moduleExportBase(k) && k.front() != '_' && v != vm.undefined())
                     mod->members[k] = v;
             return vm.alloc(std::move(mod));
         } catch (KiritoError& e) {
@@ -2545,7 +2562,7 @@ inline Handle KiritoVM::importModule(const std::string& name) {
             runBytecodeBody(*this, scope, program.stmts, Handle{}, /*hasOwner=*/false, /*isFunction=*/false);
             auto mod = std::make_unique<ModuleValue>(name);
             for (const auto& [k, v] : static_cast<EnvValue&>(arena_.deref(scope)).locals())
-                if (k != "arglist" && k != "argmain" && v != undefined())  // exclude injected env + unwritten slots
+                if (moduleExportBase(k) && v != undefined())  // drop $-hidden temporaries + injected env + unwritten slots
                     mod->members[k] = v;
             Handle h = alloc(std::move(mod));
             moduleCache_[name] = h;

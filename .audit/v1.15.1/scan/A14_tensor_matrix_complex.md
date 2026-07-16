@@ -209,6 +209,143 @@ via `zeros`** — a 100× memory difference for the same "no" answer.
   matters is a C++ one in `tools/tests/unit/test_tensor.cpp` bounding peak allocation, or simply a
   timing assertion (the unfixed build takes ~1.5 s, a fixed one ~0 s).
 
-## Log
+### A14-5: in-place element assignment `t[i,j]=v` silently desyncs the autograd graph — `backward()` then returns gradients computed against stale pre-mutation values, with no error  [severity: MED] [confidence: confirmed]
+- Location: `src/kirito/stdlib_tensor.hpp:1625-1639` (`TensorVal::setItem`).
+- What: `setItem` writes the new element straight into `store` (`std::get<FT>(store).at(idx) = ...`)
+  and never touches the tensor's autograd state (`requiresGrad`, `node`, or any cached forward copy).
+  The differentiable ops snapshot their inputs at forward time (e.g. `g_math` copies `acopy = a`,
+  `g_pow` copies `acopy = a`, `g_mul`/etc. capture the operand data into the closure), so a later
+  in-place edit of the SAME tensor is invisible to the recorded graph. `backward()` then produces
+  gradients for the values that existed **when the op ran**, not for the tensor's current contents —
+  and the visible tensor data and its graph silently disagree. PyTorch guards exactly this: an
+  in-place op on a leaf requiring grad is a hard error, and an in-place edit of a tensor still needed
+  for backward is caught by version counters at `.backward()`. Kirito has neither guard.
+- Repro (real output, `/tmp/a14/p6.ki`):
+```ki
+var w = tensor.Tensor([1.0,2.0,3.0], requiresgrad=True)
+var y = w * w          # graph built with w = [1,2,3]
+w[0] = 100.0           # mutate the leaf AFTER the graph is built
+var loss = y.sum()
+loss.backward()
+io.print("w now:", w.tolist())      # -> [100.0, 2.0, 3.0]
+io.print("grad:", w.grad)           # -> [2.0, 4.0, 6.0]   (= 2*[1,2,3], the STALE values)
+```
+```
+w now: [100.0, 2.0, 3.0]
+grad (2*w? which w?): [2.0, 4.0, 6.0]
+y: [1.0, 4.0, 9.0]
+mutated non-leaf b: [999.0, 4.0]
+grad after mutating non-leaf: [2.0, 2.0]
+```
+  `w.grad` is `[2,4,6]` while `w` is now `[100,2,3]` — the gradient of `sum(w*w)` at the current leaf
+  should be `[200,4,6]`. Second case: mutating a **non-leaf** tracked result `b = a*2` to `b[0]=999`
+  leaves `b.tolist()==[999,4]` yet backward computes as if `b==[2,4]` (grad w.r.t. `a` = `[2,2]`), so
+  the tensor's own value and its graph are inconsistent with no diagnostic.
+- Impact: any code that mixes the one supported in-place op (`t[i,j]=v`, documented as the single
+  mutator) with autograd gets silently wrong gradients — no throw, no NaN, just a wrong number. It is
+  reachable from ordinary scatter/masking-style updates inside a training loop (`params[i] = ...`).
+  The functional-update design (rebind, don't mutate) *avoids* it, but nothing enforces that design,
+  so a user who mutates a grad tensor gets a plausible-looking wrong answer. This is the
+  "two supported features interact wrongly, silently" class.
+- Proposed fix: make `setItem` refuse to mutate a tensor that participates in a graph — throw a clear
+  error when `requiresGrad` is set or `node` is non-null (mirroring PyTorch's leaf guard), e.g. right
+  after the index checks:
+  ```cpp
+  if (requiresGrad || node)
+      throw KiritoError("cannot assign into a Tensor that tracks gradients; detach() first "
+                        "(in-place edits are invisible to the autograd graph)");
+  ```
+  This keeps the documented "element assignment is the only in-place op" true for plain tensors while
+  closing the silent-wrong-grad hole. (A softer alternative — invalidate the graph on mutation — is
+  more work and still surprises the user; the hard error matches the rest of the numeric stack's
+  "throw, don't silently mislead" stance.)
+- Proposed test: `tools/tests/scripts/audit_tensor.ki` — assert that assigning into a
+  `requiresgrad=True` tensor throws (typed `catch`), and a C++ case in
+  `tools/tests/unit/test_tensor_deep.cpp` pinning the message. **Untested surface today** — the 273
+  `requiresgrad` test lines never combine autograd with `t[i]=v`.
 
-(in progress)
+### A14-6: `softplus` forward overflows to `inf` for large inputs (naive `log1p(exp(x))`), unlike NumPy/PyTorch's numerically-stable formula — breaks training on unnormalized activations  [severity: LOW] [confidence: confirmed]
+- Location: `src/kirito/stdlib_tensor.hpp:532` (`mathForward`, `MathOp::Softplus`):
+  `return std::log1p(std::exp(x));`
+- What: for `x` past ~709, `std::exp(x)` overflows to `+inf`, so `softplus(x)` returns `inf` even
+  though the true value is ≈`x` (softplus is asymptotic to the identity). NumPy/`scipy`/PyTorch use
+  the stable identity `softplus(x) = max(x,0) + log1p(exp(-|x|))`, which never overflows and returns
+  ≈`x` for large `x`. The **derivative** here is already stable (`sigmoid(x)`, line 532's neighbour),
+  so only the forward pass is wrong — which is worse, because it silently poisons the loss.
+- Repro (real output, `/tmp/a14/p7.ki`):
+```ki
+io.print("softplus 1000:", tensor.Tensor([1000.0]).softplus().tolist())
+```
+```
+softplus 1000: [inf]
+```
+  (True value ≈ 1000.0.)
+- Impact: `softplus` is in the documented differentiable math set and is used as an activation in the
+  `deep_learning` / `kgrad` examples. A single large pre-activation (an unnormalized input, an
+  exploding layer) turns the forward output — and hence the loss — into `inf`, then `nan` on the
+  backward multiply, killing the run with no clue that softplus was the culprit. Sigmoid, by
+  contrast, saturates cleanly (`sigmoid(-1000)` → `0`, no inf), so this is specific to softplus.
+- Proposed fix: the standard stable form:
+  ```cpp
+  case MathOp::Softplus: { double m = x > 0.0 ? x : 0.0; return m + std::log1p(std::exp(-std::fabs(x))); } break;
+  ```
+  Value-identical to today for small `x` (still `log1p(exp(x))` at `x=0` → `0.6931…`, the pinned
+  case), overflow-free for large `x`. No documented contract changes.
+- Proposed test: `tools/tests/scripts/audit_tensor.ki` — assert `T.Tensor([1000.0]).softplus()`
+  ≈ `1000.0` (finite), alongside the existing `softplus(0)` case. **Untested surface today** —
+  `r4_tensor.ki:418` / `r6_tensor.ki:448` only check `softplus(0.0)`, never a large input.
+
+## Coverage gaps
+
+- **Autograd × in-place** (A14-5): no test combines `t[i]=v` with a grad-tracking tensor. Broader:
+  no test drives autograd through `flip`/`squeeze`/`expanddims`/`swapaxes`/`broadcastto` grad paths
+  (I verified reshape/concatenate/where/broadcast grads are correct, but the structural-op grads are
+  unverified here).
+- **Numerical stability** beyond softplus: `sigmoid` is stable; `softplus` is not (A14-6). Did not
+  exhaustively probe `erf`/`tanh`/`log1p` edge overflow — likely fine but untested at extremes.
+- **NaN-in-argmax/argmin per-axis**: whole-tensor NaN argmax is deliberate + documented (A13-1); the
+  per-axis NaN path (`forEachLine` branch, `stdlib_tensor.hpp:1157-1164`) mirrors it but I did not
+  find a test exercising a NaN inside a per-axis argmax.
+- **`einsum`**: only lightly probed (2-operand). Did not fuzz malformed subscript strings.
+- **`matrix`/`complex` module DRY**: the two determinant-error leaks (A14-2) are the one confirmed
+  Float-vs-Complex/tensor-vs-matrix divergence; the rest of the shared surface (transpose/inverse/
+  trace/apply/dot/cross/norm) is symmetric and correctly guarded in both.
+
+## Non-findings (verified correct, with the inputs used)
+
+- **Purity**: `x + y`, `x * y`, broadcast `+`, `matmul` all leave operands unchanged (`/tmp/a14/p1.ki`,
+  `p7.ki`). Only `t[i,j]=v` mutates — as documented (but see A14-5 for its grad interaction).
+- **Broadcasting** `(2,1)+(1,3)→(2,3)` correct values + grad `[[60],[60]]` (`p1.ki`); `where`
+  broadcasts a `(1,1)` arg correctly (`p7.ki`).
+- **`==` bit-exact / `.compare` tolerant** holds for Tensor, Matrix, ComplexMatrix, Complex:
+  whole-tensor `==` with NaN → `False`, `.compare` NaN → `False`, `[-0.0]==[0.0]` → `True`,
+  near-equal matrices `==`→`False` but `.compare`→`True`, `Complex(2,0)==2`→`True` (`p2.ki`, `p5.ki`).
+  No method found where `==` is wrongly tolerant or `.compare` wrongly exact.
+- **Domain errors THROW** across the analytic set: tensor `log`/`sqrt`/`asin`/`acos`/`acosh`/`atanh`
+  of out-of-domain elements, `reciprocal(0)`, scalar `t/0`, `t%0`, `t**0.5` of a negative base, and
+  the complex `log(0)`/`atanh(±1)`/`pow(0,-1)` all throw a clean `math domain error`; `sqrt(-1)`/
+  `asin(2)`/`cbrt(-8)` correctly do NOT throw (`p7.ki`, `p9.ki`).
+- **Empty / 0-dim / singular**: `sum`/`prod` of an empty tensor → identity, `mean`/`max` → throw;
+  0-dim scalar tensor `item()`/arithmetic work; singular matrix `inv`/`solve`/`matrix.inverse` throw
+  "matrix is singular", `det`→`0.0` (`p3.ki`).
+- **Per-axis reductions over a zero-length axis** are self-consistent for `mean`/`max`/`min`/`std`/
+  `var`/`ptp`/`median` (all THROW, matching their whole-tensor path + the documented rule);
+  `cumsum(1)` → `[[],[],[]]` (`p4.ki`). The lone outlier is `all`/`any` — already recorded as A14-3.
+- **`std`/`var` with `ddof >= n`** throws "not enough elements" rather than dividing by ≤0 (`p4.ki`).
+- **NaN in reductions**: `min`/`max` propagate NaN, `sort` puts NaN last, `argmax` returns the NaN
+  index — all deliberate/documented (A13-1) (`p8.ki`).
+- **Backward semantics**: non-scalar `backward()` without a seed throws "seed gradient is required";
+  repeated `backward()` accumulates into `.grad` (PyTorch-style) (`p1.ki`).
+- **Mixed Float/Complex promotion**: `concatenate`/`stack`/`matmul`/`+` promote to Complex; `where`
+  and elementwise `.eq()`/`<` are Float-only (documented limitations, not bugs) (`p5b.ki`, `p11.ki`).
+- **Arg validation**: `reshape` total-mismatch, `squeeze` non-1 axis, `expanddims`/`sum(axis)` out of
+  range, `clip(lo>hi)`, `matmul` rank<2, negative `split` sections all throw cleanly (`p10.ki`,
+  `p8.ki`). `reshape([2,-1])` (NumPy -1 inference) is unsupported — a documented `readShape` rejection,
+  not a bug.
+- **OOB span audit (A14-1 class)**: I re-swept every fixed-arity instance method in all three files.
+  Every one except `take` (A14-1) guards `a[0]` with `Args(...).require(N)`, an `a.empty()`/`a.size()`
+  check, or a signatured `NativeFunction` (bindArgs-padded). All module-level functions are either
+  `m.fn` (signatured/padded) or `m.kwfn` (explicit `a.size()` guards). **`take` remains the sole
+  span-overread.**
+
+## Status: DONE

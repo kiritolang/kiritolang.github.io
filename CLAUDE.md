@@ -401,7 +401,10 @@ a stability fuzzer, and a benchmark). Working today:
     of the module, hidden from `inspect`). Tensor **arithmetic is pure** — every op returns a new
     tensor and never mutates its operands (the only in-place op is element assignment `t[i,j]=v`), so a
     gradient-descent step **rebinds** the parameter (`w = w - w.grad*lr`, re-marked `requiresgrad(True)`)
-    rather than mutating in place — the functional update style of JAX/Optax, not PyTorch. The
+    rather than mutating in place — the functional update style of JAX/Optax, not PyTorch. Element
+    assignment on a **grad-tracking** tensor is **refused** (it would desync the cached autograd graph
+    and silently return gradients against stale values — PyTorch errors on the same): `detach()` first,
+    or rebind functionally. The
     `matrix` and `complex` matrix types are **built on this engine** (a 2-D tensor is a matrix).
   - `matrix` — dense real matrices (a 2-D `Tensor<double>`) of arbitrary shape (no concurrency): +,-,* (matrix/scalar),
     `m[i, j]` element access/assignment, transpose, determinant, inverse, trace, apply, factories

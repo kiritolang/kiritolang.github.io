@@ -529,7 +529,10 @@ inline double mathForward(MathOp k, double x) {
         case MathOp::Atanh: { return std::atanh(x); } break;
         case MathOp::Relu: { return x > 0 ? x : 0.0; } break;
         case MathOp::Sigmoid: { return 1.0 / (1.0 + std::exp(-x)); } break;
-        case MathOp::Softplus: { return std::log1p(std::exp(x)); } break;
+        // Numerically stable softplus: naive log1p(exp(x)) overflows to inf for x > ~709, poisoning
+        // the forward pass (the derivative is already stable). max(x,0)+log1p(exp(-|x|)) is exact
+        // and is what NumPy/PyTorch use.
+        case MathOp::Softplus: { return std::max(x, 0.0) + std::log1p(std::exp(-std::abs(x))); } break;
         case MathOp::Erf: { return std::erf(x); } break;
         case MathOp::Floor: { return std::floor(x); } break;
         case MathOp::Ceil: { return std::ceil(x); } break;
@@ -1623,6 +1626,13 @@ inline Handle TensorVal::getItem(KiritoVM& vm, std::span<const Handle> keys) {
 }
 
 inline void TensorVal::setItem(KiritoVM& vm, std::span<const Handle> keys, Handle value) {
+    // Refuse in-place mutation of a grad-tracking tensor. The autograd graph caches forward values,
+    // so writing an element (the sole in-place op) without touching the graph makes a later backward()
+    // silently return gradients computed against the STALE pre-mutation values. PyTorch hard-errors on
+    // the same; Kirito's documented style is to rebind functionally (w = w - w.grad*lr), not mutate.
+    if (requiresGrad || node)
+        throw KiritoError("Tensor element assignment is not allowed on a grad-tracking tensor "
+                          "(it would desync the autograd graph); detach() first, or rebind functionally");
     if (keys.size() != ndim()) throw KiritoError("Tensor element assignment needs a full index (one per dimension)");
     const tensor::Shape& sh = shape();
     tensor::Shape idx;
@@ -1964,6 +1974,7 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return tns::wrap([&]() { return tns::g_sliceAxis(vm, self, axis, tns::resolveSlice(vm, sH, eH, stH, t.shape()[axis])); });
     });
     if (name == "take") return bind("take", {"indices", "axis"}, [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        Args(vm, a, "take").require(1);   // makeMethod's positional fast path forwards args verbatim; guard before a[0]
         std::vector<std::ptrdiff_t> idxs;
         for (Value e : Value(vm, a[0]).items()) idxs.push_back(static_cast<std::ptrdiff_t>(e.asInt("index")));
         int64_t axis = 0;

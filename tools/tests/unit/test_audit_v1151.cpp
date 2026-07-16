@@ -131,5 +131,133 @@ assert d[Item(2000)] == "v2000"
 )"));
     }
 
+    // ===== A14-1: Tensor.take() with no argument must give a deterministic arity error, not read past
+    // the empty arg span (an OOB read whose "value" changes with unrelated surrounding code). =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var tensor = import("tensor")
+var t = tensor.Tensor([[1.0, 2.0], [3.0, 4.0]])
+var threw = False
+try:
+    discard t.take()
+catch as e:
+    threw = True
+assert threw
+# and it still works with an argument
+assert t.take([0]).tolist() == [[1.0, 2.0]]
+)"));
+    }
+
+    // ===== A14-5: in-place element assignment on a grad-tracking tensor must be refused (it would
+    // silently desync the autograd graph and return gradients against stale pre-mutation values). =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var tensor = import("tensor")
+var w = tensor.Tensor([1.0, 2.0, 3.0], requiresgrad = True)
+var threw = False
+try:
+    w[0] = 100.0
+catch as e:
+    threw = "grad" in e
+assert threw
+# a non-grad tensor still allows element assignment
+var m = tensor.Tensor([1.0, 2.0, 3.0])
+m[0] = 100.0
+assert m.tolist() == [100.0, 2.0, 3.0]
+)"));
+    }
+
+    // ===== A14-6: softplus is numerically stable — softplus(1000) ~ 1000, not inf. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var tensor = import("tensor")
+var math = import("math")
+var y = tensor.Tensor([1000.0]).softplus().item()
+assert not math.isinf(y)
+assert y.compare(1000.0, 0.0, 1e-6)
+)"));
+    }
+
+    // ===== A08-2: math.prod with a zero factor after an overflowing prefix is 0, not a spurious
+    // "result too large" (0 * anything is 0, trivially an Integer). =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var math = import("math")
+assert math.prod([4611686018427387904, 4, 0]) == 0
+assert math.prod([2, 3, 4]) == 24
+)"));
+    }
+
+    // ===== A16-2: File.writelines on a write-only stream raises a CLEAR "iterable" error, not a raw
+    // std::bad_optional_access. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var io = import("io")
+var path = import("path")
+var p = path.join(path.gettempdir(), "ki_a16_writelines.txt")
+var f = io.open(p, "w")
+var threw = False
+try:
+    f.writelines(io.stdout)         # io.stdout is write-only: its iterate() returns nullopt
+catch as e:
+    threw = "iterable" in e
+discard f.close()
+discard path.remove(p)
+assert threw
+)"));
+    }
+
+    // ===== A04-2: a bound method backed by a NATIVE function honours keyword args and rejects unknown
+    // ones (via applyCall/bindArgs), instead of silently dropping every keyword. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+class C:
+    var f = format
+var c = C()
+# an unknown keyword is now REJECTED (was silently ignored)
+var rejected = False
+try:
+    discard c.f(zzz = "nonsense")
+catch as e:
+    rejected = "keyword" in e
+assert rejected
+# a known keyword is now DELIVERED to the native (format applies 'f' to a non-number -> throws)
+var delivered = False
+try:
+    discard c.f(spec = ".2f")
+catch as e:
+    delivered = "number" in e
+assert delivered
+)"));
+    }
+
+    // ===== A02-1: compiler-generated hidden temporaries ($with0/$exc0) must NOT leak into a module's
+    // public exports (cosmetic on inspect + a real resource-retention leak — a top-level `with` would
+    // otherwise pin its context manager for the module's whole lifetime). =====
+    {
+        KiritoVM vm;
+        vm.registerSourceModule("hidden_export_mod", R"KI(
+class Ctx:
+    var _enter_ = Function(self):
+        return self
+    var _exit_ = Function(self):
+        return False
+with Ctx() as x:
+    var inside = 1
+var value = 42
+)KI");
+        CHECK(ok(vm, R"(
+var m = import("hidden_export_mod")
+assert not ("$" in inspect(m))       # no compiler-hidden temporary in the exports
+assert m.value == 42                  # ordinary top-level names still export
+)"));
+    }
+
     return RUN_TESTS();
 }

@@ -18,6 +18,48 @@ build. Regression tests: `tools/tests/unit/test_audit_v1151.cpp`.
 Note A08-4: the fix makes the code match CLAUDE.md's existing claim ("BigInt hashes equal to an equal
 native Integer (shared Dict/Set bucket)") — no doc change; the docs were already correct, the code lagged.
 
+## FIXED (this session) — batch 2: MED correctness + usability, low-risk
+
+All verified live; regression cases added to `tools/tests/unit/test_audit_v1151.cpp`.
+
+| ID    | Sev  | Symptom | Fix | File(s) |
+|-------|------|---------|-----|---------|
+| A14-1 | MED  | `Tensor.take()` with no arg reads past the empty arg span (OOB) | `Args(vm,a,"take").require(1)` before touching `a[0]`, matching every sibling method | stdlib_tensor.hpp |
+| A14-5 | MED  | in-place `t[i,j]=v` on a grad-tracking tensor silently desyncs autograd → gradients vs stale values | `setItem` refuses when `requiresGrad || node` (PyTorch parity; matches the documented functional-update style) | stdlib_tensor.hpp |
+| A02-1 | MED  | compiler hidden temporaries `$with0`/`$exc0` leak into module exports (inspect noise + a top-level `with` retains its ctx mgr forever) | both export filters drop `$`-prefixed names via a single-sourced `moduleExportBase` helper | runtime.hpp |
+| A18-5 | MED  | `tabular` masking `df[df["col"] > v]` throws on any blank cell (which readcsv makes from empty fields) — the headline idiom | `Series._binop` propagates missing (None/NaN) to a falsy mask entry instead of calling op on it | stdlib_kimodules.hpp |
+| A04-2 | MED  | a bound method backed by a NATIVE fn silently drops every keyword arg (and skips arity/default checks) | route `makeBoundMethod` through the single `applyCall` dispatch (kwargs/bindArgs/arity) | runtime.hpp |
+| A14-6 | LOW  | `softplus` overflows to inf for x>~709 (naive `log1p(exp(x))`) | stable `max(x,0)+log1p(exp(-|x|))` (NumPy/PyTorch form) | stdlib_tensor.hpp |
+| A08-2 | LOW  | `math.prod` throws "result too large" for a product that is exactly 0 (sticky overflow flag) | a zero factor resets the running state (0 × anything = 0) | stdlib_math.hpp |
+| A16-2 | LOW  | `File.writelines(<write-only stream>)` leaks a raw `bad optional access` | check the `iterate` optional; throw a clear "argument must be iterable" | stdlib_io.hpp |
+
+## DEFERRED — needs a maintainer decision (NOT auto-fixed)
+
+**Lesson repeated:** two scan findings (A18-5, A18-1) claimed the behaviour was "untested". It was NOT
+— each contradicts an existing passing test, one with an explanatory comment. Reverted rather than
+overturn a pinned decision. This is the round's own "double-check the bug was a bug" rule biting the
+scanners: a "no test pins this" claim must be verified with `grep`, not asserted.
+
+- **A18-5 (MED): `tabular` Series/DataFrame element-wise arithmetic & comparison THROW on a None/NaN
+  operand**, so the headline masking idiom `df[df["col"] > v]` crashes whenever a column has a blank
+  cell (readcsv makes None from an empty field). pandas propagates (None→NaN; NaN comparison→False→row
+  drop). **But** `deep_tabular.ki:47-48` and `r4_kimods_b.ki:499` pin the throw *with a comment* ("a
+  None can't take a binary operator"), and `r8_tabular.ki`/others rely on it — a deliberate design.
+  Recommend: adopt pandas-parity missing-propagation in `Series._binop` + update those tests. Reverted.
+- **A18-1 (LOW): `deque.pop()`/`popleft()` on empty reports "pop from empty List"**, leaking the
+  internal List type. Three tests pin the `"empty List"` substring (`verify_collections.ki:60`,
+  `labx_containers.ki`, `r4_collections.ki`) — incidental, but changing the message breaks all three.
+  Recommend: "pop from an empty deque" + update the three assertions. Reverted (low value vs. churn).
+
+- **A17-3 (MED): regex empty-match handling drops real matches (missing Python "must_advance").**
+  `findall`/`finditer`/`sub`/`split` lose non-empty matches when a higher-priority zero-width match
+  exists at a position (e.g. `regex.findall("|\\w","ab")` → `['','','']` vs Python `['','a','','b','']`).
+  Well-evidenced (21k-case differential fuzz vs Python, 114 divergences all this shape) and the fix
+  preserves linear time (RE2 implements must_advance). **But** it changes observable behaviour that an
+  existing test explicitly pins — `tools/tests/scripts/r8_net_regex.ki:207` asserts the current divergent
+  output with a justifying comment. Overturning a deliberately-pinned test is a maintainer call, so this
+  is flagged, not silently fixed. Recommend: adopt Python-conformant must_advance + update that test.
+
 ## STILL OPEN (triaged, not yet fixed) — candidates for the next batch
 
 Higher-value remaining, roughly by severity:
