@@ -93,23 +93,25 @@ public:
     }
     // Free every occupied-but-unmarked slot; promote every survivor to old and reset its cycle flags.
     // A full trace proves reachability, so the nursery is empty afterward (every survivor is old).
+    // Returns the SURVIVOR count — the caller's adaptive retarget needs the live set, and counting it
+    // here (in the walk it already does) saves a second full O(capacity) liveCount() pass.
     std::size_t sweep() {
-        std::size_t freed = 0;
+        std::size_t live = 0;
         for (uint32_t i = 0; i < slots_.size(); ++i) {
             Slot& s = slots_[i];
             if (!s.occupied) continue;
             if (!s.obj->gcMarked()) {
                 freeSlot(i);
-                ++freed;
             } else {
                 s.obj->gcSetMarked(false);
                 s.obj->gcSetAge(Object::kGcOldAge);   // survived a full trace => old
                 s.obj->gcSetRemembered(false);
+                ++live;
             }
         }
         young_.clear();
         remembered_.clear();   // flags already cleared on survivors above; freed ones are gone
-        return freed;
+        return live;
     }
 
     // --- MINOR (nursery) collection primitives — scan only the young generation ---

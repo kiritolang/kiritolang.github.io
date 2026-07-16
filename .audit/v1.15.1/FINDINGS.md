@@ -52,6 +52,28 @@ Regression cases in `test_audit_v1151.cpp`; each verified live.
 | A14-4 | LOW  | `tensor.arange` allocated ~1 GB before rejecting an oversized range | bound the element count up front (`ceil((stop-start)/step)`), reject non-finite; keep the in-loop guard as a backstop | stdlib_tensor.hpp |
 | A05-3 | LOW  | `Bytes()` accepts any iterable of Integers but its message + docs said "a List of Integers" | reword the message + docs to "an iterable of Integers (0..255)" (code was correct leniency) | bytes.hpp, docs/pages/09,12 |
 
+## FIXED (this session) — batch 4: GC timing-stability (A12, low-risk, zero semantic change)
+
+The user's perf ask was variance, not throughput. A12 measured minor GC at ~53% of a sum_loop run
+and isolated three leads. The two zero-semantic-change ones are fixed here; the third (the big one)
+is deferred as it needs a redesign, which the user's "low-risk only" rules out.
+
+| ID  | Symptom | Fix | File(s) |
+|-----|---------|-----|---------|
+| A12-L1 | every collection malloc/frees (and page-faults) its ~256 KB mark-stack from scratch — a per-minor jitter source | hoist `work`/`childbuf` to reused VM members `gcWork_`/`gcChildbuf_` (`clear()` keeps capacity); safe to share minor/major (single-threaded, collections never nest) | vm.hpp |
+| A12-L2 | every major makes a second full O(capacity) pass (`liveCount()`) right after `sweep()` just to retarget | `sweep()` returns the survivor count it already walks past; the retarget uses it | vm.hpp, arena.hpp |
+
+Correctness: pure optimizations, so there is no behavioural regression to assert — semantic
+equivalence is proven by the whole suite + the `--gc-threshold 1` soak staying green under **all four
+variants (debug/release/asan/tsan 820/820)**. A flaky timing test would be the wrong thing to add.
+
+**DEFERRED — A12-L3 (the big one, needs a redesign, NOT low-risk):** every collection rescans
+`tempRoots_` in full, so a native that accumulates N objects under one `RootScope` (range, sorted,
+map, zip, split, join, …) is O(N²/nursery) in root visits — `range(3M)` inside a timed loop is the
+worst case. The cure A12 proposes is an adaptive nursery (its P1) and/or rooting the container once
+instead of each element; both are cadence/hot-path changes that exceed the user's "low-risk only"
+bound. Flagged with full measurements in `scan/A12_perf_variance.md`.
+
 ## DEFERRED — needs a maintainer decision (NOT auto-fixed)
 
 **Lesson repeated:** two scan findings (A18-5, A18-1) claimed the behaviour was "untested". It was NOT

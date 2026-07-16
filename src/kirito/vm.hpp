@@ -181,10 +181,10 @@ public:
     void collectGarbage() {
         GcTimer timer(majorNanos_);
         arena_.clearMarks();
-        std::vector<Handle> work;
+        std::vector<Handle>& work = gcWork_; work.clear();
         auto enqueue = [&](Handle h) { if (arena_.markIfUnmarked(h)) work.push_back(h); };
         forEachRoot(enqueue);
-        std::vector<Handle> childbuf;
+        std::vector<Handle>& childbuf = gcChildbuf_;
         while (!work.empty()) {
             Handle h = work.back();
             work.pop_back();
@@ -192,7 +192,7 @@ public:
             arena_.deref(h).children(childbuf);
             for (Handle c : childbuf) enqueue(c);
         }
-        arena_.sweep();
+        std::size_t live = arena_.sweep();   // sweep returns the survivor count (L2: skips a 2nd O(capacity) liveCount walk)
         ++majorCount_;
         allocsSinceMajor_ = 0;
         allocsSinceGc_ = 0;
@@ -203,7 +203,7 @@ public:
         // PAUSE (see kMinorNursery); this bounds the total WORK. Pinned off by setGcThreshold().
         // Measured after the sweep, so `live` is the true surviving set, not floating garbage.
         if (gcAdaptive_)
-            gcThreshold_ = std::max(kGcThresholdFloor, arena_.liveCount() * 4);
+            gcThreshold_ = std::max(kGcThresholdFloor, live * 4);
     }
 
     // MINOR collection: scans only the young generation. Marks young objects reachable from the roots
@@ -213,10 +213,10 @@ public:
     void minorCollect() {
         GcTimer timer(minorNanos_);
         arena_.clearYoungMarks();
-        std::vector<Handle> work;
+        std::vector<Handle>& work = gcWork_; work.clear();
         auto enqueue = [&](Handle h) { if (arena_.markIfYoungUnmarked(h)) work.push_back(h); };
         forEachRoot(enqueue);
-        std::vector<Handle> childbuf;
+        std::vector<Handle>& childbuf = gcChildbuf_;
         // Seed from the remembered set: an old object's young children are roots for this minor.
         for (Object* c : arena_.remembered()) {
             childbuf.clear();
@@ -445,6 +445,12 @@ private:
     bool replScopeReady_ = false;
     Handle arglist_{};  // the command-line arguments as a List, bound as `arglist` in every module scope
     std::vector<Handle> tempRoots_;
+    // Reused GC mark-stack + child scratch: hoisted out of collectGarbage/minorCollect so a collection
+    // no longer malloc/frees (and page-faults) a ~256 KB buffer every time — a measured per-minor jitter
+    // source. clear() keeps capacity. Safe to share between minor and major: the VM is single-threaded
+    // and a minor never nests inside a major (children() cannot allocate, so no collection re-enters).
+    std::vector<Handle> gcWork_;
+    std::vector<Handle> gcChildbuf_;
     // Pinned C++-side roots — see pinHandle/unpinHandle. Refcount-map keyed by handle so the same h
     // can be pinned by multiple wrappers (shared_ptr<Pin> copies).
     fum::unordered_map<Handle, int> pinnedRoots_;
