@@ -1,0 +1,91 @@
+========== TYPE Integer ==========
+Integer value:
+  compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool
+========== TYPE Float ==========
+Float value:
+  compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool
+========== TYPE String ==========
+String value:
+  apply(fn) -> String
+  center(width, fillchar) -> String
+  count(sub, start, end) -> Integer
+  encode(encoding) -> Bytes
+  endswith(suffix, start, end) -> Bool
+  find(sub, start, end) -> Integer
+  format(...) -> String
+  index(sub, start, end) -> Integer
+  isalnum() -> Bool
+  isalpha() -> Bool
+  isdigit() -> Bool
+  islower() -> Bool
+  isspace() -> Bool
+  isupper() -> Bool
+  join(iterable) -> String
+  levenshtein(other) -> Integer|List
+  ljust(width, fillchar) -> String
+  lower() -> String
+  lstrip(chars) -> String
+  partition(sep) -> List
+  removeprefix(prefix) -> String
+  removesuffix(suffix) -> String
+  replace(old, new, count) -> String
+  rfind(sub, start, end) -> Integer
+  rindex(sub, start, end) -> Integer
+  rjust(width, fillchar) -> String
+  rpartition(sep) -> List
+  rstrip(chars) -> String
+  split(sep, maxsplit) -> List
+  startswith(prefix, start, end) -> Bool
+  strip(chars) -> String
+  upper() -> String
+  zfill(width) -> String
+========== TYPE Bytes ==========
+Bytes object:
+  apply(fn) -> Bytes
+  decode(encoding) -> String
+  hex() -> String
+========== TYPE List ==========
+List value:
+  append(item)
+  apply(fn) -> List
+  clear()
+  copy() -> List
+  count(value) -> Integer
+  extend(iterable)
+  index(value, start, end) -> Integer
+  insert(index, item)
+  pop(index) -> item
+  remove(value)
+  reverse()
+  sort(key = None, reverse = False)
+========== TYPE Set ==========
+Set value:
+  add(value)
+  apply(fn) -> Set
+  clear()
+  contains(value) -> Bool
+  copy() -> Set
+  difference(other) -> Set
+  discard(value)
+  intersection(other) -> Set
+  isdisjoint(other) -> Bool
+  issubset(other) -> Bool
+  issuperset(other) -> Bool
+  pop() -> value
+  remove(value)
+  symmetricdifference(other) -> Set
+  union(other) -> Set
+========== TYPE Dict ==========
+Dict value:
+  apply(fn) -> Dict
+  clear()
+  copy() -> Dict
+  get(key, default = None)
+  items() -> List
+  keys() -> List
+  pop(key, default = None)
+  popitem() -> List
+  remove(key)
+  setdefault(key, default = None)
+  update(other)
+  values() -> List

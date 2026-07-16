@@ -510,9 +510,10 @@ class BigIntVal : public NativeClass<BigIntVal> {
 public:
     static constexpr const char* kTypeName = "BigInt";
     bigint::Big val;
+    bool initialized_ = false;  // true once a value is fully built; guards _setstate_ (see below)
 
-    BigIntVal() = default;
-    explicit BigIntVal(bigint::Big v) : val(std::move(v)) {}
+    BigIntVal() = default;                                    // empty shell for serialize/dump reconstruction
+    explicit BigIntVal(bigint::Big v) : val(std::move(v)) { initialized_ = true; }
 
     bool truthy() const override { return !val.isZero(); }
     std::string str(StringifyCtx&) const override { return bigint::toString(val, 10); }
@@ -675,8 +676,16 @@ inline Handle BigIntVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return makeMethod(vm, "_setstate_", {"state"},
             [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 Args(vm, a, "_setstate_").require(1);
-                static_cast<BigIntVal&>(vm.arena().deref(self)).val =
-                    parseBig(Value(vm, a[0]).asStringRef("BigInt state"), 10);
+                auto& b = static_cast<BigIntVal&>(vm.arena().deref(self));
+                // BigInt is immutable + hashable (a Dict/Set key). _setstate_ is the deserializer's
+                // alloc(empty) -> _setstate_ path only; re-homing an established value in place would
+                // change its hash inside a live bucket and corrupt any container keyed on it. One-shot
+                // (mirrors DateTime/Bytes._setstate_).
+                if (b.initialized_)
+                    throw KiritoError("BigInt _setstate_: cannot re-initialize an established BigInt "
+                                      "(it is immutable once built)");
+                b.val = parseBig(Value(vm, a[0]).asStringRef("BigInt state"), 10);
+                b.initialized_ = true;
                 return vm.none();
             }, std::vector<Handle>{self});
     return Object::getAttr(vm, self, name);

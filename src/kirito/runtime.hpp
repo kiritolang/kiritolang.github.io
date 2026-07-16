@@ -813,13 +813,17 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                     dict(vm, self).set(vm.arena(), k, v);
                 return vm.none();
             }
-            auto it = o.iterate(vm);
-            if (!it) throw KiritoError("update expects a Dict or an iterable of [key, value] pairs");
-            for (Handle pairH : *it) {
-                auto pit = vm.arena().deref(pairH).iterate(vm);
-                if (!pit || pit->size() != 2)
+            // Root every level: a user _iter_ may hand back a freshly built container that nothing
+            // else roots, and DictVal::set runs a user _hash_/_eq_ that allocates — so an unrooted
+            // pair (or its key/value) is swept mid-loop (dangling handle). The set-algebra family
+            // roots the same way; rootedIterate is the single source of that idiom.
+            RootScope rs(vm);
+            auto pairs = rootedIterate(vm, a[0], rs, "update expects a Dict or an iterable of [key, value] pairs");
+            for (Handle pairH : pairs) {
+                auto pit = rootedIterate(vm, pairH, rs, "update: each pair must have exactly 2 elements (key, value)");
+                if (pit.size() != 2)
                     throw KiritoError("update: each pair must have exactly 2 elements (key, value)");
-                dict(vm, self).set(vm.arena(), (*pit)[0], (*pit)[1]);
+                dict(vm, self).set(vm.arena(), pit[0], pit[1]);
             }
             return vm.none();
         });
@@ -837,12 +841,10 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
     if (name == "popitem")
         return bind("popitem", {}, [self, dict](KiritoVM& vm, std::span<const Handle>) -> Handle {
             auto& d = dict(vm, self);
-            auto ks = d.keys();
-            if (ks.empty()) throw KiritoError("popitem: dictionary is empty");
             RootScope rs(vm);
-            Handle k = rs.add(ks.back());
-            Handle v = rs.add(*d.find(vm.arena(), k));
-            d.remove(vm.arena(), k);
+            auto kv = d.popArbitrary();   // takes the pair from its bucket; see the comment there
+            Handle k = rs.add(kv.first);  // (a NaN key can't be looked back up, and this drains it)
+            Handle v = rs.add(kv.second);
             auto pair = std::make_unique<ListVal>();
             pair->elems.push_back(k);
             pair->elems.push_back(v);
@@ -3012,7 +3014,7 @@ inline void KiritoVM::installBuiltins() {
     // (n zero bytes), a String (encoded; default utf-8), or another Bytes (copied).
     defSig("Bytes", {{"x", "", none()}, {"encoding", "", none()}}, "Bytes", [](KiritoVM& vm, std::span<const Handle> args) -> Handle {
         if (args.empty() || vm.arena().deref(args[0]).kind() == ValueKind::None)
-            return vm.alloc(std::make_unique<BytesVal>());
+            return vm.alloc(std::make_unique<BytesVal>(std::string()));  // initialized empty value, not the deserializer shell
         std::string enc = "utf-8";
         if (args.size() > 1 && vm.arena().deref(args[1]).kind() != ValueKind::None)
             enc = Value(vm, args[1]).asStringRef("Bytes encoding");

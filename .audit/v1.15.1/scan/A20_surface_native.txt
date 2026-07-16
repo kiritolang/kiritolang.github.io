@@ -1,0 +1,313 @@
+========== NATIVE File ==========
+File object:
+  close()
+  flush()
+  read(size) -> String
+  readline() -> String
+  readlines() -> List
+  seek(offset, whence) -> Integer
+  tell() -> Integer
+  write(data)
+  writelines(lines)
+========== NATIVE BytesIO ==========
+BytesIO object:
+  close()
+  flush()
+  getvalue() -> String
+  read(size) -> String
+  readline() -> String
+  seek(offset, whence) -> Integer
+  size() -> Integer
+  tell() -> Integer
+  truncate() -> Integer
+  write(data) -> Integer
+========== NATIVE StdStream ==========
+StdStream object:
+  flush()
+  read(size) -> String
+  readline() -> String
+  write(data)
+========== NATIVE Random ==========
+Random object:
+  choice(seq)
+  choices(population, k) -> List
+  expovariate(lambd) -> Float
+  gauss(mu, sigma) -> Float
+  generator: String
+  normalvariate(mu, sigma) -> Float
+  randint(a, b) -> Integer
+  random() -> Float
+  randrange(start, stop, step) -> Integer
+  sample(population, k) -> List
+  seed(a)
+  shuffle(seq)
+  uniform(a, b) -> Float
+========== NATIVE Tensor ==========
+Tensor object:
+  abs() -> Tensor
+  acos() -> Tensor
+  acosh() -> Tensor
+  all(axis = None) -> Bool
+  angle() -> Tensor
+  any(axis = None) -> Bool
+  apply(fn) -> Tensor
+  argmax(axis = None) -> Tensor
+  argmin(axis = None) -> Tensor
+  argsort(axis = None) -> Tensor
+  asin() -> Tensor
+  asinh() -> Tensor
+  astype(dtype) -> Tensor
+  atan() -> Tensor
+  atanh() -> Tensor
+  backward(seed = None) -> None
+  broadcastto(shape) -> Tensor
+  cbrt() -> Tensor
+  ceil() -> Tensor
+  clip(lo, hi) -> Tensor
+  compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool
+  conj() -> Tensor
+  conjugate() -> Tensor
+  cos() -> Tensor
+  cosh() -> Tensor
+  cumprod(axis = None) -> Tensor
+  cumsum(axis = None) -> Tensor
+  detach() -> Tensor
+  dot(other) -> Number
+  dtype() -> String
+  eq(other) -> Tensor
+  erf() -> Tensor
+  exp() -> Tensor
+  expanddims(axis) -> Tensor
+  flatten() -> Tensor
+  flip(axis = None) -> Tensor
+  floor() -> Tensor
+  ge(other) -> Tensor
+  grad: Tensor
+  gt(other) -> Tensor
+  imag() -> Tensor
+  item() -> Number
+  le(other) -> Tensor
+  log() -> Tensor
+  log10() -> Tensor
+  log2() -> Tensor
+  logicaland(other) -> Tensor
+  logicalnot() -> Tensor
+  logicalor(other) -> Tensor
+  logicalxor(other) -> Tensor
+  lt(other) -> Tensor
+  matmul(other) -> Tensor
+  max(axis = None) -> Tensor
+  maximum(other) -> Tensor
+  mean(axis = None) -> Tensor
+  median(axis = None) -> Tensor
+  min(axis = None) -> Tensor
+  minimum(other) -> Tensor
+  ndim() -> Integer
+  ne(other) -> Tensor
+  permute(axes) -> Tensor
+  pow(p) -> Tensor
+  prod(axis = None) -> Tensor
+  ptp(axis = None) -> Tensor
+  real() -> Tensor
+  reciprocal() -> Tensor
+  relu() -> Tensor
+  repeat(count, axis = None) -> Tensor
+  requiresgrad(flag = None) -> Bool
+  reshape(shape) -> Tensor
+  round() -> Tensor
+  shape() -> List
+  sigmoid() -> Tensor
+  sign() -> Tensor
+  sin() -> Tensor
+  sinh() -> Tensor
+  size() -> Integer
+  slice(start, stop, step, axis = 0) -> Tensor
+  softplus() -> Tensor
+  sort(axis = None) -> Tensor
+  sqrt() -> Tensor
+  square() -> Tensor
+  squeeze(axis = None) -> Tensor
+  std(axis = None, ddof = 0) -> Tensor
+  sum(axis = None) -> Tensor
+  swapaxes(axis1, axis2) -> Tensor
+  take(indices, axis = 0) -> Tensor
+  tan() -> Tensor
+  tanh() -> Tensor
+  tile(reps) -> Tensor
+  tolist() -> List
+  transpose() -> Tensor
+  trunc() -> Tensor
+  var(axis = None, ddof = 0) -> Tensor
+  zerograd() -> None
+========== NATIVE Matrix ==========
+Matrix object:
+  apply(fn) -> Matrix
+  cols() -> Integer
+  compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool
+  cross(other) -> Matrix
+  determinant() -> Float
+  dot(other) -> Float
+  get(row, col) -> Float
+  inverse() -> Matrix
+  norm() -> Float
+  row(i) -> List
+  rows() -> Integer
+  set(row, col, value)
+  shape() -> List
+  sum() -> Float
+  trace() -> Float
+  transpose() -> Matrix
+========== NATIVE Complex ==========
+Complex object:
+  argument() -> Float
+  compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool
+  conjugate() -> Complex
+  im: Float
+  is_zero() -> Bool
+  modulus() -> Float
+  norm2() -> Float
+  re: Float
+========== NATIVE ComplexMatrix ==========
+ComplexMatrix object:
+  apply(fn) -> ComplexMatrix
+  cols() -> Integer
+  compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool
+  conjugate() -> ComplexMatrix
+  cross(other) -> ComplexMatrix
+  determinant() -> Complex
+  dot(other) -> Complex
+  get(row, col) -> Complex
+  hermitian() -> ComplexMatrix
+  inverse() -> ComplexMatrix
+  norm() -> Float
+  row(i) -> List
+  rows() -> Integer
+  set(row, col, value)
+  shape() -> List
+  trace() -> Complex
+  transpose() -> ComplexMatrix
+========== NATIVE DateTime ==========
+DateTime object:
+  add(seconds) -> DateTime
+  day: Integer
+  diff(other) -> Integer
+  format(fmt) -> String
+  hour: Integer
+  iso() -> String
+  isoformat() -> String
+  minute: Integer
+  month: Integer
+  second: Integer
+  sub(seconds) -> DateTime
+  timestamp: Integer
+  weekday: Integer
+  year: Integer
+  yearday: Integer
+========== NATIVE Regex ==========
+Regex object:
+  findall(string, pos, endpos) -> List
+  finditer(string, pos, endpos) -> List
+  fullmatch(string, pos, endpos) -> Match
+  groupindex: Dict
+  groups: Integer
+  match(string, pos, endpos) -> Match
+  pattern: String
+  search(string, pos, endpos) -> Match
+  split(string, maxsplit) -> List
+  sub(repl, string, count) -> String
+========== NATIVE Match ==========
+Match object:
+  end(group) -> Integer
+  group(index) -> String
+  groupdict(default) -> Dict
+  groups(default) -> List
+  span(group) -> List
+  start(group) -> Integer
+  string: String
+========== NATIVE Socket ==========
+Socket object:
+  accept() -> Socket
+  bind(host, port)
+  cipher() -> String
+  close()
+  connect(host, port)
+  detach() -> Integer
+  family: String
+  fileno() -> Integer
+  getpeername() -> [host, port]
+  getsockname() -> [host, port]
+  getsockopt(option) -> Integer
+  is_tls: Bool
+  listen(backlog)
+  recv(n) -> Bytes
+  recvall() -> Bytes
+  recvfrom(n) -> [Bytes, [host, port]]
+  send(data) -> Integer
+  sendto(data, host, port) -> Integer
+  setblocking(flag)
+  setbroadcast(flag)
+  setkeepalive(flag)
+  setnodelay(flag)
+  setreuseaddr(flag)
+  setsockopt(option, value)
+  settimeout(seconds)
+  shutdown(how)
+  starttls(server_hostname, verify) -> None
+  type: String
+========== NATIVE Session ==========
+Session object:
+  cookies: Dict
+  delete(url, opts) -> Response
+  get(url, opts) -> Response
+  head(url, opts) -> Response
+  headers: Dict
+  options(url, opts) -> Response
+  patch(url, opts) -> Response
+  post(url, opts) -> Response
+  put(url, opts) -> Response
+  request(method, url, opts) -> Response
+========== NATIVE BigInt ==========
+BigInt object:
+  bitlength() -> Integer
+  isprime() -> Bool
+  isprobableprime(rounds = 25) -> Bool
+  modpow(exponent, modulus) -> BigInt
+  toint() -> Integer
+========== NATIVE Queue ==========
+Queue object:
+  close()
+  empty() -> Bool
+  full() -> Bool
+  get(block, timeout) -> value
+  getnowait() -> value
+  put(item, block, timeout)
+  putnowait(item)
+  qsize() -> Integer
+========== NATIVE Lock ==========
+Lock object:
+  _enter_()
+  _exit_()
+  acquire(block, timeout) -> Bool
+  locked() -> Bool
+  release()
+========== NATIVE Event ==========
+Event object:
+  clear()
+  isset() -> Bool
+  set()
+  wait(timeout) -> Bool
+========== NATIVE Semaphore ==========
+Semaphore object:
+  _enter_()
+  _exit_()
+  acquire(block, timeout) -> Bool
+  release()
+========== NATIVE Barrier ==========
+Barrier object:
+  abort()
+  nwaiting() -> Integer
+  parties() -> Integer
+  reset()
+  wait(timeout) -> Integer
+========== NATIVE NoGradContext ==========
+NoGradContext value

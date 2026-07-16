@@ -112,8 +112,19 @@ inline std::ptrdiff_t probeBucket(const ObjectArena& arena, const Bucket& bucket
     // itself — a documented consequence of exact NaN-never-equal equality (tools/tests/scripts/
     // r7_types.ki). (The A06-7 audit note flagged this as divergent from Python's is-before-==; that
     // is a maintainer design decision, not a unilateral hardening change.)
-    for (std::size_t i = 0; i < bucket.size(); ++i)
-        if (arena.deref(keyOf(bucket[i])).equals(arena, key)) return static_cast<std::ptrdiff_t>(i);
+    for (std::size_t i = 0; i < bucket.size(); ++i) {
+        const Object& stored = arena.deref(keyOf(bucket[i]));
+        if (stored.equals(arena, key)) return static_cast<std::ptrdiff_t>(i);
+        // Cross-type key equality must stay symmetric — same rule kiEquals (runtime.hpp) applies to
+        // the `==` operator. A stored native Integer doesn't recognize a probe BigInt, but the BigInt
+        // recognizes the Integer, so without the retry the two hash-equal keys land in one bucket yet
+        // fail to dedupe — an order-dependent duplicate key, breaking the Dict/Set no-two-==-keys
+        // invariant. Gated on kind mismatch so same-kind dispatch (incl. write-only NaN Floats) is
+        // untouched. probeBucket, not BigIntVal, is the single fix point: it covers Dict AND Set and
+        // inoculates any future hashable native that recognizes a builtin it isn't recognized by.
+        if (stored.kind() != key.kind() && key.equals(arena, stored))
+            return static_cast<std::ptrdiff_t>(i);
+    }
     return -1;
 }
 inline Handle dictKeyOf(const std::pair<Handle, Handle>& e) { return e.first; }
@@ -244,6 +255,25 @@ public:
         if (bucket.empty()) buckets.erase(it);   // reclaim the now-empty bucket (A08-4: else the
                                                   // bucket map grows unbounded across delete-distinct cycles)
         return true;
+    }
+
+    // Remove and return SOME (key, value) — the pair `popitem` hands back. It takes the pair straight
+    // out of a bucket rather than reading a key and looking it back up, because a key is not always
+    // findable BY EQUALITY: a NaN key is deliberately write-only (`NaN != NaN`), so the look-up-again
+    // route returns null for it — and `remove` can't delete it either, so the drain loop
+    // `while len(d) > 0: d.popitem()` could not even terminate. SetVal::popArbitrary works exactly
+    // this way, which is why `Set.pop()` on a NaN member has always been fine.
+    std::pair<Handle, Handle> popArbitrary() {
+        if (probing_) throw KiritoError("Dict changed size during a key comparison");
+        for (auto it = buckets.begin(); it != buckets.end(); ++it)
+            if (!it->second.empty()) {
+                std::pair<Handle, Handle> kv = it->second.back();
+                it->second.pop_back();
+                --count;
+                if (it->second.empty()) buckets.erase(it);   // reclaim the emptied bucket
+                return kv;
+            }
+        throw KiritoError("popitem: dictionary is empty");
     }
 
     // Empty the dict. Guarded like every other mutator: a reentrant _hash_/_eq_ that clears the

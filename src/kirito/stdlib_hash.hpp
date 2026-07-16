@@ -2,6 +2,7 @@
 #define KIRITO_STDLIB_HASH_HPP
 
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 
@@ -71,7 +72,11 @@ public:
             std::string algoName = args[4].asStringRef("pbkdf2 algo");
             const hashing::HashAlgo* algo = hashing::findAlgo(algoName);
             if (!algo) throw KiritoError("pbkdf2: unknown algorithm '" + algoName + "' (use md5/sha1/sha256/sha384/sha512)");
-            if (iters < 1) throw KiritoError("pbkdf2: iterations must be >= 1");
+            // Range-check against the value actually used: pbkdf2Raw takes a uint32_t, so an
+            // iterations >= 2^32 would wrap and silently run a TINY work factor (2^32+1 -> a single
+            // HMAC) — the weak-KDF outcome the >= 1 guard exists to prevent. Reject, don't truncate.
+            if (iters < 1 || iters > std::numeric_limits<uint32_t>::max())
+                throw KiritoError("pbkdf2: iterations must be in [1, 4294967295]");
             if (dklen < 1) throw KiritoError("pbkdf2: dklen must be >= 1");
             if (dklen > 1024 * 1024) throw KiritoError("pbkdf2: dklen too large (max 1048576)");
             return Bytes(vm, hashing::pbkdf2Raw(*algo, pw, salt,

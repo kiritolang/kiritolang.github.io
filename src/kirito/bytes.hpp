@@ -29,9 +29,10 @@ class BytesVal : public NativeClass<BytesVal> {
 public:
     static constexpr const char* kTypeName = "Bytes";
     std::string data;
+    bool initialized_ = false;  // true once a value is fully built; guards _setstate_ (see below)
 
-    BytesVal() = default;
-    explicit BytesVal(std::string d) : data(std::move(d)) {}
+    BytesVal() = default;                                       // empty shell for serialize/dump reconstruction
+    explicit BytesVal(std::string d) : data(std::move(d)) { initialized_ = true; }
 
     bool truthy() const override { return !data.empty(); }
 
@@ -122,7 +123,7 @@ public:
         if (op == BinOp::Mul) {
             if (b.kind() != ValueKind::Integer) throw KiritoError("can only repeat Bytes by an Integer");
             int64_t nrep = static_cast<const IntVal&>(b).value();
-            if (nrep <= 0 || data.empty()) return vm.alloc(std::make_unique<BytesVal>());
+            if (nrep <= 0 || data.empty()) return vm.alloc(std::make_unique<BytesVal>(std::string()));  // a real (initialized) empty value
             if (static_cast<uint64_t>(nrep) > kMaxRepeat / data.size())  // shared cap (common.hpp)
                 throw KiritoError("repeated Bytes too large");
             std::string out;
@@ -306,7 +307,16 @@ inline Handle BytesVal::getAttr(KiritoVM& vm, Handle self, std::string_view name
     if (name == "_setstate_")
         return makeMethod(vm, "_setstate_", {"state"}, [self, self_b](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.empty()) throw KiritoError("_setstate_ expects the serialized state");
-            self_b(vm, self).data = bytesutil::encode(Value(vm, a[0]).asStringRef("Bytes state"), "latin-1");
+            auto& b = self_b(vm, self);
+            // Bytes is immutable + hashable (a Dict/Set key). _setstate_ exists ONLY for the
+            // deserializer's alloc(empty) -> _setstate_ path; re-homing an established value in place
+            // would change its hash inside a live bucket and corrupt any container keyed on it. So it
+            // is one-shot: refuse once built (mirrors DateTime._setstate_).
+            if (b.initialized_)
+                throw KiritoError("Bytes _setstate_: cannot re-initialize an established Bytes "
+                                  "(it is immutable once built)");
+            b.data = bytesutil::encode(Value(vm, a[0]).asStringRef("Bytes state"), "latin-1");
+            b.initialized_ = true;
             return vm.none();
         }, std::vector<Handle>{self});
     return Object::getAttr(vm, self, name);
