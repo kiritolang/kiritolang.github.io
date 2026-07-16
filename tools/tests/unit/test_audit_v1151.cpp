@@ -319,6 +319,38 @@ assert threw
 )"));
     }
 
+    // ===== A14-3: per-axis all()/any() over a ZERO-LENGTH axis returns the identity (True/False),
+    // agreeing with the whole-tensor path and NumPy — instead of throwing "zero-size reduction". =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var T = import("tensor")
+var z = T.zeros([3, 0])
+assert z.all() == True and z.any() == False          # whole-tensor identity (unchanged)
+assert z.all(1).tolist() == [1.0, 1.0, 1.0]          # per-axis over empty axis: all -> True
+assert z.any(1).tolist() == [0.0, 0.0, 0.0]          # per-axis over empty axis: any -> False
+# a non-empty axis is unaffected
+assert T.Tensor([[1.0, 0.0], [1.0, 1.0]]).all(1).tolist() == [0.0, 1.0]
+)"));
+    }
+
+    // ===== A11-2 / A11-1: base64.encode and xml text decoding are behaviour-preserving after the
+    // O(n^2)->O(n) rewrite (List+join). Assert correctness (round-trips + known answers); the speed
+    // win itself isn't unit-tested (a timing assertion would be flaky). =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var b64 = import("base64")
+assert b64.encode("Man") == "TWFu"                   # RFC 4648 known answer
+assert b64.encode("M") == "TQ==" and b64.encode("Ma") == "TWE="   # 1- and 2-byte padding
+var payload = "The quick brown fox" * 200            # non-trivial, exercises many triples
+assert b64.decode(b64.encode(payload)) == List(payload.encode())   # decode -> List of byte Integers
+var xml = import("xml")
+var e = xml.fromstring("<r>a &lt; b &amp; c &gt; d &#65; &#x42;</r>")
+assert e.text == "a < b & c > d A B"                 # named + numeric entities decode correctly
+)"));
+    }
+
     // ===== A02-1: compiler-generated hidden temporaries ($with0/$exc0) must NOT leak into a module's
     // public exports (cosmetic on inspect + a real resource-retention leak — a top-level `with` would
     // otherwise pin its context manager for the module's whole lifetime). =====

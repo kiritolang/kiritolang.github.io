@@ -610,7 +610,10 @@ var encode = Function(data) -> String:
     # Returns the base64 String.
     if type(data) == "String":
         data = data.encode()
-    var out = ""
+    # Append to a List and join once at the end: `out = out + ch` per char is four full string copies
+    # per input triple -> O(n^2) (1 MB took ~an hour). This is the module's own idiom — `decode` below
+    # and `csv.formatrow` both build a List and join — so encode now matches it.
+    var out = []
     var i = 0
     var n = len(data)
     while i < n:
@@ -625,18 +628,18 @@ var encode = Function(data) -> String:
             b2 = data[i + 2]
             have = 3
         var triple = b0 * 65536 + b1 * 256 + b2
-        out = out + _alphabet[(triple // 262144) % 64]
-        out = out + _alphabet[(triple // 4096) % 64]
+        out.append(_alphabet[(triple // 262144) % 64])
+        out.append(_alphabet[(triple // 4096) % 64])
         if have >= 2:
-            out = out + _alphabet[(triple // 64) % 64]
+            out.append(_alphabet[(triple // 64) % 64])
         else:
-            out = out + "="
+            out.append("=")
         if have >= 3:
-            out = out + _alphabet[triple % 64]
+            out.append(_alphabet[triple % 64])
         else:
-            out = out + "="
+            out.append("=")
         i = i + 3
-    return out
+    return "".join(out)
 
 var decode = Function(s):
     # Returns a List of byte values.
@@ -2324,27 +2327,29 @@ var _decode = Function(s):
     # &lt; &gt; &amp; &quot; &apos; and numeric &#dd; / &#xHH;
     if "&" not in s:
         return s
-    var out = ""
+    # Build a List and join once: `out = out + <char>` per char is O(n^2) (a single `&` in a big text
+    # node made decoding ~500x slower). Matches the module's List+join house idiom (see base64/csv).
+    var out = []
     var i = 0
     var n = len(s)
     while i < n:
         if s[i] == "&":
             var semi = s.find(";", i)
             if semi < 0:
-                out = out + "&"
+                out.append("&")
                 i = i + 1
                 continue
             var ent = s[i + 1:semi]
             if ent == "lt":
-                out = out + "<"
+                out.append("<")
             elif ent == "gt":
-                out = out + ">"
+                out.append(">")
             elif ent == "amp":
-                out = out + "&"
+                out.append("&")
             elif ent == "quot":
-                out = out + "\""
+                out.append("\"")
             elif ent == "apos":
-                out = out + "'"
+                out.append("'")
             elif len(ent) > 0 and ent[0] == "#":
                 var code = -1
                 if len(ent) > 1 and (ent[1] == "x" or ent[1] == "X"):
@@ -2352,16 +2357,16 @@ var _decode = Function(s):
                 else:
                     code = _parsedec(ent[1:])
                 if code >= 0:
-                    out = out + chr(code)
+                    out.append(chr(code))
                 else:
-                    out = out + s[i:semi + 1]   # malformed numeric entity: keep verbatim (lenient)
+                    out.append(s[i:semi + 1])   # malformed numeric entity: keep verbatim (lenient)
             else:
-                out = out + s[i:semi + 1]   # unknown entity: keep verbatim
+                out.append(s[i:semi + 1])   # unknown entity: keep verbatim
             i = semi + 1
         else:
-            out = out + s[i]
+            out.append(s[i])
             i = i + 1
-    return out
+    return "".join(out)
 
 var _escape = Function(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

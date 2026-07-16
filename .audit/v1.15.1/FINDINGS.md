@@ -74,6 +74,16 @@ worst case. The cure A12 proposes is an adaptive nursery (its P1) and/or rooting
 instead of each element; both are cadence/hot-path changes that exceed the user's "low-risk only"
 bound. Flagged with full measurements in `scan/A12_perf_variance.md`.
 
+## FIXED (this session) — batch 5: a self-contradiction + two O(n²) hot paths
+
+Regression cases (correctness — a timing test would be flaky) in `test_audit_v1151.cpp`.
+
+| ID    | Sev | Symptom | Fix | File(s) |
+|-------|-----|---------|-----|---------|
+| A14-3 | MED | tensor `all`/`any` return the identity whole-tensor but THROW per-axis over a zero-length axis — the same function disagreeing with itself (and with NumPy) | pass the identity (all→True, any→False) to `reduceAxis`, exactly as `sum`/`prod` do | stdlib_tensor.hpp |
+| A11-2 | MED | `base64.encode` was O(n²) (`out = out + ch` per char) — 32 KB took ~5.7 s, ~1 MB ~an hour | build a List, `"".join` once (the module's own `decode`/`csv` idiom). Measured: 32 KB 5.7 s → 0.27 s, now linear | stdlib_kimodules.hpp |
+| A11-1 | MED | `xml` text `_decode` same O(n²) — one `&` in a big text node made decoding ~500× slower | same List+join rewrite | stdlib_kimodules.hpp |
+
 ## DEFERRED — needs a maintainer decision (NOT auto-fixed)
 
 **Lesson repeated:** two scan findings (A18-5, A18-1) claimed the behaviour was "untested". It was NOT

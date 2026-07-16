@@ -1202,7 +1202,11 @@ inline Handle allAny(KiritoVM& vm, Handle ah, int64_t axis, bool isAll) {
         return vm.makeBool(r);
     }
     std::size_t ax = static_cast<std::size_t>(axis);
-    FT out = tensor::reduceAxis(a, ax, [isAll](double x, double y) { bool xb = x != 0, yb = y != 0; return static_cast<double>(isAll ? (xb && yb) : (xb || yb)); });
+    // Pass the identity (all→True, any→False) so a per-axis reduction over an EMPTY axis yields it,
+    // exactly as the whole-tensor path already does and as NumPy specifies — instead of throwing
+    // "zero-size reduction". sum(0.0)/prod(1.0) already seed reduceAxis this way; all/any have just
+    // as well-defined an identity, so the two paths agree.
+    FT out = tensor::reduceAxis(a, ax, [isAll](double x, double y) { bool xb = x != 0, yb = y != 0; return static_cast<double>(isAll ? (xb && yb) : (xb || yb)); }, isAll ? 1.0 : 0.0);
     for (auto& v : out.data) v = v != 0.0 ? 1.0 : 0.0;  // normalize the single-length seed case
     return make(vm, std::move(out));
 }
