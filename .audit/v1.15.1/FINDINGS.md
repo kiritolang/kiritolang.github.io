@@ -1,6 +1,13 @@
 # Audit v1.15.1 — triage roll-up + fix log
 
-Scan phase: 20 agents, 44 findings (see `scan/AXX_*.md`). This file tracks the fix phase.
+Scan phase: 20 agents (3 — A14/A17/A18 — were cut off by a session wipe and resumed to completion),
+44+ findings (see `scan/AXX_*.md`). This file tracks the fix phase.
+
+**Validation gate at HEAD 98cd047 (both batches): debug 820/820, release 820/820, asan 820/820,
+tsan 820/820 — all green.** (The manual asan/tsan run first needed the sanctioned environment —
+`ulimit -s 262144` for asan's deep-recursion tests, `setarch -R` for tsan's ASLR — without which
+every tsan test FATALs on "unexpected memory mapping"; that was an invocation artifact, not a code
+defect.)
 
 ## FIXED (this session) — batch 1: HIGH + memory/security correctness
 
