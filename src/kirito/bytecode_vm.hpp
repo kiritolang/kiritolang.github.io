@@ -41,8 +41,18 @@ public:
     bool equals(const ObjectArena&, const Object& o) const override { return this == &o; }
     void children(std::vector<Handle>& out) const override {
         out.insert(out.end(), items.begin(), items.end());
-        if (lazy) out.push_back(source);
+        if (lazy) {
+            out.push_back(source);
+            lazy->roots(out);   // (F2) a combinator iterator (map/filter/zip/enumerate) holds a function
+                                // and materialized source elements that are NOT children of `source`;
+                                // trace them so a GC mid-loop can't sweep them.
+        }
     }
+    // A lazy cursor buffers young source elements in a plain C++ vector (no write barrier). It also
+    // promotes to old mid-loop (a long/allocating body outlives a minor), after which a minor would only
+    // reach it via the remembered set — which it is never in. So it must be re-traced from its stack root
+    // every minor; see KiritoVM::minorCollect.
+    bool gcNeedsRootRescan() const override { return lazy != nullptr; }
 };
 
 // Executes one Proto frame against a scope. The operand stack is a single C++ vector whose first

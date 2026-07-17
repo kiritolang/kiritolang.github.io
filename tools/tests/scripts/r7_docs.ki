@@ -230,8 +230,8 @@ var count_vowels = Function(text : String) -> Integer:
             c = c + 1
     return c
 ok(count_vowels("Hello World") == 3, "count vowels")
-ok(String(map(Function(nm): return nm * nm, [1, 2, 3, 4, 5, 6])) == "[1, 4, 9, 16, 25, 36]", "map")
-ok(String(filter(Function(nm): return nm % 2 == 0, [1, 2, 3, 4, 5, 6])) == "[2, 4, 6]", "filter")
+ok(String(List(map(Function(nm): return nm * nm, [1, 2, 3, 4, 5, 6]))) == "[1, 4, 9, 16, 25, 36]", "map")
+ok(String(List(filter(Function(nm): return nm % 2 == 0, [1, 2, 3, 4, 5, 6]))) == "[2, 4, 6]", "filter")
 ok(String(sorted(["bb", "a", "ccc"], key = len)) == "['a', 'bb', 'ccc']", "sorted key=len")
 var make_adder = Function(amount):
     return Function(x): return x + amount

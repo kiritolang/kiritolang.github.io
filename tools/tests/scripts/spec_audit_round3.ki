@@ -23,7 +23,7 @@ class NoIter:
     var x = 1
 assert throws(Function(): return sum(NoIter())), "sum non-iterable throws"
 assert throws(Function(): return sorted(NoIter())), "sorted non-iterable throws"
-assert throws(Function(): return zip(NoIter())), "zip non-iterable throws"
+assert throws(Function(): return List(zip(NoIter()))), "zip non-iterable throws"
 
 # --- switch: float cases match by EXACT value (agrees with ==), -0.0==0.0, near values distinct ---
 var sw = Function(x):

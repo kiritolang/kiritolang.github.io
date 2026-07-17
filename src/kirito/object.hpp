@@ -27,6 +27,9 @@ enum class ValueKind {
     Array, List, Set, Dict,
     Function, NativeFunction, Module, Class, Instance,
     Environment,
+    // Lazy pull-based sequences (range/map/filter/zip/enumerate). Opaque and non-castable — they are
+    // iterated, indexed, etc. only through the Object protocol slots, never by a kind-guarded downcast.
+    Iterator,
 };
 
 // Threaded through str() so containers can detect reference cycles (a value already being
@@ -229,6 +232,14 @@ public:
     virtual std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle /*self*/) { return nullptr; }
     virtual std::optional<int64_t> length(KiritoVM&);
     virtual bool contains(KiritoVM&, Handle value);  // the `in` operator
+
+    // GC: does this object hold young handles in NON-barriered storage (a plain C++ buffer, not an arena
+    // container), such that a minor collection must re-trace its children even when the object is OLD and
+    // reachable only from an operand-stack root? The generational fast path assumes every old->young edge
+    // is barriered into the remembered set; a lazy IterCursor's buffered source elements are the one
+    // exception (they live in a std::vector inside the iterator, never touched by a write barrier). Only
+    // that type overrides this to true; every arena container barriers its writes and returns false.
+    virtual bool gcNeedsRootRescan() const { return false; }
 
 private:
     // 3 bytes of generational bookkeeping; the vtable pointer already dominates every value's size,

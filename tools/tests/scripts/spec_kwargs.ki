@@ -203,7 +203,7 @@ assert "banana".count(sub = "a", start = 2) == 2, "str.count(sub=, start=)"
 assert "-".join(iterable = ["x", "y"]) == "x-y", "str.join(iterable=)"
 
 # --- enumerate / sum gained a start= keyword ---
-assert enumerate(["a", "b"], start = 1) == [[1, "a"], [2, "b"]], "enumerate(start=)"
+assert List(enumerate(["a", "b"], start = 1)) == [[1, "a"], [2, "b"]], "enumerate(start=)"
 assert sum([1, 2, 3], start = 10) == 16, "sum(start=)"
 
 # --- native-object methods (matrix / regex / BytesIO) ---

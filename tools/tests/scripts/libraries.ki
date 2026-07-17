@@ -11,7 +11,7 @@ io.print(math.gcd(48, 36))
 io.print(round(math.pi, 4))
 io.print(sum(range(1, 11)))
 io.print(sorted([3, 1, 4, 1, 5, 9, 2, 6]))
-io.print(map(Function(x): return x * x, range(5)))
+io.print(List(map(Function(x): return x * x, range(5))))
 
 # seeded random is reproducible; pin the historical Mersenne-Twister stream so the
 # expected value stays stable across engine-default changes.

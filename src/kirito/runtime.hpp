@@ -3008,6 +3008,299 @@ inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs
     return std::move(items.value());
 }
 
+// =================================================================================================
+// Lazy sequence types — range/map/filter/zip/enumerate. Each is an opaque `Iterator`-kind Object that
+// streams via lazyIterate() (so `for x in map(f, huge)` never materializes) and drains via iterate()
+// for a consumer that needs the whole sequence. Python-lazy: type() reports "map"/"filter"/… and the
+// result is NOT a List (no indexing / no ==List) — EXCEPT `range`, which for backward compatibility
+// keeps list-style str(), O(1) index/len/contains, and element-wise == against a List.
+// =================================================================================================
+
+// Pull ONE element from any iterable, streaming through its LazyIterator when it has one (range /
+// generator / file / another combinator), else iterating its materialized buffer once. roots() exposes
+// everything live so a GC during an allocating pull can't sweep it.
+struct SourceCursor {
+    Handle src;
+    std::unique_ptr<LazyIterator> lazy;
+    std::vector<Handle> buf;
+    std::size_t idx = 0;
+    bool started = false;
+    explicit SourceCursor(Handle s) : src(s) {}
+    void ensure(KiritoVM& vm) {
+        if (started) return;
+        started = true;
+        lazy = vm.arena().deref(src).lazyIterate(vm, src);
+        if (!lazy) {
+            auto items = vm.arena().deref(src).iterate(vm);
+            if (!items) throw KiritoError("type '" + vm.arena().deref(src).typeName() + "' is not iterable");
+            buf = std::move(*items);
+        }
+    }
+    std::optional<Handle> next(KiritoVM& vm) {
+        ensure(vm);
+        if (lazy) return lazy->next(vm);
+        if (idx >= buf.size()) return std::nullopt;
+        return buf[idx++];
+    }
+    // Root the cursor's currently-live handles (source + un-consumed buffer) into a RootScope, so an
+    // allocating step in the owning combinator's next() can't sweep the not-yet-consumed source elements
+    // — this covers the FIRST next(), where the buffer is materialized mid-call and so is not yet in the
+    // drain loop's pre-next roots snapshot.
+    void rootInto(RootScope& rs, KiritoVM& vm) {
+        std::vector<Handle> hs; roots(hs);
+        for (Handle h : hs) if (h.generation != 0) rs.add(h);
+        (void)vm;
+    }
+    void roots(std::vector<Handle>& out) {
+        out.push_back(src);
+        if (lazy) lazy->roots(out);
+        for (std::size_t i = idx; i < buf.size(); ++i) out.push_back(buf[i]);
+    }
+};
+
+// ---- range ----
+struct RangeLazyIterator : LazyIterator {
+    int64_t cur, step; int64_t remaining;
+    RangeLazyIterator(int64_t start, int64_t st, uint64_t count)
+        : cur(start), step(st), remaining(static_cast<int64_t>(count)) {}
+    std::optional<Handle> next(KiritoVM& vm) override {
+        if (remaining <= 0) return std::nullopt;
+        Handle h = vm.makeInt(cur);
+        cur = static_cast<int64_t>(static_cast<uint64_t>(cur) + static_cast<uint64_t>(step));  // wrap-safe
+        --remaining;
+        return h;
+    }
+    // Produces fresh Integers, holds no persistent Handle → nothing to root.
+};
+class RangeVal : public Object {
+public:
+    int64_t start_, stop_, step_;
+    RangeVal(int64_t a, int64_t b, int64_t c) : start_(a), stop_(b), step_(c) {}
+    uint64_t count() const {
+        if (step_ > 0 && stop_ > start_) {
+            uint64_t us = static_cast<uint64_t>(step_), span = static_cast<uint64_t>(stop_) - static_cast<uint64_t>(start_);
+            return span / us + (span % us != 0 ? 1 : 0);
+        }
+        if (step_ < 0 && stop_ < start_) {
+            uint64_t ns = 0u - static_cast<uint64_t>(step_), span = static_cast<uint64_t>(start_) - static_cast<uint64_t>(stop_);
+            return span / ns + (span % ns != 0 ? 1 : 0);
+        }
+        return 0;
+    }
+    int64_t at(uint64_t k) const { return static_cast<int64_t>(static_cast<uint64_t>(start_) + static_cast<uint64_t>(step_) * k); }
+    ValueKind kind() const override { return ValueKind::Iterator; }
+    std::string typeName() const override { return "range"; }
+    bool truthy() const override { return count() > 0; }
+    void children(std::vector<Handle>&) const override {}
+    std::string str(StringifyCtx&) const override {
+        uint64_t n = count();
+        std::string s = "[";
+        for (uint64_t k = 0; k < n; ++k) { if (k) s += ", "; s += std::to_string(at(k)); }
+        s += "]";
+        return s;
+    }
+    // range used to BE a List, so it stays sequence-equal to a List (element-wise) and to another range
+    // (same value sequence). Arena-only (no vm): range elements are Integers, compared directly.
+    bool equals(const ObjectArena& arena, const Object& other) const override {
+        uint64_t n = count();
+        if (auto* r = dynamic_cast<const RangeVal*>(&other)) {
+            if (r->count() != n) return false;
+            if (n == 0) return true;
+            if (r->at(0) != at(0)) return false;
+            return n == 1 || r->step_ == step_;
+        }
+        if (other.kind() == ValueKind::List || other.kind() == ValueKind::Array) {
+            const auto& l = static_cast<const ListVal&>(other);
+            if (l.elems.size() != n) return false;
+            for (uint64_t k = 0; k < n; ++k) {
+                const Object& e = arena.deref(l.elems[k]);
+                if (e.kind() != ValueKind::Integer || static_cast<const IntVal&>(e).value() != at(k)) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+    std::optional<int64_t> length(KiritoVM&) override { return static_cast<int64_t>(count()); }
+    bool contains(KiritoVM& vm, Handle v) override {
+        const Object& o = vm.arena().deref(v);
+        if (o.kind() != ValueKind::Integer) return false;
+        int64_t x = static_cast<const IntVal&>(o).value();
+        if (step_ > 0) { if (x < start_ || x >= stop_) return false; }
+        else { if (x > start_ || x <= stop_) return false; }
+        return (x - start_) % step_ == 0;   // x,start_ both in-range → subtraction fits
+    }
+    Handle getItem(KiritoVM& vm, std::span<const Handle> keys) override {
+        Handle k = singleKey(*this, keys);
+        const Object& ko = vm.arena().deref(k);
+        if (ko.kind() != ValueKind::Integer) throw KiritoError("range indices must be Integers");
+        int64_t i = static_cast<const IntVal&>(ko).value();
+        int64_t n = static_cast<int64_t>(count());
+        if (i < 0) i += n;
+        if (i < 0 || i >= n) throw KiritoError("range index out of range");
+        return vm.makeInt(at(static_cast<uint64_t>(i)));
+    }
+    std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
+        uint64_t n = count();
+        if (n > kMaxRangeCount) throw KiritoError("range too large");  // materialization guard (defensive)
+        RootScope rs(vm);
+        std::vector<Handle> out;
+        out.reserve(static_cast<std::size_t>(n));
+        for (uint64_t k = 0; k < n; ++k) out.push_back(rs.add(vm.makeInt(at(k))));
+        return out;
+    }
+    Handle slice(KiritoVM& vm, Handle a, Handle b, Handle c) override {
+        auto items = iterate(vm);              // bounded by the range cap
+        RootScope rs(vm);
+        for (Handle h : *items) rs.add(h);      // re-root across alloc (iterate's own scope has ended)
+        auto lv = std::make_unique<ListVal>();
+        lv->elems = std::move(*items);
+        Handle lh = rs.add(vm.alloc(std::move(lv)));
+        return vm.arena().deref(lh).slice(vm, a, b, c);
+    }
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle) override {
+        return std::make_unique<RangeLazyIterator>(start_, step_, count());
+    }
+};
+
+// ---- map ----
+struct MapLazyIterator : LazyIterator {
+    Handle fn; SourceCursor src;
+    MapLazyIterator(Handle f, Handle s) : fn(f), src(s) {}
+    std::optional<Handle> next(KiritoVM& vm) override {
+        auto x = src.next(vm);                  // may materialize src.buf (fresh String chars etc.)
+        if (!x) return std::nullopt;
+        RootScope rs(vm); rs.add(*x); src.rootInto(rs, vm);  // keep *x AND the un-consumed source buffer
+        std::array<Handle, 1> args{*x};                      // alive across the allocating fn call
+        return vm.arena().deref(fn).call(vm, args);
+    }
+    void roots(std::vector<Handle>& out) override { out.push_back(fn); src.roots(out); }
+};
+class MapVal : public Object {
+public:
+    Handle fn_, src_;
+    MapVal(Handle f, Handle s) : fn_(f), src_(s) {}
+    ValueKind kind() const override { return ValueKind::Iterator; }
+    std::string typeName() const override { return "map"; }
+    bool truthy() const override { return true; }
+    std::string str(StringifyCtx&) const override { return "<map object>"; }
+    bool equals(const ObjectArena&, const Object& o) const override { return this == &o; }
+    void children(std::vector<Handle>& out) const override { out.push_back(fn_); out.push_back(src_); }
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle) override {
+        return std::make_unique<MapLazyIterator>(fn_, src_);
+    }
+    std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
+        RootScope rs(vm); auto it = lazyIterate(vm, Handle{}); return drainLazy(vm, *it, rs);
+    }
+};
+
+// ---- filter ----
+struct FilterLazyIterator : LazyIterator {
+    Handle fn; SourceCursor src;
+    FilterLazyIterator(Handle f, Handle s) : fn(f), src(s) {}
+    std::optional<Handle> next(KiritoVM& vm) override {
+        while (true) {
+            auto x = src.next(vm);
+            if (!x) return std::nullopt;
+            RootScope rs(vm); rs.add(*x); src.rootInto(rs, vm);
+            std::array<Handle, 1> args{*x};
+            if (vm.arena().deref(vm.arena().deref(fn).call(vm, args)).truthy()) return *x;
+        }
+    }
+    void roots(std::vector<Handle>& out) override { out.push_back(fn); src.roots(out); }
+};
+class FilterVal : public Object {
+public:
+    Handle fn_, src_;
+    FilterVal(Handle f, Handle s) : fn_(f), src_(s) {}
+    ValueKind kind() const override { return ValueKind::Iterator; }
+    std::string typeName() const override { return "filter"; }
+    bool truthy() const override { return true; }
+    std::string str(StringifyCtx&) const override { return "<filter object>"; }
+    bool equals(const ObjectArena&, const Object& o) const override { return this == &o; }
+    void children(std::vector<Handle>& out) const override { out.push_back(fn_); out.push_back(src_); }
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle) override {
+        return std::make_unique<FilterLazyIterator>(fn_, src_);
+    }
+    std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
+        RootScope rs(vm); auto it = lazyIterate(vm, Handle{}); return drainLazy(vm, *it, rs);
+    }
+};
+
+// ---- zip ----
+struct ZipLazyIterator : LazyIterator {
+    std::vector<SourceCursor> cursors;
+    std::optional<Handle> next(KiritoVM& vm) override {
+        if (cursors.empty()) return std::nullopt;
+        RootScope rs(vm);
+        auto tup = std::make_unique<ListVal>();
+        for (auto& c : cursors) {
+            auto e = c.next(vm);            // may materialize c.buf (fresh String chars etc.)
+            if (!e) return std::nullopt;    // shortest source exhausted -> zip ends
+            rs.add(*e);
+            // Root EVERY column's un-consumed buffer (incl. the one just materialized) across the
+            // remaining pulls and the final alloc — a later column's next() must not sweep them.
+            for (auto& cc : cursors) cc.rootInto(rs, vm);
+            tup->elems.push_back(*e);
+        }
+        return vm.alloc(std::move(tup));
+    }
+    void roots(std::vector<Handle>& out) override { for (auto& c : cursors) c.roots(out); }
+};
+class ZipVal : public Object {
+public:
+    std::vector<Handle> srcs_;
+    explicit ZipVal(std::vector<Handle> s) : srcs_(std::move(s)) {}
+    ValueKind kind() const override { return ValueKind::Iterator; }
+    std::string typeName() const override { return "zip"; }
+    bool truthy() const override { return true; }
+    std::string str(StringifyCtx&) const override { return "<zip object>"; }
+    bool equals(const ObjectArena&, const Object& o) const override { return this == &o; }
+    void children(std::vector<Handle>& out) const override { for (Handle h : srcs_) out.push_back(h); }
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle) override {
+        auto it = std::make_unique<ZipLazyIterator>();
+        for (Handle s : srcs_) it->cursors.emplace_back(s);
+        return it;
+    }
+    std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
+        RootScope rs(vm); auto it = lazyIterate(vm, Handle{}); return drainLazy(vm, *it, rs);
+    }
+};
+
+// ---- enumerate ----
+struct EnumerateLazyIterator : LazyIterator {
+    SourceCursor src; int64_t i;
+    EnumerateLazyIterator(Handle s, int64_t start) : src(s), i(start) {}
+    std::optional<Handle> next(KiritoVM& vm) override {
+        auto x = src.next(vm);
+        if (!x) return std::nullopt;
+        RootScope rs(vm); rs.add(*x); src.rootInto(rs, vm);
+        Handle idx = rs.add(vm.makeInt(i));
+        i = wadd(i, 1);
+        auto pair = std::make_unique<ListVal>();
+        pair->elems.push_back(idx);
+        pair->elems.push_back(*x);
+        return vm.alloc(std::move(pair));
+    }
+    void roots(std::vector<Handle>& out) override { src.roots(out); }
+};
+class EnumerateVal : public Object {
+public:
+    Handle src_; int64_t start_;
+    EnumerateVal(Handle s, int64_t start) : src_(s), start_(start) {}
+    ValueKind kind() const override { return ValueKind::Iterator; }
+    std::string typeName() const override { return "enumerate"; }
+    bool truthy() const override { return true; }
+    std::string str(StringifyCtx&) const override { return "<enumerate object>"; }
+    bool equals(const ObjectArena&, const Object& o) const override { return this == &o; }
+    void children(std::vector<Handle>& out) const override { out.push_back(src_); }
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle) override {
+        return std::make_unique<EnumerateLazyIterator>(src_, start_);
+    }
+    std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
+        RootScope rs(vm); auto it = lazyIterate(vm, Handle{}); return drainLazy(vm, *it, rs);
+    }
+};
+
 inline void KiritoVM::installBuiltins() {
     auto& g = static_cast<EnvValue&>(arena_.deref(global_));
     auto def = [&](const char* name, NativeFn fn) {
@@ -3322,20 +3615,10 @@ inline void KiritoVM::installBuiltins() {
             uint64_t span = static_cast<uint64_t>(start) - static_cast<uint64_t>(stop);
             count = span / negstep + (span % negstep != 0 ? 1 : 0);
         }
-        if (count > kMaxRangeCount) throw KiritoError("range too large");  // element-count cap, not the byte cap
-        RootScope rs(vm);
-        auto list = std::make_unique<ListVal>();
-        list->elems.reserve(static_cast<std::size_t>(count));
-        // Count-driven (not `i += step` until it passes `stop`): a near-INT64_MAX step would
-        // signed-overflow that increment (UB) and not terminate. Every produced value is a valid
-        // range element in [start, stop), so the per-element `v += step` can't overflow; we just skip
-        // the final increment (which would step one past the last element and could overflow).
-        int64_t v = start;
-        for (uint64_t k = 0; k < count; ++k) {
-            list->elems.push_back(rs.add(vm.makeInt(v)));
-            if (k + 1 < count) v += step;
-        }
-        return vm.alloc(std::move(list));
+        if (count > kMaxRangeCount) throw KiritoError("range too large");  // element-count cap kept even
+        // though range is now LAZY: it preserves the "range too large" contract AND bounds the cost of
+        // any materializing op (str/eager iterate/slice). Iteration itself is O(1) memory (RangeVal).
+        return vm.alloc(std::make_unique<RangeVal>(start, stop, step));
     }))));
     defSig("sum", {{"iterable"}, {"start", "", makeInt(0)}}, "Number", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         auto items = vm.arena().deref(a[0]).iterate(vm);
@@ -3424,9 +3707,9 @@ inline void KiritoVM::installBuiltins() {
         for (auto& p : tagged) list->elems.push_back(p.second);
         return vm.alloc(std::move(list));
     });
-    defSig("enumerate", {{"iterable"}, {"start", "", makeInt(0)}}, "List", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        RootScope rs(vm);
-        auto out = std::make_unique<ListVal>();
+    defSig("enumerate", {{"iterable"}, {"start", "", makeInt(0)}}, "Iterator", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        // Lazy: yields [index, value] pairs on demand (Python-style). The iterable is validated lazily
+        // on first pull, not here — a non-iterable throws when iterated, as with map/filter/zip.
         int64_t i = 0;
         if (a.size() > 1) {
             const Object& so = vm.arena().deref(a[1]);
@@ -3434,57 +3717,20 @@ inline void KiritoVM::installBuiltins() {
                 throw KiritoError("enumerate() start must be an Integer, got " + so.typeName());
             i = static_cast<const IntVal&>(so).value();
         }
-        auto items = rootedIterate(vm, a[0], rs, "enumerate() argument is not iterable");
-        for (Handle h : items) {
-            auto pair = std::make_unique<ListVal>();
-            // An index past the small-int intern range is a fresh allocation held ONLY by this
-            // not-yet-arena-reachable pair, so vm.alloc(pair) below would collect it. (v1.15 A19-1.)
-            pair->elems.push_back(rs.add(vm.makeInt(i)));
-            i = wadd(i, 1);  // two's-complement wrap, no signed-overflow UB at INT64_MAX start
-            pair->elems.push_back(h);
-            out->elems.push_back(rs.add(vm.alloc(std::move(pair))));
-        }
-        return vm.alloc(std::move(out));
+        return vm.alloc(std::make_unique<EnumerateVal>(a[0], i));
     });
     def("zip", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        RootScope rs(vm);
-        std::vector<std::vector<Handle>> cols;
-        std::size_t minLen = SIZE_MAX;
-        for (Handle h : a) {
-            auto col = rootedIterate(vm, h, rs, "zip() argument is not iterable");
-            minLen = std::min(minLen, col.size());
-            cols.push_back(std::move(col));
-        }
-        if (cols.empty()) minLen = 0;
-        auto out = std::make_unique<ListVal>();
-        for (std::size_t i = 0; i < minLen; ++i) {
-            auto tup = std::make_unique<ListVal>();
-            for (auto& c : cols) tup->elems.push_back(c[i]);
-            out->elems.push_back(rs.add(vm.alloc(std::move(tup))));
-        }
-        return vm.alloc(std::move(out));
+        // Lazy: pulls one element from each source per step, ending at the shortest.
+        std::vector<Handle> srcs(a.begin(), a.end());
+        return vm.alloc(std::make_unique<ZipVal>(std::move(srcs)));
     });
-    defSig("map", {{"function"}, {"iterable"}}, "List", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        RootScope rs(vm);
-        Handle f = a[0];
-        auto out = std::make_unique<ListVal>();
-        auto items = rootedIterate(vm, a[1], rs, "map() argument is not iterable");
-        for (Handle x : items) {
-            std::array<Handle, 1> args{x};
-            out->elems.push_back(rs.add(vm.arena().deref(f).call(vm, args)));
-        }
-        return vm.alloc(std::move(out));
+    defSig("map", {{"function"}, {"iterable"}}, "Iterator", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        // Lazy: applies `function` to each element on demand (Python-style).
+        return vm.alloc(std::make_unique<MapVal>(a[0], a[1]));
     });
-    defSig("filter", {{"function"}, {"iterable"}}, "List", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        RootScope rs(vm);
-        Handle f = a[0];
-        auto out = std::make_unique<ListVal>();
-        auto items = rootedIterate(vm, a[1], rs, "filter() argument is not iterable");
-        for (Handle x : items) {
-            std::array<Handle, 1> args{x};
-            if (vm.arena().deref(vm.arena().deref(f).call(vm, args)).truthy()) out->elems.push_back(x);
-        }
-        return vm.alloc(std::move(out));
+    defSig("filter", {{"function"}, {"iterable"}}, "Iterator", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        // Lazy: yields each element whose `function` result is truthy (Python-style).
+        return vm.alloc(std::make_unique<FilterVal>(a[0], a[1]));
     });
     defSig("type", {{"x"}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         return vm.makeString(vm.arena().deref(a[0]).typeName());

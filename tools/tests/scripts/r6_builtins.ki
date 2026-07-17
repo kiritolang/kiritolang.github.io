@@ -161,32 +161,32 @@ ok(throws(Function(): return range(0, 1000000000000)), "range too large throws (
 ok(throws(Function(): return range(2, 5, start = 1)), "range positional/keyword clash throws")
 
 # ============================================================ enumerate ===
-ok(enumerate(["a", "b"]) == [[0, "a"], [1, "b"]], "enumerate default start 0")
-ok(enumerate(["a", "b"], 1) == [[1, "a"], [2, "b"]], "enumerate start positional")
-ok(enumerate(["a", "b"], start = 5) == [[5, "a"], [6, "b"]], "enumerate start keyword")
-ok(enumerate(["a"], -2) == [[-2, "a"]], "enumerate negative start")
-ok(enumerate([]) == [], "enumerate empty")
-ok(throws(Function(): return enumerate(5)), "enumerate non-iterable throws")
+ok(List(enumerate(["a", "b"])) == [[0, "a"], [1, "b"]], "enumerate default start 0")
+ok(List(enumerate(["a", "b"], 1)) == [[1, "a"], [2, "b"]], "enumerate start positional")
+ok(List(enumerate(["a", "b"], start = 5)) == [[5, "a"], [6, "b"]], "enumerate start keyword")
+ok(List(enumerate(["a"], -2)) == [[-2, "a"]], "enumerate negative start")
+ok(List(enumerate([])) == [], "enumerate empty")
+ok(throws(Function(): return List(enumerate(5))), "enumerate non-iterable throws")
 ok(throws(Function(): return enumerate([1], 1.5)), "enumerate float start throws")
 
 # ================================================================= zip ===
-ok(zip([1, 2, 3], ["a", "b"]) == [[1, "a"], [2, "b"]], "zip truncates to shortest")
-ok(zip([1, 2], [3, 4], [5, 6]) == [[1, 3, 5], [2, 4, 6]], "zip three-way")
-ok(zip() == [], "zip of nothing")
-ok(zip([], [1, 2]) == [], "zip with empty input")
-ok(throws(Function(): return zip(5)), "zip non-iterable throws")
+ok(List(zip([1, 2, 3], ["a", "b"])) == [[1, "a"], [2, "b"]], "zip truncates to shortest")
+ok(List(zip([1, 2], [3, 4], [5, 6])) == [[1, 3, 5], [2, 4, 6]], "zip three-way")
+ok(List(zip()) == [], "zip of nothing")
+ok(List(zip([], [1, 2])) == [], "zip with empty input")
+ok(throws(Function(): return List(zip(5))), "zip non-iterable throws")
 
 # ============================================================ map / filter ===
 var dbl = Function(x): return x * 2
 var isEven = Function(x): return x % 2 == 0
-ok(map(dbl, [1, 2, 3]) == [2, 4, 6], "map applies fn")
-ok(map(dbl, range(3)) == [0, 2, 4], "map over range (eager List)")
-ok(map(dbl, []) == [], "map empty")
-ok(filter(isEven, range(6)) == [0, 2, 4], "filter keeps truthy")
-ok(filter(isEven, []) == [], "filter empty")
-ok(map(function = dbl, iterable = [1, 2]) == [2, 4], "map keyword args")
-ok(filter(function = isEven, iterable = [1, 2, 3, 4]) == [2, 4], "filter keyword args")
-ok(throws(Function(): return map(dbl, 5)), "map non-iterable throws")
+ok(List(map(dbl, [1, 2, 3])) == [2, 4, 6], "map applies fn")
+ok(List(map(dbl, range(3))) == [0, 2, 4], "map over range")
+ok(List(map(dbl, [])) == [], "map empty")
+ok(List(filter(isEven, range(6))) == [0, 2, 4], "filter keeps truthy")
+ok(List(filter(isEven, [])) == [], "filter empty")
+ok(List(map(function = dbl, iterable = [1, 2])) == [2, 4], "map keyword args")
+ok(List(filter(function = isEven, iterable = [1, 2, 3, 4])) == [2, 4], "filter keyword args")
+ok(throws(Function(): return List(map(dbl, 5))), "map non-iterable throws")
 
 # ============================================================= reversed ===
 ok(reversed([1, 2, 3]) == [3, 2, 1], "reversed of list")

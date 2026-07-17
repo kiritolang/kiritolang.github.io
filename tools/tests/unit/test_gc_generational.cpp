@@ -396,5 +396,38 @@ String(keep[0]) + String(keep[1][1]) + String(keep[2]["k"])
             "String(len(d)) + \"|\" + d[\"live\"]")) == "2|y");
     }
 
+    // ===== LAZY ITERATORS under gc-every-alloc: a lazy map/filter/zip/enumerate/range buffers young
+    // source elements in NON-barriered C++ storage and its IterCursor promotes to old MID-LOOP, so a
+    // minor could sweep the un-consumed buffer / the source container (gcNeedsRootRescan + each
+    // combinator's per-next rootInto guard against this). Fresh-element sources (Strings) and
+    // non-interned values so the swept object is a real young heap object, not an interned scalar. =====
+    {
+        KiritoVM vm;
+        vm.installStandardLibrary();
+        vm.setGcThreshold(1);
+        // map/filter over a String (fresh chars in the buffer), drained eagerly (drainLazy path)
+        CHECK(vm.stringify(vm.runSource(
+            "String(List(map(Function(c): return c + \"!\", \"abcdefgh\")))"))
+            == "['a!', 'b!', 'c!', 'd!', 'e!', 'f!', 'g!', 'h!']");
+        // enumerate over a String, for-unpacked with an allocating body (IterCursor path)
+        CHECK(vm.stringify(vm.runSource(
+            "var out = []\nfor i, ch in enumerate(\"wxyz\"):\n    out.append(ch + String(i + 5000))\n"
+            "String(out)")) == "['w5000', 'x5001', 'y5002', 'z5003']");
+        // zip two Strings, unpacked, allocating body
+        CHECK(vm.stringify(vm.runSource(
+            "var out = []\nfor a, b in zip(\"abcd\", \"wxyz\"):\n    out.append(a + b)\nString(out)"))
+            == "['aw', 'bx', 'cy', 'dz']");
+        // enumerate over a NON-interned Integer list (source held only by the promoting IterCursor)
+        CHECK(vm.stringify(vm.runSource(
+            "var out = []\nfor i, v in enumerate([1000, 2000, 3000, 4000]):\n    out.append(v + i)\nString(out)"))
+            == "[1000, 2001, 3002, 4003]");
+        // chained lazy: map over filter over range, non-interned results, eager drain
+        CHECK(vm.stringify(vm.runSource(
+            "String(List(map(Function(n): return n + 1000, filter(Function(n): return n % 2 == 0, range(8)))))"))
+            == "[1000, 1002, 1004, 1006]");
+        // lazy range iteration is O(1) memory and survives churn (sum never materializes)
+        CHECK(vm.stringify(vm.runSource("sum(range(1000))")) == "499500");
+    }
+
     return RUN_TESTS();
 }

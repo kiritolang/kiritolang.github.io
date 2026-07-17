@@ -151,9 +151,9 @@ check(List(enumerate(["a", "b"], 5)) == [[5, "a"], [6, "b"]], "enumerate positio
 check(List(enumerate(["a", "b"], start = 10)) == [[10, "a"], [11, "b"]], "enumerate keyword start")
 check(List(enumerate(["x", "y"], -2)) == [[-2, "x"], [-1, "y"]], "enumerate negative start")
 check(List(enumerate("ab")) == [[0, "a"], [1, "b"]], "enumerate over a String")
-check(type(enumerate([1])) == "List", "enumerate returns a List (eager)")
-check(enumerate(["a", "b"])[1] == [1, "b"], "enumerate result is indexable")
-check(throws(Function(): return enumerate(5)), "enumerate non-iterable throws")
+check(type(enumerate([1])) == "enumerate", "enumerate returns a lazy iterator")
+check(List(enumerate(["a", "b"]))[1] == [1, "b"], "enumerate result (materialized) is indexable")
+check(throws(Function(): return List(enumerate(5))), "enumerate non-iterable throws on iteration")
 check(throws(Function(): return enumerate([1, 2], 1.5)), "enumerate Float start throws")
 
 # =====================================================================
@@ -162,14 +162,14 @@ check(throws(Function(): return enumerate([1, 2], 1.5)), "enumerate Float start 
 check(List(zip([1, 2], ["a", "b"])) == [[1, "a"], [2, "b"]], "zip two-way")
 check(List(zip([1, 2], ["a", "b"], [True, False])) == [[1, "a", True], [2, "b", False]], "zip three-way")
 check(List(zip([1, 2, 3], [1])) == [[1, 1]], "zip truncates to shortest")
-check(zip() == [], "zip no args is empty")
+check(List(zip()) == [], "zip no args is empty")
 check(List(zip([1, 2, 3])) == [[1], [2], [3]], "zip single iterable")
 check(List(zip([], [1, 2])) == [], "zip with an empty input is empty")
 check(List(zip("ab", [1, 2])) == [["a", 1], ["b", 2]], "zip over a String")
-check(type(zip([1], [2])) == "List", "zip returns a List (eager)")
-check(zip([1, 2], [3, 4])[1] == [2, 4], "zip result is indexable")
-check(throws(Function(): return zip(5)), "zip non-iterable throws")
-check(throws(Function(): return zip([1, 2], 5)), "zip a non-iterable among iterables throws")
+check(type(zip([1], [2])) == "zip", "zip returns a lazy iterator")
+check(List(zip([1, 2], [3, 4]))[1] == [2, 4], "zip result (materialized) is indexable")
+check(throws(Function(): return List(zip(5))), "zip non-iterable throws on iteration")
+check(throws(Function(): return List(zip([1, 2], 5))), "zip a non-iterable among iterables throws on iteration")
 
 # =====================================================================
 # map  (function, iterable)  -> List of results
@@ -178,9 +178,9 @@ check(List(map(inc, [1, 2, 3])) == [2, 3, 4], "map increments")
 check(List(map(inc, [])) == [], "map empty")
 check(List(map(upperf, "abc")) == ["A", "B", "C"], "map over a String")
 check(List(map(function = neg, iterable = [1, 2])) == [-1, -2], "map keyword form")
-check(type(map(neg, [1])) == "List", "map returns a List (eager)")
-check(throws(Function(): return map(5, [1, 2])), "map non-callable throws")
-check(throws(Function(): return map(inc, 5)), "map non-iterable throws")
+check(type(map(neg, [1])) == "map", "map returns a lazy iterator")
+check(throws(Function(): return List(map(5, [1, 2]))), "map non-callable throws on iteration")
+check(throws(Function(): return List(map(inc, 5))), "map non-iterable throws on iteration")
 check(throws(Function(): return map(inc, [1], [2])), "map a third arg throws")
 
 # =====================================================================
@@ -190,9 +190,9 @@ check(List(filter(gt2, [1, 2, 3, 4])) == [3, 4], "filter keeps truthy(fn)")
 check(List(filter(gt2, [])) == [], "filter empty")
 check(List(filter(neg, [0, 1, 2])) == [1, 2], "filter drops falsy results (0 of neg(0)==0)")
 check(List(filter(function = gt2, iterable = [1, 2, 3])) == [3], "filter keyword form")
-check(type(filter(gt2, [1])) == "List", "filter returns a List (eager)")
-check(throws(Function(): return filter(5, [1, 2])), "filter non-callable throws")
-check(throws(Function(): return filter(gt2, 5)), "filter non-iterable throws")
+check(type(filter(gt2, [1])) == "filter", "filter returns a lazy iterator")
+check(throws(Function(): return List(filter(5, [1, 2]))), "filter non-callable throws on iteration")
+check(throws(Function(): return List(filter(gt2, 5))), "filter non-iterable throws on iteration")
 
 # =====================================================================
 # reversed  (iterable)  -> List in reverse
@@ -282,9 +282,9 @@ check(throws(Function(): return import()), "import no-arg throws")
 # Native builtins with a signature print name(params) -> Ret.
 check(inspect(len) == "len(x) -> Integer", "inspect len signature")
 check(inspect(type) == "type(x) -> String", "inspect type signature")
-check(inspect(map) == "map(function, iterable) -> List", "inspect map signature")
+check(inspect(map) == "map(function, iterable) -> Iterator", "inspect map signature")
 check(inspect(sum) == "sum(iterable, start = 0) -> Number", "inspect sum signature + default")
-check(inspect(enumerate) == "enumerate(iterable, start = 0) -> List", "inspect enumerate signature")
+check(inspect(enumerate) == "enumerate(iterable, start = 0) -> Iterator", "inspect enumerate signature")
 check(inspect(isinstance) == "isinstance(value, type) -> Bool", "inspect isinstance signature")
 check("reverse: Bool = False" in inspect(sorted), "inspect sorted shows the reverse default + annotation")
 # Variadic builtins advertise themselves as name(...).

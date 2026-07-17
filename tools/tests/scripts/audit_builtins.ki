@@ -326,33 +326,33 @@ assert threw, "range positional+keyword clash throws"
 # ==========================================================================
 # enumerate
 # ==========================================================================
-assert enumerate(["a", "b"]) == [[0, "a"], [1, "b"]], "enumerate default"
-assert enumerate(["a", "b"], 5) == [[5, "a"], [6, "b"]], "enumerate positional start"
-assert enumerate(["a", "b"], start = 10) == [[10, "a"], [11, "b"]], "enumerate keyword start"
-assert enumerate([]) == [], "enumerate empty"
-assert enumerate("ab") == [[0, "a"], [1, "b"]], "enumerate String"
+assert List(enumerate(["a", "b"])) == [[0, "a"], [1, "b"]], "enumerate default"
+assert List(enumerate(["a", "b"], 5)) == [[5, "a"], [6, "b"]], "enumerate positional start"
+assert List(enumerate(["a", "b"], start = 10)) == [[10, "a"], [11, "b"]], "enumerate keyword start"
+assert List(enumerate([])) == [], "enumerate empty"
+assert List(enumerate("ab")) == [[0, "a"], [1, "b"]], "enumerate String"
 
 # ==========================================================================
 # zip — variadic, shortest-wins
 # ==========================================================================
-assert zip() == [], "zip() empty"
-assert zip([1, 2, 3]) == [[1], [2], [3]], "zip single"
-assert zip([1, 2], [3, 4]) == [[1, 3], [2, 4]], "zip two equal"
-assert zip([1, 2, 3], [10, 20]) == [[1, 10], [2, 20]], "zip truncates to shortest"
-assert zip([1], [2], [3]) == [[1, 2, 3]], "zip three"
-assert zip([], [1, 2]) == [], "zip with empty"
+assert List(zip()) == [], "zip() empty"
+assert List(zip([1, 2, 3])) == [[1], [2], [3]], "zip single"
+assert List(zip([1, 2], [3, 4])) == [[1, 3], [2, 4]], "zip two equal"
+assert List(zip([1, 2, 3], [10, 20])) == [[1, 10], [2, 20]], "zip truncates to shortest"
+assert List(zip([1], [2], [3])) == [[1, 2, 3]], "zip three"
+assert List(zip([], [1, 2])) == [], "zip with empty"
 
 # ==========================================================================
 # map / filter
 # ==========================================================================
 var square = Function(x): return x * x
-assert map(square, [1, 2, 3]) == [1, 4, 9], "map"
-assert map(square, []) == [], "map empty"
-assert map(function = square, iterable = [2, 3]) == [4, 9], "map kw"
+assert List(map(square, [1, 2, 3])) == [1, 4, 9], "map"
+assert List(map(square, [])) == [], "map empty"
+assert List(map(function = square, iterable = [2, 3])) == [4, 9], "map kw"
 var even = Function(x): return x % 2 == 0
-assert filter(even, [1, 2, 3, 4]) == [2, 4], "filter"
-assert filter(even, []) == [], "filter empty"
-assert filter(function = even, iterable = [1, 2, 3]) == [2], "filter kw"
+assert List(filter(even, [1, 2, 3, 4])) == [2, 4], "filter"
+assert List(filter(even, [])) == [], "filter empty"
+assert List(filter(function = even, iterable = [1, 2, 3])) == [2], "filter kw"
 
 # ==========================================================================
 # reversed

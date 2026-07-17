@@ -33,13 +33,15 @@ int main() {
     // sorted / enumerate / zip
     CHECK(evalStr(vm, "sorted([3, 1, 2])") == "[1, 2, 3]");
     CHECK(evalStr(vm, "sorted([\"c\", \"a\", \"b\"])") == "['a', 'b', 'c']");
-    CHECK(evalStr(vm, "enumerate([\"a\", \"b\"])") == "[[0, 'a'], [1, 'b']]");
-    CHECK(evalStr(vm, "zip([1, 2, 3], [4, 5])") == "[[1, 4], [2, 5]]");
+    // map/filter/zip/enumerate are LAZY iterator objects now — materialize with List(...) to inspect.
+    CHECK(evalStr(vm, "List(enumerate([\"a\", \"b\"]))") == "[[0, 'a'], [1, 'b']]");
+    CHECK(evalStr(vm, "List(zip([1, 2, 3], [4, 5]))") == "[[1, 4], [2, 5]]");
+    CHECK(evalStr(vm, "type(enumerate([1]))") == "enumerate");
 
     // inline anonymous functions (single-line body, explicit return)
     CHECK(evalStr(vm, "var sq = Function(x): return x * x\nsq(9)") == "81");
-    CHECK(evalStr(vm, "map(Function(x): return x * x, [1, 2, 3])") == "[1, 4, 9]");
-    CHECK(evalStr(vm, "filter(Function(x): return x % 2 == 0, range(6))") == "[0, 2, 4]");
+    CHECK(evalStr(vm, "List(map(Function(x): return x * x, [1, 2, 3]))") == "[1, 4, 9]");
+    CHECK(evalStr(vm, "List(filter(Function(x): return x % 2 == 0, range(6)))") == "[0, 2, 4]");
 
     // type
     CHECK(evalStr(vm, "type(42)") == "Integer");

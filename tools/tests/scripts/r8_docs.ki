@@ -87,8 +87,8 @@ ok(String(visited) == "[1, 2, 3]", "for walks a snapshot, appended item not visi
 ok((True or False if False else "x") == "x", "(a or b) if c else d grouping")
 
 # ---- Builtins: enumerate(start) / zip / all / any ----
-ok(String(enumerate(["a", "b"], start = 1)) == "[[1, 'a'], [2, 'b']]", "enumerate start=1")
-ok(String(zip([1, 2, 3], ["a", "b"])) == "[[1, 'a'], [2, 'b']]", "zip truncates to shortest")
+ok(String(List(enumerate(["a", "b"], start = 1))) == "[[1, 'a'], [2, 'b']]", "enumerate start=1")
+ok(String(List(zip([1, 2, 3], ["a", "b"]))) == "[[1, 'a'], [2, 'b']]", "zip truncates to shortest")
 ok(all([1, 2, 3]) == True and all([1, 0, 3]) == False, "all")
 ok(any([0, 0, 1]) == True and any([0, 0, 0]) == False, "any")
 ok(all([]) == True and any([]) == False, "all/any vacuous")

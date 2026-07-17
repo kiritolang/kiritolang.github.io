@@ -226,6 +226,22 @@ public:
             c->childrenInDirtyCards(childbuf);
             for (Handle ch : childbuf) enqueue(ch);
         }
+        // An OLD operand-stack object that holds young handles in NON-barriered storage (a lazy
+        // IterCursor's buffered source elements) is not in the remembered set and is skipped by the
+        // young-only root scan above — a minor would sweep its buffer. Such an object promotes to old
+        // MID-LOOP (its allocating body outlives a minor), so re-trace its children here every minor.
+        // Bounded to the few objects that flag gcNeedsRootRescan() (only IterCursor), so this is not the
+        // full-old-root rescan the generational design avoids.
+        for (const std::vector<Handle>* region : auxRoots_)
+            for (Handle h : *region) {
+                if (h.generation == 0) continue;
+                Object& o = arena_.deref(h);
+                if (!o.gcYoung() && o.gcNeedsRootRescan()) {
+                    childbuf.clear();
+                    o.children(childbuf);
+                    for (Handle ch : childbuf) enqueue(ch);
+                }
+            }
         while (!work.empty()) {
             Handle h = work.back();
             work.pop_back();
