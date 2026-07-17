@@ -248,9 +248,13 @@ a stability fuzzer, and a benchmark). Working today:
   its O(live) cost. The floor (131072) must stay a comfortable multiple of the nursery or the major
   trigger fires first and minors never run. Both constants are measured, not guessed (`tools/tests/bench`,
   per-rep intra-run CV: v1.15 A18/S3 — vs 1.15.0, no workload regressed, sort/string_ops ~25% faster,
-  CV 0.265→0.055 on sum_loop, arena 1.6–6.5× smaller). Known limit: a minor rescans each remembered old
-  container IN FULL, so a growing List re-remembers itself on every append — card marking is the fix and
-  is what would let the nursery shrink further. GC stats are exposed via
+  CV 0.265→0.055 on sum_loop, arena 1.6–6.5× smaller). **Card marking** now removes the old quadratic
+  where a minor rescanned each remembered old container IN FULL (a growing List/Dict/Set re-remembering
+  itself on every append): a `CardTable` (object.hpp) over a container's ordered child array marks the
+  written entry's card, and a minor rescans only DIRTY cards (`childrenInDirtyCards`) — so building a
+  large List/Dict/Set is O(N), not O(N²/nursery). Applied to the runtime-growable containers (List, and
+  the dense-backed Dict/Set); Env/Instance/Module/Class stay full-rescan (they grow only from source,
+  never a runtime loop). GC stats are exposed via
   `KiritoVM::gcMinorCount()`/`gcMajorCount()` and the CLI's `--gc-stats`; `--gc-threshold N` (or
   `KIRITO_GC_THRESHOLD`) pins BOTH cadences to an aggressive fixed value (the write-barrier soak — but
   note it only proves what the test's VALUES exercise: small integers are interned and permanently

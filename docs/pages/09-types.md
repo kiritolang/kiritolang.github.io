@@ -19,8 +19,8 @@ names can share one collection and see each other's mutations.
 | `String` | `"hi"`, `f"{x}"` | no | yes | Unicode, indexed by code point |
 | `Bytes` | `Bytes([72, 105])` | no | yes | immutable raw bytes (0–255), the binary counterpart to `String` |
 | `List` | `[1, 2, 3]` | yes | no | ordered sequence |
-| `Set` | `{1, 2, 3}` | yes | no | unordered unique elements |
-| `Dict` | `{"a": 1}` | yes | no | unordered key→value map (hashable keys) |
+| `Set` | `{1, 2, 3}` | yes | no | insertion-ordered unique elements |
+| `Dict` | `{"a": 1}` | yes | no | insertion-ordered key→value map (hashable keys) |
 
 Each type's constructor (e.g. `Integer(x)`, `List(iter)`) is a built-in function — see
 [Built-in Functions](builtins.html#types-and-conversion).
@@ -233,7 +233,8 @@ io.print(xs[0], xs[-1], xs[1:3])   # 1 4 [2, 3]
 
 ## Set
 
-An unordered collection of unique, hashable values. Supports `in`, `len`, iteration, and the usual
+An **insertion-ordered** collection of unique, hashable values (iteration visits elements in insertion
+order, stable across deletes). Supports `in`, `len`, iteration, and the usual
 set algebra. Since Kirito has no `|`/`&`/`^` operators, the operator forms are `a - b` (difference)
 and `a < b`/`a <= b`/`a > b`/`a >= b` (proper-/subset, proper-/superset); union, intersection, and
 symmetric difference are the methods below (`==`/`!=` compare by membership).
@@ -241,8 +242,8 @@ symmetric difference are the methods below (`==`/`!=` compare by membership).
 ```kirito
 var a = {1, 2, 3}
 var b = {3, 4}
-io.print(a.union(b), a.intersection(b))   # a 4-element set and {3} (a Set is unordered, so the
-                                          # printed element order is unspecified)
+io.print(a.union(b), a.intersection(b))   # a 4-element set and {3} (a Set is insertion-ordered:
+                                          # union keeps a's elements first, then b's new ones)
 ```
 
 ### Set methods
@@ -272,9 +273,11 @@ keys), or a String (its characters) — e.g. `{1, 2}.union([2, 3])`. The set-alg
 
 ## Dict
 
-An **unordered** map from hashable keys to values (iteration order is unspecified — do not rely on
-it). Supports `d[key]` get/set, `in` (over keys), `len`, and iteration (over keys). Multi-key
-indexing assignment (`m[i, j] = v`) is available to types that define it.
+An **insertion-ordered** map from hashable keys to values — iteration (`keys()`/`values()`/`items()`,
+`for k in d`, and `str`) visits keys in the order they were first inserted, and that order is stable
+across deletes (updating an existing key keeps its position). Supports `d[key]` get/set, `in` (over
+keys), `len`, and iteration. Multi-key indexing assignment (`m[i, j] = v`) is available to types that
+define it.
 
 ```kirito
 var d = {"a": 1, "b": 2}
@@ -294,7 +297,7 @@ io.print(d.get("z", 0))    # 0 (default)
 | `d.get(key[, default])` | Value for `key`, or `default` (or `None`) if missing. |
 | `d.pop(key[, default])` | Remove and return `key`'s value. |
 | `d.remove(key)` | Delete `key` (throws if absent; like `pop` but returns nothing). |
-| `d.popitem()` | Remove and return an arbitrary `[key, value]` pair (a Dict is unordered — no "last" pair to rely on). |
+| `d.popitem()` | Remove and return the **last-inserted** `[key, value]` pair (LIFO, like Python's dict). |
 | `d.setdefault(key[, default])` | Get `key`, inserting `default` first if absent. |
 | `d.update(other)` | Merge another Dict (or `[key, value]` pairs) in. |
 | `d.apply(fn)` | A new Dict with the same keys and `fn` applied to each value (like `tensor.apply`). |

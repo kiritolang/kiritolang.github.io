@@ -104,8 +104,8 @@ Binary search / ordered insertion into a sorted List.
 - `c[x] → Integer` — index syntax for the count of `x`.
 - `c.items() → List` — `[value, count]` pairs.
 - `c.mostcommon([n: Integer]) → List` — `[value, count]` pairs, highest count first. The sort is
-  stable, but the underlying Dict is unordered, so the relative order of *tied* counts is
-  unspecified (don't rely on it). With `n`, only the top `n`; `n = 0` gives `[]`, and a **negative**
+  stable and the underlying Dict is insertion-ordered, so *tied* counts appear in first-insertion
+  order. With `n`, only the top `n`; `n = 0` gives `[]`, and a **negative**
   `n` returns all but the `|n|` least-common pairs (an end-slice — don't pass a negative `n` expecting
   an empty list).
 

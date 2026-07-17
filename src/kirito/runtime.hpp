@@ -831,9 +831,9 @@ inline Handle DictVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
     if (name == "copy")
         return bind("copy", {}, [self, dict](KiritoVM& vm, std::span<const Handle>) -> Handle {
             auto c = std::make_unique<DictVal>();
-            c->buckets = dict(vm, self).buckets;
-            c->count = dict(vm, self).count;
-            return vm.alloc(std::move(c));
+            auto& d = dict(vm, self);
+            c->entries = d.entries; c->index = d.index; c->count = d.count; c->tombstones = d.tombstones;
+            return vm.alloc(std::move(c));   // fresh (young) copy -> no cards to carry
         });
     if (name == "clear")
         return bind("clear", {}, [self, dict](KiritoVM& vm, std::span<const Handle>) -> Handle {
@@ -931,47 +931,25 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             if (a.empty()) throw KiritoError("remove expects a value");
             auto& s = set_of(vm, self);
             const Object& v = vm.arena().deref(a[0]);
-            if (!v.hashable()) throw KiritoError("unhashable type '" + v.typeName() + "'");  // match the
-                // canonical message used by Set.add / Dict / hash() — Set.remove had drifted to a bare
-                // "unhashable type" with no type name.
-            std::size_t h = v.hash();
-            if (s.probing_) throw KiritoError("Set changed size during a value comparison");
-            ProbeScope guard(s.probing_);  // reentrant _eq_ must not realloc the bucket we hold
-            auto it = s.buckets.find(h);
-            if (it != s.buckets.end()) {
-                auto i = probeBucket(vm.arena(), it->second, v, setKeyOf);
-                if (i >= 0) {
-                    it->second.erase(it->second.begin() + i); --s.count;
-                    if (it->second.empty()) s.buckets.erase(it);   // reclaim the emptied bucket (A08-4)
-                    return vm.none();
-                }
-            }
-            throw KiritoError("remove: value not in Set");
+            if (!v.hashable()) throw KiritoError("unhashable type '" + v.typeName() + "'");  // canonical
+                // message (matches Set.add / Dict / hash()) — before the not-found path below.
+            if (!s.remove(vm.arena(), a[0])) throw KiritoError("remove: value not in Set");
+            return vm.none();
         });
     if (name == "copy")
         return bind("copy", {}, [self, set_of](KiritoVM& vm, std::span<const Handle>) -> Handle {
             auto c = std::make_unique<SetVal>();
-            c->buckets = set_of(vm, self).buckets;
-            c->count = set_of(vm, self).count;
-            return vm.alloc(std::move(c));
+            auto& s = set_of(vm, self);
+            c->entries = s.entries; c->index = s.index; c->count = s.count; c->tombstones = s.tombstones;
+            return vm.alloc(std::move(c));   // fresh (young) copy -> no cards to carry
         });
     if (name == "discard")  // remove if present, no error otherwise (cf. remove)
         return bind("discard", {"value"}, [self, set_of](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.empty()) throw KiritoError("discard expects a value");
             auto& s = set_of(vm, self);
             const Object& v = vm.arena().deref(a[0]);
-            if (!v.hashable()) return vm.none();
-            std::size_t h = v.hash();
-            if (s.probing_) throw KiritoError("Set changed size during a value comparison");
-            ProbeScope guard(s.probing_);  // reentrant _eq_ must not realloc the bucket we hold
-            auto it = s.buckets.find(h);
-            if (it != s.buckets.end()) {
-                auto i = probeBucket(vm.arena(), it->second, v, setKeyOf);
-                if (i >= 0) {
-                    it->second.erase(it->second.begin() + i); --s.count;
-                    if (it->second.empty()) s.buckets.erase(it);   // reclaim the emptied bucket (A08-4)
-                }
-            }
+            if (!v.hashable()) return vm.none();   // discard is silent on a missing/unhashable value
+            s.remove(vm.arena(), a[0]);            // ignore the result (no error if absent)
             return vm.none();
         });
     if (name == "clear")

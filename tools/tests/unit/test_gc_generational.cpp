@@ -363,5 +363,38 @@ String(keep[0]) + String(keep[1][1]) + String(keep[2]["k"])
             "zs[0] + \"|\" + String(len(zs))")) == "z401|298");
     }
 
+    // ===== DENSE Dict/Set card marking under gc-every-alloc: the dense entry array is carded exactly
+    // like a List. A Dict/Set grown in a loop keeps every live young key/value; a DELETE tombstones the
+    // entry (no shift) so the old→young edge is gone but survivors keep their cards; a rehash (compaction
+    // past the tombstone/load threshold) shifts entries → markAll, so no young child is lost. =====
+    {
+        KiritoVM vm;
+        vm.installStandardLibrary();
+        vm.setGcThreshold(1);
+        // (d) build a large old Dict of fresh young key+value pairs, churn, read back a scattered sample
+        CHECK(vm.stringify(vm.runSource(
+            "var d = {}\nvar i = 0\nwhile i < 400:\n    d[\"k\" + String(i * 3 + 500)] = \"v\" + String(i * 3 + 500)\n    i = i + 1\n"
+            "var junk = 0\nwhile junk < 300:\n    discard [junk]\n    junk = junk + 1\n"
+            "d[\"k500\"] + \"|\" + d[\"k1697\"] + \"|\" + String(len(d))")) == "v500|v1697|400");
+        // (e) delete forces tombstones then a rehash-compaction; survivors keep their young children
+        CHECK(vm.stringify(vm.runSource(
+            "var e = {}\nvar j = 0\nwhile j < 200:\n    e[j] = \"e\" + String(j + 900)\n    j = j + 1\n"
+            "var g = 0\nwhile g < 100:\n    discard e.pop(g * 2)\n    g = g + 1\n"       // delete every even key
+            "var churn = 0\nwhile churn < 200:\n    discard [churn, churn]\n    churn = churn + 1\n"
+            "e[1] + \"|\" + e[199] + \"|\" + String(len(e))")) == "e901|e1099|100");
+        // (f) Set of fresh young strings grown in a loop, discard half, churn, verify survivors present
+        CHECK(vm.stringify(vm.runSource(
+            "var s = Set()\nvar a = 0\nwhile a < 200:\n    s.add(\"s\" + String(a + 400))\n    a = a + 1\n"
+            "var b = 0\nwhile b < 100:\n    s.discard(\"s\" + String(b * 2 + 400))\n    b = b + 1\n"
+            "var c = 0\nwhile c < 200:\n    discard [c]\n    c = c + 1\n"
+            "String(s.contains(\"s401\")) + \"|\" + String(s.contains(\"s400\")) + \"|\" + String(len(s))"))
+            == "True|False|100");
+        // (g) NaN key stays write-only after a GC (unfindable but present; a live key still resolves)
+        CHECK(vm.stringify(vm.runSource(
+            "var m = import(\"math\")\nvar d = {}\n"
+            "d[m.nan] = \"x\"\nd[\"live\"] = \"y\"\nvar z = 0\nwhile z < 100:\n    discard [z]\n    z = z + 1\n"
+            "String(len(d)) + \"|\" + d[\"live\"]")) == "2|y");
+    }
+
     return RUN_TESTS();
 }

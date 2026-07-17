@@ -755,9 +755,9 @@ public:
     bool remove(const Value& k) { return mut().remove(vm_->arena(), k.handle()); }
     bool remove(std::string_view sk) { return remove(Value(*vm_, sk)); }
 
-    void clear() { auto& d = mut(); d.buckets.clear(); d.count = 0; }
+    void clear() { mut().clear(); }
 
-    // Key list (hash-bucket order — same order as Kirito's iteration).
+    // Key list (insertion order — same order as Kirito's iteration).
     std::vector<Value> keys() const {
         std::vector<Value> out;
         out.reserve(size());
@@ -805,8 +805,8 @@ private:
 };
 
 // ================================================================================================
-// Set — unordered unique values. `s.add(v)` inserts, `s.contains(v)` peeks, `s.discard(v)` removes
-// silently. Ordering follows the hash-bucket walk (Kirito iteration order).
+// Set — insertion-ordered unique values. `s.add(v)` inserts, `s.contains(v)` peeks, `s.discard(v)`
+// removes silently. Iteration visits elements in first-insertion order (Kirito iteration order).
 // ================================================================================================
 class Set : public Value {
 public:
@@ -840,19 +840,10 @@ public:
     bool contains(const Value& v) const { return raw().contains(vm_->arena(), v.handle()); }
     template <class T> bool contains(T x) const { return contains(Value(*vm_, x)); }
 
-    // Remove; silent if absent. Rebuilds without the value since SetVal has no direct remove.
-    void discard(const Value& v) {
-        auto& s = mut();
-        if (!s.contains(vm_->arena(), v.handle())) return;
-        SetVal rebuilt;
-        for (Handle h : s.items())
-            if (!vm_->arena().deref(h).equals(vm_->arena(), vm_->arena().deref(v.handle())))
-                rebuilt.add(vm_->arena(), h);
-        s.buckets = std::move(rebuilt.buckets);
-        s.count = rebuilt.count;
-    }
+    // Remove; silent if absent.
+    void discard(const Value& v) { mut().remove(vm_->arena(), v.handle()); }
 
-    void clear() { auto& s = mut(); s.buckets.clear(); s.count = 0; }
+    void clear() { mut().clear(); }
 
     std::vector<Value> items() const {
         std::vector<Value> out;

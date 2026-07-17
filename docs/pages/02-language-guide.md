@@ -56,7 +56,7 @@ Dynamically typed, strongly typed. Built-in types:
 | `String` | `"hi"`, Unicode, code-point indexed |
 | `Bytes` | raw bytes 0–255, byte indexed — `"hi".encode()`, `Bytes([104, 105])`, `fromhex("6869")` |
 | `List` | `[1, 2, 3]` (ordered, mutable) |
-| `Set` | `{1, 2, 3}` (unique, unordered) |
+| `Set` | `{1, 2, 3}` (unique, insertion-ordered) |
 | `Dict` | `{"a": 1}` (key→value) |
 
 `type(x)` returns the type name as a String. Constructors double as converters: `Integer("42")`,
