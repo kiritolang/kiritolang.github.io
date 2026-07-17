@@ -128,14 +128,20 @@ int main() {
         CHECK(!has(w, "self-assignment"));
     }
 
-    // --- duplicate parameter name ---
+    // --- duplicate parameter name is a hard PARSE error now (not a warn-and-run) ---
     {
-        auto w = warn("var f = Function(a, b, a):\n    return a\n");
-        CHECK(has(w, "duplicate parameter name 'a'"));
+        bool threw = false;
+        try {
+            Parser(Lexer("var f = Function(a, b, a):\n    return a\n").tokenize()).parseProgram();
+        } catch (const KiritoError& e) {
+            threw = true;
+            CHECK(std::string(e.what()).find("duplicate parameter name 'a'") != std::string::npos);
+        }
+        CHECK(threw);
     }
     {
         auto w = warn("var f = Function(a, b):\n    return a + b\n");
-        CHECK(!has(w, "duplicate parameter"));
+        CHECK(!has(w, "duplicate parameter"));   // distinct params: parses fine, no warning
     }
 
     // --- discard still runs the expression (side effects preserved) ---

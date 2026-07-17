@@ -520,8 +520,8 @@ ok("unreachable code" in warnStderr("var f = Function():\n    return 1\n    var 
    "analyzer warns: unreachable code after return")
 ok("self-assignment" in warnStderr("var f = Function():\n    var x = 1\n    x = x\n    return x\nvar r = f()\n"),
    "analyzer warns: self-assignment")
-ok("duplicate parameter" in warnStderr("var f = Function(a, a): return a\nvar r = f(1, 2)\n"),
-   "analyzer warns: duplicate parameter name")
+ok("duplicate parameter name" in warnStderr("var f = Function(a, a): return a\n"),
+   "duplicate parameter name is a hard parse error")
 # todo emits its own warning with the reminder text.
 ok("todo: handle later" in warnStderr("var f = Function():\n    todo \"handle later\"\n    return 1\nvar r = f()\n"),
    "todo emits a warning with the reminder text")

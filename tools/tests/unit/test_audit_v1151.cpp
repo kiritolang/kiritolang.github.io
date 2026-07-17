@@ -425,6 +425,47 @@ assert "Matrix row index out of range" in e1
 )"));
     }
 
+    // ===== A02-3: a duplicate parameter name is a hard PARSE error (was a warn-and-run that then
+    // desynced the resolver slot layout — assertion abort / silent wrong binding). =====
+    {
+        KiritoVM vm;
+        bool threw = false;
+        try { vm.runSource("var f = Function(a, b, a):\n    return a\n"); }
+        catch (const KiritoError& e) {
+            threw = std::string(e.what()).find("duplicate parameter name") != std::string::npos;
+        }
+        CHECK(threw);
+    }
+    {
+        KiritoVM vm;   // distinct params still fine, incl. the shapes that used to abort
+        CHECK(ok(vm, R"(
+var f = Function(a, b):
+    var x = 100
+    var g = Function():
+        return [x, a, b]
+    return g()
+assert f(1, 2) == [100, 1, 2]
+)"));
+    }
+
+    // ===== A02-2: a module (frozen OR .ki-file — one shared rule now) hides a `_private` top-level
+    // name but still exports a `_dunder_` (trailing underscore = not private) and ordinary names. =====
+    {
+        KiritoVM vm;
+        vm.registerSourceModule("priv_export_mod", R"KI(
+var _secret = 42
+var _dunder_ = 7
+var trailing_ = 1
+var value = 99
+)KI");
+        CHECK(ok(vm, R"(
+var m = import("priv_export_mod")
+assert m.value == 99 and m.trailing_ == 1
+assert not hasattr(m, "_secret")     # single-leading-underscore private is hidden
+assert m._dunder_ == 7               # trailing-underscore name is NOT private -> exported
+)"));
+    }
+
     // ===== Batch 7 conformance changes (maintainer-approved; each updates a formerly-pinned test) =====
 
     // A18-5: tabular Series/DataFrame ops PROPAGATE missing (None/NaN) as None instead of throwing,

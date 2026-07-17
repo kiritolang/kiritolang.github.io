@@ -273,7 +273,8 @@ a stability fuzzer, and a benchmark). Working today:
 - **Static warnings + `discard`**: a non-fatal analysis pass (`analyzer.hpp`) run before execution
   flags: function-local variables assigned-but-never-used; bare expression statements whose
   non-`None` value is dropped; a `var` re-declared in the same block; unreachable code after a
-  return/throw/break/continue; self-assignment (`x = x`); and duplicate parameter names. `discard
+  return/throw/break/continue; and self-assignment (`x = x`). (A **duplicate parameter name** is a hard
+  **parse error**, not a warning — it would desync the resolver's slot layout from the runtime frame.) `discard
   EXPR` evaluates and intentionally drops a value (suppressing the unused-result case). `todo
   [message]` is a no-op statement (like `pass`) that *deliberately* emits a `todo: ...` warning at
   its location reminding you to implement something (an optional trailing string is the reminder).
@@ -648,7 +649,10 @@ a stability fuzzer, and a benchmark). Working today:
 - **Modules** can also be `.ki` files found on the import path (`--lib <dir>`, the cwd, the
   script's directory, the `KIRITO_PATH` env var [PATH-style], and the per-user package dir
   `~/.kirito/packages` + each package sub-dir), lexed+parsed+evaluated once per VM and cached by
-  resolved path. **Circular imports are detected and rejected**: a module's members are published to
+  resolved path. A module's **public exports** are its top-level bindings *except* **private** names
+  (a single leading `_`, no trailing `_` — a dunder `_x_` stays public), the injected `arglist`/`argmain`,
+  and compiler-hidden `$` temporaries — one shared rule (`moduleExportBase`) for BOTH `.ki`-file and
+  frozen-source modules (they used to diverge on `_private`). **Circular imports are detected and rejected**: a module's members are published to
   the cache only after its body finishes, so a re-entrant import of an in-progress module (a self
   import, or a chain `a → b → a`) throws a clear `circular import detected: a -> b -> a` error naming
   the cycle (tracked by both module name and resolved path) instead of recursing until the native

@@ -733,7 +733,14 @@ private:
         bool seenDefault = false;
         if (!at(TokenType::RParen)) {
             while (true) {
+                auto pspan = peek().span;                 // the parameter name, for a precise diagnostic
                 ast::Param p = parseParam();
+                // A duplicate parameter name is a hard parse error (like Python's SyntaxError), not a
+                // warn-and-run: a duplicate would desync the resolver's slot layout from the runtime
+                // frame layout (wrong-slot reads / an assertion abort), so reject it up front.
+                for (const auto& q : node->params)
+                    if (q.name == p.name)
+                        throw KiritoError("duplicate parameter name '" + p.name + "'", pspan);
                 if (p.defaultValue) seenDefault = true;
                 else if (seenDefault)
                     throw KiritoError("non-default parameter '" + p.name +

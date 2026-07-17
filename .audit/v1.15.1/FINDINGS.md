@@ -114,9 +114,16 @@ collections C++ unit tests) all green.
 Docs updated: json exceptions table (drop the now-unreachable "invalid low surrogate"), tabular Series
 missing-propagation note.
 
+## FIXED (this session) — batch 8: A02-3 (HIGH) + A02-2, maintainer-approved
+
+| ID    | Change | Tests |
+|-------|--------|-------|
+| A02-3 (HIGH) | a **duplicate parameter name** is now a hard PARSE error (parser.hpp), not a warn-and-run — killing the resolver-slot-layout desync (assertion abort / silent wrong binding) at the source. Analyzer's dead dup-param warning removed. | new `errors/duplicate_param.ki`; updated `test_warnings.cpp`, `r7_language.ki`; audit test |
+| A02-2 | the two module-export filters are UNIFIED into one `moduleExportBase`: a `.ki`-file module now HIDES its `_private` top-level names, exactly like a frozen module already did (dunders `_x_` and ordinary names still export). No fallbacks, per the maintainer. | audit test (frozen path) |
+
 ## DEFERRED — needs a maintainer decision (NOT auto-fixed)
 
-_(none remaining — all four conformance items were approved and applied above.)_
+_(none remaining — all four conformance items were approved and applied in batch 7.)_
 
 _Historical (now resolved): A13-3 was initially reverted at the golden-test gate because six json/serde
 tests pinned the throw; the maintainer then approved the conformant behaviour, so it and the tests
@@ -164,11 +171,6 @@ The remaining backlog, roughly by value — each deliberately left because it is
 involved (a core resolver/compiler change deserving a fresh, careful session) or a low-value tail:
 
 **Involved — merit a dedicated session, not a tail-of-a-long-run rush:**
-- **A02-3 (HIGH):** a duplicate parameter name desyncs the resolver's env layout from the runtime
-  frame layout → debug assertion abort / release silent wrong binding. The correct fix is the layout
-  math in `computeFunctionEnvIndex` (must handle deduped params, per the finding's shape-map table);
-  promoting the analyzer *warning* to a hard error would be simpler but breaks the warn-and-run tests
-  (`test_warnings.cpp`, `r7_language.ki`) and changes documented behaviour — a maintainer call.
 - A10-2 (HIGH, build): `kirito.hpp` doesn't compile under clang++ default flags → the documented
   libFuzzer build is dead. Build/portability, not a runtime bug.
 - A09-1 / A09-2 (MED): a nested function inside a method loses class ownership (can't touch

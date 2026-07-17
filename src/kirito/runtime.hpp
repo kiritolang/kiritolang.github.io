@@ -2448,15 +2448,18 @@ void KiritoVM::install() {
     });
 }
 
-// The base rule shared by both module-export filters (frozen-source and .ki-file): a top-level
-// binding is exportable unless it is a compiler-generated hidden temporary (`$with0`/`$exc0` — which
-// would otherwise leak into inspect() AND retain a top-level `with`'s context manager for the module's
-// whole lifetime) or the per-file injected env (arglist/argmain). `$` names are unwritable/unreadable
-// from Kirito (the lexer rejects `$`), so filtering them can break no user code. (The two filters still
-// diverge on `_private` top-level names — the frozen filter hides them, the .ki filter does not; that
-// is the separate, lower-severity A02-2 and is left as-is here.)
+// The ONE rule for whether a module's top-level binding is a public export, shared by both loaders
+// (frozen-source AND .ki-file — they used to diverge, A02-2). A binding is hidden when it is:
+//   - a **private** name (single leading `_`, no trailing `_`) — a module-private, not an export;
+//   - a compiler-generated hidden temporary (`$with0`/`$exc0`) — which would otherwise leak into
+//     inspect() and pin a top-level `with`'s context manager for the module's whole lifetime;
+//   - the per-file injected env (`arglist`/`argmain`).
+// `$` names are unwritable/unreadable from Kirito (the lexer rejects `$`), so filtering them breaks no
+// code. Dunder names (`_x_`) are NOT private (trailing `_`), so they still export.
 inline bool moduleExportBase(const std::string& k) {
-    return !k.empty() && k.front() != '$' && k != "arglist" && k != "argmain";
+    if (k.empty() || k.front() == '$' || k == "arglist" || k == "argmain") return false;
+    if (k.front() == '_' && k.back() != '_') return false;   // a single-leading-underscore private name
+    return true;
 }
 
 inline void KiritoVM::registerSourceModule(std::string name, std::string_view source) {
@@ -2479,9 +2482,8 @@ inline void KiritoVM::registerSourceModule(std::string name, std::string_view so
             runBytecodeBody(vm, scope, program.stmts, Handle{}, /*hasOwner=*/false, /*isFunction=*/false);
             auto mod = std::make_unique<ModuleValue>(modName);
             for (const auto& [k, v] : static_cast<EnvValue&>(vm.arena().deref(scope)).locals())
-                // frozen modules also hide private (`_`) top-level names; the shared base rule drops
-                // `$`-hidden temporaries + the injected env, and undefined() is an unwritten slot.
-                if (moduleExportBase(k) && k.front() != '_' && v != vm.undefined())
+                // moduleExportBase now hides private (`_`) names too — one rule for both loaders (A02-2).
+                if (moduleExportBase(k) && v != vm.undefined())
                     mod->members[k] = v;
             return vm.alloc(std::move(mod));
         } catch (KiritoError& e) {
