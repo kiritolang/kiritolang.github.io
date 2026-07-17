@@ -425,6 +425,60 @@ assert "Matrix row index out of range" in e1
 )"));
     }
 
+    // ===== Batch 7 conformance changes (maintainer-approved; each updates a formerly-pinned test) =====
+
+    // A18-5: tabular Series/DataFrame ops PROPAGATE missing (None/NaN) as None instead of throwing,
+    // so the masking idiom survives a blank cell (pandas parity).
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var t = import("tabular")
+assert (t.Series([1, None, 3]) + 1).tolist() == [2, None, 4]
+assert (t.Series([1, None, 3]) > 0).tolist() == [True, None, True]
+var df = t.DataFrame({"a": [1, None, 3], "b": [10, 20, 30]})
+assert len(df[df["a"] > 1]) == 1               # blank row drops, no throw
+)"));
+    }
+
+    // A17-3: regex must_advance — findall/sub/split don't drop a non-empty match masked by a
+    // higher-priority zero-width one (Python parity).
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var re = import("regex")
+assert re.findall("|\\w", "ab") == ["", "a", "", "b", ""]
+assert re.findall("a||b", "ab") == ["a", "", "b", ""]
+assert re.sub("|\\w", "X", "ab") == "XXXXX"
+assert re.findall("a", "aaa") == ["a", "a", "a"]      # ordinary case unaffected
+assert re.findall("a*", "aa") == ["aa", ""]           # trailing empty preserved
+)"));
+    }
+
+    // A18-1: deque.pop()/popleft() on empty name "deque", not the internal "List".
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var co = import("collections")
+var e1 = ""
+try:
+    co.deque().pop()
+catch as e:
+    e1 = e
+assert "deque" in e1 and not ("List" in e1)
+)"));
+    }
+
+    // A13-3: json.loads substitutes U+FFFD for a high surrogate + non-low \u (consistent with a lone
+    // surrogate) instead of throwing; a valid pair still combines.
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var json = import("json")
+assert json.loads("\"\\uD800\\u0041\"") == chr(65533) + "A"
+assert json.loads("\"\\uD83D\\uDE00\"") == chr(128512)     # valid pair -> U+1F600
+)"));
+    }
+
     // ===== A02-1: compiler-generated hidden temporaries ($with0/$exc0) must NOT leak into a module's
     // public exports (cosmetic on inspect + a real resource-retention leak — a top-level `with` would
     // otherwise pin its context manager for the module's whole lifetime). =====

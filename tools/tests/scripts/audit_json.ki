@@ -79,8 +79,8 @@ io.print("badu:" if "invalid \\u" in caught(Function(): return json.parse("\"\\u
 io.print("nocolon:" if "':'" in caught(Function(): return json.parse("{\"a\" 1}")) else "BAD")
 # non-string key (numeric)
 io.print("intkey:" if "expected string key" in caught(Function(): return json.parse("{1:2}")) else "BAD")
-# bad low surrogate
-io.print("badlow:" if "low surrogate" in caught(Function(): return json.parse("\"\\uD83D\\u0041\"")) else "BAD")
+# high surrogate + non-low \u: the unpaired high surrogate -> U+FFFD, the following escape re-parses
+io.print("subhi:" if json.parse("\"\\uD83D\\u0041\"") == chr(65533) + "A" else "BAD")
 # all-whitespace
 io.print("ws:" if "unexpected" in caught(Function(): return json.parse("   ")) else "BAD")
 # invalid literal

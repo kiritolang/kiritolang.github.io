@@ -97,9 +97,32 @@ Regression cases (correctness — a timing test would be flaky) in `test_audit_v
 | A08-3 (doc) | `.audit/README.md`'s FP table said `math.trunc` returns Integer; it returns **Float** (the row inverted the v1.12 verdict) | corrected + warned against "restoring" an Integer return | .audit/README.md |
 | A05-2 (doc) | `isinstance(v, type(v))` is False for a class value (type() shares a name with instances) — undocumented | noted under `type`/`isinstance` | docs/pages/08-builtins.md |
 
+## FIXED (this session) — batch 7: the 4 conformance changes (maintainer-APPROVED after the pinned-test gate)
+
+The user (maintainer) reviewed the four findings that each overturned a deliberately-pinned test and
+approved applying ALL of them, updating the pinned tests to the conformant behaviour. Verified live +
+targeted tests (the relevant golden scripts, all 43 regex scripts, and the tabular/regex/json/serde/
+collections C++ unit tests) all green.
+
+| ID    | Change | Pinned tests updated |
+|-------|--------|----------------------|
+| A18-5 | tabular `Series._binop` propagates missing (None/NaN)→None instead of throwing (pandas parity; `df[df["col"]>v]` survives a blank cell) | deep_tabular.ki, r4_kimods_b.ki |
+| A17-3 | regex `must_advance`: findall/finditer/sub/split no longer drop a non-empty match masked by a higher-priority zero-width one. Added a defaulted `mustAdvance` to `reng::run` (rejects a zero-width match at exactly startPos); stays linear-time | r8_net_regex.ki |
+| A18-1 | `deque.pop()`/`popleft()` on empty say "pop from an empty deque", not the internal "List" | verify_collections.ki |
+| A13-3 | `json.loads` U+FFFD-substitutes a high surrogate + non-low `\u` (rewind `pos_-=6`), consistent with a truly-lone surrogate | r6_json, audit_json(+.expected), labx_serde, r4_serialization, deep_serialization, r8_serde_data |
+
+Docs updated: json exceptions table (drop the now-unreachable "invalid low surrogate"), tabular Series
+missing-propagation note.
+
 ## DEFERRED — needs a maintainer decision (NOT auto-fixed)
 
-- **A13-3 (LOW): `json.loads` throws on a high surrogate followed by a valid-but-non-low `\u` escape**
+_(none remaining — all four conformance items were approved and applied above.)_
+
+_Historical (now resolved): A13-3 was initially reverted at the golden-test gate because six json/serde
+tests pinned the throw; the maintainer then approved the conformant behaviour, so it and the tests
+were updated together._
+
+- **(was) A13-3 (LOW): `json.loads` throws on a high surrogate followed by a valid-but-non-low `\u` escape**
   (`\uD800A`), while a truly lone high surrogate (not followed by `\u`) is U+FFFD-substituted.
   The scan called this an inconsistency with the code's own unpaired-surrogate rule — but **six tests**
   (`r6_json`, `audit_json`, `labx_serde`, `r4_serialization`, `deep_serialization`, `r8_serde_data`)

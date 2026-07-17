@@ -72,8 +72,9 @@ var lone2 = json.parse("\"\\uDC00\"")
 assert ord(lone2[0]) == 0xFFFD, "lone low surrogate -> U+FFFD"
 var pair = json.parse("\"\\uD83D\\uDE00\"")
 assert len(pair) == 1 and ord(pair[0]) == 0x1F600, "surrogate pair -> single astral code point"
-# A high surrogate followed by a non-low \u escape is rejected.
-assert raises_msg(Function(): return json.parse("\"\\uD800\\u0041\""), "invalid low surrogate"), "bad surrogate pair"
+# A high surrogate followed by a non-low \u escape: the unpaired high surrogate -> U+FFFD and the
+# following escape re-parses (consistent with a truly-lone surrogate; matches the literal-char spelling).
+assert json.parse("\"\\uD800\\u0041\"") == chr(65533) + "A", "high surrogate + non-low \\u -> U+FFFD + char"
 
 # Recursion guard: pathologically deep nesting throws rather than overflowing the native stack.
 assert raises_msg(Function(): return json.parse("[" * 1100 + "]" * 1100), "nesting too deep"), "deep nesting guarded"

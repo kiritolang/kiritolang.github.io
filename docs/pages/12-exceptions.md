@@ -675,7 +675,7 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `JSON parse error: trailing characters after JSON value` | Extra non-whitespace after the top-level value | Parse one value; strip trailing junk |
 | `JSON parse error: nesting too deep` | Arrays/objects nested past 1000 | Flatten the structure |
 | `JSON parse error: expected string key` / `expected ':'` / `expected ',' or '}'` / `expected ',' or ']'` | Malformed object/array structure | Fix the separators/keys |
-| `JSON parse error: unterminated string` / `bad escape` / `bad \u escape` / `invalid \u escape …` / `invalid low surrogate …` | Malformed string/escape | Fix the string escaping |
+| `JSON parse error: unterminated string` / `bad escape` / `bad \u escape` / `invalid \u escape …` | Malformed string/escape | Fix the string escaping (a lone/unpaired `\u` surrogate is not an error — it decodes to U+FFFD) |
 | `cannot serialize a cyclic structure to JSON` / `structure too deeply nested to serialize to JSON` | `json.stringify` hit a cycle / >1000 depth | Break the cycle / flatten |
 | `cannot serialize '<T>' to JSON` | A Set/Function/native in the graph | Convert to JSON-native types (List/Dict/scalars) |
 | `json.stringify: indent too large (maximum 100)` | A huge `indent=` to `stringify` (would overflow/OOM the pad) | Use an indent ≤ 100 |

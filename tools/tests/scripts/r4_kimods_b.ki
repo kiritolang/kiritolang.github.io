@@ -495,8 +495,8 @@ ok(a.isin([]).tolist() == [False, False, False, False], "Series.isin with an emp
 # the shared _binop throws on a length mismatch, in either direction.
 ok(throws(Function(): return tb.Series([1, 2]) + tb.Series([1, 2, 3])), "Series + Series of unequal length throws")
 ok(throws(Function(): return tb.Series([1, 2, 3]) + tb.Series([1, 2])), "the length-mismatch throw is symmetric")
-# element-wise ops THROW on a None element (None can't take an operator / be ordered).
-ok(throws(Function(): return tb.Series([1, None, 3]) + 1), "Series + scalar throws on a None element")
+# element-wise ops PROPAGATE a None element as None (pandas parity; the masking idiom survives blanks).
+ok((tb.Series([1, None, 3]) + 1).tolist() == [2, None, 4], "Series + scalar propagates None")
 
 # --- Series aggregations (skip missing; Bool counts as 0/1).
 var canon = tb.Series([2, 4, 4, 4, 5, 5, 7, 9])

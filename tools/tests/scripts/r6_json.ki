@@ -162,7 +162,7 @@ ok(throws(Function(): return json.parse("{\"a\" 1}")), "missing ':' in object th
 ok(throws(Function(): return json.parse("\"\\q\"")), "bad escape \\q throws")
 ok(throws(Function(): return json.parse("\"\\uZZZZ\"")), "bad hex in \\u throws")
 ok(throws(Function(): return json.parse("\"\\uF\"")), "truncated \\u escape throws")
-ok(throws(Function(): return json.parse("\"\\ud83d\\u0041\"")), "high surrogate + non-low \\u throws")
+ok(json.parse("\"\\ud83d\\u0041\"") == chr(65533) + "A", "high surrogate + non-low \\u -> U+FFFD then the char")
 ok(throws(Function(): return json.parse("1..2")), "'1..2' throws")
 ok(throws(Function(): return json.parse("1e1e1")), "'1e1e1' throws")
 ok(throws(Function(): return json.parse("Inf")), "short 'Inf' throws")

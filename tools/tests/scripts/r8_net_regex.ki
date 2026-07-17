@@ -204,7 +204,7 @@ if argmain:
     ok(re.search("a{0,0}b", "b").group() == "b", "{0,0} consumes nothing")
     ok(re.search("ab{0,2}c", "ac").group() == "ac", "{0,2} allows zero of the inner atom")
     ok(re.search("ab{0,2}c", "abbc").group() == "abbc", "{0,2} allows the upper bound")
-    ok(re.findall("a||b", "ab") == ["a", "", ""], "empty alternation branch is a valid empty match")
+    ok(re.findall("a||b", "ab") == ["a", "", "b", ""], "must_advance: an empty branch doesn't mask the non-empty 'b' (Python parity)")
     ok(re.search("(x|)", "y").group() == "", "an empty alternative matches the empty string")
     ok(throws(Function(): return re.compile("a++")), "a double quantifier (possessive a++) is rejected")
     ok(throws(Function(): return re.compile("a*+")), "a*+ (possessive star) is rejected")

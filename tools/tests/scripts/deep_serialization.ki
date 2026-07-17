@@ -77,7 +77,7 @@ assert json.parse("\"\\uD83D\\uDE00\"") == "😀", "json surrogate pair -> astra
 # lone surrogates are accepted (WTF-8 encoded) rather than rejected -- pin the lenient behaviour
 assert clean(Function(): return json.parse("\"\\uD83D\"")), "json lone high surrogate handled cleanly"
 assert clean(Function(): return json.parse("\"\\uDE00\"")), "json lone low surrogate handled cleanly"
-assert throws(Function(): return json.parse("\"\\uD83D\\u0041\"")), "json bad low surrogate rejected"
+assert json.parse("\"\\uD83D\\u0041\"") == chr(65533) + "A", "json high surrogate + non-low \\u -> U+FFFD + char"
 # unicode keys + values round-trip
 var ukeys = {"世界": 1, "café": 2, "😀": 3}
 assert json.loads(json.dumps(ukeys)) == ukeys, "json unicode keys round-trip"

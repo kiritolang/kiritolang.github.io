@@ -57,8 +57,8 @@ built.appendleft(0)
 assert String(built) == "deque([0, 1])", "deque build from empty"
 
 # --- hardening: pop/popleft on empty must raise; index out of range must raise ---
-assert raises_msg(Function(): return empty.pop(), "empty List"), "deque pop empty raises"
-assert raises_msg(Function(): return empty.popleft(), "empty List"), "deque popleft empty raises"
+assert raises_msg(Function(): return empty.pop(), "empty deque"), "deque pop empty raises (names deque, not List)"
+assert raises_msg(Function(): return empty.popleft(), "empty deque"), "deque popleft empty raises (names deque, not List)"
 assert raises_msg(Function(): return dq[100], "index out of range"), "deque index oob raises"
 
 # --- documented surface only: no rotate/extend/maxlen (verify actual surface) ---

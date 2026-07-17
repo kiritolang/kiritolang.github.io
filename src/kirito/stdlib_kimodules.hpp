@@ -311,8 +311,12 @@ class deque:
     var appendleft = Function(self, x):
         self._items.insert(0, x)
     var pop = Function(self):
+        if len(self._items) == 0:
+            throw "pop from an empty deque"
         return self._items.pop()
     var popleft = Function(self):
+        if len(self._items) == 0:
+            throw "pop from an empty deque"
         return self._items.pop(0)
     var _len_ = Function(self) -> Integer:
         return len(self._items)
@@ -1406,17 +1410,27 @@ class Series:
 
     # --- element-wise arithmetic (Series-Series aligned by position, or Series-scalar) ---
     var _binop = Function(self, other, op):
+        # Propagate missing (None / NaN) instead of calling op on it: `None > 26` / `None + 1` would
+        # throw, which crashes the headline masking idiom `df[df["col"] > v]` whenever a column has a
+        # blank cell (exactly what readcsv makes from an empty field). A missing result is None — a
+        # falsy mask entry (pandas-parity row drop for comparisons; NaN-propagation for arithmetic).
         var out = []
         if isinstance(other, "Series"):
             if len(self.values) != len(other.values):
                 throw "Series: length mismatch (" + String(len(self.values)) + " vs " + String(len(other.values)) + ")"
             var i = 0
             while i < len(self.values):
-                out.append(op(self.values[i], other.values[i]))
+                if _isnan(self.values[i]) or _isnan(other.values[i]):
+                    out.append(None)
+                else:
+                    out.append(op(self.values[i], other.values[i]))
                 i = i + 1
         else:
             for v in self.values:
-                out.append(op(v, other))
+                if _isnan(v) or _isnan(other):
+                    out.append(None)
+                else:
+                    out.append(op(v, other))
         return Series(out, List(self.index), self.name)
 
     var _add_ = Function(self, other):

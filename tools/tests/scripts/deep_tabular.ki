@@ -43,10 +43,11 @@ assert throws(Function(): return shortS > longS), "comparison throws the same wa
 assert (pd.Series([1, 2]) + pd.Series([10, 20])).tolist() == [11, 22], "equal-length Series + Series aligns"
 
 # =================================================================== Series MISSING-DATA arithmetic
-# Aggregations skip missing, and element-wise arithmetic / comparison THROW on a None operand (a None
-# can't take a binary operator). sortvalues, by contrast, sorts missing to the end like pandas.
-assert throws(Function(): return pd.Series([1, None, 3]) + 1), "Series + scalar throws on a None element"
-assert throws(Function(): return pd.Series([1, None, 3]) > 0), "Series comparison throws on a None element"
+# Aggregations skip missing, and element-wise arithmetic / comparison PROPAGATE missing as None
+# (pandas parity — so the masking idiom df[df["col"] > v] survives a blank cell). sortvalues sorts
+# missing to the end like pandas.
+assert (pd.Series([1, None, 3]) + 1).tolist() == [2, None, 4], "Series + scalar propagates None (pandas parity)"
+assert (pd.Series([1, None, 3]) > 0).tolist() == [True, None, True], "Series comparison propagates None (pandas parity)"
 assert pd.Series([3, None, 1]).sortvalues().tolist() == [1, 3, None], "Series.sortvalues sorts None to the end (na_position=last)"
 assert pd.Series([3, None, 1]).sortvalues(False).tolist() == [3, 1, None], "Series.sortvalues descending keeps None last"
 # but the aggregations DO quietly skip the same None

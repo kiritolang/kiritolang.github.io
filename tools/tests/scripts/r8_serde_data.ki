@@ -139,7 +139,7 @@ ok(throws(Function(): return json.parse("[1] [2]")), "json two top-level values 
 ok(throws(Function(): return json.parse("{\"a\":1 \"b\":2}")), "json missing comma in object throws")
 ok(throws(Function(): return json.parse("[1 2]")), "json missing comma in array throws")
 ok(throws(Function(): return json.parse("nan")), "json lowercase nan throws (only NaN token)")
-ok(throws(Function(): return json.parse("\"\\ud800\\u0041\"")), "json high surrogate + BMP \\u throws")
+ok(json.parse("\"\\ud800\\u0041\"") == chr(65533) + "A", "json high surrogate + BMP \\u -> U+FFFD + char")
 # A raw control char inside a string is accepted (lenient); the writer re-escapes it (lossless).
 ok(json.parse("\"x\ty\"") == "x\ty", "json raw tab in string accepted (lenient)")
 var ctrlRt = "a" + chr(1) + chr(2) + chr(30) + "z"

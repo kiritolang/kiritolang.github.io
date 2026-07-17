@@ -151,9 +151,10 @@ private:
                             unsigned lo = readHex4();
                             if (lo >= 0xDC00 && lo <= 0xDFFF)
                                 cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                            else fail("invalid low surrogate in \\u escape");   // a malformed \u-pair is a
-                                              // stricter error than a truly-lone surrogate (which U+FFFD-
-                                              // substitutes below) — deliberate, pinned by json/serde tests.
+                            else pos_ -= 6;   // not a low surrogate: rewind the speculatively-read \uXXXX so
+                                              // the lone high surrogate below is U+FFFD-substituted (the code's
+                                              // own unpaired-surrogate rule) and the next escape re-parses —
+                                              // matching the identical input spelled with a literal char.
                         }
                         // An UNPAIRED surrogate (a lone \uD800 high, or a lone low) is not a valid code
                         // point and would encode to invalid UTF-8; substitute U+FFFD (like browsers /

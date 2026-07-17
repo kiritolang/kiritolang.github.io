@@ -1466,7 +1466,10 @@ A dataframe-style data-analysis library: a labelled 1-D **`Series`** and 2-D **`
 I/O, label/position indexing, boolean masking, element-wise arithmetic (on `Series` —
 a `DataFrame` is operated on per-column), aggregations, group-by, joins, and missing-data handling.
 `Series`-to-`Series` arithmetic and comparison require **equal length** (a mismatch throws consistently
-in either order — no silent truncation); a `Series`-to-scalar op broadcasts the scalar.
+in either order — no silent truncation); a `Series`-to-scalar op broadcasts the scalar. Element-wise
+arithmetic and comparison **propagate missing** (a `None`/NaN element yields `None`, pandas-style)
+rather than throwing — so a boolean mask like `df[df["col"] > v]` works even when the column has a
+blank cell (which `readcsv` produces from an empty field).
 Public names follow Kirito's lowercase-no-underscore convention (`readcsv`, `sortvalues`,
 `valuecounts`, `resetindex`, ...).
 
