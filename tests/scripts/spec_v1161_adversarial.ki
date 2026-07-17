@@ -1,0 +1,140 @@
+# v1.16.1 audit — adversarial / edge / boundary / reentrancy tests for the v1.16.0 features
+# (lazy range/map/filter/zip/enumerate, generators, dense insertion-ordered Dict/Set). Manufactured
+# to try to BREAK the new surface from every angle. All must hold.
+var io = import("io")
+var math = import("math")
+
+# ===== lazy range: equality/reflection, index/slice/contains, boundaries =====
+assert range(3) == [0, 1, 2] and [0, 1, 2] == range(3), "range==List both directions"
+assert range(0, 4, 2) == range(0, 3, 2), "range==range by value sequence ([0,2])"
+assert range(0, 0) == [] and not (range(3) == range(4)), "empty / differing-length ranges"
+assert not (range(3) == {0, 1, 2}) and range(3) != [0, 1], "range != Set / shorter List"
+assert range(10)[0] == 0 and range(10)[9] == 9 and range(10)[-1] == 9, "range indexing incl. negative"
+assert range(0, 10, 3) == [0, 3, 6, 9] and range(10, 0, -2) == [10, 8, 6, 4, 2], "range steps"
+assert range(1, 100, 999999999) == [1], "range huge step -> single element"
+assert 5 in range(10) and not (5 in range(0, 10, 2)) and not (10 in range(10)), "range contains"
+assert range(10)[2:5] == [2, 3, 4], "range slice materializes a List"
+assert len(range(0, 1000000, 7)) == 142858, "range O(1) len over a large span"
+var BIG = 9223372036854775807
+assert len(range(BIG - 2, BIG)) == 2 and range(BIG - 1, BIG) == [BIG - 1], "range near INT64_MAX"
+var rthrew = False
+try:
+    discard range(10)[10]
+catch:
+    rthrew = True
+assert rthrew, "range index out of range throws"
+# F05-1 regression: `x in range` with a large step spans >half the int64 domain — the offset math must
+# be unsigned (was signed-overflow UB; tripped under the asan/ubsan preset). Values verified by hand.
+var HUGE = 6000000000000
+var rov = range(-9000000000000000000, 9000000000000000000, HUGE)
+assert len(rov) > 1000000, "huge-span range constructs within the cap"
+assert (0 in rov) and ((-9000000000000000000) in rov) and not ((-9000000000000000000 + 1) in rov), "range contains, huge span, positive step (no signed overflow)"
+assert (0 in range(9000000000000000000, -9000000000000000000, -HUGE)), "range contains, huge span, negative step"
+
+# ===== dense insertion-ordered Dict/Set: order, tombstone, rehash, cross-type, NaN =====
+var d = {}
+for k in ["z", "a", "m", "q", "b"]:
+    d[k] = 1
+assert d.keys() == ["z", "a", "m", "q", "b"], "dict keys are in insertion order"
+discard d.pop("m")
+d["m"] = 2
+assert d.keys() == ["z", "a", "q", "b", "m"], "delete + reinsert appends at the end"
+assert d.popitem() == ["m", 2], "popitem is LIFO"
+var big = {}
+var i = 0
+while i < 500:
+    big[i] = i * i
+    i = i + 1
+assert len(big) == 500 and big[499] == 249001, "dict grows + rehashes correctly"
+var first3 = []
+var seen = 0
+for k in big:
+    if seen < 3:
+        first3.append(k)
+    seen = seen + 1
+assert first3 == [0, 1, 2], "insertion order survives a rehash"
+var mixed = {}
+mixed[1] = "int"
+assert 1.0 in mixed and mixed[1.0] == "int", "Float key finds a value-equal Integer key"
+var nd = {}
+nd[math.nan] = "x"
+nd["live"] = "y"
+assert len(nd) == 2 and not (math.nan in nd) and nd["live"] == "y", "NaN key is write-only; live keys resolve"
+var s = Set()
+for x in [3, 1, 3, 2, 1]:
+    s.add(x)
+assert List(s) == [3, 1, 2], "set: dedup + first-insertion order"
+assert ({1, 2, 3} - {2}) == {1, 3} and ({1, 2} < {1, 2, 3}), "set difference / proper-subset operators"
+
+# ===== user-class hashable key (reentrancy-adjacent: _hash_/_eq_ run mid-lookup) =====
+class Pt:
+    var _init_ = Function(self, x):
+        self._x = x
+    var _hash_ = Function(self):
+        return self._x
+    var _eq_ = Function(self, o):
+        return self._x == o._x
+var pd = {}
+pd[Pt(5)] = "a"
+assert pd[Pt(5)] == "a" and Pt(5) in pd and not (Pt(6) in pd), "user-class dict key via _hash_/_eq_"
+
+# ===== lazy combinators: re-iteration, nesting, empties, over an infinite generator =====
+var mp = map(Function(x): return x * 2, [1, 2, 3])
+assert List(mp) == [2, 4, 6] and List(mp) == [2, 4, 6], "map is re-iterable (fresh pass)"
+assert List(map(Function(x): return x + 1, filter(Function(x): return x % 2 == 0, range(10)))) == [1, 3, 5, 7, 9], "nested map/filter/range"
+assert List(zip([1, 2, 3], "ab")) == [[1, "a"], [2, "b"]], "zip stops at the shortest"
+assert List(enumerate(["p", "q"], -1)) == [[-1, "p"], [0, "q"]], "enumerate negative start"
+assert List(map(Function(x): return x, [])) == [] and List(filter(Function(x): return True, "")) == [], "map/filter over empty"
+assert List(zip([], [1, 2])) == [] and List(enumerate([])) == [], "zip/enumerate over empty"
+assert sum(range(0)) == 0, "sum of an empty range"
+
+class Nats:
+    var _init_ = Function(self):
+        self.i = 0
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        self.i = self.i + 1
+        return self.i
+var got = []
+for x in map(Function(v): return v * v, filter(Function(v): return v % 2 == 1, Nats())):
+    if x > 30:
+        break
+    got.append(x)
+assert got == [1, 9, 25], "map/filter over an INFINITE generator + break stays bounded"
+assert List(zip(range(3), Nats())) == [[0, 1], [1, 2], [2, 3]], "zip(range, infinite gen) stops at range"
+
+# ===== generators: drain, sum, strict PEP-479 StopIteration attribution =====
+class Countdown:
+    var _init_ = Function(self, n):
+        self.n = n
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        if self.n <= 0:
+            throw StopIteration()
+        self.n = self.n - 1
+        return self.n + 1
+assert List(Countdown(3)) == [3, 2, 1] and sum(Countdown(4)) == 10, "generator drains + streams into sum"
+
+var leak = Function():
+    throw StopIteration()
+class Leaky:
+    var _init_ = Function(self):
+        self.i = 0
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        self.i = self.i + 1
+        if self.i > 2:
+            discard leak()   # StopIteration raised BELOW _next_ must surface, not silently end iteration
+        return self.i
+var surfaced = False
+try:
+    for x in Leaky():
+        discard x
+catch StopIteration as e:
+    surfaced = True
+assert surfaced, "a StopIteration leaking from a deeper call surfaces (strict PEP-479)"
+
+io.print("v1.16.1 adversarial: all passed")

@@ -729,7 +729,7 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
     if (name == "clear")
         return makeMethod(vm,
             "clear", {}, [self, self_list](KiritoVM& vm, std::span<const Handle>) -> Handle {
-                self_list(vm, self).elems.clear();
+                self_list(vm, self).clearElems();   // resets elems + cards (single-sourced)
                 return vm.none();
             }, std::vector<Handle>{self});
     if (name == "count")
@@ -3160,9 +3160,16 @@ public:
         const Object& o = vm.arena().deref(v);
         if (o.kind() != ValueKind::Integer) return false;
         int64_t x = static_cast<const IntVal&>(o).value();
-        if (step_ > 0) { if (x < start_ || x >= stop_) return false; }
-        else { if (x > start_ || x <= stop_) return false; }
-        return (x - start_) % step_ == 0;   // x,start_ both in-range → subtraction fits
+        // Offset/modulo in UNSIGNED (matching count()/at()): a range can span more than half the int64
+        // domain within the element cap (a large step), so `x - start_` would signed-overflow (UB) even
+        // for an in-range x — e.g. `0 in range(INT64_MIN, INT64_MAX, 6e12)`.
+        if (step_ > 0) {
+            if (x < start_ || x >= stop_) return false;
+            return (static_cast<uint64_t>(x) - static_cast<uint64_t>(start_)) % static_cast<uint64_t>(step_) == 0;
+        }
+        if (x > start_ || x <= stop_) return false;
+        uint64_t negstep = 0u - static_cast<uint64_t>(step_);   // |step|, valid even for INT64_MIN
+        return (static_cast<uint64_t>(start_) - static_cast<uint64_t>(x)) % negstep == 0;
     }
     Handle getItem(KiritoVM& vm, std::span<const Handle> keys) override {
         Handle k = singleKey(*this, keys);

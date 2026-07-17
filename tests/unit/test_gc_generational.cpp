@@ -429,5 +429,39 @@ String(keep[0]) + String(keep[1][1]) + String(keep[2]["k"])
         CHECK(vm.stringify(vm.runSource("sum(range(1000))")) == "499500");
     }
 
+    // ===== CARD-TABLE SPILL (>8192 entries) — v1.16.1 A04 F04-1. The inline card word covers only the
+    // first 64 cards = entries [0, 8192); a container OLD, remembered, and written PAST index 8192
+    // allocates the CardTable `spill` vector. Nothing exercised it before (largest carded container in
+    // the suite was ~500). Build >9000 fresh non-interned entries, promote to old, write near the tail
+    // (card >64 -> spill), churn under gc-every-alloc, and assert the young tail child survives. =====
+    {
+        KiritoVM vm;
+        vm.installStandardLibrary();
+        vm.setGcThreshold(1);
+        // List: 9200 fresh strings, overwrite entry 9000 (card 70 -> spill), append a tail, churn, read
+        CHECK(vm.stringify(vm.runSource(
+            "var xs = []\nvar i = 0\nwhile i < 9200:\n    xs.append(\"v\" + String(i))\n    i = i + 1\n"
+            "xs[9000] = \"spill-sentinel\"\nxs.append(\"tail-\" + String(9200))\n"
+            "var j = 0\nwhile j < 300:\n    discard [j]\n    j = j + 1\n"
+            "xs[9000] + \"|\" + xs[9200] + \"|\" + String(len(xs))")) == "spill-sentinel|tail-9200|9201");
+        // Dict: 9200 fresh keys+values, overwrite a value past card 64, churn, read back
+        CHECK(vm.stringify(vm.runSource(
+            "var d = {}\nvar i = 0\nwhile i < 9200:\n    d[\"k\" + String(i)] = \"v\" + String(i)\n    i = i + 1\n"
+            "d[\"k9000\"] = \"spill-v\"\nvar j = 0\nwhile j < 300:\n    discard [j, j]\n    j = j + 1\n"
+            "d[\"k9000\"] + \"|\" + d[\"k9199\"] + \"|\" + String(len(d))")) == "spill-v|v9199|9200");
+        // Set: 9200 fresh members spanning the spill boundary survive a churn
+        CHECK(vm.stringify(vm.runSource(
+            "var s = Set()\nvar i = 0\nwhile i < 9200:\n    s.add(\"m\" + String(i))\n    i = i + 1\n"
+            "var j = 0\nwhile j < 300:\n    discard [j]\n    j = j + 1\n"
+            "String(s.contains(\"m9000\")) + \"|\" + String(s.contains(\"m9199\")) + \"|\" + String(len(s))"))
+            == "True|True|9200");
+        // F04-2: list.clear() resets the CardTable — a cleared-then-refilled OLD list stays correct.
+        CHECK(vm.stringify(vm.runSource(
+            "var xs = []\nvar i = 0\nwhile i < 9200:\n    xs.append(\"a\" + String(i))\n    i = i + 1\n"
+            "xs.clear()\nvar k = 0\nwhile k < 200:\n    xs.append(\"b\" + String(k + 5000))\n    k = k + 1\n"
+            "var j = 0\nwhile j < 200:\n    discard [j]\n    j = j + 1\n"
+            "xs[0] + \"|\" + xs[199] + \"|\" + String(len(xs))")) == "b5000|b5199|200");
+    }
+
     return RUN_TESTS();
 }
