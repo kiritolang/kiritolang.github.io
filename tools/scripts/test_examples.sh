@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run every runnable program in examples/ against a `ki` interpreter. This is a smoke test — each
 # example is expected to exit 0; there are no per-example golden outputs at this level (the
-# `tools/tests/scripts/*.ki` suite does that job). Network-only demos are skipped.
+# `tests/scripts/*.ki` suite does that job). Network-only demos are skipped.
 #
 # Usage:
 #   tools/scripts/test_examples.sh                 # uses `ki` from PATH

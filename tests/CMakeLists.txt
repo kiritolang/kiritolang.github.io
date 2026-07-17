@@ -250,7 +250,7 @@ foreach(script ${ki_scripts})
                      -DEXPECTED=${expected} ${extra}
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ki_script.cmake)
     # Run the script from the repo root so relative paths in the script (e.g.
-    # `tools/tests/net_abuse_server.py` in probe_http_client_abuse.ki) resolve
+    # `tests/net_abuse_server.py` in probe_http_client_abuse.ki) resolve
     # against the source tree, not the build directory.
     set_tests_properties(script_${nm} PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endforeach()

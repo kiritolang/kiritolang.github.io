@@ -24,7 +24,7 @@ import threading
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-KPM_KI = os.path.normpath(os.path.join(HERE, "..", "..", "kpm", "kpm.ki"))
+KPM_KI = os.path.normpath(os.path.join(HERE, "..", "kpm", "kpm.ki"))
 
 # registry[(owner, repo)] = {"default_branch": str, "tags": [str], "refs": {ref: {path: content}}}
 REGISTRY = {}

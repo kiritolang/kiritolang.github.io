@@ -2,7 +2,7 @@
 
 A complete tree-walking interpreter for the Kirito language, **written entirely in Kirito** (`.ki`).
 It lexes, parses and evaluates Kirito source, and is exercised by running the main project's own
-`tools/tests/scripts/*.ki` suite through it and checking each program reproduces its recorded output.
+`tests/scripts/*.ki` suite through it and checking each program reproduces its recorded output.
 
 This is the ultimate stress test for the real interpreter: every token, AST node and evaluation step
 of the inner programs runs through thousands of lines of Kirito — closures, classes, exceptions,
@@ -15,7 +15,7 @@ cmake --build build                                                   # build th
 ki --lib examples/big_projects/selfhost/lib examples/big_projects/selfhost/run_tests.ki
 ```
 
-(run from the repository root, so the `tools/tests/scripts` paths resolve). It prints `PASS`/`FAIL` per
+(run from the repository root, so the `tests/scripts` paths resolve). It prints `PASS`/`FAIL` per
 program and ends with `ALL SELF-HOST TESTS PASSED`. Pass `full` to also run the slow crypto/compression
 programs.
 
@@ -120,7 +120,7 @@ syscall module (clocks + environment) used by `sys`/`time`.
 
 ## Test coverage
 
-The harness auto-discovers every `tools/tests/scripts/*.ki` that has a matching `.expected` and runs
+The harness auto-discovers every `tests/scripts/*.ki` that has a matching `.expected` and runs
 the vast majority of them, reproducing the real interpreter's output byte-for-byte. The authoritative,
 always-current list of what is skipped (and why) lives in `run_tests.ki` as two sets:
 

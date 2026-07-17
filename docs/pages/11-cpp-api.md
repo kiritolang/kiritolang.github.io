@@ -180,7 +180,7 @@ Handle r = vm.runSource("import(\"stats\").mean([2, 4, 6, 8])\n");
 ```
 
 This is the lightest embed and is what the integration test
-(`tools/tests/integration/embed_demo.cpp`) uses. The only thing you give up is multiprocessing:
+(`tests/integration/embed_demo.cpp`) uses. The only thing you give up is multiprocessing:
 `import("parallel")` throws, because `parallel` is a dispatcher-provided capability. Reach for a
 bare VM only when you're certain you'll never want worker VMs; otherwise prefer the dispatcher.
 
@@ -673,7 +673,7 @@ arithmetic.
 is a single-character `Value`); on a **Dict**, it yields the **keys**, not the pairs. If your
 native expects a *List*, always check `.isList()` before iterating — a Kirito caller passing a bare
 String otherwise silently unpacks into its characters. The router integration test
-(`tools/tests/integration/embed_router.cpp`) had to add exactly one line to guard against this:
+(`tests/integration/embed_router.cpp`) had to add exactly one line to guard against this:
 
 ```cpp
 if (!r.isList()) throw KiritoError("rule must return a List, got '" + r.typeName() + "'");
@@ -1091,7 +1091,7 @@ Full class details (`bindArgs`, the read-only surface, `NativeFn`/`NativeFnKw` t
 Subclass `NativeModule`, override `name()` and `setup()`, register with one `install<T>()`. Inside
 `setup`, declare members through the `ModuleBuilder` — `fn` for functions, `value` for constants,
 `alias` for a second public name. This is a complete `stats` module — it is also the embedding
-integration test (`tools/tests/integration/embed_demo.cpp`), so it is guaranteed to compile and
+integration test (`tests/integration/embed_demo.cpp`), so it is guaranteed to compile and
 run:
 
 ```cpp
@@ -1180,7 +1180,7 @@ operators — subclass **`NativeClass<Derived>`**. The CRTP base fills in `kind`
 protocol slots your type uses.
 
 Here is a complete 2-D vector — attributes, methods, an overloaded `+`, and a custom `str`
-(verified in `tools/tests/integration/embed_demo.cpp`):
+(verified in `tests/integration/embed_demo.cpp`):
 
 ```cpp
 struct Vec2 : NativeClass<Vec2> {

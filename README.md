@@ -205,7 +205,7 @@ docs/              The documentation site: hand-authored Markdown in `docs/pages
   editors/           Syntax-highlighting definitions for `.ki` files — Notepad++ (UDL), VS Code
                      (TextMate grammar + extension), and Vim. See `docs/editors/README.md`.
 
-License/           LICENSE (MIT) and THIRD_PARTY_LICENSES.md (licenses of incorporated software).
+license/           LICENSE (MIT) and THIRD_PARTY_LICENSES.md (licenses of incorporated software).
 .audit/            Hidden but tracked: the paper trail of the codebase audit rounds (pre-1.12 / v1.12 /
                    v1.13) — per-subsystem findings, triaged roll-ups, and recorded false positives.
 CLAUDE.md          The project charter: what Kirito is, how it's built, and the working rules.
@@ -215,7 +215,7 @@ CLAUDE.md          The project charter: what Kirito is, how it's built, and the 
 
 Kirito (bytecode VM) vs C++ (`-O2`, gcc 13.3) vs CPython 3.11 vs Lua 5.1 vs Bash on identical algorithms
 over identical (LCG-generated) data, release build. **Microseconds per repetition, mean ± population
-stddev, one unit per row, lower is better** — median of three runs (`tools/tests/bench/compare.py`):
+stddev, one unit per row, lower is better** — median of three runs (`tests/bench/compare.py`):
 
 | Workload | N | reps | C++ (-O2) | Python 3.11 | Lua 5.1 | Bash | Kirito |
 |---|---|---|---|---|---|---|---|
@@ -243,7 +243,7 @@ is the least stable. Bash uses adaptive reps (~0.5 s per workload, min 5), so it
 samples. Lua 5.1 has no integer type, so its column uses doubles; the benchmark's 31-bit LCG is computed
 with an exact split-multiply so every language runs on byte-identical data.
 
-Reproduce: `cmake --build build-release --target ki && python3 tools/tests/bench/compare.py --ki build-release/ki`
+Reproduce: `cmake --build build-release --target ki && python3 tests/bench/compare.py --ki build-release/ki`
 (the Lua column appears automatically when `lua5.1` is on your `PATH`).
 
 ## Embedding Kirito in C++
@@ -401,11 +401,11 @@ tools/scripts/test_release.sh ./build/ki    # or test one specific interpreter
 
 ## License
 
-Kirito is released under the [MIT License](License/LICENSE) — all of its own source
+Kirito is released under the [MIT License](license/LICENSE) — all of its own source
 (`src/kirito/`, `tools/`, `kpm/`, `examples/`, `docs/`) is original work.
 
 Incorporated third-party software and its licenses are recorded in
-[`License/THIRD_PARTY_LICENSES.md`](License/THIRD_PARTY_LICENSES.md): the bundled **fum** hash-map
+[`license/THIRD_PARTY_LICENSES.md`](license/THIRD_PARTY_LICENSES.md): the bundled **fum** hash-map
 library (MIT), and **OpenSSL** (Apache License 2.0), which is linked only into TLS
 builds (`-DKIRITO_ENABLE_TLS=ON`). The compression, hashing, and regex modules are
 from-scratch implementations of public standards, not third-party code.

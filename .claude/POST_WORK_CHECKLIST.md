@@ -7,10 +7,10 @@ The routine to run **after every change, before declaring it done**. The mechani
 
 1. **Write tests for what changed.** Every new feature or fixed bug gets a focused test in the same
    change (CLAUDE.md rule). Prefer many small tests over one big one.
-   - Behaviour at the C++/embedding boundary → a `tools/tests/unit/test_*.cpp` (register it in
-     `tools/tests/CMakeLists.txt`).
-   - End-to-end `.ki` behaviour with known output → `tools/tests/scripts/NAME.ki` + `NAME.expected`.
-   - Code that *should fail* → `tools/tests/errors/NAME.ki` + `NAME.experr` (each `.experr` line is a
+   - Behaviour at the C++/embedding boundary → a `tests/unit/test_*.cpp` (register it in
+     `tests/CMakeLists.txt`).
+   - End-to-end `.ki` behaviour with known output → `tests/scripts/NAME.ki` + `NAME.expected`.
+   - Code that *should fail* → `tests/errors/NAME.ki` + `NAME.experr` (each `.experr` line is a
      required substring of stderr; the script must exit non-zero). Cover the bad path, not just the
      good one.
    - **Regression-per-bug.** A fix for a specific bug ships an executable test the bug would have
@@ -52,7 +52,7 @@ The routine to run **after every change, before declaring it done**. The mechani
       it surfaces, then re-run and push the fix.** (binaryDir `build-tsan`)
 
    Each variant is a clean reconfigure + build + `ctest`. The suite is **auto-discovered**: unit
-   executables register in `tools/tests/CMakeLists.txt`, and the `tools/scripts/` and `errors/` directories are
+   executables register in `tests/CMakeLists.txt`, and the `tools/scripts/` and `errors/` directories are
    globbed, so the routine never enumerates test files and stays correct as tests come and go.
 
    > Disk hygiene: the four build dirs together are large (~1.3 GB debug + 1.3 GB release + ~12 GB asan

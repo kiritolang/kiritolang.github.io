@@ -1,1017 +1,237 @@
-# CLAUDE.md - Claude Code Instructions
+# CLAUDE.md — Kirito engineering guide
 
-**Read this file in full at the start of every session before doing anything else.**
-It is the source of truth for what Kirito is, how we build it, and how we work.
+**Read this in full at the start of every session.** It is the source of truth for *how we work* and
+the *shape of the system*. The exhaustive language/stdlib/API reference lives in **`docs/`** (authored
+Markdown in `docs/pages/`, rendered by `docs/build_docs.py`) — this file does **not** duplicate it.
 
-## Git
+**Kirito** is a from-scratch, dynamically- but strongly-typed, general-purpose scripting language
+(`.ki` files; namespace `Kirito`), implemented as a **bytecode compiler + stack VM** in header-only
+**C++20**. It is both a standalone interpreter (`ki`) and an embeddable library (Lua-style: one
+`KiritoVM` = one fully-encapsulated process). Design goal: a high-level, low-boilerplate language that
+is also an easy-to-extend C++ framework.
 
-**ONLY commit and push to `claude-branch`.** That branch is Claude's own scratch branch and the
-only place Claude's work lives while it is in flight; pushing to `main` (or any other branch) is
-forbidden. The cycle is: work on `claude-branch`, open a pull request, wait for the human to merge.
+---
 
-**Only (re)start `claude-branch` from `main` when it doesn't already exist, or when its previous
-pull request has already been merged.** A merged PR is finished — never reuse it; branch fresh from
-`main` so the next PR starts clean. But if `claude-branch` already exists with **unmerged** work
-(an open PR, or commits not yet in `main`), **keep working on it** — do NOT recreate it, or you will
-discard commits the open PR still needs. Don't force a new branch just because a new task arrived.
+## Repository structure
+
+- **`src/`** — the interpreter (header-only `src/kirito/*.hpp` behind the umbrella `src/kirito.hpp`) and
+  `main.cpp` (the `ki` entry point). `src/fum/` is a vendored hash map.
+- **`tests/`** — everything test-related: `unit/*.cpp` (CTest), golden `scripts/*.ki` + `.expected`,
+  the error suite `errors/*.ki` + `.experr` (a program that must fail with required diagnostic text),
+  `fuzz/`, and `CMakeLists.txt` (auto-discovers tests via `CONFIGURE_DEPENDS` globs).
+- **`docs/`** — documentation, references, the course, and the doc site builder.
+- **`tools/`** — hardened scripts (`tools/scripts/`) and the pinned-environment record
+  (`tools/versions.env`). `kpm/` (the package manager, written in Kirito) is at the repo root.
+- **`examples/`** — single-file demos and `examples/big_projects/` (larger multi-file programs that
+  double as stress tests).
+- **`.audit/`** — hidden but tracked; **frozen records of past audits** (`v1.NN/…`). Never rewrite a
+  historical audit record; a new audit round gets a new directory.
+- **`license/`** — `LICENSE` (MIT) + `THIRD_PARTY_LICENSES.md`. Never add/remove/modify a license here
+  without explicit permission.
+
+**Script threshold.** Any routine (setup, build, run, test) that takes more than one command, or a
+single command longer than ~60 characters, must be a **hardened script in `tools/`** — not run ad hoc.
+Hardened means: validate its own preconditions and arguments, detect a misconfigured environment or
+missing tools, and fail with a clear, actionable error rather than crashing opaquely or proceeding on
+bad assumptions. **Self-contained:** any required config / data download / install step must likewise be
+a hardened `tools/` script, never an undocumented manual step.
+
+**Pinned environment.** `tools/versions.env` records the exact toolchain the project builds against;
+`tools/scripts/check_env.sh` validates the local environment against it (used by contributors/CI).
+Keep both current. Kirito has **no third-party runtime dependencies** (OpenSSL is optional, only for the
+TLS/crypto features), so the reproducibility surface is just compiler + CMake + Ninja (+ optional OpenSSL).
+
+---
+
+## Workflow
+
+- **Start clean.** Confirm you are on the correct branch and have pulled remote changes before starting.
+- **Audit → plan → implement.** Read/run/test the relevant code before making any claim about existing
+  behavior — never assert from memory or assumption. Understand the current state, then plan, then implement.
+- **Never assume a request is correct as stated.** Take the intent seriously, but analyze the requested
+  change against the actual codebase and proactively flag risks, consequences, or better alternatives —
+  correct a wrong assumption rather than silently complying or silently working around it.
+- **Audit system-wide impact** before and during a change — callers, shared state, invariants relied on
+  elsewhere — against the real sources, not memory. Revisit if the scope grows.
+- **Keep docs, references, and tests up to date in the same change**, never as a follow-up.
+- **Test before pushing:** run the scoped tests covering the change. Before opening a PR: the full suite
+  (the 4-variant gate below).
+
+### Git — branch `claude-branch` only
+
+**Only commit and push to `claude-branch`.** Never commit/push to `main`, never force-push `main`. Open a
+pull request only when explicitly asked; expect the branch to be deleted after merge (recreate freely from
+`origin/main` for new work — rebase only if `main` advanced with conflicting changes).
 
 ```sh
 git fetch origin main
-# Branch missing, or its previous PR already merged -> (re)start fresh from main:
-git checkout -B claude-branch origin/main
-# Branch exists with unmerged work -> just switch to it and keep going (do NOT use -B):
-git checkout claude-branch
+git checkout -B claude-branch origin/main   # branch missing, or its previous PR already merged
+git checkout claude-branch                  # branch exists with unmerged work — keep going (never -B over it)
 ```
 
-Pick the one that matches the situation; when unsure whether the last PR merged, check before
-recreating (a merged PR shows in `git log origin/main`, or ask). Follow-up commits for an
-unmerged PR simply land on the existing `claude-branch` and update that same PR.
+Push whenever a logically-complete change is done and its scoped tests pass — don't leave completed work
+unpushed. A PreToolUse hook (`.claude/hooks/enforce_claude_branch.py`) blocks commits off `claude-branch`
+and pushes touching `main`; if it fires, switch to `claude-branch` and retry — do not bypass it.
 
-A PreToolUse hook (`.claude/hooks/enforce_claude_branch.py`, wired in `.claude/settings.json`)
-enforces this — it blocks any `git commit` off `claude-branch` and any `git push` that touches
-`main` or leaves `claude-branch`. If the hook fires, do not try to bypass it: switch to
-`claude-branch` with `git checkout claude-branch` (or create it from `origin/main` if it genuinely
-doesn't exist) and retry — never `-B` over a branch that still has unmerged work.
+### Versioning
 
-Opening and updating a pull request from `claude-branch` is fine; no other GitHub write is.
+`kVersion` in `src/kirito/version.hpp` (surfaced as `ki --version` / `sys.version`) is the version the
+**next** release *will* carry — editing it neither releases nor authorizes a tag/GitHub Release. "Bump to
+X" means only "edit `kVersion` (+ docs that quote it)". A release happens **only** when the user explicitly
+asks (build binaries, push tag, upload Release). An **audit/hardening round is a PATCH bump**
+(`1.12.0`→`1.12.1`); a **minor** bump is for genuinely new user-facing features, a **major** for breaking
+changes — and only when asked. (`.audit/v1.NN` are round labels, not versions.)
 
-## Versions
-
-**A "released version" of Kirito is a git tag + published GitHub Release, nothing less.** The
-`kVersion` constant in `src/kirito/version.hpp` (surfaced as `ki --version` / `sys.version`) is the
-version the next release WILL carry, not the version that is out. So "bump the version to X" means
-only "edit `kVersion` (+ any docs that quote it) to X" — it does NOT mean X is released, does NOT
-imply a tag or a Release, and does NOT authorize either. A release happens only when the user
-explicitly asks for one (build the binaries, push the tag, upload the GitHub Release). Until then
-`kVersion` is just the label the in-progress work will ship under.
-
-**An audit loop is a PATCH (bugfix) release — bump only the patch component** of `kVersion`
-(`1.12.0` → `1.12.1` → `1.12.2` …), never the minor or major. An audit loop hardens/fixes/tests the
-existing surface; it does not add headline features, so it is a bugfix release by definition. Reserve
-a minor bump for genuinely new user-facing features and a major bump for breaking changes, and only
-when the user asks. (The `.audit/v1.NN` directories are internal round labels, not version numbers —
-don't infer the version from them.)
-
-## What we are building
-
-**Kirito** — a from-scratch, dynamically-typed, strongly-typed general-purpose scripting language.
-Source files use the `.ki` extension. The language namespace is `Kirito`.
-
-Main idea for the language: it should be a high-level language that's fast to develop in. We want just right level of abstraction to allow for that without demanind "boilerplate code" from the user. At the same time, Kirito is supposed to be a C++ framework - users should be able to easily implement and wire-in new objects / functions / modules in C++ Kirito's framework.
-
-Furthemore, Kirito is expected to be capable of being extension language that can be integrated into bigger application in C++. It's therefore important that single "proccess" of Kirito is expected to be fully encapsulated in single object of KiritoVM class.
-
-Implementation: **modern C++ (C++20)**. The execution engine is a **bytecode compiler + stack VM**
-behind the AST boundary (it replaced the original tree-walking evaluator — there is no tree-walker).
-
-Pipeline — keep these stages separate, each behind a clean interface:
-
-```
-.ki source -> Lexer -> [tokens] -> Parser -> [AST] -> Compiler -> [bytecode Proto] -> BytecodeVM -> result
-```
-
-The **AST is the stable boundary**. Treat it as a contract: the compiler depends only on the AST,
-never on lexer/parser internals — it is a second AST visitor alongside the parser. The bytecode VM
-reuses the entire value/object model, operator dispatch, call protocol, and GC; it owns only the
-control structure (a flat instruction stream + an explicit operand stack instead of native recursion).
-
-### Language shape (the target)
-
-Kirito should support:
-
-- `var` declarations; `#` line comments. **Significant indentation**: blocks are
-  introduced by `:` + newline + indent (no braces).
-- **Reference assignment semantics**: `A = B + C` allocates a new value, and `A`
-  is bound to it. Assignment binds names to values; it does not deep-copy. `var` declares in the
-  current scope; bare `=` rebinds the nearest existing binding (a `NameError` if undefined).
-- **First-class functions**: `var main = Function():` followed by an indented block, called as `main()`.
-  Parameters take **keyword arguments** (`f(b = 2, a = 1)`, any order) and **default values**
-  (`Function(base, exp = 2):`) — keywords work **uniformly across every callable**: plain calls,
-  **class instantiation** (forwarded to `_init_`: `Point(x = 1, y = 2)`), **instance/inherited/`_super_`
-  method calls**, **built-in type methods** (`xs.sort(key = f, reverse = True)`, `s.split(sep = ",")`,
-  `d.get(key = k, default = 0)`), **native-object methods** (matrix/regex/io/net/…), and signatured
-  builtins/stdlib functions (the shared `makeMethod` helper gives any native member function keyword
-  support). Parameters and the return value take optional **enforcing type
-  annotations** (`Function(d : Dict) -> Float:`): unlike advisory type hints these are *checked at runtime* —
-  the argument must be an instance of the named type (inheritance-aware: a subclass satisfies a base
-  annotation) and the function must return that type, else a clear error. `Any` / no annotation
-  accepts anything.
-- **Control flow**: explicit `return` (functions default to `None`), `if`/`elif`/`else`, `while`,
-  `for VAR in ITERABLE`, `break`, `continue`; logical keywords `and`/`or`/`not`; the **conditional
-  expression** `THEN if COND else ORELSE` (lowest precedence, short-circuits, right-associative when
-  chained). `return` outside a function and `break`/`continue` outside a loop are rejected at parse
-  time.
-- **Packing & unpacking**: a bare comma sequence packs into a List (`var t = 1, 2, 3`; `return a, b`
-  returns `[a, b]`). The left side of `=`, `var`, and `for` unpacks any iterable — `var a, b = pair`,
-  `a, b = b, a` (swap), `for k, v in d.items()` — with a single **starred** target absorbing the
-  surplus (`var first, *rest = xs`, `var *init, last = xs`). Counts are checked (a clear error on
-  mismatch); unpack targets may be names, indices, or members (`a[0], a[1] = x, y`).
-- **Numerics**: separate `Integer` (int64) and `Float` (double); integer literals may be decimal,
-  hex (`0xFF`), octal (`0o17`), or binary (`0b1010`) (case-insensitive prefix, full-width
-  two's-complement), and float literals allow scientific notation (`1e10`, `1.5e3`, `2e-3`,
-  and `1.e5` — a `.` followed by an exponent; an exponent needs e/E + optional sign + a digit, so
-  `1.compare(x)` stays member access).
-  **True division** — `/` always yields `Float`, `//` is
-  floor division, `%` modulo, `**` right-assoc exponentiation. Integer arithmetic is fixed-width
-  int64 with **well-defined two's-complement wraparound** on overflow (no UB); **arbitrary-precision
-  integers** are delivered as the `int` module's `BigInt` value type (see the stdlib list). **Float
-  `==`/`!=` is EXACT IEEE-754**: `0.1 + 0.2
-  == 0.3` is `False`, `NaN != NaN`, `inf == inf`, `0.0 == -0.0` — so equality agrees with `<`/`>`
-  (trichotomy) and with hashing (distinct-but-close floats are distinct Set/Dict keys). For
-  *approximate* comparison every Integer/Float has **`.compare(other, rel_tol = 1e-9, abs_tol = 0.0)
-  -> Bool`** (close when `|a - b| <= max(rel_tol * max(|a|, |b|), abs_tol)`). **The boundary rule is: ONLY `==`/`!=` are exact — every native
-  numeric type (`Complex`, real `Matrix`, `Tensor`, `ComplexMatrix`/complex `Matrix`) compares
-  bit-exactly with `==` and carries the same `.compare(other, rel_tol, abs_tol)` method. METHODS, by
-  contrast, MAY (and should) be tolerant — `.compare` and predicates like `complex.is_zero` use a
-  rel/abs epsilon; tolerance lives in methods, never in `==`.** Resource guards: huge string/list repetition, padding, and
-  `range` are bounded (throw instead of OOMing); deeply nested source/data structures throw instead
-  of overflowing the native stack.
-- **Modules** via `import("io")`; first stdlib module is `io` (`io.input`, `io.print`).
-- Built-in types, dynamically typed: `None`, `Bool`, `Integer`, `Float`, `String`,
-  and collections `List`, `Set`, `Dict` (plus an internal `Array` — same value model as `List`, no
-  literal/constructor exposed to Kirito). Values are hashable where it makes
-  sense. **Stringification has a str-vs-repr distinction**: a bare `print(s)`/`String(s)` shows a
-  String's raw text, but a String *nested in a container* prints in **repr form** (quoted + escaped):
-  `print(["a", "b"])` → `['a', 'b']`, `print({"k": "v"})` → `{'k': 'v'}`, so `[""]` (→ `['']`) is
-  distinguishable from `[]`. Numeric/math depth was a *later* enrichment (the general scripting core
-  came first) and is now delivered: the native `matrix` and `complex` modules (complex numbers +
-  real/complex matrices and vectors).
-- **`Bytes`** — an immutable sequence of raw bytes (0–255): the byte-exact
-  counterpart to the Unicode (code-point) `String`. `b[i]` is an Integer byte, slicing yields Bytes,
-  iteration yields Integers; `+` concatenates, `*` repeats, lexicographic ordering, hashable. Convert
-  with `s.encode([enc])` (String → Bytes) and `b.decode([enc])` (Bytes → String); encodings `utf-8`
-  (default), `latin-1` (lossless byte↔code-point), `ascii`. `b.hex()` / `fromhex(s)`; `Bytes(x[, enc])`
-  builds from a List of Integers, an Integer n (n zero bytes), a String, or a Bytes. Serializable.
-  This is the right type for binary I/O — `net.get(url).content`, `io.open(path, "rb")`, gzip/zlib —
-  because a String, being UTF-8, merges valid multi-byte sequences and so cannot address arbitrary
-  bytes.
-- **Classes**: user-defined types — `class` with methods and instance
-  attributes, instantiated by calling the class. A class is just another first-class value, in the
-  same value/object model as built-ins, so a C++-defined type and a Kirito `class` look alike to
-  the VM. Special methods use dunder names with **single** underscores:
-  `_init_`, `_str_`, `_add_`/`_sub_`/`_mul_`/`_div_`/`_floordiv_`/`_mod_`/`_pow_`,
-  `_eq_`/`_ne_`/`_lt_`/`_le_`/`_gt_`/`_ge_`, `_neg_`/`_not_`, `_bool_` (opt-in truthiness — every
-  `if`/`while`/`and`/`or`/`not`/`Bool(x)`/`filter` dispatches through it; must return a `Bool`;
-  without it, an instance is always truthy — the additive-safe default), `_call_`,
-  `_getitem_`/`_setitem_` (variadic keys: `m[i, j] = v`), `_len_`, `_contains_`, `_iter_`, `_next_`
-  (the **lazy generator protocol** — see below), `_enter_`/`_exit_`, and `_hash_`. Members whose
-  name has a **single leading underscore and no trailing underscore** (e.g. `_count`) are **private**
-  — accessible only from within a method of the same class **or a subclass** (privacy is per class
-  *chain*, not per defining class — there is no name mangling). A **nested function defined inside a
-  method** inherits that method's class ownership, so a closure/callback lexically inside a method may
-  also touch `self._private` and resolve `self._super_()`; a function defined outside any method
-  cannot. Non-function class-body
-  `var`s are shared class attributes: instances read them through the class and copy-on-write on
-  assignment. Parameter **defaults are evaluated at call time**, once per call, left-to-right (so
-  a mutable default like `xs = []` is a fresh list each call — not a shared-once footgun); a default
-  may reference an **earlier (already-bound) parameter** (`Function(a, b = a + 1)`) as well as
-  enclosing-scope names — the resolver, analyzer, and runtime binder all agree.
-  `self._super_()` returns a *parent view*
-  of self (method lookup starts at the base of the currently-running method's class) — for extending
-  inherited methods/constructors; it climbs one level per call (so multi-level chains compose),
-  throws if the class has no base, and is overridable (but shouldn't be). The parent view resolves
-  **named** lookups only, so an inherited special method is extended by its dunder NAME
-  (`self._super_()._call_(x)`, `self._super_()._getitem_(i)`) — operator syntax on the view
-  (`self._super_()(x)`, `self._super_()[i]`) throws "type 'Super' is not callable/indexable". This is
-  uniform across every operator dunder (one rule, no exceptions); giving `SuperValue` a `call` slot
-  alone was rejected in v1.15 (A09-6) precisely because it would make `()` work while `[]`/`+`/… still
-  didn't. Documented in the language guide.
-
-Build the smallest thing that runs end-to-end first (lex+parse+eval an integer
-literal, then arithmetic, then `var`, then functions, then `io`), and grow outward.
-Every step must keep `main.ki`-style programs as the north star.
-
-**Status:** the language is broadly implemented and tested end-to-end (`src/kirito/*.hpp`, the
-`ki` runner, an extensive CTest suite incl. golden `.ki` scripts, an embedding integration test,
-a stability fuzzer, and a benchmark). Working today:
-- Arithmetic (true division), `var`/reference-assignment, comparisons, `in`/`not in`.
-- Indentation blocks with `if/elif/else`/`while`/`for`/`break`/`continue`/`pass`/`todo`, `and`/`or`/`not`.
-  Tabs and spaces both work but ambiguous mixing is rejected (measured with tab=8
-  and tab=1, both must agree). Line endings are universal: the lexer normalizes CRLF and lone CR to
-  LF up front, so Windows/WSL-copied (`\r\n`) sources lex identically to Unix `\n` (a stray `\r` on a
-  blank line no longer corrupts the indent/dedent stream) and strips a leading UTF-8 BOM (the same
-  editors write one; a mid-file BOM is still a lex error).
-- `switch SUBJECT:` with `case V[, V2...]:` arms and an optional `default:` — **no fallthrough**
-  (exactly one arm runs). Case labels are constant scalars (`Integer`/`Float`/`String`/`Bool`/`None`),
-  matched exactly by type+value (so `case 1` ≠ `case 1.0`, and float labels match by exact value, not a
-  rounded string); compiled into an exact-match comparison chain. Non-scalar subjects only reach `default`; duplicate case
-  values, a second `default`, and an empty body are rejected. `case`/`default` are **soft keywords**
-  (lexed as identifiers, recognized only inside a switch body) so they stay usable as ordinary names
-  like a `default` parameter; only `switch` itself is reserved.
-- First-class functions with closures and `return`; `assert`. Recursion is bounded by a call-depth
-  guard (configurable) that throws a catchable error instead of overflowing the native stack.
-- `List`/`Set`/`Dict` with literals, indexing, slicing, iteration, `in`, and methods (append/pop/
-  reverse/insert/remove/index/extend/copy/clear/count; keys/values/items/get/pop/update/setdefault/
-  popitem/clear; add/discard/contains/union/intersection/difference/symmetricdifference/issubset/
-  issuperset/isdisjoint/pop/clear/...); `len`. **Set algebra also via operators** (Kirito has no
-  `|`/`&`/`^` tokens): `-` is difference and `<`/`<=`/`>`/`>=` are proper-/subset and proper-/superset.
-  Every container — `List`/`Set`/`Dict` and the
-  sequences `String`/`Bytes` — has **`apply(fn)`** (like `tensor.apply`): a new container of the same
-  type with `fn` mapped over the elements (over a Dict's *values*, keeping keys; over a String's
-  characters; over a Bytes' bytes). Built-in containers also describe their methods under `inspect`. Lists support lexicographic ordering (`<`/`<=`/`>`/`>=`,
-  element-by-element then by length) and `+` concatenation (and `*` Integer repetition,
-  guarded against huge counts), enabling multi-key sorts via
-  a list-returning `key`. Ordered collections have an efficient in-place
-  `sort([key][, reverse])` that is **stable** by default (so is the `sorted()` builtin); keys are
-  precomputed once per element.
-- **Unicode** `String` (code-point indexing/slicing/iteration), `*` repetition, and methods
-  (upper/lower [Unicode-aware]/strip/split/join/replace/startswith/endswith/find/rfind/index/count/
-  is{digit,alpha,alnum,space,lower,upper}/removeprefix/removesuffix/ljust/rjust/center/zfill/
-  — search/replace methods honor optional args (strip(chars), split(sep, maxsplit),
-  replace(old, new, count), find/index/rfind/rindex/count/startswith/endswith with code-point
-  [start[, end]]) — and the format mini-spec's `#` alternate form adds the 0b/0o/0x base prefix —
-  partition/rpartition, and `levenshtein` (the Unicode/code-point edit distance to a String, or to
-  each String in a List — computed in C++; the `string` module's `similarity`/`closest`/`fuzzymatch`
-  build fuzzy matching on it) and `.format()`.
-- **User-defined `class`es** with methods, attributes, inheritance, operator methods
-  (`_add_`/`_str_`/`_getitem_`/...), and private `_members`.
-- **Exceptions**: `try`/`catch [Type as e]`/`finally`/`throw` (typed matching via the class chain).
-  Indentation-based blocks, but **C++-style keyword names** (`catch`/`throw`, not `except`/`raise`).
-  A bare `catch` also catches **any `std::exception`** crossing the native boundary (surfaced as a
-  catchable String), so a C++ module that throws can't escape a Kirito `try`.
-- **Context managers**: `with ... as ...` (enter/exit protocol).
-- **Garbage collection**: precise, **non-moving generational** mark-sweep with rooted intermediates
-  (AddressSanitizer-clean). Each `Object` carries a young/old age tag; a cheap **minor** collection
-  scans only the young generation (a nursery list, so it is O(young) not O(heap)) and promotes
-  survivors in place (the age flips — handles never move), while an occasional full **major**
-  collection reclaims old-generation garbage and old-spanning dead cycles. A **write barrier** inside
-  the core value mutators (env bindings, List/Dict/Set/Instance/Module writes, class-method installs)
-  records old→young edges in a **remembered set** so a minor never frees a still-reachable young
-  object. The barrier fires transparently for both the VM and the C++ API (the `value.hpp` wrappers
-  call the same mutators); each barriered mutator takes the **owning arena** from its caller (there is
-  deliberately no arena-less overload — one existed and misrouted with 2+ VMs on a thread). Still no
-  `shared_ptr` / no per-value refcount.
-  **The two cadences are independent, which is the point of the split**: a minor runs every
-  `kMinorNursery` (32768) allocations — fixed and small, because a minor costs O(young), so the pause
-  stream is many uniform blips and the arena's high-water stays near live+nursery; a major runs every
-  `max(kGcThresholdFloor, live*4)` allocations — proportional to live, because that is what amortizes
-  its O(live) cost. The floor (131072) must stay a comfortable multiple of the nursery or the major
-  trigger fires first and minors never run. Both constants are measured, not guessed (`tools/tests/bench`,
-  per-rep intra-run CV: v1.15 A18/S3 — vs 1.15.0, no workload regressed, sort/string_ops ~25% faster,
-  CV 0.265→0.055 on sum_loop, arena 1.6–6.5× smaller). **Card marking** now removes the old quadratic
-  where a minor rescanned each remembered old container IN FULL (a growing List/Dict/Set re-remembering
-  itself on every append): a `CardTable` (object.hpp) over a container's ordered child array marks the
-  written entry's card, and a minor rescans only DIRTY cards (`childrenInDirtyCards`) — so building a
-  large List/Dict/Set is O(N), not O(N²/nursery). Applied to the runtime-growable containers (List, and
-  the dense-backed Dict/Set); Env/Instance/Module/Class stay full-rescan (they grow only from source,
-  never a runtime loop). GC stats are exposed via
-  `KiritoVM::gcMinorCount()`/`gcMajorCount()` and the CLI's `--gc-stats`; `--gc-threshold N` (or
-  `KIRITO_GC_THRESHOLD`) pins BOTH cadences to an aggressive fixed value (the write-barrier soak — but
-  note it only proves what the test's VALUES exercise: small integers are interned and permanently
-  rooted, which is how the v1.15 A19-1 dangling-handle class hid from five rounds of it).
-  **Rooting rule for native code:** root a value the moment it is made (`RootScope::add`), not once its
-  owner is arena-reachable — a container built off-arena (`make_unique<ListVal>` + allocate into it) is
-  traced by nothing, so the next allocation collects what it holds.
-- **String literals** in every spelling: **single- or double-quoted** (`'x'` / `"x"` — pick one to
-  embed the other quote unescaped), each **triplable** (`'''…'''` / `"""…"""`) for **multiline**
-  strings that span newlines and hold lone quotes, with two combinable prefixes — `r` for **raw**
-  (backslashes literal: `r"\n"` is two chars) and `f` for **f-strings** (`rf`/`fr` combine). Cooked
-  escapes: `\n \t \r \0 \\ \" \'` and `\xHH`. A single-line form can't cross a newline; an
-  unterminated string, a bad escape, or a raw string ending in a lone backslash is a clear lex error.
-  All of this is one unified lexer routine (`Lexer::stringLiteral`).
-- **f-strings** `f"{expr}"` (with optional `:format-spec` — `f"{x:05d}"`, `f"{pi:.2f}"` — and
-  surrounding whitespace allowed inside the braces) in any quote style/flavour (`f'…'`, `f"""…"""`,
-  raw `rf"…"`); because `'…'` strings exist, an f-string can hold a single-quoted key:
-  `f"{d['k']}"`. Inline anonymous functions `Function(x): return x*x` (a single same-line statement;
-  an inline body does NOT comma-pack — `var f = Function(): return a, b` is rejected as ambiguous
-  rather than silently binding `f` to `[<function>, b]`; use an indented block body to pack, or wrap
-  the function in `[ ]`. A comma after an inline function in a call-argument or bracketed-list position
-  still delimits normally).
-- **Static warnings + `discard`**: a non-fatal analysis pass (`analyzer.hpp`) run before execution
-  flags: function-local variables assigned-but-never-used; bare expression statements whose
-  non-`None` value is dropped; a `var` re-declared in the same block; unreachable code after a
-  return/throw/break/continue; and self-assignment (`x = x`). (A **duplicate parameter name** is a hard
-  **parse error**, not a warning — it would desync the resolver's slot layout from the runtime frame.) `discard
-  EXPR` evaluates and intentionally drops a value (suppressing the unused-result case). `todo
-  [message]` is a no-op statement (like `pass`) that *deliberately* emits a `todo: ...` warning at
-  its location reminding you to implement something (an optional trailing string is the reminder).
-  Warnings print `file:line:col: warning: ...` to stderr; the `ki` flag `-w`/`--no-warn` disables
-  them. Module-level names (exports) and class members are never flagged.
-- **Lazy generators**: a user class is a **pull-based generator** when its `_iter_(self)` returns an
-  object with a `_next_(self)` method: `_next_` yields the next value or `throw StopIteration()` to end.
-  A `for`/`sum`/`sorted`/`List(...)`/unpacking over it streams — one value at a time, so an **infinite**
-  generator + `break` (or `any`/`all` short-circuit) is bounded and never materializes. **`StopIteration`**
-  is a built-in exception class (global; matches typed `catch`/`isinstance`). **Strict PEP-479**: only a
-  StopIteration raised at `_next_`'s own frame ends iteration — one leaking from a deeper call surfaces
-  as an error. The seam is the pull-based `LazyIterator` (`object.hpp`); an `_iter_` that returns a plain
-  List (the pre-generator style) still works. `range`/`map`/`filter`/`zip`/`enumerate` are lazy on the
-  same seam (below). No `yield` coroutines (the VM recurses on the native stack — out of scope).
-- **Builtins**: `range` (a **lazy** sequence — see below), `sum`, `min`, `max`, `abs`, `round`, `sorted`,
-  `enumerate`/`zip`/`map`/`filter` (**lazy iterators**, Python-style: the result's `type()` is
-  `range`/`map`/`filter`/`zip`/`enumerate`, NOT `List`, and it is not indexable / not `== [list]` — wrap
-  in `List(...)` to materialize; a non-iterable/non-callable arg throws when ITERATED, not at
-  construction). `range` is the exception that stays **backward-compatible**: it prints list-style
-  (`[0, 1, 2]`), compares `== [0, 1, 2]` (both directions), and supports O(1) `len`/index/`in`; it still
-  throws `range too large` past the 32M-element cap (which now bounds only the *materializing* ops —
-  iteration itself is O(1) memory). The reductions `sum`/`min`/`max`/`all`/`any` and `str.join`/
-  `list.extend` **stream** a lazy source (no intermediate List). `len`, `type`, `id`, `import`, `inspect`,
-  `all`, `any`, `reversed`, `divmod`, `isinstance`
-  (the type argument may be a user class, a **built-in type constructor** — `isinstance(1, Integer)` —
-  or a type-name String; typed `catch` likewise matches built-in types, e.g. `catch String as e`),
-  `hasattr(obj, name)` (does `obj.name` resolve? — **existence**, so an attribute that is `None` still
-  counts as present; privacy-agnostic; `True` iff `obj.name` would evaluate, so uniformly `False` on a
-  class value and a plain function; a non-String name throws),
-  `ord`, `chr`, `bin`, `oct`, `hex`, `pow` (2- and 3-arg modular), `bitand`/`bitor`/`bitxor`/`bitnot`
-  and `shl`/`shr` (bitwise ops + shifts on Integers — Kirito has no `&`/`|`/`^`/`~`/`<<`/`>>`
-  operators), `format` (mini-format-spec:
-  fill/align/sign/width/`,`/precision/type), and the
-  `Integer`/`Float`/`String`/`Bool`/`List`/`Set`/`Dict` constructors/converters. `inspect(x)` returns
-  a String describing the public methods/attributes (with signatures + annotations) of a class,
-  instance, module, function, or **native object** (Random/Matrix/BytesIO/DateTime/regex/Socket/… —
-  each `NativeClass` declares its members via `Object::inspectMembers()`) — **including native
-  functions/modules that declare a signature**.
-- **Native functions can declare a signature** (`NativeFunction` second ctor / `ModuleBuilder::fn`
-  overload, taking `std::vector<NativeParam>` + a return-type string). A signatured native function
-  then accepts **keyword arguments** and **defaults** (the VM binds them into the positional
-  `span` the impl expects via `NativeFunction::bindArgs` — strictly by name, so out-of-order keywords
-  bind correctly) and is fully described by `inspect`. Errors
-  carry the module/chunk filename (`KiritoError::file`), so a parse error in an imported module
-  reports that module's path, not the entry script's. **Every fixed-arity native** — builtins
-  (incl. the `Integer`/`Float`/`String`/`Bool`/`List`/`Set`/`Dict` constructors) and all stdlib
-  modules (io/math/random/matrix/json/serialize/dump/net/sys/time/zlib/hash) — declares a signature,
-  so it accepts keyword args and `inspect` shows its full signature. Genuinely **variadic** natives
-  (`min`/`max`/`zip`/`range`/`sum`/`io.print`) take a positional list and show `...` under `inspect`;
-  a variadic native that also wants named options is registered as a **keyword-aware variadic**
-  (`NativeFnKw` / `ModuleBuilder::kwfn` / `NativeFunction(name, NativeFnKw)`, dispatched via
-  `callKw`) — e.g. `min`/`max` accept `key=`/`default=`, and `io.print` etc. accept `stream=`.
-- **Standard library** (each a one-liner `vm.install<T>()`; a third party adds their own the same
-  way — `#include` a header, register on the VM, no global state):
-  - `io` — print/eprint/write/input/read acting on **rebindable, interchangeable streams**: the
-    module-level `stdout`/`stderr`/`stdin` (with originals kept as `__stdout__`/`__stderr__`/
-    `__stdin__`) can be reassigned to a file, a `BytesIO`, another std stream, or any object exposing
-    `write`/`readline`/`read` (duck-typed) — so I/O redirection is just an assignment. Each of
-    print/eprint/write/input/read also takes an optional **`stream=`** keyword to direct that one
-    call to a specific stream without rebinding the std slots (variadic-yet-keyword-aware natives via
-    `ModuleBuilder::kwfn` / `NativeFunction(NativeFnKw)`). A common
-    stream protocol (`IoStream`: streamWrite/streamRead/streamReadLine/streamFlush) is implemented by
-    `File`, `BytesIO`, and the std streams. `open` files & streams (read([n])/readline/readlines/
-    write/writelines/seek/tell/flush, iterable line-by-line, usable as a `with` context manager); a
-    **binary mode** (`"rb"`/`"wb"`/`"ab"`/`"r+b"`) makes read/readline/iteration yield `Bytes` and
-    write accept `Bytes` (the stream is always byte-exact internally),
-    `BytesIO` (an in-memory byte buffer with a read/write cursor; note its reads return **String** —
-    Kirito Strings are byte-transparent). Module members are rebindable (`ModuleValue::setAttr`).
-    `io` is **only** I/O now: streams, `open`, `print`/`eprint`/`input`/`read`/`write`, `BytesIO`.
-    Everything that interprets, queries, mutates, or lists the filesystem by path lives in the `path`
-    module (below), the single home for path operations — so callers never have to remember whether a
-    helper is in `io` or `sys`.
-  - `path` — Kirito's **os.path + os filesystem** surface: the sole home for ALL path/filesystem
-    operations. Pure path-string manipulation (`join`/`dirname`/`basename`/`splitext`), read-only
-    queries (`exists`/`isfile`/`isdir`/`getsize`/`listdir`/`walk`/`getcwd`), and mutation
-    (`mkdir`/`remove`/`rmtree`/`rename`/`chmod`). Path strings use `/` on every platform (identical
-    cross-platform; the split helpers still accept `\`). `join(*parts)` is variadic with os.path.join
-    semantics (absolute `/`-component resets; needs ≥1 part — **throws on zero args**; a leading `\`
-    is not absolute). Queries `exists`/`isfile`/`isdir`/`listdir`/`walk` are tolerant (missing →
-    `False`/`[]`); `getsize` **throws** on a missing/non-regular path. Mutation is **strict by
-    default** (throw, not silent no-op) with opt-in leniency: `mkdir(exist_ok=False)` throws if the
-    dir exists; `remove`/`rmtree(missing_ok=False)` throw if the target is absent; `rmtree` is the
-    recursive `rm -rf`. `mkdir`/`remove`/`rmtree` return a Bool (True=did it, False=lenient no-op),
-    `rename` returns None, `chmod` is lenient (Bool). `path` also owns the filesystem *locations*
-    `gettempdir()` (system temp dir), `fasttemp()` (the fastest scratch dir — a RAM tmpfs `/dev/shm`
-    on Linux, else `gettempdir()`; best-effort, degrades on macOS/Windows), and `executable` (absolute
-    path of the running `ki` binary) — moved here from `sys`, since they name a place on disk.
-  - `math` — constants and the usual functions (trig/hyperbolic, exp/log, gamma/erf/erfc, floor/ceil/
-    trunc, gcd/lcm, factorial, isnan/isinf, prod/comb/perm, ...). **Domain errors THROW** a clear `math
-    domain error` rather than returning silent `NaN`/`inf` rubbish (`sqrt(-1)`, `log(0)`, `asin(2)`,
-    `acosh(0)`, `atanh(1)`, `gamma(0)`, `pow(-2, 0.5)`, `fmod(x, 0)`, …); a `NaN` argument passes
-    through and genuine overflow-to-`inf` is not a domain error. The same policy holds across the
-    numeric stack — the **`complex`** analytic set throws on the same out-of-domain inputs
-    (`log`/`log10` of `0`, `atanh(±1)`, zero to a negative/complex power) and **`tensor`** element-wise
-    math throws on an out-of-domain element (consistent with the tensor engine's div-by-zero guard).
-  - `random` — object-based RNG (`Random(seed, generator = "xoshiro")`, no global state); dispatches
-    a single distribution surface (random/uniform/randint/randrange/choice/choices/shuffle/sample/
-    gauss/expovariate) through a `std::variant` over two engines — the vendored `fum::xoshiro256`
-    (xoshiro256++, ~1.5–1.75× faster than MT on raw `next()` and every `<random>` distribution, the
-    DEFAULT) and `std::mt19937_64` (`generator = "mersenne_twister"`). `.generator` exposes the
-    active engine's name; serialize/dump tag the state with the kind so a checkpoint round-trips
-    onto the same engine (`choices(population, k=1)` samples WITH replacement into a List; `choice`
-    is its k=1 case unwrapped; `sample` is without replacement). Separate from the seedable `Random`
-    object, the module also exposes **OS-CSPRNG secure random** (module-level, unpredictable, for
-    tokens/keys/salts): `randombytes(n = 32)` → Bytes, `randomhex(n = 32)` / `randomurlsafe(n = 32)`
-    (base64url, unpadded) → String, and `randombelow(n)` → a bias-free Integer in `[0, n)` (rejection
-    sampling). The kernel entropy source (getrandom/getentropy/`/dev/urandom`, BCryptGenRandom on
-    Windows) lives behind `rand_compat.hpp` (mirrors `net_compat.hpp`); a failure throws, never weak
-    bytes.
-  - `tensor` — dense **N-dimensional** arrays in C++ (`tensor.hpp`, a generic `Tensor<T>` engine;
-    CPU-only, GPU-ready single-buffer design). dtype **Float** (default) or **Complex**
-    (the engine is generic in T). `Tensor(nested[, dtype][, requiresgrad])`/`zeros`/`ones`/`full`/`eye`/`arange`;
-    `t[i,j,...]` (full index → scalar, partial → sub-tensor; negative indices count from the end) +
-    assignment; **NumPy-style indexing**
-    (`t[a:b:c]` axis-0 slice, `t[mask]` boolean, `t[[i,j]]` fancy, plus grad-aware `t.slice`/`t.take`);
-    +,-,*,/ **element-wise** with NumPy **broadcasting** (mixed Float/Complex promotes) and scalar ops
-    (`/`, `//`, `%` all **throw on a zero divisor**, like scalar arithmetic);
-    element-wise comparisons (`eq/ne/lt/le/gt/ge` + the `< <= > >=` operators → 0/1 mask) and logic
-    (`logicaland/or/xor/not`) — note the **whole-tensor `==` operator** returns a single Bool (same
-    shape + every element **bit-exact**, NaN never equal — use `.compare(other, rel_tol, abs_tol)` for
-    a tolerant whole-tensor check), distinct from the elementwise `.eq()` mask;
-    `%`,`//`,`**` operators; `matmul` (2-D + batched), `dot`,
-    `tensordot(a,b,axes)`/`contract` (general axis contraction), `transpose`/`permute`/`reshape`/
-    `flatten`, `apply` (element-wise map), `astype`, `item()` (a one-element tensor → a Float/Complex
-    scalar), `tolist()` (→ a nested Kirito List); reductions `sum`/`mean`/`prod`/`min`/`max`/
-    `argmin`/`argmax`/`std`/`var`/`all`/`any`/`ptp`/`median`/`cumsum`/`cumprod` (whole or per-axis);
-    selection `where`/`clip`/`maximum`/`minimum`; structural `squeeze`/`expanddims`/`swapaxes`/`flip`/
-    `broadcastto`/`repeat`/`tile`/`concatenate`/`stack`/`split`; creation `linspace`/`zeroslike`/
-    `oneslike`/`fulllike`/`identity`/`diag`/`tril`/`triu`; linear algebra `det`/`inv`/`solve`/`trace`/
-    `norm`/`outer`/`inner`/`kron`/`cross`/`einsum`; sorting `sort`/`argsort`/`unique`/`nonzero`/
-    `searchsorted`; complex helpers `real`/`imag`/`conj`/`angle`; plus a differentiable element-wise
-    math set (exp/log/sqrt/cbrt/square/pow/reciprocal/abs/sign/floor/ceil/round/trunc/sin/cos/tan/
-    asin/acos/atan/sinh/cosh/tanh/asinh/acosh/atanh/relu/sigmoid/softplus/erf). **Reverse-mode autograd** (Float-only, opt-in): tensors don't track gradients by
-    default; mark a leaf via the `requiresgrad=True` constructor kwarg or `t.requiresgrad(True)`, and
-    the differentiable ops (+,-,*,/,**, matmul, tensordot, sum/mean, transpose/reshape/permute/flatten,
-    neg, where/clip/maximum/minimum, concatenate/stack/split, squeeze/expanddims/swapaxes/flip/
-    broadcastto, cumsum, grad-aware slice/take, and the math set) record a computational graph;
-    `t.backward([seed])` accumulates `t.grad`,
-    `t.zerograd()` clears it, `t.detach()` stops gradient flow, and `with tensor.nograd():` (a context
-    manager) disables tracking for a block. The graph records *operations* (not data location), so it
-    carries forward to a future GPU backend. The grad-mode flag is VM-scoped (a hidden `_grad` member
-    of the module, hidden from `inspect`). Tensor **arithmetic is pure** — every op returns a new
-    tensor and never mutates its operands (the only in-place op is element assignment `t[i,j]=v`), so a
-    gradient-descent step **rebinds** the parameter (`w = w - w.grad*lr`, re-marked `requiresgrad(True)`)
-    rather than mutating in place — the functional update style of JAX/Optax, not PyTorch. Element
-    assignment on a **grad-tracking** tensor is **refused** (it would desync the cached autograd graph
-    and silently return gradients against stale values — PyTorch errors on the same): `detach()` first,
-    or rebind functionally. The
-    `matrix` and `complex` matrix types are **built on this engine** (a 2-D tensor is a matrix).
-  - `matrix` — dense real matrices (a 2-D `Tensor<double>`) of arbitrary shape (no concurrency): +,-,* (matrix/scalar),
-    `m[i, j]` element access/assignment, transpose, determinant, inverse, trace, apply, factories
-    (zeros/ones/identity); square-only ops (determinant/inverse/trace) throw on non-square. **Vectors**
-    (a Matrix with one dimension = 1): `vector(list)` factory, `dot` (scalar product; `*` stays
-    matrix multiply), `cross` (3-vectors), `norm` (Euclidean 2-norm).
-  - `complex` — complex numbers and complex matrices (a 2-D `Tensor<cdouble>`), all in C++ (`std::complex<double>`). `Complex(re
-    [, im])`/`of(re, im)`/`real(re)`/`polar(r, θ)`; constants `i`/`zero`/`one` (genuinely
-    Complex-typed, so they live here — real-axis constants like π/e/τ do not: use `math.pi`/`math.e`/
-    `math.tau`, the single source of truth, and lift to the real axis via `complex.real(math.pi)` if a
-    Complex value is needed);
-    operators `+ - * / **` and unary `-` (Complex-on-the-left; reals coerce to the real axis; complex
-    numbers are unordered so `<`/`>` throw); `.re`/`.im`, `conjugate`/`modulus`/`argument`/`norm2`/
-    `is_zero`; the analytic math set (`exp`/`log`/`log10`/`sqrt`/`cbrt`/`pow` + trig/inverse-trig/
-    hyperbolic/inverse-hyperbolic) as module functions over a Complex-or-number; and a complex
-    `Matrix` (arbitrary shape; nested-list ctor; `m[i, j]`; +,-,* matrix/scalar;
-    `transpose`/`conjugate`/`hermitian`, **`determinant` via Gaussian elimination** and **`inverse`
-    via fast O(n³) Gauss-Jordan**, `trace`, factories zeros/ones/identity/`vector`, and complex
-    **vector** ops `dot` [Hermitian inner product], `cross`, `norm`; `*` is matrix multiply).
-    Supersedes the old
-    pure-Kirito `complex.ki`/`cmatrix.ki` prototypes; the `linsolve` solver and the complex examples
-    build on it.
-  - `json` — parse/loads (objects → Dict; decodes \u escapes + surrogate pairs) and stringify/dumps
-    (optional indent for pretty-printing).
-  - `serialize` — text graph dumps/loads/save/load preserving shared references and cycles.
-  - `dump` — compact BINARY serialization preserving references and cycles; `dumps(value)` returns
-    the blob as **`Bytes`** and `loads(bytes)` reconstructs it (save/load persist to a file).
-    `serialize` (text) and `dump` (binary) are two formats of
-    the same feature: they share one graph walk + reconstruction core (`serde::flatten`/`rebuild` in
-    `stdlib_serde.hpp`) and supply only their byte codec — unlike `json`, which is flat data
-    interchange with no reference/cycle preservation. **`loads`/`load` EXECUTES CODE** — rebuilding a
-    `Function`/`class` re-parses its stored source, so a class body's eager class-var initializers run
-    at load time: a blob is a program, the same trust boundary as Python's `pickle` (the deserializer
-    is hardened against malformed/byte-flipped blobs, which is memory safety, not this). Only load
-    blobs you'd trust as a `.ki` file; `json` is the code-free format for untrusted data. Documented
-    under "Security: never load a blob you do not trust" in `docs/pages/10-stdlib.md`. Both handle the built-in value types
-    (None/Bool/Integer/Float/String/List/Dict/Set) **and user `class` instances** — serialized by
-    attributes or via the **`_getstate_`/`_setstate_`** protocol when the class
-    defines it (a native C++ type opts in the same way + `vm.registerDeserializer(name, factory)`).
-    **`Function` and `class` VALUES are serializable BY DEFAULT, self-contained** (v1.15): the parser
-    captures each `Function(...)...` / `class ...:` literal's **verbatim source** (`FunctionExpr::source`
-    / `ClassStmt::source`, sliced from the first token's byte offset to the **last token the body
-    consumed** via a parser line-start index + each token's source extent — so trailing comments and
-    blank lines, which emit no tokens, are never swept in; the AST is otherwise untouched), and serde
-    stores that source plus a **free-variable snapshot** — the names the
-    body references from its defining scope (`freeVariables`/`eagerFreeVariables` in `locals.hpp`, the
-    dual of `capturedLocals`), each captured value recursively serialized. On load the source is re-parsed
-    (`vm.evalIn` into a fresh scope pre-seeded with the free vars) and the closure rebuilt. Boundary
-    (the "std reimport / user travels" rule): a captured **module reconnects by re-`import`** (a
-    `Module` node holding its name, NOT copied); a referenced **user function/class travels recursively**;
-    a **builtin** re-resolves for free; plain values travel by value. Deserialization needs **no import of
-    the defining module** — **a user-class instance carries its class** (the flatten walk pulls the class
-    into the graph), so `dump.loads(dump.dumps(anInstance))` works in a **fresh VM**: the class is rebuilt
-    from the blob and re-registered when absent, or **reconnected to an existing same-named class**
-    (rebuild is skipped, so deserializing never clobbers the caller's live class). The base class travels
-    too; closures / self-recursion / mutual recursion are preserved (a final wiring pass binds free vars
-    after every node exists, so cycles resolve; classes rebuild in eager-dependency order). Reconstruction lives in
-    `serde::rebuild` (passes: leaves+modules → function shells → classes topologically → containers/
-    instances → wire → bind free vars). A **native/built-in function** (e.g. a bound `math.sqrt`) and a
-    `Function` literal defined **inside an f-string** (no captured source) are NOT serializable (clear
-    error). The recursive `serde::flatten` walk keeps Function/Class flattening in out-of-line helpers so
-    a deeply nested plain-data graph still hits the depth guard (8000 frames; 1500 under sanitizers)
-    before overflowing the native stack. The native **value** types opt in and round-trip through both
-    formats: **Matrix/Vector**
-    (`matrix`), **Complex/ComplexMatrix** (`complex`), **DateTime** (`time`), **Random** (`random` —
-    restores the generator's exact stream, a reproducible checkpoint), and gradient-free **Tensor**
-    (`tensor`). Resource-like natives that wrap live state (`Socket`/`Session`, open files/`BytesIO`/
-    streams, compiled regex `Regex`/`Match`) are intentionally **not** serializable and throw a
-    clear, catchable error.
-  - `net` — a complete **socket foundation** plus a full-fledged HTTP/1.1 client. The **`Socket`**
-    spans TCP and UDP over IPv4 and IPv6: create with `Socket()` (the historical TCP/IPv4 default),
-    the general `socket(family, type)` (`family` `"inet"`/`"inet6"`, `type` `"stream"`/`"dgram"`), or
-    the shortcuts `tcpsocket([family])` / `udpsocket([family])`; `socketpair([type])` returns a
-    connected, share-nothing `[Socket, Socket]` pair (native `AF_UNIX` on POSIX, a loopback stream
-    pair emulated on Windows — and `.family` reports which it really got, `"unix"` or `"inet"`). Stream methods `connect`/`bind`/`listen`/`accept`/`send`/`recv`/
-    `recvall`; datagram methods `sendto(data, host, port)` / `recvfrom([n]) -> [Bytes, [host, port]]`
-    (`connect` on a UDP socket sets the default peer, then plain `send`/`recv` work). `recv`/`recvall`/
-    `recvfrom` return **`Bytes`** so binary streams stay byte-exact (`.decode()` for text); `send`/
-    `sendto` accept a String or Bytes. Half-close via `shutdown([how])` (`"read"`/`"write"`/`"both"`);
-    introspect with `getsockname()` / `getpeername()` (→ `[host, port]`), the read-only `family` /
-    `type` attributes, and `fileno()` (the raw fd, non-destructive — cf. `detach()`, which relinquishes
-    ownership and clears the fd; `fileno()` returns `-1` on a closed/detached socket, and a second
-    `detach()` throws rather than handing out a stale fd). Options are **string-keyed**:
-    `setsockopt(option, value)` / `getsockopt(option)` over
-    `reuseaddr`/`broadcast`/`keepalive`/`rcvbuf`/`sndbuf`/`nodelay` (+ read-only `error`/`type`/
-    `acceptconn`; `reuseport` where the OS has it), with named conveniences `setreuseaddr`/`setnodelay`/
-    `setbroadcast`/`setkeepalive`, plus `setblocking(flag)` and `settimeout(seconds)` (which bounds a
-    subsequent `connect()` too — via a non-blocking connect + `select` — not only send/recv, so a
-    black-hole host can't hang past the timeout; `0` means blocking/no timeout and a **negative throws**,
-    as in Python — it used to be read as "stay blocking", the opposite of the ask. `parallel`'s
-    primitives reject a negative `timeout=` the same way). **Socket-level TLS**: `socket.starttls(server_hostname
-    = None, verify = True)` upgrades a **connected stream socket** to TLS in place — covering both
-    **STARTTLS** (speak the plaintext protocol first, then encrypt the same connection: SMTP/IMAP/FTP)
-    and **implicit TLS** (SMTPS/IMAPS: connect, then starttls immediately) — after which `send`/`recv`/
-    `recvall` are transparently encrypted; `socket.cipher()` reports the negotiated suite and
-    `socket.is_tls` whether TLS is active. It shares the HTTP client's TLS handshake helper
-    (`net::tlsClientHandshake` — SNI, trust store incl. the Windows ROOT store, hostname verification),
-    needs a `net.tlsenabled` build (else it throws, never silently plaintext), and refuses a UDP/closed/
-    already-TLS socket or a `detach` while TLS-active. Name resolution:
-    `gethostname()`, `gethostbyname(host)` (first IPv4), `getaddrinfo(host[, port[, family[, type]]])`
-    (→ a List of `{family, type, host, port}` dicts). `fromfd(fd[, family, type])` adopts an existing
-    fd (e.g. one handed over by `socket.detach()` to a worker VM). Every entry point validates its
-    input (family/type/option strings, the 0–65535 port range, non-negative sizes) and a
-    use-after-close throws a clean `"… : socket is closed"` rather than a raw errno. The HTTP client
-    (requests-style): `request(method, url[, opts])` plus
-    `get/post/put/delete/patch/head/options` returning a rich
-    `Response` (`status`/`statuscode`/`reason`/`ok`/`url`/`text` [decoded String]/`content` [raw
-    `Bytes`, for binary downloads]/`headers`/`cookies`, `json()`,
-    `raiseforstatus()`, case-insensitive `header()`, and `["status"]`/`["body"]` indexing). Request
-    `opts`: `headers`, `params`, `data` (string or form-Dict), `json`, `files` (multipart upload),
-    `auth` (`[user, pass]` Basic), `timeout`, `allowredirects`/`maxredirects`, `verify` (TLS cert
-    verification, on by default), `cookies`. Follows redirects, decodes chunked transfer-encoding,
-    decompresses gzip/deflate, and parses/sends cookies. A `Session()` keeps a cookie jar + default
-    headers across calls; the jar is **host-scoped** (a server-set cookie is remembered with the host
-    that set it and sent only back there — by hostname, as RFC 6265 and the cross-host redirect rule
-    do; a cookie the user sets by hand has no origin and is unscoped), while `.headers` go to every
-    host, as in `requests`. HTTPS via `-DKIRITO_ENABLE_TLS=ON` (links OpenSSL; verifies the peer cert
-    by default — trust roots come from the OS: OpenSSL's default paths/`SSL_CERT_FILE` on Unix and the
-    **Windows system "ROOT" store** via CryptoAPI, since OpenSSL ships no default CA bundle there; a
-    verify failure reports the actual reason). **`net.tlsenabled`** is a Bool reporting whether this
-    build has HTTPS; the **`debug` and `release` CMake presets now enable TLS** so the HTTPS + deep-TLS
-    tests (`test_net_tls`, `spec_net_tls.ki` against an in-process OpenSSL server) run in the ordinary
-    build — `asan`/`tsan` stay TLS-off for the *full* suite to avoid OpenSSL's still-reachable
-    allocations tripping LSan, but the TLS code (HTTPS client + `socket.starttls`) is still
-    AddressSanitizer/UBSan-validated via a **targeted asan+TLS build of `test_net_tls`** (configure a
-    build dir with `-fsanitize=address,undefined -DKIRITO_ENABLE_TLS=ON`, build+run just that target —
-    OpenSSL's own still-reachable globals are not LSan "leaks", so it runs clean).
-    Deliberately **not** included (out of scope, by design): asyncio/event loops and a built-in HTTP
-    server — servers are built on the raw sockets (see the `webserver` example). URL helpers:
-    quote/unquote/urlencode/parseqs/urlsplit.
-  - `sys` — environment (getenv/setenv/unsetenv/environ), `platform`, `arch` (x64/arm64/x86), `version`
-    (the interpreter's semver string, == `ki --version`), `traceback`, `exit`, and **external-process
-    execution** (the running binary's own path is `path.executable`, a filesystem location):
-    `createprocess(args, cwd, input, timeout, binary)` runs a program by argv (no shell) and
-    `shell(command, cwd, input, timeout, binary)` runs it through `/bin/sh -c` (POSIX) / `cmd.exe /c`
-    (Windows) — both block, capture, and return `{code, stdout, stderr}` (stdout/stderr drained on
-    their own threads so a chatty child can't deadlock; positive `timeout` kills+throws). `input`
-    accepts a **String or Bytes** (a Bytes is fed to stdin VERBATIM — a String is UTF-8-encoded, which
-    would balloon high bytes into multi-byte sequences and corrupt a binary consumer), and
-    **`binary=True`** returns stdout/stderr as raw `Bytes` instead of a String — so a Bytes-in +
-    binary-out pipeline is byte-exact through a non-Kirito tool (e.g. piping to ffmpeg/pngquant without
-    temp files). This is for EXTERNAL programs (ffmpeg, git, …), distinct from `parallel`'s worker-VM model. The platform split (fork+execvp+pipe
-    on POSIX, CreateProcessW+CreatePipe on Windows, incl. the Windows argv-quoting) lives in
-    `proc_compat.hpp`, mirroring `net_compat.hpp`; the Kirito API is identical on every platform.
-  - `time` — high-precision clocks (time/timens/monotonic/perfcounterns), sleep, and calendar
-    time (`now`/`datetime`/`make`/`strptime`; `DateTime` with fields, iso/format,
-    add/sub/diff arithmetic). `DateTime` has **value equality + hashing** by instant (epoch), so two
-    DateTimes for the same instant compare equal and can be Dict/Set keys, and it is serializable.
-  - `zlib` — compress/decompress (standard zlib streams, RFC 1950), raw deflate/inflate — a
-    self-contained DEFLATE/INFLATE, no external dependency, interoperable with real zlib (the
-    checksums live in `hash`). Every function accepts a `String` **or** a `Bytes` and returns the same
-    type as its input, so binary streams (downloads, files) stay byte-correct via `Bytes`.
-  - `gzip` — the gzip **container** (RFC 1952, `.gz` files / HTTP `Content-Encoding: gzip`): its own
-    module, distinct from the bare zlib stream. `compress`/`decompress` (aliases `gzip`/`gunzip`) —
-    `gzip(1)`-compatible, header flags + CRC-32 verified; String-or-Bytes in, same type out. Pair with
-    `net.get(url).content` (raw `Bytes`) to fetch and unpack a `.gz` (`gzip.decompress(resp.content)`).
-  - `hash` — md5/sha1/sha256/**sha384/sha512** hex digests, **HMAC** (`hmac(key, msg, algo = "sha256")`,
-    RFC 2104), **PBKDF2** (`pbkdf2(password, salt, iterations, dklen = 32, algo = "sha256")` → Bytes,
-    RFC 8018), and constant-time **`comparedigest(a, b)`** (for MAC/digest verification without a
-    timing oracle), plus the non-cryptographic checksums adler32/crc32 (Integer) and crc64 (CRC-64/XZ,
-    as a signed Integer). Self-contained (`hashing.hpp` — a `HashAlgo` descriptor table makes HMAC/
-    PBKDF2 algorithm-generic), standard-conformant; every function takes a `String` **or** a `Bytes`.
-  - `crypto` — **OpenSSL-gated** advanced cryptography (built on OpenSSL, so like the `net` module's
-    HTTPS it needs `-DKIRITO_ENABLE_TLS`; `crypto.enabled` is a Bool and, without OpenSSL, every
-    function throws a clear "requires KIRITO_ENABLE_TLS" error instead of silently no-op'ing).
-    Keys are **PEM strings** (no native key object to leak): **AES-GCM** authenticated encryption
-    (`aesencrypt(key, plaintext, iv, aad = None)` → `{ciphertext, tag}`, `aesdecrypt(...)`
-    → Bytes; a failed tag throws "authentication failed", never garbage), **RSA**
-    (`rsagenerate(bits = 2048)`, `rsasign`/`rsaverify` [PKCS#1 v1.5], `rsaencrypt`/`rsadecrypt`
-    [OAEP-SHA256]), **EC/ECDSA** (`ecgenerate(curve = "prime256v1")`, `ecsign`/`ecverify`), and
-    **X.509** (`x509parse(pem)` → `{subject, issuer, serial, not_before, not_after, sans}`). All
-    OpenSSL resources are RAII-owned (unique_ptr + `*_free`); the error queue is cleared on entry.
-    `stdlib_crypto.hpp`. (The self-contained basics — HMAC/SHA-512/PBKDF2/CSPRNG — deliberately stay
-    OUT of this module, in `hash`/`random`, so a no-OpenSSL build still has them.)
-  - `int` — **arbitrary-precision integers**: a pure-C++ `BigInt` value type (sign + little-endian
-    base-2^32 magnitude; schoolbook add/sub/mul, long division with **floor** `//`/`%` matching native
-    Integer, fast exponentiation + modpow — no GMP dependency, `stdlib_int.hpp`) plus the integer math
-    set carried the way `complex` carries its analytic set: `BigInt(x)`/`big(x)`/`fromstring(s,
-    base = 10)`, `gcd`/`lcm`/`factorial`/`comb`/`perm`/`isqrt`/`abs`/`pow`/`modpow`/`modinv`, and
-    **primality** — deterministic `isprime(n)` (the naive O(√n) trial division, a tight native uint64
-    loop for values that fit, BigInt fallback beyond) alongside probabilistic `isprobableprime(n,
-    rounds = 25)` (Miller-Rabin over the OS CSPRNG) and `randomprime(bits, rounds = 25)` — both
-    **throw** if the OS entropy source is unavailable rather than fall back to a predictable base/prime
-    (the deterministic `isprime` needs no randomness and still works). BigInt
-    follows the language's **reflected-operator rule** — arithmetic dispatches on the LEFT operand, so
-    `BigInt(2)+3` works while `3+BigInt(2)` throws; only `==`/`!=` are symmetric — its **`/` yields a
-    Float** (the language-wide true-division rule, lossy beyond double range exactly as Integer/Integer
-    is), it hashes equal to an equal native Integer (shared Dict/Set bucket), and it serializes
-    (serialize/dump) as its decimal String. BigInt methods: `modpow`/`isprime`/`isprobableprime`/
-    `bitlength`/`toint`. A `kMaxLimbs` guard makes a runaway mul/pow/factorial throw, not OOM.
-  - `regex` — a from-scratch, **linear-time** regular-expression library (`regex_engine.hpp`: a
-    recursive-descent parser → bytecode compiler → Thompson-NFA Pike VM with capture tracking; NO
-    `std::regex`, NO backtracking, so `(a+)+b`-style patterns can't blow up). A high-level API:
-    `compile`/`match`/`search`/`fullmatch`/`findall`/`finditer`/`sub` (string or callable repl)/
-    `split`/`escape`, `IGNORECASE`/`MULTILINE`/`DOTALL` flags, capturing/non-capturing/named groups,
-    greedy+lazy quantifiers, classes/anchors/boundaries, on Unicode code points. Backreferences and
-    lookaround are deliberately rejected (they'd break the linear-time guarantee, à la RE2).
-  - `parallel` — **multiprocessing** (`stdlib_parallel.hpp` + `dispatcher.hpp`): true parallelism by
-    running many fully-isolated `KiritoVM`s, one per OS thread, that **share nothing** and communicate
-    only by passing serialized values (the `dump` codec) through thread-safe primitives owned by the
-    `KiritoDispatcher`. `spawn(fn, *args, **kwargs)` runs `fn` in a fresh worker VM (resolved by the
-    function's source span, re-read from its `.ki` file — so `fn` must be file-defined; locals captured
-    from an enclosing function do NOT cross — and args/result must be serializable) and returns a `Task`
-    (`join`/`done`); `Queue` (put/get/putnowait/getnowait/qsize/empty/full/close — the central transfer
-    primitive, cross-VM by identity) plus the coordination primitives `Lock`/`Event`/`Semaphore`/
-    `Barrier` (all cross-VM by identity, all with timeouts, all woken by shutdown) and `cpucount`. Only
-    the `ki` CLI installs it (every VM is built through a dispatcher via `KiritoDispatcher::configureVM`);
-    a bare embedded `KiritoVM` has no `parallel`. **Deadlock-safe by construction** for the parallel
-    primitives: every one of them blocks on a `Waitable` with an `aborted_` flag, and `shutdown()` aborts
-    them all before joining threads, so a worker blocked in a `Queue`/`Lock`/`Event`/`Semaphore`/`Barrier`
-    always unwinds (throwing a catchable "operation aborted"). A worker blocked in a *bare* blocking
-    syscall that is NOT a parallel primitive — a socket `recv`/`accept`, `io.input`, `sys.shell` with no
-    timeout — is outside that net and can still hang `shutdown()`'s join; give such calls a timeout
-    (`socket.settimeout`) so they unwind. The `net` module
-    gains `socket.detach()` / `net.fromfd(fd)` to hand an accepted connection to a worker VM (same OS
-    process). The example servers (`sqldb`, `webserver`) are built on this.
-  - **Kirito-authored, frozen-source modules** (registered via `vm.registerSourceModule(name, src)`;
-    bodies live in `stdlib_kimodules.hpp`, compiled once per VM on first import): `itertools`
-    (chain/repeat/cycle/islice/accumulate/product/permutations/combinations/count/takewhile/
-    dropwhile/filterfalse/compress/starmap/pairwise/ziplongest/groupby), `functools`
-    (reduce/partial/cache), `collections` (deque/Counter/defaultdict), `statistics`
-    (mean/median/mode/variance/stdev/multimode/quantiles/...), `string` (constants + capwords + levenshtein-based `similarity`/`closest`/`fuzzymatch`),
-    `textwrap` (wrap/fill/indent/dedent), `base64` (+urlsafe), `csv` (low-level parse/format),
-    `tabular` (a dataframe-style, pandas-like data-analysis library: labelled 1-D `Series` + 2-D `DataFrame`,
-    `readcsv`/`tocsv` with type inference, column/`loc`/`iloc`/boolean-mask selection, element-wise
-    arithmetic & comparisons, aggregations [sum/mean/min/max/std/median/...], `groupby`+`agg`,
-    `sortvalues`, `merge` [inner/left/right/outer], `concat`, `describe`, `dropna`/`fillna`,
-    `valuecounts`/`unique`/`apply`; numeric-only reductions treat Bool as 0/1), `xml` (an
-    ElementTree-style XML parser/serializer: `parse`/`fromstring`/`tostring` + an `Element` tree with
-    `tag`/`attrib`/`text`/`tail`/`children` and `find`/`findall`/`findtext`/`get`/`itertext`; handles
-    attributes, entities [named + numeric], comments, CDATA, the `<?xml?>` declaration; lenient), `heapq`
-    (+nlargest/heapreplace/merge), `bisect`, `copy` (copy/deepcopy), `enum`, `tee` (a `Tee`
-    fan-out stream that clones writes to extra streams — e.g. stdout to a log file — plus
-    `tee_stdout`/`tee_stderr` context managers that hook the std streams), `arg` (an argparse-style
-    `Parser`: positional/option/flag declarations, then `parse(arglist)` -> Dict; type-converts
-    options to their default's type, `-h`/`--help` prints usage and returns None), `semver` (semantic
-    versioning à la semver.org + node-semver: parse/valid/clean, compare/eq/lt/gt/diff/inc, and the
-    range grammar satisfies/validrange/maxsatisfying/minsatisfying/sort/rsort — `^`/`~`/comparators/
-    x-ranges/hyphen ranges/AND/OR, prerelease precedence + gating; this is what `kpm` resolves
-    `repo@<constraint>` with).
-- **Modules** can also be `.ki` files found on the import path (`--lib <dir>`, the cwd, the
-  script's directory, the `KIRITO_PATH` env var [PATH-style], and the per-user package dir
-  `~/.kirito/packages` + each package sub-dir), lexed+parsed+evaluated once per VM and cached by
-  resolved path. A module's **public exports** are its top-level bindings *except* **private** names
-  (a single leading `_`, no trailing `_` — a dunder `_x_` stays public), the injected `arglist`/`argmain`,
-  and compiler-hidden `$` temporaries — one shared rule (`moduleExportBase`) for BOTH `.ki`-file and
-  frozen-source modules (they used to diverge on `_private`). **Circular imports are detected and rejected**: a module's members are published to
-  the cache only after its body finishes, so a re-entrant import of an in-progress module (a self
-  import, or a chain `a → b → a`) throws a clear `circular import detected: a -> b -> a` error naming
-  the cycle (tracked by both module name and resolved path) instead of recursing until the native
-  stack or the call-depth guard blows; the in-progress set is unwound on failure so a later import on
-  the same VM still works, and re-importing an already-finished module (a non-cyclic diamond) is fine.
-  The env/package paths live in the CLI only (`src/kirito/cli_paths.hpp`,
-  unit-tested), not the embeddable VM core. The `ki` CLI
-  is interactive: REPL with no file (multi-line blocks via a `...` continuation prompt until a blank
-  line), runs a file otherwise. Every file scope is pre-bound with **`arglist`** (the command-line
-  arguments as a List — populated only in a directly-run file; **empty** in an imported module) and
-  **`argmain`** (a Bool: True iff the file is run directly, False when imported — the
-  run-directly-vs-imported flag). Small-integer interning, flat-vector scopes, a
-  no-temporaries fast call path, and other non-invasive perf wins. **Every `Object` is allocated
-  through a thread-local small-object pool** (`pool.hpp`, a segregated free-list keyed by size class up
-  to 224 B — covering Int/Float/Bool/Str/List/Set/Dict/Instance/Class/Function/EnvValue): profiling a
-  tight arithmetic loop put ~25% of run time in `malloc`/`free` from per-operation value boxing, and
-  recycling those fixed-size blocks cut the instruction count ~25% (sum_loop) with no semantic change.
-  It is thread-local (safe: one OS thread per VM, share-nothing multiprocessing) and **bypassed under
-  asan/tsan** so the sanitizers still instrument every allocation. (A runtime *inline-cache* prototype
-  for name lookup was rejected — it measured break-even because the flat-vector scopes already make name
-  lookup cheap and the cache itself allocated; the strict lexical addressing instead resolves EVERY name
-  to a slot/global index at COMPILE time with zero added allocation — see the bytecode-VM section below.)
-- **Sample projects** in `examples/` — single-file pure-Kirito demos:
-  `complex_linsolve.ki` (complex linear-system solver on `complex.ComplexMatrix` + a Gauss-Jordan
-  solver in `examples/lib/linsolve.ki`), `gen_systems.ki` / `solve_systems.ki` (a producer-consumer
-  pair that writes/reads system files under `/tmp`), `rpn_calculator.ki`,
-  `wordcount.ki`, `stats.ki`, `trie.ki`, `todo.ki`, `domain_suffix_bench.ki` (whitelist/blacklist
-  benchmark), `rule34_download.ki` (network image downloader — the only network-dependent example),
-  and three `tabular`-library data-analysis demos — `tabular_iris.ki` on the bundled
-  `examples/data/iris.csv`, `tabular_sales.ki`, `tabular_survey.ki`.
-  Two subdirectories bundle related material:
-  `examples/deep_learning/` is a tiny **PyTorch-like nn library** in pure Kirito (`lib/nn.ki`,
-  atop the native `tensor` autograd) plus ten worked projects that train real models on real,
-  downloaded datasets (MLP on iris, conv on digits, diabetes regression, digits autoencoder,
-  breast-cancer binary, wine MLP, digits softmax, PCA on digits, k-means on iris, denoising AE);
-  `examples/http_client/` is a `net` HTTP-client app + companion server + Python test harness.
-  `examples/big_projects/` holds larger, multi-file programs — each also a stress test for the
-  interpreter. Every project ships a self-test entry point that either matches a
-  `test_<proj>.expected` byte for byte, self-asserts and prints an `ALL TESTS PASSED` /
-  `N passed, 0 failed` line, or drives a live server through a Python harness:
-  - `sqldb` — a networked SQL database, **concurrent** via the `parallel` actor model: a single
-    DB-owner VM serializes access while a pool of connection workers handles socket I/O;
-    `test_client.py` runs functional + adversarial suites and `test_concurrent.py` asserts
-    consistency under K simultaneous clients.
-  - `webserver` — an HTTP/1.1 server + Sinatra/Flask-style routing framework (`:name` params,
-    middleware, JSON, static files), **concurrent** via a stateless `parallel` worker pool;
-    `test_client.py` + `test_concurrent.py` fire parallel requests and an adversarial burst.
-  - `kgrad` — a pure-Kirito tensor/autodiff/deep-learning library: strided views, reverse-mode
-    autograd with a computational graph, SGD/Adam, Linear/Conv2d/BatchNorm/activations as
-    PyTorch-style Modules, MSE/BCE/CE/NLL losses, Dataset/DataLoader, PCA, weight serialization,
-    and a backend abstraction ready for a future GPU device — trains an MLP that solves XOR; conv
-    backward is gradient-checked.
-  - `selfhost` — a **Kirito interpreter written in Kirito** (`lib/interp.ki` + `lib/lexer.ki` +
-    `lib/parser.ki`, with pure-Kirito reimplementations of the stdlib under `lib/stdmods/`); `run.ki`
-    is the CLI front-end, `run_tests.ki` re-runs the main project's `tools/tests/scripts/*.ki`
-    golden suite through it (with a documented EXCLUDE / native-audit-prefix set for tests that
-    depend on native-only surface — `parallel`, native `net.Socket`, `serialize`'s KSER1 format, the
-    exhaustive `audit_/deep_/r4_/r5_/r6_/r10_/r11_` regression families, and `class_hash`).
-  - `cronki` — a cron-like scheduler + one-shot batch runner in pure Kirito; parses the full
-    crontab micro-language and appends every result to a JSON-lines history log.
-  - `feedreader` — an RSS 2.0 + Atom feed reader with a persistent store, unread/mark-read, and
-    search.
-  - `kirdown` — a self-contained CommonMark-subset Markdown → HTML converter.
-  - `ledger` — plain-text double-entry accounting inspired by `hledger` / `beancount` (balance,
-    income, register, top, stats, csv reports).
-  - `snip` — a CLI-first code-snippet manager using the `dump` binary codec for its on-disk format.
-  - `sqldb_kwargs` / `webserver_kwargs` — copies of the two servers refactored so *every* call site
-    passes arguments by name (built-in methods, native methods, stdlib functions included); an
-    end-to-end test that keyword arguments work uniformly across every callable.
-
-  All examples and big projects are covered by two release-binary smoke-test scripts —
-  `tools/scripts/test_examples.sh` (skips the network-only `rule34_download.ki`) and
-  `tools/scripts/test_big_projects.sh` (self-host is opt-in via `--selfhost` — it is slow) — both
-  take `--ki PATH`; the nightly workflow runs them against the freshly-built `dist/ki-linux-x64`.
-
-Tested under four CMake presets: **`debug`** (g++ `-O0` — fast compiles for the dev loop — with the
-hardened warning set `-Werror -Wall -Wextra -Wformat=2 -Wconversion -Wpointer-arith -Wpedantic
--fstack-protector-all -Wreorder -Wunused -Wshadow` — the strictest *warning* gate; note a few
-optimization-dependent warnings like `-Wmaybe-uninitialized` only fire under `-O1+`, so `release`
-`-O2` remains their gate), **`release`** (the same minus `-Wconversion`/`-Wshadow`, at `-O2`; the
-build to ship/benchmark), **`asan`** (AddressSanitizer/UBSan, `-O1`, hardened warnings), and
-**`tsan`** (ThreadSanitizer, `-O1` — the data-race + lock-order-inversion gate for the `parallel`
-dispatcher, the only concurrent code). A **shared precompiled header** (`kirito_pch`, defined in the
-root `CMakeLists.txt`) compiles the umbrella `src/kirito.hpp` once per build; `ki`/`main.cpp` and
-every test `REUSE_FROM` it (`-Winvalid-pch` + `-Werror` makes a silently-unusable PCH a hard error,
-never a quiet fallback to per-TU reparses). A faster linker (mold, else lld) is auto-selected when
-present (`-DKIRITO_FAST_LINKER=OFF` to disable).
-The codebase is `-Wconversion`-clean; the deliberate native-binding idiom where bound-method lambdas
-take `vm`/`self` parameters shadowing the enclosing `getAttr`/`setup` (same VM by design) is silenced
-with a scoped `#pragma GCC diagnostic ignored "-Wshadow"` in the stdlib glue + runtime type-methods,
-so `-Wshadow` stays active in the compiler/VM/parser/lexer/GC core. An 11k-input fuzzer guards
-stability. Tests include an **error-message suite** (`tools/tests/errors/*.ki` + `.experr`: programs that
-must fail, with the required diagnostic text) and an **adversarial suite**
-(`tools/tests/unit/test_adversarial.cpp`: overflow, recursion, cyclic structures, Unicode, slicing edge
-cases). The **post-work routine** (`tools/scripts/post_work_check.sh`, documented in
-`.claude/POST_WORK_CHECKLIST.md`) runs the variants **sequentially** — `debug`, then `release`,
-**commit+push once both are green**, then `asan` and `tsan` (fix and re-push any failure) — each a clean
-build of the whole auto-discovered CTest suite. Run it before calling a change done.
-
-**Never run two builds at once, and never hand-roll `-j$(nproc)`.** Sequential is a *memory* constraint,
-not a stylistic preference: every test TU includes the whole header-only interpreter, so one compile
-peaks at ~1.7 GB RSS at `-O2` and ~3.2 GB under asan. Peak build RAM is `jobs × that` — it scales with
-CORE COUNT, not with the box's RAM — so a 24-core `-j24` wants ~41 GB (release) or ~78 GB (asan), and two
-variants side by side want ~82 GB. On the WSL2 dev box (24 cores / 47 GB, booted `panic=-1`) that OOMs
-the kernel and **reboots the whole distro**, losing the VM rather than just the build. So: let
-`post_work_check.sh` drive the builds (it sizes `-j` from MemAvailable, default cap `PW_MAX_JOBS=16`,
-and refuses to start beside another build), don't background a second variant to "save time", and don't
-run a bare `cmake --build -j$(nproc)` alongside it.
-
-**Docs:** an expandable HTML site (`docs/`) — hand-authored Markdown in `docs/pages/` rendered by
-the dependency-free `docs/build_docs.py` into `docs/site/` (intro, build, embedding, extending,
-language guide, a built-in **types + special-methods/operator-overloading** reference, builtins
-reference, a **comprehensive per-function stdlib reference** with signatures/inputs/outputs, recipes,
-a **Packages & kpm** page (installing/versioning/publishing packages — the page lives right before
-the course), and a course — a **core** path of 16 lessons (Lesson 0 editor setup → Lesson 15 capstone; the basic
-types/control/collections/functions material is consolidated into dense lessons) followed by 6
-**bonus lessons** for specialized libraries: regex, command-line programs, tabular data, linear
-algebra, tensors+autograd, and concurrency). `build_docs.py` auto-anchors every documented
-symbol and turns later `inline code` mentions into clickable cross-links — but only for
-*unambiguous* names: a name defined in more than one place, or an instance-method name reused across
-modules (`sum`/`split`/`mean`/…, detected from `receiver.name` forms in the reference pages), keeps
-its anchor but is never auto-linked, so a prose mention never points at the wrong module. It also
-renders Markdown indented code fences, multi-line list items, and strips `<!--comment-->` directives.
-Documentation is authored in those `.md` files, NOT scraped from code comments.
-
-Not yet done (future enrichment): comprehensions, variadic params, `yield`
-coroutines (the VM recurses on the native C++ stack, so a stackless rewrite is out of scope; the
-**protocol-based generators** below cover the streaming use), full-Unicode case folding (current
-`upper`/`lower` cover ASCII + Latin-1 + Latin Extended-A). (Arbitrary-precision integers ARE done —
-the `int` module's `BigInt`; **lazy generators ARE done** — the `_iter_`/`_next_` protocol + lazy
-`range`/`map`/`filter`/`zip`/`enumerate`, below.) The **bytecode compiler + stack VM** is done and is the **sole
-engine** — the tree-walker is gone (`bytecode.hpp` / `compiler.hpp` / `bytecode_vm.hpp`; the
-`Compiler` is a second AST visitor that lowers each body to a `Proto`, executed by the `BytecodeVM`
-with an explicit GC-rooted operand stack instead of native recursion; operator/call/member semantics
-are shared free functions in `runtime.hpp`). A **compile-time, scope-aware name-resolution pass**
-(`resolver.hpp`, run before execution in `evalIn`/the module loaders) now throws `name 'X' is not
-defined` for any reference bound to no parameter, no `var`/`for`/`class`/`catch`/`with` name in an
-enclosing lexical scope, no run-scope/REPL binding, and no builtin — resolution is by scope
-*membership*, so recursion/mutual-recursion/forward-references resolve, and an undefined name is a
-compile error (not catchable at run time). **Strict lexical addressing** is implemented: EVERY lexical
-name in compiled code resolves at COMPILE time to an O(1) access with **no run-time name comparison and
-no fallback**. Three storage tiers: (1) a function's non-captured locals/params → a **frame slot**
-(`LoadLocal`/`StoreLocal`/`AssignLocal`, a direct index into the call frame's operand stack `stack_[3 +
-slot]`, zero allocation); (2) **captured** locals/params, **enclosing-function**, **module-level**, and
-**class-body** names → an env `(depth, index)` (`LoadVar`/`AssignVar` walk `depth` EnvValue parents and
-index the slot — no scan); (3) builtins/globals, including **embedder-added** ones → an absolute
-`LoadGlobal(index)` into the frozen-then-append-only global scope. The `(depth, index)` is correct **by
-construction**: a module/REPL scope's names are pre-declared into the live `EnvValue` by the resolver,
-which reads their indices straight back; a function/class scope's captured-params (positional) +
-captured-locals/members (after) share ONE deterministic layout helper (`collectBlockDeclsOrdered` +
-capture filter in `locals.hpp`) between the resolver's annotation and the runtime's frame-entry slot
-pre-declaration — so index P+i names the same binding on both sides (a debug-only assertion checks each
-slot's name; compiled out in release). Reading or rebinding an **unwritten** slot is a strict `name 'X'
-is not defined` error (Python's UnboundLocalError shape) — NOT a walk to an outer/builtin binding: the
-former "read-before-write finds an outer" behaviour is gone, so the contract is now purely membership +
-assignment order (`var sorted = sorted(x)`, a self-shadowing initializer, is an error, not the builtin).
-The **REPL's persistent scope is treated exactly like a module scope** (append-only, so slots stay
-stable across lines; a closure defined on an earlier line captures and observes later mutations).
-`LoadName`/`StoreName`/`AssignName` survive ONLY at intentional boundaries — a `var` **declaration**
-writes its pre-declared slot by name, a **parameter default** runs as its own Proto (a different
-frame/depth), and a bare embedder `evalIn` against a **custom (non-module) scope** — never as a
-read-before-write fallback. In the `parallel` share-nothing model a spawned nested function is given
-empty stand-in closure scopes so its (non-crossing) enclosing-local references raise a clean name error
-rather than reading a wrong slot. Two companion v1.9 wins ride along: a **numeric binary
-fast path** (Integer/Float arithmetic in `applyBinaryOp` skips the virtual dispatch, delegating straight
-to the shared `numericBinary` with identical wraparound/true-division/exact-compare semantics) and
-**constant deduplication** (repeated scalar literals share one `consts` slot, floats keyed on exact
-bits). Measured ~10% on function-local arithmetic loops; no regression on call-heavy/module-level code.
+---
 
 ## Architecture (as built)
 
-- **Header-only core.** The whole interpreter lives in `src/kirito/*.hpp`, surfaced through one
-  umbrella header: `#include "kirito.hpp"` embeds Kirito in any C++ program (Lua-style), **no `main`**.
-  The standalone interpreter's `main()` lives only in `main.cpp`. Use **`#ifndef` include guards**
-  (e.g. `KIRITO_OBJECT_HPP`), **never `#pragma once`**; everything `inline`/templated, no mutable
-  globals — all state is VM-scoped.
-- **One `KiritoVM` = one fully-encapsulated process**, composing its owned sub-objects: an
-  `ObjectArena`, the global `Environment`, and the `ModuleRegistry`. No global/static mutable state,
-  so multiple VMs coexist and the whole context is serializable later. Because the arena is
-  **unsynchronized**, exactly one OS thread may ever touch a given VM — so concurrency is
-  **multiprocessing**: a `KiritoDispatcher` (`dispatcher.hpp`) owns the main VM plus worker VMs (one per
-  thread) and the cross-VM primitives, and the `parallel` module exposes it. Workers share nothing;
-  they exchange only serialized blobs through thread-safe Queues/primitives owned by the dispatcher.
-- **VM-owned value graph + handles.** Every value is an `Object` owned by an arena slot
-  (`unique_ptr`); everything else holds lightweight `Handle`s (slot+generation). Reference-assignment
-  = two bindings sharing one handle. No `shared_ptr`, no per-value refcount. Reclamation is a
-  **non-moving generational mark-sweep GC** (`Object::children()` is the trace oracle for both the
-  minor and major collectors): the arena is never compacted, so a `Handle` stays valid across any
-  collection and its generation still catches use-after-free. Survivors are promoted by flipping an
-  age tag on the `Object` — no copying, no handle rewriting — and a write barrier + remembered set
-  (see the GC bullet above) let a minor collection reclaim the young churn without rescanning the live
-  heap. The whole model stays serializable (the value graph is a pure handle graph).
-- **Unified object protocol.** Built-ins, C++-authored types, and Kirito `class`es all derive
-  from one `Object` base exposing the same slots (`truthy/str/equals/hash`, and operation slots
-  `binary/unary/call/getAttr/setAttr/getItem/setItem/iterate/length`). The VM dispatches
-  through the protocol — it can't tell built-ins from user types.
-- **Execution engine: bytecode.** The `Compiler` (`compiler.hpp`, a second AST visitor) lowers each
-  body — a function body, the top-level program, a class body, or a parameter default — to a flat
-  `Proto` (`bytecode.hpp`: an `Op` stream + constant/name/func/call/unpack/class side-tables), cached
-  per body on the VM and compiled lazily (a nested function literal compiles on first call). The
-  `BytecodeVM` (`bytecode_vm.hpp`) executes a `Proto` with an explicit operand stack (a region of the
-  VM's GC roots) instead of native recursion. Control flow is jumps; exceptions use a runtime block
-  stack; `finally`/`with`-exit on `return`/`break`/`continue` is compiled inline. On the exception
-  path a `finally` body runs with the in-flight exception **parked** — its value in a hidden `$excN`
-  local, its span in a `Proto::excSpanSlots` slot (`Save`/`RestoreExcSpan`) — so a nested try/catch
-  inside that body, which unwinds in the same frame, can neither corrupt the operand stack nor steal
-  the re-raised exception's reported line. Operator/call/member
-  semantics live in shared free functions (`applyBinaryOp`/`applyCall`/`evalMemberGet`/… in
-  `runtime.hpp`). A genuine program error the compiler finds (deep nest, invalid assignment target)
-  is thrown as a `KiritoError`, like a parser diagnostic. A **positional-after-keyword** argument is
-  different: the compiler detects it but emits a **deferred, catchable runtime throw** (the callee and
-  the arguments up to the offending one are evaluated first, then it throws) — so it is a `catch`-able
-  runtime error, not a compile-time diagnostic.
-- **Layered scoping**: global (built-ins) → module (per `.ki` file) → local (per function call);
-  closures capture their lexical scope by handle. Only functions/modules/class-bodies introduce scopes.
-- **Extending in C++**: subclass `NativeModule` (override `setup`) or `NativeClass` (override only
-  the slots you need) and register with one call — indistinguishable from a built-in to the VM.
-  Prefer the built-in types via the ergonomic `value.hpp` API. Every Kirito builtin has a matching
-  C++ wrapper — `Bool`/`Integer`/`Float`/`String`/`Bytes`/`List`/`Dict`/`Set` — all derived from a
-  polymorphic `Value` base and constructed idiomatically (`Value(vm, 42)`, `String(vm, "hi")`,
-  `List(vm, {1, "a", 3.14})`, `Dict(vm, {{"k", 1}, {"n", "s"}})`, `Set(vm, {1, 2, 3})`,
-  `Value::None(vm)`). Peek then wrap zero-alloc: `arg.isDict()` then `Dict d = arg.asDict()`. The
-  wrappers mirror Kirito's method surface (`d[k]`/`d.contains(k)`/`d.get(k, dflt)`/`d.set(k, v)`,
-  `s[i]` code-point on `String` / byte on `Bytes`, `xs.push(v)`/`xs.pop()`/`xs.contains(v)` on
-  `List`, `s.contains(v)`/`s.add(v)`/`s.discard(v)` on `Set`, range-for on every collection). The
-  full operator surface (`+ - * / % ** == != < <= > >=`, unary `-`/`!`, `in`, `.hash()`) delegates
-  to `applyBinaryOp`/`applyUnaryOp` so C++ `a + b` is byte-identical to Kirito's `a + b` (same
-  wraparound, true-division, exact IEEE-754 `==`). Fresh-alloc wrapper constructors GC-pin their
-  handle for the wrapper's lifetime via `KiritoVM::pinHandle`/`unpinHandle` (a refcounted companion
-  to `tempRoots_` scanned by `collectGarbage`), so mid-expression allocations don't sweep partially-
-  built containers. A host that stores a Kirito value in a **long-lived** C++ object (a class member,
-  a `std::vector`, a callback registry) can't use `RootScope` (stack-scoped) and must not keep a bare
-  `Handle` (the collector can't see it, so a later GC sweeps it — a dangling handle); it holds a
-  **`PinnedHandle`** (value.hpp) instead — an owning, copy/move-aware RAII GC root that pins its handle
-  for its own lifetime (`PinnedHandle(vm, h)` / `.value()` / `operator Handle`).
-  Returning built-in values is the default; defining a new `NativeClass` is the
-  fallback (only for genuinely new behaviour). `value.hpp` is included by `native.hpp`, so every
-  module gets it.
+- **Header-only core.** The whole interpreter is `src/kirito/*.hpp`, surfaced through `#include "kirito.hpp"`
+  (embeds Kirito, no `main`). Use `#ifndef` guards (never `#pragma once`); everything `inline`/templated;
+  **no mutable globals** — all state is VM-scoped.
+- **One `KiritoVM` = one encapsulated process**, owning an `ObjectArena`, the global `Environment`, and the
+  `ModuleRegistry`. No global/static mutable state → multiple VMs coexist and a VM's whole context is
+  serializable. The arena is unsynchronized, so **exactly one OS thread may touch a given VM**; concurrency
+  is therefore **multiprocessing** — a `KiritoDispatcher` owns the main VM + one worker VM per thread + the
+  cross-VM primitives, and the `parallel` module exposes it. Workers share nothing; they exchange only
+  serialized blobs through thread-safe queues/primitives.
+- **Pipeline (keep the stages separate, each behind a clean interface):**
+  `.ki → Lexer → [tokens] → Parser → [AST] → Compiler → [bytecode Proto] → BytecodeVM → result`.
+  The **AST is the stable boundary**: the `Compiler` (`compiler.hpp`) is a second AST visitor (alongside the
+  parser) that lowers each body to a flat `Proto` (`bytecode.hpp`); the `BytecodeVM` (`bytecode_vm.hpp`)
+  executes it with an explicit GC-rooted operand stack instead of native recursion. Operator/call/member
+  semantics are shared free functions in `runtime.hpp`. A compile-time, scope-aware **resolver** turns every
+  name into an O(1) slot/global index (strict lexical addressing; read-before-write is a `name not defined`
+  error, not an outer-scope fallback).
+- **VM-owned value graph + handles.** Every value is an `Object` in an arena slot (`unique_ptr`); everything
+  else holds lightweight `Handle`s (slot+generation). Reference-assignment = two bindings sharing one handle.
+  No `shared_ptr`, no per-value refcount. Reclamation is a **precise, non-moving, generational mark-sweep GC**
+  (young nursery + old gen; write barrier + remembered set for old→young edges; **card marking** so a
+  container grown in a loop is O(N) not O(N²); minors promote in place, majors reclaim old cycles). A
+  `Handle` stays valid across any collection (non-moving) and its generation catches use-after-free. **GC
+  rule for native code:** root a value the moment it is made (`RootScope`/`PinnedHandle`), not once its owner
+  is arena-reachable — an off-arena container is traced by nothing. See `docs/` and the `GC` memories for the
+  subtle invariant that an object buffering young handles in non-arena storage must be re-traced from its root.
+- **Unified object protocol.** Built-ins, C++-authored `NativeClass`es, and Kirito `class`es all derive from
+  one `Object` exposing the same slots (`truthy/str/equals/hash` + `binary/unary/call/getAttr/setAttr/
+  getItem/setItem/iterate/lazyIterate/length`). The VM cannot tell them apart.
+- **Extending in C++.** Prefer the ergonomic `value.hpp` wrappers (`Value`/`Integer`/`Float`/`String`/
+  `Bytes`/`List`/`Set`/`Dict`) — they mirror Kirito's operators/methods and barrier/root correctly. For new
+  behavior, subclass `NativeModule` (override `setup`) or `NativeClass` (override only the slots you need) and
+  register with one call — indistinguishable from a built-in to the VM. A host storing a value in a long-lived
+  C++ object holds a `PinnedHandle`, never a bare `Handle`.
+
+**Status:** broadly implemented and tested end-to-end. The bytecode VM is the sole engine (no tree-walker).
+Full feature/stdlib/API details are in `docs/pages/` — do not re-enumerate them here.
+
+---
 
 ## Build & test
 
-Toolchain present: `g++ 13`, `clang++ 18`, `cmake 3.28`, `ninja`, `ctest`.
+Toolchain: see `tools/versions.env` (g++ 13, clang++ 18, cmake 3.28, ninja; C++20). Run
+`tools/scripts/check_env.sh` to verify. Thin, out-of-source CMake: the header-only core is an `INTERFACE`
+target; CMake builds `ki` (from `main.cpp`) + the test executables, reusing a shared precompiled header.
+Static linking by default (self-contained binaries). Cross-platform (Linux + Windows minimum); the only
+platform-specific code is behind `net_compat.hpp` / `proc_compat.hpp` / `rand_compat.hpp`.
 
-- Build is **thin CMake** (out-of-source, e.g. `build/`), C++20: the header-only core is an
-  `INTERFACE` target; CMake builds only `ki` (from `main.cpp`) and the test executables.
-- **Cross-platform** (Linux + Windows minimum): the only platform-specific code is sockets,
-  isolated behind `net_compat.hpp` (BSD sockets vs Winsock); everything else is `std::filesystem`/
-  STL. CMake links `ws2_32` on Windows automatically.
-- **Static linking** by default (self-contained binaries): full `-static` on GCC/Clang, static CRT
-  on MSVC; TLS builds fall back to a static C++ runtime since OpenSSL is usually shared-only.
-- **Install + packages**: `tools/scripts/install.sh` (Linux/macOS) and `tools/scripts/install.ps1` (Windows)
-  are one-line installers that download the release binary (or build from source), place `ki`/`kpm`
-  launchers on PATH, and create `~/.kirito/packages`. **`kpm/kpm.ki`** is the package manager,
-  written in Kirito (uses `net`/`json`/`io`/`sys`/`semver`): `kpm install <repo>[@ref]` fetches a
-  package's `kirito.json` manifest + modules into `~/.kirito/packages/<name>/`; also
-  `remove`/`list`/`update`/`outdated`/`where`/`version`. **Multi-host (1.3):** `<repo>` defaults to
-  GitHub (`owner/repo`) but a host-aware adapter also installs from **GitLab** and self-hosted
-  instances — `gitlab.com/o/r`, `gitlab:o/r`, a full `https://…` URL (host auto-detected), or a
-  `gitlab+`/`github+` prefix to force the host TYPE (self-hosted GitLab / GitHub Enterprise); GitHub
-  endpoints are env-overridable (`$KPM_GITHUB_API`/`$KPM_GITHUB_RAW`). Hardening: manifest validation,
-  a path-traversal guard on module paths + package names (a manifest can never write outside the
-  package dir), and version-conflict warnings across the dependency graph. (`tools/tests/kpm_integration.py`
-  drives the real kpm under `ki` against a localhost GitHub/GitLab mock — install/deps/semver/update/
-  remove/conflict + every misconfig failure mode.) Dependencies are other repos (each optionally
-  `@<constraint>`). An `@ref` is either
-  a **literal git ref** (`@main`, a sha) or a **semver constraint** (`@^1.2.0`, `@1.x`, `@">=1 <2"`)
-  resolved against the repo's tags by the `semver` module (`validrange` tells them apart;
-  `maxsatisfying` picks the highest matching tag); the chosen constraint is recorded in `.kpm.json`
-  so `update`/`outdated` re-resolve it. **Self-maintenance**: `kpm update-kpm` refreshes `kpm.ki`
-  from GitHub (path via `$KPM_SELF`, set by the launcher), and `kpm update-ki` downloads the latest
-  release binary for `sys.platform`/`sys.arch`, `io.chmod`s it executable, and atomically swaps it in
-  over the running interpreter (`path.executable` / `$KPM_KI_PATH`; Windows moves the old exe aside
-  first) — both version-check against `sys.version` and no-op when current (`--force` overrides).
-  `$GITHUB_TOKEN`/`$KPM_GITHUB_TOKEN` (GitHub bearer) and `$GITLAB_TOKEN`/`$KPM_GITLAB_TOKEN` (GitLab
-  `PRIVATE-TOKEN`) lift each host's rate limit + reach private repos. The standalone `ki` also gains
-  `-v`/`--version`.
-- Tests run under **CTest**. **Every language feature gets a test.** Prefer many
-  small, focused tests (one behavior each) over large ones. A feature isn't done
-  until it has a test and the suite is green.
-- **Release-binary smoke tests** live alongside the C++ suite: `tools/scripts/test_examples.sh`
-  runs every runnable `examples/*.ki` against a chosen `ki` binary (with the right `--lib` flags
-  for `complex_linsolve.ki` / `solve_systems.ki`; skips the network-only `rule34_download.ki`), and
-  `tools/scripts/test_big_projects.sh` covers all three big-project testing conventions in one place
-  — golden-`.expected` (cronki, feedreader, kirdown, ledger, snip), self-asserting Kirito assertions
-  (kgrad + kgrad/extra), and the Python harnesses
-  `test_client.py` + `test_concurrent.py` for sqldb, sqldb_kwargs, webserver, webserver_kwargs. Both
-  take `--ki PATH`; the big-projects script keeps the slow self-host suite opt-in behind
-  `--selfhost`.
-- **Doc-as-test**: `tools/scripts/test_docs_examples.py` walks every fenced ```kirito block in
-  `docs/pages/*.md`, prefixes a common import preamble, and runs it — any block missing an
-  `<!--norun-->` marker must execute cleanly. Prevents doc rot (bumped stdlib signatures, dropped
-  builtins) that a plain read-through would silently miss.
-- **Semantic-stability quick check**: `tools/scripts/bytecode_stability.sh` runs every golden
-  `.ki` in `tools/tests/scripts/` and diffs stdout against `.expected` — the same round-trip CTest
-  runs, packaged as a one-shot pre-commit script that needs no CMake configure/build.
-- **Coverage-guided fuzzing (opt-in)**: `-DKIRITO_ENABLE_LIBFUZZER=ON` builds `ki_fuzz` (needs
-  clang), a `LLVMFuzzerTestOneInput` around the interpreter under the same contract as the offline
-  `fuzz_eval.cpp` — a caught `KiritoError` is expected, any other C++ exception escaping the
-  interpreter is treated as a crash for libFuzzer to minimise.
-- **Nightly CI** (`.github/workflows/nightly.yml`) runs at 03:00 UTC on `main` with a
-  fresh-commits gate — a small "gate" job compares `HEAD` against the last completed Nightly run and
-  skips the heavy job when they match; a `workflow_dispatch` always runs. The heavy job runs
-  `post_work_check.sh` (debug + release + asan + tsan), `build_all.sh` (Linux native + Windows
-  cross-compile via mingw-w64) and `test_release.sh`, then chains `test_examples.sh` +
-  `test_big_projects.sh` against the shipped `dist/ki-linux-x64`, and uploads the release binaries
-  as an artifact. All compilation happens on Linux.
-- Before claiming something works, actually build and run it; report real output.
+Four CMake presets, each a full clean build of the auto-discovered CTest suite:
+**`debug`** (g++ `-O0`, the strictest warning gate: `-Werror -Wall -Wextra -Wconversion -Wshadow …`),
+**`release`** (`-O2`, ship/benchmark), **`asan`** (Address/UBSan), **`tsan`** (ThreadSanitizer — the
+data-race gate for the `parallel` dispatcher, the only concurrent code).
 
-## Code style & working directives
+**Post-work gate** (`tools/scripts/post_work_check.sh`, contract in `.claude/POST_WORK_CHECKLIST.md`): runs
+the variants **sequentially** — `debug`, then `release`, **commit+push once both are green**, then `asan`
+and `tsan` (fix and re-push any failure). Run it before calling a change done.
 
-- **Terse but self-explanatory.** Names carry the meaning. Comment the *why*, never
-  the *what*; if code needs a comment to say what it does, rewrite the code.
-- Small, single-responsibility units. Use abstraction only responsibly, where 
-  you expect extension will be required later.
-- **Keep code DRY**. If you do something three Times or more, it should probably be a 
-  separate function.
-- Match the style of surrounding code: naming, structure, idiom.
-- **Kirito's public surface uses lowercase, no-underscore names** — every Kirito-visible function and
-  method (builtins, stdlib module functions, type methods) is all lowercase with no underscores or
-  camelCase (`gettempdir`, `splitext`, `startswith`, `symmetricdifference`, `httpget`, `timens`).
-  This is the language convention; keep new names consistent with it. (C++ identifiers still follow
-  ordinary C++ style; this rule is about names exposed to Kirito code.)
-- Clear diagnostics: lexer/parser/runtime errors should carry line and column and a
-  message a user can act on. Errors are part of the language, not an afterthought.
-- Prefer the standard library and plain data structures over cleverness.
-- C++: use STL and modern standard (C++20). Never expose raw pointers. Everywhere 
-  it is possible favor references, if reference can't be used, use smart pointers.
-  Favor std::unique_ptr over std::shared_ptr.
-- In general, objects shouldn't share attributes. If B belongs to A, then A "owns" B
-  and this gets messy when C that's not part of A has reference to B. Variables in
-  kirito code can get and use references like this, but it must not be ingrained in 
-  language internals, we want clean separation so in the end it's easy to save&load 
-  context. 
+> **Never run two builds at once, and never hand-roll `-j$(nproc)`.** Sequential is a **memory** constraint,
+> not style: every test TU includes the whole header-only interpreter, so one compile peaks ~1.7 GB RSS at
+> `-O2` (~3.2 GB under asan), and peak build RAM = `jobs × that`, scaling with CORE COUNT. On the WSL2 dev box
+> (24 cores / 47 GB) two variants at once OOM the kernel and **reboot the distro**. Let `post_work_check.sh`
+> size `-j` (it caps jobs from MemAvailable and refuses to start beside another build); never background a
+> second variant.
+
+Other checks (all take `--ki PATH`): release-binary smoke tests (`test_examples.sh`, `test_big_projects.sh`),
+doc-as-test (`test_docs_examples.py` runs every ```kirito fence in the docs), and the golden round-trip
+(`bytecode_stability.sh`). Opt-in coverage-guided fuzzer (`-DKIRITO_ENABLE_LIBFUZZER=ON`, needs clang).
+Nightly CI (`.github/workflows/`) runs the gate + cross-compile + smoke tests. **Before claiming something
+works, actually build and run it; report real output.**
+
+---
+
+## General programming rules
+
+- **Single Source of Truth (SSOT / DRY).** Every behavior has exactly one authoritative, isolable
+  implementation. Reuse via parameterization/composition/generics; extend the existing one rather than
+  forking a parallel copy. Eliminate duplicated *knowledge*, not just duplicated code.
+- **Self-explaining code.** Expressive names over comments. Comments explain *why* (assumptions, invariants,
+  complexity, non-obvious tradeoffs), never *what* the code already says. If a comment is needed to say what
+  code does, improve the code.
+- **Never allow silent failures.** Expose failure through the idiomatic mechanism so ignoring it is hard.
+  Fail fast when an invariant is violated. A value that can't be valid should throw on use, not propagate.
+- **No silent fallbacks or workarounds in our own code** — no papering over a bug with a fallback / retry-and-
+  hope / silent degradation; fix the cause. (This does *not* apply to genuinely **external** failure modes —
+  a flaky service, transient network — where an explicit, documented fallback is legitimate.)
+- **Structured, diagnostic errors.** Errors carry **what** (a specific condition), **where** (operation/site —
+  Kirito errors carry file:line:col + a traceback), and context (expected vs actual, offending input). Not
+  bare, generic strings.
+- **KISS + scope generality to the module, not the feature.** Prefer the simplest approach that meets the
+  required complexity bounds. Build the *complete* version of the thing you're building (that class/algorithm),
+  but do not add speculative features nobody asked for (YAGNI). Design for later extension without pre-building
+  it.
+- **Deterministic ownership (RAII).** One owner per resource, released automatically (destructor/`with`/scope
+  guard). No leaks. Never expose raw owning pointers — favor references, else `std::unique_ptr` over
+  `shared_ptr`.
+- **Preserve invariants; make invalid states unconstructible.** Types stay valid throughout their lifetime.
+- **No implicit/unsafe conversions.** No silent narrowing/truncation/coercion that loses data or changes
+  meaning; a lossy/failing conversion must be explicit and checked. (The codebase is `-Wconversion`-clean.)
+- **No undefined behavior.** Never rely on or trigger UB (OOB, use-after-free, signed overflow, data races,
+  aliasing). Guarantee it with sanitizers/safe abstractions, not hope. (asan/ubsan/tsan gate the build.)
+- **No global mutable state / singletons.** State is owned explicitly (an object, a module, or an injected
+  dependency) and its mutation is traceable to one owner and scope. All Kirito state is VM-scoped.
+- **Separate concerns.** Keep logic independent of I/O/net/OS/UI behind clean interfaces; depend on interfaces,
+  not concretions (see the `*_compat.hpp` isolation layer).
+- **Prefer pure functions; single-purpose functions.** Return values over mutable out-params; don't mutate
+  state you don't own. Each function does one conceptual thing (extract helpers rather than bundling several).
+- **Small, hard-to-misuse public APIs.** Hide implementation details; make invalid use difficult and correct
+  use natural. Validate inputs and enforce contracts at module boundaries (internal code may assume them).
+- **Prefer immutability/const-correctness, determinism, and the standard library** over mutation, nondeterminism,
+  and third-party deps (unless an external dep gives substantial justified value; randomness/time/external
+  systems are deterministic-exempt only when explicitly part of the contract).
+- **Consider performance in design, never at the cost of correctness or an algorithm's big-O.** Optimize only
+  measured bottlenecks. **Document non-trivial complexity, synchronization, and invariants.**
+
+### Naming: Kirito's public surface is lowercase, no underscores
+
+Every Kirito-visible name (builtins, stdlib functions, type methods) is all-lowercase, no underscores/camelCase
+(`gettempdir`, `startswith`, `symmetricdifference`, `timens`). C++ identifiers use ordinary C++ style.
+
+---
+
+## Testing rules
+
+- **Every non-trivial piece of code MUST be thoroughly tested**; prefer many small, single-behavior tests.
+- Unit-test components in isolation. Test **edge/boundary/invalid/empty inputs and adversarial attempts** to
+  break the code. Test **failure paths**: exceptions, cleanup, rollback, resource release under failure.
+- Use **property-based / fuzz** testing where applicable; **randomized** testing with deterministic **seeds**
+  when reproducibility matters, and sanity-check the outputs.
+- Verify **critical algorithms** against independent implementations, mathematical properties, or sanity checks.
+- **Every discovered bug ships a regression test** (before or with the fix), named for the *symptom* it covers
+  (`spec_dict_iter_after_delete.ki`, not `fix_pr47`), so it can never silently rot. A feature isn't done until
+  it has a test and the suite is green.
+- Design for testability: abstract db/fs/clock/rng/net behind interfaces or inject them.
+
+---
+
+## General philosophy
+
+Correctness before performance. Simplicity before cleverness. Readability before brevity. Reusability through
+good abstractions, not speculative features. Every abstraction must reduce overall complexity — if it doesn't,
+remove it. Every module should be understandable, testable, and replaceable in isolation, and make invalid
+usage difficult and correct usage natural.
+
+---
 
 ## Keep this file current
 
-When a decision changes the language design, architecture, or workflow, update this
-file in the same change. It must always describe Kirito as it actually is.
+When a decision changes the language design, architecture, or workflow, update this file **in the same change**.
+It must always describe Kirito as it actually is. Put exhaustive feature/API detail in `docs/`, not here.

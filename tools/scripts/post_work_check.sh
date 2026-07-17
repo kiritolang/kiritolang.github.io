@@ -132,7 +132,7 @@ JOBS="$(jobs_for 2)"
 RETIRED_API_RE='(\.build\(\))|((^|[^.A-Za-z0-9_])(val|makeList)\(\s*[A-Za-z_]*vm)|([^.]none\(\s*[A-Za-z_]*vm)'
 preflight_retired_api() {
     local hits
-    hits=$(grep -rnE "$RETIRED_API_RE" src tools/tests examples \
+    hits=$(grep -rnE "$RETIRED_API_RE" src tests examples \
                 --include=*.hpp --include=*.cpp 2>/dev/null \
            | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)' | grep -vE 'vm\.none|`')
     if [ -n "$hits" ]; then

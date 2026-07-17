@@ -1163,7 +1163,7 @@ guarantee. In practice, write `(a*)` or `(a+)*` when the captured value matters 
 group is almost always an accident anyway.
 
 The engine is validated against a large, classic regular-expression test corpus (run through
-Kirito in `tools/tests/scripts/spec_regex_corpus.ki`): zero false positives/negatives, and every
+Kirito in `tests/scripts/spec_regex_corpus.ki`): zero false positives/negatives, and every
 unsupported-feature or invalid pattern is rejected with a clean error rather than crashing.
 
 ### Module functions
