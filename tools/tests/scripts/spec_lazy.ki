@@ -73,4 +73,27 @@ assert List(map(Function(n): return n + 1, filter(Function(n): return n > 2, ran
 assert inspect(map) == "map(function, iterable) -> Iterator", "inspect map"
 assert inspect(enumerate) == "enumerate(iterable, start = 0) -> Iterator", "inspect enumerate"
 
+# --- streaming reductions (sum/min/max/all/any/join/extend) drain a lazy source without a temp List,
+#     and all/any SHORT-CIRCUIT — even over an INFINITE generator (would hang if materialized) ---
+var math = import("math")
+assert sum(range(1000)) == 499500, "sum streams a range"
+assert min(range(3, 9)) == 3 and max(range(3, 9)) == 8, "min/max stream a range"
+assert min([], default = 7) == 7, "min empty default"
+assert math.prod(range(1, 5)) == 24, "prod over a range"
+assert ",".join(map(Function(x): return String(x), range(4))) == "0,1,2,3", "join over a map"
+var xs = [0]
+discard xs.extend(range(1, 4))
+assert xs == [0, 1, 2, 3], "extend by a range"
+
+class Naturals:
+    var _init_ = Function(self):
+        self.i = 0
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        self.i = self.i + 1
+        return self.i
+assert any(map(Function(x): return x > 100, Naturals())), "any short-circuits an infinite generator"
+assert not all(map(Function(x): return x < 5, Naturals())), "all short-circuits an infinite generator"
+
 io.print("lazy: all passed")

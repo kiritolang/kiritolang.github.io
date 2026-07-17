@@ -92,6 +92,10 @@ inline void gcWriteBarrier(ObjectArena& arena, Object* container, Handle value, 
 // an allocating callback/rehash mid-loop can't sweep an unconsumed element. Used by both the built-in
 // type methods (below) and the free builtins, so the rooting is single-sourced.
 inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs, const char* err);
+// Stream a source element-by-element to `fn` (returns false to stop early), rooting each; lazy sources
+// stream O(1), eager sources materialize once. Defined after the lazy sequence types. (Template, so the
+// forward declaration must precede its early users — extend/join.)
+template <class F> inline void streamIterate(KiritoVM& vm, Handle src, const char* err, F&& fn);
 
 // Generator protocol helpers (defined after typeMatches). isStopIteration: is `h` the built-in
 // StopIteration sentinel a generator's _next_ raises to signal exhaustion? drainLazy: eagerly pull a
@@ -708,10 +712,10 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
         return makeMethod(vm,
             "extend", {"iterable"}, [self, self_list](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 if (a.empty()) throw KiritoError("extend expects an iterable");
-                auto other = vm.arena().deref(a[0]).iterate(vm);
-                if (!other) throw KiritoError("extend expects an iterable");
-                auto& list = self_list(vm, self);
-                for (Handle h : other.value()) list.append(vm.arena(), h);
+                streamIterate(vm, a[0], "extend expects an iterable", [&](Handle h) {  // streams a lazy source
+                    self_list(vm, self).append(vm.arena(), h);   // re-deref each step: append can't move it (non-moving arena)
+                    return true;
+                });
                 return vm.none();
             }, std::vector<Handle>{self});
     if (name == "copy")
@@ -1406,17 +1410,16 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
         });
     if (name == "join")
         return bindReq("join", 1, {"iterable"}, [self, recv](KiritoVM& vm, std::span<const Handle> a) {
-            const std::string& sep = recv(vm, self);
-            RootScope rs(vm);
-            auto items = rootedIterate(vm, a[0], rs, "join expects an iterable");  // root: a user _str_ may allocate
+            std::string sep = recv(vm, self);   // copy: the stream below allocates (a user _str_)
             std::string out;
             bool first = true;
-            for (Handle h : items) {
+            streamIterate(vm, a[0], "join expects an iterable", [&](Handle h) {  // streams a lazy source
                 if (!first) out += sep;
                 first = false;
                 out += asStr(vm, h, "join");
                 if (out.size() > kMaxRepeat) throw KiritoError("join result too large");
-            }
+                return true;
+            });
             return vm.makeString(std::move(out));
         });
     if (name == "format")
@@ -3008,6 +3011,38 @@ inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs
     return std::move(items.value());
 }
 
+// Stream each element of `src` to `fn`, rooting it for the call's duration. A LAZY source (range /
+// generator / map/filter/zip/enumerate) is pulled one element at a time — O(1) memory, and `fn`
+// returning false stops early (so `any`/`all` short-circuit even over an INFINITE generator instead
+// of trying to materialize it). An eager source is materialized once (its elements already live in
+// memory) and looped. Mirrors drainLazy's rooting (which is GC-soak proven). `err` = the not-iterable
+// diagnostic. Use this for reductions (sum/min/max/all/any/prod/join/extend); use rootedIterate when
+// the whole sequence is genuinely needed (sorted/List()/reversed/unpacking).
+template <class F>
+inline void streamIterate(KiritoVM& vm, Handle src, const char* err, F&& fn) {
+    Object& o = vm.arena().deref(src);
+    if (auto lazy = o.lazyIterate(vm, src)) {
+        std::vector<Handle> held;
+        vm.pushAuxRoots(&held);
+        struct Pop { KiritoVM& v; ~Pop() { v.popAuxRoots(); } } pop{vm};
+        while (true) {
+            held.clear();
+            lazy->roots(held);
+            auto n = lazy->next(vm);
+            if (!n) break;
+            RootScope rs(vm);
+            rs.add(*n);
+            if (!fn(*n)) break;
+        }
+        return;
+    }
+    auto items = o.iterate(vm);
+    if (!items) throw KiritoError(err);
+    RootScope rs(vm);
+    for (Handle h : items.value()) rs.add(h);
+    for (Handle h : items.value()) if (!fn(h)) break;
+}
+
 // =================================================================================================
 // Lazy sequence types — range/map/filter/zip/enumerate. Each is an opaque `Iterator`-kind Object that
 // streams via lazyIterate() (so `for x in map(f, huge)` never materializes) and drains via iterate()
@@ -3621,8 +3656,6 @@ inline void KiritoVM::installBuiltins() {
         return vm.alloc(std::make_unique<RangeVal>(start, stop, step));
     }))));
     defSig("sum", {{"iterable"}, {"start", "", makeInt(0)}}, "Number", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        auto items = vm.arena().deref(a[0]).iterate(vm);
-        if (!items) throw KiritoError("sum() argument is not iterable");
         bool isFloat = false;
         double f = 0;
         int64_t n = 0;
@@ -3632,12 +3665,13 @@ inline void KiritoVM::installBuiltins() {
             else if (st.kind() == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(st).value(); n = v; f = static_cast<double>(v); }
             else throw KiritoError("sum start must be a number");
         }
-        for (Handle h : items.value()) {
+        streamIterate(vm, a[0], "sum() argument is not iterable", [&](Handle h) {  // streams: sum(range(N)) is O(1) memory
             const Object& o = vm.arena().deref(h);
             if (o.kind() == ValueKind::Float) { isFloat = true; f += static_cast<const FloatVal&>(o).value(); }
             else if (o.kind() == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(o).value(); n = wadd(n, v); f += static_cast<double>(v); }
             else throw KiritoError("sum expects numbers");
-        }
+            return true;
+        });
         return isFloat ? vm.makeFloat(f) : vm.makeInt(n);
     });
     // min/max are variadic (a single iterable, or several positional values) and accept the keyword
@@ -3655,26 +3689,31 @@ inline void KiritoVM::installBuiltins() {
             else if (na.name == "default") { defaultVal = na.value; hasDefault = true; }
             else throw KiritoError(std::string(who) + "() got an unexpected keyword argument '" + na.name + "'");
         }
-        std::vector<Handle> items;
-        if (a.size() == 1) { auto it = vm.arena().deref(a[0]).iterate(vm);
-            if (!it) throw KiritoError(std::string(who) + "() argument is not iterable");
-            items = std::move(it.value()); }
-        else items.assign(a.begin(), a.end());
-        for (Handle h : items) rs.add(h);
-        if (items.empty()) {
-            if (hasDefault) return defaultVal;
-            throw KiritoError(std::string(who) + "() arg is an empty sequence");
-        }
         auto keyOf = [&](Handle h) -> Handle {
             if (!hasKey) return h;
             std::array<Handle, 1> args{h};
             return rs.add(vm.arena().deref(keyFn).call(vm, args));
         };
-        Handle best = items[0], bestKey = keyOf(best);
-        for (std::size_t i = 1; i < items.size(); ++i) {
-            Handle k = keyOf(items[i]);
+        // Fold to the best element without materializing (a lazy single-iterable streams). best/bestKey
+        // are kept rooted in `rs` across elements, since streamIterate only roots each element during its
+        // own callback.
+        Handle best{}, bestKey{};
+        bool has = false;
+        auto consider = [&](Handle h) {
+            Handle k = keyOf(h);
+            if (!has) { best = rs.add(h); bestKey = k; has = true; return; }
             bool better = wantMax ? kiLessThan(vm, bestKey, k) : kiLessThan(vm, k, bestKey);
-            if (better) { best = items[i]; bestKey = k; }
+            if (better) { best = rs.add(h); bestKey = k; }
+        };
+        if (a.size() == 1) {
+            std::string err = std::string(who) + "() argument is not iterable";
+            streamIterate(vm, a[0], err.c_str(), [&](Handle h) { consider(h); return true; });
+        } else {
+            for (Handle h : a) { rs.add(h); consider(h); }
+        }
+        if (!has) {
+            if (hasDefault) return defaultVal;
+            throw KiritoError(std::string(who) + "() arg is an empty sequence");
         }
         return best;
     };
@@ -3763,19 +3802,17 @@ inline void KiritoVM::installBuiltins() {
 
     defSig("all", {{"iterable"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         if (a.size() != 1) throw KiritoError("all expected 1 argument");
-        RootScope rs(vm);
-        auto items = rootedIterate(vm, a[0], rs, "all expects an iterable");
-        for (Handle h : items)
-            if (!vm.arena().deref(h).truthy()) return vm.makeBool(false);   // a user _bool_ may allocate
-        return vm.makeBool(true);
+        bool result = true;   // streams: short-circuits on the first falsy element (a user _bool_ may allocate)
+        streamIterate(vm, a[0], "all expects an iterable",
+                      [&](Handle h) { if (!vm.arena().deref(h).truthy()) { result = false; return false; } return true; });
+        return vm.makeBool(result);
     });
     defSig("any", {{"iterable"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         if (a.size() != 1) throw KiritoError("any expected 1 argument");
-        RootScope rs(vm);
-        auto items = rootedIterate(vm, a[0], rs, "any expects an iterable");
-        for (Handle h : items)
-            if (vm.arena().deref(h).truthy()) return vm.makeBool(true);    // a user _bool_ may allocate
-        return vm.makeBool(false);
+        bool result = false;  // streams: short-circuits on the first truthy element
+        streamIterate(vm, a[0], "any expects an iterable",
+                      [&](Handle h) { if (vm.arena().deref(h).truthy()) { result = true; return false; } return true; });
+        return vm.makeBool(result);
     });
     defSig("reversed", {{"iterable"}}, "List", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         if (a.size() != 1) throw KiritoError("reversed expected 1 argument");

@@ -65,16 +65,27 @@ parameter name.
 ## Sequences and iteration
 
 - `len(x) → Integer` — number of elements of a collection, or code points of a String.
-- `range(stop) → List` / `range(start, stop[, step]) → List` — integers from `start` (default `0`)
-  up to but excluding `stop`, stepping by `step` (default `1`, may be negative). Materializes a List;
-  a step of `0` throws, and an over-large result throws rather than exhausting memory. (`stop` may also
+- `range(stop) → range` / `range(start, stop[, step]) → range` — integers from `start` (default `0`)
+  up to but excluding `stop`, stepping by `step` (default `1`, may be negative). A **lazy** sequence:
+  iterating it is O(1) memory (it never builds the list), yet it stays backward-compatible — it prints
+  list-style (`range(3)` → `[0, 1, 2]`), compares `== [0, 1, 2]`, and supports O(1) `len(r)`, `r[i]`, and
+  `x in r`. A step of `0` throws, and a length past the 32M-element cap throws `range too large` (the cap
+  now bounds only the materializing operations — plain iteration is unbounded in memory). (`stop` may also
   be given by the keyword `end`.)
-- `enumerate(iterable[, start]) → List` — a list of `[index, value]` pairs, indices starting at
-  `0` (or at `start`, e.g. `enumerate(xs, start = 1)`).
-- `zip(*iterables) → List` — a list of `[a, b, …]` tuples drawn position-wise from the inputs,
-  truncated to the shortest. Variadic.
-- `map(function, iterable) → List` — apply `function` to every element, collecting the results.
-- `filter(function, iterable) → List` — keep the elements for which `function(x)` is truthy.
+- `enumerate(iterable[, start]) → Iterator` — a **lazy** iterator of `[index, value]` pairs, indices
+  starting at `0` (or at `start`, e.g. `enumerate(xs, start = 1)`). Wrap in `List(...)` to materialize.
+- `zip(*iterables) → Iterator` — a **lazy** iterator of `[a, b, …]` tuples drawn position-wise from the
+  inputs, ending at the shortest. Variadic.
+- `map(function, iterable) → Iterator` — a **lazy** iterator applying `function` to every element.
+- `filter(function, iterable) → Iterator` — a **lazy** iterator of the elements for which `function(x)`
+  is truthy.
+
+  > **Lazy note.** `map`/`filter`/`zip`/`enumerate` return a one-pass **iterator** (like Python 3), not a
+  > List: `type(map(f, xs))` is `"map"`, the result is not indexable and is not `== [a, list]`, and a
+  > non-iterable/non-callable argument throws when the result is *iterated*, not when it is created. Feed
+  > it to a `for` loop or an eager consumer (`List(...)`, `sum`, `sorted`, unpacking) to use it. Consumers
+  > that fold — `sum`/`min`/`max`/`all`/`any` and `str.join`/`list.extend` — **stream** it without a temp
+  > List, so `any(...)`/`all(...)` short-circuit even over an infinite generator.
 - `reversed(iterable) → List` — the elements in reverse order.
 - `sorted(iterable[, key][, reverse]) → List` — a new **stable**-sorted list. `key` is an optional
   function mapping each element to its comparison key (computed once per element); `reverse = True`
@@ -158,7 +169,8 @@ String). Fill/align/width/precision still work on Strings.
 
 - `divmod`/`//`/`%` use floor semantics — the quotient rounds toward negative infinity and the
   remainder takes the sign of the divisor: `divmod(-7, 3) == [-3, 2]`.
-- `range` materializes a List, so very large ranges allocate.
+- `range` is lazy — `for i in range(30000000)` iterates in O(1) memory (no List is built); only a
+  *materializing* use (`String(r)`, `List(r)`, slicing) pays for the elements, and is bounded by the 32M cap.
 - `min`/`max` throw on an empty sequence unless `default` is given; `sum([])` is `0`.
 - Passing a non-iterable where an iterable is expected throws a clean `is not iterable` error.
 - An unknown keyword, a duplicated argument, a missing required argument, or too many positionals all

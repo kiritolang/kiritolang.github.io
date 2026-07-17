@@ -374,7 +374,39 @@ Invoked as `x OP y` → `x._op_(y)`; return a `Bool` (or any truthy/falsy value)
 | `_setitem_(self, key, value)` | `x[key] = value` (variadic keys: `m[i, j] = v`) | nothing |
 | `_len_(self)` | `len(x)` | an `Integer` |
 | `_contains_(self, item)` | `item in x` / `item not in x` | a truth value |
-| `_iter_(self)` | `for v in x:`, and any iteration (unpacking, `List(x)`, …) | any iterable of the elements to yield (a List, Set, String, another iterable instance — the VM iterates whatever you return) |
+| `_iter_(self)` | `for v in x:`, and any iteration (unpacking, `List(x)`, …) | an **iterator** (an object with `_next_`, commonly `self` or a fresh iterator instance — the lazy generator protocol below), OR any plain iterable to yield (a List/Set/String — the VM iterates whatever you return) |
+| `_next_(self)` | each step of iterating a `_next_`-style iterator | the next value, or `throw StopIteration()` to end |
+
+### Lazy generators (`_iter_` / `_next_`)
+
+A class becomes a **lazy, pull-based generator** when `_iter_` returns an object whose `_next_(self)`
+yields one value per call and raises `StopIteration` at the end. Iteration then **streams** — a `for`
+loop, `sum`, `sorted`, `List(...)`, or unpacking pulls one value at a time and never materializes the
+whole sequence, so an **infinite** generator with `break` (or `any`/`all` short-circuiting) is bounded:
+
+```kirito
+class Count:
+    var _init_ = Function(self, start):
+        self.n = start
+    var _iter_ = Function(self):
+        return self                 # self is the iterator
+    var _next_ = Function(self):
+        var v = self.n
+        self.n = self.n + 1
+        return v                    # never raises StopIteration -> infinite
+
+for x in Count(0):
+    if x >= 3:
+        break
+    io.print(x)                     # 0, 1, 2
+```
+
+`StopIteration` is a built-in exception class — `throw StopIteration()` inside `_next_` ends the
+iteration, and you can `catch StopIteration as e:` or `isinstance(e, StopIteration)`. **Strict
+(PEP-479):** only a `StopIteration` raised at `_next_`'s own frame ends iteration; one that leaks from
+a deeper call inside `_next_` surfaces as an error, so a bug can't masquerade as "iteration finished".
+Returning a plain List from `_iter_` (the older, eager style) still works. The built-in
+`range`/`map`/`filter`/`zip`/`enumerate` are lazy on this same seam.
 
 ### Callable and context-manager protocol
 

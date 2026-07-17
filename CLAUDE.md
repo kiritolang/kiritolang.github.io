@@ -153,8 +153,8 @@ Kirito should support:
   `_eq_`/`_ne_`/`_lt_`/`_le_`/`_gt_`/`_ge_`, `_neg_`/`_not_`, `_bool_` (opt-in truthiness — every
   `if`/`while`/`and`/`or`/`not`/`Bool(x)`/`filter` dispatches through it; must return a `Bool`;
   without it, an instance is always truthy — the additive-safe default), `_call_`,
-  `_getitem_`/`_setitem_` (variadic keys: `m[i, j] = v`), `_len_`, `_contains_`, `_iter_`,
-  `_enter_`/`_exit_`, and `_hash_`. Members whose
+  `_getitem_`/`_setitem_` (variadic keys: `m[i, j] = v`), `_len_`, `_contains_`, `_iter_`, `_next_`
+  (the **lazy generator protocol** — see below), `_enter_`/`_exit_`, and `_hash_`. Members whose
   name has a **single leading underscore and no trailing underscore** (e.g. `_count`) are **private**
   — accessible only from within a method of the same class **or a subclass** (privacy is per class
   *chain*, not per defining class — there is no name mangling). A **nested function defined inside a
@@ -287,8 +287,25 @@ a stability fuzzer, and a benchmark). Working today:
   its location reminding you to implement something (an optional trailing string is the reminder).
   Warnings print `file:line:col: warning: ...` to stderr; the `ki` flag `-w`/`--no-warn` disables
   them. Module-level names (exports) and class members are never flagged.
-- **Builtins**: `range`, `sum`, `min`, `max`, `abs`, `round`, `sorted`, `enumerate`, `zip`, `map`,
-  `filter`, `len`, `type`, `id`, `import`, `inspect`, `all`, `any`, `reversed`, `divmod`, `isinstance`
+- **Lazy generators**: a user class is a **pull-based generator** when its `_iter_(self)` returns an
+  object with a `_next_(self)` method: `_next_` yields the next value or `throw StopIteration()` to end.
+  A `for`/`sum`/`sorted`/`List(...)`/unpacking over it streams — one value at a time, so an **infinite**
+  generator + `break` (or `any`/`all` short-circuit) is bounded and never materializes. **`StopIteration`**
+  is a built-in exception class (global; matches typed `catch`/`isinstance`). **Strict PEP-479**: only a
+  StopIteration raised at `_next_`'s own frame ends iteration — one leaking from a deeper call surfaces
+  as an error. The seam is the pull-based `LazyIterator` (`object.hpp`); an `_iter_` that returns a plain
+  List (the pre-generator style) still works. `range`/`map`/`filter`/`zip`/`enumerate` are lazy on the
+  same seam (below). No `yield` coroutines (the VM recurses on the native stack — out of scope).
+- **Builtins**: `range` (a **lazy** sequence — see below), `sum`, `min`, `max`, `abs`, `round`, `sorted`,
+  `enumerate`/`zip`/`map`/`filter` (**lazy iterators**, Python-style: the result's `type()` is
+  `range`/`map`/`filter`/`zip`/`enumerate`, NOT `List`, and it is not indexable / not `== [list]` — wrap
+  in `List(...)` to materialize; a non-iterable/non-callable arg throws when ITERATED, not at
+  construction). `range` is the exception that stays **backward-compatible**: it prints list-style
+  (`[0, 1, 2]`), compares `== [0, 1, 2]` (both directions), and supports O(1) `len`/index/`in`; it still
+  throws `range too large` past the 32M-element cap (which now bounds only the *materializing* ops —
+  iteration itself is O(1) memory). The reductions `sum`/`min`/`max`/`all`/`any` and `str.join`/
+  `list.extend` **stream** a lazy source (no intermediate List). `len`, `type`, `id`, `import`, `inspect`,
+  `all`, `any`, `reversed`, `divmod`, `isinstance`
   (the type argument may be a user class, a **built-in type constructor** — `isinstance(1, Integer)` —
   or a type-name String; typed `catch` likewise matches built-in types, e.g. `catch String as e`),
   `hasattr(obj, name)` (does `obj.name` resolve? — **existence**, so an attribute that is `None` still
@@ -785,10 +802,12 @@ its anchor but is never auto-linked, so a prose mention never points at the wron
 renders Markdown indented code fences, multi-line list items, and strips `<!--comment-->` directives.
 Documentation is authored in those `.md` files, NOT scraped from code comments.
 
-Not yet done (future enrichment): comprehensions, variadic params,
-generators, full-Unicode case folding (current `upper`/`lower` cover
-ASCII + Latin-1 + Latin Extended-A). (Arbitrary-precision integers ARE done — the `int` module's
-`BigInt`.) The **bytecode compiler + stack VM** is done and is the **sole
+Not yet done (future enrichment): comprehensions, variadic params, `yield`
+coroutines (the VM recurses on the native C++ stack, so a stackless rewrite is out of scope; the
+**protocol-based generators** below cover the streaming use), full-Unicode case folding (current
+`upper`/`lower` cover ASCII + Latin-1 + Latin Extended-A). (Arbitrary-precision integers ARE done —
+the `int` module's `BigInt`; **lazy generators ARE done** — the `_iter_`/`_next_` protocol + lazy
+`range`/`map`/`filter`/`zip`/`enumerate`, below.) The **bytecode compiler + stack VM** is done and is the **sole
 engine** — the tree-walker is gone (`bytecode.hpp` / `compiler.hpp` / `bytecode_vm.hpp`; the
 `Compiler` is a second AST visitor that lowers each body to a `Proto`, executed by the `BytecodeVM`
 with an explicit GC-rooted operand stack instead of native recursion; operator/call/member semantics
