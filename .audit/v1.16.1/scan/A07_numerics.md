@@ -40,3 +40,29 @@ Findings below (append-only).
   `{BigInt(3): 1}.get(3.0) == 1`.
 - Verified-real: CONFIRMED.
 
+### F07-3 [Med] Float `%` (and the mod path) returns NaN for a finite dividend with an infinite divisor
+- runtime.hpp:281-284 — float Mod computes `x - std::floor(x / y) * y`. For `y = inf`,
+  `floor(x/y) = 0.0`, and `0.0 * inf = NaN`, so the result is NaN even though the mathematically
+  correct floor-mod is `x` (Python `5.0 % inf` == `5.0`).
+- Trigger (CONFIRMED via ki, vs Python): `5.0 % inf` → Kirito `nan`, Python `5.0`;
+  `(-5.0) % inf` → Kirito `nan`, Python `inf`; `5.0 % (-inf)` → Kirito `nan`, Python `-inf`.
+  (`5.0 // inf` → `0.0` matches.)
+- Why it matters: a wrong numeric result (NaN) where a clean value exists, and it contradicts the
+  module-wide "don't return silent NaN rubbish" ethos. Exotic inputs, but silently wrong.
+- Fix idea: special-case an infinite divisor with a finite dividend (return x when signs align per
+  floor semantics), or use `std::fmod` then apply the floor sign-correction (which handles inf), e.g.
+  `r = std::fmod(x,y); if (r != 0 && (r<0)!=(y<0)) r += y;` — std::fmod(5,inf)=5.
+- Test to add: `5.0 % inf == 5.0`, `(-5.0) % inf == inf`.
+- Verified-real: CONFIRMED (reproduced, diverges from Python floor-mod).
+
+### F07-4 [Low] BigInt vs Float ordering/arithmetic throws a misleading "arithmetic" message
+- stdlib_int.hpp:594-596 — BigIntVal::binary coerces rhs unconditionally via `coerce(...,"BigInt
+  arithmetic")`, so a *comparison* like `BigInt(3) < 3.5` throws "BigInt arithmetic expects a BigInt
+  or Integer" (says "arithmetic" for a comparison) rather than either comparing or a clear message.
+- Trigger (CONFIRMED): `BigInt(3) < 3.5` → throws "BigInt arithmetic expects a BigInt or Integer".
+- Why it matters: minor UX/consistency — native `3 < 3.5` works; BigInt cannot be ordered against a
+  Float at all, and the diagnostic misdescribes the operation.
+- Fix idea: for Lt/Le/Gt/Ge/Eq/Ne give a comparison-specific message, or support Float comparison via
+  an exact BigInt-vs-Float compare (ties into F07-2).
+- Verified-real: CONFIRMED.
+
