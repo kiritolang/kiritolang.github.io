@@ -333,7 +333,7 @@ inline Handle makeBytes(KiritoVM& vm, Handle x, const std::string& enc = "utf-8"
     if (o.kind() == ValueKind::Integer) {
         int64_t n = static_cast<const IntVal&>(o).value();
         if (n < 0) throw KiritoError("negative count");
-        if (static_cast<uint64_t>(n) > 256ull * 1024 * 1024) throw KiritoError("Bytes too large");
+        if (static_cast<uint64_t>(n) > kMaxRepeat) throw KiritoError("Bytes too large");   // shared cap (common.hpp)
         return vm.alloc(std::make_unique<BytesVal>(std::string(static_cast<std::size_t>(n), '\0')));
     }
     auto it = o.iterate(vm);

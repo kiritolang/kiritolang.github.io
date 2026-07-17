@@ -351,6 +351,80 @@ assert e.text == "a < b & c > d A B"                 # named + numeric entities 
 )"));
     }
 
+    // ===== A08-1: Integer.compare with ZERO tolerance is exact above 2^53 (an exact __int128 diff,
+    // not a lossy double round-trip that collapses two int64 differing by 1). =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+assert (2**62 + 1).compare(2**62, 0.0, 0.0) == False   # differ by 1 above 2^53 -> NOT close at 0 tol
+assert (2**62).compare(2**62, 0.0, 0.0) == True        # equal -> close
+assert (2**62 + 1).compare(2**62, 0.0, 2.0) == True    # within abs_tol 2 -> close
+# still agrees with == and <
+assert (2**62 + 1) != (2**62) and (2**62) < (2**62 + 1)
+)"));
+    }
+
+    // ===== A09-4: a class defining _setstate_ but no _getstate_ must be REJECTED at serialize time
+    // (the mirror of _getstate_-without-_setstate_, which already errors) — else _setstate_ silently
+    // never runs on load. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var dump = import("dump")
+class Half:
+    var _init_ = Function(self):
+        self.x = 1
+    var _setstate_ = Function(self, s):
+        self.x = s
+var threw = False
+try:
+    discard dump.dumps(Half())
+catch as e:
+    threw = "_getstate_" in e
+assert threw
+# a class with BOTH still round-trips
+class Whole:
+    var _init_ = Function(self):
+        self.x = 7
+    var _getstate_ = Function(self):
+        return self.x
+    var _setstate_ = Function(self, s):
+        self.x = s
+assert dump.loads(dump.dumps(Whole())).x == 7
+)"));
+    }
+
+    // ===== A05-1: range's guard is an ELEMENT-count cap (~32M), so a range that would allocate
+    // multiple GB is rejected up front; a normal range still works. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var threw = False
+try:
+    discard range(40000000)          # > 32M cap, ~3 GB of IntVals -> rejected before allocating
+catch as e:
+    threw = "range too large" in e
+assert threw
+assert len(range(1000)) == 1000
+)"));
+    }
+
+    // ===== A10-3: Matrix.row()'s out-of-range message names "Matrix" (matching getItem), not the
+    // bare "row index out of range". =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var matrix = import("matrix")
+var m = matrix.Matrix([[1.0, 2.0], [3.0, 4.0]])
+var e1 = ""
+try:
+    discard m.row(9)
+catch as e:
+    e1 = e
+assert "Matrix row index out of range" in e1
+)"));
+    }
+
     // ===== A02-1: compiler-generated hidden temporaries ($with0/$exc0) must NOT leak into a module's
     // public exports (cosmetic on inspect + a real resource-retention leak — a top-level `with` would
     // otherwise pin its context manager for the module's whole lifetime). =====

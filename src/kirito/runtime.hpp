@@ -336,7 +336,23 @@ inline Handle makeNumericCompare(KiritoVM& vm, Handle self) {
             const Object& abst = v.arena().deref(a[2]);
             if (!isNumeric(rel) || !isNumeric(abst))
                 throw KiritoError("compare() rel_tol and abs_tol must be numbers");
-            return v.makeBool(floatClose(asDouble(v.arena().deref(self)), asDouble(other),
+            const Object& selfO = v.arena().deref(self);
+            // Both Integer: take the difference EXACTLY (in __int128, so opposite-sign extremes don't
+            // overflow) instead of rounding each to double first — otherwise two int64 that differ by 1
+            // above 2^53 collapse to the same double and compare "close" even at zero tolerance, the one
+            // spot in the numeric stack that would disagree with exact ==/</>. The tolerance formula is
+            // unchanged: close iff |a-b| <= max(relTol*max(|a|,|b|), absTol).
+            if (selfO.kind() == ValueKind::Integer && other.kind() == ValueKind::Integer) {
+                int64_t ia = static_cast<const IntVal&>(selfO).value();
+                int64_t ib = static_cast<const IntVal&>(other).value();
+                __extension__ __int128 d = static_cast<__int128>(ia) - static_cast<__int128>(ib);
+                if (d < 0) d = -d;
+                double bound = std::max(asDouble(rel) * std::max(std::fabs(static_cast<double>(ia)),
+                                                                 std::fabs(static_cast<double>(ib))),
+                                        asDouble(abst));
+                return v.makeBool(static_cast<double>(d) <= bound);
+            }
+            return v.makeBool(floatClose(asDouble(selfO), asDouble(other),
                                          asDouble(rel), asDouble(abst)));
         },
         std::vector<Handle>{self}));
@@ -3196,7 +3212,7 @@ inline void KiritoVM::installBuiltins() {
             uint64_t span = static_cast<uint64_t>(start) - static_cast<uint64_t>(stop);
             count = span / negstep + (span % negstep != 0 ? 1 : 0);
         }
-        if (count > kMaxRepeat) throw KiritoError("range too large");
+        if (count > kMaxRangeCount) throw KiritoError("range too large");  // element-count cap, not the byte cap
         RootScope rs(vm);
         auto list = std::make_unique<ListVal>();
         list->elems.reserve(static_cast<std::size_t>(count));

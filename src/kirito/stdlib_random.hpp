@@ -243,9 +243,9 @@ public:
                 // k defaults to 1 (like choice, but as a 1-element List); an explicit None is also 1.
                 int64_t k = (a.size() < 2 || vm.arena().deref(a[1]).kind() == ValueKind::None) ? 1 : asInt(vm, a[1]);
                 if (k < 0) throw KiritoError("choices: k must be non-negative");
-                // Resource guard on the result length, matching runtime.hpp's kMaxRepeat for list
-                // repetition (not visible here — stdlib_random is included before that constant).
-                if (static_cast<uint64_t>(k) > 256ull * 1024 * 1024)
+                // Resource guard on the result length, the shared kMaxRepeat (common.hpp) used for
+                // String/List/Bytes repetition — already used at the top of this file too.
+                if (static_cast<uint64_t>(k) > kMaxRepeat)
                     throw KiritoError("choices: k too large");
                 RootScope rs(vm);
                 for (Handle h : pool) rs.add(h);   // keep the (possibly freshly-iterated) pool alive

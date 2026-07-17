@@ -251,7 +251,7 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         Args(vm, a, "row").require(1);
         auto& m = self_m(vm, self);
         std::size_t r = idx(vm, a[0]);
-        if (r >= m.rows()) throw KiritoError("row index out of range");
+        if (r >= m.rows()) throw KiritoError("Matrix row index out of range");  // match getItem's text
         RootScope rs(vm);
         auto list = std::make_unique<ListVal>();
         for (std::size_t c = 0; c < m.cols(); ++c) list->elems.push_back(rs.add(vm.makeFloat(m.at(r, c))));

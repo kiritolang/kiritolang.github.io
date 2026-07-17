@@ -17,7 +17,10 @@ A leading `*args` below denotes a variadic positional list; `[arg]` denotes an o
 The type constructors double as converters and are keyword-callable by their
 parameter name.
 
-- `type(x) → String` — the type name of `x` (e.g. `"Integer"`, `"List"`, a user class's name).
+- `type(x) → String` — the type name of `x` (e.g. `"Integer"`, `"List"`, a user class's name). Note a
+  **class value and its instances share one name** — `type(Foo)` and `type(Foo())` are both `"Foo"` — so
+  `type()` alone can't tell a class from its instance, and `isinstance(v, type(v))` (which holds for every
+  other value) is `False` when `v` is itself a class value.
 - `Integer(x) → Integer` — convert to a 64-bit integer. Accepts `Bool` (`True`→`1`), `Float`
   (truncates toward zero; rejects NaN/∞/out-of-range), or a `String` in decimal or `0x`/`0o`/`0b`
   form (the base prefix is case-insensitive — `0X`/`0O`/`0B` also work; surrounding whitespace and a

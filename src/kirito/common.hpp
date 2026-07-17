@@ -158,6 +158,12 @@ inline bool floatClose(double a, double b, double relTol, double absTol) {
 // before runtime.hpp) shares the exact same cap.
 inline constexpr uint64_t kMaxRepeat = 256ull * 1024 * 1024;
 
+// `range` materializes a List, and each element costs ~80 B (a Handle in list->elems + a fresh
+// non-interned IntVal + its arena slot) — NOT one byte like String/Bytes repetition. So `range` needs
+// its own count cap; borrowing the byte-sized kMaxRepeat would admit a ~21 GB list, defeating the
+// documented "range is bounded (throw instead of OOMing)" guarantee. ~32M elements ≈ 2.5 GB.
+inline constexpr uint64_t kMaxRangeCount = 32ull * 1024 * 1024;
+
 }  // namespace kirito
 
 // KiritoError and KiritoThrow — see the note above their placeholder-comment. Included at the

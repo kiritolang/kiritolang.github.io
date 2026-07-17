@@ -84,7 +84,29 @@ Regression cases (correctness — a timing test would be flaky) in `test_audit_v
 | A11-2 | MED | `base64.encode` was O(n²) (`out = out + ch` per char) — 32 KB took ~5.7 s, ~1 MB ~an hour | build a List, `"".join` once (the module's own `decode`/`csv` idiom). Measured: 32 KB 5.7 s → 0.27 s, now linear | stdlib_kimodules.hpp |
 | A11-1 | MED | `xml` text `_decode` same O(n²) — one `&` in a big text node made decoding ~500× slower | same List+join rewrite | stdlib_kimodules.hpp |
 
+## FIXED (this session) — batch 6: LOW correctness + DRY + doc accuracy
+
+| ID  | Symptom | Fix | File(s) |
+|-----|---------|-----|---------|
+| A08-1 | `Integer.compare(other, 0.0, 0.0)` returned True for two int64 differing by 1 above 2^53 (lossy double round-trip) | exact `__int128` diff when both operands are Integer | runtime.hpp |
+| A09-4 | a class with `_setstate_` but no `_getstate_` silently deserialized half-initialized (`_setstate_` never ran) | reject at flatten time, mirroring the `_getstate_`-without-`_setstate_` hard error | stdlib_serde.hpp |
+| A05-1 | `range`'s guard borrowed the byte-sized `kMaxRepeat`, admitting a ~21 GB list (per-element ~80 B) | new `kMaxRangeCount` (~32M elems ≈ 2.5 GB), sized for range's real cost | common.hpp, runtime.hpp |
+| A10-3 (DRY) | the "row index out of range" text existed 4× with two spellings — `matrix`/`complex` `row()` dropped the type prefix `getItem` uses | align both to "Matrix/ComplexMatrix row index out of range" | stdlib_matrix.hpp, stdlib_complex.hpp |
+| A10-4 / A05-4 (DRY) | `kMaxRepeat` re-typed as the literal `256*1024*1024` in the random/bytes result-length guards, one with a comment falsely claiming the constant is "not visible here" | use `kMaxRepeat`; fix the stale comment | stdlib_random.hpp, bytes.hpp |
+| A01-3 (doc) | CLAUDE.md called positional-after-keyword a compile-time diagnostic; it is a deferred, catchable runtime throw | corrected | CLAUDE.md |
+| A08-3 (doc) | `.audit/README.md`'s FP table said `math.trunc` returns Integer; it returns **Float** (the row inverted the v1.12 verdict) | corrected + warned against "restoring" an Integer return | .audit/README.md |
+| A05-2 (doc) | `isinstance(v, type(v))` is False for a class value (type() shares a name with instances) — undocumented | noted under `type`/`isinstance` | docs/pages/08-builtins.md |
+
 ## DEFERRED — needs a maintainer decision (NOT auto-fixed)
+
+- **A13-3 (LOW): `json.loads` throws on a high surrogate followed by a valid-but-non-low `\u` escape**
+  (`\uD800A`), while a truly lone high surrogate (not followed by `\u`) is U+FFFD-substituted.
+  The scan called this an inconsistency with the code's own unpaired-surrogate rule — but **six tests**
+  (`r6_json`, `audit_json`, `labx_serde`, `r4_serialization`, `deep_serialization`, `r8_serde_data`)
+  deliberately pin the throw ("high surrogate + non-low/BMP `\u` throws"). Treating a *malformed pair*
+  attempt more strictly than a lone surrogate is a defensible, tested choice; overturning it is a
+  maintainer call. Reverted (the third scan finding this round to claim "inconsistent/untested" while
+  a test pinned the behaviour — same lesson as A18-5/A18-1).
 
 **Lesson repeated:** two scan findings (A18-5, A18-1) claimed the behaviour was "untested". It was NOT
 — each contradicts an existing passing test, one with an explanatory comment. Reverted rather than

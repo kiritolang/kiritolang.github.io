@@ -226,6 +226,13 @@ inline std::pair<std::vector<Node>, uint32_t> flatten(KiritoVM& vm, Handle root,
                     n.links.push_back(visit(state));
                     break;
                 }
+                // Symmetric validation: a class defining _setstate_ but NOT _getstate_ would fall through
+                // to auto-serializing its attributes and _setstate_ would never run on load — silently
+                // half-initializing any derived state. That is the mirror of _getstate_-without-_setstate_,
+                // which already hard-errors on rebuild, so reject it here at flatten time too.
+                if (inst && serdeMethod(vm, h, "_setstate_"))
+                    throw KiritoError("cannot serialize '" + inst->className +
+                                      "': it defines _setstate_ but no _getstate_");
                 // Otherwise a plain user-class instance auto-serializes its attributes.
                 if (inst) {
                     n.tag = Tag::Object;

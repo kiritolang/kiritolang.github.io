@@ -855,8 +855,11 @@ bits). Measured ~10% on function-local arithmetic loops; no regression on call-h
   inside that body, which unwinds in the same frame, can neither corrupt the operand stack nor steal
   the re-raised exception's reported line. Operator/call/member
   semantics live in shared free functions (`applyBinaryOp`/`applyCall`/`evalMemberGet`/… in
-  `runtime.hpp`). A genuine program error the compiler finds (deep nest, invalid assignment target,
-  positional-after-keyword) is thrown as a `KiritoError`, like a parser diagnostic.
+  `runtime.hpp`). A genuine program error the compiler finds (deep nest, invalid assignment target)
+  is thrown as a `KiritoError`, like a parser diagnostic. A **positional-after-keyword** argument is
+  different: the compiler detects it but emits a **deferred, catchable runtime throw** (the callee and
+  the arguments up to the offending one are evaluated first, then it throws) — so it is a `catch`-able
+  runtime error, not a compile-time diagnostic.
 - **Layered scoping**: global (built-ins) → module (per `.ki` file) → local (per function call);
   closures capture their lexical scope by handle. Only functions/modules/class-bodies introduce scopes.
 - **Extending in C++**: subclass `NativeModule` (override `setup`) or `NativeClass` (override only
