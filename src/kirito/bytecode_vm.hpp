@@ -194,6 +194,13 @@ public:
                 case Op::MakeFunction: {
                     auto fn = std::make_unique<KiFunction>(proto.funcs[in.a], scope());
                     fn->sourceFile = vm_.currentChunkFile();
+                    // A function literal created INSIDE a method body inherits that method's owner
+                    // class, so a nested closure/callback may touch `self._private` and resolve
+                    // `self._super_()` — code lexically inside a method IS within that method
+                    // (A09-1/A09-2). Only ever GRANTS the access the privacy contract already promises.
+                    // Safe against the "never stamp a shared function object" rule (BuildClass above):
+                    // this KiFunction is freshly allocated on every execution, not shared.
+                    if (hasOwner_) { fn->ownerClass = ownerClass(); fn->hasOwner = true; }
                     push(vm_.alloc(std::move(fn)));
                 } break;
                 case Op::BuildClass: {

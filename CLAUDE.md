@@ -157,7 +157,10 @@ Kirito should support:
   `_enter_`/`_exit_`, and `_hash_`. Members whose
   name has a **single leading underscore and no trailing underscore** (e.g. `_count`) are **private**
   — accessible only from within a method of the same class **or a subclass** (privacy is per class
-  *chain*, not per defining class — there is no name mangling). Non-function class-body
+  *chain*, not per defining class — there is no name mangling). A **nested function defined inside a
+  method** inherits that method's class ownership, so a closure/callback lexically inside a method may
+  also touch `self._private` and resolve `self._super_()`; a function defined outside any method
+  cannot. Non-function class-body
   `var`s are shared class attributes: instances read them through the class and copy-on-write on
   assignment. Parameter **defaults are evaluated at call time**, once per call, left-to-right (so
   a mutable default like `xs = []` is a fresh list each call — not a shared-once footgun); a default

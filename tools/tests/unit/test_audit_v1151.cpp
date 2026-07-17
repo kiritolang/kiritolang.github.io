@@ -425,6 +425,54 @@ assert "Matrix row index out of range" in e1
 )"));
     }
 
+    // ===== A09-1 / A09-2: a function literal defined INSIDE a method inherits the method's class
+    // ownership, so a nested closure/callback may touch self._private and resolve self._super_() —
+    // while a function defined OUTSIDE a method still can't (privacy is only granted, never opened). =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+class Bag:
+    var _init_ = Function(self):
+        self._items = [500, 300, 900]
+    var total = Function(self):
+        var acc = 0
+        var add = Function(v):           # closure reads self via capture; write to acc
+            acc = acc + v
+        for v in self._items:            # and self._items is private
+            add(v)
+        return acc
+    var first_private = Function(self):
+        var f = Function(): return self._items[0]   # private read INSIDE a nested function
+        return f()
+assert Bag().total() == 1700
+assert Bag().first_private() == 500
+class Base:
+    var greet = Function(self): return "base"
+class Sub(Base):
+    var greet = Function(self): return "sub"
+    var via_closure = Function(self):
+        var f = Function(): return self._super_().greet()   # _super_ inside a nested function
+        return f()
+assert Sub().via_closure() == "base"
+)"));
+    }
+    {
+        KiritoVM vm;   // a function defined OUTSIDE any method still cannot reach a private
+        CHECK(ok(vm, R"(
+class Bag:
+    var _init_ = Function(self):
+        self._x = 5
+var b = Bag()
+var ext = Function(): return b._x
+var denied = False
+try:
+    discard ext()
+catch as e:
+    denied = "private" in e
+assert denied
+)"));
+    }
+
     // ===== A19.1-1: a user-class instance's _hash_/_eq_/_bool_ dispatch through its OWNING VM, so a
     // SECOND VM constructed on the same thread doesn't misroute them (multi-VM isolation contract). =====
     {
