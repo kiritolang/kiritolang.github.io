@@ -92,13 +92,14 @@ int main() {
     CHECK(okGc1("len(Set(\"abcdefghij\"))") == "10");                              // A09-3 Set ctor
     CHECK(okGc1("len(Dict([[\"a\", 1], [\"b\", 2], [\"c\", 3]]))") == "3");        // A09-3 Dict ctor
     CHECK(okGc1("len(List(\"abcdefghij\"))") == "10");                            // List ctor
-    CHECK(okGc1("len(map(Function(c): return c + \"!\", \"abcdefghij\"))") == "10");  // A09-4 map
-    CHECK(okGc1("len(filter(Function(c): return True, \"abcdefghij\"))") == "10");    // A09-4 filter
+    // map/filter/zip/enumerate are lazy now (no len()) — List(...) drains them (drainLazy rooting).
+    CHECK(okGc1("len(List(map(Function(c): return c + \"!\", \"abcdefghij\")))") == "10");  // A09-4 map
+    CHECK(okGc1("len(List(filter(Function(c): return True, \"abcdefghij\")))") == "10");    // A09-4 filter
     CHECK(okGc1("sorted(\"dbca\")") == "['a', 'b', 'c', 'd']");                    // A09-4 sorted (key/_lt_)
-    CHECK(okGc1("all(map(Function(x): return True, \"abcde\"))") == "True");       // A09-4 all
-    CHECK(okGc1("any(map(Function(x): return False, \"abcde\"))") == "False");     // A09-4 any
-    CHECK(okGc1("len(zip(\"abc\", \"defgh\"))") == "3");                           // zip columns
-    CHECK(okGc1("len(enumerate(\"abcde\"))") == "5");                              // enumerate
+    CHECK(okGc1("all(map(Function(x): return True, \"abcde\"))") == "True");       // A09-4 all (streams)
+    CHECK(okGc1("any(map(Function(x): return False, \"abcde\"))") == "False");     // A09-4 any (streams)
+    CHECK(okGc1("len(List(zip(\"abc\", \"defgh\")))") == "3");                     // zip columns
+    CHECK(okGc1("len(List(enumerate(\"abcde\")))") == "5");                        // enumerate
     CHECK(okGc1("len(reversed(\"abcde\"))") == "5");                               // reversed
     // A06-1/2: apply's fn CLEARS the receiver (dropping the only other reference to the snapshot's
     // fresh string handles) then allocates — the snapshot must stay rooted. Elements are Strings, not
