@@ -19,3 +19,24 @@ Findings below (append-only).
   `math.ceil` for negatives; `math.trunc(1e300)` throws.
 - Verified-real: CONFIRMED (behaviour reproduced).
 
+### F07-2 [Med] BigInt vs Float equality breaks transitivity + poisons Set/Dict
+- stdlib_int.hpp:529-536 (BigIntVal::equals) handles BigInt/Integer/Bool but NOT Float. So
+  `BigInt(3) == 3.0` is False even though `3 == 3.0` is True and `3 == BigInt(3)` is True.
+  Equality is no longer transitive across the three numeric types.
+- Trigger (CONFIRMED via ki):
+  `3 == 3.0` → True, `3 == BigInt(3)` → True, but `3.0 == BigInt(3)` → False.
+  `{3.0, BigInt(3), 3}` → len 2 (BigInt(3) coexists with 3.0 though BigInt(3)==3==3.0).
+  `d[BigInt(3)]="big"; d.get(3.0)` → "missing" but `d.get(3)` → "big".
+- Why it matters: BigInt hashes equal to an integral Float (both `std::hash<int64_t>(3)`), so they land
+  in the same Set/Dict bucket but compare unequal — a Dict keyed by a BigInt is reachable via Integer
+  but not the equal Float. Silent wrong lookups / duplicate set members. The CLAUDE.md contract
+  ("hashes equal to an equal native Integer, shared Dict/Set bucket") is only half-honored: it forgot
+  the Integer==Float bridge.
+- Fix idea: in BigIntVal::equals add a Float branch — if the other Float is integral and in-range,
+  compare exactly (BigInt-from-that-int64 cmp), matching intFloatEqual's exactness; else False.
+  (FloatVal::equals need not change — kiEquals already reflects Instance-kind mismatches, calling
+  ob.equals(oa).) Consider also whether `<`/`>` should work BigInt-vs-Float (currently throws).
+- Test to add: `BigInt(3) == 3.0`, `3.0 == BigInt(3)`, `len({3, 3.0, BigInt(3)}) == 1`,
+  `{BigInt(3): 1}.get(3.0) == 1`.
+- Verified-real: CONFIRMED.
+
