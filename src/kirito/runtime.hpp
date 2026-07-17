@@ -66,6 +66,18 @@ inline void gcWriteBarrier(ObjectArena& arena, Object* container, Handle value) 
     if (value.generation == 0) return;                  // null/sentinel handle: points to nothing
     if (arena.deref(value).gcYoung()) arena.remember(container);
 }
+// Card-aware form (List/Dict/Set). Marks the written entry's card AND remembers. Must NOT early-out on
+// gcRemembered() before marking (else a later write to a different card in the same cycle is lost); a
+// young container still early-outs (a minor traces it in full anyway, and young objects never carry
+// cards). `remember()` keeps its own idempotent flag, so the container is enrolled at most once.
+inline void gcWriteBarrier(ObjectArena& arena, Object* container, Handle value, std::size_t entryIndex) {
+    if (container->gcYoung()) return;
+    if (value.generation == 0) return;
+    if (arena.deref(value).gcYoung()) {
+        container->gcMarkCard(entryIndex);
+        arena.remember(container);
+    }
+}
 // (There is deliberately NO arena-less overload. One existed, resolving the arena via activeVM() —
 // the most recently CONSTRUCTED live VM on this thread, which is not necessarily the one that owns
 // `container`. With two VMs on one thread — which the embedding API explicitly allows — it would ask
@@ -553,6 +565,7 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                 }
                 Handle v = list.elems[static_cast<std::size_t>(idx)];
                 list.elems.erase(list.elems.begin() + idx);
+                list.gcReorderShift();   // erase-mid shifts later elements off their cards
                 return v;
             },
             std::vector<Handle>{self});
@@ -578,8 +591,9 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
     if (name == "reverse")
         return makeMethod(vm,
             "reverse", {}, [self, self_list](KiritoVM& vm, std::span<const Handle>) -> Handle {
-                auto& e = self_list(vm, self).elems;
-                std::reverse(e.begin(), e.end());
+                auto& l = self_list(vm, self);
+                std::reverse(l.elems.begin(), l.elems.end());
+                l.gcReorderShift();   // every element moved to a new index -> cards stale
                 return vm.none();
             }, std::vector<Handle>{self});
     if (name == "sort")
@@ -621,10 +635,11 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                                  });
                 // Re-fetch the list (the handle is rooted, so the ListVal itself is stable) and
                 // overwrite its contents with the sorted order.
-                auto& e = self_list(vm, self).elems;
-                e.clear();
-                e.reserve(tagged.size());
-                for (const auto& p : tagged) e.push_back(p.second);
+                auto& l = self_list(vm, self);
+                l.elems.clear();
+                l.elems.reserve(tagged.size());
+                for (const auto& p : tagged) l.elems.push_back(p.second);
+                l.gcReorderShift();   // rewritten order -> existing young children moved off their cards
                 return vm.none();
             }, std::vector<Handle>{self});
     if (name == "insert")
@@ -653,8 +668,8 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
                 for (Handle h : snap) rs.add(h);
                 for (std::size_t i = 0; i < snap.size(); ++i)
                     if (kiEquals(vm, snap[i], a[0])) {
-                        auto& e = self_list(vm, self).elems;
-                        if (i < e.size()) e.erase(e.begin() + i);
+                        auto& l = self_list(vm, self);
+                        if (i < l.elems.size()) { l.elems.erase(l.elems.begin() + i); l.gcReorderShift(); }
                         return vm.none();
                     }
                 throw KiritoError("remove: value not in List");

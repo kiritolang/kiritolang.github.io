@@ -2,6 +2,7 @@
 #define KIRITO_OBJECT_HPP
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -66,6 +67,63 @@ struct EqualsGuard {
 struct LazyIterator {
     virtual ~LazyIterator() = default;
     virtual std::optional<Handle> next(KiritoVM& vm) = 0;  // nullopt == exhausted
+    // Expose any Kirito Handles this iterator holds (a mapped function, source iterators, a user
+    // iterator object) so the GC keeps them alive across an allocating next() — the IterCursor that
+    // owns the LazyIterator calls this from children(). Default: none (a stream reads from its rooted
+    // source and holds no independent handle).
+    virtual void roots(std::vector<Handle>&) {}
+};
+
+// A dirty-card set over a container's ordered child array (List/Dict/Set). The write barrier marks the
+// card containing a written entry; a minor rescans only dirty cards, so a container grown by appends is
+// strictly O(N) at any nursery size (vs. the full re-children() rescan that was O(N^2/nursery)). Fixed
+// card size (kCardSlots, well below kMinorNursery) is what guarantees the linear bound. The inline word
+// covers the first 64 cards (8192 entries) with zero heap allocation; the spill scales to any size and
+// is allocated only when a container both exceeds 8192 entries AND is written while old-and-remembered.
+// `allDirty` is the O(1) fallback for an index-shifting mutation (insert/erase/reverse/sort/compaction).
+struct CardTable {
+    static constexpr std::size_t kCardSlots = 128;   // entries per card
+    uint64_t inlineBits = 0;                          // cards [0,64)  -> entries [0, 8192)
+    std::unique_ptr<std::vector<uint64_t>> spill;     // cards [64,..) -> allocated on demand
+    bool allDirty = false;
+
+    void mark(std::size_t entryIndex) {
+        if (allDirty) return;
+        std::size_t card = entryIndex / kCardSlots, word = card >> 6, bit = card & 63;
+        if (word == 0) { inlineBits |= (uint64_t{1} << bit); return; }
+        std::size_t si = word - 1;
+        if (!spill) spill = std::make_unique<std::vector<uint64_t>>();
+        if (spill->size() <= si) spill->resize(si + 1, 0);
+        (*spill)[si] |= (uint64_t{1} << bit);
+    }
+    void markAll() { allDirty = true; }
+    void clear() {
+        inlineBits = 0; allDirty = false;
+        if (spill) for (uint64_t& w : *spill) w = 0;
+    }
+    bool any() const {
+        if (allDirty || inlineBits) return true;
+        if (spill) for (uint64_t w : *spill) if (w) return true;
+        return false;
+    }
+    // Call emit(lo, hi) for each dirty [lo, hi) entry range, clamped to `count` (the current child
+    // count — so a container that SHRANK never emits a stale out-of-range slot).
+    template <class F>
+    void forEachDirtyRange(std::size_t count, F emit) const {
+        if (allDirty) { if (count) emit(std::size_t{0}, count); return; }
+        auto emitWord = [&](std::size_t wordIdx, uint64_t bits) {
+            while (bits) {
+                std::size_t card = wordIdx * 64 + static_cast<std::size_t>(__builtin_ctzll(bits));
+                bits &= bits - 1;
+                std::size_t lo = card * kCardSlots;
+                if (lo >= count) continue;
+                std::size_t hi = lo + kCardSlots; if (hi > count) hi = count;
+                emit(lo, hi);
+            }
+        };
+        emitWord(0, inlineBits);
+        if (spill) for (std::size_t si = 0; si < spill->size(); ++si) emitWord(si + 1, (*spill)[si]);
+    }
 };
 
 // The one uniform protocol every value implements — built-in scalars, collections,
@@ -121,6 +179,15 @@ public:
 
     // Enumerate contained handles for the mark-sweep GC and for serialization.
     virtual void children(std::vector<Handle>&) const {}
+
+    // Card-marking hooks for large ordered containers (List/Dict/Set). The 4-arg write barrier marks
+    // the card of a written entry; a minor rescans only dirty cards via childrenInDirtyCards. Defaults
+    // below keep Env/Instance/Module/Class on the full rescan (they grow only from source, never a
+    // runtime loop, so they can't drive the quadratic). childrenInDirtyCards defaults to children().
+    virtual void gcMarkCard(std::size_t /*entryIndex*/) {}
+    virtual void gcMarkAllCards() {}
+    virtual void gcClearCards() {}
+    virtual void childrenInDirtyCards(std::vector<Handle>& out) const { children(out); }
 
     // --- generational GC metadata (managed by ObjectArena + the collector; not part of the value) ---
     // Every Object is born YOUNG (age 0). Surviving a collection PROMOTES it in place (age reaches
@@ -187,6 +254,11 @@ private:
 class ObjectArena;
 inline void gcWriteBarrier(ObjectArena& arena, Object* container, Handle value);
 inline void gcWriteBarrier(Object* container, Handle value);
+// Card-aware form for List/Dict/Set: besides remembering the old->young edge, it marks the written
+// entry's card so a minor rescans only that region. Unlike the 3-arg form it must NOT early-out on
+// gcRemembered() before marking — a container remembered at entry 5 and later written at entry 9000
+// must dirty 9000's card too. Defined in runtime.hpp after KiritoVM is complete.
+inline void gcWriteBarrier(ObjectArena& arena, Object* container, Handle value, std::size_t entryIndex);
 
 inline Handle Object::binary(KiritoVM&, BinOp, Handle, Handle) {
     throw KiritoError("type '" + typeName() + "' does not support this binary operator");

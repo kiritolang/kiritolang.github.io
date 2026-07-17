@@ -217,10 +217,13 @@ public:
         auto enqueue = [&](Handle h) { if (arena_.markIfYoungUnmarked(h)) work.push_back(h); };
         forEachRoot(enqueue);
         std::vector<Handle>& childbuf = gcChildbuf_;
-        // Seed from the remembered set: an old object's young children are roots for this minor.
+        // Seed from the remembered set: an old object's young children are roots for this minor. A
+        // card-tracked container (List/Dict/Set) enumerates only its DIRTY cards — the recently-written
+        // regions — so a growing container's rescan is O(new), not O(all children). Full-rescan types
+        // (Env/Instance/Module/Class) inherit childrenInDirtyCards = children().
         for (Object* c : arena_.remembered()) {
             childbuf.clear();
-            c->children(childbuf);
+            c->childrenInDirtyCards(childbuf);
             for (Handle ch : childbuf) enqueue(ch);
         }
         while (!work.empty()) {

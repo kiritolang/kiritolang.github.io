@@ -338,5 +338,30 @@ String(keep[0]) + String(keep[1][1]) + String(keep[2]["k"])
             == "{'a': {'b': [1, 2]}}");
     }
 
+    // ===== CARD MARKING: a minor rescans only a remembered container's DIRTY cards, so a growing List
+    // is O(N). Correctness under gc-every-alloc: an OLD list must not lose a young child whose card is
+    // (a) freshly appended, (b) overwritten in place, or (c) MOVED by a reorder (reverse/sort/erase) —
+    // an index-shift invalidates the card index, so the op must markAll. Non-interned values (i>256,
+    // fresh strings) so the child is a real young object, not a permanently-rooted interned int. =====
+    {
+        KiritoVM vm;
+        vm.installStandardLibrary();
+        vm.setGcThreshold(1);   // collect on every allocation
+        // (a) append many young children to a promoting list, then read them back after churn
+        CHECK(vm.stringify(vm.runSource(
+            "var xs = []\nvar i = 0\nwhile i < 400:\n    xs.append(\"v\" + String(i * 7 + 300))\n    i = i + 1\n"
+            "xs[0] + \"|\" + xs[399] + \"|\" + String(len(xs))")) == "v300|v3093|400");
+        // (b) overwrite an element in place (setElem) with a fresh young value, then GC-churn, read back
+        CHECK(vm.stringify(vm.runSource(
+            "var ys = []\nvar j = 0\nwhile j < 300:\n    ys.append(j + 1000)\n    j = j + 1\n"
+            "ys[150] = \"replaced\"\nvar k = 0\nwhile k < 200:\n    discard [k]\n    k = k + 1\nys[150]"))
+            == "replaced");
+        // (c) reorder (reverse/sort/remove/pop-mid) an old list holding young children, then churn+read
+        CHECK(vm.stringify(vm.runSource(
+            "var zs = []\nvar m = 0\nwhile m < 300:\n    zs.append(\"z\" + String(700 - m))\n    m = m + 1\n"
+            "zs.sort()\ndiscard zs.pop(5)\nzs.remove(zs[10])\nvar n = 0\nwhile n < 200:\n    discard [n, n]\n    n = n + 1\n"
+            "zs[0] + \"|\" + String(len(zs))")) == "z401|298");
+    }
+
     return RUN_TESTS();
 }

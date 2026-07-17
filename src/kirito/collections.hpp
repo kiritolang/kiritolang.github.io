@@ -44,15 +44,33 @@ inline std::string stringifyGuarded(const Object* self, StringifyCtx& ctx,
 class ListVal : public Object {
 public:
     std::vector<Handle> elems;
+    CardTable cards;   // dirty-card set over `elems` for the generational minor GC (card-marked type)
 
     // Barriered element writes: inserting a (possibly young) handle into a (possibly old) list records
-    // the old->young edge for the generational collector. Removal/reorder ops (pop/erase/clear/reverse/
-    // sort) never create a new edge, so they touch `elems` directly with no barrier.
-    void append(ObjectArena& arena, Handle h) { gcWriteBarrier(arena, this, h); elems.push_back(h); }
-    void setElem(ObjectArena& arena, std::size_t i, Handle h) { gcWriteBarrier(arena, this, h); elems[i] = h; }
+    // the old->young edge AND marks the written slot's card. append/setElem write at a STABLE index, so
+    // they mark just that card. insertElem SHIFTS [i,end), moving young children off their cards, so it
+    // conservatively markAll()s when old (one full rescan next minor). Removal/reorder ops (pop/erase/
+    // reverse/sort) also shift and must call gcReorderShift() — see below and their sites in runtime.hpp.
+    void append(ObjectArena& arena, Handle h) { gcWriteBarrier(arena, this, h, elems.size()); elems.push_back(h); }
+    void setElem(ObjectArena& arena, std::size_t i, Handle h) { gcWriteBarrier(arena, this, h, i); elems[i] = h; }
     void insertElem(ObjectArena& arena, std::size_t i, Handle h) {
-        gcWriteBarrier(arena, this, h);
+        bool shifts = i < elems.size();
         elems.insert(elems.begin() + static_cast<std::ptrdiff_t>(i), h);
+        gcWriteBarrier(arena, this, h, i);
+        if (shifts && !gcYoung()) cards.markAll();   // [i,end) moved to new indices -> cards stale
+    }
+    // Call from any op that REORDERS existing elements (reverse/sort/erase-not-at-end/pop-not-at-end):
+    // an old list may hold young children whose card bits now point at the wrong slots, so rescan all.
+    // Young lists are traced in full anyway; end-pop/end-append don't shift and skip this.
+    void gcReorderShift() { if (!gcYoung()) cards.markAll(); }
+
+    void gcMarkCard(std::size_t entryIndex) override { cards.mark(entryIndex); }
+    void gcMarkAllCards() override { cards.markAll(); }
+    void gcClearCards() override { cards.clear(); }
+    void childrenInDirtyCards(std::vector<Handle>& out) const override {
+        cards.forEachDirtyRange(elems.size(), [&](std::size_t lo, std::size_t hi) {
+            for (std::size_t i = lo; i < hi; ++i) out.push_back(elems[i]);
+        });
     }
 
     ValueKind kind() const override { return ValueKind::List; }

@@ -74,7 +74,9 @@ public:
                   "resetRemembered()'s wholesale clear assumes promote-on-first-survival; raising "
                   "kGcOldAge requires rescan-retain of old->still-young edges");
     void resetRemembered() {
-        for (Object* o : remembered_) o->gcSetRemembered(false);
+        // Clear dirty cards in lockstep with the remembered flag — same promote-on-first-survival
+        // soundness (after a minor no old->young edge remains, so all dirty state is stale).
+        for (Object* o : remembered_) { o->gcClearCards(); o->gcSetRemembered(false); }
         remembered_.clear();
     }
 
@@ -106,6 +108,7 @@ public:
                 s.obj->gcSetMarked(false);
                 s.obj->gcSetAge(Object::kGcOldAge);   // survived a full trace => old
                 s.obj->gcSetRemembered(false);
+                s.obj->gcClearCards();                // a full trace re-marks everything; drop stale cards
                 ++live;
             }
         }
