@@ -1359,8 +1359,14 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             std::size_t maxIdx = noSep ? (a.empty() ? 0 : 1) : 1;
             if (a.size() > maxIdx && vm.arena().deref(a[maxIdx]).kind() != ValueKind::None)
                 maxsplit = argInt(vm, a[maxIdx], "split");
+            // Root the result list ONCE (not each field): with card marking the promoted list's
+            // minor rescan is O(new fields), so a big split no longer walks an O(N) tempRoots set.
             RootScope rs(vm);
-            auto list = std::make_unique<ListVal>();
+            Handle lh = rs.add(vm.alloc(std::make_unique<ListVal>()));
+            auto push = [&](std::string t) {
+                Handle sh = vm.makeString(std::move(t));  // may GC; lh is rooted, prior fields safe
+                static_cast<ListVal&>(vm.arena().deref(lh)).append(vm.arena(), sh);
+            };
             int64_t splits = 0;
             auto reached = [&] { return maxsplit >= 0 && splits >= maxsplit; };
             if (noSep) {
@@ -1369,12 +1375,12 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
                     while (i < n && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
                     if (i >= n) break;
                     if (reached()) {  // remaining text is the final field — keep its trailing whitespace
-                        list->elems.push_back(rs.add(vm.makeString(s.substr(i, n - i))));
+                        push(s.substr(i, n - i));
                         break;
                     }
                     std::size_t start = i;
                     while (i < n && !std::isspace(static_cast<unsigned char>(s[i]))) ++i;
-                    list->elems.push_back(rs.add(vm.makeString(s.substr(start, i - start))));
+                    push(s.substr(start, i - start));
                     ++splits;
                 }
             } else {
@@ -1382,13 +1388,13 @@ inline Handle StrVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
                 if (sep.empty()) throw KiritoError("empty separator");
                 std::size_t pos, prev = 0;
                 while (!reached() && (pos = s.find(sep, prev)) != std::string::npos) {
-                    list->elems.push_back(rs.add(vm.makeString(s.substr(prev, pos - prev))));
+                    push(s.substr(prev, pos - prev));
                     prev = pos + sep.size();
                     ++splits;
                 }
-                list->elems.push_back(rs.add(vm.makeString(s.substr(prev))));
+                push(s.substr(prev));
             }
-            return vm.alloc(std::move(list));
+            return lh;
         });
     if (name == "join")
         return bindReq("join", 1, {"iterable"}, [self, recv](KiritoVM& vm, std::span<const Handle> a) {
