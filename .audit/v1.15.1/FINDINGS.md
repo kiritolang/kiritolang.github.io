@@ -199,16 +199,26 @@ involved (a core resolver/compiler change deserving a fresh, careful session) or
 **All involved MED/HIGH are now FIXED** (batches 8–9): A02-3, A10-2, A09-1/2, A13-1/2, A04-1, A19.1-1,
 A01-1/4. See the batch 8 / batch 9 tables above.
 
-**LOW tail remaining** (cosmetic — deliberately deferred as lowest-value):
-- A01-2 (LOW): an error inside an f-string reports the f-string TOKEN's line/col, not the
-  placeholder's — the column is wrong for a non-leading placeholder, the line wrong in a triple-quoted
-  f-string. (Diagnostic-position polish; needs the lexer to thread the placeholder's offset.)
-- A09-3 (LOW): method/constructor arity errors count the implicit `self`, so the numbers don't match
-  what the user typed. (Needs a hidden-leading-arg count threaded into the arity check.)
-- A06-3 (LOW): a few collection-surface test-coverage gaps (listed in `scan/A06_collections.md`).
+**LOW tail — now ALSO fixed (batch 10):**
+- **A01-2**: an error inside an f-string now reports the placeholder's TRUE source location — the
+  column tracks the `{`'s offset within the literal (prefix + quote + filler), and the line tracks the
+  physical line in a triple-quoted f-string (the traceback frame too). `parseFString` computes the
+  exact source byte of the placeholder and seeds the sub-lexer there (new `spanOfByte` reverse of
+  `byteOf`); `parseEmbedded` advances past trimmed leading whitespace. Regression in `test_fstring.cpp`.
+  (The v1.12 fix seeded with the f-string TOKEN's position — only correct for a leading placeholder.)
+- **A09-3**: a method/constructor arity error now subtracts the implicit `self` (so the counts match
+  the call site) and names the callee — a `hiddenLeading` count threaded through `applyCall`/`callFull`,
+  passed as 1 by `makeBoundMethod` and the constructor path. Updated `surf_arity_01/10.experr`
+  (surf_arity_10 had pinned the *buggy* self-counting message); regression in `test_audit_v1151.cpp`.
+- **A06-3**: pinned the untested collection behaviours (aliased Set self-arg, `d.update(d)`, cyclic
+  `sorted` termination, mixed-type sort key, exact repeat-too-large message, snapshot-clearing sort key
+  under the GC soak) in `test_audit_v1151.cpp`. (#1 popitem-NaN was already covered by the A06-1 test.)
 
 Everything else from the LOW tail (A05-1/2/3/4, A08-1/2/3, A09-4, A10-3/4, A01-3) was fixed in
 batches 3/6; A13-3, A18-5, A18-1 were applied as conformance changes in batch 7; A02-2 in batch 8.
+
+**Nothing remains open.** Every finding from the v1.15.1 scan is fixed or (for the 4 conformance items)
+applied per maintainer decision, each with a regression test.
 
 ## Meta findings (not code bugs)
 - A20-0: previous inventory was 22% of the real surface (see `scan/A20_surface_*.txt` for the full map).

@@ -425,6 +425,77 @@ assert "Matrix row index out of range" in e1
 )"));
     }
 
+    // ===== A06-3: pin previously-UNTESTED collection behaviours (all correct today) so a regression
+    // can't slip through — aliased Set self-arg, Dict self-update, cyclic sorted terminates, mixed-type
+    // sort key throws, the exact repeat-too-large message, and a snapshot-clearing sort key under GC. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var s = {1000, 2000}                          # aliased Set self-argument (ONE object on both sides)
+assert len(s.union(s)) == 2 and len(s - s) == 0
+assert len(s.difference(s)) == 0 and len(s.symmetricdifference(s)) == 0
+assert (s <= s) and not (s < s)
+var d = {"a": 1000, "b": 2000}                # Dict self-update is a no-op
+d.update(d)
+assert len(d) == 2 and d["a"] == 1000
+var a = [1000]                                # sorted() on mutually-cyclic lists must terminate
+var b = [2000]
+a.append(b)
+b.append(a)
+var done = False
+try:
+    discard sorted([a, b])
+    done = True
+catch as e:
+    done = True
+assert done
+var mixed = False                             # a key= returning mixed/non-comparable types throws
+try:
+    discard [1000, 2000].sort(key = Function(x): return x if x > 1500 else String(x))
+catch as e:
+    mixed = True
+assert mixed
+var msg = ""                                  # the huge-repeat guard's EXACT message
+try:
+    discard [1] * 100000000000
+catch as e:
+    msg = e
+assert "repeated List too large" in msg
+)"));
+    }
+    {
+        KiritoVM vm;
+        vm.setGcThreshold(1);   // a sort key that CLEARS the container mid-sort must not crash/dangle
+        CHECK(ok(vm, R"(
+var xs = ["aa", "bb", "cc", "dd"]
+var f = Function(x):
+    xs.clear()
+    return x
+xs.sort(key = f)
+)"));
+    }
+
+    // ===== A09-3: a method/constructor arity error subtracts the implicit `self`, so the counts
+    // match what the user typed, and names the callee instead of a bare "function". =====
+    {
+        KiritoVM vm;
+        std::string err;
+        try {
+            vm.runSource("class Pt:\n    var meth = Function(self, a): return a\nPt().meth(1, 2)\n");
+        } catch (const KiritoError& e) { err = e.what(); }
+        CHECK(err.find("'meth' takes 1 positional argument(s) but 2 were given") != std::string::npos);
+        std::string cerr;
+        try {
+            vm.runSource("class Box:\n    var _init_ = Function(self, w): self.w = w\nBox(1, 2, 3)\n");
+        } catch (const KiritoError& e) { cerr = e.what(); }
+        CHECK(cerr.find("takes 1 positional argument(s) but 3 were given") != std::string::npos);
+        // a plain (self-less) function is unchanged in its counts
+        std::string perr;
+        try { vm.runSource("var f = Function(a): return a\nf(1, 2)\n"); }
+        catch (const KiritoError& e) { perr = e.what(); }
+        CHECK(perr.find("takes 1 positional argument(s) but 2 were given") != std::string::npos);
+    }
+
     // ===== A01-1: an inline Function literal written across physical lines inside a bracket (lexer
     // line-continuation) must still serialize — the captured source is wrapped in parens so serde's
     // standalone re-parse sees the same newline suppression. =====

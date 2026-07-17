@@ -1,6 +1,7 @@
 #ifndef KIRITO_PARSER_HPP
 #define KIRITO_PARSER_HPP
 
+#include <algorithm>
 #include <cctype>
 #include <memory>
 #include <string>
@@ -956,6 +957,9 @@ private:
         std::size_t e = rawCode.find_last_not_of(" \t");
         std::string code = (b == std::string::npos) ? std::string() : rawCode.substr(b, e - b + 1);
         if (code.empty()) throw KiritoError("f-string '{...}' must contain a single expression", span);
+        // `span` points at the char right after `{`; advance past the leading whitespace we just
+        // trimmed so the seed lands on the expression's first char (only spaces/tabs — no newline).
+        if (b != std::string::npos && b > 0) span.col += static_cast<uint32_t>(b);
         // The embedded expression is lexed/parsed by a sub Lexer+Parser SEEDED at the f-string token's
         // line/col, so every AST node it produces carries a span absolute to the source file (not line 1)
         // — runtime/resolver errors inside an f-string then report the real file location (A02-2). Parse
@@ -1035,7 +1039,23 @@ private:
                     else if (ch == ')' || ch == ']' || ch == '}') --bd;
                     else if (ch == ':' && bd == 0) { p.spec = inner.substr(k + 1); inner.resize(k); break; }
                 }
-                p.expr = parseEmbedded(inner, t.span);
+                // Seed the sub-parse at the placeholder's TRUE source location, not the f-string
+                // token's start: skip the r/R/f/F prefix + the opening quote (1 or 3), then add the
+                // `{`'s index `i` within the literal. `t.text` is the raw (un-decoded) inner content,
+                // so `i` maps linearly to source bytes. Falls back to the token span when source_ is
+                // empty (a nested sub-parse — e.g. an f-string inside a deserialized function). (A01-2)
+                SourceSpan exprSpan = t.span;
+                if (!source_.empty()) {
+                    std::size_t base = byteOf(t.span);
+                    while (base < source_.size() &&
+                           (source_[base]=='r'||source_[base]=='R'||source_[base]=='f'||source_[base]=='F'))
+                        ++base;
+                    if (base + 2 < source_.size() && (source_[base]=='"'||source_[base]=='\'') &&
+                        source_[base+1]==source_[base] && source_[base+2]==source_[base]) base += 3;  // triple quote
+                    else if (base < source_.size()) base += 1;                                        // single quote
+                    exprSpan = spanOfByte(base + i + 1);   // +1 skips the `{`
+                }
+                p.expr = parseEmbedded(inner, exprSpan);
                 node->parts.push_back(std::move(p));
                 i = j + 1;
             } else if (c == '}') {
@@ -1129,6 +1149,20 @@ private:
         if (li >= lineStart_.size()) return source_.size();
         std::size_t off = lineStart_[li] + (s.col == 0 ? 0 : s.col - 1);
         return off > source_.size() ? source_.size() : off;
+    }
+    // The reverse of byteOf: a byte offset in source_ -> its 1-based (line, col). Used to seed the
+    // f-string sub-lexer at the TRUE source location of an embedded placeholder (A01-2) — accounting
+    // for the prefix + opening quote + the `{`'s offset within the literal, which the token span alone
+    // ignores (it only pointed at the literal's start, so any non-leading placeholder drifted).
+    SourceSpan spanOfByte(std::size_t off) const {
+        SourceSpan s;
+        if (lineStart_.empty()) { s.line = 1; s.col = 1; return s; }
+        if (off > source_.size()) off = source_.size();
+        auto it = std::upper_bound(lineStart_.begin(), lineStart_.end(), off);
+        std::size_t li = static_cast<std::size_t>(it - lineStart_.begin()) - 1;
+        s.line = static_cast<uint32_t>(li + 1);
+        s.col = static_cast<uint32_t>(off - lineStart_[li] + 1);
+        return s;
     }
     // Byte offset just past the last content token consumed — the end of a construct whose first token
     // is `toks_[startTok]` and which has just been fully parsed. The trailing Newline/Indent/Dedent

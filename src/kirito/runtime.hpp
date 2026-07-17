@@ -85,7 +85,7 @@ inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs
 // already-evaluated positional + named args. makeBoundMethod routes through it so a bound method
 // backed by a NATIVE function still honours keyword args / defaults / arity (not positional-only).
 inline Handle applyCall(KiritoVM& vm, Handle callee, std::span<const Handle> positional,
-                        std::span<const NamedArg> named);
+                        std::span<const NamedArg> named, std::size_t hiddenLeading = 0);
 
 // --- numeric helpers ------------------------------------------------------------------------
 
@@ -1726,8 +1726,9 @@ inline Handle ClassValue::callFull(KiritoVM& vm, std::span<const Handle> args,
         for (Handle a : args) full.push_back(a);
         Object& initObj = vm.arena().deref(initH);
         // A Kirito `_init_` binds keyword args; a native `_init_` (rare) takes positional only.
+        // hiddenLeading=1: the prepended `self` is subtracted from arity-error counts (A09-3).
         if (initObj.kind() == ValueKind::Function)
-            static_cast<KiFunction&>(initObj).callFull(vm, full, named);
+            static_cast<KiFunction&>(initObj).callFull(vm, full, named, /*hiddenLeading=*/1);
         else
             initObj.call(vm, full);
     } else if (!named.empty() || !args.empty()) {
@@ -1750,8 +1751,9 @@ inline Handle makeBoundMethod(KiritoVM& vm, std::string name, Handle receiver, H
             for (Handle a : args) full.push_back(a);
             // Route through applyCall — the ONE call-dispatch — so a native-backed method honours
             // keyword args, defaults, and arity checks exactly like a direct call, instead of silently
-            // dropping every keyword (the old `m.call(vm, full)` positional-only path).
-            return applyCall(vm, methodH, full, named);
+            // dropping every keyword (the old `m.call(vm, full)` positional-only path). hiddenLeading=1:
+            // the prepended `self` is subtracted from any arity-error counts (A09-3).
+            return applyCall(vm, methodH, full, named, /*hiddenLeading=*/1);
         }},
         std::vector<Handle>{receiver, methodH}));
 }
@@ -2070,7 +2072,7 @@ inline Handle KiFunction::call(KiritoVM& vm, std::span<const Handle> args) {
 }
 
 inline Handle KiFunction::callFull(KiritoVM& vm, std::span<const Handle> positional,
-                                   std::span<const NamedArg> named) {
+                                   std::span<const NamedArg> named, std::size_t hiddenLeading) {
     CallGuard depth(vm);  // bound native-stack recursion -> catchable error, not a crash
     // While this body runs, the "current chunk" is THIS function's defining file, so any closures it
     // creates at runtime (e.g. functools.partial's returned function) inherit the right source file
@@ -2120,9 +2122,15 @@ inline Handle KiFunction::callFull(KiritoVM& vm, std::span<const Handle> positio
     std::vector<bool> bound(params.size(), false);
     std::vector<Handle> values(params.size());
 
-    if (positional.size() > params.size())
-        throw KiritoError("function takes " + std::to_string(params.size()) + " positional argument(s) but " +
-                          std::to_string(positional.size()) + " were given");
+    if (positional.size() > params.size()) {
+        // Subtract the implicit leading args (a method's/constructor's `self`) so the reported counts
+        // match the user's call site; name the callee instead of a bare "function" (A09-3).
+        std::size_t declared = params.size() - std::min(hiddenLeading, params.size());
+        std::size_t given = positional.size() - std::min(hiddenLeading, positional.size());
+        std::string who = def_->name.empty() ? "function" : "'" + def_->name + "'";
+        throw KiritoError(who + " takes " + std::to_string(declared) + " positional argument(s) but " +
+                          std::to_string(given) + " were given");
+    }
     for (std::size_t i = 0; i < positional.size(); ++i) { values[i] = positional[i]; bound[i] = true; }
 
     // named args: match each to a parameter by name
@@ -2295,12 +2303,12 @@ inline Handle applyBinaryOp(KiritoVM& vm, BinOp op, Handle lhs, Handle rhs) {
 // function, a class (instantiation forwards kwargs to _init_), a native function (signatured/kwarg/
 // exact-arity), or an instance (_call_). The caller wraps this with its own location tag.
 inline Handle applyCall(KiritoVM& vm, Handle callee, std::span<const Handle> positional,
-                        std::span<const NamedArg> named) {
+                        std::span<const NamedArg> named, std::size_t hiddenLeading) {
     Object& c = vm.arena().deref(callee);
     const ValueKind k = c.kind();   // hoisted: this is the hot call path, kind() is virtual
     if (named.empty()) {
         if (k == ValueKind::Function)
-            return static_cast<KiFunction&>(c).callFull(vm, positional, {});
+            return static_cast<KiFunction&>(c).callFull(vm, positional, {}, hiddenLeading);
         if (k == ValueKind::NativeFunction && static_cast<NativeFunction&>(c).hasSignature() &&
             positional.size() != static_cast<NativeFunction&>(c).params().size()) {
             auto& nf = static_cast<NativeFunction&>(c);
@@ -2312,7 +2320,7 @@ inline Handle applyCall(KiritoVM& vm, Handle callee, std::span<const Handle> pos
         return c.call(vm, positional);
     }
     if (k == ValueKind::Function)
-        return static_cast<KiFunction&>(c).callFull(vm, positional, named);
+        return static_cast<KiFunction&>(c).callFull(vm, positional, named, hiddenLeading);
     if (k == ValueKind::Class)
         return static_cast<ClassValue&>(c).callFull(vm, positional, named);
     if (k == ValueKind::NativeFunction && static_cast<NativeFunction&>(c).acceptsKwargs())
