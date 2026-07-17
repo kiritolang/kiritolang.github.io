@@ -1,0 +1,112 @@
+# Lazy generators: the _iter_/_next_ protocol + StopIteration. Covers streaming for-loops, eager
+# consumers draining a generator, separate iterator objects, re-iterability, infinite generators with
+# break, strict PEP-479 StopIteration attribution, and backward-compatible _iter_-returns-a-List.
+var io = import("io")
+
+# --- countdown generator: _iter_ returns self ---
+class Countdown:
+    var _init_ = Function(self, n):
+        self.n = n
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        if self.n <= 0:
+            throw StopIteration()
+        self.n = self.n - 1
+        return self.n + 1
+
+var out = []
+for x in Countdown(5):
+    out.append(x)
+assert out == [5, 4, 3, 2, 1], "for over generator"
+
+# --- eager consumers materialize a generator ---
+assert List(Countdown(3)) == [3, 2, 1], "List(gen)"
+assert Set(Countdown(3)) == {1, 2, 3}, "Set(gen)"
+assert sum(Countdown(4)) == 10, "sum(gen)"
+assert sorted(Countdown(3)) == [1, 2, 3], "sorted(gen)"
+assert List(reversed(Countdown(3))) == [1, 2, 3], "reversed(gen)"
+assert max(Countdown(9)) == 9 and min(Countdown(9)) == 1, "min/max(gen)"
+
+# --- unpacking a generator ---
+var a, b, c = Countdown(3)
+assert a == 3 and b == 2 and c == 1, "unpack generator"
+
+# --- separate iterator object (not self); a fresh _iter_ each pass → re-iterable ---
+class RangeIter:
+    var _init_ = Function(self, lo, hi):
+        self.lo = lo
+        self.hi = hi
+    var _next_ = Function(self):
+        if self.lo >= self.hi:
+            throw StopIteration()
+        var v = self.lo
+        self.lo = self.lo + 1
+        return v
+class Counter:
+    var _init_ = Function(self, lo, hi):
+        self.lo = lo
+        self.hi = hi
+    var _iter_ = Function(self):
+        return RangeIter(self.lo, self.hi)
+var r = Counter(2, 6)
+assert List(r) == [2, 3, 4, 5], "separate iterator object"
+assert List(r) == [2, 3, 4, 5], "re-iterable (fresh _iter_ each time)"
+
+# --- infinite generator + break never runs away ---
+class Naturals:
+    var _init_ = Function(self):
+        self.i = 0
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        self.i = self.i + 1
+        return self.i
+var firstFive = []
+for n in Naturals():
+    if n > 5:
+        break
+    firstFive.append(n)
+assert firstFive == [1, 2, 3, 4, 5], "infinite generator + break"
+
+# --- StopIteration is a real, catchable, isinstance-matchable class ---
+var caught = False
+try:
+    throw StopIteration()
+catch StopIteration as e:
+    caught = True
+assert caught, "catch StopIteration"
+assert isinstance(StopIteration(), StopIteration), "isinstance StopIteration"
+
+# --- STRICT (PEP-479): a StopIteration leaking from a call BELOW _next_ is not silent truncation ---
+var leak = Function():
+    throw StopIteration()
+class Leaky:
+    var _init_ = Function(self):
+        self.i = 0
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        self.i = self.i + 1
+        if self.i > 2:
+            discard leak()          # raised one frame BELOW _next_ → must surface, not end iteration
+        return self.i
+var surfaced = False
+try:
+    for x in Leaky():
+        discard x
+catch StopIteration as e:
+    surfaced = True
+assert surfaced, "deep StopIteration surfaces (strict PEP-479)"
+
+# --- backward compatible: _iter_ returning a plain List still works ---
+class OldStyle:
+    var _iter_ = Function(self):
+        return [7, 8, 9]
+assert List(OldStyle()) == [7, 8, 9], "old-style _iter_ returns a List"
+var oldSum = 0
+for v in OldStyle():
+    oldSum = oldSum + v
+assert oldSum == 24, "for over old-style _iter_"
+
+io.print("generators: all passed")

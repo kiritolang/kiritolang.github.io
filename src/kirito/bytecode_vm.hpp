@@ -369,6 +369,11 @@ public:
                     // results) are not the iterable's children(), so `iterable` on the stack can't protect them.
                     RootScope rs(vm_);
                     if (lazy) {
+                        // The iterator may hold handles that are NOT the iterable (a user _iter_ returns a
+                        // separate iterator object; map/filter/zip hold a function + source iterators) —
+                        // root them across alloc(cursor)'s GC, exactly as the eager branch roots its items.
+                        std::vector<Handle> held; lazy->roots(held);
+                        for (Handle h : held) rs.add(h);
                         cursor->lazy = std::move(lazy);
                         cursor->source = iterable;   // keep the stream rooted for the loop's duration
                     } else {
@@ -430,14 +435,14 @@ public:
 
                 case Op::SetupBlock: { blocks_.push_back({in.a, stack_.size()}); } break;
                 case Op::PopBlock: { blocks_.pop_back(); } break;
-                case Op::Reraise: { Handle v = pop(); throw KiritoThrow{v, excSpan_}; } break;  // keep the original site
+                case Op::Reraise: { Handle v = pop(); KiritoThrow t{v, excSpan_}; t.depth = static_cast<int>(vm_.callDepth()); throw t; } break;  // keep the original site
                 case Op::SaveExcSpan: { excSpans_[in.a] = excSpan_; } break;
                 case Op::RestoreExcSpan: { excSpan_ = excSpans_[in.a]; } break;
                 case Op::ExcMatch: {
                     Handle type = pop(), exc = pop();
                     push(vm_.makeBool(isInstanceOf(vm_, exc, type)));
                 } break;
-                case Op::Throw: { Handle v = pop(); throw KiritoThrow{v, in.span}; } break;
+                case Op::Throw: { Handle v = pop(); KiritoThrow t{v, in.span}; t.depth = static_cast<int>(vm_.callDepth()); throw t; } break;
                 case Op::Return: { return pop(); } break;
                 default: {
                     // An opcode the dispatch doesn't know means a corrupt/truncated Proto — a VM

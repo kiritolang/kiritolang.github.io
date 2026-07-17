@@ -289,6 +289,7 @@ public:
         }
     }
     void leaveCall() { --callDepth_; }
+    std::size_t callDepth() const { return callDepth_; }  // for strict StopIteration attribution
     void setMaxCallDepth(std::size_t n) { maxCallDepth_ = n; }
     void setMaxStackBytes(std::size_t n) { maxStackBytes_ = n; }
 

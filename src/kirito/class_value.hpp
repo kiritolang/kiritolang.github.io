@@ -151,6 +151,7 @@ public:
     std::optional<int64_t> length(KiritoVM&) override;
     bool contains(KiritoVM&, Handle value) override;
     std::optional<std::vector<Handle>> iterate(KiritoVM&) override;  // via _iter_ (runtime.hpp)
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle self) override;  // via _iter_/_next_ (runtime.hpp)
 
     const Handle* findMethod(const ObjectArena& arena, const std::string& n) const {
         return static_cast<const ClassValue&>(arena.deref(cls)).findMethod(arena, n);

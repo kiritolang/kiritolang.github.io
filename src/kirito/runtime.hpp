@@ -93,6 +93,14 @@ inline void gcWriteBarrier(ObjectArena& arena, Object* container, Handle value, 
 // type methods (below) and the free builtins, so the rooting is single-sourced.
 inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs, const char* err);
 
+// Generator protocol helpers (defined after typeMatches). isStopIteration: is `h` the built-in
+// StopIteration sentinel a generator's _next_ raises to signal exhaustion? drainLazy: eagerly pull a
+// LazyIterator to a rooted vector (the lazy->eager bridge used by rootedIterate and each native lazy
+// type's eager iterate()).
+inline bool typeMatches(KiritoVM& vm, Handle value, const std::string& typeName);
+inline bool isStopIteration(KiritoVM& vm, Handle h);
+inline std::vector<Handle> drainLazy(KiritoVM& vm, LazyIterator& it, RootScope& elemRoots);
+
 // Forward decl (defined near applyBinaryOp): the single dispatch for calling any callable with
 // already-evaluated positional + named args. makeBoundMethod routes through it so a bound method
 // backed by a NATIVE function still honours keyword args / defaults / arity (not positional-only).
@@ -1952,8 +1960,46 @@ inline bool InstanceValue::contains(KiritoVM& vm, Handle value) {
     return vm.arena().deref(r).truthy();
 }
 
+// Pull-based driver for a user class's _iter_/_next_ generator protocol. `iterator_` is whatever
+// _iter_ returned (commonly a fresh iterator instance, or `self`); each next() calls its _next_(self)
+// and treats a StopIteration raised AT _next_'S OWN FRAME as end-of-stream. Strict (PEP-479): a
+// StopIteration that leaks from a deeper call inside _next_ is NOT swallowed — it surfaces as an error,
+// so a bug can't masquerade as "iteration finished". roots() exposes the held iterator so a GC during
+// an allocating _next_ (or during the owning IterCursor's own construction) can't sweep it (F2).
+struct UserLazyIterator : LazyIterator {
+    Handle iterator_;
+    explicit UserLazyIterator(Handle it) : iterator_(it) {}
+    std::optional<Handle> next(KiritoVM& vm) override {
+        InstanceValue& it = static_cast<InstanceValue&>(vm.arena().deref(iterator_));
+        std::size_t boundary = vm.callDepth() + 1;  // the frame _next_ itself runs in
+        try {
+            return invokeOp(vm, it, "_next_", {}, "'" + it.className + "' iterator has no _next_ method");
+        } catch (KiritoThrow& t) {
+            // Only _next_'s OWN raise (t.depth == boundary) ends iteration; a deeper leak propagates.
+            if (isStopIteration(vm, t.value) && t.depth == static_cast<int>(boundary)) return std::nullopt;
+            throw;
+        }
+    }
+    void roots(std::vector<Handle>& out) override { out.push_back(iterator_); }
+};
+
+// A class opts into STREAMING iteration by having _iter_ return an object with a _next_ method. If it
+// returns a plain iterable instead (a List/range — the pre-generator style), lazyIterate declines
+// (nullptr) and the eager iterate() path re-dispatches it, so old _iter_-returns-a-List classes keep
+// working unchanged.
+inline std::unique_ptr<LazyIterator> InstanceValue::lazyIterate(KiritoVM& vm, Handle /*self*/) {
+    if (!findMethod(vm.arena(), "_iter_")) return nullptr;
+    Handle r = invokeOp(vm, *this, "_iter_", {}, "'" + className + "' is not iterable");
+    Object& itObj = vm.arena().deref(r);
+    if (itObj.kind() == ValueKind::Instance &&
+        static_cast<InstanceValue&>(itObj).findMethod(vm.arena(), "_next_"))
+        return std::make_unique<UserLazyIterator>(r);
+    return nullptr;
+}
+
 inline std::optional<std::vector<Handle>> InstanceValue::iterate(KiritoVM& vm) {
-    // A class becomes iterable by defining _iter_(self) returning any iterable (commonly a List).
+    // A class becomes iterable by defining _iter_(self) returning any iterable (commonly a List, or a
+    // _next_-style iterator — see lazyIterate).
     if (!findMethod(vm.arena(), "_iter_")) return std::nullopt;
     // Guard against `_iter_` returning `self` (or a mutually-referential instance): the result is
     // re-dispatched through iterate(), and a self/cyclic return recurses in native C++ — each level's
@@ -1968,7 +2014,15 @@ inline std::optional<std::vector<Handle>> InstanceValue::iterate(KiritoVM& vm) {
     Handle r = invokeOp(vm, *this, "_iter_", {}, "'" + className + "' is not iterable");
     RootScope rs(vm);
     rs.add(r);
-    return vm.arena().deref(r).iterate(vm);
+    Object& itObj = vm.arena().deref(r);
+    // Generator style: _iter_ returned a _next_-driven iterator — drain it eagerly for a consumer that
+    // needs the whole sequence (a StopIteration at _next_'s frame ends it).
+    if (itObj.kind() == ValueKind::Instance &&
+        static_cast<InstanceValue&>(itObj).findMethod(vm.arena(), "_next_")) {
+        UserLazyIterator lazy(r);
+        return drainLazy(vm, lazy, rs);
+    }
+    return itObj.iterate(vm);  // old style: _iter_ returned a plain iterable
 }
 inline std::string InstanceValue::str(StringifyCtx& ctx) const {
     if (ctx.vm) {
@@ -2047,6 +2101,35 @@ inline bool typeMatches(KiritoVM& vm, Handle value, const std::string& typeName)
         if (o.typeName() == typeName) return true;
     }
     return false;
+}
+
+// Is `h` the built-in StopIteration sentinel a generator's _next_ raises to signal exhaustion? Accepts
+// an instance of the StopIteration class (the normal form, `throw StopIteration()`) and, leniently, the
+// class value itself (`throw StopIteration`).
+inline bool isStopIteration(KiritoVM& vm, Handle h) {
+    const Object& o = vm.arena().deref(h);
+    if (o.kind() == ValueKind::Class) return static_cast<const ClassValue&>(o).name == "StopIteration";
+    return typeMatches(vm, h, "StopIteration");
+}
+
+// Eagerly pull a LazyIterator to a vector, rooting each produced element in `elemRoots` and keeping the
+// iterator's own held handles (its function / source iterators / user iterator) rooted across every
+// allocating next(). The single lazy->eager bridge: rootedIterate and each native lazy type's eager
+// iterate() go through here, so an eager consumer of a lazy source "just works".
+inline std::vector<Handle> drainLazy(KiritoVM& vm, LazyIterator& it, RootScope& elemRoots) {
+    std::vector<Handle> out;
+    std::vector<Handle> held;                 // the iterator's live internals, refreshed each step
+    vm.pushAuxRoots(&held);                    // scanned as GC roots for the drain's duration
+    struct Pop { KiritoVM& vm; ~Pop() { vm.popAuxRoots(); } } pop{vm};
+    while (true) {
+        held.clear();
+        it.roots(held);                        // re-expose the iterator's current handles before next()
+        auto n = it.next(vm);
+        if (!n) break;
+        elemRoots.add(*n);
+        out.push_back(*n);
+    }
+    return out;
 }
 
 // Resolve a type argument (for `isinstance` and typed `catch`) to a type name: a Class -> its name,
@@ -2914,6 +2997,11 @@ inline std::string applyFormatSpec(KiritoVM& vm, Handle value, const std::string
 // against that, so every consumer routes through here instead of re-deriving the pattern. `err` is the
 // "not iterable" diagnostic thrown when `src` has no iteration protocol.
 inline std::vector<Handle> rootedIterate(KiritoVM& vm, Handle src, RootScope& rs, const char* err) {
+    // Prefer lazy iteration when the source streams (range/map/filter/zip/enumerate, a user generator,
+    // a file) — drain it once, rooting the iterator and each element. One place bridges lazy→eager for
+    // EVERY eager consumer (List()/Set()/Dict()/sorted/reversed/join/update/unpacking/random.sample/…).
+    if (auto lazy = vm.arena().deref(src).lazyIterate(vm, src))
+        return drainLazy(vm, *lazy, rs);
     auto items = vm.arena().deref(src).iterate(vm);
     if (!items) throw KiritoError(err);
     for (Handle h : items.value()) rs.add(h);
@@ -2930,6 +3018,17 @@ inline void KiritoVM::installBuiltins() {
     auto defSig = [&](const char* name, std::vector<NativeParam> sig, std::string ret, NativeFn fn) {
         g.define(arena(), name, alloc(std::make_unique<NativeFunction>(name, std::move(sig), std::move(ret), std::move(fn))));
     };
+
+    // StopIteration — the built-in sentinel a generator's _next_ raises to end iteration. It is a plain
+    // class value in the global scope, so `throw StopIteration()` inside _next_ stops a `for`/`sum`/…,
+    // and `catch StopIteration as e` / `isinstance(e, StopIteration)` match it via the class chain.
+    {
+        auto sc = std::make_unique<ClassValue>();
+        sc->name = "StopIteration";
+        Handle sch = alloc(std::move(sc));
+        static_cast<ClassValue&>(arena_.deref(sch)).selfHandle = sch;
+        g.define(arena(), "StopIteration", sch);
+    }
 
     defSig("len", {{"x"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> args) -> Handle {
         if (args.size() != 1) throw KiritoError("len expected 1 argument");
