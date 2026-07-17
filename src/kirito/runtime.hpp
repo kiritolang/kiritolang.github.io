@@ -280,7 +280,12 @@ inline Handle numericBinary(KiritoVM& vm, BinOp op, Handle aH, Handle bH) {
             } break;
             case BinOp::Mod: {
                 if (y == 0.0) throw KiritoError("float modulo by zero");
-                return vm.makeFloat(x - std::floor(x / y) * y);
+                // `x - floor(x/y)*y` loses the remainder for large |x/y| (`1e17 % 3` -> 0 not 1) and gives
+                // NaN for an infinite divisor (`0*inf`). Use fmod (exact truncated remainder) + the Python
+                // floor-mod sign correction so the result takes the divisor's sign and stays in [0,|y|).
+                double r = std::fmod(x, y);
+                if (r != 0.0 && ((r < 0.0) != (y < 0.0))) r += y;
+                return vm.makeFloat(r);
             } break;
             case BinOp::Pow: {
                 // Match math.pow's domain policy (a NaN operand passes through): 0**-n (= 1/0) and a
@@ -490,10 +495,16 @@ inline bool kiLessThan(KiritoVM& vm, Handle a, Handle b) {
         }
         return xe.size() < ye.size();  // shared prefix equal: shorter list is "less"
     }
-    // A user class can define ordering via `_lt_`, so sorted()/min()/max() and `<` work on instances.
-    if (x.kind() == ValueKind::Instance)
-        if (auto* inst = dynamic_cast<const InstanceValue*>(&x); inst && inst->findMethod(vm.arena(), "_lt_"))
+    // Ordering for an Instance-kind value dispatches to its own `<`: a user class via `_lt_`, and a
+    // native value type (BigInt, DateTime, …) via its `binary(Lt)` — so sorted()/min()/max() work on
+    // them just like the `<` operator does (F07-8: a NativeClass has kind()==Instance but is not an
+    // InstanceValue, so it must NOT be gated behind the _lt_ dynamic_cast). A native type that is
+    // genuinely unordered (Complex) or non-comparable (Socket) makes its own binary throw clearly.
+    if (x.kind() == ValueKind::Instance) {
+        const auto* inst = dynamic_cast<const InstanceValue*>(&x);
+        if (!inst || inst->findMethod(vm.arena(), "_lt_"))
             return vm.arena().deref(vm.arena().deref(a).binary(vm, BinOp::Lt, a, b)).truthy();
+    }
     throw KiritoError("cannot order '" + x.typeName() + "' and '" + y.typeName() + "'");
 }
 
@@ -1719,11 +1730,9 @@ inline Handle ClassValue::callFull(KiritoVM& vm, std::span<const Handle> args,
     inst->cls = selfHandle;
     inst->className = name;
     inst->ownerVM_ = &vm;   // the VM that owns this instance — used by _hash_/_eq_/_bool_ (multi-VM safe)
-    // Cache the dunder-availability flags now, walking the class chain once. Dict/Set hot paths
-    // then read a plain bool instead of doing a method lookup per hash/equals.
-    inst->hasHashDunder = findMethod(vm.arena(), "_hash_") != nullptr;
-    inst->hasEqDunder   = findMethod(vm.arena(), "_eq_")   != nullptr;
-    inst->hasBoolDunder = findMethod(vm.arena(), "_bool_") != nullptr;
+    // Cache the dunder-availability flags now, walking the class chain once (single-sourced with
+    // serde::rebuild via cacheDunderFlags). Dict/Set hot paths then read a plain bool.
+    inst->cacheDunderFlags(*this, vm.arena());
     Handle instH = vm.alloc(std::move(inst));
     static_cast<InstanceValue&>(vm.arena().deref(instH)).selfHandle = instH;
     if (const Handle* init = findMethod(vm.arena(), "_init_")) {

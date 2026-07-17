@@ -44,7 +44,39 @@ delivered real findings. Given usage cost, remaining areas are being audited dir
   wart. **FIX:** single-sourced `ListVal::clearElems()` (resets elems + cards); both `list.clear()` and
   the value.hpp wrapper call it. Regression added (clear-then-refill an old >9000 list).
 
-### OPEN — lower priority (candidates for later batches)
+### FIXED — batch 2 (A03/A07/A08 findings)
+- **F03-1 / F07-3 [Med] — float `%` wrong for large operands / NaN for inf divisor.** `x - floor(x/y)*y`
+  collapsed the remainder (`1e17 % 3` → 0, want 1) and gave NaN for `5.0 % inf`. **FIX:** `std::fmod` +
+  floor sign-correction (runtime.hpp numericBinary). Regression `spec_v1161_fixes.ki`.
+- **F07-8 [High] — min/max/sorted couldn't order BigInt** (a NativeClass with kind()==Instance failed the
+  `_lt_` dynamic_cast). **FIX:** kiLessThan dispatches to `binary(Lt)` for any Instance-kind (user `_lt_`
+  OR a native ordered type); Complex/Socket still throw their own clear "unordered". Regression added.
+- **F08-2 [High] — deserialized instance lost `_bool_` truthiness** (serde::rebuild set hash/eq flags but
+  not bool → silent: a restored falsy instance became truthy; hit dump + serialize + parallel). **FIX:**
+  single-sourced `InstanceValue::cacheDunderFlags()` (F08-4), called from callFull AND rebuild. Regression.
+- **F07-1 [Med] — math.trunc returns Float** — RE-VERIFIED as **NOT A BUG / WONTFIX**. `trunc → Float`
+  is a DELIBERATE, documented (`10-stdlib`), and explicitly-TESTED contract (7 golden scripts assert it
+  "per doc", incl. `trunc(NaN)`/`trunc(large)` staying Float). Changing it to Integer broke all 7 +
+  the doc — a contract, not a defect. The agent's flag was a Python-conformance note. Reverted; kept as
+  a documented intentional divergence from Python. (Lesson: double-check "inconsistency" findings against
+  the tested/documented contract before treating them as bugs.)
+
+### OPEN — lower priority (candidates for later batches, all logged in scan/*.md)
+- **F07-9 [Med]** sum()/min/max reject BigInt/Complex though `+`/operators work → fall back to
+  applyBinaryOp(Add). **F07-2 [Med]** BigInt==Float non-transitive + Set/Dict bucket poison → BigIntVal::
+  equals Float branch. (Both real, deferred to a numeric-boundary batch.)
+- **F08-1 [Med]** isinstance/typed-catch/annotations match user classes by NAME not identity (two
+  same-named classes conflate) — soundness hole, but name-matching is partly deliberate (serde
+  reconnection); needs identity-first-with-name-fallback or a doc note.
+- **F08-3 [Low]** `!=` not symmetric for a right-only standalone `_ne_`. **F13-1 [Low]** regex.sub/split
+  negative count treated as unlimited (Python-divergence). **F13-2 [Low]** tensor `t[i]` grad path lacks
+  warnDetach. **F07-4/5/6 [Low]** BigInt<Float message / Float("1e400")→throw / modpow negative modulus.
+  **F07-7** NaN Set/Dict key — DESIGN (exact ==), document only. CardTable::any() dead code.
+### PERF (A15 — proposals, need release-build measurement before applying)
+- P15-1 harness should report median+p95 (not mean+stddev over a bimodal dist) — low-risk/high-reward.
+- P15-4 skip the aux-root rescan via a live-IterCursor counter (low-risk; my v1.16.0 code).
+- P15-2/P15-3 decouple major threshold from nursery / raise the major floor — Med-risk, measure first.
+- P15-5/P15-6 warm-up reps / operand-stack reserve. (Variance root: rare large GC pauses on random reps.)
 - **F05-2 [Low]** Dict/Set entry positions are `int32_t` — silent probe corruption past 2^31 entries
   (~64 GB, impractical; no clean-error guard like the range/repeat caps). Consider a guarded throw.
 - **F05-3 [Low]** map/filter/zip/enumerate are RE-iterable (fresh cursor per pass) vs Python's one-shot.

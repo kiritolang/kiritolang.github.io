@@ -156,6 +156,16 @@ public:
     const Handle* findMethod(const ObjectArena& arena, const std::string& n) const {
         return static_cast<const ClassValue&>(arena.deref(cls)).findMethod(arena, n);
     }
+
+    // Cache the opt-in dunder-availability flags by walking the class chain ONCE. Single source for
+    // both instantiation (ClassValue::callFull) and deserialization (serde::rebuild) — they must not
+    // diverge (rebuild once forgot _bool_, silently defeating a restored instance's truthiness). The
+    // Dict/Set hot path then reads a plain bool instead of a per-op method lookup.
+    void cacheDunderFlags(const ClassValue& cv, const ObjectArena& arena) {
+        hasHashDunder = cv.findMethod(arena, "_hash_") != nullptr;
+        hasEqDunder   = cv.findMethod(arena, "_eq_")   != nullptr;
+        hasBoolDunder = cv.findMethod(arena, "_bool_") != nullptr;
+    }
 };
 
 // The value returned by `self._super_()`: a proxy onto the same instance whose attribute/method

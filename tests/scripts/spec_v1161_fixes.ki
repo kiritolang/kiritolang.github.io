@@ -1,0 +1,43 @@
+# v1.16.1 audit — regression tests for the confirmed bugs fixed this round (A03/A07/A08 findings).
+var io = import("io")
+var math = import("math")
+var int = import("int")
+var dump = import("dump")
+var serialize = import("serialize")
+
+# --- F03-1 / F07-3: Float `%` used `x - floor(x/y)*y`, which lost the remainder for large |x/y| and
+#     gave NaN for an infinite divisor. Now fmod + floor sign-correction (matches Python / math.fmod). ---
+assert 1e17 % 3.0 == 1.0, "large float mod keeps the remainder"
+assert 1e16 % 7.0 == math.fmod(1e16, 7.0), "large positive float mod matches math.fmod"
+assert 5.0 % math.inf == 5.0, "finite % +inf == the dividend"
+assert (0.0 - 5.0) % math.inf == math.inf, "-5 % +inf == +inf (floor sign)"
+assert 5.0 % (0.0 - math.inf) == (0.0 - math.inf), "5 % -inf == -inf"
+assert (-5.0) % 3.0 == 1.0 and 5.0 % (0.0 - 3.0) == (0.0 - 1.0), "float mod takes the divisor's sign"
+assert 0.0 <= (7.5 % 2.0) and (7.5 % 2.0) < 2.0, "float mod stays in [0, |divisor|)"
+
+# --- F07-8: min/max/sorted can order BigInt (a NativeClass whose `<` works) — was 'cannot order'. ---
+var bs = [int.big(5), int.big(1), int.big(3), int.big(9)]
+assert String(sorted(bs)) == "[1, 3, 5, 9]", "sorted() orders BigInt"
+assert String(min(bs)) == "1" and String(max(bs)) == "9", "min/max order BigInt"
+assert int.big(3) < int.big(5) and not (int.big(9) < int.big(2)), "BigInt < still works"
+
+# --- F08-2 / F08-4: a deserialized instance kept _hash_/_eq_ but LOST _bool_ truthiness (silent).
+#     Now single-sourced via cacheDunderFlags, restored by both dump and serialize. ---
+class Flag:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _bool_ = Function(self):
+        return self.v
+assert not Bool(dump.loads(dump.dumps(Flag(False)))), "dump round-trip restores _bool_ (falsy stays falsy)"
+assert Bool(dump.loads(dump.dumps(Flag(True)))), "dump round-trip restores _bool_ (truthy stays truthy)"
+assert not Bool(serialize.loads(serialize.dumps(Flag(False)))), "serialize round-trip restores _bool_"
+# and the restored instance is still usable in an if
+var restored = dump.loads(dump.dumps(Flag(False)))
+var branch = "then"
+if restored:
+    branch = "then"
+else:
+    branch = "else"
+assert branch == "else", "restored falsy instance takes the else branch"
+
+io.print("v1.16.1 fixes: all passed")
