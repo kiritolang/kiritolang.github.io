@@ -764,14 +764,23 @@ private:
         if (at(TokenType::Newline)) {
             node->body = parseIndentedSuite();  // block body
         } else {
-            // Inline body: one statement on the same line, e.g. Function(x): return x * x.
-            // It is a normal statement (uses explicit return) with no trailing-newline requirement.
+            // Inline body: one statement on the same line, e.g. Function(x): return x * x. It is a
+            // RESTRICTED single statement (see parseInlineStatement) — return/pass/todo/throw/discard/
+            // assert, a bare expression, or an assignment; a `var`/`if`/loop needs a block body.
             node->inlineBody = true;
             node->body.push_back(parseInlineStatement());
         }
         --funcDepth_;
         loopDepth_ = savedLoop;
         node->source = captureSource(startTok);  // verbatim text, for serialization
+        // An INLINE body may have been written across physical lines because it sits inside a
+        // (`/`[`/`{` — where the lexer suppresses newlines (line continuation). captureSource slices
+        // that text WITHOUT the enclosing bracket, so serde re-parsing it standalone (at paren depth 0)
+        // would see the now-significant newline and fail (A01-1). Wrap an inline literal's source in
+        // parens to restore exactly the newline suppression it was parsed under. A block body must NOT
+        // be wrapped (its Indents would be suppressed) — and a block body can never appear inside
+        // brackets anyway, so an inline literal is the only across-lines case.
+        if (node->inlineBody) node->source = "(" + node->source + ")";
         return node;
     }
 
@@ -802,6 +811,19 @@ private:
                 auto node = std::make_unique<ast::ThrowStmt>();
                 node->span = advance().span;
                 node->value = parseExpr();
+                return node;
+            } break;
+            case TokenType::KwDiscard: {   // `discard EXPR` — the analyzer recommends it inside inline bodies (A01-4)
+                auto node = std::make_unique<ast::DiscardStmt>();
+                node->span = advance().span;
+                node->expr = parseExpr();
+                return node;
+            } break;
+            case TokenType::KwAssert: {
+                auto node = std::make_unique<ast::AssertStmt>();
+                node->span = advance().span;
+                node->cond = parseExpr();
+                if (at(TokenType::Comma)) { advance(); node->message = parseExpr(); }
                 return node;
             } break;
             default: {

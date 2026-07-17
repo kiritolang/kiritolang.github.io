@@ -425,6 +425,34 @@ assert "Matrix row index out of range" in e1
 )"));
     }
 
+    // ===== A01-1: an inline Function literal written across physical lines inside a bracket (lexer
+    // line-continuation) must still serialize — the captured source is wrapped in parens so serde's
+    // standalone re-parse sees the same newline suppression. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var ser = import("serialize")
+var mk = Function(f): return f
+var k = mk(Function(p): return p[0] * 1000 +
+    p[1])
+assert k([2, 5]) == 2005
+assert ser.loads(ser.dumps(k))([2, 5]) == 2005     # round-trips (used to throw at deserialize)
+)"));
+    }
+
+    // ===== A01-4: an inline function body accepts `discard` and `assert` (the analyzer recommends
+    // `discard` there; it used to be a parse error). =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+var g = Function(): return 41
+var f = Function(): discard g()
+discard f()
+var h = Function(): assert 1 == 1
+discard h()
+)"));
+    }
+
     // ===== A13-1: a class whose eager class-var is built by a captured FACTORY helper (which
     // instantiates another class) must load in a FRESH VM — the tiered build order sees the class
     // reachable only through the helper's free vars. Two VMs share the blob via a temp file. =====

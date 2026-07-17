@@ -131,6 +131,8 @@ missing-propagation note.
 | A06-2 | LOW | `ValueKind::Array` is a reserved kind with no producer (no `ArrayVal`), only defensive `|| Array` checks — reader confusion | clarifying comment at the enum (kept as a reserved placeholder; removing it + its 9 `\|\| Array` sites is churn with no behavioural change) | object.hpp |
 | A09-1 / A09-2 | MED | a function literal created INSIDE a method had no class ownership, so a nested closure/callback was DENIED `self._private` and `self._super_()` (contract: code inside a method is within that method) | a `MakeFunction` executed in a method frame inherits its owner class (fresh KiFunction per execution, so the "never stamp a shared fn" rule holds); a fn defined outside a method still can't reach a private | bytecode_vm.hpp |
 | A13-1 / A13-2 (was A10-4) | MED | a serde blob whose class has an eager class-var built by a captured FACTORY helper (`class Alpha: var b = mk()`, `mk` returns another class) failed to load in a FRESH VM — "type 'None' is not callable" — breaking the "deserialization needs no import" contract. `eagerDepsReady` only saw DIRECT links, not classes reachable through a helper's free vars | TIERED build order: tier 1 uses the eager FRONTIER (reachability through helpers) — precise where acyclic; tier 2 falls back to direct-links one-at-a-time to break a spurious cycle (preserves the pinned mutual-bind case). No blob-format change, no double-run | stdlib_serde.hpp |
+| A01-1 | MED | an inline `Function` literal written across physical lines inside a `(`/`[`/`{` (lexer line-continuation) captured un-reparsable source → silently unserializable ("expected an expression"/"expected an indented block" at deserialize) | wrap an inline body's captured source in parens, restoring the newline suppression it was parsed under | parser.hpp |
+| A01-4 | MED | an inline function body rejected `discard`/`assert` (parse error) though the analyzer *recommends* `discard` there | add `KwDiscard`/`KwAssert` to `parseInlineStatement`; correct the overclaiming "normal statement" comment | parser.hpp |
 
 ## DEFERRED — needs a maintainer decision (NOT auto-fixed)
 
@@ -181,23 +183,19 @@ A08-2, A16-2, A15-1, A15-2, A14-2, A14-4, A05-3, A12-L1, A12-L2, A14-3, A11-1, A
 The remaining backlog, roughly by value — each deliberately left because it is either genuinely
 involved (a core resolver/compiler change deserving a fresh, careful session) or a low-value tail:
 
-**Involved — merit a dedicated session, not a tail-of-a-long-run rush:**
-- A10-2 (HIGH, build): `kirito.hpp` doesn't compile under clang++ default flags → the documented
-  libFuzzer build is dead. Build/portability, not a runtime bug.
-- A09-1 / A09-2 (MED): a nested function inside a method loses class ownership (can't touch
-  `self._private`; `self._super_()` unavailable) — closure/ownership plumbing.
-- A13-1 / A13-2 (MED): an eager class-var initializer that calls across classes / reads a captured
-  instance fails to load in a fresh VM — serde rebuild ordering.
-- A04-1 (MED): traceback frame line disagrees with the `error:` line on a `finally`/`with` reraise.
-- A19.1-1 (MED): `_hash_`/`_eq_`/`_bool_` dispatch via `activeVM()` misroutes with 2+ VMs on one
-  thread (the A05-1 landmine). Needs a C++-level repro the scan agent couldn't compile.
-- A01-1 / A01-4 (MED): an inline `Function` relying on a bracket line-continuation is unserializable;
-  an inline body rejects the `discard` the analyzer recommends.
+**All involved MED/HIGH are now FIXED** (batches 8–9): A02-3, A10-2, A09-1/2, A13-1/2, A04-1, A19.1-1,
+A01-1/4. See the batch 8 / batch 9 tables above.
 
-**LOW tail** (cosmetic / DRY / doc): A01-2 (f-string error col), A01-3 (doc), A05-1/2/4, A08-1
-(`.compare` exact >2^53), A08-3 (FP-table doc), A09-3 (arity counts self), A09-4 (`_setstate_` w/o
-`_getstate_`), A10-3/A10-4 (DRY: dedup the "row index out of range" text + `kMaxRepeat`), A13-3
-(json surrogate), A06-2/3 (vestigial `ValueKind::Array`), A02-2 (export `_private` divergence).
+**LOW tail remaining** (cosmetic — deliberately deferred as lowest-value):
+- A01-2 (LOW): an error inside an f-string reports the f-string TOKEN's line/col, not the
+  placeholder's — the column is wrong for a non-leading placeholder, the line wrong in a triple-quoted
+  f-string. (Diagnostic-position polish; needs the lexer to thread the placeholder's offset.)
+- A09-3 (LOW): method/constructor arity errors count the implicit `self`, so the numbers don't match
+  what the user typed. (Needs a hidden-leading-arg count threaded into the arity check.)
+- A06-3 (LOW): a few collection-surface test-coverage gaps (listed in `scan/A06_collections.md`).
+
+Everything else from the LOW tail (A05-1/2/3/4, A08-1/2/3, A09-4, A10-3/4, A01-3) was fixed in
+batches 3/6; A13-3, A18-5, A18-1 were applied as conformance changes in batch 7; A02-2 in batch 8.
 
 ## Meta findings (not code bugs)
 - A20-0: previous inventory was 22% of the real surface (see `scan/A20_surface_*.txt` for the full map).
