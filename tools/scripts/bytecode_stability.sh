@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bytecode / semantic stability gate. Runs every golden `.ki` in tools/tests/scripts/ through a
+# Bytecode / semantic stability gate. Runs every golden `.ki` in tests/scripts/ through a
 # chosen `ki` binary and diffs stdout against the recorded `.expected`. Any drift is a stability
 # breach — either the compiler changed something (intentional, requires updating fixtures) or the
 # VM changed behaviour (unintentional, is the bug).
@@ -32,7 +32,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 drift=0
 total=0
-for ki_file in tools/tests/scripts/*.ki; do
+for ki_file in tests/scripts/*.ki; do
     exp="${ki_file%.ki}.expected"
     [ -f "$exp" ] || continue
     total=$((total + 1))

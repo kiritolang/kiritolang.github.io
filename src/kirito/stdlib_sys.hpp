@@ -41,6 +41,17 @@ inline std::mutex& envMutex() { static std::mutex m; return m; }
 inline Handle runExternalProcess(KiritoVM& vm, const std::vector<std::string>& argv,
                                  Value cwdV, Value inputV, Value timeoutV, bool binary) {
     std::string cwd = cwdV.isNone() ? std::string() : cwdV.asStringRef("cwd");
+    // A Kirito String is byte-transparent and may hold a NUL, but argv/cwd cross the syscall boundary
+    // as NUL-terminated c_str() — everything past the first NUL is silently discarded. That is the
+    // poison-NUL truncation bypass (a validated "evil.sh\0.png" execs as "evil.sh"): validation and
+    // execution disagree about the same value. Reject rather than truncate, as CPython's subprocess
+    // does, and as this codebase already rejects CR/LF in net headers. (`input` is byte-faithful — it
+    // is delivered length-based, not via c_str() — so it is deliberately NOT checked.)
+    auto rejectNul = [](const std::string& s, const char* what) {
+        if (s.find('\0') != std::string::npos) throw KiritoError(std::string(what) + " must not contain a NUL byte");
+    };
+    for (const auto& s : argv) rejectNul(s, "createprocess/shell: an argument");
+    rejectNul(cwd, "createprocess/shell: cwd");
     // `input` accepts a String OR Bytes. A String is fed as its UTF-8 encoding (unchanged); a Bytes
     // is fed VERBATIM — the only way to hand a subprocess arbitrary binary (a String built from
     // Bytes.decode() would re-encode high bytes into multi-byte UTF-8 and corrupt a binary consumer

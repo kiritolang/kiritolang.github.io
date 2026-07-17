@@ -203,6 +203,8 @@ public:
         // prod(iterable[, start]): product of the elements (Integer if all Integer, else Float).
         m.fn("prod", {{"iterable"}, {"start", "", vm.makeInt(1)}}, "Number", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.empty()) throw KiritoError("prod expects an iterable");
+            // NB: prod materializes a lazy source (it lives in stdlib_math.hpp, included before runtime.hpp
+            // where streamIterate is defined). A lazy source is bounded (the range cap) so this is fine.
             auto items = vm.arena().deref(a[0]).iterate(vm);
             if (!items) throw KiritoError("prod expects an iterable");
             bool isFloat = false, intOverflow = false;
@@ -219,7 +221,10 @@ public:
                 if (o.kind() == ValueKind::Float) { isFloat = true; f *= static_cast<const FloatVal&>(o).value(); }
                 else if (o.kind() == ValueKind::Integer) {
                     int64_t v = static_cast<const IntVal&>(o).value();
-                    if (__builtin_mul_overflow(n, v, &n)) intOverflow = true;  // track; only an error if the result stays Integer
+                    // A zero factor makes the exact result 0 (trivially an Integer), so it clears any
+                    // earlier overflow — otherwise prod([2**62, 4, 0]) throws though its answer is 0.
+                    if (v == 0) { n = 0; intOverflow = false; }
+                    else if (__builtin_mul_overflow(n, v, &n)) intOverflow = true;  // track; only an error if the result stays Integer
                     f *= static_cast<double>(v);
                 }
                 else throw KiritoError("prod expects numbers");

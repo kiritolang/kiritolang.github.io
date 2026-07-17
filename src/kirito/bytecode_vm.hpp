@@ -1,6 +1,7 @@
 #ifndef KIRITO_BYTECODE_VM_HPP
 #define KIRITO_BYTECODE_VM_HPP
 
+#include <cassert>
 #include <memory>
 #include <span>
 #include <string>
@@ -40,8 +41,18 @@ public:
     bool equals(const ObjectArena&, const Object& o) const override { return this == &o; }
     void children(std::vector<Handle>& out) const override {
         out.insert(out.end(), items.begin(), items.end());
-        if (lazy) out.push_back(source);
+        if (lazy) {
+            out.push_back(source);
+            lazy->roots(out);   // (F2) a combinator iterator (map/filter/zip/enumerate) holds a function
+                                // and materialized source elements that are NOT children of `source`;
+                                // trace them so a GC mid-loop can't sweep them.
+        }
     }
+    // A lazy cursor buffers young source elements in a plain C++ vector (no write barrier). It also
+    // promotes to old mid-loop (a long/allocating body outlives a minor), after which a minor would only
+    // reach it via the remembered set — which it is never in. So it must be re-traced from its stack root
+    // every minor; see KiritoVM::minorCollect.
+    bool gcNeedsRootRescan() const override { return lazy != nullptr; }
 };
 
 // Executes one Proto frame against a scope. The operand stack is a single C++ vector whose first
@@ -64,8 +75,22 @@ public:
     BytecodeVM(const BytecodeVM&) = delete;
     BytecodeVM& operator=(const BytecodeVM&) = delete;
 
-    Handle run(const Proto& proto) {
+    Handle run(const Proto& proto, std::span<const Handle> paramValues = {}) {
+        excSpans_.assign(proto.excSpanSlots, SourceSpan{});
         for (uint32_t i = 0; i < proto.localCount; ++i) push(vm_.undefined());  // reserve frame slots
+        // Place each non-captured parameter's argument value straight into its frame slot, so a param
+        // read is a direct slot access (no scope-chain name walk / unwritten-slot fallback). Captured
+        // params (paramSlots[i] < 0) are left to the scope env, where the closure can reach them.
+        for (std::size_t i = 0; i < proto.paramSlots.size() && i < paramValues.size(); ++i)
+            if (proto.paramSlots[i] >= 0) setLocal(static_cast<uint32_t>(proto.paramSlots[i]), paramValues[i]);
+        // Pre-declare this function's captured-local env slots, immediately after the parameters that
+        // callFull already defined (so their fixed indices are P, P+1, ...). A closure reaches them by
+        // LoadVar(depth, index); the local's own `var` overwrites the placeholder in place. Empty for
+        // module/class bodies (a module's slots are pre-declared by the resolver into the live scope).
+        if (!proto.envSlots.empty()) {
+            EnvValue& env = static_cast<EnvValue&>(vm_.arena().deref(scope()));
+            for (const auto& name : proto.envSlots) env.define(vm_.arena(), name, vm_.undefined());
+        }
         const std::vector<Instr>& code = proto.code;
         std::size_t ip = 0;
         while (true) {
@@ -86,9 +111,36 @@ public:
                     if (!found) throw KiritoError("name '" + proto.names[in.a] + "' is not defined", in.span);
                     push(*found);
                 } break;
+                case Op::LoadGlobal: { push(vm_.globalSlot(in.a)); } break;  // O(1): no scope-chain walk
+                case Op::LoadVar: {  // O(1): walk `depth` parents, read slot `index` — no name lookup
+                    const EnvVarRef& ref = proto.envVars[in.a];
+                    EnvValue& e = envAtDepth(ref.depth);
+                    // The slot is exact by construction, EXCEPT when a closure is placed on a scope
+                    // chain shorter/emptier than it was compiled for — a spawned nested function whose
+                    // enclosing locals do NOT cross to the worker gets empty stand-in scopes, so the
+                    // enclosing slot is out of range. That is a clean "not defined", not a wrong read.
+                    if (ref.index >= e.size())
+                        throw KiritoError("name '" + ref.name + "' is not defined", in.span);
+                    assert(e.nameAt(ref.index) == ref.name);  // otherwise the (depth,index) is exact
+                    Handle h = e.at(ref.index);
+                    if (h == vm_.undefined())  // declared but not yet assigned (its `var` hasn't run): strict
+                        throw KiritoError("name '" + ref.name + "' is not defined", in.span);
+                    push(h);
+                } break;
+                case Op::AssignVar: {  // O(1) rebind of the (depth, index) env slot — no name lookup
+                    Handle v = pop();
+                    const EnvVarRef& ref = proto.envVars[in.a];
+                    EnvValue& e = envAtDepth(ref.depth);
+                    if (ref.index >= e.size())   // an enclosing slot that did not cross (see LoadVar)
+                        throw KiritoError("name '" + ref.name + "' is not defined", in.span);
+                    assert(e.nameAt(ref.index) == ref.name);
+                    if (e.at(ref.index) == vm_.undefined())  // rebinding before the var executed
+                        throw KiritoError("name '" + ref.name + "' is not defined", in.span);
+                    e.setAt(vm_.arena(), ref.index, v);
+                } break;
                 case Op::StoreName: {
                     Handle v = pop();
-                    static_cast<EnvValue&>(vm_.arena().deref(scope())).define(proto.names[in.a], v);
+                    static_cast<EnvValue&>(vm_.arena().deref(scope())).define(vm_.arena(), proto.names[in.a], v);
                 } break;
                 case Op::AssignName: {
                     Handle v = pop();
@@ -96,24 +148,18 @@ public:
                         throw KiritoError("name '" + proto.names[in.a] + "' is not defined", in.span);
                 } break;
 
-                case Op::LoadLocal: {
+                case Op::LoadLocal: {  // O(1): direct frame slot, no name lookup
                     Handle h = getLocal(in.a);
-                    if (h == vm_.undefined()) {  // unwritten: behave exactly like LoadName (walk the chain)
-                        auto found = envLookup(vm_.arena(), scope(), proto.localNames[in.a]);
-                        if (!found) throw KiritoError("name '" + proto.localNames[in.a] + "' is not defined", in.span);
-                        h = *found;
-                    }
+                    if (h == vm_.undefined())  // read before assignment: strict, no name walk
+                        throw KiritoError("name '" + proto.localNames[in.a] + "' is not defined", in.span);
                     push(h);
                 } break;
                 case Op::StoreLocal: { setLocal(in.a, pop()); } break;
-                case Op::AssignLocal: {
+                case Op::AssignLocal: {  // O(1): direct frame slot, no name lookup
                     Handle v = pop();
-                    if (getLocal(in.a) == vm_.undefined()) {  // no local binding yet: rebind nearest existing
-                        if (!envAssign(vm_.arena(), scope(), proto.localNames[in.a], v))
-                            throw KiritoError("name '" + proto.localNames[in.a] + "' is not defined", in.span);
-                    } else {
-                        setLocal(in.a, v);
-                    }
+                    if (getLocal(in.a) == vm_.undefined())  // rebinding before the var executed: strict
+                        throw KiritoError("name '" + proto.localNames[in.a] + "' is not defined", in.span);
+                    setLocal(in.a, v);
                 } break;
 
                 case Op::UnaryOp: {
@@ -158,6 +204,13 @@ public:
                 case Op::MakeFunction: {
                     auto fn = std::make_unique<KiFunction>(proto.funcs[in.a], scope());
                     fn->sourceFile = vm_.currentChunkFile();
+                    // A function literal created INSIDE a method body inherits that method's owner
+                    // class, so a nested closure/callback may touch `self._private` and resolve
+                    // `self._super_()` — code lexically inside a method IS within that method
+                    // (A09-1/A09-2). Only ever GRANTS the access the privacy contract already promises.
+                    // Safe against the "never stamp a shared function object" rule (BuildClass above):
+                    // this KiFunction is freshly allocated on every execution, not shared.
+                    if (hasOwner_) { fn->ownerClass = ownerClass(); fn->hasOwner = true; }
                     push(vm_.alloc(std::move(fn)));
                 } break;
                 case Op::BuildClass: {
@@ -178,8 +231,11 @@ public:
                     cls->name = cs.name;
                     cls->base = base;
                     cls->hasBase = hasBase;
+                    cls->def = &cs;               // the AST (verbatim source + body) for serialization
+                    cls->closure = classScope;    // the scope its free variables resolve against
                     for (const auto& [k, v] : static_cast<EnvValue&>(vm_.arena().deref(classScope)).locals())
-                        cls->methods[k] = v;                            // the names the body defined are the methods
+                        if (v != vm_.undefined())                       // skip a pre-declared slot never assigned
+                            cls->defineMethod(vm_.arena(), k, v);                    // the names the body defined are the methods
                     Handle clsHandle = rs.add(vm_.alloc(std::move(cls)));
                     auto& klass = static_cast<ClassValue&>(vm_.arena().deref(clsHandle));
                     klass.selfHandle = clsHandle;
@@ -205,10 +261,14 @@ public:
                             clone->hasOwner = true;
                             owned.emplace_back(mname, rs.add(vm_.alloc(std::move(clone))));
                         }
-                        for (auto& [mname, ch] : owned) { klass.methods[mname] = ch; classEnv.define(mname, ch); }
+                        for (auto& [mname, ch] : owned) { klass.defineMethod(vm_.arena(), mname, ch); classEnv.define(vm_.arena(), mname, ch); }
                     }
-                    static_cast<EnvValue&>(vm_.arena().deref(scope())).define(cs.name, clsHandle);
                     vm_.registerClass(cs.name, clsHandle);  // so serialize/dump can reconstruct instances
+                    // Leave the class on the operand stack; the compiler binds cs.name right after via
+                    // StoreLocal/StoreName (exactly like `var Name = ...`), so a non-captured class name
+                    // lands in its frame slot rather than only the scope env — consistent with the slot
+                    // model now that there is no unwritten-slot name-walk fallback to paper over it.
+                    push(clsHandle);
                 } break;
 
                 case Op::GetAttr: {
@@ -319,6 +379,11 @@ public:
                     // results) are not the iterable's children(), so `iterable` on the stack can't protect them.
                     RootScope rs(vm_);
                     if (lazy) {
+                        // The iterator may hold handles that are NOT the iterable (a user _iter_ returns a
+                        // separate iterator object; map/filter/zip hold a function + source iterators) —
+                        // root them across alloc(cursor)'s GC, exactly as the eager branch roots its items.
+                        std::vector<Handle> held; lazy->roots(held);
+                        for (Handle h : held) rs.add(h);
                         cursor->lazy = std::move(lazy);
                         cursor->source = iterable;   // keep the stream rooted for the loop's duration
                     } else {
@@ -380,12 +445,14 @@ public:
 
                 case Op::SetupBlock: { blocks_.push_back({in.a, stack_.size()}); } break;
                 case Op::PopBlock: { blocks_.pop_back(); } break;
-                case Op::Reraise: { Handle v = pop(); throw KiritoThrow{v, excSpan_}; } break;  // keep the original site
+                case Op::Reraise: { Handle v = pop(); KiritoThrow t{v, excSpan_}; t.depth = static_cast<int>(vm_.callDepth()); throw t; } break;  // keep the original site
+                case Op::SaveExcSpan: { excSpans_[in.a] = excSpan_; } break;
+                case Op::RestoreExcSpan: { excSpan_ = excSpans_[in.a]; } break;
                 case Op::ExcMatch: {
                     Handle type = pop(), exc = pop();
                     push(vm_.makeBool(isInstanceOf(vm_, exc, type)));
                 } break;
-                case Op::Throw: { Handle v = pop(); throw KiritoThrow{v, in.span}; } break;
+                case Op::Throw: { Handle v = pop(); KiritoThrow t{v, in.span}; t.depth = static_cast<int>(vm_.callDepth()); throw t; } break;
                 case Op::Return: { return pop(); } break;
                 default: {
                     // An opcode the dispatch doesn't know means a corrupt/truncated Proto — a VM
@@ -405,7 +472,7 @@ public:
             if (!unwind(s, e.span, ip)) throw;
             vm_.setLastTraceback(e.traceback);
           } catch (KiritoThrow& t) {  // non-const: append this frame to the traceback before re-throwing
-            appendFrame(t.traceback, ip, code);
+            appendFrame(t.traceback, ip, code, t.span);   // innermost frame -> the exception's true origin line
             if (!unwind(t.value, t.span, ip)) throw;
             vm_.setLastTraceback(t.traceback);  // handled here -> expose the chain to sys.traceback()
           } catch (const std::exception& e) {
@@ -435,6 +502,12 @@ private:
     // sits above them); reserved once at frame entry and never popped, so these indices stay valid.
     Handle getLocal(uint32_t i) const { return stack_[kOperandBase + i]; }
     void setLocal(uint32_t i, Handle h) { stack_[kOperandBase + i] = h; }
+    // The EnvValue `depth` hops up the scope chain from this frame — the target of LoadVar/AssignVar.
+    EnvValue& envAtDepth(uint16_t depth) {
+        Handle s = scope();
+        for (uint16_t d = 0; d < depth; ++d) s = static_cast<EnvValue&>(vm_.arena().deref(s)).parent();
+        return static_cast<EnvValue&>(vm_.arena().deref(s));
+    }
 
     template <typename F>
     auto located(SourceSpan span, F&& fn) -> decltype(fn()) {
@@ -464,8 +537,15 @@ private:
     // Record THIS frame on an unwinding error's traceback: its label + file + the line it was executing
     // (the faulting instruction for the innermost frame, the call site for the outer ones). Called once
     // per frame the exception passes through, building the chain innermost-first.
-    void appendFrame(std::vector<TraceFrame>& tb, std::size_t ip, const std::vector<Instr>& code) {
+    void appendFrame(std::vector<TraceFrame>& tb, std::size_t ip, const std::vector<Instr>& code,
+                     SourceSpan originSpan = {}) {
         uint32_t ln = (ip >= 1 && ip <= code.size()) ? code[ip - 1].span.line : 0;
+        // For the INNERMOST frame of a thrown value (tb still empty), prefer the exception's own origin
+        // line: after a `finally`/`with` reraise, the executing instruction is the `try:`/`with`
+        // statement, not the throw site, so `code[ip-1]` would make the innermost traceback frame
+        // disagree with the already-correct `error:` line. Outer frames (tb non-empty) keep the call
+        // site. Only the KiritoThrow arm passes an origin (a KiritoError's span may be another chunk).
+        if (tb.empty() && originSpan.line != 0) ln = originSpan.line;
         tb.push_back(TraceFrame{frameLabel_, vm_.currentChunkFile(), ln});
     }
 
@@ -478,13 +558,20 @@ private:
     std::vector<Handle> stack_;
     std::vector<Block> blocks_;
     SourceSpan excSpan_{};  // span of the exception currently being unwound (for Reraise)
+    // One slot per try-with-finally in this Proto, holding that try's in-flight exception span across
+    // its finally body — the span's half of the same parking the exception VALUE gets in a hidden
+    // local, and for the same reason: a nested try/catch inside the finally has its own unwind(),
+    // which overwrites excSpan_, and the outer Reraise would then report the inner (already handled)
+    // exception's line. Addressed by slot rather than pushed/popped, so a break/return/throw leaving
+    // the finally early cannot desynchronize it.
+    std::vector<SourceSpan> excSpans_;
     bool hasOwner_;
     std::string frameLabel_;  // function name / "<function>" / "<module>" — for traceback frames
 };
 
 inline Handle runBytecodeBody(KiritoVM& vm, Handle scope, const ast::Block& body, Handle ownerClass,
                               bool hasOwner, bool isFunction, std::string frameLabel,
-                              const ast::FunctionExpr* fnDef) {
+                              const ast::FunctionExpr* fnDef, std::span<const Handle> paramValues) {
     // Root the scope (and owning class) across BOTH compilation and execution: first-run compilation
     // materialises constants and so may trigger GC, and the top-level scope is not otherwise rooted
     // here (unlike a function call scope, which callFull already roots). The BytecodeVM re-roots them
@@ -494,7 +581,7 @@ inline Handle runBytecodeBody(KiritoVM& vm, Handle scope, const ast::Block& body
     if (hasOwner) rs.add(ownerClass);
     const Proto* proto = protoForBody(vm, body, isFunction, fnDef);
     BytecodeVM bc(vm, scope, ownerClass, hasOwner, std::move(frameLabel));
-    return bc.run(*proto);
+    return bc.run(*proto, paramValues);
 }
 
 inline Handle runBytecodeExpr(KiritoVM& vm, Handle scope, const ast::Expr& e) {

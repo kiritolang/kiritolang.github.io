@@ -7,10 +7,10 @@ The routine to run **after every change, before declaring it done**. The mechani
 
 1. **Write tests for what changed.** Every new feature or fixed bug gets a focused test in the same
    change (CLAUDE.md rule). Prefer many small tests over one big one.
-   - Behaviour at the C++/embedding boundary → a `tools/tests/unit/test_*.cpp` (register it in
-     `tools/tests/CMakeLists.txt`).
-   - End-to-end `.ki` behaviour with known output → `tools/tests/scripts/NAME.ki` + `NAME.expected`.
-   - Code that *should fail* → `tools/tests/errors/NAME.ki` + `NAME.experr` (each `.experr` line is a
+   - Behaviour at the C++/embedding boundary → a `tests/unit/test_*.cpp` (register it in
+     `tests/CMakeLists.txt`).
+   - End-to-end `.ki` behaviour with known output → `tests/scripts/NAME.ki` + `NAME.expected`.
+   - Code that *should fail* → `tests/errors/NAME.ki` + `NAME.experr` (each `.experr` line is a
      required substring of stderr; the script must exit non-zero). Cover the bad path, not just the
      good one.
    - **Regression-per-bug.** A fix for a specific bug ships an executable test the bug would have
@@ -23,6 +23,17 @@ The routine to run **after every change, before declaring it done**. The mechani
 
 2. **Build the variants and run the WHOLE suite — SEQUENTIALLY, in order** (`tools/scripts/post_work_check.sh`).
    The order is the workflow gate, not just a list:
+
+   **SEQUENTIALLY is a memory constraint, not a preference.** Every test TU includes the whole
+   header-only interpreter: one compile peaks at ~1.7 GB RSS at `-O2` and ~3.2 GB under asan, so peak
+   build RAM is `jobs × that` and scales with CORE COUNT rather than with the box's RAM. A 24-core
+   `-j24` wants ~41 GB (release) / ~78 GB (asan); two variants at once want ~82 GB. On the WSL2 dev box
+   (24 cores / 47 GB, booted `panic=-1`) that OOMs the kernel and reboots the whole distro — you lose
+   the VM, not just the build. The script sizes `-j` from MemAvailable (cap `PW_MAX_JOBS`, default 16;
+   `PW_SANITIZER_JOBS` overrides asan/tsan) and **refuses to start** if another instance holds its lock
+   or if a stray `cc1plus`/`ninja` is already running. Don't background a second variant to save time,
+   and don't run a bare `cmake --build -j$(nproc)` beside it — the script can only budget the jobs it
+   knows about.
 
    1. **`debug`** — g++ `-O2` with the **hardened** warning set (`-Wconversion -Wshadow -Wreorder
       -Wunused -fstack-protector-all -Werror`, on top of the release warnings). The strictest compile
@@ -41,7 +52,7 @@ The routine to run **after every change, before declaring it done**. The mechani
       it surfaces, then re-run and push the fix.** (binaryDir `build-tsan`)
 
    Each variant is a clean reconfigure + build + `ctest`. The suite is **auto-discovered**: unit
-   executables register in `tools/tests/CMakeLists.txt`, and the `tools/scripts/` and `errors/` directories are
+   executables register in `tests/CMakeLists.txt`, and the `tools/scripts/` and `errors/` directories are
    globbed, so the routine never enumerates test files and stays correct as tests come and go.
 
    > Disk hygiene: the four build dirs together are large (~1.3 GB debug + 1.3 GB release + ~12 GB asan

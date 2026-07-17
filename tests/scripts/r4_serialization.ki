@@ -1,0 +1,571 @@
+# r4_serialization.ki — exhaustive audit-companion for the serialization stack: json (flat
+# interchange), serialize (human-readable text object-graph), dump (compact binary object-graph).
+# Probes every documented function from every angle: typical, edge (empty / nested / cyclic /
+# shared-ref graphs, all scalar types, unicode, large, user classes with & without
+# _getstate_/_setstate_, native value types), and malformed (json bad input RAISEs; non-serializable
+# resources RAISE). Verifies IDENTITY PRESERVATION across a round-trip (a shared sub-object stays one
+# object — mutate via one ref, observe via the other; a cycle stays intact) and CROSS-FORMAT
+# agreement (serialize text vs dump binary reconstruct the same graph shape).
+#
+# Only CONFIRMED-correct behavior is asserted here; behaviors found to be wrong are reported as
+# FINDINGS, not encoded as passing assertions. DETERMINISTIC: any file save/load uses the scratchpad
+# and is cleaned up. NOTE: == is NOT chained Python-style in Kirito (a == b == c parses (a==b)==c),
+# so every identity/equality check below is pairwise.
+
+var json = import("json")
+var path = import("path")
+var serialize = import("serialize")
+var dump = import("dump")
+var io = import("io")
+var sys = import("sys")
+var math = import("math")
+var matrix = import("matrix")
+var complex = import("complex")
+var time = import("time")
+var random = import("random")
+var tensor = import("tensor")
+var net = import("net")
+var regex = import("regex")
+
+var SCRATCH = import("path").gettempdir()   # portable temp dir (TMPDIR/TMP/TEMP, falls back to /tmp)
+
+var nassert = 0
+var ok = Function(cond, msg):
+    nassert = nassert + 1
+    assert cond, msg
+
+# True iff fn() thrown a catchable error (a clean diagnostic, never a crash).
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+# ============================================================ JSON: parse — scalars & containers
+ok(json.parse("true") == True, "json true")
+ok(json.parse("false") == False, "json false")
+ok(json.parse("null") == None, "json null")
+ok(json.parse("42") == 42, "json int")
+ok(json.parse("-17") == -17, "json negative int")
+ok(json.parse("3.5") == 3.5, "json float")
+ok(json.parse("1.5e3") == 1500.0, "json scientific")
+ok(json.parse("1e+5") == 100000.0, "json signed exponent")
+ok(json.parse("\"hi\"") == "hi", "json string")
+ok(isinstance(json.parse("42"), Integer), "json int is Integer")
+ok(isinstance(json.parse("3.5"), Float), "json float is Float")
+ok(isinstance(json.parse("-0.0"), Float), "json -0.0 is Float")
+ok(json.parse("-0") == 0, "json -0 is 0")
+ok(isinstance(json.parse("-0"), Integer), "json -0 is Integer")
+ok(isinstance(json.parse("999999999999999999999999"), Float), "json huge int widens to Float")
+
+# objects -> Dict, arrays -> List
+ok(type(json.parse("{\"a\": 1}")) == "Dict", "json object -> Dict")
+ok(type(json.parse("[1, 2]")) == "List", "json array -> List")
+ok(json.parse("{\"a\": 1}")["a"] == 1, "json object access")
+ok(json.parse("[1, 2, 3]")[1] == 2, "json array access")
+ok(json.parse("[]") == [], "json empty array")
+ok(json.parse("{}") == {}, "json empty object")
+ok(json.parse("{\"\": 0}")[""] == 0, "json empty key")
+ok(json.parse("[[1, 2], [3, 4]]")[1][0] == 3, "json nested array")
+ok(json.parse("{\"u\": {\"v\": [1]}}")["u"]["v"][0] == 1, "json nested object")
+# the parsed object is a real, mutable Dict
+var parsed = json.parse("{\"x\": 1}")
+parsed["y"] = 2
+ok(len(parsed) == 2, "json parsed Dict is mutable")
+# duplicate keys: last wins
+ok(json.parse("{\"a\":1,\"a\":2}") == {"a": 2}, "json duplicate keys last wins")
+# surrounding + interior whitespace tolerated
+ok(json.parse("  \n\t [ 1 , 2 ]  ") == [1, 2], "json whitespace tolerated")
+
+# ============================================================ JSON: escapes / unicode / surrogates
+ok(json.parse("\"a\\nb\"") == "a\nb", "json \\n escape")
+ok(json.parse("\"a\\tb\"") == "a\tb", "json \\t escape")
+ok(json.parse("\"a\\/b\"") == "a/b", "json \\/ escape")
+ok(json.parse("\"\\\"\\\\\"") == "\"\\", "json quote+backslash escape")
+ok(json.parse("\"caf\\u00e9\"") == "café", "json \\u latin escape")
+ok(json.parse("\"\\u00FF\"") == Bytes([195, 191]).decode("utf-8"), "json \\u byte escape")
+ok(json.parse("\"\\uD83D\\uDE00\"") == "😀", "json surrogate pair -> astral")
+# lone surrogates substitute U+FFFD (well-formed UTF-8, per the impl) — NOT a crash, NOT WTF-8
+ok(ord(json.parse("\"\\uD83D\"")) == 65533, "json lone high surrogate -> U+FFFD")
+ok(ord(json.parse("\"\\uDE00\"")) == 65533, "json lone low surrogate -> U+FFFD")
+# high surrogate not followed by a \u falls through to U+FFFD + the following char
+var hs = json.parse("\"\\uD83Dx\"")
+ok(ord(hs[0]) == 65533 and hs[1] == "x", "json high surrogate + plain char -> U+FFFD,char")
+# unicode keys & values round-trip
+var ukeys = {"世界": 1, "café": 2, "😀": 3}
+ok(json.loads(json.dumps(ukeys)) == ukeys, "json unicode keys round-trip")
+
+# ============================================================ JSON: stringify / dumps
+ok(json.stringify(None) == "null", "json.stringify None")
+ok(json.stringify(True) == "true", "json.stringify True")
+ok(json.stringify(False) == "false", "json.stringify False")
+ok(json.stringify(42) == "42", "json.stringify int")
+ok(json.stringify("hi") == "\"hi\"", "json.stringify string")
+ok(json.stringify([1, "two", [3]]) == "[1, \"two\", [3]]", "json.stringify nested")
+ok(type(json.dumps([1])) == "String", "json.dumps -> String")
+# control chars are \u-escaped (valid JSON) and round-trip
+var ctrl = "a" + chr(1) + "b" + chr(31) + "c"
+ok(json.dumps(chr(0)) == "\"\\u0000\"", "json escapes NUL")
+ok(json.loads(json.dumps(ctrl)) == ctrl, "json control chars round-trip")
+# non-string keys are stringified with canonical JSON tokens
+ok(json.dumps({1: "v"}) == "{\"1\": \"v\"}", "json int key stringified")
+ok(json.dumps({True: "v"}) == "{\"true\": \"v\"}", "json bool key -> true")
+ok(json.dumps({None: "v"}) == "{\"null\": \"v\"}", "json None key -> null")
+# pretty printing
+ok(json.loads(json.dumps({"a": [1, {"b": 2}]}, indent = 2)) == {"a": [1, {"b": 2}]}, "json indent=2 round-trips")
+ok(json.loads(json.dumps([1, [2]], 4)) == [1, [2]], "json positional indent round-trips")
+ok(json.dumps([], indent = 2) == "[]", "json indent empty list")
+ok(json.dumps({}, indent = 2) == "{}", "json indent empty dict")
+ok(json.dumps([1, 2], indent = 0) == "[1, 2]", "json indent=0 compact")
+ok(json.dumps([1, 2], indent = -3) == "[1, 2]", "json negative indent compact")
+
+# ============================================================ JSON: non-finite floats round-trip
+ok(json.dumps(math.nan) == "NaN", "json.dumps NaN")
+ok(json.dumps(math.inf) == "Infinity", "json.dumps Infinity")
+ok(json.dumps(-math.inf) == "-Infinity", "json.dumps -Infinity")
+ok(json.parse("Infinity") == math.inf, "json parse Infinity")
+ok(json.parse("-Infinity") == -math.inf, "json parse -Infinity")
+ok(math.isnan(json.parse("NaN")), "json parse NaN")
+ok(math.isnan(json.parse(json.dumps(math.nan))), "json NaN round-trip")
+ok(json.loads(json.dumps([math.inf, -math.inf])) == [math.inf, -math.inf], "json +-inf list round-trip")
+
+# ============================================================ JSON: float EXACT round-trip
+var fx = 0.1 + 0.2
+ok(json.loads(json.dumps(fx)) == fx, "json float exact round-trip (0.1+0.2)")
+ok(json.dumps(0.1 + 0.2) == "0.30000000000000004", "json emits shortest round-tripping float")
+ok(json.loads(json.dumps(1.0 / 3.0)) == 1.0 / 3.0, "json 1/3 exact round-trip")
+
+# ============================================================ JSON: malformed input THROWS
+ok(throws(Function(): return json.parse("")), "json empty throws")
+ok(throws(Function(): return json.parse("   ")), "json all-whitespace throws")
+ok(throws(Function(): return json.parse("foo")), "json bareword throws")
+ok(throws(Function(): return json.parse("tru")), "json partial literal throws")
+ok(throws(Function(): return json.parse("1 2")), "json trailing chars throws")
+ok(throws(Function(): return json.parse("+1")), "json leading + throws")
+ok(throws(Function(): return json.parse(".5")), "json leading dot throws")
+ok(throws(Function(): return json.parse("--1")), "json double minus throws")
+ok(throws(Function(): return json.parse("0x10")), "json hex throws")
+ok(throws(Function(): return json.parse("'single'")), "json single quotes throw")
+ok(throws(Function(): return json.parse("[1, 2")), "json unclosed array throws")
+ok(throws(Function(): return json.parse("{\"a\": 1")), "json unclosed object throws")
+ok(throws(Function(): return json.parse("[1]]")), "json extra close throws")
+ok(throws(Function(): return json.parse("[1,2,]")), "json trailing array comma throws")
+ok(throws(Function(): return json.parse("{\"a\":1,}")), "json trailing object comma throws")
+ok(throws(Function(): return json.parse("{\"a\" 1}")), "json missing colon throws")
+ok(throws(Function(): return json.parse("{1:2}")), "json non-string key throws")
+ok(throws(Function(): return json.parse("\"abc")), "json unterminated string throws")
+ok(throws(Function(): return json.parse("\"\\q\"")), "json bad escape throws")
+ok(throws(Function(): return json.parse("\"\\uZZZZ\"")), "json bad \\u escape throws")
+ok(json.parse("\"\\uD83D\\u0041\"") == chr(65533) + "A", "json high surrogate + non-low \\u -> U+FFFD + char")
+ok(throws(Function(): return json.parse("[1] // c")), "json line comment throws")
+ok(throws(Function(): return json.parse("/* c */[1]")), "json block comment throws")
+ok(throws(Function(): return json.parse(Bytes([239, 187, 191]).decode("utf-8") + "[1]")), "json BOM throws")
+ok(throws(Function(): return json.parse(123)), "json.parse on non-String throws")
+# error message carries the diagnostic
+var jerr = Function():
+    try:
+        discard json.parse("{bad}")
+        return ""
+    catch as e:
+        return String(e)
+ok("JSON parse error" in jerr(), "json error message names the parser")
+
+# ============================================================ JSON: depth guard + cyclic/unserializable
+var nest = Function(n, opn, close):
+    var s = ""
+    var i = 0
+    while i < n:
+        s = s + opn
+        i = i + 1
+    s = s + "1"
+    var j = 0
+    while j < n:
+        s = s + close
+        j = j + 1
+    return s
+ok(json.parse(nest(900, "[", "]")) != None, "json 900-deep array parses")
+ok(throws(Function(): return json.parse(nest(2000, "[", "]"))), "json 2000-deep array throws")
+ok(throws(Function(): return json.parse(nest(2000, "{\"a\":", "}"))), "json 2000-deep object throws")
+var jcyc = [1]
+jcyc.append(jcyc)
+ok(throws(Function(): return json.dumps(jcyc)), "json.dumps rejects a cycle")
+ok(throws(Function(): return json.dumps({1, 2})), "json.dumps rejects a Set")
+ok(throws(Function(): return json.dumps(io.print)), "json.dumps rejects a Function")
+ok(throws(Function(): return json.dumps(Bytes([1, 2]))), "json.dumps rejects Bytes")
+
+# ============================================================ SERIALIZE & DUMP: scalar round-trips
+# A helper that asserts a value round-trips equal through BOTH text and binary formats.
+var bothRT = Function(v, label):
+    ok(serialize.loads(serialize.dumps(v)) == v, "serialize " + label)
+    ok(dump.loads(dump.dumps(v)) == v, "dump " + label)
+bothRT(None, "None")
+bothRT(True, "True")
+bothRT(False, "False")
+bothRT(0, "zero")
+bothRT(42, "int")
+bothRT(-1000000, "negative int")
+bothRT(9223372036854775807, "int64 max")
+bothRT(-9223372036854775808, "int64 min")
+bothRT(3.14159265358979, "float")
+bothRT(0.0, "0.0")
+bothRT(-0.0, "-0.0")
+bothRT("", "empty string")
+bothRT("hello world", "string")
+bothRT("héllo \n\t world", "unicode + escape string")
+bothRT("a" + chr(0) + "b", "string with NUL")
+bothRT("世界😀", "astral string")
+
+# return types
+ok(type(serialize.dumps([1])) == "String", "serialize.dumps -> String")
+ok(type(dump.dumps([1])) == "Bytes", "dump.dumps -> Bytes")
+
+# ============================================================ SERIALIZE & DUMP: containers
+bothRT([], "empty list")
+bothRT([1, 2, 3], "list")
+bothRT([[1, 2], [3, [4, 5]]], "nested list")
+bothRT({}, "empty dict")
+bothRT({"a": [1, 2], "b": "x"}, "dict")
+bothRT({"a": {"b": {"c": [1, {"d": 2}]}}}, "deep dict")
+bothRT(Set([]), "empty set")
+bothRT(Set([1, 2, 3]), "set")
+bothRT(Bytes([]), "empty bytes")
+bothRT(Bytes([0, 1, 2, 255, 128, 10, 13]), "bytes")
+# mixed-type list
+bothRT([None, True, 1, 2.5, "s", [1], {"k": 1}, Set([9]), Bytes([7])], "mixed-type list")
+# Dict with non-string keys (graph formats preserve any hashable key)
+bothRT({1: "a", 2.5: "b", True: "c", "s": "d", None: "e"}, "dict with mixed scalar keys")
+
+# key insertion order preserved
+var ordered = {}
+ordered["z"] = 1
+ordered["a"] = 2
+ordered["m"] = 3
+ok(serialize.loads(serialize.dumps(ordered)).keys() == ["z", "a", "m"], "serialize preserves key order")
+ok(dump.loads(dump.dumps(ordered)).keys() == ["z", "a", "m"], "dump preserves key order")
+ok(json.loads(json.dumps(ordered)).keys() == ["z", "a", "m"], "json preserves key order")
+
+# ============================================================ SERIALIZE & DUMP: large structures
+var big = []
+var bi = 0
+while bi < 3000:
+    big.append([bi, bi * bi])
+    bi = bi + 1
+var bigS = serialize.loads(serialize.dumps(big))
+ok(len(bigS) == 3000 and bigS[2999][1] == 8994001, "serialize large structure")
+var bigD = dump.loads(dump.dumps(big))
+ok(len(bigD) == 3000 and bigD[2999][1] == 8994001, "dump large structure")
+
+# ============================================================ IDENTITY: shared references preserved
+# A sub-object reachable by two paths becomes ONE object after load: mutate via one, observe via the
+# other.
+var checkSharedList = Function(loadfn, dumpfn, fmt):
+    var A = [1]
+    var graph = [A, A, [9]]
+    var y = loadfn(dumpfn(graph))
+    ok(id(y[0]) == id(y[1]), fmt + " shared list is one object")
+    y[0].append(2)
+    ok(y[1] == [1, 2], fmt + " mutate-via-one observed-via-other")
+checkSharedList(serialize.loads, serialize.dumps, "serialize")
+checkSharedList(dump.loads, dump.dumps, "dump")
+
+# shared object reachable via an instance attribute AND a list
+class Box:
+    var _init_ = Function(self, v):
+        self.v = v
+var checkSharedInstance = Function(loadfn, dumpfn, fmt):
+    var shared = [42]
+    var pair = [Box(shared), shared]
+    var r = loadfn(dumpfn(pair))
+    ok(id(r[0].v) == id(r[1]), fmt + " shared across instance attr + list")
+    r[1].append(99)
+    ok(r[0].v == [42, 99], fmt + " mutation visible through instance attr")
+checkSharedInstance(serialize.loads, serialize.dumps, "serialize")
+checkSharedInstance(dump.loads, dump.dumps, "dump")
+
+# shared Bytes value
+var sharedb = Bytes([9, 9])
+var bnest = {"a": [sharedb], "b": sharedb}
+ok(serialize.loads(serialize.dumps(bnest)) == bnest, "serialize nested/shared Bytes")
+ok(dump.loads(dump.dumps(bnest)) == bnest, "dump nested/shared Bytes")
+
+# ============================================================ IDENTITY: cycles survive
+# self-referential list
+var checkSelfList = Function(loadfn, dumpfn, fmt):
+    var c = []
+    c.append(c)
+    var r = loadfn(dumpfn(c))
+    ok(id(r[0]) == id(r), fmt + " self-referential list cycle intact")
+checkSelfList(serialize.loads, serialize.dumps, "serialize")
+checkSelfList(dump.loads, dump.dumps, "dump")
+# self-referential dict (root is its own value)
+var checkSelfDict = Function(loadfn, dumpfn, fmt):
+    var g = {}
+    g["self"] = g
+    var r = loadfn(dumpfn(g))
+    ok(id(r["self"]) == id(r), fmt + " self-referential dict cycle intact")
+checkSelfDict(serialize.loads, serialize.dumps, "serialize")
+checkSelfDict(dump.loads, dump.dumps, "dump")
+# a 2-cycle through user-class instances
+var checkInstanceCycle = Function(loadfn, dumpfn, fmt):
+    var na = Box(1)
+    var nb = Box(2)
+    na.v = nb
+    nb.v = na
+    var r = loadfn(dumpfn(na))
+    ok(id(r.v.v) == id(r), fmt + " 2-cycle through instances intact")
+    ok(r.v.v.v.v.v.v == r, fmt + " cycle walks consistently")
+checkInstanceCycle(serialize.loads, serialize.dumps, "serialize")
+checkInstanceCycle(dump.loads, dump.dumps, "dump")
+
+# ============================================================ USER CLASSES: by attributes
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+var pt = Point(3, 4)
+var ptS = serialize.loads(serialize.dumps(pt))
+ok(ptS.x == 3 and ptS.y == 4, "serialize instance by attributes")
+var ptD = dump.loads(dump.dumps(pt))
+ok(ptD.x == 3 and ptD.y == 4, "dump instance by attributes")
+# _init_ is NOT re-run on load (no side effects, attributes restored directly)
+var ctr = [0]
+class SideEffect:
+    var _init_ = Function(self):
+        ctr[0] = ctr[0] + 1
+var se = SideEffect()
+ok(ctr[0] == 1, "construct ran _init_ once")
+discard dump.loads(dump.dumps(se))
+ok(ctr[0] == 1, "dump load did NOT re-run _init_")
+discard serialize.loads(serialize.dumps(se))
+ok(ctr[0] == 1, "serialize load did NOT re-run _init_")
+# private members (single leading underscore) round-trip as ordinary attributes
+class Priv:
+    var _init_ = Function(self):
+        self._secret = 42
+        self.pub = 1
+    var reveal = Function(self):
+        return self._secret
+var pr = Priv()
+ok(dump.loads(dump.dumps(pr)).reveal() == 42, "dump round-trips a private member")
+ok(serialize.loads(serialize.dumps(pr)).reveal() == 42, "serialize round-trips a private member")
+
+# ============================================================ USER CLASSES: _getstate_/_setstate_
+class Cache:
+    var _init_ = Function(self, n):
+        self.n = n
+        self.computed = n * n           # transient — recomputed, not stored
+    var _getstate_ = Function(self):
+        return self.n
+    var _setstate_ = Function(self, state):
+        self.n = state
+        self.computed = state * state
+var cache = Cache(5)
+var cacheD = dump.loads(dump.dumps(cache))
+ok(cacheD.n == 5 and cacheD.computed == 25, "dump _getstate_/_setstate_ restores")
+var cacheS = serialize.loads(serialize.dumps(cache))
+ok(cacheS.n == 5 and cacheS.computed == 25, "serialize _getstate_/_setstate_ restores")
+# _getstate_ returning a container with internal aliasing -> aliasing preserved
+var shState = [1, 2]
+class Holder:
+    var _init_ = Function(self):
+        self.data = None
+    var _getstate_ = Function(self):
+        return [shState, shState]
+    var _setstate_ = Function(self, state):
+        self.data = state
+var hl = dump.loads(dump.dumps(Holder()))
+ok(id(hl.data[0]) == id(hl.data[1]), "dump _getstate_ preserves internal aliasing")
+# a class defining _getstate_ but NO _setstate_: dumps OK, loads THROWS (clean diagnostic)
+class OnlyGet:
+    var _init_ = Function(self):
+        self.x = 5
+    var _getstate_ = Function(self):
+        return self.x
+ok(throws(Function(): return dump.dumps(OnlyGet())) == False, "dump _getstate_-only dumps fine")
+ok(throws(Function(): return dump.loads(dump.dumps(OnlyGet()))), "dump _getstate_-only loads throws")
+ok(throws(Function(): return serialize.loads(serialize.dumps(OnlyGet()))), "serialize _getstate_-only loads throws")
+# _getstate_ returning a non-serializable value THROWS at dump time
+class BadState:
+    var _init_ = Function(self):
+        self.x = 1
+    var _getstate_ = Function(self):
+        return net.Socket()
+    var _setstate_ = Function(self, s):
+        self.x = 1
+ok(throws(Function(): return dump.dumps(BadState())), "dump _getstate_ returning resource throws")
+ok(throws(Function(): return serialize.dumps(BadState())), "serialize _getstate_ returning resource throws")
+
+# ============================================================ NATIVE VALUE TYPES round-trip both formats
+var m = matrix.Matrix([[1.0, 2.0], [3.0, 4.0]])
+bothRT(m, "Matrix")
+var vec = matrix.vector([1.0, 2.0, 3.0])
+bothRT(vec, "Vector")
+var cx = complex.Complex(3.0, 4.0)
+bothRT(cx, "Complex")
+var cm = complex.Matrix([[complex.Complex(1.0, 1.0), complex.Complex(2.0, -1.0)]])
+bothRT(cm, "ComplexMatrix")
+var dt = time.make(2026, 6, 28, 12, 30, 45)
+bothRT(dt, "DateTime")
+var t = tensor.Tensor([[1.0, 2.0], [3.0, 4.0]])
+bothRT(t, "Tensor")
+# native value types nested + shared inside containers
+var sharedM = matrix.Matrix([[7.0]])
+var natNest = {"m": [sharedM, sharedM], "c": complex.Complex(1.0, 2.0), "dt": dt}
+var natD = dump.loads(dump.dumps(natNest))
+ok(natD["m"][0] == sharedM and id(natD["m"][0]) == id(natD["m"][1]), "dump nested+shared Matrix")
+ok(natD["c"] == complex.Complex(1.0, 2.0), "dump nested Complex")
+var natS = serialize.loads(serialize.dumps(natNest))
+ok(natS["m"][0] == sharedM and id(natS["m"][0]) == id(natS["m"][1]), "serialize nested+shared Matrix")
+
+# Random restores the exact generator stream (a reproducible checkpoint)
+var rng = random.Random(12345)
+discard rng.random()
+discard rng.random()
+var rngD = dump.loads(dump.dumps(rng))
+ok(rng.random() == rngD.random(), "dump Random restores the exact stream")
+var rng2 = random.Random(777)
+discard rng2.randint(0, 100)
+var rng2S = serialize.loads(serialize.dumps(rng2))
+ok(rng2.randint(0, 100) == rng2S.randint(0, 100), "serialize Random restores the exact stream")
+
+# a grad-requiring Tensor THROWS (must detach() first); a detached one round-trips
+var gt = tensor.Tensor([[1.0, 2.0]], requiresgrad = True)
+ok(throws(Function(): return dump.dumps(gt)), "dump rejects a grad-requiring Tensor")
+ok(throws(Function(): return serialize.dumps(gt)), "serialize rejects a grad-requiring Tensor")
+ok(dump.loads(dump.dumps(gt.detach())) == gt.detach(), "dump round-trips a detached Tensor")
+
+# ============================================================ FLOAT boundaries through both formats
+var edgeFloats = [0.0, -0.0, 1.0, -1.0, 0.1, 1.0 / 3.0, 1e308, -1e308, 2.2250738585072014e-308, 123456789.123456789]
+for x in edgeFloats:
+    ok(dump.loads(dump.dumps(x)) == x, "dump float boundary round-trip")
+    ok(serialize.loads(serialize.dumps(x)) == x, "serialize float boundary round-trip")
+# NaN / +Inf / -Inf are bit-preserved (== is false for NaN, so check structurally)
+var nfd = dump.loads(dump.dumps([math.nan, math.inf, -math.inf]))
+ok(math.isnan(nfd[0]) and math.isinf(nfd[1]) and nfd[1] > 0.0 and nfd[2] < 0.0, "dump preserves NaN/+-Inf")
+var nfs = serialize.loads(serialize.dumps([math.nan, math.inf, -math.inf]))
+ok(math.isnan(nfs[0]) and math.isinf(nfs[1]) and nfs[1] > 0.0 and nfs[2] < 0.0, "serialize preserves NaN/+-Inf")
+# a genuine subnormal (produced at runtime) is bit-exact in BINARY (verified by blob identity, since
+# Float == is exact and distinguishes it from the smallest normal)
+var subnormal = 2.2250738585072014e-308 / 2.0
+ok(math.isfinite(subnormal) and subnormal > 0.0, "produced a positive subnormal at runtime")
+var subblob = dump.dumps(subnormal)
+ok(dump.dumps(dump.loads(subblob)) == subblob, "dump round-trips a subnormal bit-exactly")
+ok(subblob != dump.dumps(2.2250738585072014e-308), "dump distinguishes subnormal from smallest normal")
+
+# ============================================================ RESOURCE TYPES must THROW (no crash)
+var resources = [
+    Function(): return net.Socket(),
+    Function(): return net.Session(),
+    Function(): return regex.compile("a+"),
+    Function(): return regex.search("(a)", "a"),
+    Function(): return io.BytesIO()
+]
+var ri = 0
+while ri < len(resources):
+    ok(throws(Function(): return serialize.dumps(resources[ri]())), "serialize rejects resource #" + String(ri))
+    ok(throws(Function(): return dump.dumps(resources[ri]())), "dump rejects resource #" + String(ri))
+    ri = ri + 1
+# an open File rejects too
+var fp = path.join(SCRATCH, "r4_probe.txt")
+var fh = io.open(fp, "w")
+ok(throws(Function(): return serialize.dumps(fh)), "serialize rejects an open File")
+ok(throws(Function(): return dump.dumps(fh)), "dump rejects an open File")
+fh.close()
+discard path.remove(fp, missing_ok = True)
+# a bare NATIVE function still rejects; a Module reconnects by re-import (same per-VM singleton)
+ok(throws(Function(): return dump.dumps(io.print)), "dump rejects a native Function")
+ok(throws(Function(): return serialize.dumps(io.print)), "serialize rejects a native Function")
+ok(dump.loads(dump.dumps(io)) == io, "dump round-trips a Module by reimport")
+
+# ============================================================ CROSS-FORMAT structural equivalence
+# The two graph formats reconstruct an IDENTICAL graph shape (shared refs + cycles + instances).
+class CNode:
+    var _init_ = Function(self, v):
+        self.v = v
+        self.link = None
+var na = CNode(1)
+var nb = CNode(2)
+na.link = nb
+nb.link = na
+var shared = [7, 8]
+var graph = {"cycle": na, "shared": [shared, shared], "set": Set([1, 2, 3]), "nil": None}
+var sres = serialize.loads(serialize.dumps(graph))
+var dres = dump.loads(dump.dumps(graph))
+ok(id(sres["cycle"].link.link) == id(sres["cycle"]), "serialize preserves the instance cycle")
+ok(id(dres["cycle"].link.link) == id(dres["cycle"]), "dump preserves the instance cycle")
+ok(id(sres["shared"][0]) == id(sres["shared"][1]), "serialize preserves the shared alias")
+ok(id(dres["shared"][0]) == id(dres["shared"][1]), "dump preserves the shared alias")
+ok(sres["set"] == Set([1, 2, 3]) and dres["set"] == Set([1, 2, 3]), "both restore the Set")
+ok(sres["cycle"].v == 1 and dres["cycle"].v == 1, "both restore the instance attribute")
+# the SAME value reconstructs equal through both formats
+ok(sres["shared"][0] == dres["shared"][0], "cross-format equal reconstruction")
+# re-encoding a loaded value is deterministic (stable bytes/text)
+var val = {"a": [1, 2, 3], "b": {"c": Set([4, 5]), "d": None}, "e": 3.14}
+ok(dump.dumps(dump.loads(dump.dumps(val))) == dump.dumps(val), "dump deterministic re-encode")
+ok(serialize.dumps(serialize.loads(serialize.dumps(val))) == serialize.dumps(val), "serialize deterministic re-encode")
+
+# the binary blob is itself Bytes — a serializable value — so it round-trips through dump
+var blob = dump.dumps([1, 2, 3])
+ok(dump.loads(dump.dumps(blob)) == blob, "dump blob (Bytes) re-dumps")
+# dump.loads accepts a String of the identical bytes (latin-1 round-trip)
+ok(dump.loads(blob.decode("latin-1").encode("latin-1")) == [1, 2, 3], "dump.loads accepts identical-byte String")
+
+# ============================================================ MALFORMED graph blobs THROW (no crash)
+# binary
+ok(serialize.loads(serialize.dumps([1, 2, 3])) == [1, 2, 3], "serialize blob round-trips")
+ok(throws(Function(): return dump.loads("")), "dump empty throws")
+ok(throws(Function(): return dump.loads("not a dump blob")), "dump garbage throws")
+ok(throws(Function(): return dump.loads(Bytes([88, 88, 88, 88, 1, 0, 0, 0, 0]))), "dump bad magic throws")
+ok(throws(Function(): return dump.loads(Bytes([75, 68, 77, 80, 99, 0, 0, 0, 0]))), "dump bad version throws")
+# text
+ok(throws(Function(): return serialize.loads("")), "serialize empty throws")
+ok(throws(Function(): return serialize.loads("not a blob")), "serialize garbage throws")
+ok(throws(Function(): return serialize.loads("KXXXX 1 N 0")), "serialize bad header throws")
+ok(throws(Function(): return serialize.loads("KSER1 -5 0")), "serialize negative count throws")
+ok(throws(Function(): return serialize.loads("KSER1 999999999 0")), "serialize impossible count throws")
+ok(throws(Function(): return serialize.loads("KSER1 1 Z 0")), "serialize unknown tag throws")
+ok(throws(Function(): return serialize.loads("KSER1 1 N 99")), "serialize root id out of range throws")
+ok(throws(Function(): return serialize.loads("KSER1 1 L 1 50 0")), "serialize child id out of range throws")
+ok(throws(Function(): return serialize.loads("KSER1 1 F notafloat 0")), "serialize bad float token throws (caught)")
+ok(throws(Function(): return serialize.loads("KSER1 1 I notanint 0")), "serialize bad int token throws (caught)")
+# a String payload containing the format's own tokens/separators survives (length-prefixed)
+var nasty = "KSER1 5 L 3 fake tokens \n\t with spaces and 123 I F S P 9 here"
+ok(serialize.loads(serialize.dumps(nasty)) == nasty, "serialize survives a token-like String")
+ok(serialize.loads(serialize.dumps(["KSER1", "0 ", " I 5 ", ""])) == ["KSER1", "0 ", " I 5 ", ""], "serialize survives a list of token-like Strings")
+# every truncation of a real blob is handled cleanly
+var sblob = serialize.dumps({"k": [1, 2, Set([3])], "n": None})
+var sti = 1
+while sti < len(sblob):
+    ok(throws(Function(): return serialize.loads(sblob[0:sti])), "serialize truncation @" + String(sti) + " throws")
+    sti = sti + 1
+var dblob = dump.dumps({"k": [1, 2, Set([3])], "n": None})
+var dti = 0
+while dti < len(dblob):
+    ok(throws(Function(): return dump.loads(dblob[0:dti])), "dump truncation @" + String(dti) + " throws")
+    dti = dti + 1
+
+# ============================================================ FILE save / load round-trip (scratchpad)
+var sp = path.join(SCRATCH, "r4_serialize.txt")
+serialize.save({"name": "Kirito", "scores": [10, 20, 30]}, sp)
+var sloaded = serialize.load(sp)
+ok(sloaded["name"] == "Kirito" and sloaded["scores"][2] == 30, "serialize save/load file")
+discard path.remove(sp, missing_ok = True)
+var dp = path.join(SCRATCH, "r4_dump.bin")
+dump.save({"name": "Kirito", "nested": {"x": [1, 2]}}, dp)
+var dloaded = dump.load(dp)
+ok(dloaded["name"] == "Kirito" and dloaded["nested"]["x"][0] == 1, "dump save/load file")
+discard path.remove(dp, missing_ok = True)
+# load of a nonexistent path throws
+ok(throws(Function(): return serialize.load(path.join(SCRATCH, "nonexistent_r4.dat"))), "serialize.load missing file throws")
+ok(throws(Function(): return dump.load(path.join(SCRATCH, "nonexistent_r4.bin"))), "dump.load missing file throws")
+
+# ============================================================ KEYWORD ARGUMENTS on every function
+ok(json.parse(text = "[1, 2]") == [1, 2], "json.parse keyword arg")
+ok(json.stringify(value = [1, 2], indent = 2) != "", "json.stringify keyword args")
+ok(serialize.dumps(value = [5])[0] == "K", "serialize.dumps keyword arg")
+ok(serialize.loads(text = serialize.dumps([5]))[0] == 5, "serialize.loads keyword arg")
+ok(len(dump.dumps(value = [5])) > 0, "dump.dumps keyword arg")
+ok(dump.loads(data = dump.dumps([5]))[0] == 5, "dump.loads keyword arg")
+
+io.print("r4_serialization: all " + String(nassert) + " assertions passed")

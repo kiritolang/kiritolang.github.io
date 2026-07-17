@@ -51,6 +51,12 @@ public:
     // alone — without this, a '\r' left on a blank line defeats the blank-line check and corrupts the
     // indent/dedent stream. Universal-newline source handling.
     static std::string normalizeNewlines(std::string_view s) {
+        // A leading UTF-8 BOM is a byte-order marker, not source: the same Windows editors this
+        // function already forgives for CRLF write one by default, and without this the file dies on
+        // its first byte ("unexpected character") though it is otherwise perfectly valid Kirito.
+        if (s.size() >= 3 && static_cast<unsigned char>(s[0]) == 0xEF &&
+            static_cast<unsigned char>(s[1]) == 0xBB && static_cast<unsigned char>(s[2]) == 0xBF)
+            s.remove_prefix(3);
         std::string out;
         out.reserve(s.size());
         for (std::size_t i = 0; i < s.size(); ++i) {
@@ -64,6 +70,11 @@ public:
         return out;
     }
 
+    // The newline-normalized source the lexer worked over. Token line/col are absolute into THIS text,
+    // so the parser can map a token back to a byte offset (see Parser's line-start index) to capture a
+    // construct's verbatim source for serialization.
+    const std::string& source() const { return src_; }
+
     std::vector<Token> tokenize() {
         std::vector<Token> out;
         indent_ = {{0, 0}};
@@ -75,6 +86,8 @@ public:
                 continue;
             }
             char c = src_[pos_];
+            const std::size_t tokStart = pos_;
+            const std::size_t emitted = out.size();
             if (c == ' ' || c == '\t' || c == '\r') {
                 advance();
             } else if (c == '#') {
@@ -98,6 +111,12 @@ public:
             } else {
                 out.push_back(op());
             }
+            // A token's exact source extent, which the parser needs to slice a Function/class
+            // literal's verbatim source (Parser::captureSource). Whitespace and comments emit no
+            // token, so they are never covered; the zero-width Indent/Dedent markers that
+            // handleIndentation emits above keep length 0.
+            if (out.size() > emitted)
+                out.back().span.length = static_cast<uint32_t>(pos_ - tokStart);
         }
         // Close the final logical line, then unwind any open indentation, then EOF.
         if (!out.empty() && out.back().type != TokenType::Newline)
@@ -200,23 +219,30 @@ private:
             return make(TokenType::Integer, line, col, std::move(text));
         }
         while (std::isdigit(static_cast<unsigned char>(peek()))) { text += peek(); advance(); }
-        if (peek() == '.' && std::isdigit(static_cast<unsigned char>(peek(1)))) {
+        // A well-formed exponent at offset k: `e`/`E`, an optional sign, then at least one digit.
+        // Anything less is not an exponent, so a bare identifier after a number (`1 else`) and a
+        // method call on a literal (`1.compare(x)`) are left alone.
+        auto exponentAt = [&](std::size_t k) {
+            if (peek(k) != 'e' && peek(k) != 'E') return false;
+            ++k;
+            if (peek(k) == '+' || peek(k) == '-') ++k;
+            return std::isdigit(static_cast<unsigned char>(peek(k))) != 0;
+        };
+        // The fraction: a digit after the '.' (1.5), or an exponent directly after it (1.e5 — how
+        // every C-family language spells it). Without the latter the '.' would fall through to op(),
+        // and `1.e5` would silently become member access (1).e5, failing only at RUNTIME with
+        // "type 'Integer' has no attribute 'e5'".
+        if (peek() == '.' && (std::isdigit(static_cast<unsigned char>(peek(1))) || exponentAt(1))) {
             isFloat = true;
             text += peek(); advance();
             while (std::isdigit(static_cast<unsigned char>(peek()))) { text += peek(); advance(); }
         }
-        // Scientific notation: an `e`/`E` followed by an optional sign and at least one digit makes
-        // it a Float (1e10, 1.5e3, 2e-3, 1E5). Only consume the exponent if it's well-formed, so a
-        // bare identifier after a number (e.g. `1 else`) isn't swallowed.
-        if (peek() == 'e' || peek() == 'E') {
-            std::size_t k = 1;
-            if (peek(k) == '+' || peek(k) == '-') ++k;
-            if (std::isdigit(static_cast<unsigned char>(peek(k)))) {
-                isFloat = true;
-                text += peek(); advance();                                   // e/E
-                if (peek() == '+' || peek() == '-') { text += peek(); advance(); }
-                while (std::isdigit(static_cast<unsigned char>(peek()))) { text += peek(); advance(); }
-            }
+        // Scientific notation makes it a Float (1e10, 1.5e3, 2e-3, 1E5).
+        if (exponentAt(0)) {
+            isFloat = true;
+            text += peek(); advance();                                   // e/E
+            if (peek() == '+' || peek() == '-') { text += peek(); advance(); }
+            while (std::isdigit(static_cast<unsigned char>(peek()))) { text += peek(); advance(); }
         }
         return make(isFloat ? TokenType::Float : TokenType::Integer, line, col, std::move(text));
     }
@@ -405,7 +431,20 @@ private:
                 return make(TokenType::Gt, line, col);
             } break;
             default: {
-                throw KiritoError(std::string("unexpected character '") + c + "'",
+                // Render the offending byte printably: a raw non-ASCII/control byte (a UTF-8
+                // continuation byte, an embedded NUL) spliced straight into the message corrupts or
+                // truncates the diagnostic (A01-3). Show it as \xHH instead.
+                unsigned char uc = static_cast<unsigned char>(c);
+                std::string shown;
+                if (uc >= 0x20 && uc < 0x7f) {
+                    shown = std::string(1, c);
+                } else {
+                    static const char kHex[] = "0123456789abcdef";
+                    shown = "\\x";
+                    shown += kHex[uc >> 4];
+                    shown += kHex[uc & 0xf];
+                }
+                throw KiritoError("unexpected character '" + shown + "'",
                                   SourceSpan{line, col, 1});
             } break;
         }

@@ -180,7 +180,7 @@ Handle r = vm.runSource("import(\"stats\").mean([2, 4, 6, 8])\n");
 ```
 
 This is the lightest embed and is what the integration test
-(`tools/tests/integration/embed_demo.cpp`) uses. The only thing you give up is multiprocessing:
+(`tests/integration/embed_demo.cpp`) uses. The only thing you give up is multiprocessing:
 `import("parallel")` throws, because `parallel` is a dispatcher-provided capability. Reach for a
 bare VM only when you're certain you'll never want worker VMs; otherwise prefer the dispatcher.
 
@@ -228,7 +228,8 @@ on disk. See the [`parallel`](stdlib.html#parallel) reference and the
 ## 3. Handles and GC lifetime
 
 **Understand this section before anything else in the extension API** — every value the C++ side
-sees is a `Handle`, and Kirito's mark-sweep GC has one rule you have to follow to use them safely.
+sees is a `Handle`, and Kirito's generational mark-sweep GC has one rule you have to follow to use
+them safely.
 
 ### What a `Handle` is
 
@@ -276,6 +277,31 @@ This is deliberate: **a stale handle is detected, not silently reinterpreted as 
 If you see the dangling-handle error, the fix is always the same — root the handle across the
 allocating call that reclaimed it (see [rooting](#the-rooting-rule) below).
 
+### The collector is generational — and that changes nothing for you
+
+Kirito's GC is a **non-moving generational mark-sweep**. Values are born *young* (in a nursery); a
+cheap **minor** collection scans only the young generation and, when a value survives, **promotes**
+it in place to the *old* generation (the age tag flips — the object never moves, so **your `Handle`
+stays byte-identical and valid**). A rarer full **major** collection reclaims old-generation garbage.
+A **write barrier** inside the core value mutators records any old→young pointer so a minor never
+frees a still-reachable young value.
+
+Two things follow, and both are "you do nothing new":
+
+- **The rooting discipline is unchanged.** `RootScope`, `PinnedHandle`, and `pushAuxRoots` are roots
+  for *both* collectors, exactly as before. Root a handle you hold across an allocating call — that's
+  the whole contract, minor or major.
+- **The write barrier is fully internal.** Every `value.hpp` wrapper mutator (`list.push(v)`,
+  `dict.set(k, v)`, `set.add(v)`, `instance.setAttr(...)`) calls the same barriered primitives the
+  interpreter does, so pushing a fresh (young) value into a promoted (old) container Just Works. You
+  never see, set, or reason about generations. Every wrapper, `Handle`, `PinnedHandle`, and
+  `KiritoVM` signature is exactly what it was before the generational collector landed.
+
+One consequence worth knowing: because minor collections are frequent, a **mis-rooted** handle tends
+to be reclaimed *sooner* than under a single whole-heap collector — so a latent rooting bug surfaces
+as the dangling-handle error quickly (a feature, not a regression). The GC statistics
+(`vm.gcMinorCount()` / `vm.gcMajorCount()`, or the CLI's `--gc-stats`) let you watch the cadence.
+
 ### Handle equality is identity
 
 `h1 == h2` compares `slot` and `generation`; two live Handles compare equal **iff they point at
@@ -307,7 +333,7 @@ Use **`Handle`** when you're storing a value, passing it around, or handing it t
 
 - Return type of every native function (`Handle fn(KiritoVM&, std::span<const Handle>)`).
 - Argument to `registerGlobal`, `alloc` return, `ModuleBuilder::value`, `DictVal::set`,
-  `ListVal::elems.push_back`, and similar sink APIs.
+  `ListVal::append`, and similar sink APIs.
 - Storing values on your own C++ side (map keys, member fields) — a Handle is 8 bytes and
   trivially copyable.
 
@@ -647,7 +673,7 @@ arithmetic.
 is a single-character `Value`); on a **Dict**, it yields the **keys**, not the pairs. If your
 native expects a *List*, always check `.isList()` before iterating — a Kirito caller passing a bare
 String otherwise silently unpacks into its characters. The router integration test
-(`tools/tests/integration/embed_router.cpp`) had to add exactly one line to guard against this:
+(`tests/integration/embed_router.cpp`) had to add exactly one line to guard against this:
 
 ```cpp
 if (!r.isList()) throw KiritoError("rule must return a List, got '" + r.typeName() + "'");
@@ -1065,7 +1091,7 @@ Full class details (`bindArgs`, the read-only surface, `NativeFn`/`NativeFnKw` t
 Subclass `NativeModule`, override `name()` and `setup()`, register with one `install<T>()`. Inside
 `setup`, declare members through the `ModuleBuilder` — `fn` for functions, `value` for constants,
 `alias` for a second public name. This is a complete `stats` module — it is also the embedding
-integration test (`tools/tests/integration/embed_demo.cpp`), so it is guaranteed to compile and
+integration test (`tests/integration/embed_demo.cpp`), so it is guaranteed to compile and
 run:
 
 ```cpp
@@ -1154,7 +1180,7 @@ operators — subclass **`NativeClass<Derived>`**. The CRTP base fills in `kind`
 protocol slots your type uses.
 
 Here is a complete 2-D vector — attributes, methods, an overloaded `+`, and a custom `str`
-(verified in `tools/tests/integration/embed_demo.cpp`):
+(verified in `tests/integration/embed_demo.cpp`):
 
 ```cpp
 struct Vec2 : NativeClass<Vec2> {

@@ -1,0 +1,102 @@
+# Adversarial generational-GC probes: deliberate attempts to provoke a write-barrier miss / UAF from
+# pure Kirito. Meant to be run BOTH at the default cadence and under the gc-every-alloc soak
+# (KIRITO_GC_THRESHOLD=1). Every result is deterministic and checked; a barrier gap corrupts a value
+# (or ASan flags a use-after-free). Prints one final line.
+var io = import("io")
+var dump = import("dump")
+
+# --- 1. reference SWAPS between two old lists under churn: values ping-pong across old containers ---
+var A = []
+var B = []
+var i = 0
+while i < 8000:
+    A.append(i)
+    B.append(-i)
+    # swap the tails: pop from one old list, push into the other (old <- value already old, but the
+    # fresh boxed negation below is young and enters an old list)
+    B.append(A[len(A) - 1] * 2)   # old B <- young Integer (A[..]*2 is a fresh box)
+    var junk = [i, [i, i], {"z": i}]
+    i = i + 1
+io.print(len(A) + len(B))         # 8000 + 16000 = 24000
+io.print(A[7999] + B[15999])      # 7999 + 7999*2 = 23997
+
+# --- 2. an old Dict of young LISTS, each list appended-to long after the dict promoted ---
+var buckets = {}
+var b = 0
+while b < 2000:
+    buckets[b % 50] = []          # 50 keys, lists replaced (old dict <- young list)
+    b = b + 1
+var f = 0
+while f < 20000:
+    var key = f % 50
+    buckets[key].append(f)        # old-or-young list gains a young Integer
+    var noise = String(f) * 3
+    f = f + 1
+var total = 0
+for key in buckets.keys():
+    total = total + len(buckets[key])
+io.print(total)                   # 20000 spread across 50 buckets
+
+# --- 3. a class DEFINED inside a hot loop (BuildClass + method installs under churn), instantiated ---
+var sumMethods = 0
+var c = 0
+while c < 3000:
+    class Ephemeral:
+        var _init_ = Function(self, n): self.n = n
+        var doubled = Function(self): return self.n * 2
+        var tripled = Function(self): return self.n * 3
+    var e = Ephemeral(c)
+    sumMethods = sumMethods + e.doubled() + e.tripled()
+    c = c + 1
+io.print(sumMethods)              # sum over c of 5c = 5 * (0+..+2999) = 5 * 4498500 = 22492500
+
+# --- 4. dump.loads INSIDE a loop: rebuild a small cyclic instance graph repeatedly under churn ---
+class Pair:
+    var _init_ = Function(self, x): self.x = x
+var okays = 0
+var d = 0
+while d < 2000:
+    var p = Pair(d)
+    var q = Pair(d + 1)
+    p.other = q
+    q.other = p                   # cycle
+    var round = dump.loads(dump.dumps([p, q]))
+    if round[0].x == d and round[0].other.x == d + 1 and round[1].other.x == d:
+        okays = okays + 1
+    d = d + 1
+io.print(okays)                   # 2000  (every round-trip preserved the cycle)
+
+# --- 5. a self-referential + generation-spanning cyclic structure, mutated after promotion ---
+var root = []
+root.append(root)                 # self-cycle
+var deep = root
+var g = 0
+while g < 4000:
+    var layer = [g]
+    deep.append(layer)            # old <- young list
+    deep = layer                  # descend
+    var churn = {"k": [g, g, g]}
+    g = g + 1
+# walk to the bottom, summing the first element of each layer we appended
+var walk = root[1]                # first appended layer (g == 0)
+var steps = 0
+while len(walk) > 1:
+    steps = steps + 1
+    walk = walk[1]
+io.print(steps)                   # 3999  (we descended 4000 layers; the last has no child)
+io.print(root[0] == root)         # True  (self-cycle intact)
+
+# --- 6. WIDE structure: one old list holding thousands of distinct young sublists ---
+var wide = []
+var w = 0
+while w < 15000:
+    wide.append([w, w * w])       # old <- fresh young 2-list
+    w = w + 1
+var checksum = 0
+var x = 0
+while x < 15000:
+    checksum = checksum + wide[x][1] - wide[x][0]   # w*w - w
+    x = x + 1
+io.print(checksum)                # sum(w*w - w for w in 0..14999)
+
+io.print("ALL GC ADVERSARIAL TESTS PASSED")

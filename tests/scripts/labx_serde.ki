@@ -1,0 +1,270 @@
+# labx_serde.ki — deep edge/hardening tests for the json, serialize, and dump modules.
+# Goes beyond verify_json / verify_serde / spec_serde* / audit_json / deep_serialization:
+# malformed-JSON hardening, lone surrogates, non-serializable values, shared-reference and cycle
+# preservation across BOTH text (serialize) and binary (dump) codecs, user-class round-trips (by
+# attributes and via _getstate_/_setstate_), unknown-class-on-load, resource-like natives that must
+# refuse, and truncated/corrupt binary blobs. Every real check is an assert; the only printed line is
+# the final sentinel.
+
+var io = import("io")
+var json = import("json")
+var serialize = import("serialize")
+var dump = import("dump")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ---------------------------------------------------------------------------
+# json.parse — malformed input must raise (hunt silent errors)
+# ---------------------------------------------------------------------------
+assert raises_msg(Function(): return json.parse("[1,2,]"), "unexpected character"), "trailing comma in array"
+assert raises_msg(Function(): return json.parse("{\"a\":1,}"), "expected string key"), "trailing comma in object"
+assert raises_msg(Function(): return json.parse("{\"a\":1"), "expected ',' or '}'"), "unclosed brace"
+assert raises_msg(Function(): return json.parse("[1,2"), "expected ',' or ']'"), "unclosed bracket"
+assert raises_msg(Function(): return json.parse("\"\\x\""), "bad escape"), "bad string escape"
+assert raises_msg(Function(): return json.parse("\"unterminated"), "unterminated string"), "unterminated string"
+assert raises_msg(Function(): return json.parse(""), "unexpected character"), "empty input"
+assert raises_msg(Function(): return json.parse("nul"), "invalid literal"), "truncated literal"
+assert raises_msg(Function(): return json.parse("[1] [2]"), "trailing characters"), "two values"
+assert raises_msg(Function(): return json.parse("{1:2}"), "expected string key"), "non-string key"
+# '+' before a number/keyword is not accepted; only bare NaN/Infinity/-Infinity are.
+assert raises(Function(): return json.parse("+1")), "leading plus"
+assert raises(Function(): return json.parse("+NaN")), "plus NaN rejected"
+assert raises(Function(): return json.parse("+Infinity")), "plus Infinity rejected"
+
+# LENIENT number grammar (documented design choice, not strict RFC 8259): leading zeros, a trailing
+# dot, and a bare exponent all parse rather than raising.
+assert json.parse("012") == 12, "leading zeros parse leniently"
+assert json.parse("1.") == 1.0, "trailing dot parses leniently"
+assert json.parse("-0") == 0, "negative zero integer"
+
+# Non-finite float tokens (JS-style extension) round-trip through parse.
+assert json.parse("NaN") != json.parse("NaN"), "NaN is not equal to itself"
+assert json.parse("Infinity") > 1e300, "Infinity token"
+assert json.parse("-Infinity") < -1e300, "negative Infinity token"
+
+# Duplicate object keys: last value wins, silently (no error).
+var dup = json.parse("{\"a\":1,\"a\":2,\"a\":3}")
+assert len(dup) == 1 and dup["a"] == 3, "duplicate keys keep the last value"
+
+# Integer/Float type is preserved on parse; an integer too large for int64 widens to Float.
+assert type(json.parse("5")) == "Integer", "bare integer stays Integer"
+assert type(json.parse("5.0")) == "Float", "decimal is Float"
+assert type(json.parse("5e0")) == "Float", "exponent form is Float"
+assert type(json.parse("123456789012345678901234567890")) == "Float", "oversized int widens to Float"
+
+# Lone/unpaired surrogates are NOT an error — they decode to U+FFFD (well-formed UTF-8), and a real
+# surrogate PAIR combines into one astral code point.
+var lone = json.parse("\"\\uD800\"")
+assert len(lone) == 1 and ord(lone[0]) == 0xFFFD, "lone high surrogate -> U+FFFD"
+var lone2 = json.parse("\"\\uDC00\"")
+assert ord(lone2[0]) == 0xFFFD, "lone low surrogate -> U+FFFD"
+var pair = json.parse("\"\\uD83D\\uDE00\"")
+assert len(pair) == 1 and ord(pair[0]) == 0x1F600, "surrogate pair -> single astral code point"
+# A high surrogate followed by a non-low \u escape: the unpaired high surrogate -> U+FFFD and the
+# following escape re-parses (consistent with a truly-lone surrogate; matches the literal-char spelling).
+assert json.parse("\"\\uD800\\u0041\"") == chr(65533) + "A", "high surrogate + non-low \\u -> U+FFFD + char"
+
+# Recursion guard: pathologically deep nesting throws rather than overflowing the native stack.
+assert raises_msg(Function(): return json.parse("[" * 1100 + "]" * 1100), "nesting too deep"), "deep nesting guarded"
+
+# ---------------------------------------------------------------------------
+# json.stringify — round-trips, escaping, edges, and non-serializable values
+# ---------------------------------------------------------------------------
+# Floats round-trip EXACTLY (shortest round-tripping form).
+assert json.stringify(0.1 + 0.2) == "0.30000000000000004", "float shortest round-trip text"
+assert json.parse(json.stringify(0.1 + 0.2)) == 0.1 + 0.2, "float exact cycle"
+# Non-finite floats emit the bare JS tokens and parse back.
+assert json.stringify([json.parse("Infinity"), json.parse("-Infinity")]) == "[Infinity, -Infinity]", "non-finite tokens"
+assert json.parse(json.stringify(json.parse("NaN"))) != json.parse(json.stringify(json.parse("NaN"))), "NaN survives cycle"
+
+# Control chars and escapes: nested strings + \n \t and a NUL become \u00xx / \n etc.
+var esc = {"k": "a\nb\tc"}
+assert json.parse(json.stringify(esc))["k"] == "a\nb\tc", "escape round-trip"
+assert "\\u0000" in json.stringify("\0"), "NUL is \\u-escaped"
+# Unicode round-trips (é + astral emoji).
+var uni = chr(233) + chr(0x1F600)
+assert json.parse(json.stringify(uni)) == uni, "unicode round-trip"
+
+# Empty containers.
+assert json.stringify([]) == "[]", "empty list compact"
+assert json.stringify({}) == "{}", "empty dict compact"
+assert json.stringify([], indent=2) == "[]", "empty list stays compact when indented"
+assert json.stringify({}, indent=2) == "{}", "empty dict stays compact when indented"
+
+# indent default (0) is compact; a positive indent pretty-prints; a huge indent throws.
+assert json.stringify([1, 2]) == "[1, 2]", "default compact"
+assert json.stringify([1]) == json.stringify([1], indent=0), "indent 0 == default"
+assert json.stringify([1, {"a": 2}], indent=2) == "[\n  1,\n  {\n    \"a\": 2\n  }\n]", "pretty print exact"
+assert raises_msg(Function(): return json.stringify([1], indent=200), "indent too large"), "huge indent throws"
+
+# Bool/None object keys serialize to the canonical JSON tokens.
+assert json.stringify({True: 1, None: 2}) == "{\"true\": 1, \"null\": 2}", "bool/none keys canonicalized"
+
+# A value json cannot represent throws a clear error (Set, function, and cyclic structures).
+assert raises_msg(Function(): return json.stringify({1, 2, 3}), "cannot serialize 'Set' to JSON"), "set is not JSON"
+assert raises_msg(Function(): return json.stringify(Function(): return 1), "to JSON"), "function is not JSON"
+var cyc = [1]
+cyc.append(cyc)
+assert raises_msg(Function(): return json.stringify(cyc), "cyclic"), "cyclic structure to JSON"
+
+# ---------------------------------------------------------------------------
+# serialize (text) + dump (binary): shared references preserved
+# ---------------------------------------------------------------------------
+var checkShared = Function(codec):
+    var inner = [1, 2]
+    var outer = [inner, inner, {"ref": inner}]
+    var r = codec(outer)
+    # All three paths must still point at ONE list after the round-trip.
+    r[0].append(99)
+    assert r[1] == [1, 2, 99], "alias by second index sees the mutation"
+    assert r[2]["ref"] == [1, 2, 99], "alias inside a dict sees the mutation"
+
+checkShared(Function(x): return serialize.loads(serialize.dumps(x)))
+checkShared(Function(x): return dump.loads(dump.dumps(x)))
+
+# Cycles survive both codecs.
+var checkCycle = Function(codec):
+    var c = ["head"]
+    c.append(c)
+    var r = codec(c)
+    assert r[0] == "head", "cycle payload intact"
+    assert r[1][1][1][0] == "head", "cycle re-enters itself"
+
+checkCycle(Function(x): return serialize.loads(serialize.dumps(x)))
+checkCycle(Function(x): return dump.loads(dump.dumps(x)))
+
+# ---------------------------------------------------------------------------
+# Built-in value types (incl. Bytes) round-trip through both codecs
+# ---------------------------------------------------------------------------
+var payload = [None, True, 42, 3.5, "hi", Bytes([104, 105]), {1, 2}, {"k": [1, 2]}]
+assert serialize.loads(serialize.dumps(payload)) == payload, "mixed payload text round-trip"
+assert dump.loads(dump.dumps(payload)) == payload, "mixed payload binary round-trip"
+# dump.dumps returns Bytes.
+assert type(dump.dumps(42)) == "Bytes", "dumps returns Bytes"
+# Bytes used as a (content-hashed) Dict key round-trips correctly.
+var bk = {Bytes([1, 2]): "a", Bytes([3, 4]): "b"}
+var rbk = dump.loads(dump.dumps(bk))
+assert rbk[Bytes([1, 2])] == "a" and rbk[Bytes([3, 4])] == "b", "bytes dict key round-trip"
+
+# ---------------------------------------------------------------------------
+# User classes: by attributes, and via the _getstate_/_setstate_ protocol
+# ---------------------------------------------------------------------------
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _eq_ = Function(self, o):
+        return self.x == o.x and self.y == o.y
+
+var p = Point(3, 4)
+var rp = serialize.loads(serialize.dumps(p))
+assert rp.x == 3 and rp.y == 4, "class attributes restored (text)"
+assert type(dump.loads(dump.dumps(p))) == "Point", "class type restored (binary)"
+
+# Shared instance referenced twice stays shared after load.
+var pair2 = [p, p]
+var rpair = dump.loads(dump.dumps(pair2))
+rpair[0].x = 111
+assert rpair[1].x == 111, "shared instance stays shared"
+
+# _getstate_/_setstate_: a transient field is dropped and recomputed on load.
+class Temp:
+    var _init_ = Function(self, v):
+        self.v = v
+        self.cached = v * 100
+    var _getstate_ = Function(self):
+        return {"v": self.v}
+    var _setstate_ = Function(self, st):
+        self.v = st["v"]
+        self.cached = self.v * 100
+
+var t = Temp(7)
+var rt = serialize.loads(serialize.dumps(t))
+assert rt.v == 7 and rt.cached == 700, "getstate/setstate restores + recomputes (text)"
+var rtd = dump.loads(dump.dumps(t))
+assert rtd.v == 7 and rtd.cached == 700, "getstate/setstate restores + recomputes (binary)"
+
+# ---------------------------------------------------------------------------
+# Native value types round-trip; a grad-tracking Tensor refuses
+# ---------------------------------------------------------------------------
+var matrix = import("matrix")
+var m = matrix.Matrix([[1, 2], [3, 4]])
+var rm = dump.loads(dump.dumps(m))
+assert rm[0, 0] == 1 and rm[1, 1] == 4, "matrix round-trip"
+
+var complex = import("complex")
+var z = complex.of(3, 4)
+var rz = serialize.loads(serialize.dumps(z))
+assert rz.re == 3.0 and rz.im == 4.0, "complex round-trip"
+
+var time = import("time")
+var dt = time.make(2020, 1, 2, 3, 4, 5)
+assert dump.loads(dump.dumps(dt)) == dt, "datetime round-trip"
+
+# Random restores the exact generator stream (reproducible checkpoint).
+var random = import("random")
+var a = random.Random(42)
+var av = [a.randint(0, 1000000), a.randint(0, 1000000), a.randint(0, 1000000)]
+var b = dump.loads(dump.dumps(random.Random(42)))
+var bv = [b.randint(0, 1000000), b.randint(0, 1000000), b.randint(0, 1000000)]
+assert av == bv, "random stream restored"
+
+var tensor = import("tensor")
+var td = tensor.Tensor([1.0, 2.0])
+assert dump.loads(dump.dumps(td)).tolist() == [1.0, 2.0], "grad-free tensor round-trip"
+var tg = tensor.Tensor([1.0, 2.0], requiresgrad=True)
+assert raises_msg(Function(): return dump.dumps(tg), "requires grad"), "grad tensor refuses without detach"
+assert dump.loads(dump.dumps(tg.detach())).tolist() == [1.0, 2.0], "detached tensor round-trips"
+
+# ---------------------------------------------------------------------------
+# Resource-like natives are NOT serializable — each must throw clearly
+# ---------------------------------------------------------------------------
+var net = import("net")
+var regex = import("regex")
+assert raises_msg(Function(): return dump.dumps(net.Socket()), "cannot dump type 'Socket'"), "socket refuses dump"
+assert raises_msg(Function(): return serialize.dumps(net.Socket()), "cannot serialize type 'Socket'"), "socket refuses serialize"
+assert raises_msg(Function(): return dump.dumps(regex.compile(r"\d+")), "cannot dump type 'Regex'"), "regex refuses dump"
+var fpath = "/tmp/labx_serde_scratch.txt"
+var fh = io.open(fpath, "w")
+assert raises_msg(Function(): return dump.dumps(fh), "cannot dump type 'File'"), "open file refuses dump"
+discard fh.write("x")
+var buf = io.BytesIO()
+assert raises(Function(): return dump.dumps(buf)), "BytesIO refuses dump"
+
+# ---------------------------------------------------------------------------
+# Corrupt / truncated blobs must raise cleanly (never crash)
+# ---------------------------------------------------------------------------
+var good = dump.dumps([1, 2, 3])
+assert raises_msg(Function(): return dump.loads(good[0:6]), "truncated dump data"), "truncated binary blob"
+assert raises_msg(Function(): return dump.loads(Bytes([1, 2, 3, 4])), "bad dump header"), "bad magic"
+assert raises_msg(Function(): return dump.loads(Bytes(0)), "truncated"), "empty binary blob"
+# A valid header but a bad version / bad tag / out-of-range root.
+assert raises(Function(): return dump.loads(good[0:len(good) - 1])), "dropped root id byte"
+
+# Corrupt text blobs.
+assert raises_msg(Function(): return serialize.loads("garbage"), "bad serialization header"), "bad text header"
+assert raises_msg(Function(): return serialize.loads(""), "unexpected end"), "empty text blob"
+assert raises_msg(Function(): return serialize.loads("KSER1 1 I abc 0"), "malformed number"), "non-numeric int token"
+assert raises_msg(Function(): return serialize.loads("KSER1 99999999 N 0"), "bad object count"), "object count exceeds blob"
+assert raises_msg(Function(): return serialize.loads("KSER1 -1 N 0"), "bad object count"), "negative object count"
+assert raises_msg(Function(): return serialize.loads("KSER1 1 Z 0"), "bad serialization tag"), "unknown tag"
+assert raises_msg(Function(): return serialize.loads("KSER1 1 N 5"), "root id out of range"), "root id out of range (text)"
+
+# Unknown class on load: a user-class node whose class is not defined in this VM raises.
+assert raises_msg(Function(): return serialize.loads("KSER1 1 O 5 Ghost 0 0"), "class 'Ghost' is not defined"), "unknown class on load"
+# A Stateful node naming a type with no class and no registered deserializer raises.
+assert raises_msg(Function(): return serialize.loads("KSER1 2 P 5 Ghost 1 N 0"), "no class or registered deserializer"), "unknown stateful type on load"
+
+io.print("OK serde")

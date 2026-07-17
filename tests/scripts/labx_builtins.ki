@@ -1,0 +1,432 @@
+# ============================================================================
+# labx_builtins.ki — deep edge/hardening pass over the built-in functions
+# documented in docs/pages/08-builtins.md, going BEYOND audit_builtins.ki /
+# spec_builtins.ki / r4_builtins.ki / r10_builtins.ki / verify_builtins.ki.
+#
+# Focus: the format mini-spec (every documented combination + error cases),
+# round() half-away-from-zero + ndigits corners, pow 3-arg modular edges,
+# divmod sign/float semantics, min/max key=/default=/positional/iterate,
+# bit ops at int64 boundaries, base converters, isinstance pseudo-types,
+# hasattr existence semantics, and constructor bad-input hardening.
+# ============================================================================
+var io = import("io")
+var math = import("math")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+var close = Function(a, b) -> Bool:
+    return a.compare(b, rel_tol = 0.0, abs_tol = 1e-12)
+
+# ==========================================================================
+# format — the mini-spec, every documented axis and its error cases
+# ==========================================================================
+# NOTE: format(v) and format(v, "") route through String() (stringify), NOT the
+# 'g'-lossy default, so a Float keeps its ".0". A NON-empty spec with no type
+# char, however, applies 'g' to a Float (documented default type).
+assert format(100.0) == "100.0", "format(Float) no spec == stringify"
+assert format(100.0, "") == "100.0", "format(Float, '') empty spec == stringify"
+assert format(100.0, "8") == "     100", "non-empty width-only spec applies 'g' to Float"
+assert format(3.14) == "3.14", "format(Float) stringify"
+assert format(True) == "True", "format(Bool) stringify"
+assert format(None) == "None", "format(None) stringify"
+
+# --- integer presentations + base prefixes -------------------------------
+assert format(42, "d") == "42", "format d"
+assert format(255, "x") == "ff", "format x"
+assert format(255, "X") == "FF", "format X"
+assert format(255, "b") == "11111111", "format b"
+assert format(255, "o") == "377", "format o"
+assert format(0, "b") == "0", "format 0 in b"
+assert format(0, "x") == "0", "format 0 in x"
+# negative integers keep the sign before the magnitude digits
+assert format(-255, "x") == "-ff", "format negative x keeps sign"
+assert format(-10, "b") == "-1010", "format negative b keeps sign"
+# '#' alternate form inserts the base prefix (after any sign)
+assert format(255, "#x") == "0xff", "format #x"
+assert format(255, "#X") == "0XFF", "format #X uppercase prefix"
+assert format(255, "#o") == "0o377", "format #o"
+assert format(255, "#b") == "0b11111111", "format #b"
+assert format(0, "#x") == "0x0", "format #x on zero"
+assert format(-255, "#x") == "-0xff", "format #x negative: sign then 0x"
+# '#' with decimal is a documented no-op (prefix only for non-base-10)
+assert format(42, "#d") == "42", "format #d has no prefix (decimal)"
+# '#' interacts with zero-pad: prefix precedes the zero fill
+assert format(255, "#08x") == "0x0000ff", "format #08x: prefix then zero-pad"
+assert format(255, "#010b") == "0b11111111", "format #010b: width already met"
+# thousands grouping (base 10 only)
+assert format(1234567, ",") == "1,234,567", "format ,"
+assert format(1000000, ",d") == "1,000,000", "format ,d"
+assert format(-1234567, ",") == "-1,234,567", "format , negative"
+assert format(1234567, ",d") == "1,234,567", "format ,d explicit"
+
+# --- float presentations -------------------------------------------------
+assert format(3.14159, ".2f") == "3.14", "format .2f"
+assert format(3.14159, ".0f") == "3", "format .0f"
+assert format(1234.5, ".2f") == "1234.50", "format .2f pads"
+assert format(1e10, "e") == "1.000000e+10", "format e default precision"
+assert format(1e10, ".2e") == "1.00e+10", "format .2e"
+assert format(1.5, "g") == "1.5", "format g"
+assert format(0.25, ".1%") == "25.0%", "format .1%"
+assert format(0.5, "%") == "50.000000%", "format % default precision"
+assert format(0.0, ".2%") == "0.00%", "format .2% zero"
+assert format(42, ".2f") == "42.00", "format int coerces to float for .2f"
+assert format(True, "d") == "1", "format Bool as d -> 1"
+assert format(False, "b") == "0", "format Bool as b -> 0"
+# comma + float precision groups only the integer part
+assert format(1234567.891, ",.2f") == "1,234,567.89", "format ,.2f"
+assert format(1234.5, ",.1f") == "1,234.5", "format ,.1f"
+
+# --- fill / align / width (code-point aware) ------------------------------
+assert format("hi", "^6") == "  hi  ", "format center"
+assert format("hi", "<6") == "hi    ", "format left"
+assert format("hi", ">6") == "    hi", "format right"
+assert format("hi", "*<6") == "hi****", "format custom fill left"
+assert format("x", "*^7") == "***x***", "format custom center"
+assert format("x", ".<5") == "x....", "format . fill"
+assert format(-5, "^7d") == "  -5   ", "format center a number (uneven split)"
+# width counts CODE POINTS, not UTF-8 bytes (é is 2 bytes, 1 code point)
+assert format(chr(233), "*^5") == "**" + chr(233) + "**", "format width by code points"
+# string precision truncates to N code points
+assert format("hello", ".3") == "hel", "format string precision truncates"
+assert format("h" + chr(233) + "llo", ".3") == "h" + chr(233) + "l", "format string precision by code point"
+
+# --- sign handling + zero pad + '=' sign-aware align ----------------------
+assert format(42, "+d") == "+42", "format + sign"
+assert format(42, "-d") == "42", "format - sign (default)"
+assert format(42, " d") == " 42", "format space sign"
+assert format(-42, "+d") == "-42", "format + sign on negative"
+assert format(-42, "+06d") == "-00042", "format +06d: sign, zero pad between"
+assert format(42, "06d") == "000042", "format 06d zero pad"
+assert format(7, ">06d") == "000007", "bare '0' fill wins even with explicit '>' align"
+assert format(-42, "=6d") == "-   42", "format '=' pads between sign and digits"
+assert format(42, "=+6d") == "+   42", "format '=+' sign then pad then digits"
+
+# --- format error cases (must raise) --------------------------------------
+assert raises(Function(): return format(42, ".2d")), "precision not allowed for integer type"
+assert raises(Function(): return format(255, ",x")), "',' not allowed with non-base-10"
+assert raises(Function(): return format(42, "z")), "unknown format type"
+assert raises(Function(): return format(3.14, "d")), "float rejected by integer type 'd'"
+assert raises(Function(): return format(3.14, "x")), "float rejected by integer type 'x'"
+assert raises_msg(Function(): return format("x", "+5"), "sign"), "sign rejected on string"
+assert raises_msg(Function(): return format("x", "#6"), "alternate"), "'#' rejected on string"
+assert raises_msg(Function(): return format("x", "=6"), "'='"), "'=' align rejected on string"
+assert raises_msg(Function(): return format("x", ","), "','"), "',' rejected on string"
+assert raises_msg(Function(): return format(42, 5), "String"), "non-String spec throws"
+assert raises(Function(): return format([1], "d")), "List can't take integer presentation"
+
+# ==========================================================================
+# round — half AWAY from zero (not banker's) + ndigits corners
+# ==========================================================================
+assert round(0.5) == 1, "round(0.5)=1 half away"
+assert round(1.5) == 2, "round(1.5)=2"
+assert round(2.5) == 3, "round(2.5)=3 (NOT banker's 2)"
+assert round(3.5) == 4, "round(3.5)=4"
+assert round(-0.5) == -1, "round(-0.5)=-1 half away"
+assert round(-2.5) == -3, "round(-2.5)=-3 (NOT banker's -2)"
+assert round(0.4) == 0, "round(0.4)=0"
+assert round(-0.4) == 0, "round(-0.4)=0"
+assert round(0) == 0, "round(Integer) passes through"
+assert type(round(3.5)) == "Integer", "round() -> Integer"
+# ndigits form -> Float; Integer input with ndigits ALSO -> Float
+assert type(round(3.14159, 2)) == "Float", "round(x, nd) -> Float"
+assert type(round(5, 2)) == "Float", "round(Integer, nd) -> Float"
+assert round(5, 2) == 5.0, "round(5, 2) == 5.0"
+assert close(round(3.14159, 2), 3.14), "round to 2 places"
+assert close(round(1.25, 1), 1.3), "round(1.25,1)=1.3 half away"
+assert close(round(0.125, 2), 0.13), "round(0.125,2)=0.13 half away (exact binary)"
+# double-rounding guard: 2.675*100 in plain double is 267.4999...; result must be 2.67
+assert close(round(2.675, 2), 2.67), "round(2.675,2)=2.67 (no double-round)"
+# negative ndigits rounds to the tens/hundreds place, half-away on the boundary
+assert close(round(150.0, -2), 200.0), "round(150,-2)=200 half away up"
+assert close(round(250.0, -2), 300.0), "round(250,-2)=300 half away up"
+assert close(round(149.0, -2), 100.0), "round(149,-2)=100"
+# extreme ndigits: beyond a double's reach is a no-op / signed zero, not NaN
+assert round(1.23456, 400) == 1.23456, "round huge +ndigits is no-op"
+assert round(1.23456, -400) == 0.0, "round huge -ndigits collapses to 0"
+# NaN/inf: throw in the -> Integer form, pass through with ndigits
+assert raises_msg(Function(): return round(math.nan), "NaN"), "round(NaN)->Int throws"
+assert raises_msg(Function(): return round(math.inf), "infinity"), "round(inf)->Int throws"
+assert round(math.nan, 2) != round(math.nan, 2), "round(nan, 2) is nan (passes through)"
+assert round(math.inf, 2) == math.inf, "round(inf, 2) passes through"
+assert raises_msg(Function(): return round(1.5, 1.5), "Integer"), "round ndigits must be Integer"
+
+# ==========================================================================
+# divmod — floor semantics, all sign combos, and Floats
+# ==========================================================================
+assert divmod(7, 3) == [2, 1], "divmod(7,3)"
+assert divmod(-7, 3) == [-3, 2], "divmod(-7,3)=[-3,2] remainder sign of divisor"
+assert divmod(7, -3) == [-3, -2], "divmod(7,-3)=[-3,-2]"
+assert divmod(-7, -3) == [2, -1], "divmod(-7,-3)=[2,-1]"
+assert divmod(0, 5) == [0, 0], "divmod(0,5)"
+assert divmod(6, 3) == [2, 0], "divmod exact"
+# float divmod: floor quotient (still Float), remainder sign of divisor
+assert divmod(7.5, 2) == [3.0, 1.5], "divmod float"
+assert divmod(-7.5, 2) == [-4.0, 0.5], "divmod float floor"
+assert type(divmod(7, 3)[0]) == "Integer", "divmod int quotient Integer"
+assert type(divmod(7.5, 2)[0]) == "Float", "divmod float quotient Float"
+assert raises(Function(): return divmod(5, 0)), "divmod by zero throws"
+assert raises(Function(): return divmod(5.0, 0.0)), "divmod float by zero throws"
+
+# ==========================================================================
+# pow — 2-arg and 3-arg modular edges
+# ==========================================================================
+assert pow(2, 10) == 1024, "pow 2-arg"
+assert pow(2, 0) == 1, "pow x,0"
+assert pow(0, 0) == 1, "pow 0,0=1"
+assert pow(2, -3) == 0.125, "pow neg exp 2-arg -> Float"
+assert type(pow(2, -1)) == "Float", "pow neg exp is Float"
+assert pow(2, 10, 1000) == 24, "pow 3-arg modular"
+assert pow(2, 0, 7) == 1, "pow exp0 modular"
+assert pow(0, 0, 5) == 1, "pow(0,0,5)=1"
+assert pow(2, 100, 1) == 0, "pow mod=1 always 0"
+# negative base, 3-arg: residue matches Kirito's floor % ((-3)**3 % 7 == 1)
+assert pow(-3, 3, 7) == 1, "pow(-3,3,7)=1 floor-consistent"
+assert pow(-2, 3, 5) == ((-2) ** 3) % 5, "pow negative base matches (b**e)%m"
+# no int64 overflow (reduced in int128 internally)
+assert pow(2, 62, 1000000007) == 145586002, "pow big exp no overflow"
+assert pow(123, 456, 789) == 699, "pow big modular"
+assert pow(base = 2, exp = 10, mod = 1000) == 24, "pow all keyword"
+# 3-arg hardening
+assert raises_msg(Function(): return pow(2.0, 3, 5), "Integer"), "pow 3-arg Float base throws"
+assert raises_msg(Function(): return pow(2, -3, 5), "non-negative"), "pow 3-arg neg exp throws"
+assert raises_msg(Function(): return pow(2, 3, 0), "non-zero"), "pow mod=0 throws"
+assert raises_msg(Function(): return pow(2, 3, -5), "positive"), "pow negative modulus throws"
+# 2-arg 0**negative is a division-by-zero style error
+assert raises(Function(): return pow(0, -1)), "pow(0,-1) throws (0 to negative power)"
+
+# ==========================================================================
+# bin / oct / hex — sign-aware, zero, round-trip
+# ==========================================================================
+assert bin(0) == "0b0", "bin(0)"
+assert oct(0) == "0o0", "oct(0)"
+assert hex(0) == "0x0", "hex(0)"
+assert bin(-10) == "-0b1010", "bin negative"
+assert oct(-15) == "-0o17", "oct negative"
+assert hex(-255) == "-0xff", "hex negative lowercase"
+# full-range boundary values round-trip through Integer()
+assert Integer(hex(9223372036854775807)) == 9223372036854775807, "hex INT64_MAX round-trip"
+assert Integer(hex(-9223372036854775808)) == -9223372036854775808, "hex INT64_MIN round-trip"
+assert Integer(bin(-9223372036854775808)) == -9223372036854775808, "bin INT64_MIN round-trip"
+assert raises_msg(Function(): return hex(1.5), "Integer"), "hex Float throws"
+assert raises_msg(Function(): return bin("5"), "Integer"), "bin String throws"
+
+# ==========================================================================
+# bitand/bitor/bitxor/bitnot/shl/shr — int64 boundaries
+# ==========================================================================
+assert bitand(0xFF, 0x0F) == 0x0F, "bitand"
+assert bitor(0xF0, 0x0F) == 0xFF, "bitor"
+assert bitxor(0xFF, 0x0F) == 0xF0, "bitxor"
+assert bitand(-1, 12345) == 12345, "bitand(-1, x)=x (all ones)"
+assert bitor(-1, 0) == -1, "bitor(-1,0)=-1"
+assert bitxor(-1, 0) == -1, "bitxor(-1,0)=-1"
+assert bitnot(0) == -1, "bitnot(0)=-1"
+assert bitnot(-1) == 0, "bitnot(-1)=0"
+assert bitnot(5) == -6, "bitnot(5)=-6"
+# ~INT64_MIN == INT64_MAX, ~INT64_MAX == INT64_MIN
+assert bitnot(-9223372036854775808) == 9223372036854775807, "bitnot(INT64_MIN)=INT64_MAX"
+assert bitnot(9223372036854775807) == -9223372036854775808, "bitnot(INT64_MAX)=INT64_MIN"
+assert shl(1, 0) == 1, "shl by 0"
+assert shl(1, 62) == 4611686018427387904, "shl(1,62)"
+assert shl(1, 63) == -9223372036854775808, "shl(1,63) wraps to INT64_MIN"
+assert shl(1, 64) == 0, "shl >=64 all bits out"
+assert shl(1, 1000) == 0, "shl huge all bits out"
+assert shr(-8, 1) == -4, "shr negative arithmetic"
+assert shr(-1, 63) == -1, "shr(-1,63)=-1 sign fill"
+assert shr(-9223372036854775808, 63) == -1, "shr(INT64_MIN,63)=-1"
+assert shr(-1, 64) == -1, "shr(-1,>=64)=-1 sign fill"
+assert shr(7, 64) == 0, "shr(positive,>=64)=0"
+assert shr(9223372036854775807, 1) == 4611686018427387903, "shr(INT64_MAX,1)"
+assert raises_msg(Function(): return shl(1, -1), "negative"), "shl negative count throws"
+assert raises_msg(Function(): return shr(1, -1), "negative"), "shr negative count throws"
+assert raises_msg(Function(): return bitand(1, 2.0), "Integer"), "bitand Float throws"
+
+# ==========================================================================
+# min / max — key=, default=, positional vs single-iterable, string iterate
+# ==========================================================================
+assert min([3, 1, 2]) == 1, "min iterable"
+assert max([3, 1, 2]) == 3, "max iterable"
+assert min(3, 1, 2) == 1, "min positional"
+assert max(3, 1, 2) == 3, "max positional"
+# a single String arg iterates its characters
+assert min("cba") == "a", "min iterates a String"
+assert max("abc") == "c", "max iterates a String"
+# key= works on both the iterable and the positional form
+assert min(["abc", "ab", "abcd"], key = len) == "ab", "min key=len"
+assert max(1, 2, 3, key = Function(x): return -x) == 1, "max key on positional args"
+# ties: first element with the extremum key is returned (stable)
+var tp = [[1, "a"], [1, "b"], [1, "c"]]
+assert min(tp, key = Function(p): return p[0]) == [1, "a"], "min returns first on tie"
+assert max(tp, key = Function(p): return p[0]) == [1, "a"], "max returns first on tie"
+# default= only kicks in for an empty single-iterable
+assert min([], default = 99) == 99, "min empty + default"
+assert max([], default = -1) == -1, "max empty + default"
+assert min([], key = len, default = "z") == "z", "min empty key+default"
+# zero-arg forms: empty sequence -> throw, or default
+assert min(default = 5) == 5, "min() with only default returns it"
+assert raises_msg(Function(): return min([]), "empty"), "min([]) throws empty"
+assert raises_msg(Function(): return max([]), "empty"), "max([]) throws empty"
+assert raises_msg(Function(): return min(), "empty"), "min() no args throws empty"
+assert raises_msg(Function(): return min([1], bad = 2), "unexpected"), "min unknown kw throws"
+
+# ==========================================================================
+# sum — Integer/Float promotion, start, wraparound
+# ==========================================================================
+assert sum([]) == 0, "sum([])=0"
+assert sum([], start = 7) == 7, "sum empty + start"
+assert sum([1, 2, 3], 10) == 16, "sum positional start"
+assert type(sum([1, 2])) == "Integer", "sum ints -> Integer"
+assert type(sum([1, 2.0])) == "Float", "sum mixed -> Float"
+assert type(sum([1, 2], 1.0)) == "Float", "sum int with Float start -> Float"
+# integer overflow wraps two's-complement (consistent with + operator)
+assert sum([9223372036854775807, 1]) == -9223372036854775808, "sum wraps at INT64_MAX"
+assert raises_msg(Function(): return sum([1, "x"]), "number"), "sum non-number throws"
+assert raises_msg(Function(): return sum([1], "x"), "number"), "sum bad start throws"
+
+# ==========================================================================
+# isinstance — builtin constructors, type-name Strings, pseudo-types, classes
+# ==========================================================================
+# Bool is its OWN type, not an Integer subtype (both directions)
+assert isinstance(True, Integer) == False, "isinstance(True, Integer)=False"
+assert isinstance(1, Bool) == False, "isinstance(1, Bool)=False"
+assert isinstance(True, Bool) == True, "isinstance(True, Bool)"
+# builtin constructor forms
+assert isinstance(1, Integer) == True, "isinstance ctor Integer"
+assert isinstance("x", String) == True, "isinstance ctor String"
+assert isinstance([], List) == True, "isinstance ctor List"
+assert isinstance(Bytes(), Bytes) == True, "isinstance ctor Bytes"
+# pseudo-type Strings
+assert isinstance(1, "Number") == True, "isinstance Integer is Number"
+assert isinstance(1.0, "Number") == True, "isinstance Float is Number"
+assert isinstance("x", "Number") == False, "isinstance String not Number"
+assert isinstance(True, "Number") == False, "isinstance Bool not Number"
+assert isinstance(5, "Any") == True, "isinstance Any always true"
+assert isinstance(None, "Any") == True, "isinstance Any on None"
+assert isinstance(len, "Function") == True, "isinstance builtin fn is Function"
+assert isinstance(Function(): return 1, "Function") == True, "isinstance user fn is Function"
+assert isinstance(io, "Module") == True, "isinstance module"
+assert isinstance(None, "None") == True, "isinstance None"
+# native object type name
+var matrix = import("matrix")
+assert isinstance(matrix.zeros(2, 2), "Matrix") == True, "isinstance native Matrix"
+# user classes + inheritance
+class Animal:
+    var alive = True
+class Dog (Animal):
+    var noise = "woof"
+var d = Dog()
+assert isinstance(d, Dog) == True, "isinstance own class"
+assert isinstance(d, Animal) == True, "isinstance subclass satisfies base"
+assert isinstance(d, "Animal") == True, "isinstance base by name"
+# a Class value is NOT an instance of itself
+assert isinstance(Dog, Dog) == False, "class value is not its own instance"
+assert raises(Function(): return isinstance(1, 42)), "isinstance bad type arg throws"
+
+# ==========================================================================
+# hasattr — existence (not accessibility, not value)
+# ==========================================================================
+class Widget:
+    var _secret = None       # private, present-but-None
+    var label = "w"
+    var greet = Function(self):
+        return "hi"
+var w = Widget()
+assert hasattr(w, "label") == True, "hasattr present attr"
+assert hasattr(w, "greet") == True, "hasattr method"
+assert hasattr(w, "_secret") == True, "hasattr private-and-None still exists"
+assert hasattr(w, "missing") == False, "hasattr absent attr"
+# builtin type methods + values
+assert hasattr("x", "upper") == True, "hasattr String method"
+assert hasattr([1], "append") == True, "hasattr List method"
+assert hasattr(5, "compare") == True, "hasattr Integer method"
+assert hasattr(5, "nope") == False, "hasattr Integer missing"
+# modules
+assert hasattr(math, "sqrt") == True, "hasattr module member"
+assert hasattr(math, "not_a_fn") == False, "hasattr module missing"
+# a class VALUE exposes no member access -> always False; a plain function too
+assert hasattr(Widget, "label") == False, "hasattr on class value is False"
+assert hasattr(len, "anything") == False, "hasattr on plain function is False"
+assert raises_msg(Function(): return hasattr(w, 5), "String"), "hasattr non-String name throws"
+
+# ==========================================================================
+# constructors — bad-input hardening + documented accepts
+# ==========================================================================
+# Integer: doubled sign, space after sign/prefix, doubled/embedded prefix, empties
+assert Integer("  -42  ") == -42, "Integer trims whitespace, sign ok"
+assert Integer("+0xFF") == 255, "Integer +hex"
+assert Integer("-0b1010") == -10, "Integer -binary"
+assert raises(Function(): return Integer("--5")), "Integer('--5') throws"
+assert raises(Function(): return Integer("+ 5")), "Integer('+ 5') space after sign throws"
+assert raises(Function(): return Integer("0x-5")), "Integer('0x-5') throws"
+assert raises(Function(): return Integer("0x0x5")), "Integer doubled prefix throws"
+assert raises(Function(): return Integer("0x")), "Integer('0x') empty magnitude throws"
+assert raises(Function(): return Integer("")), "Integer('') throws"
+assert raises(Function(): return Integer("12.5")), "Integer('12.5') rejects decimal"
+assert raises(Function(): return Integer("42abc")), "Integer trailing garbage throws"
+assert raises(Function(): return Integer("0b12")), "Integer bad binary digit throws"
+assert raises_msg(Function(): return Integer([1]), "convert"), "Integer(List) throws"
+assert raises_msg(Function(): return Integer(1e100), "range"), "Integer(huge Float) out of range"
+assert raises_msg(Function(): return Integer(math.nan), "NaN"), "Integer(NaN) throws"
+assert raises_msg(Function(): return Integer(math.inf), "infinity"), "Integer(inf) throws"
+# Float: DOC says "nan"/"inf"/"infinity" ARE accepted (case/sign) — NOT errors
+assert Float("nan") != Float("nan"), "Float('nan') parses to NaN"
+assert Float("NaN") != Float("NaN"), "Float('NaN') case-insensitive"
+assert Float("inf") == math.inf, "Float('inf')"
+assert Float("-inf") == -math.inf, "Float('-inf')"
+assert Float("INFINITY") == math.inf, "Float('INFINITY')"
+assert Float("+inf") == math.inf, "Float('+inf')"
+assert Float("1.5e-3") == 0.0015, "Float scientific"
+assert raises(Function(): return Float("abc")), "Float('abc') throws"
+assert raises(Function(): return Float("0x1p4")), "Float rejects C99 hex-float"
+assert raises(Function(): return Float("1.2.3")), "Float double-dot throws"
+assert raises(Function(): return Float([1])), "Float(List) throws"
+# List/Set/Dict: None -> empty, non-iterable throws, bad pair shape throws
+assert List(None) == [], "List(None) empty"
+assert Set(None) == Set(), "Set(None) empty"
+assert Dict(None) == {}, "Dict(None) empty"
+assert List("abc") == ["a", "b", "c"], "List(String) splits code points"
+assert raises_msg(Function(): return List(42), "iterable"), "List(non-iterable) throws"
+assert raises(Function(): return Dict([[1, 2, 3]])), "Dict bad pair (3 elems) throws"
+assert raises(Function(): return Dict([[1]])), "Dict bad pair (1 elem) throws"
+# Bytes + fromhex hardening
+assert len(Bytes(5)) == 5, "Bytes(n) n zero bytes"
+assert Bytes("hi", encoding = "ascii") == Bytes([104, 105]), "Bytes ascii"
+assert raises(Function(): return Bytes([256])), "Bytes([256]) out of range"
+assert raises(Function(): return Bytes([-1])), "Bytes([-1]) out of range"
+assert fromhex("48 69").decode() == "Hi", "fromhex with spaces"
+assert fromhex("") == Bytes(), "fromhex('') empty"
+assert raises_msg(Function(): return fromhex("4"), "odd"), "fromhex odd length throws"
+assert raises_msg(Function(): return fromhex("zz"), "hex"), "fromhex non-hex throws"
+
+# ==========================================================================
+# abs — Float, Integer, INT64_MIN wrap
+# ==========================================================================
+assert abs(-5) == 5, "abs Integer"
+assert abs(-3.5) == 3.5, "abs Float"
+assert abs(-9223372036854775808) == -9223372036854775808, "abs(INT64_MIN) wraps to itself"
+assert raises_msg(Function(): return abs("x"), "number"), "abs(String) throws"
+
+# ============================================================ enumerate / zip
+assert List(enumerate(["a", "b", "c"])) == [[0, "a"], [1, "b"], [2, "c"]], "enumerate default start 0"
+assert List(enumerate(["a", "b"], 10)) == [[10, "a"], [11, "b"]], "enumerate custom start"
+assert List(enumerate([])) == [], "enumerate empty"
+assert List(enumerate("ab")) == [[0, "a"], [1, "b"]], "enumerate over a String (code points)"
+assert List(enumerate(["x"], -3)) == [[-3, "x"]], "enumerate negative start"
+assert raises(Function(): return List(enumerate(5))), "enumerate over a non-iterable throws"
+assert List(zip([1, 2], ["a", "b"])) == [[1, "a"], [2, "b"]], "zip two equal-length"
+assert List(zip([1, 2, 3], ["a"])) == [[1, "a"]], "zip truncates to the shortest"
+assert List(zip([1, 2], ["a", "b"], [True, False])) == [[1, "a", True], [2, "b", False]], "zip three-way"
+assert List(zip([], [1, 2])) == [], "zip with an empty operand is empty"
+assert List(zip([1, 2])) == [[1], [2]], "zip of a single iterable wraps each element"
+assert raises(Function(): return List(zip([1], 5))), "zip over a non-iterable throws"
+
+io.print("OK builtins")

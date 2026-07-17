@@ -36,6 +36,9 @@ public:
     SourceSpan span{};                    // throw / assert site (file:line:col)
     std::string file;                     // defining chunk of the function that threw ("" = entry)
     std::vector<TraceFrame> traceback;    // call chain — filled as the throw unwinds VM frames
+    int depth = -1;                       // VM call depth at the throw site (set by Op::Throw/Reraise);
+                                          // -1 for a C++ KiritoError. Used for strict PEP-479 attribution
+                                          // of a generator's own StopIteration vs one leaking from deeper.
 
     // No VM here, so we cannot stringify `value`. Return a stable generic label; a runSource-style
     // wrapper that catches an escaping KiritoThrow typically re-throws it as a KiritoError with

@@ -1,0 +1,230 @@
+# r10_parallel.ki — docs-vs-impl audit of the `parallel` multiprocessing module (spawn/Task, Queue,
+# Lock/Event/Semaphore/Barrier, cpucount). Every assertion mirrors real native behavior, cross-checked
+# against docs/pages/10-stdlib.md (the `parallel` section) and src/kirito/stdlib_parallel.hpp +
+# dispatcher.hpp. `parallel` is installed ONLY by the `ki` CLI (a bare embedded VM has no `parallel`),
+# so this runs through `ki`; `spawn(fn, ...)` requires `fn` to be FILE-DEFINED (the worker re-reads
+# this file and locates fn by source span), so the workers live at module level and the driver is
+# guarded by `if argmain:` (a worker re-evaluates this file with argmain False, defining the workers
+# and skipping the driver — so workers never print and never re-run the assertions).
+#
+# DETERMINISTIC + TERMINATING: tiny worker counts, every Task joined or drained, every cross-thread
+# step gated by a Queue/Event handshake, every blocking call a buggy build could stall on carries a
+# SHORT timeout so a regression FAILS instead of hanging, and every assertion is on an order-
+# independent invariant/aggregate (a sorted list, a count, a flag) — never on arrival order or timing.
+# One stdout line, no stray output: "r10_parallel: <n> checks passed".
+var io = import("io")
+var parallel = import("parallel")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# ---- module-level workers (spawn re-reads this file with argmain False and defines these) ----
+var w_square = Function(x):
+    return x * x
+var w_sub = Function(a, b):
+    return a - b
+var w_def = Function(x, y = 100):
+    return x + y
+var w_typed = Function(x : Integer) -> Integer:
+    return x + 1
+var w_boom = Function():
+    throw "kirito-boom-42"
+var w_id = Function(x):
+    return x
+var w_ret_fn = Function():                 # a worker returning a live resource -> result isn't serializable
+    return import("io").BytesIO()          # (a Kirito Function would now serialize and cross back)
+var w_producer = Function(q, k):           # fills a cross-VM Queue, then closes it (drives a drain loop)
+    var i = 0
+    while i < k:
+        q.put(i)
+        i = i + 1
+    q.close()
+var w_hold_lock = Function(lk, gotit, rel):    # hold a lock across a handshake so main can time out
+    discard lk.acquire(True, 5.0)
+    gotit.put(1)
+    discard rel.wait(5.0)
+    lk.release()
+# a factory whose returned closure captures an enclosing-function local (the closure does NOT cross to
+# a worker — the captured name is undefined there, surfacing as a clean error at join()).
+var make_closure = Function():
+    var captured = 7
+    return Function():
+        return captured
+# a multi-statement thunk for throws(): a primitive is unhashable, so using one as a Dict key throws.
+var queue_as_key = Function():
+    var d = {}
+    d[parallel.Queue()] = 1
+    return d
+
+if argmain:
+    # ============================== cpucount ===============================================
+    ok(type(parallel.cpucount()) == "Integer", "cpucount() returns an Integer")
+    ok(parallel.cpucount() >= 1, "cpucount() >= 1")
+
+    # ============================== spawn + Task.join / done ===============================
+    var tSq = parallel.spawn(w_square, 6)
+    ok(tSq.join() == 36, "spawn(w_square, 6).join() == 36")
+    ok(tSq.done() == True, "Task.done() is True after join")
+    ok(tSq.join() == 36, "join() is idempotent (same value on a second call)")
+    ok(parallel.spawn(w_sub, b = 3, a = 10).join() == 7, "spawn forwards keyword args (out of order)")
+    ok(parallel.spawn(w_sub, 10, b = 3).join() == 7, "spawn forwards mixed positional + keyword")
+    ok(parallel.spawn(w_def, 5).join() == 105, "a spawned worker evaluates a default parameter")
+    ok(parallel.spawn(w_def, 5, 7).join() == 12, "a spawned default parameter can be overridden")
+    ok(parallel.spawn(w_typed, 4).join() == 5, "spawn honors a satisfied type annotation")
+    ok(parallel.spawn(Function(z): return z + 2, 40).join() == 42, "spawn an inline anonymous function literal (no captures)")
+
+    # ============================== spawn hardening ========================================
+    ok(throws(Function(): return parallel.spawn(42)), "spawn rejects a non-function")
+    ok(throws(Function(): return parallel.spawn(len, [1, 2])), "spawn rejects a native function (not a .ki-defined one)")
+    ok(throws(Function(): return parallel.spawn(w_id, len)), "spawn rejects a non-serializable argument (throws at spawn time)")
+    # a worker that throws surfaces the error at join(); its message is preserved; done() then True.
+    var tBoom = parallel.spawn(w_boom)
+    var boomThrew = False
+    var boomMsg = ""
+    try:
+        discard tBoom.join()
+    catch as eB:
+        boomThrew = True
+        boomMsg = String(eB)
+    ok(boomThrew, "a worker that throws surfaces the error at join()")
+    ok(boomMsg.find("kirito-boom-42") >= 0, "the worker's thrown message is preserved through join()")
+    ok(tBoom.done() == True, "Task.done() is True after a throwing worker is joined")
+    # a closure over a captured enclosing-function local: spawn succeeds, join() fails cleanly.
+    ok(throws(Function(): return parallel.spawn(make_closure()).join()), "a closure over a captured local fails at join (the closure does not cross)")
+    # an enforced type-annotation violation is checked in the worker and surfaces at join().
+    ok(throws(Function(): return parallel.spawn(w_typed, "nope").join()), "a spawned type-annotation violation surfaces at join()")
+    # a non-serializable RETURN value surfaces at join().
+    ok(throws(Function(): return parallel.spawn(w_ret_fn).join()), "a non-serializable worker return surfaces at join()")
+
+    # ============================== Queue: put/get/qsize/empty/full/close ==================
+    var q1 = parallel.Queue()
+    ok(q1.empty() == True, "a fresh Queue is empty()")
+    ok(q1.put(10) == None, "Queue.put returns None")
+    q1.put(20)
+    q1.put(30)
+    ok(q1.qsize() == 3, "Queue.qsize() after 3 puts")
+    ok(q1.empty() == False, "Queue is not empty() after puts")
+    ok(q1.full() == False, "an unbounded Queue (maxsize 0) is never full()")
+    ok(q1.get() == 10, "Queue.get() is FIFO (first item)")
+    ok(q1.getnowait() == 20, "Queue.getnowait() returns the next item (FIFO)")
+    ok(q1.close() == None, "Queue.close() returns None")
+    ok(throws(Function(): return parallel.Queue().getnowait()), "getnowait() on an empty Queue throws")
+    ok(throws(Function(): return parallel.Queue().get(True, 0.05)), "a blocking get() that times out on an empty Queue throws")
+    # bounded queue: full() + putnowait/put throw on a full queue
+    var q2 = parallel.Queue(2)
+    q2.putnowait("a")
+    ok(q2.putnowait(item = "b") == None, "Queue.putnowait(item=) keyword works and returns None")
+    ok(q2.full() == True, "a bounded Queue reports full() when at maxsize")
+    ok(throws(Function(): return q2.putnowait("c")), "putnowait() on a full bounded Queue throws")
+    ok(throws(Function(): return q2.put("c", True, 0.05)), "a blocking put() that times out on a full Queue throws")
+    # close: drains the buffered items in order, then get throws; put throws
+    var q3 = parallel.Queue()
+    q3.put(11)
+    q3.put(22)
+    q3.close()
+    ok(q3.get() == 11, "a closed Queue drains its buffered items in order (first)")
+    ok(q3.get() == 22, "a closed Queue drains its buffered items in order (second)")
+    ok(throws(Function(): return q3.get()), "a closed and drained Queue throws on get()")
+    ok(throws(Function(): return q3.put(33)), "put() on a closed Queue throws")
+
+    # ============================== Queue crosses VMs by identity ==========================
+    # a worker fills a Queue passed to it; main drains until close() -> the SAME queue.
+    var pq = parallel.Queue()
+    var pTask = parallel.spawn(w_producer, pq, 5)
+    var drained = []
+    var draining = True
+    while draining:
+        try:
+            drained.append(pq.get(True, 5.0))
+        catch:
+            draining = False
+    discard pTask.join()
+    drained.sort()
+    ok(drained == [0, 1, 2, 3, 4], "a Queue passed to a worker is the SAME queue (cross-VM by identity)")
+    # identity vs equality: two handles to one queue are not ==, yet share state; unhashable.
+    var idq = parallel.Queue()
+    var relayq = parallel.Queue()
+    relayq.put(idq)
+    var idq2 = relayq.get()
+    ok((idq == idq2) == False, "two handles to the same Queue are not == (no _eq_; per-wrapper identity)")
+    idq.put("payload")
+    ok(idq2.get(True, 2.0) == "payload", "yet both handles reference the same underlying queue")
+    ok(throws(queue_as_key), "a Queue is unhashable (cannot be a Dict key) — catchable")
+
+    # ============================== Lock ===================================================
+    var lk1 = parallel.Lock()
+    ok(lk1.locked() == False, "a fresh Lock is not locked()")
+    ok(lk1.acquire() == True, "Lock.acquire() on a free lock returns True")
+    ok(lk1.locked() == True, "Lock is locked() after acquire")
+    ok(throws(Function(): return lk1.acquire(False)), "a non-reentrant re-acquire by the same thread throws")
+    lk1.release()
+    ok(lk1.locked() == False, "Lock is free after release")
+    ok(throws(Function(): return lk1.release()), "releasing an unheld Lock throws")
+    with lk1:
+        ok(lk1.locked() == True, "with Lock: acquires (locked inside the block)")
+    ok(lk1.locked() == False, "with Lock: releases on block exit")
+    # a worker holds the lock; main's blocking acquire then TIMES OUT and returns False (not a throw)
+    var hlk = parallel.Lock()
+    var gate = parallel.Queue()
+    var relEv = parallel.Event()
+    var holdTask = parallel.spawn(w_hold_lock, hlk, gate, relEv)
+    discard gate.get(True, 5.0)
+    ok(hlk.acquire(True, 0.05) == False, "a blocking acquire on a worker-held Lock times out -> False")
+    ok(hlk.acquire(False) == False, "a non-blocking acquire on a worker-held Lock -> False")
+    relEv.set()
+    discard holdTask.join()
+    ok(hlk.locked() == False, "the Lock is free after the holding worker releases and joins")
+
+    # ============================== Event ==================================================
+    var ev1 = parallel.Event()
+    ok(ev1.isset() == False, "a fresh Event is not isset()")
+    ok(ev1.wait(0.02) == False, "Event.wait on an unset event times out -> False")
+    ev1.set()
+    ok(ev1.isset() == True, "Event.isset() True after set()")
+    ok(ev1.wait() == True, "Event.wait on a set event returns True")
+    ev1.clear()
+    ok(ev1.isset() == False, "Event.clear() resets isset()")
+
+    # ============================== Semaphore ==============================================
+    var sm2 = parallel.Semaphore(2)
+    ok(sm2.acquire(False) == True, "Semaphore(2) grants permit 1")
+    ok(sm2.acquire(False) == True, "Semaphore(2) grants permit 2")
+    ok(sm2.acquire(False) == False, "Semaphore(2) denies a 3rd permit -> False")
+    sm2.release()
+    ok(sm2.acquire(False) == True, "Semaphore.release() restores a permit")
+    var sm0 = parallel.Semaphore(0)
+    ok(sm0.acquire(True, 0.05) == False, "a blocking Semaphore acquire with 0 permits times out -> False")
+    var smD = parallel.Semaphore()
+    ok(smD.acquire(False) == True, "Semaphore() defaults to 1 permit")
+    ok(smD.acquire(False) == False, "Semaphore() has exactly 1 permit")
+    var sm1 = parallel.Semaphore(1)
+    with sm1:
+        ok(sm1.acquire(False) == False, "with Semaphore: holds the only permit inside the block")
+    ok(sm1.acquire(False) == True, "with Semaphore: permit restored after the block")
+    ok(throws(Function(): return parallel.Semaphore(-1)), "Semaphore(-1) throws (value must be >= 0)")
+
+    # ============================== Barrier ================================================
+    var br1 = parallel.Barrier(1)
+    ok(br1.parties() == 1, "Barrier(1).parties() == 1")
+    ok(br1.nwaiting() == 0, "a fresh Barrier has 0 nwaiting()")
+    ok(br1.wait() == 0, "a single-party Barrier.wait() returns arrival index 0")
+    ok(throws(Function(): return parallel.Barrier(2).wait(0.05)), "an under-filled Barrier.wait(timeout) throws (breaks the barrier)")
+    var abr = parallel.Barrier(1)
+    abr.abort()
+    ok(throws(Function(): return abr.wait(0.5)), "wait() on an aborted Barrier throws")
+    abr.reset()
+    ok(throws(Function(): return abr.wait(0.5)), "abort() is permanent: reset() does not revive an aborted Barrier")
+    var rbr = parallel.Barrier(1)
+    ok(rbr.reset() == None, "Barrier.reset() returns None")
+    ok(rbr.wait(1.0) == 0, "a Barrier is reusable after a plain reset()")
+    ok(throws(Function(): return parallel.Barrier(0)), "Barrier(0) throws (parties must be >= 1)")
+
+    io.print("r10_parallel: " + String(n) + " checks passed")

@@ -152,7 +152,11 @@ public:
 
     using NamedArg = kirito::NamedArg;  // call sites refer to KiFunction::NamedArg
     // Full call path supporting positional + named args, defaults, and annotation enforcement.
-    Handle callFull(KiritoVM&, std::span<const Handle> positional, std::span<const NamedArg> named);
+    // `hiddenLeading` is the count of implicit leading args the caller spliced in (1 for a bound
+    // method's / constructor's `self`), subtracted from arity-error counts so the numbers match what
+    // the user actually typed (A09-3).
+    Handle callFull(KiritoVM&, std::span<const Handle> positional, std::span<const NamedArg> named,
+                    std::size_t hiddenLeading = 0);
 
 private:
     const ast::FunctionExpr* def_;

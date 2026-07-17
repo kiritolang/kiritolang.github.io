@@ -13,6 +13,8 @@
 
 namespace kirito {
 
+namespace ast { struct ClassStmt; }  // the class's definition AST (for source-capture serialization)
+
 // Kirito's special (operator) methods use dunder names with single underscores:
 // _init_, _str_, _add_, _eq_, _getitem_, _call_, ... These map an operator/protocol slot to the
 // method name a class may define.
@@ -53,6 +55,12 @@ public:
     Handle base{};
     bool hasBase = false;
     Handle selfHandle{};  // the class's own arena handle (set by the evaluator after allocation)
+    // Serialization support (both set at definition time by BuildClass). `def` is the class's AST — its
+    // verbatim `source` text and body/base drive the free-variable snapshot; `closure` is the scope the
+    // class body ran in (its parent is the defining scope), where a serialized class's free variables
+    // are looked up. Both null for a class not built from source (none currently). See stdlib_serde.hpp.
+    const ast::ClassStmt* def = nullptr;
+    Handle closure{};
 
     ValueKind kind() const override { return ValueKind::Class; }
     std::string typeName() const override { return name; }
@@ -62,6 +70,14 @@ public:
     void children(std::vector<Handle>& out) const override {
         for (const auto& [k, v] : methods) out.push_back(v);
         if (hasBase) out.push_back(base);
+        if (closure.slot) out.push_back(closure);  // keep the defining scope alive for serialization
+    }
+
+    // Install a method binding (barriered: an old class value gaining a young method handle). Used by
+    // BuildClass; the raw `methods[...]=` writes it replaces would bypass the generational barrier.
+    void defineMethod(ObjectArena& arena, const std::string& name, Handle h) {
+        gcWriteBarrier(arena, this, h);
+        methods[name] = h;
     }
 
     // Method resolution walks the base chain.
@@ -85,6 +101,12 @@ public:
     Handle cls{};
     Handle selfHandle{};     // this instance's own arena handle (for invoking its methods)
     std::string className;   // copied from the class so typeName()/str() need no arena
+    // The VM that OWNS this instance, set at construction. `_hash_`/`_eq_`/`_bool_` run a Kirito
+    // method and so need a VM; they used to grab KiritoVM::activeVM() (the most-recently-constructed
+    // live VM on the thread), which MISROUTES when two VMs coexist — dispatching an A-instance's dunder
+    // against B's arena (a stale-generation throw, or silent type confusion). Using the owner keeps
+    // each VM's objects isolated (the documented contract). activeVM() stays only as a null fallback.
+    KiritoVM* ownerVM_ = nullptr;
     // Opt-in dunder cache — set once at instantiation time by walking the class chain, so the
     // Dict/Set hash/equals hot path is a plain bool test with no method lookup.
     bool hasHashDunder = false;   // class (or a base) defines `_hash_` → InstanceValue is hashable
@@ -114,9 +136,9 @@ public:
         out.push_back(cls);
         for (const auto& [k, v] : attrs) out.push_back(v);
     }
-    void setAttr(KiritoVM&, std::string_view name, Handle value) override {
-        attrs[std::string(name)] = value;
-    }
+    // Barriered (an old instance gaining a young attribute); defined in runtime.hpp, where KiritoVM
+    // is complete, since the barrier needs the arena that owns this instance.
+    void setAttr(KiritoVM& vm, std::string_view name, Handle value) override;
     Handle getAttr(KiritoVM&, Handle self, std::string_view name) override;  // runtime.hpp
 
     // Operator protocol -> _op_ method dispatch (defined in runtime.hpp).
@@ -129,6 +151,7 @@ public:
     std::optional<int64_t> length(KiritoVM&) override;
     bool contains(KiritoVM&, Handle value) override;
     std::optional<std::vector<Handle>> iterate(KiritoVM&) override;  // via _iter_ (runtime.hpp)
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle self) override;  // via _iter_/_next_ (runtime.hpp)
 
     const Handle* findMethod(const ObjectArena& arena, const std::string& n) const {
         return static_cast<const ClassValue&>(arena.deref(cls)).findMethod(arena, n);

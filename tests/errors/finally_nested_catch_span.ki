@@ -1,0 +1,13 @@
+# A try/catch that runs INSIDE a finally, and fully handles its own exception, must not steal the
+# blame: the exception the finally is unwinding (line 5) is what escapes, so line 5 is what the
+# diagnostic must name — not line 8, the inner throw that was already dealt with. (v1.15 A04-1)
+var f = Function():
+    try:
+        throw "original-error"
+    finally:
+        try:
+            throw "inner-handled"
+        catch String as e:
+            discard e
+
+f()

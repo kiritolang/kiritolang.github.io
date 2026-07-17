@@ -22,6 +22,9 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+# Fail fast with an actionable message if the native toolchain is missing or too old (the Windows
+# cross-toolchain / OpenSSL are validated by their own steps below). See tools/versions.env.
+tools/scripts/check_env.sh --quiet
 ROOT="$PWD/.deps"
 OPENSSL_TAG="openssl-3.3.2"
 JOBS="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"  # autodetected core count

@@ -659,9 +659,12 @@ struct MatchResult {
 //   anchored   — the match must begin exactly at startPos (re.match); else it may begin anywhere
 //                at or after startPos (re.search), preferring the leftmost start.
 //   requireEnd — the match must reach the end of text (re.fullmatch).
+//   mustAdvance — reject a ZERO-WIDTH match at exactly startPos (Python's must_advance): used by the
+//                iterating callers (findall/finditer/sub/split) after an empty match, so a
+//                higher-priority empty alternative can't mask a non-empty match at the same position.
 // Linear time: O(text.size() * program.size()).
 inline MatchResult run(const Program& prog, const std::vector<int32_t>& text,
-                       int startPos, bool anchored, bool requireEnd) {
+                       int startPos, bool anchored, bool requireEnd, bool mustAdvance = false) {
     using namespace detail;
     int n = static_cast<int>(text.size());
     int m = static_cast<int>(prog.insts.size());
@@ -700,6 +703,11 @@ inline MatchResult run(const Program& prog, const std::vector<int32_t>& text,
                 } break;
                 case Inst::Match: {
                     if (!requireEnd || sp == n) {
+                        // must_advance: a match ending at startPos is zero-width AND at the start (a
+                        // thread can't start before startPos). Reject it and keep scanning this thread
+                        // list, so a lower-priority non-empty alternative here — or the leftmost match
+                        // at a later position — wins instead.
+                        if (mustAdvance && sp == startPos) break;
                         best.matched = true;
                         best.slots = t.caps;
                         cut = true;  // lower-priority threads can't beat this one; stop scanning clist

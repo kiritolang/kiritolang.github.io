@@ -44,6 +44,34 @@ inline std::string stringifyGuarded(const Object* self, StringifyCtx& ctx,
 class ListVal : public Object {
 public:
     std::vector<Handle> elems;
+    CardTable cards;   // dirty-card set over `elems` for the generational minor GC (card-marked type)
+
+    // Barriered element writes: inserting a (possibly young) handle into a (possibly old) list records
+    // the old->young edge AND marks the written slot's card. append/setElem write at a STABLE index, so
+    // they mark just that card. insertElem SHIFTS [i,end), moving young children off their cards, so it
+    // conservatively markAll()s when old (one full rescan next minor). Removal/reorder ops (pop/erase/
+    // reverse/sort) also shift and must call gcReorderShift() — see below and their sites in runtime.hpp.
+    void append(ObjectArena& arena, Handle h) { gcWriteBarrier(arena, this, h, elems.size()); elems.push_back(h); }
+    void setElem(ObjectArena& arena, std::size_t i, Handle h) { gcWriteBarrier(arena, this, h, i); elems[i] = h; }
+    void insertElem(ObjectArena& arena, std::size_t i, Handle h) {
+        bool shifts = i < elems.size();
+        elems.insert(elems.begin() + static_cast<std::ptrdiff_t>(i), h);
+        gcWriteBarrier(arena, this, h, i);
+        if (shifts && !gcYoung()) cards.markAll();   // [i,end) moved to new indices -> cards stale
+    }
+    // Call from any op that REORDERS existing elements (reverse/sort/erase-not-at-end/pop-not-at-end):
+    // an old list may hold young children whose card bits now point at the wrong slots, so rescan all.
+    // Young lists are traced in full anyway; end-pop/end-append don't shift and skip this.
+    void gcReorderShift() { if (!gcYoung()) cards.markAll(); }
+
+    void gcMarkCard(std::size_t entryIndex) override { cards.mark(entryIndex); }
+    void gcMarkAllCards() override { cards.markAll(); }
+    void gcClearCards() override { cards.clear(); }
+    void childrenInDirtyCards(std::vector<Handle>& out) const override {
+        cards.forEachDirtyRange(elems.size(), [&](std::size_t lo, std::size_t hi) {
+            for (std::size_t i = lo; i < hi; ++i) out.push_back(elems[i]);
+        });
+    }
 
     ValueKind kind() const override { return ValueKind::List; }
     std::string typeName() const override { return "List"; }
@@ -91,23 +119,18 @@ public:
     Handle getAttr(KiritoVM&, Handle self, std::string_view name) override;
 };
 
-// The one implementation of the "find a key within its hash bucket" probe, shared by Dict (a bucket
-// of {key, value}) and Set (a bucket of value): `keyOf` extracts the comparable key Handle from a
-// bucket element, and equality goes through the value protocol. Returns the index or -1.
-template <class Bucket, class KeyOf>
-inline std::ptrdiff_t probeBucket(const ObjectArena& arena, const Bucket& bucket, const Object& key,
-                                  KeyOf keyOf) {
-    // NOTE: Kirito deliberately does NOT do an identity (`is`) short-circuit before `==` here. A NaN
-    // key is therefore a "write-only" key — insertable but never findable, since NaN is never `==` to
-    // itself — a documented consequence of exact NaN-never-equal equality (tools/tests/scripts/
-    // r7_types.ki). (The A06-7 audit note flagged this as divergent from Python's is-before-==; that
-    // is a maintainer design decision, not a unilateral hardening change.)
-    for (std::size_t i = 0; i < bucket.size(); ++i)
-        if (arena.deref(keyOf(bucket[i])).equals(arena, key)) return static_cast<std::ptrdiff_t>(i);
-    return -1;
+// The one equality rule for a Dict/Set key lookup, shared by Dict AND Set. Kirito deliberately does
+// NOT identity-short-circuit before `==`, so a NaN key is "write-only" — insertable but never findable
+// (NaN != NaN), a documented consequence of exact NaN-never-equal equality (r7_types.ki). Cross-type
+// equality must stay SYMMETRIC — the same rule kiEquals (runtime.hpp) applies to `==`: a stored native
+// Integer doesn't recognize a probe BigInt, but the BigInt recognizes the Integer, so without the retry
+// the two hash-equal keys stay unmerged (an order-dependent duplicate key, breaking the no-two-==-keys
+// invariant). Gated on a kind mismatch so same-kind dispatch (incl. write-only NaN Floats) is untouched.
+inline bool keysEqual(const ObjectArena& arena, const Object& stored, const Object& key) {
+    if (stored.equals(arena, key)) return true;
+    if (stored.kind() != key.kind() && key.equals(arena, stored)) return true;
+    return false;
 }
-inline Handle dictKeyOf(const std::pair<Handle, Handle>& e) { return e.first; }
-inline Handle setKeyOf(Handle e) { return e; }
 
 // Reentrancy guard for the hash-bucketed Dict/Set. Probing a bucket runs the key's `_hash_`/`_eq_`,
 // which is arbitrary Kirito code that may mutate the SAME container — reallocating the bucket map or
@@ -129,67 +152,124 @@ struct ProbeScope {
 // protocol's equals within the bucket.
 class DictVal : public Object {
 public:
-    fum::unordered_map<std::size_t, std::vector<std::pair<Handle, Handle>>> buckets;
-    std::size_t count = 0;
-    mutable bool probing_ = false;  // a bucket probe (which runs user _hash_/_eq_) is in flight
+    // Compact (Python-3.7) layout: a DENSE, INSERTION-ORDERED entry array + an open-addressing index
+    // into it. Iteration is insertion order; deletes leave a TOMBSTONE (a blanked entry, key.generation
+    // == 0) so surviving entries keep a STABLE index — which is what makes the CardTable over `entries`
+    // valid across deletes (a shift would move a young child off its card -> UAF). Compaction (rare)
+    // shifts positions and markAll()s.
+    struct Entry { Handle key; Handle value; std::size_t hash; };
+    static constexpr int32_t kEmpty = -1;
+    static constexpr int32_t kDeleted = -2;
+    std::vector<Entry> entries;                                    // dense; entries.size() == count + tombstones
+    std::vector<int32_t> index = std::vector<int32_t>(8, kEmpty);  // open-addressing -> entry position
+    std::size_t count = 0;                                         // live entries
+    std::size_t tombstones = 0;                                    // dead (blanked) entries in `entries`
+    CardTable cards;                                               // dirty-card set over `entries`
+    mutable bool probing_ = false;   // a probe (runs user _hash_/_eq_) is in flight — reject nested mutation
 
     ValueKind kind() const override { return ValueKind::Dict; }
     std::string typeName() const override { return "Dict"; }
     bool truthy() const override { return count > 0; }
 
+    // Probe the index chain for `key` (hash h). Returns the matching LIVE entry position, or -1; on -1,
+    // `outSlot` is the first kEmpty slot (insert target — kDeleted slots are skipped, not reused, so the
+    // load-factor invariant below keeps a kEmpty always reachable). May run a user _eq_ via keysEqual.
+    std::ptrdiff_t probeIndex(const ObjectArena& arena, const Object& key, std::size_t h, std::size_t& outSlot) const {
+        std::size_t mask = index.size() - 1, slot = h & mask;
+        for (std::size_t n = 0; n < index.size(); ++n) {
+            int32_t e = index[slot];
+            if (e == kEmpty) { outSlot = slot; return -1; }
+            if (e != kDeleted) {
+                const Entry& ent = entries[static_cast<std::size_t>(e)];
+                if (ent.hash == h && ent.key.generation != 0 &&
+                    keysEqual(arena, arena.deref(ent.key), key)) { outSlot = slot; return e; }
+            }
+            slot = (slot + 1) & mask;
+        }
+        outSlot = slot;   // table saturated (shouldn't happen: entries.size() < 3/4 index.size())
+        return -1;
+    }
+    // Rebuild `index` from live entries. When `compact`, first drop tombstoned entries (shifting
+    // positions -> markAll). Sizes to a pow2 with a < 3/4 load factor. Amortized O(n).
+    void reindex(bool compact) {
+        if (compact && tombstones) {
+            std::vector<Entry> live; live.reserve(count);
+            for (const Entry& e : entries) if (e.key.generation != 0) live.push_back(e);
+            entries.swap(live);
+            tombstones = 0;
+            if (!gcYoung()) cards.markAll();   // entry positions shifted -> old cards no longer describe them
+        }
+        std::size_t newSize = 8;
+        while (newSize * 3 < (entries.size() + 1) * 4) newSize *= 2;
+        index.assign(newSize, kEmpty);
+        std::size_t mask = newSize - 1;
+        for (std::size_t p = 0; p < entries.size(); ++p) {
+            if (entries[p].key.generation == 0) continue;   // skip tombstones (non-compacting rebuild)
+            std::size_t slot = entries[p].hash & mask;
+            while (index[slot] != kEmpty) slot = (slot + 1) & mask;
+            index[slot] = static_cast<int32_t>(p);
+        }
+    }
+
     void set(ObjectArena& arena, Handle key, Handle value) {
         const Object& k = arena.deref(key);
         requireHashable(k);
-        std::size_t h = k.hash();  // may run _hash_; done before any bucket reference is cached
+        std::size_t h = k.hash();  // may run _hash_; done before any entry reference is cached
         if (probing_) throw KiritoError("Dict changed size during a key comparison");
         ProbeScope guard(probing_);
-        auto& bucket = buckets[h];
-        auto i = probeBucket(arena, bucket, k, dictKeyOf);  // may run _eq_ (nested mutation rejected)
-        if (i >= 0) { bucket[static_cast<std::size_t>(i)].second = value; return; }
-        bucket.emplace_back(key, value);
+        std::size_t slot = 0;
+        std::ptrdiff_t pos = probeIndex(arena, k, h, slot);   // may run _eq_ (nested mutation rejected)
+        if (pos >= 0) {   // key present: update the value in place (stable index -> mark its card)
+            gcWriteBarrier(arena, this, value, static_cast<std::size_t>(pos));
+            entries[static_cast<std::size_t>(pos)].value = value;
+            return;
+        }
+        // insert: append the entry only AFTER the probe, so a GC fired by _hash_/_eq_ saw a consistent
+        // dict (the append below is a C++ vector op, never a Kirito allocation, so no GC lands mid-write).
+        std::size_t np = entries.size();
+        entries.push_back(Entry{key, value, h});
+        index[slot] = static_cast<int32_t>(np);
         ++count;
+        gcWriteBarrier(arena, this, key, np);
+        gcWriteBarrier(arena, this, value, np);
+        if (entries.size() * 4 >= index.size() * 3) reindex(tombstones * 2 >= entries.size());
     }
     const Handle* find(const ObjectArena& arena, Handle key) const {
         const Object& k = arena.deref(key);
         requireHashable(k);
         std::size_t h = k.hash();
         ProbeScope guard(probing_);  // read: block nested mutation from a reentrant _eq_
-        auto it = buckets.find(h);
-        if (it == buckets.end()) return nullptr;
-        auto i = probeBucket(arena, it->second, k, dictKeyOf);
-        return i >= 0 ? &it->second[static_cast<std::size_t>(i)].second : nullptr;
+        std::size_t slot = 0;
+        std::ptrdiff_t pos = probeIndex(arena, k, h, slot);
+        return pos >= 0 ? &entries[static_cast<std::size_t>(pos)].value : nullptr;
     }
     std::vector<Handle> keys() const {
-        std::vector<Handle> out;
-        out.reserve(count);
-        for (const auto& [h, bucket] : buckets)
-            for (const auto& [k, v] : bucket) out.push_back(k);
+        std::vector<Handle> out; out.reserve(count);
+        for (const Entry& e : entries) if (e.key.generation != 0) out.push_back(e.key);
         return out;
     }
-    // Key/value pairs, for C++ consumers that need both (e.g. urlencode).
+    // Key/value pairs, for C++ consumers that need both (e.g. urlencode). Insertion order.
     std::vector<std::pair<Handle, Handle>> pairs() const {
-        std::vector<std::pair<Handle, Handle>> out;
-        out.reserve(count);
-        for (const auto& [h, bucket] : buckets)
-            for (const auto& [k, v] : bucket) out.emplace_back(k, v);
+        std::vector<std::pair<Handle, Handle>> out; out.reserve(count);
+        for (const Entry& e : entries) if (e.key.generation != 0) out.emplace_back(e.key, e.value);
         return out;
     }
 
     std::string str(StringifyCtx& ctx) const override {
         return stringifyGuarded(this, ctx, "{", "}", [&] {
             ProbeScope pguard(probing_);  // stringifyChild runs a contained value's _str_, which can
-                                          // mutate THIS dict and realloc the bucket we're iterating —
-                                          // reject it (catchable) instead of a heap-use-after-free.
+                                          // mutate THIS dict and realloc `entries` — reject it (catchable)
+                                          // instead of a heap-use-after-free.
             std::string s;
             bool first = true;
-            for (const auto& [h, bucket] : buckets)
-                for (const auto& [k, v] : bucket) {
-                    if (!first) s += ", ";
-                    first = false;
-                    s += stringifyChild(ctx, k);
-                    s += ": ";
-                    s += stringifyChild(ctx, v);
-                }
+            for (const Entry& e : entries) {
+                if (e.key.generation == 0) continue;
+                if (!first) s += ", ";
+                first = false;
+                s += stringifyChild(ctx, e.key);
+                s += ": ";
+                s += stringifyChild(ctx, e.value);
+            }
             return s;
         });
     }
@@ -199,46 +279,91 @@ public:
         const auto& o = static_cast<const DictVal&>(other);
         if (o.count != count) return false;
         EqualsGuard guard;
-        ProbeScope pguard(probing_);  // we iterate THIS's live buckets; a reentrant _eq_ that
-                                      // mutates/clears this dict mid-compare must be rejected, not UAF
-        for (const auto& [h, bucket] : buckets)
-            for (const auto& [k, v] : bucket) {
-                const Handle* ov = o.find(arena, k);
-                if (!ov || !arena.deref(v).equals(arena, arena.deref(*ov))) return false;
-            }
+        ProbeScope pguard(probing_);  // we iterate THIS's live entries; a reentrant _eq_ (run by o.find)
+                                      // that mutates/clears this dict mid-compare must be rejected, not UAF
+        for (const Entry& e : entries) {
+            if (e.key.generation == 0) continue;
+            const Handle* ov = o.find(arena, e.key);
+            if (!ov || !arena.deref(e.value).equals(arena, arena.deref(*ov))) return false;
+        }
         return true;
     }
     void children(std::vector<Handle>& out) const override {
-        for (const auto& [h, bucket] : buckets)
-            for (const auto& [k, v] : bucket) { out.push_back(k); out.push_back(v); }
+        for (const Entry& e : entries) if (e.key.generation != 0) { out.push_back(e.key); out.push_back(e.value); }
+    }
+    // Card virtuals — dirty-range rescan over `entries`, sharing children's per-entry emit (key then value).
+    void gcMarkCard(std::size_t entryIndex) override { cards.mark(entryIndex); }
+    void gcMarkAllCards() override { cards.markAll(); }
+    void gcClearCards() override { cards.clear(); }
+    void childrenInDirtyCards(std::vector<Handle>& out) const override {
+        cards.forEachDirtyRange(entries.size(), [&](std::size_t lo, std::size_t hi) {
+            for (std::size_t i = lo; i < hi; ++i)
+                if (entries[i].key.generation != 0) { out.push_back(entries[i].key); out.push_back(entries[i].value); }
+        });
     }
     std::optional<std::vector<Handle>> iterate(KiritoVM&) override { return keys(); }
     std::optional<int64_t> length(KiritoVM&) override { return static_cast<int64_t>(count); }
 
+    // The index slot pointing at entry `pos` — probe by that entry's hash for the slot whose value IS
+    // `pos` (matched by POSITION, not key equality, so it also finds a write-only NaN key's slot).
+    std::size_t slotOfPos(std::size_t pos) const {
+        std::size_t mask = index.size() - 1, slot = entries[pos].hash & mask;
+        while (index[slot] != static_cast<int32_t>(pos)) slot = (slot + 1) & mask;   // must exist (live)
+        return slot;
+    }
+    // Tombstone the live entry at `pos`: kDelete its index slot, blank the entry (dropping its old->young
+    // edges), shrink count. No card mark — removing an edge never needs remembering.
+    void tombstone(std::size_t pos) {
+        index[slotOfPos(pos)] = kDeleted;
+        entries[pos].key = Handle{};
+        entries[pos].value = Handle{};
+        ++tombstones;
+        --count;
+    }
+
     bool remove(ObjectArena& arena, Handle key) {
         const Object& k = arena.deref(key);
-        if (!k.hashable()) return false;
+        requireHashable(k);   // reject an unhashable key with the SAME message as set/find (A06-1),
+                              // not a silent false that surfaces downstream as a misleading "key not found"
         std::size_t h = k.hash();
         if (probing_) throw KiritoError("Dict changed size during a key comparison");
         ProbeScope guard(probing_);
-        auto it = buckets.find(h);
-        if (it == buckets.end()) return false;
-        auto& bucket = it->second;
-        auto i = probeBucket(arena, bucket, k, dictKeyOf);
-        if (i < 0) return false;
-        bucket.erase(bucket.begin() + i);
-        --count;
-        if (bucket.empty()) buckets.erase(it);   // reclaim the now-empty bucket (A08-4: else the
-                                                  // bucket map grows unbounded across delete-distinct cycles)
+        std::size_t slot = 0;
+        std::ptrdiff_t pos = probeIndex(arena, k, h, slot);
+        if (pos < 0) return false;
+        tombstone(static_cast<std::size_t>(pos));
+        if (tombstones * 2 >= entries.size() && tombstones > 8) reindex(/*compact=*/true);
         return true;
     }
 
-    // Empty the dict. Guarded like every other mutator: a reentrant _hash_/_eq_ that clears the
-    // dict mid-probe would free the bucket a live C++ probe loop holds by reference (double-free).
+    // Remove and return the LAST (key, value) — Python `popitem` order. Takes the entry by POSITION,
+    // not by looking a key back up, because a NaN key is write-only (`NaN != NaN`); the drain loop
+    // `while len(d) > 0: d.popitem()` must terminate even for NaN keys. SetVal::popArbitrary is the same.
+    std::pair<Handle, Handle> popArbitrary() {
+        if (probing_) throw KiritoError("Dict changed size during a key comparison");
+        std::size_t i = entries.size();
+        while (i > 0 && entries[i - 1].key.generation == 0) --i;   // skip trailing tombstones
+        if (i == 0) throw KiritoError("popitem: dictionary is empty");
+        --i;                                                        // the last LIVE entry
+        std::pair<Handle, Handle> kv{entries[i].key, entries[i].value};
+        index[slotOfPos(i)] = kDeleted;
+        std::size_t trailingDead = entries.size() - i - 1;          // dead entries after the live one
+        entries.resize(i);                                          // physically drop them all -> tail stays tight
+        --count;
+        tombstones -= trailingDead;
+        if (count == 0) index.assign(8, kEmpty);                    // fully drained -> reset the index (drop kDeleted bloat)
+        return kv;
+    }
+
+    // Empty the dict. Guarded like every mutator: a reentrant _hash_/_eq_ clearing mid-probe would free
+    // `entries`/`index` a live C++ probe loop holds by reference.
     void clear() {
         if (probing_) throw KiritoError("Dict changed size during a key comparison");
-        buckets.clear();
+        entries.clear();
+        index.assign(8, kEmpty);
         count = 0;
+        tombstones = 0;
+        cards.clear();
     }
 
     Handle getItem(KiritoVM&, std::span<const Handle> keys) override;
@@ -255,13 +380,61 @@ public:
 // Hash-bucketed set of unique values.
 class SetVal : public Object {
 public:
-    fum::unordered_map<std::size_t, std::vector<Handle>> buckets;
+    // Same dense insertion-ordered layout as DictVal, without the value column. See DictVal for the
+    // rationale (tombstoned deletes -> stable indices -> a valid CardTable over `entries`).
+    struct Entry { Handle value; std::size_t hash; };
+    static constexpr int32_t kEmpty = -1;
+    static constexpr int32_t kDeleted = -2;
+    std::vector<Entry> entries;
+    std::vector<int32_t> index = std::vector<int32_t>(8, kEmpty);
     std::size_t count = 0;
-    mutable bool probing_ = false;  // a bucket probe (which runs user _hash_/_eq_) is in flight
+    std::size_t tombstones = 0;
+    CardTable cards;
+    mutable bool probing_ = false;
 
     ValueKind kind() const override { return ValueKind::Set; }
     std::string typeName() const override { return "Set"; }
     bool truthy() const override { return count > 0; }
+
+    std::ptrdiff_t probeIndex(const ObjectArena& arena, const Object& value, std::size_t h, std::size_t& outSlot) const {
+        std::size_t mask = index.size() - 1, slot = h & mask;
+        for (std::size_t n = 0; n < index.size(); ++n) {
+            int32_t e = index[slot];
+            if (e == kEmpty) { outSlot = slot; return -1; }
+            if (e != kDeleted) {
+                const Entry& ent = entries[static_cast<std::size_t>(e)];
+                if (ent.hash == h && ent.value.generation != 0 &&
+                    keysEqual(arena, arena.deref(ent.value), value)) { outSlot = slot; return e; }
+            }
+            slot = (slot + 1) & mask;
+        }
+        outSlot = slot;
+        return -1;
+    }
+    void reindex(bool compact) {
+        if (compact && tombstones) {
+            std::vector<Entry> live; live.reserve(count);
+            for (const Entry& e : entries) if (e.value.generation != 0) live.push_back(e);
+            entries.swap(live);
+            tombstones = 0;
+            if (!gcYoung()) cards.markAll();
+        }
+        std::size_t newSize = 8;
+        while (newSize * 3 < (entries.size() + 1) * 4) newSize *= 2;
+        index.assign(newSize, kEmpty);
+        std::size_t mask = newSize - 1;
+        for (std::size_t p = 0; p < entries.size(); ++p) {
+            if (entries[p].value.generation == 0) continue;
+            std::size_t slot = entries[p].hash & mask;
+            while (index[slot] != kEmpty) slot = (slot + 1) & mask;
+            index[slot] = static_cast<int32_t>(p);
+        }
+    }
+    std::size_t slotOfPos(std::size_t pos) const {
+        std::size_t mask = index.size() - 1, slot = entries[pos].hash & mask;
+        while (index[slot] != static_cast<int32_t>(pos)) slot = (slot + 1) & mask;
+        return slot;
+    }
 
     bool add(ObjectArena& arena, Handle value) {
         const Object& v = arena.deref(value);
@@ -269,10 +442,29 @@ public:
         std::size_t h = v.hash();
         if (probing_) throw KiritoError("Set changed size during a value comparison");
         ProbeScope guard(probing_);
-        auto& bucket = buckets[h];
-        if (probeBucket(arena, bucket, v, setKeyOf) >= 0) return false;
-        bucket.push_back(value);
+        std::size_t slot = 0;
+        if (probeIndex(arena, v, h, slot) >= 0) return false;
+        std::size_t np = entries.size();
+        entries.push_back(Entry{value, h});
+        index[slot] = static_cast<int32_t>(np);
         ++count;
+        gcWriteBarrier(arena, this, value, np);
+        if (entries.size() * 4 >= index.size() * 3) reindex(tombstones * 2 >= entries.size());
+        return true;
+    }
+    bool remove(ObjectArena& arena, Handle value) {
+        const Object& v = arena.deref(value);
+        if (!v.hashable()) return false;
+        std::size_t h = v.hash();
+        if (probing_) throw KiritoError("Set changed size during a value comparison");
+        ProbeScope guard(probing_);
+        std::size_t slot = 0;
+        std::ptrdiff_t pos = probeIndex(arena, v, h, slot);
+        if (pos < 0) return false;
+        index[slotOfPos(static_cast<std::size_t>(pos))] = kDeleted;
+        entries[static_cast<std::size_t>(pos)].value = Handle{};
+        ++tombstones; --count;
+        if (tombstones * 2 >= entries.size() && tombstones > 8) reindex(true);
         return true;
     }
     bool contains(const ObjectArena& arena, Handle value) const {
@@ -280,52 +472,53 @@ public:
         if (!v.hashable()) return false;
         std::size_t h = v.hash();
         ProbeScope guard(probing_);  // read: block nested mutation from a reentrant _eq_
-        auto it = buckets.find(h);
-        if (it == buckets.end()) return false;
-        return probeBucket(arena, it->second, v, setKeyOf) >= 0;
+        std::size_t slot = 0;
+        return probeIndex(arena, v, h, slot) >= 0;
     }
     std::vector<Handle> items() const {
-        std::vector<Handle> out;
-        out.reserve(count);
-        for (const auto& [h, bucket] : buckets)
-            for (Handle e : bucket) out.push_back(e);
+        std::vector<Handle> out; out.reserve(count);
+        for (const Entry& e : entries) if (e.value.generation != 0) out.push_back(e.value);
         return out;
     }
 
-    // Empty the set. Guarded like add/remove/discard: a reentrant _hash_/_eq_ that clears the set
-    // mid-probe would free the bucket a live C++ probe loop holds by reference (double-free).
     void clear() {
         if (probing_) throw KiritoError("Set changed size during a value comparison");
-        buckets.clear();
+        entries.clear();
+        index.assign(8, kEmpty);
         count = 0;
+        tombstones = 0;
+        cards.clear();
     }
-    // Remove and return an arbitrary element (throws on empty). Guarded like clear(): popping a
-    // bucket entry mid-probe would corrupt the vector a live probe loop is iterating.
+    // Remove and return the LAST element (throws on empty). By POSITION, so a write-only NaN member is
+    // still drainable (Set.pop() on a NaN has always worked). Trims trailing tombstones to stay O(N).
     Handle popArbitrary() {
         if (probing_) throw KiritoError("Set changed size during a value comparison");
-        for (auto it = buckets.begin(); it != buckets.end(); ++it)
-            if (!it->second.empty()) {
-                Handle v = it->second.back();
-                it->second.pop_back();
-                --count;
-                if (it->second.empty()) buckets.erase(it);   // reclaim the emptied bucket (A08-4)
-                return v;
-            }
-        throw KiritoError("pop from an empty Set");
+        std::size_t i = entries.size();
+        while (i > 0 && entries[i - 1].value.generation == 0) --i;
+        if (i == 0) throw KiritoError("pop from an empty Set");
+        --i;
+        Handle v = entries[i].value;
+        index[slotOfPos(i)] = kDeleted;
+        std::size_t trailingDead = entries.size() - i - 1;
+        entries.resize(i);
+        --count;
+        tombstones -= trailingDead;
+        if (count == 0) index.assign(8, kEmpty);
+        return v;
     }
 
     std::string str(StringifyCtx& ctx) const override {
         return stringifyGuarded(this, ctx, "{", "}", [&] {
             ProbeScope pguard(probing_);  // a contained value's _str_ can mutate THIS set and realloc
-                                          // the bucket we're iterating — reject it, don't UAF.
+                                          // `entries` — reject it, don't UAF.
             std::string s;
             bool first = true;
-            for (const auto& [h, bucket] : buckets)
-                for (Handle e : bucket) {
-                    if (!first) s += ", ";
-                    first = false;
-                    s += stringifyChild(ctx, e);
-                }
+            for (const Entry& e : entries) {
+                if (e.value.generation == 0) continue;
+                if (!first) s += ", ";
+                first = false;
+                s += stringifyChild(ctx, e.value);
+            }
             return s;
         });
     }
@@ -335,16 +528,23 @@ public:
         const auto& o = static_cast<const SetVal&>(other);
         if (o.count != count) return false;
         EqualsGuard guard;
-        ProbeScope pguard(probing_);  // we iterate THIS's live buckets; a reentrant _eq_ (run by
+        ProbeScope pguard(probing_);  // we iterate THIS's live entries; a reentrant _eq_ (run by
                                       // o.contains) that clears this set mid-compare must be rejected
-        for (const auto& [h, bucket] : buckets)
-            for (Handle e : bucket)
-                if (!o.contains(arena, e)) return false;
+        for (const Entry& e : entries)
+            if (e.value.generation != 0 && !o.contains(arena, e.value)) return false;
         return true;
     }
     void children(std::vector<Handle>& out) const override {
-        for (const auto& [h, bucket] : buckets)
-            out.insert(out.end(), bucket.begin(), bucket.end());
+        for (const Entry& e : entries) if (e.value.generation != 0) out.push_back(e.value);
+    }
+    void gcMarkCard(std::size_t entryIndex) override { cards.mark(entryIndex); }
+    void gcMarkAllCards() override { cards.markAll(); }
+    void gcClearCards() override { cards.clear(); }
+    void childrenInDirtyCards(std::vector<Handle>& out) const override {
+        cards.forEachDirtyRange(entries.size(), [&](std::size_t lo, std::size_t hi) {
+            for (std::size_t i = lo; i < hi; ++i)
+                if (entries[i].value.generation != 0) out.push_back(entries[i].value);
+        });
     }
     std::optional<std::vector<Handle>> iterate(KiritoVM&) override { return items(); }
     std::optional<int64_t> length(KiritoVM&) override { return static_cast<int64_t>(count); }

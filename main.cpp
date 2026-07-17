@@ -55,10 +55,13 @@ void usage() {
                  "options:\n"
                  "  --lib <dir>   add a directory to the module import path (repeatable)\n"
                  "  -w, --no-warn disable static-analysis warnings\n"
+                 "  --gc-stats    print generational-GC statistics to stderr on exit\n"
+                 "  --gc-threshold <n>  collect every n allocations (default: adaptive); n=1 stresses the GC\n"
                  "  -v, --version print the Kirito version and exit\n"
                  "  -h, --help    show this help\n"
                  "environment:\n"
                  "  KIRITO_PATH   extra import directories (PATH-style, " ENV_SEP "-separated)\n"
+                 "  KIRITO_GC_THRESHOLD  same as --gc-threshold (stresses barrier coverage across a run)\n"
                  "  packages installed by kpm under ~/.kirito/packages are importable directly\n";
 }
 
@@ -147,6 +150,8 @@ int main(int argc, char** argv) {
     std::string file;
     std::vector<std::string> scriptArgs;
     bool warnings = true;
+    bool gcStats = false;
+    long gcThreshold = -1;  // -1 = leave the VM's adaptive default
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -159,6 +164,13 @@ int main(int argc, char** argv) {
             libs.push_back(arg.substr(6));
         } else if (arg == "--no-warn" || arg == "-w") {
             warnings = false;
+        } else if (arg == "--gc-stats") {
+            gcStats = true;
+        } else if (arg == "--gc-threshold") {
+            if (++i >= argc) { std::cerr << "ki: --gc-threshold needs a number\n"; return 2; }
+            gcThreshold = std::strtol(argv[i], nullptr, 10);
+        } else if (arg.rfind("--gc-threshold=", 0) == 0) {
+            gcThreshold = std::strtol(arg.substr(15).c_str(), nullptr, 10);
         } else if (arg == "-h" || arg == "--help") {
             usage();
             return 0;
@@ -196,6 +208,27 @@ int main(int argc, char** argv) {
                                                      homeEnv ? homeEnv : "", pathSep))
         dispatcher.addLibPath(d);
 
+    // GC threshold: an explicit --gc-threshold wins; otherwise KIRITO_GC_THRESHOLD lets a whole test
+    // run (examples, big projects, the suite) execute under an aggressive fixed threshold — the
+    // write-barrier soak, since a missed barrier surfaces as a wrong result or an ASan use-after-free.
+    if (gcThreshold < 0) {
+        if (const char* env = std::getenv("KIRITO_GC_THRESHOLD"); env && *env)
+            gcThreshold = std::strtol(env, nullptr, 10);
+    }
+    if (gcThreshold >= 1) dispatcher.setGcThreshold(static_cast<std::size_t>(gcThreshold));
+
+    // Print the generational-GC statistics gathered over this run (the `--gc-stats` yardstick).
+    auto reportGcStats = [&]() {
+        if (!gcStats) return;
+        std::cerr << "gc-stats: minor=" << vm.gcMinorCount()
+                  << " (" << static_cast<double>(vm.gcMinorNanos()) / 1e6 << " ms)"
+                  << "  major=" << vm.gcMajorCount()
+                  << " (" << static_cast<double>(vm.gcMajorNanos()) / 1e6 << " ms)"
+                  << "  live=" << vm.liveCount()
+                  << "  young=" << vm.youngCount()
+                  << "  capacity=" << vm.arenaCapacity() << "\n";
+    };
+
     if (file.empty()) return repl(vm);
 
     // The script's own directory is also searched for sibling modules.
@@ -232,12 +265,15 @@ int main(int argc, char** argv) {
         const std::string& where = e.file.empty() ? file : e.file;
         std::cerr << kirito::formatTraceback(e.traceback);
         std::cerr << where << ":" << e.span.line << ":" << e.span.col << ": error: " << e.what() << "\n";
+        reportGcStats();
         return 1;
     } catch (const std::exception& e) {
         // A native that throws a std::exception the user didn't catch (e.g. std::bad_alloc) must not
         // call std::terminate — report it and exit non-zero like any other error.
         std::cerr << file << ": error: " << e.what() << "\n";
+        reportGcStats();
         return 1;
     }
+    reportGcStats();
     return 0;
 }

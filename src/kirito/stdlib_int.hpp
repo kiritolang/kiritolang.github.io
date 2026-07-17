@@ -510,9 +510,10 @@ class BigIntVal : public NativeClass<BigIntVal> {
 public:
     static constexpr const char* kTypeName = "BigInt";
     bigint::Big val;
+    bool initialized_ = false;  // true once a value is fully built; guards _setstate_ (see below)
 
-    BigIntVal() = default;
-    explicit BigIntVal(bigint::Big v) : val(std::move(v)) {}
+    BigIntVal() = default;                                    // empty shell for serialize/dump reconstruction
+    explicit BigIntVal(bigint::Big v) : val(std::move(v)) { initialized_ = true; }
 
     bool truthy() const override { return !val.isZero(); }
     std::string str(StringifyCtx&) const override { return bigint::toString(val, 10); }
@@ -563,7 +564,12 @@ inline int64_t coerceInt(KiritoVM& vm, Handle h, const char* who) {
     return v;
 }
 inline Handle powOp(KiritoVM& vm, const Big& base, const Big& exp) {
-    if (exp.neg) return vm.makeFloat(std::pow(toDouble(base), toDouble(exp)));   // Float, like Integer**negInt
+    if (exp.neg) {
+        // Mirror native Integer**negInt / Float**neg exactly (runtime.hpp): 0**-n is undefined, throw
+        // the same message rather than letting std::pow return a silent inf (A08-1).
+        if (base.isZero()) throw KiritoError("zero cannot be raised to a negative power");
+        return vm.makeFloat(std::pow(toDouble(base), toDouble(exp)));   // Float, like Integer**negInt
+    }
     uint64_t e;
     if (!toUint64(exp, e)) {
         if (base.isZero()) return make(vm, Big{});
@@ -636,8 +642,9 @@ inline Handle BigIntVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
                 return vm.makeBool(isPrimeExact(selfVal(vm, self)));
             }, std::vector<Handle>{self});
     if (name == "isprobableprime") {
+        RootScope rs(vm);
         std::vector<NativeParam> sig;
-        sig.emplace_back("rounds", "Integer", vm.makeInt(25));
+        sig.emplace_back("rounds", "Integer", rs.add(vm.makeInt(25)));  // interned today; don't rely on it
         return vm.alloc(std::make_unique<NativeFunction>(
             "isprobableprime", std::move(sig), "Bool",
             [self, selfVal](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -669,8 +676,16 @@ inline Handle BigIntVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return makeMethod(vm, "_setstate_", {"state"},
             [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 Args(vm, a, "_setstate_").require(1);
-                static_cast<BigIntVal&>(vm.arena().deref(self)).val =
-                    parseBig(Value(vm, a[0]).asStringRef("BigInt state"), 10);
+                auto& b = static_cast<BigIntVal&>(vm.arena().deref(self));
+                // BigInt is immutable + hashable (a Dict/Set key). _setstate_ is the deserializer's
+                // alloc(empty) -> _setstate_ path only; re-homing an established value in place would
+                // change its hash inside a live bucket and corrupt any container keyed on it. One-shot
+                // (mirrors DateTime/Bytes._setstate_).
+                if (b.initialized_)
+                    throw KiritoError("BigInt _setstate_: cannot re-initialize an established BigInt "
+                                      "(it is immutable once built)");
+                b.val = parseBig(Value(vm, a[0]).asStringRef("BigInt state"), 10);
+                b.initialized_ = true;
                 return vm.none();
             }, std::vector<Handle>{self});
     return Object::getAttr(vm, self, name);

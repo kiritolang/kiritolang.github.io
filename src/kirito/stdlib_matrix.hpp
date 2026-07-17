@@ -173,20 +173,20 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     if (name == "cols") return bind("cols", {}, [self, self_m](KiritoVM& vm, std::span<const Handle>) { return vm.makeInt(static_cast<int64_t>(self_m(vm, self).cols())); });
     if (name == "shape") return bind("shape", {}, [self, self_m](KiritoVM& vm, std::span<const Handle>) -> Handle {
         auto& m = self_m(vm, self);
+        // rows()/cols() past the small-int intern range allocate, and the List is not arena-reachable
+        // until the alloc below — root them, or the second collects the first. (v1.15 A19-1.)
+        RootScope rs(vm);
         auto list = std::make_unique<ListVal>();
-        list->elems.push_back(vm.makeInt(static_cast<int64_t>(m.rows())));
-        list->elems.push_back(vm.makeInt(static_cast<int64_t>(m.cols())));
+        list->elems.push_back(rs.add(vm.makeInt(static_cast<int64_t>(m.rows()))));
+        list->elems.push_back(rs.add(vm.makeInt(static_cast<int64_t>(m.cols()))));
         return vm.alloc(std::move(list));
     });
     // compare(other, rel_tol=1e-9, abs_tol=0.0) -> Bool — tolerant whole-matrix comparison
     // (rel/abs tolerance per element), since `==` is now exact. Signatured: keyword args/defaults + inspect.
     if (name == "compare") {
-        std::vector<NativeParam> sig;
-        sig.emplace_back("other");
-        sig.emplace_back("rel_tol", "Float", vm.makeFloat(1e-9));
-        sig.emplace_back("abs_tol", "Float", vm.makeFloat(0.0));
+        RootScope rs(vm);
         return vm.alloc(std::make_unique<NativeFunction>(
-            "compare", std::move(sig), "Bool",
+            "compare", toleranceSig(vm, rs), "Bool",
             [self](KiritoVM& v, std::span<const Handle> a) -> Handle {
                 auto& m = static_cast<MatrixVal&>(v.arena().deref(self));
                 const auto* o = dynamic_cast<const MatrixVal*>(&v.arena().deref(a[0]));
@@ -220,7 +220,8 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     if (name == "determinant") return bind("determinant", {}, [self, self_m](KiritoVM& vm, std::span<const Handle>) -> Handle {
         auto& m = self_m(vm, self);
         if (m.rows() != m.cols()) throw KiritoError("determinant requires a square Matrix");
-        return vm.makeFloat(tensor::determinant(m.t));
+        try { return vm.makeFloat(tensor::determinant(m.t)); }        // translate the engine error, as `inverse` does
+        catch (const tensor::TensorError& e) { throw KiritoError(e.what()); }
     });
     if (name == "inverse") return bind("inverse", {}, [self, self_m](KiritoVM& vm, std::span<const Handle>) -> Handle {
         auto& m = self_m(vm, self);
@@ -250,7 +251,7 @@ inline Handle MatrixVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         Args(vm, a, "row").require(1);
         auto& m = self_m(vm, self);
         std::size_t r = idx(vm, a[0]);
-        if (r >= m.rows()) throw KiritoError("row index out of range");
+        if (r >= m.rows()) throw KiritoError("Matrix row index out of range");  // match getItem's text
         RootScope rs(vm);
         auto list = std::make_unique<ListVal>();
         for (std::size_t c = 0; c < m.cols(); ++c) list->elems.push_back(rs.add(vm.makeFloat(m.at(r, c))));

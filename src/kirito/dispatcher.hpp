@@ -27,6 +27,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -82,13 +83,18 @@ public:
         std::unique_lock<std::mutex> lk(m_);
         auto ready = [&] { return aborted_ || closed_ || !q_.empty(); };
         if (!awaitPred(lk, notEmpty_, ready, block, timeout)) return WaitResult::TimedOut;
-        if (!q_.empty()) {  // always drain available items before reporting closed
-            out = std::move(q_.front());
+        // Abort outranks a buffered item, as it does in Lock/Event/Semaphore/Barrier. shutdown()
+        // fires abort() to make every blocked worker unwind; draining first would instead have the
+        // worker run more application code — a whole backlog of it — during teardown, which is the
+        // opposite of what shutdown asked for, and it made "every blocked worker unwinds on abort"
+        // true only up to the depth of the queue.
+        if (aborted_) return WaitResult::Aborted;
+        if (!q_.empty()) {  // a graceful close() still drains: the producer is done, but what it
+            out = std::move(q_.front());  // already produced is not thrown away
             q_.pop_front();
             notFull_.notify_one();
             return WaitResult::Ok;
         }
-        if (aborted_) return WaitResult::Aborted;
         return WaitResult::Closed;
     }
 
@@ -328,145 +334,152 @@ struct Task {
 // ---------------------------------------------------------------------------------------------------
 namespace dispatch_detail {
 
-inline const ast::FunctionExpr* findInExpr(const ast::Expr* e, uint32_t line, uint32_t col);
-inline const ast::FunctionExpr* findInBlock(const ast::Block& b, uint32_t line, uint32_t col);
+// The descent threads `depth` = the number of enclosing function/class SCOPES, and writes it into
+// `foundDepth` at the match — so a spawned function's lexical nesting is recovered alongside its def.
+inline const ast::FunctionExpr* findInExpr(const ast::Expr* e, uint32_t line, uint32_t col, int depth, int& foundDepth);
+inline const ast::FunctionExpr* findInBlock(const ast::Block& b, uint32_t line, uint32_t col, int depth, int& foundDepth);
 
-inline const ast::FunctionExpr* findInStmt(const ast::Stmt* s, uint32_t line, uint32_t col) {
+inline const ast::FunctionExpr* findInStmt(const ast::Stmt* s, uint32_t line, uint32_t col, int depth, int& foundDepth) {
     using namespace ast;
     if (!s) return nullptr;
-    if (const auto* e = dynamic_cast<const ExprStmt*>(s)) return findInExpr(e->expr.get(), line, col);
-    if (const auto* d = dynamic_cast<const DiscardStmt*>(s)) return findInExpr(d->expr.get(), line, col);
-    if (const auto* v = dynamic_cast<const VarDeclStmt*>(s)) return findInExpr(v->init.get(), line, col);
+    if (const auto* e = dynamic_cast<const ExprStmt*>(s)) return findInExpr(e->expr.get(), line, col, depth, foundDepth);
+    if (const auto* d = dynamic_cast<const DiscardStmt*>(s)) return findInExpr(d->expr.get(), line, col, depth, foundDepth);
+    if (const auto* v = dynamic_cast<const VarDeclStmt*>(s)) return findInExpr(v->init.get(), line, col, depth, foundDepth);
     if (const auto* a = dynamic_cast<const AssignStmt*>(s)) {
-        if (auto* r = findInExpr(a->target.get(), line, col)) return r;
-        return findInExpr(a->value.get(), line, col);
+        if (auto* r = findInExpr(a->target.get(), line, col, depth, foundDepth)) return r;
+        return findInExpr(a->value.get(), line, col, depth, foundDepth);
     }
     if (const auto* i = dynamic_cast<const IfStmt*>(s)) {
         for (const auto& [cond, body] : i->branches) {
-            if (auto* r = findInExpr(cond.get(), line, col)) return r;
-            if (auto* r = findInBlock(body, line, col)) return r;
+            if (auto* r = findInExpr(cond.get(), line, col, depth, foundDepth)) return r;
+            if (auto* r = findInBlock(body, line, col, depth, foundDepth)) return r;
         }
-        if (i->orelse) return findInBlock(*i->orelse, line, col);
+        if (i->orelse) return findInBlock(*i->orelse, line, col, depth, foundDepth);
         return nullptr;
     }
     if (const auto* w = dynamic_cast<const WhileStmt*>(s)) {
-        if (auto* r = findInExpr(w->cond.get(), line, col)) return r;
-        return findInBlock(w->body, line, col);
+        if (auto* r = findInExpr(w->cond.get(), line, col, depth, foundDepth)) return r;
+        return findInBlock(w->body, line, col, depth, foundDepth);
     }
     if (const auto* f = dynamic_cast<const ForStmt*>(s)) {
-        if (auto* r = findInExpr(f->iterable.get(), line, col)) return r;
-        return findInBlock(f->body, line, col);
+        if (auto* r = findInExpr(f->iterable.get(), line, col, depth, foundDepth)) return r;
+        return findInBlock(f->body, line, col, depth, foundDepth);
     }
-    if (const auto* r = dynamic_cast<const ReturnStmt*>(s)) return findInExpr(r->value.get(), line, col);
+    if (const auto* r = dynamic_cast<const ReturnStmt*>(s)) return findInExpr(r->value.get(), line, col, depth, foundDepth);
     if (const auto* t = dynamic_cast<const TryStmt*>(s)) {
-        if (auto* r = findInBlock(t->body, line, col)) return r;
+        if (auto* r = findInBlock(t->body, line, col, depth, foundDepth)) return r;
         for (const auto& h : t->handlers) {
-            if (auto* r = findInExpr(h.type.get(), line, col)) return r;
-            if (auto* r = findInBlock(h.body, line, col)) return r;
+            if (auto* r = findInExpr(h.type.get(), line, col, depth, foundDepth)) return r;
+            if (auto* r = findInBlock(h.body, line, col, depth, foundDepth)) return r;
         }
-        if (t->hasFinally) return findInBlock(t->finallyBody, line, col);
+        if (t->hasFinally) return findInBlock(t->finallyBody, line, col, depth, foundDepth);
         return nullptr;
     }
-    if (const auto* th = dynamic_cast<const ThrowStmt*>(s)) return findInExpr(th->value.get(), line, col);
+    if (const auto* th = dynamic_cast<const ThrowStmt*>(s)) return findInExpr(th->value.get(), line, col, depth, foundDepth);
     if (const auto* c = dynamic_cast<const ClassStmt*>(s)) {
-        if (auto* r = findInExpr(c->base.get(), line, col)) return r;
-        return findInBlock(c->body, line, col);
+        if (auto* r = findInExpr(c->base.get(), line, col, depth, foundDepth)) return r;  // base: enclosing scope
+        return findInBlock(c->body, line, col, depth + 1, foundDepth);                    // class body: one scope deeper
     }
     if (const auto* wi = dynamic_cast<const WithStmt*>(s)) {
-        if (auto* r = findInExpr(wi->context.get(), line, col)) return r;
-        return findInBlock(wi->body, line, col);
+        if (auto* r = findInExpr(wi->context.get(), line, col, depth, foundDepth)) return r;
+        return findInBlock(wi->body, line, col, depth, foundDepth);
     }
     if (const auto* as = dynamic_cast<const AssertStmt*>(s)) {
-        if (auto* r = findInExpr(as->cond.get(), line, col)) return r;
-        return findInExpr(as->message.get(), line, col);
+        if (auto* r = findInExpr(as->cond.get(), line, col, depth, foundDepth)) return r;
+        return findInExpr(as->message.get(), line, col, depth, foundDepth);
     }
     if (const auto* sw = dynamic_cast<const SwitchStmt*>(s)) {
-        if (auto* r = findInExpr(sw->subject.get(), line, col)) return r;
+        if (auto* r = findInExpr(sw->subject.get(), line, col, depth, foundDepth)) return r;
         for (const auto& cl : sw->cases) {
-            for (const auto& cv : cl.values) if (auto* r = findInExpr(cv.get(), line, col)) return r;
-            if (auto* r = findInBlock(cl.body, line, col)) return r;
+            for (const auto& cv : cl.values) if (auto* r = findInExpr(cv.get(), line, col, depth, foundDepth)) return r;
+            if (auto* r = findInBlock(cl.body, line, col, depth, foundDepth)) return r;
         }
-        if (sw->hasDefault) return findInBlock(sw->defaultBody, line, col);
+        if (sw->hasDefault) return findInBlock(sw->defaultBody, line, col, depth, foundDepth);
         return nullptr;
     }
     return nullptr;  // Break/Continue/Pass/Todo carry no sub-expressions
 }
 
-inline const ast::FunctionExpr* findInBlock(const ast::Block& b, uint32_t line, uint32_t col) {
-    for (const auto& s : b) if (auto* r = findInStmt(s.get(), line, col)) return r;
+inline const ast::FunctionExpr* findInBlock(const ast::Block& b, uint32_t line, uint32_t col, int depth, int& foundDepth) {
+    for (const auto& s : b) if (auto* r = findInStmt(s.get(), line, col, depth, foundDepth)) return r;
     return nullptr;
 }
 
-inline const ast::FunctionExpr* findInExpr(const ast::Expr* e, uint32_t line, uint32_t col) {
+inline const ast::FunctionExpr* findInExpr(const ast::Expr* e, uint32_t line, uint32_t col, int depth, int& foundDepth) {
     using namespace ast;
     if (!e) return nullptr;
     if (const auto* fn = dynamic_cast<const FunctionExpr*>(e)) {
-        if (fn->span.line == line && fn->span.col == col) return fn;  // the match
-        for (const auto& p : fn->params) if (auto* r = findInExpr(p.defaultValue.get(), line, col)) return r;
-        return findInBlock(fn->body, line, col);
+        if (fn->span.line == line && fn->span.col == col) { foundDepth = depth; return fn; }  // the match
+        // a param default and the body both belong to this function's own scope (one level deeper)
+        for (const auto& p : fn->params) if (auto* r = findInExpr(p.defaultValue.get(), line, col, depth + 1, foundDepth)) return r;
+        return findInBlock(fn->body, line, col, depth + 1, foundDepth);
     }
-    if (const auto* u = dynamic_cast<const UnaryExpr*>(e)) return findInExpr(u->operand.get(), line, col);
+    if (const auto* u = dynamic_cast<const UnaryExpr*>(e)) return findInExpr(u->operand.get(), line, col, depth, foundDepth);
     if (const auto* b = dynamic_cast<const BinaryExpr*>(e)) {
-        if (auto* r = findInExpr(b->lhs.get(), line, col)) return r;
-        return findInExpr(b->rhs.get(), line, col);
+        if (auto* r = findInExpr(b->lhs.get(), line, col, depth, foundDepth)) return r;
+        return findInExpr(b->rhs.get(), line, col, depth, foundDepth);
     }
     if (const auto* l = dynamic_cast<const LogicalExpr*>(e)) {
-        if (auto* r = findInExpr(l->lhs.get(), line, col)) return r;
-        return findInExpr(l->rhs.get(), line, col);
+        if (auto* r = findInExpr(l->lhs.get(), line, col, depth, foundDepth)) return r;
+        return findInExpr(l->rhs.get(), line, col, depth, foundDepth);
     }
     if (const auto* cnd = dynamic_cast<const ConditionalExpr*>(e)) {
-        if (auto* r = findInExpr(cnd->then.get(), line, col)) return r;
-        if (auto* r = findInExpr(cnd->cond.get(), line, col)) return r;
-        return findInExpr(cnd->orelse.get(), line, col);
+        if (auto* r = findInExpr(cnd->then.get(), line, col, depth, foundDepth)) return r;
+        if (auto* r = findInExpr(cnd->cond.get(), line, col, depth, foundDepth)) return r;
+        return findInExpr(cnd->orelse.get(), line, col, depth, foundDepth);
     }
     if (const auto* c = dynamic_cast<const CallExpr*>(e)) {
-        if (auto* r = findInExpr(c->callee.get(), line, col)) return r;
-        for (const auto& a : c->args) if (auto* r = findInExpr(a.value.get(), line, col)) return r;
+        if (auto* r = findInExpr(c->callee.get(), line, col, depth, foundDepth)) return r;
+        for (const auto& a : c->args) if (auto* r = findInExpr(a.value.get(), line, col, depth, foundDepth)) return r;
         return nullptr;
     }
-    if (const auto* m = dynamic_cast<const MemberExpr*>(e)) return findInExpr(m->object.get(), line, col);
+    if (const auto* m = dynamic_cast<const MemberExpr*>(e)) return findInExpr(m->object.get(), line, col, depth, foundDepth);
     if (const auto* ix = dynamic_cast<const IndexExpr*>(e)) {
-        if (auto* r = findInExpr(ix->object.get(), line, col)) return r;
-        for (const auto& k : ix->indices) if (auto* r = findInExpr(k.get(), line, col)) return r;
+        if (auto* r = findInExpr(ix->object.get(), line, col, depth, foundDepth)) return r;
+        for (const auto& k : ix->indices) if (auto* r = findInExpr(k.get(), line, col, depth, foundDepth)) return r;
         return nullptr;
     }
     if (const auto* sl = dynamic_cast<const SliceExpr*>(e)) {
-        if (auto* r = findInExpr(sl->object.get(), line, col)) return r;
-        if (auto* r = findInExpr(sl->start.get(), line, col)) return r;
-        if (auto* r = findInExpr(sl->stop.get(), line, col)) return r;
-        return findInExpr(sl->step.get(), line, col);
+        if (auto* r = findInExpr(sl->object.get(), line, col, depth, foundDepth)) return r;
+        if (auto* r = findInExpr(sl->start.get(), line, col, depth, foundDepth)) return r;
+        if (auto* r = findInExpr(sl->stop.get(), line, col, depth, foundDepth)) return r;
+        return findInExpr(sl->step.get(), line, col, depth, foundDepth);
     }
     if (const auto* lst = dynamic_cast<const ListLiteral*>(e)) {
-        for (const auto& x : lst->elems) if (auto* r = findInExpr(x.get(), line, col)) return r;
+        for (const auto& x : lst->elems) if (auto* r = findInExpr(x.get(), line, col, depth, foundDepth)) return r;
         return nullptr;
     }
     if (const auto* st = dynamic_cast<const SetLiteral*>(e)) {
-        for (const auto& x : st->elems) if (auto* r = findInExpr(x.get(), line, col)) return r;
+        for (const auto& x : st->elems) if (auto* r = findInExpr(x.get(), line, col, depth, foundDepth)) return r;
         return nullptr;
     }
     if (const auto* dt = dynamic_cast<const DictLiteral*>(e)) {
         for (const auto& [k, v] : dt->entries) {
-            if (auto* r = findInExpr(k.get(), line, col)) return r;
-            if (auto* r = findInExpr(v.get(), line, col)) return r;
+            if (auto* r = findInExpr(k.get(), line, col, depth, foundDepth)) return r;
+            if (auto* r = findInExpr(v.get(), line, col, depth, foundDepth)) return r;
         }
         return nullptr;
     }
     if (const auto* fs = dynamic_cast<const FStringExpr*>(e)) {
-        for (const auto& p : fs->parts) if (p.isExpr) if (auto* r = findInExpr(p.expr.get(), line, col)) return r;
+        for (const auto& p : fs->parts) if (p.isExpr) if (auto* r = findInExpr(p.expr.get(), line, col, depth, foundDepth)) return r;
         return nullptr;
     }
     if (const auto* tup = dynamic_cast<const TupleExpr*>(e)) {
-        for (const auto& x : tup->elems) if (auto* r = findInExpr(x.get(), line, col)) return r;
+        for (const auto& x : tup->elems) if (auto* r = findInExpr(x.get(), line, col, depth, foundDepth)) return r;
         return nullptr;
     }
-    if (const auto* star = dynamic_cast<const StarExpr*>(e)) return findInExpr(star->inner.get(), line, col);
+    if (const auto* star = dynamic_cast<const StarExpr*>(e)) return findInExpr(star->inner.get(), line, col, depth, foundDepth);
     return nullptr;  // Literal / Name: no sub-functions
 }
 
 }  // namespace dispatch_detail
 
-inline const ast::FunctionExpr* findFunctionBySpan(const ast::Program& prog, uint32_t line, uint32_t col) {
-    return dispatch_detail::findInBlock(prog.stmts, line, col);
+// Returns the spawned function's definition and, via `foundDepth`, the number of enclosing
+// function/class scopes it is nested within (0 == a top-level file function).
+inline const ast::FunctionExpr* findFunctionBySpan(const ast::Program& prog, uint32_t line, uint32_t col,
+                                                   int& foundDepth) {
+    foundDepth = 0;
+    return dispatch_detail::findInBlock(prog.stmts, line, col, 0, foundDepth);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -534,6 +547,13 @@ public:
         { std::lock_guard<std::mutex> lk(registryMutex_); maxCallDepth_ = n; }
         if (main_) main_->setMaxCallDepth(n);
     }
+    // Pin an explicit GC threshold on the main VM and every worker VM (via configureVM) — used by the
+    // CLI's --gc-threshold / KIRITO_GC_THRESHOLD to run a whole program under an aggressive collector
+    // (the write-barrier soak). 0 leaves the adaptive default.
+    void setGcThreshold(std::size_t n) {
+        { std::lock_guard<std::mutex> lk(registryMutex_); gcThreshold_ = n; }
+        if (main_ && n) main_->setGcThreshold(n);
+    }
 
     std::shared_ptr<ConcurrentQueue> createQueue(std::size_t maxsize) { return makeWaitable(queues_, maxsize); }
     std::shared_ptr<ConcurrentQueue> queueById(uint64_t id) { return byId(queues_, id); }
@@ -556,8 +576,18 @@ public:
         task->id = id;
         Task* tp = task.get();
         tasks_[id] = std::move(task);
-        tp->thread = std::thread([this, tp, sf = std::move(sourceFile), line, col,
-                                  blob = std::move(argsBlob)]() { runWorker(tp, sf, line, col, blob); });
+        // If the thread can't start (pthread_create EAGAIN under thread/FD exhaustion — realistic
+        // for a long-running server), take the registry entry back out: `spawn()` never returns a
+        // Task for it, so nothing could ever join or erase it, and it would sit there for the life
+        // of the dispatcher. Report it as a Kirito error rather than letting std::system_error cross
+        // the native boundary as a bare "std::exception".
+        try {
+            tp->thread = std::thread([this, tp, sf = std::move(sourceFile), line, col,
+                                      blob = std::move(argsBlob)]() { runWorker(tp, sf, line, col, blob); });
+        } catch (const std::system_error& e) {
+            tasks_.erase(id);
+            throw KiritoError("parallel.spawn: could not start a worker thread: " + std::string(e.what()));
+        }
         return id;
     }
     bool taskDone(uint64_t id) {
@@ -691,10 +721,18 @@ private:
                 worker.setBootstrapping(false);
                 const ast::Program* prog = worker.programForFile(sourceFile);
                 if (!prog) throw KiritoError("parallel.spawn: could not load '" + sourceFile + "'");
-                const ast::FunctionExpr* def = findFunctionBySpan(*prog, line, col);
+                int fnDepth = 0;
+                const ast::FunctionExpr* def = findFunctionBySpan(*prog, line, col, fnDepth);
                 if (!def) throw KiritoError("parallel.spawn: could not locate the spawned function in '" +
                                             sourceFile + "'");
-                auto fnv = std::make_unique<KiFunction>(def, modScope);
+                // A spawned function nested inside other functions/classes does NOT capture their
+                // locals across the share-nothing boundary. Give it `fnDepth` EMPTY stand-in scopes
+                // above modScope: its compiled references to those enclosing locals then hit an
+                // out-of-range slot and raise a clean "not defined" (the documented rule), while its
+                // module-level references still resolve by walking through the empties to modScope.
+                Handle closure = modScope;
+                for (int d = 0; d < fnDepth; ++d) closure = rs.add(worker.newScope(closure));
+                auto fnv = std::make_unique<KiFunction>(def, closure);
                 fnv->sourceFile = sourceFile;
                 Handle fnH = rs.add(worker.alloc(std::move(fnv)));
                 Handle packed = rs.add(dumpfmt::read(worker, argsBlob));
@@ -730,6 +768,7 @@ private:
     std::unique_ptr<KiritoVM> main_;
     std::vector<std::string> libPaths_;
     std::size_t maxCallDepth_ = 0;  // 0 == leave the VM default
+    std::size_t gcThreshold_ = 0;   // 0 == leave the VM's adaptive default (see setGcThreshold)
 
     std::mutex registryMutex_;  // guards the maps below; NEVER held across a thread join or VM call
     fum::unordered_map<uint64_t, std::shared_ptr<ConcurrentQueue>> queues_;

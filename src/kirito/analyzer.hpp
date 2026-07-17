@@ -17,7 +17,7 @@
 //   - a statement that can never run because the block already returned/threw/broke/continued ->
 //     "unreachable code".
 //   - `x = x` -> "self-assignment ... has no effect".
-//   - a repeated parameter name in a function signature -> "duplicate parameter".
+// (A repeated parameter name is a hard PARSE error now — see parser.hpp — not an analyzer warning.)
 
 #include <string>
 #include <vector>
@@ -301,10 +301,9 @@ private:
 
     void analyzeFunction(const ast::FunctionExpr& fn) {
         pushScope();
-        fum::unordered_set<std::string> seenParams;
+        // Duplicate parameter names are now a hard PARSE error (parser.hpp), so the AST here never
+        // holds one — no analyzer warning needed.
         for (const auto& p : fn.params) {
-            if (!seenParams.insert(p.name).second)
-                warnings_.push_back({fn.span, "duplicate parameter name '" + p.name + "'"});
             if (p.defaultValue) analyzeExpr(*p.defaultValue);  // defaults evaluate in the outer-ish scope
             declare(p.name, fn.span, /*isParam=*/true);
         }

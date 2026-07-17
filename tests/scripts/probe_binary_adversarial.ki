@@ -1,0 +1,133 @@
+# Adversarial probe: try to BREAK the binary/container/tensor features with malformed inputs, edge
+# cases, resource-exhaustion attempts, and hostile callbacks. Every hostile case must throw a clean,
+# catchable error (or behave safely) and leave the VM healthy. Prints OK at the end.
+var io = import("io")
+var gzip = import("gzip")
+var zlib = import("zlib")
+var hash = import("hash")
+var dump = import("dump")
+var serialize = import("serialize")
+var random = import("random")
+var T = import("tensor")
+
+var throws = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return True
+
+var nthrow = 0
+var must_throw = Function(label, fn):
+    if not throws(fn):
+        throw "expected error but none thrown: " + label
+    nthrow = nthrow + 1
+
+# --- Bytes: resource guards + malformed ------------------------------------------------------
+must_throw("Bytes huge repeat overflow", Function(): return Bytes([1, 2, 3]) * 9999999999)
+must_throw("Bytes huge n", Function(): return Bytes(9999999999))
+must_throw("Bytes element 256", Function(): return Bytes([0, 255, 256]))
+must_throw("Bytes element float", Function(): return Bytes([1, 2.5]))
+must_throw("Bytes index float", Function(): return Bytes([1, 2])[1.5])
+must_throw("Bytes slice step 0", Function(): return Bytes([1, 2, 3])[0:3:0])
+must_throw("decode unknown enc", Function(): return Bytes([65]).decode("rot13"))
+must_throw("encode unknown enc", Function(): return "x".encode("rot13"))
+must_throw("fromhex odd", Function(): return fromhex("a"))
+must_throw("fromhex bad char", Function(): return fromhex("zz"))
+# apply with hostile callbacks
+must_throw("Bytes apply throws", Function(): return Bytes([1, 2, 3]).apply(Function(x): throw "boom"))
+must_throw("Bytes apply out of range", Function(): return Bytes([1]).apply(Function(x): return 300))
+must_throw("Bytes apply non-int", Function(): return Bytes([1]).apply(Function(x): return "nope"))
+# safe edge cases (must NOT throw)
+assert Bytes([1]) * 0 == Bytes(), "repeat 0 safe"
+assert Bytes()[0:0] == Bytes(), "empty slice safe"
+assert (999 in Bytes([1])) == False, "out-of-range membership safe"
+assert Bytes(None) == Bytes() and Bytes() == Bytes([]), "Bytes(None)/Bytes() are empty (None is the no-arg sentinel)"
+
+# --- gzip / zlib: malformed streams ----------------------------------------------------------
+must_throw("gunzip not gzip", Function(): return gzip.decompress("hello world, definitely not gzip"))
+must_throw("gunzip bad magic", Function(): return gzip.decompress(Bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18])))
+must_throw("gunzip truncated", Function(): return gzip.decompress(Bytes([31, 139, 8, 0, 0, 0, 0, 0])))
+must_throw("gunzip corrupt body", Function(): return gzip.decompress(Bytes([31, 139, 8, 0, 0, 0, 0, 0, 0, 3, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0])))
+must_throw("inflate garbage", Function(): return zlib.inflate(Bytes([200, 201, 202, 203])))
+must_throw("decompress garbage", Function(): return zlib.decompress("not a zlib stream here"))
+must_throw("gzip wrong arg type", Function(): return gzip.compress([1, 2, 3]))
+must_throw("crc32 wrong type", Function(): return hash.crc32(None))
+# a corrupted-mid-stream gzip (flip a byte) must be caught, not crash
+var good = gzip.compress("the quick brown fox " * 50)
+var corrupt = good[0:100] + Bytes("ZZZZZ", "ascii").decode("ascii") + good[105:]
+must_throw("gunzip CRC/data corruption", Function(): return gzip.decompress(corrupt))
+
+# --- dump: corrupt / truncated blobs ---------------------------------------------------------
+must_throw("dump loads garbage", Function(): return dump.loads("not a dump blob"))
+must_throw("dump loads empty", Function(): return dump.loads(""))
+must_throw("dump loads bad magic", Function(): return dump.loads("XXXX...."))
+must_throw("dump loads truncated header", Function(): return dump.loads("KDMP"))
+must_throw("dump loads truncated bytes", Function(): return dump.loads(dump.dumps([1, 2, 3])[0:8]))
+must_throw("dump unsupported value", Function(): return dump.dumps(len))
+# a deeply nested structure must serialize without overflowing (bounded), or throw cleanly
+var deep = []
+var cur = deep
+var depth = 0
+while depth < 200:
+    var inner = []
+    cur.append(inner)
+    cur = inner
+    depth = depth + 1
+assert dump.loads(dump.dumps(deep)) == deep, "deep nesting round-trips"
+# a cycle round-trips (shared-reference preservation)
+var cyc = [1]
+cyc.append(cyc)
+var rc = dump.loads(dump.dumps(cyc))
+assert rc[0] == 1 and id(rc[1]) == id(rc), "cyclic dump round-trips"
+
+# --- apply: source-mutation safety + hostile callbacks on collections ------------------------
+# apply takes a snapshot, so mutating the source inside the callback is safe (no infinite growth)
+var xs = [1, 2, 3]
+var grow = Function(v):
+    xs.append(v)            # mutate the source during apply
+    return v * 10
+var ys = xs.apply(grow)
+assert ys == [10, 20, 30] and len(xs) == 6, "apply snapshots the source"
+must_throw("List apply throws", Function(): return [1, 2, 3].apply(Function(x): throw "x"))
+must_throw("List apply non-callable", Function(): return [1].apply(42))
+must_throw("Set apply unhashable result", Function(): return {1, 2}.apply(Function(x): return [x]))
+must_throw("Dict apply throws", Function(): return {"a": 1}.apply(Function(v): throw "y"))
+must_throw("String apply non-String result", Function(): return "abc".apply(Function(c): return 7))
+# Set.apply collisions collapse (safe); Dict.apply maps values and keeps keys
+assert len({1, 2, 3, 4}.apply(Function(x): return x % 2)) == 2, "set apply collapses"
+var dapplied = {"a": 1, "b": 2}.apply(Function(v): return v * 100)
+assert dapplied["a"] == 100 and dapplied["b"] == 200, "dict apply maps values"
+var keysok = True
+for dk in dapplied.keys():
+    if not (dk in {"a", "b"}):
+        keysok = False
+assert keysok, "dict apply keeps keys"
+
+# --- tensor item/tolist: malformed -----------------------------------------------------------
+must_throw("item multi-element", Function(): return T.Tensor([1.0, 2.0, 3.0]).item())
+must_throw("item empty", Function(): return T.zeros([0]).item())
+
+# --- fuzz: random binary blobs through the whole stack, VM must stay healthy ------------------
+var rng = random.Random(7)
+var f = 0
+while f < 60:
+    var n = rng.randint(0, 200)
+    var lst = []
+    var k = 0
+    while k < n:
+        lst.append(rng.randint(0, 255))
+        k = k + 1
+    var blob = Bytes(lst)
+    # round-trips
+    assert gzip.decompress(gzip.compress(blob)) == blob, "fuzz gzip"
+    assert dump.loads(dump.dumps(blob)) == blob, "fuzz dump bytes"
+    assert serialize.loads(serialize.dumps(blob)) == blob, "fuzz serialize bytes"
+    assert blob.decode("latin-1").encode("latin-1") == blob, "fuzz latin-1"
+    # a random truncation of a gzip stream must never crash (throws or, rarely, decodes)
+    if n > 4:
+        var gz = gzip.compress(blob)
+        discard throws(Function(): return gzip.decompress(gz[0:n // 2]))
+    f = f + 1
+
+io.print("OK binary-adversarial (" + String(nthrow) + " hostile cases handled)")

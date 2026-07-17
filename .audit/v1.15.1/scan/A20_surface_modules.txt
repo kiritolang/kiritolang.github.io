@@ -1,0 +1,474 @@
+========== MODULE io ==========
+module io:
+  BytesIO(initial: String = "") -> BytesIO  [native]
+  __stderr__: StdStream
+  __stdin__: StdStream
+  __stdout__: StdStream
+  eprint(...)  [native]
+  input(...)  [native]
+  open(path: String, mode: String = "r") -> File  [native]
+  print(...)  [native]
+  read(...)  [native]
+  stderr: StdStream
+  stdin: StdStream
+  stdout: StdStream
+  write(...)  [native]
+========== MODULE path ==========
+module path:
+  basename(path: String) -> String  [native]
+  chmod(path: String, mode: Integer) -> Bool  [native]
+  dirname(path: String) -> String  [native]
+  executable: String
+  exists(path: String) -> Bool  [native]
+  fasttemp() -> String  [native]
+  getcwd() -> String  [native]
+  getsize(path: String) -> Integer  [native]
+  gettempdir() -> String  [native]
+  isdir(path: String) -> Bool  [native]
+  isfile(path: String) -> Bool  [native]
+  join(...)  [native]
+  listdir(path: String) -> List  [native]
+  mkdir(path: String, exist_ok: Bool = False) -> Bool  [native]
+  remove(path: String, missing_ok: Bool = False) -> Bool  [native]
+  rename(src: String, dst: String)  [native]
+  rmtree(path: String, missing_ok: Bool = False) -> Bool  [native]
+  splitext(path: String) -> List  [native]
+  walk(dir: String) -> List  [native]
+========== MODULE math ==========
+module math:
+  acos(x: Number) -> Float  [native]
+  acosh(x: Number) -> Float  [native]
+  asin(x: Number) -> Float  [native]
+  asinh(x: Number) -> Float  [native]
+  atan(x: Number) -> Float  [native]
+  atan2(y: Number, x: Number) -> Float  [native]
+  atanh(x: Number) -> Float  [native]
+  cbrt(x: Number) -> Float  [native]
+  ceil(x: Number) -> Integer  [native]
+  comb(n: Integer, k: Integer) -> Integer  [native]
+  copysign(x: Number, y: Number) -> Float  [native]
+  cos(x: Number) -> Float  [native]
+  cosh(x: Number) -> Float  [native]
+  degrees(x: Number) -> Float  [native]
+  e: Float
+  erf(x: Number) -> Float  [native]
+  erfc(x: Number) -> Float  [native]
+  exp(x: Number) -> Float  [native]
+  expm1(x: Number) -> Float  [native]
+  fabs(x: Number) -> Float  [native]
+  factorial(n: Integer) -> Integer  [native]
+  floor(x: Number) -> Integer  [native]
+  fmod(x: Number, y: Number) -> Float  [native]
+  gamma(x: Number) -> Float  [native]
+  gcd(a: Integer, b: Integer) -> Integer  [native]
+  hypot(x: Number, y: Number) -> Float  [native]
+  inf: Float
+  isfinite(x: Number) -> Bool  [native]
+  isinf(x: Number) -> Bool  [native]
+  isnan(x: Number) -> Bool  [native]
+  lcm(a: Integer, b: Integer) -> Integer  [native]
+  lgamma(x: Number) -> Float  [native]
+  log(x: Number, base = None) -> Float  [native]
+  log10(x: Number) -> Float  [native]
+  log1p(x: Number) -> Float  [native]
+  log2(x: Number) -> Float  [native]
+  nan: Float
+  perm(n: Integer, k = None) -> Integer  [native]
+  pi: Float
+  pow(x: Number, y: Number) -> Float  [native]
+  prod(iterable, start = 1) -> Number  [native]
+  radians(x: Number) -> Float  [native]
+  sin(x: Number) -> Float  [native]
+  sinh(x: Number) -> Float  [native]
+  sqrt(x: Number) -> Float  [native]
+  tan(x: Number) -> Float  [native]
+  tanh(x: Number) -> Float  [native]
+  tau: Float
+  trunc(x: Number) -> Float  [native]
+========== MODULE random ==========
+module random:
+  Random(seed = None, generator: String = "xoshiro") -> Random  [native]
+  hasentropy() -> Bool  [native]
+  randombelow(n: Integer) -> Integer  [native]
+  randombytes(n: Integer = 32) -> Bytes  [native]
+  randomhex(n: Integer = 32) -> String  [native]
+  randomurlsafe(n: Integer = 32) -> String  [native]
+========== MODULE tensor ==========
+module tensor:
+  Tensor(data, dtype = None, requiresgrad = False) -> Tensor  [native]
+  arange(...)  [native]
+  concat(tensors: List, axis: Integer = 0) -> Tensor  [native]
+  concatenate(tensors: List, axis: Integer = 0) -> Tensor  [native]
+  contract(a: Tensor, b: Tensor, aaxes, baxes) -> Tensor  [native]
+  cross(a: Tensor, b: Tensor) -> Tensor  [native]
+  det(t: Tensor) -> Number  [native]
+  diag(t: Tensor, k: Integer = 0) -> Tensor  [native]
+  einsum(...)  [native]
+  eye(n: Integer, dtype = None, requiresgrad = False) -> Tensor  [native]
+  full(shape: List, value: Number, dtype = None, requiresgrad = False) -> Tensor  [native]
+  fulllike(t: Tensor, value: Number) -> Tensor  [native]
+  identity(n: Integer, dtype = None, requiresgrad = False) -> Tensor  [native]
+  inner(a: Tensor, b: Tensor) -> Tensor  [native]
+  inv(t: Tensor) -> Tensor  [native]
+  kron(a: Tensor, b: Tensor) -> Tensor  [native]
+  linspace(start: Number, stop: Number, num: Integer = 50) -> Tensor  [native]
+  nograd() -> NoGradContext  [native]
+  nonzero(t: Tensor) -> List  [native]
+  norm(t: Tensor, ord: Number = 2) -> Float  [native]
+  ones(shape: List, dtype = None, requiresgrad = False) -> Tensor  [native]
+  oneslike(t: Tensor) -> Tensor  [native]
+  outer(a: Tensor, b: Tensor) -> Tensor  [native]
+  searchsorted(a: Tensor, v)  [native]
+  solve(a: Tensor, b: Tensor) -> Tensor  [native]
+  split(t: Tensor, sections: List, axis: Integer = 0) -> List  [native]
+  stack(tensors: List, axis: Integer = 0) -> Tensor  [native]
+  tensor(data, dtype = None, requiresgrad = False) -> Tensor  [native]
+  tensordot(a: Tensor, b: Tensor, axes = 2) -> Tensor  [native]
+  trace(t: Tensor) -> Number  [native]
+  tril(t: Tensor, k: Integer = 0) -> Tensor  [native]
+  triu(t: Tensor, k: Integer = 0) -> Tensor  [native]
+  unique(t: Tensor) -> Tensor  [native]
+  where(cond: Tensor, a: Tensor, b: Tensor) -> Tensor  [native]
+  zeros(shape: List, dtype = None, requiresgrad = False) -> Tensor  [native]
+  zeroslike(t: Tensor) -> Tensor  [native]
+========== MODULE matrix ==========
+module matrix:
+  Matrix(...)  [native]
+  identity(n: Integer) -> Matrix  [native]
+  ones(rows: Integer, cols: Integer) -> Matrix  [native]
+  vector(values: List) -> Matrix  [native]
+  zeros(rows: Integer, cols: Integer) -> Matrix  [native]
+========== MODULE complex ==========
+module complex:
+  Complex(re: Number, im = 0) -> Complex  [native]
+  Matrix(rows: List) -> ComplexMatrix  [native]
+  abs(z) -> Float  [native]
+  acos(z) -> Complex  [native]
+  acosh(z) -> Complex  [native]
+  argument(z) -> Float  [native]
+  asin(z) -> Complex  [native]
+  asinh(z) -> Complex  [native]
+  atan(z) -> Complex  [native]
+  atanh(z) -> Complex  [native]
+  cbrt(z) -> Complex  [native]
+  conjugate(z) -> Complex  [native]
+  cos(z) -> Complex  [native]
+  cosh(z) -> Complex  [native]
+  exp(z) -> Complex  [native]
+  i: Complex
+  identity(n: Integer) -> ComplexMatrix  [native]
+  log(z) -> Complex  [native]
+  log10(z) -> Complex  [native]
+  modulus(z) -> Float  [native]
+  norm2(z) -> Float  [native]
+  of(re: Number, im: Number) -> Complex  [native]
+  one: Complex
+  ones(rows: Integer, cols: Integer) -> ComplexMatrix  [native]
+  phase(z) -> Float  [native]
+  polar(r: Number, theta: Number) -> Complex  [native]
+  pow(z, w) -> Complex  [native]
+  real(re: Number) -> Complex  [native]
+  sin(z) -> Complex  [native]
+  sinh(z) -> Complex  [native]
+  sqrt(z) -> Complex  [native]
+  tan(z) -> Complex  [native]
+  tanh(z) -> Complex  [native]
+  vector(values: List) -> ComplexMatrix  [native]
+  zero: Complex
+  zeros(rows: Integer, cols: Integer) -> ComplexMatrix  [native]
+========== MODULE json ==========
+module json:
+  dumps(value, indent: Integer = 0) -> String  [native]
+  loads(text: String)  [native]
+  parse(text: String)  [native]
+  stringify(value, indent: Integer = 0) -> String  [native]
+========== MODULE serialize ==========
+module serialize:
+  dumps(value) -> String  [native]
+  load(path: String)  [native]
+  loads(text: String)  [native]
+  save(value, path: String)  [native]
+========== MODULE dump ==========
+module dump:
+  dumps(value) -> Bytes  [native]
+  load(path: String)  [native]
+  loads(data)  [native]
+  save(value, path: String)  [native]
+========== MODULE net ==========
+module net:
+  Session() -> Session  [native]
+  Socket() -> Socket  [native]
+  delete(url: String, options = None) -> Response  [native]
+  fromfd(fd: Integer, family: String = "inet", type: String = "stream") -> Socket  [native]
+  get(url: String, options = None) -> Response  [native]
+  getaddrinfo(host: String, port = None, family: String = "", type: String = "") -> List  [native]
+  gethostbyname(host: String) -> String  [native]
+  gethostname() -> String  [native]
+  head(url: String, options = None) -> Response  [native]
+  options(url: String, options = None) -> Response  [native]
+  parseqs(query: String) -> Dict  [native]
+  patch(url: String, options = None) -> Response  [native]
+  post(url: String, options = None) -> Response  [native]
+  put(url: String, options = None) -> Response  [native]
+  quote(s: String) -> String  [native]
+  request(method: String, url: String, options = None) -> Response  [native]
+  socket(family: String = "inet", type: String = "stream") -> Socket  [native]
+  socketpair(type: String = "stream") -> List  [native]
+  tcpsocket(family: String = "inet") -> Socket  [native]
+  tlsenabled: Bool
+  udpsocket(family: String = "inet") -> Socket  [native]
+  unquote(s: String) -> String  [native]
+  urlencode(params: Dict) -> String  [native]
+  urlsplit(url: String) -> Dict  [native]
+========== MODULE sys ==========
+module sys:
+  arch: String
+  createprocess(args: List, cwd = None, input = "", timeout = None, binary: Bool = False) -> Dict  [native]
+  environ() -> Dict  [native]
+  exit(code: Integer = 0)  [native]
+  getenv(name: String, default = None) -> String  [native]
+  platform: String
+  setenv(name: String, value: String)  [native]
+  shell(command: String, cwd = None, input = "", timeout = None, binary: Bool = False) -> Dict  [native]
+  traceback() -> String  [native]
+  unsetenv(name: String)  [native]
+  version: String
+========== MODULE time ==========
+module time:
+  datetime(timestamp = None) -> DateTime  [native]
+  make(year: Integer, month: Integer, day: Integer, hour: Integer = 0, minute: Integer = 0, second: Integer = 0) -> DateTime  [native]
+  monotonic() -> Float  [native]
+  now() -> DateTime  [native]
+  perfcounterns() -> Integer  [native]
+  sleep(seconds: Number)  [native]
+  strptime(text: String, format: String) -> DateTime  [native]
+  time() -> Float  [native]
+  timens() -> Integer  [native]
+========== MODULE zlib ==========
+module zlib:
+  compress(data)  [native]
+  decompress(data)  [native]
+  deflate(data)  [native]
+  inflate(data)  [native]
+========== MODULE gzip ==========
+module gzip:
+  compress(data)  [native]
+  decompress(data)  [native]
+  gunzip(data)  [native]
+  gzip(data)  [native]
+========== MODULE hash ==========
+module hash:
+  adler32(data) -> Integer  [native]
+  comparedigest(a, b) -> Bool  [native]
+  crc32(data) -> Integer  [native]
+  crc64(data) -> Integer  [native]
+  hash(value) -> Integer  [native]
+  hmac(key, msg, algo: String = "sha256") -> String  [native]
+  md5(data) -> String  [native]
+  pbkdf2(password, salt, iterations: Integer, dklen: Integer = 32, algo: String = "sha256") -> Bytes  [native]
+  sha1(data) -> String  [native]
+  sha256(data) -> String  [native]
+  sha384(data) -> String  [native]
+  sha512(data) -> String  [native]
+========== MODULE crypto ==========
+module crypto:
+  aesdecrypt(key, ciphertext, iv, tag, aad = None) -> Bytes  [native]
+  aesencrypt(key, plaintext, iv, aad = None) -> Dict  [native]
+  ecgenerate(curve: String = "prime256v1") -> Dict  [native]
+  ecsign(private_pem: String, message, algo: String = "sha256") -> Bytes  [native]
+  ecverify(public_pem: String, message, signature, algo: String = "sha256") -> Bool  [native]
+  enabled: Bool
+  rsadecrypt(private_pem: String, data) -> Bytes  [native]
+  rsaencrypt(public_pem: String, data) -> Bytes  [native]
+  rsagenerate(bits: Integer = 2048) -> Dict  [native]
+  rsasign(private_pem: String, message, algo: String = "sha256") -> Bytes  [native]
+  rsaverify(public_pem: String, message, signature, algo: String = "sha256") -> Bool  [native]
+  x509parse(pem: String) -> Dict  [native]
+========== MODULE int ==========
+module int:
+  BigInt(value) -> BigInt  [native]
+  abs(n) -> BigInt  [native]
+  big(value) -> BigInt  [native]
+  comb(n, k) -> BigInt  [native]
+  factorial(n) -> BigInt  [native]
+  fromstring(s: String, base: Integer = 10) -> BigInt  [native]
+  gcd(a, b) -> BigInt  [native]
+  isprime(n) -> Bool  [native]
+  isprobableprime(n, rounds: Integer = 25) -> Bool  [native]
+  isqrt(n) -> BigInt  [native]
+  lcm(a, b) -> BigInt  [native]
+  modinv(a, m) -> BigInt  [native]
+  modpow(base, exp, mod) -> BigInt  [native]
+  one: BigInt
+  perm(n, k) -> BigInt  [native]
+  pow(base, exp) -> BigInt  [native]
+  randomprime(bits: Integer, rounds: Integer = 25) -> BigInt  [native]
+  zero: BigInt
+========== MODULE regex ==========
+module regex:
+  DOTALL: Integer
+  I: Integer
+  IGNORECASE: Integer
+  M: Integer
+  MULTILINE: Integer
+  S: Integer
+  compile(pattern: String, flags: Integer = 0) -> Regex  [native]
+  escape(s: String) -> String  [native]
+  findall(pattern: String, string: String, flags: Integer = 0) -> List  [native]
+  finditer(pattern: String, string: String, flags: Integer = 0) -> List  [native]
+  fullmatch(pattern: String, string: String, flags: Integer = 0)  [native]
+  match(pattern: String, string: String, flags: Integer = 0)  [native]
+  search(pattern: String, string: String, flags: Integer = 0)  [native]
+  split(pattern: String, string: String, maxsplit: Integer = 0, flags: Integer = 0) -> List  [native]
+  sub(pattern: String, repl, string: String, count: Integer = 0, flags: Integer = 0) -> String  [native]
+========== MODULE parallel ==========
+module parallel:
+  Barrier(parties: Integer) -> Barrier  [native]
+  Event() -> Event  [native]
+  Lock() -> Lock  [native]
+  Queue(maxsize: Integer = 0) -> Queue  [native]
+  Semaphore(value: Integer = 1) -> Semaphore  [native]
+  cpucount() -> Integer  [native]
+  spawn(...)  [native]
+========== MODULE itertools ==========
+module itertools:
+  accumulate(iterable, func = ...)
+  chain(lists)
+  combinations(items, r)
+  compress(data, selectors)
+  count(start = ..., step = ..., stop = ...)
+  cycle(iterable, times)
+  dropwhile(pred, iterable)
+  filterfalse(pred, iterable)
+  groupby(iterable, key = ...)
+  islice(iterable, start, stop, step = ...)
+  pairwise(iterable)
+  permutations(items, r = ...)
+  product(lists)
+  repeat(value, times)
+  starmap(func, argtuples)
+  takewhile(pred, iterable)
+  ziplongest(lists, fillvalue = ...)
+========== MODULE functools ==========
+module functools:
+  cache(func)
+  partial(func, bound)
+  reduce(func, iterable, initial = ...)
+========== MODULE collections ==========
+module collections:
+  Counter: Counter
+  defaultdict: defaultdict
+  deque: deque
+========== MODULE statistics ==========
+module statistics:
+  mean(data) -> Float
+  median(data) -> Float
+  mode(data)
+  multimode(data)
+  pstdev(data) -> Float
+  pvariance(data) -> Float
+  quantiles(data, n = ...)
+  stdev(data) -> Float
+  variance(data) -> Float
+========== MODULE string ==========
+module string:
+  ascii_letters: String
+  ascii_lowercase: String
+  ascii_uppercase: String
+  capwords(s) -> String
+  closest(query, candidates)
+  digits: String
+  fuzzymatch(query, candidates, cutoff = ...)
+  hexdigits: String
+  octdigits: String
+  punctuation: String
+  similarity(a, b)
+  whitespace: String
+========== MODULE textwrap ==========
+module textwrap:
+  dedent(text) -> String
+  fill(text, width = ...)
+  indent(text, prefix) -> String
+  wrap(text, width = ...)
+========== MODULE base64 ==========
+module base64:
+  decode(s)
+  encode(data) -> String
+  urlsafedecode(s)
+  urlsafeencode(data) -> String
+========== MODULE csv ==========
+module csv:
+  format(rows) -> String
+  formatrow(fields) -> String
+  parse(text)
+  parserow(line)
+========== MODULE tabular ==========
+module tabular:
+  DataFrame: DataFrame
+  GroupBy: GroupBy
+  Series: Series
+  concat(frames)
+  merge(left, right, on, how = ...)
+  readcsv(source, header = ..., infer = ...)
+========== MODULE xml ==========
+module xml:
+  Element: Element
+  fromstring(text: String)
+  parse(text: String)
+  tostring(element) -> String
+========== MODULE heapq ==========
+module heapq:
+  heapify(items)
+  heappop(heap)
+  heappush(heap, item)
+  heapreplace(heap, item)
+  merge(lists)
+  nlargest(n, items)
+  nsmallest(n, items)
+========== MODULE bisect ==========
+module bisect:
+  bisect(a, x) -> Integer
+  bisectleft(a, x) -> Integer
+  bisectright(a, x) -> Integer
+  insort(a, x)
+  insortleft(a, x)
+  insortright(a, x)
+========== MODULE copy ==========
+module copy:
+  copy(obj)
+  deepcopy(obj)
+========== MODULE enum ==========
+module enum:
+  Enum: Enum
+========== MODULE tee ==========
+module tee:
+  Tee: Tee
+  tee_stderr: tee_stderr
+  tee_stdout: tee_stdout
+========== MODULE arg ==========
+module arg:
+  Parser: Parser
+========== MODULE semver ==========
+module semver:
+  clean(s) -> String
+  compare(a, b)
+  diff(a, b)
+  eq(a, b)
+  gt(a, b)
+  gte(a, b)
+  inc(s, release) -> String
+  lt(a, b)
+  lte(a, b)
+  major(s)
+  maxsatisfying(versions, rng)
+  minor(s)
+  minsatisfying(versions, rng)
+  neq(a, b)
+  parse(s)
+  patch(s)
+  prerelease(s)
+  rsort(versions)
+  satisfies(version, rng) -> Bool
+  sort(versions)
+  valid(s)
+  validrange(rng) -> Bool

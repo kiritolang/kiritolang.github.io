@@ -1,0 +1,171 @@
+========== KICLASS collections.Counter ==========
+class Counter:
+  _getitem_(self, x)
+  _init_(self, items = ...)
+  _str_(self) -> String
+  add(self, x)
+  get(self, x)
+  items(self)
+  mostcommon(self, n = ...)
+========== KICLASS collections.deque ==========
+class deque:
+  _getitem_(self, i)
+  _init_(self, items = ...)
+  _iter_(self)
+  _len_(self) -> Integer
+  _str_(self) -> String
+  append(self, x)
+  appendleft(self, x)
+  pop(self)
+  popleft(self)
+========== KICLASS collections.defaultdict ==========
+class defaultdict:
+  _contains_(self, k)
+  _getitem_(self, k)
+  _init_(self, factory)
+  _setitem_(self, k, v)
+  _str_(self) -> String
+  items(self)
+  keys(self)
+  values(self)
+========== KICLASS tabular.Series ==========
+class Series:
+  _add_(self, other)
+  _div_(self, other)
+  _eq_(self, other)
+  _floordiv_(self, other)
+  _ge_(self, other)
+  _getitem_(self, key)
+  _gt_(self, other)
+  _init_(self, values, index = ..., name = ...)
+  _iter_(self)
+  _le_(self, other)
+  _len_(self) -> Integer
+  _lt_(self, other)
+  _mod_(self, other)
+  _mul_(self, other)
+  _ne_(self, other)
+  _setitem_(self, key, value)
+  _str_(self) -> String
+  _sub_(self, other)
+  all(self) -> Bool
+  any(self) -> Bool
+  apply(self, fn)
+  astype(self, typename)
+  copy(self)
+  count(self) -> Integer
+  dropna(self)
+  eq(self, other)
+  fillna(self, value)
+  head(self, n = ...)
+  iat(self, pos)
+  isin(self, values)
+  map(self, fn)
+  max(self)
+  mean(self)
+  median(self)
+  min(self)
+  ne(self, other)
+  nunique(self) -> Integer
+  prod(self)
+  resetindex(self)
+  sortvalues(self, ascending = ...)
+  std(self)
+  sum(self)
+  tail(self, n = ...)
+  tolist(self)
+  unique(self)
+  valuecounts(self)
+  variance(self)
+========== KICLASS tabular.DataFrame ==========
+class DataFrame:
+  _getitem_(self, key)
+  _init_(self, data = ..., columns = ..., index = ...)
+  _len_(self) -> Integer
+  _setitem_(self, key, value)
+  _str_(self) -> String
+  apply(self, fn)
+  assign(self, name, value)
+  at(self, label, col)
+  column(self, name)
+  copy(self)
+  count(self)
+  describe(self)
+  drop(self, columns)
+  dropna(self)
+  fillna(self, value)
+  groupby(self, by)
+  head(self, n = ...)
+  iat(self, pos, col)
+  iterrows(self)
+  max(self)
+  mean(self)
+  merge(self, other, on, how = ...)
+  min(self)
+  nrows(self) -> Integer
+  rename(self, columns)
+  resetindex(self)
+  rowat(self, pos)
+  rowsat(self, positions)
+  setindex(self, col)
+  shape(self)
+  slice(self, start, stop)
+  sortvalues(self, by, ascending = ...)
+  std(self)
+  sum(self)
+  tail(self, n = ...)
+  tocsv(self)
+  todict(self)
+  torows(self)
+========== KICLASS tabular.GroupBy ==========
+class GroupBy:
+  _init_(self, frame, by)
+  agg(self, spec)
+  apply(self, fn)
+  count(self)
+  max(self)
+  mean(self)
+  min(self)
+  size(self)
+  std(self)
+  sum(self)
+========== KICLASS xml.Element ==========
+class Element:
+  _getitem_(self, i)
+  _init_(self, tag, attrib = ...)
+  _iter_(self)
+  _len_(self) -> Integer
+  _str_(self) -> String
+  find(self, tag)
+  findall(self, tag)
+  findtext(self, tag, default = ...)
+  get(self, key, default = ...)
+  itertext(self)
+  tostring(self) -> String
+========== KICLASS enum.Enum ==========
+class Enum:
+  _contains_(self, name)
+  _getitem_(self, name)
+  _init_(self, names)
+  get(self, name)
+  nameof(self, value)
+  names(self)
+  values(self)
+========== KICLASS tee.Tee ==========
+class Tee:
+  _enter_(self)
+  _exit_(self)
+  _init_(self, primary, copies = ...)
+  close(self)
+  flush(self)
+  streams(self)
+  write(self, data)
+  writelines(self, lines)
+========== KICLASS arg.Parser ==========
+class Parser:
+  _init_(self, description = ...)
+  flag(self, name, help = ...)
+  option(self, name, default = ..., help = ...)
+  parse(self, args)
+  positional(self, name, help = ...)
+  usage(self) -> String

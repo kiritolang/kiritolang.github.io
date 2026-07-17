@@ -7,6 +7,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #ifndef _WIN32
@@ -206,7 +207,15 @@ inline int parseType(const std::string& s) {
     if (s == "dgram" || s == "udp") return SOCK_DGRAM;
     throw KiritoError("unknown socket type '" + s + "' (expected 'stream' or 'dgram')");
 }
-inline const char* familyName(int f) { return f == AF_INET6 ? "inet6" : "inet"; }
+inline const char* familyName(int f) {
+    if (f == AF_INET6) return "inet6";
+#ifndef _WIN32
+    // What POSIX socketpair() actually returns. Not creatable via socket()/parseFamily — a Socket
+    // only ever reports it, and reporting "inet" for it was simply untrue.
+    if (f == AF_UNIX) return "unix";
+#endif
+    return "inet";
+}
 inline const char* typeName(int t) { return t == SOCK_DGRAM ? "dgram" : "stream"; }
 
 // Socket options addressed by a short lowercase string (so no raw SO_*/IPPROTO_* integers leak into
@@ -775,6 +784,11 @@ public:
         return {"headers: Dict", "cookies: Dict", "get(url, opts) -> Response", "post(url, opts) -> Response", "put(url, opts) -> Response", "delete(url, opts) -> Response", "patch(url, opts) -> Response", "head(url, opts) -> Response", "options(url, opts) -> Response", "request(method, url, opts) -> Response"};
     }
     Handle headersH{}, cookiesH{};
+    // The host each jar cookie came from, so a cookie set by one origin is not sent to another
+    // (the jar itself stays the documented flat name->value Dict, so `.cookies["k"]` still works).
+    // A cookie the user put in the jar directly has no entry here and is sent everywhere — that is
+    // an explicit instruction, not something a server slipped us.
+    std::unordered_map<std::string, std::string> cookieOrigin;
     void children(std::vector<Handle>& out) const override { out.push_back(headersH); out.push_back(cookiesH); }
     std::string str(StringifyCtx&) const override { return "<Session>"; }
     Handle getAttr(KiritoVM& vm, Handle self, std::string_view name) override;
@@ -1014,8 +1028,8 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     }
 }
 
-// A Session request: merge the session's default headers + cookie jar into `opts`, perform the
-// request, then fold the response's cookies back into the jar.
+// A Session request: merge the session's default headers + the cookies scoped to this host into
+// `opts`, perform the request, then fold the response's cookies back into the jar.
 inline Handle sessionDo(KiritoVM& vm, Handle self, const std::string& method, const std::string& url, Handle opts) {
     auto& s = static_cast<SessionVal&>(vm.arena().deref(self));
     RootScope rs(vm);
@@ -1029,18 +1043,32 @@ inline Handle sessionDo(KiritoVM& vm, Handle self, const std::string& method, co
     mergeInto(hdr, s.headersH);                        // session defaults...
     mergeInto(hdr, netOpt(vm, opts, "headers"));       // ...overlaid by per-call headers
     eff.set("headers", hdr);
+    // Only this host's cookies travel. Without the origin check, a Session that logged in to one
+    // host would hand that host's session cookie to every other host it later talked to — the same
+    // leak `net::redirectScope` already refuses to allow across a redirect.
+    const std::string host = net::asciiLower(net::parseUrl(url).host);
     Dict ck(vm);
-    mergeInto(ck, s.cookiesH);
-    mergeInto(ck, netOpt(vm, opts, "cookies"));
+    if (vm.arena().deref(s.cookiesH).kind() == ValueKind::Dict)
+        for (const auto& [k, v] : Value(vm, s.cookiesH).pairs()) {
+            auto it = s.cookieOrigin.find(k.str());
+            if (it == s.cookieOrigin.end() || it->second == host) ck.set(k.str(), v.handle());
+        }
+    mergeInto(ck, netOpt(vm, opts, "cookies"));        // a per-call cookie is explicit: always sent
     eff.set("cookies", ck);
     Handle effH = rs.add(eff.handle());
 
     Handle resp = netRequest(vm, method, url, effH);
-    // persist response cookies into the session jar
+    // persist response cookies into the session jar, tagged with the host that actually set them
+    // (the final URL's — netRequest may have followed a redirect, and it clears the jar when one
+    // crosses hosts, so a cookie surviving here belongs to where the exchange ended up)
     auto& r = static_cast<ResponseVal&>(vm.arena().deref(resp));
+    const std::string origin = net::asciiLower(net::parseUrl(r.url).host);
     auto& jar = static_cast<DictVal&>(vm.arena().deref(s.cookiesH));
     const DictVal& rc = static_cast<const DictVal&>(vm.arena().deref(r.cookiesH));
-    for (Handle k : rc.keys()) jar.set(vm.arena(), k, *rc.find(vm.arena(), k));
+    for (Handle k : rc.keys()) {
+        jar.set(vm.arena(), k, *rc.find(vm.arena(), k));
+        s.cookieOrigin[Value(vm, k).str()] = origin;
+    }
     return resp;
 }
 
@@ -1191,6 +1219,10 @@ inline Handle SocketVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
             double secs = t.kind() == ValueKind::Float
                               ? static_cast<const FloatVal&>(t).value()
                               : static_cast<double>(asInt(vm, a[0]));
+            // setTimeout reads "not positive" as "leave it blocking", so a negative would silently
+            // undo the caller's intent — most likely a computed timeout that went negative upstream.
+            // 0 keeps its documented meaning (blocking, no timeout), as in Python.
+            if (!(secs >= 0)) throw KiritoError("settimeout: seconds must be >= 0");
             auto& s = sock(vm, self);
             net::setTimeout(s.fdOrThrow("settimeout"), secs);
             s.timeout = secs;   // also bounds a subsequent connect() (Python semantics)
@@ -1462,8 +1494,9 @@ public:
                  if (!netcompat::socketPair(typ, fds))
                      throw KiritoError("socketpair(" + ts + ") failed: " + netcompat::lastError());
                  RootScope rs(vm);
-                 Handle s0 = rs.add(vm.alloc(std::make_unique<SocketVal>(fds[0], AF_INET, typ)));
-                 Handle s1 = rs.add(vm.alloc(std::make_unique<SocketVal>(fds[1], AF_INET, typ)));
+                 const int fam = netcompat::kSocketPairFamily;  // AF_UNIX on POSIX, AF_INET on Windows
+                 Handle s0 = rs.add(vm.alloc(std::make_unique<SocketVal>(fds[0], fam, typ)));
+                 Handle s1 = rs.add(vm.alloc(std::make_unique<SocketVal>(fds[1], fam, typ)));
                  List out(vm);
                  out.push(s0);
                  out.push(s1);

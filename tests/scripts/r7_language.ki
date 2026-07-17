@@ -1,0 +1,541 @@
+# r7_language.ki — complementary, adversarial audit of docs/pages/02-language-guide.md.
+# r4/r5/r6 already cover the core surface exhaustively; r7 targets GAPS and HARDER edge cases:
+#   - starred-target boundary counts (empty, exact-shortfall, single-star alone),
+#   - swap / multi-target assignment with side effects and mixed name/index/member targets,
+#   - closures capturing a SHARED loop variable (late binding) + multi-level write-through,
+#   - operator-overload fallbacks (only _ne_ derives from _eq_; _gt_/_le_/_ge_ do NOT derive
+#     from _lt_; no reflected arithmetic; _eq_ propagates an inner error; `_bool_` and `_hash_`
+#   - _len_ does NOT drive truthiness; default _str_ / default-repr-in-container,
+#   - try/catch/finally where finally TRANSFERS control over a pending return/break (extends r5),
+#   - with: _exit_ return value does NOT suppress an exception; _exit_ on break/continue,
+#   - switch exactness + runtime-non-scalar case + nested switch,
+#   - conditional-expr precedence vs `not` (not binds tighter than the ternary),
+#   - lazy assert-message evaluation, _init_ return ignored, param-ordering/default-scoping rules,
+#   - all six analyzer warnings present (via a subprocess) + their absence on clean/discard code.
+# Self-checking: every assertion bumps a counter; the final line reports the total.
+
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(thunk) -> True iff calling thunk() throws.
+var throws = Function(thunk):
+    var threw = False
+    try:
+        discard thunk()
+    catch as e:
+        threw = True
+    return threw
+
+# importErr(src, sub) -> True iff importing `src` throws and `sub` (if non-empty) is in the message.
+# Parse/lex/compile errors surface on import, not in this file's own compile.
+var impCounter = 0
+var importErr = Function(src, sub):
+    impCounter = impCounter + 1
+    var fp = "/tmp/r7_lang_" + String(impCounter)
+    var fh = io.open(fp + ".ki", "w")
+    fh.write(src)
+    fh.close()
+    var threw = False
+    try:
+        discard import(fp)
+    catch as e:
+        threw = sub == "" or sub in e
+    path.remove(fp + ".ki", missing_ok = True)
+    return threw
+
+# ============================================================================
+# Packing / unpacking — starred boundary counts (gaps vs r4/r5/r6)
+# ============================================================================
+# A lone starred target gathers the WHOLE iterable, including the empty case.
+var *starWhole = [9, 8, 7]
+ok(starWhole == [9, 8, 7] and type(starWhole) == "List", "lone starred target gathers everything")
+var *starEmptyAll = []
+ok(starEmptyAll == [] and type(starEmptyAll) == "List", "lone starred target over [] is the empty list")
+
+# A starred tail absorbs zero surplus (exactly enough fixed values, nothing left).
+var oneHead, *oneStarTail = [1]
+ok(oneHead == 1 and oneStarTail == [], "a starred tail absorbs zero surplus")
+# A starred HEAD likewise absorbs zero surplus.
+var *zeroHead, lastOne = [5]
+ok(zeroHead == [] and lastOne == 5, "a starred head absorbs zero surplus")
+
+# A fixed target plus a star: shortfall (too few values for the fixed part) throws.
+ok(importErr("var a, b, c = [1]\n", "unpack"), "fixed-target unpack shortfall throws")
+ok(importErr("var a, b, *rest = [1]\n", "at least"), "head+head+star with too few fixed values throws")
+ok(importErr("var a, *rest = []\n", "at least"), "head + starred tail over [] throws (need >= 1 fixed)")
+
+# Swap with side effects: the whole RHS is evaluated before any LHS target is assigned.
+var swapCalls = []
+var swapArr = [10, 20, 30]
+var ixn = Function(i):
+    swapCalls.append(i)
+    return i
+swapArr[ixn(0)], swapArr[ixn(2)] = swapArr[ixn(2)], swapArr[ixn(0)]
+ok(swapArr == [30, 20, 10], "indexed swap produces the right values")
+ok(swapCalls == [2, 0, 0, 2], "swap evaluates the RHS indices first, then the LHS targets")
+
+# Mixed unpack targets in one statement: name + index + member.
+class HasAttr:
+    var _init_ = Function(self):
+        self.attr = 0
+var mixObj = HasAttr()
+var mixArr = [0]
+var mixName = 0
+mixName, mixArr[0], mixObj.attr = 1, 2, 3
+ok(mixName == 1 and mixArr[0] == 2 and mixObj.attr == 3, "mixed name/index/member unpack targets")
+
+# for-loop with a starred target (head + starred tail per row, rows of differing length).
+var starRows = [[1, 2, 3, 4], [5, 6]]
+var rowHeads = []
+var rowTails = []
+for rowHead, *rowTail in starRows:
+    rowHeads.append(rowHead)
+    rowTails.append(rowTail)
+ok(rowHeads == [1, 5], "for-loop starred unpack: heads")
+ok(rowTails == [[2, 3, 4], [6]], "for-loop starred unpack: variable-length tails")
+
+# Unpacking from non-list iterables: range, Set, Dict (keys).
+var rA, rB, rC = range(3)
+ok(rA == 0 and rB == 1 and rC == 2, "unpack from a range")
+var setUA, setUB = {1, 2}
+ok(sorted([setUA, setUB]) == [1, 2], "unpack from a Set")
+var dkA, dkB = {"x": 1, "y": 2}
+ok(sorted([dkA, dkB]) == ["x", "y"], "unpack from a Dict yields its keys")
+
+# ============================================================================
+# Closures capturing a loop variable — SHARED binding (late binding)
+# ============================================================================
+var loopClosures = []
+for li in [0, 1, 2]:
+    loopClosures.append(Function(): return li)
+ok(loopClosures[0]() == 2 and loopClosures[2]() == 2, "for-loop var is one shared binding (late binding)")
+
+var whileClosures = []
+var wci = 0
+while wci < 3:
+    whileClosures.append(Function(): return wci)
+    wci = wci + 1
+ok(whileClosures[0]() == 3, "while-loop closure sees the final value of the captured var")
+
+# Multi-level closure write-through to an outer binding.
+var threeDeep = Function():
+    var x = 1
+    var mid = Function():
+        var inner = Function():
+            x = x + 10
+        inner()
+        return x
+    return mid()
+ok(threeDeep() == 11, "nested closure two levels deep writes through to the outer var")
+
+# ============================================================================
+# Operator-overload fallbacks (gaps: only _ne_ derives; no cross-derivation)
+# ============================================================================
+class OnlyLt:
+    var _init_ = Function(self, v): self.v = v
+    var _lt_ = Function(self, o): return self.v < o.v
+ok(OnlyLt(1) < OnlyLt(2), "_lt_ works")
+ok(throws(Function(): return OnlyLt(2) > OnlyLt(1)), "_gt_ is NOT derived from _lt_")
+ok(throws(Function(): return OnlyLt(1) <= OnlyLt(2)), "_le_ is NOT derived from _lt_")
+ok(throws(Function(): return OnlyLt(2) >= OnlyLt(1)), "_ge_ is NOT derived from _lt_")
+
+# Only _ne_ is auto-derived from _eq_ (confirms the r4 claim from the opposite side).
+class OnlyEq:
+    var _init_ = Function(self, v): self.v = v
+    var _eq_ = Function(self, o): return self.v == o.v
+ok((OnlyEq(1) != OnlyEq(2)) and not (OnlyEq(1) != OnlyEq(1)), "_ne_ auto-derives from _eq_")
+
+# No reflected arithmetic: instance must be on the LEFT for _add_.
+class AddOnly:
+    var _init_ = Function(self, v): self.v = v
+    var _add_ = Function(self, o): return "ok"
+ok(AddOnly(1) + 2 == "ok", "_add_ with instance on the left")
+ok(throws(Function(): return 2 + AddOnly(1)), "no reflected arithmetic (instance on the right throws)")
+
+# A comparison op (_lt_) is not reflected either.
+ok(throws(Function(): return 5 < OnlyLt(10)), "no reflected comparison (builtin on the left throws)")
+
+# _eq_ that touches a missing attribute PROPAGATES the inner error (not swallowed to False).
+ok(throws(Function(): return OnlyEq(1) == 5), "_eq_ propagates an inner attribute error")
+
+# Default equality with None is False (identity), symmetric, never throws.
+class Plain:
+    var _init_ = Function(self): pass
+var plainInst = Plain()
+ok((plainInst == None) == False and (None == plainInst) == False, "instance == None is False (identity)")
+ok((plainInst != None) == True, "instance != None is True")
+
+# `_hash_` on a class DOES opt instances in — hashability + value-lookup are both live.
+class WithHash:
+    var _init_ = Function(self, v): self.v = v
+    var _hash_ = Function(self) -> Integer: return self.v
+    var _eq_ = Function(self, o) -> Bool: return isinstance(o, WithHash) and self.v == o.v
+var useHashKey = Function():
+    var d = {}
+    d[WithHash(1)] = "x"
+    return d[WithHash(1)]                        # same value looks up the same slot
+ok(useHashKey() == "x", "a class defining _hash_ makes instances hashable + value-keyed")
+# A class that does NOT define _hash_ stays unhashable (the opt-in is per-class).
+class NoHashDunder:
+    var _init_ = Function(self, v): self.v = v
+var noHashKey = Function():
+    var d = {}
+    d[NoHashDunder(1)] = "x"
+    return d
+ok(throws(noHashKey), "a class without _hash_ stays unhashable")
+
+# ============================================================================
+# Truthiness and stringification of instances (gaps)
+# ============================================================================
+# `_bool_(self) -> Bool` is the opt-in truthiness dunder. Defining it lets `if`/`while`/`and`/`or`/
+# `not`/`Bool(x)` route through the user's decision. A class WITHOUT `_bool_` remains always
+# truthy (the additive-safe default so adding the dunder later never silently flips existing code).
+class WithBool:
+    var _init_ = Function(self): pass
+    var _bool_ = Function(self) -> Bool: return False
+class WithoutBool:
+    var _init_ = Function(self): pass
+ok(("t" if WithBool() else "f") == "f", "_bool_ returning False makes the instance falsy")
+ok(("t" if WithoutBool() else "f") == "t", "a class without _bool_ is always truthy")
+
+# _len_ does NOT drive truthiness on its own (unlike Python): a class opts in via `_bool_`.
+class ZeroLen:
+    var _len_ = Function(self): return 0
+ok(("t" if ZeroLen() else "f") == "t", "_len_ == 0 does NOT make an instance falsy (no _bool_)")
+
+# A plain instance is always truthy.
+ok(("t" if Plain() else "f") == "t", "a plain instance is truthy")
+
+# Default _str_ form, and default repr inside a container.
+class NoStr:
+    var _init_ = Function(self): pass
+ok(String(NoStr()) == "<NoStr object>", "default _str_ is '<Name object>'")
+ok(String([NoStr()]) == "[<NoStr object>]", "default repr inside a container")
+# A user _str_ is used UNQUOTED inside a container (no repr re-quoting of the result).
+class HasStr:
+    var _str_ = Function(self): return "hi"
+ok(String([HasStr()]) == "[hi]", "user _str_ used unquoted inside a container")
+
+# ============================================================================
+# try / catch / finally — finally that TRANSFERS control over a pending action
+# ============================================================================
+# throw in finally overrides a pending return from the try body.
+var throwOverReturn = Function():
+    try:
+        return "ret"
+    finally:
+        throw "fin"
+ok(throws(throwOverReturn), "throw in finally overrides a pending return (escapes)")
+var throwOverReturnVal = "?"
+try:
+    discard throwOverReturn()
+catch as e:
+    throwOverReturnVal = e
+ok(throwOverReturnVal == "fin", "the finally's throw is the value that escapes")
+
+# break in finally overrides a pending return (loop exits normally).
+var breakOverReturn = Function():
+    var i = 0
+    while i < 3:
+        try:
+            return "early"
+        finally:
+            break
+    return "after_loop"
+ok(breakOverReturn() == "after_loop", "break in finally overrides a pending return")
+
+# continue in finally overrides a pending break (loop keeps going).
+var contOverBreak = Function():
+    var out = []
+    var i = 0
+    while i < 3:
+        i = i + 1
+        try:
+            if i == 2:
+                break
+            out.append("b" + String(i))
+        finally:
+            out.append("f" + String(i))
+            continue
+    out.append("done")
+    return out
+ok(contOverBreak() == ["b1", "f1", "f2", "b3", "f3", "done"], "continue in finally overrides a pending break")
+
+# Triple-nested finally: each runs innermost-first, then the exception reaches the outer catch.
+var tripleOrder = []
+var triple = Function():
+    try:
+        try:
+            try:
+                throw "deep"
+            finally:
+                tripleOrder.append("f1")
+        finally:
+            tripleOrder.append("f2")
+    catch as e:
+        tripleOrder.append("caught:" + e)
+triple()
+ok(tripleOrder == ["f1", "f2", "caught:deep"], "triple-nested finally runs inner->outer, then outer catch")
+
+# ============================================================================
+# Context managers — exit return value & control-flow out of the body
+# ============================================================================
+# _exit_ returning a truthy value does NOT suppress a body exception (unlike Python).
+class ExitSuppress:
+    var _enter_ = Function(self): return self
+    var _exit_ = Function(self): return True
+var exitNoSuppress = Function():
+    with ExitSuppress() as c:
+        throw "boom"
+    return "after"
+ok(throws(exitNoSuppress), "a truthy _exit_ return does NOT suppress the exception")
+
+# _exit_ runs when the body breaks out of the enclosing loop.
+class ExitLog:
+    var _init_ = Function(self, log): self.log = log
+    var _enter_ = Function(self): return self
+    var _exit_ = Function(self): self.log.append("exit")
+var breakLog = []
+var bli = 0
+while bli < 3:
+    with ExitLog(breakLog) as c:
+        breakLog.append("body")
+        break
+    bli = bli + 1
+ok(breakLog == ["body", "exit"], "_exit_ runs when the body breaks the enclosing loop")
+
+# _exit_ runs on each continue out of the body.
+var contLog = []
+for cli in range(2):
+    with ExitLog(contLog) as c:
+        contLog.append("b" + String(cli))
+        continue
+ok(contLog == ["b0", "exit", "b1", "exit"], "_exit_ runs on continue out of the body")
+
+# ============================================================================
+# switch — exactness, runtime non-scalar case, nested
+# ============================================================================
+# Negative-Integer and None/Bool scalar labels.
+var swScalar = Function(v):
+    switch v:
+        case -1:
+            return "neg1"
+        case None:
+            return "none"
+        case True:
+            return "true"
+        case False:
+            return "false"
+        default:
+            return "other"
+ok(swScalar(-1) == "neg1", "switch matches a negative Integer label")
+ok(swScalar(None) == "none" and swScalar(True) == "true" and swScalar(False) == "false", "switch None/Bool labels")
+ok(swScalar(0) == "other", "switch: 0 does not match case False (exact type)")
+
+# A case label whose RUNTIME value is non-scalar throws when that arm is reached.
+var nonScalarCase = Function():
+    var bad = [1, 2]
+    switch 5:
+        case bad:
+            return "matched"
+        default:
+            return "default"
+ok(throws(nonScalarCase), "a runtime non-scalar case value throws when the arm is reached")
+
+# An instance subject (non-scalar) reaches only default.
+var instSubject = Function(c):
+    switch c:
+        case 1:
+            return "one"
+        default:
+            return "def"
+ok(instSubject(Plain()) == "def", "an instance subject reaches only default")
+
+# Nested switch.
+var nestedSwitch = Function(a, b):
+    switch a:
+        case 1:
+            switch b:
+                case 1:
+                    return "1-1"
+                default:
+                    return "1-x"
+        default:
+            return "x"
+ok(nestedSwitch(1, 1) == "1-1" and nestedSwitch(1, 9) == "1-x" and nestedSwitch(9, 9) == "x", "nested switch dispatch")
+
+# continue inside a switch arm propagates to the enclosing loop.
+var swContOut = []
+for sci in range(4):
+    switch sci:
+        case 1:
+            continue
+        default:
+            swContOut.append(sci)
+ok(swContOut == [0, 2, 3], "continue inside a switch arm propagates to the for loop")
+
+# ============================================================================
+# Conditional expression — precedence vs `not`, and nesting
+# ============================================================================
+# `not` binds TIGHTER than the ternary: `not X if C else Y` == `(not X) if C else Y`.
+ok((not True if False else "ELSE") == "ELSE", "not binds tighter than the conditional expression")
+ok((not False if True else True) == True, "ternary chooses the (not X) then-branch")
+# The ternary is genuinely the lowest-precedence operator (vs arithmetic / or).
+ok((1 + 2 if False else 3 + 4) == 7, "arithmetic binds tighter than the ternary")
+ok((False or "B" if True else "D") == "B", "or binds tighter than the ternary")
+# Usable as a dict value and a call argument.
+var posLabel = "pos" if 5 > 0 else "neg"
+ok({"k": posLabel}["k"] == "pos", "ternary result usable as a dict value")
+var dbl = Function(x): return x * 2
+ok(dbl(10 if True else 20) == 20, "ternary usable as a call argument")
+
+# ============================================================================
+# assert — lazy message evaluation
+# ============================================================================
+var assertMsgCalls = []
+var assertMsg = Function():
+    assertMsgCalls.append(1)
+    return "failmsg"
+assert True, assertMsg()
+ok(assertMsgCalls == [], "assert message is NOT evaluated when the condition is truthy")
+var assertCaught = "?"
+try:
+    assert False, assertMsg()
+catch as e:
+    assertCaught = e
+ok(assertMsgCalls == [1] and assertCaught == "failmsg", "assert message IS evaluated (once) on failure")
+
+# ============================================================================
+# Functions — _init_ return, parameter-ordering & default-scoping rules
+# ============================================================================
+# A value returned from _init_ is ignored; the constructed instance is returned.
+class InitReturns:
+    var _init_ = Function(self):
+        self.x = 1
+        return 42
+var ir = InitReturns()
+ok(ir.x == 1 and type(ir) == "InitReturns", "a value returned from _init_ is ignored")
+
+# A non-default parameter after a default parameter is a parse error.
+ok(importErr("var f = Function(a = 1, b): return a + b\n", "non-default"), "required param after a default param is rejected")
+
+# Two starred targets are rejected.
+ok(importErr("var a, *b, *c = [1, 2, 3]\n", ""), "two starred targets are rejected")
+
+# A default expression evaluates at call time and CAN reference an earlier (already-bound) parameter,
+# as well as enclosing-scope names (the resolver, analyzer, and runtime binder all agree — A03-3).
+var earlierParamDefault = Function(a, b = a + 1): return [a, b]
+ok(earlierParamDefault(10) == [10, 11], "a default may reference an earlier parameter")
+ok(earlierParamDefault(10, 99) == [10, 99], "an explicit arg overrides the earlier-param default")
+# ...but a name bound to neither an earlier param nor an enclosing scope is still undefined.
+ok(importErr("var f = Function(a, b = c + 1): return b\n", "not defined"), "a default referencing an unbound name is rejected")
+
+# A default evaluated left-to-right, fresh each call (side effects re-run, in order).
+var defOrder = 0
+var bumpDef = Function():
+    defOrder = defOrder + 1
+    return defOrder
+var twoDefaults = Function(x = bumpDef(), y = bumpDef()): return [x, y]
+ok(twoDefaults() == [1, 2], "defaults evaluate left-to-right at call time")
+ok(twoDefaults() == [3, 4], "defaults re-evaluate fresh on the next call")
+ok(twoDefaults(99) == [99, 5], "an explicit positional arg skips that default's evaluation")
+
+# An annotated parameter with a default still type-checks the supplied value...
+var annDefault = Function(a : Integer = 5) -> Integer: return a
+ok(annDefault() == 5 and annDefault(7) == 7, "annotation + default both apply")
+ok(throws(Function(): return annDefault("x")), "an annotated+defaulted param still rejects a wrong-type value")
+# ...and a default that itself violates the annotation is caught when applied.
+ok(importErr("var f = Function(a : Integer = \"bad\") -> Integer: return a\nvar r = f()\n", "must be"),
+   "a default value that violates the annotation is caught when applied")
+
+# ============================================================================
+# Recursion-depth guard — catchable, recoverable, covers mutual recursion
+# ============================================================================
+var pingF = Function(x): return pongF(x + 1)
+var pongF = Function(x): return pingF(x + 1)
+ok(throws(Function(): return pingF(0)), "mutual recursion hits the catchable depth guard")
+# After catching a depth error, a bounded recursion still works (state recovered).
+try:
+    var deepF = Function(d): return deepF(d + 1)
+    discard deepF(0)
+catch as e:
+    discard e
+var fact = Function(k):
+    if k <= 1:
+        return 1
+    return k * fact(k - 1)
+ok(fact(5) == 120, "after a caught depth error, a bounded recursion still runs")
+
+# ============================================================================
+# Adversarial: cyclic structures don't crash
+# ============================================================================
+# A self-referential list stringifies with a cycle marker (no infinite loop / crash).
+var cyc = [1]
+cyc.append(cyc)
+ok(String(cyc) == "[1, [...]]", "a self-referential list stringifies with a [...] cycle marker")
+# Comparing two cyclic structures throws a catchable depth error rather than hanging.
+var compareCyclic = Function():
+    var p = [1]
+    p.append(p)
+    var q = [1]
+    q.append(q)
+    return p == q
+ok(throws(compareCyclic), "comparing cyclic structures throws a catchable recursion-depth error")
+
+# ============================================================================
+# Static analyzer warnings — present (via subprocess) and absent on clean code
+# ============================================================================
+# We run a child `ki` over a temp file and inspect its stderr, because warnings go to stderr and
+# would otherwise pollute THIS script's clean output.
+var warnStderr = Function(src):
+    var fh = io.open("/tmp/r7_warn.ki", "w")
+    fh.write(src)
+    fh.close()
+    var res = sys.createprocess([path.executable, "/tmp/r7_warn.ki"], "", "", 10.0)
+    path.remove("/tmp/r7_warn.ki", missing_ok = True)
+    return res["stderr"]
+
+# Same, but pass `-w` so the analyzer is silenced.
+var warnStderrNoWarn = Function(src):
+    var fh = io.open("/tmp/r7_warn.ki", "w")
+    fh.write(src)
+    fh.close()
+    var res = sys.createprocess([path.executable, "-w", "/tmp/r7_warn.ki"], "", "", 10.0)
+    path.remove("/tmp/r7_warn.ki", missing_ok = True)
+    return res["stderr"]
+
+ok("assigned but never used" in warnStderr("var f = Function():\n    var u = 1\n    return 2\nvar r = f()\n"),
+   "analyzer warns: assigned-but-never-used local")
+ok("result of expression is unused" in warnStderr("var f = Function(): return 5\nf()\n"),
+   "analyzer warns: unused result of a bare expression")
+ok("re-declared in this block" in warnStderr("var f = Function():\n    var x = 1\n    var x = 2\n    return x\nvar r = f()\n"),
+   "analyzer warns: var re-declared in the same block")
+ok("unreachable code" in warnStderr("var f = Function():\n    return 1\n    var d = 2\nvar r = f()\n"),
+   "analyzer warns: unreachable code after return")
+ok("self-assignment" in warnStderr("var f = Function():\n    var x = 1\n    x = x\n    return x\nvar r = f()\n"),
+   "analyzer warns: self-assignment")
+ok("duplicate parameter name" in warnStderr("var f = Function(a, a): return a\n"),
+   "duplicate parameter name is a hard parse error")
+# todo emits its own warning with the reminder text.
+ok("todo: handle later" in warnStderr("var f = Function():\n    todo \"handle later\"\n    return 1\nvar r = f()\n"),
+   "todo emits a warning with the reminder text")
+ok("todo: not yet implemented" in warnStderr("var f = Function():\n    todo\n    return 1\nvar r = f()\n"),
+   "a bare todo warns 'not yet implemented'")
+# -w silences warnings (the same source that warned above now produces nothing).
+ok(warnStderrNoWarn("var f = Function():\n    var u = 1\n    return 2\nvar r = f()\n") == "",
+   "the -w flag silences analyzer warnings")
+# Absence: a clean program emits nothing on stderr.
+ok(warnStderr("var io2 = import(\"io\")\nio2.print(\"x\")\n") == "", "a clean program produces no warnings")
+# Absence: discard suppresses the unused-result warning.
+ok(warnStderr("var f = Function(): return 5\ndiscard f()\n") == "", "discard suppresses the unused-result warning")
+# Absence: module-level (exported) names are never flagged as unused.
+ok(warnStderr("var exportedButUnusedHere = 99\nvar io2 = import(\"io\")\nio2.print(\"ok\")\n") == "",
+   "module-level names are never flagged as unused")
+
+io.print("r7_language: " + String(n) + " checks passed")

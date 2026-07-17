@@ -104,8 +104,8 @@ Binary search / ordered insertion into a sorted List.
 - `c[x] → Integer` — index syntax for the count of `x`.
 - `c.items() → List` — `[value, count]` pairs.
 - `c.mostcommon([n: Integer]) → List` — `[value, count]` pairs, highest count first. The sort is
-  stable, but the underlying Dict is unordered, so the relative order of *tied* counts is
-  unspecified (don't rely on it). With `n`, only the top `n`; `n = 0` gives `[]`, and a **negative**
+  stable and the underlying Dict is insertion-ordered, so *tied* counts appear in first-insertion
+  order. With `n`, only the top `n`; `n = 0` gives `[]`, and a **negative**
   `n` returns all but the `|n|` least-common pairs (an end-slice — don't pass a negative `n` expecting
   an empty list).
 
@@ -269,14 +269,16 @@ module's HTTPS. The self-contained basics — HMAC, SHA-512, PBKDF2, secure rand
   unauthenticated plaintext.
 - `rsagenerate(bits = 2048) → Dict` — a new RSA keypair as `{private: String, public: String}` (PEM).
 - `rsasign(private_pem, message, algo = "sha256") → Bytes` / `rsaverify(public_pem, message,
-  signature, algo = "sha256") → Bool` — PKCS#1 v1.5 signatures.
+  signature, algo = "sha256") → Bool` — PKCS#1 v1.5 signatures. The key must actually *be* an RSA
+  key: a key of another family throws rather than silently signing with that family's algorithm.
 - `rsaencrypt(public_pem, data) → Bytes` / `rsadecrypt(private_pem, data) → Bytes` — RSA-OAEP
   (SHA-256). Encrypts a short payload directly (for bulk data, encrypt with AES-GCM and wrap the AES
   key with RSA).
 - `ecgenerate(curve = "prime256v1") → Dict` — an EC keypair (PEM); other curves e.g. `secp384r1`,
   `secp521r1`.
 - `ecsign(private_pem, message, algo = "sha256") → Bytes` / `ecverify(public_pem, message,
-  signature, algo = "sha256") → Bool` — ECDSA signatures.
+  signature, algo = "sha256") → Bool` — ECDSA signatures. As with `rsasign`, the key must be an EC
+  key; an RSA key throws.
 - `x509parse(pem) → Dict` — parse a certificate to
   `{subject, issuer, serial, not_before, not_after, sans}` (`sans` is a List of DNS names).
 
@@ -312,6 +314,11 @@ Low-level CSV parsing/formatting (RFC-4180-style quoting). For tabular data anal
 
 Compact **binary** serialization (the binary counterpart of `serialize`), preserving references and
 cycles. `dumps` returns the blob as [`Bytes`](types.html#bytes); `loads` reconstructs from it.
+
+**Never `loads`/`load` a blob from an untrusted source** — reconstructing a `Function`/`class` value
+re-parses and runs its source, so a blob is a program, not data. See
+[serialize's security note](#security-never-load-a-blob-you-do-not-trust); use [`json`](#json) for
+data that crosses a trust boundary.
 
 - `dumps(value) → Bytes` — serialize to a compact binary blob.
 - `loads(data)` — reconstruct the value graph; pass the **`Bytes`** returned by `dumps` directly (do
@@ -720,6 +727,15 @@ sockets below; see the `webserver` example.)
 - `Session() → Session` — a session that persists a cookie jar (`.cookies`) and default headers
   (`.headers`) across requests; has the same `request(method, url[, options])` and verb methods
   (`s.get(url[, options])`, …).
+  **Cookies are scoped to the host that set them**: a cookie a server sends back is remembered with
+  that server's hostname and is sent only to that hostname, so a Session that logs in to one site
+  never hands its session cookie to another. (Scoping is by hostname, not port — matching the cookie
+  RFC and the redirect rule below. The jar is keyed by cookie *name*, so if two hosts set the same
+  name, the last one wins and the cookie follows that host.) A cookie **you** put in the jar yourself
+  (`s.cookies["k"] = "v"`) has no origin and is sent to every host you ask — it is your explicit
+  instruction. `.headers` are likewise sent to every host, so treat a default `Authorization` header
+  as "for anyone this Session talks to" and pass a per-call `headers` option instead when it is meant
+  for one origin only.
 
 The `options` Dict may contain: `headers` (Dict), `params` (Dict → query string), `data` (String, a
 form-Dict, or `Bytes` → sent as `application/octet-stream`), `json` (any value → JSON body +
@@ -1131,8 +1147,23 @@ quantifiers `* + ?`, `{n}`, `{n,}`, `{n,m}`, each greedy or **lazy** with a trai
 `\1`–`\9` is **rejected** (it reads as a backreference, which is unsupported) — write an octal
 character as `\0NN`.
 
+### One divergence from Python: a repeated group that can match empty
+
+When a capturing group can match the empty string *and* is itself repeated (`(a*)*`, `(a*){0,}`),
+Kirito's value for that **group** differs from Python's — `search("(a*)*", "")` gives `[None]` where
+Python gives `('',)`, and `fullmatch("(a*)*", "aaa")` gives `['aaa']` (the iteration that consumed the
+text) where Python gives `('',)` (a final empty iteration at the end).
+
+**The match itself is always correct** — `group(0)`, whether the pattern matches, and every span are
+right; only the captured value of such a group differs. This falls out of simulating all alternatives
+at once instead of backtracking: threads that reach the same position are merged, so "looped again and
+matched empty" cannot be kept apart from "did not loop again". Go's `regexp` and RE2 diverge from
+Perl-family engines here for the same reason, and it is part of the price of the linear-time
+guarantee. In practice, write `(a*)` or `(a+)*` when the captured value matters — a repeated nullable
+group is almost always an accident anyway.
+
 The engine is validated against a large, classic regular-expression test corpus (run through
-Kirito in `tools/tests/scripts/spec_regex_corpus.ki`): zero false positives/negatives, and every
+Kirito in `tests/scripts/spec_regex_corpus.ki`): zero false positives/negatives, and every
 unsupported-feature or invalid pattern is rejected with a clean error rather than crashing.
 
 ### Module functions
@@ -1242,11 +1273,54 @@ s.gt("1.0.10", "1.0.9")                 # True  (numeric, not lexical)
 preserves shared references and cycles (a full object snapshot, unlike `json` which is flat data
 interchange with no aliasing). They share one graph walk and reconstruction core and differ only in
 output: **`serialize` is human-readable text**, **`dump` is compact binary**. Supported value types:
-`None`/`Bool`/`Integer`/`Float`/`String`/[`Bytes`](types.html#bytes)/`List`/`Dict`/`Set`, **plus user
-`class` instances**.
+`None`/`Bool`/`Integer`/`Float`/`String`/[`Bytes`](types.html#bytes)/`List`/`Dict`/`Set`, **user
+`class` instances**, and — self-contained — **`Function` and `class` values themselves**.
 
-A class instance is serialized **by its attributes** by default and reconstructed by looking the
-class up by name in the loading VM (so the class must be defined there; `_init_` is *not* re-run). A
+### Security: never load a blob you do not trust
+
+**`loads`/`load` runs code.** A `Function`/`class` blob carries the construct's *source text*, and
+reconstructing it re-parses and executes that source — a class body's eager class-variable
+initializers run right there, at load time. A blob is therefore a **program**, not inert data: whoever
+wrote it chooses what runs inside your VM the moment you load it, with your permissions.
+
+<!--norun (illustrates the hazard rather than running it; `blob` is deliberately undefined)-->
+```kirito
+# If `blob` came from somewhere you don't control, this is the same as running their script:
+var value = dump.loads(blob)     # a class body inside the blob executes HERE
+```
+
+This is inherent to the source-reparse design and is exactly the hazard Python's `pickle` carries;
+treat the two the same way. Load blobs only from sources you would equally trust to hand you a `.ki`
+file and let you run it — your own files, your own processes, an authenticated peer. For data that
+crosses a trust boundary, use [`json`](#json) instead: it carries values only, never code. (Kirito's
+deserializer is hardened against *memory-safety* abuse — malformed and byte-flipped blobs fail
+cleanly — but no amount of that stops a well-formed blob whose class body simply asks to run.)
+
+### Functions and classes serialize by default
+
+A **`Function`** value round-trips through both formats with no special work: its source text is stored
+and re-parsed on load, and the free variables it **captures travel with it — by value**. A referenced
+**user function or class travels recursively** (so a function that calls a helper serializes the helper
+too), a **standard/stdlib module reconnects by re-`import`** on load (a closure over `math`/`json`/… is
+not copied — it re-binds to the loading VM's module), and a builtin (`len`, `range`, …) simply
+re-resolves. Self-reference and mutual recursion are preserved, so a recursive `Function` still recurses
+after a round-trip.
+
+A **`class`** value serializes the same way — its source (and its base class, which **travels** with it)
+is re-run on load, which also **re-registers the class by name**. This is the key consequence for
+instances: an **instance now carries its class**, so `dump.loads(dump.dumps(myInstance))` works in a
+fresh VM **with no import of the defining module** — the class is reconstructed from the blob. (An
+instance whose class is already defined in the loading VM still reconnects to it by name, as before.)
+
+Two limitations: a `Function` literal written **inside an f-string** has no captured source, so it
+isn't serializable (define it as a normal binding); and a **native/built-in** function bound to a
+variable (e.g. `var f = math.sqrt`) can't be serialized — wrap it in a Kirito `Function`, or re-`import`
+the module on load. Live-resource natives (below) remain non-serializable.
+
+A class instance is serialized **by its attributes** by default and reconstructed against its class —
+which now **travels in the blob** (re-registered on load), so the loading VM needs no import; if a class
+of that name is already defined there, the instance reconnects to it instead. Either way `_init_` is
+*not* re-run. A
 class can override this with the **`_getstate_`/`_setstate_` protocol**: `_getstate_(self)` returns
 the serializable state to store, and `_setstate_(self, state)` restores it — useful to drop transient
 fields (recomputing them on load) or to reduce a value to plain serializable data. A native (C++)
@@ -1392,7 +1466,10 @@ A dataframe-style data-analysis library: a labelled 1-D **`Series`** and 2-D **`
 I/O, label/position indexing, boolean masking, element-wise arithmetic (on `Series` —
 a `DataFrame` is operated on per-column), aggregations, group-by, joins, and missing-data handling.
 `Series`-to-`Series` arithmetic and comparison require **equal length** (a mismatch throws consistently
-in either order — no silent truncation); a `Series`-to-scalar op broadcasts the scalar.
+in either order — no silent truncation); a `Series`-to-scalar op broadcasts the scalar. Element-wise
+arithmetic and comparison **propagate missing** (a `None`/NaN element yields `None`, pandas-style)
+rather than throwing — so a boolean mask like `df[df["col"] > v]` works even when the column has a
+blank cell (which `readcsv` produces from an empty field).
 Public names follow Kirito's lowercase-no-underscore convention (`readcsv`, `sortvalues`,
 `valuecounts`, `resetindex`, ...).
 
@@ -1594,6 +1671,13 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
 - `t.ptp(axis = None)` — max − min; `t.median(axis = None)` — sorts `NaN` last (like `sort`/`argsort`/`unique`), so a `NaN` only affects the result when it lands at the median position.
 - `t.cumsum(axis = None)` (differentiable) / `t.cumprod(axis = None)` — cumulative scans
   (`axis = None` flattens first).
+
+**Reducing nothing.** When there is nothing to reduce — a zero-length axis, or an empty tensor — the
+answer depends on whether the reduction has an identity. `sum` and `prod` do, so they return it
+(`zeros([3, 0]).sum(axis = 1)` → `[0.0, 0.0, 0.0]`, `prod` → `[1.0, 1.0, 1.0]`, as in NumPy): the sum
+of no numbers really is 0. `mean`, `min`, `max`, `ptp`, `median`, `std` and `var` have none — the mean
+of nothing is `0/0` and the largest of nothing does not exist — so they **throw**, the same way
+`math.sqrt(-1)` throws instead of handing back a quiet `NaN`. Check `len` first, or reduce with `sum`.
 
 ### Structural ops
 

@@ -19,8 +19,8 @@ names can share one collection and see each other's mutations.
 | `String` | `"hi"`, `f"{x}"` | no | yes | Unicode, indexed by code point |
 | `Bytes` | `Bytes([72, 105])` | no | yes | immutable raw bytes (0–255), the binary counterpart to `String` |
 | `List` | `[1, 2, 3]` | yes | no | ordered sequence |
-| `Set` | `{1, 2, 3}` | yes | no | unordered unique elements |
-| `Dict` | `{"a": 1}` | yes | no | unordered key→value map (hashable keys) |
+| `Set` | `{1, 2, 3}` | yes | no | insertion-ordered unique elements |
+| `Dict` | `{"a": 1}` | yes | no | insertion-ordered key→value map (hashable keys) |
 
 Each type's constructor (e.g. `Integer(x)`, `List(iter)`) is a built-in function — see
 [Built-in Functions](builtins.html#types-and-conversion).
@@ -184,8 +184,9 @@ b[0:1]                           # b'H'
 Bytes([0xc3, 0xa9]).decode("utf-8")   # "é"
 ```
 
-Construct with `Bytes(x[, encoding])` — from a List of Integers, an Integer `n` (`n` zero bytes), a
-String (encoded; default `utf-8`), or another Bytes (copied) — or `fromhex("48 69")`.
+Construct with `Bytes(x[, encoding])` — from an iterable of Integers (0..255) — a List, but also a
+Set/`range`/Dict-keys — an Integer `n` (`n` zero bytes), a String (encoded; default `utf-8`), or
+another Bytes (copied) — or `fromhex("48 69")`.
 
 | Method / function | Meaning |
 | --- | --- |
@@ -232,7 +233,8 @@ io.print(xs[0], xs[-1], xs[1:3])   # 1 4 [2, 3]
 
 ## Set
 
-An unordered collection of unique, hashable values. Supports `in`, `len`, iteration, and the usual
+An **insertion-ordered** collection of unique, hashable values (iteration visits elements in insertion
+order, stable across deletes). Supports `in`, `len`, iteration, and the usual
 set algebra. Since Kirito has no `|`/`&`/`^` operators, the operator forms are `a - b` (difference)
 and `a < b`/`a <= b`/`a > b`/`a >= b` (proper-/subset, proper-/superset); union, intersection, and
 symmetric difference are the methods below (`==`/`!=` compare by membership).
@@ -240,8 +242,8 @@ symmetric difference are the methods below (`==`/`!=` compare by membership).
 ```kirito
 var a = {1, 2, 3}
 var b = {3, 4}
-io.print(a.union(b), a.intersection(b))   # a 4-element set and {3} (a Set is unordered, so the
-                                          # printed element order is unspecified)
+io.print(a.union(b), a.intersection(b))   # a 4-element set and {3} (a Set is insertion-ordered:
+                                          # union keeps a's elements first, then b's new ones)
 ```
 
 ### Set methods
@@ -271,9 +273,11 @@ keys), or a String (its characters) — e.g. `{1, 2}.union([2, 3])`. The set-alg
 
 ## Dict
 
-An **unordered** map from hashable keys to values (iteration order is unspecified — do not rely on
-it). Supports `d[key]` get/set, `in` (over keys), `len`, and iteration (over keys). Multi-key
-indexing assignment (`m[i, j] = v`) is available to types that define it.
+An **insertion-ordered** map from hashable keys to values — iteration (`keys()`/`values()`/`items()`,
+`for k in d`, and `str`) visits keys in the order they were first inserted, and that order is stable
+across deletes (updating an existing key keeps its position). Supports `d[key]` get/set, `in` (over
+keys), `len`, and iteration. Multi-key indexing assignment (`m[i, j] = v`) is available to types that
+define it.
 
 ```kirito
 var d = {"a": 1, "b": 2}
@@ -293,7 +297,7 @@ io.print(d.get("z", 0))    # 0 (default)
 | `d.get(key[, default])` | Value for `key`, or `default` (or `None`) if missing. |
 | `d.pop(key[, default])` | Remove and return `key`'s value. |
 | `d.remove(key)` | Delete `key` (throws if absent; like `pop` but returns nothing). |
-| `d.popitem()` | Remove and return an arbitrary `[key, value]` pair (a Dict is unordered — no "last" pair to rely on). |
+| `d.popitem()` | Remove and return the **last-inserted** `[key, value]` pair (LIFO, like Python's dict). |
 | `d.setdefault(key[, default])` | Get `key`, inserting `default` first if absent. |
 | `d.update(other)` | Merge another Dict (or `[key, value]` pairs) in. |
 | `d.apply(fn)` | A new Dict with the same keys and `fn` applied to each value (like `tensor.apply`). |
@@ -370,7 +374,39 @@ Invoked as `x OP y` → `x._op_(y)`; return a `Bool` (or any truthy/falsy value)
 | `_setitem_(self, key, value)` | `x[key] = value` (variadic keys: `m[i, j] = v`) | nothing |
 | `_len_(self)` | `len(x)` | an `Integer` |
 | `_contains_(self, item)` | `item in x` / `item not in x` | a truth value |
-| `_iter_(self)` | `for v in x:`, and any iteration (unpacking, `List(x)`, …) | any iterable of the elements to yield (a List, Set, String, another iterable instance — the VM iterates whatever you return) |
+| `_iter_(self)` | `for v in x:`, and any iteration (unpacking, `List(x)`, …) | an **iterator** (an object with `_next_`, commonly `self` or a fresh iterator instance — the lazy generator protocol below), OR any plain iterable to yield (a List/Set/String — the VM iterates whatever you return) |
+| `_next_(self)` | each step of iterating a `_next_`-style iterator | the next value, or `throw StopIteration()` to end |
+
+### Lazy generators (`_iter_` / `_next_`)
+
+A class becomes a **lazy, pull-based generator** when `_iter_` returns an object whose `_next_(self)`
+yields one value per call and raises `StopIteration` at the end. Iteration then **streams** — a `for`
+loop, `sum`, `sorted`, `List(...)`, or unpacking pulls one value at a time and never materializes the
+whole sequence, so an **infinite** generator with `break` (or `any`/`all` short-circuiting) is bounded:
+
+```kirito
+class Count:
+    var _init_ = Function(self, start):
+        self.n = start
+    var _iter_ = Function(self):
+        return self                 # self is the iterator
+    var _next_ = Function(self):
+        var v = self.n
+        self.n = self.n + 1
+        return v                    # never raises StopIteration -> infinite
+
+for x in Count(0):
+    if x >= 3:
+        break
+    io.print(x)                     # 0, 1, 2
+```
+
+`StopIteration` is a built-in exception class — `throw StopIteration()` inside `_next_` ends the
+iteration, and you can `catch StopIteration as e:` or `isinstance(e, StopIteration)`. **Strict
+(PEP-479):** only a `StopIteration` raised at `_next_`'s own frame ends iteration; one that leaks from
+a deeper call inside `_next_` surfaces as an error, so a bug can't masquerade as "iteration finished".
+Returning a plain List from `_iter_` (the older, eager style) still works. The built-in
+`range`/`map`/`filter`/`zip`/`enumerate` are lazy on this same seam.
 
 ### Callable and context-manager protocol
 

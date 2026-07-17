@@ -8,7 +8,7 @@
 #      "N passed, 0 failed" / "ALL TESTS PASSED" line. Exit 0 iff every assertion held.
 #      (kgrad: test_kgrad.ki + test_extra.ki;
 #       selfhost: run_tests.ki — a Kirito-in-Kirito interpreter run over the whole
-#       tools/tests/scripts/*.ki golden suite; genuinely slow AND lags recent language
+#       tests/scripts/*.ki golden suite; genuinely slow AND lags recent language
 #       features, so it's opt-in via --selfhost.)
 #   3. Python harness — a `test_client.py` (functional + adversarial) and, where present, a
 #      `test_concurrent.py`. Both accept `--ki PATH` and launch the server themselves.
@@ -99,7 +99,7 @@ run examples/big_projects/kgrad/test_extra.ki \
     examples/big_projects/kgrad/test_extra.ki
 
 if [ "$SELFHOST" -eq 1 ]; then
-    # selfhost/run_tests.ki drives the whole tools/tests/scripts/*.ki golden suite through a
+    # selfhost/run_tests.ki drives the whole tests/scripts/*.ki golden suite through a
     # Kirito-in-Kirito interpreter, so it is very slow. Cap it at an hour.
     run examples/big_projects/selfhost/run_tests.ki \
         timeout --preserve-status 3600 \

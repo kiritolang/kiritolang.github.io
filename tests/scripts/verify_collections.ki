@@ -1,0 +1,152 @@
+# Doc-vs-impl verification for the `collections` module (docs/pages/10-stdlib.md "## collections").
+# deque / Counter / defaultdict. Functioning (exact values), edge (empty/single/missing keys),
+# and HARDENING (bad input must raise the right message; a silent no-raise is a bug). Prints "OK collections".
+var io = import("io")
+var collections = import("collections")
+
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch String as e:
+        return needle in e
+
+# ============================================================ deque
+var dq = collections.deque([1, 2, 3])
+assert len(dq) == 3, "deque len from iterable"
+assert dq[0] == 1 and dq[2] == 3 and dq[-1] == 3, "deque indexing (incl. negative via List)"
+assert String(dq) == "deque([1, 2, 3])", "deque _str_"
+
+# append / appendleft add to right / left
+dq.appendleft(0)
+dq.append(4)
+assert String(dq) == "deque([0, 1, 2, 3, 4])", "deque append/appendleft ends"
+assert len(dq) == 5, "deque len after adds"
+
+# pop = rightmost, popleft = leftmost
+assert dq.pop() == 4, "deque pop rightmost"
+assert dq.popleft() == 0, "deque popleft leftmost"
+assert String(dq) == "deque([1, 2, 3])", "deque state after pops"
+
+# iteration yields elements left-to-right
+var seen = []
+for x in dq:
+    seen.append(x)
+assert seen == [1, 2, 3], "deque iteration order"
+
+# --- edge: empty deque ---
+var empty = collections.deque()
+assert len(empty) == 0 and String(empty) == "deque([])", "deque() empty ctor"
+assert collections.deque(None) == collections.deque(None) or True, "deque(None) accepted"  # None -> empty
+assert len(collections.deque(None)) == 0, "deque(None) is empty"
+
+# --- edge: single element then drain ---
+var one = collections.deque([42])
+assert one.pop() == 42 and len(one) == 0, "deque single pop"
+
+# --- edge: build via appends from empty ---
+var built = collections.deque()
+built.append(1)
+built.appendleft(0)
+assert String(built) == "deque([0, 1])", "deque build from empty"
+
+# --- hardening: pop/popleft on empty must raise; index out of range must raise ---
+assert raises_msg(Function(): return empty.pop(), "empty deque"), "deque pop empty raises (names deque, not List)"
+assert raises_msg(Function(): return empty.popleft(), "empty deque"), "deque popleft empty raises (names deque, not List)"
+assert raises_msg(Function(): return dq[100], "index out of range"), "deque index oob raises"
+
+# --- documented surface only: no rotate/extend/maxlen (verify actual surface) ---
+assert not hasattr(dq, "rotate"), "deque has no rotate (not in docs/impl)"
+assert not hasattr(dq, "extend"), "deque has no extend"
+assert not hasattr(dq, "maxlen"), "deque has no maxlen"
+
+# ============================================================ Counter
+var ct = collections.Counter(["a", "b", "a", "c", "a", "b"])
+assert ct.get("a") == 3 and ct.get("b") == 2 and ct.get("c") == 1, "Counter tallies"
+assert ct.get("z") == 0, "Counter get unseen -> 0"
+assert ct["a"] == 3 and ct["z"] == 0, "Counter index syntax (unseen -> 0)"
+
+# Counter over a String iterates code points
+var cs = collections.Counter("aab")
+assert cs.get("a") == 2 and cs.get("b") == 1, "Counter over String"
+assert cs.get(x = "a") == 2, "Counter.get keyword arg"
+
+# add increments
+ct.add("a")
+assert ct.get("a") == 4, "Counter.add increments existing"
+ct.add("new")
+assert ct.get("new") == 1, "Counter.add new key -> 1"
+
+# items() -> [value, count] pairs
+var m = collections.Counter([1, 1, 2])
+var it = m.items()
+assert type(it) == "List", "Counter.items -> List"
+
+# mostcommon: highest count first (top distinct counts are unambiguous)
+var mc = collections.Counter(["a", "a", "a", "b", "b", "c"])
+assert mc.mostcommon(2) == [["a", 3], ["b", 2]], "Counter.mostcommon(n)"
+assert mc.mostcommon() == [["a", 3], ["b", 2], ["c", 1]], "Counter.mostcommon() all"
+assert mc.mostcommon(0) == [], "Counter.mostcommon(0) -> []"
+assert mc.mostcommon(1) == [["a", 3]], "Counter.mostcommon(1)"
+# documented: negative n is an end-slice (all but |n| least-common), NOT empty
+assert mc.mostcommon(-1) == [["a", 3], ["b", 2]], "Counter.mostcommon(-1) end-slice"
+
+# --- edge: empty Counter ---
+var ce = collections.Counter()
+assert ce.get("x") == 0 and ce["x"] == 0, "empty Counter get -> 0"
+assert ce.mostcommon() == [], "empty Counter mostcommon -> []"
+assert ce.items() == [], "empty Counter items -> []"
+
+# --- documented surface: mostcommon exists; no elements / arithmetic ---
+assert hasattr(ct, "mostcommon"), "Counter has mostcommon"
+assert not hasattr(ct, "most_common"), "Counter uses mostcommon (no underscore), not most_common"
+assert not hasattr(ct, "elements"), "Counter has no elements (not documented/impl)"
+
+# ============================================================ defaultdict
+# factory fills a missing key
+var dd = collections.defaultdict(Function(): return [])
+dd["x"].append(1)
+dd["x"].append(2)
+assert dd["x"] == [1, 2], "defaultdict factory fills missing key (list)"
+assert "x" in dd, "defaultdict key present after access"
+assert "y" not in dd, "defaultdict absent key not present until accessed"
+
+# accessing a missing key inserts factory() (existence side effect)
+assert dd["y"] == [], "defaultdict missing access -> factory()"
+assert "y" in dd, "defaultdict access inserts the key"
+
+# integer-zero factory
+var counts = collections.defaultdict(Function(): return 0)
+counts["a"] = counts["a"] + 1
+counts["a"] = counts["a"] + 1
+assert counts["a"] == 2, "defaultdict Integer factory accumulate"
+assert counts["b"] == 0, "defaultdict Integer factory default 0"
+
+# explicit set / keys / values / items
+var dd2 = collections.defaultdict(Function(): return 0)
+dd2["k"] = 9
+assert dd2["k"] == 9, "defaultdict setitem"
+assert "k" in dd2.keys(), "defaultdict keys"
+assert 9 in dd2.values(), "defaultdict values"
+assert ["k", 9] in dd2.items(), "defaultdict items"
+assert String(dd2) == "defaultdict({'k': 9})", "defaultdict _str_"
+
+# --- edge: fresh factory per missing key (mutable defaults are independent) ---
+var fresh = collections.defaultdict(Function(): return [])
+fresh["a"].append(1)
+assert fresh["b"] == [], "defaultdict fresh factory per key (independent lists)"
+assert fresh["a"] == [1], "defaultdict earlier key unaffected"
+
+# --- documented surface: has keys/values/items; no get / no len ---
+assert not hasattr(dd, "get"), "defaultdict has no get (index instead)"
+
+# --- hardening: factory is required (no default) ---
+assert raises_msg(Function(): return collections.defaultdict(), "factory"), "defaultdict() missing factory raises"
+
+io.print("OK collections")

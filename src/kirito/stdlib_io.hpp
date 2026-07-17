@@ -214,6 +214,7 @@ public:
             return bind("writelines", {"lines"}, [self, file](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 Args(vm, a, "writelines").require(1);
                 auto items = vm.arena().deref(a[0]).iterate(vm);
+                if (!items) throw KiritoError("writelines: argument must be iterable");  // a write-only stream returns nullopt, not a throw
                 auto& f = file(vm, self);
                 for (Handle h : items.value()) f.streamWrite(ioRawBytes(vm, h, "writelines"));  // String or Bytes
                 return vm.none();

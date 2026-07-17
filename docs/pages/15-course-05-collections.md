@@ -111,7 +111,8 @@ io.print(sorted(a.difference(b)))       # => [1, 2]
 io.print(a.issubset({1, 2, 3, 4, 5}))   # => True
 ```
 
-(We wrap results in `sorted(...)` only to get a stable order for printing — sets are unordered.)
+(A Set is insertion-ordered, but a set-algebra result's order depends on how the operation builds it;
+we wrap in `sorted(...)` here just to get a predictable numeric order for printing.)
 
 ## Dicts: keys to values
 

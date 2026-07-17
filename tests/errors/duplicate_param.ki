@@ -1,0 +1,2 @@
+var f = Function(a, b, a):
+    return a

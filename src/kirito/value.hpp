@@ -112,6 +112,16 @@ struct Anything {
     }
 };
 
+// Root whatever the CALLER handed us before we materialise anything else. A Handle (or a Value
+// viewing one) may be a fresh, unrooted allocation — a native that just did `vm.makeString(...)` and
+// passed the result straight in — and materialising the other half of a key/value pair allocates,
+// which would collect it. A primitive needs nothing (it is not an object yet); a Value built from a
+// primitive already pins itself. (v1.15 A19-1.)
+template <class T> inline void rootArg(RootScope& rs, const T& x) {
+    if constexpr (std::is_same_v<std::decay_t<T>, Handle>) rs.add(x);
+    else if constexpr (std::is_base_of_v<Value, std::decay_t<T>>) rs.add(x.handle());
+}
+
 }  // namespace detail
 
 // ================================================================================================
@@ -577,16 +587,17 @@ public:
 
     // Overwrite (in-place). Uses positive index; negatives supported symmetrically.
     void set(std::ptrdiff_t i, const Value& v) {
-        auto& e = mut().elems;
-        std::ptrdiff_t n = static_cast<std::ptrdiff_t>(e.size());
+        auto& l = mut();
+        std::ptrdiff_t n = static_cast<std::ptrdiff_t>(l.elems.size());
         std::ptrdiff_t k = i < 0 ? i + n : i;
         if (k < 0 || k >= n) throw KiritoError("List index out of range");
-        e[static_cast<std::size_t>(k)] = v.handle();
+        l.setElem(vm_->arena(), static_cast<std::size_t>(k), v.handle());  // barriered element write
     }
 
-    // Append. Chainable for fluent construction.
-    List& push(const Value& v) { mut().elems.push_back(v.handle()); return *this; }
-    List& push(Handle h) { mut().elems.push_back(h); return *this; }
+    // Append. Chainable for fluent construction. (Barriered: the wrapper API sees the write barrier
+    // transparently, so an embedder pushing a young value into a promoted list Just Works.)
+    List& push(const Value& v) { mut().append(vm_->arena(), v.handle()); return *this; }
+    List& push(Handle h) { mut().append(vm_->arena(), h); return *this; }
     template <class T> List& push(T x) { return push(Value(*vm_, x)); }
 
     // Pop and return the last element. Popping removes the list's reference to it, so if nothing
@@ -649,8 +660,14 @@ public:
         RootScope roots(vm);
         auto dv = std::make_unique<DictVal>();
         for (const auto& [ka, va] : entries) {
-            Handle kh = ka.toHandle(vm), vh = va.toHandle(vm);
-            roots.add(kh); roots.add(vh);
+            // Root each handle AS IT IS MATERIALISED, not both afterwards: `va.toHandle(vm)`
+            // allocates, and until `dv` is itself arena-reachable (the alloc below) nothing traces
+            // what it holds — so an unrooted `kh` would be collected by the value's allocation, and
+            // the finished Dict would hand out a dangling key. The List/Set ctors already root one
+            // item at a time for the same reason. (v1.15 A19-1: this shipped `net.urlsplit`,
+            // `regex.groupdict`, `json.loads` etc. with dangling members under a GC.)
+            Handle kh = roots.add(ka.toHandle(vm));
+            Handle vh = roots.add(va.toHandle(vm));
             dv->set(vm.arena(), kh, vh);
         }
         adopt(vm, vm.alloc(std::move(dv)));
@@ -689,17 +706,43 @@ public:
         mut().set(vm_->arena(), k.handle(), v.handle());
         return *this;
     }
-    Dict& set(std::string_view sk, const Value& v) { return set(Value(*vm_, sk), v); }
-    Dict& set(std::string_view sk, Handle h) { return set(Value(*vm_, sk), Value(*vm_, h)); }
+    // These two take a value the caller ALREADY materialised and then allocate the key from `sk`.
+    // A Value built from a primitive pins itself, but a Value wrapping a raw Handle does not (it
+    // trusts the object to be rooted elsewhere) — and a native returning a fresh Handle
+    // (`M.groupString(vm, g)`, …) has nothing rooting it yet. So root the incoming value BEFORE
+    // allocating the key, or the key's allocation collects it. (v1.15 A19-1: this is what made
+    // `regex.groupdict` hand back dangling values under a GC.)
+    Dict& set(std::string_view sk, const Value& v) {
+        RootScope rs(*vm_);
+        detail::rootArg(rs, v);
+        return set(Value(*vm_, sk), v);
+    }
+    Dict& set(std::string_view sk, Handle h) {
+        RootScope rs(*vm_);
+        rs.add(h);
+        return set(Value(*vm_, sk), Value(*vm_, h));
+    }
     template <class V> Dict& set(std::string_view sk, V v) {
+        RootScope rs(*vm_);
+        detail::rootArg(rs, v);
         return set(Value(*vm_, sk), Value(*vm_, v));
     }
     template <class K, class V> Dict& set(K k, V v) {
+        RootScope rs(*vm_);
+        detail::rootArg(rs, k); detail::rootArg(rs, v);
         return set(Value(*vm_, k), Value(*vm_, v));
     }
     // Overloads accepting a raw Handle key.
-    Dict& set(Handle k, Handle v) { return set(Value(*vm_, k), Value(*vm_, v)); }
-    Dict& set(Handle k, const Value& v) { return set(Value(*vm_, k), v); }
+    Dict& set(Handle k, Handle v) {
+        RootScope rs(*vm_);
+        rs.add(k); rs.add(v);
+        return set(Value(*vm_, k), Value(*vm_, v));
+    }
+    Dict& set(Handle k, const Value& v) {
+        RootScope rs(*vm_);
+        rs.add(k); detail::rootArg(rs, v);
+        return set(Value(*vm_, k), v);
+    }
 
     // Membership check.
     bool contains(const Value& k) const { return raw().find(vm_->arena(), k.handle()) != nullptr; }
@@ -712,9 +755,9 @@ public:
     bool remove(const Value& k) { return mut().remove(vm_->arena(), k.handle()); }
     bool remove(std::string_view sk) { return remove(Value(*vm_, sk)); }
 
-    void clear() { auto& d = mut(); d.buckets.clear(); d.count = 0; }
+    void clear() { mut().clear(); }
 
-    // Key list (hash-bucket order — same order as Kirito's iteration).
+    // Key list (insertion order — same order as Kirito's iteration).
     std::vector<Value> keys() const {
         std::vector<Value> out;
         out.reserve(size());
@@ -762,8 +805,8 @@ private:
 };
 
 // ================================================================================================
-// Set — unordered unique values. `s.add(v)` inserts, `s.contains(v)` peeks, `s.discard(v)` removes
-// silently. Ordering follows the hash-bucket walk (Kirito iteration order).
+// Set — insertion-ordered unique values. `s.add(v)` inserts, `s.contains(v)` peeks, `s.discard(v)`
+// removes silently. Iteration visits elements in first-insertion order (Kirito iteration order).
 // ================================================================================================
 class Set : public Value {
 public:
@@ -797,19 +840,10 @@ public:
     bool contains(const Value& v) const { return raw().contains(vm_->arena(), v.handle()); }
     template <class T> bool contains(T x) const { return contains(Value(*vm_, x)); }
 
-    // Remove; silent if absent. Rebuilds without the value since SetVal has no direct remove.
-    void discard(const Value& v) {
-        auto& s = mut();
-        if (!s.contains(vm_->arena(), v.handle())) return;
-        SetVal rebuilt;
-        for (Handle h : s.items())
-            if (!vm_->arena().deref(h).equals(vm_->arena(), vm_->arena().deref(v.handle())))
-                rebuilt.add(vm_->arena(), h);
-        s.buckets = std::move(rebuilt.buckets);
-        s.count = rebuilt.count;
-    }
+    // Remove; silent if absent.
+    void discard(const Value& v) { mut().remove(vm_->arena(), v.handle()); }
 
-    void clear() { auto& s = mut(); s.buckets.clear(); s.count = 0; }
+    void clear() { mut().clear(); }
 
     std::vector<Value> items() const {
         std::vector<Value> out;

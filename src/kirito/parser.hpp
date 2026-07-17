@@ -1,6 +1,7 @@
 #ifndef KIRITO_PARSER_HPP
 #define KIRITO_PARSER_HPP
 
+#include <algorithm>
 #include <cctype>
 #include <memory>
 #include <string>
@@ -23,6 +24,13 @@ public:
     // resetting to 0 each level and overflowing the native stack.
     explicit Parser(std::vector<Token> tokens, int startDepth = 0)
         : toks_(std::move(tokens)), exprDepth_(startDepth) {}
+    // With the newline-normalized source (from Lexer::source()): the parser then captures the verbatim
+    // source text of every Function/class literal into its AST node (FunctionExpr/ClassStmt::source),
+    // which is what makes those values serializable by default. `startDepth` is as above.
+    Parser(std::vector<Token> tokens, std::string source, int startDepth = 0)
+        : toks_(std::move(tokens)), source_(std::move(source)), exprDepth_(startDepth) {
+        buildLineIndex();
+    }
 
     ast::Program parseProgram() {
         ast::Program prog;
@@ -227,6 +235,7 @@ private:
 
     ast::StmtPtr parseClass() {
         auto node = std::make_unique<ast::ClassStmt>();
+        std::size_t startTok = pos_;                    // the 'class' keyword — start of the construct
         node->span = advance().span;  // 'class'
         node->name = expect(TokenType::Identifier, "a class name").text;
         if (at(TokenType::LParen)) {
@@ -235,6 +244,7 @@ private:
             expect(TokenType::RParen, "')' after base class");
         }
         node->body = parseBlock();
+        node->source = captureSource(startTok);  // verbatim text, for serialization
         return node;
     }
 
@@ -718,12 +728,20 @@ private:
 
     ast::ExprPtr parseFunction() {
         auto node = std::make_unique<ast::FunctionExpr>();
+        std::size_t startTok = pos_;                    // the 'Function' keyword — start of the literal
         node->span = advance().span;  // 'Function'
         expect(TokenType::LParen, "'(' after Function");
         bool seenDefault = false;
         if (!at(TokenType::RParen)) {
             while (true) {
+                auto pspan = peek().span;                 // the parameter name, for a precise diagnostic
                 ast::Param p = parseParam();
+                // A duplicate parameter name is a hard parse error (like Python's SyntaxError), not a
+                // warn-and-run: a duplicate would desync the resolver's slot layout from the runtime
+                // frame layout (wrong-slot reads / an assertion abort), so reject it up front.
+                for (const auto& q : node->params)
+                    if (q.name == p.name)
+                        throw KiritoError("duplicate parameter name '" + p.name + "'", pspan);
                 if (p.defaultValue) seenDefault = true;
                 else if (seenDefault)
                     throw KiritoError("non-default parameter '" + p.name +
@@ -747,13 +765,23 @@ private:
         if (at(TokenType::Newline)) {
             node->body = parseIndentedSuite();  // block body
         } else {
-            // Inline body: one statement on the same line, e.g. Function(x): return x * x.
-            // It is a normal statement (uses explicit return) with no trailing-newline requirement.
+            // Inline body: one statement on the same line, e.g. Function(x): return x * x. It is a
+            // RESTRICTED single statement (see parseInlineStatement) — return/pass/todo/throw/discard/
+            // assert, a bare expression, or an assignment; a `var`/`if`/loop needs a block body.
             node->inlineBody = true;
             node->body.push_back(parseInlineStatement());
         }
         --funcDepth_;
         loopDepth_ = savedLoop;
+        node->source = captureSource(startTok);  // verbatim text, for serialization
+        // An INLINE body may have been written across physical lines because it sits inside a
+        // (`/`[`/`{` — where the lexer suppresses newlines (line continuation). captureSource slices
+        // that text WITHOUT the enclosing bracket, so serde re-parsing it standalone (at paren depth 0)
+        // would see the now-significant newline and fail (A01-1). Wrap an inline literal's source in
+        // parens to restore exactly the newline suppression it was parsed under. A block body must NOT
+        // be wrapped (its Indents would be suppressed) — and a block body can never appear inside
+        // brackets anyway, so an inline literal is the only across-lines case.
+        if (node->inlineBody) node->source = "(" + node->source + ")";
         return node;
     }
 
@@ -784,6 +812,19 @@ private:
                 auto node = std::make_unique<ast::ThrowStmt>();
                 node->span = advance().span;
                 node->value = parseExpr();
+                return node;
+            } break;
+            case TokenType::KwDiscard: {   // `discard EXPR` — the analyzer recommends it inside inline bodies (A01-4)
+                auto node = std::make_unique<ast::DiscardStmt>();
+                node->span = advance().span;
+                node->expr = parseExpr();
+                return node;
+            } break;
+            case TokenType::KwAssert: {
+                auto node = std::make_unique<ast::AssertStmt>();
+                node->span = advance().span;
+                node->cond = parseExpr();
+                if (at(TokenType::Comma)) { advance(); node->message = parseExpr(); }
                 return node;
             } break;
             default: {
@@ -916,6 +957,9 @@ private:
         std::size_t e = rawCode.find_last_not_of(" \t");
         std::string code = (b == std::string::npos) ? std::string() : rawCode.substr(b, e - b + 1);
         if (code.empty()) throw KiritoError("f-string '{...}' must contain a single expression", span);
+        // `span` points at the char right after `{`; advance past the leading whitespace we just
+        // trimmed so the seed lands on the expression's first char (only spaces/tabs — no newline).
+        if (b != std::string::npos && b > 0) span.col += static_cast<uint32_t>(b);
         // The embedded expression is lexed/parsed by a sub Lexer+Parser SEEDED at the f-string token's
         // line/col, so every AST node it produces carries a span absolute to the source file (not line 1)
         // — runtime/resolver errors inside an f-string then report the real file location (A02-2). Parse
@@ -995,7 +1039,23 @@ private:
                     else if (ch == ')' || ch == ']' || ch == '}') --bd;
                     else if (ch == ':' && bd == 0) { p.spec = inner.substr(k + 1); inner.resize(k); break; }
                 }
-                p.expr = parseEmbedded(inner, t.span);
+                // Seed the sub-parse at the placeholder's TRUE source location, not the f-string
+                // token's start: skip the r/R/f/F prefix + the opening quote (1 or 3), then add the
+                // `{`'s index `i` within the literal. `t.text` is the raw (un-decoded) inner content,
+                // so `i` maps linearly to source bytes. Falls back to the token span when source_ is
+                // empty (a nested sub-parse — e.g. an f-string inside a deserialized function). (A01-2)
+                SourceSpan exprSpan = t.span;
+                if (!source_.empty()) {
+                    std::size_t base = byteOf(t.span);
+                    while (base < source_.size() &&
+                           (source_[base]=='r'||source_[base]=='R'||source_[base]=='f'||source_[base]=='F'))
+                        ++base;
+                    if (base + 2 < source_.size() && (source_[base]=='"'||source_[base]=='\'') &&
+                        source_[base+1]==source_[base] && source_[base+2]==source_[base]) base += 3;  // triple quote
+                    else if (base < source_.size()) base += 1;                                        // single quote
+                    exprSpan = spanOfByte(base + i + 1);   // +1 skips the `{`
+                }
+                p.expr = parseEmbedded(inner, exprSpan);
                 node->parts.push_back(std::move(p));
                 i = j + 1;
             } else if (c == '}') {
@@ -1069,6 +1129,69 @@ private:
         node->lhs = std::move(lhs);
         node->rhs = std::move(rhs);
         return node;
+    }
+
+    // Source-capture support (empty when the parser was constructed without source): the verbatim
+    // newline-normalized source plus the byte offset of each line start, so a token's absolute
+    // (line, col) maps to a byte offset. col counts BYTES (the lexer advances one column per byte), so
+    // byteOf({line,col}) = lineStart_[line-1] + col-1. Used to slice a Function/class construct's exact
+    // source text between the byte offset of its first token and the token that follows it.
+    std::string source_;
+    std::vector<std::size_t> lineStart_;
+    void buildLineIndex() {
+        lineStart_.push_back(0);
+        for (std::size_t i = 0; i < source_.size(); ++i)
+            if (source_[i] == '\n') lineStart_.push_back(i + 1);
+    }
+    std::size_t byteOf(const SourceSpan& s) const {
+        if (lineStart_.empty() || s.line == 0) return 0;
+        std::size_t li = s.line - 1;
+        if (li >= lineStart_.size()) return source_.size();
+        std::size_t off = lineStart_[li] + (s.col == 0 ? 0 : s.col - 1);
+        return off > source_.size() ? source_.size() : off;
+    }
+    // The reverse of byteOf: a byte offset in source_ -> its 1-based (line, col). Used to seed the
+    // f-string sub-lexer at the TRUE source location of an embedded placeholder (A01-2) — accounting
+    // for the prefix + opening quote + the `{`'s offset within the literal, which the token span alone
+    // ignores (it only pointed at the literal's start, so any non-leading placeholder drifted).
+    SourceSpan spanOfByte(std::size_t off) const {
+        SourceSpan s;
+        if (lineStart_.empty()) { s.line = 1; s.col = 1; return s; }
+        if (off > source_.size()) off = source_.size();
+        auto it = std::upper_bound(lineStart_.begin(), lineStart_.end(), off);
+        std::size_t li = static_cast<std::size_t>(it - lineStart_.begin()) - 1;
+        s.line = static_cast<uint32_t>(li + 1);
+        s.col = static_cast<uint32_t>(off - lineStart_[li] + 1);
+        return s;
+    }
+    // Byte offset just past the last content token consumed — the end of a construct whose first token
+    // is `toks_[startTok]` and which has just been fully parsed. The trailing Newline/Indent/Dedent
+    // structure tokens are skipped because they sit at, or past, any comments and blank lines that
+    // follow the body: comments emit no token, so anchoring on the next real token would sweep them in.
+    std::size_t contentEnd(std::size_t startTok) const {
+        std::size_t i = pos_;
+        while (i > startTok + 1 && isStructural(toks_[i - 1].type)) --i;
+        const Token& last = toks_[i - 1];
+        return byteOf(last.span) + last.span.length;
+    }
+    static bool isStructural(TokenType t) {
+        return t == TokenType::Newline || t == TokenType::Indent || t == TokenType::Dedent ||
+               t == TokenType::EndOfFile;
+    }
+
+    // The verbatim source of the just-parsed construct whose first token is `toks_[startTok]`, right-
+    // trimmed of trailing whitespace. Empty when no source was supplied (an f-string's re-parsed
+    // expression) — which is what makes a Function defined there unserializable.
+    std::string captureSource(std::size_t startTok) const {
+        if (source_.empty()) return {};
+        std::size_t a = byteOf(toks_[startTok].span);
+        std::size_t b = std::min(contentEnd(startTok), source_.size());
+        if (b <= a) return {};
+        std::string text = source_.substr(a, b - a);
+        while (!text.empty() && (text.back() == ' ' || text.back() == '\t' ||
+                                 text.back() == '\n' || text.back() == '\r'))
+            text.pop_back();
+        return text;
     }
 
     std::vector<Token> toks_;

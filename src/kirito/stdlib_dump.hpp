@@ -122,6 +122,21 @@ inline std::string encode(const std::vector<serde::Node>& nodes, uint32_t rootId
                 putU32(b, static_cast<uint32_t>(n.s.size())); b.append(n.s);
                 putU32(b, n.links.empty() ? 0u : n.links[0]);
             } break;
+            case serde::Tag::Function: {  // source text + free-variable (name,value) id pairs
+                putU32(b, static_cast<uint32_t>(n.s.size())); b.append(n.s);
+                putU32(b, static_cast<uint32_t>(n.links.size() / 2));
+                for (uint32_t id : n.links) putU32(b, id);
+            } break;
+            case serde::Tag::Class: {  // source + class name + eager count + free-variable id pairs
+                putU32(b, static_cast<uint32_t>(n.s.size())); b.append(n.s);
+                putU32(b, static_cast<uint32_t>(n.s2.size())); b.append(n.s2);
+                putU32(b, static_cast<uint32_t>(n.i));
+                putU32(b, static_cast<uint32_t>(n.links.size() / 2));
+                for (uint32_t id : n.links) putU32(b, id);
+            } break;
+            case serde::Tag::Module: {  // module import name
+                putU32(b, static_cast<uint32_t>(n.s.size())); b.append(n.s);
+            } break;
         }
     }
     putU32(b, rootId);
@@ -157,6 +172,9 @@ inline std::pair<std::vector<serde::Node>, uint32_t> decode(const std::string& d
             case 7: { nd.tag = serde::Tag::Set; uint32_t c = r.u32(); for (uint32_t k = 0; k < c; ++k) nd.links.push_back(r.u32()); } break;
             case 8: { nd.tag = serde::Tag::Object; nd.s = r.bytes(r.u32()); uint32_t c = r.u32(); for (uint64_t k = 0; k < static_cast<uint64_t>(c) * 2; ++k) nd.links.push_back(r.u32()); } break;
             case 9: { nd.tag = serde::Tag::Stateful; nd.s = r.bytes(r.u32()); nd.links.push_back(r.u32()); } break;
+            case 10: { nd.tag = serde::Tag::Function; nd.s = r.bytes(r.u32()); uint32_t c = r.u32(); for (uint64_t k = 0; k < static_cast<uint64_t>(c) * 2; ++k) nd.links.push_back(r.u32()); } break;
+            case 11: { nd.tag = serde::Tag::Class; nd.s = r.bytes(r.u32()); nd.s2 = r.bytes(r.u32()); nd.i = r.u32(); uint32_t c = r.u32(); for (uint64_t k = 0; k < static_cast<uint64_t>(c) * 2; ++k) nd.links.push_back(r.u32()); } break;
+            case 12: { nd.tag = serde::Tag::Module; nd.s = r.bytes(r.u32()); } break;
             default: { throw KiritoError("bad dump tag"); } break;
         }
     }
@@ -170,8 +188,16 @@ inline std::string write(KiritoVM& vm, Handle root) {
 }
 
 inline Handle read(KiritoVM& vm, const std::string& data) {
-    auto [nodes, rootId] = decode(data);
-    return serde::rebuild(vm, nodes, rootId);
+    try {
+        auto [nodes, rootId] = decode(data);
+        return serde::rebuild(vm, nodes, rootId);
+    } catch (const KiritoError&) {
+        throw;  // already a clean, intentional diagnostic
+    } catch (const std::exception& e) {
+        // Same contract as the text codec's loads: corrupt input yields a clean Kirito error, never a
+        // raw C++ exception. Both codecs share one rebuild, so they must report its failures alike.
+        throw KiritoError("corrupt dump data: " + std::string(e.what()));
+    }
 }
 
 }  // namespace dumpfmt

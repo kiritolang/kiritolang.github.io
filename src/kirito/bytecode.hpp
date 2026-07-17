@@ -2,6 +2,7 @@
 #define KIRITO_BYTECODE_HPP
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -29,11 +30,14 @@ enum class Op : uint8_t {
     LoadConst,        // a: push consts[a]
     LoadNone,         //    push the None singleton
     LoadName,         // a: push the value bound to names[a] (NameError if undefined)
+    LoadGlobal,       // a: push global slot a — a builtin/global resolved at compile time (O(1), no walk)
+    LoadVar,          // a: (envVars[a]=depth,index,name) push the (depth-up, index) env slot — O(1), no walk
+    AssignVar,        // a: (envVars[a]) rebind the (depth-up, index) env slot = pop() — O(1), no walk
     StoreName,        // a: define names[a] = pop() in the current scope (var)
     AssignName,       // a: rebind the nearest existing names[a] = pop() (NameError if undefined)
-    LoadLocal,        // a: push frame slot a; if unwritten, fall back to LoadName via localNames[a]
+    LoadLocal,        // a: push frame slot a (a non-captured function local); unwritten -> "not defined"
     StoreLocal,       // a: frame slot a = pop()  (a non-captured function local — var/for/with/catch)
-    AssignLocal,      // a: if slot a written, slot a = pop(); else rebind via AssignName(localNames[a])
+    AssignLocal,      // a: frame slot a = pop(); if unwritten (rebind before its var ran) -> "not defined"
     Pop,              //    discard the top of stack
     Dup,              //    push a copy of the top of stack
     UnaryOp,          // a: (UnOp) replace top with op(top)
@@ -68,6 +72,8 @@ enum class Op : uint8_t {
     SetupBlock,       // a: push an exception block (try/with): on a throw, unwind here with the exc value
     PopBlock,         //    pop the innermost exception block (left normally)
     Reraise,          //    pop an exception value -> re-throw it (unmatched catch / after a finally)
+    SaveExcSpan,      // a: excSpans[a] = the in-flight exception's span   (park it across a finally)
+    RestoreExcSpan,   // a: the in-flight exception's span = excSpans[a]   (unpark it, before Reraise)
     ExcMatch,         //    type=pop, exc=pop -> push Bool(exc is an instance of the class `type`)
     Throw,            //    pop -> throw it as a Kirito exception (assert/throw)
     Return,           //    pop -> return it from this frame
@@ -87,6 +93,18 @@ struct UnpackSpec {
 struct SwitchTable {
     fum::unordered_map<std::string, uint32_t> targets;  // scalar key (scalarSwitchKey form) -> arm offset
     uint32_t defaultTarget = 0;                          // arm to run when no case key matches
+};
+
+// A resolved lexical reference into an indexed env scope: how many EnvValue hops up from the running
+// frame's scope to the owning scope, the binding's fixed slot there, and its name (for a clean
+// "referenced before assignment" diagnostic and a debug-only slot-name assertion). Produced by the
+// resolver, which guarantees the (depth, index) by construction — module scopes read the index back
+// from the live scope, function scopes share one ordered-layout helper between annotation and the
+// runtime slot pre-declaration — so no runtime name lookup is ever needed.
+struct EnvVarRef {
+    uint16_t depth = 0;
+    uint32_t index = 0;
+    std::string name;
 };
 
 // A call site's static shape: how many leading positional args, then the names of the trailing
@@ -114,8 +132,12 @@ struct Proto {
     std::vector<UnpackSpec> unpacks;                  // Unpack targets
     std::vector<const ast::ClassStmt*> classes;       // BuildClass targets (name/base/body)
     std::vector<SwitchTable> switches;                // SwitchDispatch targets (compile-time case tables)
+    std::vector<EnvVarRef> envVars;                    // LoadVar/AssignVar targets (depth,index into an env scope)
+    std::vector<std::string> envSlots;                 // captured non-param locals to pre-declare in the scope env
+    uint32_t excSpanSlots = 0;                         // Save/RestoreExcSpan slots (one per try-with-finally)
     uint32_t localCount = 0;                           // frame slots to reserve for slot-addressed locals
-    std::vector<std::string> localNames;              // slot -> name (for the LoadLocal fallback + errors)
+    std::vector<std::string> localNames;              // slot -> name (for "referenced before assignment" errors)
+    std::vector<int> paramSlots;                       // param i -> its frame slot, or -1 if captured (name-based)
 };
 
 class KiritoVM;
@@ -126,7 +148,8 @@ class KiritoVM;
 // (KiFunction::callFull / KiritoVM::evalIn / the module loaders) only need this declaration.
 Handle runBytecodeBody(KiritoVM& vm, Handle scope, const ast::Block& body, Handle ownerClass,
                        bool hasOwner, bool isFunction, std::string frameLabel = "<module>",
-                       const ast::FunctionExpr* fnDef = nullptr);
+                       const ast::FunctionExpr* fnDef = nullptr,
+                       std::span<const Handle> paramValues = {});
 // Compile and evaluate a single expression against `scope` (a parameter's default value).
 Handle runBytecodeExpr(KiritoVM& vm, Handle scope, const ast::Expr& e);
 

@@ -1,0 +1,221 @@
+# Adversarial audit of the `heapq` stdlib module: every documented function (heapify, heappush,
+# heappop, heapreplace, nlargest, nsmallest, merge) is probed against the min-heap invariant
+# (heap[i] <= heap[2i+1] and heap[2i+2] for every internal node) and against a sort oracle.
+# Probes cover edges: empty heap, single element, all-equal, strictly descending input, mixed
+# Integers/Floats, Strings as ordered keys, n=0 / n>len in nlargest/nsmallest, merging empty and
+# already-sorted lists, and a randomized fuzz of push/pop sequences against `sorted()`.
+
+var io = import("io")
+var h = import("heapq")
+var random = import("random")
+
+# A heap satisfies a[parent] <= a[child] for every parent/child pair.
+var isheap = Function(a) -> Bool:
+    var i = 0
+    var n = len(a)
+    while i < n:
+        var L = 2 * i + 1
+        var R = 2 * i + 2
+        if L < n and a[L] < a[i]:
+            return False
+        if R < n and a[R] < a[i]:
+            return False
+        i = i + 1
+    return True
+
+# Drain a heap by repeated heappop -> a non-decreasing list (== sorted).
+var drain = Function(heap):
+    var out = []
+    while len(heap) > 0:
+        out.append(h.heappop(heap))
+    return out
+
+# --- empty heap throws on heappop / heapreplace -------------------------------------------------
+var threw = False
+try:
+    discard h.heappop([])
+catch as e:
+    threw = "empty" in e
+assert threw, "heappop on empty throws 'empty'"
+threw = False
+try:
+    discard h.heapreplace([], 5)
+catch as e:
+    threw = "empty" in e
+assert threw, "heapreplace on empty throws 'empty'"
+
+# --- heapify on empty / single / all-equal ------------------------------------------------------
+assert h.heapify([]) == [], "heapify of [] -> []"
+assert h.heapify([42]) == [42], "heapify of one element -> itself"
+var all = h.heapify([7, 7, 7, 7])
+assert isheap(all) and len(all) == 4, "heapify all-equal stays a heap"
+
+# --- doc: heapify returns a NEW list, original is untouched -------------------------------------
+var orig = [9, 4, 7, 1, 6, 2, 8]
+var hp = h.heapify(orig)
+assert orig == [9, 4, 7, 1, 6, 2, 8], "heapify does not mutate its argument"
+assert isheap(hp), "heapify output satisfies the heap invariant"
+assert sorted(orig) == drain(hp), "drained heapify == sorted(input)"
+
+# --- heappush keeps the heap invariant after every push ----------------------------------------
+var rng = random.Random(31415)
+var hp2 = []
+var i = 0
+while i < 200:
+    h.heappush(hp2, rng.randint(-100, 100))
+    assert isheap(hp2), "heappush keeps invariant"
+    i = i + 1
+assert len(hp2) == 200, "heappush appended every element"
+
+# --- heappop pops the minimum AND keeps the invariant ------------------------------------------
+var prev = h.heappop(hp2)
+while len(hp2) > 0:
+    var cur = h.heappop(hp2)
+    assert cur >= prev, "heappop yields non-decreasing sequence"
+    assert isheap(hp2), "heap invariant survives every pop"
+    prev = cur
+
+# --- strictly descending input -- the very worst order for a min-heap --------------------------
+var desc = []
+i = 99
+while i >= 0:
+    desc.append(i)
+    i = i - 1
+var hd = h.heapify(desc)
+assert isheap(hd), "heapify of strictly descending input"
+assert drain(hd) == sorted(desc), "drain of descending == sorted"
+
+# --- heapreplace returns the old smallest and keeps the invariant -------------------------------
+var hr = h.heapify([1, 3, 5, 7, 9])
+var popped = h.heapreplace(hr, 4)
+assert popped == 1, "heapreplace returns the previous minimum"
+assert isheap(hr), "heapreplace keeps invariant"
+assert sorted(hr) == [3, 4, 5, 7, 9], "heapreplace produces the right elements"
+# heapreplace with a value smaller than every element: it pops the old minimum, then the new value
+# settles in at the root.
+hr = h.heapify([5, 6, 7])
+var p2 = h.heapreplace(hr, 1)
+assert p2 == 5 and h.heappop(hr) == 1, "heapreplace with a smaller value: new root"
+
+# --- nsmallest / nlargest -----------------------------------------------------------------------
+# n=0 -> empty list
+assert h.nsmallest(0, [1, 2, 3]) == [], "nsmallest(0) -> []"
+assert h.nlargest(0, [1, 2, 3]) == [], "nlargest(0) -> []"
+# n > len(items) -> the whole sorted list (cap)
+assert h.nsmallest(10, [3, 1, 2]) == [1, 2, 3], "nsmallest(>len) caps at the whole list"
+assert h.nlargest(10, [3, 1, 2]) == [3, 2, 1], "nlargest(>len) caps at the whole list"
+# n=1 single value
+assert h.nsmallest(1, [5, 1, 9, 3]) == [1], "nsmallest(1) is the min"
+assert h.nlargest(1, [5, 1, 9, 3]) == [9], "nlargest(1) is the max"
+# nsmallest/nlargest on empty
+assert h.nsmallest(3, []) == [] and h.nlargest(3, []) == [], "nlargest/nsmallest of empty"
+
+# --- nsmallest equivalence to sorted(items)[:n] -- fuzz -----------------------------------------
+var trial = 0
+while trial < 200:
+    var sz = rng.randint(1, 30)
+    var xs = []
+    var k = 0
+    while k < sz:
+        xs.append(rng.randint(-50, 50))
+        k = k + 1
+    var nn = rng.randint(0, sz + 5)
+    var srt = sorted(xs)
+    var srtdesc = sorted(xs, None, True)
+    var nstop = nn if nn < sz else sz
+    assert h.nsmallest(nn, xs) == srt[0:nstop], "fuzz: nsmallest == sorted asc prefix"
+    assert h.nlargest(nn, xs) == srtdesc[0:nstop], "fuzz: nlargest == sorted desc prefix"
+    trial = trial + 1
+
+# --- merge of sorted lists ----------------------------------------------------------------------
+assert h.merge([]) == [], "merge of zero lists -> []"
+assert h.merge([[]]) == [], "merge of one empty list -> []"
+assert h.merge([[1, 3, 5], [2, 4, 6], [0, 7]]) == [0, 1, 2, 3, 4, 5, 6, 7], "merge of sorted lists"
+assert h.merge([[1, 1, 1], [1, 1]]) == [1, 1, 1, 1, 1], "merge of equal-value lists"
+
+# --- merge fuzz: == sorted(concat) --------------------------------------------------------------
+trial = 0
+while trial < 200:
+    var numl = rng.randint(0, 5)
+    var lists = []
+    var concat = []
+    var li = 0
+    while li < numl:
+        var n = rng.randint(0, 15)
+        var lst = []
+        var j = 0
+        while j < n:
+            lst.append(rng.randint(-30, 30))
+            j = j + 1
+        lst.sort()
+        lists.append(lst)
+        for v in lst:
+            concat.append(v)
+        li = li + 1
+    assert h.merge(lists) == sorted(concat), "fuzz: merge(sorted lists) == sorted(concat)"
+    trial = trial + 1
+
+# --- Strings as a comparable key ----------------------------------------------------------------
+var sh = h.heapify(["dog", "ant", "cat", "bee"])
+assert isheap(sh), "heap of Strings satisfies the invariant"
+assert drain(sh) == ["ant", "bee", "cat", "dog"], "String heap drains lexicographically"
+
+# --- Mixed Integer / Float compare via numeric order --------------------------------------------
+var fh = h.heapify([3, 1.5, 2, 0.5])
+assert drain(fh) == [0.5, 1.5, 2, 3], "Int+Float heap drains in numeric order"
+
+# --- big push-pop sequence: a giant priority queue stays consistent -----------------------------
+var pq = []
+i = 0
+while i < 500:
+    h.heappush(pq, rng.randint(0, 10000))
+    i = i + 1
+# pop them all -- must be non-decreasing
+var last = h.heappop(pq)
+while len(pq) > 0:
+    var nxt = h.heappop(pq)
+    assert nxt >= last, "drained order non-decreasing on N=500"
+    last = nxt
+
+# --- heappush + heappop interleaving (priority-queue scheduler pattern) -------------------------
+# Push 100 random tasks, then for 200 iterations: pop the min, push a new random task >= the
+# current min. The popped sequence must be non-decreasing.
+var sch = []
+i = 0
+while i < 100:
+    h.heappush(sch, rng.randint(0, 1000))
+    i = i + 1
+last = h.heappop(sch)
+i = 0
+while i < 200:
+    var nv = last + rng.randint(0, 50)   # never drop below the current minimum
+    h.heappush(sch, nv)
+    var got = h.heappop(sch)
+    assert got >= last, "scheduler pattern: pop is non-decreasing"
+    last = got
+    i = i + 1
+
+# --- heapreplace is equivalent to heappop+heappush (when heap is non-empty) ---------------------
+var a1 = h.heapify([5, 8, 3, 9, 1])
+var a2 = h.heapify([5, 8, 3, 9, 1])
+var r1 = h.heapreplace(a1, 7)
+var r2 = h.heappop(a2)
+h.heappush(a2, 7)
+assert r1 == r2 and sorted(a1) == sorted(a2), "heapreplace == pop+push (same final multiset)"
+
+# heapify builds bottom-up (Floyd, O(n)) rather than pushing one at a time. Same contract, so pin
+# the parts that could quietly change with the algorithm: the invariant on a hostile ordering, the
+# source list left alone, and the any-iterable input the old per-item `for x in items` loop accepted.
+var hf_src = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]      # strictly descending: every node must sift
+var hf_heap = h.heapify(hf_src)
+assert isheap(hf_heap), "bottom-up heapify holds the invariant on descending input"
+assert hf_src == [9, 8, 7, 6, 5, 4, 3, 2, 1, 0], "heapify does not touch its source list"
+assert sorted(hf_heap) == sorted(hf_src), "heapify keeps every element"
+assert h.heapify([]) == [] and h.heapify([5]) == [5], "heapify of empty / single"
+assert isheap(h.heapify(range(20, 0, -1))), "heapify accepts a range"      # not just a List
+assert isheap(h.heapify({5, 3, 9, 1})), "heapify accepts a Set"
+assert h.heapify("cba") == ["a", "b", "c"], "heapify accepts a String"
+var hf_dup = h.heapify([2, 2, 2, 1, 1, 3])
+assert isheap(hf_dup) and hf_dup[0] == 1, "heapify with duplicates keeps the min at the root"
+
+io.print("OK audit-heapq")

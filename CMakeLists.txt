@@ -11,7 +11,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(KIRITO_ENABLE_TLS "Enable HTTPS in the net module via OpenSSL" OFF)
 
 # Optional libFuzzer (coverage-guided) build of the stability fuzzer. Off by default. Enable with
-# -DKIRITO_ENABLE_LIBFUZZER=ON — requires clang. Builds tools/tests/fuzz/fuzz_libfuzzer.cpp as
+# -DKIRITO_ENABLE_LIBFUZZER=ON — requires clang. Builds tests/fuzz/fuzz_libfuzzer.cpp as
 # `ki_fuzz`, which reads inputs from libFuzzer's `LLVMFuzzerTestOneInput` and runs each through the
 # interpreter under the same "OK if throws / not OK if crashes" contract as the offline fuzzer.
 # Run:  ./ki_fuzz corpus/ -max_total_time=600
@@ -61,6 +61,12 @@ add_library(kirito INTERFACE)
 target_include_directories(kirito INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(kirito INTERFACE cxx_std_20)
 target_link_libraries(kirito INTERFACE Threads::Threads)
+# Clang leaves sized deallocation off by default (GCC/MSVC enable it). Object re-declares the sized
+# aligned operator delete only under __cpp_sized_deallocation, so the header compiles either way; turn
+# the feature ON for Clang so the sized-delete fast path is kept. Propagates to every consumer.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(kirito INTERFACE -fsized-deallocation)
+endif()
 if(WIN32)
     target_link_libraries(kirito INTERFACE ws2_32 bcrypt)  # Winsock; bcrypt = BCryptGenRandom (OS CSPRNG)
 endif()
@@ -85,10 +91,10 @@ endif()
 # interpreter; parsing it dominates compile time and it is included by main.cpp AND every test TU
 # (~156 in all). Compile it into a PCH ONCE here (a tiny carrier TU) and have `ki` plus every test
 # REUSE_FROM it, so the core is parsed a single time per build instead of once per TU. Defined here
-# (not under tools/tests) so the `ki` target below can reuse it too.
+# (not under tests) so the `ki` target below can reuse it too.
 # -Winvalid-pch (with the presets' -Werror) makes a silently-unusable PCH a hard error, so a flag
 # mismatch that would quietly drop the PCH and reparse everything can never slip through.
-add_library(kirito_pch STATIC ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/pch_carrier.cpp)
+add_library(kirito_pch STATIC ${CMAKE_CURRENT_SOURCE_DIR}/tests/pch_carrier.cpp)
 target_link_libraries(kirito_pch PRIVATE kirito)
 if(NOT MSVC)
     target_compile_options(kirito_pch PRIVATE -Wall -Wextra -Wpedantic -Winvalid-pch)
@@ -123,11 +129,11 @@ endif()
 # with `-fsanitize=fuzzer` — the caller supplies it via the CMake configure flags, we only build
 # the target when the option is on.
 if(KIRITO_ENABLE_LIBFUZZER)
-    add_executable(ki_fuzz tools/tests/fuzz/fuzz_libfuzzer.cpp)
+    add_executable(ki_fuzz tests/fuzz/fuzz_libfuzzer.cpp)
     target_link_libraries(ki_fuzz PRIVATE kirito)
     target_compile_options(ki_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
     target_link_options(ki_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
 enable_testing()
-add_subdirectory(tools/tests)
+add_subdirectory(tests)

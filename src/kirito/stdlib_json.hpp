@@ -111,7 +111,12 @@ private:
         skipWs();
         if (peek() == ']') { ++pos_; return h; }
         while (true) {
-            l.elems.push_back(value());
+            // Barriered append, like object()'s d.set() below. The raw elems.push_back this replaces
+            // skipped the write barrier: `l` is rooted across the recursive value() call, so a
+            // collection can PROMOTE it, and an old list silently gaining a young element is never
+            // enrolled in the remembered set — the next minor then frees a nested array that is
+            // still perfectly reachable. (v1.15 A19-2: json.loads("[1, [2]]") lost its inner list.)
+            l.append(vm_.arena(), value());
             skipWs();
             if (peek() == ',') { ++pos_; continue; }
             if (peek() == ']') { ++pos_; break; }
@@ -146,7 +151,10 @@ private:
                             unsigned lo = readHex4();
                             if (lo >= 0xDC00 && lo <= 0xDFFF)
                                 cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                            else fail("invalid low surrogate in \\u escape");
+                            else pos_ -= 6;   // not a low surrogate: rewind the speculatively-read \uXXXX so
+                                              // the lone high surrogate below is U+FFFD-substituted (the code's
+                                              // own unpaired-surrogate rule) and the next escape re-parses —
+                                              // matching the identical input spelled with a literal char.
                         }
                         // An UNPAIRED surrogate (a lone \uD800 high, or a lone low) is not a valid code
                         // point and would encode to invalid UTF-8; substitute U+FFFD (like browsers /

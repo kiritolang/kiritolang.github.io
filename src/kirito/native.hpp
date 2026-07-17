@@ -108,7 +108,7 @@ public:
     Handle moduleHandle() const { return module_; }
 
     ModuleBuilder& fn(std::string name, NativeFn impl) {
-        mod_.members[name] = vm_.alloc(std::make_unique<NativeFunction>(name, std::move(impl)));
+        mod_.setMember(vm_.arena(), name, vm_.alloc(std::make_unique<NativeFunction>(name, std::move(impl))));
         return *this;
     }
     // With a declared signature: the function then accepts keyword arguments and defaults, and
@@ -120,24 +120,24 @@ public:
         // (e.g. hash.hmac's "sha256"), leaving the function holding a dangling default handle.
         RootScope rs(vm_);
         for (const auto& p : sig) if (p.hasDefault) rs.add(p.defaultValue);
-        mod_.members[name] = vm_.alloc(std::make_unique<NativeFunction>(
-            name, std::move(sig), std::move(returnType), std::move(impl)));
+        mod_.setMember(vm_.arena(), name, vm_.alloc(std::make_unique<NativeFunction>(
+            name, std::move(sig), std::move(returnType), std::move(impl))));
         return *this;
     }
     // A variadic native that also accepts keyword arguments (impl receives positional args + named).
     ModuleBuilder& kwfn(std::string name, NativeFnKw impl) {
-        mod_.members[name] = vm_.alloc(std::make_unique<NativeFunction>(name, std::move(impl)));
+        mod_.setMember(vm_.arena(), name, vm_.alloc(std::make_unique<NativeFunction>(name, std::move(impl))));
         return *this;
     }
     ModuleBuilder& value(const std::string& name, Handle h) {
-        mod_.members[name] = h;
+        mod_.setMember(vm_.arena(), name, h);
         return *this;
     }
     // Bind `name` to the same member as an already-registered `existing` (a second public name).
     ModuleBuilder& alias(const std::string& name, const std::string& existing) {
         auto it = mod_.members.find(existing);
         if (it == mod_.members.end()) throw KiritoError("alias target '" + existing + "' not registered");
-        mod_.members[name] = it->second;
+        mod_.setMember(vm_.arena(), name, it->second);
         return *this;
     }
     KiritoVM& vm() { return vm_; }
@@ -173,6 +173,23 @@ public:
 
 // Wrap a member function's positional implementation so it ALSO accepts keyword arguments, without
 // touching the impl. `params` names the positional slots. On a keyword call,
+// The `(other, rel_tol = 1e-9, abs_tol = 0.0)` signature that EVERY native numeric type's `.compare`
+// carries (Integer/Float, Matrix, Complex, ComplexMatrix, Tensor) — the tolerant counterpart to the
+// language's exact `==`. One definition, so the tolerances can't drift apart between types.
+//
+// `rs` must outlive the NativeFunction this signature goes into. A default is an unrooted temporary
+// until the function exists to trace it (NativeFunction::children()), so the very next allocation —
+// the other default, or the function itself — can collect it, leaving a method holding a dangling
+// default that only fires when a caller omits the argument. Hence rooting each one AS it is made,
+// rather than after the fact. (v1.15 A19-1.)
+inline std::vector<NativeParam> toleranceSig(KiritoVM& vm, RootScope& rs) {
+    std::vector<NativeParam> sig;
+    sig.emplace_back("other");
+    sig.emplace_back("rel_tol", "Float", rs.add(vm.makeFloat(1e-9)));
+    sig.emplace_back("abs_tol", "Float", rs.add(vm.makeFloat(0.0)));
+    return sig;
+}
+
 // positionals fill left-to-right, keywords bind by name, any slot left as a hole before the last
 // supplied one is filled with None, and trailing unset slots are dropped — so the impl receives
 // exactly the variable-length span it always did (its own None/arity checks still apply). A

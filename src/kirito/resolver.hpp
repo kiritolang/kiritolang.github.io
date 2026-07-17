@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "fum/unordered_map.hpp"
 #include "fum/unordered_set.hpp"
 #include "ast.hpp"
 #include "common.hpp"
@@ -32,44 +33,125 @@ public:
     // Resolve the program that will run in `runScope`. Names already bound there are predeclared, so
     // the REPL's accumulated bindings (a persistent scope across lines) and any embedder-defined
     // names resolve — not just the ones this program declares. Builtins resolve via the global env.
-    void resolve(const ast::Program& program, Handle runScope) {
+    //
+    // `indexTopLevel` is set for a genuine module/script scope (a directly-run file, an imported .ki
+    // file, a frozen stdlib module) — NOT the REPL's persistent dynamic scope nor a bare embedder
+    // eval. When set, every top-level binding is given a fixed slot in the live module EnvValue up
+    // front (predeclareModuleSlots) and every reference that resolves to one is annotated with its
+    // (depth, index) so the compiler emits a direct LoadVar/AssignVar with no run-time name walk.
+    void resolve(const ast::Program& program, Handle runScope, bool indexTopLevel = false) {
+        indexTopLevel_ = indexTopLevel;
         scopes_.emplace_back();
         const auto& env = static_cast<const EnvValue&>(vm_.arena().deref(runScope));
         for (const auto& [name, h] : env.locals()) declare(name);  // arglist/argmain, prior REPL, embedder
         collectDecls(program.stmts);
+        if (indexTopLevel_) predeclareModuleSlots(runScope);
         checkBlock(program.stmts);
         scopes_.pop_back();
     }
 
 private:
+    // A lexical scope on the resolution stack. `names` is membership (a name declared anywhere in the
+    // scope is visible throughout it). `kind` distinguishes the module/REPL scope, a function body, and
+    // a class body. `envIndex` maps each name that lives in this scope's EnvValue to its fixed slot —
+    // for a module scope, every top-level binding (when indexed); for a function scope, its captured
+    // parameters (at their positional index) and captured locals (after the parameters). A reference
+    // resolving to a name in `envIndex` compiles to a direct LoadVar/AssignVar(depth, index); a name
+    // absent from it is a frame-slot local (LoadLocal) or, in a bare-eval/class scope, name-based.
+    struct Scope {
+        fum::unordered_set<std::string> names;
+        enum Kind { Module, Function, Class } kind = Module;
+        fum::unordered_map<std::string, uint32_t> envIndex;
+    };
     KiritoVM& vm_;
-    std::vector<fum::unordered_set<std::string>> scopes_;
+    std::vector<Scope> scopes_;
     int depth_ = 0;  // checkExpr recursion bound (anti stack-overflow)
+    bool indexTopLevel_ = false;                        // module-scope names get fixed slots + LoadVar
+    int inDefault_ = 0;                                 // >0 while checking a parameter default (its own frame)
 
-    void declare(const std::string& name) { scopes_.back().insert(name); }
-    bool inLexicalScope(const std::string& name) const {
-        for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it)
-            if (it->count(name)) return true;
-        return false;
+    void declare(const std::string& name) { scopes_.back().names.insert(name); }
+    // Index of the innermost scope (0 == module) that declares `name`, or -1 if none — so the caller
+    // can compute the EnvValue-hop depth to it. Every enclosing function/class body is exactly one hop.
+    int lexicalScopeIndexOf(const std::string& name) const {
+        for (std::size_t j = scopes_.size(); j-- > 0;)
+            if (scopes_[j].names.count(name)) return static_cast<int>(j);
+        return -1;
     }
     bool isGlobal(const std::string& name) const {
         return envLookup(vm_.arena(), vm_.global(), name).has_value();  // builtins + registered globals
     }
 
-    // Open a nested scope (a function or class body), predeclare its params, gather ALL of the
-    // block's declarations (so forward references resolve), check every reference, then close it.
-    void resolveScope(const ast::Block& body, const std::vector<ast::Param>* params = nullptr) {
+    // Give every top-level binding a fixed slot in the live module EnvValue before the body runs.
+    // Seeded names (arglist/argmain, plus anything the embedder/REPL carried in) keep their existing
+    // positions; each remaining declaration is appended as an `undefined()` placeholder that its `var`
+    // overwrites in place at run time. Indices are read straight back from the scope, so a reference
+    // annotated from scope0Index_ is guaranteed to address the right slot — no name lookup needed. A
+    // name never assigned at run time stays `undefined()` and is filtered out of the module's exports.
+    void predeclareModuleSlots(Handle runScope) {
+        auto& env = static_cast<EnvValue&>(vm_.arena().deref(runScope));
+        auto& idx = scopes_[0].envIndex;
+        for (std::size_t i = 0; i < env.size(); ++i) idx.emplace(env.nameAt(i), static_cast<uint32_t>(i));
+        for (const auto& name : scopes_[0].names) {
+            if (idx.count(name)) continue;  // already bound (seeded, or a duplicate declaration)
+            uint32_t slot = static_cast<uint32_t>(env.size());
+            env.define(vm_.arena(), name, vm_.undefined());
+            idx.emplace(name, slot);
+        }
+    }
+
+    // A function body: its own scope. Predeclare its params, gather ALL of the body's declarations (so
+    // forward references resolve), assign env slots to its captured params/locals, check every
+    // reference, then close it.
+    void resolveFunctionScope(const ast::FunctionExpr& fn) {
         scopes_.emplace_back();
-        if (params) for (const auto& p : *params) declare(p.name);
+        scopes_.back().kind = Scope::Function;
+        for (const auto& p : fn.params) declare(p.name);
+        collectDecls(fn.body);
+        computeFunctionEnvIndex(scopes_.back(), fn);
+        checkBlock(fn.body);
+        scopes_.pop_back();
+    }
+    // A class body is its own scope. Its bindings are ALSO harvested by name into the class's method/
+    // attr table (so class-body names keep name-based writes), but every one lives at a fixed index in
+    // the class-scope EnvValue — pre-declared at BuildClass in the same order — so a reference to one
+    // (a method reading a sibling method / class var by bare name) compiles to a direct LoadVar.
+    void resolveClassScope(const ast::Block& body) {
+        scopes_.emplace_back();
+        scopes_.back().kind = Scope::Class;
         collectDecls(body);
+        computeClassEnvIndex(scopes_.back(), body);
         checkBlock(body);
         scopes_.pop_back();
+    }
+    // Every class-body name is env-resident at a fixed index, in the shared deterministic order the
+    // compiler records in Proto.envSlots and the runtime pre-declares them.
+    void computeClassEnvIndex(Scope& s, const ast::Block& body) {
+        uint32_t next = 0;
+        for (const auto& name : collectBlockDeclsOrdered(body)) s.envIndex.emplace(name, next++);
+    }
+
+    // The env layout of a function scope: captured parameters keep their positional slot (callFull
+    // defines every parameter in the scope env, in order), and captured non-param locals follow the
+    // parameters in the SAME deterministic order the compiler records in Proto.envSlots and the runtime
+    // pre-declares them (collectBlockDeclsOrdered + captured/non-param filter) — so index P+i names the
+    // same binding on both sides. Non-captured locals/params are frame slots and get no env index.
+    void computeFunctionEnvIndex(Scope& s, const ast::FunctionExpr& fn) {
+        NameSet captured = capturedLocals(fn.params, fn.body);
+        NameSet paramSet;
+        for (std::size_t i = 0; i < fn.params.size(); ++i) {
+            paramSet.insert(fn.params[i].name);
+            if (captured.count(fn.params[i].name))
+                s.envIndex.emplace(fn.params[i].name, static_cast<uint32_t>(i));
+        }
+        uint32_t next = static_cast<uint32_t>(fn.params.size());
+        for (const auto& name : collectBlockDeclsOrdered(fn.body))
+            if (captured.count(name) && !paramSet.count(name)) s.envIndex.emplace(name, next++);
     }
 
     // Pre-pass: record every name a block binds into the current scope. The traversal lives in
     // locals.hpp (collectBlockDecls), shared with the compiler's slot-assignment pass so both agree on
     // exactly which names a scope binds.
-    void collectDecls(const ast::Block& block) { kirito::collectBlockDecls(block, scopes_.back()); }
+    void collectDecls(const ast::Block& block) { kirito::collectBlockDecls(block, scopes_.back().names); }
 
     // --- reference checking ---------------------------------------------------------------------
     void checkBlock(const ast::Block& block) { for (const auto& s : block) checkStmt(*s); }
@@ -92,7 +174,7 @@ private:
         } else if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&s)) checkExpr(*th->value);
         else if (const auto* c = dynamic_cast<const ast::ClassStmt*>(&s)) {
             if (c->base) checkExpr(*c->base);
-            resolveScope(c->body);  // a class body is its own (membership) scope
+            resolveClassScope(c->body);  // a class body is its own (membership) scope
         } else if (const auto* wi = dynamic_cast<const ast::WithStmt*>(&s)) { checkExpr(*wi->context); checkBlock(wi->body); }
         else if (const auto* as = dynamic_cast<const ast::AssertStmt*>(&s)) { checkExpr(*as->cond); if (as->message) checkExpr(*as->message); }
         else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&s)) {
@@ -112,8 +194,32 @@ private:
     }
 
     void checkName(const ast::NameExpr& n) {
-        if (!inLexicalScope(n.name) && !isGlobal(n.name))
+        int j = lexicalScopeIndexOf(n.name);
+        if (j >= 0) {                          // a lexical binding shadows any builtin
+            // Resolve to a direct env slot when the owning scope indexes this name: a function scope
+            // always indexes its captured params/locals; a class body always indexes its member names;
+            // the module scope indexes its top-level names only for a real module/script/REPL scope
+            // (indexTopLevel_), never a bare embedder eval. A frame-slot local (absent from envIndex)
+            // stays LoadLocal. depth = the EnvValue hops from the referencing frame up to the owning
+            // scope (each enclosing function/class body is one hop). Parameter defaults run as their own
+            // Proto (a different frame/depth), so references inside them are left name-based.
+            const Scope& sj = scopes_[static_cast<std::size_t>(j)];
+            bool indexable = sj.kind == Scope::Function || sj.kind == Scope::Class ||
+                             (sj.kind == Scope::Module && indexTopLevel_);
+            if (indexable && inDefault_ == 0) {
+                auto it = sj.envIndex.find(n.name);
+                if (it != sj.envIndex.end()) {
+                    n.envDepth = static_cast<int>(scopes_.size() - 1 - static_cast<std::size_t>(j));
+                    n.envIndex = static_cast<int>(it->second);
+                }
+            }
+            return;
+        }
+        if (!isGlobal(n.name))
             throw KiritoError("name '" + n.name + "' is not defined", n.span);
+        // A genuine builtin/global reference: annotate its fixed global slot so the compiler emits a
+        // direct LoadGlobal. builtinSlot() is -1 for an embedder-added global (still resolves via LoadName).
+        n.builtinSlot = vm_.builtinSlot(n.name);
     }
 
     void checkExpr(const ast::Expr& e) {
@@ -150,11 +256,13 @@ private:
             // scope populated incrementally), then resolve the body with all params.
             scopes_.emplace_back();
             for (const auto& p : fn->params) {
-                if (p.defaultValue) checkExpr(*p.defaultValue);   // sees enclosing scopes + earlier params
+                // A default runs as its own Proto in the call scope (a different frame/depth than the
+                // body), so references inside it are left name-based, not annotated for LoadVar.
+                if (p.defaultValue) { ++inDefault_; checkExpr(*p.defaultValue); --inDefault_; }
                 declare(p.name);                                   // visible to the defaults that follow
             }
             scopes_.pop_back();
-            resolveScope(fn->body, &fn->params);
+            resolveFunctionScope(*fn);
         }
         // LiteralExpr binds/references nothing.
     }

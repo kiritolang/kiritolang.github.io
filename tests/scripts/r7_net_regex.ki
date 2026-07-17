@@ -1,0 +1,764 @@
+# r7_net_regex.ki — round-7 exhaustive re-audit of the `net` (TCP + HTTP/1.1 client + URL helpers)
+# and `regex` (linear-time Thompson-NFA engine) stdlib modules against docs/pages/10-stdlib.md.
+#
+# NO EXTERNAL NETWORK. Every TCP/HTTP exchange is a 127.0.0.1 loopback: a one-shot server runs in a
+# `parallel` worker VM, picks its own free port by scanning a small range (an ephemeral bind's port
+# is not observable from Kirito — there is no getsockname), and publishes it back through a Queue.
+# All blocking ops carry SHORT timeouts so nothing can hang; cross-thread results are asserted on
+# values, never on timing. The `ki` CLI installs the dispatcher that backs `parallel`. HTTPS/TLS is
+# NOT exercised (this build has no TLS, and external network is forbidden). The pure/offline surface
+# (URL helpers, the whole regex engine) is hammered directly.
+#
+# Worker functions MUST be module-level (a worker re-evaluates this file with argmain False, so the
+# side-effecting checks live under `if argmain:` while the workers are just defined).
+
+var io = import("io")
+var net = import("net")
+var re = import("regex")
+var parallel = import("parallel")
+var t = import("time")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+
+# throws(f) -> Bool: True iff calling f() throws a catchable error.
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+# ===================================================================== loopback server workers
+# Bind the first free 127.0.0.1 port in [lo, lo+span); return [socket, port]. A fresh socket per
+# attempt (a socket whose bind failed is closed and not reused). Throws if the whole range is busy.
+var bindFree = Function(lo, span):
+    var p = lo
+    while p < lo + span:
+        var s = net.Socket()
+        s.settimeout(5.0)
+        try:
+            s.bind("127.0.0.1", p)
+            return [s, p]
+        catch as e:
+            s.close()
+            p = p + 1
+    throw "no free port in range"
+
+# One-shot TCP echo server: bind+listen, publish the port, accept one client, echo its bytes back,
+# return the byte count echoed.
+var echoServer = Function(portq):
+    var bp = bindFree(50100, 90)
+    var srv = bp[0]
+    srv.listen(1)
+    portq.put(bp[1])
+    var c = srv.accept()
+    var data = c.recv(65536)
+    var sent = c.send(data)
+    c.close()
+    srv.close()
+    return sent
+
+# One-shot HTTP/1.1 server returning a fixed status/reason/body with a couple of headers and a
+# Set-Cookie; publishes its port, serves exactly one request.
+var httpServer = Function(portq, status, reason, body):
+    var bp = bindFree(50200, 90)
+    var srv = bp[0]
+    srv.listen(1)
+    portq.put(bp[1])
+    var c = srv.accept()
+    discard c.recv(8192)
+    var resp = "HTTP/1.1 " + String(status) + " " + reason + "\r\n"
+    resp = resp + "Content-Type: application/json\r\nX-Test: yes\r\n"
+    resp = resp + "Set-Cookie: sid=abc123; Path=/\r\n"
+    resp = resp + "Content-Length: " + String(len(body)) + "\r\n\r\n" + body
+    discard c.send(resp)
+    c.close()
+    srv.close()
+    return "served"
+
+# Capture server: record the raw request text (so the client can assert what went on the wire),
+# reply 200 ok.
+var captureServer = Function(portq, reqq):
+    var bp = bindFree(50300, 90)
+    var srv = bp[0]
+    srv.listen(1)
+    portq.put(bp[1])
+    var c = srv.accept()
+    var req = c.recv(8192).decode()
+    reqq.put(req)
+    discard c.send("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+    c.close()
+    srv.close()
+    return "served"
+
+# Binary server: reply with a raw-byte body (NUL/0xFF/control bytes), no Content-Encoding, so
+# r.content must be byte-exact.
+var binaryServer = Function(portq):
+    var bp = bindFree(50400, 90)
+    var srv = bp[0]
+    srv.listen(1)
+    portq.put(bp[1])
+    var c = srv.accept()
+    discard c.recv(8192)
+    var payload = Bytes([0, 1, 255, 128, 10, 13, 0, 65])
+    var head = Bytes("HTTP/1.1 200 OK\r\nContent-Length: " + String(len(payload)) + "\r\n\r\n")
+    discard c.send(head + payload)
+    c.close()
+    srv.close()
+    return "served"
+
+# Chunked transfer-encoding server: "Wiki" + "pedia" in two chunks; the client must see "Wikipedia".
+var chunkServer = Function(portq):
+    var bp = bindFree(50500, 90)
+    var srv = bp[0]
+    srv.listen(1)
+    portq.put(bp[1])
+    var c = srv.accept()
+    discard c.recv(8192)
+    var resp = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+    resp = resp + "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n"
+    discard c.send(resp)
+    c.close()
+    srv.close()
+    return "served"
+
+# Two-request server: the first sets a cookie, the second captures the request line so a Session can
+# prove it re-sent the cookie from its jar.
+var cookieServer = Function(portq, reqq):
+    var bp = bindFree(50600, 90)
+    var srv = bp[0]
+    srv.listen(2)
+    portq.put(bp[1])
+    var c1 = srv.accept()
+    discard c1.recv(8192)
+    discard c1.send("HTTP/1.1 200 OK\r\nSet-Cookie: token=xyz; Path=/\r\nContent-Length: 2\r\n\r\nok")
+    c1.close()
+    var c2 = srv.accept()
+    var req2 = c2.recv(8192).decode()
+    reqq.put(req2)
+    discard c2.send("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+    c2.close()
+    srv.close()
+    return "served"
+
+# One listener, reached under two different host NAMES (127.0.0.1 and localhost — the client scopes
+# cookies by hostname, as RFC 6265 does and as the redirect path already does). Sets a cookie on the
+# first request, then echoes the next two requests back so the test can see who got the cookie.
+var twoOriginServer = Function(portq, reqq):
+    var bp = bindFree(50800, 90)
+    var srv = bp[0]
+    srv.listen(3)
+    portq.put(bp[1])
+    var c1 = srv.accept()
+    discard c1.recv(8192)
+    discard c1.send("HTTP/1.1 200 OK\r\nSet-Cookie: session=SECRET; Path=/\r\nContent-Length: 2\r\n\r\nok")
+    c1.close()
+    for i in range(2):
+        var c = srv.accept()
+        reqq.put(c.recv(8192).decode())
+        discard c.send("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+        c.close()
+    srv.close()
+    return "served"
+
+# Redirect server: 302 -> /final, then 200 with a marker body. Proves redirect following.
+var redirectServer = Function(portq):
+    var bp = bindFree(50700, 90)
+    var srv = bp[0]
+    srv.listen(2)
+    var port = bp[1]
+    portq.put(port)
+    var c1 = srv.accept()
+    discard c1.recv(8192)
+    discard c1.send("HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\n\r\n")
+    c1.close()
+    var c2 = srv.accept()
+    discard c2.recv(8192)
+    discard c2.send("HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nlanded!")
+    c2.close()
+    srv.close()
+    return "served"
+
+# A helper that spins up a capture server, sends one request with the given verb/opts, and returns
+# [Response, rawRequestText]. Lives at module level so it is safe in any worker re-eval.
+var captureOnce = Function(verb, opts):
+    var cq = parallel.Queue()
+    var crq = parallel.Queue()
+    var ct = parallel.spawn(captureServer, cq, crq)
+    var cport = cq.get(True, 5.0)
+    var rr = net.request(verb, "http://127.0.0.1:" + String(cport) + "/x", opts)
+    var req = crq.get(True, 5.0)
+    discard ct.join()
+    return [rr, req]
+
+if argmain:
+    # =========================================================================================
+    # REGEX — match vs search vs fullmatch (anchoring)
+    # =========================================================================================
+    ok(re.match("id", "id 99").group() == "id", "match anchors at start")
+    ok(re.match(r"\d+", "x 12") == None, "match must begin at 0 -> None")
+    ok(re.search(r"\d+", "x 12 y").group() == "12", "search finds anywhere")
+    ok(re.search("zzz", "no match") == None, "search miss -> None")
+    ok(re.fullmatch(r"\d+", "4821").group() == "4821", "fullmatch covers whole string")
+    ok(re.fullmatch(r"\d+", "48x") == None, "fullmatch rejects partial")
+    ok(re.fullmatch("a.c", "abc").group() == "abc", "fullmatch with dot")
+
+    # ---- literals, dot, classes (ranges, negation, shorthands inside classes) ----
+    ok(re.search("a.c", "xaQcy").group() == "aQc", "dot matches one char")
+    ok(re.search("a.c", "a\nc") == None, "dot excludes newline by default")
+    ok(re.search("[aeiou]", "rhythm and").group() == "a", "char class")
+    ok(re.search("[A-Z]+", "go LOUD now").group() == "LOUD", "class range")
+    ok(re.search("[^0-9]+", "123abc!").group() == "abc!", "negated class")
+    ok(re.search(r"[\d.]+", "v3.14!").group() == "3.14", "shorthand inside class")
+    ok(re.search(r"\d+", "  4821 x").group() == "4821", "\\d shorthand")
+    ok(re.search(r"\D+", "12abc").group() == "abc", "\\D negated digit")
+    ok(re.search(r"\w+", "  hi_there!").group() == "hi_there", "\\w shorthand")
+    ok(re.search(r"\W+", "ab!! cd").group() == "!! ", "\\W non-word")
+    ok(re.search(r"\s+", "a   b").group() == "   ", "\\s whitespace")
+    ok(re.search(r"\S+", "  word ").group() == "word", "\\S non-space")
+    ok(ord(re.search(r"[\b]", chr(8)).group()) == 8, "\\b inside a class is a backspace")
+
+    # ---- quantifiers: greedy vs lazy, {n}, {n,m}, {n,} ----
+    ok(re.search("ab*c", "ac").group() == "ac", "* allows zero")
+    ok(re.search("ab+c", "abbbc").group() == "abbbc", "+ one or more")
+    ok(re.search("colou?r", "color").group() == "color", "? optional (absent)")
+    ok(re.search("colou?r", "colour").group() == "colour", "? optional (present)")
+    ok(re.search("<.*>", "<a><b>").group() == "<a><b>", "greedy grabs maximum")
+    ok(re.search("<.*?>", "<a><b>").group() == "<a>", "lazy grabs minimum")
+    ok(re.search("a+?", "aaab").group() == "a", "lazy + grabs one")
+    ok(re.search(r"\d{3}", "12345").group() == "123", "{n} exact")
+    ok(re.search(r"\d{2,3}", "12345").group() == "123", "{n,m} greedy upper")
+    ok(re.search(r"\d{2,3}?", "12345").group() == "12", "{n,m} lazy lower")
+    ok(re.search(r"\d{2,}", "12345").group() == "12345", "{n,} unbounded")
+
+    # ---- anchors and boundaries ----
+    ok(re.search("^id", "id 99").group() == "id", "^ start anchor")
+    ok(re.search("99$", "id 99").group() == "99", "$ end anchor")
+    ok(re.findall(r"\bcat\b", "cat scatter cat") == ["cat", "cat"], "\\b word boundary")
+    ok(re.search(r"\Bcat\B", "scatter").group() == "cat", "\\B non-boundary")
+    ok(re.search(r"\Aabc", "abcdef").group() == "abc", "\\A absolute start")
+    ok(re.search(r"xyz\z", "wwxyz").group() == "xyz", "\\z absolute end")
+    ok(re.search(r"abc\z", "abc\n") == None, "\\z is strict end (no match before trailing newline)")
+    ok(re.search(r"abc\Z", "abc\n") == None, "\\Z is strict end in Kirito (like \\z)")
+
+    # ---- groups: capturing, non-participating, non-capturing, named (both spellings) ----
+    var md = re.search(r"(\d{4})-(\d{2})-(\d{2})", "log 2024-06-07 ok")
+    ok(md.group() == "2024-06-07", "group 0 is the whole match")
+    ok(md.group(1) == "2024" and md.group(2) == "06" and md.group(3) == "07", "numbered groups")
+    ok(md.groups() == ["2024", "06", "07"], "groups() all")
+    ok(md.group(1, 3) == ["2024", "07"], "group(multiple keys) -> List")
+    ok(md.span() == [4, 14], "span() of the whole match")
+    ok(md.span(2) == [9, 11] and md.start(1) == 4 and md.end(1) == 8, "group span/start/end")
+    ok(md.string == "log 2024-06-07 ok", "Match.string attribute")
+
+    var partial = re.search(r"(\d+)?-(\d+)", "-5")
+    ok(partial.group(1) == None, "non-participating group -> None")
+    ok(partial.group(2) == "5", "participating group")
+    ok(partial.groups() == [None, "5"], "groups() default None")
+    ok(partial.groups("X") == ["X", "5"], "groups(default)")
+    ok(partial.start(1) == -1 and partial.end(1) == -1, "absent group span -> -1")
+
+    ok(re.findall("(?:ab)+", "ababab xx abab") == ["ababab", "abab"], "non-capturing group")
+    var who = re.search(r"(?P<user>\w+)@(?P<host>[\w.]+)", "ada@kirito.dev now")
+    ok(who.group("user") == "ada" and who.group("host") == "kirito.dev", "named group (?P<>)")
+    ok(who.groupdict() == {"user": "ada", "host": "kirito.dev"}, "groupdict()")
+    var who2 = re.search(r"(?<a>\w+)=(?<b>\d+)", "x=12")
+    ok(who2.group("a") == "x" and who2.group("b") == "12", "named group (?<>) spelling")
+    ok(re.search(r"(?P<x>\d+)", "n12").group(1) == "12", "named group is also numbered")
+    ok(re.compile(r"(?P<a>x)(?P<b>y)").groupindex == {"a": 1, "b": 2}, "Regex.groupindex name->number")
+
+    # ---- alternation ----
+    ok(re.search("cat|dog|bird", "I have a dog").group() == "dog", "alternation")
+    ok(re.findall("(jan|feb|mar)", "feb and mar") == ["feb", "mar"], "grouped alternation")
+
+    # ---- findall shapes (0 / 1 / 2+ groups); non-overlapping ----
+    ok(re.findall(r"\d+", "12 and 345") == ["12", "345"], "findall 0 groups -> Strings")
+    ok(re.compile(r"(\d+)").findall("a1 b22") == ["1", "22"], "findall 1 group -> that group")
+    ok(re.findall(r"(\w)(\w)", "abcd") == [["a", "b"], ["c", "d"]], "findall 2+ groups -> Lists")
+    ok(re.findall("aa", "aaaa") == ["aa", "aa"], "findall matches are non-overlapping")
+
+    # ---- finditer (List of Match objects) ----
+    var spans = []
+    for hit in re.finditer(r"\d+", "a1 b22"):
+        spans = spans + [[hit.group(), hit.start()]]
+    ok(spans == [["1", 1], ["22", 4]], "finditer yields Match objects")
+    ok(re.finditer("z", "abc") == [], "finditer no match -> empty List")
+
+    # ---- sub: string template (\1, \g<name>, \g<0>, \\), callable repl, count ----
+    ok(re.sub(r"\s+", "_", "a   b  c") == "a_b_c", "sub string template")
+    ok(re.sub(r"(\w+)@(\w+)", r"\2.\1", "user@host") == "host.user", "sub \\1 backref template")
+    ok(re.sub(r"(?P<n>\d+)", r"[\g<n>]", "x12y") == "x[12]y", "sub \\g<name>")
+    ok(re.sub(r"\d+", r"<\g<0>>", "x12y") == "x<12>y", "sub \\g<0> whole match")
+    ok(re.compile("a").sub("\\\\", "a") == "\\", "sub literal backslash via \\\\")
+    ok(re.sub("a", "X", "aaaa", 2) == "XXaa", "sub count limit")
+    ok(re.compile("a").sub("X", "aaa", 0) == "XXX", "sub count 0 replaces all")
+    ok(re.compile("a").sub("X", "aaa", -1) == "XXX", "sub negative count replaces all")
+    var redact = Function(mm):
+        return "*" * len(mm.group())
+    ok(re.sub(r"\d+", redact, "card 1234 5678") == "card **** ****", "sub callable repl")
+
+    # ---- split (maxsplit, captured-group interleaving, empty pattern) ----
+    ok(re.split(r",\s*", "a, b,c ,  d") == ["a", "b", "c ", "d"], "split on matches")
+    ok(re.split(r"(\s+)", "one two") == ["one", " ", "two"], "split keeps captured separators")
+    ok(re.split(r"\d", "a1b2c", 1) == ["a", "b2c"], "split maxsplit")
+    ok(re.split("", "abc") == ["", "a", "b", "c", ""], "split on empty matches")
+    ok(re.findall("", "abc") == ["", "", "", ""], "findall empty pattern: one '' per position")
+
+    # ---- escape ----
+    ok(re.escape("a.b*c") == "a\\.b\\*c", "escape metacharacters")
+    ok(re.escape("a b") == "a\\ b", "escape backslashes a space (not word-ish)")
+    ok(re.search(re.escape("3.14"), "pi=3.14").group() == "3.14", "escaped literal dot matches literally")
+    ok(re.escape("héllo") == "héllo", "escape leaves non-ASCII code points alone")
+
+    # ---- flags: constants, aliases, combinations, inline ----
+    ok(re.I == re.IGNORECASE and re.M == re.MULTILINE and re.S == re.DOTALL, "flag aliases")
+    ok(re.findall("cat", "Cat CAT cat", re.IGNORECASE) == ["Cat", "CAT", "cat"], "IGNORECASE")
+    ok(re.findall(r"^\w+", "one\ntwo\nthree", re.MULTILINE) == ["one", "two", "three"], "MULTILINE ^")
+    ok(re.search("a.b", "a\nb", re.DOTALL).group() == "a\nb", "DOTALL: dot matches newline")
+    ok(re.search("a.b", "a\nb") == None, "without DOTALL dot excludes newline")
+    ok(re.findall("^cat", "Cat\ncat", re.IGNORECASE + re.MULTILINE) == ["Cat", "cat"], "combined flags with +")
+    ok(re.search("(?i)hello", "HELLO there").group() == "HELLO", "inline (?i) flag")
+    ok(re.search("(?s)a.b", "a\nb").group() == "a\nb", "inline (?s) flag")
+    ok(re.findall("(?m)^\\w+", "ab\ncd") == ["ab", "cd"], "inline (?m) flag")
+
+    # ---- escapes inside a pattern: octal \0NN, \xHH, \uHHHH, named whitespace ----
+    ok(re.search(r"\060", "x0y").group() == "0", "octal \\0NN escape")
+    ok(re.search(r"\x41", "xAy").group() == "A", "\\xHH escape")
+    ok(re.search("\\u00FF", "X" + chr(255) + "Y").group() == chr(255), "\\uHHHH escape")
+    ok(re.search(r"a\tb", "a\tb").group() == "a\tb", "\\t in a pattern")
+
+    # ---- compiled Regex attributes + pos/endpos ----
+    var word = re.compile("[A-Za-z]+", re.IGNORECASE)
+    ok(word.findall("Hello, World!") == ["Hello", "World"], "compiled findall")
+    ok(word.pattern == "[A-Za-z]+" and word.groups == 0, "Regex.pattern + groups count")
+    var rxd = re.compile(r"\d+")
+    ok(rxd.search("ab12cd", 2).group() == "12", "Regex.search with pos")
+    ok(rxd.match("ab12", 2).group() == "12", "Regex.match anchored at pos")
+    ok(rxd.search("1234", 0, 2).group() == "12", "endpos truncates the subject")
+    ok(re.compile("b$").search("abc", 0, 2).group() == "b", "$ anchors at endpos")
+    ok(re.compile("a").search("ab", 99) == None, "a past-end pos matches nothing (no OOB)")
+
+    # ---- Unicode: code-point indices; \w is ASCII-only (documented) ----
+    ok(re.search(r"\w+", "héllo").group() == "h", "\\w is ASCII-only (stops at the accent)")
+    ok(re.search(".", "λ").group() == "λ", "dot matches a multi-byte code point")
+    ok(re.search("[é]", "café").group() == "é", "Unicode literal in a class")
+    ok(re.findall(".", "héllo") == ["h", "é", "l", "l", "o"], "findall iterates code points")
+    var us = re.search("b", "λλb")
+    ok(us.start() == 2 and us.span() == [2, 3], "code-point (not byte) indices")
+    ok(re.sub("é", "e", "café") == "cafe", "sub over a multi-byte code point")
+
+    # ---- LINEAR-TIME guarantee: a backtracking-killer pattern returns promptly, not exponentially ----
+    var t0 = t.monotonic()
+    ok(re.search("(a+)+b", "a" * 5000 + "c") == None, "pathological (a+)+b: no match")
+    ok(re.search("(a|aa)+c", "a" * 4000) == None, "pathological (a|aa)+c: no match")
+    ok(t.monotonic() - t0 < 3.0, "pathological patterns run in linear time (fast, no blow-up)")
+
+    # ---- DELIBERATELY UNSUPPORTED (per docs): backreferences + lookaround MUST throw ----
+    ok(throws(Function(): return re.compile(r"(a)\1")), "backreference \\1 rejected")
+    ok(throws(Function(): return re.compile(r"\1")), "bare backreference rejected")
+    ok(throws(Function(): return re.compile("a(?=b)")), "lookahead (?=) rejected")
+    ok(throws(Function(): return re.compile("a(?!b)")), "negative lookahead (?!) rejected")
+    ok(throws(Function(): return re.compile("(?<=a)b")), "lookbehind (?<=) rejected")
+    ok(throws(Function(): return re.compile("(?<!a)b")), "negative lookbehind (?<!) rejected")
+    ok(throws(Function(): return re.compile("(?P<x>a)(?P=x)")), "named backreference (?P=) rejected")
+
+    # ---- malformed patterns throw a clean error (no crash) ----
+    ok(throws(Function(): return re.compile("(unbalanced")), "missing ) rejected")
+    ok(throws(Function(): return re.compile("a)")), "unbalanced ) rejected")
+    ok(throws(Function(): return re.compile("[unterminated")), "unterminated class rejected")
+    ok(throws(Function(): return re.compile("*nothing")), "nothing-to-repeat rejected")
+    ok(throws(Function(): return re.compile(r"\x4")), "incomplete \\x escape rejected")
+    ok(throws(Function(): return re.compile("[z-a]")), "reversed character range rejected")
+    ok(throws(Function(): return re.compile("a\\")), "trailing backslash rejected")
+    ok(throws(Function(): return re.compile("a{3,2}")), "{n,m} with n>m rejected")
+    ok(throws(Function(): return re.compile("a{2000}")), "repetition count > 1000 rejected")
+    ok(throws(Function(): return re.compile("(" * 3000 + "a" + ")" * 3000)), "deeply nested pattern rejected")
+
+    # ---- bad group keys / template references / repl types throw ----
+    ok(throws(Function(): return re.search("(a)", "a").group(5)), "group(out-of-range) rejected")
+    ok(throws(Function(): return re.search("(a)", "a").group(-1)), "group(negative) rejected")
+    ok(throws(Function(): return re.search("(a)", "a").group("nope")), "group(bad name) rejected")
+    ok(throws(Function(): return re.sub("(a)", r"\5", "a")), "sub bad group reference rejected")
+    ok(throws(Function(): return re.compile("a").sub("\\g<missing>", "a")), "sub \\g<unknown name> rejected")
+    ok(throws(Function(): return re.compile("a").sub(42, "a")), "sub non-String/non-callable repl rejected")
+    ok(throws(Function(): return re.sub("a", Function(mm): return 1, "a")), "sub callable returning non-String rejected")
+
+    # ---- kwargs on signatured regex natives ----
+    ok(re.compile(pattern = "a", flags = re.I).pattern == "a", "compile(pattern=, flags=)")
+    ok(re.sub(pattern = "a", repl = "X", string = "aaaa", count = 2) == "XXaa", "sub(pattern=, repl=, string=, count=)")
+    ok(re.match(pattern = "a", string = "abc").group() == "a", "match(pattern=, string=)")
+    ok(re.findall(pattern = r"\d", string = "a1b2") == ["1", "2"], "findall(pattern=, string=)")
+    ok(re.split(pattern = ",", string = "a,b", maxsplit = 1) == ["a", "b"], "split(pattern=, string=, maxsplit=)")
+    ok(re.search(pattern = "x", string = "axb").group() == "x", "search(pattern=, string=)")
+    ok(re.compile(r"\d+").search(string = "ab12", pos = 2).group() == "12", "Regex.search(string=, pos=)")
+
+    # ---- inspect of the regex module + a compiled Regex + a Match ----
+    var insRe = inspect(re)
+    ok("compile(pattern: String, flags: Integer = 0) -> Regex" in insRe, "inspect regex lists compile signature")
+    ok("sub(pattern: String, repl, string: String, count: Integer = 0, flags: Integer = 0) -> String" in insRe, "inspect regex lists sub signature")
+    ok("escape(s: String) -> String" in insRe, "inspect regex lists escape")
+    var insRx = inspect(re.compile("(?P<a>x)"))
+    ok("pattern: String" in insRx and "groups: Integer" in insRx, "inspect Regex lists pattern/groups")
+    ok("findall(string, pos, endpos) -> List" in insRx, "inspect Regex lists findall")
+    var insM = inspect(re.search("x", "x"))
+    ok("group(index) -> String" in insM and "span(group) -> List" in insM, "inspect Match lists group/span")
+
+    # ---- a compiled Regex / a Match are NOT serializable (resource-like) ----
+    var dump = import("dump")
+    ok(throws(Function(): return dump.dumps(re.compile("a"))), "compiled Regex is not serializable")
+    ok(throws(Function(): return dump.dumps(re.search("a", "a"))), "Match is not serializable")
+
+    # =========================================================================================
+    # NET — URL helpers (pure / offline)
+    # =========================================================================================
+    # quote: percent-encode all but the RFC 3986 unreserved set
+    ok(net.quote("a b") == "a%20b", "quote encodes a space")
+    ok(net.quote("a/b?c=d&e") == "a%2Fb%3Fc%3Dd%26e", "quote encodes reserved chars")
+    ok(net.quote("safe-_.~AZaz09") == "safe-_.~AZaz09", "quote leaves the unreserved set alone")
+    ok(net.quote("café") == "caf%C3%A9", "quote encodes multi-byte UTF-8 byte-by-byte")
+    ok(net.quote("\n") == "%0A", "quote encodes a control char")
+    ok(net.quote("+") == "%2B", "quote encodes a literal +")
+    ok(net.quote("") == "", "quote empty")
+
+    # unquote: percent-decode + '+' -> space; malformed escapes pass through literally
+    ok(net.unquote("a%20b") == "a b", "unquote decodes %XX")
+    ok(net.unquote("a+b") == "a b", "unquote turns + into a space")
+    ok(net.unquote("caf%C3%A9") == "café", "unquote decodes multi-byte UTF-8")
+    ok(net.unquote("100%") == "100%", "unquote passes a lone % through")
+    ok(net.unquote("%G0") == "%G0", "unquote passes a malformed escape through")
+    ok(net.unquote("%2") == "%2", "unquote passes a truncated escape through")
+    ok(net.unquote("") == "", "unquote empty")
+
+    # quote/unquote round-trip over reserved/space/Unicode samples
+    for s in ["plain", "with spaces", "sym/bo?ls=&#", "café", "漢字 — naïve", "", "/", "?=&"]:
+        ok(net.unquote(net.quote(s)) == s, "quote/unquote round-trip")
+
+    # urlencode: build k=v&... from a Dict (keys + values encoded; non-String values stringified)
+    ok(net.urlencode({"a": "1"}) == "a=1", "urlencode single pair")
+    ok(net.urlencode({"q": "x y"}) == "q=x%20y", "urlencode encodes a value")
+    ok(net.urlencode({"k=k": "v&v"}) == "k%3Dk=v%26v", "urlencode encodes both key and value")
+    ok(net.urlencode({"a": 1}) == "a=1", "urlencode stringifies a non-String value")
+    ok(net.urlencode({}) == "", "urlencode empty Dict")
+
+    # parseqs: parse k=v&... into a Dict (values decoded)
+    ok(net.parseqs("a=1&b=2") == {"a": "1", "b": "2"}, "parseqs basic")
+    ok(net.parseqs("q=x+y") == {"q": "x y"}, "parseqs decodes +")
+    ok(net.parseqs("a=1&flag&b=2") == {"a": "1", "flag": "", "b": "2"}, "parseqs valueless key -> ''")
+    ok(net.parseqs("k=%2F") == {"k": "/"}, "parseqs decodes %XX in a value")
+    ok(net.parseqs("a=b=c")["a"] == "b=c", "parseqs: only the first = splits k=v")
+    ok(net.parseqs("a=1&a=2")["a"] == "2", "parseqs duplicate key: later wins")
+    ok(net.parseqs("&&a=1&&") == {"a": "1"}, "parseqs skips empty segments")
+    ok(net.parseqs("=v") == {}, "parseqs skips an empty key")
+    ok(net.parseqs("") == {}, "parseqs empty")
+
+    # urlencode/parseqs round-trip
+    var rt = net.parseqs(net.urlencode({"k": "v v", "n": "42"}))
+    ok(rt["k"] == "v v" and rt["n"] == "42", "urlencode/parseqs round-trip")
+
+    # urlsplit: scheme/host/port/path/query/fragment (all String; port textual)
+    var u = net.urlsplit("http://example.com:8080/a/b?x=1&y=2#frag")
+    ok(u["scheme"] == "http" and u["host"] == "example.com", "urlsplit scheme/host")
+    ok(u["port"] == "8080" and Integer(u["port"]) == 8080, "urlsplit port is textual digits")
+    ok(u["path"] == "/a/b" and u["query"] == "x=1&y=2" and u["fragment"] == "frag", "urlsplit path/query/fragment")
+    var u2 = net.urlsplit("https://host/just/path")
+    ok(u2["scheme"] == "https" and u2["host"] == "host", "urlsplit https scheme")
+    ok(u2["port"] == "" and u2["query"] == "" and u2["fragment"] == "", "urlsplit absent parts -> empty")
+    var u6 = net.urlsplit("http://[::1]:8080/p")
+    ok(u6["host"] == "[::1]" and u6["port"] == "8080", "urlsplit keeps bracketed IPv6 + port")
+    ok(net.urlsplit("http://[2001:db8::1]/x")["host"] == "[2001:db8::1]", "urlsplit IPv6 without port")
+    var uu = net.urlsplit("http://user:pass@host.example:90/p")
+    ok(uu["host"] == "host.example" and uu["port"] == "90", "urlsplit drops userinfo from host/port")
+    ok(net.urlsplit("example.com/p")["scheme"] == "" and net.urlsplit("example.com/p")["host"] == "example.com", "urlsplit no-scheme")
+    ok(net.urlsplit("/just/a/path")["path"] == "/just/a/path", "urlsplit bare path")
+    ok(net.urlsplit("http://h#x")["fragment"] == "x" and net.urlsplit("http://h#x")["path"] == "", "urlsplit fragment-only")
+    ok(net.urlsplit("http://h/p?q1?q2")["query"] == "q1?q2", "urlsplit: a 2nd ? stays in the query")
+    ok(net.urlsplit("file:///etc/hosts")["host"] == "" and net.urlsplit("file:///etc/hosts")["path"] == "/etc/hosts", "urlsplit file:///")
+    var ue = net.urlsplit("")
+    ok(ue["scheme"] == "" and ue["host"] == "" and ue["path"] == "", "urlsplit empty")
+
+    # kwargs + argument validation on the URL helpers
+    ok(net.quote(s = "a b") == "a%20b", "quote keyword arg (s=)")
+    ok(net.unquote(s = "a%20b") == "a b", "unquote keyword arg (s=)")
+    ok(net.urlencode(params = {"x": "y z"}) == "x=y%20z", "urlencode keyword arg (params=)")
+    ok(net.parseqs(query = "k=v") == {"k": "v"}, "parseqs keyword arg (query=)")
+    ok(net.urlsplit(url = "http://h:9/p")["port"] == "9", "urlsplit keyword arg (url=)")
+    ok(throws(Function(): return net.quote(42)), "quote rejects a non-String")
+    ok(throws(Function(): return net.unquote([1, 2])), "unquote rejects a non-String")
+    ok(throws(Function(): return net.urlencode()), "urlencode() with no arg throws")
+    ok(throws(Function(): return net.urlencode("not a dict")), "urlencode rejects a non-Dict")
+    ok(throws(Function(): return net.urlencode([1, 2])), "urlencode rejects a List")
+    ok(throws(Function(): return net.parseqs(42)), "parseqs rejects a non-String")
+    ok(throws(Function(): return net.urlsplit({})), "urlsplit rejects a non-String")
+
+    # =========================================================================================
+    # NET — Socket construction, the `with` manager, argument + error paths
+    # =========================================================================================
+    var s0 = net.Socket()
+    ok(type(s0) == "Socket", "Socket() constructs a Socket")
+    s0.close()
+    s0.close()
+    ok(True, "double close is safe (idempotent)")
+    with net.Socket() as ws:
+        ok(type(ws) == "Socket", "Socket usable as a `with` context manager")
+
+    # connect/bind/recv argument validation
+    ok(throws(Function(): return net.Socket().connect("127.0.0.1", 99999)), "connect port > 65535 throws")
+    ok(throws(Function(): return net.Socket().connect("127.0.0.1", -1)), "connect negative port throws")
+    ok(throws(Function(): return net.Socket().bind("127.0.0.1", -1)), "bind negative port throws")
+    ok(throws(Function(): return net.Socket().connect("127.0.0.1")), "connect() needs host AND port (arity)")
+    ok(throws(Function(): return net.Socket().send()), "send() with no data throws (arity guard)")
+    ok(throws(Function(): return net.Socket().settimeout()), "settimeout() needs seconds (arity)")
+    ok(throws(Function(): return net.Socket().recv(-1)), "recv negative size throws")
+    ok(throws(Function(): return net.Socket().send(123)), "send rejects a non-String/Bytes argument")
+
+    # recv on an unconnected socket, send on a closed socket -> clean errors, no crash
+    var unconnRecv = Function():
+        var s = net.Socket()
+        var r = s.recv(10)
+        s.close()
+        return r
+    ok(throws(unconnRecv), "recv on an unconnected socket throws (no crash)")
+    var closedSend = Function():
+        var s = net.Socket()
+        s.close()
+        return s.send("x")
+    ok(throws(closedSend), "send on a closed socket throws")
+
+    # connect to an almost-certainly-dead loopback port throws (with a short timeout, can't hang)
+    var dead = net.Socket()
+    dead.settimeout(2.0)
+    ok(throws(Function(): return dead.connect("127.0.0.1", 1)), "connect to a closed port throws")
+    dead.close()
+
+    # settimeout accepts an Integer and a Float; bind+listen on the loopback works
+    var st = net.Socket()
+    st.settimeout(1)
+    st.settimeout(0.5)
+    ok(True, "settimeout accepts Integer and Float")
+    st.close()
+    var srvbl = net.Socket()
+    srvbl.bind("127.0.0.1", 0)
+    srvbl.listen(4)
+    ok(True, "bind(127.0.0.1, 0) + listen succeeds")
+    srvbl.close()
+
+    # detach() -> fromfd() round-trip, all in one process (no worker needed): bind+listen, connect a
+    # client (the SYN sits in the accept backlog), accept it, detach the client's raw fd, re-adopt it
+    # via net.fromfd, and prove the adopted socket can still send to the accepted peer.
+    var dbp = bindFree(51000, 90)
+    var dsrv = dbp[0]
+    var dport = dbp[1]
+    dsrv.listen(4)
+    var dcli = net.Socket()
+    dcli.connect("127.0.0.1", dport)
+    var dconn = dsrv.accept()
+    var dfd = dcli.detach()
+    ok(type(dfd) == "Integer", "socket.detach() returns the raw fd as an Integer")
+    var dcli2 = net.fromfd(dfd)
+    discard dcli2.send("via-fromfd")
+    ok(dconn.recv(64).decode() == "via-fromfd", "net.fromfd adopts the detached fd and can send on it")
+    dcli2.close()
+    dconn.close()
+    dsrv.close()
+
+    # inspect of the net module, a Socket, a Session
+    var insNet = inspect(net)
+    ok("request(method: String, url: String, options = None) -> Response" in insNet, "inspect net lists request")
+    ok("quote(s: String) -> String" in insNet and "urlsplit(url: String) -> Dict" in insNet, "inspect net lists URL helpers")
+    var insSock = inspect(net.Socket())
+    ok("recv(n) -> Bytes" in insSock and "send(data) -> Integer" in insSock, "inspect Socket lists recv/send")
+    ok("detach() -> Integer" in insSock, "inspect Socket lists detach")
+    var insSess = inspect(net.Session())
+    ok("request(method, url, opts) -> Response" in insSess, "inspect Session lists request")
+    var sess0 = net.Session()
+    ok(type(sess0.headers) == "Dict" and type(sess0.cookies) == "Dict", "Session().headers/cookies are Dicts")
+
+    # =========================================================================================
+    # NET — HTTP request construction error paths (no live peer needed)
+    # =========================================================================================
+    ok(throws(Function(): return net.get("ftp://example.com/x")), "get rejects a non-http(s) URL")
+    ok(throws(Function(): return net.request("GET", "notaurl")), "request rejects a malformed URL")
+    ok(throws(Function(): return net.request(method = "GET", url = "ftp://x/")), "request(method=, url=) still validates the URL")
+    ok(throws(Function(): return net.get("https://127.0.0.1:1/")), "get(https dead) throws (no-TLS build or refused)")
+    ok(throws(Function(): return net.Session().get("ftp://nope/x")), "Session.get rejects a non-http(s) URL")
+
+    # =========================================================================================
+    # NET — loopback TCP echo through a worker (bind/listen/accept/recv/send; Bytes fidelity)
+    # =========================================================================================
+    var eq = parallel.Queue()
+    var et = parallel.spawn(echoServer, eq)
+    var eport = eq.get(True, 5.0)
+    ok(eport > 0, "echo worker bound a port")
+    var es = net.Socket()
+    es.settimeout(5.0)
+    es.connect("127.0.0.1", eport)
+    # a payload with an embedded NUL, 0xFF, control bytes
+    var payload = Bytes([0, 1, 255, 128, 10, 13, 0, 65, 9, 7])
+    ok(es.send(payload) == 10, "send returns the byte count")
+    var got = es.recvall()
+    es.close()
+    ok(type(got) == "Bytes", "recvall returns Bytes")
+    ok(got == payload, "TCP echo round-trips bytes exactly (NUL/0xFF/0x80/control-safe)")
+    ok(et.join() == 10, "echo server echoed 10 bytes")
+
+    # a larger payload survives recv vs recvall semantics
+    var eq2 = parallel.Queue()
+    var et2 = parallel.spawn(echoServer, eq2)
+    var eport2 = eq2.get(True, 5.0)
+    var es2 = net.Socket()
+    es2.settimeout(5.0)
+    es2.connect("127.0.0.1", eport2)
+    var big = Bytes("x" * 20000)
+    discard es2.send(big)
+    # recv with an explicit cap returns AT MOST n bytes (Bytes); drain the rest with recvall
+    var firstChunk = es2.recv(4096)
+    ok(type(firstChunk) == "Bytes" and len(firstChunk) <= 4096 and len(firstChunk) > 0, "recv(n) returns at most n Bytes")
+    var rest = es2.recvall()
+    es2.close()
+    ok(len(firstChunk) + len(rest) == 20000, "recv(n) + recvall drains the whole payload")
+    discard et2.join()
+
+    # =========================================================================================
+    # NET — Response object via a loopback HTTP/1.1 server (status/text/content/headers/json/...)
+    # =========================================================================================
+    var hq = parallel.Queue()
+    var hbody = "{\"n\": 42, \"ok\": true}"
+    var ht = parallel.spawn(httpServer, hq, 201, "Created", hbody)
+    var hport = hq.get(True, 5.0)
+    var r = net.get("http://127.0.0.1:" + String(hport) + "/path")
+    ok(r.status == 201 and r.statuscode == 201, "Response status + statuscode alias")
+    ok(r.reason == "Created", "Response reason")
+    ok(r.ok == True, "Response ok True for 2xx")
+    ok(r.text == hbody and r.body == hbody, "Response text + body alias")
+    ok(type(r.content) == "Bytes" and r.content == Bytes(hbody), "Response content is the body as Bytes")
+    ok(r.header("CONTENT-TYPE") == "application/json", "Response header() is case-insensitive")
+    ok(r.header("nope", "DEF") == "DEF", "Response header() returns a supplied default")
+    ok(r.header("nope") == None, "Response header() returns None when absent")
+    ok(r.headers["X-Test"] == "yes", "Response headers Dict")
+    ok(r.cookies["sid"] == "abc123", "Response cookies parsed from Set-Cookie")
+    ok(r.url.endswith("/path"), "Response url is the final URL")
+    ok(r.json()["n"] == 42 and r.json()["ok"] == True, "Response json() parses the body")
+    ok(r["status"] == 201 and r["body"] == hbody and r["reason"] == "Created", "Response index status/body/reason")
+    ok(r["ok"] == True and r["headers"]["X-Test"] == "yes", "Response index ok/headers")
+    ok(type(r["content"]) == "Bytes", "Response index content is Bytes")
+    ok(throws(Function(): return r["nope"]), "Response index of an unknown key throws")
+    ok(not throws(Function(): return r.raiseforstatus()), "raiseforstatus on 2xx does not throw")
+    discard ht.join()
+
+    # 4xx + 5xx: ok False, raiseforstatus throws
+    var hq2 = parallel.Queue()
+    var ht2 = parallel.spawn(httpServer, hq2, 404, "Not Found", "no")
+    var hport2 = hq2.get(True, 5.0)
+    var r2 = net.get("http://127.0.0.1:" + String(hport2) + "/")
+    ok(r2.ok == False and r2.status == 404, "Response ok False for 404")
+    ok(throws(Function(): return r2.raiseforstatus()), "raiseforstatus on 404 throws")
+    discard ht2.join()
+
+    # binary content stays byte-exact (no Content-Encoding)
+    var bq = parallel.Queue()
+    var bt = parallel.spawn(binaryServer, bq)
+    var bport = bq.get(True, 5.0)
+    var br = net.get("http://127.0.0.1:" + String(bport) + "/")
+    ok(br.content == Bytes([0, 1, 255, 128, 10, 13, 0, 65]), "Response content is byte-exact for a binary body")
+    discard bt.join()
+
+    # chunked transfer-encoding is decoded automatically
+    var cq = parallel.Queue()
+    var ct = parallel.spawn(chunkServer, cq)
+    var cport = cq.get(True, 5.0)
+    var cr = net.get("http://127.0.0.1:" + String(cport) + "/")
+    ok(cr.text == "Wikipedia", "Response decodes chunked transfer-encoding")
+    discard ct.join()
+
+    # =========================================================================================
+    # NET — request options reach the wire (params / auth / headers / json / data / files / cookies)
+    # =========================================================================================
+    var pr = captureOnce("PUT", {"params": {"a": "1"}, "auth": ["user", "pass"], "headers": {"X-Foo": "bar"}})
+    ok(pr[0].status == 200, "put with opts got 200")
+    ok(pr[1].startswith("PUT /x?a=1 "), "params appended to the request line")
+    ok("X-Foo: bar" in pr[1], "custom header sent")
+    ok("Authorization: Basic " in pr[1], "auth -> Basic Authorization header")
+
+    var jr = captureOnce("POST", {"json": {"name": "ada"}})
+    ok("Content-Type: application/json" in jr[1], "json= sets application/json")
+    ok("\"name\": \"ada\"" in jr[1], "json= serializes the body")
+
+    var dr = captureOnce("POST", {"data": {"a": "1", "b": "x y"}})
+    ok("application/x-www-form-urlencoded" in dr[1], "data Dict -> form-urlencoded")
+    ok("a=1" in dr[1] and "b=x%20y" in dr[1], "data Dict values form-encoded")
+
+    var dsr = captureOnce("POST", {"data": "raw-string-body"})
+    ok("text/plain" in dsr[1] and "raw-string-body" in dsr[1], "data String -> text/plain body")
+
+    var dbr = captureOnce("POST", {"data": Bytes([65, 66, 67])})
+    ok("application/octet-stream" in dbr[1] and "ABC" in dbr[1], "data Bytes -> octet-stream body")
+
+    var fr = captureOnce("POST", {"files": {"upload": "filecontent"}})
+    ok("multipart/form-data" in fr[1], "files -> multipart/form-data")
+    ok("Content-Disposition" in fr[1] and "filecontent" in fr[1], "files multipart body has the content")
+
+    var vr = captureOnce("GET", {"verify": False, "timeout": 5})
+    ok(vr[0].status == 200, "verify=False + timeout accepted on plain http")
+
+    var ckr = captureOnce("GET", {"cookies": {"sess": "tok"}})
+    ok("Cookie: " in ckr[1] and "sess=tok" in ckr[1], "cookies= option sends a Cookie header")
+
+    var hr = captureOnce("HEAD", None)
+    ok(hr[1].startswith("HEAD /x "), "HEAD verb produces a HEAD request line")
+
+    # =========================================================================================
+    # NET — redirect following + Session cookie persistence across requests
+    # =========================================================================================
+    var rdq = parallel.Queue()
+    var rdt = parallel.spawn(redirectServer, rdq)
+    var rdport = rdq.get(True, 5.0)
+    var rdr = net.get("http://127.0.0.1:" + String(rdport) + "/start")
+    ok(rdr.status == 200 and rdr.text == "landed!", "302 redirect is followed to the final 200")
+    ok(rdr.url.endswith("/final"), "Response url is the post-redirect URL")
+    discard rdt.join()
+
+    var skq = parallel.Queue()
+    var skrq = parallel.Queue()
+    var skt = parallel.spawn(cookieServer, skq, skrq)
+    var skport = skq.get(True, 5.0)
+    var sess = net.Session()
+    var skbase = "http://127.0.0.1:" + String(skport)
+    discard sess.get(skbase + "/a")
+    ok(sess.cookies["token"] == "xyz", "Session folds Set-Cookie into its jar")
+    discard sess.get(skbase + "/b")
+    var skreq2 = skrq.get(True, 5.0)
+    ok("token=xyz" in skreq2, "Session re-sends the jar cookie on the next request")
+    discard skt.join()
+
+    # A Session's jar is scoped to the host that set each cookie: one origin's session cookie must
+    # not travel to another, exactly as a redirect crossing hosts already drops it.
+    var toq = parallel.Queue()
+    var torq = parallel.Queue()
+    var tot = parallel.spawn(twoOriginServer, toq, torq)
+    var toport = String(toq.get(True, 5.0))
+    var sess2 = net.Session()
+    discard sess2.get("http://127.0.0.1:" + toport + "/login")
+    ok(sess2.cookies["session"] == "SECRET", "Session jar holds the cookie 127.0.0.1 set")
+    discard sess2.get("http://localhost:" + toport + "/track")
+    ok(not ("SECRET" in torq.get(True, 5.0)), "cookie set by 127.0.0.1 is NOT sent to localhost")
+    discard sess2.get("http://127.0.0.1:" + toport + "/again")
+    ok("session=SECRET" in torq.get(True, 5.0), "the setting host still gets its own cookie back")
+    discard tot.join()
+
+    # A cookie the user puts in the jar by hand has no origin, so it is sent wherever they ask.
+    var mq = parallel.Queue()
+    var mrq = parallel.Queue()
+    var mt = parallel.spawn(twoOriginServer, mq, mrq)
+    var mport = String(mq.get(True, 5.0))
+    var sess3 = net.Session()
+    discard sess3.get("http://127.0.0.1:" + mport + "/login")
+    sess3.cookies["manual"] = "mine"
+    discard sess3.get("http://localhost:" + mport + "/x")
+    ok("manual=mine" in mrq.get(True, 5.0), "a user-set cookie is unscoped (sent to any host)")
+    discard sess3.get("http://127.0.0.1:" + mport + "/y")
+    discard mt.join()
+
+    io.print("r7_net_regex: " + String(n) + " checks passed")

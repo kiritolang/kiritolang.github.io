@@ -37,6 +37,9 @@ inline char tagLetter(serde::Tag t) {
         case serde::Tag::Set: { return 'T'; } break;
         case serde::Tag::Object: { return 'O'; } break;
         case serde::Tag::Stateful: { return 'P'; } break;
+        case serde::Tag::Function: { return 'U'; } break;
+        case serde::Tag::Class: { return 'C'; } break;
+        case serde::Tag::Module: { return 'M'; } break;
     }
     return '?';
 }
@@ -71,6 +74,18 @@ inline std::string encode(const std::vector<serde::Node>& nodes, uint32_t rootId
             } break;
             case serde::Tag::Stateful: {  // class name, then the single state id
                 out << n.s.size() << " " << n.s << " " << (n.links.empty() ? 0 : n.links[0]) << " ";
+            } break;
+            case serde::Tag::Function: {  // source text (length-prefixed), then free-var id pairs
+                out << n.s.size() << " " << n.s << " " << (n.links.size() / 2) << " ";
+                for (uint32_t id : n.links) out << id << " ";
+            } break;
+            case serde::Tag::Class: {  // source, class name, eager count, then free-var id pairs
+                out << n.s.size() << " " << n.s << " " << n.s2.size() << " " << n.s2 << " "
+                    << n.i << " " << (n.links.size() / 2) << " ";
+                for (uint32_t id : n.links) out << id << " ";
+            } break;
+            case serde::Tag::Module: {  // module import name
+                out << n.s.size() << " " << n.s << " ";
             } break;
         }
     }
@@ -123,6 +138,28 @@ public:
                     int len = countToken();
                     nd.s = rawBytes(len);
                     nd.links.push_back(static_cast<uint32_t>(std::stol(token())));
+                } break;
+                case 'U': {
+                    nd.tag = serde::Tag::Function;
+                    int len = countToken();
+                    nd.s = rawBytes(len);
+                    int pairs = countToken();
+                    for (long k = 0; k < static_cast<long>(pairs) * 2; ++k) nd.links.push_back(static_cast<uint32_t>(std::stol(token())));
+                } break;
+                case 'C': {
+                    nd.tag = serde::Tag::Class;
+                    int slen = countToken();
+                    nd.s = rawBytes(slen);
+                    int nlen = countToken();
+                    nd.s2 = rawBytes(nlen);
+                    nd.i = std::stoll(token());
+                    int pairs = countToken();
+                    for (long k = 0; k < static_cast<long>(pairs) * 2; ++k) nd.links.push_back(static_cast<uint32_t>(std::stol(token())));
+                } break;
+                case 'M': {
+                    nd.tag = serde::Tag::Module;
+                    int len = countToken();
+                    nd.s = rawBytes(len);
                 } break;
                 default: { throw KiritoError("bad serialization tag '" + t + "'"); } break;
             }

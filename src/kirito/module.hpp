@@ -33,8 +33,12 @@ public:
     }
     // Rebinding a module member is allowed, so e.g. `io.stdout = io.open(...)`
     // redirects every subsequent io.print. The module is a per-VM singleton, so this is global.
-    void setAttr(KiritoVM&, std::string_view name, Handle value) override {
-        members[std::string(name)] = value;
+    void setAttr(KiritoVM& vm, std::string_view name, Handle value) override;  // runtime.hpp (barriered)
+    // Barriered member install (the native ModuleBuilder path). A module is a per-VM singleton that
+    // outlives every value bound into it, so once promoted it is a permanent old->young store site.
+    void setMember(ObjectArena& arena, const std::string& name, Handle h) {
+        gcWriteBarrier(arena, this, h);
+        members[name] = h;
     }
     const std::string& name() const { return name_; }
 

@@ -29,9 +29,10 @@ class BytesVal : public NativeClass<BytesVal> {
 public:
     static constexpr const char* kTypeName = "Bytes";
     std::string data;
+    bool initialized_ = false;  // true once a value is fully built; guards _setstate_ (see below)
 
-    BytesVal() = default;
-    explicit BytesVal(std::string d) : data(std::move(d)) {}
+    BytesVal() = default;                                       // empty shell for serialize/dump reconstruction
+    explicit BytesVal(std::string d) : data(std::move(d)) { initialized_ = true; }
 
     bool truthy() const override { return !data.empty(); }
 
@@ -122,7 +123,7 @@ public:
         if (op == BinOp::Mul) {
             if (b.kind() != ValueKind::Integer) throw KiritoError("can only repeat Bytes by an Integer");
             int64_t nrep = static_cast<const IntVal&>(b).value();
-            if (nrep <= 0 || data.empty()) return vm.alloc(std::make_unique<BytesVal>());
+            if (nrep <= 0 || data.empty()) return vm.alloc(std::make_unique<BytesVal>(std::string()));  // a real (initialized) empty value
             if (static_cast<uint64_t>(nrep) > kMaxRepeat / data.size())  // shared cap (common.hpp)
                 throw KiritoError("repeated Bytes too large");
             std::string out;
@@ -288,6 +289,9 @@ inline Handle BytesVal::getAttr(KiritoVM& vm, Handle self, std::string_view name
             std::string out;
             out.reserve(src.size());
             for (unsigned char c : src) {
+                // Safe unrooted only because a byte is 0..255, inside the interned small-int range
+                // (kSmallIntHi = 256) — those live in a permanent VM root, so the allocating user
+                // callback below cannot collect one. Any wider value here would need rs.add().
                 std::array<Handle, 1> args{vm.makeInt(c)};
                 int64_t r = Value(vm, vm.arena().deref(fn).call(vm, args)).asInt("Bytes apply result");
                 if (r < 0 || r > 255) throw KiritoError("Bytes apply: result must be a byte (0..255)");
@@ -303,7 +307,16 @@ inline Handle BytesVal::getAttr(KiritoVM& vm, Handle self, std::string_view name
     if (name == "_setstate_")
         return makeMethod(vm, "_setstate_", {"state"}, [self, self_b](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.empty()) throw KiritoError("_setstate_ expects the serialized state");
-            self_b(vm, self).data = bytesutil::encode(Value(vm, a[0]).asStringRef("Bytes state"), "latin-1");
+            auto& b = self_b(vm, self);
+            // Bytes is immutable + hashable (a Dict/Set key). _setstate_ exists ONLY for the
+            // deserializer's alloc(empty) -> _setstate_ path; re-homing an established value in place
+            // would change its hash inside a live bucket and corrupt any container keyed on it. So it
+            // is one-shot: refuse once built (mirrors DateTime._setstate_).
+            if (b.initialized_)
+                throw KiritoError("Bytes _setstate_: cannot re-initialize an established Bytes "
+                                  "(it is immutable once built)");
+            b.data = bytesutil::encode(Value(vm, a[0]).asStringRef("Bytes state"), "latin-1");
+            b.initialized_ = true;
             return vm.none();
         }, std::vector<Handle>{self});
     return Object::getAttr(vm, self, name);
@@ -320,11 +333,13 @@ inline Handle makeBytes(KiritoVM& vm, Handle x, const std::string& enc = "utf-8"
     if (o.kind() == ValueKind::Integer) {
         int64_t n = static_cast<const IntVal&>(o).value();
         if (n < 0) throw KiritoError("negative count");
-        if (static_cast<uint64_t>(n) > 256ull * 1024 * 1024) throw KiritoError("Bytes too large");
+        if (static_cast<uint64_t>(n) > kMaxRepeat) throw KiritoError("Bytes too large");   // shared cap (common.hpp)
         return vm.alloc(std::make_unique<BytesVal>(std::string(static_cast<std::size_t>(n), '\0')));
     }
     auto it = o.iterate(vm);
-    if (!it) throw KiritoError("Bytes() expects a List of Integers, an Integer, a String, or Bytes");
+    // Any iterable of Integers is accepted (Set/range/Dict-keys too), coherent with Kirito's iteration
+    // protocol — so the message says "iterable", not "List", to match what the code actually takes.
+    if (!it) throw KiritoError("Bytes() expects an iterable of Integers (0..255), an Integer, a String, or Bytes");
     std::string out;
     out.reserve(it->size());
     for (Handle h : *it) {

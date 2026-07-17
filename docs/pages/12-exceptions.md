@@ -59,6 +59,10 @@ A **bare `catch`** also catches any C++ `std::exception` that crosses the native
 starts: lexer, parser, name-resolution, and static-analysis errors are reported when the program is
 compiled, so a `try` inside the same program can't catch its own syntax error.
 
+**`StopIteration`** is a built-in exception class (always in scope). A [lazy generator](09-types.md#lazy-generators-_iter_--_next_)
+raises `throw StopIteration()` from its `_next_` to signal the end of iteration; you can `catch
+StopIteration as e:` and `isinstance(e, StopIteration)` matches it like any typed exception.
+
 ### Catching errors — as a C++ embedder
 
 ```cpp
@@ -233,6 +237,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `name '<X>' is not defined` | Load/rebind of an unbound name at run time (also caught earlier by the resolver in most cases) | Declare with `var` or fix the spelling |
+| `name '<X>' is not defined` (read/rebind before its own `var` runs) | A local **read or plain `=` before its `var` executes** — Kirito uses strict lexical addressing (like Python's *UnboundLocalError*): a name declared in a scope is that scope's binding throughout, so it never silently reads an outer variable of the same name | Move the read below the `var`, or use a different name for the local |
 
 ### Indexing & slicing
 
@@ -402,7 +407,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `'utf-8' codec can't decode: invalid UTF-8 byte sequence` / `'<enc>' codec can't decode byte <hex>` | `bytes.decode(enc)` on invalid bytes | Use the correct encoding / valid data |
 | `unknown encoding: '<enc>'` | Unsupported encoding name | Use utf-8 / latin-1 / ascii |
 | `fromhex: odd-length hex string` / `fromhex: non-hex digit` | Bad `fromhex` input | Pass an even-length hex string |
-| `Bytes() expects a List of Integers, an Integer, a String, or Bytes` / `Bytes() list elements must be Integers` / `Bytes() element out of range (0..255)` | Bad `Bytes(x)` construction | Pass valid 0–255 Integers / supported types |
+| `Bytes() expects an iterable of Integers (0..255), an Integer, a String, or Bytes` / `Bytes() list elements must be Integers` / `Bytes() element out of range (0..255)` | Bad `Bytes(x)` construction | Pass valid 0–255 Integers / supported types |
 | `Bytes too large` | `Bytes(n)` with an oversized n | Use a bounded count |
 | `negative count` | `Bytes(n)` with a negative n (e.g. `Bytes(-1)`) | Pass a non-negative count |
 
@@ -514,6 +519,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `recvfrom size must be non-negative` | Negative `recvfrom(n)` | Pass n ≥ 0 |
 | `shutdown: how must be 'read', 'write', or 'both'` | Bad `how` to `shutdown` | Use `"read"`/`"write"`/`"both"` |
 | `setsockopt: unknown option '<opt>'` / `getsockopt: unknown option '<opt>'` | An option name outside the supported set | Use a documented option name |
+| `settimeout: seconds must be >= 0` | A negative `socket.settimeout()` | Pass `0` for blocking (no timeout) or a positive number of seconds |
 | `<net op> failed: <err>` | An OS socket syscall failed (setsockopt/getsockopt/shutdown/setblocking/settimeout, the named convenience setters) | Check the socket state / the option value |
 | `socketpair(<type>) failed` | The OS could not create the connected pair | Retry; check resource limits |
 | `gethostbyname: cannot resolve '<host>'` | DNS lookup returned no address | Check the hostname/DNS |
@@ -673,7 +679,7 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `JSON parse error: trailing characters after JSON value` | Extra non-whitespace after the top-level value | Parse one value; strip trailing junk |
 | `JSON parse error: nesting too deep` | Arrays/objects nested past 1000 | Flatten the structure |
 | `JSON parse error: expected string key` / `expected ':'` / `expected ',' or '}'` / `expected ',' or ']'` | Malformed object/array structure | Fix the separators/keys |
-| `JSON parse error: unterminated string` / `bad escape` / `bad \u escape` / `invalid \u escape …` / `invalid low surrogate …` | Malformed string/escape | Fix the string escaping |
+| `JSON parse error: unterminated string` / `bad escape` / `bad \u escape` / `invalid \u escape …` | Malformed string/escape | Fix the string escaping (a lone/unpaired `\u` surrogate is not an error — it decodes to U+FFFD) |
 | `cannot serialize a cyclic structure to JSON` / `structure too deeply nested to serialize to JSON` | `json.stringify` hit a cycle / >1000 depth | Break the cycle / flatten |
 | `cannot serialize '<T>' to JSON` | A Set/Function/native in the graph | Convert to JSON-native types (List/Dict/scalars) |
 | `json.stringify: indent too large (maximum 100)` | A huge `indent=` to `stringify` (would overflow/OOM the pad) | Use an indent ≤ 100 |
@@ -687,8 +693,14 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `structure too deeply nested to serialize` / `… to dump` | Graph deeper than the guard (10000; 1500 under sanitizers) | Flatten the structure |
 | `cannot serialize/dump type '<T>' (define _getstate_/_setstate_ to make it serializable)` | An instance with no `_getstate_` / a live-resource native | Add `_getstate_`/`_setstate_`, or exclude it |
 | `cannot serialize/dump type '<T>'` | A non-serializable kind (Socket, open file, Regex) | Exclude the resource from the graph |
+| `cannot serialize/dump a native/built-in function '<name>' (only Kirito-defined functions are serializable; a module reconnects by import)` | A bound reference to a builtin/native function (e.g. `var f = math.sqrt`) in the graph | Serialize a Kirito `Function` wrapper, or re-`import` the module on load |
+| `cannot serialize/dump this function: its source text was not captured …` | A `Function` literal defined inside an f-string (its source isn't recorded) | Define the function as a top-level/`var` binding, not inside an f-string |
+| `cannot serialize/dump class '<name>': its source text was not captured` | A class whose defining source wasn't recorded (should not occur for normally-defined classes) | Define the class normally |
 | `serialized root/child id out of range` / `truncated/unexpected end …` / `corrupt … : <what>` | Corrupt/truncated serialized blob | Re-dump; deserialize only trusted data |
-| `cannot deserialize: class '<name>' is not defined in this VM` | Object tag names a user class absent from this VM | Define/import the class before loading |
+| `cannot deserialize: class '<name>' is not defined in this VM` | An instance tag names a user class that neither travels in the blob nor is defined here | Deserialize output produced by this build; the class usually travels with the instance now |
+| `cannot deserialize function: <reason>` / `cannot deserialize class '<name>': <reason>` | A serialized function/class re-parse or re-run failed (corrupt/foreign source, or a free variable that can't be re-bound) | Deserialize only trusted `serialize`/`dump` output |
+| `cannot deserialize: cyclic class-definition dependency (a base class or class-variable initializer forms a cycle)` | A blob whose classes have a definition-time cycle (impossible for validly-serialized source) | Deserialize only trusted data |
+| `cannot deserialize: a free-variable name is not a String` | A corrupt function/class record whose free-variable name slot isn't a String | Deserialize only trusted data |
 | `cannot deserialize '<name>': no class or registered deserializer in this VM` | A stateful native tag with no factory | `vm.registerDeserializer(name, …)` |
 | `cannot deserialize '<name>': it defines _getstate_ but no _setstate_` | Class can serialize but not restore | Add `_setstate_` |
 | `bad serialization header` / `bad dump header` / `unsupported dump version` | Wrong/foreign format header | Feed real `serialize.dumps`/`dump.dumps` output |
@@ -756,6 +768,7 @@ OpenSSL-gated. On a non-TLS build every function throws the first row below; bra
 | `aesdecrypt: authentication failed (wrong key/iv/tag or tampered data)` | The GCM tag didn't verify — wrong key/iv/aad or tampered ciphertext | Never trust the output; discard it |
 | `rsagenerate: bits must be in [512, 16384]` | An out-of-range RSA key size | Use e.g. 2048/3072/4096 |
 | `crypto: unknown hash '<algo>'` | A bad `algo=` to `rsasign`/`rsaverify`/`ecsign`/`ecverify` | Use `"sha256"`/`"sha384"`/`"sha512"` |
+| `rsasign: expected RSA private key, got EC` | A key of the wrong family — e.g. an `ecgenerate` key passed to `rsasign`/`rsaverify` (or an RSA key to `ecsign`/`ecverify`) | Use the `rsa*` functions with `rsagenerate` keys and the `ec*` functions with `ecgenerate` keys |
 | an OpenSSL error string | A malformed PEM key, unknown curve, or unparseable certificate to `rsa*`/`ec*`/`x509parse` | Pass a valid PEM key / curve name / certificate |
 
 ### int — arbitrary-precision integers
@@ -846,6 +859,7 @@ large* — live under [Resource guards](#resource-guards-repetition--padding--ra
 | `parallel.Queue: put to a full queue` / `get from an empty queue` | Non-blocking put/get with no room/item | Block, or check `full`/`empty` first |
 | `parallel.Lock: release of an unlocked lock` | `release()` without holding it | Only release what you hold |
 | `parallel.Queue: maxsize must be >= 0` / `Semaphore: value must be >= 0` / `Barrier: parties must be >= 1` | A bad constructor argument | Pass a valid initial value |
+| `parallel: timeout must be >= 0 (use None to wait forever)` | A negative `timeout=` to `Queue.get`/`put`, `Lock`/`Semaphore.acquire`, `Event`/`Barrier.wait` — usually a computed duration that went negative | Pass `0` to poll once, a positive number to bound the wait, or `None` to block |
 | `parallel.<Type>: uninitialized …` / `cannot rebind (unknown id…)` | A method on an uninitialized/foreign primitive | Construct it in this dispatcher |
 | `Queue.put: missing item` / `Queue.putnowait: missing item` | `put`/`putnowait` called with no item argument | Pass the item to enqueue |
 
@@ -877,6 +891,13 @@ error. It comes from `ObjectArena::at()` (via the `dangling()` helper).
 
 The arena's ABA guard (a slot is retired once its generation would wrap past 2³²) means a stale handle
 can **never** silently re-validate against a recycled object — you always get this throw, not wrong data.
+
+Because the collector is **generational** (frequent cheap minor collections over the young generation,
+plus a rarer full major — see the [C++ API](cpp-api.html)), a mis-rooted handle is typically reclaimed
+*sooner* than it would be under a single whole-heap collector, so this diagnostic tends to surface
+quickly during development. The fix is unchanged: root it with `RootScope` / `PinnedHandle`. Rooting is
+identical for both collectors, and the non-moving design means a rooted `Handle` is **never**
+invalidated by promotion — only by actually becoming unreachable.
 
 ### Native functions — argument helpers (`native.hpp`)
 

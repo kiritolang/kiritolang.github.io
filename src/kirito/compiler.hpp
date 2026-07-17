@@ -36,7 +36,8 @@ public:
     // Compile a whole body. isFunction picks the implicit tail: a function falls off the end
     // returning None; the top-level program returns its last expression value (the REPL echo).
     void compile(const ast::Block& body, bool isFunction, const ast::FunctionExpr* fnDef = nullptr) {
-        if (fnDef) assignLocalSlots(*fnDef, body);  // slot-address this function's non-captured locals
+        if (fnDef) assignLocalSlots(*fnDef, body);        // a function: slot-address its non-captured locals
+        else if (isFunction) collectClassEnvSlots(body);  // a class body (isFunction, no fnDef): index its names
         compileBlock(body);
         if (isFunction) { emit(Op::LoadNone); emit(Op::Return); }
         else { emit(Op::LoadResult); emit(Op::Return); }
@@ -92,6 +93,12 @@ private:
         proto_.unpacks.push_back(UnpackSpec{count, starIndex});
         return static_cast<uint32_t>(proto_.unpacks.size() - 1);
     }
+    // A resolver-annotated (depth, index) env reference -> a LoadVar/AssignVar operand.
+    uint32_t addEnvVar(const ast::NameExpr& e) {
+        proto_.envVars.push_back(EnvVarRef{static_cast<uint16_t>(e.envDepth),
+                                           static_cast<uint32_t>(e.envIndex), e.name});
+        return static_cast<uint32_t>(proto_.envVars.size() - 1);
+    }
     void emitCall0(SourceSpan span) {  // call the value on top of stack with no arguments
         proto_.calls.push_back(CallSpec{0, {}});
         emit(Op::Call, static_cast<uint32_t>(proto_.calls.size() - 1), span);
@@ -107,11 +114,32 @@ private:
         slotsEnabled_ = true;
         NameSet captured = capturedLocals(fn.params, body);
         NameSet params;
-        for (const auto& p : fn.params) params.insert(p.name);
+        // Non-captured parameters get frame slots FIRST (slots 0..k-1, in parameter order) so the call
+        // binder can place argument values into them by position. proto_.paramSlots[p] records each
+        // param's slot (or -1 when the param is captured and must stay name-based in the scope env).
+        proto_.paramSlots.reserve(fn.params.size());
+        for (const auto& p : fn.params) {
+            params.insert(p.name);
+            if (!captured.count(p.name)) proto_.paramSlots.push_back(static_cast<int>(defineSlot(p.name)));
+            else proto_.paramSlots.push_back(-1);
+        }
         NameSet decls;
         collectBlockDecls(body, decls);
         for (const auto& name : decls)
             if (!captured.count(name) && !params.count(name)) defineSlot(name);
+        // Captured non-param locals live in the scope's EnvValue (a nested closure reaches them), at
+        // fixed indices AFTER the parameters. Record them in the SAME deterministic order the resolver
+        // uses to assign their (depth, index), so the runtime pre-declares slot i for the name the
+        // resolver addressed as index P+i. Read via LoadVar; declared via StoreName into the slot.
+        for (const auto& name : collectBlockDeclsOrdered(body))
+            if (captured.count(name) && !params.count(name)) proto_.envSlots.push_back(name);
+    }
+    // A class body is not slotted (its names are harvested by name into the class), but every top-level
+    // name it binds lives in the class-scope EnvValue at a fixed index, so a method reading a sibling
+    // method / class var by bare name compiles to a direct LoadVar. Record them in the SAME order the
+    // resolver assigns their indices and the runtime pre-declares them (collectBlockDeclsOrdered).
+    void collectClassEnvSlots(const ast::Block& body) {
+        for (const auto& name : collectBlockDeclsOrdered(body)) proto_.envSlots.push_back(name);
     }
     uint32_t defineSlot(const std::string& name) {
         uint32_t slot = nextSlot_++;
@@ -238,7 +266,9 @@ private:
     void compileAssignTarget(const ast::Expr& target, SourceSpan span) {
         switch (target.exprKind()) {
             case ast::ExprKind::Name: {
-                emitAssign(static_cast<const ast::NameExpr&>(target).name, span);
+                const auto& n = static_cast<const ast::NameExpr&>(target);
+                if (n.envIndex >= 0) emit(Op::AssignVar, addEnvVar(n), span);  // rebind an indexed env slot
+                else emitAssign(n.name, span);
             } break;
             case ast::ExprKind::Index: {
                 const auto& idx = static_cast<const ast::IndexExpr&>(target);
@@ -437,7 +467,8 @@ private:
         protoForBody(vm_, s.body, /*isFunction=*/true);  // compile + cache the body (errors propagate)
         if (s.base) compileExpr(*s.base);
         proto_.classes.push_back(&s);
-        emit(Op::BuildClass, static_cast<uint32_t>(proto_.classes.size() - 1), s.span);
+        emit(Op::BuildClass, static_cast<uint32_t>(proto_.classes.size() - 1), s.span);  // pushes the class
+        emitStore(s.name, s.span);   // bind the class name in its slot (frame or env), like `var Name = ...`
         emit(Op::ClearResult);
     }
 
@@ -456,12 +487,20 @@ private:
         // finally always runs at the clean operand height. `$` can't appear in a user name.
         std::string excName = hasFin ? "$exc" + std::to_string(tryCounter_++) : std::string();
         if (hasFin) ensureHiddenSlot(excName);
+        // The exception's SPAN needs parking across the finally body just as its value does: a nested
+        // try/catch in that body unwinds too, overwriting the frame's "span currently being unwound",
+        // and the Reraise below would then blame the inner (already handled) exception's line for the
+        // outer one that is genuinely still in flight.
+        uint32_t spanSlot = hasFin ? proto_.excSpanSlots++ : 0;
         auto emitFinally = [this, &s, hasFin] { if (hasFin) compileBlock(s.finallyBody); };
-        // Run the finally on an EXCEPTION path: stash exc (top of stack) -> finally -> reload exc.
-        auto emitFinallyExc = [this, &s, hasFin, &excName] {
+        // Run the finally on an EXCEPTION path: stash exc (top of stack) + its span -> finally ->
+        // reload both.
+        auto emitFinallyExc = [this, &s, hasFin, &excName, spanSlot] {
             if (!hasFin) return;
             emitStore(excName, s.span);
+            emit(Op::SaveExcSpan, spanSlot, s.span);
             compileBlock(s.finallyBody);
+            emit(Op::RestoreExcSpan, spanSlot, s.span);
             emitLoad(excName, s.span);
         };
 
@@ -571,7 +610,11 @@ private:
             emit(Op::LoadNone);
     }
 
-    void visit(const ast::NameExpr& e) override { emitLoad(e.name, e.span); }
+    void visit(const ast::NameExpr& e) override {
+        if (e.builtinSlot >= 0) emit(Op::LoadGlobal, static_cast<uint32_t>(e.builtinSlot), e.span);
+        else if (e.envIndex >= 0) emit(Op::LoadVar, addEnvVar(e), e.span);
+        else emitLoad(e.name, e.span);
+    }
 
     void visit(const ast::UnaryExpr& e) override {
         compileExpr(*e.operand);

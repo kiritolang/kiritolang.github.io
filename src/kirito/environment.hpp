@@ -39,15 +39,18 @@ public:
     bool hasParent() const { return hasParent_; }
     Handle parent() const { return parent_; }
 
-    // Define (or overwrite) a binding in this scope.
-    void define(const std::string& name, Handle h) {
+    // Define (or overwrite) a binding in this scope. Takes the owning arena — like every other
+    // barriered mutator (List::append, Dict::set, …) — because the barrier must ask the arena that
+    // owns this scope whether `h` is young, and only the caller knows which VM that is.
+    void define(ObjectArena& arena, const std::string& name, Handle h) {
+        gcWriteBarrier(arena, this, h);  // an old scope (global/module/class-body) gaining a young binding
         for (auto& [k, v] : vars_)
             if (k == name) { v = h; return; }
         vars_.push_back(name, h);
     }
-    bool assignLocal(const std::string& name, Handle h) {
+    bool assignLocal(ObjectArena& arena, const std::string& name, Handle h) {
         for (auto& [k, v] : vars_)
-            if (k == name) { v = h; return true; }
+            if (k == name) { gcWriteBarrier(arena, this, h); v = h; return true; }
         return false;
     }
     const Handle* findLocal(const std::string& name) const {
@@ -57,6 +60,18 @@ public:
     }
     // Iterable view of the bindings (used to snapshot class methods / module members).
     const auto& locals() const { return vars_; }
+    // Positional access to the i-th binding — the O(1) path behind LoadGlobal/LoadVar(index). Valid
+    // for a scope whose bindings only ever grow by append (global scope, and a module/function scope
+    // once its slots are pre-declared), so index i is stable once assigned. `nameAt` backs the
+    // debug-only slot-name assertion and the compiler's env-index read-back; `setAt` is the O(1)
+    // StoreVar/AssignVar write.
+    Handle at(std::size_t i) const { return vars_[i].second; }
+    const std::string& nameAt(std::size_t i) const { return vars_[i].first; }
+    void setAt(ObjectArena& arena, std::size_t i, Handle h) {
+        gcWriteBarrier(arena, this, h);
+        vars_[i].second = h;
+    }
+    std::size_t size() const { return vars_.size(); }
 
     void reserve(std::size_t n) { vars_.reserve(n); }
 
@@ -140,7 +155,7 @@ inline bool envAssign(ObjectArena& arena, Handle env, const std::string& name, H
     Handle cur = env;
     while (true) {
         auto& e = static_cast<EnvValue&>(arena.deref(cur));
-        if (e.assignLocal(name, value)) return true;
+        if (e.assignLocal(arena, name, value)) return true;
         if (!e.hasParent()) return false;
         cur = e.parent();
     }

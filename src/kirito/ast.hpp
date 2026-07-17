@@ -75,6 +75,17 @@ struct LiteralExpr : Expr {
 
 struct NameExpr : Expr {
     std::string name;
+    // Resolver annotation: >= 0 means this reference binds to a builtin/global at that fixed global
+    // slot, so the compiler lowers it to a direct LoadGlobal(index) instead of a scope-chain name walk.
+    // -1 means "not a fast global" (a lexical name, or an embedder-added global) — compile as before.
+    mutable int builtinSlot = -1;
+    // Resolver annotation for a lexical name that resolves to an INDEXED env scope (a module-level or,
+    // later, captured binding): envDepth = the number of EnvValue hops from the referencing frame's
+    // scope up to the scope that owns the binding, envIndex = the binding's fixed slot in that scope.
+    // Both >= 0 => the compiler emits a direct LoadVar/AssignVar(depth, index) with no name lookup.
+    // -1 => not an indexed env reference (a frame-slot local, or a name-based scope) — compile as before.
+    mutable int envDepth = -1;
+    mutable int envIndex = -1;
     ExprKind exprKind() const override { return ExprKind::Name; }
     void accept(ExprVisitor& v) const override { v.visit(*this); }
 };
@@ -283,6 +294,11 @@ struct FunctionExpr : Expr {
     std::string returnAnnotation;  // "" if no `-> Type`
     std::string name;              // binding name (`var NAME = Function`/method), "" if anonymous; used
                                    // only to label tracebacks — name resolution never depends on it
+    // The exact source text of this `Function(...)...` literal, captured verbatim by the parser (empty
+    // if the parser wasn't given the source — e.g. an f-string sub-parse). It is what makes a function
+    // value serializable by default: `serialize`/`dump` store this text and re-parse it on load, so a
+    // function round-trips with no dependency on the original AST or file. See stdlib_serde.hpp.
+    std::string source;
     Block body;
     bool inlineBody = false;        // true for `Function(): STMT` (a single same-line statement), false
                                     // for an indented block. The parser rejects a bare comma-pack right
@@ -350,6 +366,11 @@ struct ThrowStmt : Stmt {
 struct ClassStmt : Stmt {
     std::string name;
     ExprPtr base;  // optional base class
+    // The exact source text of this `class ...:` definition, captured verbatim by the parser (empty if
+    // the parser wasn't given the source). As with FunctionExpr::source, this is what lets a class
+    // value serialize by default — re-parsed on load, so a class (and its instances) round-trips
+    // self-contained, needing no import of the defining module. See stdlib_serde.hpp.
+    std::string source;
     Block body;
     void accept(StmtVisitor& v) const override { v.visit(*this); }
 };

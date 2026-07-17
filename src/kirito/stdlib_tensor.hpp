@@ -529,7 +529,10 @@ inline double mathForward(MathOp k, double x) {
         case MathOp::Atanh: { return std::atanh(x); } break;
         case MathOp::Relu: { return x > 0 ? x : 0.0; } break;
         case MathOp::Sigmoid: { return 1.0 / (1.0 + std::exp(-x)); } break;
-        case MathOp::Softplus: { return std::log1p(std::exp(x)); } break;
+        // Numerically stable softplus: naive log1p(exp(x)) overflows to inf for x > ~709, poisoning
+        // the forward pass (the derivative is already stable). max(x,0)+log1p(exp(-|x|)) is exact
+        // and is what NumPy/PyTorch use.
+        case MathOp::Softplus: { return std::max(x, 0.0) + std::log1p(std::exp(-std::abs(x))); } break;
         case MathOp::Erf: { return std::erf(x); } break;
         case MathOp::Floor: { return std::floor(x); } break;
         case MathOp::Ceil: { return std::ceil(x); } break;
@@ -1199,7 +1202,11 @@ inline Handle allAny(KiritoVM& vm, Handle ah, int64_t axis, bool isAll) {
         return vm.makeBool(r);
     }
     std::size_t ax = static_cast<std::size_t>(axis);
-    FT out = tensor::reduceAxis(a, ax, [isAll](double x, double y) { bool xb = x != 0, yb = y != 0; return static_cast<double>(isAll ? (xb && yb) : (xb || yb)); });
+    // Pass the identity (all→True, any→False) so a per-axis reduction over an EMPTY axis yields it,
+    // exactly as the whole-tensor path already does and as NumPy specifies — instead of throwing
+    // "zero-size reduction". sum(0.0)/prod(1.0) already seed reduceAxis this way; all/any have just
+    // as well-defined an identity, so the two paths agree.
+    FT out = tensor::reduceAxis(a, ax, [isAll](double x, double y) { bool xb = x != 0, yb = y != 0; return static_cast<double>(isAll ? (xb && yb) : (xb || yb)); }, isAll ? 1.0 : 0.0);
     for (auto& v : out.data) v = v != 0.0 ? 1.0 : 0.0;  // normalize the single-length seed case
     return make(vm, std::move(out));
 }
@@ -1300,8 +1307,11 @@ inline Handle nonzeroT(KiritoVM& vm, Handle ah) {
         bool nz = A.isComplex() ? (A.elemAsComplex(lin) != cdouble(0, 0)) : (std::get<FT>(A.store).data[lin] != 0.0);
         if (nz) { tensor::Shape c = tensor::unravel(lin, sh); for (std::size_t d = 0; d < nd; ++d) coords[d].push_back(static_cast<double>(c[d])); }
     }
+    // The List isn't in the arena until the alloc below, so nothing traces what it holds: root each
+    // per-axis tensor as it is made, or allocating the next one collects the last. (v1.15 A19-1.)
+    RootScope rs(vm);
     auto list = std::make_unique<ListVal>();
-    for (std::size_t d = 0; d < nd; ++d) { std::size_t m = coords[d].size(); list->elems.push_back(make(vm, FT(tensor::Shape{m}, std::move(coords[d])))); }
+    for (std::size_t d = 0; d < nd; ++d) { std::size_t m = coords[d].size(); list->elems.push_back(rs.add(make(vm, FT(tensor::Shape{m}, std::move(coords[d]))))); }
     return vm.alloc(std::move(list));
 }
 inline Handle searchsortedT(KiritoVM& vm, Handle aH, Handle vH) {
@@ -1620,6 +1630,13 @@ inline Handle TensorVal::getItem(KiritoVM& vm, std::span<const Handle> keys) {
 }
 
 inline void TensorVal::setItem(KiritoVM& vm, std::span<const Handle> keys, Handle value) {
+    // Refuse in-place mutation of a grad-tracking tensor. The autograd graph caches forward values,
+    // so writing an element (the sole in-place op) without touching the graph makes a later backward()
+    // silently return gradients computed against the STALE pre-mutation values. PyTorch hard-errors on
+    // the same; Kirito's documented style is to rebind functionally (w = w - w.grad*lr), not mutate.
+    if (requiresGrad || node)
+        throw KiritoError("Tensor element assignment is not allowed on a grad-tracking tensor "
+                          "(it would desync the autograd graph); detach() first, or rebind functionally");
     if (keys.size() != ndim()) throw KiritoError("Tensor element assignment needs a full index (one per dimension)");
     const tensor::Shape& sh = shape();
     tensor::Shape idx;
@@ -1652,12 +1669,9 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     // shape + every element within tolerance), since `==` is now exact. Signatured for
     // keyword args/defaults + inspect.
     if (name == "compare") {
-        std::vector<NativeParam> sig;
-        sig.emplace_back("other");
-        sig.emplace_back("rel_tol", "Float", vm.makeFloat(1e-9));
-        sig.emplace_back("abs_tol", "Float", vm.makeFloat(0.0));
+        RootScope rs(vm);
         return vm.alloc(std::make_unique<NativeFunction>(
-            "compare", std::move(sig), "Bool",
+            "compare", toleranceSig(vm, rs), "Bool",
             [self](KiritoVM& v, std::span<const Handle> a) -> Handle {
                 auto& t = static_cast<TensorVal&>(v.arena().deref(self));
                 const auto* o = dynamic_cast<const TensorVal*>(&v.arena().deref(a[0]));
@@ -1699,8 +1713,11 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return build(0, 0);
     });
     if (name == "shape") return bind("shape", {}, [self, self_t](KiritoVM& vm, std::span<const Handle>) -> Handle {
+        // A dimension past the small-int intern range is a fresh allocation, and the List is not
+        // arena-reachable yet — so root each one. (Only ever bit shapes with a dim > 255.)
+        RootScope rs(vm);
         auto list = std::make_unique<ListVal>();
-        for (std::size_t d : self_t(vm, self).shape()) list->elems.push_back(vm.makeInt(static_cast<int64_t>(d)));
+        for (std::size_t d : self_t(vm, self).shape()) list->elems.push_back(rs.add(vm.makeInt(static_cast<int64_t>(d))));
         return vm.alloc(std::move(list));
     });
     if (name == "ndim") return bind("ndim", {}, [self, self_t](KiritoVM& vm, std::span<const Handle>) { return vm.makeInt(static_cast<int64_t>(self_t(vm, self).ndim())); });
@@ -1738,7 +1755,11 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         }
         FT out = std::get<FT>(t.store);
         for (std::size_t i = 0; i < out.data.size(); ++i) {
-            std::array<Handle, 1> args{vm.makeFloat(out.data[i])};
+            // Root the argument: `fn` is user code and will allocate, and an unrooted Float would be
+            // collected out from under the callee. (The Complex branch above always did; this one
+            // didn't. v1.15 A19-1.)
+            RootScope rs(vm);
+            std::array<Handle, 1> args{rs.add(vm.makeFloat(out.data[i]))};
             out.data[i] = Value(vm, vm.arena().deref(fn).call(vm, args)).asFloat("apply result");
         }
         return tns::make(vm, std::move(out));
@@ -1957,6 +1978,7 @@ inline Handle TensorVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
         return tns::wrap([&]() { return tns::g_sliceAxis(vm, self, axis, tns::resolveSlice(vm, sH, eH, stH, t.shape()[axis])); });
     });
     if (name == "take") return bind("take", {"indices", "axis"}, [self](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        Args(vm, a, "take").require(1);   // makeMethod's positional fast path forwards args verbatim; guard before a[0]
         std::vector<std::ptrdiff_t> idxs;
         for (Value e : Value(vm, a[0]).items()) idxs.push_back(static_cast<std::ptrdiff_t>(e.asInt("index")));
         int64_t axis = 0;
@@ -2267,7 +2289,15 @@ public:
             }
             if (!hasStop) throw KiritoError("arange: missing stop");
             if (step == 0) throw KiritoError("arange step must be non-zero");
+            // Bound the element count BEFORE allocating: the old in-loop guard first grew the vector to
+            // ~1 GB. ceil((stop-start)/step) is the count; a non-finite span (inf stop) is rejected
+            // instantly, and a NaN span collapses to 0 (an empty tensor, the existing NaN behaviour).
+            double span = stop - start;
+            double countf = ((span > 0) == (step > 0)) ? std::ceil(span / step) : 0.0;
+            if (!std::isfinite(countf) || countf > static_cast<double>(tns::kMaxElems))
+                throw KiritoError("Tensor too large");
             std::vector<double> data;
+            data.reserve(countf > 0 ? static_cast<std::size_t>(countf) : 0);
             if (step > 0) for (double x = start; x < stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
             else for (double x = start; x > stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
             std::size_t n = data.size();

@@ -28,6 +28,21 @@ var b = a          # b and a are independent bindings to the same value
 Reference semantics: `A = B` makes `A` refer to the same value as `B`; mutating a shared mutable
 value (List/Dict/Set/instance) is visible through every name bound to it.
 
+**Scoping is strict and lexical.** A name declared anywhere in a scope (with `var`, or as a
+`for`/`with`/`catch`/parameter/`class` binding) is *that scope's* binding throughout — so reading or
+rebinding it **before its `var` runs** is a `name 'X' is not defined` error, exactly like Python's
+`UnboundLocalError`. Kirito never silently falls back to an outer variable of the same name; if you
+want the outer value, use a different local name or read it before shadowing:
+
+<!--norun (illustrative — demonstrates the error)-->
+```kirito
+var x = 1
+var f = Function():
+    var y = x        # ERROR: x names THIS function's local (declared below), read before its var ran
+    var x = 2
+    return y
+```
+
 ## Types
 
 Dynamically typed, strongly typed. Built-in types:
@@ -41,7 +56,7 @@ Dynamically typed, strongly typed. Built-in types:
 | `String` | `"hi"`, Unicode, code-point indexed |
 | `Bytes` | raw bytes 0–255, byte indexed — `"hi".encode()`, `Bytes([104, 105])`, `fromhex("6869")` |
 | `List` | `[1, 2, 3]` (ordered, mutable) |
-| `Set` | `{1, 2, 3}` (unique, unordered) |
+| `Set` | `{1, 2, 3}` (unique, insertion-ordered) |
 | `Dict` | `{"a": 1}` (key→value) |
 
 `type(x)` returns the type name as a String. Constructors double as converters: `Integer("42")`,
@@ -349,6 +364,22 @@ class Dog(Animal):
 
 Because resolution starts at the *current method's* class base, each `_super_()` climbs exactly one
 level, so multi-level chains (`Puppy → Dog → Animal`) compose correctly.
+
+**Reach an inherited special method by its name, not by its operator.** The parent view resolves
+*named* lookups, so operator syntax on it does not work — `self._super_()(x)` and `self._super_()[i]`
+throw (`type 'Super' is not callable` / `is not indexable`), and so on for every operator. Extend the
+base's version by spelling the dunder out:
+
+<!--norun (illustrative class fragment)-->
+```kirito
+class Doubler(Base):
+    var _call_ = Function(self, x): return self._super_()._call_(x) * 2      # not _super_()(x)
+    var _getitem_ = Function(self, i): return self._super_()._getitem_(i)    # not _super_()[i]
+```
+
+This holds uniformly for every operator dunder, so there is one rule to remember rather than a list of
+exceptions. Ordinary methods and attributes are unaffected — `self._super_().describe()` is a named
+lookup and works normally.
 
 `_super_()` is only meaningful when the class inherits — calling it from a class with no base throws
 `_super_() called in 'X', which does not inherit from any class`.

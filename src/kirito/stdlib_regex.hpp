@@ -152,13 +152,15 @@ inline std::vector<reng::MatchResult> allMatches(const reng::Program& p, const s
     std::vector<reng::MatchResult> out;
     int n = static_cast<int>(text.size());
     int pos = startPos < 0 ? 0 : startPos;
-    while (pos <= n) {
-        if (maxCount >= 0 && static_cast<int>(out.size()) >= maxCount) break;
-        reng::MatchResult r = reng::run(p, text, pos, /*anchored=*/false, /*requireEnd=*/false);
-        if (!r.matched) break;
+    bool mustAdvance = false;   // after an empty match, the next search must not accept an empty match
+    while (pos <= n) {          // at the SAME position — Python's must_advance, so a higher-priority
+        if (maxCount >= 0 && static_cast<int>(out.size()) >= maxCount) break;   // empty alternative
+        reng::MatchResult r = reng::run(p, text, pos, /*anchored=*/false, /*requireEnd=*/false, mustAdvance);
+        if (!r.matched) break;   // doesn't mask a non-empty match (`|\w`, `a??`, `a||b`, …).
         int a = r.slots[0], b = r.slots[1];
         out.push_back(std::move(r));
-        pos = (b > a) ? b : a + 1;   // empty match: advance one to make progress
+        pos = b;                 // advance to the match end; if it was empty (b==a) pos stays and the
+        mustAdvance = (a == b);  // next search must advance — else run returns no match and we stop.
     }
     return out;
 }

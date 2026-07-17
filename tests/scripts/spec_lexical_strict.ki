@@ -1,0 +1,50 @@
+# Strict lexical-addressing contract: reading or rebinding a name before its declaration executes is
+# a clean, CATCHABLE error (no walk to an outer/builtin binding), even when an outer name shadows it.
+var io = import("io")
+
+var passed = 0
+var failed = 0
+var check = Function(name, didThrow):
+    if didThrow:
+        passed = passed + 1
+    else:
+        failed = failed + 1
+        io.print("FAIL: " + name + " should have thrown")
+
+# 1. module var read before its `var` executes -> error (not the builtin/outer)
+var threw = False
+try:
+    discard readBeforeInit          # declared below, read here
+    var readBeforeInit = 1
+catch:
+    threw = True
+check("module read-before-init", threw)
+
+# 2. module var shadowing a builtin, read before assignment -> error (NOT the builtin len)
+var threw2 = False
+try:
+    discard len                      # 'len' is a module var (below), shadows builtin; unassigned here
+    var len = 5
+catch:
+    threw2 = True
+check("shadow-builtin read-before-init", threw2)
+
+# 3. rebind before declaration -> error
+var threw3 = False
+try:
+    rebindBeforeInit = 9             # rebind of a not-yet-declared module var
+    var rebindBeforeInit = 1
+catch:
+    threw3 = True
+check("module rebind-before-init", threw3)
+
+# 4. genuinely correct forward/mutual recursion still works (deferred refs, resolved at call time)
+var isEven = Function(n): return True if n == 0 else isOdd(n - 1)
+var isOdd = Function(n): return False if n == 0 else isEven(n - 1)
+check("mutual recursion ok", isEven(10) and isOdd(7))
+
+# 5. a normal module helper called normally is fine
+var twice = Function(x): return x * 2
+check("module helper ok", twice(21) == 42)
+
+io.print(String(passed) + " passed, " + String(failed) + " failed")

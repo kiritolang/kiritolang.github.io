@@ -187,6 +187,14 @@ inline int connectWithTimeout(socket_t s, const sockaddr* addr, socklen_t addrle
 // A connected pair of sockets (like Python socket.socketpair). POSIX has a native socketpair() over
 // AF_UNIX. Windows has none, so emulate a STREAM pair over a 127.0.0.1 loopback listener; a datagram
 // pair is unsupported there (returns false → the net module throws a clear error).
+//
+// The family the pair ACTUALLY gets, which genuinely differs by platform — so the Socket reports what
+// it is instead of claiming AF_INET everywhere.
+#if defined(_WIN32)
+inline constexpr int kSocketPairFamily = AF_INET;
+#else
+inline constexpr int kSocketPairFamily = AF_UNIX;
+#endif
 #if defined(_WIN32)
 inline bool socketPair(int type, socket_t out[2]) {
     if (type != SOCK_STREAM) return false;
