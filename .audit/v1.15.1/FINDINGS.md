@@ -3,11 +3,24 @@
 Scan phase: 20 agents (3 — A14/A17/A18 — were cut off by a session wipe and resumed to completion),
 44+ findings (see `scan/AXX_*.md`). This file tracks the fix phase.
 
-**Validation gate at HEAD 98cd047 (both batches): debug 820/820, release 820/820, asan 820/820,
-tsan 820/820 — all green.** (The manual asan/tsan run first needed the sanctioned environment —
-`ulimit -s 262144` for asan's deep-recursion tests, `setarch -R` for tsan's ASLR — without which
-every tsan test FATALs on "unexpected memory mapping"; that was an invocation artifact, not a code
-defect.)
+**FINAL validation gate at HEAD 68875bb (all 9 batches): debug / release / asan / tsan all 822/822 —
+green.** Run via `post_work_check.sh` (which supplies the sanctioned env: `ulimit -s 262144` for
+asan's deep-recursion tests, `setarch -R` for tsan's ASLR). The final full-suite run also caught one
+stale test assertion (`test_r5_internals` still expected the dup-param *warning* that A02-3 made a
+parse error) that the per-batch targeted runs had missed — the reason the whole suite runs at the end.
+
+## Round outcome (v1.15.1)
+
+**~40 findings fixed across 9 batches**, every one with a regression test, all four variants green.
+- HIGH: A06-1, A03-1, A08-4, A16-1 (+ A10-2 build, A02-3).
+- MED: A07-1, A14-1, A14-5, A02-1, A04-2, A15-1, A15-2, A14-2, A14-3, A11-1, A11-2, A19.1-1, A04-1,
+  A09-1, A09-2, A13-1, A13-2, A01-1, A01-4, and the 4 maintainer-approved conformance changes
+  (A18-5, A17-3, A18-1, A13-3).
+- LOW/DRY/doc + perf: A14-6, A08-2, A16-2, A18-1, A14-4, A05-3, A08-1, A09-4, A05-1, A10-3, A10-4,
+  A05-4, A01-3, A08-3, A05-2, A06-2, A12-L1, A12-L2.
+
+**Remaining (cosmetic LOW, deferred):** A01-2 (f-string error column), A09-3 (arity errors count
+`self`), A06-3 (a few collection test-coverage gaps). `kVersion` stays `1.15.0` (no release implied).
 
 ## FIXED (this session) — batch 1: HIGH + memory/security correctness
 
