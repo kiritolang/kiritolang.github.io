@@ -1708,6 +1708,7 @@ inline Handle ClassValue::callFull(KiritoVM& vm, std::span<const Handle> args,
     auto inst = std::make_unique<InstanceValue>();
     inst->cls = selfHandle;
     inst->className = name;
+    inst->ownerVM_ = &vm;   // the VM that owns this instance — used by _hash_/_eq_/_bool_ (multi-VM safe)
     // Cache the dunder-availability flags now, walking the class chain once. Dict/Set hot paths
     // then read a plain bool instead of doing a method lookup per hash/equals.
     inst->hasHashDunder = findMethod(vm.arena(), "_hash_") != nullptr;
@@ -1806,16 +1807,17 @@ inline Handle SuperValue::getAttr(KiritoVM& vm, Handle, std::string_view name) {
 
 // --- `_hash_` / `_eq_` / `_bool_` opt-in on user classes ---------------------------------------
 // These slots are const with no VM arg (Dict/Set call them deep, and every `if`/`while`/`and`/
-// `or`/`not`/`Bool(x)` reaches `truthy()`), so the Kirito method is dispatched through
-// KiritoVM::activeVM() — the thread's current VM. The instance stashes a bool at instantiation
-// time so the hot path checks a plain field, not a hash-table lookup.
+// `or`/`not`/`Bool(x)` reaches `truthy()`), so the Kirito method needs a VM to run. The instance
+// carries its OWNING VM (`ownerVM_`, set at instantiation) and dispatches through it — so two VMs
+// coexisting on one thread never cross-dispatch (A19.1-1); `activeVM()` is only a null fallback.
+// The instance also stashes a bool at instantiation so the hot path checks a plain field, not a lookup.
 
 // `_bool_(self) -> Bool` — user-defined truthiness. Every conditional expression that reaches an
 // instance eventually calls truthy(); if the class defines `_bool_`, call it and require a Bool
 // return. Without `_bool_`, an instance is always truthy (the historical, additive-safe default).
 inline bool InstanceValue::truthy() const {
     if (!hasBoolDunder) return true;
-    KiritoVM* vm = KiritoVM::activeVM();
+    KiritoVM* vm = ownerVM_ ? ownerVM_ : KiritoVM::activeVM();   // owner first — multi-VM safe (A19.1-1)
     if (!vm)
         throw KiritoError("_bool_ requires an active interpreter context");
     const Handle* m = findMethod(vm->arena(), "_bool_");
@@ -1832,7 +1834,7 @@ inline bool InstanceValue::truthy() const {
 }
 
 inline std::size_t InstanceValue::hash() const {
-    KiritoVM* vm = KiritoVM::activeVM();
+    KiritoVM* vm = ownerVM_ ? ownerVM_ : KiritoVM::activeVM();   // owner first — multi-VM safe (A19.1-1)
     if (!vm)
         throw KiritoError("_hash_ requires an active interpreter context");
     const Handle* m = findMethod(vm->arena(), "_hash_");
@@ -1870,7 +1872,7 @@ inline bool InstanceValue::equals(const ObjectArena& arena, const Object& other)
     // We have `other` as a reference; the InstanceValue keeps its own `selfHandle` so we can pass
     // both sides to the Kirito `_eq_` method by re-using their cached handles.
     const auto& rhs = *rhsp;
-    KiritoVM* vm = KiritoVM::activeVM();
+    KiritoVM* vm = ownerVM_ ? ownerVM_ : KiritoVM::activeVM();   // owner first — multi-VM safe (A19.1-1)
     if (!vm) return false;
     const Handle* m = findMethod(arena, "_eq_");
     if (!m) return false;

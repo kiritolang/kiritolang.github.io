@@ -540,6 +540,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
                     auto inst = std::make_unique<InstanceValue>();
                     inst->cls = *cls;
                     inst->className = nd.s;
+                    inst->ownerVM_ = &vm;   // owner VM for _hash_/_eq_/_bool_ (multi-VM safe)
                     // Cache the dunder availability now — same as ClassValue::callFull does — so a
                     // deserialised instance is hashable/equatable to the same extent as a freshly
                     // constructed one.

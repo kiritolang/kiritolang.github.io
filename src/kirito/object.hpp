@@ -91,9 +91,15 @@ public:
     // alignment. No current type is over-aligned, so this is a defensive guard against a future one.
     static void* operator new(std::size_t n, std::align_val_t a) { return ::operator new(n, a); }
     static void operator delete(void* p, std::align_val_t a) noexcept { ::operator delete(p, a); }
+    // The SIZED aligned delete only exists when the compiler enables sized deallocation (GCC on by
+    // default; Clang only under -fsized-deallocation). Guard it so `kirito.hpp` compiles under clang++
+    // with default flags — the unsized aligned delete above already covers the over-aligned case
+    // (dropping the size hint is always legal), so #if-ing this out is zero-risk.
+#if defined(__cpp_sized_deallocation)
     static void operator delete(void* p, std::size_t n, std::align_val_t a) noexcept {
         ::operator delete(p, n, a);
     }
+#endif
 
     virtual ValueKind kind() const = 0;
     virtual std::string typeName() const = 0;

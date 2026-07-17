@@ -61,6 +61,12 @@ add_library(kirito INTERFACE)
 target_include_directories(kirito INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_features(kirito INTERFACE cxx_std_20)
 target_link_libraries(kirito INTERFACE Threads::Threads)
+# Clang leaves sized deallocation off by default (GCC/MSVC enable it). Object re-declares the sized
+# aligned operator delete only under __cpp_sized_deallocation, so the header compiles either way; turn
+# the feature ON for Clang so the sized-delete fast path is kept. Propagates to every consumer.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(kirito INTERFACE -fsized-deallocation)
+endif()
 if(WIN32)
     target_link_libraries(kirito INTERFACE ws2_32 bcrypt)  # Winsock; bcrypt = BCryptGenRandom (OS CSPRNG)
 endif()

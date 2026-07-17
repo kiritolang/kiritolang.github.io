@@ -425,6 +425,31 @@ assert "Matrix row index out of range" in e1
 )"));
     }
 
+    // ===== A19.1-1: a user-class instance's _hash_/_eq_/_bool_ dispatch through its OWNING VM, so a
+    // SECOND VM constructed on the same thread doesn't misroute them (multi-VM isolation contract). =====
+    {
+        KiritoVM a;
+        KiritoVM b;      // constructed AFTER a -> activeVM() == &b for the rest of the scope
+        (void)b;
+        // Define the class AND exercise its dunders in ONE run on `a` (runSource doesn't persist across
+        // calls). The K instances are owned by `a`; their _hash_/_eq_/_bool_ must dispatch through `a`
+        // even though `b` is the thread's active VM — otherwise a's class handle is deref'd in b's arena.
+        CHECK(ok(a, R"(
+class K:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _hash_ = Function(self):
+        return self.v
+    var _eq_ = Function(self, o):
+        return self.v == o.v
+    var _bool_ = Function(self):
+        return self.v != 0
+assert len({K(1), K(2), K(1)}) == 2          # _hash_ + _eq_ via A
+assert (K(1) in {K(1), K(2)})                # _eq_/_hash_ via A
+assert Bool(K(0)) == False and Bool(K(5)) == True    # _bool_ via A
+)"));
+    }
+
     // ===== A02-3: a duplicate parameter name is a hard PARSE error (was a warn-and-run that then
     // desynced the resolver slot layout — assertion abort / silent wrong binding). =====
     {

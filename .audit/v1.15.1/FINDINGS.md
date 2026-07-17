@@ -121,6 +121,13 @@ missing-propagation note.
 | A02-3 (HIGH) | a **duplicate parameter name** is now a hard PARSE error (parser.hpp), not a warn-and-run — killing the resolver-slot-layout desync (assertion abort / silent wrong binding) at the source. Analyzer's dead dup-param warning removed. | new `errors/duplicate_param.ki`; updated `test_warnings.cpp`, `r7_language.ki`; audit test |
 | A02-2 | the two module-export filters are UNIFIED into one `moduleExportBase`: a `.ki`-file module now HIDES its `_private` top-level names, exactly like a frozen module already did (dunders `_x_` and ordinary names still export). No fallbacks, per the maintainer. | audit test (frozen path) |
 
+## FIXED (this session) — batch 9: remaining involved MED
+
+| ID    | Sev  | Symptom | Fix | File(s) |
+|-------|------|---------|-----|---------|
+| A19.1-1 | MED | `_hash_`/`_eq_`/`_bool_` on a user instance dispatched via `activeVM()` (the most-recently-constructed VM), misrouting when 2+ VMs coexist on a thread → stale-generation throw or silent type confusion (breaks the multi-VM isolation contract) | `InstanceValue` carries its **owning VM** (`ownerVM_`, set at instantiation + serde rebuild); the three slots dispatch through it, `activeVM()` only a null fallback | class_value.hpp, runtime.hpp, stdlib_serde.hpp |
+| A10-2 | HIGH(build) | `kirito.hpp` didn't compile under clang++ default flags (the sized aligned `operator delete` needs `-fsized-deallocation`) → the documented libFuzzer build was dead | guard the sized overload behind `#if defined(__cpp_sized_deallocation)` (the unsized aligned delete already covers over-aligned); add `-fsized-deallocation` for Clang in CMake | object.hpp, CMakeLists.txt |
+
 ## DEFERRED — needs a maintainer decision (NOT auto-fixed)
 
 _(none remaining — all four conformance items were approved and applied in batch 7.)_

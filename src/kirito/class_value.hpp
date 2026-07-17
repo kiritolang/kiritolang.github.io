@@ -101,6 +101,12 @@ public:
     Handle cls{};
     Handle selfHandle{};     // this instance's own arena handle (for invoking its methods)
     std::string className;   // copied from the class so typeName()/str() need no arena
+    // The VM that OWNS this instance, set at construction. `_hash_`/`_eq_`/`_bool_` run a Kirito
+    // method and so need a VM; they used to grab KiritoVM::activeVM() (the most-recently-constructed
+    // live VM on the thread), which MISROUTES when two VMs coexist — dispatching an A-instance's dunder
+    // against B's arena (a stale-generation throw, or silent type confusion). Using the owner keeps
+    // each VM's objects isolated (the documented contract). activeVM() stays only as a null fallback.
+    KiritoVM* ownerVM_ = nullptr;
     // Opt-in dunder cache — set once at instantiation time by walking the class chain, so the
     // Dict/Set hash/equals hot path is a plain bool test with no method lookup.
     bool hasHashDunder = false;   // class (or a base) defines `_hash_` → InstanceValue is hashable
