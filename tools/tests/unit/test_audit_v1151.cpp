@@ -425,6 +425,35 @@ assert "Matrix row index out of range" in e1
 )"));
     }
 
+    // ===== A13-1: a class whose eager class-var is built by a captured FACTORY helper (which
+    // instantiates another class) must load in a FRESH VM — the tiered build order sees the class
+    // reachable only through the helper's free vars. Two VMs share the blob via a temp file. =====
+    {
+        std::string mk = "var p = import(\"path\").join(import(\"path\").gettempdir(), \"ki_a13_factory.kdmp\")\n";
+        {
+            KiritoVM a;
+            CHECK(ok(a, mk + R"(
+var dump = import("dump")
+class Beta:
+    var _init_ = Function(self):
+        self.v = 777
+var factory = Function(): return Beta()
+class Alpha:
+    var b = factory()
+dump.save(Alpha(), p)
+)"));
+        }
+        {
+            KiritoVM b;   // FRESH VM: knows nothing of Alpha/Beta/factory
+            CHECK(ok(b, mk + R"(
+var dump = import("dump")
+var loaded = dump.load(p)
+assert loaded.b.v == 777
+discard import("path").remove(p, missing_ok = True)
+)"));
+        }
+    }
+
     // ===== A09-1 / A09-2: a function literal defined INSIDE a method inherits the method's class
     // ownership, so a nested closure/callback may touch self._private and resolve self._super_() —
     // while a function defined OUTSIDE a method still can't (privacy is only granted, never opened). =====

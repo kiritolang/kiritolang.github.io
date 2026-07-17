@@ -483,40 +483,58 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             }
         };
         std::size_t remaining = pending.size();
-        while (remaining > 0) {
-            bool progressed = false;
-            for (uint32_t i : pending) {
-                if (built[i] || !eagerDepsReady(i)) continue;
-                const Node& nd = nodes[i];
-                // Reconnect to a class of this name ALREADY defined in the loading VM rather than
-                // rebuilding it — so deserializing an instance never clobbers the caller's live class of
-                // the same name (and a same-VM round-trip returns the very same class object). The class
-                // still travels in the blob purely so an ABSENT class can be rebuilt here.
-                const Handle* existing = vm.findClass(nd.s2);
-                if (existing && vm.arena().deref(*existing).kind() == ValueKind::Class) {
-                    objs[i] = roots.add(*existing);   // no scope -> pass 5 skips it (nothing to wire)
-                    built[i] = 1;
-                    --remaining;
-                    progressed = true;
-                    continue;
-                }
-                Handle S = roots.add(vm.newScope(vm.global()));
-                declareFreeVars(static_cast<EnvValue&>(vm.arena().deref(S)), nd, /*eagerReal=*/true);
-                bindEagerHelpers(i);
-                try {
-                    vm.evalIn(nd.s, S, "<deserialized class>", /*indexTopLevel=*/true);
-                } catch (const KiritoError& e) {
-                    throw KiritoError("cannot deserialize class '" + nd.s2 + "': " + e.what());
-                }
-                const Handle* c = vm.findClass(nd.s2);
-                if (!c)
-                    throw KiritoError("cannot deserialize class '" + nd.s2 + "': re-parse did not define it");
-                objs[i] = roots.add(*c);
-                deserScope[i] = S;
+        // Build one class node: reconnect to a same-named class already in the loading VM, or re-parse.
+        auto buildOne = [&](uint32_t i) {
+            const Node& nd = nodes[i];
+            // Reconnect to a class of this name ALREADY defined in the loading VM rather than
+            // rebuilding it — so deserializing an instance never clobbers the caller's live class of
+            // the same name (and a same-VM round-trip returns the very same class object). The class
+            // still travels in the blob purely so an ABSENT class can be rebuilt here.
+            const Handle* existing = vm.findClass(nd.s2);
+            if (existing && vm.arena().deref(*existing).kind() == ValueKind::Class) {
+                objs[i] = roots.add(*existing);   // no scope -> pass 5 skips it (nothing to wire)
                 built[i] = 1;
                 --remaining;
-                progressed = true;
+                return;
             }
+            Handle S = roots.add(vm.newScope(vm.global()));
+            declareFreeVars(static_cast<EnvValue&>(vm.arena().deref(S)), nd, /*eagerReal=*/true);
+            bindEagerHelpers(i);
+            try {
+                vm.evalIn(nd.s, S, "<deserialized class>", /*indexTopLevel=*/true);
+            } catch (const KiritoError& e) {
+                throw KiritoError("cannot deserialize class '" + nd.s2 + "': " + e.what());
+            }
+            const Handle* c = vm.findClass(nd.s2);
+            if (!c)
+                throw KiritoError("cannot deserialize class '" + nd.s2 + "': re-parse did not define it");
+            objs[i] = roots.add(*c);
+            deserScope[i] = S;
+            built[i] = 1;
+            --remaining;
+        };
+        // Tier-1 readiness: every CLASS reachable through this class's eager frontier (its own eager
+        // links AND the free vars of the helpers they reach) is already built. This sees through a
+        // captured helper that instantiates another class (A13-1) — `eagerDepsReady`, which looks only
+        // at DIRECT links, cannot. Reachability is a sound over-approximation of the real dependency,
+        // so where it is acyclic it gives the exact order.
+        auto frontierDepsReady = [&](uint32_t i) -> bool {
+            for (uint32_t id : eagerFrontier(i))
+                if (id != i && nodes[id].tag == Tag::Class && !built[id]) return false;
+            return true;
+        };
+        while (remaining > 0) {
+            bool progressed = false;
+            // Tier 1 (precise): build every class whose eager-frontier classes are all built.
+            for (uint32_t i : pending)
+                if (!built[i] && frontierDepsReady(i)) { buildOne(i); progressed = true; }
+            if (progressed) continue;
+            // Tier 2 (fallback): reachability reported a possibly-SPURIOUS cycle — two classes that
+            // only BIND helpers naming each other look mutually dependent though neither dereferences
+            // the other (`eagerFreeVariables` can't tell `var m = helper` from `var v = helper()`).
+            // Relax to what the body DIRECTLY names and build ONE, then re-attempt the precise tier.
+            for (uint32_t i : pending)
+                if (!built[i] && eagerDepsReady(i)) { buildOne(i); progressed = true; break; }
             if (!progressed)
                 throw KiritoError("cannot deserialize: cyclic class-definition dependency (a base class "
                                   "or class-variable initializer forms a cycle)");
