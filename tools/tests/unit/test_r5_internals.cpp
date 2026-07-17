@@ -207,7 +207,8 @@ int main() {
                       "variable 'x' is re-declared in this block"));
         CHECK(hasWarn(warn("var f = Function():\n    return 1\n    var x = 2\n"), "unreachable code"));
         CHECK(hasWarn(warn("var x = 1\nx = x\n"), "self-assignment of 'x' has no effect"));
-        CHECK(hasWarn(warn("var f = Function(a, b, a):\n    return a\n"), "duplicate parameter name 'a'"));
+        // A duplicate parameter name is a hard PARSE error now (not a warn-and-run).
+        CHECK(errOf("var f = Function(a, b, a):\n    return a\n").find("duplicate parameter name 'a'") != std::string::npos);
         // discard suppresses the unused-result warning; a clean program warns about nothing.
         CHECK(!hasWarn(warn("var x = 1\ndiscard x + 2\n"), "result of expression is unused"));
         CHECK(!hasWarn(warn("var f = Function():\n    var x = 5\n    return x\n"), "never used"));
