@@ -20,6 +20,9 @@ class Object;
 
 enum class ValueKind {
     None, Bool, Integer, Float, String,
+    // `Array` is a RESERVED kind with no producer today — there is no ArrayVal, so nothing ever
+    // reports it. It survives only as a defensive `|| ValueKind::Array` alongside `List` in the
+    // list-handling paths (a placeholder for a possible future List-model type). NOT a live type.
     Array, List, Set, Dict,
     Function, NativeFunction, Module, Class, Instance,
     Environment,

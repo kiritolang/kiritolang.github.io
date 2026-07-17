@@ -127,6 +127,8 @@ missing-propagation note.
 |-------|------|---------|-----|---------|
 | A19.1-1 | MED | `_hash_`/`_eq_`/`_bool_` on a user instance dispatched via `activeVM()` (the most-recently-constructed VM), misrouting when 2+ VMs coexist on a thread → stale-generation throw or silent type confusion (breaks the multi-VM isolation contract) | `InstanceValue` carries its **owning VM** (`ownerVM_`, set at instantiation + serde rebuild); the three slots dispatch through it, `activeVM()` only a null fallback | class_value.hpp, runtime.hpp, stdlib_serde.hpp |
 | A10-2 | HIGH(build) | `kirito.hpp` didn't compile under clang++ default flags (the sized aligned `operator delete` needs `-fsized-deallocation`) → the documented libFuzzer build was dead | guard the sized overload behind `#if defined(__cpp_sized_deallocation)` (the unsized aligned delete already covers over-aligned); add `-fsized-deallocation` for Clang in CMake | object.hpp, CMakeLists.txt |
+| A04-1 | MED | the innermost traceback frame line disagreed with the `error:` line whenever an exception crossed a `finally`/`with` (the frame showed the `try:`/`with` line, the reraised instruction, not the throw) | `appendFrame` prefers the exception's own origin span for the innermost frame (KiritoThrow arm only); outer frames keep the call site | bytecode_vm.hpp; new `errors/traceback_line_through_finally.ki` |
+| A06-2 | LOW | `ValueKind::Array` is a reserved kind with no producer (no `ArrayVal`), only defensive `|| Array` checks — reader confusion | clarifying comment at the enum (kept as a reserved placeholder; removing it + its 9 `\|\| Array` sites is churn with no behavioural change) | object.hpp |
 
 ## DEFERRED — needs a maintainer decision (NOT auto-fixed)
 

@@ -450,7 +450,7 @@ public:
             if (!unwind(s, e.span, ip)) throw;
             vm_.setLastTraceback(e.traceback);
           } catch (KiritoThrow& t) {  // non-const: append this frame to the traceback before re-throwing
-            appendFrame(t.traceback, ip, code);
+            appendFrame(t.traceback, ip, code, t.span);   // innermost frame -> the exception's true origin line
             if (!unwind(t.value, t.span, ip)) throw;
             vm_.setLastTraceback(t.traceback);  // handled here -> expose the chain to sys.traceback()
           } catch (const std::exception& e) {
@@ -515,8 +515,15 @@ private:
     // Record THIS frame on an unwinding error's traceback: its label + file + the line it was executing
     // (the faulting instruction for the innermost frame, the call site for the outer ones). Called once
     // per frame the exception passes through, building the chain innermost-first.
-    void appendFrame(std::vector<TraceFrame>& tb, std::size_t ip, const std::vector<Instr>& code) {
+    void appendFrame(std::vector<TraceFrame>& tb, std::size_t ip, const std::vector<Instr>& code,
+                     SourceSpan originSpan = {}) {
         uint32_t ln = (ip >= 1 && ip <= code.size()) ? code[ip - 1].span.line : 0;
+        // For the INNERMOST frame of a thrown value (tb still empty), prefer the exception's own origin
+        // line: after a `finally`/`with` reraise, the executing instruction is the `try:`/`with`
+        // statement, not the throw site, so `code[ip-1]` would make the innermost traceback frame
+        // disagree with the already-correct `error:` line. Outer frames (tb non-empty) keep the call
+        // site. Only the KiritoThrow arm passes an origin (a KiritoError's span may be another chunk).
+        if (tb.empty() && originSpan.line != 0) ln = originSpan.line;
         tb.push_back(TraceFrame{frameLabel_, vm_.currentChunkFile(), ln});
     }
 
