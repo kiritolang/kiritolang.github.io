@@ -1,0 +1,394 @@
+# Exhaustive coverage for the functional / collection stdlib:
+#   collections (deque, Counter, defaultdict), itertools, functools, enum, copy, tee.
+# Every assertion below was confirmed against the real interpreter (build-release/ki).
+var io = import("io")
+var it = import("itertools")
+var ft = import("functools")
+var col = import("collections")
+var cp = import("copy")
+var en = import("enum")
+var tee = import("tee")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+# ============================================================================
+# itertools
+# ============================================================================
+
+# --- count(start, step, stop) : eager, requires a stop bound -----------------
+assert it.count(0, 1, 5) == [0, 1, 2, 3, 4], "count ascending"
+assert it.count(2, 3, 12) == [2, 5, 8, 11], "count with step 3"
+assert it.count(5, -1, 0) == [5, 4, 3, 2, 1], "count descending"
+assert it.count(0, 1, 0) == [], "count empty when start==stop"
+assert it.count(0, 1, -3) == [], "count empty when stop below start (positive step)"
+assert it.count(0, -1, 3) == [], "count empty when descending target above start"
+assert it.count(10, 5, 11) == [10], "count single element"
+assert it.count(0, 2, 5) == [0, 2, 4], "count step overshoots stop (exclusive)"
+# hardening: missing stop, zero step
+assert "needs a stop bound" in emsg(Function(): return it.count(0, 1)), "count needs stop"
+assert "step must not be zero" in emsg(Function(): return it.count(0, 0, 5)), "count zero step"
+
+# --- repeat(value, times) ----------------------------------------------------
+assert it.repeat("a", 3) == ["a", "a", "a"], "repeat basic"
+assert it.repeat("a", 0) == [], "repeat 0 times"
+assert it.repeat("a", -2) == [], "repeat negative times is empty"
+assert it.repeat([1], 2) == [[1], [1]], "repeat a list value"
+
+# --- cycle(iterable, times) --------------------------------------------------
+assert it.cycle([1, 2], 3) == [1, 2, 1, 2, 1, 2], "cycle basic"
+assert it.cycle([1, 2], 0) == [], "cycle 0 times"
+assert it.cycle([], 5) == [], "cycle empty iterable"
+assert it.cycle("ab", 2) == ["a", "b", "a", "b"], "cycle a string"
+
+# --- chain(list-of-iterables) ------------------------------------------------
+assert it.chain([[1, 2], [3, 4]]) == [1, 2, 3, 4], "chain basic"
+assert it.chain([]) == [], "chain of nothing"
+assert it.chain([[], [1], []]) == [1], "chain skips empties"
+assert it.chain([[1], [2], [3]]) == [1, 2, 3], "chain many singletons"
+
+# --- islice(iterable, start, stop, step=1) -----------------------------------
+assert it.islice([0, 1, 2, 3, 4], 1, 4) == [1, 2, 3], "islice basic"
+assert it.islice([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 1, 8, 2) == [1, 3, 5, 7], "islice with step"
+assert it.islice([1, 2, 3], 0, 0) == [], "islice empty range"
+assert it.islice([1, 2, 3], 5, 10) == [], "islice start past end"
+assert it.islice([1, 2, 3], 0, 100) == [1, 2, 3], "islice stop past end clamps"
+# islice over a range (a non-list iterable) — stops without materialising all of it conceptually
+assert it.islice(range(1000000), 0, 3) == [0, 1, 2], "islice takes a prefix of a large range"
+assert it.islice(range(1000000), 2, 5) == [2, 3, 4], "islice a window of a large range"
+# hardening
+assert "must be a positive integer" in emsg(Function(): return it.islice([1, 2, 3], 0, 3, 0)), "islice step 0"
+assert "must be a positive integer" in emsg(Function(): return it.islice([1, 2, 3], 0, 3, -1)), "islice step negative"
+assert "must be non-negative" in emsg(Function(): return it.islice([1, 2, 3], -1, 3)), "islice negative start"
+assert "must be non-negative" in emsg(Function(): return it.islice([1, 2, 3], 0, -1)), "islice negative stop"
+
+# --- accumulate(iterable[, func]) --------------------------------------------
+assert it.accumulate([1, 2, 3, 4]) == [1, 3, 6, 10], "accumulate sum"
+assert it.accumulate([1, 2, 3, 4], Function(a, b): return a * b) == [1, 2, 6, 24], "accumulate product"
+assert it.accumulate([]) == [], "accumulate empty"
+assert it.accumulate([5]) == [5], "accumulate single"
+assert it.accumulate([3, 1, 4, 1], Function(a, b): return a if a > b else b) == [3, 3, 4, 4], "accumulate running max"
+
+# --- product(list-of-iterables) ----------------------------------------------
+assert it.product([[1, 2], [3, 4]]) == [[1, 3], [1, 4], [2, 3], [2, 4]], "product basic"
+assert it.product([]) == [[]], "product of nothing is one empty tuple"
+assert it.product([[1, 2], []]) == [], "product with an empty pool is empty"
+assert it.product([[1], [2], [3]]) == [[1, 2, 3]], "product of singletons"
+# hardening: oversized product guard
+assert "too large" in emsg(Function(): return it.product([range(10000), range(10000), range(1000)])), "product guard"
+
+# --- permutations(items[, r]) ------------------------------------------------
+assert it.permutations([1, 2, 3]) == [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]], "permutations full"
+assert it.permutations([1, 2, 3], 2) == [[1, 2], [1, 3], [2, 1], [2, 3], [3, 1], [3, 2]], "permutations r=2"
+assert it.permutations([1, 2], 0) == [[]], "permutations r=0 is one empty"
+assert it.permutations([], 0) == [[]], "permutations empty r=0"
+assert it.permutations([1, 2]) == [[1, 2], [2, 1]], "permutations pair"
+assert it.permutations([1, 2], 5) == [], "permutations r>n is empty"
+assert it.permutations([1, 2], -1) == [], "permutations negative r is empty"
+# hardening: oversized guard
+assert "too large" in emsg(Function(): return it.permutations(range(20))), "permutations guard"
+
+# --- combinations(items, r) --------------------------------------------------
+assert it.combinations([1, 2, 3, 4], 2) == [[1, 2], [1, 3], [1, 4], [2, 3], [2, 4], [3, 4]], "combinations r=2"
+assert it.combinations([1, 2, 3], 0) == [[]], "combinations r=0 is one empty"
+assert it.combinations([1, 2, 3], 3) == [[1, 2, 3]], "combinations r=n"
+assert it.combinations([1, 2], 5) == [], "combinations r>n is empty"
+assert it.combinations([1, 2], -1) == [], "combinations negative r is empty"
+assert "too large" in emsg(Function(): return it.combinations(range(50), 25)), "combinations guard"
+
+# --- takewhile / dropwhile ---------------------------------------------------
+assert it.takewhile(Function(x): return x < 3, [1, 2, 3, 1]) == [1, 2], "takewhile"
+assert it.takewhile(Function(x): return x < 3, [5, 1, 2]) == [], "takewhile first fails"
+assert it.takewhile(Function(x): return x < 9, [1, 2, 3]) == [1, 2, 3], "takewhile all pass"
+assert it.takewhile(Function(x): return True, []) == [], "takewhile empty"
+assert it.dropwhile(Function(x): return x < 3, [1, 2, 3, 1, 2]) == [3, 1, 2], "dropwhile"
+assert it.dropwhile(Function(x): return x < 9, [1, 2, 3]) == [], "dropwhile all dropped"
+assert it.dropwhile(Function(x): return False, [1, 2]) == [1, 2], "dropwhile drops nothing"
+# takewhile over a large range stops early (leading run only)
+assert it.takewhile(Function(x): return x < 4, range(1000000)) == [0, 1, 2, 3], "takewhile a prefix of a large range"
+
+# --- filterfalse / compress --------------------------------------------------
+assert it.filterfalse(Function(x): return x % 2 == 0, [1, 2, 3, 4, 5]) == [1, 3, 5], "filterfalse odds"
+assert it.filterfalse(Function(x): return True, [1, 2, 3]) == [], "filterfalse all true"
+assert it.filterfalse(Function(x): return False, [1, 2]) == [1, 2], "filterfalse none true"
+assert it.compress(["a", "b", "c", "d"], [1, 0, 1, 0]) == ["a", "c"], "compress"
+assert it.compress(["a", "b", "c"], [1, 1]) == ["a", "b"], "compress short selectors truncates"
+assert it.compress(["a"], [0]) == [], "compress all off"
+assert it.compress([], [1, 1]) == [], "compress empty data"
+
+# --- starmap -----------------------------------------------------------------
+assert it.starmap(Function(t): return t[0] + t[1], [[1, 2], [3, 4]]) == [3, 7], "starmap add pairs"
+assert it.starmap(Function(t): return t[0], []) == [], "starmap empty"
+
+# --- pairwise ----------------------------------------------------------------
+assert it.pairwise([1, 2, 3, 4]) == [[1, 2], [2, 3], [3, 4]], "pairwise"
+assert it.pairwise([1]) == [], "pairwise single has no pairs"
+assert it.pairwise([]) == [], "pairwise empty"
+
+# --- ziplongest --------------------------------------------------------------
+assert it.ziplongest([[1, 2, 3], [4, 5]]) == [[1, 4], [2, 5], [3, None]], "ziplongest default fill None"
+assert it.ziplongest([[1, 2, 3], [4, 5]], -1) == [[1, 4], [2, 5], [3, -1]], "ziplongest custom fill"
+assert it.ziplongest([[1, 2], [3, 4]]) == [[1, 3], [2, 4]], "ziplongest equal length"
+assert it.ziplongest([]) == [], "ziplongest of nothing"
+assert it.ziplongest([[], []]) == [], "ziplongest of empties"
+
+# --- groupby -----------------------------------------------------------------
+assert it.groupby([1, 1, 2, 3, 3, 1]) == [[1, [1, 1]], [2, [2]], [3, [3, 3]], [1, [1]]], "groupby consecutive"
+assert it.groupby([]) == [], "groupby empty"
+assert it.groupby([5]) == [[5, [5]]], "groupby single"
+assert it.groupby(["a", "aa", "b", "cc"], Function(s): return len(s)) == [[1, ["a"]], [2, ["aa"]], [1, ["b"]], [2, ["cc"]]], "groupby with key"
+
+# ============================================================================
+# functools
+# ============================================================================
+
+# --- reduce(func, iterable[, initial]) ---------------------------------------
+assert ft.reduce(Function(a, b): return a + b, [1, 2, 3, 4]) == 10, "reduce sum no init"
+assert ft.reduce(Function(a, b): return a + b, [1, 2, 3, 4], 100) == 110, "reduce sum with init"
+assert ft.reduce(Function(a, b): return a + b, [], 0) == 0, "reduce empty with init returns init"
+assert ft.reduce(Function(a, b): return a + b, [42]) == 42, "reduce single no init returns element"
+assert ft.reduce(Function(a, b): return a * b, [1, 2, 3, 4], 1) == 24, "reduce product"
+# A legitimate None seed must be used, not treated as 'omitted' (identity sentinel, not == None)
+assert ft.reduce(Function(a, b): return b, [1, 2, 3], None) == 3, "reduce None seed is a real seed"
+assert ft.reduce(Function(a, b): return a, [], None) == None, "reduce empty with None seed returns None"
+# hardening: empty with no seed
+assert "empty sequence with no initial" in emsg(Function(): return ft.reduce(Function(a, b): return a + b, [])), "reduce empty no init throws"
+
+# --- partial(func, bound) ----------------------------------------------------
+var add3 = Function(args): return args[0] + args[1] + args[2]
+var p = ft.partial(add3, [10])
+assert p([1, 2]) == 13, "partial binds leading arg"
+var pnone = ft.partial(add3, [])
+assert pnone([1, 2, 3]) == 6, "partial with empty bound"
+# snapshot: mutating the caller's list after creation must NOT leak in
+var b = [1]
+var p2 = ft.partial(add3, b)
+b.append(999)
+assert p2([2, 3]) == 6, "partial snapshots its bound list"
+
+# --- cache(func) -------------------------------------------------------------
+var calls = [0]
+var sq = Function(x):
+    calls[0] = calls[0] + 1
+    return x * x
+var cf = ft.cache(sq)
+assert cf(4) == 16, "cache first call"
+assert cf(4) == 16, "cache repeated call"
+assert calls[0] == 1, "cache invoked underlying once"
+assert cf(5) == 25, "cache new argument"
+assert calls[0] == 2, "cache invoked underlying twice for distinct args"
+# a memoized None result is still cached (not recomputed as 'missing')
+var gcalls = [0]
+var gnone = Function(x):
+    gcalls[0] = gcalls[0] + 1
+    return None
+var cg = ft.cache(gnone)
+assert cg(1) == None, "cache None result first"
+assert cg(1) == None, "cache None result cached"
+assert gcalls[0] == 1, "cache stored the None result"
+
+# ============================================================================
+# collections.deque
+# ============================================================================
+var dq = col.deque([1, 2, 3])
+assert len(dq) == 3, "deque len"
+dq.append(4)
+dq.appendleft(0)
+assert String(dq) == "deque([0, 1, 2, 3, 4])", "deque str after appends"
+assert dq[0] == 0, "deque index front"
+assert dq[-1] == 4, "deque negative index"
+assert len(dq) == 5, "deque len after appends"
+var walked = []
+for x in dq:
+    walked.append(x)
+assert walked == [0, 1, 2, 3, 4], "deque iterates left to right"
+assert dq.pop() == 4, "deque pop returns rightmost"
+assert dq.popleft() == 0, "deque popleft returns leftmost"
+assert String(dq) == "deque([1, 2, 3])", "deque str after pops"
+# empty deque
+var edq = col.deque()
+assert len(edq) == 0, "empty deque len 0"
+assert String(edq) == "deque([])", "empty deque str"
+# hardening: pop from empty
+assert "empty deque" in emsg(Function(): return edq.pop()), "deque pop empty throws"
+assert "empty deque" in emsg(Function(): return edq.popleft()), "deque popleft empty throws"
+# deque built from a string is iterable char-by-char
+var sdq = col.deque("ab")
+assert sdq[0] == "a", "deque from string"
+
+# ============================================================================
+# collections.Counter
+# ============================================================================
+var c = col.Counter("aabbbc")
+assert c["b"] == 3, "Counter index count"
+assert c["a"] == 2, "Counter index count a"
+assert c["z"] == 0, "Counter missing key is 0"
+assert c.get("a") == 2, "Counter.get"
+assert c.get("z") == 0, "Counter.get missing is 0"
+c.add("z")
+assert c["z"] == 1, "Counter.add new"
+c.add("a")
+assert c["a"] == 3, "Counter.add existing"
+# mostcommon ordering + the n<=0 contract (returns [], NOT an end-slice)
+var c2 = col.Counter("aaabbc")
+assert c2.mostcommon() == [["a", 3], ["b", 2], ["c", 1]], "mostcommon all sorted"
+assert c2.mostcommon(2) == [["a", 3], ["b", 2]], "mostcommon top 2"
+assert c2.mostcommon(0) == [], "mostcommon(0) is [] (contract)"
+assert c2.mostcommon(-1) == [], "mostcommon(-1) is [] not an end-slice (contract)"
+assert c2.mostcommon(100) == [["a", 3], ["b", 2], ["c", 1]], "mostcommon n>len returns all"
+# tie stability: equal counts appear in first-insertion order
+var ctie = col.Counter(["z", "y", "x"])
+assert ctie.mostcommon() == [["z", 1], ["y", 1], ["x", 1]], "mostcommon ties in insertion order"
+# empty Counter
+var ce = col.Counter()
+assert ce.mostcommon() == [], "empty Counter mostcommon"
+assert ce["anything"] == 0, "empty Counter index 0"
+assert ce.items() == [], "empty Counter items"
+# hardening: Counter has no arithmetic operator (documented arithmetic not implemented)
+assert "no operator" in emsg(Function(): return col.Counter("a") + col.Counter("b")), "Counter + is not supported"
+
+# ============================================================================
+# collections.defaultdict
+# ============================================================================
+var dd = col.defaultdict(Function(): return [])
+dd["x"].append(1)
+dd["x"].append(2)
+assert dd["x"] == [1, 2], "defaultdict list factory accumulates"
+assert ("x" in dd) == True, "defaultdict contains present key"
+assert ("y" in dd) == False, "defaultdict does not contain unset key"
+# reading a missing key inserts the factory default
+assert dd["fresh"] == [], "defaultdict inserts factory() on missing read"
+assert ("fresh" in dd) == True, "defaultdict missing read now present"
+# int factory
+var dcount = col.defaultdict(Function(): return 0)
+dcount["a"] = dcount["a"] + 1
+dcount["a"] = dcount["a"] + 1
+dcount["b"] = dcount["b"] + 1
+assert dcount["a"] == 2, "defaultdict int factory count a"
+assert dcount["b"] == 1, "defaultdict int factory count b"
+assert dcount.keys() == ["a", "b"], "defaultdict keys insertion order"
+assert dcount.values() == [2, 1], "defaultdict values"
+assert dcount.items() == [["a", 2], ["b", 1]], "defaultdict items"
+# explicit set overwrites
+dcount["a"] = 99
+assert dcount["a"] == 99, "defaultdict explicit set"
+
+# ============================================================================
+# enum
+# ============================================================================
+var e = en.Enum(["RED", "GREEN", "BLUE"])
+assert e.get("RED") == 0, "enum get RED"
+assert e.get("BLUE") == 2, "enum get BLUE"
+assert e["GREEN"] == 1, "enum index syntax"
+assert e.nameof(0) == "RED", "enum nameof"
+assert e.nameof(2) == "BLUE", "enum nameof BLUE"
+assert e.names() == ["RED", "GREEN", "BLUE"], "enum names in definition order"
+assert e.values() == [0, 1, 2], "enum values"
+assert ("RED" in e) == True, "enum membership present"
+assert ("PINK" in e) == False, "enum membership absent"
+# names() returns a copy — mutating it must not affect the enum
+var ns = e.names()
+ns.append("HACK")
+assert e.names() == ["RED", "GREEN", "BLUE"], "enum names() returns a defensive copy"
+# single-member enum
+var e1 = en.Enum(["ONLY"])
+assert e1.get("ONLY") == 0, "single-member enum"
+# hardening
+assert "no such enum member" in emsg(Function(): return e.get("NOPE")), "enum get unknown throws"
+assert "duplicate enum member" in emsg(Function(): return en.Enum(["A", "B", "A"])), "enum duplicate throws"
+assert threw(Function(): return e.nameof(99)) == True, "enum nameof unknown value throws"
+
+# ============================================================================
+# copy — shallow vs deep, aliasing, cycles
+# ============================================================================
+# shallow copy shares nested elements
+var nested = [[1, 2], [3, 4]]
+var sc = cp.copy(nested)
+assert sc == nested, "shallow copy equal"
+assert id(sc) != id(nested), "shallow copy is a new outer object"
+sc[0].append(99)
+assert nested[0] == [1, 2, 99], "shallow copy shares nested element (mutation leaks)"
+# deep copy is fully independent
+var nested2 = [[1, 2], [3, 4]]
+var dc = cp.deepcopy(nested2)
+dc[0].append(77)
+assert nested2[0] == [1, 2], "deep copy nested element is independent"
+# deep copy of a dict of lists
+var dmap = {"a": [1, 2], "b": [3, 4]}
+var dmap2 = cp.deepcopy(dmap)
+dmap2["a"].append(9)
+assert dmap == {"a": [1, 2], "b": [3, 4]}, "deep copy dict values independent"
+# deep copy of a set
+var st = Set([1, 2, 3])
+var st2 = cp.deepcopy(st)
+st2.add(4)
+assert len(st) == 3, "deep copy set independent"
+# immutable scalars copy to themselves
+assert cp.copy(5) == 5, "copy int"
+assert cp.deepcopy("hi") == "hi", "deepcopy string"
+assert cp.copy(None) == None, "copy None"
+assert cp.deepcopy(True) == True, "deepcopy bool"
+# shared reference preserved within one deep copy (both slots are the SAME copied object)
+var shared = [1, 2]
+var holder = [shared, shared]
+var hc = cp.deepcopy(holder)
+assert id(hc[0]) == id(hc[1]), "deepcopy preserves shared reference identity"
+hc[0].append(5)
+assert hc[1] == [1, 2, 5], "deepcopy shared reference stays shared"
+assert holder[0] == [1, 2], "deepcopy shared did not touch the original"
+# cycle-safe deep copy
+var cyc = [1]
+cyc.append(cyc)
+var dcyc = cp.deepcopy(cyc)
+assert id(dcyc[1]) == id(dcyc), "deepcopy of a cycle self-references the copy"
+assert id(dcyc) != id(cyc), "deepcopy of a cycle is a new object"
+
+# ============================================================================
+# tee — fan-out streams
+# ============================================================================
+# pure fan-out sink (primary None) into a BytesIO copy
+var buf = io.BytesIO()
+var t = tee.Tee(None, buf)
+assert t.write("hello") == 5, "Tee.write returns length"
+assert buf.getvalue() == "hello", "Tee writes to the copy"
+assert len(t.streams()) == 1, "Tee with only a copy has one stream"
+# writelines fans each line out
+var buf2 = io.BytesIO()
+var t2 = tee.Tee(None, buf2)
+t2.writelines(["a", "b", "c"])
+assert buf2.getvalue() == "abc", "Tee.writelines writes each line"
+# copies first then primary, both receive the data; streams() order is copies then primary
+var prim = io.BytesIO()
+var cpy = io.BytesIO()
+var t3 = tee.Tee(prim, cpy)
+t3.write("x")
+assert prim.getvalue() == "x", "Tee writes primary"
+assert cpy.getvalue() == "x", "Tee writes copy"
+assert len(t3.streams()) == 2, "Tee streams count includes primary and copy"
+# multiple copies as a list
+var a1 = io.BytesIO()
+var a2 = io.BytesIO()
+var t4 = tee.Tee(None, [a1, a2])
+t4.write("z")
+assert a1.getvalue() == "z", "Tee list copy 1"
+assert a2.getvalue() == "z", "Tee list copy 2"
+assert len(t4.streams()) == 2, "Tee two copies, no primary"
+# close flushes without raising (BytesIO has no-op flush)
+assert threw(Function(): return t4.close()) == False, "Tee.close does not raise"
+# context manager: io.stdout is restored after the block
+var log = io.BytesIO()
+with tee.tee_stdout(log):
+    io.print("mirrored")
+assert "mirrored" in log.getvalue(), "tee_stdout mirrors into the copy"
+
+io.print("cov collections/fp: all passed")

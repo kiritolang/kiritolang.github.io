@@ -1,0 +1,461 @@
+# Exhaustive coverage of Kirito's global builtins (docs/pages/08-builtins.md).
+# Every assertion reflects the REAL interpreter behavior, confirmed by running build-release/ki.
+# Covers: normal use, edge/boundary cases, and hardening (bad input MUST raise the correct message).
+
+var io = import("io")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+var nan = Float("nan")
+var inf = Float("inf")
+var ninf = Float("-inf")
+
+# ============================================================================
+# type(x)
+# ============================================================================
+assert type(1) == "Integer", "type Integer"
+assert type(1.0) == "Float", "type Float"
+assert type("x") == "String", "type String"
+assert type(True) == "Bool", "type Bool"
+assert type(None) == "None", "type None"
+assert type([1]) == "List", "type List"
+assert type({1}) == "Set", "type Set"
+assert type({1: 2}) == "Dict", "type Dict"
+assert type(io) == "Module", "type Module"
+assert type(range(3)) == "range", "type range"
+assert type(map(String, [1])) == "map", "type map is lazy iterator named 'map'"
+assert type(filter(Bool, [1])) == "filter", "type filter"
+assert type(zip([1])) == "zip", "type zip"
+assert type(enumerate([1])) == "enumerate", "type enumerate"
+assert type(iter([1])) == "iterator", "type iter -> 'iterator'"
+# A class value and its instances share one name.
+class Foo:
+    var _init_ = Function(self): self.x = 1
+assert type(Foo) == "Foo" and type(Foo()) == "Foo", "class value and instance share type name"
+
+# ============================================================================
+# Integer(x)
+# ============================================================================
+assert Integer(True) == 1 and Integer(False) == 0, "Integer(Bool)"
+assert Integer(3.9) == 3 and Integer(-3.9) == -3, "Integer(Float) truncates toward zero"
+assert Integer("42") == 42, "Integer decimal string"
+assert Integer("  -0x1F  ") == -31, "Integer hex string with sign and whitespace"
+assert Integer("0b101") == 5 and Integer("0B101") == 5, "Integer binary (case-insensitive prefix)"
+assert Integer("0o17") == 15 and Integer("0O17") == 15, "Integer octal"
+assert Integer("0xff") == 255 and Integer("0Xff") == 255, "Integer hex case-insensitive"
+assert Integer(42) == 42, "Integer(Integer) identity"
+assert Integer("9223372036854775807") == 9223372036854775807, "Integer INT64_MAX"
+assert Integer("-9223372036854775808") == -9223372036854775808, "Integer INT64_MIN round-trip"
+assert Integer("0xFFFFFFFFFFFFFFFF") == -1, "Integer full-width hex two's-complement"
+assert Integer("+5") == 5, "Integer single leading plus sign"
+# Hardening: unparseable / malformed strings throw with a descriptive message.
+assert threw(Function(): return Integer("abc")), "Integer('abc') throws"
+assert "cannot convert String to Integer" in emsg(Function(): return Integer("abc")), "Integer bad-string message"
+assert "'--5'" in emsg(Function(): return Integer("--5")), "Integer doubled sign rejected"
+assert threw(Function(): return Integer("+ 5")), "Integer space after sign rejected"
+assert threw(Function(): return Integer("0x-5")), "Integer sign after prefix rejected"
+assert threw(Function(): return Integer("42abc")), "Integer trailing garbage rejected"
+assert threw(Function(): return Integer("12.5")), "Integer non-integer string rejected"
+assert threw(Function(): return Integer("")), "Integer empty string rejected"
+assert "NaN" in emsg(Function(): return Integer(nan)), "Integer(NaN) throws"
+assert "infinity" in emsg(Function(): return Integer(inf)), "Integer(inf) throws"
+assert "out of Integer range" in emsg(Function(): return Integer(1e300)), "Integer huge float out of range"
+assert "cannot convert 'List' to Integer" in emsg(Function(): return Integer([1])), "Integer(List) throws"
+assert "cannot convert 'None' to Integer" in emsg(Function(): return Integer(None)), "Integer(None) throws"
+
+# ============================================================================
+# Float(x)
+# ============================================================================
+assert Float(3) == 3.0, "Float(Integer)"
+assert Float(True) == 1.0 and Float(False) == 0.0, "Float(Bool)"
+assert Float("1.5") == 1.5 and Float("1e3") == 1000.0, "Float decimal/scientific string"
+assert Float("inf") == inf and Float("-INFINITY") == ninf, "Float inf/infinity case-insensitive"
+assert Float(2.5) == 2.5, "Float(Float) identity"
+assert Float("  1.5  ") == 1.5, "Float surrounding whitespace"
+# NaN is not == to itself; confirm parse produced a NaN by self-inequality.
+assert Float("nan") != Float("nan"), "Float('nan') parses to NaN (not self-equal)"
+assert threw(Function(): return Float("xyz")), "Float('xyz') throws"
+assert "cannot convert String to Float" in emsg(Function(): return Float("xyz")), "Float bad-string message"
+assert threw(Function(): return Float("0x1p4")), "Float rejects C99 hex-float literal"
+assert "cannot convert 'List' to Float" in emsg(Function(): return Float([1])), "Float(List) throws"
+
+# ============================================================================
+# String(x)
+# ============================================================================
+assert String(2.0) == "2.0", "String(Float) round-trips (not lossy 'g')"
+assert String(None) == "None", "String(None)"
+assert String(True) == "True", "String(Bool)"
+assert String([1, 2]) == "[1, 2]", "String(List)"
+assert String({1: 2}) == "{1: 2}", "String(Dict)"
+assert String({1}) == "{1}", "String(Set)"
+assert String(inf) == "inf" and String(nan) == "nan", "String(inf/nan)"
+assert String(42) == "42", "String(Integer)"
+
+# ============================================================================
+# Bool(x)
+# ============================================================================
+assert Bool(0) == False and Bool(1) == True, "Bool(Integer)"
+assert Bool("") == False and Bool("x") == True, "Bool(String) emptiness"
+assert Bool([]) == False and Bool([0]) == True, "Bool(List) emptiness"
+assert Bool({}) == False and Bool({1}) == True, "Bool(Dict/Set) emptiness"
+assert Bool(None) == False, "Bool(None)"
+assert Bool(0.0) == False and Bool(0.1) == True, "Bool(Float)"
+assert Bool(Foo) == True, "Bool of a class value is truthy"
+
+# ============================================================================
+# Bytes(x[, encoding]) and fromhex
+# ============================================================================
+assert len(Bytes()) == 0 and len(Bytes(None)) == 0, "Bytes()/Bytes(None) empty"
+assert len(Bytes(3)) == 3, "Bytes(n) -> n zero bytes"
+assert Bytes([72, 73]).decode() == "HI", "Bytes(List of Integers)"
+assert Bytes("Hi").decode() == "Hi", "Bytes(String) default utf-8"
+assert len(Bytes("café")) == 5, "Bytes utf-8 encodes multibyte"
+assert Bytes("Hi", "ascii").decode() == "Hi", "Bytes ascii encoding"
+assert len(Bytes("é", "latin-1")) == 1, "Bytes latin-1 encoding"
+assert len(Bytes(Bytes([1, 2]))) == 2, "Bytes(Bytes) copies"
+assert fromhex("48 69").decode() == "Hi", "fromhex with spaces"
+assert len(fromhex("")) == 0, "fromhex empty"
+# Hardening.
+assert "out of range (0..255)" in emsg(Function(): return Bytes([256])), "Bytes element > 255 throws"
+assert "out of range (0..255)" in emsg(Function(): return Bytes([-1])), "Bytes element < 0 throws"
+assert "must be Integers" in emsg(Function(): return Bytes([1.5])), "Bytes non-Integer element throws"
+assert "negative count" in emsg(Function(): return Bytes(-1)), "Bytes(negative) throws"
+assert "unknown encoding" in emsg(Function(): return Bytes("x", "utf-16")), "Bytes unknown encoding throws"
+assert "can't encode" in emsg(Function(): return Bytes("é", "ascii")), "Bytes non-ascii to ascii throws"
+assert "non-hex digit" in emsg(Function(): return fromhex("zz")), "fromhex non-hex throws"
+assert "odd-length" in emsg(Function(): return fromhex("abc")), "fromhex odd length throws"
+
+# ============================================================================
+# len(x)
+# ============================================================================
+assert len("héllo") == 5, "len counts code points"
+assert len("a😀b") == 3, "len of astral code point is 1"
+assert len("") == 0 and len([]) == 0 and len({}) == 0, "len of empties"
+assert len([1, 2, 3]) == 3, "len(List)"
+assert len(range(10)) == 10, "len(range) O(1)"
+assert len(Bytes(3)) == 3, "len(Bytes)"
+assert "no length" in emsg(Function(): return len(5)), "len(Integer) throws no-length"
+assert threw(Function(): return len(None)), "len(None) throws"
+
+# ============================================================================
+# range(...)
+# ============================================================================
+assert range(3) == [0, 1, 2], "range(stop) equals list"
+assert List(range(2, 8, 2)) == [2, 4, 6], "range(start, stop, step)"
+assert List(range(5, 0, -1)) == [5, 4, 3, 2, 1], "range negative step"
+assert List(range(5, 0)) == [], "range empty when start>=stop"
+assert List(range(0)) == [], "range(0) empty"
+assert 2 in range(0, 10, 2) and not (3 in range(0, 10, 2)), "range membership O(1)"
+assert range(0, 10, 3)[3] == 9, "range indexing"
+assert len(range(0, 10, 3)) == 4, "range len with step"
+assert List(range(end = 3)) == [0, 1, 2], "range keyword end alias for stop"
+assert "step cannot be zero" in emsg(Function(): return range(0, 5, 0)), "range step 0 throws"
+assert "range expects Integers" in emsg(Function(): return range(1.5)), "range float arg throws"
+assert "missing required argument 'stop'" in emsg(Function(): return range(start = 1)), "range without stop throws"
+assert "unexpected keyword argument 'bad'" in emsg(Function(): return range(bad = 1)), "range bad kwarg throws"
+assert "range too large" in emsg(Function(): return List(range(40000000))), "materializing huge range throws"
+
+# ============================================================================
+# enumerate / zip / map / filter / iter (all lazy)
+# ============================================================================
+assert List(enumerate(["a", "b"])) == [[0, "a"], [1, "b"]], "enumerate default start 0"
+assert List(enumerate(["a", "b"], start = 1)) == [[1, "a"], [2, "b"]], "enumerate start kwarg"
+assert List(zip([1, 2], [3, 4, 5])) == [[1, 3], [2, 4]], "zip ends at shortest"
+assert List(zip([1, 2])) == [[1], [2]], "zip single iterable"
+assert List(zip()) == [], "zip of nothing is empty"
+assert List(map(Function(x): return x * 2, [1, 2, 3])) == [2, 4, 6], "map"
+assert List(filter(Function(x): return x > 1, [1, 2, 3])) == [2, 3], "filter"
+assert List(iter([9, 8])) == [9, 8], "iter over list"
+# Lazy: a non-iterable/non-callable throws when CONSUMED, not when created.
+assert not threw(Function(): return map(5, 5)), "map does not validate at creation"
+assert "is not callable" in emsg(Function(): return List(map(5, [1, 2]))), "map non-callable throws on consume"
+assert "is not callable" in emsg(Function(): return List(filter(5, [1, 2]))), "filter non-callable throws on consume"
+assert "is not iterable" in emsg(Function(): return List(map(String, 5))), "map non-iterable throws on consume"
+assert "is not iterable" in emsg(Function(): return List(iter(5))), "iter non-iterable throws on consume"
+assert "start must be an Integer" in emsg(Function(): return enumerate([1], start = 1.5)), "enumerate float start throws"
+# any/all stream and short-circuit over map/filter.
+assert any(map(Function(x): return x > 2, [1, 2, 3])) == True, "any streams map"
+assert all(filter(Function(x): return x > 0, [1, 2, 3])) == True, "all streams filter"
+
+# ============================================================================
+# reversed / sorted
+# ============================================================================
+assert reversed([1, 2, 3]) == [3, 2, 1], "reversed list"
+assert reversed("abc") == ["c", "b", "a"], "reversed string -> list of chars"
+assert reversed(range(3)) == [2, 1, 0], "reversed range"
+assert reversed([]) == [], "reversed empty"
+assert sorted([3, 1, 2]) == [1, 2, 3], "sorted ascending"
+assert sorted([3, 1, 2], reverse = True) == [3, 2, 1], "sorted reverse"
+assert sorted(["bb", "a", "ccc"], key = len) == ["a", "bb", "ccc"], "sorted key=len"
+assert sorted(["bb", "a", "ccc"], key = len, reverse = True) == ["ccc", "bb", "a"], "sorted key+reverse"
+assert sorted([]) == [], "sorted empty"
+# Stability: equal keys keep input order.
+assert sorted([[1, "a"], [1, "b"], [0, "c"]], key = Function(p): return p[0]) == [[0, "c"], [1, "a"], [1, "b"]], "sorted stable"
+assert "cannot order" in emsg(Function(): return sorted([1, "a"])), "sorted mixed types throws"
+assert "is not iterable" in emsg(Function(): return sorted(5)), "sorted non-iterable throws"
+assert "is not iterable" in emsg(Function(): return reversed(5)), "reversed non-iterable throws"
+
+# ============================================================================
+# sum
+# ============================================================================
+assert sum([1, 2, 3]) == 6, "sum integers -> Integer"
+assert sum([1.5, 2]) == 3.5, "sum mixed -> Float"
+assert sum([]) == 0, "sum([]) is 0"
+assert sum([], 10) == 10, "sum([], start) is start"
+assert sum([1, 2], start = 5) == 8, "sum start kwarg"
+assert type(sum([1, 2, 3])) == "Integer", "sum of ints stays Integer"
+assert type(sum([1, 2], 0.0)) == "Float", "sum with float start is Float"
+assert sum([9223372036854775807, 1]) == -9223372036854775808, "sum int64 wraps two's-complement"
+# Generic fold via a value type's own +.
+class Money:
+    var _init_ = Function(self, a): self.amt = a
+    var _add_ = Function(self, o): return Money(self.amt + o.amt)
+assert sum([Money(1), Money(2)], Money(100)).amt == 103, "sum folds a value type via its own +"
+assert "sum expects numbers" in emsg(Function(): return sum(["a", "b"])), "sum of strings throws (no concat)"
+assert "sum start must be a number" in emsg(Function(): return sum([1], "x")), "sum non-number start throws"
+assert "sum start must be a number" in emsg(Function(): return sum([[1]], [])), "sum List start throws (no concat)"
+assert "is not iterable" in emsg(Function(): return sum(5)), "sum non-iterable throws"
+
+# ============================================================================
+# min / max
+# ============================================================================
+assert min([3, 1, 2]) == 1 and max([3, 1, 2]) == 3, "min/max of iterable"
+assert min(3, 1, 2) == 1 and max(3, 1, 2) == 3, "min/max of positional args"
+assert min("banana") == "a" and max("banana") == "n", "min/max over string chars"
+assert min([], default = 9) == 9, "min default on empty"
+assert max([], default = -1) == -1, "max default on empty"
+assert max(["ab", "c", "def"], key = len) == "def", "max key=len"
+assert min(["ab", "c", "def"], key = len) == "c", "min key=len"
+assert min([5]) == 5, "min single-element iterable"
+assert "empty sequence" in emsg(Function(): return min([])), "min empty throws"
+assert "empty sequence" in emsg(Function(): return max([])), "max empty throws"
+assert "is not iterable" in emsg(Function(): return min(5)), "min single non-iterable throws"
+assert "unexpected keyword argument 'bad'" in emsg(Function(): return min([1], bad = 1)), "min bad kwarg throws"
+
+# ============================================================================
+# all / any
+# ============================================================================
+assert all([]) == True, "all([]) vacuously True"
+assert all([1, 1, True]) == True, "all truthy"
+assert all([1, 0]) == False, "all with falsy"
+assert any([]) == False, "any([]) False"
+assert any([0, 1]) == True, "any with truthy"
+assert any([0, 0, False]) == False, "any all falsy"
+assert "is not iterable" in emsg(Function(): return all(5)), "all non-iterable throws"
+assert "is not iterable" in emsg(Function(): return any(5)), "any non-iterable throws"
+
+# ============================================================================
+# abs
+# ============================================================================
+assert abs(-5) == 5 and abs(5) == 5, "abs Integer"
+assert abs(-2.5) == 2.5, "abs Float"
+assert abs(0) == 0 and abs(0.0) == 0.0, "abs zero"
+assert abs(-9223372036854775808) == -9223372036854775808, "abs(INT64_MIN) wraps to itself"
+assert "abs expects a number" in emsg(Function(): return abs("x")), "abs non-number throws"
+assert threw(Function(): return abs([1])), "abs List throws"
+
+# ============================================================================
+# round
+# ============================================================================
+assert round(0.5) == 1 and round(-1.5) == -2, "round half away from zero"
+assert round(2.5) == 3, "round 2.5 -> 3 (not banker's)"
+assert round(3.14159, 2) == 3.14, "round to 2 decimals"
+assert round(2.675, 2) == 2.67, "round 2.675 uses extended precision"
+assert round(1234.5678, ndigits = -2) == 1200.0, "round negative ndigits"
+assert type(round(3.14159, 2)) == "Float", "round with ndigits -> Float"
+assert type(round(3.7)) == "Integer", "round without ndigits -> Integer"
+assert round(5) == 5, "round Integer passthrough"
+# NaN/inf: throw in ->Integer form, pass through with ndigits.
+assert round(nan, 2) != round(nan, 2), "round(nan, 2) is nan"
+assert round(inf, 2) == inf, "round(inf, 2) is inf"
+assert "cannot round NaN" in emsg(Function(): return round(nan)), "round(nan) throws"
+assert "cannot round infinity" in emsg(Function(): return round(inf)), "round(inf) throws"
+assert "out of Integer range" in emsg(Function(): return round(1e300)), "round huge -> out of range"
+assert "ndigits must be an Integer" in emsg(Function(): return round(1.5, 1.5)), "round float ndigits throws"
+assert "round expects a number" in emsg(Function(): return round("x")), "round non-number throws"
+
+# ============================================================================
+# divmod
+# ============================================================================
+assert divmod(7, 3) == [2, 1], "divmod positive"
+assert divmod(-7, 3) == [-3, 2], "divmod floor semantics (negative dividend)"
+assert divmod(7, -3) == [-3, -2], "divmod negative divisor"
+assert divmod(7.5, 2) == [3.0, 1.5], "divmod floats"
+assert threw(Function(): return divmod(1, 0)), "divmod by zero throws"
+
+# ============================================================================
+# pow
+# ============================================================================
+assert pow(2, 10) == 1024, "pow two-arg"
+assert pow(2, 10, 1000) == 24, "pow three-arg modular"
+assert pow(2, 10, mod = 1000) == 24, "pow mod kwarg"
+assert pow(2, -1) == 0.5, "pow negative exp -> Float"
+assert pow(2.0, 0.5) > 1.41 and pow(2.0, 0.5) < 1.42, "pow float exponent"
+assert pow(0, 0) == 1, "pow(0,0) == 1"
+assert pow(2, 3, 5) == 3, "pow modular correctness"
+assert "must be non-negative with a modulus" in emsg(Function(): return pow(2, -1, 10)), "pow negative exp with mod throws"
+assert "modulus must be non-zero" in emsg(Function(): return pow(2, 3, 0)), "pow mod 0 throws"
+assert "modulus must be positive" in emsg(Function(): return pow(2, 3, -5)), "pow negative mod throws"
+assert "must be Integer with 3 args" in emsg(Function(): return pow(2.0, 3, 5)), "pow float base with mod throws"
+
+# ============================================================================
+# bin / oct / hex (sign-aware)
+# ============================================================================
+assert bin(5) == "0b101" and bin(-5) == "-0b101", "bin sign-aware"
+assert oct(8) == "0o10" and oct(0) == "0o0", "oct"
+assert hex(255) == "0xff" and hex(-255) == "-0xff", "hex sign-aware"
+assert hex(0) == "0x0", "hex zero"
+assert "hex expects an Integer" in emsg(Function(): return hex(1.0)), "hex float throws"
+assert "bin expects an Integer" in emsg(Function(): return bin("x")), "bin non-int throws"
+assert "oct expects an Integer" in emsg(Function(): return oct(1.5)), "oct float throws"
+
+# ============================================================================
+# bitand / bitor / bitxor / bitnot / shl / shr
+# ============================================================================
+assert bitand(12, 10) == 8, "bitand"
+assert bitor(12, 10) == 14, "bitor"
+assert bitxor(12, 10) == 6, "bitxor"
+assert bitnot(0) == -1 and bitnot(5) == -6, "bitnot (~a == -a-1)"
+assert shl(1, 4) == 16, "shl"
+assert shl(1, 64) == 0, "shl >= 64 clears all bits"
+assert shr(-8, 1) == -4, "shr arithmetic (sign-preserving)"
+assert shr(1, 64) == 0 and shr(-1, 64) == -1, "shr >= 64 fills with sign"
+assert "negative shift count" in emsg(Function(): return shl(1, -1)), "shl negative count throws"
+assert "negative shift count" in emsg(Function(): return shr(1, -1)), "shr negative count throws"
+assert "must be an Integer" in emsg(Function(): return bitand(1.0, 2)), "bitand float throws"
+assert "must be an Integer" in emsg(Function(): return bitor(1, "x")), "bitor non-int throws"
+
+# ============================================================================
+# ord / chr (round-trip, unicode, boundaries)
+# ============================================================================
+assert ord("A") == 65 and chr(65) == "A", "ord/chr ASCII"
+assert ord("€") == 8364 and chr(8364) == "€", "ord/chr BMP"
+assert ord(chr(128512)) == 128512, "ord/chr astral round-trip"
+assert chr(0) == "\x00" or len(chr(0)) == 1, "chr(0) is one char"
+assert "single character" in emsg(Function(): return ord("ab")), "ord multi-char throws"
+assert "single character" in emsg(Function(): return ord("")), "ord empty throws"
+assert "ord expects a String" in emsg(Function(): return ord(65)), "ord non-string throws"
+assert "out of Unicode range" in emsg(Function(): return chr(0x110000)), "chr above max throws"
+assert "out of Unicode range" in emsg(Function(): return chr(-1)), "chr negative throws"
+assert "surrogate" in emsg(Function(): return chr(0xD800)), "chr surrogate throws"
+assert "chr expects an Integer" in emsg(Function(): return chr("A")), "chr non-int throws"
+
+# ============================================================================
+# format
+# ============================================================================
+assert format(42, "05d") == "00042", "format zero-pad"
+assert format(255, "x") == "ff" and format(255, "X") == "FF", "format hex"
+assert format(255, "#x") == "0xff", "format hex with # prefix"
+assert format(8, "#o") == "0o10" and format(5, "#b") == "0b101", "format oct/bin alt form"
+assert format(3.14159, ".2f") == "3.14", "format fixed"
+assert format(1234567, ",") == "1,234,567", "format thousands"
+assert format(0.25, ".1%") == "25.0%", "format percent"
+assert format("hi", "^6") == "  hi  ", "format center"
+assert format("hi", "<6") == "hi    " and format("hi", ">6") == "    hi", "format left/right"
+assert format("x", "*^7") == "***x***", "format custom fill"
+assert format(-42, "+06d") == "-00042", "format sign + zero-pad"
+assert format(2.0) == "2.0", "format no spec == String()"
+assert format(42) == "42", "format no spec integer"
+# Hardening: numeric-only flags on a String presentation throw.
+assert "sign not allowed" in emsg(Function(): return format("x", "+5")), "format string +sign throws"
+assert "alternate form" in emsg(Function(): return format("x", "#6")), "format string # throws"
+assert "'=' alignment" in emsg(Function(): return format("x", "=6")), "format string = align throws"
+assert "',' not allowed" in emsg(Function(): return format("x", ",")), "format string , throws"
+assert "spec must be a String" in emsg(Function(): return format(5, 5)), "format non-string spec throws"
+
+# ============================================================================
+# List / Set / Dict constructors
+# ============================================================================
+assert List() == [], "List() empty"
+assert List([1, 2, 3]) == [1, 2, 3], "List from iterable"
+assert List("abc") == ["a", "b", "c"], "List from string"
+assert List(range(3)) == [0, 1, 2], "List from range"
+assert List(iterable = [7, 8]) == [7, 8], "List iterable kwarg"
+assert len(Set()) == 0, "Set() empty"
+assert len(Set([1, 1, 2, 2, 3])) == 3, "Set dedups"
+assert len(Dict()) == 0, "Dict() empty"
+assert Dict([[1, 2], [3, 4]]) == {1: 2, 3: 4}, "Dict from pairs"
+assert "is not iterable" in emsg(Function(): return List(5)), "List non-iterable throws"
+assert "is not iterable" in emsg(Function(): return Set(5)), "Set non-iterable throws"
+assert "is not iterable" in emsg(Function(): return Dict(5)), "Dict non-iterable throws"
+assert "[key, value] pairs" in emsg(Function(): return Dict([[1, 2, 3]])), "Dict bad pair length throws"
+
+# ============================================================================
+# isinstance
+# ============================================================================
+assert isinstance(1, Integer) == True, "isinstance builtin type constructor"
+assert isinstance("x", String) == True and isinstance(1, String) == False, "isinstance String"
+assert isinstance([1], List) == True, "isinstance List"
+assert isinstance(1, "Integer") == True, "isinstance type-name String form"
+# Bool is its own type, not a subtype of Integer.
+assert isinstance(True, Integer) == False, "Bool is not Integer"
+assert isinstance(1, Bool) == False, "Integer is not Bool"
+assert isinstance(True, Bool) == True, "True is Bool"
+# Pseudo-types.
+assert isinstance(1, "Number") == True and isinstance(1.0, "Number") == True, "isinstance Number pseudo-type"
+assert isinstance("x", "Number") == False, "String is not Number"
+assert isinstance(1, "Any") == True and isinstance(None, "Any") == True, "isinstance Any"
+assert isinstance(None, "None") == True, "isinstance None pseudo-type"
+assert isinstance(io, "Module") == True, "isinstance Module"
+assert isinstance(Function(): return 1, "Function") == True, "isinstance Function"
+# User class inheritance-aware; class value fails isinstance(v, type(v)).
+assert isinstance(Foo(), Foo) == True, "instance isinstance its class"
+assert isinstance(Foo, Foo) == False, "class value is not an instance of itself"
+assert "must be a class, a built-in type, or a type-name String" in emsg(Function(): return isinstance(1, 5)), "isinstance bad type arg throws"
+
+# ============================================================================
+# hasattr
+# ============================================================================
+assert hasattr("x", "upper") == True, "hasattr string method"
+assert hasattr([1], "append") == True, "hasattr list method"
+assert hasattr(5, "compare") == True, "hasattr integer method"
+assert hasattr(io, "print") == True, "hasattr module member"
+assert hasattr(1, "nope") == False, "hasattr missing member"
+assert hasattr(Foo(), "x") == True, "hasattr instance attribute"
+assert hasattr(Foo, "x") == False, "hasattr on a class value is always False"
+assert hasattr(Function(): return 1, "anything") == False, "hasattr on plain function is False"
+assert "must be a String" in emsg(Function(): return hasattr(1, 5)), "hasattr non-string name throws"
+
+# ============================================================================
+# id
+# ============================================================================
+var aliasA = [1, 2, 3]
+var aliasB = aliasA
+var distinct = [1, 2, 3]
+assert id(aliasA) == id(aliasB), "id equal for shared reference"
+assert id(aliasA) != id(distinct), "id differs for equal-but-distinct"
+assert type(id(1)) == "Integer", "id returns Integer"
+
+# ============================================================================
+# inspect / import
+# ============================================================================
+assert "_init_" in inspect(Foo) and "Foo" in inspect(Foo), "inspect lists class members"
+assert type(inspect(io)) == "String", "inspect returns a String"
+assert type(import("io")) == "Module", "import returns a Module"
+assert type(import(name = "math")) == "Module", "import name kwarg"
+assert import("io") == import("io"), "import is cached per VM (same module object)"
+assert "no module named" in emsg(Function(): return import("no_such_module_xyz")), "import missing throws"
+assert "String module name" in emsg(Function(): return import(5)), "import non-string throws"
+
+# ============================================================================
+# Cross-cutting: kwargs / arity errors (docs: clear catchable errors)
+# ============================================================================
+assert Integer(x = "42") == 42, "kwarg by parameter name"
+assert "unexpected keyword argument 'y'" in emsg(Function(): return Integer(y = 5)), "unknown kwarg throws"
+assert "multiple values for argument 'x'" in emsg(Function(): return Integer(5, x = 6)), "duplicate arg throws"
+assert "at most 1 positional" in emsg(Function(): return abs(1, 2)), "too many positionals throws"
+assert "missing required argument 'b'" in emsg(Function(): return divmod(1)), "missing required arg throws"
+
+io.print("cov builtins: all passed")
