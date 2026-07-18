@@ -1,0 +1,411 @@
+# cov_net_parallel.ki — coverage for the `net` and `parallel` stdlib modules.
+#
+# DETERMINISTIC + REPRODUCIBLE + NO EXTERNAL RESOURCES. Every assertion here runs
+# entirely in-process:
+#   * net: only the pure URL/address helpers, socket construction/attributes, a
+#     LOCAL `socketpair` (AF_UNIX / loopback, no external network), numeric-literal
+#     name resolution (no DNS), and the ERROR paths (bad URL, closed socket, invalid
+#     family/type/port). Live HTTP and remote sockets need the network and are OUT OF
+#     SCOPE for a golden test — see findings_net_parallel.md.
+#   * parallel: worker VMs run in-process; every blocking call carries a SHORT timeout
+#     and every assertion is on an aggregate/sorted result (never on timing or arrival
+#     order), so the output is byte-identical across runs.
+#
+# Spawnable worker functions live at MODULE level (a worker re-evaluates this file with
+# argmain False, defining the functions while skipping the `if argmain:` driver).
+
+var io = import("io")
+var net = import("net")
+var par = import("parallel")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+# ---- module-level workers (spawnable) ----------------------------------------
+var w_square = Function(x):
+    return x * x
+var w_sum = Function(lo, hi):
+    var s = 0
+    var i = lo
+    while i < hi:
+        s = s + i
+        i = i + 1
+    return s
+var w_boom = Function(x):
+    return x / 0
+var w_retsocket = Function():
+    return net.Socket()
+var w_producer = Function(out, n):
+    var i = 0
+    while i < n:
+        out.put(i * i)
+        i = i + 1
+    out.close()
+var w_makequeue = Function():
+    var q = par.Queue()
+    q.put(101)
+    q.put(202)
+    return q
+var w_barrier = Function(bar, out):
+    try:
+        discard bar.wait(5.0)
+        out.put("ok")
+    catch as e:
+        out.put("broken")
+var w_waitevent = Function(ev, out):
+    out.put(ev.wait(5.0))
+
+# emsg helpers that need a local binding (no `;` statement separator in Kirito).
+var getnowaitEmpty = Function():
+    var q = par.Queue()
+    return q.getnowait()
+
+if argmain:
+    # ==========================================================================
+    # net — URL helpers (pure, no network)
+    # ==========================================================================
+
+    # quote: percent-encode all but RFC-3986 unreserved; never emits a bare '+'.
+    assert net.quote("hello") == "hello"
+    assert net.quote("hello world") == "hello%20world"
+    assert net.quote("a+b") == "a%2Bb"
+    assert net.quote("a=b&c") == "a%3Db%26c"
+    assert net.quote("foo/bar") == "foo%2Fbar"
+    assert net.quote("~-_.") == "~-_."
+    assert "+" not in net.quote("a b+c")
+
+    # unquote: %XX decode + '+' -> space (query-string style); malformed escapes pass through.
+    assert net.unquote("hello%20world") == "hello world"
+    assert net.unquote("a+b") == "a b"
+    assert net.unquote("%41%42") == "AB"
+    assert net.unquote("%zz") == "%zz"
+    assert net.unquote("abc%") == "abc%"
+    assert net.unquote(net.quote("hello world foo/bar?baz=1")) == "hello world foo/bar?baz=1"
+
+    # urlencode: Dict -> query string (keys+values encoded).
+    var enc = net.urlencode({"x": "a b", "y": "c&d"})
+    assert type(enc) == "String"
+    assert "x=a%20b" in enc
+    assert "y=c%26d" in enc
+
+    # parseqs: query string -> Dict (decoded); dup keys last-wins; empty key dropped.
+    var qs = net.parseqs("a=1&b=hello%20world&c=3")
+    assert type(qs) == "Dict"
+    assert qs["a"] == "1"
+    assert qs["b"] == "hello world"
+    assert qs["c"] == "3"
+    assert net.parseqs("k=1&k=2&k=3")["k"] == "3"
+    assert len(net.parseqs("=v&a=b")) == 1
+    assert net.parseqs("x=hello+world")["x"] == "hello world"
+    assert len(net.parseqs("")) == 0
+    # urlencode/parseqs round-trip.
+    var rt = net.parseqs(net.urlencode({"p": "a b", "q": "c&d=e"}))
+    assert rt["p"] == "a b"
+    assert rt["q"] == "c&d=e"
+
+    # urlsplit: split into scheme/host/port/path/query/fragment (all String).
+    var u1 = net.urlsplit("https://example.com:8080/path?q=1#hash")
+    assert u1["scheme"] == "https"
+    assert u1["host"] == "example.com"
+    assert u1["port"] == "8080"
+    assert u1["path"] == "/path"
+    assert u1["query"] == "q=1"
+    assert u1["fragment"] == "hash"
+    # no port -> empty string.
+    var u2 = net.urlsplit("http://localhost/simple")
+    assert u2["port"] == ""
+    assert u2["host"] == "localhost"
+    assert u2["path"] == "/simple"
+    # minimal (host only).
+    var u3 = net.urlsplit("http://host.com")
+    assert u3["host"] == "host.com"
+    assert u3["path"] == ""
+    # bracketed IPv6 literal: brackets kept in host, port after "]:".
+    var u4 = net.urlsplit("http://[::1]:8080/p")
+    assert u4["host"] == "[::1]"
+    assert u4["port"] == "8080"
+    # userinfo (user:pass@) is excluded from host/port.
+    var u5 = net.urlsplit("http://user:pass@host.com:99/x")
+    assert u5["host"] == "host.com"
+    assert u5["port"] == "99"
+
+    # ==========================================================================
+    # net — sockets (construction / attributes / LOCAL socketpair; no network)
+    # ==========================================================================
+
+    # tlsenabled is a Bool (debug/release presets build with TLS).
+    assert type(net.tlsenabled) == "Bool"
+
+    # constructor family/type reporting.
+    var td = net.udpsocket()
+    assert td.family == "inet"
+    assert td.type == "dgram"
+    td.close()
+    var t6 = net.tcpsocket("inet6")
+    assert t6.family == "inet6"
+    assert t6.type == "stream"
+    t6.close()
+    var sg = net.socket("inet", "stream")
+    assert sg.family == "inet"
+    assert sg.type == "stream"
+    sg.close()
+    # historical default Socket() is TCP/IPv4.
+    var sd = net.Socket()
+    assert sd.family == "inet"
+    assert sd.type == "stream"
+    sd.close()
+
+    # socketpair: a connected, share-nothing local pair (no external network).
+    var pair = net.socketpair()
+    assert len(pair) == 2
+    var pa = pair[0]
+    var pb = pair[1]
+    assert pa.send("ping") == 4
+    assert pb.recv(1024).decode("utf-8") == "ping"
+    # the pair is bidirectional.
+    discard pb.send("pong")
+    assert pa.recv(1024).decode("utf-8") == "pong"
+    pa.close()
+    pb.close()
+
+    # Socket usable as a `with` context manager (auto-closed on exit).
+    with net.Socket() as ws:
+        assert ws.family == "inet"
+
+    # string-keyed socket options (local, no I/O).
+    var so = net.Socket()
+    so.setsockopt("reuseaddr", 1)
+    assert so.getsockopt("reuseaddr") == 1
+    so.setnodelay(True)
+    so.close()
+
+    # fileno on a closed socket is -1 (non-destructive, must not be adopted).
+    var fc = net.Socket()
+    fc.close()
+    assert fc.fileno() == -1
+
+    # ==========================================================================
+    # net — name resolution (numeric literals only; no DNS / no network)
+    # ==========================================================================
+
+    assert type(net.gethostname()) == "String"
+    # resolving a numeric IP literal needs no DNS lookup.
+    var ip = net.gethostbyname("127.0.0.1")
+    assert type(ip) == "String"
+    assert "127" in ip
+    var ai = net.getaddrinfo("127.0.0.1", 80)
+    assert type(ai) == "List"
+    assert len(ai) >= 1
+
+    # ==========================================================================
+    # net — hardening: should-error cases DO error, with the right diagnostic
+    # ==========================================================================
+
+    # invalid family/type.
+    assert "unknown address family" in emsg(Function(): return net.socket("bogus", "stream"))
+    assert "unknown socket type" in emsg(Function(): return net.socket("inet", "bogus"))
+    # port out of range on connect.
+    assert "port out of range" in emsg(Function(): return net.Socket().connect("127.0.0.1", 99999))
+    # HTTP verbs reject a non-http(s) URL.
+    assert "http://" in emsg(Function(): return net.get("ftp://x"))
+    assert "http://" in emsg(Function(): return net.post("ftp://x"))
+    assert "http://" in emsg(Function(): return net.head("nothttp"))
+    assert "http://" in emsg(Function(): return net.request("GET", "gopher://x"))
+    # unknown socket option lists the valid names.
+    assert "unknown option" in emsg(Function(): return net.Socket().getsockopt("bogus"))
+    # a call on a closed socket says so rather than a raw OS error.
+    var cs = net.Socket()
+    cs.close()
+    assert "socket is closed" in emsg(Function(): return cs.send("x"))
+    # negative recv size rejected.
+    assert "non-negative" in emsg(Function(): return net.Socket().recv(-1))
+    # getpeername on an unconnected socket throws (OS-specific text, so only check it throws).
+    assert threw(Function(): return net.Socket().getpeername())
+    # a connect to a closed local port throws cleanly (loopback, no external network).
+    assert threw(Function(): return net.Socket().connect("127.0.0.1", 1))
+
+    # ==========================================================================
+    # parallel — cpucount + spawn/join over pure worker functions
+    # ==========================================================================
+
+    assert par.cpucount() >= 1
+
+    # a pure function runs in a fresh worker and returns the correct result.
+    assert par.spawn(w_square, 7).join() == 49
+
+    # map a pure function across workers == the sequential result, ORDER PRESERVED.
+    var data = [1, 2, 3, 4, 5]
+    var seq = []
+    for x in data:
+        seq.append(w_sum(0, x))
+    var tasks = []
+    for x in data:
+        tasks.append(par.spawn(w_sum, 0, x))
+    var pmap = []
+    for t in tasks:
+        pmap.append(t.join())
+    assert pmap == seq
+    assert pmap == [0, 1, 3, 6, 10]
+
+    # join is idempotent: a second call returns the cached result.
+    var ti = par.spawn(w_square, 9)
+    assert ti.join() == 81
+    assert ti.join() == 81
+    assert ti.done() == True
+
+    # a worker that throws surfaces a catchable error at join (no crash/hang).
+    var tb = par.spawn(w_boom, 3)
+    assert threw(Function(): return tb.join())
+    assert "worker thrown" in emsg(Function(): return tb.join())
+    assert "division by zero" in emsg(Function(): return tb.join())
+
+    # data crosses only as a SERIALIZED value: a non-serializable ARGUMENT (a live
+    # socket) is caught synchronously at spawn.
+    var liveSock = net.Socket()
+    assert "cannot dump" in emsg(Function(): return par.spawn(w_square, liveSock))
+    liveSock.close()
+    # a non-serializable RETURN value surfaces later, at join.
+    assert "cannot dump" in emsg(Function(): return par.spawn(w_retsocket).join())
+
+    # spawn input validation.
+    assert "missing function argument" in emsg(Function(): return par.spawn())
+    assert "must be a Kirito function" in emsg(Function(): return par.spawn(42))
+
+    # ==========================================================================
+    # parallel — Queue round-trips (single-thread + cross-worker)
+    # ==========================================================================
+
+    var q = par.Queue()
+    assert type(q) == "Queue"
+    assert q.empty()
+    assert not q.full()
+    assert q.qsize() == 0
+    q.put(10)
+    q.put(20)
+    q.put(30)
+    assert q.qsize() == 3
+    assert not q.empty()
+    # FIFO order.
+    assert q.get() == 10
+    assert q.get() == 20
+    q.putnowait(40)
+    assert q.getnowait() == 30
+    assert q.getnowait() == 40
+    assert q.empty()
+    # getnowait on empty throws.
+    assert "empty queue" in emsg(getnowaitEmpty)
+
+    # bounded queue back-pressure surface (non-blocking).
+    var qb = par.Queue(2)
+    qb.put(1)
+    qb.put(2)
+    assert qb.full()
+    assert "full queue" in emsg(Function(): return qb.putnowait(3))
+    assert par.Queue(0).qsize() == 0
+
+    # close(): subsequent put throws; the consumer-loop idiom stops on drain.
+    var qc = par.Queue()
+    qc.close()
+    assert threw(Function(): return qc.put(1))
+
+    # a worker produces into a Queue; the caller drains it (aggregate, order-independent).
+    var qp = par.Queue()
+    discard par.spawn(w_producer, qp, 4)
+    var drained = []
+    var running = True
+    while running:
+        try:
+            drained.append(qp.get(True, 5.0))
+        catch as e:
+            running = False
+    drained.sort()
+    assert drained == [0, 1, 4, 9]
+
+    # a worker-CREATED Queue crosses back to the caller by identity.
+    var qw = par.spawn(w_makequeue).join()
+    assert qw.get() == 101
+    assert qw.get() == 202
+
+    # ==========================================================================
+    # parallel — Lock / Event / Semaphore / Barrier
+    # ==========================================================================
+
+    # Lock: acquire/release, non-reentrant, context manager, unheld-release throws.
+    var lk = par.Lock()
+    assert not lk.locked()
+    assert lk.acquire(False) == True
+    assert lk.locked()
+    lk.release()
+    assert not lk.locked()
+    var lknr = par.Lock()
+    lknr.acquire(False)
+    assert threw(Function(): return lknr.acquire(False))
+    lknr.release()
+    with lk as _:
+        assert lk.locked()
+    assert not lk.locked()
+    assert "unlocked lock" in emsg(Function(): return par.Lock().release())
+
+    # Event: set/clear/isset, wait(0) semantics.
+    var ev = par.Event()
+    assert not ev.isset()
+    ev.set()
+    assert ev.isset()
+    assert ev.wait(0) == True
+    ev.clear()
+    assert not ev.isset()
+    assert ev.wait(0) == False
+    # a worker observes a cross-VM Event set by the caller (by identity).
+    var eo = par.Queue()
+    discard par.spawn(w_waitevent, ev, eo)
+    ev.set()
+    assert eo.get(True, 5.0) == True
+
+    # Semaphore: bounded permits, context manager, over-acquire fails, negative throws.
+    var sem = par.Semaphore(3)
+    assert sem.acquire(False) == True
+    assert sem.acquire(False) == True
+    assert sem.acquire(False) == True
+    assert sem.acquire(False, 0) == False
+    sem.release()
+    assert sem.acquire(False) == True
+    var sem1 = par.Semaphore(1)
+    with sem1 as _:
+        assert sem1.acquire(False) == False
+    assert sem1.acquire(False) == True
+
+    # Barrier: parties/nwaiting, cross-worker rendezvous, abort makes wait throw.
+    var bar = par.Barrier(3)
+    assert bar.parties() == 3
+    assert bar.nwaiting() == 0
+    var bout = par.Queue()
+    discard par.spawn(w_barrier, bar, bout)
+    discard par.spawn(w_barrier, bar, bout)
+    discard bar.wait(5.0)
+    var brs = [bout.get(True, 5.0), bout.get(True, 5.0)]
+    brs.sort()
+    assert brs == ["ok", "ok"]
+    var bab = par.Barrier(2)
+    bab.abort()
+    assert threw(Function(): return bab.wait(1.0))
+
+    # constructor validation.
+    assert "maxsize must be >= 0" in emsg(Function(): return par.Queue(-1))
+    assert "value must be >= 0" in emsg(Function(): return par.Semaphore(-1))
+    assert "parties must be >= 1" in emsg(Function(): return par.Barrier(0))
+
+    # a cross-VM primitive is unhashable (no value ==/hash).
+    assert threw(Function(): return {par.Lock(): 1})
+
+    io.print("cov net/parallel: all passed")

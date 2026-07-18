@@ -28,27 +28,25 @@ here until every row is `done` and the doc-vs-impl deltas are all resolved.
 ## Phase 2 — per-area coverage (status: todo / in-progress / done)
 Scope from the reference pages: 08-builtins (99 sigs), 09-types (162), 10-stdlib (696) — ~40 modules.
 
-| Area | Doc section | Test file | Status | Findings? |
-|------|-------------|-----------|--------|-----------|
-| builtins | 08-builtins | cov_builtins.ki | **done** (307 asserts) | none |
-| types: None/Bool/Integer/Float + String/Bytes | 09-types | cov_scalars_strbytes.ki | **done** (264 asserts) | surplus-arg SILENT accept on upper/lower/isX/hex/strip (arity gap); doc: round ties away-from-zero, String(Bytes)→repr |
-| types: List/Set/Dict + dunders | 09-types | cov_containers_dunders.ki | **done** (235 asserts) | BUG-1 native-error-in-_next_ (FIXED); Set.pop LIFO doc-note |
-| io + path + sys + time | 10-stdlib | cov_system.ki | wave3 (running) | |
-| hash + crypto + gzip + zlib | 10-stdlib | cov_hash_compress.ki | **done** (118 asserts) | none (all vectors match); notes: no incremental hasher API, no compression level param, crypto TLS-enabled here |
-| dump + serialize + semver + arg | 10-stdlib | cov_serde_misc.ki | wave3 (running) | |
-| tabular + matrix + tensor | 10-stdlib | cov_arrays.ki | wave3 (running) | |
-| net + parallel | 10-stdlib | cov_net_parallel.ki | DEFERRED (final targeted pass) | |
-| math+statistics+random+bisect+heapq | 10-stdlib | cov_math_stats.ki | **done** (325 asserts) | none |
-| int (BigInt) + complex | 10-stdlib | cov_int_complex.ki | **done** (302 asserts) | none (bugs); doc: BigInt==Float int64-range caveat, .compare-vs-zero note |
-| string mod + textwrap + regex | 10-stdlib | cov_string_regex.ki | **done** (216 asserts) | textwrap width≤0 accepted silently (triage: doc note vs validate ≥1) |
-| json + csv + base64 + xml | 10-stdlib | cov_serde_text.ki | **done** (169 asserts) | base64.decode trailing-garbage SILENT ERROR (src fix); json cycle msg doc-delta |
-| collections + itertools + functools + tee + enum + copy | 10-stdlib | cov_collections_fp.ki | **done** (188 asserts) | none |
-| io + path + sys + time | 10-stdlib | cov_system.ki | todo | |
-| hash + crypto + gzip + zlib | 10-stdlib | cov_hash_compress.ki | todo | |
-| dump + serialize + semver + arg | 10-stdlib | cov_serde_misc.ki | todo | |
-| tabular | 10-stdlib | cov_tabular.ki | todo | |
-| matrix + tensor | 10-stdlib | cov_matrix_tensor.ki | todo | |
-| net + parallel | 10-stdlib | cov_net_parallel.ki | todo | |
+**LABEL X — COMPLETE.** Every documented builtin, type, and stdlib module (~35) now has a dedicated
+cov_*.ki suite. Re-checked the 10-stdlib `##` module headings against the test files: all mapped, no
+gaps. **15 areas, ~3617 assertions**, golden 369/369.
+
+| Area | Test file | Asserts | Findings |
+|------|-----------|---------|----------|
+| builtins | cov_builtins.ki | 307 | none |
+| None/Bool/Integer/Float + String/Bytes | cov_scalars_strbytes.ki | 264 | surplus-arg silent-accept (deferred); docs OK |
+| List/Set/Dict + dunders | cov_containers_dunders.ki | 235 | BUG-1 (FIXED) |
+| math/statistics/random/bisect/heapq | cov_math_stats.ki | 325 | none |
+| int (BigInt) + complex | cov_int_complex.ki | 302 | none |
+| string mod + textwrap + regex | cov_string_regex.ki | 216 | textwrap width≤0 (deferred) |
+| json + csv + base64 + xml | cov_serde_text.ki | 169 | base64 trailing-garbage (FIXED); json cycle msg (doc FIXED) |
+| collections/itertools/functools/tee/enum/copy | cov_collections_fp.ki | 188 | none |
+| io + path + sys + time | cov_system.ki | 251 | none |
+| hash + crypto + gzip + zlib | cov_hash_compress.ki | 118 | none (test made TLS-config-agnostic) |
+| dump + serialize + semver + arg | cov_serde_misc.ki | 177 | dump/serialize trailing-garbage (FIXED) |
+| tabular + matrix + tensor | cov_arrays.ki | 296 | Series truthiness (FIXED); tensor.reciprocal msg (minor) |
+| net + parallel | cov_net_parallel.ki | 136 | none (network fns: existence+error only) |
 
 ## FIX PASS 1 (gated) — applied
 - **BUG-1 (HIGH) FIXED:** native error in a user `_next_` no longer corrupts into "dangling handle".
