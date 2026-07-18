@@ -1396,6 +1396,13 @@ class Series:
     var _len_ = Function(self) -> Integer:
         return len(self.values)
 
+    # A Series has no single truth value — using one directly in `if`/`while` (or `Bool(series)`) is
+    # almost always a mask-misused-as-a-scalar bug, so it is an error (matching the documented contract)
+    # rather than silently taking the branch. Test explicitly instead (e.g. `len(s) > 0`, a reduction,
+    # or a specific element).
+    var _bool_ = Function(self):
+        throw "the truth value of a Series is ambiguous — test it explicitly (len(s) > 0, a reduction, or a specific element), not the Series itself"
+
     var _iter_ = Function(self):
         return iter(self.values)
 

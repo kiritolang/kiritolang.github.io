@@ -165,6 +165,8 @@ public:
             }
         }
         uint32_t rootId = static_cast<uint32_t>(std::stoul(token()));
+        while (pos_ < s_.size() && s_[pos_] == ' ') ++pos_;   // trailing spaces are fine
+        if (pos_ != s_.size()) throw KiritoError("trailing data after serialized root (corrupt or concatenated blob)");
         return {std::move(nodes), rootId};
     }
 

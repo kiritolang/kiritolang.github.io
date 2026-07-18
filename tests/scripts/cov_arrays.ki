@@ -116,11 +116,15 @@ assert tb.Series([True, False]).all() == False
 assert tb.Series([False, True]).any() == True
 assert tb.Series([False, False]).any() == False
 
-# DELTA / SILENT-ERROR: docs say a Series used directly in if/while is an error. It is NOT: a Series
-# is always truthy (even all-False and empty). Pin the real behavior.
-assert not threw(Function(): return Bool(tb.Series([False, False])))
-assert Bool(tb.Series([False, False])) == True
-assert Bool(tb.Series([])) == True
+# A Series has no single truth value: using one in a boolean context (Bool/if/while) is an error
+# (matching the docs), not silently truthy — so a mask misused as a scalar bool is caught.
+assert "truth value of a Series is ambiguous" in emsg(Function(): return Bool(tb.Series([False, False]))), "Bool(Series) throws (ambiguous)"
+assert threw(Function(): return Bool(tb.Series([]))), "Bool(empty Series) throws too"
+var seriesIfFn = Function():
+    if tb.Series([1, 2]):
+        return "took-branch"
+    return "no"
+assert "ambiguous" in emsg(seriesIfFn), "a Series directly in `if` throws"
 
 # apply/map/astype/sortvalues/head/tail.
 assert a.apply(Function(x): return x * 2).tolist() == [2, 4, 6]

@@ -84,6 +84,7 @@ public:
         if (s_.compare(pos_, n, magic, n) != 0) throw KiritoError("bad dump header");
         pos_ += n;
     }
+    bool atEnd() const { return pos_ == s_.size(); }   // all input consumed?
 
 private:
     void need(std::size_t n) { if (pos_ + n > s_.size()) throw KiritoError("truncated dump data"); }
@@ -179,6 +180,7 @@ inline std::pair<std::vector<serde::Node>, uint32_t> decode(const std::string& d
         }
     }
     uint32_t rootId = r.u32();
+    if (!r.atEnd()) throw KiritoError("trailing data after dump root (corrupt or concatenated blob)");
     return {std::move(nodes), rootId};
 }
 
