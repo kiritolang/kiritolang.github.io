@@ -1988,7 +1988,12 @@ struct UserLazyIterator : LazyIterator {
             return invokeOp(vm, it, "_next_", {}, "'" + it.className + "' iterator has no _next_ method");
         } catch (KiritoThrow& t) {
             // Only _next_'s OWN raise (t.depth == boundary) ends iteration; a deeper leak propagates.
-            if (isStopIteration(vm, t.value) && t.depth == static_cast<int>(boundary)) return std::nullopt;
+            // The depth check MUST come first: a native KiritoError carries no live value (`value ==
+            // Handle{}`, depth -1), so evaluating isStopIteration(t.value) on it would deref a null
+            // handle and throw "dangling handle", CLOBBERING the real error. depth == boundary is only
+            // ever true for a Kirito-level `throw` (which does carry a live value), so short-circuiting
+            // on it keeps a native error (index-out-of-range, etc.) from _next_ intact with its message.
+            if (t.depth == static_cast<int>(boundary) && isStopIteration(vm, t.value)) return std::nullopt;
             throw;
         }
     }
@@ -2119,6 +2124,8 @@ inline bool typeMatches(KiritoVM& vm, Handle value, const std::string& typeName)
 // an instance of the StopIteration class (the normal form, `throw StopIteration()`) and, leniently, the
 // class value itself (`throw StopIteration`).
 inline bool isStopIteration(KiritoVM& vm, Handle h) {
+    if (h.generation == 0) return false;   // the reserved null Handle{} (e.g. a native KiritoError's
+                                           // value) is not a StopIteration — and must not be deref'd.
     const Object& o = vm.arena().deref(h);
     if (o.kind() == ValueKind::Class) return static_cast<const ClassValue&>(o).name == "StopIteration";
     return typeMatches(vm, h, "StopIteration");

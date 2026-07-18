@@ -223,11 +223,12 @@ assert "lone trailing character" in emsg(Function(): return base64.decode("A"))
 assert "truncated or corrupted" in emsg(Function(): return base64.decode("TW"))
 assert threw(Function(): return base64.decode("!"))
 
-# --- SILENT ERROR (documented, not asserted as correct): everything after the first '=' is
-#     dropped without validation, so trailing garbage past the padding is silently accepted.
-#     Recorded in findings; asserting the current behavior so a future fix trips this test. -----
-assert base64.decode("TWFu====garbage") == [77, 97, 110]
-assert base64.decode("TWE=X") == [77, 97]
+# --- trailing garbage after padding is REJECTED (was a silent error: everything after the first '='
+#     used to be dropped without validation). Now a real character following '=' throws. -----
+assert "data after padding" in emsg(Function(): return base64.decode("TWFu====garbage")), "trailing garbage after padding rejected"
+assert "data after padding" in emsg(Function(): return base64.decode("TWE=X")), "a real char after '=' rejected"
+assert base64.decode("TWE=") == [77, 97]              # valid padded input still decodes
+assert base64.decode("TWFu") == [77, 97, 110]         # valid unpadded input still decodes
 
 # ============================================================================================
 # xml

@@ -67,8 +67,8 @@ assert base64.urlsafeencode("foobar") == base64.encode("foobar"), "urlsafe==std 
 assert Bytes(base64.urlsafedecode(base64.urlsafeencode(allbytes))) == allbytes, "urlsafe binary round-trip"
 
 # ============================================================ hardening
-# decode stops at the first '=' (padding), ignoring anything after it
-assert base64.decode("SGk=extra") == [72, 105], "decode stops at first '='"
+# data after the '=' padding is rejected (a real char following padding is not valid base64)
+assert raises_msg(Function(): return base64.decode("SGk=extra"), "data after padding"), "decode rejects data after '='"
 # invalid characters throw (whitespace is NOT allowed by this decoder)
 assert raises_msg(Function(): return base64.decode("SG k="), "invalid base64 character"), "decode rejects space"
 assert raises_msg(Function(): return base64.decode("!!!!"), "invalid base64 character"), "decode rejects punctuation"

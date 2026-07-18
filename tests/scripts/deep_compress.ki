@@ -240,8 +240,8 @@ assert throws(Function(): return b64.decode("SG!o")), "base64 embedded invalid c
 assert throws(Function(): return b64.decode("SGVs\nbG8=")), "base64 rejects embedded newline (no whitespace skipping)"
 # (c) Anything AFTER the first '=' is SILENTLY DROPPED (the decode loop breaks at '='): trailing
 # garbage past the padding is ignored rather than rejected.
-assert b64.decode("SGk=") == b64.decode("SGk=trailing-garbage-ignored"), "base64 silently drops bytes after '='"
-assert Bytes(b64.decode("SGk=!!!@@@")) == Bytes([72, 105]), "base64 trailing-after-pad ignored"
+assert throws(Function(): return b64.decode("SGk=trailing-garbage")), "base64 rejects data after the = padding"
+assert throws(Function(): return b64.decode("SGk=!!!@@@")), "base64 rejects any character after the = padding"
 
 # =============================================================================================
 # 7. fuzz: random garbage into every decoder must terminate (no hang / no crash). The CHECKSUMMED

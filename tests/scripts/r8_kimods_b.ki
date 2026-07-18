@@ -131,7 +131,7 @@ ok(b64.decode("AQIDBA==") == [1, 2, 3, 4], "base64 decode padded 4-byte")
 ok(b64.decode("QUI") == [65, 66], "base64 decode padless 3 chars -> 2 bytes")
 ok(b64.decode("Qg") == [66], "base64 decode padless 2 chars -> 1 byte")
 # decoding stops at the first '=' (even mid-stream garbage afterwards)
-ok(b64.decode("Qg==xyz") == [66], "base64 decode stops at first '='")
+ok(throws(Function(): return b64.decode("Qg==xyz")), "base64 rejects data after the = padding")
 
 # --- Bytes and List inputs agree; binary fidelity for fresh bytes ---
 ok(b64.encode(Bytes([10, 20, 30, 40])) == b64.encode([10, 20, 30, 40]), "base64 Bytes input == List input")

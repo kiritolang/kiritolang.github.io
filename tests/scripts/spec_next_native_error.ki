@@ -1,0 +1,71 @@
+# Regression (BUG-1): a NATIVE error (index-out-of-range, divide-by-zero, key-not-found) raised inside a
+# user class's `_next_` during iteration must surface with its REAL message, NOT be corrupted into
+# "dangling handle (stale generation)". Root cause: UserLazyIterator::next evaluated isStopIteration on
+# the throw's value BEFORE the depth check, dereferencing the null value-handle of the native KiritoError
+# (which throws "dangling handle", clobbering the original). Fixed by ordering the depth check first
+# (+ guarding isStopIteration against the null Handle{}).
+var io = import("io")
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+class IdxGen:
+    var _init_ = Function(self):
+        self.i = 0
+        self.data = [10, 20]
+    var _iter_ = Function(self): return self
+    var _next_ = Function(self):
+        var v = self.data[self.i]        # native "index out of range" once i >= 2
+        self.i = self.i + 1
+        return v
+
+# for-loop
+var forFn = Function():
+    for x in IdxGen():
+        discard x
+    return 0
+var forErr = emsg(forFn)
+assert "index out of range" in forErr, "native error in _next_ surfaces via for-loop"
+assert not ("dangling handle" in forErr), "no dangling-handle corruption via for-loop"
+
+# eager consumers drain through the same path
+assert "index out of range" in emsg(Function(): return List(IdxGen())), "native error via List(gen)"
+assert "index out of range" in emsg(Function(): return sum(IdxGen())), "native error via sum(gen)"
+assert "index out of range" in emsg(Function(): return sorted(IdxGen())), "native error via sorted(gen)"
+
+# a different native error (divide by zero) from _next_
+class DivGen:
+    var _init_ = Function(self): self.n = 1
+    var _iter_ = Function(self): return self
+    var _next_ = Function(self):
+        var r = 10 / (self.n - 1)        # n=1 -> 10/0 native error immediately
+        self.n = self.n + 1
+        return r
+assert "zero" in emsg(Function(): return List(DivGen())), "divide-by-zero in _next_ surfaces"
+
+# StopIteration STILL ends iteration cleanly (the fix must not break the normal exhaustion path)
+class Ok3:
+    var _init_ = Function(self): self.i = 0
+    var _iter_ = Function(self): return self
+    var _next_ = Function(self):
+        if self.i >= 3:
+            throw StopIteration()
+        self.i = self.i + 1
+        return self.i
+assert List(Ok3()) == [1, 2, 3], "StopIteration still ends iteration cleanly"
+var acc = 0
+for v in Ok3():
+    acc = acc + v
+assert acc == 6, "StopIteration ends a for-loop cleanly"
+
+# a user `throw` (non-StopIteration) from _next_ also surfaces with its own value
+class Boom:
+    var _init_ = Function(self): pass
+    var _iter_ = Function(self): return self
+    var _next_ = Function(self): throw "boom-from-next"
+assert "boom-from-next" in emsg(Function(): return List(Boom())), "a user throw from _next_ surfaces"
+
+io.print("next native-error regression: passed")

@@ -129,7 +129,7 @@ assert raises_msg(Function(): return b64.decode("SGl"), "truncated or corrupted"
 assert raises_msg(Function(): return b64.decode("SG k="), "invalid base64 character"), "decode rejects space"
 assert raises_msg(Function(): return b64.decode("-w=="), "invalid base64 character"), "std decode rejects urlsafe '-'"
 # decode stops at the first '=' and ignores the tail (padding sentinel)
-assert b64.decode("SGk=junk") == [72, 105], "decode stops at first '='"
+assert raises_msg(Function(): return b64.decode("SGk=junk"), "data after padding"), "decode rejects data after the = padding"
 
 # ============================================================================================
 # CSV — quote toggling, whitespace preservation, ragged rows, embedded newline round-trip

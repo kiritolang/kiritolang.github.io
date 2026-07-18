@@ -141,6 +141,19 @@ public:
 // ============================================================================ helpers
 namespace redetail {
 
+// reng::run can throw reng::RegexError at MATCH time (e.g. the step-budget guard tripping on a
+// pathological pattern/input) — not just at compile time. Translate it to a KiritoError at the native
+// boundary so it surfaces with a proper file:line:col + traceback like every other Kirito error,
+// instead of escaping as an untranslated std::exception (a bare "error: <what>" with no location).
+template <class... A>
+inline reng::MatchResult runGuarded(A&&... a) {
+    try {
+        return reng::run(std::forward<A>(a)...);
+    } catch (const reng::RegexError& e) {
+        throw KiritoError(std::string("regex match failed: ") + e.what());
+    }
+}
+
 inline Handle makeMatch(KiritoVM& vm, Handle subject, const reng::MatchResult& r, const reng::Program& p) {
     return vm.alloc(std::make_unique<MatchVal>(subject, r.slots, p.numGroups, p.groupNames, p.nameToGroup));
 }
@@ -155,7 +168,7 @@ inline std::vector<reng::MatchResult> allMatches(const reng::Program& p, const s
     bool mustAdvance = false;   // after an empty match, the next search must not accept an empty match
     while (pos <= n) {          // at the SAME position — Python's must_advance, so a higher-priority
         if (maxCount >= 0 && static_cast<int>(out.size()) >= maxCount) break;   // empty alternative
-        reng::MatchResult r = reng::run(p, text, pos, /*anchored=*/false, /*requireEnd=*/false, mustAdvance);
+        reng::MatchResult r = redetail::runGuarded(p, text, pos, /*anchored=*/false, /*requireEnd=*/false, mustAdvance);
         if (!r.matched) break;   // doesn't mask a non-empty match (`|\w`, `a??`, `a||b`, …).
         int a = r.slots[0], b = r.slots[1];
         out.push_back(std::move(r));
@@ -277,7 +290,7 @@ public:
                 int pos = redetail::resolvePosEndpos(vm, args, a, text);  // None-safe, clamped, applies endpos
                 bool anchored = (name != "search");
                 bool requireEnd = (name == "fullmatch");
-                reng::MatchResult r = reng::run(R.prog, text, pos, anchored, requireEnd);
+                reng::MatchResult r = redetail::runGuarded(R.prog, text, pos, anchored, requireEnd);
                 if (!r.matched) return vm.none();
                 return redetail::makeMatch(vm, args[0].handle(), r, R.prog);
             });

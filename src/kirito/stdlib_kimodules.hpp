@@ -655,9 +655,13 @@ var decode = Function(s):
     var out = []
     var buffer = 0
     var bits = 0
+    var padding = False
     for ch in s:
         if ch == "=":
-            break
+            padding = True          # padding has started; only '=' may follow
+            continue
+        if padding:                 # a real character after '=' is trailing garbage, not valid base64
+            throw "invalid base64: data after padding"
         if ch not in _index:
             throw "invalid base64 character: '" + ch + "'"
         buffer = buffer * 64 + _index[ch]

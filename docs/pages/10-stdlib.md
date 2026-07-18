@@ -63,7 +63,9 @@ Operates on **byte values**: a `List` of Integers (0–255), a [`Bytes`](types.h
 `String` (encoded as its UTF-8 bytes).
 
 - `encode(data: List | Bytes | String) → String` — Base64-encode the data.
-- `decode(s: String) → List` — decode Base64 text back to a list of byte values.
+- `decode(s: String) → List` — decode Base64 text back to a list of byte values. Validates its input:
+  an invalid character, a lone trailing character, non-zero leftover bits, or any data after the `=`
+  padding all throw (no silent truncation). Padless-but-otherwise-valid input decodes.
 - `urlsafeencode(data: List | Bytes | String) → String` — encode using the URL-safe alphabet (`-_`).
 - `urlsafedecode(s: String) → List` — decode using the URL-safe alphabet (`-_`).
 
@@ -585,9 +587,10 @@ and a trailing-dot float (`1.` → `1.0`) are accepted; a duplicate object key k
 become `Infinity` if it also overflows a double).
 
 **`stringify` only serializes JSON-representable values, and the indent is capped.** A value that has no
-JSON form — a `Set`, a function, a class/instance without a JSON mapping, or a structure containing a
-**cycle** — throws `cannot serialize '<Type>' to JSON`. The `indent` width has a hard maximum of 100;
-a larger value throws `json.stringify: indent too large (maximum 100)`.
+JSON form — a `Set`, a function, or a class/instance without a JSON mapping — throws
+`cannot serialize '<Type>' to JSON`; a structure containing a **cycle** throws `cannot serialize a
+cyclic structure to JSON`. The `indent` width has a hard maximum of 100; a larger value throws
+`json.stringify: indent too large (maximum 100)`.
 
 ---
 

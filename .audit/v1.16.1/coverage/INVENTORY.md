@@ -45,6 +45,26 @@ Scope from the reference pages: 08-builtins (99 sigs), 09-types (162), 10-stdlib
 | matrix + tensor | 10-stdlib | cov_matrix_tensor.ki | todo | |
 | net + parallel | 10-stdlib | cov_net_parallel.ki | todo | |
 
+## FIX PASS 1 (gated) — applied
+- **BUG-1 (HIGH) FIXED:** native error in a user `_next_` no longer corrupts into "dangling handle".
+  UserLazyIterator::next checks `t.depth == boundary` BEFORE isStopIteration (a native KiritoError has a
+  null value handle + depth -1, so it short-circuits); isStopIteration also guards the null Handle{}.
+  Regression: spec_next_native_error.ki.
+- **base64.decode FIXED:** rejects any character after the `=` padding ("data after padding") instead of
+  silently dropping it. Migrated 6 golden tests that had pinned the old silent behavior + the cov test.
+- **regex match-time RegexError FIXED (defensive):** redetail::runGuarded wraps reng::run so the
+  match-complexity-budget throw surfaces as a KiritoError with file:line:col+traceback (the budget is a
+  high guard, not triggerable by ordinary patterns → no dedicated regression; covered by regex-error tests).
+- **DOC fixes:** json cycle message corrected (`cannot serialize a cyclic structure to JSON`); base64
+  decode validation documented. (`round` tie-direction was ALREADY documented — agent note was mistaken.)
+
+## DEFERRED (reviewed; documented — lower value / higher risk / untestable)
+- **tensor `_setstate_` / matrix|complex.vector >64M** raw TensorError → same defensive wrap as regex,
+  but pathological/hard-to-trigger; deferred (note in phase1 file).
+- **textwrap.wrap/fill width≤0** accepted silently — docs don't specify a bound; low value, deferred.
+- **String/Bytes surplus-arg** (upper/strip/isX/hex ignore extra positional args) — SYSTEMIC arity-check
+  change, higher regression risk; needs a careful central design; deferred to a dedicated pass.
+
 ## Doc-vs-impl deltas + bugs found (consolidated; fix after the agent wave, gated where src)
 SRC fixes (batch, gated):
 - **base64.decode** silently accepts trailing garbage after `=` padding (`decode("TWE=X")`→[77,97]). Validate.
