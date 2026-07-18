@@ -63,7 +63,9 @@ Operates on **byte values**: a `List` of Integers (0–255), a [`Bytes`](types.h
 `String` (encoded as its UTF-8 bytes).
 
 - `encode(data: List | Bytes | String) → String` — Base64-encode the data.
-- `decode(s: String) → List` — decode Base64 text back to a list of byte values.
+- `decode(s: String) → List` — decode Base64 text back to a list of byte values. Validates its input:
+  an invalid character, a lone trailing character, non-zero leftover bits, or any data after the `=`
+  padding all throw (no silent truncation). Padless-but-otherwise-valid input decodes.
 - `urlsafeencode(data: List | Bytes | String) → String` — encode using the URL-safe alphabet (`-_`).
 - `urlsafedecode(s: String) → List` — decode using the URL-safe alphabet (`-_`).
 
@@ -105,9 +107,8 @@ Binary search / ordered insertion into a sorted List.
 - `c.items() → List` — `[value, count]` pairs.
 - `c.mostcommon([n: Integer]) → List` — `[value, count]` pairs, highest count first. The sort is
   stable and the underlying Dict is insertion-ordered, so *tied* counts appear in first-insertion
-  order. With `n`, only the top `n`; `n = 0` gives `[]`, and a **negative**
-  `n` returns all but the `|n|` least-common pairs (an end-slice — don't pass a negative `n` expecting
-  an empty list).
+  order. With `n`, only the top `n`; `n ≤ 0` gives `[]` (matching CPython — a negative `n` is **not** an
+  end-slice).
 
 ### defaultdict object
 
@@ -586,9 +587,10 @@ and a trailing-dot float (`1.` → `1.0`) are accepted; a duplicate object key k
 become `Infinity` if it also overflows a double).
 
 **`stringify` only serializes JSON-representable values, and the indent is capped.** A value that has no
-JSON form — a `Set`, a function, a class/instance without a JSON mapping, or a structure containing a
-**cycle** — throws `cannot serialize '<Type>' to JSON`. The `indent` width has a hard maximum of 100;
-a larger value throws `json.stringify: indent too large (maximum 100)`.
+JSON form — a `Set`, a function, or a class/instance without a JSON mapping — throws
+`cannot serialize '<Type>' to JSON`; a structure containing a **cycle** throws `cannot serialize a
+cyclic structure to JSON`. The `indent` width has a hard maximum of 100; a larger value throws
+`json.stringify: indent too large (maximum 100)`.
 
 ---
 
@@ -777,7 +779,9 @@ chunked transfer-encoding is decoded, and `gzip`/`deflate` responses are decompr
 - `urlsplit(url: String) → Dict` — split a URL into `scheme`/`host`/`port`/`path`/`query`/`fragment`
   (all `String`; `port` is the textual digits, empty when absent — use `Integer(d["port"])` if you need
   it numeric). A bracketed IPv6 literal is preserved in `host` with its brackets, and the optional
-  port follows after `]:` — `urlsplit("http://[::1]:8080/p")` -> `host = "[::1]", port = "8080"`.
+  port follows after `]:` — `urlsplit("http://[::1]:8080/p")` -> `host = "[::1]", port = "8080"`. An
+  authority (`host`/`port`) is recognized only after `://`, so a **protocol-relative** reference has no
+  authority: `urlsplit("//host/path")` -> `scheme`/`host` empty, `path = "//host/path"`.
 
 ### Sockets
 
@@ -1357,7 +1361,9 @@ Human-readable **text** serialization → a `String`.
 - `pvariance(data) → Float` — the population variance.
 - `pstdev(data) → Float` — the population standard deviation.
 - `quantiles(data[, n]) → List` — cut points dividing `data` into `n` equal groups (`n ≥ 1`, default
-  `4`); throws on fewer than two data points or `n < 1`.
+  `4`); throws on fewer than two data points or `n < 1`. Uses the **exclusive** method (matching CPython
+  `statistics.quantiles`): when `n` exceeds the sample size the outer cut points **extrapolate** past the
+  data range rather than clamping to the min/max — e.g. `quantiles([1, 2], 4) == [0.75, 1.5, 2.25]`.
 
 ---
 
@@ -1481,7 +1487,10 @@ Public names follow Kirito's lowercase-no-underscore convention (`readcsv`, `sor
 
 - `Series(values, index = None, name = None)` — a 1-D labelled column.
 - `DataFrame(data = None, columns = None, index = None)` — `data` is a Dict of `column → values`, a
-  List of row-Lists (pair with `columns`), or a List of row-Dicts (columns are the key union).
+  List of row-Lists (pair with `columns`), or a List of row-Dicts (columns are the key union). From
+  row-Lists the width is set by the first row; a later row of a **different** width throws a clear
+  `row R has W fields but the frame is N wide` (no silent truncation of a long row, no bare index error
+  on a short one).
 - `readcsv(source, header = True, infer = True)` — build a DataFrame from CSV text (or a filename).
   With `infer`, each cell becomes Integer/Float/Bool/None/String; a short row's missing trailing cells
   are `None`, but a row with **more** fields than the header throws (no silent data loss, like pandas).

@@ -1,0 +1,587 @@
+# Exhaustive coverage of the system stdlib modules: io, path, sys, time.
+# Deterministic and side-effect-free: every file lives under path.gettempdir() with a unique
+# prefix and is removed before exit; no assertion depends on a variable value (current time,
+# tempdir path, env content) — those are checked by invariant (type / sign / shape / separator).
+# Verified against build-bin/ki-release; deltas from the prose brief are recorded in
+# .audit/v1.16.1/coverage/findings_system.md.
+
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+var time = import("time")
+var math = import("math")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+# A private scratch directory so parallel runs never collide and cleanup is total.
+var base = path.join(path.gettempdir(), "kirito_cov_system_scratch")
+path.rmtree(base, missing_ok = True)
+assert path.mkdir(base)
+
+var tmpfile = Function(name):
+    return path.join(base, name)
+
+# ============================================================================
+# io — console streams, open/File, BytesIO
+# ============================================================================
+
+# --- open modes: write / read round-trip -----------------------------------
+var p = tmpfile("rw.txt")
+with io.open(p, "w") as f:
+    f.write("line1\n")
+    f.write("line2\n")
+    f.write("line3")
+assert path.getsize(p) == 17
+
+# read() with no size reads the whole remaining file
+var fr = io.open(p, "r")
+assert fr.read() == "line1\nline2\nline3"
+fr.close()
+
+# read(size) reads exactly size characters
+var fr2 = io.open(p, "r")
+assert fr2.read(5) == "line1"
+assert fr2.read(1) == "\n"
+fr2.close()
+
+# read past EOF yields "" (not an error)
+var fr3 = io.open(p, "r")
+discard fr3.read()
+assert fr3.read() == ""
+assert fr3.read(10) == ""
+fr3.close()
+
+# readline strips the trailing newline; a final line without newline still returns
+var fl = io.open(p, "r")
+assert fl.readline() == "line1"
+assert fl.readline() == "line2"
+assert fl.readline() == "line3"
+assert fl.readline() == ""
+fl.close()
+
+# readlines returns every remaining line as a List (newlines stripped)
+var frl = io.open(p, "r")
+assert frl.readlines() == ["line1", "line2", "line3"]
+frl.close()
+
+# iterating a file yields its lines lazily
+var collected = []
+for ln in io.open(p, "r"):
+    collected.append(ln)
+assert collected == ["line1", "line2", "line3"]
+
+# eager List(f) consumes lines too
+assert List(io.open(p, "r")) == ["line1", "line2", "line3"]
+
+# --- tell / seek ------------------------------------------------------------
+var fs = io.open(p, "r")
+assert fs.tell() == 0
+discard fs.readline()
+assert fs.tell() == 6
+assert fs.seek(0) == 0
+assert fs.tell() == 0
+assert fs.seek(3) == 3            # whence 0 (from start)
+assert fs.read(2) == "e1"
+assert fs.seek(0, 2) == 17        # whence 2 (from end)
+assert fs.seek(-2, 1) == 15       # whence 1 (relative to current)
+assert fs.read() == "e3"
+fs.close()
+
+# --- write modes: truncate ("w") vs append ("a") ----------------------------
+with io.open(p, "w") as f:
+    f.write("fresh")
+assert path.getsize(p) == 5       # "w" truncated the prior contents
+with io.open(p, "a") as f:
+    f.write("-more")
+var fa = io.open(p, "r")
+assert fa.read() == "fresh-more"
+fa.close()
+
+# --- r+ read/write ----------------------------------------------------------
+with io.open(p, "w") as f:
+    f.write("abcdef")
+var frp = io.open(p, "r+")
+assert frp.read(3) == "abc"
+frp.write("XYZ")                  # overwrite at the cursor
+frp.seek(0)
+assert frp.read() == "abcXYZ"
+frp.close()
+
+# --- writelines -------------------------------------------------------------
+with io.open(p, "w") as f:
+    f.writelines(["a\n", "b\n", "c\n"])
+var fwl = io.open(p, "r")
+assert fwl.readlines() == ["a", "b", "c"]
+fwl.close()
+
+# --- flush is a no-op that must not throw -----------------------------------
+var ff = io.open(p, "w")
+ff.write("x")
+ff.flush()
+ff.close()
+
+# --- binary mode: read/readline/iteration yield Bytes, write accepts Bytes ---
+var bp = tmpfile("data.bin")
+with io.open(bp, "wb") as bf:
+    bf.write(Bytes([0, 1, 2, 255]))
+assert path.getsize(bp) == 4
+var brf = io.open(bp, "rb")
+var bdata = brf.read()
+assert type(bdata) == "Bytes"
+assert len(bdata) == 4
+assert bdata == Bytes([0, 1, 2, 255])
+brf.close()
+
+# binary readline / writelines round-trip in Bytes
+with io.open(bp, "wb") as bf:
+    bf.writelines([Bytes([104, 105, 10]), Bytes([98, 121, 101])])
+var brl = io.open(bp, "rb")
+assert type(brl.readline()) == "Bytes"
+assert brl.readline() == Bytes([98, 121, 101])
+brl.close()
+
+# text-mode read returns String
+var trf = io.open(p, "r")
+assert type(trf.read()) == "String"
+trf.close()
+
+# --- HARDENING: open ---------------------------------------------------------
+assert "could not open file" in emsg(Function(): return io.open(tmpfile("nope_missing.txt"), "r"))
+assert threw(Function(): return io.open(tmpfile("nope_missing.txt"), "r"))
+assert "unsupported file mode" in emsg(Function(): return io.open(p, "q"))
+assert "unsupported file mode" in emsg(Function(): return io.open(p, "rw"))
+assert "embedded NUL byte in path" in emsg(Function(): return io.open("a\x00b", "r"))
+assert "open path must be a String" in emsg(Function(): return io.open(5))
+assert "open mode must be a String" in emsg(Function(): return io.open(p, 5))
+assert "missing required argument" in emsg(Function(): return io.open())
+assert "at most 2 positional" in emsg(Function(): return io.open(p, "r", "extra"))
+
+# --- HARDENING: wrong-mode / closed File ------------------------------------
+var ro = io.open(p, "r")
+assert "file not open for writing" in emsg(Function(): return ro.write("x"))     # write to read-only
+ro.close()
+var wo = io.open(p, "w")
+assert "file not open for reading" in emsg(Function(): return wo.read())          # read from write-only
+assert "file not open for reading" in emsg(Function(): return wo.readline())
+wo.close()
+var cl = io.open(p, "r")
+cl.close()
+assert "I/O operation on closed file" in emsg(Function(): return cl.read())        # read a closed file
+assert "I/O operation on closed file" in emsg(Function(): return cl.seek(0))       # seek a closed file
+assert "I/O operation on closed file" in emsg(Function(): return cl.tell())
+
+# --- HARDENING: seek bounds / read arg --------------------------------------
+var sk = io.open(p, "r")
+assert "resulting position is negative" in emsg(Function(): return sk.seek(-1))
+assert "whence must be 0" in emsg(Function(): return sk.seek(0, 3))
+assert "whence must be 0" in emsg(Function(): return sk.seek(0, -1))
+sk.close()
+var ri = io.open(p, "r")
+assert "read expected Integer" in emsg(Function(): return ri.read(None))           # File.read requires Integer
+ri.close()
+
+# ============================================================================
+# io — BytesIO
+# ============================================================================
+var b = io.BytesIO()
+assert b.write("hello") == 5           # write returns the count
+assert b.write(" world") == 6
+assert b.size() == 11
+assert len(b) == 11                    # len(b) mirrors size()
+assert b.tell() == 11
+assert b.seek(0) == 0
+assert b.read(5) == "hello"
+assert b.read() == " world"            # read() with no arg reads the rest
+assert b.getvalue() == "hello world"
+
+# read(None) reads the rest (unlike File.read, which requires an Integer)
+b.seek(0)
+assert b.read(None) == "hello world"
+
+# readline reads through the next newline (returned without it)
+var bl = io.BytesIO("a\nbc\nd")
+assert bl.readline() == "a"
+assert bl.readline() == "bc"
+assert bl.readline() == "d"
+assert bl.readline() == ""
+
+# write accepts Bytes and overwrites at the cursor
+var bw = io.BytesIO("ABCDEF")
+bw.seek(2)
+assert bw.write(Bytes([120, 121])) == 2
+assert bw.getvalue() == "ABxyEF"
+
+# truncate drops everything after the cursor
+var bt = io.BytesIO("keepdrop")
+bt.seek(4)
+assert bt.truncate() == 4
+assert bt.getvalue() == "keep"
+
+# BytesIO initial content: cursor starts at 0
+var bi = io.BytesIO("init")
+assert bi.getvalue() == "init"
+assert bi.tell() == 0
+assert bi.read() == "init"
+
+# seek clamps a before-start position to 0 (File.seek would throw)
+var bc = io.BytesIO("xyz")
+assert bc.seek(-100) == 0
+assert bc.read() == "xyz"
+
+# read at/past end yields ""
+var be = io.BytesIO("z")
+be.seek(1)
+assert be.read() == ""
+
+# flush and close are no-ops that keep the buffer usable
+var bf2 = io.BytesIO("stay")
+bf2.flush()
+bf2.close()
+assert bf2.getvalue() == "stay"        # close is a soft no-op; buffer still readable
+
+# BytesIO usable as a with-context manager
+with io.BytesIO("ctx") as bcm:
+    assert bcm.read() == "ctx"
+
+# BytesIO constructor arg must be a byte String
+assert "BytesIO expects a byte String" in emsg(Function(): return io.BytesIO(123))
+
+# ============================================================================
+# io — console streams with a stream= redirect (no real stdout side effects)
+# ============================================================================
+var sink = io.BytesIO()
+io.print("hi", "there", stream = sink)
+assert sink.getvalue() == "hi there\n"           # space-separated, newline-terminated
+
+var sink2 = io.BytesIO()
+io.write("a", "b", "c", stream = sink2)
+assert sink2.getvalue() == "abc"                 # no separator, no trailing newline
+
+var sink3 = io.BytesIO()
+io.eprint("e", stream = sink3)
+assert sink3.getvalue() == "e\n"
+
+var src = io.BytesIO("first\nsecond\n")
+assert io.input(stream = src) == "first"         # one line, newline stripped
+assert io.input(stream = src) == "second"
+
+var src2 = io.BytesIO("abcdef")
+assert io.read(3, stream = src2) == "abc"         # read n chars
+assert io.read(stream = src2) == "def"            # rest until EOF
+
+# the standard streams exist and are rebindable objects
+assert sys.platform == "linux"                    # (sanity; used again below)
+assert io.__stdout__ != None
+assert io.__stderr__ != None
+assert io.__stdin__ != None
+
+# ============================================================================
+# path — string operations
+# ============================================================================
+assert path.join("a", "b", "c") == "a/b/c"
+assert path.join("a") == "a"
+assert path.join("a", "/b", "c") == "/b/c"        # an absolute component resets
+assert path.join("a", "") == "a/"                 # empty component still emits a separator
+assert path.join("a", "", "b") == "a/b"
+assert path.join("a/", "b") == "a/b"              # no double separator
+assert path.join("a", "\\b") == "a/\\b"           # a leading backslash is NOT absolute
+
+assert path.dirname("/a") == "/"                  # root kept
+assert path.dirname("a/b/c") == "a/b"
+assert path.dirname("file.txt") == ""             # no separator -> empty
+assert path.dirname("") == ""
+assert path.dirname("a/b/") == "a/b"
+
+assert path.basename("a/b/c") == "c"
+assert path.basename("a/b/") == ""                # trailing slash -> empty final component
+assert path.basename("file.txt") == "file.txt"
+assert path.basename("") == ""
+assert path.basename("a\\b\\c") == "c"            # basename splits on backslash too
+
+assert path.splitext("a/b.txt") == ["a/b", ".txt"]
+assert path.splitext("README") == ["README", ""]
+assert path.splitext("archive.tar.gz") == ["archive.tar", ".gz"]   # only the last ext
+assert path.splitext(".bashrc") == [".bashrc", ""]                 # leading-dot run protected
+assert path.splitext("..") == ["..", ""]
+assert path.splitext("...x") == ["...x", ""]
+assert path.splitext("foo.") == ["foo", "."]
+
+# HARDENING: pure string ops reject a non-String and a NUL
+assert "path expected String" in emsg(Function(): return path.dirname(5))
+assert "path expected String" in emsg(Function(): return path.basename(5))
+assert "path expected String" in emsg(Function(): return path.splitext(5))
+assert "join expected at least one path component" in emsg(Function(): return path.join())
+assert "embedded NUL byte in path" in emsg(Function(): return path.exists("a\x00b"))
+
+# ============================================================================
+# path — filesystem queries (tolerant predicates, strict getsize)
+# ============================================================================
+var qf = tmpfile("query.txt")
+with io.open(qf, "w") as f:
+    f.write("1234567")
+assert path.exists(qf)
+assert path.isfile(qf)
+assert not path.isdir(qf)
+assert path.getsize(qf) == 7
+
+assert path.exists(base)
+assert path.isdir(base)
+assert not path.isfile(base)
+
+# missing path: predicates are tolerant (False), getsize throws
+var nope = tmpfile("does_not_exist_zzz")
+assert not path.exists(nope)
+assert not path.isfile(nope)
+assert not path.isdir(nope)
+assert threw(Function(): return path.getsize(nope))
+assert "getsize" in emsg(Function(): return path.getsize(nope))
+
+# gettempdir / fasttemp / getcwd / executable: check invariants, not literals
+assert type(path.gettempdir()) == "String"
+assert len(path.gettempdir()) > 0
+assert type(path.fasttemp()) == "String"
+assert len(path.fasttemp()) > 0
+assert type(path.getcwd()) == "String"
+assert "/" in path.getcwd()
+assert type(path.executable) == "String"
+assert len(path.executable) > 0
+
+# ============================================================================
+# path — listing (listdir / walk)
+# ============================================================================
+var listing = tmpfile("list_dir")
+assert path.mkdir(listing)
+with io.open(path.join(listing, "one.txt"), "w") as f:
+    f.write("1")
+with io.open(path.join(listing, "two.txt"), "w") as f:
+    f.write("2")
+assert path.mkdir(path.join(listing, "sub"))
+with io.open(path.join(listing, "sub", "three.txt"), "w") as f:
+    f.write("3")
+
+var names = path.listdir(listing)
+names.sort()
+assert names == ["one.txt", "sub", "two.txt"]      # direct entries only
+assert len(path.walk(listing)) == 3                # every file, recursively
+assert path.listdir(nope) == []                    # tolerant: missing dir -> []
+assert path.walk(nope) == []
+
+# ============================================================================
+# path — mutation (strict by default, opt-in lenient)
+# ============================================================================
+var md = tmpfile("mut_dir")
+assert path.mkdir(md) == True                      # created
+assert path.isdir(md)
+assert "already exists" in emsg(Function(): return path.mkdir(md))    # strict: throws
+assert path.mkdir(md, exist_ok = True) == False    # lenient no-op
+
+# nested parents are created
+var nested = path.join(md, "x", "y", "z")
+assert path.mkdir(nested)
+assert path.isdir(nested)
+
+# remove a file; a missing target throws unless missing_ok
+var rmf = path.join(md, "gone.txt")
+with io.open(rmf, "w") as f:
+    f.write("bye")
+assert path.remove(rmf) == True
+assert not path.exists(rmf)
+assert "does not exist" in emsg(Function(): return path.remove(rmf))
+assert path.remove(rmf, missing_ok = True) == False
+
+# remove refuses a non-empty directory
+assert "not empty" in emsg(Function(): return path.remove(md)).lower()
+
+# rename / move
+var src_f = path.join(md, "src.txt")
+var dst_f = path.join(md, "dst.txt")
+with io.open(src_f, "w") as f:
+    f.write("data")
+assert path.rename(src_f, dst_f) == None
+assert not path.exists(src_f)
+assert path.exists(dst_f)
+assert threw(Function(): return path.rename(path.join(md, "no_src"), dst_f))
+
+# chmod: lenient (missing -> False), success -> True
+assert path.chmod(dst_f, 0o644) == True
+assert path.chmod(nope, 0o644) == False
+
+# rmtree: strict/missing_ok like remove, but recursive
+assert "does not exist" in emsg(Function(): return path.rmtree(nope))
+assert path.rmtree(nope, missing_ok = True) == False
+assert path.rmtree(md) == True                     # recursively removes a populated tree
+assert not path.exists(md)
+
+# ============================================================================
+# sys — platform / version / env / traceback
+# ============================================================================
+assert type(sys.platform) == "String"
+assert sys.platform == "linux"                     # (this box; darwin/windows elsewhere)
+assert type(sys.arch) == "String"
+assert sys.arch in ["x64", "arm64", "x86", "unknown"]
+
+# version is a semantic-version String: at least MAJOR.MINOR.PATCH, all numeric
+assert type(sys.version) == "String"
+var vparts = sys.version.split(".")
+assert len(vparts) >= 3
+assert Integer(vparts[0]) >= 0
+assert Integer(vparts[1]) >= 0
+assert Integer(vparts[2].split("-")[0]) >= 0       # tolerate a -prerelease suffix
+
+# environ is a Dict; getenv/setenv/unsetenv round-trip on a private key
+assert type(sys.environ()) == "Dict"
+var K = "KIRITO_COV_SYSTEM_KEY"
+sys.unsetenv(K)
+assert sys.getenv(K) == None                       # unset -> None
+assert sys.getenv(K, "fallback") == "fallback"     # default returned
+sys.setenv(K, "value1")
+assert sys.getenv(K) == "value1"
+assert K in sys.environ()
+assert sys.environ()[K] == "value1"
+sys.setenv(K, "")                                  # POSIX: empty string is a valid value
+assert sys.getenv(K) == ""
+sys.unsetenv(K)
+assert sys.getenv(K) == None
+assert not (K in sys.environ())
+
+# traceback: empty until an error unwinds, then non-empty
+try:
+    discard 1 / 0
+catch as e:
+    assert len(sys.traceback()) > 0
+assert type(sys.traceback()) == "String"
+
+# ============================================================================
+# sys — exit (observed via a child process; codes are deterministic)
+# ============================================================================
+var exitprobe = tmpfile("exit_probe.ki")
+var runExit = Function(body):
+    with io.open(exitprobe, "w") as f:
+        f.write("var sys = import(\"sys\")\n" + body + "\n")
+    return sys.createprocess([path.executable, exitprobe])["code"]
+
+assert runExit("sys.exit(0)") == 0
+assert runExit("sys.exit(3)") == 3
+assert runExit("sys.exit(256)") == 0               # POSIX 8-bit wrap: 256 -> 0
+assert runExit("sys.exit(257)") == 1
+assert runExit("sys.exit(-1)") == 255              # -1 -> 255
+assert runExit("sys.exit()") == 0                  # no arg -> 0
+var strexit = sys.createprocess([path.executable, exitprobe, "unused"])
+with io.open(exitprobe, "w") as f:
+    f.write("var sys = import(\"sys\")\nsys.exit(\"boom\")\n")
+var strres = sys.createprocess([path.executable, exitprobe])
+assert strres["code"] == 1                         # a non-Integer message exits 1, not 0
+assert "boom" in strres["stderr"]
+path.remove(exitprobe)
+
+# ============================================================================
+# time — clocks (invariants only; time is nondeterministic)
+# ============================================================================
+assert type(time.time()) == "Float"
+assert time.time() > 0
+assert type(time.timens()) == "Integer"
+assert time.timens() > 0
+assert type(time.monotonic()) == "Float"
+var m1 = time.monotonic()
+var m2 = time.monotonic()
+assert m2 >= m1                                    # monotonic never goes backwards
+assert type(time.perfcounterns()) == "Integer"
+assert time.perfcounterns() > 0
+var pc1 = time.perfcounterns()
+var pc2 = time.perfcounterns()
+assert pc2 >= pc1
+
+# sleep: non-positive is a clean no-op; only tiny real sleeps
+assert time.sleep(0) == None
+assert time.sleep(-1) == None
+assert time.sleep(0.001) == None                   # ~1ms, deterministic enough
+# HARDENING: non-finite / too-large throw rather than hang
+assert "finite" in emsg(Function(): return time.sleep(math.nan))
+assert "finite" in emsg(Function(): return time.sleep(math.inf))
+assert "too large" in emsg(Function(): return time.sleep(1e10))
+
+# ============================================================================
+# time — DateTime construction, fields, methods
+# ============================================================================
+var dt = time.make(2024, 3, 5, 7, 8, 9)
+assert dt.year == 2024
+assert dt.month == 3
+assert dt.day == 5
+assert dt.hour == 7
+assert dt.minute == 8
+assert dt.second == 9
+assert dt.yearday == 65
+assert type(dt.timestamp) == "Integer"
+assert type(dt.weekday) == "Integer"
+assert dt.weekday >= 0 and dt.weekday <= 6
+
+# iso / isoformat alias
+assert dt.iso() == "2024-03-05T07:08:09"
+assert dt.isoformat() == dt.iso()
+assert dt.format("%Y/%m/%d") == "2024/03/05"
+assert dt.format("%H:%M:%S") == "07:08:09"
+
+# make normalizes out-of-range components (C mktime style)
+assert time.make(2024, 13, 1).iso() == "2025-01-01T00:00:00"   # month 13 -> next Jan
+assert time.make(2024, 1, 32).iso() == "2024-02-01T00:00:00"   # day 32 -> next month
+assert threw(Function(): return time.make(9999999999, 1, 1))   # component out of range
+
+# datetime(epoch) and now()
+assert time.datetime(0).iso() == "1970-01-01T00:00:00"
+assert type(time.now()) == "DateTime"
+assert type(time.datetime()) == "DateTime"          # current time if omitted
+assert threw(Function(): return time.datetime(math.nan))
+assert threw(Function(): return time.datetime(math.inf))
+
+# add / sub / diff
+var d0 = time.make(2024, 1, 1, 0, 0, 0)
+var d1 = d0.add(3600)
+assert d1.iso() == "2024-01-01T01:00:00"
+assert d1.diff(d0) == 3600
+assert d0.diff(d1) == -3600
+assert d1.sub(3600).iso() == d0.iso()
+assert threw(Function(): return d0.add("nope"))
+assert threw(Function(): return d0.diff(5))
+
+# value equality & hashing by instant (usable as Dict key / Set member)
+assert time.datetime(100) == time.datetime(100)
+assert not (time.datetime(100) == time.datetime(101))
+var dtset = Set()
+dtset.add(time.datetime(100))
+dtset.add(time.datetime(100))
+assert len(dtset) == 1
+var dtmap = {}
+dtmap[time.datetime(200)] = "v"
+assert dtmap[time.datetime(200)] == "v"
+
+# ============================================================================
+# time — strptime (strict parsing)
+# ============================================================================
+assert time.strptime("2024-01-15", "%Y-%m-%d").iso() == "2024-01-15T00:00:00"
+assert time.strptime("2024-01-15 13:45:07", "%Y-%m-%d %H:%M:%S").iso() == "2024-01-15T13:45:07"
+assert time.strptime("50%", "%S%%").second == 50                # literal %% and %S
+# HARDENING: mismatch / out-of-range / trailing input all throw
+assert "does not match format" in emsg(Function(): return time.strptime("nope", "%Y"))
+assert "does not match format" in emsg(Function(): return time.strptime("2024-99-99", "%Y-%m-%d"))
+assert "does not match format" in emsg(Function(): return time.strptime("2024-01-01XYZ", "%Y-%m-%d"))
+assert "does not match format" in emsg(Function(): return time.strptime("25:00:00", "%H:%M:%S"))
+
+# ============================================================================
+# cleanup — leave no trace
+# ============================================================================
+path.rmtree(base, missing_ok = True)
+assert not path.exists(base)
+
+io.print("cov system: all passed")

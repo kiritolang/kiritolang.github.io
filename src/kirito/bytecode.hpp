@@ -67,7 +67,6 @@ enum class Op : uint8_t {
     GetIter,          //    replace the top iterable with an internal iteration cursor
     ForIter,          // a: advance the cursor on top; if exhausted pop it and ip=a, else push next item
     Unpack,           // a: (unpacks[a]) pop an iterable -> push its n spread slots, first target (slot 0) on top
-    SwitchMatch,      //    v=pop, subj=pop -> push Bool(subj and v are the same scalar by type+value)
     SwitchDispatch,   // a: (switches[a]) pop subject -> ip = the arm offset for key(subject), else default (O(1))
     SetupBlock,       // a: push an exception block (try/with): on a throw, unwind here with the exc value
     PopBlock,         //    pop the innermost exception block (left normally)
@@ -86,10 +85,10 @@ struct UnpackSpec {
     int32_t starIndex = -1;
 };
 
-// A switch's compile-time dispatch table: every (literal-scalar) case value's key mapped to the
-// bytecode offset of its arm, plus the default offset. Built once by the compiler so SwitchDispatch
-// runs in O(1) — hash the subject's key once and jump — instead of an O(n) per-case comparison chain.
-// (A switch with any non-literal case value falls back to the SwitchMatch comparison chain instead.)
+// A switch's compile-time dispatch table: every (constant-scalar) case value's key mapped to the
+// bytecode offset of its arm, plus the default offset. Every case label is a compile-time constant, so
+// the table is built once by the compiler and SwitchDispatch runs in O(1) — hash the subject's key once
+// and jump — independent of the case count.
 struct SwitchTable {
     fum::unordered_map<std::string, uint32_t> targets;  // scalar key (scalarSwitchKey form) -> arm offset
     uint32_t defaultTarget = 0;                          // arm to run when no case key matches

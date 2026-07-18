@@ -271,7 +271,7 @@ assert throws(Function(): return b64.decode("@@@@")), "decode of a non-alphabet 
 assert throws(Function(): return b64.decode("ab*d")), "decode rejects an embedded illegal char"
 # FINDING (lenient): everything from the first '=' onward is dropped, so trailing garbage after
 # padding is ignored rather than rejected.
-assert b64.decode("TQ==whatever") == [77], "FINDING: decode stops at the first '=' (trailing junk ignored, not an error)"
+assert throws(Function(): return b64.decode("TQ==whatever")), "base64 rejects trailing junk after the = padding"
 
 # --- urlsafe: '+'->'-', '/'->'_'; round-trips the high-bit bytes that produce + and /. -----------
 assert b64.urlsafeencode([251, 255, 191]) == "-_-_", "urlsafe maps + and / to - and _"

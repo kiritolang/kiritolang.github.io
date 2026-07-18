@@ -255,7 +255,7 @@ assert raises_msg(Function(): return 1 in Plain(), "does not support 'in'"), "no
 # ============================================================ _iter_
 class Range3:
     var _init_ = Function(self): pass
-    var _iter_ = Function(self): return [10, 20, 30]
+    var _iter_ = Function(self): return iter([10, 20, 30])
 var acc = []
 for x in Range3():
     acc.append(x)
@@ -271,11 +271,11 @@ var iterPlain = Function():
     for z in Plain():
         pass
 assert raises_msg(iterPlain, "is not iterable"), "no _iter_ raises"
-# _iter_ returning a non-iterable value throws when the result is re-iterated
+# _iter_ must return an iterator — a bare non-iterator value is rejected
 class IterInt:
     var _init_ = Function(self): pass
     var _iter_ = Function(self): return 42
-assert raises_msg(Function(): return List(IterInt()), "is not iterable"), "_iter_ non-iterable return raises"
+assert raises_msg(Function(): return List(IterInt()), "must return an iterator"), "_iter_ non-iterator return raises"
 
 # ============================================================ _enter_ / _exit_ (with-context)
 class Ctx:

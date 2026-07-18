@@ -97,11 +97,12 @@ io.print(describe_day("Mon"))           # => back to work
 io.print(describe_day("Wed"))           # => a weekday
 ```
 
-In practice you'll use **constant scalars** for case labels (Integer, Float, String, Bool, None) —
-matched by exact type *and* value, so `case 1` does not match `1.0`, and an all-literal switch compiles
-to one O(1) dispatch. Labels may be any expression, though (`case some_var`, `case 3 + 4`); a
-non-literal switch falls back to a comparison chain. `case` and `default` are "soft keywords":
-they're only special inside a `switch`, so you can still use them as ordinary names elsewhere.
+Case labels must be **compile-time constant scalars** (Integer, Float, String, Bool, None) — matched by
+exact type *and* value, so `case 1` does not match `1.0`. A constant expression over literals is folded
+at compile time, so `case 3 + 4` and `case -1` are fine; a label that reads runtime state (`case
+some_var`, `case f()`) is a compile-time error. Because every label is constant, the whole switch
+compiles to one O(1) dispatch. `case` and `default` are "soft keywords": they're only special inside a
+`switch`, so you can still use them as ordinary names elsewhere.
 
 **Which to use?** Ranges (`>= 90`) need comparisons, so an `if`/`elif` chain fits. Matching a value
 against a fixed set of constants is exactly what `switch` is for — it reads as a table and runs in

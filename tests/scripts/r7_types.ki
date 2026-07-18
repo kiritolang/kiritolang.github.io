@@ -264,14 +264,14 @@ ok(GI()[7] == 7, "scalar _getitem_ works")
 ok(throws(Function(): return GI()[1:3]), "slicing an instance throws (no slice protocol)")
 # _iter_ may return ANY iterable (here a String) and drives every iteration form.
 class StrIter:
-    var _iter_ = Function(self): return "abc"
+    var _iter_ = Function(self): return iter("abc")
 var collected = []
 for ch in StrIter():
     collected.append(ch)
 ok(collected == ["a", "b", "c"], "_iter_ returning a String yields its characters")
 ok(List(StrIter()) == ["a", "b", "c"], "_iter_ drives the List() constructor")
 class NumIter:
-    var _iter_ = Function(self): return [3, 1, 2]
+    var _iter_ = Function(self): return iter([3, 1, 2])
 ok(sum(NumIter()) == 6 and sorted(NumIter()) == [1, 2, 3] and max(NumIter()) == 3, "_iter_ drives sum/sorted/max")
 var ua, ub, uc = NumIter()
 ok(ua == 3 and ub == 1 and uc == 2, "_iter_ drives unpacking")

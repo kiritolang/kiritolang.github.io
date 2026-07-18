@@ -249,7 +249,7 @@ class Countdown:
         while i > 0:
             out.append(i)
             i = i - 1
-        return out
+        return iter(out)
 
 var collected = []
 for x in Countdown(3):

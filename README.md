@@ -158,8 +158,8 @@ Kirito is young and makes deliberate trade-offs. The notable current limits:
   tree-walker), but interpreter-bound tight loops remain a few × slower than CPython and Lua 5.1, and
   far slower than C++; work that delegates to the C++ standard library (sorting, hashing, string ops)
   closes most of the gap and can match or beat Lua 5.1. See [Benchmarks](#benchmarks).
-- **Integers are fixed-width `int64`** with well-defined two's-complement wraparound on overflow;
-  arbitrary-precision integers are a future enrichment.
+- **The default `Integer` is fixed-width `int64`** with well-defined two's-complement wraparound on
+  overflow; for unbounded values the `int` module provides an arbitrary-precision `BigInt` value type.
 - **Unicode case mapping** (`upper`/`lower`) covers ASCII, Latin-1 and Latin Extended-A, not the full
   Unicode case-folding tables.
 - **A single `KiritoVM` is single-threaded** — one VM is one fully-encapsulated, serializable process
@@ -188,17 +188,19 @@ examples/          Sample `.ki` programs (RPN calculator, word count, todo, stat
 
 kpm/               kpm.ki — the package manager, written in Kirito (installs packages from GitHub).
 
+tests/             The CTest suite (every feature gets a test):
+  unit/              C++ unit tests (one executable per area).
+  scripts/           Golden `.ki` programs — each `*.ki` checked against its `*.expected` stdout.
+  errors/            `.ki` programs that must fail, with required diagnostics in `*.experr`.
+  lang/              End-to-end language tests driven from C++.
+  integration/       C++-embedding projects (each embeds a `KiritoVM`).
+  fuzz/  bench/      Stability fuzzers; timing + cross-language C++/Python comparison.
+
 tools/             Project tooling:
-  tests/             The CTest suite (every feature gets a test):
-    unit/              C++ unit tests (one executable per area).
-    scripts/           Golden `.ki` programs — each `*.ki` checked against its `*.expected` stdout.
-    errors/            `.ki` programs that must fail, with required diagnostics in `*.experr`.
-    lang/              End-to-end language tests driven from C++.
-    integration/       C++-embedding projects (each embeds a `KiritoVM`).
-    fuzz/  bench/      Stability fuzzers; timing + cross-language C++/Python comparison.
   scripts/           build_all.sh (release binaries), test_release.sh (run the `.ki` suites against
                      a built binary), post_work_check.sh (clean-build every variant + full CTest),
                      install.sh / install.ps1 (the Linux/macOS + Windows installers).
+  versions.env       The pinned toolchain (g++/clang/cmake/ninja versions) the project builds against.
 
 docs/              The documentation site: hand-authored Markdown in `docs/pages/`, rendered by
                    the dependency-free `docs/build_docs.py` into `docs/site/`.
@@ -206,42 +208,43 @@ docs/              The documentation site: hand-authored Markdown in `docs/pages
                      (TextMate grammar + extension), and Vim. See `docs/editors/README.md`.
 
 license/           LICENSE (MIT) and THIRD_PARTY_LICENSES.md (licenses of incorporated software).
-.audit/            Hidden but tracked: the paper trail of the codebase audit rounds (pre-1.12 / v1.12 /
-                   v1.13) — per-subsystem findings, triaged roll-ups, and recorded false positives.
+.audit/            Hidden but tracked: the paper trail of the codebase audit rounds (pre-1.12 through
+                   v1.16.1) — per-subsystem findings, triaged roll-ups, and recorded false positives.
 CLAUDE.md          The project charter: what Kirito is, how it's built, and the working rules.
 ```
 
 ## Benchmarks
 
-Kirito (bytecode VM) vs C++ (`-O2`, gcc 13.3) vs CPython 3.11 vs Lua 5.1 vs Bash on identical algorithms
+Kirito (bytecode VM) vs C++ (`-O2`, gcc 13.3) vs CPython 3.12 vs Lua 5.1 vs Bash on identical algorithms
 over identical (LCG-generated) data, release build. **Microseconds per repetition, mean ± population
 stddev, one unit per row, lower is better** — median of three runs (`tests/bench/compare.py`):
 
-| Workload | N | reps | C++ (-O2) | Python 3.11 | Lua 5.1 | Bash | Kirito |
+| Workload | N | reps | C++ (-O2) | Python 3.12 | Lua 5.1 | Bash | Kirito |
 |---|---|---|---|---|---|---|---|
 | *pessimistic — interpreter-bound tight loops* | | | | | | | |
-| `sum_loop` (arithmetic loop) | 1000 | 2000 | 0.40 ± 0.38 | 40.7 ± 5.1 | 16.3 ± 5.5 | 3326 ± 334 | 253 ± 174 |
-| `fib` (recursive calls) | 17 | 300 | 3.01 ± 1.6 | 209 ± 23 | 164 ± 20 | 59081 ± 1887 | 1644 ± 389 |
-| `sieve` (nested loops + indexed writes) | 1500 | 500 | 1.83 ± 1.0 | 108 ± 25 | 128 ± 21 | 17474 ± 869 | 1267 ± 372 |
+| `sum_loop` (arithmetic loop) | 1000 | 2000 | 0.195 ± 0.005 | 34.2 ± 2.7 | 7.69 ± 1.0 | 1421 ± 19 | 112 ± 52 |
+| `fib` (recursive calls) | 17 | 300 | 1.57 ± 0.02 | 120 ± 4.4 | 88.3 ± 5.3 | 30692 ± 74 | 782 ± 128 |
+| `sieve` (nested loops + indexed writes) | 1500 | 500 | 1.01 ± 0.05 | 74.9 ± 4.4 | 57.2 ± 5.7 | 7400 ± 39 | 641 ± 186 |
 | *optimistic — work delegated to C++ builtins* | | | | | | | |
-| `sort` (builtin sort) | 1500 | 2000 | 16.2 ± 9.3 | 101 ± 26 | 354 ± 24 | 136488 ± 3009 | 350 ± 41 |
-| `dict_ops` (hash insert/lookup) | 1000 | 1500 | 49.9 ± 11 | 114 ± 11 | 127 ± 22 | 7115 ± 446 | 382 ± 222 |
-| `string_ops` (`split`/`join`) | 1500 | 2000 | 36.7 ± 12 | 42.0 ± 4.9 | 190 ± 45 | 2518 ± 159 | 133 ± 155 |
+| `sort` (builtin sort) | 1500 | 2000 | 7.55 ± 1.3 | 38.8 ± 4.7 | 153 ± 15 | 64314 ± 355 | 143 ± 23 |
+| `dict_ops` (hash insert/lookup) | 1000 | 1500 | 25.7 ± 2.3 | 64.4 ± 8.6 | 47.6 ± 11 | 3265 ± 77 | 146 ± 48 |
+| `string_ops` (`split`/`join`) | 1500 | 2000 | 20.0 ± 1.8 | 25.3 ± 2.6 | 107 ± 18 | 4455 ± 17 | 70.0 ± 48 |
 
 The shape is what a bytecode VM with a fast C++ standard library should show: on interpreter-bound tight
-loops (`sum_loop`/`fib`/`sieve`) it pays per-operation dispatch and trails Lua 5.1's register VM and
-CPython by roughly an order of magnitude, but once the work lands in native builtins
+loops (`sum_loop`/`fib`/`sieve`) it pays per-operation dispatch and trails Lua 5.1's register VM by
+roughly an order of magnitude and CPython by several ×, but once the work lands in native builtins
 (`sort`/`dict_ops`/`string_ops` delegate to `std::sort` / `std::unordered_map` / `std::string`) it
-closes the gap and **matches or beats Lua 5.1** (`sort` ~parity, `string_ops` faster). **Slot-addressed
-locals** (resolving each function's non-captured locals to a frame-slot index at compile time) plus a
-numeric binary fast path landed in 1.9 and roughly halved the tight-loop gap.
+closes the gap and **matches or beats Lua 5.1** (faster on `sort` and `string_ops`; a few × behind on
+`dict_ops`). **Slot-addressed locals** (resolving each function's non-captured locals to a frame-slot
+index at compile time) plus a numeric binary fast path landed in 1.9 and roughly halved the tight-loop gap.
 
-Measured on a shared cloud container, so absolutes run slower and noisier than a dedicated host — which
-is why the table reports the median of three runs and why Kirito's per-run stddev is large (GC pauses).
-The C++ baseline runs in tens to hundreds of *nanoseconds* where timer jitter dominates, so its column
-is the least stable. Bash uses adaptive reps (~0.5 s per workload, min 5), so its stddev is over fewer
-samples. Lua 5.1 has no integer type, so its column uses doubles; the benchmark's 31-bit LCG is computed
-with an exact split-multiply so every language runs on byte-identical data.
+Measured on the project's WSL2 dev box (24-core), so absolutes are lower than the shared-cloud host these
+were previously taken on — but Kirito's per-run stddev stays large (rare GC pauses land on random reps),
+which is why the table reports the median of three runs. The C++ baseline runs in tens to hundreds of
+*nanoseconds* where timer jitter dominates, so its column is the least stable. Bash uses adaptive reps
+(~0.5 s per workload, min 5), so its stddev is over fewer samples. Lua 5.1 has no integer type, so its
+column uses doubles; the benchmark's 31-bit LCG is computed with an exact split-multiply so every
+language runs on byte-identical data.
 
 Reproduce: `cmake --build build-release --target ki && python3 tests/bench/compare.py --ki build-release/ki`
 (the Lua column appears automatically when `lua5.1` is on your `PATH`).

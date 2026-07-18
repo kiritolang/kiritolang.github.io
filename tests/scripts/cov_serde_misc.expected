@@ -1,0 +1,25 @@
+usage: <name> [--count VALUE] [--rate VALUE] [--mode VALUE] [--out VALUE] [--loud]
+
+greeter
+
+arguments:
+  <name>  
+  --count VALUE  (default 1)  
+  --rate VALUE  (default 1.5)  
+  --mode VALUE  (default fast)  
+  --out VALUE  (default None)  
+  --loud  
+  -h, --help  show this help and stop
+usage: <name> [--count VALUE] [--rate VALUE] [--mode VALUE] [--out VALUE] [--loud]
+
+greeter
+
+arguments:
+  <name>  
+  --count VALUE  (default 1)  
+  --rate VALUE  (default 1.5)  
+  --mode VALUE  (default fast)  
+  --out VALUE  (default None)  
+  --loud  
+  -h, --help  show this help and stop
+cov serde-misc: all passed

@@ -1,0 +1,553 @@
+# Exhaustive coverage tests for Kirito's numeric-array stdlib modules:
+#   tabular (Series, DataFrame, GroupBy), matrix, tensor.
+# Every assertion matches the ACTUAL interpreter behavior (verified against ./build-bin/ki-release),
+# never assumed. Where the implementation diverges from docs/pages/10-stdlib.md the test pins the
+# REAL behavior and the delta is recorded in .audit/v1.16.1/coverage/findings_arrays.md — the test is
+# never bent to match the docs. Computed Floats (det/inverse/matmul/std) use a tolerant abs-compare.
+
+var io = import("io")
+var math = import("math")
+var tb = import("tabular")
+var matrix = import("matrix")
+var T = import("tensor")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+# Tolerant absolute-difference compare for computed Floats.
+var approx = Function(a, b):
+    return math.fabs(a - b) < 0.000001
+
+# Tolerant elementwise compare of two flat Lists of numbers.
+var approxl = Function(a, b):
+    if len(a) != len(b):
+        return False
+    var i = 0
+    while i < len(a):
+        if not approx(a[i], b[i]):
+            return False
+        i = i + 1
+    return True
+
+# ==================================================================================================
+# tabular — Series construction and aggregations
+# ==================================================================================================
+var s = tb.Series([1, 2, 3, 4])
+assert s.sum() == 10
+assert approx(s.mean(), 2.5)
+assert s.min() == 1
+assert s.max() == 4
+assert approx(s.median(), 2.5)
+assert approx(s.variance(), 1.6666666666666667)
+assert approx(s.std(), 1.2909944487358056)
+assert s.prod() == 24
+assert s.count() == 4
+assert s.tolist() == [1, 2, 3, 4]
+
+# Single-element Series.
+var s1e = tb.Series([7])
+assert s1e.sum() == 7
+assert approx(s1e.mean(), 7.0)
+assert s1e.min() == 7 and s1e.max() == 7
+assert s1e.count() == 1
+
+# Empty Series: sum/prod have identities, the rest are None (DELTA: tensor throws here; tabular does
+# not — recorded). count is 0.
+var se = tb.Series([])
+assert se.sum() == 0
+assert se.prod() == 1
+assert se.count() == 0
+assert se.mean() == None
+assert se.min() == None
+assert se.max() == None
+assert se.std() == None
+assert se.median() == None
+
+# Missing-data propagation in reductions (skip missing; Bool counts as 0/1).
+var sn = tb.Series([1, None, 3])
+assert sn.sum() == 4
+assert approx(sn.mean(), 2.0)
+assert sn.count() == 2
+assert sn.dropna().tolist() == [1, 3]
+assert sn.fillna(0).tolist() == [1, 0, 3]
+assert sn.unique() == [1, None, 3]        # None counts as one distinct value
+assert sn.nunique() == 3
+assert tb.Series([True, True, False]).sum() == 2
+
+# valuecounts: descending counts, missing skipped.
+assert tb.Series([1, 1, 2, 3, 3, 3]).valuecounts().tolist() == [3, 2, 1]
+
+# ==================================================================================================
+# tabular — Series elementwise arithmetic / comparison / masking helpers
+# ==================================================================================================
+var a = tb.Series([1, 2, 3])
+var b = tb.Series([10, 20, 30])
+assert (a + b).tolist() == [11, 22, 33]
+assert (b - a).tolist() == [9, 18, 27]
+assert (a * b).tolist() == [10, 40, 90]
+assert (a + 100).tolist() == [101, 102, 103]      # scalar broadcast
+assert a.eq(2).tolist() == [False, True, False]
+assert a.ne(2).tolist() == [True, False, True]
+assert a.isin([1, 3]).tolist() == [True, False, True]
+assert (a > 1).tolist() == [False, True, True]
+
+# Length mismatch throws consistently in either order — no silent truncation.
+assert threw(Function(): return tb.Series([1, 2]) + tb.Series([1, 2, 3]))
+assert threw(Function(): return tb.Series([1, 2, 3]) + tb.Series([1, 2]))
+assert "length mismatch" in emsg(Function(): return tb.Series([1, 2]) + tb.Series([1, 2, 3]))
+
+# Missing propagates through comparison (mask still usable).
+assert tb.Series([1, None, 3]).eq(3).tolist() == [False, None, True]
+
+# .all()/.any() reduce a boolean Series.
+assert tb.Series([True, True]).all() == True
+assert tb.Series([True, False]).all() == False
+assert tb.Series([False, True]).any() == True
+assert tb.Series([False, False]).any() == False
+
+# A Series has no single truth value: using one in a boolean context (Bool/if/while) is an error
+# (matching the docs), not silently truthy — so a mask misused as a scalar bool is caught.
+assert "truth value of a Series is ambiguous" in emsg(Function(): return Bool(tb.Series([False, False]))), "Bool(Series) throws (ambiguous)"
+assert threw(Function(): return Bool(tb.Series([]))), "Bool(empty Series) throws too"
+var seriesIfFn = Function():
+    if tb.Series([1, 2]):
+        return "took-branch"
+    return "no"
+assert "ambiguous" in emsg(seriesIfFn), "a Series directly in `if` throws"
+
+# apply/map/astype/sortvalues/head/tail.
+assert a.apply(Function(x): return x * 2).tolist() == [2, 4, 6]
+assert a.map(Function(x): return x + 1).tolist() == [2, 3, 4]
+assert tb.Series([1, 2]).astype("Float").tolist() == [1.0, 2.0]
+assert tb.Series([3, 1, 2]).sortvalues().tolist() == [1, 2, 3]
+assert tb.Series([3, 1, 2]).sortvalues(ascending=False).tolist() == [3, 2, 1]
+assert tb.Series([1, 2, 3, 4, 5, 6]).head().tolist() == [1, 2, 3, 4, 5]
+assert tb.Series([1, 2, 3, 4, 5, 6]).head(2).tolist() == [1, 2]
+assert tb.Series([1, 2, 3, 4, 5, 6]).tail(2).tolist() == [5, 6]
+assert tb.Series([1, 2, 3]).copy().tolist() == [1, 2, 3]
+
+# ==================================================================================================
+# tabular — DataFrame construction (columns / rows / row-dicts) and the ragged-row contract
+# ==================================================================================================
+var df = tb.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}, columns=["a", "b"])
+assert df.shape() == [3, 2]
+assert df.nrows() == 3
+assert df.columns == ["a", "b"]
+assert len(df) == 3
+assert df["a"].tolist() == [1, 2, 3]
+assert df[["a", "b"]].columns == ["a", "b"]
+assert df.torows() == [{"a": 1, "b": 4}, {"a": 2, "b": 5}, {"a": 3, "b": 6}]
+assert df.todict() == {"a": [1, 2, 3], "b": [4, 5, 6]}
+
+# From row-Lists: width set by the first row.
+var dfr = tb.DataFrame([[1, 2], [3, 4]], columns=["a", "b"])
+assert dfr.torows() == [{"a": 1, "b": 2}, {"a": 3, "b": 4}]
+
+# F14-4 contract: a later row of a DIFFERENT width throws a clear message; no silent truncation of a
+# long row, no bare index error on a short one.
+assert threw(Function(): return tb.DataFrame([[1, 2], [3, 4, 5]], columns=["a", "b"]))
+assert "row 1 has 3 fields but the frame is 2 wide" in emsg(Function(): return tb.DataFrame([[1, 2], [3, 4, 5]], columns=["a", "b"]))
+assert "row 1 has 1 fields but the frame is 2 wide" in emsg(Function(): return tb.DataFrame([[1, 2], [3]], columns=["a", "b"]))
+
+# From row-Dicts: columns are the key union (first-seen order), missing -> None.
+var dfd = tb.DataFrame([{"a": 1, "b": 2}, {"b": 3, "c": 4}])
+assert dfd.columns == ["a", "b", "c"]
+assert dfd.torows() == [{"a": 1, "b": 2, "c": None}, {"a": None, "b": 3, "c": 4}]
+assert tb.DataFrame([{"z": 1, "a": 2}, {"a": 3, "m": 4}]).columns == ["z", "a", "m"]
+
+# ==================================================================================================
+# tabular — DataFrame selection, masking, per-cell access, column mutation
+# ==================================================================================================
+var d = tb.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}, columns=["a", "b"])
+assert d.iloc[0].tolist() == [1, 4]
+assert d.loc[0].tolist() == [1, 4]
+assert d.at(0, "a") == 1
+assert d.iat(1, 1) == 5           # iat is (row-pos, col-pos), both Integer
+assert d.rowat(0).tolist() == [1, 4]
+assert d.column("a").tolist() == [1, 2, 3]
+
+# Boolean-Series masking (with None-propagation friendliness).
+var dm = tb.readcsv("name,dept,salary\nAda,eng,120\nAlan,eng,110\nGrace,ops,95\nEdsger,ops,130")
+assert dm[dm["salary"] > 100]["name"].tolist() == ["Ada", "Alan", "Edsger"]
+
+# Column add / assign / drop / rename.
+var d2 = tb.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}, columns=["a", "b"])
+d2["c"] = [7, 8, 9]
+assert d2.columns == ["a", "b", "c"]
+d2["k"] = 0                        # scalar broadcast
+assert d2["k"].tolist() == [0, 0, 0]
+assert d2.assign("d", 1).columns == ["a", "b", "c", "k", "d"]
+assert d2.drop(["c"]).columns == ["a", "b", "k"]
+assert d2.rename({"a": "A"}).columns == ["A", "b", "c", "k"]
+
+# Missing column select raises.
+assert threw(Function(): return d["zzz"])
+assert "zzz" in emsg(Function(): return d["zzz"])
+
+# ==================================================================================================
+# tabular — DataFrame aggregations over numeric columns -> Series indexed by column
+# ==================================================================================================
+var dg = tb.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]}, columns=["a", "b"])
+assert dg.sum().tolist() == [6, 15]
+assert dg.mean().tolist() == [2.0, 5.0]
+assert dg.min().tolist() == [1, 4]
+assert dg.max().tolist() == [3, 6]
+# count tallies non-null over EVERY column (any dtype).
+assert dg.count().tolist() == [3, 3]
+# describe -> DataFrame keyed by numeric column.
+assert dg.describe().columns == ["a", "b"]
+# apply maps fn over each numeric column's Series.
+assert dm.apply(Function(col): return col.sum()).tolist() == [455]
+
+# ==================================================================================================
+# tabular — CSV I/O (readcsv / tocsv) and round-trip with None
+# ==================================================================================================
+var csv = tb.readcsv("name,dept,salary\nAda,eng,120\nAlan,eng,110\nGrace,ops,95")
+assert csv.shape() == [3, 3]
+assert csv["salary"].tolist() == [120, 110, 95]
+# A row with MORE fields than the header throws (no silent data loss).
+assert threw(Function(): return tb.readcsv("a,b\n1,2,3"))
+assert "row 2 has 3 fields" in emsg(Function(): return tb.readcsv("a,b\n1,2,3"))
+# A SHORT row's missing trailing cells are None.
+assert tb.readcsv("a,b\n1").torows() == [{"a": 1, "b": None}]
+# Multi-column None is a real empty field and survives the round-trip.
+var dcsv = tb.readcsv("a,b,c\n1,,3")
+assert dcsv.torows() == [{"a": 1, "b": None, "c": 3}]
+assert dcsv.tocsv() == "a,b,c\n1,,3"
+
+# ==================================================================================================
+# tabular — groupby / agg
+# ==================================================================================================
+var gb = dm.groupby("dept")
+# Group order is first-seen (eng before ops here).
+assert gb.mean()["salary"].tolist() == [115.0, 112.5]
+assert gb.size().tolist() == [2, 2]
+assert gb.sum()["salary"].tolist() == [230, 225]
+assert gb.max()["salary"].tolist() == [120, 130]
+assert gb.min()["salary"].tolist() == [110, 95]
+assert gb.agg({"salary": "sum"})["salary"].tolist() == [230, 225]
+assert gb.agg({"salary": "median"})["salary"].tolist() == [115.0, 112.5]
+# count spans value columns, reporting each group's row count (not the group key column).
+var gc = dm.groupby("dept").count()
+assert "name" in gc.columns and "salary" in gc.columns
+# std of a single-element group is None.
+var dm3 = tb.readcsv("d,v\neng,10\neng,20\nops,5")
+assert approx(dm3.groupby("d").std()["v"].tolist()[0], 7.0710678118654755)
+assert dm3.groupby("d").std()["v"].tolist()[1] == None
+
+# ==================================================================================================
+# tabular — merge / concat
+# ==================================================================================================
+var lft = tb.DataFrame({"k": [1, 2, 3], "lv": [10, 20, 30]}, columns=["k", "lv"])
+var rgt = tb.DataFrame({"k": [2, 3, 4], "rv": [200, 300, 400]}, columns=["k", "rv"])
+assert tb.merge(lft, rgt, on="k").torows() == [{"k": 2, "lv": 20, "rv": 200}, {"k": 3, "lv": 30, "rv": 300}]
+assert tb.merge(lft, rgt, on="k", how="left").torows() == [{"k": 1, "lv": 10, "rv": None}, {"k": 2, "lv": 20, "rv": 200}, {"k": 3, "lv": 30, "rv": 300}]
+assert tb.merge(lft, rgt, on="k", how="right").torows() == [{"k": 2, "lv": 20, "rv": 200}, {"k": 3, "lv": 30, "rv": 300}, {"k": 4, "lv": None, "rv": 400}]
+assert tb.merge(lft, rgt, on="k", how="outer").nrows() == 4
+# Non-key column in both frames disambiguated pandas-style (_x / _y).
+var cx = tb.DataFrame({"k": [1], "v": [9]}, columns=["k", "v"])
+var cy = tb.DataFrame({"k": [1], "v": [8]}, columns=["k", "v"])
+assert tb.merge(cx, cy, on="k").columns == ["k", "v_x", "v_y"]
+# concat: column union, missing filled with None.
+var cc = tb.concat([tb.DataFrame({"a": [1], "b": [2]}, columns=["a", "b"]), tb.DataFrame({"a": [9], "c": [10]}, columns=["a", "c"])])
+assert cc.torows() == [{"a": 1, "b": 2, "c": None}, {"a": 9, "b": None, "c": 10}]
+
+# sortvalues / head / tail on a DataFrame.
+assert dm.sortvalues("salary", ascending=False)["name"].tolist() == ["Edsger", "Ada", "Alan", "Grace"]
+assert dm.sortvalues("salary")["name"].tolist() == ["Grace", "Alan", "Ada", "Edsger"]
+assert dm.head(2)["name"].tolist() == ["Ada", "Alan"]
+assert dm.tail(2)["name"].tolist() == ["Grace", "Edsger"]
+
+# ==================================================================================================
+# matrix — construction / access / factories
+# ==================================================================================================
+var mm = matrix.Matrix([[1, 2], [3, 4]])
+assert approx(mm[0, 1], 2.0)
+assert approx(mm.get(1, 0), 3.0)
+assert approxl(mm[0], [1.0, 2.0])
+assert approxl(mm.row(1), [3.0, 4.0])
+assert mm.shape() == [2, 2]
+assert mm.rows() == 2 and mm.cols() == 2
+assert approxl(matrix.zeros(2, 2).row(0), [0.0, 0.0])
+assert approxl(matrix.ones(2, 2).row(0), [1.0, 1.0])
+assert approxl(matrix.identity(3).row(0), [1.0, 0.0, 0.0])
+assert matrix.vector([1, 2, 3]).shape() == [1, 3]
+assert approxl(matrix.Matrix(2, 3).row(0), [0.0, 0.0, 0.0])   # zero matrix from dims
+
+# set / assignment.
+var ms = matrix.Matrix([[1, 2], [3, 4]])
+ms.set(0, 0, 9)
+assert approx(ms[0, 0], 9.0)
+ms[1, 1] = 8
+assert approx(ms[1, 1], 8.0)
+assert approxl(ms.apply(Function(x): return x * 10).row(0), [90.0, 20.0])
+
+# ==================================================================================================
+# matrix — arithmetic, transpose, linear algebra
+# ==================================================================================================
+assert approxl((mm + mm).row(0), [2.0, 4.0])
+assert approxl((mm - mm).row(0), [0.0, 0.0])
+assert approxl((mm * mm).row(0), [7.0, 10.0])         # matrix multiply
+assert approxl((mm * mm).row(1), [15.0, 22.0])
+assert approxl((mm * 2).row(0), [2.0, 4.0])           # scalar on the RIGHT
+assert approxl(mm.transpose().row(0), [1.0, 3.0])
+assert approx(mm.determinant(), -2.0)
+assert approx(mm.trace(), 5.0)
+assert approx(mm.sum(), 10.0)
+assert approx(matrix.Matrix([[5]]).determinant(), 5.0)                  # 1x1 det
+assert approx(matrix.Matrix([[1, 2, 3], [4, 5, 6], [7, 8, 10]]).determinant(), -3.0)
+
+# inverse and the tolerant compare.
+var inv = mm.inverse()
+assert approxl(inv.row(0), [-2.0, 1.0])
+assert approxl(inv.row(1), [1.5, -0.5])
+assert (mm * inv).compare(matrix.identity(2), abs_tol=1e-9) == True
+# exact equality operator.
+assert (matrix.Matrix([[1, 2]]) == matrix.Matrix([[1, 2]])) == True
+assert (matrix.Matrix([[1, 2]]) == matrix.Matrix([[1, 3]])) == False
+
+# vector ops.
+assert approx(matrix.vector([1, 2, 3]).dot(matrix.vector([4, 5, 6])), 32.0)
+assert approxl(matrix.vector([1, 0, 0]).cross(matrix.vector([0, 1, 0])).row(0), [0.0, 0.0, 1.0])
+assert approx(matrix.vector([3, 4]).norm(), 5.0)
+
+# matrix — HARDENING (must raise the correct message).
+assert "singular" in emsg(Function(): return matrix.Matrix([[1, 2], [2, 4]]).inverse())
+# determinant of a singular matrix returns 0.0 (does NOT throw) — the documented asymmetry.
+assert approx(matrix.Matrix([[1, 2], [2, 4]]).determinant(), 0.0)
+assert "square" in emsg(Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).determinant())
+assert "square" in emsg(Function(): return matrix.Matrix([[1, 2, 3], [4, 5, 6]]).trace())
+assert "equal length" in emsg(Function(): return matrix.Matrix([[1, 2], [3]]))
+assert "inner dimensions" in emsg(Function(): return matrix.Matrix([[1, 2]]) * matrix.Matrix([[1, 2]]))
+# Scalar must be the RIGHT operand: 2 * A throws.
+assert threw(Function(): return 2 * matrix.Matrix([[1, 2], [3, 4]]))
+
+# ==================================================================================================
+# tensor — construction / shape / dtype / indexing
+# ==================================================================================================
+var t = T.Tensor([[1, 2], [3, 4]])
+assert t.shape() == [2, 2]
+assert t.ndim() == 2
+assert t.size() == 4
+assert t.dtype() == "Float"
+assert approx(t[0, 1], 2.0)                 # full index -> scalar
+assert t[1].tolist() == [3.0, 4.0]          # partial index -> sub-tensor
+assert t[-1].tolist() == [3.0, 4.0]         # negative index
+assert t.tolist() == [[1.0, 2.0], [3.0, 4.0]]
+
+# rank-0 scalar tensor.
+var t0 = T.Tensor(5)
+assert t0.shape() == []
+assert t0.ndim() == 0
+assert t0.size() == 1
+assert approx(t0.item(), 5.0)
+
+# factories.
+assert T.zeros([2, 2]).tolist() == [[0.0, 0.0], [0.0, 0.0]]
+assert T.ones([3]).tolist() == [1.0, 1.0, 1.0]
+assert T.full([2], 7).tolist() == [7.0, 7.0]
+assert T.eye(2).tolist() == [[1.0, 0.0], [0.0, 1.0]]
+assert T.identity(2).tolist() == [[1.0, 0.0], [0.0, 1.0]]
+assert T.arange(5).tolist() == [0.0, 1.0, 2.0, 3.0, 4.0]
+assert T.arange(1, 7, 2).tolist() == [1.0, 3.0, 5.0]
+assert T.linspace(0, 1, 5).tolist() == [0.0, 0.25, 0.5, 0.75, 1.0]
+assert T.zeroslike(T.Tensor([1, 2, 3])).tolist() == [0.0, 0.0, 0.0]
+assert T.oneslike(T.Tensor([[1, 2]])).tolist() == [[1.0, 1.0]]
+
+# ==================================================================================================
+# tensor — elementwise arithmetic + broadcasting
+# ==================================================================================================
+assert (t + t).tolist() == [[2.0, 4.0], [6.0, 8.0]]
+assert (t * t).tolist() == [[1.0, 4.0], [9.0, 16.0]]      # Hadamard, NOT matmul
+assert (t * 2).tolist() == [[2.0, 4.0], [6.0, 8.0]]       # scalar
+assert (-t).tolist() == [[-1.0, -2.0], [-3.0, -4.0]]
+# broadcasting (axes align from the right).
+assert (T.Tensor([[1, 2, 3], [4, 5, 6]]) + T.Tensor([10, 20, 30])).tolist() == [[11.0, 22.0, 33.0], [14.0, 25.0, 36.0]]
+# broadcast mismatch throws, no silent wrong-broadcast.
+assert threw(Function(): return T.Tensor([1, 2, 3]) + T.Tensor([1, 2]))
+assert "broadcast" in emsg(Function(): return T.Tensor([1, 2, 3]) + T.Tensor([1, 2]))
+# zero-divisor guards.
+assert threw(Function(): return T.Tensor([1, 2]) // T.Tensor([0, 1]))
+assert threw(Function(): return T.Tensor([1, 2]) % T.Tensor([0, 1]))
+
+# ==================================================================================================
+# tensor — matmul / transpose / reshape / structural
+# ==================================================================================================
+assert t.matmul(t).tolist() == [[7.0, 10.0], [15.0, 22.0]]
+assert threw(Function(): return T.Tensor([[1, 2]]).matmul(T.Tensor([[1, 2]])))
+assert "inner dimensions" in emsg(Function(): return T.Tensor([[1, 2]]).matmul(T.Tensor([[1, 2]])))
+assert t.transpose().tolist() == [[1.0, 3.0], [2.0, 4.0]]
+assert t.permute([1, 0]).tolist() == [[1.0, 3.0], [2.0, 4.0]]
+assert t.swapaxes(0, 1).tolist() == [[1.0, 3.0], [2.0, 4.0]]
+assert t.reshape([4]).tolist() == [1.0, 2.0, 3.0, 4.0]
+assert t.flatten().tolist() == [1.0, 2.0, 3.0, 4.0]
+# reshape to incompatible size throws.
+assert threw(Function(): return t.reshape([5]))
+assert "elements" in emsg(Function(): return t.reshape([5]))
+assert T.Tensor([[1], [2]]).squeeze().tolist() == [1.0, 2.0]
+assert T.Tensor([1, 2]).expanddims(0).shape() == [1, 2]
+assert T.Tensor([1, 2, 3]).flip().tolist() == [3.0, 2.0, 1.0]
+assert T.Tensor([1, 2]).repeat(2).tolist() == [1.0, 1.0, 2.0, 2.0]
+assert T.Tensor([1, 2]).tile([2]).tolist() == [1.0, 2.0, 1.0, 2.0]
+assert T.Tensor([1, 2, 3]).broadcastto([2, 3]).tolist() == [[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]
+assert T.concatenate([T.Tensor([1, 2]), T.Tensor([3, 4])]).tolist() == [1.0, 2.0, 3.0, 4.0]
+assert T.stack([T.Tensor([1, 2]), T.Tensor([3, 4])]).tolist() == [[1.0, 2.0], [3.0, 4.0]]
+
+# ==================================================================================================
+# tensor — indexing & slicing
+# ==================================================================================================
+assert T.Tensor([1, 2, 3, 4, 5])[1:4].tolist() == [2.0, 3.0, 4.0]
+assert T.Tensor([1, 2, 3])[T.Tensor([1, 0, 1])].tolist() == [1.0, 3.0]        # boolean mask
+assert T.Tensor([[1], [2], [3]])[[0, 2]].tolist() == [[1.0], [3.0]]           # fancy index
+assert T.Tensor([1, 2, 3, 4]).slice(1, 3, 1).tolist() == [2.0, 3.0]
+assert T.Tensor([[1], [2], [3]]).take([0, 2]).tolist() == [[1.0], [3.0]]
+
+# ==================================================================================================
+# tensor — reductions (whole-tensor, per-axis, negative axis, empty-axis contract)
+# ==================================================================================================
+var tr = T.Tensor([[1, 2], [3, 4]])
+assert approx(tr.sum(), 10.0)
+assert tr.sum(axis=0).tolist() == [4.0, 6.0]
+assert tr.sum(axis=1).tolist() == [3.0, 7.0]
+assert tr.sum(axis=-1).tolist() == [3.0, 7.0]           # negative axis (NumPy-style)
+assert approx(tr.mean(), 2.5)
+assert approx(tr.prod(), 24.0)
+assert approx(tr.min(), 1.0) and approx(tr.max(), 4.0)
+assert tr.argmin() == 0 and tr.argmax() == 3
+assert approx(tr.std(), 1.118033988749895)
+assert approx(tr.var(), 1.25)
+assert approx(tr.ptp(), 3.0)
+assert approx(tr.median(), 2.5)
+assert tr.cumsum().tolist() == [1.0, 3.0, 6.0, 10.0]
+assert tr.cumprod().tolist() == [1.0, 2.0, 6.0, 24.0]
+assert tr.all() == True
+assert T.Tensor([0, 0]).any() == False
+# out-of-range axis throws.
+assert threw(Function(): return tr.sum(axis=5))
+assert "axis out of range" in emsg(Function(): return tr.sum(axis=5))
+# empty-axis contract: sum/prod have identities and return them; mean/max/std throw.
+assert T.zeros([3, 0]).sum(axis=1).tolist() == [0.0, 0.0, 0.0]
+assert T.zeros([3, 0]).prod(axis=1).tolist() == [1.0, 1.0, 1.0]
+assert threw(Function(): return T.zeros([3, 0]).mean(axis=1))
+assert "empty" in emsg(Function(): return T.zeros([3, 0]).mean(axis=1))
+# empty tensor: sum ok, max throws.
+assert approx(T.Tensor([]).sum(), 0.0)
+assert threw(Function(): return T.Tensor([]).max())
+
+# ==================================================================================================
+# tensor — comparisons / logic / selection
+# ==================================================================================================
+assert T.Tensor([1, 2, 3]).eq(T.Tensor([1, 0, 3])).tolist() == [1.0, 0.0, 1.0]
+assert T.Tensor([1, 2, 3]).gt(T.Tensor([0, 2, 4])).tolist() == [1.0, 0.0, 0.0]
+assert T.where(T.Tensor([1, 0, 1]), T.Tensor([1, 2, 3]), T.Tensor([4, 5, 6])).tolist() == [1.0, 5.0, 3.0]
+assert T.Tensor([1, 5, 10]).clip(2, 8).tolist() == [2.0, 5.0, 8.0]
+assert T.Tensor([1, 5]).maximum(T.Tensor([3, 2])).tolist() == [3.0, 5.0]
+assert T.Tensor([1, 5]).minimum(T.Tensor([3, 2])).tolist() == [1.0, 2.0]
+# whole-tensor == is exact Bool (distinct from the .eq mask).
+assert (T.Tensor([1, 2]) == T.Tensor([1, 2])) == True
+assert (T.Tensor([1, 2]) == T.Tensor([1, 3])) == False
+
+# ==================================================================================================
+# tensor — sort/search, creation helpers
+# ==================================================================================================
+assert T.Tensor([3, 1, 2]).sort().tolist() == [1.0, 2.0, 3.0]
+assert T.Tensor([3, 1, 2]).argsort().tolist() == [1.0, 2.0, 0.0]
+assert T.unique(T.Tensor([3, 1, 2, 1, 3])).tolist() == [1.0, 2.0, 3.0]
+assert approx(T.searchsorted(T.Tensor([1, 3, 5]), 4), 2.0)
+assert T.diag(T.Tensor([1, 2])).tolist() == [[1.0, 0.0], [0.0, 2.0]]
+assert T.diag(T.Tensor([[1, 2], [3, 4]])).tolist() == [1.0, 4.0]
+assert T.tril(T.Tensor([[1, 2], [3, 4]])).tolist() == [[1.0, 0.0], [3.0, 4.0]]
+assert T.triu(T.Tensor([[1, 2], [3, 4]])).tolist() == [[1.0, 2.0], [0.0, 4.0]]
+
+# ==================================================================================================
+# tensor — linear algebra (module functions, 2-D)
+# ==================================================================================================
+var la = T.Tensor([[4, 3], [6, 3]])
+assert approx(T.det(la), -6.0)
+assert approx(T.trace(la), 7.0)
+assert approxl(T.inv(la).flatten().tolist(), [-0.5, 0.5, 1.0, -0.6666666666666666])
+# inv is a true inverse.
+assert la.matmul(T.inv(la)).compare(T.eye(2), abs_tol=1e-9) == True
+# solve: A x = b.
+assert approxl(T.solve(la, T.Tensor([[1], [0]])).flatten().tolist(), [-0.5, 1.0])
+assert approx(T.norm(T.Tensor([3, 4])), 5.0)
+assert T.outer(T.Tensor([1, 2]), T.Tensor([3, 4])).tolist() == [[3.0, 4.0], [6.0, 8.0]]
+assert approx(T.inner(T.Tensor([1, 2]), T.Tensor([3, 4])).item(), 11.0)
+assert T.kron(T.Tensor([[1, 0], [0, 1]]), T.Tensor([[1, 2], [3, 4]])).shape() == [4, 4]
+assert T.cross(T.Tensor([1, 0, 0]), T.Tensor([0, 1, 0])).tolist() == [0.0, 0.0, 1.0]
+assert approx(T.Tensor([1, 2, 3]).dot(T.Tensor([4, 5, 6])), 32.0)
+assert T.einsum("ij->ji", T.Tensor([[1, 2], [3, 4]])).tolist() == [[1.0, 3.0], [2.0, 4.0]]
+assert approx(T.tensordot(T.Tensor([1, 2]), T.Tensor([3, 4]), axes=1).item(), 11.0)
+assert approx(T.contract(T.Tensor([1, 2]), T.Tensor([3, 4]), 0, 0).item(), 11.0)
+
+# tensor linalg — HARDENING.
+assert "singular" in emsg(Function(): return T.inv(T.Tensor([[1, 2], [2, 4]])))
+assert "square" in emsg(Function(): return T.det(T.Tensor([[1, 2, 3]])))
+assert "2-D" in emsg(Function(): return T.kron(T.Tensor([1, 2]), T.Tensor([3, 4])))
+assert "once" in emsg(Function(): return T.einsum("ii->ii", T.Tensor([[1, 2], [3, 4]])))
+assert "one element" in emsg(Function(): return T.Tensor([1, 2]).item())
+
+# ==================================================================================================
+# tensor — complex dtype + helpers
+# ==================================================================================================
+var tc = T.Tensor([1, 2], dtype="Complex")
+assert tc.dtype() == "Complex"
+assert tc.real().tolist() == [1.0, 2.0]
+assert T.Tensor([1.5, 2.5]).astype("Complex").dtype() == "Complex"
+# min/max on a Complex tensor throws (unordered).
+assert threw(Function(): return tc.min())
+assert "Complex" in emsg(Function(): return tc.max())
+# angle() on a Float tensor: pi for negatives, 0 otherwise.
+assert approxl(T.Tensor([-1.0, 1.0]).angle().tolist(), [math.pi, 0.0])
+
+# ==================================================================================================
+# tensor — differentiable element-wise math + domain guards
+# ==================================================================================================
+assert approxl(T.Tensor([0.0, 1.0]).exp().tolist(), [1.0, math.e])
+assert approxl(T.Tensor([1.0, 4.0]).sqrt().tolist(), [1.0, 2.0])
+assert approxl(T.Tensor([-2.0, 3.0]).relu().tolist(), [0.0, 3.0])
+assert approxl(T.Tensor([2.0, 3.0]).square().tolist(), [4.0, 9.0])
+# Out-of-domain ELEMENT throws (no silent NaN/inf poisoning).
+assert "domain error" in emsg(Function(): return T.Tensor([-1.0]).log())
+assert "domain error" in emsg(Function(): return T.Tensor([-1.0]).sqrt())
+assert "domain error" in emsg(Function(): return T.Tensor([2.0]).asin())
+# DELTA: docs group reciprocal(0) with the "math domain error" set, but it raises a distinct
+# division-by-zero message. Pin the real wording.
+assert "reciprocal of 0" in emsg(Function(): return T.Tensor([0.0]).reciprocal())
+
+# ==================================================================================================
+# tensor — autograd
+# ==================================================================================================
+# Linear model gradient: loss = sum(W x); dL/dW = broadcast of x^T.
+var w = T.Tensor([[1.0, 2.0], [3.0, 4.0]], requiresgrad=True)
+var x = T.Tensor([[1.0], [1.0]])
+var loss = w.matmul(x).sum()
+loss.backward()
+assert w.grad.tolist() == [[1.0, 1.0], [1.0, 1.0]]
+assert w.requiresgrad() == True
+
+# Scalar y = v^2; dy/dv = 2v.
+var v = T.Tensor(3.0, requiresgrad=True)
+var y = (v * v).sum()
+y.backward()
+assert approx(v.grad.item(), 6.0)
+v.zerograd()
+assert v.grad == None
+
+# detach stops grad; a Complex tensor cannot require grad.
+assert w.detach().requiresgrad() == False
+assert threw(Function(): return T.Tensor([1, 2], dtype="Complex", requiresgrad=True))
+assert "Float-only" in emsg(Function(): return T.Tensor([1, 2], dtype="Complex", requiresgrad=True))
+
+io.print("cov arrays: all passed")

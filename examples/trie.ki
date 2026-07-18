@@ -133,7 +133,7 @@ class Trie:
     var _contains_ = Function(self, key) -> Bool:
         return self.contains(key)                   # key in trie  (exact membership)
     var _iter_ = Function(self):
-        return self.keys()                          # for k in trie
+        return iter(self.keys())                    # for k in trie
     var _str_ = Function(self) -> String:
         return type(self) + "(" + String(self._size) + " keys)"
 

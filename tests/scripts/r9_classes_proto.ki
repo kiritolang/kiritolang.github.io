@@ -105,10 +105,10 @@ class Ordered:
 
 var o1 = Ordered(1)
 var o2 = Ordered(2)
-ok(o1 < o2 == True, "_lt_ works")
-ok(o1 <= o2 == True, "_le_ works")
-ok(o2 > o1 == True, "_gt_ works")
-ok(o2 >= o1 == True, "_ge_ works")
+ok((o1 < o2) == True, "_lt_ works")
+ok((o1 <= o2) == True, "_le_ works")
+ok((o2 > o1) == True, "_gt_ works")
+ok((o2 >= o1) == True, "_ge_ works")
 ok(o1 == Ordered(1), "_eq_ works")
 ok(sorted([o2, o1, Ordered(3)], key=Function(x): return x.v) == [o1, o2, Ordered(3)], "sorted with class key")
 
@@ -160,8 +160,8 @@ class Bag:
         return x in self.items
 
 var bag = Bag([1, 2, 3])
-ok(2 in bag == True, "_contains_: 2 in bag")
-ok(5 in bag == False, "_contains_: 5 not in bag")
+ok((2 in bag) == True, "_contains_: 2 in bag")
+ok((5 in bag) == False, "_contains_: 5 not in bag")
 
 # =========================================================== _iter_ protocol
 # _iter_ returns an iterable (e.g. a List); for-in then iterates that iterable.
@@ -174,13 +174,13 @@ class CountDown:
         while i > 0:
             result.append(i)
             i = i - 1
-        return result
+        return iter(result)
 
 var cd = CountDown(3)
 var items = []
 for x in cd:
     items.append(x)
-ok(items == [3, 2, 1], "_iter_ protocol: for-in uses _iter_ (returns List)")
+ok(items == [3, 2, 1], "_iter_ protocol: for-in uses _iter_ (returns iter(list))")
 
 var cd2 = CountDown(0)
 var items2 = []

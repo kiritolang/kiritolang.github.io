@@ -1,0 +1,4 @@
+var f = Function(): return 1
+switch 1:
+    case f():
+        discard 0

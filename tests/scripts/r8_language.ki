@@ -237,14 +237,8 @@ var swReturn = Function(v):
             return "def"
     return "unreached"
 ok(swReturn(1) == "one" and swReturn(9) == "def", "return inside a switch arm returns from the function")
-# A duplicate case value throws (catchable) only when the switch is actually reached.
-var swDup = Function():
-    switch 1:
-        case 7:
-            return "a"
-        case 7:
-            return "b"
-ok(throws(swDup), "a duplicate case value throws when the switch is reached")
+# A duplicate case value is a COMPILE-time error (case labels are constant, so it is known statically).
+ok(importErr("switch 1:\n    case 7:\n        var a = 1\n    case 7:\n        var b = 1\n", "duplicate switch case value"), "a duplicate case value is a compile-time error")
 
 # ============================================================================
 # Packing / unpacking — fresh boundary + resolver interactions

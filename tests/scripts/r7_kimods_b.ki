@@ -164,7 +164,7 @@ ok(b64.decode("") == [], "base64 decode empty")
 ok(b64.decode("Zg") == [102], "base64 decode padless 2 chars")
 ok(b64.decode("Zm8") == [102, 111], "base64 decode padless 3 chars")
 # '=' stops decoding at the first occurrence (even mid-stream)
-ok(b64.decode("Zg==garbage") == [102], "base64 decode stops at first =")
+ok(throws(Function(): return b64.decode("Zg==garbage")), "base64 rejects data after the = padding")
 
 # --- Bytes input and List input agree; binary safety ---
 ok(b64.encode(Bytes([0, 255, 128, 1])) == b64.encode([0, 255, 128, 1]), "base64 Bytes==List input")

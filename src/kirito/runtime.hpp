@@ -280,7 +280,12 @@ inline Handle numericBinary(KiritoVM& vm, BinOp op, Handle aH, Handle bH) {
             } break;
             case BinOp::Mod: {
                 if (y == 0.0) throw KiritoError("float modulo by zero");
-                return vm.makeFloat(x - std::floor(x / y) * y);
+                // `x - floor(x/y)*y` loses the remainder for large |x/y| (`1e17 % 3` -> 0 not 1) and gives
+                // NaN for an infinite divisor (`0*inf`). Use fmod (exact truncated remainder) + the Python
+                // floor-mod sign correction so the result takes the divisor's sign and stays in [0,|y|).
+                double r = std::fmod(x, y);
+                if (r != 0.0 && ((r < 0.0) != (y < 0.0))) r += y;
+                return vm.makeFloat(r);
             } break;
             case BinOp::Pow: {
                 // Match math.pow's domain policy (a NaN operand passes through): 0**-n (= 1/0) and a
@@ -490,10 +495,16 @@ inline bool kiLessThan(KiritoVM& vm, Handle a, Handle b) {
         }
         return xe.size() < ye.size();  // shared prefix equal: shorter list is "less"
     }
-    // A user class can define ordering via `_lt_`, so sorted()/min()/max() and `<` work on instances.
-    if (x.kind() == ValueKind::Instance)
-        if (auto* inst = dynamic_cast<const InstanceValue*>(&x); inst && inst->findMethod(vm.arena(), "_lt_"))
+    // Ordering for an Instance-kind value dispatches to its own `<`: a user class via `_lt_`, and a
+    // native value type (BigInt, DateTime, …) via its `binary(Lt)` — so sorted()/min()/max() work on
+    // them just like the `<` operator does (F07-8: a NativeClass has kind()==Instance but is not an
+    // InstanceValue, so it must NOT be gated behind the _lt_ dynamic_cast). A native type that is
+    // genuinely unordered (Complex) or non-comparable (Socket) makes its own binary throw clearly.
+    if (x.kind() == ValueKind::Instance) {
+        const auto* inst = dynamic_cast<const InstanceValue*>(&x);
+        if (!inst || inst->findMethod(vm.arena(), "_lt_"))
             return vm.arena().deref(vm.arena().deref(a).binary(vm, BinOp::Lt, a, b)).truthy();
+    }
     throw KiritoError("cannot order '" + x.typeName() + "' and '" + y.typeName() + "'");
 }
 
@@ -729,7 +740,7 @@ inline Handle ListVal::getAttr(KiritoVM& vm, Handle self, std::string_view name)
     if (name == "clear")
         return makeMethod(vm,
             "clear", {}, [self, self_list](KiritoVM& vm, std::span<const Handle>) -> Handle {
-                self_list(vm, self).elems.clear();
+                self_list(vm, self).clearElems();   // resets elems + cards (single-sourced)
                 return vm.none();
             }, std::vector<Handle>{self});
     if (name == "count")
@@ -1719,11 +1730,9 @@ inline Handle ClassValue::callFull(KiritoVM& vm, std::span<const Handle> args,
     inst->cls = selfHandle;
     inst->className = name;
     inst->ownerVM_ = &vm;   // the VM that owns this instance — used by _hash_/_eq_/_bool_ (multi-VM safe)
-    // Cache the dunder-availability flags now, walking the class chain once. Dict/Set hot paths
-    // then read a plain bool instead of doing a method lookup per hash/equals.
-    inst->hasHashDunder = findMethod(vm.arena(), "_hash_") != nullptr;
-    inst->hasEqDunder   = findMethod(vm.arena(), "_eq_")   != nullptr;
-    inst->hasBoolDunder = findMethod(vm.arena(), "_bool_") != nullptr;
+    // Cache the dunder-availability flags now, walking the class chain once (single-sourced with
+    // serde::rebuild via cacheDunderFlags). Dict/Set hot paths then read a plain bool.
+    inst->cacheDunderFlags(*this, vm.arena());
     Handle instH = vm.alloc(std::move(inst));
     static_cast<InstanceValue&>(vm.arena().deref(instH)).selfHandle = instH;
     if (const Handle* init = findMethod(vm.arena(), "_init_")) {
@@ -1979,17 +1988,28 @@ struct UserLazyIterator : LazyIterator {
             return invokeOp(vm, it, "_next_", {}, "'" + it.className + "' iterator has no _next_ method");
         } catch (KiritoThrow& t) {
             // Only _next_'s OWN raise (t.depth == boundary) ends iteration; a deeper leak propagates.
-            if (isStopIteration(vm, t.value) && t.depth == static_cast<int>(boundary)) return std::nullopt;
+            // The depth check MUST come first: a native KiritoError carries no live value (`value ==
+            // Handle{}`, depth -1), so evaluating isStopIteration(t.value) on it would deref a null
+            // handle and throw "dangling handle", CLOBBERING the real error. depth == boundary is only
+            // ever true for a Kirito-level `throw` (which does carry a live value), so short-circuiting
+            // on it keeps a native error (index-out-of-range, etc.) from _next_ intact with its message.
+            if (t.depth == static_cast<int>(boundary) && isStopIteration(vm, t.value)) return std::nullopt;
             throw;
         }
     }
     void roots(std::vector<Handle>& out) override { out.push_back(iterator_); }
 };
 
-// A class opts into STREAMING iteration by having _iter_ return an object with a _next_ method. If it
-// returns a plain iterable instead (a List/range — the pre-generator style), lazyIterate declines
-// (nullptr) and the eager iterate() path re-dispatches it, so old _iter_-returns-a-List classes keep
-// working unchanged.
+// The ONE iteration protocol: a class is iterable by defining `_iter_(self)` that returns an ITERATOR —
+// either a NATIVE iterator (`iter(<collection>)`, or `range`/`map`/`filter`/`zip`/`enumerate`, all
+// ValueKind::Iterator), or a user `_next_`-style iterator (an Instance with a `_next_` method). A bare
+// List/range-style collection from `_iter_` is NOT accepted (the old eager shim was retired), so there
+// is exactly one way to be iterable — wrap the collection in `iter(...)`.
+//
+// A pathological cyclic `_iter_` (e.g. `return iter(self)`, which re-enters this on every pulled
+// element) is bounded by the native-nesting guard in SourceCursor::next — each level balances the VM
+// call-depth guard, so that is the one place the recursion actually accumulates. Here we only classify
+// the `_iter_` result.
 inline std::unique_ptr<LazyIterator> InstanceValue::lazyIterate(KiritoVM& vm, Handle /*self*/) {
     if (!findMethod(vm.arena(), "_iter_")) return nullptr;
     Handle r = invokeOp(vm, *this, "_iter_", {}, "'" + className + "' is not iterable");
@@ -1997,23 +2017,14 @@ inline std::unique_ptr<LazyIterator> InstanceValue::lazyIterate(KiritoVM& vm, Ha
     if (itObj.kind() == ValueKind::Instance &&
         static_cast<InstanceValue&>(itObj).findMethod(vm.arena(), "_next_"))
         return std::make_unique<UserLazyIterator>(r);
-    return nullptr;
+    if (itObj.kind() == ValueKind::Iterator)
+        return itObj.lazyIterate(vm, r);  // a native iterator: iter(...) / range / map / filter / …
+    throw KiritoError("'" + className + "' _iter_ must return an iterator — call iter(...) on a collection, "
+                      "or return an object with a _next_ method");
 }
 
 inline std::optional<std::vector<Handle>> InstanceValue::iterate(KiritoVM& vm) {
-    // A class becomes iterable by defining _iter_(self) returning any iterable (commonly a List, or a
-    // _next_-style iterator — see lazyIterate).
     if (!findMethod(vm.arena(), "_iter_")) return std::nullopt;
-    // Guard against `_iter_` returning `self` (or a mutually-referential instance): the result is
-    // re-dispatched through iterate(), and a self/cyclic return recurses in native C++ — each level's
-    // `_iter_` call keeps the call-depth guard balanced, so it never trips → native stack overflow
-    // (A07-1). Bound the re-dispatch depth and throw a catchable error; a legitimate `_iter_` chain
-    // (A -> B -> List) is only a few levels deep. One OS thread == one VM, so thread_local is VM-scoped.
-    static thread_local int iterDepth = 0;
-    if (iterDepth >= 100)
-        throw KiritoError("'" + className + "' _iter_ recurses too deeply (does _iter_ return self or a cycle?)");
-    ++iterDepth;
-    struct DepthGuard { int& d; ~DepthGuard() { --d; } } depthGuard{iterDepth};
     Handle r = invokeOp(vm, *this, "_iter_", {}, "'" + className + "' is not iterable");
     RootScope rs(vm);
     rs.add(r);
@@ -2025,7 +2036,10 @@ inline std::optional<std::vector<Handle>> InstanceValue::iterate(KiritoVM& vm) {
         UserLazyIterator lazy(r);
         return drainLazy(vm, lazy, rs);
     }
-    return itObj.iterate(vm);  // old style: _iter_ returned a plain iterable
+    if (itObj.kind() == ValueKind::Iterator)
+        return itObj.iterate(vm);  // drain the native iterator (iter(...) / range / map / …)
+    throw KiritoError("'" + className + "' _iter_ must return an iterator — call iter(...) on a collection, "
+                      "or return an object with a _next_ method");
 }
 inline std::string InstanceValue::str(StringifyCtx& ctx) const {
     if (ctx.vm) {
@@ -2110,6 +2124,8 @@ inline bool typeMatches(KiritoVM& vm, Handle value, const std::string& typeName)
 // an instance of the StopIteration class (the normal form, `throw StopIteration()`) and, leniently, the
 // class value itself (`throw StopIteration`).
 inline bool isStopIteration(KiritoVM& vm, Handle h) {
+    if (h.generation == 0) return false;   // the reserved null Handle{} (e.g. a native KiritoError's
+                                           // value) is not a StopIteration — and must not be deref'd.
     const Object& o = vm.arena().deref(h);
     if (o.kind() == ValueKind::Class) return static_cast<const ClassValue&>(o).name == "StopIteration";
     return typeMatches(vm, h, "StopIteration");
@@ -2491,7 +2507,8 @@ inline std::vector<Handle> spreadValues(KiritoVM& vm, Handle value, std::size_t 
 
 // Canonical type+value key for switch dispatch. Only hashable scalar kinds can label a case or be
 // matched; other types yield nullopt (they only reach `default`). Matching is exact by type AND
-// value, so `case 1` and `case 1.0` differ. Used by the bytecode SwitchMatch opcode.
+// value, so `case 1` and `case 1.0` differ. Used by SwitchDispatch (to key the subject) and by the
+// compiler's constant-label folding (to key each `case` value at compile time).
 inline std::optional<std::string> scalarSwitchKey(KiritoVM& vm, Handle h) {
     const Object& o = vm.arena().deref(h);
     switch (o.kind()) {
@@ -3073,9 +3090,22 @@ struct SourceCursor {
     }
     std::optional<Handle> next(KiritoVM& vm) {
         ensure(vm);
-        if (lazy) return lazy->next(vm);
-        if (idx >= buf.size()) return std::nullopt;
-        return buf[idx++];
+        if (!lazy) {
+            if (idx >= buf.size()) return std::nullopt;
+            return buf[idx++];
+        }
+        // Bound a pathological cyclic iterator: `_iter_ = Function(self): return iter(self)` (or
+        // map(f, self), etc.) re-enters self.lazyIterate on every pull, forming an unbounded NATIVE
+        // recursion whose per-level `_iter_` VM call balances the call-depth guard — so only this
+        // native-nesting bound catches it (a catchable error, never a stack overflow). Legit combinator
+        // nesting (map(filter(map(x)))) is shallow, and sequential pulls of a flat source don't nest, so
+        // this fires only on a genuine cycle. Off the hot range path (RangeLazyIterator uses no cursor).
+        static thread_local int depth = 0;
+        if (depth >= 200)
+            throw KiritoError("iterator recurses too deeply (does _iter_ return iter(self) or form a cycle?)");
+        ++depth;
+        struct G { int& d; ~G() { --d; } } g{depth};
+        return lazy->next(vm);
     }
     // Root the cursor's currently-live handles (source + un-consumed buffer) into a RootScope, so an
     // allocating step in the owning combinator's next() can't sweep the not-yet-consumed source elements
@@ -3160,9 +3190,16 @@ public:
         const Object& o = vm.arena().deref(v);
         if (o.kind() != ValueKind::Integer) return false;
         int64_t x = static_cast<const IntVal&>(o).value();
-        if (step_ > 0) { if (x < start_ || x >= stop_) return false; }
-        else { if (x > start_ || x <= stop_) return false; }
-        return (x - start_) % step_ == 0;   // x,start_ both in-range → subtraction fits
+        // Offset/modulo in UNSIGNED (matching count()/at()): a range can span more than half the int64
+        // domain within the element cap (a large step), so `x - start_` would signed-overflow (UB) even
+        // for an in-range x — e.g. `0 in range(INT64_MIN, INT64_MAX, 6e12)`.
+        if (step_ > 0) {
+            if (x < start_ || x >= stop_) return false;
+            return (static_cast<uint64_t>(x) - static_cast<uint64_t>(start_)) % static_cast<uint64_t>(step_) == 0;
+        }
+        if (x > start_ || x <= stop_) return false;
+        uint64_t negstep = 0u - static_cast<uint64_t>(step_);   // |step|, valid even for INT64_MIN
+        return (static_cast<uint64_t>(start_) - static_cast<uint64_t>(x)) % negstep == 0;
     }
     Handle getItem(KiritoVM& vm, std::span<const Handle> keys) override {
         Handle k = singleKey(*this, keys);
@@ -3330,6 +3367,34 @@ public:
     void children(std::vector<Handle>& out) const override { out.push_back(src_); }
     std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle) override {
         return std::make_unique<EnumerateLazyIterator>(src_, start_);
+    }
+    std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
+        RootScope rs(vm); auto it = lazyIterate(vm, Handle{}); return drainLazy(vm, *it, rs);
+    }
+};
+
+// ---- iter(iterable): the explicit iterator over any iterable. A class becomes iterable by having
+// `_iter_(self)` return one (or any native iterator, or a `_next_`-style user iterator) — a bare List
+// from `_iter_` is not accepted. Delegates to the source's own iteration (streams a lazy source,
+// drains an eager one) via a SourceCursor, so it is memory-light and re-iterable like map/filter. ----
+struct IterLazyIterator : LazyIterator {
+    SourceCursor src;
+    explicit IterLazyIterator(Handle s) : src(s) {}
+    std::optional<Handle> next(KiritoVM& vm) override { return src.next(vm); }
+    void roots(std::vector<Handle>& out) override { src.roots(out); }
+};
+class IterVal : public Object {
+public:
+    Handle src_;
+    explicit IterVal(Handle s) : src_(s) {}
+    ValueKind kind() const override { return ValueKind::Iterator; }
+    std::string typeName() const override { return "iterator"; }
+    bool truthy() const override { return true; }
+    std::string str(StringifyCtx&) const override { return "<iterator>"; }
+    bool equals(const ObjectArena&, const Object& o) const override { return this == &o; }
+    void children(std::vector<Handle>& out) const override { out.push_back(src_); }
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle) override {
+        return std::make_unique<IterLazyIterator>(src_);
     }
     std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
         RootScope rs(vm); auto it = lazyIterate(vm, Handle{}); return drainLazy(vm, *it, rs);
@@ -3656,23 +3721,55 @@ inline void KiritoVM::installBuiltins() {
         return vm.alloc(std::make_unique<RangeVal>(start, stop, step));
     }))));
     defSig("sum", {{"iterable"}, {"start", "", makeInt(0)}}, "Number", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        bool isFloat = false;
+        // Fast path: pure Integer/Float via an int64/double accumulator (streams -> O(1) memory). If a
+        // non-scalar element appears (BigInt/Complex/anything with its own `+`), switch to a generic
+        // Handle accumulator folded with applyBinaryOp(Add) so the aggregate isn't limited to the two
+        // native scalar kinds (F07-9). The accumulator lives in a dedicated AUX-root region — NOT a
+        // RootScope: streamIterate roots each element in its own inner RootScope, whose pop would drop a
+        // handle we'd pushed onto tempRoots_ from inside the callback; an aux region is unaffected.
+        std::vector<Handle> gRoots(2);   // [0] = accumulator, [1] = the scalar transient during the seed
+        vm.pushAuxRoots(&gRoots);
+        struct AuxPop { KiritoVM& v; ~AuxPop() { v.popAuxRoots(); } } auxPop{vm};
+        bool isFloat = false, generic = false;
         double f = 0;
         int64_t n = 0;
-        if (a.size() > 1) {  // optional start value (default 0): sum(it, start)
+        auto scalarHandle = [&]() -> Handle { return isFloat ? vm.makeFloat(f) : vm.makeInt(n); };
+        if (a.size() > 1) {  // optional start value (default 0)
             const Object& st = vm.arena().deref(a[1]);
             if (st.kind() == ValueKind::Float) { isFloat = true; f = static_cast<const FloatVal&>(st).value(); }
             else if (st.kind() == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(st).value(); n = v; f = static_cast<double>(v); }
+            // A non-scalar start only seeds the generic fold if it is a numeric-like value type
+            // (BigInt/Complex/user `_add_`, all ValueKind::Instance). A String/List/Bytes start is
+            // rejected — sum concatenates nothing (the deliberate "no list start concat" contract).
+            else if (st.kind() == ValueKind::Instance) { generic = true; gRoots[0] = a[1]; }
             else throw KiritoError("sum start must be a number");
         }
-        streamIterate(vm, a[0], "sum() argument is not iterable", [&](Handle h) {  // streams: sum(range(N)) is O(1) memory
+        streamIterate(vm, a[0], "sum() argument is not iterable", [&](Handle h) {
             const Object& o = vm.arena().deref(h);
-            if (o.kind() == ValueKind::Float) { isFloat = true; f += static_cast<const FloatVal&>(o).value(); }
-            else if (o.kind() == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(o).value(); n = wadd(n, v); f += static_cast<double>(v); }
-            else throw KiritoError("sum expects numbers");
-            return true;
+            const ValueKind k = o.kind();
+            if (!generic) {
+                if (k == ValueKind::Float) { isFloat = true; f += static_cast<const FloatVal&>(o).value(); return true; }
+                if (k == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(o).value(); n = wadd(n, v); f += static_cast<double>(v); return true; }
+                if (k == ValueKind::Instance) {
+                    // First non-scalar numeric (BigInt/Complex/user `_add_`): fold the accumulated scalar
+                    // INTO it (the native type must be on the LEFT — arithmetic dispatches on the left
+                    // operand and reals coerce to it).
+                    generic = true;
+                    gRoots[1] = scalarHandle();   // root the fresh scalar across the add (h is rooted by streamIterate)
+                    gRoots[0] = applyBinaryOp(vm, BinOp::Add, h, gRoots[1]);
+                    gRoots[1] = Handle{};
+                    return true;
+                }
+                throw KiritoError("sum expects numbers");   // String/List/Bytes/… — preserve the contract
+            }
+            // generic mode: fold numbers and numeric value types; reject everything else the same way.
+            if (k == ValueKind::Float || k == ValueKind::Integer || k == ValueKind::Instance) {
+                gRoots[0] = applyBinaryOp(vm, BinOp::Add, gRoots[0], h);   // acc (native) + element
+                return true;
+            }
+            throw KiritoError("sum expects numbers");
         });
-        return isFloat ? vm.makeFloat(f) : vm.makeInt(n);
+        return generic ? gRoots[0] : scalarHandle();
     });
     // min/max are variadic (a single iterable, or several positional values) and accept the keyword
     // options `key` (a function producing the comparison key) and `default` (returned for an empty
@@ -3770,6 +3867,12 @@ inline void KiritoVM::installBuiltins() {
     defSig("filter", {{"function"}, {"iterable"}}, "Iterator", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         // Lazy: yields each element whose `function` result is truthy (Python-style).
         return vm.alloc(std::make_unique<FilterVal>(a[0], a[1]));
+    });
+    defSig("iter", {{"iterable"}}, "Iterator", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        // The explicit iterator over any iterable. Its main use is the iteration protocol: a class
+        // returns `iter(<its backing collection>)` from `_iter_` (a bare List from `_iter_` is rejected).
+        // Like map/filter, the view is re-iterable and streams a lazy source instead of materializing it.
+        return vm.alloc(std::make_unique<IterVal>(a[0]));
     });
     defSig("type", {{"x"}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         return vm.makeString(vm.arena().deref(a[0]).typeName());

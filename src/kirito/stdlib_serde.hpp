@@ -559,12 +559,12 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
                     inst->cls = *cls;
                     inst->className = nd.s;
                     inst->ownerVM_ = &vm;   // owner VM for _hash_/_eq_/_bool_ (multi-VM safe)
-                    // Cache the dunder availability now — same as ClassValue::callFull does — so a
-                    // deserialised instance is hashable/equatable to the same extent as a freshly
-                    // constructed one.
+                    // Cache the dunder availability now — single-sourced with ClassValue::callFull via
+                    // cacheDunderFlags — so a deserialised instance is hashable/equatable/truthy to the
+                    // SAME extent as a freshly constructed one (previously _bool_ was dropped here,
+                    // silently making a restored falsy instance truthy — A08 F08-2).
                     const auto& cv = static_cast<const ClassValue&>(vm.arena().deref(*cls));
-                    inst->hasHashDunder = cv.findMethod(vm.arena(), "_hash_") != nullptr;
-                    inst->hasEqDunder   = cv.findMethod(vm.arena(), "_eq_")   != nullptr;
+                    inst->cacheDunderFlags(cv, vm.arena());
                     Handle ih = roots.add(vm.alloc(std::move(inst)));
                     static_cast<InstanceValue&>(vm.arena().deref(ih)).selfHandle = ih;
                     objs[i] = ih;

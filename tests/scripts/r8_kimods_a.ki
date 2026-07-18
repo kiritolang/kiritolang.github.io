@@ -199,7 +199,7 @@ ok(dq.pop() == 7 and dq.popleft() == 3 and len(dq) == 1, "deque drains from both
 # Counter over INTEGER keys: mostcommon ordering and a negative-n end-slice that drops everything.
 var cInt = co.Counter([1, 1, 2, 3, 3, 3])
 ok(cInt.mostcommon(2) == [[3, 3], [1, 2]], "Counter(Integer keys) mostcommon top-2 by count")
-ok(cInt.mostcommon(-1) == [[3, 3], [1, 2]], "Counter mostcommon(-1) drops the single least-common")
+ok(cInt.mostcommon(-1) == [], "Counter mostcommon(negative n) is [] (CPython)")
 ok(cInt.mostcommon(-10) == [], "Counter mostcommon with a hugely negative n drops everything -> []")
 # Counter.get of an unseen key is 0; the documented-absent surface throws.
 ok(co.Counter([1]).get(99) == 0, "Counter.get of an unseen key is 0")
@@ -230,9 +230,9 @@ ok(co.defaultdict(factory = Function(): return 9)["k"] == 9, "defaultdict(factor
 var q1 = st.quantiles([1, 2, 4, 8])
 ok(len(q1) == 3, "quantiles default n=4 -> 3 cuts")
 ok(close(q1[0], 1.25) and close(q1[1], 3.0) and close(q1[2], 7.0), "quantiles interior interpolation matches the oracle")
-# Both clamp arms on tiny data: n large vs 2 points clamps the outer cut points to the extremes.
+# Tail cuts on tiny data: n large vs 2 points EXTRAPOLATES past the range (CPython exclusive method).
 var q2 = st.quantiles([1, 2], 4)
-ok(close(q2[0], 1.0) and close(q2[1], 1.5) and close(q2[2], 2.0), "quantiles n=4 on 2 points hits both clamp arms")
+ok(close(q2[0], 0.75) and close(q2[1], 1.5) and close(q2[2], 2.25), "quantiles n=4 on 2 points extrapolates the tail cuts")
 ok(len(st.quantiles([1, 2, 3], 5)) == 4, "quantiles n=5 -> 4 cuts")
 # quantiles sorts internally; n=2 single cut equals the median.
 ok(st.quantiles([8, 2, 4, 1]) == st.quantiles([1, 2, 4, 8]), "quantiles sorts internally")

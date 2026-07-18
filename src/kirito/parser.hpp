@@ -290,16 +290,20 @@ private:
         SourceSpan span = advance().span;  // 'var'
         auto node = std::make_unique<ast::VarDeclStmt>();
         node->span = span;
-        parseTargetNameList(node->names, node->starIndex, "a name after 'var'");
+        node->forceUnpack = parseTargetNameList(node->names, node->starIndex, "a name after 'var'");
         expect(TokenType::Assign, "'=' in var declaration");
         node->init = parseValueSeq();
-        if (node->names.size() == 1 && node->starIndex == -1) labelFunction(node->names[0], node->init.get());
+        if (node->names.size() == 1 && node->starIndex == -1 && !node->forceUnpack)
+            labelFunction(node->names[0], node->init.get());
         endSimpleStatement();
         return node;
     }
 
     // Parse a comma-separated list of (optionally one starred) names, used by `var` and `for`.
-    void parseTargetNameList(std::vector<std::string>& names, int& starIndex, const char* what) {
+    // Returns true iff a TRAILING comma closed the list (`a,` before `=`/`in`). A trailing comma after
+    // a single name is a 1-element unpack request (`var a, = x`), which the caller flags as forceUnpack
+    // so it matches the bare `a, = x` rather than silently binding the whole iterable.
+    bool parseTargetNameList(std::vector<std::string>& names, int& starIndex, const char* what) {
         while (true) {
             if (at(TokenType::Star)) {
                 if (starIndex != -1) throw KiritoError("two starred targets in assignment", peek().span);
@@ -309,8 +313,9 @@ private:
             names.push_back(expect(TokenType::Identifier, what).text);
             if (!at(TokenType::Comma)) break;
             advance();
-            if (at(TokenType::Assign) || at(TokenType::KwIn)) break;  // trailing comma
+            if (at(TokenType::Assign) || at(TokenType::KwIn)) return true;  // trailing comma
         }
+        return false;
     }
 
     // Parse a value position that may pack: `e` or `e, e, ...` (a tuple, evaluated to a List).
@@ -404,7 +409,7 @@ private:
     ast::StmtPtr parseFor() {
         auto node = std::make_unique<ast::ForStmt>();
         node->span = advance().span;  // 'for'
-        parseTargetNameList(node->vars, node->starIndex, "a loop variable");
+        node->forceUnpack = parseTargetNameList(node->vars, node->starIndex, "a loop variable");
         expect(TokenType::KwIn, "'in'");
         node->iterable = parseExpr();
         ++loopDepth_;
@@ -515,35 +520,55 @@ private:
         return parseComparison();
     }
 
+    // Detect a comparison-family operator at the cursor (==, !=, <, <=, >, >=, in, not in) without
+    // consuming it. Kirito comparisons do NOT chain (see parseComparison), so we need to peek for a
+    // second one to reject it.
+    bool comparisonOpAhead() const {
+        switch (peek().type) {
+            case TokenType::EqEq: case TokenType::NotEq:
+            case TokenType::Lt: case TokenType::Le:
+            case TokenType::Gt: case TokenType::Ge:
+            case TokenType::KwIn: return true;
+            case TokenType::KwNot: return peekAt(1).type == TokenType::KwIn;
+            default: return false;
+        }
+    }
+
     ast::ExprPtr parseComparison() {
         ChainDepth cd(exprDepth_);
         auto left = parseAdd();
-        while (true) {
-            if (blockJustClosed_) return left;  // a block-fn's dedent terminates the statement (A02-1)
-            BinOp op;
-            SourceSpan span;
-            if (at(TokenType::KwIn)) {
-                op = BinOp::In;
-                span = advance().span;
-            } else if (at(TokenType::KwNot) && peekAt(1).type == TokenType::KwIn) {
-                op = BinOp::NotIn;
-                span = advance().span;
-                advance();
-            } else {
-                switch (peek().type) {
-                    case TokenType::EqEq: { op = BinOp::Eq; } break;
-                    case TokenType::NotEq: { op = BinOp::Ne; } break;
-                    case TokenType::Lt: { op = BinOp::Lt; } break;
-                    case TokenType::Le: { op = BinOp::Le; } break;
-                    case TokenType::Gt: { op = BinOp::Gt; } break;
-                    case TokenType::Ge: { op = BinOp::Ge; } break;
-                    default: { return left; } break;
-                }
-                span = advance().span;
+        if (blockJustClosed_) return left;  // a block-fn's dedent terminates the statement (A02-1)
+        BinOp op;
+        SourceSpan span;
+        if (at(TokenType::KwIn)) {
+            op = BinOp::In;
+            span = advance().span;
+        } else if (at(TokenType::KwNot) && peekAt(1).type == TokenType::KwIn) {
+            op = BinOp::NotIn;
+            span = advance().span;
+            advance();
+        } else {
+            switch (peek().type) {
+                case TokenType::EqEq: { op = BinOp::Eq; } break;
+                case TokenType::NotEq: { op = BinOp::Ne; } break;
+                case TokenType::Lt: { op = BinOp::Lt; } break;
+                case TokenType::Le: { op = BinOp::Le; } break;
+                case TokenType::Gt: { op = BinOp::Gt; } break;
+                case TokenType::Ge: { op = BinOp::Ge; } break;
+                default: { return left; } break;
             }
-            cd.step(span);
-            left = binary(std::move(left), op, parseAdd(), span);
+            span = advance().span;
         }
+        cd.step(span);
+        left = binary(std::move(left), op, parseAdd(), span);
+        // Reject a chained comparison — `a < b < c`, `1 == 1 == 1`, `x in y in z`. Unlike Python, Kirito
+        // comparisons are non-chaining: `a < b < c` would otherwise parse as `(a < b) < c` and compare a
+        // Bool. Require the conditions be joined explicitly with `and`/`or`.
+        if (!blockJustClosed_ && comparisonOpAhead()) {
+            throw KiritoError("chained comparison is not allowed; connect the conditions with 'and'/'or' "
+                              "(e.g. 'a < b and b < c')", peek().span);
+        }
+        return left;
     }
 
     ast::ExprPtr parseAdd() {

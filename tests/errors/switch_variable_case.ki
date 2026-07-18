@@ -1,0 +1,4 @@
+var v = 3
+switch 3:
+    case v:
+        discard 0

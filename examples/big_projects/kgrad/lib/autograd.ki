@@ -246,7 +246,7 @@ var relu = Function(a):
     var out = _make(nd.relu(a.data), [a], None)
     var bw = Function():
         if a.requires_grad:
-            var mask = nd._unary(a.data, "sign_pos")
+            var mask = nd.unary(a.data, "sign_pos")
             a.accum(nd.mul(out.grad, mask))
     out.grad_fn = bw
     return out

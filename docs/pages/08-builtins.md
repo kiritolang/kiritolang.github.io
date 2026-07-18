@@ -49,6 +49,15 @@ parameter name.
   The type-name `String` form also accepts the **pseudo-types** `"Number"` (Integer or Float),
   `"Any"` (always `True`), `"Function"`, `"Module"`, `"None"`, and a **native object's type name**
   (e.g. `isinstance(m, "Matrix")`).
+
+  > **Matching is by class NAME, not identity.** For a user class, `isinstance` (and a typed `catch`,
+  > and an enforcing type annotation) test whether the value's class **chain** contains a class of the
+  > **same name** — they do not compare class identity. So two *distinct* classes that happen to share a
+  > name (e.g. one defined in each of two modules, or a class redefined after instances were made) are
+  > treated as the same type here. This is deliberate: it is what lets a deserialized instance
+  > (`dump`/`serialize`) re-match its class after a round-trip into a fresh VM, where the rebuilt class is
+  > a different object than the original. Keep user class names distinct if you rely on `isinstance` /
+  > typed `catch` to tell two types apart.
 - `hasattr(obj, name: String) → Bool` — whether `obj.name` resolves to an attribute or method. It is
   **existence**, not value: an attribute set to `None` still exists, so `hasattr` returns `True` for it
   (this is the whole point — it tells a present-but-`None` attribute apart from a missing one). Works
@@ -79,6 +88,11 @@ parameter name.
 - `map(function, iterable) → Iterator` — a **lazy** iterator applying `function` to every element.
 - `filter(function, iterable) → Iterator` — a **lazy** iterator of the elements for which `function(x)`
   is truthy.
+- `iter(iterable) → Iterator` — the explicit iterator over any iterable. Its main use is the iteration
+  protocol: a class becomes iterable by returning `iter(<its backing collection>)` from
+  [`_iter_`](09-types.md#user-defined-classes) — a bare List from `_iter_` is **not** accepted. Like
+  `map`/`filter`, the view is **lazy** (streams a lazy source instead of materializing it) and
+  re-iterable. `iter` of a non-iterable throws when it is consumed.
 
   > **Lazy note.** `map`/`filter`/`zip`/`enumerate` return a one-pass **iterator** (like Python 3), not a
   > List: `type(map(f, xs))` is `"map"`, the result is not indexable and is not `== [a, list]`, and a
@@ -90,9 +104,11 @@ parameter name.
 - `sorted(iterable[, key][, reverse]) → List` — a new **stable**-sorted list. `key` is an optional
   function mapping each element to its comparison key (computed once per element); `reverse = True`
   sorts descending. `sorted(xs, key = len, reverse = True)`.
-- `sum(iterable, start = 0) → Number` — the sum of a sequence of numbers, added onto `start`; an
-  `Integer` if every element (and `start`) is an Integer, otherwise a `Float`. `sum([])` is `start`
-  (`0` by default).
+- `sum(iterable, start = 0) → Number` — the sum of a sequence of numbers, added onto `start`. Pure
+  `Integer`/`Float` scalars use a fast accumulator (an `Integer` if every element and `start` are
+  Integers, else a `Float`); a numeric value type (`BigInt`, `Complex`) folds via its own `+`, giving a
+  value of that type. A non-number element (or `start`) throws — `sum` does **not** concatenate Strings
+  or Lists. `sum([])` is `start` (`0` by default).
 - `min(*args[, key][, default]) → value` / `max(*args[, key][, default]) → value` — the smallest /
   largest of a single iterable (`min(xs)`) or of several positional values (`min(a, b, c)`). `key` is
   an optional function producing the comparison key; `default` is returned when the (single) iterable

@@ -168,7 +168,7 @@ catch as e:
     lenErr = e
 assert "_len_ must return an Integer" in lenErr, "_len_ returning non-Integer throws"
 
-# _iter_ returning a non-iterable throws cleanly (doc says it returns "a List of elements").
+# _iter_ must return an iterator; a bare non-iterator throws cleanly.
 class BadIter:
     var _iter_ = Function(self): return 42
 var iterErr = "no"
@@ -176,8 +176,8 @@ try:
     for z in BadIter():
         discard z
 catch as e:
-    iterErr = "iterable" in e
-assert iterErr, "_iter_ returning a non-iterable throws 'not iterable'"
+    iterErr = "must return an iterator" in e
+assert iterErr, "_iter_ returning a non-iterator throws 'must return an iterator'"
 
 # _str_ returning a non-String: the runtime is LENIENT — it stringifies the returned value rather
 # than erroring (doc 06-types.md says _str_ "Returns a String"). Record the actual behavior.

@@ -619,7 +619,7 @@ public:
         return false;
     }
 
-    void clear() { mut().elems.clear(); }
+    void clear() { mut().clearElems(); }   // resets elems + cards (single-sourced with list.clear())
 
     // Iteration — range-for over Values.
     class Iterator {

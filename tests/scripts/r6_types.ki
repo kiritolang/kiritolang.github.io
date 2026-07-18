@@ -581,7 +581,7 @@ class Bag:
     var _contains_ = Function(self, x):
         return x in self.items
     var _iter_ = Function(self):
-        return self.items
+        return iter(self.items)
     var _call_ = Function(self, k):
         return k * 2
 

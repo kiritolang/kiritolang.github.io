@@ -125,7 +125,7 @@ int main() {
             "    var _init_ = Function(self):\n"
             "        self._xs = [1, 2, 3]\n"
             "    var _iter_ = Function(self):\n"
-            "        return self._xs\n"
+            "        return iter(self._xs)\n"
             "var total = 0\nfor x in Bag():\n    total = total + x\ntotal") == "6");
     }
 

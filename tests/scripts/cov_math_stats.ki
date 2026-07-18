@@ -1,0 +1,581 @@
+# Exhaustive coverage tests for Kirito's numeric stdlib modules:
+#   math, statistics, random, bisect, heapq
+# Every assertion matches the ACTUAL interpreter behavior (verified by running ./build-release/ki),
+# never assumed. Float results use a tolerant abs-compare (`approx`) unless the value is exactly
+# representable (small integers as Floats). Random tests are seeded and check invariants /
+# determinism / ranges rather than exact unseeded values.
+
+var io = import("io")
+var math = import("math")
+var stats = import("statistics")
+var random = import("random")
+var bisect = import("bisect")
+var heapq = import("heapq")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+# Tolerant absolute-difference comparison for irrational / computed Floats.
+var approx = Function(a, b):
+    return math.fabs(a - b) < 0.000000001
+
+# ==================================================================================================
+# math — constants
+# ==================================================================================================
+assert approx(math.pi, 3.141592653589793)
+assert approx(math.e, 2.718281828459045)
+assert approx(math.tau, 2.0 * math.pi)
+assert math.isinf(math.inf)
+assert math.inf > 0
+assert math.isnan(math.nan)
+assert math.nan != math.nan             # NaN is never equal to itself
+
+# ==================================================================================================
+# math — roots & powers
+# ==================================================================================================
+assert approx(math.sqrt(4), 2.0)
+assert approx(math.sqrt(2), 1.4142135623730951)
+assert math.sqrt(0) == 0.0
+assert approx(math.sqrt(16), 4.0)
+assert approx(math.sqrt(x = 25), 5.0)   # keyword argument
+assert approx(math.cbrt(27), 3.0)
+assert approx(math.cbrt(-8), -2.0)      # cbrt is defined for negatives
+assert approx(math.pow(2, 10), 1024.0)
+assert type(math.pow(2, 3)) == "Float"  # math.pow always returns Float
+assert approx(math.pow(4, 0.5), 2.0)
+assert approx(math.pow(2, -1), 0.5)
+assert math.pow(0, 0) == 1.0
+# domain errors
+assert "sqrt: math domain error" in emsg(Function(): return math.sqrt(-1))
+assert threw(Function(): return math.sqrt(-0.0001))
+assert "a negative base requires an integer exponent" in emsg(Function(): return math.pow(-2, 0.5))
+assert "zero to a negative power" in emsg(Function(): return math.pow(0, -1))
+# NaN passes through, is not a domain error
+assert math.isnan(math.sqrt(math.nan))
+# overflow to inf is a RANGE condition, not a domain error -> no throw
+assert math.isinf(math.exp(1000))
+
+# ==================================================================================================
+# math — trigonometric
+# ==================================================================================================
+assert math.sin(0) == 0.0
+assert math.cos(0) == 1.0
+assert math.tan(0) == 0.0
+assert approx(math.sin(math.pi / 2), 1.0)
+assert approx(math.cos(math.pi), -1.0)
+assert approx(math.asin(1), math.pi / 2)
+assert approx(math.acos(1), 0.0)
+assert approx(math.atan(1), math.pi / 4)
+assert approx(math.atan2(1, 1), math.pi / 4)
+assert approx(math.atan2(0, -1), math.pi)
+assert approx(math.hypot(3, 4), 5.0)
+assert approx(math.hypot(5, 12), 13.0)
+# inverse trig domain errors
+assert "asin: math domain error" in emsg(Function(): return math.asin(2))
+assert "acos: math domain error" in emsg(Function(): return math.acos(2))
+assert threw(Function(): return math.asin(-1.5))
+assert threw(Function(): return math.acos(-1.5))
+# atan/atan2/hypot have no domain restriction
+assert not threw(Function(): return math.atan(1000000))
+
+# ==================================================================================================
+# math — hyperbolic
+# ==================================================================================================
+assert math.sinh(0) == 0.0
+assert math.cosh(0) == 1.0
+assert math.tanh(0) == 0.0
+assert approx(math.asinh(math.sinh(1.5)), 1.5)
+assert approx(math.acosh(math.cosh(1.5)), 1.5)
+assert approx(math.atanh(math.tanh(0.5)), 0.5)
+assert math.asinh(0) == 0.0
+assert approx(math.acosh(1), 0.0)
+assert math.atanh(0) == 0.0
+# hyperbolic domain errors
+assert "acosh: math domain error" in emsg(Function(): return math.acosh(0))
+assert threw(Function(): return math.acosh(0.5))
+assert "atanh: math domain error" in emsg(Function(): return math.atanh(1))
+assert threw(Function(): return math.atanh(-1))
+assert threw(Function(): return math.atanh(2))
+# asinh has no domain restriction
+assert not threw(Function(): return math.asinh(-1000))
+
+# ==================================================================================================
+# math — exp & logarithms
+# ==================================================================================================
+assert approx(math.exp(0), 1.0)
+assert approx(math.exp(1), math.e)
+assert approx(math.exp(math.log(5)), 5.0)
+assert math.expm1(0) == 0.0
+assert approx(math.expm1(1), math.e - 1.0)
+assert math.log1p(0) == 0.0
+assert approx(math.log(math.e), 1.0)
+assert approx(math.log(8, 2), 3.0)      # log with base
+assert approx(math.log(1000, 10), 3.0)
+assert approx(math.log2(8), 3.0)
+assert approx(math.log10(1000), 3.0)
+assert math.log(1) == 0.0
+# log domain errors
+assert "log: math domain error (argument must be > 0)" in emsg(Function(): return math.log(0))
+assert threw(Function(): return math.log(-1))
+assert "base must be > 0 and != 1" in emsg(Function(): return math.log(8, 1))
+assert threw(Function(): return math.log(8, 0))
+assert threw(Function(): return math.log(8, -2))
+assert "log2: math domain error" in emsg(Function(): return math.log2(0))
+assert threw(Function(): return math.log2(-1))
+assert "log10: math domain error" in emsg(Function(): return math.log10(0))
+assert threw(Function(): return math.log10(-1))
+assert "log1p: math domain error" in emsg(Function(): return math.log1p(-1))
+assert threw(Function(): return math.log1p(-2))
+
+# ==================================================================================================
+# math — gamma / lgamma / erf
+# ==================================================================================================
+assert approx(math.gamma(5), 24.0)      # gamma(n) == (n-1)!
+assert approx(math.gamma(1), 1.0)
+assert approx(math.lgamma(1), 0.0)
+assert approx(math.lgamma(2), 0.0)
+assert math.erf(0) == 0.0
+assert approx(math.erf(math.inf), 1.0)
+assert math.erfc(0) == 1.0
+assert approx(math.erf(1) + math.erfc(1), 1.0)
+# gamma poles at 0, -1, -2, ... throw
+assert "gamma: math domain error" in emsg(Function(): return math.gamma(0))
+assert threw(Function(): return math.gamma(-1))
+assert threw(Function(): return math.gamma(-2))
+assert "lgamma: math domain error" in emsg(Function(): return math.lgamma(0))
+assert threw(Function(): return math.lgamma(-1))
+# gamma of a positive non-integer is fine
+assert not threw(Function(): return math.gamma(0.5))
+# a negative non-integer is a valid gamma input
+assert not threw(Function(): return math.gamma(-0.5))
+
+# ==================================================================================================
+# math — rounding & sign
+# ==================================================================================================
+assert math.floor(2.7) == 2
+assert type(math.floor(2.7)) == "Integer"
+assert math.floor(-2.5) == -3
+assert math.ceil(2.1) == 3
+assert type(math.ceil(2.1)) == "Integer"
+assert math.ceil(-2.5) == -2
+assert math.trunc(2.7) == 2.0
+assert type(math.trunc(2.7)) == "Float"   # doc: trunc -> Float
+assert math.trunc(-2.7) == -2.0
+assert math.fabs(-3.5) == 3.5
+assert math.fabs(3.5) == 3.5
+assert type(math.fabs(-3)) == "Float"
+assert math.copysign(3, -1) == -3.0
+assert math.copysign(-3, 1) == 3.0
+assert math.copysign(3, -0.0) == -3.0
+# floor/ceil of non-finite throw (can't convert to Integer)
+assert "cannot convert infinity to Integer" in emsg(Function(): return math.floor(math.inf))
+assert "cannot convert NaN to Integer" in emsg(Function(): return math.ceil(math.nan))
+
+# ==================================================================================================
+# math — fmod
+# ==================================================================================================
+assert approx(math.fmod(7, 3), 1.0)
+assert approx(math.fmod(-7, 3), -1.0)   # result has sign of x
+assert approx(math.fmod(7, -3), 1.0)
+assert math.fmod(6, 3) == 0.0
+assert "fmod: math domain error (divisor is zero)" in emsg(Function(): return math.fmod(3, 0))
+assert "fmod: math domain error (infinite dividend)" in emsg(Function(): return math.fmod(math.inf, 3))
+# fmod(finite, inf) is fine
+assert not threw(Function(): return math.fmod(3, math.inf))
+
+# ==================================================================================================
+# math — degrees / radians
+# ==================================================================================================
+assert approx(math.degrees(math.pi), 180.0)
+assert approx(math.radians(180), math.pi)
+assert approx(math.degrees(math.radians(90)), 90.0)
+assert math.degrees(0) == 0.0
+assert math.radians(0) == 0.0
+
+# ==================================================================================================
+# math — predicates
+# ==================================================================================================
+assert math.isnan(math.nan)
+assert not math.isnan(1.0)
+assert not math.isnan(math.inf)
+assert math.isinf(math.inf)
+assert math.isinf(-math.inf)
+assert not math.isinf(1.0)
+assert not math.isinf(math.nan)
+assert math.isfinite(1.0)
+assert not math.isfinite(math.inf)
+assert not math.isfinite(math.nan)
+
+# ==================================================================================================
+# math — gcd / lcm (Integer)
+# ==================================================================================================
+assert math.gcd(12, 18) == 6
+assert math.gcd(-12, 18) == 6           # magnitude-based
+assert math.gcd(0, 5) == 5
+assert math.gcd(0, 0) == 0
+assert math.gcd(17, 5) == 1
+assert type(math.gcd(4, 6)) == "Integer"
+assert math.lcm(4, 6) == 12
+assert math.lcm(-4, 6) == 12
+assert math.lcm(0, 5) == 0              # lcm with zero is zero
+assert math.lcm(0, 0) == 0
+assert math.lcm(7, 3) == 21
+# gcd/lcm demand Integers
+assert "gcd expects Integers" in emsg(Function(): return math.gcd(1.5, 2))
+assert "lcm expects Integers" in emsg(Function(): return math.lcm(1.5, 2))
+# lcm overflow throws
+assert "lcm result too large" in emsg(Function(): return math.lcm(9223372036854775807, 9223372036854775806))
+
+# ==================================================================================================
+# math — factorial / comb / perm
+# ==================================================================================================
+assert math.factorial(0) == 1
+assert math.factorial(1) == 1
+assert math.factorial(5) == 120
+assert math.factorial(20) == 2432902008176640000
+assert type(math.factorial(5)) == "Integer"
+assert "factorial is not defined for negatives" in emsg(Function(): return math.factorial(-1))
+assert "factorial result too large for Integer" in emsg(Function(): return math.factorial(21))
+assert "factorial expects an Integer" in emsg(Function(): return math.factorial(1.5))
+
+assert math.comb(5, 2) == 10
+assert math.comb(5, 0) == 1
+assert math.comb(5, 5) == 1
+assert math.comb(5, 6) == 0             # k > n -> 0
+assert math.comb(30, 15) == 155117520
+assert "comb/perm require non-negative Integers" in emsg(Function(): return math.comb(-1, 2))
+assert threw(Function(): return math.comb(5, -1))
+assert "comb/perm result too large" in emsg(Function(): return math.comb(100, 50))
+
+assert math.perm(5, 2) == 20
+assert math.perm(5) == 120              # k omitted -> n!
+assert math.perm(5, 0) == 1
+assert math.perm(3, 5) == 0             # k > n -> 0
+assert math.perm(5, None) == 120        # explicit None == omitted
+assert "comb/perm require non-negative Integers" in emsg(Function(): return math.perm(-1))
+assert "comb/perm result too large" in emsg(Function(): return math.perm(30, 20))
+
+# ==================================================================================================
+# math — prod
+# ==================================================================================================
+assert math.prod([1, 2, 3, 4]) == 24
+assert type(math.prod([1, 2, 3, 4])) == "Integer"
+assert math.prod([]) == 1               # empty product with default start
+assert math.prod([1, 2, 3], 10) == 60   # start argument
+assert math.prod([1.0, 2, 3]) == 6.0    # a Float anywhere -> Float result
+assert type(math.prod([1.0, 2, 3])) == "Float"
+assert math.prod([2, 3], 0.5) == 3.0    # Float start -> Float
+assert math.prod([100, 200, 0]) == 0    # a zero factor clears overflow tracking
+assert "prod result too large for Integer" in emsg(Function(): return math.prod([1000000000000, 1000000000000]))
+# a Float in the mix means no overflow (result is Float, huge)
+assert not threw(Function(): return math.prod([1000000000000.0, 1000000000000.0]))
+assert "prod expects numbers" in emsg(Function(): return math.prod([1, "x"]))
+
+# ==================================================================================================
+# statistics — mean / median
+# ==================================================================================================
+assert stats.mean([1, 2, 3, 4]) == 2.5
+assert stats.mean([5]) == 5.0
+assert stats.mean([1.5, 2.5, 3.5]) == 2.5
+assert type(stats.mean([1, 2, 3])) == "Float"
+assert approx(stats.mean([-1, 0, 1]), 0.0)
+assert "mean requires at least one data point" in emsg(Function(): return stats.mean([]))
+
+assert stats.median([1, 2, 3]) == 2.0       # odd -> middle
+assert stats.median([1, 2, 3, 4]) == 2.5    # even -> average of two middle
+assert stats.median([3, 1, 2]) == 2.0       # sorts first
+assert stats.median([7]) == 7.0
+assert "median requires at least one data point" in emsg(Function(): return stats.median([]))
+
+# ==================================================================================================
+# statistics — mode / multimode
+# ==================================================================================================
+assert stats.mode([1, 1, 2, 3]) == 1
+assert stats.mode(["a", "b", "a"]) == "a"
+assert stats.mode([3, 1, 1, 2, 2]) == 1     # tie -> first value to reach the max count
+assert stats.mode([42]) == 42
+assert "no mode for empty data" in emsg(Function(): return stats.mode([]))
+
+assert stats.multimode([1, 1, 2, 2, 3]) == [1, 2]   # first-seen order
+assert stats.multimode([1, 2, 3]) == [1, 2, 3]      # all unique -> all tied
+assert stats.multimode([1, 1, 1]) == [1]
+assert stats.multimode([]) == []                    # empty is [], not an error
+
+# ==================================================================================================
+# statistics — variance / stdev / pvariance / pstdev
+# ==================================================================================================
+assert stats.variance([1, 2, 3, 4, 5]) == 2.5       # sample variance
+assert approx(stats.stdev([1, 2, 3, 4, 5]), 1.5811388300841898)
+assert stats.pvariance([1, 2, 3, 4, 5]) == 2.0      # population variance
+assert approx(stats.pstdev([1, 2, 3, 4, 5]), 1.4142135623730951)
+assert stats.variance([2, 2, 2, 2]) == 0.0          # no spread
+assert approx(stats.stdev([1, 2, 3, 4, 5]), math.sqrt(stats.variance([1, 2, 3, 4, 5])))
+assert approx(stats.pstdev([1, 2, 3, 4, 5]), math.sqrt(stats.pvariance([1, 2, 3, 4, 5])))
+# variance/stdev need >= 2 points; pvariance/pstdev need >= 1
+assert "variance requires at least two data points" in emsg(Function(): return stats.variance([1]))
+assert threw(Function(): return stats.stdev([1]))
+assert threw(Function(): return stats.variance([]))
+assert "pvariance requires at least one data point" in emsg(Function(): return stats.pvariance([]))
+assert threw(Function(): return stats.pstdev([]))
+assert stats.pvariance([5]) == 0.0                  # single point is valid for population variance
+
+# ==================================================================================================
+# statistics — quantiles (exclusive method)
+# ==================================================================================================
+assert stats.quantiles([1, 2]) == [0.75, 1.5, 2.25]   # extrapolates past the data range
+assert stats.quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9]) == [2.5, 5.0, 7.5]
+assert len(stats.quantiles([1, 2, 3, 4], 10)) == 9    # n cut points = n - 1
+assert stats.quantiles([1, 2, 3, 4, 5], 2) == [3.0]   # single median cut
+assert "quantiles requires at least two data points" in emsg(Function(): return stats.quantiles([1]))
+assert threw(Function(): return stats.quantiles([]))
+assert "quantiles: n must be at least 1" in emsg(Function(): return stats.quantiles([1, 2, 3], 0))
+assert threw(Function(): return stats.quantiles([1, 2, 3], -1))
+
+# ==================================================================================================
+# bisect
+# ==================================================================================================
+assert bisect.bisectleft([1, 3, 5, 7], 5) == 2
+assert bisect.bisectright([1, 3, 5, 7], 5) == 3
+assert bisect.bisect([1, 3, 5, 7], 5) == 3          # alias for right
+assert bisect.bisectleft([], 5) == 0                # empty list
+assert bisect.bisectright([], 5) == 0
+assert bisect.bisectleft([1, 2, 3], 0) == 0         # before all
+assert bisect.bisectleft([1, 2, 3], 10) == 3        # after all
+assert bisect.bisectright([1, 2, 3], 10) == 3
+# duplicates: left is the leftmost, right is past the run
+assert bisect.bisectleft([1, 2, 2, 2, 3], 2) == 1
+assert bisect.bisectright([1, 2, 2, 2, 3], 2) == 4
+# insort keeps the list sorted at the correct side
+var bl = [1, 3, 5]
+bisect.insortleft(bl, 4)
+assert bl == [1, 3, 4, 5]
+var br = [1, 3, 5]
+bisect.insortright(br, 4)
+assert br == [1, 3, 4, 5]
+var bi_dup = [1, 2, 2, 3]
+bisect.insortleft(bi_dup, 2)
+assert bi_dup == [1, 2, 2, 2, 3]
+var bs = [1, 3, 5]
+bisect.insort(bs, 0)                                 # alias for insortright
+bisect.insort(bs, 6)
+assert bs == [0, 1, 3, 5, 6]
+# a bisect stays consistent with a full sort under random insertion
+var rb = random.Random(2024)
+var built = []
+for i in range(60):
+    bisect.insort(built, rb.randint(0, 100))
+assert built == sorted(built)
+
+# ==================================================================================================
+# heapq
+# ==================================================================================================
+# heapify returns a NEW list; the original is untouched.
+var hsrc = [5, 3, 8, 1, 9, 2]
+var heap = heapq.heapify(hsrc)
+assert hsrc == [5, 3, 8, 1, 9, 2]
+assert heap[0] == 1                                  # min at the root
+# popping in order yields sorted output
+var popped = []
+var hp = heapq.heapify([5, 3, 8, 1, 9, 2])
+while len(hp) > 0:
+    popped.append(heapq.heappop(hp))
+assert popped == [1, 2, 3, 5, 8, 9]
+# heappush/heappop maintain the invariant vs a full sort (seeded stress)
+var rh = random.Random(555)
+var data = []
+for i in range(80):
+    data.append(rh.randint(-50, 50))
+var stressheap = []
+for x in data:
+    heapq.heappush(stressheap, x)
+var stressout = []
+while len(stressheap) > 0:
+    stressout.append(heapq.heappop(stressheap))
+assert stressout == sorted(data)
+# heapreplace pops the smallest and pushes item in one pass
+var hr = heapq.heapify([1, 2, 3])
+assert heapq.heapreplace(hr, 0) == 1
+assert hr[0] == 0
+assert len(hr) == 3
+# merge already-sorted inputs
+assert heapq.merge([[1, 4, 7], [2, 3], [0, 9]]) == [0, 1, 2, 3, 4, 7, 9]
+assert heapq.merge([]) == []
+assert heapq.merge([[]]) == []
+assert heapq.merge([[1, 2, 3]]) == [1, 2, 3]
+# nsmallest / nlargest
+assert heapq.nsmallest(2, [5, 3, 8, 1, 9]) == [1, 3]
+assert heapq.nlargest(2, [5, 3, 8, 1, 9]) == [9, 8]
+assert heapq.nsmallest(10, [3, 1, 2]) == [1, 2, 3]   # n > len clamps to all
+assert heapq.nlargest(10, [3, 1, 2]) == [3, 2, 1]
+assert heapq.nsmallest(0, [1, 2, 3]) == []
+assert heapq.nlargest(0, [1, 2, 3]) == []            # non-positive n -> [], not a tail slice
+assert heapq.nlargest(-2, [1, 2, 3]) == []
+# heap error paths
+assert "heappop from empty heap" in emsg(Function(): return heapq.heappop([]))
+assert "heapreplace on empty heap" in emsg(Function(): return heapq.heapreplace([], 5))
+
+# ==================================================================================================
+# random — construction & determinism
+# ==================================================================================================
+var r = random.Random(42)
+assert r.generator == "xoshiro"
+assert random.Random(1, "mersenne_twister").generator == "mersenne_twister"
+assert random.Random(1, "xoshiro256").generator == "xoshiro"
+assert random.Random(1, "mt19937_64").generator == "mersenne_twister"
+assert "unknown generator 'foo'" in emsg(Function(): return random.Random(1, "foo"))
+
+# Same seed -> identical stream (determinism), across every method.
+var a1 = random.Random(12345)
+var a2 = random.Random(12345)
+var s1 = []
+var s2 = []
+for i in range(20):
+    s1.append(a1.random())
+for i in range(20):
+    s2.append(a2.random())
+assert s1 == s2
+var b1 = random.Random(777)
+var b2 = random.Random(777)
+var i1 = []
+var i2 = []
+for i in range(20):
+    i1.append(b1.randint(0, 1000000))
+for i in range(20):
+    i2.append(b2.randint(0, 1000000))
+assert i1 == i2
+# reseeding the SAME object reproduces the stream
+var rc = random.Random(1)
+var first = rc.random()
+rc.seed(1)
+assert rc.random() == first
+# different seeds -> (very likely) different streams
+assert random.Random(1).random() != random.Random(2).random()
+
+# ==================================================================================================
+# random — random() / uniform() ranges
+# ==================================================================================================
+var rr = random.Random(9)
+for i in range(200):
+    var x = rr.random()
+    assert x >= 0.0 and x < 1.0
+for i in range(200):
+    var u = rr.uniform(10, 20)
+    assert u >= 10.0 and u < 20.0
+assert rr.uniform(5, 5) == 5.0
+# uniform rejects non-finite bounds
+assert "a and b must be finite numbers" in emsg(Function(): return random.Random(1).uniform(0, math.inf))
+assert threw(Function(): return random.Random(1).uniform(math.nan, 1))
+
+# ==================================================================================================
+# random — randint / randrange
+# ==================================================================================================
+var ri = random.Random(3)
+for i in range(200):
+    var v = ri.randint(1, 6)
+    assert v >= 1 and v <= 6                          # inclusive both ends
+assert ri.randint(5, 5) == 5
+assert "randint: empty range" in emsg(Function(): return random.Random(1).randint(5, 1))
+# randrange like range
+for i in range(200):
+    var v = ri.randrange(10)
+    assert v >= 0 and v < 10
+for i in range(200):
+    var v = ri.randrange(2, 8)
+    assert v >= 2 and v < 8
+for i in range(200):
+    var v = ri.randrange(2, 10, 2)
+    assert v >= 2 and v < 10 and v % 2 == 0
+assert "randrange: step must not be zero" in emsg(Function(): return random.Random(1).randrange(0, 10, 0))
+assert "randrange: empty range" in emsg(Function(): return random.Random(1).randrange(5, 5))
+assert threw(Function(): return random.Random(1).randrange(10, 0))   # positive step, hi<lo
+
+# ==================================================================================================
+# random — choice / choices / sample / shuffle
+# ==================================================================================================
+var rp = random.Random(88)
+var pop = [10, 20, 30, 40, 50]
+for i in range(100):
+    assert rp.choice(pop) in pop
+assert "choice from empty sequence" in emsg(Function(): return random.Random(1).choice([]))
+# choices: WITH replacement, k may exceed len
+var ch = rp.choices(pop, 8)
+assert len(ch) == 8
+for x in ch:
+    assert x in pop
+assert rp.choices(pop, 0) == []
+assert len(rp.choices(pop)) == 1                      # default k = 1
+assert "choices: k must be non-negative" in emsg(Function(): return random.Random(1).choices(pop, -1))
+assert "choices from empty population" in emsg(Function(): return random.Random(1).choices([]))
+# sample: WITHOUT replacement -> distinct
+var samp = rp.sample(pop, 3)
+assert len(samp) == 3
+assert len(Set(samp)) == 3
+for x in samp:
+    assert x in pop
+assert rp.sample(pop, 0) == []
+assert rp.sample(pop, 5) != None                      # k == len is allowed
+assert "sample: k out of range" in emsg(Function(): return random.Random(1).sample(pop, 6))
+assert threw(Function(): return random.Random(1).sample(pop, -1))
+# shuffle: in place, preserves the multiset
+var lst = [1, 2, 3, 4, 5, 6, 7, 8]
+rp.shuffle(lst)
+assert sorted(lst) == [1, 2, 3, 4, 5, 6, 7, 8]
+assert "shuffle requires a List" in emsg(Function(): return random.Random(1).shuffle(42))
+# choice/choices/sample determinism under a fixed seed
+var d1 = random.Random(31)
+var d2 = random.Random(31)
+assert d1.sample([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 5) == d2.sample([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 5)
+
+# ==================================================================================================
+# random — gauss / normalvariate / expovariate
+# ==================================================================================================
+var rg = random.Random(101)
+assert type(rg.gauss(0, 1)) == "Float"
+assert type(rg.gauss()) == "Float"                    # both args default
+assert type(rg.gauss(sigma = 2.0)) == "Float"         # keyword, mu skipped
+assert type(rg.normalvariate(5, 2)) == "Float"        # alias
+assert rg.gauss(5, 0) == 5.0                           # sigma 0 collapses to mu
+assert "gauss: sigma must be non-negative" in emsg(Function(): return random.Random(1).gauss(0, -1))
+assert "mu and sigma must be finite numbers" in emsg(Function(): return random.Random(1).gauss(0, math.nan))
+assert threw(Function(): return random.Random(1).gauss(math.inf, 1))
+# gauss determinism
+assert random.Random(7).gauss(0, 1) == random.Random(7).gauss(0, 1)
+# expovariate: positive, finite lambda
+assert type(rg.expovariate(1.5)) == "Float"
+for i in range(50):
+    assert rg.expovariate(2.0) >= 0.0                 # exponential samples are non-negative
+assert "expovariate: lambda must be positive and finite" in emsg(Function(): return random.Random(1).expovariate(0))
+assert threw(Function(): return random.Random(1).expovariate(-1))
+assert threw(Function(): return random.Random(1).expovariate(math.inf))
+
+# ==================================================================================================
+# random — secure module-level CSPRNG (ranges/lengths/invariants, not exact values)
+# ==================================================================================================
+assert random.hasentropy()                            # OS RNG available in this environment
+var rb16 = random.randombytes(16)
+assert type(rb16) == "Bytes"
+assert len(rb16) == 16
+assert len(random.randombytes()) == 32                # default n
+assert len(random.randombytes(0)) == 0
+assert len(random.randomhex(16)) == 32                # 2n hex chars
+assert len(random.randomhex()) == 64
+assert len(random.randomurlsafe(15)) == 20            # base64url no padding: ceil(15*4/3)
+for i in range(200):
+    var below = random.randombelow(6)
+    assert below >= 0 and below < 6
+assert "randombelow: n must be positive" in emsg(Function(): return random.randombelow(0))
+assert threw(Function(): return random.randombelow(-5))
+assert "count must be non-negative" in emsg(Function(): return random.randombytes(-1))
+
+io.print("cov math/stats: all passed")

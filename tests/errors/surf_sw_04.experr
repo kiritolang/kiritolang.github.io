@@ -1,1 +1,1 @@
-switch case value must be Integer, Float, String, Bool, or None
+a switch case label must be a constant scalar

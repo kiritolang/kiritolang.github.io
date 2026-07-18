@@ -63,6 +63,11 @@ public:
     // an old list may hold young children whose card bits now point at the wrong slots, so rescan all.
     // Young lists are traced in full anyway; end-pop/end-append don't shift and skip this.
     void gcReorderShift() { if (!gcYoung()) cards.markAll(); }
+    // Single source for emptying a List: drop the elements AND reset the card table (an emptied list has
+    // no children, so any dirty card is stale). Both Kirito `list.clear()` and the value.hpp wrapper call
+    // this so the invariant matches Dict/Set clear() and isn't duplicated. (Leaving stale cards was
+    // memory-safe — forEachDirtyRange clamps to the child count — but defeated the O(N) card fast path.)
+    void clearElems() { elems.clear(); cards.clear(); }
 
     void gcMarkCard(std::size_t entryIndex) override { cards.mark(entryIndex); }
     void gcMarkAllCards() override { cards.markAll(); }

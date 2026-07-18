@@ -1,0 +1,779 @@
+# Exhaustive coverage for the List / Set / Dict types and the user-class
+# special-method (dunder) protocol (docs/pages/09-types.md).
+# Every assertion below was confirmed against the real interpreter
+# (build-release/ki). Where the implementation differs from the documentation,
+# the test asserts ACTUAL behavior and the delta is recorded in
+# .audit/v1.16.1/coverage/findings_containers_dunders.md.
+var io = import("io")
+var math = import("math")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+# ============================================================================
+# List
+# ============================================================================
+
+# --- append / pop / insert (normal) -----------------------------------------
+var l1 = [1, 2, 3]
+l1.append(4)
+assert l1 == [1, 2, 3, 4], "append to end"
+assert l1.pop() == 4, "pop returns last"
+assert l1 == [1, 2, 3], "pop removes last"
+assert l1.pop(0) == 1, "pop(i) returns indexed"
+assert l1 == [2, 3], "pop(i) removes indexed"
+
+var l2 = [1, 2, 3]
+l2.insert(1, 9)
+assert l2 == [1, 9, 2, 3], "insert before index"
+l2.insert(100, 7)
+assert l2 == [1, 9, 2, 3, 7], "insert past end clamps to append"
+l2.insert(-1, 8)
+assert l2 == [1, 9, 2, 3, 8, 7], "insert at -1 is before last"
+
+# --- append/pop edge: empty & single ----------------------------------------
+var single = [42]
+assert single.pop() == 42, "pop single"
+assert single == [], "list empty after popping only element"
+single.append(1)
+assert single == [1], "append to previously-emptied list"
+
+# --- remove / index / count -------------------------------------------------
+var l3 = [1, 2, 3, 2]
+assert l3.index(2) == 1, "index first match"
+assert l3.index(2, 2) == 3, "index with start window"
+assert l3.count(2) == 2, "count occurrences"
+assert l3.count(9) == 0, "count absent is 0"
+l3.remove(2)
+assert l3 == [1, 3, 2], "remove first equal element"
+
+# --- reverse / sort ---------------------------------------------------------
+var l4 = [1, 2, 3]
+l4.reverse()
+assert l4 == [3, 2, 1], "reverse in place"
+var l5 = [3, 1, 2]
+l5.sort()
+assert l5 == [1, 2, 3], "sort ascending in place"
+l5.sort(reverse=True)
+assert l5 == [3, 2, 1], "sort reverse"
+# sort stability: equal keys keep original relative order
+var pairs = [[1, "a"], [1, "b"], [0, "c"]]
+pairs.sort(key=Function(p): return p[0])
+assert pairs == [[0, "c"], [1, "a"], [1, "b"]], "sort is stable on equal keys"
+
+# --- extend / apply / copy / clear ------------------------------------------
+var l6 = [1]
+l6.extend([2, 3])
+assert l6 == [1, 2, 3], "extend with list"
+l6.extend({4, 5})
+assert l6 == [1, 2, 3, 4, 5], "extend with set"
+l6.extend("ab")
+assert l6 == [1, 2, 3, 4, 5, "a", "b"], "extend with string chars"
+assert [1, 2, 3].apply(Function(x): return x * 10) == [10, 20, 30], "apply maps each element"
+var l7 = [1, 2]
+var l7c = l7.copy()
+l7c.append(3)
+assert l7 == [1, 2], "copy is independent of original"
+assert l7c == [1, 2, 3], "copy mutation stays local"
+var l8 = [1, 2, 3]
+l8.clear()
+assert l8 == [], "clear empties the list"
+
+# --- slicing / + / * / in ---------------------------------------------------
+var xs = [1, 2, 3, 4, 5]
+assert xs[1:3] == [2, 3], "basic slice"
+assert xs[::-1] == [5, 4, 3, 2, 1], "reverse slice"
+assert xs[::2] == [1, 3, 5], "step slice"
+assert xs[-1:] == [5], "negative-start slice"
+assert xs[:-1] == [1, 2, 3, 4], "negative-stop slice"
+assert xs[::-2] == [5, 3, 1], "negative step"
+assert [][:] == [], "slice of empty list"
+assert [5][0:0] == [], "empty slice window"
+assert [1, 2, 3][10:20] == [], "out-of-range slice is empty"
+assert [1, 2] + [3] == [1, 2, 3], "list concatenation"
+assert [1] * 3 == [1, 1, 1], "list repetition"
+assert [1] * 0 == [], "repeat zero is empty"
+assert 3 in xs, "in membership present"
+assert not (9 in xs), "in membership absent"
+assert [1, 2, 3] in [[1, 2, 3], [4]], "in uses equality for nested lists"
+
+# --- aliasing vs copy -------------------------------------------------------
+var orig = [1, 2]
+var alias = orig
+alias.append(9)
+assert orig == [1, 2, 9], "aliases share one underlying list"
+
+# --- nested + self-reference in str -----------------------------------------
+var cyc = [1, 2]
+cyc.append(cyc)
+assert String(cyc) == "[1, 2, [...]]", "self-referential list str uses [...]"
+assert String([1, "a"]) == "[1, 'a']", "nested string element shows repr-quoted"
+
+# --- comprehension-style via map / filter -----------------------------------
+assert List(map(Function(x): return x * x, [1, 2, 3])) == [1, 4, 9], "map squares"
+assert List(filter(Function(x): return x % 2 == 0, [1, 2, 3, 4])) == [2, 4], "filter evens"
+
+# --- large N ----------------------------------------------------------------
+var big = []
+var bi = 0
+while bi < 1000:
+    big.append(bi)
+    bi = bi + 1
+assert len(big) == 1000, "large list length"
+assert big[999] == 999, "large list last element"
+assert sum(big) == 499500, "large list sum"
+
+# --- mutation during iteration: snapshot of original length -----------------
+var mut = [1, 2, 3]
+var seen = []
+for v in mut:
+    seen.append(v)
+    if v == 1:
+        mut.append(99)
+assert seen == [1, 2, 3], "for over a list snapshots the starting length"
+
+# --- List HARDENING: bad input MUST raise the correct message ---------------
+assert "pop from empty List" in emsg(Function(): return [].pop()), "pop empty list message"
+assert "pop index out of range" in emsg(Function(): return [1].pop(5)), "pop out-of-range message"
+assert "remove: value not in List" in emsg(Function(): return [1, 2].remove(9)), "remove missing message"
+assert "index: value not in List" in emsg(Function(): return [1, 2].index(9)), "index missing message"
+assert "index out of range" in emsg(Function(): return [1][5]), "getitem oob message"
+assert "index out of range" in emsg(Function(): return [1][-5]), "getitem neg oob message"
+assert "can only repeat List by an Integer" in emsg(Function(): return [1] * "x"), "repeat by non-int message"
+assert "can only concatenate List to List" in emsg(Function(): return [1] + 3), "concat non-list message"
+var sortmixed = Function():
+    var m = [1, "a"]
+    m.sort()
+    return m
+assert "cannot order 'String' and 'Integer'" in emsg(sortmixed), "sort of mixed types errors"
+
+# ============================================================================
+# Set
+# ============================================================================
+
+# --- empty literal is a Dict; Set() is the empty set ------------------------
+assert type({}) == "Dict", "{} is an empty Dict, not a Set"
+assert type(Set()) == "Set", "Set() builds an empty Set"
+assert type({1, 2}) == "Set", "{elems} is a Set"
+
+# --- add / discard / remove / pop / contains --------------------------------
+var s1 = {1, 2, 3}
+s1.add(4)
+assert s1 == {1, 2, 3, 4}, "add new element"
+s1.add(1)
+assert s1 == {1, 2, 3, 4}, "add duplicate is a no-op"
+s1.discard(9)
+assert s1 == {1, 2, 3, 4}, "discard absent is silent"
+s1.discard(1)
+assert s1 == {2, 3, 4}, "discard present removes it"
+assert s1.contains(2), "contains present"
+assert not s1.contains(99), "contains absent"
+assert 2 in s1, "in operator on set"
+
+# --- set algebra methods (against a Set) ------------------------------------
+var a = {1, 2, 3}
+var b = {3, 4}
+assert a.union(b) == {1, 2, 3, 4}, "union"
+assert a.intersection(b) == {3}, "intersection"
+assert a.difference(b) == {1, 2}, "difference"
+assert a.symmetricdifference(b) == {1, 2, 4}, "symmetric difference"
+assert a - b == {1, 2}, "difference operator"
+
+# --- set algebra methods accept any iterable --------------------------------
+assert {1, 2}.union([2, 3]) == {1, 2, 3}, "union accepts a list"
+assert {"a", "b", "c"}.intersection("abx") == {"a", "b"}, "intersection accepts a string"
+assert {1, 2, 3}.difference([2]) == {1, 3}, "difference accepts a list"
+assert {1, 2}.union({"k1": 0, "k2": 0}) == {1, 2, "k1", "k2"}, "union accepts a dict (its keys)"
+
+# --- subset / superset / disjoint + operators -------------------------------
+assert {1, 2}.issubset([1, 2, 3]), "issubset accepts iterable"
+assert a.issuperset({1, 2}), "issuperset"
+assert a.isdisjoint({7, 8}), "isdisjoint true"
+assert not a.isdisjoint({3}), "isdisjoint false"
+assert {1, 2} < {1, 2, 3}, "proper subset operator"
+assert {1, 2} <= {1, 2}, "subset-or-equal operator"
+assert {1, 2, 3} > {1, 2}, "proper superset operator"
+assert {1, 2} >= {1, 2}, "superset-or-equal operator"
+assert not ({1, 2} < {1, 2}), "not a proper subset of itself"
+
+# --- equality by membership, order-independent ------------------------------
+assert {1, 2, 3} == {3, 2, 1}, "set equality ignores order"
+assert {1, 2} != {1, 2, 3}, "set inequality"
+
+# --- Set() construction / dedup / from iterables ----------------------------
+assert Set([1, 2, 2, 3]) == {1, 2, 3}, "Set from list dedups"
+assert Set("aab") == {"a", "b"}, "Set from string chars"
+
+# --- insertion order preserved (union keeps a's first, then b's new) --------
+var ordered = {3, 1, 2}
+ordered.add(0)
+assert String(ordered) == "{3, 1, 2, 0}", "set keeps insertion order"
+assert String({1, 2, 3}.union({4, 5})) == "{1, 2, 3, 4, 5}", "union order: self then other's new"
+
+# --- copy independence / clear ----------------------------------------------
+var sc = {1, 2}
+var scc = sc.copy()
+scc.add(3)
+assert sc == {1, 2}, "set copy is independent"
+assert scc == {1, 2, 3}, "set copy mutation stays local"
+var scl = {1, 2}
+scl.clear()
+assert scl == Set(), "clear empties the set"
+
+# --- pop is LIFO (last-inserted), deterministic here ------------------------
+var sp = {10, 20, 30}
+assert sp.pop() == 30, "set pop removes last-inserted"
+assert sp.pop() == 20, "set pop continues LIFO"
+assert sp == {10}, "set after two pops"
+
+# --- cross-type equal keys: 1 == 1.0 merge; True is distinct ----------------
+var ct = Set()
+ct.add(1)
+ct.add(1.0)
+ct.add(True)
+assert len(ct) == 2, "1 and 1.0 are the same set element; True is distinct"
+assert 1 in ct, "integer 1 present"
+assert 1.0 in ct, "float 1.0 finds the same element"
+assert True in ct, "True is a separate element"
+
+# --- NaN as a set element (write-only: never equal, never found) ------------
+var ns = Set()
+ns.add(math.nan)
+assert len(ns) == 1, "NaN can be added once"
+assert not (math.nan in ns), "NaN is never found (nan != nan)"
+ns.add(math.nan)
+assert len(ns) == 2, "each NaN insert is a distinct element (never equal)"
+
+# --- Set HARDENING ----------------------------------------------------------
+assert "remove: value not in Set" in emsg(Function(): return {1}.remove(9)), "set remove missing message"
+assert "pop from an empty Set" in emsg(Function(): return Set().pop()), "set pop empty message"
+assert "unhashable type 'List'" in emsg(Function(): return {[1]}), "unhashable list as set element"
+assert "unhashable type 'Set'" in emsg(Function(): return {Set()}), "unhashable set as set element"
+assert "does not support this binary operator" in emsg(Function(): return {1} - [1]), "difference operator rejects list rhs"
+assert "does not support this binary operator" in emsg(Function(): return {1} < [1]), "subset operator rejects list rhs"
+
+# ============================================================================
+# Dict
+# ============================================================================
+
+# --- keys / values / items / get / [] / in ----------------------------------
+var d1 = {"a": 1, "b": 2}
+d1["c"] = 3
+assert d1.keys() == ["a", "b", "c"], "keys in insertion order"
+assert d1.values() == [1, 2, 3], "values in insertion order"
+assert d1.items() == [["a", 1], ["b", 2], ["c", 3]], "items as [k, v] pairs"
+assert d1["a"] == 1, "getitem by key"
+assert d1.get("a") == 1, "get present"
+assert d1.get("z") == None, "get absent returns None"
+assert d1.get("z", 0) == 0, "get absent with default"
+assert "a" in d1, "in tests keys"
+assert not ("z" in d1), "in absent key"
+
+# --- pop / popitem / remove -------------------------------------------------
+var d2 = {"a": 1, "b": 2, "c": 3}
+assert d2.pop("a") == 1, "pop returns value"
+assert d2 == {"b": 2, "c": 3}, "pop removes key"
+assert d2.pop("z", 99) == 99, "pop absent with default"
+assert d2.popitem() == ["c", 3], "popitem removes last-inserted (LIFO)"
+assert d2 == {"b": 2}, "dict after popitem"
+var d3 = {"a": 1, "b": 2}
+d3.remove("a")
+assert d3 == {"b": 2}, "remove deletes key"
+
+# --- setdefault -------------------------------------------------------------
+var d4 = {"a": 1}
+assert d4.setdefault("a", 9) == 1, "setdefault keeps existing"
+assert d4.setdefault("b", 5) == 5, "setdefault inserts default"
+assert d4 == {"a": 1, "b": 5}, "setdefault mutates dict"
+assert d4.setdefault("c") == None, "setdefault with no default inserts None"
+assert d4["c"] == None, "setdefault None is stored"
+
+# --- update -----------------------------------------------------------------
+var d5 = {"a": 1}
+d5.update({"a": 10, "b": 2})
+assert d5 == {"a": 10, "b": 2}, "update merges + overwrites"
+d5.update([["c", 3]])
+assert d5 == {"a": 10, "b": 2, "c": 3}, "update from [k, v] pairs"
+
+# --- apply / copy / clear ---------------------------------------------------
+assert {"a": 1, "b": 2}.apply(Function(v): return v * 10) == {"a": 10, "b": 20}, "apply maps values, keeps keys"
+var d6 = {"a": 1}
+var d6c = d6.copy()
+d6c["b"] = 2
+assert d6 == {"a": 1}, "dict copy is independent"
+assert d6c == {"a": 1, "b": 2}, "dict copy mutation stays local"
+var d7 = {"a": 1}
+d7.clear()
+assert d7 == {}, "clear empties the dict"
+
+# --- insertion order across delete + reinsert -------------------------------
+var d8 = {"a": 1, "b": 2, "c": 3}
+discard d8.pop("b")
+d8["b"] = 9
+assert d8.keys() == ["a", "c", "b"], "reinserted key goes to the end"
+# updating an existing key keeps its position
+var d9 = {"a": 1, "b": 2}
+d9["a"] = 99
+assert d9.keys() == ["a", "b"], "updating a key keeps its position"
+
+# --- for k in d yields keys -------------------------------------------------
+var d10 = {"x": 1, "y": 2}
+var dkeys = []
+for k in d10:
+    dkeys.append(k)
+assert dkeys == ["x", "y"], "for over dict yields keys in order"
+# items() unpacking
+var kv = []
+for k, val in d10.items():
+    kv.append(k + String(val))
+assert kv == ["x1", "y2"], "items() unpacks to k, v"
+
+# --- cross-type equal keys: 1 == 1.0 merge; True distinct -------------------
+var ctd = {}
+ctd[1] = 1
+ctd[1.0] = 2
+ctd[True] = 3
+assert len(ctd) == 2, "1 and 1.0 are the same dict key; True distinct"
+assert ctd[1] == 2, "assigning to 1.0 overwrote key 1's value"
+assert ctd[True] == 3, "True is a separate key"
+
+# --- self-reference in str --------------------------------------------------
+var dcyc = {}
+dcyc["self"] = dcyc
+assert String(dcyc) == "{'self': {...}}", "self-referential dict str uses {...}"
+assert String({"k": "v"}) == "{'k': 'v'}", "dict str shows repr-quoted string values"
+
+# --- nested equality --------------------------------------------------------
+assert {"a": [1, 2]} == {"a": [1, 2]}, "nested dict equality"
+
+# --- large N ----------------------------------------------------------------
+var bigd = {}
+var bj = 0
+while bj < 1000:
+    bigd[bj] = bj * 2
+    bj = bj + 1
+assert len(bigd) == 1000, "large dict length"
+assert bigd[500] == 1000, "large dict lookup"
+
+# --- mutation during iteration does not raise -------------------------------
+var dmut = {"a": 1, "b": 2}
+var dmutrun = Function():
+    var c = 0
+    for k in dmut:
+        c = c + 1
+    return c
+assert not threw(dmutrun), "iterating a dict without mutation is fine"
+
+# --- Dict HARDENING ---------------------------------------------------------
+assert "pop: key not found" in emsg(Function(): return {"a": 1}.pop("z")), "pop missing no-default message"
+assert "popitem: dictionary is empty" in emsg(Function(): return {}.popitem()), "popitem empty message"
+assert "key not found: z" in emsg(Function(): return {"a": 1}.remove("z")), "remove missing message"
+assert "key not found: z" in emsg(Function(): return {"a": 1}["z"]), "getitem missing message"
+assert "unhashable type 'List'" in emsg(Function(): return {}[[1]]), "unhashable list key lookup"
+assert "unhashable type 'Set'" in emsg(Function(): return {Set(): 1}), "unhashable set key literal"
+assert "is not iterable" in emsg(Function(): return {}.update(5)), "update from non-iterable message"
+
+# ============================================================================
+# Dunder protocol
+# ============================================================================
+
+# --- _init_ / _str_ / arithmetic / comparison / _getitem_ / _len_ -----------
+class Vec:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _add_ = Function(self, o):
+        return Vec(self.x + o.x, self.y + o.y)
+    var _sub_ = Function(self, o):
+        return Vec(self.x - o.x, self.y - o.y)
+    var _mul_ = Function(self, k):
+        return Vec(self.x * k, self.y * k)
+    var _eq_ = Function(self, o):
+        return isinstance(o, Vec) and self.x == o.x and self.y == o.y
+    var _lt_ = Function(self, o):
+        return self.x ** 2 + self.y ** 2 < o.x ** 2 + o.y ** 2
+    var _getitem_ = Function(self, i):
+        if i == 0:
+            return self.x
+        return self.y
+    var _len_ = Function(self):
+        return 2
+    var _str_ = Function(self):
+        return f"Vec({self.x}, {self.y})"
+
+var va = Vec(1, 2)
+var vb = Vec(3, 4)
+assert String(va + vb) == "Vec(4, 6)", "_add_ dispatch"
+assert String(va - vb) == "Vec(-2, -2)", "_sub_ dispatch"
+assert String(va * 3) == "Vec(3, 6)", "_mul_ dispatch"
+assert va == Vec(1, 2), "_eq_ dispatch"
+assert va != vb, "_ne_ defaults to not _eq_"
+assert String(va) == "Vec(1, 2)", "_str_ via String()"
+assert f"{va}" == "Vec(1, 2)", "_str_ via f-string"
+assert len(va) == 2, "_len_ via len()"
+assert va[0] == 1, "_getitem_ index 0"
+assert va[1] == 2, "_getitem_ index 1"
+assert va < vb, "_lt_ dispatch"
+assert String(sorted([vb, va])[0]) == "Vec(1, 2)", "_lt_ drives sorted()"
+# nested _str_ in a container
+assert String([va, vb]) == "[Vec(1, 2), Vec(3, 4)]", "_str_ used when nested in a list"
+
+# --- full arithmetic set: _div_ _floordiv_ _mod_ _pow_ ----------------------
+class N:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _floordiv_ = Function(self, o):
+        return self.v // o.v
+    var _mod_ = Function(self, o):
+        return self.v % o.v
+    var _pow_ = Function(self, o):
+        return self.v ** o.v
+    var _div_ = Function(self, o):
+        return self.v / o.v
+assert N(7) // N(2) == 3, "_floordiv_"
+assert N(7) % N(3) == 1, "_mod_"
+assert N(2) ** N(3) == 8, "_pow_"
+assert N(6) / N(2) == 3.0, "_div_ returns float"
+
+# --- full comparison set: _le_ _gt_ _ge_ ------------------------------------
+class C:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _le_ = Function(self, o):
+        return self.v <= o.v
+    var _gt_ = Function(self, o):
+        return self.v > o.v
+    var _ge_ = Function(self, o):
+        return self.v >= o.v
+assert C(1) <= C(2), "_le_"
+assert C(3) > C(2), "_gt_"
+assert C(2) >= C(2), "_ge_"
+
+# --- _eq_ drives in / index / count / remove on Lists -----------------------
+class V:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _eq_ = Function(self, o):
+        return isinstance(o, V) and self.v == o.v
+var vlist = [V(1), V(2), V(3), V(2)]
+assert V(2) in vlist, "_eq_ drives list in"
+assert vlist.index(V(2)) == 1, "_eq_ drives list index"
+assert vlist.count(V(2)) == 2, "_eq_ drives list count"
+vlist.remove(V(2))
+assert len(vlist) == 3, "_eq_ drives list remove"
+
+# --- _neg_ / _not_ return raw, uncoerced ------------------------------------
+class Money:
+    var _init_ = Function(self, c):
+        self.c = c
+    var _neg_ = Function(self):
+        return Money(-self.c)
+    var _str_ = Function(self):
+        return f"${self.c}"
+assert String(-Money(5)) == "$-5", "_neg_ dispatch"
+class RawNeg:
+    var _neg_ = Function(self):
+        return "negated"
+assert -RawNeg() == "negated", "_neg_ result is raw (a String here)"
+class RawNot:
+    var _not_ = Function(self):
+        return "notted"
+assert not RawNot() == "notted", "_not_ result is raw (a String here)"
+# a class without _not_ and without _bool_ is always truthy -> not x is False
+class Plain:
+    var x = 1
+assert (not Plain()) == False, "default truthy -> not is False"
+
+# --- _bool_ -----------------------------------------------------------------
+class Bag:
+    var _init_ = Function(self, items):
+        self.items = items
+    var _bool_ = Function(self):
+        return len(self.items) > 0
+assert Bool(Bag([1, 2])), "_bool_ true when non-empty"
+assert not Bool(Bag([])), "_bool_ false when empty"
+var bagbranch = ""
+if Bag([]):
+    bagbranch = "then"
+else:
+    bagbranch = "else"
+assert bagbranch == "else", "_bool_ drives if"
+# and/or return the operand, using _bool_ to choose
+assert String(Bag([]) and "x") == String(Bag([])), "and returns the falsy _bool_ operand"
+assert (Bag([1]) and "z") == "z", "and returns rhs when lhs truthy"
+# conditional expression uses _bool_
+assert ("yes" if Bag([1]) else "no") == "yes", "_bool_ drives conditional expression"
+# a class without _bool_ is always truthy
+assert Bool(Plain()), "no _bool_ means always truthy"
+# _len_ does NOT drive truthiness
+class Sized:
+    var _len_ = Function(self):
+        return 0
+assert Bool(Sized()), "_len_ == 0 does not make an instance falsy"
+# subclass inherits _bool_
+class BoolBase:
+    var _init_ = Function(self, n):
+        self.n = n
+    var _bool_ = Function(self):
+        return self.n > 0
+class BoolDerived(BoolBase):
+    var _init_ = Function(self, n):
+        self._super_()._init_(n)
+assert Bool(BoolDerived(5)), "subclass inherits _bool_ (true)"
+assert not Bool(BoolDerived(0)), "subclass inherits _bool_ (false)"
+
+# --- _contains_ -------------------------------------------------------------
+class Range3:
+    var _contains_ = Function(self, item):
+        return item >= 0 and item < 3
+var r3 = Range3()
+assert 2 in r3, "_contains_ true"
+assert not (5 in r3), "_contains_ false"
+assert 5 not in r3, "_contains_ drives 'not in'"
+
+# --- _hash_ / _eq_ (Set/Dict keys) ------------------------------------------
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _hash_ = Function(self):
+        return self.x * 100 + self.y
+    var _eq_ = Function(self, o):
+        return isinstance(o, Point) and self.x == o.x and self.y == o.y
+var pset = {Point(1, 2), Point(1, 2), Point(3, 4)}
+assert len(pset) == 2, "_hash_ + _eq_ dedup equal instances in a Set"
+var pdict = {}
+pdict[Point(1, 2)] = 9
+assert pdict[Point(1, 2)] == 9, "_hash_ + _eq_ make distinct instances the same Dict key"
+# _hash_ without _eq_ keys by identity
+class HOnly:
+    var _hash_ = Function(self):
+        return 5
+var hd = {}
+hd[HOnly()] = 1
+hd[HOnly()] = 2
+assert len(hd) == 2, "_hash_ without _eq_ keys by identity (distinct instances)"
+
+# --- _call_ (incl. kwargs) --------------------------------------------------
+class Adder:
+    var _init_ = Function(self, base):
+        self.base = base
+    var _call_ = Function(self, x):
+        return self.base + x
+assert Adder(5)(10) == 15, "_call_ dispatch"
+class Kw:
+    var _call_ = Function(self, a, b=0):
+        return a + b
+assert Kw()(1, b=2) == 3, "_call_ accepts keyword arguments"
+
+# --- _enter_ / _exit_ -------------------------------------------------------
+class Ctx:
+    var _init_ = Function(self):
+        self.log = []
+    var _enter_ = Function(self):
+        self.log.append("enter")
+        return self
+    var _exit_ = Function(self):
+        self.log.append("exit")
+var ctx = Ctx()
+with ctx as cc:
+    cc.log.append("body")
+assert ctx.log == ["enter", "body", "exit"], "_enter_/_exit_ around with-block"
+# _exit_ runs even when the body throws
+var ctx2 = Ctx()
+var ctxthrow = Function():
+    with ctx2 as cc2:
+        throw "boom"
+assert threw(ctxthrow), "exception propagates out of with"
+assert ctx2.log == ["enter", "exit"], "_exit_ runs on exception (no body append)"
+
+# --- _getitem_ / _setitem_ (scalar and variadic) ----------------------------
+class Grid:
+    var _init_ = Function(self):
+        self.d = {}
+    var _setitem_ = Function(self, key, value):
+        self.d[key] = value
+    var _getitem_ = Function(self, key):
+        return self.d.get(key, 0)
+var g = Grid()
+g[1] = 10
+assert g[1] == 10, "_setitem_/_getitem_ scalar"
+assert g[99] == 0, "_getitem_ default path"
+class M2:
+    var _init_ = Function(self):
+        self.d = {}
+    var _setitem_ = Function(self, i, j, v):
+        self.d[f"{i},{j}"] = v
+    var _getitem_ = Function(self, i, j):
+        return self.d.get(f"{i},{j}", -1)
+var m2 = M2()
+m2[1, 2] = 7
+assert m2[1, 2] == 7, "variadic _setitem_/_getitem_"
+assert m2[0, 0] == -1, "variadic _getitem_ default"
+
+# --- _iter_ / _next_ lazy generator -----------------------------------------
+class Count:
+    var _init_ = Function(self, start, stop):
+        self.n = start
+        self.stop = stop
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        if self.n >= self.stop:
+            throw StopIteration()
+        var cur = self.n
+        self.n = self.n + 1
+        return cur
+var citer = []
+for x in Count(0, 3):
+    citer.append(x)
+assert citer == [0, 1, 2], "_iter_/_next_ drives for-loop"
+assert List(Count(5, 8)) == [5, 6, 7], "_iter_/_next_ drives List()"
+assert sum(Count(1, 5)) == 10, "_iter_/_next_ drives sum()"
+# infinite generator bounded by break
+class CountUp:
+    var _init_ = Function(self, start):
+        self.n = start
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        var cur = self.n
+        self.n = self.n + 1
+        return cur
+var bounded = []
+for x in CountUp(0):
+    if x >= 3:
+        break
+    bounded.append(x)
+assert bounded == [0, 1, 2], "infinite generator bounded by break"
+# _iter_ returning a bare collection is rejected
+class BadIter:
+    var _init_ = Function(self):
+        self.items = [1, 2, 3]
+    var _iter_ = Function(self):
+        return self.items
+var baditerrun = Function():
+    for x in BadIter():
+        discard x
+    return 0
+assert "_iter_ must return an iterator" in emsg(baditerrun), "_iter_ must return an iterator, not a bare list"
+# wrapping in iter(...) works
+class GoodIter:
+    var _init_ = Function(self):
+        self.items = [1, 2, 3]
+    var _iter_ = Function(self):
+        return iter(self.items)
+assert List(GoodIter()) == [1, 2, 3], "_iter_ returning iter(list) works"
+# PEP-479: a StopIteration leaking from a deeper call inside _next_ surfaces as an error
+var stophelper = Function():
+    throw StopIteration()
+class DeepStop:
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        return stophelper()
+var deepstoprun = Function():
+    for x in DeepStop():
+        discard x
+    return 0
+assert isinstance(emsg(deepstoprun), StopIteration), "leaked StopIteration surfaces as an error (PEP-479)"
+# StopIteration is a catchable built-in exception
+assert isinstance(StopIteration(), StopIteration), "StopIteration is a class"
+
+# --- dunder HARDENING -------------------------------------------------------
+# reflected operators are not consulted: instance must be on the left
+assert "unsupported operand" in emsg(Function(): return 3 * va), "no reflected _rmul_ (instance must be left)"
+# an undefined operator throws a clear "no operator" error
+assert "has no operator '_div_'" in emsg(Function(): return va / vb), "undefined _div_ message"
+# ordering operators do NOT derive from each other
+class OnlyGt:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _gt_ = Function(self, o):
+        return self.v > o.v
+assert "has no operator '_lt_'" in emsg(Function(): return OnlyGt(1) < OnlyGt(2)), "_lt_ not derived from _gt_"
+# _bool_ must return a Bool
+class BadBool:
+    var _bool_ = Function(self):
+        return 1
+assert "_bool_ must return a Bool" in emsg(Function(): return Bool(BadBool())), "_bool_ wrong-type message"
+# a throwing _bool_ propagates
+class ThrowBool:
+    var _bool_ = Function(self):
+        throw "boolfail"
+assert "boolfail" in emsg(Function(): return Bool(ThrowBool())), "throwing _bool_ propagates"
+# _hash_ must return an Integer
+class BadHash:
+    var _hash_ = Function(self):
+        return "x"
+var badhashrun = Function():
+    var m = {}
+    m[BadHash()] = 1
+    return m
+assert "_hash_ must return an Integer" in emsg(badhashrun), "_hash_ wrong-type message"
+# _len_ must return a non-negative Integer
+class BadLen:
+    var _len_ = Function(self):
+        return "x"
+assert "_len_ must return an Integer" in emsg(Function(): return len(BadLen())), "_len_ wrong-type message"
+class NegLen:
+    var _len_ = Function(self):
+        return -1
+assert "_len_ must return a non-negative Integer" in emsg(Function(): return len(NegLen())), "_len_ negative message"
+# an instance without _hash_ is unhashable
+assert "unhashable type 'Plain'" in emsg(Function(): return {Plain()}), "no _hash_ -> unhashable class message"
+# calling a non-callable instance
+class NoCall:
+    var x = 1
+assert "not callable" in emsg(Function(): return NoCall()(1)), "non-callable instance message"
+# iterating a non-iterable instance
+class NoIter:
+    var x = 1
+var noiterrun = Function():
+    for x in NoIter():
+        discard x
+    return 0
+assert "is not iterable" in emsg(noiterrun), "non-iterable instance message"
+# with on a non-context-manager instance
+class NoCtx:
+    var x = 1
+var noctxrun = Function():
+    with NoCtx() as v:
+        discard v
+    return 0
+assert "no attribute '_enter_'" in emsg(noctxrun), "with on non-context-manager message"
+# missing required _init_ argument
+assert "missing required argument" in emsg(Function(): return Money()), "missing _init_ argument message"
+# instance without _init_ default str
+class NoStr:
+    var _init_ = Function(self):
+        self.v = 1
+assert String(NoStr()) == "<NoStr object>", "default str is <Class object>"
+
+# --- DELTA regression: native error raised inside _next_ during a for-loop ---
+# Documented PEP-479 behavior says a deeper error "surfaces as an error". It
+# does surface (it throws), but the CONCRETE message/traceback is currently
+# lost and replaced by an unrelated "dangling handle" diagnostic. We only
+# assert that it throws, so as not to lock in the buggy message. See findings.
+class NativeErrInNext:
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        return [1, 2, 3][10]
+var nativeerrrun = Function():
+    for x in NativeErrInNext():
+        discard x
+    return 0
+assert threw(nativeerrrun), "a native error raised inside _next_ still throws"
+
+io.print("cov containers/dunders: all passed")

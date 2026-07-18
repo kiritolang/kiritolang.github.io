@@ -1,0 +1,80 @@
+# v1.16.1 audit — regression tests for the confirmed bugs fixed this round (A03/A07/A08 findings).
+var io = import("io")
+var math = import("math")
+var int = import("int")
+var dump = import("dump")
+var serialize = import("serialize")
+
+# --- F03-1 / F07-3: Float `%` used `x - floor(x/y)*y`, which lost the remainder for large |x/y| and
+#     gave NaN for an infinite divisor. Now fmod + floor sign-correction (matches Python / math.fmod). ---
+assert 1e17 % 3.0 == 1.0, "large float mod keeps the remainder"
+assert 1e16 % 7.0 == math.fmod(1e16, 7.0), "large positive float mod matches math.fmod"
+assert 5.0 % math.inf == 5.0, "finite % +inf == the dividend"
+assert (0.0 - 5.0) % math.inf == math.inf, "-5 % +inf == +inf (floor sign)"
+assert 5.0 % (0.0 - math.inf) == (0.0 - math.inf), "5 % -inf == -inf"
+assert (-5.0) % 3.0 == 1.0 and 5.0 % (0.0 - 3.0) == (0.0 - 1.0), "float mod takes the divisor's sign"
+assert 0.0 <= (7.5 % 2.0) and (7.5 % 2.0) < 2.0, "float mod stays in [0, |divisor|)"
+
+# --- F07-8: min/max/sorted can order BigInt (a NativeClass whose `<` works) — was 'cannot order'. ---
+var bs = [int.big(5), int.big(1), int.big(3), int.big(9)]
+assert String(sorted(bs)) == "[1, 3, 5, 9]", "sorted() orders BigInt"
+assert String(min(bs)) == "1" and String(max(bs)) == "9", "min/max order BigInt"
+assert int.big(3) < int.big(5) and not (int.big(9) < int.big(2)), "BigInt < still works"
+
+# --- F08-2 / F08-4: a deserialized instance kept _hash_/_eq_ but LOST _bool_ truthiness (silent).
+#     Now single-sourced via cacheDunderFlags, restored by both dump and serialize. ---
+class Flag:
+    var _init_ = Function(self, v):
+        self.v = v
+    var _bool_ = Function(self):
+        return self.v
+assert not Bool(dump.loads(dump.dumps(Flag(False)))), "dump round-trip restores _bool_ (falsy stays falsy)"
+assert Bool(dump.loads(dump.dumps(Flag(True)))), "dump round-trip restores _bool_ (truthy stays truthy)"
+assert not Bool(serialize.loads(serialize.dumps(Flag(False)))), "serialize round-trip restores _bool_"
+# and the restored instance is still usable in an if
+var restored = dump.loads(dump.dumps(Flag(False)))
+var branch = "then"
+if restored:
+    branch = "then"
+else:
+    branch = "else"
+assert branch == "else", "restored falsy instance takes the else branch"
+
+# --- F07-2: BigInt == Float — was non-transitive (BigInt(3)==3.0 False though 3==3.0 and 3==BigInt(3))
+#     and poisoned Set/Dict (a BigInt key reachable by Integer but not the equal Float). ---
+assert int.big(3) == 3.0 and 3.0 == int.big(3), "BigInt == Float (symmetric)"
+assert not (int.big(3) == 3.5) and not (int.big(3) == 4.0), "BigInt != non-equal Float"
+assert len({3, 3.0, int.big(3)}) == 1, "Integer, Float, BigInt of one value dedup to a single Set member"
+assert {int.big(5): "big"}.get(5.0, "miss") == "big", "a BigInt Dict key is reachable by the equal Float"
+assert not (int.big(3) == math.inf) and not (int.big(3) == math.nan), "BigInt != inf/nan"
+
+# --- F07-9: sum() folds BigInt/Complex (its own `+`) via a generic accumulator, not just Integer/Float.
+#     The scalar fast path is unchanged; the native type stays on the LEFT (reflected-operator rule). ---
+var complex = import("complex")
+assert sum([1, 2, 3]) == 6 and sum([1.5, 2.5]) == 4.0 and sum([1, 2], 10) == 13 and sum([]) == 0, "sum scalar fast path unchanged"
+assert String(sum([int.big(5), int.big(3), int.big(2)])) == "10", "sum of BigInts"
+assert String(sum([int.big(5), 3, 2])) == "10", "sum of BigInt + Integer (native on the left)"
+assert String(sum(map(Function(x): return int.big(x), [10, 20, 30]))) == "60", "sum of a lazy BigInt source"
+assert sum([complex.of(1, 1), complex.of(2, 2)]) == complex.of(3, 3), "sum of Complex"
+assert sum([complex.of(1, 1), complex.of(2, 2)], complex.zero) == complex.of(3, 3), "sum of Complex with a Complex start"
+
+# --- F07-9 (contract preserved): sum still rejects non-numbers and a non-number start (only numeric
+#     value types — BigInt/Complex — reach the generic fold; String/List do NOT concatenate). ---
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+assert threw(Function(): return sum(["a", "b"])), "sum of Strings throws (no concat)"
+assert threw(Function(): return sum([[1], [2]])), "sum of Lists throws (no list concat)"
+assert threw(Function(): return sum([[1], [2]], [])), "sum with a List start throws (no list start concat)"
+assert threw(Function(): return sum([1, 2], "x")), "sum with a String start throws"
+
+# --- F01-1: comparisons do not chain — the valid forms (explicit and/or, or a parenthesized inner
+#     comparison) still work; the chained form is a parse error (see tests/errors/chained_comparison_*). ---
+assert (1 < 2) and (2 < 3), "explicit-and comparison chain works"
+assert (1 == 1) == True, "a parenthesized inner comparison works"
+assert 1 < 2 and 2 < 3 and 3 < 4, "and-joined comparisons work"
+
+io.print("v1.16.1 fixes: all passed")

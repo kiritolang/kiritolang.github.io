@@ -69,7 +69,7 @@ class Range3:
         while i < self.n:
             out.append(i)
             i = i + 1
-        return out
+        return iter(out)
     var _call_ = Function(self, k): return k * self.n
 var r3 = Range3(3)
 assert 2 in r3 and 5 not in r3, "_contains_"

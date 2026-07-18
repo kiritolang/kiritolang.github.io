@@ -573,7 +573,7 @@ class Box:
     var _getitem_ = Function(self, i): return self.items[i]
     var _len_ = Function(self): return len(self.items)
     var _contains_ = Function(self, x): return x in self.items
-    var _iter_ = Function(self): return self.items
+    var _iter_ = Function(self): return iter(self.items)
 var box = Box([10, 20, 30])
 ok(box[0] == 10, "_getitem_")
 ok(box[-1] == 30, "_getitem_ passes key through")
@@ -722,7 +722,7 @@ ok(len(Set([1, 1, 2])) == 2, "Set(List) dedups")
 ok(String(123) == "123", "String(Integer)")
 ok(String([1, 2]) == "[1, 2]", "String(List)")
 ok(Dict([["a", 1]]) == {"a": 1}, "Dict(pairs)")
-ok(1 == "x" == False, "cross-type == never throws (False)")
+ok((1 == "x") == False, "cross-type == never throws (False)")
 ok(([] == {}) == False, "List vs Dict == is False")
 
 io.print("r10_types: " + String(n) + " checks passed")

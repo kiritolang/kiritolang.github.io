@@ -106,7 +106,7 @@ class Countdown:
         while k > 0:
             out.append(k)
             k = k - 1
-        return out
+        return iter(out)
 var collected = []
 for v in Countdown(3):
     collected.append(v)

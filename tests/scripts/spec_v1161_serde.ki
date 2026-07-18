@@ -1,0 +1,61 @@
+# v1.16.1 audit — serde round-trips (json / serialize / dump), incl. the v1.16.0 ordered Dict/Set
+# preserving insertion order, shared references, cycles, user classes, and special floats.
+var io = import("io")
+var json = import("json")
+var serialize = import("serialize")
+var dump = import("dump")
+var math = import("math")
+
+# --- json ---
+var d = {"z": 1, "a": 2, "m": [3, 4], "n": None, "b": True, "f": 1.5}
+assert json.loads(json.dumps(d)) == d, "json dict round-trip"
+assert json.dumps({"z": 1, "a": 2}) == "{\"z\": 1, \"a\": 2}", "json preserves insertion order"
+assert json.loads("[1, 2.5, true, false, null, \"x\"]") == [1, 2.5, True, False, None, "x"], "json scalars"
+assert json.loads("\"\\u00e9\\u0041\"") == "éA", "json unicode escape"
+assert json.dumps([1, [2, [3, [4]]]]) == "[1, [2, [3, [4]]]]", "json nested"
+var jthrew = False
+try:
+    discard json.loads("{bad}")
+catch:
+    jthrew = True
+assert jthrew, "json malformed input throws"
+
+# --- serialize (text): shared refs + cycles ---
+var shared = [1, 2]
+var g2 = serialize.loads(serialize.dumps([shared, shared]))
+g2[0].append(99)
+assert g2[1] == [1, 2, 99], "serialize preserves sharing (aliasing survives)"
+var cyc = []
+cyc.append(cyc)
+var cyc2 = serialize.loads(serialize.dumps(cyc))
+assert len(cyc2) == 1 and id(cyc2[0]) == id(cyc2), "serialize round-trips a self-referential cycle"
+assert serialize.loads(serialize.dumps([math.inf, 0.0 - math.inf])) == [math.inf, 0.0 - math.inf], "serialize inf/-inf"
+
+# --- dump (binary): Bytes, refs/cycles, user classes, ordered collections ---
+assert type(dump.dumps([1, 2, 3])) == "Bytes", "dump.dumps returns Bytes"
+assert dump.loads(dump.dumps({"a": [1, 2], "b": Set()})) == {"a": [1, 2], "b": Set()}, "dump dict+set round-trip"
+var pair2 = dump.loads(dump.dumps([{"x": 1}, None]))
+assert pair2[0] == {"x": 1}, "dump nested dict round-trip"
+
+# --- the v1.16.0 ordered Set/Dict preserve insertion order through serde ---
+var os = Set()
+for x in [5, 3, 8, 1]:
+    os.add(x)
+assert List(dump.loads(dump.dumps(os))) == [5, 3, 8, 1], "dump preserves Set insertion order"
+assert List(serialize.loads(serialize.dumps(os))) == [5, 3, 8, 1], "serialize preserves Set insertion order"
+var od = {}
+for k in ["q", "b", "z", "a"]:
+    od[k] = 1
+assert dump.loads(dump.dumps(od)).keys() == ["q", "b", "z", "a"], "dump preserves Dict insertion order"
+
+# --- user class round-trips by attributes ---
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var _eq_ = Function(self, o):
+        return self.x == o.x and self.y == o.y
+var p2 = dump.loads(dump.dumps(Point(3, 4)))
+assert p2.x == 3 and p2.y == 4, "dump round-trips a user-class instance"
+
+io.print("v1.16.1 serde: all passed")

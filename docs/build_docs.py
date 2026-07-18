@@ -82,8 +82,11 @@ def highlight_kirito(code):
 # --- symbol model -----------------------------------------------------------------------------
 QUALIFIED = {}     # "List.append" -> {"slug","anchor","sig","owner","name","kind"}
 BY_NAME = {}       # "append" -> [qualified keys]
-HEADING_SYMS = {}  # "List"/"io" -> {"slug","anchor","kind"} (a type/module/native-object owner section)
+HEADING_SYMS = {}  # "List"/"io" -> {"slug","anchor","kind"} — the CANONICAL (shallowest) owner section
 _HEADING_LEVEL = {}  # "String" -> the heading level its HEADING_SYMS entry came from (shallowest wins)
+HEADING_SYMS_ALL = {}  # "List" -> [ {"slug","anchor","kind"}, ... ] — EVERY page that heads this name, so
+                       # a bare `List` on the C++ API page links to that page's own `List` section rather
+                       # than the canonical (Kirito-type) one. Same-page candidate wins in _resolve_link.
 OWNERS = set()     # names that own members (modules + types + native objects)
 _EMITTED = set()   # (slug, anchor) ids already emitted this render, to avoid dup ids
 _CUR_SLUG = ""     # page slug currently rendering (for owner reset + ids)
@@ -137,14 +140,19 @@ def _collect_owners(pages):
             if mo:
                 OWNERS.add(mo.group(1))
                 HEADING_SYMS.setdefault(mo.group(1), {"slug": slug, "anchor": _slug(t), "kind": "type"})
+                HEADING_SYMS_ALL.setdefault(mo.group(1), []).append({"slug": slug, "anchor": _slug(t), "kind": "type"})
             elif re.fullmatch(r"[A-Za-z_]\w*", t):
                 # a lowercase single-word level-2 heading is a module; a known builtin type is a type.
                 # A name can head a section on MORE THAN ONE page — e.g. `## String` in the types
                 # reference AND `#### String` in the C++ API (the C++ wrapper). A bare mention must link
-                # to the CANONICAL entry, not whichever page happened to be processed last. Resolve by
-                # the SHALLOWEST heading level (the type reference's `## String` at level 2 wins over a
-                # `#### String` deep in another page), first page breaking a tie — order-independent.
+                # to the CANONICAL entry (SHALLOWEST heading level, first page breaking a tie — so the
+                # type reference's `## String` at level 2 wins over a `#### String` deep in another page)
+                # UNLESS the mention is ON a page that has its own section for that name, in which case the
+                # same-page section wins (HEADING_SYMS_ALL + _resolve_link) — so `List` in the C++ API
+                # reference links to the C++ wrapper, not the Kirito type.
                 kind = "module" if (level == 2 and t[:1].islower()) else ("type" if t in TYPES else None)
+                if kind:
+                    HEADING_SYMS_ALL.setdefault(t, []).append({"slug": slug, "anchor": _slug(t), "kind": kind})
                 if kind and level < _HEADING_LEVEL.get(t, 99):
                     OWNERS.add(t)
                     HEADING_SYMS[t] = {"slug": slug, "anchor": _slug(t), "kind": kind}
@@ -264,8 +272,14 @@ def _resolve_link(code_text):
                 return (e["slug"], e["anchor"])
             return ("__search__", member)
         return None
-    # bare name
-    if head in HEADING_SYMS:                                              # a type / module name -> its section
+    # bare name -> a type / module / native-object section. When the name heads a section on MORE THAN
+    # one page (e.g. `List` in the Kirito type reference AND in the C++ API), a mention ON one of those
+    # pages links to THAT page's section (so `List` in the C++ reference points at the C++ wrapper);
+    # anywhere else it falls back to the canonical (shallowest) section.
+    if head in HEADING_SYMS:
+        for c in HEADING_SYMS_ALL.get(head, ()):
+            if c["slug"] == _CUR_SLUG:
+                return (c["slug"], c["anchor"])
         e = HEADING_SYMS[head]
         return (e["slug"], e["anchor"])
     cands = BY_NAME.get(head)
