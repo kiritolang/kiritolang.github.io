@@ -79,6 +79,30 @@ delivered real findings. Given usage cost, remaining areas are being audited dir
   start=0) is WRONG: the reflected-operator rule makes `Integer(0) + BigInt` throw. A correct fix must seed
   the accumulator from the first non-scalar element (or require a matching start). Do carefully next session.
 
+### FIXED — batch 3
+- **F07-9 [Med] — sum() rejected BigInt/Complex.** Now a generic Handle accumulator (aux-rooted; native
+  type on the LEFT per the reflected-operator rule) kicks in when a non-scalar element appears; scalar
+  fast path unchanged. Regression in spec_v1161_fixes.ki; asan gc=1 clean (first attempt had a rooting
+  bug — RootScope inside the streamIterate callback got popped by streamIterate's inner scope; fixed with
+  a dedicated aux-root region).
+
+### OPEN — batch-3 scan findings (A01/A09/A12/A14 — real, deferred; full detail in scan/*.md)
+- **F01-1 [Med]** comparison ops are left-assoc not chained: `1==1==1`→False, `1<2<3` throws "type 'Bool'".
+  DESIGN DECISION needed: reject chained comparison at parse time, or implement Python chaining. (Ask user.)
+- **F01-2 [Med]** `var a, = x` / `for x, in xs` drop the trailing comma (bind whole iterable, swallow count
+  mismatch) while `a, = x` correctly 1-tuple-unpacks — silent path inconsistency. Real bug, nichey syntax.
+- **F14-2 [Med]** Counter.mostcommon(negative n) returns an end-slice instead of `[]` (silent wrong vs CPython).
+- **F14-4 [Med]** DataFrame([[...]]) from rows silently TRUNCATES a too-long later row (data loss); raw
+  "index out of range" on a too-short one — inconsistent with readcsv (rejects/pads).
+- **F14-1 [Med, pre-existing]** statistics.quantiles tail extrapolation. **F14-3/F14-5 [Low]** deque
+  maxlen/rotate missing; bare Dict-error diagnostics in merge/agg.
+- **F12-1 [Low]** HTTPS client accepts a TLS-truncated response silently (SSL_read<=0) unlike sibling
+  paths that throw — TLS-truncation robustness. F12-2/F12-3 [Low] Barrier broken-state / Windows socketpair.
+- **F09-1..7 [Low]** Integer("2^63") wraps (overflow boundary is 2^64), Float("1e400") throws, round()
+  MSVC buf, value.hpp minor rooting/iterator/doc items. No High/Med in A09.
+- **F13-1/F13-2 [Low]** regex negative count; tensor t[i] grad warnDetach. **F08-1 [Med]** isinstance by
+  name not identity. **F08-3 [Low]** `!=` standalone `_ne_` symmetry. **F07-4/5/6 [Low]** BigInt<Float msg.
+
 ### OPEN — lower priority (candidates for later batches, all logged in scan/*.md)
 - **F07-9 [Med]** sum()/min/max reject BigInt/Complex though `+`/operators work → fall back to
   applyBinaryOp(Add). **F07-2 [Med]** BigInt==Float non-transitive + Set/Dict bucket poison → BigIntVal::

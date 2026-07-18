@@ -3672,23 +3672,42 @@ inline void KiritoVM::installBuiltins() {
         return vm.alloc(std::make_unique<RangeVal>(start, stop, step));
     }))));
     defSig("sum", {{"iterable"}, {"start", "", makeInt(0)}}, "Number", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-        bool isFloat = false;
+        // Fast path: pure Integer/Float via an int64/double accumulator (streams -> O(1) memory). If a
+        // non-scalar element appears (BigInt/Complex/anything with its own `+`), switch to a generic
+        // Handle accumulator folded with applyBinaryOp(Add) so the aggregate isn't limited to the two
+        // native scalar kinds (F07-9). The accumulator lives in a dedicated AUX-root region — NOT a
+        // RootScope: streamIterate roots each element in its own inner RootScope, whose pop would drop a
+        // handle we'd pushed onto tempRoots_ from inside the callback; an aux region is unaffected.
+        std::vector<Handle> gRoots(2);   // [0] = accumulator, [1] = the scalar transient during the seed
+        vm.pushAuxRoots(&gRoots);
+        struct AuxPop { KiritoVM& v; ~AuxPop() { v.popAuxRoots(); } } auxPop{vm};
+        bool isFloat = false, generic = false;
         double f = 0;
         int64_t n = 0;
-        if (a.size() > 1) {  // optional start value (default 0): sum(it, start)
+        auto scalarHandle = [&]() -> Handle { return isFloat ? vm.makeFloat(f) : vm.makeInt(n); };
+        if (a.size() > 1) {  // optional start value (default 0)
             const Object& st = vm.arena().deref(a[1]);
             if (st.kind() == ValueKind::Float) { isFloat = true; f = static_cast<const FloatVal&>(st).value(); }
             else if (st.kind() == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(st).value(); n = v; f = static_cast<double>(v); }
-            else throw KiritoError("sum start must be a number");
+            else { generic = true; gRoots[0] = a[1]; }   // a non-numeric start seeds the generic fold
         }
-        streamIterate(vm, a[0], "sum() argument is not iterable", [&](Handle h) {  // streams: sum(range(N)) is O(1) memory
+        streamIterate(vm, a[0], "sum() argument is not iterable", [&](Handle h) {
             const Object& o = vm.arena().deref(h);
-            if (o.kind() == ValueKind::Float) { isFloat = true; f += static_cast<const FloatVal&>(o).value(); }
-            else if (o.kind() == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(o).value(); n = wadd(n, v); f += static_cast<double>(v); }
-            else throw KiritoError("sum expects numbers");
+            if (!generic && o.kind() == ValueKind::Float) { isFloat = true; f += static_cast<const FloatVal&>(o).value(); return true; }
+            if (!generic && o.kind() == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(o).value(); n = wadd(n, v); f += static_cast<double>(v); return true; }
+            if (!generic) {
+                // First non-scalar element: fold the accumulated scalar INTO it (the native type must be
+                // on the LEFT — arithmetic dispatches on the left operand and reals coerce to it).
+                generic = true;
+                gRoots[1] = scalarHandle();   // root the fresh scalar across the add (h is rooted by streamIterate)
+                gRoots[0] = applyBinaryOp(vm, BinOp::Add, h, gRoots[1]);
+                gRoots[1] = Handle{};
+                return true;
+            }
+            gRoots[0] = applyBinaryOp(vm, BinOp::Add, gRoots[0], h);   // acc (native) + element
             return true;
         });
-        return isFloat ? vm.makeFloat(f) : vm.makeInt(n);
+        return generic ? gRoots[0] : scalarHandle();
     });
     // min/max are variadic (a single iterable, or several positional values) and accept the keyword
     // options `key` (a function producing the comparison key) and `default` (returned for an empty

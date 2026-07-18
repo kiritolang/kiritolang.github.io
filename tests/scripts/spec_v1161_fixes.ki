@@ -48,4 +48,14 @@ assert len({3, 3.0, int.big(3)}) == 1, "Integer, Float, BigInt of one value dedu
 assert {int.big(5): "big"}.get(5.0, "miss") == "big", "a BigInt Dict key is reachable by the equal Float"
 assert not (int.big(3) == math.inf) and not (int.big(3) == math.nan), "BigInt != inf/nan"
 
+# --- F07-9: sum() folds BigInt/Complex (its own `+`) via a generic accumulator, not just Integer/Float.
+#     The scalar fast path is unchanged; the native type stays on the LEFT (reflected-operator rule). ---
+var complex = import("complex")
+assert sum([1, 2, 3]) == 6 and sum([1.5, 2.5]) == 4.0 and sum([1, 2], 10) == 13 and sum([]) == 0, "sum scalar fast path unchanged"
+assert String(sum([int.big(5), int.big(3), int.big(2)])) == "10", "sum of BigInts"
+assert String(sum([int.big(5), 3, 2])) == "10", "sum of BigInt + Integer (native on the left)"
+assert String(sum(map(Function(x): return int.big(x), [10, 20, 30]))) == "60", "sum of a lazy BigInt source"
+assert sum([complex.of(1, 1), complex.of(2, 2)]) == complex.of(3, 3), "sum of Complex"
+assert sum([complex.of(1, 1), complex.of(2, 2)], complex.zero) == complex.of(3, 3), "sum of Complex with a Complex start"
+
 io.print("v1.16.1 fixes: all passed")
