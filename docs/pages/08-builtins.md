@@ -49,6 +49,15 @@ parameter name.
   The type-name `String` form also accepts the **pseudo-types** `"Number"` (Integer or Float),
   `"Any"` (always `True`), `"Function"`, `"Module"`, `"None"`, and a **native object's type name**
   (e.g. `isinstance(m, "Matrix")`).
+
+  > **Matching is by class NAME, not identity.** For a user class, `isinstance` (and a typed `catch`,
+  > and an enforcing type annotation) test whether the value's class **chain** contains a class of the
+  > **same name** — they do not compare class identity. So two *distinct* classes that happen to share a
+  > name (e.g. one defined in each of two modules, or a class redefined after instances were made) are
+  > treated as the same type here. This is deliberate: it is what lets a deserialized instance
+  > (`dump`/`serialize`) re-match its class after a round-trip into a fresh VM, where the rebuilt class is
+  > a different object than the original. Keep user class names distinct if you rely on `isinstance` /
+  > typed `catch` to tell two types apart.
 - `hasattr(obj, name: String) → Bool` — whether `obj.name` resolves to an attribute or method. It is
   **existence**, not value: an attribute set to `None` still exists, so `hasattr` returns `True` for it
   (this is the whole point — it tells a present-but-`None` attribute apart from a missing one). Works

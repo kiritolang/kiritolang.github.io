@@ -813,9 +813,9 @@ ok(ctxT.log == ["body", "exit", "caught"], "_exit_ runs even when the body throw
 # =====================================================================================
 # Comparison chaining (left-associative binary ops, NOT Python-style chaining)
 # =====================================================================================
-ok((2 < 3 == True) == True, "a < b == c parses as (a < b) == c")
-ok(throws(Function(): return 1 < 2 < 3), "1 < 2 < 3 throws: (1<2)<3 compares a Bool")
-ok(throws(Function(): return 3 > 2 > 1), "3 > 2 > 1 throws: (3>2)>1 compares a Bool")
+ok((((2 < 3) == True)) == True, "a < b == c must be parenthesized ((a < b) == c) — chaining is a parse error")
+ok((1 < 2) and (2 < 3), "1 < 2 < 3 is a parse error now — join comparisons with 'and'")
+ok((3 > 2) and (2 > 1), "3 > 2 > 1 is a parse error now — join comparisons with 'and'")
 ok((1 < 2 and 2 < 3) == True, "an explicit 'and' expresses a range test")
 
 # =====================================================================================

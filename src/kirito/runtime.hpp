@@ -3689,23 +3689,36 @@ inline void KiritoVM::installBuiltins() {
             const Object& st = vm.arena().deref(a[1]);
             if (st.kind() == ValueKind::Float) { isFloat = true; f = static_cast<const FloatVal&>(st).value(); }
             else if (st.kind() == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(st).value(); n = v; f = static_cast<double>(v); }
-            else { generic = true; gRoots[0] = a[1]; }   // a non-numeric start seeds the generic fold
+            // A non-scalar start only seeds the generic fold if it is a numeric-like value type
+            // (BigInt/Complex/user `_add_`, all ValueKind::Instance). A String/List/Bytes start is
+            // rejected — sum concatenates nothing (the deliberate "no list start concat" contract).
+            else if (st.kind() == ValueKind::Instance) { generic = true; gRoots[0] = a[1]; }
+            else throw KiritoError("sum start must be a number");
         }
         streamIterate(vm, a[0], "sum() argument is not iterable", [&](Handle h) {
             const Object& o = vm.arena().deref(h);
-            if (!generic && o.kind() == ValueKind::Float) { isFloat = true; f += static_cast<const FloatVal&>(o).value(); return true; }
-            if (!generic && o.kind() == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(o).value(); n = wadd(n, v); f += static_cast<double>(v); return true; }
+            const ValueKind k = o.kind();
             if (!generic) {
-                // First non-scalar element: fold the accumulated scalar INTO it (the native type must be
-                // on the LEFT — arithmetic dispatches on the left operand and reals coerce to it).
-                generic = true;
-                gRoots[1] = scalarHandle();   // root the fresh scalar across the add (h is rooted by streamIterate)
-                gRoots[0] = applyBinaryOp(vm, BinOp::Add, h, gRoots[1]);
-                gRoots[1] = Handle{};
+                if (k == ValueKind::Float) { isFloat = true; f += static_cast<const FloatVal&>(o).value(); return true; }
+                if (k == ValueKind::Integer) { int64_t v = static_cast<const IntVal&>(o).value(); n = wadd(n, v); f += static_cast<double>(v); return true; }
+                if (k == ValueKind::Instance) {
+                    // First non-scalar numeric (BigInt/Complex/user `_add_`): fold the accumulated scalar
+                    // INTO it (the native type must be on the LEFT — arithmetic dispatches on the left
+                    // operand and reals coerce to it).
+                    generic = true;
+                    gRoots[1] = scalarHandle();   // root the fresh scalar across the add (h is rooted by streamIterate)
+                    gRoots[0] = applyBinaryOp(vm, BinOp::Add, h, gRoots[1]);
+                    gRoots[1] = Handle{};
+                    return true;
+                }
+                throw KiritoError("sum expects numbers");   // String/List/Bytes/… — preserve the contract
+            }
+            // generic mode: fold numbers and numeric value types; reject everything else the same way.
+            if (k == ValueKind::Float || k == ValueKind::Integer || k == ValueKind::Instance) {
+                gRoots[0] = applyBinaryOp(vm, BinOp::Add, gRoots[0], h);   // acc (native) + element
                 return true;
             }
-            gRoots[0] = applyBinaryOp(vm, BinOp::Add, gRoots[0], h);   // acc (native) + element
-            return true;
+            throw KiritoError("sum expects numbers");
         });
         return generic ? gRoots[0] : scalarHandle();
     });

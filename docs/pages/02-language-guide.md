@@ -222,6 +222,11 @@ for x in iterable:
 Logical operators `and`/`or`/`not` short-circuit and yield an operand. `break`/`continue` outside a
 loop and `return` outside a function are rejected at parse time.
 
+**Comparisons do not chain.** Unlike Python, `a < b < c` is a **parse error** — Kirito will not read it
+as `a < b and b < c`. Connect the conditions explicitly with `and`/`or` (`a < b and b < c`), or wrap an
+inner comparison in parentheses when you really mean to compare its Bool result (`(a == b) == c`). This
+keeps `a < b < c` from silently parsing as `(a < b) < c` (comparing a Bool).
+
 **`for` iterates a snapshot.** A `for` loop captures the iterable's elements (or a dict's keys) once,
 at loop start, then walks that fixed snapshot. So mutating the collection inside the loop is safe and
 well-defined: appending never causes an infinite loop (the new items aren't visited this pass),

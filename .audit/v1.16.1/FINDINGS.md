@@ -86,9 +86,22 @@ delivered real findings. Given usage cost, remaining areas are being audited dir
   bug — RootScope inside the streamIterate callback got popped by streamIterate's inner scope; fixed with
   a dedicated aux-root region).
 
-### OPEN — batch-3 scan findings (A01/A09/A12/A14 — real, deferred; full detail in scan/*.md)
-- **F01-1 [Med]** comparison ops are left-assoc not chained: `1==1==1`→False, `1<2<3` throws "type 'Bool'".
-  DESIGN DECISION needed: reject chained comparison at parse time, or implement Python chaining. (Ask user.)
+### FIXED — batch 4 (user-directed)
+- **F07-9 [Med] — sum() contract regression CLOSED (the correct, narrow fix).** The batch-3 generic-fold
+  seeded on ANY non-scalar → it started concatenating Strings/Lists, breaking the deliberate "sum expects
+  numbers"/"sum start must be a number"/"no list start concat" contract (r4_builtins, audit_builtins,
+  labx_builtins, r8_docs). FIX: the generic accumulator now only engages for `ValueKind::Instance`
+  (BigInt/Complex/user `_add_`); String/List/Bytes elements OR start re-throw the numeric-contract error.
+  Regression: test_audit_v1161.cpp + spec_v1161_fixes.ki (rejects sum of Strings/Lists + a non-number start).
+- **F01-1 [Med] — DECIDED (user): reject chained comparison at parse time.** `parseComparison` now consumes
+  at most ONE comparison-family operator (==/!=/</<=/>/>=/in/not in); a second one throws "chained comparison
+  is not allowed; connect the conditions with 'and'/'or'". Prevents `a<b<c` silently parsing as `(a<b)<c`.
+  Tests: tests/errors/chained_comparison_{lt,eq,in} + test_audit_v1161.cpp. Migrated the old
+  `X <cmp> Y == True/False` idiom in the golden scripts to the parenthesized form (`(X <cmp> Y) == True`);
+  full 352-fixture golden suite green. Docs: 02-language-guide (new "Comparisons do not chain" note).
+- **F08-1 [Med] — DECIDED (user): documented, not code-changed.** isinstance / typed `catch` / enforcing
+  annotations match user classes by NAME not identity (needed for serde class-reconnection across VMs).
+  Documented the limitation in docs/pages/08-builtins.md (isinstance) and 12-exceptions.md (typed catch).
 - **F01-2 [Med]** `var a, = x` / `for x, in xs` drop the trailing comma (bind whole iterable, swallow count
   mismatch) while `a, = x` correctly 1-tuple-unpacks — silent path inconsistency. Real bug, nichey syntax.
 - **F14-2 [Med]** Counter.mostcommon(negative n) returns an end-slice instead of `[]` (silent wrong vs CPython).

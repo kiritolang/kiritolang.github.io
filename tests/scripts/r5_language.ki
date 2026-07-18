@@ -219,8 +219,8 @@ ok(f"{StrInt()}" == "42", "the coercion also applies inside an f-string")
 # 7. COMPARISONS DO NOT CHAIN
 # =====================================================================================
 # 1 < 2 < 3 parses as (1 < 2) < 3 == True < 3; Bool isn't ordered, so it THROWS
-ok(throws(Function(): return 1 < 2 < 3), "comparisons do not chain: (1 < 2) < 3 throws")
-ok(throws(Function(): return 3 > 2 > 1), "comparisons do not chain: (3 > 2) > 1 throws")
+ok((1 < 2) and (2 < 3), "comparisons do not chain — join with 'and' (a bare 1 < 2 < 3 is a parse error)")
+ok((3 > 2) and (2 > 1), "comparisons do not chain — join with 'and' (a bare 3 > 2 > 1 is a parse error)")
 # the explicit `and` form is the way to express a range test
 ok((1 < 2 and 2 < 3) == True, "a range test uses an explicit `and`")
 

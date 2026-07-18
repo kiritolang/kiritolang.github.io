@@ -59,6 +59,12 @@ A **bare `catch`** also catches any C++ `std::exception` that crosses the native
 starts: lexer, parser, name-resolution, and static-analysis errors are reported when the program is
 compiled, so a `try` inside the same program can't catch its own syntax error.
 
+> **A typed `catch T as e` matches user classes by NAME, not identity** — like [`isinstance`](08-builtins.md#isinstance)
+> (they share one mechanism): `e` is caught if its class **chain** holds a class named `T`, not one that
+> *is* the same class object. Two distinct same-named classes are therefore caught interchangeably. This
+> is what lets a deserialized exception re-match its class in a fresh VM; keep exception class names
+> distinct when you rely on a typed `catch` to tell two error types apart.
+
 **`StopIteration`** is a built-in exception class (always in scope). A [lazy generator](09-types.md#lazy-generators-_iter_--_next_)
 raises `throw StopIteration()` from its `_next_` to signal the end of iteration; you can `catch
 StopIteration as e:` and `isinstance(e, StopIteration)` matches it like any typed exception.

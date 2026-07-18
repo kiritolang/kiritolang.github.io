@@ -112,7 +112,7 @@ ok(throws(Function(): return 5 % 0), "% by zero throws")
 ok(bitand(0xF0, 0x3C) == 48 and bitor(8, 1) == 9 and bitxor(5, 1) == 4, "bitand/or/xor")
 ok(bitnot(0) == -1 and shl(1, 8) == 256 and shr(-8, 1) == -4, "bitnot/shl/shr (arithmetic)")
 # Chained comparison is NOT Python-style; it is left-associative, so `1 < 2 < 3` is `(1<2) < 3`.
-ok(throws(Function(): return 1 < 2 < 3), "no chained comparison: (1<2)<3 throws")
+ok((1 < 2) and (2 < 3), "no chained comparison — join with 'and' (a bare 1 < 2 < 3 is a parse error)")
 
 # ============================================================================
 # Types and conversions

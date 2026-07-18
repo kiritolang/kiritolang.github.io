@@ -58,4 +58,23 @@ assert String(sum(map(Function(x): return int.big(x), [10, 20, 30]))) == "60", "
 assert sum([complex.of(1, 1), complex.of(2, 2)]) == complex.of(3, 3), "sum of Complex"
 assert sum([complex.of(1, 1), complex.of(2, 2)], complex.zero) == complex.of(3, 3), "sum of Complex with a Complex start"
 
+# --- F07-9 (contract preserved): sum still rejects non-numbers and a non-number start (only numeric
+#     value types — BigInt/Complex — reach the generic fold; String/List do NOT concatenate). ---
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+assert threw(Function(): return sum(["a", "b"])), "sum of Strings throws (no concat)"
+assert threw(Function(): return sum([[1], [2]])), "sum of Lists throws (no list concat)"
+assert threw(Function(): return sum([[1], [2]], [])), "sum with a List start throws (no list start concat)"
+assert threw(Function(): return sum([1, 2], "x")), "sum with a String start throws"
+
+# --- F01-1: comparisons do not chain — the valid forms (explicit and/or, or a parenthesized inner
+#     comparison) still work; the chained form is a parse error (see tests/errors/chained_comparison_*). ---
+assert (1 < 2) and (2 < 3), "explicit-and comparison chain works"
+assert (1 == 1) == True, "a parenthesized inner comparison works"
+assert 1 < 2 and 2 < 3 and 3 < 4, "and-joined comparisons work"
+
 io.print("v1.16.1 fixes: all passed")

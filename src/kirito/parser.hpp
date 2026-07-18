@@ -515,35 +515,55 @@ private:
         return parseComparison();
     }
 
+    // Detect a comparison-family operator at the cursor (==, !=, <, <=, >, >=, in, not in) without
+    // consuming it. Kirito comparisons do NOT chain (see parseComparison), so we need to peek for a
+    // second one to reject it.
+    bool comparisonOpAhead() const {
+        switch (peek().type) {
+            case TokenType::EqEq: case TokenType::NotEq:
+            case TokenType::Lt: case TokenType::Le:
+            case TokenType::Gt: case TokenType::Ge:
+            case TokenType::KwIn: return true;
+            case TokenType::KwNot: return peekAt(1).type == TokenType::KwIn;
+            default: return false;
+        }
+    }
+
     ast::ExprPtr parseComparison() {
         ChainDepth cd(exprDepth_);
         auto left = parseAdd();
-        while (true) {
-            if (blockJustClosed_) return left;  // a block-fn's dedent terminates the statement (A02-1)
-            BinOp op;
-            SourceSpan span;
-            if (at(TokenType::KwIn)) {
-                op = BinOp::In;
-                span = advance().span;
-            } else if (at(TokenType::KwNot) && peekAt(1).type == TokenType::KwIn) {
-                op = BinOp::NotIn;
-                span = advance().span;
-                advance();
-            } else {
-                switch (peek().type) {
-                    case TokenType::EqEq: { op = BinOp::Eq; } break;
-                    case TokenType::NotEq: { op = BinOp::Ne; } break;
-                    case TokenType::Lt: { op = BinOp::Lt; } break;
-                    case TokenType::Le: { op = BinOp::Le; } break;
-                    case TokenType::Gt: { op = BinOp::Gt; } break;
-                    case TokenType::Ge: { op = BinOp::Ge; } break;
-                    default: { return left; } break;
-                }
-                span = advance().span;
+        if (blockJustClosed_) return left;  // a block-fn's dedent terminates the statement (A02-1)
+        BinOp op;
+        SourceSpan span;
+        if (at(TokenType::KwIn)) {
+            op = BinOp::In;
+            span = advance().span;
+        } else if (at(TokenType::KwNot) && peekAt(1).type == TokenType::KwIn) {
+            op = BinOp::NotIn;
+            span = advance().span;
+            advance();
+        } else {
+            switch (peek().type) {
+                case TokenType::EqEq: { op = BinOp::Eq; } break;
+                case TokenType::NotEq: { op = BinOp::Ne; } break;
+                case TokenType::Lt: { op = BinOp::Lt; } break;
+                case TokenType::Le: { op = BinOp::Le; } break;
+                case TokenType::Gt: { op = BinOp::Gt; } break;
+                case TokenType::Ge: { op = BinOp::Ge; } break;
+                default: { return left; } break;
             }
-            cd.step(span);
-            left = binary(std::move(left), op, parseAdd(), span);
+            span = advance().span;
         }
+        cd.step(span);
+        left = binary(std::move(left), op, parseAdd(), span);
+        // Reject a chained comparison — `a < b < c`, `1 == 1 == 1`, `x in y in z`. Unlike Python, Kirito
+        // comparisons are non-chaining: `a < b < c` would otherwise parse as `(a < b) < c` and compare a
+        // Bool. Require the conditions be joined explicitly with `and`/`or`.
+        if (!blockJustClosed_ && comparisonOpAhead()) {
+            throw KiritoError("chained comparison is not allowed; connect the conditions with 'and'/'or' "
+                              "(e.g. 'a < b and b < c')", peek().span);
+        }
+        return left;
     }
 
     ast::ExprPtr parseAdd() {
