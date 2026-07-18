@@ -779,7 +779,9 @@ chunked transfer-encoding is decoded, and `gzip`/`deflate` responses are decompr
 - `urlsplit(url: String) → Dict` — split a URL into `scheme`/`host`/`port`/`path`/`query`/`fragment`
   (all `String`; `port` is the textual digits, empty when absent — use `Integer(d["port"])` if you need
   it numeric). A bracketed IPv6 literal is preserved in `host` with its brackets, and the optional
-  port follows after `]:` — `urlsplit("http://[::1]:8080/p")` -> `host = "[::1]", port = "8080"`.
+  port follows after `]:` — `urlsplit("http://[::1]:8080/p")` -> `host = "[::1]", port = "8080"`. An
+  authority (`host`/`port`) is recognized only after `://`, so a **protocol-relative** reference has no
+  authority: `urlsplit("//host/path")` -> `scheme`/`host` empty, `path = "//host/path"`.
 
 ### Sockets
 
