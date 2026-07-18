@@ -32,7 +32,12 @@ Scope from the reference pages: 08-builtins (99 sigs), 09-types (162), 10-stdlib
 |------|-------------|-----------|--------|-----------|
 | builtins | 08-builtins | cov_builtins.ki | **done** (307 asserts) | none |
 | types: None/Bool/Integer/Float + String/Bytes | 09-types | cov_scalars_strbytes.ki | **done** (264 asserts) | surplus-arg SILENT accept on upper/lower/isX/hex/strip (arity gap); doc: round ties away-from-zero, String(Bytes)→repr |
-| types: List/Set/Dict + dunders | 09-types | cov_containers_dunders.ki | wave2 (running) | |
+| types: List/Set/Dict + dunders | 09-types | cov_containers_dunders.ki | **done** (235 asserts) | BUG-1 native-error-in-_next_ (FIXED); Set.pop LIFO doc-note |
+| io + path + sys + time | 10-stdlib | cov_system.ki | wave3 (running) | |
+| hash + crypto + gzip + zlib | 10-stdlib | cov_hash_compress.ki | **done** (118 asserts) | none (all vectors match); notes: no incremental hasher API, no compression level param, crypto TLS-enabled here |
+| dump + serialize + semver + arg | 10-stdlib | cov_serde_misc.ki | wave3 (running) | |
+| tabular + matrix + tensor | 10-stdlib | cov_arrays.ki | wave3 (running) | |
+| net + parallel | 10-stdlib | cov_net_parallel.ki | DEFERRED (final targeted pass) | |
 | math+statistics+random+bisect+heapq | 10-stdlib | cov_math_stats.ki | **done** (325 asserts) | none |
 | int (BigInt) + complex | 10-stdlib | cov_int_complex.ki | **done** (302 asserts) | none (bugs); doc: BigInt==Float int64-range caveat, .compare-vs-zero note |
 | string mod + textwrap + regex | 10-stdlib | cov_string_regex.ki | **done** (216 asserts) | textwrap width≤0 accepted silently (triage: doc note vs validate ≥1) |
@@ -76,3 +81,8 @@ DOC-only fixes (no gate):
   a cyclic structure to JSON` (cycle case). Add/clarify in 10-stdlib.
 - **io.seek** `whence` shown required though optional; **regex Match.group** `{"index"}` under-describes
   its variadic form. Minor inspect/doc polish.
+
+## FIX PASS 2 candidates (from wave 3)
+- **dump.loads / serialize.loads** silently accept trailing garbage after the root id (load the valid
+  prefix instead of erroring). Same class as the base64 fix. Bounds-checked (not memory-unsafe). Fix +
+  migrate any test that pinned it. (findings_serde_misc.md has the repro.)

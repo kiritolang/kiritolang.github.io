@@ -1,0 +1,337 @@
+# Exhaustive coverage: hash / crypto / gzip / zlib stdlib modules.
+# Verified against ./build-bin/ki-release 1.16.1 and published test vectors
+# (FIPS SHA, RFC 2104/6070 HMAC/PBKDF2, CRC-64/XZ check value, NIST AES-256-GCM).
+# Deterministic: no clock/rng-dependent assertions on output bytes (crypto key
+# material is generated but only used for round-trip/verify identities).
+
+var io = import("io")
+var hash = import("hash")
+var gzip = import("gzip")
+var zlib = import("zlib")
+var crypto = import("crypto")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+# A Bytes value holding the 256 distinct byte values 0..255.
+var allbytes = Function():
+    var arr = List()
+    var i = 0
+    while i < 256:
+        arr.append(i)
+        i = i + 1
+    return Bytes(arr)
+
+# Copy a Bytes/String's bytes into a mutable List of Integers.
+var tolist = Function(data):
+    var out = List()
+    var i = 0
+    while i < len(data):
+        out.append(data[i])
+        i = i + 1
+    return out
+
+# ---------------------------------------------------------------------------
+# hash: cryptographic digests — known test vectors
+# ---------------------------------------------------------------------------
+
+# Empty-string digests (the canonical constants).
+assert hash.md5("") == "d41d8cd98f00b204e9800998ecf8427e"
+assert hash.sha1("") == "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+assert hash.sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+assert hash.sha512("") == "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
+
+# "abc" — the FIPS 180 example vectors.
+assert hash.md5("abc") == "900150983cd24fb0d6963f7d28e17f72"
+assert hash.sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d"
+assert hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+assert hash.sha384("abc") == "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7"
+assert hash.sha512("abc") == "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+
+# The million-'a' SHA-256 vector (long input; streaming-internal correctness).
+assert hash.sha256("a" * 1000000) == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+
+# Byte-exact hashing of a Bytes: the 0..255 SHA-256 vector.
+assert hash.sha256(allbytes()) == "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880"
+
+# A String and a Bytes with identical bytes hash identically.
+assert hash.sha256("abc") == hash.sha256(Bytes([97, 98, 99]))
+
+# Digests are lowercase hex of the expected length.
+assert len(hash.md5("x")) == 32
+assert len(hash.sha1("x")) == 40
+assert len(hash.sha256("x")) == 64
+assert len(hash.sha384("x")) == 96
+assert len(hash.sha512("x")) == 128
+
+# ---------------------------------------------------------------------------
+# hash: HMAC (RFC 2104 / well-known vectors)
+# ---------------------------------------------------------------------------
+
+# HMAC-SHA256(key="key", msg="The quick brown fox...") — the canonical example.
+assert hash.hmac("key", "The quick brown fox jumps over the lazy dog") == "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+
+# Default algo is sha256.
+assert hash.hmac("k", "m") == hash.hmac("k", "m", "sha256")
+
+# Every documented algo name is accepted and produces its digest-length hex.
+assert len(hash.hmac("k", "m", "md5")) == 32
+assert len(hash.hmac("k", "m", "sha1")) == 40
+assert len(hash.hmac("k", "m", "sha256")) == 64
+assert len(hash.hmac("k", "m", "sha384")) == 96
+assert len(hash.hmac("k", "m", "sha512")) == 128
+
+# Empty key and empty message are valid.
+assert hash.hmac("", "", "sha512") == "b936cee86c9f87aa5d3c6f2e84cb5a4239a5fe50480a6ec66b70ab5b1f4ac6730c6c515421b327ec1d69402e53dfb49ad7381eb067b338fd7b0cb22247225d47"
+
+# A key longer than the block size is folded (does not throw; differs from short).
+assert hash.hmac("k" * 200, "m") != hash.hmac("k", "m")
+
+# String/Bytes key and msg are byte-equivalent.
+assert hash.hmac(Bytes([107]), Bytes([109])) == hash.hmac("k", "m")
+
+# Unknown algo throws, listing the valid set.
+assert threw(Function(): hash.hmac("k", "m", "sha3"))
+assert "unknown algorithm 'sha3'" in emsg(Function(): hash.hmac("k", "m", "sha3"))
+assert "md5/sha1/sha256/sha384/sha512" in emsg(Function(): hash.hmac("k", "m", "sha3"))
+
+# ---------------------------------------------------------------------------
+# hash: PBKDF2 (RFC 6070 vectors, PBKDF2-HMAC-SHA1)
+# ---------------------------------------------------------------------------
+
+assert hash.pbkdf2("password", "salt", 1, 20, "sha1").hex() == "0c60c80f961f0e71f3a9b524af6012062fe037a6"
+assert hash.pbkdf2("password", "salt", 2, 20, "sha1").hex() == "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957"
+assert hash.pbkdf2("password", "salt", 4096, 20, "sha1").hex() == "4b007901b765489abead49d926f721d065a429c1"
+
+# Default dklen is 32, default algo sha256; result is Bytes of the requested length.
+assert len(hash.pbkdf2("p", "s", 1)) == 32
+assert len(hash.pbkdf2("p", "s", 1, 64)) == 64
+assert type(hash.pbkdf2("p", "s", 1)) == "Bytes"
+
+# Iteration count changes the output; more iterations != fewer.
+assert hash.pbkdf2("p", "s", 1) != hash.pbkdf2("p", "s", 2)
+
+# String/Bytes password and salt are byte-equivalent.
+assert hash.pbkdf2("pw", "salt", 10).hex() == hash.pbkdf2(Bytes([112, 119]), Bytes([115, 97, 108, 116]), 10).hex()
+
+# Bounds: iterations must be >= 1; dklen in [1, 1048576].
+assert "iterations must be in [1, 4294967295]" in emsg(Function(): hash.pbkdf2("p", "s", 0))
+assert "iterations must be in [1, 4294967295]" in emsg(Function(): hash.pbkdf2("p", "s", -5))
+assert "dklen must be >= 1" in emsg(Function(): hash.pbkdf2("p", "s", 1, 0))
+assert "dklen too large (max 1048576)" in emsg(Function(): hash.pbkdf2("p", "s", 1, 1048577))
+assert "unknown algorithm 'xx'" in emsg(Function(): hash.pbkdf2("p", "s", 1, 32, "xx"))
+# The maximum dklen is accepted (boundary).
+assert len(hash.pbkdf2("p", "s", 1, 1048576)) == 1048576
+
+# ---------------------------------------------------------------------------
+# hash: comparedigest (constant-time equality)
+# ---------------------------------------------------------------------------
+
+assert hash.comparedigest("abc", "abc")
+assert not hash.comparedigest("abc", "abd")
+assert not hash.comparedigest("abc", "abcd")   # length mismatch -> False, no throw
+assert hash.comparedigest("", "")
+assert hash.comparedigest(Bytes([1, 2, 3]), Bytes([1, 2, 3]))
+assert not hash.comparedigest(Bytes([1, 2, 3]), Bytes([1, 2, 4]))
+# Verifying an HMAC against itself.
+assert hash.comparedigest(hash.hmac("k", "m"), hash.hmac("k", "m"))
+
+# ---------------------------------------------------------------------------
+# hash: checksums (adler32 / crc32 / crc64)
+# ---------------------------------------------------------------------------
+
+# adler32("") == 1; adler32("abc") == 0x024D0127.
+assert hash.adler32("") == 1
+assert hash.adler32("abc") == 38600999
+# crc32("") == 0; crc32("abc") == 0x352441C2.
+assert hash.crc32("") == 0
+assert hash.crc32("abc") == 891568578
+# CRC-64/XZ check value for "123456789" == 0x995dc9bbdf1939fa (signed here).
+assert hash.crc64("123456789") == -7395533204333446662
+# Checksums are content-based: String and equal Bytes agree.
+assert hash.crc32("abc") == hash.crc32(Bytes([97, 98, 99]))
+assert hash.adler32(allbytes()) == hash.adler32(allbytes())
+# Non-negative Integers for the 32-bit checksums.
+assert hash.adler32("hello world") >= 0
+assert hash.crc32("hello world") >= 0
+
+# ---------------------------------------------------------------------------
+# hash: generic hash(value)
+# ---------------------------------------------------------------------------
+
+# Deterministic within a run and content-based for Strings/Bytes.
+assert hash.hash("abc") == hash.hash("abc")
+assert hash.hash(42) == hash.hash(42)
+assert hash.hash(True) == hash.hash(True)
+assert hash.hash(None) == hash.hash(None)
+# Unhashable input throws the Dict-key message.
+assert "unhashable type 'List'" in emsg(Function(): hash.hash([1, 2]))
+
+# ---------------------------------------------------------------------------
+# gzip: round-trip + type preservation
+# ---------------------------------------------------------------------------
+
+# A String input yields a String; a Bytes input yields Bytes (same type as input).
+assert type(gzip.compress("hello")) == "String"
+assert type(gzip.compress(Bytes([1, 2, 3]))) == "Bytes"
+
+# Round-trip: empty, text, binary 0..255, large.
+assert gzip.decompress(gzip.compress("")) == ""
+assert gzip.decompress(gzip.compress("hello world")) == "hello world"
+assert gzip.decompress(gzip.compress(allbytes())) == allbytes()
+assert gzip.decompress(gzip.compress("x" * 100000)) == "x" * 100000
+# The gzip/gunzip verb aliases behave identically.
+assert gzip.gunzip(gzip.gzip("payload")) == "payload"
+
+# Produces the RFC-1952 magic (0x1f 0x8b) and CM=deflate.
+var gz = gzip.compress(Bytes([65, 66, 67]))
+assert gz[0] == 31
+assert gz[1] == 139
+assert gz[2] == 8
+
+# Multiple concatenated members decode and join (cat a.gz b.gz).
+var memA = tolist(gzip.compress(Bytes([65])))
+var memB = tolist(gzip.compress(Bytes([66])))
+var joined = List()
+for x in memA:
+    joined.append(x)
+for x in memB:
+    joined.append(x)
+assert gzip.decompress(Bytes(joined)) == Bytes([65, 66])
+
+# ---------------------------------------------------------------------------
+# gzip: hardening — corrupt/truncated streams MUST throw (no silent partial output)
+# ---------------------------------------------------------------------------
+
+# Too short to be a member.
+assert "stream too short" in emsg(Function(): gzip.decompress("short"))
+# Bad magic.
+assert "bad magic" in emsg(Function(): gzip.decompress("not a gzip stream at all, long enough"))
+# Truncated stream (drop the last trailer bytes).
+var gfull = tolist(gzip.compress(Bytes([104, 105, 106, 107, 108, 109])))
+assert threw(Function(): gzip.decompress(Bytes(gfull[0:len(gfull) - 2])))
+assert "truncated" in emsg(Function(): gzip.decompress(Bytes(gfull[0:len(gfull) - 2])))
+# Corrupt body -> CRC-32 mismatch (not silent bad data).
+var gcorrupt = tolist(gzip.compress(Bytes([104, 105, 106, 107, 108, 109])))
+gcorrupt[len(gcorrupt) - 5] = (gcorrupt[len(gcorrupt) - 5] + 1) % 256
+assert "CRC-32 mismatch" in emsg(Function(): gzip.decompress(Bytes(gcorrupt)))
+# Trailing junk after a valid member is rejected, not ignored.
+var gjunk = tolist(gzip.compress(Bytes([1, 2, 3])))
+gjunk.append(0)
+gjunk.append(0)
+gjunk.append(0)
+assert threw(Function(): gzip.decompress(Bytes(gjunk)))
+
+# ---------------------------------------------------------------------------
+# zlib: round-trip + raw deflate/inflate
+# ---------------------------------------------------------------------------
+
+assert type(zlib.compress("hi")) == "String"
+assert type(zlib.compress(Bytes([1, 2, 3]))) == "Bytes"
+
+assert zlib.decompress(zlib.compress("")) == ""
+assert zlib.decompress(zlib.compress("hello world")) == "hello world"
+assert zlib.decompress(zlib.compress(allbytes())) == allbytes()
+assert zlib.decompress(zlib.compress("y" * 100000)) == "y" * 100000
+
+# Raw DEFLATE (no zlib header) round-trips via inflate.
+assert zlib.inflate(zlib.deflate("hello world")) == "hello world"
+assert zlib.inflate(zlib.deflate(allbytes())) == allbytes()
+assert zlib.inflate(zlib.deflate("")) == ""
+
+# The zlib stream carries the RFC-1950 header; a raw deflate does not, so they differ.
+assert zlib.compress("payload data here") != zlib.deflate("payload data here")
+
+# ---------------------------------------------------------------------------
+# zlib: hardening — corrupt/truncated MUST throw
+# ---------------------------------------------------------------------------
+
+# Too short.
+assert "zlib data too short" in emsg(Function(): zlib.decompress("ab"))
+# Not a valid zlib method / header.
+assert threw(Function(): zlib.decompress("garbage data here xxxx"))
+# Corrupt trailing Adler-32 -> checksum mismatch.
+var zc = tolist(zlib.compress(Bytes([104, 105, 106, 107, 108, 109, 110])))
+zc[len(zc) - 1] = (zc[len(zc) - 1] + 1) % 256
+assert "checksum mismatch" in emsg(Function(): zlib.decompress(Bytes(zc)))
+# Raw inflate of garbage throws (does not silently return partial data).
+assert threw(Function(): zlib.inflate("garbage"))
+# A zlib stream is NOT a valid raw deflate stream and vice-versa (header confusion is caught).
+assert threw(Function(): zlib.inflate(zlib.compress("hello world")))
+
+# ---------------------------------------------------------------------------
+# crypto: gated on KIRITO_ENABLE_TLS. If disabled, every op MUST throw
+# "requires KIRITO_ENABLE_TLS"; if enabled, verify real functionality.
+# ---------------------------------------------------------------------------
+
+if not crypto.enabled:
+    assert "requires KIRITO_ENABLE_TLS" in emsg(Function(): crypto.aesencrypt("k" * 16, "x", "i" * 12))
+    assert "requires KIRITO_ENABLE_TLS" in emsg(Function(): crypto.rsagenerate(2048))
+    assert "requires KIRITO_ENABLE_TLS" in emsg(Function(): crypto.ecgenerate())
+    assert "requires KIRITO_ENABLE_TLS" in emsg(Function(): crypto.x509parse("x"))
+    io.print("cov hash/compress: crypto disabled, gate verified")
+else:
+    # --- AES-GCM: known NIST vector (256-bit zero key, 96-bit zero IV, empty PT).
+    var zkey = List()
+    var zi = 0
+    while zi < 32:
+        zkey.append(0)
+        zi = zi + 1
+    var key = Bytes(zkey)
+    var iv = Bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    var sealed = crypto.aesencrypt(key, "", iv)
+    assert sealed["tag"].hex() == "530f8afbc74536b9a963b4f1c4cb738b"
+    assert len(sealed["ciphertext"]) == 0
+
+    # Round-trip encrypt/decrypt.
+    var s2 = crypto.aesencrypt(key, "secret message", iv)
+    assert crypto.aesdecrypt(key, s2["ciphertext"], iv, s2["tag"]).decode("utf-8") == "secret message"
+    assert type(s2["ciphertext"]) == "Bytes"
+    assert type(s2["tag"]) == "Bytes"
+
+    # Round-trip with AAD; wrong AAD fails authentication.
+    var s3 = crypto.aesencrypt(key, "msg", iv, "header")
+    assert crypto.aesdecrypt(key, s3["ciphertext"], iv, s3["tag"], "header").decode("utf-8") == "msg"
+    assert "authentication failed" in emsg(Function(): crypto.aesdecrypt(key, s3["ciphertext"], iv, s3["tag"], "wrong"))
+
+    # A tampered tag never yields plaintext — it throws "authentication failed".
+    var other = crypto.aesencrypt(key, "different", iv)
+    assert "authentication failed" in emsg(Function(): crypto.aesdecrypt(key, s2["ciphertext"], iv, other["tag"]))
+
+    # Invalid key length is rejected.
+    assert "16, 24 or 32 bytes" in emsg(Function(): crypto.aesencrypt(Bytes([1, 2, 3]), "x", iv))
+
+    # --- RSA sign/verify + encrypt/decrypt.
+    var rk = crypto.rsagenerate(2048)
+    var sig = crypto.rsasign(rk["private"], "hello")
+    assert crypto.rsaverify(rk["public"], "hello", sig)
+    assert not crypto.rsaverify(rk["public"], "hell0", sig)   # tampered message -> False
+    assert type(sig) == "Bytes"
+    assert crypto.rsadecrypt(rk["private"], crypto.rsaencrypt(rk["public"], "topsecret")).decode("utf-8") == "topsecret"
+
+    # --- EC sign/verify.
+    var ek = crypto.ecgenerate()
+    var esig = crypto.ecsign(ek["private"], "msg")
+    assert crypto.ecverify(ek["public"], "msg", esig)
+    assert not crypto.ecverify(ek["public"], "msj", esig)
+
+    # Wrong key family throws rather than silently signing with the other algorithm.
+    assert "expected RSA private key" in emsg(Function(): crypto.rsasign(ek["private"], "x"))
+
+    # x509parse rejects a non-certificate PEM.
+    assert "invalid certificate PEM" in emsg(Function(): crypto.x509parse("not a certificate"))
+
+    io.print("cov hash/compress: crypto enabled, functionality verified")
+
+io.print("cov hash/compress: all passed")

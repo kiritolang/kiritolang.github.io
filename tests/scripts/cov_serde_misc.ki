@@ -1,0 +1,384 @@
+# Exhaustive coverage of Kirito's serialization / misc stdlib (docs/pages/10-stdlib.md):
+#   dump (binary serde), serialize (text serde), semver, arg (argument parser).
+# Every assertion below was verified against the real interpreter (./build-bin/ki-release) BEFORE
+# being written. Deltas/silent-errors observed are recorded in
+#   .audit/v1.16.1/coverage/findings_serde_misc.md.
+
+var io = import("io")
+var path = import("path")
+var dump = import("dump")
+var serialize = import("serialize")
+var semver = import("semver")
+var arg = import("arg")
+var math = import("math")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+# ============================================================================================
+# dump  -- compact binary serialization (dumps/loads/save/load)
+# ============================================================================================
+
+# --- normal round-trips: dumps -> Bytes, loads reconstructs -------------------------------
+assert type(dump.dumps([1, 2, 3])) == "Bytes", "dumps returns Bytes"
+assert dump.loads(dump.dumps([1, 2, 3])) == [1, 2, 3], "list round-trip"
+# loads accepts the Bytes directly OR a String of the same raw bytes (latin-1 preserves them 1:1)
+var blob = dump.dumps([1, 2, 3])
+assert dump.loads(blob) == [1, 2, 3], "loads from Bytes"
+assert dump.loads(blob.decode("latin-1")) == [1, 2, 3], "loads from raw String"
+
+# --- EDGE: every value kind round-trips -----------------------------------------------------
+assert dump.loads(dump.dumps(None)) == None, "None"
+assert dump.loads(dump.dumps(True)) == True, "Bool True"
+assert dump.loads(dump.dumps(False)) == False, "Bool False"
+assert dump.loads(dump.dumps(0)) == 0, "Integer 0"
+assert dump.loads(dump.dumps(-42)) == -42, "Integer negative"
+assert dump.loads(dump.dumps(9223372036854775807)) == 9223372036854775807, "Integer max"
+assert dump.loads(dump.dumps(3.14)) == 3.14, "Float"
+assert dump.loads(dump.dumps(Float("inf"))) == Float("inf"), "Float inf"
+assert dump.loads(dump.dumps(Float("-inf"))) == Float("-inf"), "Float -inf"
+# NaN never equals itself, so round-trip yields a value that is still NaN (self != self)
+assert dump.loads(dump.dumps(Float("nan"))) != dump.loads(dump.dumps(Float("nan"))), "Float nan stays NaN"
+assert dump.loads(dump.dumps("héllo")) == "héllo", "String (unicode)"
+assert dump.loads(dump.dumps("")) == "", "String empty"
+# Bytes is a native stateful type that opts in
+assert type(dump.loads(dump.dumps(Bytes([1, 2, 255])))) == "Bytes", "Bytes type preserved"
+assert dump.loads(dump.dumps(Bytes([1, 2, 255]))) == Bytes([1, 2, 255]), "Bytes value"
+assert dump.loads(dump.dumps([])) == [], "empty List"
+assert dump.loads(dump.dumps({})) == {}, "empty Dict"
+assert dump.loads(dump.dumps(Set([]))) == Set([]), "empty Set"
+assert dump.loads(dump.dumps(Set([3, 1, 2]))) == Set([3, 1, 2]), "Set"
+
+# nested composite
+var nested = {"list": [1, {"inner": Set([1, 2])}], "n": None, "f": 1.5, "b": Bytes([7])}
+assert dump.loads(dump.dumps(nested)) == nested, "nested composite"
+
+# insertion order of a Dict is preserved
+var ordered = {"z": 1, "a": 2, "m": 3}
+assert dump.loads(dump.dumps(ordered)).keys() == ["z", "a", "m"], "dict insertion order preserved"
+
+# Bytes as a dict key (content-hashed stateful member)
+var bytekey = {Bytes([1, 2]): "v", Bytes([3]): "w"}
+assert dump.loads(dump.dumps(bytekey)) == bytekey, "Bytes dict key"
+
+# --- EDGE: cycles + shared references -------------------------------------------------------
+var cyc = [1, 2]
+cyc.append(cyc)
+var rcyc = dump.loads(dump.dumps(cyc))
+assert id(rcyc[2]) == id(rcyc), "self-cycle preserved"
+var shared = [9]
+var rsh = dump.loads(dump.dumps([shared, shared]))
+assert id(rsh[0]) == id(rsh[1]), "shared reference aliased once"
+
+# --- EDGE: class instance with dunders (F08-2: _bool_/_hash_/_eq_ restored) ------------------
+class Money:
+    var _init_ = Function(self, cents):
+        self.cents = cents
+    var _bool_ = Function(self) -> Bool:
+        return self.cents != 0
+    var _hash_ = Function(self) -> Integer:
+        return self.cents
+    var _eq_ = Function(self, other) -> Bool:
+        return self.cents == other.cents
+# _bool_ survives the round-trip (a restored falsy instance stays falsy)
+assert Bool(dump.loads(dump.dumps(Money(0)))) == False, "restored _bool_ falsy"
+assert Bool(dump.loads(dump.dumps(Money(5)))) == True, "restored _bool_ truthy"
+# _eq_ + _hash_ survive: an instance is equal and set-findable after a round-trip
+assert dump.loads(dump.dumps(Money(5))) == Money(5), "restored _eq_"
+assert Money(5) in dump.loads(dump.dumps(Set([Money(5)]))), "restored _hash_ (set membership)"
+
+# --- EDGE: Function / class values themselves round-trip ------------------------------------
+var incr = Function(x):
+    return x + 1
+assert dump.loads(dump.dumps(incr))(41) == 42, "Function value round-trip"
+class Pt:
+    var _init_ = Function(self, x):
+        self.x = x
+    var getx = Function(self):
+        return self.x
+assert dump.loads(dump.dumps(Pt))(7).getx() == 7, "class value round-trip"
+# module reconnects by import name
+assert type(dump.loads(dump.dumps(math))) == "Module", "module reconnects by name"
+
+# --- EDGE: _getstate_/_setstate_ protocol (drops a transient field) -------------------------
+class Cache:
+    var _init_ = Function(self, n):
+        self.n = n
+        self.tmp = 999
+    var _getstate_ = Function(self):
+        return self.n
+    var _setstate_ = Function(self, st):
+        self.n = st
+        self.tmp = 0
+var rcache = dump.loads(dump.dumps(Cache(5)))
+assert rcache.n == 5, "getstate/setstate restores n"
+assert rcache.tmp == 0, "setstate recomputes transient tmp"
+
+# --- HARDENING: malformed blobs MUST raise the correct diagnostic ---------------------------
+# wrong argument type
+assert "loads expects a Bytes" in emsg(Function(): return dump.loads(42)), "loads rejects non-bytes"
+# bad magic header
+assert "bad dump header" in emsg(Function(): return dump.loads(Bytes([1, 2, 3, 4]))), "bad magic"
+# empty / truncated
+assert "truncated dump data" in emsg(Function(): return dump.loads(Bytes([]))), "empty blob"
+assert threw(Function(): return dump.loads(blob[0:6])), "truncated valid blob throws"
+# crafted: unsupported version (KDMP + ver=2)
+assert "unsupported dump version" in emsg(Function(): return dump.loads(Bytes([75, 68, 77, 80, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0]))), "unsupported version"
+# crafted: bad tag byte (99)
+assert "bad dump tag" in emsg(Function(): return dump.loads(Bytes([75, 68, 77, 80, 1, 1, 0, 0, 0, 99, 0, 0, 0, 0]))), "bad tag"
+# crafted: object count exceeds data size
+assert "exceeds data size" in emsg(Function(): return dump.loads(Bytes([75, 68, 77, 80, 1, 255, 255, 255, 255, 0]))), "count overflow rejected"
+# crafted: root id out of range (count=1 None node, rootId=5)
+assert "root id out of range" in emsg(Function(): return dump.loads(Bytes([75, 68, 77, 80, 1, 1, 0, 0, 0, 0, 5, 0, 0, 0]))), "root id oob"
+# native/built-in function is not serializable
+var natfn = math.sqrt
+assert "native/built-in function" in emsg(Function(): return dump.dumps(natfn)), "native fn rejected"
+# _setstate_ without _getstate_ is rejected at flatten time
+class HalfState:
+    var _init_ = Function(self):
+        self.x = 1
+    var _setstate_ = Function(self, st):
+        self.x = st
+assert "defines _setstate_ but no _getstate_" in emsg(Function(): return dump.dumps(HalfState())), "setstate-only rejected"
+
+# ============================================================================================
+# serialize  -- human-readable text serialization (dumps/loads/save/load)
+# ============================================================================================
+
+# --- normal round-trips: dumps -> String ----------------------------------------------------
+assert type(serialize.dumps([1, 2, 3])) == "String", "serialize dumps returns String"
+assert serialize.dumps([1, 2, 3]).startswith("KSER1 "), "text blob has KSER1 header"
+assert serialize.loads(serialize.dumps([1, 2, 3])) == [1, 2, 3], "text list round-trip"
+
+# --- EDGE: value kinds ----------------------------------------------------------------------
+assert serialize.loads(serialize.dumps(None)) == None, "text None"
+assert serialize.loads(serialize.dumps(True)) == True, "text Bool"
+assert serialize.loads(serialize.dumps(-7)) == -7, "text Integer"
+assert serialize.loads(serialize.dumps(1.5)) == 1.5, "text Float"
+assert serialize.loads(serialize.dumps(Float("-inf"))) == Float("-inf"), "text Float -inf"
+assert serialize.loads(serialize.dumps("a b\tc")) == "a b\tc", "text String with whitespace"
+assert type(serialize.loads(serialize.dumps(Bytes([0, 255])))) == "Bytes", "text Bytes"
+assert serialize.loads(serialize.dumps(Set([3, 1, 2]))) == Set([3, 1, 2]), "text Set"
+var tnest = {"list": [1, {"inner": Set([1])}], "n": None, "f": 1.5}
+assert serialize.loads(serialize.dumps(tnest)) == tnest, "text nested composite"
+assert serialize.loads(serialize.dumps({"z": 1, "a": 2})).keys() == ["z", "a"], "text dict order"
+
+# --- EDGE: cycles + shared references + instance dunders ------------------------------------
+var tcyc = [1]
+tcyc.append(tcyc)
+var tloaded = serialize.loads(serialize.dumps(tcyc))
+assert id(tloaded[1]) == id(tloaded), "text self-cycle preserved"
+assert Bool(serialize.loads(serialize.dumps(Money(0)))) == False, "text restored _bool_"
+assert Money(5) in serialize.loads(serialize.dumps(Set([Money(5)]))), "text restored _hash_"
+
+# --- EDGE: Function / class round-trip through text -----------------------------------------
+assert serialize.loads(serialize.dumps(incr))(10) == 11, "text Function round-trip"
+assert serialize.loads(serialize.dumps(Pt))(3).getx() == 3, "text class round-trip"
+
+# --- HARDENING: malformed text MUST raise the correct diagnostic ----------------------------
+assert "bad serialization header" in emsg(Function(): return serialize.loads("NOPE 1 I 5 0")), "bad text header"
+assert "unexpected end" in emsg(Function(): return serialize.loads("")), "empty text"
+assert "bad object count" in emsg(Function(): return serialize.loads("KSER1 999999999999 0")), "text count overflow"
+assert "malformed number" in emsg(Function(): return serialize.loads("KSER1 1 I notanum 0")), "text bad number"
+assert "bad serialization tag" in emsg(Function(): return serialize.loads("KSER1 1 Z 0")), "text bad tag"
+assert "root id out of range" in emsg(Function(): return serialize.loads("KSER1 1 I 5 9")), "text root oob"
+
+# --- save / load via temp files (binary + text), then clean up ------------------------------
+var dpath = path.join(path.gettempdir(), "cov_serde_misc_dump.bin")
+var spath = path.join(path.gettempdir(), "cov_serde_misc_ser.txt")
+var payload = {"a": [1, 2, 3], "s": Set([9]), "b": Bytes([1, 2])}
+dump.save(payload, dpath)
+assert dump.load(dpath) == payload, "dump save/load round-trip"
+serialize.save(payload, spath)
+assert serialize.load(spath) == payload, "serialize save/load round-trip"
+# loading a missing file raises a clean error
+assert "could not open file for loading" in emsg(Function(): return dump.load(path.join(path.gettempdir(), "cov_serde_misc_absent_xyz.bin"))), "dump load missing"
+assert "could not open file for loading" in emsg(Function(): return serialize.load(path.join(path.gettempdir(), "cov_serde_misc_absent_xyz.txt"))), "serialize load missing"
+discard path.remove(dpath, missing_ok = True)
+discard path.remove(spath, missing_ok = True)
+assert not path.exists(dpath), "dump temp file cleaned"
+assert not path.exists(spath), "serialize temp file cleaned"
+
+# ============================================================================================
+# semver  -- semantic versioning
+# ============================================================================================
+
+# --- parse ----------------------------------------------------------------------------------
+var pv = semver.parse("1.2.3-alpha.1+build.5")
+assert pv["major"] == 1 and pv["minor"] == 2 and pv["patch"] == 3, "parse core"
+assert pv["prerelease"] == ["alpha", "1"], "parse prerelease list"
+assert pv["build"] == ["build", "5"], "parse build list"
+assert pv["raw"] == "1.2.3-alpha.1+build.5", "parse raw"
+# 0.0.0 boundary
+assert semver.parse("0.0.0")["major"] == 0, "parse 0.0.0"
+# leading 'v' tolerated, build-only, prerelease-only
+assert semver.parse("v2.0.0")["major"] == 2, "leading v tolerated"
+assert semver.parse("1.2.3+x")["build"] == ["x"], "build only"
+assert semver.parse("1.0.0-rc.1")["prerelease"] == ["rc", "1"], "prerelease only"
+
+# --- clean / valid / component accessors ----------------------------------------------------
+assert semver.clean("  v1.2.3 ") == "1.2.3", "clean strips v + whitespace"
+assert semver.clean("=1.0.0") == "1.0.0", "clean strips ="
+assert semver.valid("1.2.3") == "1.2.3", "valid returns cleaned string"
+assert semver.valid("v1.2.3") == "1.2.3", "valid returns cleaned (v stripped)"
+assert semver.valid("1.2") == None, "valid rejects partial -> None"
+assert semver.valid("garbage") == None, "valid rejects garbage -> None"
+assert semver.major("v2.5.9") == 2 and semver.minor("v2.5.9") == 5 and semver.patch("v2.5.9") == 9, "component accessors"
+assert semver.prerelease("1.0.0") == None, "prerelease None when absent"
+assert semver.prerelease("1.0.0-rc.1") == ["rc", "1"], "prerelease list when present"
+
+# --- compare / ordering ---------------------------------------------------------------------
+assert semver.compare("1.0.10", "1.0.9") == 1, "numeric (not lexical) patch compare"
+assert semver.compare("1.0.0", "1.0.0") == 0, "equal compare"
+assert semver.compare("1.0.0-alpha", "1.0.0") == -1, "prerelease sorts before release"
+assert semver.compare("1.0.0-1", "1.0.0-alpha") == -1, "numeric prerelease < alphanumeric"
+assert semver.compare("1.0.0-alpha", "1.0.0-alpha.1") == -1, "shorter prerelease set sorts first"
+assert semver.compare("1.0.0+a", "1.0.0+b") == 0, "build metadata ignored"
+# comparison shortcuts
+assert semver.eq("1.0.0", "1.0.0"), "eq"
+assert semver.neq("1.0.0", "1.0.1"), "neq"
+assert semver.lt("1.0.0", "2.0.0") and semver.lte("1.0.0", "1.0.0"), "lt/lte"
+assert semver.gt("2.0.0", "1.0.0") and semver.gte("1.0.0", "1.0.0"), "gt/gte"
+assert semver.gt("1.0.10", "1.0.9"), "gt numeric"
+
+# --- diff / inc -----------------------------------------------------------------------------
+assert semver.diff("1.0.0", "2.0.0") == "major", "diff major"
+assert semver.diff("1.0.0", "1.1.0") == "minor", "diff minor"
+assert semver.diff("1.0.0", "1.0.1") == "patch", "diff patch"
+assert semver.diff("1.0.0-a", "1.0.0-b") == "prerelease", "diff prerelease"
+assert semver.diff("1.0.0", "1.0.0") == None, "diff equal -> None"
+assert semver.inc("1.2.3", "major") == "2.0.0", "inc major"
+assert semver.inc("1.2.3", "minor") == "1.3.0", "inc minor"
+assert semver.inc("1.2.3", "patch") == "1.2.4", "inc patch"
+assert "release must be major/minor/patch" in emsg(Function(): return semver.inc("1.2.3", "huge")), "inc bad release throws"
+
+# --- satisfies / ranges ---------------------------------------------------------------------
+assert semver.satisfies("1.4.0", "^1.2.0"), "caret in range"
+assert not semver.satisfies("2.0.0", "^1.2.0"), "caret out of range"
+assert semver.satisfies("1.2.9", "~1.2.0") and not semver.satisfies("1.3.0", "~1.2.0"), "tilde range"
+assert semver.satisfies("1.5.0", ">=1.0.0 <2.0.0"), "comparator AND range"
+assert semver.satisfies("1.2.9", "1.2.x") and not semver.satisfies("1.3.0", "1.2.x"), "x-range"
+assert semver.satisfies("9.9.9", "*"), "star matches anything"
+assert semver.satisfies("1.5.0", "1.0.0 - 2.0.0"), "hyphen range"
+assert semver.satisfies("3.0.0", "^1.0.0 || ^3.0.0"), "OR range"
+assert semver.satisfies("1.5.0", ">= 1.2.0"), "whitespace between operator and version"
+# prerelease excluded unless a comparator in the set pins the same M.m.p
+assert not semver.satisfies("1.2.0-alpha", "^1.0.0"), "prerelease excluded by default"
+assert semver.satisfies("1.2.0-alpha", ">=1.2.0-alpha <1.3.0"), "prerelease allowed when pinned"
+# an unparseable range satisfies nothing (no throw)
+assert not semver.satisfies("1.0.0", "this is not a range"), "unparseable range -> False"
+assert not semver.satisfies("1.0.0", "not a version"), "range with bad version token -> False"
+
+# --- validrange -----------------------------------------------------------------------------
+assert semver.validrange("^1.2.0"), "validrange accepts a range"
+assert semver.validrange(">=1.0.0 <2.0.0"), "validrange accepts comparators"
+assert not semver.validrange("main"), "validrange rejects a literal git ref"
+
+# --- sort / rsort / max|minsatisfying -------------------------------------------------------
+assert semver.sort(["1.10.0", "1.2.0", "1.1.0"]) == ["1.1.0", "1.2.0", "1.10.0"], "sort ascending numeric"
+assert semver.rsort(["1.10.0", "1.2.0", "1.1.0"]) == ["1.10.0", "1.2.0", "1.1.0"], "rsort descending"
+assert semver.sort(["1.0.0", "bad", "2.0.0"]) == ["1.0.0", "2.0.0"], "sort drops invalid"
+assert semver.maxsatisfying(["v1.0.0", "v1.4.2", "v2.0.0"], "^1.0.0") == "v1.4.2", "maxsatisfying keeps original string"
+assert semver.minsatisfying(["1.0.0", "1.4.2", "2.0.0"], "^1.0.0") == "1.0.0", "minsatisfying"
+assert semver.maxsatisfying(["1.0.0"], "^5.0.0") == None, "maxsatisfying none -> None"
+
+# --- HARDENING: invalid versions raise the correct diagnostic -------------------------------
+assert "need MAJOR.MINOR.PATCH" in emsg(Function(): return semver.parse("1.2")), "too few components"
+assert "need MAJOR.MINOR.PATCH" in emsg(Function(): return semver.parse("1.2.3.4")), "too many components"
+assert "non-numeric core" in emsg(Function(): return semver.parse("a.b.c")), "non-numeric core"
+assert "empty prerelease identifier" in emsg(Function(): return semver.parse("1.2.3-")), "empty prerelease"
+assert "need MAJOR.MINOR.PATCH" in emsg(Function(): return semver.parse("")), "empty string"
+assert threw(Function(): return semver.parse("-1.2.3")), "leading dash rejected"
+
+# ============================================================================================
+# arg  -- command-line argument parser
+# ============================================================================================
+
+# --- declaration is chainable (each returns self) -------------------------------------------
+var pc = arg.Parser()
+assert id(pc.positional("a")) == id(pc), "positional returns self"
+assert id(pc.option("o")) == id(pc), "option returns self"
+assert id(pc.flag("f")) == id(pc), "flag returns self"
+
+# --- a fully-specified parser ---------------------------------------------------------------
+var p = arg.Parser("greeter")
+discard p.positional("name")
+discard p.option("count", 1)       # Integer default -> value coerced to Integer
+discard p.option("rate", 1.5)      # Float default -> coerced to Float
+discard p.option("mode", "fast")   # String default -> stays String
+discard p.option("out")            # None default -> stays String
+discard p.flag("loud")
+
+# long option + flag present
+var r = p.parse(["Ada", "--count", "3", "--loud"])
+assert r["name"] == "Ada", "positional captured"
+assert r["count"] == 3 and type(r["count"]) == "Integer", "option Integer coercion"
+assert r["loud"] == True, "flag present -> True"
+assert r["rest"] == [], "no extra positionals -> empty rest"
+
+# flag absent -> False, options fall back to defaults
+var r2 = p.parse(["Bob"])
+assert r2["loud"] == False, "flag absent -> False"
+assert r2["count"] == 1, "option default"
+assert r2["rate"] == 1.5, "float default"
+assert r2["mode"] == "fast", "string default"
+assert r2["out"] == None, "None default preserved"
+
+# --name=value form
+assert p.parse(["X", "--count=7"])["count"] == 7, "--name=value"
+# short forms: -c value, -l flag (matched by first letter)
+var r4 = p.parse(["X", "-c", "9", "-l"])
+assert r4["count"] == 9, "short option -c value"
+assert r4["loud"] == True, "short flag -l"
+# float + string coercion
+assert p.parse(["X", "--rate", "2.5"])["rate"] == 2.5, "float option"
+assert type(p.parse(["X", "--rate", "2.5"])["rate"]) == "Float", "float type"
+assert p.parse(["X", "--mode", "slow"])["mode"] == "slow", "string option unchanged"
+assert type(p.parse(["X", "--out", "f.txt"])["out"]) == "String", "None-default option becomes String"
+# repeated option: last wins
+assert p.parse(["X", "--count", "1", "--count", "5"])["count"] == 5, "repeated option last wins"
+# a flag given with =value still sets True (value ignored)
+assert p.parse(["N", "--loud=whatever"])["loud"] == True, "flag with =value -> True"
+
+# extra positionals collected under "rest"
+var r7 = p.parse(["a", "b", "c"])
+assert r7["name"] == "a" and r7["rest"] == ["b", "c"], "extra positionals -> rest"
+# a -NUMBER token stays a positional (so negative numbers work)
+var pn = arg.Parser()
+discard pn.positional("x")
+discard pn.positional("y")
+var rn = pn.parse(["-5", "-2"])
+assert rn["x"] == "-5" and rn["y"] == "-2", "negative-number tokens stay positional"
+# a parser with no declared positionals collects everything under rest
+assert arg.Parser().parse(["x", "y"])["rest"] == ["x", "y"], "undeclared positionals -> rest"
+
+# usage text
+assert "usage:" in p.usage(), "usage has a usage: line"
+assert "--count" in p.usage(), "usage lists options"
+assert "-h, --help" in p.usage(), "usage documents help"
+
+# --- HARDENING: bad input raises the correct diagnostic -------------------------------------
+assert "missing required argument: <name>" in emsg(Function(): return p.parse([])), "missing required positional"
+assert "unknown option: --bogus" in emsg(Function(): return p.parse(["x", "--bogus"])), "unknown long option"
+assert "unknown option: -z" in emsg(Function(): return p.parse(["x", "-z"])), "unknown short option"
+assert "option --count requires a value" in emsg(Function(): return p.parse(["x", "--count"])), "long option missing value"
+assert "requires a value" in emsg(Function(): return p.parse(["x", "-c"])), "short option missing value"
+assert "expects an integer, got 'abc'" in emsg(Function(): return p.parse(["x", "--count", "abc"])), "bad integer coercion"
+assert "expects a number, got 'xx'" in emsg(Function(): return p.parse(["x", "--rate", "xx"])), "bad float coercion"
+
+# -h / --help prints usage and returns None (usage text below is the deterministic side effect)
+assert p.parse(["Ada", "-h"]) == None, "-h returns None"
+assert p.parse(["Ada", "--help"]) == None, "--help returns None"
+
+io.print("cov serde-misc: all passed")
