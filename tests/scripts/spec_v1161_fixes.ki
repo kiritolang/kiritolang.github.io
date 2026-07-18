@@ -40,4 +40,12 @@ else:
     branch = "else"
 assert branch == "else", "restored falsy instance takes the else branch"
 
+# --- F07-2: BigInt == Float — was non-transitive (BigInt(3)==3.0 False though 3==3.0 and 3==BigInt(3))
+#     and poisoned Set/Dict (a BigInt key reachable by Integer but not the equal Float). ---
+assert int.big(3) == 3.0 and 3.0 == int.big(3), "BigInt == Float (symmetric)"
+assert not (int.big(3) == 3.5) and not (int.big(3) == 4.0), "BigInt != non-equal Float"
+assert len({3, 3.0, int.big(3)}) == 1, "Integer, Float, BigInt of one value dedup to a single Set member"
+assert {int.big(5): "big"}.get(5.0, "miss") == "big", "a BigInt Dict key is reachable by the equal Float"
+assert not (int.big(3) == math.inf) and not (int.big(3) == math.nan), "BigInt != inf/nan"
+
 io.print("v1.16.1 fixes: all passed")

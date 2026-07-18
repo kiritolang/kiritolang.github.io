@@ -532,6 +532,19 @@ public:
             return bigint::cmp(val, bigint::fromInt64(static_cast<const IntVal&>(other).value())) == 0;
         if (other.kind() == ValueKind::Bool)
             return bigint::cmp(val, bigint::fromInt64(static_cast<const BoolVal&>(other).value() ? 1 : 0)) == 0;
+        // A BigInt equals a Float iff the Float is a finite integer of the same value (F07-2) — without
+        // this, `BigInt(3) == 3.0` was False though `3 == 3.0` and `3 == BigInt(3)` are True (equality
+        // non-transitive), and since BigInt hashes equal to the integral Float they shared a Set/Dict
+        // bucket yet compared unequal (a BigInt key was reachable by Integer but not the equal Float).
+        // Exact within the int64 range (an integral double is exact there); a Float outside int64 range
+        // is treated as unequal — a genuinely-equal huge power-of-two float is an accepted rare
+        // false-negative, and any non-power-of-two huge float is not exactly an integer anyway.
+        if (other.kind() == ValueKind::Float) {
+            double f = static_cast<const FloatVal&>(other).value();
+            if (std::isnan(f) || std::isinf(f) || f != std::trunc(f)) return false;
+            if (f < -9223372036854775808.0 || f >= 9223372036854775808.0) return false;
+            return bigint::cmp(val, bigint::fromInt64(static_cast<int64_t>(f))) == 0;
+        }
         return false;
     }
 

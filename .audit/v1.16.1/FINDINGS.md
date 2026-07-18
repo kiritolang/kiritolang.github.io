@@ -61,6 +61,24 @@ delivered real findings. Given usage cost, remaining areas are being audited dir
   a documented intentional divergence from Python. (Lesson: double-check "inconsistency" findings against
   the tested/documented contract before treating them as bugs.)
 
+### FIXED — batch 2 (cont.)
+- **F07-2 [Med] — BigInt == Float non-transitive + Set/Dict poison.** `BigInt(3)==3.0` was False though
+  `3==3.0` and `3==BigInt(3)` are True, and a BigInt Dict key was unreachable by the equal Float. **FIX:**
+  BigIntVal::equals gains a Float branch (exact within int64 range; symmetric via kiEquals fallback).
+  Regression in spec_v1161_fixes.ki. asan-clean.
+
+### OPEN — from batch 3 (agents DIED early on the session limit — scans PARTIAL, resume next session)
+- **F02-1 [Med] CONFIRMED — analyzer false-positive** (analyzer.hpp): a local captured by an EARLIER-defined
+  nested function (or mutual recursion — `isEven`/`isOdd`) is spuriously warned "assigned but never used".
+  Program RUNS CORRECTLY (resolver resolves by membership); only the analyzer lacks a pre-declare pass.
+  Fix: give analyzeBlock a collectBlockDecls-style pre-pass, or track used-before-declared per scope.
+  A real fix worth doing next session; full repro in scan/A02_compiler.md.
+- **A14 (ki-modules): 1 finding logged** in scan/A14_kimods.md (agent died after itertools, before tabular).
+- **A01 (lexer/parser) + A12 (net/parallel): NOT audited** (agents died with ~0 output). Re-run next session.
+- **F07-9 [Med] deferred** — sum() rejects BigInt/Complex. The naive fix (left-fold via applyBinaryOp from
+  start=0) is WRONG: the reflected-operator rule makes `Integer(0) + BigInt` throw. A correct fix must seed
+  the accumulator from the first non-scalar element (or require a matching start). Do carefully next session.
+
 ### OPEN — lower priority (candidates for later batches, all logged in scan/*.md)
 - **F07-9 [Med]** sum()/min/max reject BigInt/Complex though `+`/operators work → fall back to
   applyBinaryOp(Add). **F07-2 [Med]** BigInt==Float non-transitive + Set/Dict bucket poison → BigIntVal::
