@@ -33,10 +33,13 @@
 #
 # DISK HYGIENE: the build dirs are large and ALL FOUR together (~1.3 GB debug + 1.3 GB release + ~12 GB
 # asan + ~9 GB tsan ≈ 24 GB) can fill a small disk mid-run (a `No space left on device` build abort).
-# So each variant's build dir is REMOVED as soon as that variant's tests PASS — peak on-disk footprint
-# is then a single variant at a time. A variant that FAILS keeps its dir (so you can re-run
-# `ctest --test-dir build-<v> --rerun-failed --output-on-failure` or attach a debugger); the logs under
-# /tmp/pw_<v>.*.log are always kept regardless. Pass --keep-builds to retain every build dir.
+# So each variant's build dir is REMOVED as soon as that variant's tests PASS — but its `ki` executable
+# is first COPIED to `build-bin/ki-<variant>` (override the dir with PW_BIN_DIR), so a built binary of
+# every variant stays available afterwards (run a script, a benchmark, a repro) without a rebuild. Peak
+# on-disk footprint is then a single variant's build tree at a time plus the small preserved binaries. A
+# variant that FAILS keeps its whole dir (so you can re-run `ctest --test-dir build-<v> --rerun-failed
+# --output-on-failure` or attach a debugger); the logs under /tmp/pw_<v>.*.log are always kept regardless.
+# Pass --keep-builds to retain every build dir in full.
 #
 # MEMORY HYGIENE — why this script refuses to run beside another build:
 # Every test TU includes the whole header-only interpreter, so ONE compile peaks at ~1.7 GB RSS at -O2
@@ -59,7 +62,8 @@
 # non-system / Windows-OpenSSL path is covered by tools/scripts/build_all.sh's mingw cross-build.
 #
 #   --no-asan       run debug + release only (the commit gate); skip the slow asan + tsan passes.
-#   --keep-builds   do NOT delete a variant's build dir after it passes (keep all artifacts).
+#   --keep-builds   do NOT delete a variant's build dir after it passes (keep all artifacts). Without
+#                   it, each passing variant's `ki` is still preserved to build-bin/ki-<variant>.
 #
 # Exit status is non-zero if ANY variant fails to build or has a failing test.
 
@@ -189,6 +193,7 @@ if ! preflight_prereqs; then
 fi
 
 declare -A DIR=( [debug]=build-debug [release]=build-release [asan]=build-asan [tsan]=build-tsan )
+PRESERVED_BIN="${PW_BIN_DIR:-build-bin}"   # each passing variant's `ki` is kept here as ki-<variant>
 FAILED=0
 GREEN_GATE=1   # cleared if debug or release fails
 
@@ -240,9 +245,17 @@ run_variant() {
     if env $pre "${runner[@]}" ctest --test-dir "$dir" -j"$JOBS" --output-on-failure \
             >"/tmp/pw_$name.test.log" 2>&1; then
         echo "[$name] $(grep -E 'tests passed' "/tmp/pw_$name.test.log" | tail -1)"
-        # Tests passed: drop this variant's build dir so the four don't pile up and fill the disk
-        # (the next variant builds from scratch anyway). Logs under /tmp/pw_$name.* are kept.
-        if [ "$KEEP_BUILDS" -eq 0 ]; then rm -rf "$dir" && echo "[$name] cleaned $dir (passed)"; fi
+        # Tests passed: drop this variant's build dir so the four don't pile up and fill the disk (the
+        # next variant builds from scratch anyway) — but FIRST preserve its `ki` executable to
+        # build-bin/ki-<variant>, so a built binary of every variant remains available for later use
+        # (running scripts / benchmarks / a repro) without a rebuild. Logs under /tmp/pw_$name.* are kept.
+        if [ "$KEEP_BUILDS" -eq 0 ]; then
+            if [ -x "$dir/ki" ]; then
+                mkdir -p "$PRESERVED_BIN" && cp -f "$dir/ki" "$PRESERVED_BIN/ki-$name" \
+                    && echo "[$name] preserved $PRESERVED_BIN/ki-$name"
+            fi
+            rm -rf "$dir" && echo "[$name] cleaned $dir (passed)"
+        fi
         return 0
     fi
     # Failed: keep the build dir for investigation (re-run failed tests / attach a debugger).
