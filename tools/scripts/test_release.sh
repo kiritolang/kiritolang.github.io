@@ -91,8 +91,14 @@ for bin in dist/debug-asan dist/debug-tsan ; do
         *asan) ASAN_OPTIONS="halt_on_error=1:abort_on_error=1:detect_leaks=0" \
                UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
                run_suite "$(basename "$bin")" "$bin" || rc=1 ;;
-        *tsan) TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1" \
-               run_suite "$(basename "$bin")" "$bin" || rc=1 ;;
+        # ThreadSanitizer maps a fixed shadow region at startup and aborts with "unexpected memory
+        # mapping" when the kernel's ASLR entropy places the binary where it expects shadow to go — so
+        # run it with ASLR disabled (setarch -R), exactly as post_work_check.sh does. Without this the
+        # process exits before running a single test and EVERY case reports as failed.
+        *tsan) runner=("$bin")
+               command -v setarch >/dev/null 2>&1 && runner=(setarch "$(uname -m)" -R "$bin")
+               TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1" \
+               run_suite "$(basename "$bin")" "${runner[@]}" || rc=1 ;;
     esac
 done
 [ "$found" -eq 0 ] && { echo "no dist/ki-* binaries found — run scripts/build_all.sh first"; exit 1; }
