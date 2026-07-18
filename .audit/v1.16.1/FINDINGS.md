@@ -86,7 +86,32 @@ delivered real findings. Given usage cost, remaining areas are being audited dir
   bug — RootScope inside the streamIterate callback got popped by streamIterate's inner scope; fixed with
   a dedicated aux-root region).
 
+### REVIEWED — DECLINED (batch 4)
+- **F12-1 [Low] — HTTPS TLS-truncation: reviewed, DECLINED (compatibility risk > benefit).** Detecting a
+  truncated HTTPS body means treating a connection that closes WITHOUT a TLS `close_notify` as an error
+  (SSL_read returns <=0 with SSL_ERROR_SSL/SYSCALL, not SSL_ERROR_ZERO_RETURN). But that is the notorious
+  OpenSSL-3.0 "unexpected eof while reading" case: MANY real, legitimate servers close the TCP connection
+  without close_notify, so throwing there silently breaks real fetches — and our CI has NO real-world
+  lenient server to validate against (the in-process test server always calls SSL_shutdown → close_notify,
+  so it could never exercise the risky path). The HTTP framing layer + `kMaxRecvAll` bound already prevent
+  OOM. Per "low-risk / no contracts broken", shipping an untestable compatibility regression for a Low
+  finding is the wrong trade — left as-is, documented here.
+
 ### FIXED — batch 4 (user-directed)
+- **F01-2 [Med] — `var a, = x` / `for x, in xs` silently dropped the trailing comma** (bound the whole
+  iterable, swallowing a count mismatch) while the bare `a, = x` correctly 1-tuple-unpacks. FIX: a trailing
+  comma after a single target now sets `forceUnpack` on VarDeclStmt/ForStmt (parser reports it from
+  parseTargetNameList), and the compiler forces the 1-element Unpack path — so all three forms agree
+  (require exactly one element, bind it). Regression in spec_v1161_kimods.ki + test_audit_v1161.cpp.
+- **F14-2 [Med] — Counter.mostcommon(negative n)** returned an end-slice (all-but-last) instead of `[]`.
+  FIX: `if n < 0: return []` (matches CPython). Regression in spec_v1161_kimods.ki.
+- **F14-4 [Med] — DataFrame from rows silently TRUNCATED a too-long later row** (data loss) and gave a bare
+  "index out of range" on a short one. FIX: `_fromrows` validates every row width against the frame's,
+  throwing "row R has W fields but the frame is N wide" — like the Matrix ragged ctor / readcsv. Regression.
+- **F14-1 [Med] — statistics.quantiles tail diverged from CPython.** Kirito clamped tail cuts to the
+  min/max; CPython's exclusive method EXTRAPOLATES (computes `delta` AFTER clamping the index, so it can go
+  negative / over-range), e.g. `quantiles([1,2], n=4) == [0.75, 1.5, 2.25]`. FIX: reimplemented to match
+  CPython exactly (verified against python3 on 4 cases incl. the pinned [1..9]→[2.5,5,7.5]). Regression.
 - **F07-9 [Med] — sum() contract regression CLOSED (the correct, narrow fix).** The batch-3 generic-fold
   seeded on ANY non-scalar → it started concatenating Strings/Lists, breaking the deliberate "sum expects
   numbers"/"sum start must be a number"/"no list start concat" contract (r4_builtins, audit_builtins,

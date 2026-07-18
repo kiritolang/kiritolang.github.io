@@ -302,10 +302,9 @@ assert c["a"] == 3, "Counter counts"
 assert c["z"] == 0, "Counter missing = 0"
 var mc = c.mostcommon(2)
 assert mc[0][0] == "a", "mostcommon top is 'a'"
-# negative n = "all but |n| least common"
+# CPython: a negative n yields [] (not an end-slice)
 var mc_neg = c.mostcommon(-1)
-# = all but 1 least common — should be 2 elements
-assert len(mc_neg) == 2, "mostcommon(-1) = all but 1"
+assert len(mc_neg) == 0, "mostcommon(negative n) is []"
 
 var dd = coll.defaultdict(Function(): return [])
 dd["x"].append(1)

@@ -319,10 +319,12 @@ assert tb.merge(no, np, on = "pid", how = "outer").nrows() == 3, "merge NaN key 
 var dup = tb.DataFrame([[1, 2], [3, 4]], columns = ["a", "a"])
 assert dup.columns == ["a", "a"], "duplicate column name kept in columns list"
 assert dup["a"].tolist() == [2, 4], "duplicate column: last column wins in data (PINNED)"
-# ragged list-of-lists: a SHORT later row throws (index out of range); a LONG later row silently truncates
-assert raises(Function(): return tb.DataFrame([[1, 2], [3]])), "ragged short row throws (PINNED)"
-var rlong = tb.DataFrame([[1, 2], [3, 4, 5]])
-assert rlong.columns == ["col0", "col1"] and rlong.nrows() == 2, "ragged long row silently truncated (PINNED)"
+# ragged list-of-lists: EITHER a short or a long later row throws a clear, row-naming error -- never a
+# silent truncation of a long row (data loss) nor a bare "index out of range" on a short one (F14-4).
+assert raises_msg(Function(): return tb.DataFrame([[1, 2], [3]]),
+                  "row 1 has 1 fields but the frame is 2 wide"), "ragged short row throws a clear error"
+assert raises_msg(Function(): return tb.DataFrame([[1, 2], [3, 4, 5]]),
+                  "row 1 has 3 fields but the frame is 2 wide"), "ragged long row throws (no silent truncation)"
 # ...but a columns= that doesn't fit the rows is the CALLER's own mismatch, not raggedness: say so
 # instead of silently dropping the trailing fields (too few) or leaking "index out of range" (too many)
 assert raises_msg(Function(): return tb.DataFrame([[1, 2, 3], [4, 5, 6]], columns = ["a", "b"]),

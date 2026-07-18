@@ -1,0 +1,48 @@
+# v1.16.1 audit — stdlib_kimodules regressions (F14-1/2/4) + the F01-2 unpack fix.
+var io = import("io")
+var col = import("collections")
+var st = import("statistics")
+var tb = import("tabular")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+# --- F14-2: Counter.mostcommon(negative n) returns [] (like CPython), not an end-slice. ---
+var c = col.Counter(["a", "a", "a", "b", "b", "c"])
+assert c.mostcommon(2) == [["a", 3], ["b", 2]], "mostcommon(2) top two"
+assert c.mostcommon(-1) == [], "mostcommon(-1) is [] (not an end-slice)"
+assert c.mostcommon(0) == [], "mostcommon(0) is []"
+assert len(c.mostcommon()) == 3, "mostcommon() returns all"
+
+# --- F14-1: statistics.quantiles matches CPython's exclusive method, extrapolating in the tail. ---
+assert st.quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9], 4) == [2.5, 5.0, 7.5], "quantiles [1..9] n=4"
+assert st.quantiles([1, 2], 4) == [0.75, 1.5, 2.25], "quantiles tail extrapolates past the data range"
+assert st.quantiles([10, 20, 30], 5) == [8.0, 16.0, 24.0, 32.0], "quantiles [10,20,30] n=5 (CPython)"
+
+# --- F14-4: DataFrame from rows rejects a RAGGED row (naming it), never truncates a long one. ---
+assert tb.DataFrame([[1, 2], [3, 4]], ["x", "y"]).torows() == [{"x": 1, "y": 2}, {"x": 3, "y": 4}], "uniform rows build fine"
+assert threw(Function(): return tb.DataFrame([[1, 2], [3, 4, 5]])), "a too-LONG later row throws (no silent truncation)"
+assert threw(Function(): return tb.DataFrame([[1, 2], [3]])), "a too-SHORT later row throws (not a raw index error)"
+
+# --- F01-2: `var a, = x` / `for x, in xs` force a 1-element unpack, matching the bare `a, = x`. ---
+var a, = [42]
+assert a == 42, "var a, = [42] binds a=42 (1-element unpack)"
+var badVarUnpack = Function():
+    var q, = [1, 2]
+    return q
+assert threw(badVarUnpack), "var a, = [1,2] throws a count mismatch"
+var acc = 0
+for x, in [[1], [2], [3]]:
+    acc = acc + x
+assert acc == 6, "for x, in [[...]] unpacks each 1-element item"
+var badForUnpack = Function():
+    for y, in [[1, 2]]:
+        pass
+    return 0
+assert threw(badForUnpack), "for x, over a 2-element item throws"
+
+io.print("v1.16.1 kimods: all passed")

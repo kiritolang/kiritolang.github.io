@@ -264,6 +264,9 @@ struct DiscardStmt : Stmt {
 struct VarDeclStmt : Stmt {
     std::vector<std::string> names;
     int starIndex = -1;
+    // A trailing comma after a single name (`var a, = x`) forces a 1-element unpack, exactly like the
+    // bare `a, = x`, instead of silently binding `a` to the whole iterable.
+    bool forceUnpack = false;
     ExprPtr init;
     void accept(StmtVisitor& v) const override { v.visit(*this); }
 };
@@ -335,6 +338,9 @@ struct WhileStmt : Stmt {
 struct ForStmt : Stmt {
     std::vector<std::string> vars;
     int starIndex = -1;
+    // A trailing comma after a single loop name (`for x, in xs`) forces a 1-element unpack of each
+    // item, matching `a, = x`, instead of silently binding `x` to the whole item.
+    bool forceUnpack = false;
     ExprPtr iterable;
     Block body;
     void accept(StmtVisitor& v) const override { v.visit(*this); }

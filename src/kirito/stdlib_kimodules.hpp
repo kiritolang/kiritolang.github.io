@@ -346,6 +346,8 @@ class Counter:
         var pairs = sorted(self._counts.items(), Function(p): return p[1], True)
         if n == None:
             return pairs
+        if n < 0:
+            return []
         return pairs[0:n]
     var _getitem_ = Function(self, x):
         return self._counts.get(x, 0)
@@ -457,7 +459,10 @@ var multimode = Function(data):
     return out
 
 var quantiles = Function(data, n = 4):
-    # Cut points dividing sorted data into n equal groups (exclusive method, the default).
+    # Cut points dividing sorted data into n equal groups (the exclusive method, matching
+    # CPython statistics.quantiles). `delta` is computed AFTER clamping the index, so a tail cut
+    # (n larger than the sample) EXTRAPOLATES past the data range on the edge slope rather than
+    # pinning to the min/max -- e.g. quantiles([1, 2], n=4) == [0.75, 1.5, 2.25].
     var s = sorted(data)
     var ld = len(s)
     if ld < 2:
@@ -465,17 +470,17 @@ var quantiles = Function(data, n = 4):
     if n < 1:
         throw "quantiles: n must be at least 1"
     var out = []
+    var m = ld + 1
     var i = 1
     while i < n:
-        var pos = Float(i) * Float(ld + 1) / Float(n)
-        var lo = Integer(pos)
-        if lo < 1:
-            out.append(Float(s[0]))
-        elif lo >= ld:
-            out.append(Float(s[ld - 1]))
-        else:
-            var frac = pos - Float(lo)
-            out.append(Float(s[lo - 1]) + frac * (Float(s[lo]) - Float(s[lo - 1])))
+        var im = i * m
+        var j = im // n
+        if j < 1:
+            j = 1
+        elif j > ld - 1:
+            j = ld - 1
+        var delta = im - j * n
+        out.append((Float(s[j - 1]) * Float(n - delta) + Float(s[j]) * Float(delta)) / Float(n))
         i = i + 1
     return out
 )KI";
@@ -1723,11 +1728,17 @@ class DataFrame:
             var ncols = len(rows[0])
             var cols = columns if columns != None else _defaultcols(ncols)
             # Say so when the caller's own columns= doesn't fit their rows: too few silently dropped
-            # the trailing fields, too many surfaced a bare "index out of range" from in here. (A
-            # RAGGED later row is a separate, deliberate behavior -- long truncates, short throws --
-            # so this measures only the first row, and never fires on the inferred column names.)
+            # the trailing fields, too many surfaced a bare "index out of range" from in here. (This
+            # measures only the first row, and never fires on the inferred column names.)
             if len(cols) != ncols:
                 throw "DataFrame: columns= has " + String(len(cols)) + " names but the rows are " + String(ncols) + " wide"
+            # A RAGGED later row is a clear error naming the row -- never silent truncation of a
+            # too-long row (data loss) nor a bare "index out of range" from `r[ci]` on a short one.
+            var ri = 0
+            while ri < len(rows):
+                if len(rows[ri]) != ncols:
+                    throw "DataFrame: row " + String(ri) + " has " + String(len(rows[ri])) + " fields but the frame is " + String(ncols) + " wide"
+                ri = ri + 1
             var ci = 0
             while ci < len(cols):
                 var col = []

@@ -94,8 +94,8 @@ assert mc.mostcommon(2) == [["a", 3], ["b", 2]], "Counter.mostcommon(n)"
 assert mc.mostcommon() == [["a", 3], ["b", 2], ["c", 1]], "Counter.mostcommon() all"
 assert mc.mostcommon(0) == [], "Counter.mostcommon(0) -> []"
 assert mc.mostcommon(1) == [["a", 3]], "Counter.mostcommon(1)"
-# documented: negative n is an end-slice (all but |n| least-common), NOT empty
-assert mc.mostcommon(-1) == [["a", 3], ["b", 2]], "Counter.mostcommon(-1) end-slice"
+# CPython: a negative n yields [] (not an end-slice)
+assert mc.mostcommon(-1) == [], "Counter.mostcommon(negative n) is []"
 
 # --- edge: empty Counter ---
 var ce = collections.Counter()

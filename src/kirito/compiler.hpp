@@ -231,7 +231,7 @@ private:
 
     void visit(const ast::VarDeclStmt& s) override {
         compileExpr(*s.init);
-        if (s.names.size() == 1 && s.starIndex == -1) {
+        if (s.names.size() == 1 && s.starIndex == -1 && !s.forceUnpack) {
             emitStore(s.names[0], s.span);
         } else {
             emit(Op::Unpack, addUnpack(static_cast<uint32_t>(s.names.size()), s.starIndex), s.span);
@@ -319,7 +319,7 @@ private:
         emit(Op::GetIter, 0, s.span);
         uint32_t top = here();
         std::size_t exit = emit(Op::ForIter, 0, s.span);  // exhausted -> pops the cursor, jumps to end
-        if (s.vars.size() == 1 && s.starIndex == -1) {
+        if (s.vars.size() == 1 && s.starIndex == -1 && !s.forceUnpack) {
             emitStore(s.vars[0], s.span);
         } else {
             emit(Op::Unpack, addUnpack(static_cast<uint32_t>(s.vars.size()), s.starIndex), s.span);

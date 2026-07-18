@@ -60,5 +60,19 @@ assert sum([1, 2, 3]) == 6 and sum([1.5, 2.5]) == 4.0 and sum([]) == 0
         CHECK(!ok(vm, "discard sum([1, 2], \"x\")\n"));
     }
 
+    // ===== F01-2: a trailing comma after a single target forces a 1-element unpack (like the bare
+    // `a, = x`), NOT a silent whole-iterable bind. So `var a, = [7]` binds a=7 and `var a, = [1,2]`
+    // throws a count mismatch; `for x, in [[1],[2]]` unpacks each 1-element item. =====
+    {
+        KiritoVM vm;
+        CHECK(vm.stringify(vm.runSource("var a, = [7]\na\n")) == "7");
+        CHECK(vm.stringify(vm.runSource("var total = 0\nfor x, in [[1], [2], [3]]:\n    total = total + x\ntotal\n")) == "6");
+        // a count mismatch throws (not a silent whole-list bind)
+        CHECK(!ok(vm, "var a, = [1, 2]\n"));
+        CHECK(!ok(vm, "for x, in [[1, 2]]:\n    pass\n"));
+        // the bare form (no `var`) already worked and still does
+        CHECK(vm.stringify(vm.runSource("var xs = [9]\nvar b = 0\nb, = xs\nb\n")) == "9");
+    }
+
     return RUN_TESTS();
 }
