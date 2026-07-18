@@ -190,5 +190,34 @@ int main() {
         CHECK(vm.stringify(r) == "7");
     }
 
+    // v1.16.1 F02-1: a local READ before its declaration in source order — captured by an EARLIER-defined
+    // nested function — must NOT be spuriously flagged "assigned but never used" (the analyzer once
+    // dropped the markUsed because the local wasn't declared yet). The resolver resolves it fine.
+    {
+        auto w = warn("var outer = Function():\n"
+                      "    var g = Function(): return y\n"   // g captures y, defined AFTER g
+                      "    var y = 5\n"
+                      "    return g()\n");
+        CHECK(!has(w, "never used"));   // neither y nor g
+    }
+    // mutual recursion between two nested functions (CLAUDE.md says this must resolve) — no false warning
+    {
+        auto w = warn("var run = Function():\n"
+                      "    var isEven = Function(n): return True if n == 0 else isOdd(n - 1)\n"
+                      "    var isOdd = Function(n): return False if n == 0 else isEven(n - 1)\n"
+                      "    return isEven(10)\n");
+        CHECK(!has(w, "never used"));   // isOdd is referenced by isEven, defined before it
+    }
+    // ...but a genuinely-unused local ALONGSIDE a forward-captured one is STILL flagged (no false negative)
+    {
+        auto w = warn("var outer = Function():\n"
+                      "    var g = Function(): return y\n"
+                      "    var y = 5\n"
+                      "    var dead = 99\n"
+                      "    return g()\n");
+        CHECK(has(w, "variable 'dead' is assigned but never used"));
+        CHECK(!has(w, "'y' is assigned"));
+    }
+
     return RUN_TESTS();
 }

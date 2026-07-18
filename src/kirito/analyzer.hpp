@@ -58,6 +58,7 @@ private:
     };
     std::vector<Scope> scopes_;
     std::vector<Warning> warnings_;
+    fum::unordered_set<std::string> pendingUsed_;  // names read before their declaration (forward capture)
     int depth_ = 0;  // analyzeExpr recursion depth (bounded, anti-stack-overflow)
     struct DepthPop { int& d; ~DepthPop() { --d; } };
 
@@ -72,13 +73,24 @@ private:
     }
 
     void declare(const std::string& name, SourceSpan span, bool isParam = false) {
-        scopes_.back().decls[name] = Decl{span, false, isParam};
+        // A name read BEFORE its declaration in source order — a local captured by an EARLIER-defined
+        // nested function, or mutual recursion (`isEven` referencing `isOdd` declared below) — calls
+        // markUsed() before this declare(), so the mark would be lost and the local spuriously flagged
+        // "assigned but never used" (F02-1). The resolver resolves such forward references by MEMBERSHIP;
+        // mirror that here: if the name was used-before-declared, the new binding starts already used.
+        bool wasForwardUsed = pendingUsed_.erase(name) > 0;
+        scopes_.back().decls[name] = Decl{span, wasForwardUsed, isParam};
     }
     void markUsed(const std::string& name) {
         for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
             auto f = it->decls.find(name);
             if (f != it->decls.end()) { f->second.used = true; return; }
         }
+        // Not yet declared in any live scope — remember it so a later declare() in this analysis marks
+        // it used (forward capture / mutual recursion). A name that stays pending is a builtin/free
+        // variable the resolver validates separately; leaving it here is harmless (worst case a later
+        // same-named local is conservatively not warned — never a false POSITIVE).
+        pendingUsed_.insert(name);
     }
     const ast::FunctionExpr* lookupFunc(const std::string& name) {
         for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
