@@ -158,8 +158,8 @@ Kirito is young and makes deliberate trade-offs. The notable current limits:
   tree-walker), but interpreter-bound tight loops remain a few × slower than CPython and Lua 5.1, and
   far slower than C++; work that delegates to the C++ standard library (sorting, hashing, string ops)
   closes most of the gap and can match or beat Lua 5.1. See [Benchmarks](#benchmarks).
-- **Integers are fixed-width `int64`** with well-defined two's-complement wraparound on overflow;
-  arbitrary-precision integers are a future enrichment.
+- **The default `Integer` is fixed-width `int64`** with well-defined two's-complement wraparound on
+  overflow; for unbounded values the `int` module provides an arbitrary-precision `BigInt` value type.
 - **Unicode case mapping** (`upper`/`lower`) covers ASCII, Latin-1 and Latin Extended-A, not the full
   Unicode case-folding tables.
 - **A single `KiritoVM` is single-threaded** — one VM is one fully-encapsulated, serializable process
@@ -188,17 +188,19 @@ examples/          Sample `.ki` programs (RPN calculator, word count, todo, stat
 
 kpm/               kpm.ki — the package manager, written in Kirito (installs packages from GitHub).
 
+tests/             The CTest suite (every feature gets a test):
+  unit/              C++ unit tests (one executable per area).
+  scripts/           Golden `.ki` programs — each `*.ki` checked against its `*.expected` stdout.
+  errors/            `.ki` programs that must fail, with required diagnostics in `*.experr`.
+  lang/              End-to-end language tests driven from C++.
+  integration/       C++-embedding projects (each embeds a `KiritoVM`).
+  fuzz/  bench/      Stability fuzzers; timing + cross-language C++/Python comparison.
+
 tools/             Project tooling:
-  tests/             The CTest suite (every feature gets a test):
-    unit/              C++ unit tests (one executable per area).
-    scripts/           Golden `.ki` programs — each `*.ki` checked against its `*.expected` stdout.
-    errors/            `.ki` programs that must fail, with required diagnostics in `*.experr`.
-    lang/              End-to-end language tests driven from C++.
-    integration/       C++-embedding projects (each embeds a `KiritoVM`).
-    fuzz/  bench/      Stability fuzzers; timing + cross-language C++/Python comparison.
   scripts/           build_all.sh (release binaries), test_release.sh (run the `.ki` suites against
                      a built binary), post_work_check.sh (clean-build every variant + full CTest),
                      install.sh / install.ps1 (the Linux/macOS + Windows installers).
+  versions.env       The pinned toolchain (g++/clang/cmake/ninja versions) the project builds against.
 
 docs/              The documentation site: hand-authored Markdown in `docs/pages/`, rendered by
                    the dependency-free `docs/build_docs.py` into `docs/site/`.
@@ -206,8 +208,8 @@ docs/              The documentation site: hand-authored Markdown in `docs/pages
                      (TextMate grammar + extension), and Vim. See `docs/editors/README.md`.
 
 license/           LICENSE (MIT) and THIRD_PARTY_LICENSES.md (licenses of incorporated software).
-.audit/            Hidden but tracked: the paper trail of the codebase audit rounds (pre-1.12 / v1.12 /
-                   v1.13) — per-subsystem findings, triaged roll-ups, and recorded false positives.
+.audit/            Hidden but tracked: the paper trail of the codebase audit rounds (pre-1.12 through
+                   v1.16.1) — per-subsystem findings, triaged roll-ups, and recorded false positives.
 CLAUDE.md          The project charter: what Kirito is, how it's built, and the working rules.
 ```
 
