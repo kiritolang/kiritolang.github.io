@@ -374,7 +374,7 @@ Invoked as `x OP y` → `x._op_(y)`; return a `Bool` (or any truthy/falsy value)
 | `_setitem_(self, key, value)` | `x[key] = value` (variadic keys: `m[i, j] = v`) | nothing |
 | `_len_(self)` | `len(x)` | an `Integer` |
 | `_contains_(self, item)` | `item in x` / `item not in x` | a truth value |
-| `_iter_(self)` | `for v in x:`, and any iteration (unpacking, `List(x)`, …) | an **iterator** (an object with `_next_`, commonly `self` or a fresh iterator instance — the lazy generator protocol below), OR any plain iterable to yield (a List/Set/String — the VM iterates whatever you return) |
+| `_iter_(self)` | `for v in x:`, and any iteration (unpacking, `List(x)`, …) | an **iterator** — a `_next_`-style object (commonly `self` or a fresh iterator instance, the lazy generator protocol below), a native iterator (`iter(collection)`, `range`/`map`/`filter`/`zip`/`enumerate`), but **not** a bare List/Set/String (wrap it: `return iter(...)`) |
 | `_next_(self)` | each step of iterating a `_next_`-style iterator | the next value, or `throw StopIteration()` to end |
 
 ### Lazy generators (`_iter_` / `_next_`)
@@ -405,8 +405,12 @@ for x in Count(0):
 iteration, and you can `catch StopIteration as e:` or `isinstance(e, StopIteration)`. **Strict
 (PEP-479):** only a `StopIteration` raised at `_next_`'s own frame ends iteration; one that leaks from
 a deeper call inside `_next_` surfaces as an error, so a bug can't masquerade as "iteration finished".
-Returning a plain List from `_iter_` (the older, eager style) still works. The built-in
-`range`/`map`/`filter`/`zip`/`enumerate` are lazy on this same seam.
+`_iter_` **must return an iterator** — there is exactly one iteration protocol. A bare collection
+(`return self.items`) is rejected with *"\_iter\_ must return an iterator"*; wrap it in
+[`iter(...)`](08-builtins.md#iter) (`return iter(self.items)`), which turns any iterable into an
+iterator. Returning a native iterator (`iter(...)`, or `range`/`map`/`filter`/`zip`/`enumerate`) works
+too — they are lazy on this same seam. (A pathological cyclic `_iter_`, e.g. `return iter(self)`, is
+depth-guarded into a catchable error rather than crashing.)
 
 ### Callable and context-manager protocol
 

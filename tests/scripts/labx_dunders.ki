@@ -148,13 +148,14 @@ assert raises(Function(): return One()[1, 2]), "1-key _getitem_ called m[i,j] ra
 assert raises(Function(): return One()[0:2]), "slice on a _getitem_-only class raises (no _slice_)"
 
 # =============================================================================
-# _iter_ protocol: returns any iterable; MATERIALIZES a snapshot, so mutating the
-# backing store mid-loop does not extend iteration; a self-returning _iter_ is
-# depth-guarded rather than crashing.
+# _iter_ protocol: must return an ITERATOR (iter(collection) / a native iterator /
+# a _next_-style object) — a bare List is rejected. iter(list) MATERIALIZES a
+# snapshot, so mutating the backing store mid-loop does not extend iteration; a
+# cyclic _iter_ (return iter(self)) is depth-guarded rather than crashing.
 # =============================================================================
 class Snap:
     var _init_ = Function(self): self.data = [1, 2, 3]
-    var _iter_ = Function(self): return self.data
+    var _iter_ = Function(self): return iter(self.data)
 var snap = Snap()
 var seen = []
 for v in snap:
@@ -165,18 +166,23 @@ assert len(snap.data) == 6, "the backing list did grow (3 appends) — proving s
 # _iter_ may return a String (iterates code points) or a Set.
 class StrIter:
     var _init_ = Function(self): pass
-    var _iter_ = Function(self): return "xy"
+    var _iter_ = Function(self): return iter("xy")
 assert List(StrIter()) == ["x", "y"], "_iter_ returning a String iterates its code points"
-# _iter_ returning self (or a cycle) is guarded — a catchable error, not a native stack overflow.
+# _iter_ returning bare self (no _next_) is rejected — it isn't an iterator.
 class SelfIter:
     var _init_ = Function(self): pass
     var _iter_ = Function(self): return self
-assert raises_msg(Function(): return List(SelfIter()), "recurses"), "_iter_ returning self is depth-guarded"
-# _iter_ returning a non-iterable scalar raises "is not iterable".
+assert raises_msg(Function(): return List(SelfIter()), "must return an iterator"), "_iter_ returning bare self is rejected"
+# a genuinely CYCLIC _iter_ (return iter(self)) is depth-guarded — catchable, not a native stack overflow.
+class Cyclic:
+    var _init_ = Function(self): pass
+    var _iter_ = Function(self): return iter(self)
+assert raises_msg(Function(): return List(Cyclic()), "recurses"), "cyclic _iter_ (iter(self)) is depth-guarded"
+# _iter_ returning a non-iterator scalar is rejected too.
 class IntIter:
     var _init_ = Function(self): pass
     var _iter_ = Function(self): return 5
-assert raises_msg(Function(): return List(IntIter()), "is not iterable"), "_iter_ returning a scalar raises"
+assert raises_msg(Function(): return List(IntIter()), "must return an iterator"), "_iter_ returning a scalar is rejected"
 
 # =============================================================================
 # _call_ — kwargs, defaults, and a default that references an EARLIER parameter

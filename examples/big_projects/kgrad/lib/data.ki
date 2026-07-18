@@ -22,10 +22,10 @@ class DataLoader:
         self.shuffle = shuffle
         self.rng = random.Random(seed)
 
-    # produce the full list of batches for this epoch (eager — Kirito has no lazy generators).
+    # produce the batches for this epoch (built eagerly, handed back as an iterator via iter()).
     var _iter_ = Function(self):
         var n = len(self.dataset)
-        var order = range(n)
+        var order = List(range(n))          # a materialized List — range is lazy; shuffle mutates in place
         if self.shuffle:
             self.rng.shuffle(order)
         var batches = []
@@ -38,4 +38,4 @@ class DataLoader:
                 Xb.append(item[0])
                 yb.append(item[1])
             batches.append([Xb, yb])
-        return batches
+        return iter(batches)

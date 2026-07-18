@@ -88,6 +88,11 @@ parameter name.
 - `map(function, iterable) → Iterator` — a **lazy** iterator applying `function` to every element.
 - `filter(function, iterable) → Iterator` — a **lazy** iterator of the elements for which `function(x)`
   is truthy.
+- `iter(iterable) → Iterator` — the explicit iterator over any iterable. Its main use is the iteration
+  protocol: a class becomes iterable by returning `iter(<its backing collection>)` from
+  [`_iter_`](09-types.md#user-defined-classes) — a bare List from `_iter_` is **not** accepted. Like
+  `map`/`filter`, the view is **lazy** (streams a lazy source instead of materializing it) and
+  re-iterable. `iter` of a non-iterable throws when it is consumed.
 
   > **Lazy note.** `map`/`filter`/`zip`/`enumerate` return a one-pass **iterator** (like Python 3), not a
   > List: `type(map(f, xs))` is `"map"`, the result is not indexable and is not `== [a, list]`, and a

@@ -573,7 +573,7 @@ class Box:
     var _getitem_ = Function(self, i): return self.items[i]
     var _len_ = Function(self): return len(self.items)
     var _contains_ = Function(self, x): return x in self.items
-    var _iter_ = Function(self): return self.items
+    var _iter_ = Function(self): return iter(self.items)
 var box = Box([10, 20, 30])
 ok(box[0] == 10, "_getitem_")
 ok(box[-1] == 30, "_getitem_ passes key through")

@@ -325,7 +325,7 @@ class deque:
     var _str_ = Function(self) -> String:
         return "deque(" + String(self._items) + ")"
     var _iter_ = Function(self):
-        return self._items
+        return iter(self._items)
 
 class Counter:
     var _init_ = Function(self, items = None):
@@ -1393,7 +1393,7 @@ class Series:
         return len(self.values)
 
     var _iter_ = Function(self):
-        return self.values
+        return iter(self.values)
 
     # by label first (if the label exists in the index), else by position
     var _getitem_ = Function(self, key):
@@ -2412,7 +2412,7 @@ class Element:
         self.children = []             # child Elements
 
     var _iter_ = Function(self):
-        return self.children
+        return iter(self.children)
     var _len_ = Function(self) -> Integer:
         return len(self.children)
     var _getitem_ = Function(self, i):

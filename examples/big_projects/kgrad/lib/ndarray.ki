@@ -268,22 +268,22 @@ var mul_scalar = Function(a, s):
     var c = a.contiguous()
     return NdArray(a.dev, a.dev.scalar("mul", c.buf, Float(s)), 0, a.shape, backend.contig_strides(a.shape))
 
-var _unary = Function(a, op):
+var unary = Function(a, op):
     var c = a.contiguous()
     return NdArray(a.dev, a.dev.unary(op, c.buf), 0, a.shape, backend.contig_strides(a.shape))
 
 var neg = Function(a):
-    return _unary(a, "neg")
+    return unary(a, "neg")
 var exp = Function(a):
-    return _unary(a, "exp")
+    return unary(a, "exp")
 var log = Function(a):
-    return _unary(a, "log")
+    return unary(a, "log")
 var relu = Function(a):
-    return _unary(a, "relu")
+    return unary(a, "relu")
 var tanh = Function(a):
-    return _unary(a, "tanh")
+    return unary(a, "tanh")
 var sqrt = Function(a):
-    return _unary(a, "sqrt")
+    return unary(a, "sqrt")
 
 # ---- matmul --------------------------------------------------------------------------------------
 # Supports (m,k) @ (k,n). A 1-D vector is treated as a row/column as needed -> result squeezed.

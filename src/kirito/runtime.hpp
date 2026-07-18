@@ -1995,10 +1995,16 @@ struct UserLazyIterator : LazyIterator {
     void roots(std::vector<Handle>& out) override { out.push_back(iterator_); }
 };
 
-// A class opts into STREAMING iteration by having _iter_ return an object with a _next_ method. If it
-// returns a plain iterable instead (a List/range — the pre-generator style), lazyIterate declines
-// (nullptr) and the eager iterate() path re-dispatches it, so old _iter_-returns-a-List classes keep
-// working unchanged.
+// The ONE iteration protocol: a class is iterable by defining `_iter_(self)` that returns an ITERATOR —
+// either a NATIVE iterator (`iter(<collection>)`, or `range`/`map`/`filter`/`zip`/`enumerate`, all
+// ValueKind::Iterator), or a user `_next_`-style iterator (an Instance with a `_next_` method). A bare
+// List/range-style collection from `_iter_` is NOT accepted (the old eager shim was retired), so there
+// is exactly one way to be iterable — wrap the collection in `iter(...)`.
+//
+// A pathological cyclic `_iter_` (e.g. `return iter(self)`, which re-enters this on every pulled
+// element) is bounded by the native-nesting guard in SourceCursor::next — each level balances the VM
+// call-depth guard, so that is the one place the recursion actually accumulates. Here we only classify
+// the `_iter_` result.
 inline std::unique_ptr<LazyIterator> InstanceValue::lazyIterate(KiritoVM& vm, Handle /*self*/) {
     if (!findMethod(vm.arena(), "_iter_")) return nullptr;
     Handle r = invokeOp(vm, *this, "_iter_", {}, "'" + className + "' is not iterable");
@@ -2006,23 +2012,14 @@ inline std::unique_ptr<LazyIterator> InstanceValue::lazyIterate(KiritoVM& vm, Ha
     if (itObj.kind() == ValueKind::Instance &&
         static_cast<InstanceValue&>(itObj).findMethod(vm.arena(), "_next_"))
         return std::make_unique<UserLazyIterator>(r);
-    return nullptr;
+    if (itObj.kind() == ValueKind::Iterator)
+        return itObj.lazyIterate(vm, r);  // a native iterator: iter(...) / range / map / filter / …
+    throw KiritoError("'" + className + "' _iter_ must return an iterator — call iter(...) on a collection, "
+                      "or return an object with a _next_ method");
 }
 
 inline std::optional<std::vector<Handle>> InstanceValue::iterate(KiritoVM& vm) {
-    // A class becomes iterable by defining _iter_(self) returning any iterable (commonly a List, or a
-    // _next_-style iterator — see lazyIterate).
     if (!findMethod(vm.arena(), "_iter_")) return std::nullopt;
-    // Guard against `_iter_` returning `self` (or a mutually-referential instance): the result is
-    // re-dispatched through iterate(), and a self/cyclic return recurses in native C++ — each level's
-    // `_iter_` call keeps the call-depth guard balanced, so it never trips → native stack overflow
-    // (A07-1). Bound the re-dispatch depth and throw a catchable error; a legitimate `_iter_` chain
-    // (A -> B -> List) is only a few levels deep. One OS thread == one VM, so thread_local is VM-scoped.
-    static thread_local int iterDepth = 0;
-    if (iterDepth >= 100)
-        throw KiritoError("'" + className + "' _iter_ recurses too deeply (does _iter_ return self or a cycle?)");
-    ++iterDepth;
-    struct DepthGuard { int& d; ~DepthGuard() { --d; } } depthGuard{iterDepth};
     Handle r = invokeOp(vm, *this, "_iter_", {}, "'" + className + "' is not iterable");
     RootScope rs(vm);
     rs.add(r);
@@ -2034,7 +2031,10 @@ inline std::optional<std::vector<Handle>> InstanceValue::iterate(KiritoVM& vm) {
         UserLazyIterator lazy(r);
         return drainLazy(vm, lazy, rs);
     }
-    return itObj.iterate(vm);  // old style: _iter_ returned a plain iterable
+    if (itObj.kind() == ValueKind::Iterator)
+        return itObj.iterate(vm);  // drain the native iterator (iter(...) / range / map / …)
+    throw KiritoError("'" + className + "' _iter_ must return an iterator — call iter(...) on a collection, "
+                      "or return an object with a _next_ method");
 }
 inline std::string InstanceValue::str(StringifyCtx& ctx) const {
     if (ctx.vm) {
@@ -3082,9 +3082,22 @@ struct SourceCursor {
     }
     std::optional<Handle> next(KiritoVM& vm) {
         ensure(vm);
-        if (lazy) return lazy->next(vm);
-        if (idx >= buf.size()) return std::nullopt;
-        return buf[idx++];
+        if (!lazy) {
+            if (idx >= buf.size()) return std::nullopt;
+            return buf[idx++];
+        }
+        // Bound a pathological cyclic iterator: `_iter_ = Function(self): return iter(self)` (or
+        // map(f, self), etc.) re-enters self.lazyIterate on every pull, forming an unbounded NATIVE
+        // recursion whose per-level `_iter_` VM call balances the call-depth guard — so only this
+        // native-nesting bound catches it (a catchable error, never a stack overflow). Legit combinator
+        // nesting (map(filter(map(x)))) is shallow, and sequential pulls of a flat source don't nest, so
+        // this fires only on a genuine cycle. Off the hot range path (RangeLazyIterator uses no cursor).
+        static thread_local int depth = 0;
+        if (depth >= 200)
+            throw KiritoError("iterator recurses too deeply (does _iter_ return iter(self) or form a cycle?)");
+        ++depth;
+        struct G { int& d; ~G() { --d; } } g{depth};
+        return lazy->next(vm);
     }
     // Root the cursor's currently-live handles (source + un-consumed buffer) into a RootScope, so an
     // allocating step in the owning combinator's next() can't sweep the not-yet-consumed source elements
@@ -3346,6 +3359,34 @@ public:
     void children(std::vector<Handle>& out) const override { out.push_back(src_); }
     std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle) override {
         return std::make_unique<EnumerateLazyIterator>(src_, start_);
+    }
+    std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
+        RootScope rs(vm); auto it = lazyIterate(vm, Handle{}); return drainLazy(vm, *it, rs);
+    }
+};
+
+// ---- iter(iterable): the explicit iterator over any iterable. A class becomes iterable by having
+// `_iter_(self)` return one (or any native iterator, or a `_next_`-style user iterator) — a bare List
+// from `_iter_` is not accepted. Delegates to the source's own iteration (streams a lazy source,
+// drains an eager one) via a SourceCursor, so it is memory-light and re-iterable like map/filter. ----
+struct IterLazyIterator : LazyIterator {
+    SourceCursor src;
+    explicit IterLazyIterator(Handle s) : src(s) {}
+    std::optional<Handle> next(KiritoVM& vm) override { return src.next(vm); }
+    void roots(std::vector<Handle>& out) override { src.roots(out); }
+};
+class IterVal : public Object {
+public:
+    Handle src_;
+    explicit IterVal(Handle s) : src_(s) {}
+    ValueKind kind() const override { return ValueKind::Iterator; }
+    std::string typeName() const override { return "iterator"; }
+    bool truthy() const override { return true; }
+    std::string str(StringifyCtx&) const override { return "<iterator>"; }
+    bool equals(const ObjectArena&, const Object& o) const override { return this == &o; }
+    void children(std::vector<Handle>& out) const override { out.push_back(src_); }
+    std::unique_ptr<LazyIterator> lazyIterate(KiritoVM&, Handle) override {
+        return std::make_unique<IterLazyIterator>(src_);
     }
     std::optional<std::vector<Handle>> iterate(KiritoVM& vm) override {
         RootScope rs(vm); auto it = lazyIterate(vm, Handle{}); return drainLazy(vm, *it, rs);
@@ -3818,6 +3859,12 @@ inline void KiritoVM::installBuiltins() {
     defSig("filter", {{"function"}, {"iterable"}}, "Iterator", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         // Lazy: yields each element whose `function` result is truthy (Python-style).
         return vm.alloc(std::make_unique<FilterVal>(a[0], a[1]));
+    });
+    defSig("iter", {{"iterable"}}, "Iterator", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        // The explicit iterator over any iterable. Its main use is the iteration protocol: a class
+        // returns `iter(<its backing collection>)` from `_iter_` (a bare List from `_iter_` is rejected).
+        // Like map/filter, the view is re-iterable and streams a lazy source instead of materializing it.
+        return vm.alloc(std::make_unique<IterVal>(a[0]));
     });
     defSig("type", {{"x"}}, "String", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         return vm.makeString(vm.arena().deref(a[0]).typeName());

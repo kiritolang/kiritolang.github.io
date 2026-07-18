@@ -1,6 +1,7 @@
 # Lazy generators: the _iter_/_next_ protocol + StopIteration. Covers streaming for-loops, eager
 # consumers draining a generator, separate iterator objects, re-iterability, infinite generators with
-# break, strict PEP-479 StopIteration attribution, and backward-compatible _iter_-returns-a-List.
+# break, strict PEP-479 StopIteration attribution, and that a bare List from _iter_ is rejected
+# (it must be an iterator — wrap a collection in iter()).
 var io = import("io")
 
 # --- countdown generator: _iter_ returns self ---
@@ -99,14 +100,23 @@ catch StopIteration as e:
     surfaced = True
 assert surfaced, "deep StopIteration surfaces (strict PEP-479)"
 
-# --- backward compatible: _iter_ returning a plain List still works ---
-class OldStyle:
+# --- _iter_ MUST return an iterator: a bare List is rejected; wrap it in iter(). ---
+class BareList:
     var _iter_ = Function(self):
         return [7, 8, 9]
-assert List(OldStyle()) == [7, 8, 9], "old-style _iter_ returns a List"
-var oldSum = 0
-for v in OldStyle():
-    oldSum = oldSum + v
-assert oldSum == 24, "for over old-style _iter_"
+var rejected = False
+try:
+    discard List(BareList())
+catch as e:
+    rejected = "must return an iterator" in e
+assert rejected, "a bare List from _iter_ is rejected (wrap it in iter())"
+class Wrapped:
+    var _iter_ = Function(self):
+        return iter([7, 8, 9])
+assert List(Wrapped()) == [7, 8, 9], "iter(list) from _iter_ works"
+var wSum = 0
+for v in Wrapped():
+    wSum = wSum + v
+assert wSum == 24, "for over an iter(list)-returning _iter_"
 
 io.print("generators: all passed")

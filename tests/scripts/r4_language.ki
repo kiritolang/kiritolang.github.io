@@ -146,7 +146,7 @@ class Vec:
         return self.y
     var _len_ = Function(self): return 2
     var _contains_ = Function(self, v): return v == self.x or v == self.y
-    var _iter_ = Function(self): return [self.x, self.y]
+    var _iter_ = Function(self): return iter([self.x, self.y])
     var _call_ = Function(self, k): return Vec(self.x * k, self.y * k)
     var _eq_ = Function(self, o): return self.x == o.x and self.y == o.y
 var v = Vec(10, 20)

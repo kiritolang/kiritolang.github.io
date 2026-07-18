@@ -40,9 +40,9 @@ int main() {
     CHECK(okGc1("var s = \"\"\nfor c in \"abc\":\n    s = s + c\ns") == "abc");
     // Bytes iterate() allocates fresh per-byte Integers (not the Bytes' children()) — same gap.
     CHECK(okGc1("var xs = []\nfor b in Bytes([65, 66, 67]):\n    xs.append(b)\nlen(xs)") == "3");
-    // A class whose _iter_ returns a freshly-built List: the returned iterable is dropped, so its
-    // elements are reachable only via the (was-unrooted) cursor items.
-    CHECK(okGc1("class R:\n    var _iter_ = Function(self): return [10, 20, 30]\n"
+    // A class whose _iter_ returns iter() over a freshly-built List: the returned iterator is dropped,
+    // so its elements are reachable only via the (was-unrooted) cursor items.
+    CHECK(okGc1("class R:\n    var _iter_ = Function(self): return iter([10, 20, 30])\n"
                 "var t = 0\nfor x in R():\n    t = t + x\nt") == "60");
     // non-empty String with multi-byte code points (fresh handles per code point)
     CHECK(okGc1("var n = 0\nfor c in \"héllo\":\n    n = n + 1\nn") == "5");
@@ -101,17 +101,21 @@ int main() {
     // index with a start/end window still works after the snapshot rework.
     CHECK(ok("[1, 2, 3, 2, 1].index(2, 2)") == "3");
 
-    // === A07-1 (Medium, uncatchable crash): `_iter_` returning `self` re-dispatched iterate() into
-    // unbounded native recursion (the balanced _iter_ call kept the depth guard from tripping) → SIGSEGV.
-    // Now bounded → a catchable error. ===
+    // === A07-1 (Medium, uncatchable crash → clean error): `_iter_` must return an ITERATOR, so a bare
+    // `self`/`self.other` (no _next_) is rejected outright — no re-dispatch, no recursion. The genuinely
+    // cyclic form `return iter(self)` (a valid native iterator that re-iterates self) is bounded by the
+    // SourceCursor native-nesting guard → a catchable error, never SIGSEGV. ===
     CHECK(has(err("class C:\n    var _iter_ = Function(self): return self\nfor x in C():\n    pass"),
-              "recurses too deeply"));
-    // a mutually-referential _iter_ pair likewise terminates with a clean error, not a crash
+              "must return an iterator"));
+    // a mutually-referential _iter_ pair returns bare instances (no _next_) → also rejected outright
     CHECK(has(err("class A:\n    var other = None\n    var _iter_ = Function(self): return self.other\n"
                   "var a = A()\nvar b = A()\na.other = b\nb.other = a\nfor x in a:\n    pass"),
+              "must return an iterator"));
+    // the genuinely cyclic iterator (return iter(self)) is depth-guarded, not a crash
+    CHECK(has(err("class C:\n    var _iter_ = Function(self): return iter(self)\nfor x in C():\n    pass"),
               "recurses too deeply"));
-    // a legitimate _iter_ chain (instance -> List) still works
-    CHECK(ok("class R:\n    var _iter_ = Function(self): return [1, 2, 3]\nvar t = 0\nfor x in R():\n    t = t + x\nt") == "6");
+    // a legitimate _iter_ over a wrapped List still works
+    CHECK(ok("class R:\n    var _iter_ = Function(self): return iter([1, 2, 3])\nvar t = 0\nfor x in R():\n    t = t + x\nt") == "6");
 
     // === A18-1 (Medium, security — CRLF header injection): user headers/cookies were written verbatim
     // into the request; a CR/LF splits/smuggles headers. Now rejected before any connection. ===

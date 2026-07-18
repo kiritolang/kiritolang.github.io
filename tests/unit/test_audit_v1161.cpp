@@ -12,6 +12,15 @@ using namespace kirito;
 static bool ok(KiritoVM& vm, const std::string& src) {
     try { vm.runSource(src); return true; } catch (...) { return false; }
 }
+// Run a program expected to throw; return the exception message (empty if it didn't throw).
+static std::string errmsg(KiritoVM& vm, const std::string& src) {
+    try { vm.runSource(src); return ""; }
+    catch (const std::exception& e) { return e.what(); }
+    catch (...) { return "<non-std exception>"; }
+}
+static bool has(const std::string& hay, const std::string& needle) {
+    return hay.find(needle) != std::string::npos;
+}
 // Parse a source; true iff parsing threw a KiritoError whose message contains `needle`.
 static bool parseThrows(const std::string& src, const std::string& needle) {
     try {
@@ -72,6 +81,40 @@ assert sum([1, 2, 3]) == 6 and sum([1.5, 2.5]) == 4.0 and sum([]) == 0
         CHECK(!ok(vm, "for x, in [[1, 2]]:\n    pass\n"));
         // the bare form (no `var`) already worked and still does
         CHECK(vm.stringify(vm.runSource("var xs = [9]\nvar b = 0\nb, = xs\nb\n")) == "9");
+    }
+
+    // ===== iter() builtin + the _iter_/_next_-only protocol (the eager _iter_-returns-a-List shim was
+    // purged). iter(x) is a re-iterable Iterator view over any iterable; a class is iterable only by
+    // returning an iterator (iter(collection) / a native iterator / a _next_ object) from _iter_. =====
+    {
+        KiritoVM vm;
+        CHECK(ok(vm, R"(
+assert List(iter([1, 2, 3])) == [1, 2, 3]
+assert List(iter("ab")) == ["a", "b"]
+assert List(iter(range(3))) == [0, 1, 2]
+assert sum(iter([1, 2, 3, 4])) == 10
+assert type(iter([1])) == "iterator"
+# re-iterable like map/filter
+var it = iter([1, 2, 3])
+assert List(it) == [1, 2, 3] and List(it) == [1, 2, 3]
+# _iter_ must return an iterator
+class WrapList:
+    var _init_ = Function(self): self.xs = [4, 5, 6]
+    var _iter_ = Function(self): return iter(self.xs)
+assert List(WrapList()) == [4, 5, 6]
+)"));
+        // a bare List / scalar / self from _iter_ is rejected with a clear message
+        CHECK(has(errmsg(vm, "class B:\n    var _iter_ = Function(self): return [1, 2]\ndiscard List(B())\n"),
+                  "must return an iterator"));
+        CHECK(has(errmsg(vm, "class B:\n    var _iter_ = Function(self): return 42\ndiscard List(B())\n"),
+                  "must return an iterator"));
+        CHECK(has(errmsg(vm, "class B:\n    var _iter_ = Function(self): return self\ndiscard List(B())\n"),
+                  "must return an iterator"));
+        // a genuinely cyclic iterator is depth-guarded (catchable), never a native stack overflow
+        CHECK(has(errmsg(vm, "class C:\n    var _iter_ = Function(self): return iter(self)\ndiscard List(C())\n"),
+                  "recurses too deeply"));
+        // iter() of a non-iterable surfaces a clean error on consumption
+        CHECK(!ok(vm, "discard List(iter(42))\n"));
     }
 
     return RUN_TESTS();

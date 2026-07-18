@@ -123,7 +123,7 @@ class Item:
         return self.v == o.v
 class Bag:
     var _iter_ = Function(self):
-        return [[Item(1000), "v1000"], [Item(2000), "v2000"], [Item(3000), "v3000"]]
+        return iter([[Item(1000), "v1000"], [Item(2000), "v2000"], [Item(3000), "v3000"]])
 var d = {}
 d.update(Bag())
 assert len(d) == 3

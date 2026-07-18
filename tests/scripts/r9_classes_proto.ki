@@ -174,13 +174,13 @@ class CountDown:
         while i > 0:
             result.append(i)
             i = i - 1
-        return result
+        return iter(result)
 
 var cd = CountDown(3)
 var items = []
 for x in cd:
     items.append(x)
-ok(items == [3, 2, 1], "_iter_ protocol: for-in uses _iter_ (returns List)")
+ok(items == [3, 2, 1], "_iter_ protocol: for-in uses _iter_ (returns iter(list))")
 
 var cd2 = CountDown(0)
 var items2 = []

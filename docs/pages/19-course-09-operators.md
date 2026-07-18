@@ -112,7 +112,7 @@ var io = import("io")
 
 class Range3:                    # yields 0, 1, 2
     var _iter_ = Function(self):
-        return [0, 1, 2]
+        return iter([0, 1, 2])   # _iter_ must return an iterator — wrap a collection in iter()
     var _contains_ = Function(self, x) -> Bool:
         return x == 0 or x == 1 or x == 2
 

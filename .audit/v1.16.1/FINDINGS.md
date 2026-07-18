@@ -97,6 +97,24 @@ delivered real findings. Given usage cost, remaining areas are being audited dir
   OOM. Per "low-risk / no contracts broken", shipping an untestable compatibility regression for a Low
   finding is the wrong trade — left as-is, documented here.
 
+### FIXED — batch 5 (user-directed: purge eager `_iter_`-returns-a-List)
+- **New `iter(iterable)` builtin + one iteration protocol.** `_iter_` must now return an ITERATOR — a
+  `_next_`-style object, or a native iterator (`iter(...)`, `range`/`map`/`filter`/`zip`/`enumerate`).
+  A bare List/Set/String from `_iter_` is rejected: *"\_iter\_ must return an iterator — call iter(...)
+  on a collection, or return an object with a \_next\_ method"*. `iter(x)` (new `IterVal`,
+  ValueKind::Iterator, wraps a SourceCursor) is a lazy, re-iterable view over any iterable — the
+  migration path for every old `return [list]`. A cyclic `_iter_` (`return iter(self)`) is bounded by a
+  native-nesting guard in `SourceCursor::next` → catchable "recurses too deeply", never a segfault (the
+  old InstanceValue re-dispatch guards were ineffective for the lazy path and were removed). This is
+  pre-release cleanup (generators/1.15–1.16 were never tagged; latest release is 1.14.1), so it stays in
+  1.16.1. Migrated: 3 shipped stdlib classes (deque/Series/Element), ~14 golden scripts, 4 C++ tests,
+  examples (trie/kgrad), docs (09-types, 08-builtins, 19-course-09). Tests: spec_v1161_iter.ki (edge +
+  protocol + cyclic-guard + 200-case randomized cross-check) + test_audit_v1161.cpp.
+- **kgrad stress-test un-rotted (pre-existing, unrelated to iter()):** `nd._unary` broke when A02-2
+  stopped exporting `_`-private module members → renamed to public `unary`; `shuffle(range(n))` broke
+  when B2 made range lazy (not a List) → `List(range(n))`. Both uncaught because big_projects isn't in
+  the CTest gate. kgrad now 20/20.
+
 ### FIXED — batch 4 (user-directed)
 - **F01-2 [Med] — `var a, = x` / `for x, in xs` silently dropped the trailing comma** (bound the whole
   iterable, swallowing a count mismatch) while the bare `a, = x` correctly 1-tuple-unpacks. FIX: a trailing

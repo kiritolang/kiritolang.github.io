@@ -1,0 +1,120 @@
+# v1.16.1 — the iter() builtin and the _iter_/_next_-only protocol (the eager _iter_-returns-a-List
+# shim was purged). Covers every iterable kind, re-iterability, streaming, snapshots, the protocol
+# rejection path, the cyclic guard, and randomized cross-checks against direct iteration.
+var io = import("io")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+var threwmsg = Function(f, needle):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return needle in e
+
+# --- iter() over every iterable kind produces the same elements as iterating the source directly ---
+assert List(iter([1, 2, 3])) == [1, 2, 3], "iter(List)"
+assert List(iter("abc")) == ["a", "b", "c"], "iter(String) yields code points"
+assert List(iter(range(4))) == [0, 1, 2, 3], "iter(range)"
+assert sorted(List(iter({3, 1, 2}))) == [1, 2, 3], "iter(Set)"
+assert List(iter({"a": 1, "b": 2})) == ["a", "b"], "iter(Dict) yields keys in insertion order"
+assert List(iter(Bytes([65, 66]))) == [65, 66], "iter(Bytes) yields ints"
+assert List(iter(iter([7, 8]))) == [7, 8], "iter(iter(x)) — iterating an iterator"
+assert List(iter(map(Function(x): return x * 2, [1, 2, 3]))) == [2, 4, 6], "iter over a lazy map"
+assert List(iter([])) == [], "iter of empty"
+
+# --- an iter() view is consumable by every iterable consumer ---
+var it = iter([10, 20, 30])
+var acc = 0
+for v in it:
+    acc = acc + v
+assert acc == 60, "for over iter()"
+assert sum(iter([1, 2, 3, 4])) == 10, "sum(iter())"
+assert max(iter([3, 9, 2])) == 9 and min(iter([3, 9, 2])) == 2, "min/max(iter())"
+assert sorted(iter([3, 1, 2])) == [1, 2, 3], "sorted(iter())"
+var ua, ub, uc = iter([1, 2, 3])
+assert ua == 1 and uc == 3, "unpack an iter()"
+assert type(iter([1])) == "iterator", "type(iter(...)) is 'iterator'"
+
+# --- re-iterable like map/filter (a fresh cursor each pass), NOT single-use ---
+var reit = iter([1, 2, 3])
+assert List(reit) == [1, 2, 3] and List(reit) == [1, 2, 3], "iter() view is re-iterable"
+
+# --- iter(list) takes a SNAPSHOT: appends during the loop don't extend it (matches for-over-list) ---
+var backing = [1, 2, 3]
+var seen = []
+for v in iter(backing):
+    seen.append(v)
+    backing.append(99)
+assert seen == [1, 2, 3], "iter(list) is a snapshot — mid-loop appends don't extend it"
+assert len(backing) == 6, "the backing list did grow (proving snapshot, not live view)"
+
+# --- iter() streams a large lazy source without materializing it (no range-too-large / OOM) ---
+var big = iter(range(1000000))
+var first3 = []
+for v in big:
+    first3.append(v)
+    if len(first3) == 3:
+        break
+assert first3 == [0, 1, 2], "iter(range(1e6)) streams lazily"
+
+# --- the protocol: _iter_ MUST return an iterator. A bare List / scalar / self is rejected. ---
+class BareList:
+    var _iter_ = Function(self): return [1, 2, 3]
+assert threwmsg(Function(): return List(BareList()), "must return an iterator"), "_iter_ returning a bare List is rejected"
+class Scalar:
+    var _iter_ = Function(self): return 42
+assert threwmsg(Function(): return List(Scalar()), "must return an iterator"), "_iter_ returning a scalar is rejected"
+class Selfish:
+    var _iter_ = Function(self): return self
+assert threwmsg(Function(): return List(Selfish()), "must return an iterator"), "_iter_ returning bare self is rejected"
+
+# --- valid protocol forms: iter(collection), a native iterator (range/map), a _next_ iterator ---
+class WrapList:
+    var _init_ = Function(self): self.xs = [4, 5, 6]
+    var _iter_ = Function(self): return iter(self.xs)
+assert List(WrapList()) == [4, 5, 6], "_iter_ returning iter(list) works"
+class WrapRange:
+    var _iter_ = Function(self): return range(3)
+assert List(WrapRange()) == [0, 1, 2], "_iter_ returning a range works"
+class Gen:
+    var _init_ = Function(self): self.i = 0
+    var _iter_ = Function(self): return self
+    var _next_ = Function(self):
+        if self.i >= 3:
+            throw StopIteration()
+        self.i = self.i + 1
+        return self.i
+assert List(Gen()) == [1, 2, 3], "_iter_/_next_ generator still works"
+
+# --- a genuinely cyclic iterator is depth-guarded, not a crash ---
+class Cyclic:
+    var _iter_ = Function(self): return iter(self)
+assert threwmsg(Function(): return List(Cyclic()), "recurses too deeply"), "cyclic iter(self) is depth-guarded"
+
+# --- iter() of a non-iterable surfaces a clean error when consumed ---
+assert threw(Function(): return List(iter(42))), "iter(non-iterable) throws on consumption"
+
+# --- randomized cross-check: iter() over a random list matches the list itself, across consumers ---
+var random = import("random")
+var rng = random.Random(20260718)
+var i = 0
+while i < 200:
+    var n = rng.randint(0, 30)
+    var lst = []
+    var k = 0
+    while k < n:
+        lst.append(rng.randint(-1000, 1000))
+        k = k + 1
+    assert List(iter(lst)) == lst, "fuzz: List(iter(lst)) == lst"
+    assert sum(iter(lst)) == sum(lst), "fuzz: sum(iter(lst)) == sum(lst)"
+    assert sorted(iter(lst)) == sorted(lst), "fuzz: sorted(iter(lst)) == sorted(lst)"
+    if n > 0:
+        assert max(iter(lst)) == max(lst) and min(iter(lst)) == min(lst), "fuzz: min/max(iter(lst))"
+    i = i + 1
+
+io.print("v1.16.1 iter: all passed")

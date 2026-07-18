@@ -206,7 +206,7 @@ ok(work8.pop() == "b" and work8.size() == 1, "Stack push/pop/size")
 # ---- Lesson 9: container protocol _iter_ / _contains_ ----
 class Range3:
     var _iter_ = Function(self):
-        return [0, 1, 2]
+        return iter([0, 1, 2])
     var _contains_ = Function(self, x) -> Bool:
         return x == 0 or x == 1 or x == 2
 var r3out = []
@@ -268,7 +268,7 @@ class Countdown:
         while i > 0:
             out.append(i)
             i = i - 1
-        return out
+        return iter(out)
 var cdr = []
 for cx in Countdown(3):
     cdr.append(cx)
