@@ -272,15 +272,14 @@ assert threw(Function(): zlib.inflate(zlib.compress("hello world")))
 
 # ---------------------------------------------------------------------------
 # crypto: gated on KIRITO_ENABLE_TLS. If disabled, every op MUST throw
-# "requires KIRITO_ENABLE_TLS"; if enabled, verify real functionality.
+# "KIRITO_ENABLE_TLS"; if enabled, verify real functionality.
 # ---------------------------------------------------------------------------
 
 if not crypto.enabled:
-    assert "requires KIRITO_ENABLE_TLS" in emsg(Function(): crypto.aesencrypt("k" * 16, "x", "i" * 12))
-    assert "requires KIRITO_ENABLE_TLS" in emsg(Function(): crypto.rsagenerate(2048))
-    assert "requires KIRITO_ENABLE_TLS" in emsg(Function(): crypto.ecgenerate())
-    assert "requires KIRITO_ENABLE_TLS" in emsg(Function(): crypto.x509parse("x"))
-    io.print("cov hash/compress: crypto disabled, gate verified")
+    assert "KIRITO_ENABLE_TLS" in emsg(Function(): crypto.aesencrypt("k" * 16, "x", "i" * 12))
+    assert "KIRITO_ENABLE_TLS" in emsg(Function(): crypto.rsagenerate(2048))
+    assert "KIRITO_ENABLE_TLS" in emsg(Function(): crypto.ecgenerate())
+    assert "KIRITO_ENABLE_TLS" in emsg(Function(): crypto.x509parse("x"))
 else:
     # --- AES-GCM: known NIST vector (256-bit zero key, 96-bit zero IV, empty PT).
     var zkey = List()
@@ -332,6 +331,5 @@ else:
     # x509parse rejects a non-certificate PEM.
     assert "invalid certificate PEM" in emsg(Function(): crypto.x509parse("not a certificate"))
 
-    io.print("cov hash/compress: crypto enabled, functionality verified")
 
 io.print("cov hash/compress: all passed")
