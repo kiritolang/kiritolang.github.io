@@ -91,9 +91,9 @@ try {
 ## Compile-time errors (thrown before your program runs)
 
 These come from the lexer, parser, name resolver, and compiler — reported while the program is being
-compiled, so a `try` in the same program **cannot catch them**. Fix the source and re-run. (Two
-compiler checks — `positional argument follows keyword argument` and `duplicate switch case value` —
-are deferred to the point the code is reached, so they *are* catchable; they're noted below.)
+compiled, so a `try` in the same program **cannot catch them**. Fix the source and re-run. (One compiler
+check — `positional argument follows keyword argument` — is deferred to the point the code is reached,
+so it *is* catchable; it's noted below.)
 
 ### Lexer — indentation
 
@@ -127,6 +127,7 @@ are deferred to the point the code is reached, so they *are* catchable; they're 
 | `expected an expression` | An expression was required but a non-expression token appeared | Provide a valid expression |
 | `expected a member name after '.'` | `.` not followed by an identifier | Write a valid attribute name after the dot |
 | `expected an index expression inside '[ ]'` | Empty subscript where an index was required | Put an index/slice inside the brackets |
+| `chained comparison is not allowed; connect the conditions with 'and'/'or'` | A second comparison operator at one level (`a < b < c`, `1 == 1 == 1`, `x in y in z`) — Kirito comparisons do not chain | Join the conditions with `and`/`or` (`a < b and b < c`), or parenthesize an inner comparison you really mean (`(a == b) == c`) |
 | `expression nested too deeply` | Source expression exceeds the recursive-descent depth bound | Flatten or split the deeply nested expression |
 
 ### Parser — statement-context rules
@@ -147,6 +148,8 @@ are deferred to the point the code is reached, so they *are* catchable; they're 
 | `a switch can have only one 'default'` | A second `default:` arm in a switch | Keep a single `default:` arm |
 | `expected 'case' or 'default' in switch body` | A switch-body statement that isn't a `case`/`default` arm | Only put `case`/`default` arms in a switch body |
 | `'switch' needs at least one 'case' or a 'default'` | An empty switch body | Add at least one `case` or a `default` |
+| `a switch case label must be a constant scalar — a literal or an expression over literals (a variable or a call is not allowed)` | A `case` label that reads runtime state (`case some_var`, `case f()`, an index/member) or folds to a non-scalar (`case [1, 2]`) | Use a literal or a constant expression over literals (`case 3 + 4`, `case -1`) |
+| `duplicate switch case value` | Two `case` arms fold to the same constant value | Make each case value distinct |
 | `'try' needs at least one 'catch' or a 'finally'` | A `try` with no handler and no finally | Add a `catch` or `finally` clause |
 
 ### Parser — f-strings
@@ -173,13 +176,14 @@ are deferred to the point the code is reached, so they *are* catchable; they're 
 | `'break'/'continue' outside a loop` | Loop-exit compiled with no enclosing loop context | Only use `break`/`continue` inside a loop |
 | `expression too deeply nested to evaluate` | Compiler-side nesting bound exceeded | Flatten or split the nested expression |
 
-### Compiler — calls & switch (deferred → catchable at runtime)
+### Compiler — calls (deferred → catchable at runtime)
 
 | Message | Cause | Fix |
 |---|---|---|
 | `positional argument follows keyword argument` | A positional argument written after a keyword argument in a call | Put all positional args before keyword args |
-| `duplicate switch case value` | Two `case` arms with the same literal scalar value | Make each case value distinct |
-| `switch case value must be Integer, Float, String, Bool, or None` | A `case` label that evaluates to a non-scalar at run time | Use a constant scalar case label |
+
+(Switch case-label errors — a non-constant/non-scalar label, a duplicate value — are compile-time and
+**not** catchable; see [Parser — switch / try](#parser-switch-try) above.)
 
 ### Static analysis warnings (NOT exceptions)
 
@@ -222,6 +226,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 |---|---|---|
 | `type '<T>' is not callable` | Calling a non-callable value | Call a function/class/callable object |
 | `type '<T>' is not iterable` | Iterating (`for`, unpack) a non-iterable | Iterate a collection/string/iterator |
+| `'<Class>' _iter_ must return an iterator — call iter(...) on a collection, or return an object with a _next_ method` | A user `_iter_` returned a bare List/collection instead of an iterator | Return `iter(collection)`, a native iterator (`range`/`map`/…), or a `_next_`-style iterator object |
 | `type '<T>' is not indexable` | `x[i]` on a non-subscriptable type | Index a List/Dict/String/etc. |
 | `type '<T>' does not support item assignment` | `x[i] = v` on a type that can't be mutated by index | Use a mutable indexable type |
 | `type '<T>' takes exactly one index` | Multi-key `x[i, j]` on a type accepting one index | Pass a single index |
@@ -335,7 +340,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `maximum comparison recursion depth exceeded (cyclic structure?)` | A deep/cyclic structure compared with `==`/`<`/`sort`/`min`/`max` | Avoid comparing cyclic structures |
 | `structure too deeply nested to stringify` | `str()`/print of a structure >1000 deep | Flatten the structure |
 | `expression too deeply nested to evaluate` / `expression nested too deeply` | Pathologically nested source | Simplify the expression nesting |
-| `'<Class>' _iter_ recurses too deeply (does _iter_ return self or a cycle?)` | A user `_iter_` that returns `self` (or forms an `_iter_` cycle), so iteration re-dispatches without bottoming out | Return a genuine iterable (a List / built-in iterator), not `self` |
+| `iterator recurses too deeply (does _iter_ return iter(self) or form a cycle?)` | A cyclic iterator — e.g. `_iter_` returns `iter(self)` (or `map(f, self)`), so each pulled element re-enters iteration without bottoming out | Return an iterator over a real collection (`iter(self.items)`) or a `_next_` object, not one that iterates the same instance |
 | `'<Class>' _str_ recurses too deeply` | A user `_str_` that returns `self` (or forms a stringification cycle), so `str()`/print re-dispatches without bottoming out | Return a plain String from `_str_`, not `self` |
 
 ### Resource guards (repetition / padding / range)
