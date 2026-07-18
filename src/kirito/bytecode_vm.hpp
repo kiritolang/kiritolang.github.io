@@ -421,18 +421,9 @@ public:
                     pop();  // drop the iterable
                     for (std::size_t i = spec.count; i-- > 0;) push(slots[i]);  // reversed: slot 0 ends on top
                 } break;
-                case Op::SwitchMatch: {
-                    Handle v = peek(0), subj = peek(1);
-                    auto vk = scalarSwitchKey(vm_, v);
-                    if (!vk) throw KiritoError("switch case value must be Integer, Float, String, Bool, or None", in.span);
-                    auto sk = scalarSwitchKey(vm_, subj);
-                    bool match = sk.has_value() && *sk == *vk;
-                    pop(); pop();
-                    push(vm_.makeBool(match));
-                } break;
                 case Op::SwitchDispatch: {
                     // O(1): hash the subject's key ONCE and jump to the precompiled arm offset (or the
-                    // default). A non-scalar / NaN subject has no key -> default, matching SwitchMatch.
+                    // default). A non-scalar / NaN subject has no key -> default.
                     Handle subj = pop();
                     const SwitchTable& tbl = proto.switches[in.a];
                     auto sk = scalarSwitchKey(vm_, subj);

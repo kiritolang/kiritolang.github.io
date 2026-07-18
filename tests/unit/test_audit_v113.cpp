@@ -238,8 +238,9 @@ int main() {
 
     // === A04-2 / A04-3 (switch negative case labels): a negative label `-1` parses as UnaryExpr(Neg,
     // Literal), not a LiteralExpr, so it (a) escaped duplicate detection — `case -1` twice was accepted
-    // — and (b) dropped the whole switch off the O(1) dispatch. constSwitchKey now folds a negated
-    // numeric literal, so duplicates are rejected and negative cases dispatch correctly. ===
+    // — and (b) dropped the whole switch off the O(1) dispatch. The compiler now constant-FOLDS every
+    // case label (foldConstValue, via the VM's own operators), so a negated literal is a proper constant:
+    // duplicates are a compile error and negative cases dispatch correctly. ===
     CHECK(has(err("var x = 5\nswitch x:\n    case -1:\n        pass\n    case -1:\n        pass"),
               "duplicate switch case value"));
     CHECK(has(err("var x = 5\nswitch x:\n    case -1.5:\n        pass\n    case -1.5:\n        pass"),

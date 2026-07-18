@@ -14,7 +14,7 @@
 #include "fum/unordered_set.hpp"
 #include "ast.hpp"
 #include "bytecode.hpp"
-#include "builtins.hpp"   // floatToRoundtrip for exact switch-case float keys
+#include "builtins.hpp"   // the core value types (Int/Float/Str/…) the emitted constants use
 #include "locals.hpp"     // collectBlockDecls + capturedLocals for slot-addressed locals
 #include "vm.hpp"
 
@@ -24,6 +24,13 @@ namespace kirito {
 // can eagerly compile a nested class body (a genuine error there propagates as a KiritoError).
 inline const Proto* protoForBody(KiritoVM& vm, const ast::Block& body, bool isFunction,
                                  const ast::FunctionExpr* fnDef = nullptr);
+
+// Runtime operator + switch-key helpers (defined later, in runtime.hpp — included by the umbrella AFTER
+// compiler.hpp). Forward-declared here so the compiler can CONSTANT-FOLD a `switch` case label through
+// the exact same semantics the VM uses at run time (so `case 3 + 4` keys identically to a runtime `3+4`).
+inline Handle applyUnaryOp(KiritoVM& vm, UnOp op, Handle operand);
+inline Handle applyBinaryOp(KiritoVM& vm, BinOp op, Handle lhs, Handle rhs);
+inline std::optional<std::string> scalarSwitchKey(KiritoVM& vm, Handle h);
 
 // Compiles a Block (a function body, the top-level program, or a class body) into a Proto — the AST's
 // second visitor, alongside the parser. It emits stack-machine instructions that reuse the runtime's
@@ -172,41 +179,50 @@ private:
         else emit(Op::AssignName, addName(name), span);
     }
 
-    // The switch-dispatch key of a literal scalar, matching scalarSwitchKey() at run time, so the
-    // compiler can detect duplicate `case` values (a compile-time error). nullopt for non-scalars.
-    static std::optional<std::string> literalSwitchKey(const ast::LiteralExpr& lit) {
-        if (std::holds_alternative<std::monostate>(lit.value)) return std::string("N");
-        if (std::holds_alternative<bool>(lit.value))
-            return std::string("B") + (std::get<bool>(lit.value) ? "1" : "0");
-        if (std::holds_alternative<int64_t>(lit.value)) return "I" + std::to_string(std::get<int64_t>(lit.value));
-        if (std::holds_alternative<double>(lit.value)) {
-            double d = std::get<double>(lit.value);
-            if (std::isnan(d)) return std::nullopt;            // NaN case matches nothing
-            if (d == 0.0) d = 0.0;                             // -0.0 / 0.0 share a key
-            return "F" + floatToRoundtrip(d);                  // EXACT key, must agree with scalarSwitchKey + ==
+    // Compile-time fold of a CONSTANT `switch` case-label expression to its value, reusing the VM's own
+    // operators so `case 3 + 4` / `case -1` / `case "a" + "b"` produce a value bit-identical to what the
+    // same expression yields at run time. Returns nullopt if the label reads runtime state (a name /
+    // call / index / member / collection literal) — that is a compile error at the call site. A constant
+    // that ERRORS while folding (e.g. `case 1 / 0`) throws here, which is exactly the desired outcome.
+    std::optional<Handle> foldConstValue(const ast::Expr& e) {
+        if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(&e)) {
+            if (std::holds_alternative<std::monostate>(lit->value)) return vm_.none();
+            if (std::holds_alternative<bool>(lit->value)) return vm_.makeBool(std::get<bool>(lit->value));
+            if (std::holds_alternative<int64_t>(lit->value)) return vm_.makeInt(std::get<int64_t>(lit->value));
+            if (std::holds_alternative<double>(lit->value)) return vm_.makeFloat(std::get<double>(lit->value));
+            if (std::holds_alternative<std::string>(lit->value)) return vm_.makeString(std::get<std::string>(lit->value));
+            return std::nullopt;
         }
-        if (std::holds_alternative<std::string>(lit.value)) return "S" + std::get<std::string>(lit.value);
-        return std::nullopt;
+        if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&e)) {
+            auto oh = foldConstValue(*un->operand);
+            if (!oh) return std::nullopt;
+            RootScope rs(vm_); rs.add(*oh);                    // keep the operand across the allocating op
+            return applyUnaryOp(vm_, un->op, *oh);
+        }
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&e)) {
+            auto lh = foldConstValue(*bin->lhs);
+            if (!lh) return std::nullopt;
+            RootScope rs(vm_); rs.add(*lh);
+            auto rh = foldConstValue(*bin->rhs);
+            if (!rh) return std::nullopt;
+            rs.add(*rh);
+            return applyBinaryOp(vm_, bin->op, *lh, *rh);
+        }
+        if (const auto* lg = dynamic_cast<const ast::LogicalExpr*>(&e)) {  // and/or, short-circuit
+            auto lh = foldConstValue(*lg->lhs);
+            if (!lh) return std::nullopt;
+            bool lt = vm_.arena().deref(*lh).truthy();
+            if (lg->isAnd ? !lt : lt) return lh;               // `and` keeps a falsy left; `or` a truthy left
+            return foldConstValue(*lg->rhs);
+        }
+        return std::nullopt;                                   // a name/call/index/member/… reads state
     }
-    // The switch key for a case-label EXPRESSION: a literal scalar, OR a unary minus applied to a
-    // numeric literal. A negative label like `-1` parses as UnaryExpr(Neg, Literal 1), NOT a
-    // LiteralExpr — so without folding it here it (a) escaped duplicate detection (`case -1` twice was
-    // accepted) and (b) silently dropped the whole switch off the O(1) dispatch to the O(n) chain.
-    // The folded key must match what scalarSwitchKey computes for the negated value at run time.
-    static std::optional<std::string> constSwitchKey(const ast::Expr& e) {
-        if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(&e)) return literalSwitchKey(*lit);
-        if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&e); un && un->op == UnOp::Neg)
-            if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(un->operand.get())) {
-                if (std::holds_alternative<int64_t>(lit->value))
-                    return "I" + std::to_string(-std::get<int64_t>(lit->value));
-                if (std::holds_alternative<double>(lit->value)) {
-                    double d = -std::get<double>(lit->value);
-                    if (std::isnan(d)) return std::nullopt;
-                    if (d == 0.0) d = 0.0;
-                    return "F" + floatToRoundtrip(d);
-                }
-            }
-        return std::nullopt;
+    // The switch-dispatch key of a constant case label, or nullopt if it is non-constant or the folded
+    // value is not a hashable scalar. Uses scalarSwitchKey so the key agrees with the subject's at run time.
+    std::optional<std::string> foldConstKey(const ast::Expr& e) {
+        auto h = foldConstValue(e);
+        if (!h) return std::nullopt;
+        return scalarSwitchKey(vm_, *h);
     }
 
     // --- recursion with a depth guard (matching the parser's nesting bound) so a pathologically deep
@@ -388,76 +404,49 @@ private:
         emit(Op::Throw, 0, s.span);
     }
 
-    // `switch SUBJECT:` — no fallthrough, exact type+value matching (case 1 != case 1.0). When every
-    // case value is a compile-time literal scalar (the documented + common form), it compiles to a
-    // single SwitchDispatch against a hash table built once now — O(1) at run time, independent of the
-    // case count. Otherwise (a non-literal case value) it falls back to a SwitchMatch comparison chain.
-    // Duplicate literal case values are a compile error.
+    // `switch SUBJECT:` — no fallthrough, exact type+value matching (`case 1` != `case 1.0`). Every case
+    // label must be a COMPILE-TIME CONSTANT SCALAR: a literal, or an expression over literals that folds
+    // to a scalar (`case 3 + 4`, `case -1`, `case "a" + "b"`). A label that reads runtime state (a
+    // variable, a call, an index/member) is a compile error; so is a duplicate value and a non-scalar
+    // constant. Because every label is a constant, the switch always compiles to a single O(1)
+    // SwitchDispatch against a hash table built now — independent of the case count.
     void visit(const ast::SwitchStmt& s) override {
-        // Duplicate literal case values are rejected — but the error is observable only when the
-        // switch is REACHED (catchable, thrown at run time, like the old jump-table build), so on a
-        // duplicate we evaluate the subject (for its side effects) and then throw at this position.
-        {
-            fum::unordered_set<std::string> seen;
-            for (const auto& c : s.cases)
-                for (const auto& valExpr : c.values)
-                    if (auto key = constSwitchKey(*valExpr); key && !seen.insert(*key).second) {
-                            compileExpr(*s.subject);
-                            emit(Op::Pop);
-                            emit(Op::LoadConst, addConst(vm_.makeString("duplicate switch case value")));
-                            emit(Op::Throw, 0, valExpr->span);
-                            emit(Op::ClearResult);
-                            return;
-                        }
-        }
-        // Fast path: all case values are compile-time constant scalars (incl. negated numeric literals)
-        // -> one O(1) hash dispatch built at compile time.
-        auto litKey = [](const ast::Expr& e) { return constSwitchKey(e); };
-        bool allLiteral = true;
-        for (const auto& c : s.cases)
-            for (const auto& v : c.values)
-                if (!litKey(*v)) { allLiteral = false; break; }
-        if (allLiteral) {
-            compileExpr(*s.subject);
-            std::size_t tblIdx = proto_.switches.size();
-            proto_.switches.emplace_back();            // reserve the slot; the index is stable across nesting
-            emit(Op::SwitchDispatch, static_cast<uint32_t>(tblIdx), s.span);  // pops subject, jumps to an arm
-            SwitchTable table;
-            std::vector<std::size_t> endJumps;
-            for (std::size_t ci = 0; ci < s.cases.size(); ++ci) {
-                uint32_t arm = here();
-                for (const auto& v : s.cases[ci].values) table.targets[*litKey(*v)] = arm;
-                compileBlock(s.cases[ci].body);
-                endJumps.push_back(emit(Op::Jump));
-            }
-            table.defaultTarget = here();              // a missed key runs the default arm (or falls to end)
-            if (s.hasDefault) compileBlock(s.defaultBody);
-            for (std::size_t j : endJumps) patch(j, here());
-            proto_.switches[tblIdx] = std::move(table);
-            emit(Op::ClearResult);
-            return;
-        }
-        compileExpr(*s.subject);                       // subject stays on the stack across the tests
-        std::vector<std::vector<std::size_t>> caseJumps(s.cases.size());
+        // Fold + validate every label BEFORE any codegen: non-constant / non-scalar / duplicate all
+        // throw here (a compile-time error at the offending label's span).
+        std::vector<std::vector<std::string>> keys(s.cases.size());
+        fum::unordered_set<std::string> seen;
         for (std::size_t ci = 0; ci < s.cases.size(); ++ci)
             for (const auto& valExpr : s.cases[ci].values) {
-                emit(Op::Dup);
-                compileExpr(*valExpr);
-                emit(Op::SwitchMatch, 0, valExpr->span);
-                caseJumps[ci].push_back(emit(Op::PopJumpIfTrue, 0, s.span));
+                std::optional<std::string> key;
+                try {
+                    key = foldConstKey(*valExpr);
+                } catch (const KiritoError& e) {   // a constant that errors while folding (`case 1/0`)
+                    throw KiritoError(e.what(), valExpr->span);
+                }
+                if (!key)
+                    throw KiritoError("a switch case label must be a constant scalar — a literal or an "
+                                      "expression over literals (a variable or a call is not allowed)",
+                                      valExpr->span);
+                if (!seen.insert(*key).second)
+                    throw KiritoError("duplicate switch case value", valExpr->span);
+                keys[ci].push_back(std::move(*key));
             }
+        compileExpr(*s.subject);
+        std::size_t tblIdx = proto_.switches.size();
+        proto_.switches.emplace_back();                // reserve the slot; the index is stable across nesting
+        emit(Op::SwitchDispatch, static_cast<uint32_t>(tblIdx), s.span);  // pops subject, jumps to an arm
+        SwitchTable table;
         std::vector<std::size_t> endJumps;
-        emit(Op::Pop);                                 // no match: drop the subject, run default
-        if (s.hasDefault) compileBlock(s.defaultBody);
-        endJumps.push_back(emit(Op::Jump));
         for (std::size_t ci = 0; ci < s.cases.size(); ++ci) {
             uint32_t arm = here();
-            for (std::size_t j : caseJumps[ci]) patch(j, arm);
-            emit(Op::Pop);                             // arrived with the subject still on the stack
+            for (auto& k : keys[ci]) table.targets[std::move(k)] = arm;
             compileBlock(s.cases[ci].body);
             endJumps.push_back(emit(Op::Jump));
         }
+        table.defaultTarget = here();                  // a missed key runs the default arm (or falls to end)
+        if (s.hasDefault) compileBlock(s.defaultBody);
         for (std::size_t j : endJumps) patch(j, here());
+        proto_.switches[tblIdx] = std::move(table);
         emit(Op::ClearResult);
     }
 

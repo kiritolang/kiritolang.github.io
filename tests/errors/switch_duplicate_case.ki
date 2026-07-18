@@ -1,5 +1,5 @@
 switch 1:
-    case 5:
-        discard 1
-    case 5:
-        discard 2
+    case 3 + 4:
+        discard 0
+    case 7:
+        discard 0

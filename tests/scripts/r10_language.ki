@@ -383,12 +383,6 @@ switch 7:
     case 3 + 4:
         swExpr = "seven"
 ok(swExpr == "seven", "a case label may be an expression")
-var swVar = "?"
-var swTarget = 5
-switch 5:
-    case swTarget:
-        swVar = "var"
-ok(swVar == "var", "a case label may be a variable")
 var swNone = "?"
 switch None:
     case None:
@@ -415,47 +409,22 @@ for si in range(5):
         default:
             swBreak.append(si)
 ok(swBreak == [0, 1, 2], "break inside a switch arm propagates to the for loop")
-# a duplicate case value is a RUNTIME error, reported only when the switch is reached
-var childDupSwitch = Function():
-    switch 1:
-        case 1:
-            return "a"
-        case 1:
-            return "b"
-ok(throws(childDupSwitch), "reaching a duplicate-case switch throws")
+# a duplicate case value is a COMPILE-time error (labels are constant, so it's known without running)
+ok(childfailsmsg("switch 1:\n    case 1:\n        discard 1\n    case 1:\n        discard 2\n", "duplicate switch case value"), "a duplicate case value is a compile-time error")
 # case/default are SOFT keywords: usable as ordinary identifiers and parameter names
 var case = 5
 var default = 7
 ok(case + default == 12, "'case'/'default' are usable as identifiers")
 var swSoftFn = Function(default = 3): return default
 ok(swSoftFn() == 3 and swSoftFn(default = 9) == 9, "'default' is usable as a parameter name")
-# a runtime non-scalar label throws when that arm is reached
-var childNonScalarLabel = Function():
-    var lst = [1, 2]
-    switch 1:
-        case lst:
-            return "x"
-    return "y"
-ok(throws(childNonScalarLabel), "a non-scalar label throws when its arm is reached")
+# a variable case label is a COMPILE-time error (labels must be constant scalars)
+ok(childfailsmsg("var lst = [1, 2]\nswitch 1:\n    case lst:\n        discard lst\n", "constant scalar"), "a variable case label is a compile-time error")
 # parse-time switch rejections (via child process)
 ok(childfailsmsg("switch 1:\n    case 1:\n        var a = 1\n    default:\n        var b = 1\n    default:\n        var c = 1\n", "one 'default'"), "a second 'default' is a parse error")
 ok(childfails("switch 1:\n    case 1:\n"), "an empty switch arm body is a parse error")
-# a non-scalar LITERAL label is a RUN-TIME check too (not parse-time): a guarded, never-reached switch
-# with `case [1, 2]:` loads fine and only throws when that arm is actually reached.
-var litLabelGuarded = Function():
-    if False:
-        switch 1:
-            case [1, 2]:
-                return "x"
-    return "loaded"
-ok(litLabelGuarded() == "loaded", "a never-reached non-scalar literal label loads fine (not parse-time)")
-var litLabelReached = Function():
-    switch 5:
-        case [1, 2]:
-            return "x"
-        default:
-            return "def"
-ok(throws(litLabelReached), "a reached non-scalar literal label throws at run time")
+# a non-scalar literal label is a COMPILE-time error too — even a guarded, never-reached switch with
+# `case [1, 2]:` no longer loads (labels are validated at compile time, not when the arm is reached).
+ok(childfailsmsg("switch 1:\n    case [1, 2]:\n        discard 1\n", "constant scalar"), "a non-scalar literal case label is a compile-time error")
 
 # =====================================================================================
 # assert

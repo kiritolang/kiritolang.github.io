@@ -97,6 +97,21 @@ delivered real findings. Given usage cost, remaining areas are being audited dir
   OOM. Per "low-risk / no contracts broken", shipping an untestable compatibility regression for a Low
   finding is the wrong trade — left as-is, documented here.
 
+### FIXED — batch 6 (user-directed: compile-time constant `switch` case labels)
+- **A `switch` case label must now be a compile-time CONSTANT SCALAR.** The compiler constant-FOLDS each
+  label through the VM's own `applyBinaryOp`/`applyUnaryOp` (rooted via RootScope), so `case 3 + 4` /
+  `case -1` / `case "a" + "b"` / `case 3 / 2` key bit-identically to a runtime evaluation, then keys via
+  `scalarSwitchKey`. A label that reads runtime state (`case some_var`, `case f()`, index/member), folds
+  to a non-scalar (`case [1, 2]`), or DUPLICATES another is a **compile-time error** (previously: a
+  variable label was a runtime comparison, and a duplicate/non-scalar label was a deferred runtime throw
+  "when the switch was reached"). Every switch is now a single O(1) SwitchDispatch — the runtime
+  SwitchMatch comparison-chain fallback and the `SwitchMatch` opcode were deleted as dead. A constant that
+  errors while folding (`case 1 / 0`) is a compile error at the label's span. Docs updated (02-language-
+  guide + 14-course-04: the old "labels are expressions / reported when reached / never-run switch still
+  loads" text). Tests: spec_v1161_switch.ki (folding), tests/errors/switch_{variable,call,duplicate,
+  nonscalar}_case, test_switch.cpp (fold + reject block); migrated the runtime-behavior switch tests in
+  r6/r8/r10_language + audit_langguide to compile-error checks. Full golden 355/355 + docs 239/239 green.
+
 ### FIXED — batch 5 (user-directed: purge eager `_iter_`-returns-a-List)
 - **New `iter(iterable)` builtin + one iteration protocol.** `_iter_` must now return an ITERATOR — a
   `_next_`-style object, or a native iterator (`iter(...)`, `range`/`map`/`filter`/`zip`/`enumerate`).

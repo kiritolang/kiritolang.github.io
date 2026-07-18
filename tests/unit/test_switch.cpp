@@ -80,12 +80,28 @@ int main() {
         CHECK(run(vm, "var d = {\"case\": 1, \"default\": 2}\nString(d[\"case\"] + d[\"default\"])") == "3");
     }
 
-    // errors
+    // case labels are compile-time CONSTANT SCALARS: a constant expression over literals folds
+    // (matching a runtime evaluation), while a variable / call / non-scalar / duplicate is a compile
+    // error — reported at compile time, so even a never-reached bad switch does not load.
+    {
+        KiritoVM vm;
+        CHECK(run(vm, "switch 7:\n    case 3 + 4:\n        var r = \"add\"\nr") == "add");
+        CHECK(run(vm, "switch -8:\n    case -2 ** 3:\n        var r = \"p\"\nr") == "p");
+        CHECK(run(vm, "switch \"ab\":\n    case \"a\" + \"b\":\n        var r = \"c\"\nr") == "c");
+        CHECK(run(vm, "switch 1.5:\n    case 3 / 2:\n        var r = \"f\"\nr") == "f");   // true-div -> Float key
+        // a folded label agrees with the same expression evaluated at run time
+        CHECK(run(vm, "var n = 6 * 7\nswitch n:\n    case 6 * 7:\n        var r = \"ok\"\nr") == "ok");
+    }
+    // errors — all reported at compile time
     {
         KiritoVM vm;
         CHECK(errOf(vm, "switch 1:\n    case 1:\n        var a=1\n    case 1:\n        var b=2\n").find("duplicate switch case value") != std::string::npos);
         CHECK(errOf(vm, "switch 1:\n    case 2, 3:\n        var a=1\n    case 3:\n        var b=2\n").find("duplicate switch case value") != std::string::npos);
-        CHECK(errOf(vm, "switch 1:\n    case [1]:\n        var a=1\n").find("switch case value must be") != std::string::npos);
+        CHECK(errOf(vm, "switch 1:\n    case 3 + 4:\n        var a=1\n    case 7:\n        var b=2\n").find("duplicate switch case value") != std::string::npos);  // folded dup
+        CHECK(errOf(vm, "switch 1:\n    case [1]:\n        var a=1\n").find("constant scalar") != std::string::npos);       // non-scalar constant
+        CHECK(errOf(vm, "var v=3\nswitch 3:\n    case v:\n        var a=1\n").find("constant scalar") != std::string::npos);  // variable label
+        CHECK(errOf(vm, "var f=Function():return 1\nswitch 1:\n    case f():\n        var a=1\n").find("constant scalar") != std::string::npos);  // call label
+        CHECK(errOf(vm, "switch 1:\n    case 1 / 0:\n        var a=1\n").find("division by zero") != std::string::npos);      // constant that errors
         CHECK(errOf(vm, "switch 1:\n    default:\n        var a=1\n    default:\n        var b=2\n").find("only one 'default'") != std::string::npos);
         CHECK(throws(vm, "switch 1:\n    pass\n"));
         CHECK(throws(vm, "switch 1:\n    case 1\n        var a=1\n"));

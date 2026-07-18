@@ -269,16 +269,17 @@ switch command:
         unknown()
 ```
 
-Case labels are **expressions**, matched against the subject **exactly by type and value** — `case 1`
-and `case 1.0` are distinct, so a constant `case 3 + 4` or even `case some_var` is allowed. In practice
-you'll use constant scalars (`Integer`/`Float`/`String`/`Bool`/`None`); a label whose **runtime value**
-is non-scalar throws when that arm is reached, and a non-scalar *subject* (e.g. a list) only ever
-reaches `default`. The labels are tested in turn as an exact-match comparison chain. A second `default`
-and an empty arm body are rejected at **parse time**; a **non-scalar label value** and a **duplicate case
-value** are reported only when the `switch` is actually reached at **run time** (so a never-executed
-`switch` with a non-scalar or duplicate label still loads). `break`/`continue`/`return` inside an arm
-propagate to the enclosing loop/function as usual; a `switch` with no matching case and no `default` is
-a no-op.
+Each case label must be a **compile-time constant scalar** (`Integer`/`Float`/`String`/`Bool`/`None`),
+matched against the subject **exactly by type and value** — `case 1` and `case 1.0` are distinct. A
+constant **expression over literals** is folded at compile time, so `case 3 + 4`, `case -1`, and
+`case "a" + "b"` are allowed and key to `7` / `-1` / `"abc"`. A label that reads runtime state — a
+variable (`case some_var`), a call, an index/member — or that folds to a non-scalar (`case [1, 2]`), or
+a **duplicate** value, is a **compile-time error**: it is caught before the program runs, so a switch
+with a bad label never loads (it is not deferred to when the arm is reached). Because every label is a
+constant, the whole `switch` compiles to one **O(1)** dispatch, independent of the case count. A
+non-scalar *subject* (e.g. a list) has no key and only ever reaches `default`. A second `default` and an
+empty arm body are rejected at parse time. `break`/`continue`/`return` inside an arm propagate to the
+enclosing loop/function as usual; a `switch` with no matching case and no `default` is a no-op.
 
 ### Functions
 

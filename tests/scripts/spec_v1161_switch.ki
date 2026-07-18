@@ -1,0 +1,79 @@
+# v1.16.1 — switch case labels must be COMPILE-TIME CONSTANT SCALARS: a constant expression over
+# literals folds (matching a runtime evaluation), while a variable/call/non-scalar/duplicate is a
+# compile error (see tests/errors/switch_*). This file verifies the folding is exact.
+var io = import("io")
+
+var hit = Function(subject, arms):
+    return arms                              # (unused helper placeholder; kept for readability)
+
+# --- integer arithmetic folds and matches by exact value ---
+var r = "?"
+switch 7:
+    case 3 + 4:
+        r = "add"
+    case 100:
+        r = "no"
+assert r == "add", "case 3 + 4 folds to 7"
+
+switch 12:
+    case 2 * 6:
+        r = "mul"
+assert r == "mul", "case 2 * 6 folds to 12"
+
+switch 3:
+    case 7 - 4:
+        r = "sub"
+assert r == "sub", "case 7 - 4 folds to 3"
+
+# --- negative literal (UnaryExpr over a literal) ---
+switch -5:
+    case -5:
+        r = "neg"
+assert r == "neg", "case -5 folds"
+
+switch -8:
+    case -2 ** 3:
+        r = "negpow"
+assert r == "negpow", "case -2 ** 3 folds to -8"
+
+# --- Float vs Integer are DISTINCT keys, and true division yields Float ---
+switch 1.5:
+    case 3 / 2:
+        r = "truediv"
+assert r == "truediv", "case 3 / 2 folds to the Float 1.5"
+var fell = "default"
+switch 2:                                    # Integer 2 must NOT match the Float label 4/2 == 2.0
+    case 4 / 2:
+        fell = "matchedfloat"
+    default:
+        fell = "default"
+assert fell == "default", "Integer 2 does not match a Float case 2.0 (exact type match)"
+
+# --- String concat / repeat fold ---
+switch "abc":
+    case "a" + "bc":
+        r = "concat"
+assert r == "concat", "case \"a\" + \"bc\" folds to \"abc\""
+switch "xxx":
+    case "x" * 3:
+        r = "repeat"
+assert r == "repeat", "case \"x\" * 3 folds to \"xxx\""
+
+# --- Bool from a constant comparison, and None ---
+switch True:
+    case 1 == 1:
+        r = "cmp"
+assert r == "cmp", "case 1 == 1 folds to True"
+switch None:
+    case None:
+        r = "none"
+assert r == "none", "case None matches None"
+
+# --- a folded constant equals a runtime-computed value (the whole point) ---
+var subj = 3 * 4 + 1
+switch subj:
+    case 3 * 4 + 1:
+        r = "runtime-agrees"
+assert r == "runtime-agrees", "a folded label matches the same expression evaluated at run time"
+
+io.print("v1.16.1 switch: all passed")

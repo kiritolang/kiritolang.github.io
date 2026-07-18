@@ -795,15 +795,7 @@ for sbi in range(5):
         default:
             swBreak.append(sbi)
 ok(swBreak == [0, 1, 2], "break inside a switch arm propagates to the for loop")
-# A non-literal case expression is evaluated and compared at match time (comparison-chain fallback).
-var caseVarTarget = 7
-var caseVarResult = "?"
-switch 7:
-    case caseVarTarget:
-        caseVarResult = "var"
-    default:
-        caseVarResult = "no"
-ok(caseVarResult == "var", "non-literal case value compares at runtime")
+# A case label must be a compile-time constant; a constant EXPRESSION (over literals) is folded.
 var caseExprResult = "?"
 switch 7:
     case 3 + 4:
@@ -811,18 +803,12 @@ switch 7:
     default:
         caseExprResult = "no"
 ok(caseExprResult == "expr", "computed case value matches")
-# Malformed switches rejected.
-ok(importErr("switch 1:\n    case [1, 2]:\n        var x = 1\n", "Integer"), "non-scalar literal case rejected")
+# Malformed switches rejected at COMPILE time (case labels must be constant scalars).
+ok(importErr("switch 1:\n    case [1, 2]:\n        var x = 1\n", "constant scalar"), "non-scalar literal case rejected")
 ok(importErr("switch 1:\n    case 1:\n    default:\n        var y = 1\n", "indented"), "empty case body rejected")
 ok(importErr("switch 1:\n    case 1:\n        var x = 1\n    default:\n        var y = 1\n    default:\n        var z = 1\n", "default"), "second default rejected")
-# Duplicate case value: thrown (catchable) when the switch is reached.
-var dupCaseFn = Function():
-    switch 1:
-        case 5:
-            return "a"
-        case 5:
-            return "b"
-ok(throws(dupCaseFn), "duplicate case value throws when reached")
+# A duplicate case value is a COMPILE-time error (known statically, since labels are constant).
+ok(importErr("switch 1:\n    case 5:\n        var a = 1\n    case 5:\n        var b = 1\n", "duplicate switch case value"), "duplicate case value rejected at compile time")
 
 # ============================================================================
 # assert

@@ -336,17 +336,8 @@ switch 999:
         sw_skip = 1
 assert sw_skip == 0, "switch no-match no-default is a no-op"
 
-# Duplicate case rejected
-threw = False
-try:
-    switch 1:
-        case 1:
-            discard 1
-        case 1:
-            discard 2
-catch as e:
-    threw = "duplicate" in e
-assert threw, "duplicate case value rejected"
+# A duplicate case value is now a COMPILE-time error (see tests/errors/switch_duplicate_case), so it
+# cannot be caught at run time — a switch with a duplicate label never loads.
 
 # break inside switch arm propagates to enclosing loop
 var swb = []

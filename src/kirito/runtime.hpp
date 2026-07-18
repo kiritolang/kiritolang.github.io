@@ -2500,7 +2500,8 @@ inline std::vector<Handle> spreadValues(KiritoVM& vm, Handle value, std::size_t 
 
 // Canonical type+value key for switch dispatch. Only hashable scalar kinds can label a case or be
 // matched; other types yield nullopt (they only reach `default`). Matching is exact by type AND
-// value, so `case 1` and `case 1.0` differ. Used by the bytecode SwitchMatch opcode.
+// value, so `case 1` and `case 1.0` differ. Used by SwitchDispatch (to key the subject) and by the
+// compiler's constant-label folding (to key each `case` value at compile time).
 inline std::optional<std::string> scalarSwitchKey(KiritoVM& vm, Handle h) {
     const Object& o = vm.arena().deref(h);
     switch (o.kind()) {
