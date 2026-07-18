@@ -1,0 +1,465 @@
+# Exhaustive coverage of the `int` (arbitrary-precision BigInt) and `complex` stdlib modules.
+# Every documented function/method/constant is exercised for normal, edge, and hardening (must-error)
+# behavior. Verified against ./build-release/ki actual output; deltas are recorded in
+# .audit/v1.16.1/coverage/findings_int_complex.md.
+
+var int = import("int")
+var complex = import("complex")
+var math = import("math")
+var io = import("io")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+# ========================================================================================
+# int module — BigInt
+# ========================================================================================
+
+# ---- constructors / converters: BigInt / big / fromstring ----
+assert String(int.big(10)) == "10"
+assert String(int.BigInt(10)) == "10"
+assert String(int.big(0)) == "0"
+assert String(int.big(-5)) == "-5"
+assert String(int.BigInt(-5)) == "-5"
+assert String(int.big(True)) == "1"                 # Bool coerces to 0/1
+assert String(int.big(False)) == "0"
+assert String(int.big(int.big(7))) == "7"           # BigInt from BigInt
+assert type(int.big(1)) == "BigInt"
+# from String: decimal, signed, prefix auto-detect
+assert String(int.big("12345678901234567890")) == "12345678901234567890"
+assert String(int.big("+42")) == "42"
+assert String(int.big("-0x10")) == "-16"
+assert String(int.big("0xff")) == "255"
+assert String(int.big("0o17")) == "15"
+assert String(int.big("0b101")) == "5"
+# fromstring with explicit base 2..36 (no prefix parsing)
+assert String(int.fromstring("ff", 16)) == "255"
+assert String(int.fromstring("101", 2)) == "5"
+assert String(int.fromstring("z", 36)) == "35"
+assert String(int.fromstring("  42  ", 10)) == "42"   # surrounding whitespace allowed
+assert String(int.fromstring("10")) == "10"           # base defaults to 10
+
+# very large: beyond int64 / uint64
+assert String(int.pow(2, 63)) == "9223372036854775808"
+assert String(int.pow(2, 64)) == "18446744073709551616"
+assert String(int.pow(2, 70)) == "1180591620717411303424"
+assert String(int.pow(2, 128)) == "340282366920938463463374607431768211456"
+assert int.pow(2, 128) == int.fromstring("340282366920938463463374607431768211456")
+
+# ---- arithmetic: + - * / // % ** and unary neg ----
+var a = int.big("123456789012345678901234567890")
+assert String(a + 1) == "123456789012345678901234567891"
+assert String(a - 1) == "123456789012345678901234567889"
+assert String(a * 2) == "246913578024691357802469135780"
+assert String(a * a) == "15241578753238836750495351562536198787501905199875019052100"
+assert String(a // 7) == "17636684144620811271604938270"
+assert String(a % 7) == "0"
+assert String(-a) == "-123456789012345678901234567890"
+assert String(-int.big(0)) == "0"                     # -0 == 0
+# true division `/` yields a Float (language-wide rule)
+assert type(int.big(10) / int.big(4)) == "Float"
+assert int.big(10) / int.big(4) == 2.5
+assert type(int.big(10) // int.big(4)) == "BigInt"
+assert int.big(10) // int.big(4) == int.big(2)
+# floor semantics for negatives (matches native Integer // and %)
+assert int.big(-7) // 2 == int.big(-4)
+assert int.big(-7) % 2 == int.big(1)
+assert int.big(7) // int.big(-2) == int.big(-4)
+assert int.big(7) % int.big(-2) == int.big(-1)
+# ** operator: non-negative int exponent -> BigInt, negative -> Float
+assert type(int.big(2) ** 10) == "BigInt"
+assert int.big(2) ** 10 == int.big(1024)
+assert int.big(2) ** 0 == int.big(1)
+assert int.big(2) ** int.big(64) == int.big("18446744073709551616")
+assert type(int.big(2) ** -1) == "Float"
+assert int.big(2) ** -1 == 0.5
+assert int.pow(0, 0) == int.big(1)
+
+# ---- comparisons incl. cross-type (F07-2 contract) ----
+assert (int.big(3) == 3) == True
+assert (int.big(3) != 4) == True
+assert (int.big(3) < 5) == True
+assert (int.big(5) > 3) == True
+assert (int.big(3) <= 3) == True
+assert (int.big(3) >= 3) == True
+assert (int.big(-5) < int.big(-3)) == True
+# BigInt vs Integer, both directions
+assert (3 == int.big(3)) == True
+assert (int.big(1) == True) == True                   # equals a Bool numerically (True == 1)
+assert (int.big(3) == True) == False
+# BigInt vs Float: equal iff Float is a finite integer of the same value
+assert (int.big(3) == 3.0) == True
+assert (3.0 == int.big(3)) == True
+assert (int.big(3) == 3.5) == False
+assert (int.big(1) == math.inf) == False
+assert (int.big(1) == math.nan) == False
+# integral Float within int64 range is exact
+assert (int.pow(2, 62) == 4611686018427387904.0) == True
+# DELTA (documented false-negative): a huge power-of-two Float outside int64 range compares unequal
+assert (int.pow(2, 64) == 18446744073709551616.0) == False
+# BigInt vs unrelated type -> False (not a throw)
+assert (int.big(5) == "5") == False
+# BigInt constructed two ways compares equal
+assert int.pow(2, 64) == int.big("18446744073709551616")
+
+# ---- Set/Dict dedup: a BigInt keys interchangeably with an equal Integer/integral Float ----
+var s = Set()
+s.add(int.big(3))
+s.add(3)
+s.add(3.0)
+assert len(s) == 1
+var d = Dict()
+d[int.big(5)] = "big"
+d[5] = "int"
+assert len(d) == 1
+assert d[5] == "int"
+assert d[int.big(5)] == "int"
+# beyond int64: a freshly-built equal BigInt hits the same bucket
+var sbig = Set()
+sbig.add(int.pow(2, 64))
+assert (int.pow(2, 64) in sbig) == True
+
+# ---- gcd / lcm ----
+assert int.gcd(48, 36) == int.big(12)
+assert int.gcd(-48, 36) == int.big(12)               # gcd ignores sign
+assert int.gcd(0, 0) == int.big(0)
+assert int.gcd(0, 5) == int.big(5)
+assert int.gcd(int.factorial(20), int.factorial(15)) == int.factorial(15)
+assert int.lcm(4, 6) == int.big(12)
+assert int.lcm(0, 5) == int.big(0)                    # lcm with zero is zero
+
+# ---- factorial / comb / perm ----
+assert String(int.factorial(0)) == "1"
+assert String(int.factorial(5)) == "120"
+assert String(int.factorial(30)) == "265252859812191058636308480000000"
+assert int.comb(5, 2) == int.big(10)
+assert int.comb(2, 5) == int.big(0)                   # k > n -> 0
+assert int.comb(5, 0) == int.big(1)
+assert int.perm(5, 2) == int.big(20)
+assert int.perm(2, 5) == int.big(0)                   # k > n -> 0
+
+# ---- isqrt / abs / pow ----
+assert int.isqrt(int.zero) == int.big(0)
+assert int.isqrt(int.big(144)) == int.big(12)
+assert int.isqrt(int.big(17)) == int.big(4)           # floor
+assert int.isqrt(int.pow(10, 20)) == int.big("10000000000")
+assert int.abs(int.big(-9)) == int.big(9)
+assert int.abs(int.big(9)) == int.big(9)
+assert int.abs(int.big(0)) == int.big(0)
+assert String(int.pow(2, 10)) == "1024"
+
+# ---- modpow / modinv ----
+assert int.modpow(4, 13, 497) == int.big(445)
+assert int.big(4).modpow(13, 497) == int.big(445)     # method form
+assert int.modpow(5, 0, 7) == int.big(1)              # base^0 % mod == 1
+assert int.modpow(5, 3, 1) == int.big(0)              # anything % 1 == 0
+assert int.modpow(-2, 3, 5) == int.big(2)             # floor-mod semantics: -8 mod 5 == 2
+assert int.modinv(3, 11) == int.big(4)                # 3*4 == 12 == 1 (mod 11)
+assert (int.modinv(3, 11) * 3) % 11 == int.big(1)
+
+# ---- primality ----
+assert int.isprime(97) == True
+assert int.isprime(2) == True
+assert int.isprime(1) == False
+assert int.isprime(0) == False
+assert int.isprime(-7) == False
+assert int.isprime(561) == False                      # Carmichael number
+assert int.big(97).isprime() == True
+assert int.isprobableprime(97) == True
+assert int.isprobableprime(561) == False
+assert int.big(7919).isprobableprime() == True
+assert int.big(7919).isprobableprime(10) == True
+# randomprime: value is random but its properties are deterministic
+var rp = int.randomprime(16)
+assert rp.bitlength() == 16
+assert rp.isprobableprime() == True
+
+# ---- BigInt methods: bitlength / toint ----
+assert int.big(255).bitlength() == 8
+assert int.big(0).bitlength() == 0
+assert int.big(1).bitlength() == 1
+assert int.pow(2, 100).bitlength() == 101
+assert int.big(42).toint() == 42
+assert type(int.big(42).toint()) == "Integer"
+assert int.big("9223372036854775807").toint() == 9223372036854775807
+assert int.big("-9223372036854775808").toint() == -9223372036854775808
+
+# ---- constants ----
+assert int.zero == int.big(0)
+assert int.one == int.big(1)
+assert String(int.zero) == "0"
+assert String(int.one) == "1"
+
+# ---- serialization round-trip (serialize) ----
+var ser = import("serialize")
+assert ser.loads(ser.dumps(int.pow(2, 100))) == int.pow(2, 100)
+
+# ========================================================================================
+# int module — HARDENING (must raise the correct error, no silent errors)
+# ========================================================================================
+
+# reflected-operator rule: Integer + BigInt throws (BigInt must be the left operand)
+assert threw(Function(): return 3 + int.big(2))
+assert "'BigInt'" in emsg(Function(): return 3 + int.big(2))
+# parse errors
+assert "invalid integer literal" in emsg(Function(): return int.big("xyz"))
+assert "invalid integer literal" in emsg(Function(): return int.big(""))
+assert "invalid integer literal" in emsg(Function(): return int.big("12abc"))
+assert "invalid integer literal" in emsg(Function(): return int.fromstring("0xff", 16))  # no prefix in explicit base
+assert "invalid integer literal" in emsg(Function(): return int.fromstring("2", 2))       # digit out of base range
+assert "base must be between 2 and 36" in emsg(Function(): return int.fromstring("10", 1))
+assert "base must be between 2 and 36" in emsg(Function(): return int.fromstring("10", 37))
+# non-integer construction
+assert "expects an Integer, a String, or a BigInt" in emsg(Function(): return int.big(3.5))
+# division / modulo by zero
+assert "integer division by zero" in emsg(Function(): return int.big(5) // 0)
+assert "integer modulo by zero" in emsg(Function(): return int.big(5) % 0)
+assert "division by zero" in emsg(Function(): return int.big(5) / 0)
+# power edge cases
+assert "zero cannot be raised to a negative power" in emsg(Function(): return int.big(0) ** -1)
+assert "negative exponent" in emsg(Function(): return int.pow(2, -3))
+assert "exponent too large" in emsg(Function(): return int.pow(2, int.pow(2, 70)))
+assert "pow result too large" in emsg(Function(): return int.pow(10, 9000000))
+# modpow / modinv errors
+assert "modulus is zero" in emsg(Function(): return int.modpow(2, 3, 0))
+assert "negative exponent" in emsg(Function(): return int.modpow(2, -3, 5))
+assert "not coprime" in emsg(Function(): return int.modinv(2, 4))
+assert "modulus must be >= 2" in emsg(Function(): return int.modinv(2, 1))
+# domain errors
+assert "negative operand" in emsg(Function(): return int.isqrt(int.big(-4)))
+assert "not defined for negatives" in emsg(Function(): return int.factorial(-1))
+assert "non-negative" in emsg(Function(): return int.comb(-1, 2))
+assert "non-negative" in emsg(Function(): return int.perm(3, -1))
+# coercion errors (Float is not an exact integer)
+assert "expects a BigInt or Integer" in emsg(Function(): return int.gcd(3.5, 2))
+# toint overflow must throw, never silently wrap
+assert "does not fit in a native Integer" in emsg(Function(): return int.pow(2, 100).toint())
+assert "does not fit in a native Integer" in emsg(Function(): return int.big("9223372036854775808").toint())
+assert "does not fit in a native Integer" in emsg(Function(): return int.big("-9223372036854775809").toint())
+# rounds / bits guards
+assert "rounds must be >= 1" in emsg(Function(): return int.isprobableprime(7, 0))
+assert "rounds must be >= 1" in emsg(Function(): return int.big(7).isprobableprime(0))
+assert "bits must be >= 2" in emsg(Function(): return int.randomprime(1))
+
+# ========================================================================================
+# complex module — Complex scalar
+# ========================================================================================
+
+# ---- constructors / constants ----
+assert String(complex.Complex(2, 3)) == "2.0+3.0i"
+assert String(complex.Complex(2)) == "2.0+0.0i"       # im defaults to 0
+assert String(complex.Complex(1, -1)) == "1.0-1.0i"
+assert String(complex.of(1, -1)) == "1.0-1.0i"
+assert String(complex.of(1.5, 2.5)) == "1.5+2.5i"
+assert String(complex.real(5)) == "5.0+0.0i"
+assert String(complex.polar(2, 0)) == "2.0+0.0i"
+assert complex.polar(1, math.pi / 2).compare(complex.i)
+assert String(complex.i) == "0.0+1.0i"
+assert String(complex.zero) == "0.0+0.0i"
+assert String(complex.one) == "1.0+0.0i"
+
+# ---- real / imag parts (and aliases) ----
+var z = complex.Complex(3, 4)
+assert z.re == 3.0
+assert z.im == 4.0
+assert z.real == 3.0
+assert z.imag == 4.0
+
+# ---- scalar reductions (methods + module functions) ----
+assert z.modulus() == 5.0
+assert z.magnitude() == 5.0
+assert z.abs() == 5.0
+assert complex.modulus(z) == 5.0
+assert complex.abs(z) == 5.0
+assert z.norm2() == 25.0
+assert complex.norm2(z) == 25.0
+assert complex.i.argument() == math.pi / 2
+assert complex.i.arg() == math.pi / 2
+assert complex.i.phase() == math.pi / 2
+assert complex.phase(complex.i) == math.pi / 2
+assert complex.argument(complex.i) == math.pi / 2
+assert complex.Complex(-1, 0).argument() == math.pi
+assert String(z.conjugate()) == "3.0-4.0i"
+assert String(complex.conjugate(z)) == "3.0-4.0i"
+# is_zero is tolerant (|z| below 1e-10), unlike exact ==
+assert complex.zero.is_zero() == True
+assert complex.Complex(1e-11, 0).is_zero() == True
+assert complex.Complex(1e-9, 0).is_zero() == False
+assert z.is_zero() == False
+
+# ---- arithmetic ----
+assert String(complex.Complex(1, 2) + complex.Complex(3, 4)) == "4.0+6.0i"
+assert String(complex.Complex(1, 2) - complex.Complex(3, 4)) == "-2.0-2.0i"
+assert String(complex.Complex(1, 2) * complex.Complex(3, 4)) == "-5.0+10.0i"
+assert String(complex.Complex(1, 2) / complex.Complex(3, 4)) == "0.44+0.08i"
+assert String(-complex.Complex(1, -2)) == "-1.0+2.0i"
+assert String(complex.Complex(1, 1) + 2) == "3.0+1.0i"    # Complex + real coerces
+assert (complex.Complex(1, 1) ** 2).compare(complex.Complex(0, 2))  # (1+i)^2 == 2i (tolerant)
+assert (complex.i ** 2).compare(complex.real(-1))   # i^2 == -1 (std::pow leaves a tiny imag residue)
+
+# ---- equality (exact) + real coercion ----
+assert (complex.Complex(2, 0) == 2) == True
+assert (complex.Complex(2, 0) == 2.0) == True
+assert (complex.Complex(1, 2) == complex.Complex(1, 2)) == True
+assert (complex.Complex(1, 2) == complex.Complex(1, 3)) == False
+assert (complex.Complex(2, 1) == 2) == False              # nonzero imag never equals a real
+assert (complex.i != complex.zero) == True
+# tolerant .compare with default and explicit tolerances
+assert complex.Complex(1, 1).compare(complex.Complex(1, 1))
+assert complex.Complex(1.0, 1.0).compare(complex.Complex(1.0000001, 1.0), 1e-3, 0.0)
+assert complex.Complex(1, 1).compare(complex.Complex(2, 2)) == False
+
+# ---- module scalar reductions on plain reals (coercion) ----
+assert complex.modulus(3) == 3.0
+assert complex.norm2(2) == 4.0
+
+# ---- analytic functions (defined across the plane; return Complex) ----
+assert complex.sqrt(-1).compare(complex.i)                # sqrt(-1) == i
+assert complex.log(-1).compare(complex.Complex(0, math.pi))  # log(-1) == iπ
+assert complex.exp(0).compare(complex.one)
+assert complex.log(complex.exp(1)).compare(complex.one)
+assert complex.cbrt(8).compare(complex.real(2))
+assert complex.pow(2, 10).compare(complex.real(1024))
+assert String(complex.pow(2, 10)) == "1024.0+0.0i"
+assert complex.log10(100).compare(complex.real(2))
+assert complex.sin(0).compare(complex.zero)
+assert complex.cos(0).compare(complex.one)
+assert complex.tan(0).compare(complex.zero)
+# domain-boundary inputs that are VALID and must not throw
+assert threw(Function(): return complex.asin(2)) == False
+assert threw(Function(): return complex.acosh(0)) == False
+assert threw(Function(): return complex.sinh(0)) == False
+assert threw(Function(): return complex.cosh(0)) == False
+assert threw(Function(): return complex.tanh(0)) == False
+assert threw(Function(): return complex.asinh(0)) == False
+assert threw(Function(): return complex.acos(0)) == False
+assert threw(Function(): return complex.atan(0)) == False
+assert threw(Function(): return complex.atanh(0)) == False
+assert threw(Function(): return complex.pow(0, 0)) == False   # 0**0 == 1
+
+# ========================================================================================
+# complex module — HARDENING (must raise the correct error)
+# ========================================================================================
+
+# reflected-operator rule: a Complex must be the LEFT operand when mixing with a number
+assert threw(Function(): return 2 + complex.Complex(1, 1))
+assert "'Complex'" in emsg(Function(): return 2 + complex.Complex(1, 1))
+assert threw(Function(): return 0 + complex.i)             # even Integer(0) + Complex throws
+# unordered: <, <=, >, >= throw
+assert "not ordered" in emsg(Function(): return complex.Complex(1, 0) < complex.Complex(2, 0))
+assert "not ordered" in emsg(Function(): return complex.Complex(1, 0) <= complex.Complex(2, 0))
+assert "not ordered" in emsg(Function(): return complex.Complex(1, 0) > complex.Complex(2, 0))
+assert "not ordered" in emsg(Function(): return complex.Complex(1, 0) >= complex.Complex(2, 0))
+# division by zero
+assert "complex division by zero" in emsg(Function(): return complex.Complex(1, 1) / complex.zero)
+# analytic singularities throw math domain error
+assert "math domain error" in emsg(Function(): return complex.log(0))
+assert "math domain error" in emsg(Function(): return complex.log10(complex.zero))
+assert "math domain error" in emsg(Function(): return complex.atanh(1))
+assert "math domain error" in emsg(Function(): return complex.atanh(-1))
+assert "math domain error" in emsg(Function(): return complex.atan(complex.i))
+# pow/** of zero to a negative or complex power
+assert "zero to a negative or complex power" in emsg(Function(): return complex.pow(complex.zero, -1))
+assert "zero to a negative or complex power" in emsg(Function(): return complex.zero ** complex.i)
+# polar rejects non-finite modulus / angle rather than emitting NaN
+assert "math domain error" in emsg(Function(): return complex.polar(math.inf, 0))
+assert "math domain error" in emsg(Function(): return complex.polar(1, math.nan))
+# non-number argument to a coercing function throws
+assert "expects a Complex or a number" in emsg(Function(): return complex.modulus("x"))
+
+# ========================================================================================
+# complex module — ComplexMatrix
+# ========================================================================================
+
+var m = complex.Matrix([[complex.Complex(1, 1), complex.Complex(2, 0)], [3, complex.i]])
+assert m.rows() == 2
+assert m.cols() == 2
+assert String(m.shape()) == "[2, 2]"
+assert String(m[0, 0]) == "1.0+1.0i"
+assert String(m.get(1, 1)) == "0.0+1.0i"
+assert String(m[1]) == "[3.0+0.0i, 0.0+1.0i]"
+assert String(m.row(0)) == "[1.0+1.0i, 2.0+0.0i]"
+m.set(0, 0, complex.Complex(9, 9))
+assert String(m[0, 0]) == "9.0+9.0i"
+m[0, 1] = complex.real(7)
+assert String(m[0, 1]) == "7.0+0.0i"
+
+# transpose / conjugate / hermitian
+var mm = complex.Matrix([[complex.Complex(1, 1), complex.Complex(2, -1)], [complex.Complex(3, 0), complex.i]])
+assert String(mm.transpose()) == "[[1.0+1.0i, 3.0+0.0i], [2.0-1.0i, 0.0+1.0i]]"
+assert String(mm.conjugate()) == "[[1.0-1.0i, 2.0+1.0i], [3.0+0.0i, 0.0-1.0i]]"   # -0.0 imag collapses to +0.0
+assert String(mm.hermitian()) == "[[1.0-1.0i, 3.0+0.0i], [2.0+1.0i, 0.0-1.0i]]"
+assert String(mm.conjugatetranspose()) == String(mm.hermitian())
+
+# determinant / trace / inverse (real-valued cells for exact string checks)
+var m2 = complex.Matrix([[complex.real(1), complex.real(2)], [complex.real(3), complex.real(4)]])
+assert String(m2.determinant()) == "-2.0+0.0i"
+assert String(m2.trace()) == "5.0+0.0i"
+assert String(m2.inverse()) == "[[-2.0+0.0i, 1.0+0.0i], [1.5+0.0i, -0.5+0.0i]]"
+assert (m2 * m2.inverse()).compare(complex.identity(2), 1e-9, 1e-9)  # abs_tol for near-zero off-diagonal
+
+# equality (exact) + compare (tolerant)
+assert (m2 == m2) == True
+assert (m2 == complex.zeros(2, 2)) == False
+assert (complex.zeros(2, 2) == complex.zeros(2, 3)) == False   # shape differs
+assert m2.compare(m2)
+
+# add / sub / matrix multiply / scalar multiply
+assert String(m2 + m2) == "[[2.0+0.0i, 4.0+0.0i], [6.0+0.0i, 8.0+0.0i]]"
+assert String(m2 - m2) == "[[0.0+0.0i, 0.0+0.0i], [0.0+0.0i, 0.0+0.0i]]"
+assert String(m2 * m2) == "[[7.0+0.0i, 10.0+0.0i], [15.0+0.0i, 22.0+0.0i]]"
+assert String(m2 * 2) == "[[2.0+0.0i, 4.0+0.0i], [6.0+0.0i, 8.0+0.0i]]"
+
+# apply
+assert String(complex.Matrix([[complex.i]]).apply(Function(x): return x.conjugate())) == "[[0.0-1.0i]]"
+
+# builders
+assert String(complex.zeros(2, 2)) == "[[0.0+0.0i, 0.0+0.0i], [0.0+0.0i, 0.0+0.0i]]"
+assert String(complex.ones(1, 2)) == "[[1.0+0.0i, 1.0+0.0i]]"
+assert String(complex.identity(2)) == "[[1.0+0.0i, 0.0+0.0i], [0.0+0.0i, 1.0+0.0i]]"
+
+# vector ops
+var v = complex.vector([1, complex.i, 3])
+assert v.rows() == 1
+assert v.cols() == 3
+assert String(v) == "[[1.0+0.0i, 0.0+1.0i, 3.0+0.0i]]"
+assert v.norm() == math.sqrt(11.0)
+# Hermitian dot: u.dot(u) == Σ|uᵢ|² is real, non-negative
+var u = complex.vector([complex.Complex(1, 0), complex.Complex(0, 1), complex.Complex(0, 0)])
+assert String(u.dot(u)) == "2.0+0.0i"
+# cross product of two 3-vectors
+var e1 = complex.vector([1, 0, 0])
+var e2 = complex.vector([0, 1, 0])
+assert String(e1.cross(e2)) == "[[0.0+0.0i, 0.0+0.0i, 1.0+0.0i]]"
+
+# serialization round-trip
+assert ser.loads(ser.dumps(complex.Complex(3, -4))) == complex.Complex(3, -4)
+assert ser.loads(ser.dumps(m2)) == m2
+
+# ---- ComplexMatrix HARDENING ----
+assert "square" in emsg(Function(): return complex.Matrix([[1, 2, 3]]).determinant())
+assert "square" in emsg(Function(): return complex.Matrix([[1, 2, 3]]).trace())
+assert "square" in emsg(Function(): return complex.Matrix([[1, 2, 3]]).inverse())
+assert "singular" in emsg(Function(): return complex.zeros(2, 2).inverse())
+assert "inner dimensions differ" in emsg(Function(): return complex.Matrix([[1, 2]]) * complex.Matrix([[1, 2]]))
+assert "equal shape" in emsg(Function(): return complex.zeros(1, 2) + complex.zeros(2, 1))
+assert "row index out of range" in emsg(Function(): return complex.zeros(2, 2)[5])
+assert "index out of range" in emsg(Function(): return complex.zeros(2, 2)[5, 5])
+assert "equal length" in emsg(Function(): return complex.Matrix([[1, 2], [3]]))    # ragged rows
+assert "equal length" in emsg(Function(): return complex.vector([1, 2]).dot(complex.vector([1, 2, 3])))
+assert "3-element" in emsg(Function(): return complex.vector([1, 2]).cross(complex.vector([1, 2])))
+assert "non-negative" in emsg(Function(): return complex.zeros(-1, 2))
+assert "non-negative" in emsg(Function(): return complex.identity(-1))
+
+io.print("cov int/complex: all passed")

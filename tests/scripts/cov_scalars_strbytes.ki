@@ -1,0 +1,406 @@
+# Exhaustive coverage of Kirito's SCALAR types (None / Bool / Integer / Float) and every
+# String and Bytes method (docs/pages/09-types.md). Every assertion below reflects the REAL
+# interpreter behavior, confirmed against ./build-release/ki — where impl differs from docs or
+# from the task brief, the DELTA is captured here and recorded in
+# .audit/v1.16.1/coverage/findings_scalars_strbytes.md (never bent to match an assumption).
+#
+# Structure per feature: NORMAL, then EDGE (empty/1-char/astral/oob/reverse-step/NaN/inf/-0.0/
+# INT64 min-max/wraparound/mixed-type/byte 0-255/invalid-utf8), then HARDENING (bad input MUST
+# raise the correct message substring; should-error cases DO error — silent errors flagged).
+
+var io = import("io")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+var nan = Float("nan")
+var inf = Float("inf")
+var ninf = Float("-inf")
+var INTMAX = 9223372036854775807
+var INTMIN = -9223372036854775808
+
+# Strings/Bytes are immutable — item assignment must throw. A named helper because a
+# multi-statement body cannot be an inline lambda argument.
+var immutS = Function():
+    var s = "abc"
+    s[0] = "z"
+    return s
+
+# ============================================================================
+# None
+# ============================================================================
+assert None == None, "None equals itself"
+assert not (None == 0), "None != Integer 0"
+assert not (None == False), "None != False"
+assert not (None == ""), "None != empty string"
+assert String(None) == "None", "None stringifies"
+assert Bool(None) == False, "None is falsy"
+assert {None: 1}[None] == 1, "None is hashable / usable as key"
+assert type(None) == "None", "type of None"
+
+# ============================================================================
+# Bool
+# ============================================================================
+assert True and not False, "bool literals"
+assert Bool(0) == False and Bool(1) == True, "Bool of int"
+assert Bool(0.0) == False and Bool(-0.0) == False, "Bool of zero floats"
+assert Bool(nan) == True, "Bool of NaN is truthy (nonzero)"
+assert Bool("") == False and Bool("x") == True, "Bool of strings"
+assert Bool([]) == False and Bool([0]) == True, "Bool of lists"
+assert Bool(None) == False, "Bool of None"
+# Bool is a DISTINCT type, not an Integer:
+assert not (True == 1), "True != 1 (strong typing)"
+assert not (False == 0), "False != 0"
+assert not (True == 1.0), "True != 1.0"
+assert threw(Function(): return True + 1), "True + 1 is a type error"
+assert "does not support this binary operator" in emsg(Function(): return True + 1), "Bool arithmetic message"
+assert Integer(True) == 1 and Integer(False) == 0, "explicit Integer(flag) counts truth"
+assert Float(True) == 1.0, "Float of Bool"
+# Bool and Integer are separate Dict keys (unlike 1.0 vs 1 which collide):
+var boolkeys = {False: 0, 0: 1}
+assert len(boolkeys) == 2, "False and 0 are DISTINCT dict keys"
+assert type(True) == "Bool", "type of Bool"
+
+# ============================================================================
+# Integer — arithmetic, division/floor/mod/pow, overflow/wraparound
+# ============================================================================
+assert 7 // 2 == 3, "floor div"
+assert -7 // 3 == -3, "floor div toward -inf"
+assert -7 % 3 == 2, "mod takes sign of divisor"
+assert 7 % -3 == -2, "mod sign of negative divisor"
+assert divmod(-7, 3) == [-3, 2], "divmod floors"
+assert 7 / 2 == 3.5, "/ always Float"
+assert 4 / 2 == 2.0 and type(4 / 2) == "Float", "/ Float even when exact"
+assert 2 ** 10 == 1024, "pow"
+assert 2 ** 3 ** 2 == 512, "pow right-associative"
+assert 2 ** -1 == 0.5 and type(2 ** -1) == "Float", "negative int exponent -> Float"
+# most-negative edge:
+assert abs(INTMIN) == INTMIN, "abs of INT64_MIN stays negative (no positive counterpart)"
+assert -INTMIN == INTMIN, "negating INT64_MIN wraps to itself"
+# two's-complement wraparound:
+assert INTMAX + 1 == INTMIN, "max+1 wraps to min"
+assert INTMIN - 1 == INTMAX, "min-1 wraps to max"
+assert INTMAX * 2 == -2, "overflow multiply wraps"
+# source-literal wraparound (docs: keeps low 64 bits):
+assert 9223372036854775808 == INTMIN, "decimal literal past max wraps negative"
+assert 0x10000000000000000 == 0, "129-bit hex literal keeps low 64 bits -> 0"
+# base rendering:
+assert hex(255) == "0xff" and bin(5) == "0b101" and oct(9) == "0o11", "base render"
+assert hex(-1) == "-0x1" and bin(-5) == "-0b101" and oct(-9) == "-0o11", "signed base render"
+assert bin(0) == "0b0", "bin of zero"
+# literal bases:
+assert 0xFF == 255 and 0o17 == 15 and 0b1010 == 10, "literal prefixes"
+# Integer() conversion:
+assert Integer("42") == 42, "Integer of decimal string"
+assert Integer("0xff") == 255 and Integer("0o17") == 15 and Integer("0b101") == 5, "Integer autodetects base prefix"
+assert Integer(3.9) == 3 and Integer(-3.9) == -3, "Integer truncates toward zero"
+assert type(3) == "Integer", "type Integer"
+# Integer.compare (approximate equality, shared with Float):
+assert (255).compare(255) == True, "int compare equal"
+assert (1).compare(1.0) == True, "int vs float compare"
+assert (100).compare(101) == False, "int compare far"
+assert (1000).compare(1000, rel_tol = 0.0, abs_tol = 0.0) == True, "int compare exact tol"
+
+# Integer HARDENING — should-error cases DO error with correct message:
+assert "division by zero" in emsg(Function(): return 1 / 0), "1/0 message"
+assert "integer division by zero" in emsg(Function(): return 1 // 0), "1//0 message"
+assert "integer modulo by zero" in emsg(Function(): return 1 % 0), "1%0 message"
+assert "negative base cannot be raised to a fractional power" in emsg(Function(): return (-2) ** 0.5), "neg base frac pow"
+assert "zero cannot be raised to a negative power" in emsg(Function(): return 0 ** -1), "0**-1"
+assert "cannot convert String to Integer" in emsg(Function(): return Integer("abc")), "Integer(bad string)"
+assert "cannot convert Float NaN to Integer" in emsg(Function(): return Integer(nan)), "Integer(nan)"
+assert "cannot convert Float infinity to Integer" in emsg(Function(): return Integer(inf)), "Integer(inf)"
+# DELTA: Integer() takes no base argument (base auto-detected from prefix instead):
+assert "at most 1 positional" in emsg(Function(): return Integer("ff", 16)), "Integer(str, base) rejected"
+
+# ============================================================================
+# Float — exact ==, .compare, NaN/inf/-0.0, hashing
+# ============================================================================
+assert (0.1 + 0.2 == 0.3) == False, "exact IEEE eq: 0.1+0.2 != 0.3"
+assert 0.3 == 0.3, "bit-identical floats equal"
+assert 1.0 == 1, "float equal to integer value"
+# NaN / inf / signed zero:
+assert (nan == nan) == False, "NaN never equals itself"
+assert inf == inf, "inf equals inf"
+assert 0.0 == -0.0, "signed zeros equal"
+assert String(-0.0) == "-0.0", "signed zero stringifies with sign"
+assert String(nan) == "nan" and String(inf) == "inf" and String(ninf) == "-inf", "nonfinite stringify"
+assert String(1.0) == "1.0", "float keeps .0"
+assert Bool(-0.0) == False, "-0.0 is falsy"
+# nonfinite arithmetic (no silent domain crash):
+assert String(inf - inf) == "nan", "inf-inf is NaN"
+assert 1 / inf == 0.0, "1/inf is 0"
+assert String(nan + 1) == "nan", "NaN propagates"
+# Float/Integer shared hashing: 1.0 and 1 are ONE key
+var fkey = {1.0: "a", 1: "b"}
+assert len(fkey) == 1 and fkey[1] == "b", "1.0 and 1 share a dict key"
+var fset = {1, 1.0, 2.0}
+assert len(fset) == 2, "1 and 1.0 collapse in a set"
+# .compare — relative and absolute tolerance:
+assert (0.1 + 0.2).compare(0.3) == True, "compare close enough"
+assert (1.0).compare(1.5) == False, "compare too far (default tol)"
+assert (1.0).compare(1.5, abs_tol = 1.0) == True, "compare widened abs tol"
+assert (10.0).compare(11.0, rel_tol = 0.0, abs_tol = 1.5) == True, "compare abs-only"
+assert (10.0).compare(11.0, rel_tol = 0.05, abs_tol = 0.0) == False, "compare rel too tight"
+assert nan.compare(nan) == False, "NaN compare always False"
+assert nan.compare(nan, abs_tol = inf) == False, "NaN compare False even with inf tol"
+assert inf.compare(inf) == True, "inf compares equal to itself"
+# Float conversions and round:
+assert Float("1.5") == 1.5, "Float of string"
+assert Float(5) == 5.0, "Float of int"
+# DELTA: round() breaks ties AWAY FROM ZERO (not banker's rounding):
+assert round(0.5) == 1 and round(1.5) == 2 and round(2.5) == 3, "round ties away from zero"
+assert round(-2.5) == -3, "round negative tie away from zero"
+assert round(2.675, 2) == 2.67, "round with ndigits (binary repr artifact)"
+# mixed-type ordering (Integer vs Float):
+assert 1 < 2.0 and 2.0 < 3, "mixed int/float ordering"
+
+# Float HARDENING:
+assert "cannot convert String to Float" in emsg(Function(): return Float("abc")), "Float(bad string)"
+assert "compare() expects a number" in emsg(Function(): return (1.0).compare("x")), "compare non-number arg"
+assert "unexpected keyword argument" in emsg(Function(): return (1.0).compare(1.0, foo = 3)), "compare bad kwarg"
+assert "at most 3 positional" in emsg(Function(): return (1.0).compare(1.0, 1e-9, 0.0, 5)), "compare too many pos"
+
+# ============================================================================
+# String — indexing / slicing (code points, negative, step, reverse)
+# ============================================================================
+var cafe = "café"
+assert len(cafe) == 4, "len counts code points"
+assert cafe[3] == "é", "index a multibyte code point"
+assert cafe[-1] == "é", "negative index"
+assert cafe[::-1] == "éfac", "reverse slice"
+assert cafe[1:3] == "af", "range slice"
+assert cafe[1:100] == "afé", "oob stop clamps"
+assert cafe[::2] == "cf", "step slice"
+assert cafe[2:1] == "", "start>stop empty"
+assert "abcde"[3:0:-1] == "dcb", "reverse-step range slice"
+# astral (non-BMP) — indexed by code point, not UTF-16 unit:
+var astral = "a😀b"
+assert len(astral) == 3, "astral char is one code point"
+assert astral[1] == "😀", "index astral char"
+assert astral[::-1] == "b😀a", "reverse with astral"
+# empty / one-char:
+assert len("") == 0, "empty string len"
+assert "x"[0] == "x", "one-char index"
+# repeat / concat / membership:
+assert "ab" * 3 == "ababab", "repeat"
+assert "ab" * 0 == "" and "ab" * -1 == "", "nonpositive repeat is empty"
+assert len("a" * 100000) == 100000, "large repeat"
+assert "a" in cafe and "" in "x", "substring / empty membership"
+
+# String indexing HARDENING:
+assert "index out of range" in emsg(Function(): return cafe[10]), "oob index"
+assert "index out of range" in emsg(Function(): return cafe[-10]), "oob negative index"
+assert "slice step cannot be zero" in emsg(Function(): return cafe[::0]), "zero step"
+assert "does not support item assignment" in emsg(Function(): return immutS()), "strings are immutable"
+assert "can only repeat String by an Integer" in emsg(Function(): return "ab" * 1.5), "repeat by float"
+assert "requires a String" in emsg(Function(): return 1 in "abc"), "non-string membership on String"
+
+# ============================================================================
+# String — case, strip, ord/chr
+# ============================================================================
+assert "café".upper() == "CAFÉ", "upper Latin-1"
+assert "HÉLLO".lower() == "héllo", "lower Latin-1"
+assert "ß".upper() == "ß", "sharp-s upper is 1:1 (no folding)"
+assert "".upper() == "", "empty upper"
+assert "  hi  ".strip() == "hi", "strip whitespace"
+assert "xxhixx".strip("x") == "hi", "strip chars"
+assert "  hi  ".lstrip() == "hi  " and "  hi  ".rstrip() == "  hi", "lstrip/rstrip"
+# ord/chr edges:
+assert ord("😀") == 128512 and chr(128512) == "😀", "ord/chr astral roundtrip"
+assert ord(chr(0)) == 0, "NUL roundtrip"
+assert ord(chr(1114111)) == 1114111, "max code point U+10FFFF"
+assert "ord expects a single character" in emsg(Function(): return ord("ab")), "ord multichar errors"
+assert "ord expects a single character" in emsg(Function(): return ord("")), "ord empty errors"
+assert "chr argument out of Unicode range" in emsg(Function(): return chr(-1)), "chr negative"
+assert "chr argument out of Unicode range" in emsg(Function(): return chr(1114112)), "chr past U+10FFFF"
+
+# ============================================================================
+# String — split / join / partition
+# ============================================================================
+assert "  a  b  c  ".split() == ["a", "b", "c"], "split whitespace runs"
+assert "a,b,c".split(",") == ["a", "b", "c"], "split on sep"
+assert "a,b,c".split(",", 1) == ["a", "b,c"], "split maxsplit"
+assert "a,b,c".split(",", 0) == ["a,b,c"], "split maxsplit 0"
+assert "".split() == [], "split empty string (whitespace mode) is empty list"
+assert "".split(",") == [""], "split empty string on sep is ['']"
+assert ", ".join(["a", "b", "c"]) == "a, b, c", "join"
+assert ",".join([]) == "", "join empty"
+assert "-".join("abc") == "a-b-c", "join iterates a String's chars"
+assert "a=b=c".partition("=") == ["a", "=", "b=c"], "partition first"
+assert "abc".partition("=") == ["abc", "", ""], "partition absent"
+assert "a=b=c".rpartition("=") == ["a=b", "=", "c"], "rpartition last"
+# split HARDENING:
+assert "empty separator" in emsg(Function(): return "abc".split("")), "split empty sep errors"
+assert "join requires a String" in emsg(Function(): return ",".join([1, 2])), "join non-string element"
+# DELTA: rsplit / splitlines are NOT implemented (task brief lists them; docs & impl omit them):
+assert "has no attribute 'rsplit'" in emsg(Function(): return "a,b".rsplit(",")), "rsplit absent"
+assert "has no attribute 'splitlines'" in emsg(Function(): return "a\nb".splitlines()), "splitlines absent"
+
+# ============================================================================
+# String — find / rfind / index / rindex / count / startswith / endswith / replace
+# ============================================================================
+assert "abcabc".find("bc") == 1 and "abcabc".rfind("bc") == 4, "find/rfind"
+assert "abc".find("z") == -1, "find absent returns -1"
+assert "abcabc".find("a", 1) == 3, "find with start window"
+assert "abcabc".find("c", -1) == 5, "find with negative start"
+assert "abcabc".find("c", 0, 2) == -1, "find with end window (excludes)"
+assert "abc".index("b") == 1 and "abcabc".rindex("bc") == 4, "index/rindex"
+assert "abcabc".index("bc", 3) == 4, "index with start window"
+assert "aaa".count("aa") == 1, "count non-overlapping"
+assert "aaaa".count("a", 1, 3) == 2, "count with window"
+assert "abc".count("") == 4, "count empty substring is len+1"
+assert "hello".startswith("he") and "hello".endswith("lo"), "startswith/endswith"
+assert "hello".startswith("ll", 2), "startswith with start window"
+assert "hello".endswith("ell", 0, 4), "endswith with end window"
+assert "hello".endswith("l", 0, -1), "endswith with negative end"
+assert "hello".startswith("lo", -2), "startswith negative start"
+assert "abc".startswith("") and "abc".endswith(""), "empty prefix/suffix always match"
+assert "aaa".replace("a", "b") == "bbb", "replace all"
+assert "aaa".replace("a", "b", 2) == "bba", "replace count"
+assert "aaa".replace("a", "b", 0) == "aaa", "replace count 0 is no-op"
+assert "aaa".replace("a", "b", -1) == "bbb", "replace negative count = all"
+assert "abc".replace("", "-") == "-a-b-c-", "replace empty inserts between"
+assert "foobar".removeprefix("foo") == "bar" and "foobar".removeprefix("x") == "foobar", "removeprefix"
+assert "foobar".removesuffix("bar") == "foo", "removesuffix"
+# find/index HARDENING:
+assert "substring not found" in emsg(Function(): return "abc".index("z")), "index absent errors"
+assert "substring not found" in emsg(Function(): return "abc".rindex("z")), "rindex absent errors"
+assert "startswith requires a String" in emsg(Function(): return "hi".startswith(["h"])), "startswith rejects list (no tuple form)"
+
+# ============================================================================
+# String — isX predicates
+# ============================================================================
+assert "123".isdigit() and not "".isdigit() and not "-1".isdigit(), "isdigit ASCII only"
+assert not "²".isdigit(), "superscript not a digit"
+assert "abc".isalpha() and "é".isalpha() and not "a1".isalpha() and not "".isalpha(), "isalpha (>=U+0080 counts)"
+assert "a1".isalnum() and not "a!".isalnum(), "isalnum"
+assert (" \t\n\r" + chr(11) + chr(12)).isspace() and not chr(160).isspace() and not "".isspace(), "isspace 6 ASCII only (NBSP U+00A0 does not count)"
+assert "abc".islower() and "abc1".islower() and not "ABC".islower() and not "123".islower(), "islower"
+assert "ABC".isupper() and not "abc".isupper(), "isupper"
+
+# ============================================================================
+# String — format / justify / zfill
+# ============================================================================
+assert "{} {}".format("a", "b") == "a b", "format sequential"
+assert "{1} {0}".format("a", "b") == "b a", "format indexed"
+assert "{0}{0}".format("x") == "xx", "format repeat index"
+assert "{{}}".format() == "{}", "format literal braces"
+assert "hi".ljust(5) == "hi   " and "hi".ljust(5, "*") == "hi***", "ljust"
+assert "hi".rjust(5, "*") == "***hi", "rjust"
+assert "hi".center(6, "*") == "**hi**" and "hi".center(5, "*") == "*hi**", "center (extra pad on right)"
+assert "hello".ljust(3) == "hello" and "hi".center(0) == "hi", "justify shorter than content unchanged"
+assert "hi".ljust(-5) == "hi", "negative width no-op"
+assert "42".zfill(5) == "00042", "zfill"
+assert "-42".zfill(5) == "-0042" and "+42".zfill(5) == "+0042", "zfill sign-aware"
+assert "-".zfill(3) == "-00", "zfill sign-only string"
+assert "12345".zfill(3) == "12345", "zfill shorter width unchanged"
+# format / justify HARDENING:
+assert "format field must be an index" in emsg(Function(): return "{:05d}".format(42)), "format method rejects format-spec"
+assert "format field must be an index" in emsg(Function(): return "{x}".format()), "format method rejects named field"
+assert "format index out of range" in emsg(Function(): return "{} {}".format("a")), "format too few args"
+assert "ljust fill must be a single character" in emsg(Function(): return "hi".ljust(5, "**")), "ljust multi-char fill"
+
+# ============================================================================
+# String — levenshtein / apply / encode
+# ============================================================================
+assert "kitten".levenshtein("sitting") == 3, "levenshtein distance"
+assert "abc".levenshtein(["abc", "abd"]) == [0, 1], "levenshtein against a list"
+assert "ab".apply(Function(c): return c + c) == "aabb", "apply flat-maps (expand)"
+assert "abc".apply(Function(c): return "" if c == "b" else c) == "ac", "apply drops on empty return"
+assert "héllo".encode("utf-8") == Bytes([0x68, 0xc3, 0xa9, 0x6c, 0x6c, 0x6f]), "encode utf-8"
+assert "hi".encode() == Bytes([104, 105]), "encode default utf-8"
+assert "é".encode("latin-1") == Bytes([0xe9]), "encode latin-1"
+assert "hi".encode("ascii") == Bytes([104, 105]), "encode ascii"
+# encode HARDENING:
+assert "codec can't encode" in emsg(Function(): return "é".encode("ascii")), "ascii encode of non-ascii errors"
+assert "codec can't encode" in emsg(Function(): return "😀".encode("latin-1")), "latin-1 encode of astral errors"
+assert "unknown encoding" in emsg(Function(): return "hi".encode("utf-16")), "unknown encoding errors"
+
+# DELTA (lax arg validation): these no-arg / single-arg methods SILENTLY IGNORE surplus
+# positional args instead of raising an arity error (see findings file). Captured as-is.
+assert "hi".upper("x", "y") == "HI", "SILENT: upper ignores extra args"
+assert "HI".lower(5) == "hi", "SILENT: lower ignores extra arg"
+assert "1".isdigit(9) == True, "SILENT: isdigit ignores extra arg"
+assert "hi".strip("h", "x") == "i", "SILENT: strip ignores 2nd positional"
+
+# ============================================================================
+# Bytes — construction
+# ============================================================================
+assert Bytes([72, 105]) == Bytes([72, 105]), "Bytes from list, equality"
+assert String(Bytes([72, 105])) == "b'Hi'", "Bytes repr (String() gives repr, not decode)"
+assert Bytes(3) == Bytes([0, 0, 0]), "Bytes(n) is n zero bytes"
+assert Bytes(0) == Bytes([]), "Bytes(0) is empty"
+assert Bytes("hi") == Bytes([104, 105]), "Bytes from String (default utf-8)"
+assert Bytes("héllo") == "héllo".encode("utf-8"), "Bytes(String) encodes utf-8"
+assert Bytes("é", "latin-1") == Bytes([0xe9]), "Bytes from String with encoding"
+assert Bytes(Bytes([1, 2])) == Bytes([1, 2]), "Bytes copy"
+assert Bytes({1, 2, 3}) == Bytes([1, 2, 3]), "Bytes from Set"
+assert Bytes(range(3)) == Bytes([0, 1, 2]), "Bytes from range"
+assert Bytes({1: "a", 2: "b"}) == Bytes([1, 2]), "Bytes from Dict keys"
+assert Bytes([]) == Bytes([]), "empty Bytes"
+# Bytes construction HARDENING:
+assert "out of range (0..255)" in emsg(Function(): return Bytes([256])), "byte 256 out of range"
+assert "out of range (0..255)" in emsg(Function(): return Bytes([-1])), "byte -1 out of range"
+assert "must be Integers" in emsg(Function(): return Bytes([1.5])), "Bytes float element errors"
+assert "negative count" in emsg(Function(): return Bytes(-1)), "Bytes(negative) errors"
+assert "unknown encoding" in emsg(Function(): return Bytes("hi", "utf-16")), "Bytes bad encoding errors"
+
+# ============================================================================
+# Bytes — indexing / slicing / membership / ops
+# ============================================================================
+var hi = Bytes([72, 105])
+assert hi[0] == 72 and type(hi[0]) == "Integer", "byte index is Integer"
+assert hi[0:1] == Bytes([72]) and type(hi[0:1]) == "Bytes", "byte slice is Bytes"
+assert Bytes([1, 2, 3])[-1] == 3, "negative byte index"
+assert Bytes([1, 2, 3])[::-1] == Bytes([3, 2, 1]), "reverse byte slice"
+assert len(Bytes([1, 2, 3])) == 3, "byte length"
+assert List(Bytes([65, 66])) == [65, 66], "iterating yields Integers"
+# byte value edges 0/127/128/255:
+assert Bytes([0, 127, 128, 255])[0] == 0 and Bytes([0, 127, 128, 255])[3] == 255, "byte value extremes"
+assert 2 in Bytes([1, 2, 3]) and not (256 in Bytes([1, 2, 3])), "byte membership (256 simply absent)"
+assert Bytes([2, 3]) in Bytes([1, 2, 3]), "Bytes subsequence membership"
+assert Bytes([1]) + Bytes([2]) == Bytes([1, 2]), "Bytes concat"
+assert Bytes([1, 2]) * 2 == Bytes([1, 2, 1, 2]), "Bytes repeat"
+assert Bytes([1, 2]) < Bytes([1, 3]), "lexicographic ordering"
+assert Bool(Bytes([])) == False and Bool(Bytes([0])) == True, "empty Bytes falsy"
+assert {Bytes([1]): "x"}[Bytes([1])] == "x", "Bytes hashable / dict key"
+# Bytes indexing HARDENING:
+assert "index out of range" in emsg(Function(): return Bytes([1, 2, 3])[10]), "byte oob index errors"
+
+# ============================================================================
+# Bytes — hex / fromhex / decode / apply
+# ============================================================================
+assert Bytes([72, 105]).hex() == "4869", "hex"
+assert Bytes([]).hex() == "", "empty hex"
+assert fromhex("48 69") == Bytes([72, 105]), "fromhex with spaces"
+assert fromhex("4869") == Bytes([72, 105]), "fromhex no spaces"
+assert fromhex("") == Bytes([]), "empty fromhex"
+assert Bytes([0xc3, 0xa9]).decode("utf-8") == "é", "decode utf-8"
+assert Bytes([104, 105]).decode() == "hi", "decode default utf-8"
+assert Bytes([255]).decode("latin-1") == "ÿ", "decode latin-1 (byte 255 -> U+00FF)"
+assert Bytes([]).decode() == "", "decode empty"
+# latin-1 lossless round-trip for all byte values:
+assert Bytes([0, 127, 128, 255]).decode("latin-1").encode("latin-1") == Bytes([0, 127, 128, 255]), "latin-1 byte<->codepoint bridge"
+assert Bytes([1, 2]).apply(Function(b): return b + 1) == Bytes([2, 3]), "bytes apply"
+# fromhex / decode HARDENING:
+assert "odd-length hex string" in emsg(Function(): return fromhex("486")), "fromhex odd length"
+assert "non-hex digit" in emsg(Function(): return fromhex("4 8")), "fromhex split nibble"
+assert "non-hex digit" in emsg(Function(): return fromhex("4g")), "fromhex non-hex char"
+assert "codec can't decode" in emsg(Function(): return Bytes([0xff]).decode("utf-8")), "decode invalid utf-8"
+assert "codec can't decode" in emsg(Function(): return Bytes([0xc0, 0x80]).decode("utf-8")), "decode overlong utf-8"
+assert "codec can't decode" in emsg(Function(): return Bytes([200]).decode("ascii")), "decode non-ascii byte as ascii"
+assert "byte" in emsg(Function(): return Bytes([255]).apply(Function(b): return b + 1)), "bytes apply out-of-range result errors"
+
+io.print("cov scalars/str/bytes: all passed")

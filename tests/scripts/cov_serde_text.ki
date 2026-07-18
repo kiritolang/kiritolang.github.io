@@ -1,0 +1,321 @@
+# Exhaustive coverage of the text-serialization stdlib modules: json, csv, base64, xml.
+# Every assertion was verified against the actual ./build-release/ki behavior before being written.
+# Deltas/silent-errors observed are recorded in .audit/v1.16.1/coverage/findings_serde_text.md.
+
+var io = import("io")
+var json = import("json")
+var csv = import("csv")
+var base64 = import("base64")
+var xml = import("xml")
+
+var threw = Function(f):
+    try:
+        discard f()
+        return False
+    catch as e:
+        return True
+
+var emsg = Function(f):
+    try:
+        discard f()
+        return ""
+    catch as e:
+        return e
+
+# ============================================================================================
+# json
+# ============================================================================================
+
+# --- normal round-trips ---------------------------------------------------------------------
+assert json.parse("1") == 1
+assert json.parse("-42") == -42
+assert json.parse("3.5") == 3.5
+assert json.parse("\"hi\"") == "hi"
+assert json.parse("true") == True
+assert json.parse("false") == False
+assert json.parse("null") == None
+assert json.parse("[1, 2, 3]") == [1, 2, 3]
+
+var v = {"a": [1, {"b": [True, None, 2.5]}], "c": "x"}
+assert json.parse(json.stringify(v)) == v
+assert json.parse(json.dumps(v)) == v          # dumps alias of stringify
+assert json.loads(json.stringify(v)) == v      # loads alias of parse
+
+# --- exact compact serialization form (separators are ", " and ": ") ------------------------
+assert json.stringify({"a": 1, "b": [1, 2, 3], "c": True, "d": None}) == "{\"a\": 1, \"b\": [1, 2, 3], \"c\": true, \"d\": null}"
+assert json.stringify([]) == "[]"
+assert json.stringify({}) == "{}"
+assert json.stringify("") == "\"\""
+
+# --- pretty-print ---------------------------------------------------------------------------
+assert json.stringify({"a": 1, "b": [1, 2]}, 2) == "{\n  \"a\": 1,\n  \"b\": [\n    1,\n    2\n  ]\n}"
+# indent <= 0 is compact
+assert json.stringify([1, 2], 0) == "[1, 2]"
+assert json.stringify([1, 2], -5) == "[1, 2]"
+# empty containers stay inline even when pretty
+assert json.stringify({"a": []}, 2) == "{\n  \"a\": []\n}"
+assert json.stringify({"a": {}}, 2) == "{\n  \"a\": {}\n}"
+# indent hard cap
+assert json.stringify({}, 100) == "{}"
+assert "indent too large" in emsg(Function(): return json.stringify({}, 101))
+
+# --- numbers: int / float / exponent --------------------------------------------------------
+assert type(json.parse("012")) == "Integer" and json.parse("012") == 12   # lenient leading zero
+assert type(json.parse("1.")) == "Float" and json.parse("1.") == 1.0      # lenient trailing dot
+assert type(json.parse("-0")) == "Integer" and json.parse("-0") == 0
+assert type(json.parse("1e3")) == "Float" and json.parse("1e3") == 1000.0
+assert type(json.parse("1E-2")) == "Float" and json.parse("1E-2") == 0.01
+assert type(json.parse("2.5e2")) == "Float" and json.parse("2.5e2") == 250.0
+# integer too large for int64 widens to Float
+assert type(json.parse("100000000000000000000000")) == "Float"
+# floats round-trip exactly (shortest round-tripping form)
+assert json.stringify(0.1 + 0.2) == "0.30000000000000004"
+assert json.stringify(1.0) == "1.0"
+assert json.parse(json.stringify(0.1 + 0.2)) == 0.1 + 0.2
+
+# --- non-finite floats round-trip as bare tokens --------------------------------------------
+assert json.stringify(json.parse("Infinity")) == "Infinity"
+assert json.stringify(json.parse("-Infinity")) == "-Infinity"
+assert json.stringify(json.parse("NaN")) == "NaN"
+assert json.parse("Infinity") == json.parse("Infinity")   # +inf equals itself
+
+# --- unicode + escapes ----------------------------------------------------------------------
+assert json.parse("\"\\u0041\\u00e9\"") == "Aé"
+assert json.parse("\"\\uD83D\\uDE00\"") == "😀"          # surrogate pair -> astral
+assert json.parse("\"\\uD800\"") == "�"                   # lone surrogate -> U+FFFD
+assert json.parse("\"a\\/b\"") == "a/b"                    # escaped solidus
+assert json.parse("\"\\u0001\"") == chr(1)
+# escape round-trips
+assert json.stringify("a\"b\\c\nd\te") == "\"a\\\"b\\\\c\\nd\\te\""
+assert json.stringify(chr(1)) == "\"\\u0001\""            # control char is \u-escaped
+assert json.parse(json.stringify("tab\there\nand \"quotes\"")) == "tab\there\nand \"quotes\""
+
+# --- whitespace tolerance & key ordering ----------------------------------------------------
+assert json.parse("  [ 1 , 2 ]  ") == [1, 2]
+assert json.parse("\n\t{\n\"a\"\t:\t1\n}\n") == {"a": 1}
+# insertion-ordered Dict: key order preserved through a round-trip
+assert json.stringify(json.parse("{\"z\":1,\"a\":2,\"m\":3}")) == "{\"z\": 1, \"a\": 2, \"m\": 3}"
+
+# --- duplicate keys keep the last value -----------------------------------------------------
+assert json.parse("{\"a\":1,\"a\":2}") == {"a": 2}
+assert json.stringify(json.parse("{\"a\":1,\"a\":2}")) == "{\"a\": 2}"
+
+# --- nested / empty / deep ------------------------------------------------------------------
+assert json.parse("[[[[]]]]") == [[[[]]]]
+assert json.parse("{\"a\":{\"b\":{\"c\":{}}}}") == {"a": {"b": {"c": {}}}}
+assert json.parse("[1, [2, [3]]]") == [1, [2, [3]]]     # v1.15 A19-2 regression: inner list kept
+
+# --- hardening: malformed input raises the correct message ----------------------------------
+assert "unterminated string" in emsg(Function(): return json.parse("\"abc"))
+assert "trailing characters" in emsg(Function(): return json.parse("1 2"))
+assert "expected string key" in emsg(Function(): return json.parse("{"))
+assert "expected string key" in emsg(Function(): return json.parse("{a:1}"))
+assert "expected ',' or ']'" in emsg(Function(): return json.parse("[1 2]"))
+assert "expected ',' or ']'" in emsg(Function(): return json.parse("[1,2"))
+assert "invalid literal" in emsg(Function(): return json.parse("tru"))
+assert "unexpected character" in emsg(Function(): return json.parse("{\"a\":}"))
+assert "unexpected character" in emsg(Function(): return json.parse(""))
+assert "bad escape" in emsg(Function(): return json.parse("\"a\\x\""))
+var _deep = ""
+var _di = 0
+while _di < 1100:
+    _deep = _deep + "["
+    _di = _di + 1
+assert "nesting too deep" in emsg(Function(): return json.parse(_deep))
+
+# --- hardening: unserializable values throw -------------------------------------------------
+assert "cannot serialize 'Set' to JSON" in emsg(Function(): return json.stringify(Set([1, 2])))
+assert threw(Function(): return json.stringify(json.parse))     # a Function has no JSON form
+var cyc = [1]
+cyc.append(cyc)
+# NOTE: doc says the cycle message is `cannot serialize '<Type>' to JSON`, but the impl throws
+# `cannot serialize a cyclic structure to JSON` (doc-vs-impl delta, recorded in findings).
+assert "cyclic structure" in emsg(Function(): return json.stringify(cyc))
+
+# ============================================================================================
+# csv
+# ============================================================================================
+
+# --- normal round-trips ---------------------------------------------------------------------
+assert csv.parse("a,b,c\n1,2,3") == [["a", "b", "c"], ["1", "2", "3"]]
+assert csv.parserow("x,y,z") == ["x", "y", "z"]
+assert csv.formatrow(["a", "b", "c"]) == "a,b,c"
+assert csv.format([["a", "b"], ["c", "d"]]) == "a,b\nc,d"
+# format -> parse round-trip
+var rows = [["name", "note"], ["ann", "hi, there"], ["bob", "line\nbreak"]]
+assert csv.parse(csv.format(rows)) == rows
+
+# --- quoting: embedded commas / quotes / newlines -------------------------------------------
+assert csv.parse("\"a,b\",c") == [["a,b", "c"]]
+assert csv.parserow("\"he said \"\"hi\"\"\",x") == ["he said \"hi\"", "x"]
+assert csv.parse("\"line1\nline2\",b") == [["line1\nline2", "b"]]
+assert csv.formatrow(["c,d", "e\"f"]) == "\"c,d\",\"e\"\"f\""
+assert csv.formatrow(["has\nnewline"]) == "\"has\nnewline\""
+assert csv.formatrow(["plain"]) == "plain"           # no quoting when unnecessary
+
+# --- type stringification on format (NO type inference either direction) --------------------
+assert csv.formatrow([1, 2.5, True, None]) == "1,2.5,True,None"
+assert csv.parserow("1,2,3") == ["1", "2", "3"]       # fields are Strings, never inferred
+assert type(csv.parserow("1,2,3")[0]) == "String"
+
+# --- edge: trailing newline / blank lines / empty / CR --------------------------------------
+assert csv.parse("a,b\n") == [["a", "b"]]             # trailing newline -> no phantom row
+assert csv.parse("a\n\nb") == [["a"], [""], ["b"]]    # a blank line is a one-empty-field row
+assert csv.parse("") == []                            # empty text -> no rows
+assert csv.parse("\n") == [[""]]                      # lone newline -> one empty-field row
+assert csv.parse("a,b\r\nc,d") == [["a", "b"], ["c", "d"]]   # CRLF treated as LF
+assert csv.parse("a,\r,b") == [["a", "", "b"]]        # a bare CR is dropped
+assert csv.parserow("a,,c") == ["a", "", "c"]         # empty middle field
+assert csv.parserow(",") == ["", ""]                  # two empty fields
+assert csv.parserow("") == [""]                       # empty line -> one empty field
+
+# --- ragged rows are preserved verbatim (the low-level csv module does NOT pad or throw;
+#     header/type-inference/ragged-padding/custom-delimiter belong to `tabular`, not `csv`) ---
+assert csv.parse("a,b,c\n1,2\n9,8,7,6") == [["a", "b", "c"], ["1", "2"], ["9", "8", "7", "6"]]
+
+# ============================================================================================
+# base64
+# ============================================================================================
+
+# --- normal / padding (RFC 4648 vectors) ----------------------------------------------------
+assert base64.encode("Man") == "TWFu"
+assert base64.encode("Ma") == "TWE="
+assert base64.encode("M") == "TQ=="
+assert base64.encode("") == ""
+assert base64.encode("foobar") == "Zm9vYmFy"
+assert base64.encode("foo") == "Zm9v"
+assert base64.encode("fo") == "Zm8="
+assert base64.encode("f") == "Zg=="
+
+# --- decode returns a List of Integer byte values -------------------------------------------
+assert base64.decode("TWFu") == [77, 97, 110]
+assert type(base64.decode("TWFu")) == "List"
+assert type(base64.decode("TWFu")[0]) == "Integer"
+assert base64.decode("") == []
+
+# --- accepts List / Bytes / String inputs ---------------------------------------------------
+assert base64.encode([77, 97, 110]) == "TWFu"
+assert base64.encode("Man".encode()) == "TWFu"       # Bytes input
+assert base64.decode(base64.encode("Man")) == [77, 97, 110]   # round-trip -> list of bytes
+
+# --- full 0..255 binary round-trip ----------------------------------------------------------
+var allbytes = []
+var bi = 0
+while bi < 256:
+    allbytes.append(bi)
+    bi = bi + 1
+assert base64.decode(base64.encode(allbytes)) == allbytes
+
+# --- padless (no "=") but complete input still decodes --------------------------------------
+assert base64.decode("TWE") == [77, 97]              # equivalent to "TWE="
+assert base64.decode("TQ") == [77]
+
+# --- url-safe variant ('+' -> '-', '/' -> '_') ----------------------------------------------
+assert base64.urlsafeencode([251, 255, 191]) == "-_-_"
+assert base64.encode([251, 255, 191]) == "+/+/"
+assert base64.urlsafedecode(base64.urlsafeencode(allbytes)) == allbytes
+assert base64.urlsafedecode("-_-_") == [251, 255, 191]
+
+# --- hardening: malformed input raises ------------------------------------------------------
+assert "invalid base64 character" in emsg(Function(): return base64.decode("****"))
+assert "invalid base64 character" in emsg(Function(): return base64.decode("TW Fu"))   # whitespace not stripped
+assert "lone trailing character" in emsg(Function(): return base64.decode("A"))
+assert "truncated or corrupted" in emsg(Function(): return base64.decode("TW"))
+assert threw(Function(): return base64.decode("!"))
+
+# --- SILENT ERROR (documented, not asserted as correct): everything after the first '=' is
+#     dropped without validation, so trailing garbage past the padding is silently accepted.
+#     Recorded in findings; asserting the current behavior so a future fix trips this test. -----
+assert base64.decode("TWFu====garbage") == [77, 97, 110]
+assert base64.decode("TWE=X") == [77, 97]
+
+# ============================================================================================
+# xml
+# ============================================================================================
+
+# --- parse / tostring round-trip ------------------------------------------------------------
+var r = xml.parse("<a x='1'><b>hi</b></a>")
+assert r.tag == "a"
+assert r.get("x") == "1"
+assert r.find("b").text == "hi"
+assert xml.tostring(r) == "<a x=\"1\"><b>hi</b></a>"
+assert r.tostring() == xml.tostring(r)
+assert String(r) == xml.tostring(r)                  # _str_ serializes
+
+# --- attributes: get / get default ----------------------------------------------------------
+assert r.get("missing") == None
+assert r.get("missing", "def") == "def"
+assert xml.parse("<t a='1' b='2'/>").attrib == {"a": "1", "b": "2"}
+assert xml.parse("<t novalue/>").get("novalue") == ""   # attribute with no value -> ""
+
+# --- text + tail (mixed content) document order ---------------------------------------------
+var d = xml.parse("<a>t1<b>t2</b>tail<c>t3</c>end</a>")
+assert d.text == "t1"
+assert d.find("b").text == "t2"
+assert d.find("b").tail == "tail"
+assert d.find("c").tail == "end"
+assert d.itertext() == ["t1", "t2", "tail", "t3", "end"]
+assert xml.tostring(d) == "<a>t1<b>t2</b>tail<c>t3</c>end</a>"   # mixed content round-trips
+
+# --- entities: named + numeric (dec + hex) --------------------------------------------------
+assert xml.parse("<a>&lt;&gt;&amp;&quot;&apos;&#65;&#x42;</a>").text == "<>&\"'AB"
+assert xml.parse("<a>&#x263A;</a>").text == "☺"
+# unknown / malformed / out-of-range entities are kept verbatim (lenient)
+assert xml.parse("<a>&unknown;</a>").text == "&unknown;"
+assert xml.parse("<a>&#9999999;</a>").text == "&#9999999;"
+assert xml.parse("<a>&#xZZ;</a>").text == "&#xZZ;"
+assert xml.parse("<a>bare & amp</a>").text == "bare & amp"   # a bare '&' with no ';' is kept
+
+# --- nested: find / findall / findtext ------------------------------------------------------
+var books = xml.parse("<r><i>1</i><i>2</i><j>3</j></r>")
+assert len(books.findall("i")) == 2
+assert len(books.findall("nope")) == 0
+assert books.find("j").text == "3"
+assert books.find("nope") == None
+assert books.findtext("i") == "1"
+assert books.findtext("nope", "fallback") == "fallback"
+assert books.findtext("missing") == ""               # default default is ""
+# len / indexing / iteration over children
+assert len(books) == 3
+assert books[0].text == "1"
+var tags = []
+for c in books:
+    tags.append(c.tag)
+assert tags == ["i", "i", "j"]
+
+# --- self-closing / empty elements ----------------------------------------------------------
+assert xml.tostring(xml.parse("<a/>")) == "<a />"
+assert xml.tostring(xml.parse("<a></a>")) == "<a />"     # empty element serializes self-closing
+assert xml.tostring(xml.Element("x")) == "<x />"
+
+# --- comment / declaration / DOCTYPE / CDATA ------------------------------------------------
+var doc = xml.parse("<?xml version='1.0'?><!-- c --><!DOCTYPE a><a><![CDATA[<raw>&x]]></a>")
+assert doc.tag == "a"
+assert doc.text == "<raw>&x"                         # CDATA is raw, no entity decoding
+assert xml.parse("<a><!-- gone -->kept</a>").text == "kept"
+
+# --- multiple top-level siblings: the LAST becomes the root ---------------------------------
+assert xml.parse("<a/><b/>").tag == "b"
+# document with no element at all -> None
+assert xml.parse("just text") == None
+assert xml.parse("") == None
+
+# --- attribute-value escaping on serialize --------------------------------------------------
+var ae = xml.Element("t", {"k": "a\"<>&b"})
+assert xml.tostring(ae) == "<t k=\"a&quot;&lt;&gt;&amp;b\" />"
+
+# --- Element construction & building a tree -------------------------------------------------
+var e = xml.Element("book", {"id": "1"})
+e.text = "hello"
+assert xml.tostring(e) == "<book id=\"1\">hello</book>"
+assert xml.fromstring("<z/>").tag == "z"             # fromstring alias of parse
+
+# --- hardening: the parser is LENIENT (malformed markup is tolerated, never throws) ---------
+assert not threw(Function(): return xml.parse("<a><b></a>"))
+assert xml.tostring(xml.parse("<a><b></a>")) == "<a><b /></a>"
+assert xml.tostring(xml.parse("<a>unclosed")) == "<a>unclosed</a>"
+assert not threw(Function(): return xml.parse("<<>>"))
+assert not threw(Function(): return xml.parse("<a attr=unquoted>x</a>"))
+assert not threw(Function(): return xml.parse("<!-- never closed"))
+
+io.print("cov serde-text: all passed")
