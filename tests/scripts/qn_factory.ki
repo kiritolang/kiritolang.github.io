@@ -1,0 +1,9 @@
+# Import-only fixture: a function that defines and returns a class, so the class must be qualified by
+# THIS module (qn_factory), not by whoever calls the function.
+var makebox = Function(label):
+    class Box:
+        var _init_ = Function(self, v):
+            self.v = v
+        var tag = Function(self):
+            return label
+    return Box

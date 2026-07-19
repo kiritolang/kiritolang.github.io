@@ -1,0 +1,6 @@
+# Import-only fixture: re-exports qn_shapes_a's Shape and defines its own class Own.
+var a = import("qn_shapes_a")
+var ReShape = a.Shape
+class Own:
+    var _init_ = Function(self):
+        self.n = 1

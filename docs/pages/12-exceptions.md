@@ -59,11 +59,15 @@ A **bare `catch`** also catches any C++ `std::exception` that crosses the native
 starts: lexer, parser, name-resolution, and static-analysis errors are reported when the program is
 compiled, so a `try` inside the same program can't catch its own syntax error.
 
-> **A typed `catch T as e` matches user classes by NAME, not identity** — like [`isinstance`](08-builtins.md#isinstance)
-> (they share one mechanism): `e` is caught if its class **chain** holds a class named `T`, not one that
-> *is* the same class object. Two distinct same-named classes are therefore caught interchangeably. This
-> is what lets a deserialized exception re-match its class in a fresh VM; keep exception class names
-> distinct when you rely on a typed `catch` to tell two error types apart.
+> **A typed `catch T as e` matches by the class's [qualified name](09-types.md#qualified-class-names-moduleclass)** —
+> like [`isinstance`](08-builtins.md#isinstance) (they share one mechanism). A class defined in an
+> imported module is identified as `module:Class`, so `catch a.MyError` catches only *that* module's
+> `MyError`, not a same-named class from another module. Writing the type as a **bare** name — a
+> same-module reference or a `"MyError"` type-name String — still matches by the class-part, so it
+> catches a `MyError` from *any* module (backward-compatible). Matching walks the class **chain** (a
+> subclass is caught by a base's type), and comparison is still by name, not object identity: two
+> classes that share the same `module:Class` qualified name are caught interchangeably (this is what
+> lets a deserialized exception re-match its class in a fresh VM).
 
 **`StopIteration`** is a built-in exception class (always in scope). A [lazy generator](09-types.md#lazy-generators-_iter_--_next_)
 raises `throw StopIteration()` from its `_next_` to signal the end of iteration; you can `catch

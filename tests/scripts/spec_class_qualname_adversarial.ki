@@ -1,0 +1,145 @@
+# Adversarial coverage for qualified class names (module:Class). Companion to spec_class_qualname.ki.
+# Exercises: a class defined inside a module function, re-export through another module, a deep
+# 3-module inheritance chain, cross-module typed catch of a base, builtin/String type-name forms, a
+# class value pulled from a collection, the reserved StopIteration sentinel vs a user module class of
+# the same name (isinstance, catch, AND generator termination), text + binary serialization of a
+# cross-module subclass, class-value round-trip identity, and a module reached under two import names.
+var io = import("io")
+var dump = import("dump")
+var ser = import("serialize")
+var a = import("qn_shapes_a")
+var b = import("qn_shapes_b")
+var factory = import("qn_factory")
+var reexport = import("qn_reexport")
+var da = import("qn_deep_a")
+var db = import("qn_deep_b")
+var dc = import("qn_deep_c")
+var us = import("qn_stop")
+var ss = import("qn_substop")
+
+# --- a class defined INSIDE a module function is qualified by its DEFINING module ---
+var Box = factory.makebox("boxy")
+io.print("factory box type = " + type(Box(1)))
+io.print("factory box isinstance = " + String(isinstance(Box(1), Box)))
+
+# --- re-export surfaces module a's class through module reexport, keeping a's qualification ---
+io.print("reexport type = " + type(reexport.ReShape("z")))
+io.print("reexport is a.Shape = " + String(isinstance(reexport.ReShape("z"), a.Shape)))
+io.print("reexport own type = " + type(reexport.Own()))
+
+# --- deep cross-module inheritance A(a) <- B(b) <- C(c) ---
+var c = dc.C()
+io.print("deep C type = " + type(c))
+io.print("C is A = " + String(isinstance(c, da.A)))
+io.print("C is B = " + String(isinstance(c, db.B)))
+io.print("C is C = " + String(isinstance(c, dc.C)))
+io.print("A is C = " + String(isinstance(da.A(), dc.C)))
+io.print("B is C = " + String(isinstance(db.B(), dc.C)))
+var midcaught = "none"
+try:
+    throw dc.C()
+catch db.B as e:
+    midcaught = "B"
+io.print("deep C caught by catch B = " + midcaught)
+
+# --- builtin-constructor and String type-name forms still work ---
+io.print("isinstance 5 Integer = " + String(isinstance(5, Integer)))
+io.print("isinstance list List = " + String(isinstance([1], List)))
+io.print("isinstance bare str = " + String(isinstance(a.Shape("x"), "Shape")))
+io.print("isinstance qualified str = " + String(isinstance(a.Shape("x"), "qn_shapes_a:Shape")))
+io.print("isinstance wrong qualified str = " + String(isinstance(a.Shape("x"), "qn_shapes_b:Shape")))
+
+# --- a class value pulled from a collection ---
+var registry = {"shape": a.Shape}
+io.print("collection class isinstance = " + String(isinstance(a.Shape("x"), registry["shape"])))
+
+# --- the reserved StopIteration sentinel vs a user module class of the same name ---
+io.print("user StopIteration type = " + type(us.StopIteration()))
+io.print("user is builtin StopIteration = " + String(isinstance(us.StopIteration(), StopIteration)))
+io.print("builtin is builtin StopIteration = " + String(isinstance(StopIteration(), StopIteration)))
+var whichcaught = "none"
+try:
+    throw us.StopIteration()
+catch StopIteration as e:
+    whichcaught = "builtin"
+catch us.StopIteration as e:
+    whichcaught = "user"
+io.print("user-stop caught by = " + whichcaught)
+
+# a generator whose _next_ throws the USER StopIteration must NOT silently end — it propagates
+class UserStopGen:
+    var _init_ = Function(self):
+        self.n = 0
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        throw us.StopIteration()
+var genresult = "silently-stopped"
+try:
+    for x in UserStopGen():
+        genresult = "yielded"
+catch us.StopIteration as e:
+    genresult = "propagated"
+io.print("user-stop generator = " + genresult)
+
+# a generator using the BUILTIN StopIteration still stops normally
+class Countdown:
+    var _init_ = Function(self, n):
+        self.n = n
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        if self.n <= 0:
+            throw StopIteration()
+        self.n = self.n - 1
+        return self.n + 1
+var seen = []
+for x in Countdown(3):
+    seen.append(x)
+io.print("countdown = " + String(seen))
+
+# a module class that genuinely SUBCLASSES the built-in StopIteration IS the sentinel (chain match)
+io.print("real subclass is StopIteration = " + String(isinstance(ss.RealSubStop(), StopIteration)))
+class SubStopGen:
+    var _init_ = Function(self):
+        self.n = 2
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        if self.n <= 0:
+            throw ss.RealSubStop()
+        self.n = self.n - 1
+        return self.n
+var subseen = []
+for x in SubStopGen():
+    subseen.append(x)
+io.print("subclass-sentinel generator = " + String(subseen))
+
+# --- a bare parameter annotation matches a same-named class from ANY module (lenient by design) ---
+var describe = Function(s : Shape):
+    return s.kind()
+io.print("annotation a.Shape = " + describe(a.Shape("x")))
+io.print("annotation b.Shape = " + describe(b.Shape("y")))
+
+# --- serialization of a cross-module SUBCLASS instance: text and binary ---
+var rtText = ser.loads(ser.dumps(dc.C()))
+io.print("text subclass restored = " + type(rtText) + " isA=" + String(isinstance(rtText, da.A)))
+var rtBin = dump.loads(dump.dumps(dc.C()))
+io.print("bin subclass restored = " + type(rtBin) + " isC=" + String(isinstance(rtBin, dc.C)))
+
+# --- a class VALUE round-trips to the same class object in the same VM ---
+var rtCls = dump.loads(dump.dumps(a.Shape))
+io.print("class-value round-trip identity = " + String(id(rtCls) == id(a.Shape)))
+
+# --- the same file imported under two names resolves to the SAME class ---
+var a2 = import("qn_shapes_a.ki")
+io.print("two-name same class = " + String(id(a.Shape) == id(a2.Shape)))
+io.print("two-name isinstance = " + String(isinstance(a.Shape("x"), a2.Shape)))
+
+# --- an error on a module instance carries the QUALIFIED class name ---
+var errmsg = "none"
+try:
+    var junk = a.Shape("x").nonexistent
+catch as e:
+    errmsg = String(e)
+io.print("error mentions qualified name = " + String("qn_shapes_a:Shape" in errmsg))

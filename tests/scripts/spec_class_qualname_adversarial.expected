@@ -1,0 +1,34 @@
+factory box type = qn_factory:Box
+factory box isinstance = True
+reexport type = qn_shapes_a:Shape
+reexport is a.Shape = True
+reexport own type = qn_reexport:Own
+deep C type = qn_deep_c:C
+C is A = True
+C is B = True
+C is C = True
+A is C = False
+B is C = False
+deep C caught by catch B = B
+isinstance 5 Integer = True
+isinstance list List = True
+isinstance bare str = True
+isinstance qualified str = True
+isinstance wrong qualified str = False
+collection class isinstance = True
+user StopIteration type = qn_stop:StopIteration
+user is builtin StopIteration = False
+builtin is builtin StopIteration = True
+user-stop caught by = user
+user-stop generator = propagated
+countdown = [3, 2, 1]
+real subclass is StopIteration = True
+subclass-sentinel generator = [1, 0]
+annotation a.Shape = a
+annotation b.Shape = b
+text subclass restored = qn_deep_c:C isA=True
+bin subclass restored = qn_deep_c:C isC=True
+class-value round-trip identity = True
+two-name same class = True
+two-name isinstance = True
+error mentions qualified name = True

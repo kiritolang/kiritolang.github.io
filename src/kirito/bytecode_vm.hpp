@@ -204,6 +204,7 @@ public:
                 case Op::MakeFunction: {
                     auto fn = std::make_unique<KiFunction>(proto.funcs[in.a], scope());
                     fn->sourceFile = vm_.currentChunkFile();
+                    fn->moduleName = vm_.currentModuleName();  // qualify classes it defines to this module
                     // A function literal created INSIDE a method body inherits that method's owner
                     // class, so a nested closure/callback may touch `self._private` and resolve
                     // `self._super_()` — code lexically inside a method IS within that method
@@ -228,7 +229,14 @@ public:
                     const Proto* body = protoForBody(vm_, cs.body, /*isFunction=*/true);  // compiled+cached already
                     { BytecodeVM sub(vm_, classScope, vm_.none(), false); sub.run(*body); }
                     auto cls = std::make_unique<ClassValue>();
-                    cls->name = cs.name;
+                    // Qualify the class by its defining module: `module:Class`. A class defined in the
+                    // main script / REPL / frozen stdlib (module name "") keeps its bare declared name.
+                    // The *binding* stays bare (the compiler still binds `cs.name` in scope), so you
+                    // still refer to it as `Class`; only the class object's identity name is qualified,
+                    // which is what makes same-named classes in different modules distinct to isinstance
+                    // / typed catch / (de)serialization. See classBareName / typeMatches.
+                    cls->name = vm_.currentModuleName().empty() ? cs.name
+                                                                : vm_.currentModuleName() + ":" + cs.name;
                     cls->base = base;
                     cls->hasBase = hasBase;
                     cls->def = &cs;               // the AST (verbatim source + body) for serialization
@@ -257,13 +265,14 @@ public:
                             auto& fn = static_cast<KiFunction&>(mo);
                             auto clone = std::make_unique<KiFunction>(&fn.def(), fn.closure());
                             clone->sourceFile = fn.sourceFile;
+                            clone->moduleName = fn.moduleName;
                             clone->ownerClass = clsHandle;
                             clone->hasOwner = true;
                             owned.emplace_back(mname, rs.add(vm_.alloc(std::move(clone))));
                         }
                         for (auto& [mname, ch] : owned) { klass.defineMethod(vm_.arena(), mname, ch); classEnv.define(vm_.arena(), mname, ch); }
                     }
-                    vm_.registerClass(cs.name, clsHandle);  // so serialize/dump can reconstruct instances
+                    vm_.registerClass(klass.name, clsHandle);  // qualified name key -> reconstruct to the right module's class
                     // Leave the class on the operand stack; the compiler binds cs.name right after via
                     // StoreLocal/StoreName (exactly like `var Name = ...`), so a non-captured class name
                     // lands in its frame slot rather than only the scope env — consistent with the slot

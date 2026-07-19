@@ -5,7 +5,9 @@ Kirito is **dynamically typed** (a name can refer to a value of any type) but **
 type name as a String; `isinstance(x, T)` tests membership (inheritance-aware). `T` may be a built-in
 type **constructor** (`isinstance(1, Integer)`, `isinstance("x", String)`) or the equivalent type-name
 String (`isinstance(1, "Integer")`) — both work. The same goes for a typed `catch`: `catch String as
-e` and `catch SomeClass as e` both match by type.
+e` and `catch SomeClass as e` both match by type. A class from an imported module is identified by a
+[qualified name `module:Class`](#qualified-class-names-moduleclass), which is what `type()` returns
+for it and what makes same-named classes in different modules distinct.
 
 These are the built-in types. Collections (`List`, `Set`, `Dict`) hold values by reference, so two
 names can share one collection and see each other's mutations.
@@ -311,6 +313,45 @@ A `class` defines a new type in the same value model as the built-ins — see th
 A class plugs into the evaluator's operator/protocol dispatch by defining **special methods** (the
 single-underscore dunders below), so a user type can behave exactly like a built-in. `inspect(x)`
 prints a class/instance/module's public API.
+
+### Qualified class names (`module:Class`)
+
+A class defined in an **imported module** is identified by its **qualified name** `module:Class`
+(the module's import name, a colon, then the declared name) — so `type()` of a `Shape` defined in
+`shapes.ki` returns `"shapes:Shape"`, and its `String(cls)` is `<class shapes:Shape>`. A class
+defined in the **main script**, the REPL, or the built-in stdlib keeps its **bare** name (`Shape`) —
+there is no module to qualify it by. The *binding* is always the bare name (you still write `Shape`,
+or `shapes.Shape` through the module), only the class's own identity is qualified.
+
+Qualification makes two same-named classes in different modules **distinct**:
+
+<!--norun (illustrative: needs two sibling modules on the import path)-->
+```kirito
+var a = import("shapes_a")          # defines class Shape
+var b = import("shapes_b")          # also defines class Shape
+var s = a.Shape("x")
+isinstance(s, a.Shape)              # True  — s is a shapes_a:Shape
+isinstance(s, b.Shape)              # False — a DIFFERENT class, despite the same declared name
+```
+
+Matching (used by `isinstance`, a typed [`catch`](12-exceptions.html), and type annotations) is
+**qualified-aware**:
+
+- A **class value** or a **qualified String** (`"shapes_a:Shape"`) matches that one module's class
+  only — `isinstance(s, a.Shape)` above.
+- A **bare String** type-name (`isinstance(s, "Shape")`) or a bare annotation matches the class-part,
+  so it still matches a same-named class in **any** module (backward-compatible).
+- Matching walks the class **chain**, so a subclass matches a base's type — even when the subclass and
+  base live in different modules.
+
+Serialization ([`dump`](10-stdlib.html#dump) / [`serialize`](10-stdlib.html#serialize)) stores the
+qualified name, so a serialized instance reconstructs against **its originating module's** class; if
+that exact class is absent in the loading VM, it falls back to any same-named class (or an old
+bare-name blob resolves to a now-qualified class). The one reserved exception is
+[`StopIteration`](#lazy-generators-_iter_--_next_), a built-in class that is always bare and is
+matched by **object identity** — a user class named `StopIteration` in a module (`module:StopIteration`)
+is a genuinely different class, so it is not caught by `catch StopIteration`, is not `isinstance` of
+it, and does **not** end a generator; only the built-in sentinel and real subclasses of it do.
 
 ## Special methods (operator overloading)
 

@@ -1,0 +1,6 @@
+# Import-only fixture: a module class that genuinely SUBCLASSES the built-in StopIteration (its base
+# is the global StopIteration, since this module does not shadow that name). An instance of it IS the
+# sentinel — a generator raising it must end normally.
+class RealSubStop(StopIteration):
+    var _init_ = Function(self):
+        self.tag = "sub"

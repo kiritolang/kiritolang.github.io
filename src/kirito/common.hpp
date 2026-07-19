@@ -151,6 +151,15 @@ inline bool floatClose(double a, double b, double relTol, double absTol) {
     return diff <= std::max(relTol * std::max(std::fabs(a), std::fabs(b)), absTol);
 }
 
+// A class's identity name is qualified `module:Class` when it is defined in an imported module, and
+// bare for the main script / REPL / frozen stdlib / native types. classBareName returns the `Class`
+// part — everything after the last ':'. Single source of truth for the qualified-name convention,
+// shared by typeMatches (matching) and the (de)serializer (class lookup).
+inline std::string_view classBareName(std::string_view qualified) {
+    auto pos = qualified.rfind(':');
+    return pos == std::string_view::npos ? qualified : qualified.substr(pos + 1);
+}
+
 // Upper bound on the size (in elements/bytes) of a single value built by repetition or padding, so a
 // hostile or careless count (`"x" * 10**12`, `"".ljust(10**9)`, `b"x" * 10**12`) throws cleanly
 // instead of OOMing the host. ~256 MB is far beyond any legitimate scripting use. Single source of

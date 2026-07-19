@@ -1,0 +1,7 @@
+# Import-only fixture for spec_class_qualname.ki (no .expected -> never run standalone).
+# Module "qn_shapes_a": a class named Shape whose qualified identity is `qn_shapes_a:Shape`.
+class Shape:
+    var _init_ = Function(self, tag):
+        self.tag = tag
+    var kind = Function(self):
+        return "a"

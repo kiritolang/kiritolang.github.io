@@ -333,8 +333,12 @@ public:
     // whichever script invoked it. RAII scope keeps the stack balanced across nested imports.
     class ChunkFileScope {
     public:
-        ChunkFileScope(KiritoVM& vm, std::string f) : vm_(vm) { vm_.chunkFiles_.push_back(std::move(f)); }
-        ~ChunkFileScope() { vm_.chunkFiles_.pop_back(); }
+        // `mod` is the name of the module whose body is executing — used to qualify a class defined
+        // here as `module:Class` (empty for the main script, the REPL, and the frozen stdlib, whose
+        // classes keep bare names). Pushed in lockstep with the chunk file so the two never diverge.
+        ChunkFileScope(KiritoVM& vm, std::string f, std::string mod = "")
+            : vm_(vm) { vm_.chunkFiles_.push_back(std::move(f)); vm_.moduleNames_.push_back(std::move(mod)); }
+        ~ChunkFileScope() { vm_.chunkFiles_.pop_back(); vm_.moduleNames_.pop_back(); }
         ChunkFileScope(const ChunkFileScope&) = delete;
         ChunkFileScope& operator=(const ChunkFileScope&) = delete;
     private:
@@ -343,6 +347,14 @@ public:
     const std::string& currentChunkFile() const {
         static const std::string empty;
         return chunkFiles_.empty() ? empty : chunkFiles_.back();
+    }
+    // The module whose body is currently executing, or "" for the main script / REPL / frozen stdlib /
+    // native code. A user `.ki` module reached via import(name) sets this to its clean import name, so a
+    // class it defines is qualified `name:Class` (making same-named classes in different modules
+    // distinct to isinstance / typed catch / serialization). See classBareName / typeMatches.
+    const std::string& currentModuleName() const {
+        static const std::string empty;
+        return moduleNames_.empty() ? empty : moduleNames_.back();
     }
 
     // VM-local traceback of the most recent error (the call chain it unwound through, innermost-first).
@@ -354,9 +366,25 @@ public:
     // Class + deserializer registries (used by serialize/dump to reconstruct objects by class name).
     void registerClass(const std::string& name, Handle cls) { classRegistry_[name] = cls; }
     // The class registered under `name`, or nullptr if none.
+    // The one built-in StopIteration class value (also bound as the global `StopIteration`). Cached so
+    // the generator sentinel is matched by object IDENTITY, not by name — a same-named class from a
+    // user module cannot masquerade as it. Kept alive by the global binding, so this is non-owning.
+    Handle stopIterationClass() const { return stopIterationClass_; }
     const Handle* findClass(const std::string& name) const {
         auto it = classRegistry_.find(name);
         return it != classRegistry_.end() ? &it->second : nullptr;
+    }
+    // Look up a class for (de)serialization by its stored identity name. Tries the exact (possibly
+    // qualified `module:Class`) name first; if absent, falls back to any registered class sharing the
+    // bare class-part — so a blob written by one module still reconstructs against a same-named class
+    // present under a different module, and an OLD bare-name blob resolves to a now-qualified class.
+    // Returns null only when no class shares the bare name (caller then rebuilds or errors clearly).
+    const Handle* findClassFuzzy(const std::string& name) const {
+        if (const Handle* h = findClass(name)) return h;
+        std::string_view bare = classBareName(name);
+        for (const auto& [k, h] : classRegistry_)
+            if (classBareName(k) == bare) return &h;
+        return nullptr;
     }
     // A native type opts into deserialization by registering reconstructor(vm, state) -> object.
     void registerDeserializer(std::string name, std::function<Handle(KiritoVM&, Handle)> fn) {
@@ -460,6 +488,7 @@ private:
     std::vector<std::string> importStack_;
     std::vector<std::string> libPaths_;
     std::vector<std::string> chunkFiles_;  // see ChunkFileScope
+    std::vector<std::string> moduleNames_; // module owning the executing chunk (see currentModuleName)
     std::vector<TraceFrame> lastTraceback_;  // call chain of the most recent error (see setLastTraceback)
     Handle replScope_{};
     bool replScopeReady_ = false;
@@ -478,6 +507,7 @@ private:
     // registered by name when defined, so a serialized instance can be reconstructed by looking its
     // class up here; a native type can register a reconstructor(state)->object to participate.
     fum::unordered_map<std::string, Handle> classRegistry_;
+    Handle stopIterationClass_{};  // the built-in StopIteration class (see stopIterationClass())
     fum::unordered_map<std::string, std::function<Handle(KiritoVM&, Handle)>> deserializers_;
     std::vector<Handle> smallInts_;
     static constexpr int64_t kSmallIntLo = -256;

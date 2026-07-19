@@ -137,6 +137,10 @@ public:
     // The chunk (file / frozen-module name) this function was defined in, so an error escaping a
     // call is attributed to the right file — not to whichever script happened to invoke it.
     std::string sourceFile;
+    // The module this function was defined in (its clean import name, or "" for main/stdlib). Carried
+    // so a class defined inside this function is qualified against its DEFINING module, even when the
+    // function is called from another module. See KiritoVM::currentModuleName.
+    std::string moduleName;
 
     ValueKind kind() const override { return ValueKind::Function; }
     std::string typeName() const override { return "Function"; }
