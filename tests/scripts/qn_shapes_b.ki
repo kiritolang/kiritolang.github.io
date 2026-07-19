@@ -1,0 +1,14 @@
+# Import-only fixture for spec_class_qualname.ki (no .expected -> never run standalone).
+# Module "qn_shapes_b": a DIFFERENT class also named Shape (`qn_shapes_b:Shape`), plus a Circle that
+# inherits from module a's Shape — so the class chain crosses a module boundary.
+var a = import("qn_shapes_a")
+
+class Shape:
+    var _init_ = Function(self, tag):
+        self.tag = tag
+    var kind = Function(self):
+        return "b"
+
+class Circle(a.Shape):
+    var _init_ = Function(self, r):
+        self.r = r

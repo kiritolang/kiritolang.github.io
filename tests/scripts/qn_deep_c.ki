@@ -1,0 +1,4 @@
+var b = import("qn_deep_b")
+class C(b.B):
+    var _init_ = Function(self):
+        self.who = "C"

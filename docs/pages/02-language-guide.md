@@ -456,6 +456,12 @@ The bundled stdlib is broad — `io`/`path` (I/O and filesystem), `math`/`random
 `itertools`/`functools`/`collections`/`tabular`, among others. The [stdlib reference](stdlib.html)
 documents every module; the [course](course-14-stdlib-tour.html) tours the highlights.
 
+A `class` defined in an imported module is identified by a **qualified name** `module:Class` (e.g. a
+`Shape` in `shapes.ki` is `shapes:Shape`), so two same-named classes in different modules are distinct
+to `isinstance`, a typed `catch`, and serialization — see
+[Qualified class names](types.html#qualified-class-names-moduleclass). Classes in the main script and
+the stdlib keep bare names.
+
 A module's members only become visible once its body has finished running, so a **circular import**
 — a module that imports itself, directly or through a chain (`a` imports `b` imports `a`) — cannot
 be satisfied. Kirito detects the loop and throws a clear `circular import detected: a -> b -> a`

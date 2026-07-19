@@ -1,0 +1,78 @@
+# Qualified class names (module:Class). A class defined in an imported module is identified as
+# `module:Class`, so two same-named classes in different modules are DISTINCT to isinstance, typed
+# catch, and (de)serialization. A class defined in the main script / stdlib keeps its bare name. A
+# bare query (annotation / "String" type-name / same-module reference) still matches by class-part
+# for backward compatibility; a qualified query matches that one module only.
+var io = import("io")
+var dump = import("dump")
+var a = import("qn_shapes_a")
+var b = import("qn_shapes_b")
+
+# a main-script class is NOT qualified (there is no module to qualify it by)
+class Widget:
+    var _init_ = Function(self):
+        self.n = 1
+
+var sa = a.Shape("x")
+var sb = b.Shape("y")
+
+io.print("type main   = " + type(Widget()))
+io.print("type a      = " + type(sa))
+io.print("type b      = " + type(sb))
+io.print("str class a = " + String(a.Shape))
+
+# precise per-module isinstance (the whole point)
+io.print("sa is a.Shape = " + String(isinstance(sa, a.Shape)))
+io.print("sa is b.Shape = " + String(isinstance(sa, b.Shape)))
+io.print("sb is a.Shape = " + String(isinstance(sb, a.Shape)))
+io.print("sb is b.Shape = " + String(isinstance(sb, b.Shape)))
+
+# a bare String type-name matches EITHER module (backward compatible)
+io.print("sa is 'Shape' = " + String(isinstance(sa, "Shape")))
+io.print("sb is 'Shape' = " + String(isinstance(sb, "Shape")))
+# a qualified String type-name is exact
+io.print("sa is 'qn_shapes_a:Shape' = " + String(isinstance(sa, "qn_shapes_a:Shape")))
+io.print("sa is 'qn_shapes_b:Shape' = " + String(isinstance(sa, "qn_shapes_b:Shape")))
+
+# cross-module inheritance: qn_shapes_b:Circle extends qn_shapes_a:Shape
+var c = b.Circle(2)
+io.print("type circle    = " + type(c))
+io.print("circle is a.Shape  = " + String(isinstance(c, a.Shape)))
+io.print("circle is b.Circle = " + String(isinstance(c, b.Circle)))
+io.print("circle is b.Shape  = " + String(isinstance(c, b.Shape)))
+
+# typed catch is per-module: throwing a.Shape is NOT caught by `catch b.Shape`
+var caught = "none"
+try:
+    throw a.Shape("boom")
+catch b.Shape as e:
+    caught = "b"
+catch a.Shape as e:
+    caught = "a"
+io.print("caught by = " + caught)
+
+# dump round-trip binds to the ORIGINATING module's class (previously last-registration-wins)
+var blob = dump.dumps(sa)
+var r = dump.loads(blob)
+io.print("restored type = " + type(r))
+io.print("restored is a = " + String(isinstance(r, a.Shape)))
+io.print("restored is b = " + String(isinstance(r, b.Shape)))
+io.print("restored kind = " + r.kind())
+
+# StopIteration is the one reserved built-in class: it stays bare and still ends a user generator
+class Countdown:
+    var _init_ = Function(self, n):
+        self.n = n
+    var _iter_ = Function(self):
+        return self
+    var _next_ = Function(self):
+        if self.n <= 0:
+            throw StopIteration()
+        self.n = self.n - 1
+        return self.n + 1
+
+var seen = []
+for x in Countdown(3):
+    seen.append(x)
+io.print("countdown = " + String(seen))
+io.print("StopIteration type = " + type(StopIteration()))

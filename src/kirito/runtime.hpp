@@ -102,6 +102,7 @@ template <class F> inline void streamIterate(KiritoVM& vm, Handle src, const cha
 // LazyIterator to a rooted vector (the lazy->eager bridge used by rootedIterate and each native lazy
 // type's eager iterate()).
 inline bool typeMatches(KiritoVM& vm, Handle value, const std::string& typeName);
+inline bool isInstanceOf(KiritoVM& vm, Handle value, Handle typeH);
 inline bool isStopIteration(KiritoVM& vm, Handle h);
 inline std::vector<Handle> drainLazy(KiritoVM& vm, LazyIterator& it, RootScope& elemRoots);
 
@@ -2091,9 +2092,22 @@ inline std::string annotationTypeName(ValueKind k) {
     }
 }
 
+// Does a class whose identity name is `candidate` satisfy a type query `query` (from isinstance / a
+// typed catch / a type annotation / a String type-name)? A FULLY-QUALIFIED query (`module:Class`)
+// matches only that exact class — this is what makes `isinstance(x, m1.Snowflake)` distinguish m1's
+// class from m2's. A BARE query (`Class`) matches by class-part, so it stays backward-compatible: an
+// annotation `x: Snowflake`, a `catch Snowflake`, or `isinstance(x, "Snowflake")` still matches a
+// same-named class in ANY module. Builtin kind names (no ':') are handled before this by the caller.
+inline bool classNameSatisfies(std::string_view candidate, const std::string& query) {
+    if (candidate == query) return true;
+    if (query.find(':') != std::string::npos) return false;   // qualified query -> exact only
+    return classBareName(candidate) == query;                 // bare query -> match the class-part
+}
+
 // Does `value` satisfy the type annotation `typeName`? Built-in type names match by kind; "Any"
 // always matches; otherwise treat it as a class name and check the instance's class chain (so
-// subclasses pass) — and also accept a NativeClass whose typeName equals the annotation.
+// subclasses pass) — and also accept a NativeClass whose typeName equals the annotation. Class-name
+// comparison is qualified-aware (see classNameSatisfies).
 inline bool typeMatches(KiritoVM& vm, Handle value, const std::string& typeName) {
     if (typeName.empty() || typeName == "Any") return true;
     const Object& o = vm.arena().deref(value);
@@ -2109,13 +2123,13 @@ inline bool typeMatches(KiritoVM& vm, Handle value, const std::string& typeName)
             Handle cur = inst->cls;
             while (true) {
                 const auto& c = static_cast<const ClassValue&>(vm.arena().deref(cur));
-                if (c.name == typeName) return true;
+                if (classNameSatisfies(c.name, typeName)) return true;
                 if (!c.hasBase) break;
                 cur = c.base;
             }
         }
         // a C++ NativeClass instance (Matrix, Socket, ...): match its own type name
-        if (o.typeName() == typeName) return true;
+        if (classNameSatisfies(o.typeName(), typeName)) return true;
     }
     return false;
 }
@@ -2126,9 +2140,15 @@ inline bool typeMatches(KiritoVM& vm, Handle value, const std::string& typeName)
 inline bool isStopIteration(KiritoVM& vm, Handle h) {
     if (h.generation == 0) return false;   // the reserved null Handle{} (e.g. a native KiritoError's
                                            // value) is not a StopIteration — and must not be deref'd.
+    Handle sc = vm.stopIterationClass();
+    if (sc.generation == 0) return false;  // sentinel class not registered yet (pre-init; never in practice)
     const Object& o = vm.arena().deref(h);
-    if (o.kind() == ValueKind::Class) return static_cast<const ClassValue&>(o).name == "StopIteration";
-    return typeMatches(vm, h, "StopIteration");
+    // Match by IDENTITY against the one built-in StopIteration class: `throw StopIteration` (the class
+    // value itself) or `throw StopIteration()` / a subclass instance (its chain contains the sentinel).
+    // A same-named class from another module (`module:StopIteration`) is a DIFFERENT object, so it can
+    // never silently end iteration — the collision an earlier name-based check would have allowed.
+    if (o.kind() == ValueKind::Class) return h == sc;
+    return isInstanceOf(vm, h, sc);
 }
 
 // Eagerly pull a LazyIterator to a vector, rooting each produced element in `elemRoots` and keeping the
@@ -2179,7 +2199,7 @@ inline Handle KiFunction::callFull(KiritoVM& vm, std::span<const Handle> positio
     // creates at runtime (e.g. functools.partial's returned function) inherit the right source file
     // for error attribution — not whatever script happened to call us.
     std::optional<KiritoVM::ChunkFileScope> chunkScope;
-    if (!sourceFile.empty()) chunkScope.emplace(vm, sourceFile);
+    if (!sourceFile.empty()) chunkScope.emplace(vm, sourceFile, moduleName);
     const auto& params = def_->params;
     RootScope rs(vm);
     Handle scope = rs.add(vm.newScope(closure_));
@@ -2680,7 +2700,9 @@ inline Handle KiritoVM::importModule(const std::string& name) {
         try {
             RootScope guard(*this);
             guard.add(scope);
-            ChunkFileScope chunkScope(*this, path.string());  // functions defined here carry this file
+            // functions/classes defined here carry this file (attribution) and this module name
+            // (`fileBase` — the clean import name, extension-stripped), so a class becomes `mod:Class`.
+            ChunkFileScope chunkScope(*this, path.string(), fileBase);
             Lexer lex(buf.str());
             auto toks = lex.tokenize();
             auto prog = std::make_unique<ast::Program>(
@@ -3421,6 +3443,7 @@ inline void KiritoVM::installBuiltins() {
         Handle sch = alloc(std::move(sc));
         static_cast<ClassValue&>(arena_.deref(sch)).selfHandle = sch;
         g.define(arena(), "StopIteration", sch);
+        stopIterationClass_ = sch;  // cache for identity-based sentinel matching (see isStopIteration)
     }
 
     defSig("len", {{"x"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> args) -> Handle {
@@ -3938,12 +3961,13 @@ inline void KiritoVM::installBuiltins() {
     defSig("isinstance", {{"value"}, {"type"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         if (a.size() != 2) throw KiritoError("isinstance expected 2 arguments");
         // Second arg is a type: a class value, a built-in type constructor (Integer/Float/String/Bool/
-        // Bytes/List/Set/Dict), or a String type-name. All resolve to a name matched through
-        // typeMatches (kind names + inheritance-aware class chain).
-        std::string typeName = resolveTypeName(vm, a[1]);
-        if (typeName.empty())
+        // Bytes/List/Set/Dict), or a String type-name. A class VALUE is matched by IDENTITY up the
+        // class chain (so two same-named classes in different modules are distinct); a constructor or a
+        // String type-name is matched by name. isInstanceOf is the single matcher shared with a typed
+        // `catch`, so the two can never disagree.
+        if (vm.arena().deref(a[1]).kind() != ValueKind::Class && resolveTypeName(vm, a[1]).empty())
             throw KiritoError("isinstance second argument must be a class, a built-in type, or a type-name String");
-        return vm.makeBool(typeMatches(vm, a[0], typeName));
+        return vm.makeBool(isInstanceOf(vm, a[0], a[1]));
     });
     defSig("hasattr", {{"obj"}, {"name", "String"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
         // hasattr(obj, name) -> does `obj.name` resolve to an attribute or method? True even when the

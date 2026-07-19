@@ -490,7 +490,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             // rebuilding it — so deserializing an instance never clobbers the caller's live class of
             // the same name (and a same-VM round-trip returns the very same class object). The class
             // still travels in the blob purely so an ABSENT class can be rebuilt here.
-            const Handle* existing = vm.findClass(nd.s2);
+            const Handle* existing = vm.findClassFuzzy(nd.s2);
             if (existing && vm.arena().deref(*existing).kind() == ValueKind::Class) {
                 objs[i] = roots.add(*existing);   // no scope -> pass 5 skips it (nothing to wire)
                 built[i] = 1;
@@ -505,7 +505,9 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             } catch (const KiritoError& e) {
                 throw KiritoError("cannot deserialize class '" + nd.s2 + "': " + e.what());
             }
-            const Handle* c = vm.findClass(nd.s2);
+            // The re-parse runs with no module context, so it defines the class under its BARE name;
+            // resolve it fuzzily (the blob's name may be qualified `module:Class`).
+            const Handle* c = vm.findClassFuzzy(nd.s2);
             if (!c)
                 throw KiritoError("cannot deserialize class '" + nd.s2 + "': re-parse did not define it");
             objs[i] = roots.add(*c);
@@ -552,12 +554,18 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             case Tag::Set: { objs[i] = roots.add(vm.alloc(std::make_unique<SetVal>())); } break;
             case Tag::Object:
             case Tag::Stateful: {
-                const Handle* cls = vm.findClass(nd.s);
+                // A user instance's class name may be qualified `module:Class`; resolve fuzzily so it
+                // reconstructs to the right module's class (or falls back to a same-named class).
+                const Handle* cls = vm.findClassFuzzy(nd.s);
                 if (cls && vm.arena().deref(*cls).kind() == ValueKind::Class) {
                     // a user class: create a bare instance now; attributes/state are filled below
                     auto inst = std::make_unique<InstanceValue>();
                     inst->cls = *cls;
-                    inst->className = nd.s;
+                    // Mirror the RESOLVED class's identity name, not the blob's stored name: when the
+                    // exact qualified class is absent and findClassFuzzy binds a same-named class from
+                    // another module (or a bare re-parse), className must agree with inst->cls so
+                    // type()/str() and isinstance (which walks inst->cls) can never disagree.
+                    inst->className = static_cast<const ClassValue&>(vm.arena().deref(*cls)).name;
                     inst->ownerVM_ = &vm;   // owner VM for _hash_/_eq_/_bool_ (multi-VM safe)
                     // Cache the dunder availability now — single-sourced with ClassValue::callFull via
                     // cacheDunderFlags — so a deserialised instance is hashable/equatable/truthy to the

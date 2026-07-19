@@ -1,0 +1,3 @@
+class StopIteration:
+    var _init_ = Function(self):
+        self.marker = "user-stop"
