@@ -11,6 +11,7 @@
     { "include": "#constants" },
     { "include": "#self" },
     { "include": "#types" },
+    { "include": "#builtin-classes" },
     { "include": "#special-methods" },
     { "include": "#builtins" },
     { "include": "#function-call" },
@@ -128,6 +129,7 @@
         { "include": "#numbers" },
         { "include": "#constants" },
         { "include": "#builtins" },
+        { "include": "#builtin-classes" },
         { "include": "#types" },
         { "include": "#operators" }
       ]
@@ -189,14 +191,20 @@
       "match": "\\b(Integer|Float|String|Bool|Bytes|List|Set|Dict|Array|Any)\\b"
     },
 
+    "builtin-classes": {
+      "comment": "built-in classes that are always in scope (currently just the StopIteration exception).",
+      "name": "support.class.kirito",
+      "match": "\\b(StopIteration)\\b"
+    },
+
     "special-methods": {
       "name": "entity.name.function.special.kirito",
-      "match": "\\b(_init_|_str_|_add_|_sub_|_mul_|_div_|_floordiv_|_mod_|_pow_|_eq_|_ne_|_lt_|_le_|_gt_|_ge_|_neg_|_not_|_bool_|_call_|_getitem_|_setitem_|_len_|_contains_|_iter_|_enter_|_exit_|_hash_|_super_|_getstate_|_setstate_)\\b"
+      "match": "\\b(_init_|_str_|_add_|_sub_|_mul_|_div_|_floordiv_|_mod_|_pow_|_eq_|_ne_|_lt_|_le_|_gt_|_ge_|_neg_|_not_|_bool_|_call_|_getitem_|_setitem_|_len_|_contains_|_iter_|_next_|_enter_|_exit_|_hash_|_super_|_getstate_|_setstate_)\\b"
     },
 
     "builtins": {
       "name": "support.function.builtin.kirito",
-      "match": "\\b(abs|all|any|bin|bitand|bitnot|bitor|bitxor|chr|divmod|enumerate|filter|format|fromhex|hasattr|hex|id|import|inspect|isinstance|len|map|max|min|oct|ord|pow|range|reversed|round|shl|shr|sorted|sum|type|zip)\\b"
+      "match": "\\b(abs|all|any|bin|bitand|bitnot|bitor|bitxor|chr|divmod|enumerate|filter|format|fromhex|hasattr|hex|id|import|inspect|isinstance|iter|len|map|max|min|oct|ord|pow|range|reversed|round|shl|shr|sorted|sum|type|zip)\\b"
     },
 
     "function-call": {
