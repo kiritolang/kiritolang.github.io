@@ -2,7 +2,7 @@
   "name": "kirito-language",
   "displayName": "Kirito Language",
   "description": "Syntax highlighting, bracket/indent rules, and snippets for the Kirito scripting language (.ki).",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "kirito",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/kiritolang/kiritolang.github.io" },

@@ -20,8 +20,8 @@ Language support for the [Kirito](https://github.com/kiritolang/kiritolang.githu
 Local: copy this folder to your extensions dir and reload VS Code —
 
 ```sh
-cp -r docs/editors/vscode ~/.vscode/extensions/kirito-language-0.2.0
-# Windows: %USERPROFILE%\.vscode\extensions\kirito-language-0.2.0
+cp -r docs/editors/vscode ~/.vscode/extensions/kirito-language-0.2.1
+# Windows: %USERPROFILE%\.vscode\extensions\kirito-language-0.2.1
 ```
 
 Or package a `.vsix`:
@@ -29,7 +29,7 @@ Or package a `.vsix`:
 ```sh
 npm install -g @vscode/vsce
 vsce package
-code --install-extension kirito-language-0.2.0.vsix
+code --install-extension kirito-language-0.2.1.vsix
 ```
 
 The grammar also works in any TextMate-grammar-aware tool (Sublime Text, the `bat` pager, …) via
