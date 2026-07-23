@@ -103,6 +103,45 @@ int main() {
         CHECK(!has(w, "re-declared"));
     }
 
+    // --- a `var` in a NESTED block shadowing an outer binding of the SAME scope ---
+    // The footgun: because if/while/for blocks SHARE the enclosing scope (function scoping), a
+    // `var x` in a nested block silently REBINDS the enclosing `var x` instead of making a new local.
+    {
+        auto w = warn("var f = Function(number):\n    var x = number\n    if True:\n        var x = 12\n    return x\n");
+        CHECK(has(w, "variable 'x' shadows an outer 'x'"));
+    }
+    // deeper nesting is still flagged
+    {
+        auto w = warn("var f = Function():\n    var x = 1\n    if True:\n        if True:\n            var x = 3\n    return x\n");
+        CHECK(has(w, "shadows an outer 'x'"));
+    }
+    // a `var` reusing a PARAMETER name is the same silent rebind
+    {
+        auto w = warn("var f = Function(x):\n    var x = 5\n    return x\n");
+        CHECK(has(w, "shadows an outer 'x'"));
+    }
+    // module-level too: a nested block's `var` rebinds the module binding
+    {
+        auto w = warn("var x = 1\nif True:\n    var x = 2\n");
+        CHECK(has(w, "shadows an outer 'x'"));
+    }
+    // sibling if/else branches are NOT ancestors of each other -> NOT a shadow (legitimate)
+    {
+        auto w = warn("var f = Function(c):\n    if c:\n        var x = 1\n    else:\n        var x = 2\n    return 0\n");
+        CHECK(!has(w, "shadows"));
+    }
+    // shadowing a name from an ENCLOSING function/module is a distinct, legitimate scope -> silent
+    {
+        auto w = warn("var x = 1\nvar f = Function():\n    var x = 2\n    return x\n");
+        CHECK(!has(w, "shadows"));
+    }
+    // a same-block re-declaration is the OTHER rule (not "shadows") — the inner is not an ancestor
+    {
+        auto w = warn("var f = Function():\n    var x = 1\n    var x = 2\n    return x\n");
+        CHECK(has(w, "re-declared in this block"));
+        CHECK(!has(w, "shadows"));
+    }
+
     // --- unreachable code after a terminator ---
     {
         auto w = warn("var f = Function():\n    return 1\n    var x = 2\n");

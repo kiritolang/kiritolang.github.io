@@ -199,6 +199,7 @@ execution continues. Disable it with `ki -w` / `--no-warn`.
 | `variable '<name>' is assigned but never used` | A function-local binding never read |
 | `result of expression is unused; prefix with 'discard' to ignore it intentionally` | A bare expression statement whose non-`None` value is dropped |
 | `variable '<name>' is re-declared in this block` | A `var` re-declared in the same block |
+| `variable '<name>' shadows an outer '<name>'; nested blocks share the enclosing scope, so this \`var\` rebinds it rather than declaring a new variable` | A `var` in a nested `if`/`while`/`for`/`with`/`try` block reuses a name already declared (as a `var` or parameter) in an enclosing block of the **same** scope — because blocks share that scope, it silently rebinds the outer binding instead of making a new local. Use `=` to rebind, or a new name. (Shadowing an *enclosing scope's* name — a different function/module — is legitimate and not flagged.) |
 | `unreachable code (the block already returns/throws/breaks/continues before this)` | A statement after a terminator in the same block |
 | `self-assignment of '<name>' has no effect` | `x = x` (name-to-name) |
 | `duplicate parameter name '<name>'` | The same parameter name declared twice |

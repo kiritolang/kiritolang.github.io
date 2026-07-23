@@ -43,6 +43,24 @@ var f = Function():
     return y
 ```
 
+**Blocks share their enclosing scope.** Only functions, the module, and class bodies introduce a
+scope — `if`/`while`/`for`/`with`/`try` blocks do **not**. So a `var` inside a nested block that
+reuses a name from an enclosing block of the *same* scope **rebinds that binding** (it does not create
+a new block-local, unlike C/Rust/Swift). Because that is an easy trap, the analyzer warns:
+
+<!--norun (illustrative — analyzer warning, still runs)-->
+```kirito
+var f = Function(n):
+    var x = n
+    if True:
+        var x = 12   # warning: 'x' shadows an outer 'x' — this REBINDS it (use `=`), not a new local
+    return x          # 12, not n
+```
+
+Write `x = 12` (a plain rebind) if that is what you mean, or pick a new name for a genuinely separate
+value. (Shadowing a name from an *enclosing* function or the module is ordinary lexical shadowing and
+is not warned.)
+
 ## Types
 
 Dynamically typed, strongly typed. Built-in types:
