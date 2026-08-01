@@ -14,6 +14,12 @@
 //     prefix with 'discard' to ignore it intentionally". `discard EXPR` suppresses this.
 //   - a second `var` of the same name in one block -> "re-declared in this block" (block-scoped to
 //     avoid flagging the legitimate `if: var x .. else: var x` pattern).
+//   - a `var` in a NESTED block whose name is already declared (as a `var` or a parameter) in an
+//     ENCLOSING block of the SAME scope -> "shadows an outer 'x'". Because if/while/for/with/try
+//     blocks share their enclosing function/module scope (see resolver.hpp), such a `var` silently
+//     REBINDS the outer binding instead of introducing a new local — a footgun for anyone expecting
+//     block scoping. Only same-scope ancestor shadowing is flagged: sibling branches (if/else) and
+//     shadowing an ENCLOSING function's/module's variable (a different, legitimate scope) stay silent.
 //   - a statement that can never run because the block already returned/threw/broke/continued ->
 //     "unreachable code".
 //   - `x = x` -> "self-assignment ... has no effect".
@@ -58,11 +64,24 @@ private:
     };
     std::vector<Scope> scopes_;
     std::vector<Warning> warnings_;
+    // The chain of `var`/param names declared in each block on the path from the current scope's
+    // outermost block down to the block being analyzed (index 0 = outermost). A `var` whose name
+    // appears in an ANCESTOR entry silently rebinds it (blocks share the enclosing scope) — the
+    // shadowing footgun. Reset per scope (saved/restored by push/popScope), because shadowing a name
+    // from an ENCLOSING function/module is a distinct, legitimate scope and must NOT be flagged.
+    std::vector<fum::unordered_set<std::string>> blockChain_;
+    std::vector<std::vector<fum::unordered_set<std::string>>> savedChains_;
     fum::unordered_set<std::string> pendingUsed_;  // names read before their declaration (forward capture)
     int depth_ = 0;  // analyzeExpr recursion depth (bounded, anti-stack-overflow)
     struct DepthPop { int& d; ~DepthPop() { --d; } };
 
-    void pushScope(bool checkUnused = true) { scopes_.emplace_back(); scopes_.back().checkUnused = checkUnused; }
+    void pushScope(bool checkUnused = true) {
+        scopes_.emplace_back(); scopes_.back().checkUnused = checkUnused;
+        // A scope boundary resets the block chain — shadowing is only a footgun WITHIN one scope
+        // (blocks sharing it); shadowing an enclosing scope's name is legitimate lexical shadowing.
+        savedChains_.push_back(std::move(blockChain_));
+        blockChain_.clear();
+    }
     void popScope() {
         Scope& sc = scopes_.back();
         if (sc.checkUnused)
@@ -70,6 +89,17 @@ private:
                 if (!d.used && !d.isParam && name != "self" && name[0] != '_')
                     warnings_.push_back({d.span, "variable '" + name + "' is assigned but never used"});
         scopes_.pop_back();
+        blockChain_ = std::move(savedChains_.back());
+        savedChains_.pop_back();
+    }
+
+    // True if `name` was declared (as a `var` or parameter) in an ANCESTOR block of the block
+    // currently being analyzed, within this same scope — i.e. a `var name` here rebinds it.
+    bool shadowsEnclosingBlock(const std::string& name) const {
+        if (blockChain_.empty()) return false;
+        for (std::size_t i = 0; i + 1 < blockChain_.size(); ++i)
+            if (blockChain_[i].count(name)) return true;
+        return false;
     }
 
     void declare(const std::string& name, SourceSpan span, bool isParam = false) {
@@ -129,7 +159,8 @@ private:
 
     // --- statement walk -------------------------------------------------------------------------
     void analyzeBlock(const ast::Block& block) {
-        fum::unordered_set<std::string> declaredHere;  // `var` names seen in THIS block
+        blockChain_.emplace_back();                 // this block's `var`/param name set
+        const std::size_t level = blockChain_.size() - 1;   // index (stable across nested reallocs)
         bool terminated = false, unreachableWarned = false;
         for (const auto& s : block) {
             if (terminated && !unreachableWarned) {
@@ -138,13 +169,19 @@ private:
                 unreachableWarned = true;  // one warning per block is enough
             }
             if (const auto* v = dynamic_cast<const ast::VarDeclStmt*>(s.get()))
-                for (const auto& name : v->names)
-                    if (!declaredHere.insert(name).second)
+                for (const auto& name : v->names) {
+                    if (!blockChain_[level].insert(name).second)
                         warnings_.push_back({v->span,
                             "variable '" + name + "' is re-declared in this block"});
+                    else if (shadowsEnclosingBlock(name))
+                        warnings_.push_back({v->span, "variable '" + name + "' shadows an outer '" +
+                            name + "'; nested blocks share the enclosing scope, so this `var` rebinds "
+                            "it rather than declaring a new variable (use `=` to rebind, or rename)"});
+                }
             analyzeStmt(*s);
             if (isTerminator(*s)) terminated = true;
         }
+        blockChain_.pop_back();
     }
 
     void analyzeStmt(const ast::Stmt& s) {
@@ -313,14 +350,18 @@ private:
 
     void analyzeFunction(const ast::FunctionExpr& fn) {
         pushScope();
-        // Duplicate parameter names are now a hard PARSE error (parser.hpp), so the AST here never
-        // holds one — no analyzer warning needed.
+        // Parameters form the body's outermost ancestor block: a `var p` in the body (or a nested
+        // block) reusing a parameter name silently rebinds the parameter, so flag it like any shadow.
+        // (Duplicate parameter names are a hard PARSE error — parser.hpp — so the AST never holds one.)
+        blockChain_.emplace_back();
         for (const auto& p : fn.params) {
             if (p.defaultValue) analyzeExpr(*p.defaultValue);  // defaults evaluate in the outer-ish scope
             declare(p.name, fn.span, /*isParam=*/true);
+            blockChain_.back().insert(p.name);
         }
         for (const auto& s : fn.body) collectFunctions(*s);
         analyzeBlock(fn.body);
+        blockChain_.pop_back();
         popScope();
     }
 };
