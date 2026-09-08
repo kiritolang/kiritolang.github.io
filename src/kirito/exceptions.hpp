@@ -65,6 +65,13 @@ private:
     std::string message_;
 };
 
+// Single source of the "unhashable type" diagnostic, raised identically by every hash entry point
+// (Object::hash, the Dict/Set key guard, the `hash` builtin, the value.hpp wrapper). One spelling so
+// the message can't drift across sites. `typeName` is the offending value's type (or class) name.
+inline KiritoError unhashableError(const std::string& typeName) {
+    return KiritoError("unhashable type '" + typeName + "'");
+}
+
 }  // namespace kirito
 
 #endif

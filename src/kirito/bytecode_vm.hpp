@@ -450,6 +450,11 @@ public:
                 case Op::RestoreExcSpan: { excSpan_ = excSpans_[in.a]; } break;
                 case Op::ExcMatch: {
                     Handle type = pop(), exc = pop();
+                    // A typed `catch` whose type expression is not a type (None, an Integer, an
+                    // instance) must fail loudly here — the same validity check isinstance uses —
+                    // rather than silently never matching and hiding a dead handler.
+                    if (!isValidTypeSpec(vm_, type))
+                        throw KiritoError("catch type must be a class, a built-in type, or a type-name String", in.span);
                     push(vm_.makeBool(isInstanceOf(vm_, exc, type)));
                 } break;
                 case Op::Throw: { Handle v = pop(); KiritoThrow t{v, in.span}; t.depth = static_cast<int>(vm_.callDepth()); throw t; } break;

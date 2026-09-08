@@ -62,7 +62,8 @@ Run as `ki greet.ki Ada --count 2 --loud` → prints `HELLO, ADA!` twice.
 Operates on **byte values**: a `List` of Integers (0–255), a [`Bytes`](types.html#bytes), or a
 `String` (encoded as its UTF-8 bytes).
 
-- `encode(data: List | Bytes | String) → String` — Base64-encode the data.
+- `encode(data: List | Bytes | String) → String` — Base64-encode the data. A `List` element outside
+  `0..255` (or a non-Integer) throws rather than being silently coerced mod 256.
 - `decode(s: String) → List` — decode Base64 text back to a list of byte values. Validates its input:
   an invalid character, a lone trailing character, non-zero leftover bits, or any data after the `=`
   padding all throw (no silent truncation). Padless-but-otherwise-valid input decodes.
@@ -407,12 +408,19 @@ correctly; `hash(value)` accepts any hashable value.
 - `crc32(data) → Integer` — CRC-32 (IEEE) checksum (as gzip/PNG use).
 - `crc64(data) → Integer` — CRC-64/XZ checksum, returned as a signed Integer (the top bit makes large
   values negative, since Kirito integers are 64-bit signed).
-- `hash(value) → Integer` — the same hash `Dict`/`Set` bucket their keys by, exposed to Kirito. Works
-  on every hashable value: `Integer` (identity), `Float`, `Bool`, `None`, `String` and `Bytes`
-  (content-based), and a user-class instance whose class defines
-  [`_hash_`](types.html#hashability-set-dict-keys). An unhashable input throws `unhashable type
-  '<name>'` — the same message a `Dict[key]` assignment would produce. Compose this inside a
-  class's own `_hash_` to fold nested attributes (`return hash.hash(self.email)`).
+- `hash(value) → Integer` — a stable, portable **logical** hash for a value: `Integer` (identity),
+  `Float`, `Bool`, `None`, `String` and `Bytes` (content-based), and a user-class instance whose class
+  defines [`_hash_`](types.html#hashability-set-dict-keys). Equal values hash equal (so `hash(1)`,
+  `hash(1.0)` and a `Set` treat them the same). An unhashable input throws `unhashable type '<name>'` —
+  the same message a `Dict[key]` assignment would produce. Compose this inside a class's own `_hash_`
+  to fold nested attributes (`return hash.hash(self.email)`). This value is deterministic and
+  reproducible; it is **not** the internal placement `Dict`/`Set` bucket keys by — those fold in a
+  per-VM random seed to resist algorithmic-complexity (**HashDoS**) attacks, where an attacker who
+  controls keys (untrusted JSON object keys, HTTP parameters) crafts many that collide into one bucket
+  and drive a container to quadratic time. The seed is drawn from the OS CSPRNG per VM and never
+  affects program output (iteration is insertion-ordered; serialization writes values, not hashes), so
+  it changes nothing observable. Set the `KIRITO_HASH_SEED` environment variable (decimal or `0x`-hex)
+  to pin it for a reproducible bucket layout while debugging.
 
 ---
 
@@ -743,7 +751,9 @@ The `options` Dict may contain: `headers` (Dict), `params` (Dict → query strin
 form-Dict, or `Bytes` → sent as `application/octet-stream`), `json` (any value → JSON body +
 `application/json`), `files` (Dict → `multipart/form-data`
 upload; value is content or `[filename, content]`), `auth` (`[user, pass]` → HTTP Basic), `timeout`
-(seconds), `allowredirects` (Bool, default `True`) / `maxredirects` (Integer, default 10), `verify`
+(seconds — **no timeout by default**, so a request can block indefinitely against an unresponsive or
+black-hole host; set an explicit `timeout` for any unattended or production caller), `allowredirects`
+(Bool, default `True`) / `maxredirects` (Integer, default 10), `verify`
 (Bool, default `True` — TLS certificate verification; trust roots come from the OS — OpenSSL's default
 paths or the `SSL_CERT_FILE` env var on Unix, the Windows system certificate store on Windows — and a
 verify failure reports the specific reason; pass `verify = False` to skip), and `cookies` (Dict). Redirects are followed

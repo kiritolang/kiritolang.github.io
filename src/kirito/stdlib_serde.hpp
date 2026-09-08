@@ -448,6 +448,12 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             }
             return out;
         };
+        // Precompute each pending class's eager frontier ONCE. It is purely structural (independent of
+        // `built`), yet frontierDepsReady re-derives it on every readiness scan — up to O(C) scans x
+        // O(C) classes x O(n) per frontier = O(C^2 * n) on a hostile many-class blob. Caching collapses
+        // the whole ordering pass to O(C * n).
+        std::vector<std::vector<uint32_t>> frontierCache(n);
+        for (uint32_t i : pending) frontierCache[i] = eagerFrontier(i);
         // A class waits for the classes its own eager free variables NAME — its base and the classes a
         // class-variable initializer refers to directly. That is precisely what the body dereferences
         // by name, so it never demands an order the graph cannot give.
@@ -471,7 +477,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         // is far too late — the initializers run HERE. Values still unbuilt at this point (an instance,
         // a native stateful) keep their placeholder, exactly as before; pass 5 finishes the job.
         auto bindEagerHelpers = [&](uint32_t i) {
-            for (uint32_t id : eagerFrontier(i)) {
+            for (uint32_t id : frontierCache[i]) {
                 if (nodes[id].tag != Tag::Function || !deserScope[id].slot) continue;
                 const Node& d = nodes[id];
                 auto& env = static_cast<EnvValue&>(vm.arena().deref(deserScope[id]));
@@ -521,7 +527,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         // at DIRECT links, cannot. Reachability is a sound over-approximation of the real dependency,
         // so where it is acyclic it gives the exact order.
         auto frontierDepsReady = [&](uint32_t i) -> bool {
-            for (uint32_t id : eagerFrontier(i))
+            for (uint32_t id : frontierCache[i])
                 if (id != i && nodes[id].tag == Tag::Class && !built[id]) return false;
             return true;
         };

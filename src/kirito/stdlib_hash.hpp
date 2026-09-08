@@ -122,9 +122,12 @@ public:
             Args args(vm, a, "hash");
             const Object& o = vm.arena().deref(args[0].handle());
             if (!o.hashable())
-                throw KiritoError("unhashable type '" + o.typeName() + "'");
-            // The Object::hash() virtual returns size_t; reinterpret as int64_t so the Integer
-            // preserves every bit (dict-lookup identity is what matters, not the numeric value).
+                throw unhashableError(o.typeName());
+            // Deliberately the LOGICAL hash() (stable, documented: Integer hashes to itself), NOT the
+            // seeded Object::bucketHash() Dict/Set place keys with. The two are intentionally decoupled
+            // (see hashmix.hpp): this is a portable, reproducible value; bucket placement is a
+            // seed-randomized HashDoS defence that must never surface. Reinterpret size_t as int64_t so
+            // the Integer preserves every bit (identity is what matters, not the numeric value).
             return Value(vm, static_cast<int64_t>(o.hash()));
         });
     }

@@ -1,0 +1,26 @@
+# spec_float_repr.ki — regression for the lossy-float-serialization bug (v1.17.1).
+# String(float) is display-oriented (%.15g) and is NOT always round-trippable, so a data path that
+# stringified cells with String() (tabular.tocsv / csv.formatrow) silently truncated precision on a
+# read/modify/write cycle. Float.repr() is the new public round-trippable formatter; the CSV writers
+# now use it for Float cells.
+
+var io      = import("io")
+var tabular = import("tabular")
+
+# repr() yields the shortest decimal that parses back to the EXACT same double.
+var xs = [1.0 / 3.0, 0.1, 0.1 + 0.2, 123456789.123456789, 1e300, 5e-324, -0.0, 2.0]
+for x in xs:
+    assert Float(x.repr()) == x, "repr round-trips: " + x.repr()
+
+# repr() stays compact for clean values (not a fixed 17-digit blob).
+assert (0.5).repr() == "0.5", "0.5 repr is compact"
+assert (2.0).repr() == "2.0", "2.0 keeps a decimal point"
+
+# The reported bug: read a CSV, write it back, read again — the float must be identical.
+var df  = tabular.readcsv("v\n0.3333333333333333\n")
+var s   = df.tocsv()
+var df2 = tabular.readcsv(s)
+assert df2["v"][0] == df["v"][0], "tabular CSV float survives write/read"
+assert df["v"][0].repr() in s, "tocsv wrote the round-trippable form"
+
+io.print("spec_float_repr: ok")

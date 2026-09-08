@@ -14,12 +14,14 @@
 //     prefix with 'discard' to ignore it intentionally". `discard EXPR` suppresses this.
 //   - a second `var` of the same name in one block -> "re-declared in this block" (block-scoped to
 //     avoid flagging the legitimate `if: var x .. else: var x` pattern).
-//   - a `var` in a NESTED block whose name is already declared (as a `var` or a parameter) in an
-//     ENCLOSING block of the SAME scope -> "shadows an outer 'x'". Because if/while/for/with/try
-//     blocks share their enclosing function/module scope (see resolver.hpp), such a `var` silently
-//     REBINDS the outer binding instead of introducing a new local — a footgun for anyone expecting
-//     block scoping. Only same-scope ancestor shadowing is flagged: sibling branches (if/else) and
-//     shadowing an ENCLOSING function's/module's variable (a different, legitimate scope) stay silent.
+//   - a `var` in a NESTED block whose name is already bound in an ENCLOSING block of the SAME scope
+//     -> "shadows an outer 'x'". The enclosing binding can be a `var`, a parameter, a `for` loop
+//     variable, or a `catch`/`with ... as` name — every one of these lives in the shared scope.
+//     Because if/while/for/with/try blocks share their enclosing function/module scope (see
+//     resolver.hpp), such a `var` silently REBINDS the outer binding instead of introducing a new
+//     local — a footgun for anyone expecting block scoping. Only same-scope ancestor shadowing is
+//     flagged: sibling branches (if/else) and shadowing an ENCLOSING function's/module's variable
+//     (a different, legitimate scope) stay silent.
 //   - a statement that can never run because the block already returned/threw/broke/continued ->
 //     "unreachable code".
 //   - `x = x` -> "self-assignment ... has no effect".
@@ -64,11 +66,13 @@ private:
     };
     std::vector<Scope> scopes_;
     std::vector<Warning> warnings_;
-    // The chain of `var`/param names declared in each block on the path from the current scope's
-    // outermost block down to the block being analyzed (index 0 = outermost). A `var` whose name
-    // appears in an ANCESTOR entry silently rebinds it (blocks share the enclosing scope) — the
-    // shadowing footgun. Reset per scope (saved/restored by push/popScope), because shadowing a name
-    // from an ENCLOSING function/module is a distinct, legitimate scope and must NOT be flagged.
+    // The chain of names BOUND in each block on the path from the current scope's outermost block
+    // down to the block being analyzed (index 0 = outermost). A block's entry holds its `var`
+    // declarations plus the bindings a `for`/`catch`/`with` introduces for its body (modelled as a
+    // synthetic ancestor block, like a function's parameters). A `var` whose name appears in an
+    // ANCESTOR entry silently rebinds it (blocks share the enclosing scope) — the shadowing footgun.
+    // Reset per scope (saved/restored by push/popScope), because shadowing a name from an ENCLOSING
+    // function/module is a distinct, legitimate scope and must NOT be flagged.
     std::vector<fum::unordered_set<std::string>> blockChain_;
     std::vector<std::vector<fum::unordered_set<std::string>>> savedChains_;
     fum::unordered_set<std::string> pendingUsed_;  // names read before their declaration (forward capture)
@@ -93,8 +97,9 @@ private:
         savedChains_.pop_back();
     }
 
-    // True if `name` was declared (as a `var` or parameter) in an ANCESTOR block of the block
-    // currently being analyzed, within this same scope — i.e. a `var name` here rebinds it.
+    // True if `name` was bound (as a `var`, parameter, `for` variable, or `catch`/`with` name) in an
+    // ANCESTOR block of the block currently being analyzed, within this same scope — i.e. a `var name`
+    // here rebinds it.
     bool shadowsEnclosingBlock(const std::string& name) const {
         if (blockChain_.empty()) return false;
         for (std::size_t i = 0; i + 1 < blockChain_.size(); ++i)
@@ -211,7 +216,13 @@ private:
             analyzeExpr(*f->iterable);
             for (const auto& name : f->vars) declare(name, f->span);  // loop vars count as used-ish
             for (const auto& name : f->vars) markUsed(name);          // don't warn on loop variables
+            // The loop variables live in the shared scope (they persist past the loop), so a `var` of
+            // the same name in the body silently rebinds them — model them as a synthetic ancestor
+            // block of the body (like a function's parameters) so that shadow is flagged.
+            blockChain_.emplace_back();
+            for (const auto& name : f->vars) blockChain_.back().insert(name);
             analyzeBlock(f->body);
+            blockChain_.pop_back();
         } else if (const auto* r = dynamic_cast<const ast::ReturnStmt*>(&s)) {
             if (r->value) analyzeExpr(*r->value);
         } else if (const auto* t = dynamic_cast<const ast::TryStmt*>(&s)) {
@@ -219,7 +230,12 @@ private:
             for (const auto& h : t->handlers) {
                 if (h.type) analyzeExpr(*h.type);
                 if (!h.name.empty()) { declare(h.name, t->span); markUsed(h.name); }
+                // The `catch ... as name` binding shares the enclosing scope; model it as a synthetic
+                // ancestor block so a `var name` inside the handler is flagged as a silent rebind.
+                blockChain_.emplace_back();
+                if (!h.name.empty()) blockChain_.back().insert(h.name);
                 analyzeBlock(h.body);
+                blockChain_.pop_back();
             }
             if (t->hasFinally) analyzeBlock(t->finallyBody);
         } else if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&s)) {
@@ -234,7 +250,12 @@ private:
         } else if (const auto* wi = dynamic_cast<const ast::WithStmt*>(&s)) {
             analyzeExpr(*wi->context);
             if (!wi->name.empty()) { declare(wi->name, wi->span); markUsed(wi->name); }
+            // The `with ... as name` binding shares the enclosing scope; model it as a synthetic
+            // ancestor block so a `var name` inside the body is flagged as a silent rebind.
+            blockChain_.emplace_back();
+            if (!wi->name.empty()) blockChain_.back().insert(wi->name);
             analyzeBlock(wi->body);
+            blockChain_.pop_back();
         } else if (const auto* td = dynamic_cast<const ast::TodoStmt*>(&s)) {
             warnings_.push_back({td->span, td->message.empty()
                                                ? "todo: not yet implemented"

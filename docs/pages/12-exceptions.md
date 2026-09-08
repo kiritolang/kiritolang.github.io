@@ -199,7 +199,7 @@ execution continues. Disable it with `ki -w` / `--no-warn`.
 | `variable '<name>' is assigned but never used` | A function-local binding never read |
 | `result of expression is unused; prefix with 'discard' to ignore it intentionally` | A bare expression statement whose non-`None` value is dropped |
 | `variable '<name>' is re-declared in this block` | A `var` re-declared in the same block |
-| `variable '<name>' shadows an outer '<name>'; nested blocks share the enclosing scope, so this \`var\` rebinds it rather than declaring a new variable` | A `var` in a nested `if`/`while`/`for`/`with`/`try` block reuses a name already declared (as a `var` or parameter) in an enclosing block of the **same** scope — because blocks share that scope, it silently rebinds the outer binding instead of making a new local. Use `=` to rebind, or a new name. (Shadowing an *enclosing scope's* name — a different function/module — is legitimate and not flagged.) |
+| `variable '<name>' shadows an outer '<name>'; nested blocks share the enclosing scope, so this \`var\` rebinds it rather than declaring a new variable` | A `var` in a nested `if`/`while`/`for`/`with`/`try` block reuses a name already bound (as a `var`, a parameter, a `for` loop variable, or a `catch`/`with ... as` name) in an enclosing block of the **same** scope — because blocks share that scope, it silently rebinds the outer binding instead of making a new local. Use `=` to rebind, or a new name. (Shadowing an *enclosing scope's* name — a different function/module — is legitimate and not flagged.) |
 | `unreachable code (the block already returns/throws/breaks/continues before this)` | A statement after a terminator in the same block |
 | `self-assignment of '<name>' has no effect` | `x = x` (name-to-name) |
 | `duplicate parameter name '<name>'` | The same parameter name declared twice |
@@ -391,7 +391,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 |---|---|---|
 | `cannot convert String to Integer: '<s>'` / `cannot convert String to Float: '<s>'` | `Integer("x")`/`Float("x")` on a non-numeric string | Pass a parseable numeric string |
 | `cannot convert '<T>' to Integer` / `cannot convert '<T>' to Float` | Converting an unsupported type | Convert a supported type |
-| `cannot convert Float NaN/infinity to Integer` / `Float is out of Integer range` | `Integer(nan/inf/huge float)` | Guard non-finite / out-of-range floats |
+| `Integer: cannot convert NaN/infinity to Integer` / `Integer: result out of Integer range` | `Integer(nan/inf/huge float)` | Guard non-finite / out-of-range floats |
 | `cannot round NaN/infinity to Integer` / `rounded value out of Integer range` | `round()` of a non-finite/huge value | Guard the value |
 | `round ndigits must be an Integer` / `round expects a number` | Bad `round` args | Pass a number (and Integer ndigits) |
 | `abs expects a number` | `abs()` of a non-number | Pass a number |
@@ -796,7 +796,7 @@ OpenSSL-gated. On a non-TLS build every function throws the first row below; bra
 | `int: base must be between 2 and 36` / `fromstring: base must be between 2 and 36` | A radix outside 2..36 | Use base 2–36 |
 | `int: invalid integer literal '<s>'` | Non-numeric text (for the chosen base) to `BigInt`/`fromstring` | Pass valid digits |
 | `BigInt expects an Integer, a String, or a BigInt` | `BigInt(x)` on an unsupported type | Pass an Integer/String/BigInt |
-| `int: number too large (exceeds size limit)` / `int: pow result too large …` / `int.pow: exponent too large` / `pow: exponent too large` | A BigInt op would exceed the `kMaxLimbs` guard (runaway mul/pow/factorial) | Reduce the magnitude/exponent |
+| `int: number too large (exceeds size limit)` / `int: pow result too large …` / `pow: exponent too large` | A BigInt op would exceed the `kMaxLimbs` guard (runaway mul/pow/factorial). `int.pow` and `**` share one power engine, so a trivial base (0, ±1) returns the exact result instead of throwing | Reduce the magnitude/exponent |
 | `int.pow: negative exponent (use ** for a Float, or modpow for modular)` | A negative exponent to `int.pow` | Use `**` (Float) or `modpow` |
 | `integer division by zero` / `integer modulo by zero` / `division by zero` | `//` / `%` / `/` a BigInt by zero | Guard the divisor |
 | `modpow: modulus is zero` / `modpow: negative exponent` | Bad `modpow` args | Positive modulus, non-negative exponent |
@@ -826,6 +826,7 @@ large* — live under [Resource guards](#resource-guards-repetition--padding--ra
 | `no mode for empty data` | `statistics.mode([])` | Provide data (or use `multimode`, which returns `[]`) |
 | `quantiles: n must be at least 1` | `statistics.quantiles(data, n)` with `n < 1` | Use `n ≥ 1` |
 | `invalid base64 character: '<ch>'` / `invalid base64: a lone trailing character (invalid length)` / `invalid base64: truncated or corrupted input` | `base64.decode` of malformed input | Decode only valid base64 |
+| `base64.encode: byte value out of range (0..255): <v>` | `base64.encode` of a `List` element outside 0–255 (or a non-Integer) | Pass valid byte values |
 | `heappop from empty heap` / `heapreplace on empty heap` | `heapq.heappop`/`heapreplace` on an empty list | Check the heap is non-empty |
 | `duplicate enum member: <name>` | Two members with the same name passed to `enum.Enum` | Use unique member names |
 | `no such enum member: <name>` | `e.nameof(v)` / member lookup for an unknown value | Look up an existing member |

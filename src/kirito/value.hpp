@@ -282,7 +282,7 @@ public:
     // insertion. Value-protocol identity is preserved: two `equals`-equal values hash the same.
     std::size_t hash() const {
         const Object& o = ref();
-        if (!o.hashable()) throw KiritoError("unhashable type '" + o.typeName() + "'");
+        if (!o.hashable()) throw unhashableError(o.typeName());
         return o.hash();
     }
 

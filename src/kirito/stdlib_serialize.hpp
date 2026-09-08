@@ -53,11 +53,11 @@ inline std::string encode(const std::vector<serde::Node>& nodes, uint32_t rootId
             case serde::Tag::None: { break; } break;
             case serde::Tag::Bool: { out << (n.b ? 1 : 0) << " "; } break;
             case serde::Tag::Integer: { out << n.i << " "; } break;
-            case serde::Tag::Float: {
-                char buf[32];
-                std::snprintf(buf, sizeof(buf), "%.17g", n.f);
-                out << buf << " ";
-            } break;
+            // Shortest round-tripping text via the single shared formatter (floatToRoundtrip, also used
+            // by json) — one source of truth for "a float that survives a serialize/parse cycle", and
+            // more compact than the old fixed %.17g (3.14 not 3.1400000000000001). The F tag makes the
+            // value's type explicit, so no disambiguating decimal point is required.
+            case serde::Tag::Float: { out << floatToRoundtrip(n.f) << " "; } break;
             case serde::Tag::String: { out << n.s.size() << " " << n.s << " "; } break;
             case serde::Tag::List:
             case serde::Tag::Set: {
@@ -100,7 +100,7 @@ public:
 
     std::pair<std::vector<serde::Node>, uint32_t> decode() {
         if (token() != "KSER1") throw KiritoError("bad serialization header");
-        long n = std::stol(token());
+        long n = toLong(token());
         if (n < 0 || static_cast<std::size_t>(n) > s_.size())
             throw KiritoError("corrupt serialized data: bad object count");
         // Grow incrementally rather than sizing to the untrusted `n` (a Node is ~80 B, min record a few
@@ -115,73 +115,86 @@ public:
             if (t.size() != 1) throw KiritoError("bad serialization tag '" + t + "'");
             switch (t[0]) {
                 case 'N': { nd.tag = serde::Tag::None; } break;
-                case 'B': { nd.tag = serde::Tag::Bool; nd.b = std::stoi(token()) != 0; } break;
-                case 'I': { nd.tag = serde::Tag::Integer; nd.i = std::stoll(token()); } break;
+                case 'B': { nd.tag = serde::Tag::Bool; nd.b = toLong(token()) != 0; } break;
+                case 'I': { nd.tag = serde::Tag::Integer; nd.i = toLL(token()); } break;
                 case 'F': { nd.tag = serde::Tag::Float; nd.f = parseDouble(token()); } break;   // parseDouble: subnormals don't trap
-                case 'S': { nd.tag = serde::Tag::String; int len = countToken(); nd.s = rawBytes(len); } break;
+                case 'S': { nd.tag = serde::Tag::String; long len = countToken(); nd.s = rawBytes(len); } break;
                 case 'L': { nd.tag = serde::Tag::List; readIds(nd.links); } break;
                 case 'T': { nd.tag = serde::Tag::Set; readIds(nd.links); } break;
                 case 'D': {
                     nd.tag = serde::Tag::Dict;
-                    int pairs = countToken();
-                    for (long k = 0; k < static_cast<long>(pairs) * 2; ++k) nd.links.push_back(static_cast<uint32_t>(std::stol(token())));
+                    long pairs = countToken();
+                    for (long k = 0; k < static_cast<long>(pairs) * 2; ++k) nd.links.push_back(static_cast<uint32_t>(toLong(token())));
                 } break;
                 case 'O': {
                     nd.tag = serde::Tag::Object;
-                    int len = countToken();
+                    long len = countToken();
                     nd.s = rawBytes(len);
-                    int pairs = countToken();
-                    for (long k = 0; k < static_cast<long>(pairs) * 2; ++k) nd.links.push_back(static_cast<uint32_t>(std::stol(token())));
+                    long pairs = countToken();
+                    for (long k = 0; k < static_cast<long>(pairs) * 2; ++k) nd.links.push_back(static_cast<uint32_t>(toLong(token())));
                 } break;
                 case 'P': {
                     nd.tag = serde::Tag::Stateful;
-                    int len = countToken();
+                    long len = countToken();
                     nd.s = rawBytes(len);
-                    nd.links.push_back(static_cast<uint32_t>(std::stol(token())));
+                    nd.links.push_back(static_cast<uint32_t>(toLong(token())));
                 } break;
                 case 'U': {
                     nd.tag = serde::Tag::Function;
-                    int len = countToken();
+                    long len = countToken();
                     nd.s = rawBytes(len);
-                    int pairs = countToken();
-                    for (long k = 0; k < static_cast<long>(pairs) * 2; ++k) nd.links.push_back(static_cast<uint32_t>(std::stol(token())));
+                    long pairs = countToken();
+                    for (long k = 0; k < static_cast<long>(pairs) * 2; ++k) nd.links.push_back(static_cast<uint32_t>(toLong(token())));
                 } break;
                 case 'C': {
                     nd.tag = serde::Tag::Class;
-                    int slen = countToken();
+                    long slen = countToken();
                     nd.s = rawBytes(slen);
-                    int nlen = countToken();
+                    long nlen = countToken();
                     nd.s2 = rawBytes(nlen);
-                    nd.i = std::stoll(token());
-                    int pairs = countToken();
-                    for (long k = 0; k < static_cast<long>(pairs) * 2; ++k) nd.links.push_back(static_cast<uint32_t>(std::stol(token())));
+                    nd.i = toLL(token());
+                    long pairs = countToken();
+                    for (long k = 0; k < static_cast<long>(pairs) * 2; ++k) nd.links.push_back(static_cast<uint32_t>(toLong(token())));
                 } break;
                 case 'M': {
                     nd.tag = serde::Tag::Module;
-                    int len = countToken();
+                    long len = countToken();
                     nd.s = rawBytes(len);
                 } break;
                 default: { throw KiritoError("bad serialization tag '" + t + "'"); } break;
             }
         }
-        uint32_t rootId = static_cast<uint32_t>(std::stoul(token()));
+        uint32_t rootId = static_cast<uint32_t>(toUL(token()));
         while (pos_ < s_.size() && s_[pos_] == ' ') ++pos_;   // trailing spaces are fine
         if (pos_ != s_.size()) throw KiritoError("trailing data after serialized root (corrupt or concatenated blob)");
         return {std::move(nodes), rootId};
     }
 
 private:
+    // Parse a WHOLE token as an integer, rejecting trailing junk. std::stol/stoll/stoul stop at the
+    // first non-digit and silently ignore the rest ("1zzz" -> 1, "0XYZ" -> 0), which would let garbage
+    // glued directly onto a numeric token (no separating space) slip past the trailing-data guard —
+    // accepting a corrupt/concatenated blob. Requiring the entire token to be consumed closes that hole.
+    void requireWhole(const std::string& t, std::size_t p) {
+        if (p != t.size()) throw KiritoError("corrupt serialized data: trailing characters in number '" + t + "'");
+    }
+    long toLong(const std::string& t)        { std::size_t p = 0; long v = std::stol(t, &p);           requireWhole(t, p); return v; }
+    long long toLL(const std::string& t)     { std::size_t p = 0; long long v = std::stoll(t, &p);      requireWhole(t, p); return v; }
+    unsigned long toUL(const std::string& t) { std::size_t p = 0; unsigned long v = std::stoul(t, &p);  requireWhole(t, p); return v; }
+
     // A non-negative element/pair count from untrusted text, bounded by the blob length (you cannot have
-    // more elements than bytes), so `count*2`/loops can't overflow int and a crafted huge/negative count
-    // throws cleanly instead of looping wild or signed-overflowing (UB).
-    int countToken() {
-        long v = std::stol(token());
+    // more elements than bytes), so `count*2`/loops can't overflow and a crafted huge/negative count
+    // throws cleanly instead of looping wild or signed-overflowing (UB). Returned as `long`, not `int`:
+    // a blob larger than INT_MAX would make a narrowing `static_cast<int>` implementation-defined
+    // (possibly negative), so the width matches the s_.size() bound it is checked against.
+    long countToken() {
+        long v = toLong(token());
         if (v < 0 || v > static_cast<long>(s_.size())) throw KiritoError("corrupt serialized data: bad count");
-        return static_cast<int>(v);
+        return v;
     }
     void readIds(std::vector<uint32_t>& out) {
-        int c = countToken();
-        for (int k = 0; k < c; ++k) out.push_back(static_cast<uint32_t>(std::stol(token())));
+        long c = countToken();
+        for (long k = 0; k < c; ++k) out.push_back(static_cast<uint32_t>(toLong(token())));
     }
     std::string token() {
         while (pos_ < s_.size() && s_[pos_] == ' ') ++pos_;
@@ -190,7 +203,7 @@ private:
         if (start == pos_) throw KiritoError("unexpected end of serialized data");
         return s_.substr(start, pos_ - start);
     }
-    std::string rawBytes(int len) {
+    std::string rawBytes(long len) {
         if (len < 0) throw KiritoError("corrupt serialized data: bad string length");
         if (pos_ < s_.size() && s_[pos_] == ' ') ++pos_;  // single separator
         if (pos_ + static_cast<std::size_t>(len) > s_.size()) throw KiritoError("truncated string");
@@ -218,7 +231,7 @@ inline Handle loads(KiritoVM& vm, const std::string& text) {
         // stol/stod on a malformed token, etc. -> a clean Kirito error, never an escape. std::stoi/stol/
         // stoll/stod set what() to just the function name ("stoi"); translate that to a readable message.
         std::string w = e.what();
-        if (w == "stoi" || w == "stol" || w == "stoll" || w == "stod" || w == "stoull")
+        if (w == "stoi" || w == "stol" || w == "stoll" || w == "stoul" || w == "stod" || w == "stoull")
             w = "malformed number";
         throw KiritoError("corrupt serialized data: " + w);
     }

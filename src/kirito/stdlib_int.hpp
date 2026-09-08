@@ -542,7 +542,7 @@ public:
         if (other.kind() == ValueKind::Float) {
             double f = static_cast<const FloatVal&>(other).value();
             if (std::isnan(f) || std::isinf(f) || f != std::trunc(f)) return false;
-            if (f < -9223372036854775808.0 || f >= 9223372036854775808.0) return false;
+            if (!doubleFitsInt64(f)) return false;   // shared int64 boundary (builtins.hpp)
             return bigint::cmp(val, bigint::fromInt64(static_cast<int64_t>(f))) == 0;
         }
         return false;
@@ -576,6 +576,20 @@ inline int64_t coerceInt(KiritoVM& vm, Handle h, const char* who) {
     if (!toInt64(b, v)) throw KiritoError(std::string(who) + " is too large to use here");
     return v;
 }
+// base ** exp for a NON-negative exp (precondition exp >= 0). The single implementation shared by the
+// `**` operator (powOp) and the `int.pow` module fn, so both agree on the trivial-base short-circuits
+// (0**huge = 0, (±1)**huge by parity) instead of one returning the exact answer while the other throws
+// "exponent too large" for the same inputs.
+inline Handle powNonNeg(KiritoVM& vm, const Big& base, const Big& exp) {
+    uint64_t e;
+    if (!toUint64(exp, e)) {   // exponent exceeds uint64: only trivial bases have a representable result
+        if (base.isZero()) return make(vm, Big{});                     // 0**n = 0 (n > 0 here)
+        if (base.mag.size() == 1 && base.mag[0] == 1)                  // (±1)**e: 1, or -1 for odd e
+            return make(vm, fromInt64((!base.neg || exp.mag.empty() || !(exp.mag[0] & 1)) ? 1 : -1));
+        throw KiritoError("pow: exponent too large");
+    }
+    return make(vm, powU64(base, e));
+}
 inline Handle powOp(KiritoVM& vm, const Big& base, const Big& exp) {
     if (exp.neg) {
         // Mirror native Integer**negInt / Float**neg exactly (runtime.hpp): 0**-n is undefined, throw
@@ -583,16 +597,7 @@ inline Handle powOp(KiritoVM& vm, const Big& base, const Big& exp) {
         if (base.isZero()) throw KiritoError("zero cannot be raised to a negative power");
         return vm.makeFloat(std::pow(toDouble(base), toDouble(exp)));   // Float, like Integer**negInt
     }
-    uint64_t e;
-    if (!toUint64(exp, e)) {
-        if (base.isZero()) return make(vm, Big{});
-        if (base.mag.size() == 1 && base.mag[0] == 1) {
-            if (!base.neg) return make(vm, fromInt64(1));
-            return make(vm, fromInt64((exp.mag.empty() || !(exp.mag[0] & 1)) ? 1 : -1));   // (-1)**e by parity
-        }
-        throw KiritoError("pow: exponent too large");
-    }
-    return make(vm, powU64(base, e));
+    return powNonNeg(vm, base, exp);
 }
 
 }  // namespace bigint
@@ -777,10 +782,10 @@ public:
             Args args(vm, a, "pow");
             Big exp = coerce(vm, args[1].handle(), "pow exp");
             if (exp.neg) throw KiritoError("int.pow: negative exponent (use ** for a Float, or modpow for modular)");
-            uint64_t e;
             Big base = coerce(vm, args[0].handle(), "pow base");
-            if (!toUint64(exp, e)) throw KiritoError("int.pow: exponent too large");
-            return make(vm, powU64(base, e));
+            // Same power engine as `**` (powNonNeg): 0**huge / (±1)**huge return the exact result rather
+            // than throwing, so int.pow and the operator can never disagree.
+            return powNonNeg(vm, base, exp);
         });
         m.fn("modpow", {{"base"}, {"exp"}, {"mod"}}, "BigInt", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "modpow");

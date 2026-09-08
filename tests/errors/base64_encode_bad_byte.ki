@@ -1,0 +1,3 @@
+# base64.encode must reject a List byte value outside 0..255 rather than silently coercing it mod 256.
+var base64 = import("base64")
+discard base64.encode([256])

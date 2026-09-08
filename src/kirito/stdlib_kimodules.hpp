@@ -614,6 +614,15 @@ while _i < len(_alphabet):
     _index[_alphabet[_i]] = _i
     _i = _i + 1
 
+var _byte = Function(v) -> Integer:
+    # Validate a single input element is a real byte. Without this, a List holding a value outside
+    # 0..255 (or a non-Integer) is silently mangled by the triple arithmetic below (256 -> 0, -1 ->
+    # 255): silent data corruption. Bytes/String elements are always in range, so this only ever
+    # rejects a malformed List.
+    if type(v) != "Integer" or v < 0 or v > 255:
+        throw "base64.encode: byte value out of range (0..255): " + String(v)
+    return v
+
 var encode = Function(data) -> String:
     # data: a List of byte values (0..255), a Bytes, or a String (encoded as UTF-8 bytes).
     # Returns the base64 String.
@@ -626,15 +635,15 @@ var encode = Function(data) -> String:
     var i = 0
     var n = len(data)
     while i < n:
-        var b0 = data[i]
+        var b0 = _byte(data[i])
         var b1 = 0
         var b2 = 0
         var have = 1
         if i + 1 < n:
-            b1 = data[i + 1]
+            b1 = _byte(data[i + 1])
             have = 2
         if i + 2 < n:
-            b2 = data[i + 2]
+            b2 = _byte(data[i + 2])
             have = 3
         var triple = b0 * 65536 + b1 * 256 + b2
         out.append(_alphabet[(triple // 262144) % 64])
@@ -695,49 +704,18 @@ var _needsQuote = Function(field) -> Bool:
 var formatrow = Function(fields) -> String:
     var parts = []
     for f in fields:
-        var s = String(f)
+        # Round-trippable Float text (String() is display-lossy) so CSV data survives a write/read cycle.
+        var s = f.repr() if type(f) == "Float" else String(f)
         if _needsQuote(s):
             s = "\"" + s.replace("\"", "\"\"") + "\""
         parts.append(s)
     return ",".join(parts)
 
-var parserow = Function(line):
-    var fields = []
-    var current = ""
-    var inQuotes = False
-    var i = 0
-    var n = len(line)
-    while i < n:
-        var c = line[i]
-        if inQuotes:
-            if c == "\"":
-                if i + 1 < n and line[i + 1] == "\"":
-                    current = current + "\""
-                    i = i + 1
-                else:
-                    inQuotes = False
-            else:
-                current = current + c
-        elif c == "\"":
-            inQuotes = True
-        elif c == ",":
-            fields.append(current)
-            current = ""
-        else:
-            current = current + c
-        i = i + 1
-    fields.append(current)
-    return fields
-
-var format = Function(rows) -> String:
-    var lines = []
-    for row in rows:
-        lines.append(formatrow(row))
-    return "\n".join(lines)
-
-var parse = Function(text):
-    # RFC-4180-aware parse: track quote state across the whole text so a quoted field may contain
-    # newlines without being split into separate rows. A `\n` is a row terminator only outside quotes.
+# Shared field-splitting core for BOTH csv parsers, so the quoted-field state machine (comma splits,
+# "" un-escaping, quotes spanning content) has ONE implementation. `splitrows` decides whether a bare
+# newline terminates a row: parse() splits on it; parserow() treats a single line's newline as literal.
+# Returns a List of rows (each a List of fields).
+var _parserows = Function(text, splitrows):
     var rows = []
     var fields = []
     var current = ""
@@ -760,20 +738,36 @@ var parse = Function(text):
         elif c == ",":
             fields.append(current)
             current = ""
-        elif c == "\n":
+        elif splitrows and c == "\n":
             fields.append(current)
             rows.append(fields)
             fields = []
             current = ""
-        elif c == "\r":
+        elif splitrows and c == "\r":
             pass        # \r is skipped (CRLF treated as LF)
         else:
             current = current + c
         i = i + 1
-    if current != "" or len(fields) > 0:
+    # parse(): flush a final row only if something is pending (no phantom row after a trailing newline).
+    # parserow(): always emit exactly one row (an empty line -> [""]).
+    if not splitrows or current != "" or len(fields) > 0:
         fields.append(current)
         rows.append(fields)
     return rows
+
+var parserow = Function(line):
+    return _parserows(line, False)[0]
+
+var format = Function(rows) -> String:
+    var lines = []
+    for row in rows:
+        lines.append(formatrow(row))
+    return "\n".join(lines)
+
+var parse = Function(text):
+    # RFC-4180-aware parse: track quote state across the whole text so a quoted field may contain
+    # newlines without being split into separate rows. A `\n` is a row terminator only outside quotes.
+    return _parserows(text, True)
 )KI";
 
 // --- heapq (binary min-heap over a List) -------------------------------------------------------
@@ -2021,7 +2015,9 @@ class DataFrame:
             var row = []
             for c in self.columns:
                 var v = self.data[c][i]
-                row.append("" if v == None else String(v))
+                # Float cells use the round-trippable repr() (String() is display-lossy: a read/modify/
+                # write of a CSV would silently drop precision — e.g. 0.3333333333333333 -> ...333).
+                row.append("" if v == None else (v.repr() if type(v) == "Float" else String(v)))
             rows.append(row)
             i = i + 1
         return _csv.format(rows)

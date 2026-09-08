@@ -137,8 +137,7 @@ inline bool floatEqual(double l, double r) {
 // Integer↔Float ==/!=/<,<=,>,>= EXACT, so equality agrees with ordering and with hashing.
 inline int compareIntFloat(int64_t i, double f) {
     if (f != f) return 2;                                 // NaN is unordered with everything
-    constexpr double kTwo63 = 9223372036854775808.0;      // 2^63, exact in double (-kTwo63 == INT64_MIN)
-    if (f >= kTwo63) return -1;                            // f >= 2^63 > every int64  -> i < f
+    if (f >= kTwo63) return -1;                            // f >= 2^63 > every int64  -> i < f (shared boundary, builtins.hpp)
     if (f < -kTwo63) return +1;                            // f < -2^63 < every int64  -> i > f
     double ff = std::floor(f);                             // f now in [-2^63, 2^63): floor(f) fits int64
     int64_t fi = static_cast<int64_t>(ff);                // exact (ff integral and in range)
@@ -338,8 +337,7 @@ inline std::size_t FloatVal::hash() const {
     // An integral Float that denotes an exact int64 must hash identically to that Integer, so `==`
     // agrees with hashing (Set/Dict membership). The range must match intFloatEqual EXACTLY: [-2^63, 2^63)
     // (NaN/±inf fall through to the double hash — inf == floor(inf) but is out of range).
-    if (value_ == std::floor(value_) &&
-        value_ >= -9223372036854775808.0 && value_ < 9223372036854775808.0)
+    if (value_ == std::floor(value_) && doubleFitsInt64(value_))
         return std::hash<int64_t>{}(static_cast<int64_t>(value_));
     return std::hash<double>{}(value_);
 }
@@ -396,10 +394,19 @@ inline std::vector<std::string> IntVal::inspectMembers() const {
 }
 inline Handle FloatVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) {
     if (name == "compare") return makeNumericCompare(vm, self);
+    // repr() -> the shortest decimal String that parses back to this exact Float (via the shared
+    // floatToRoundtrip, the same formatter json/dump use). String(x) stays display-oriented (%.15g,
+    // may lose a digit); repr() is the round-trippable form for data serialization (e.g. CSV).
+    if (name == "repr")
+        return vm.alloc(std::make_unique<NativeFunction>(
+            "repr", std::vector<NativeParam>{}, "String",
+            [self](KiritoVM& v, std::span<const Handle>) -> Handle {
+                return v.makeString(floatToRoundtrip(static_cast<const FloatVal&>(v.arena().deref(self)).value()));
+            }));
     return Object::getAttr(vm, self, name);
 }
 inline std::vector<std::string> FloatVal::inspectMembers() const {
-    return {"compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool"};
+    return {"compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool", "repr() -> String"};
 }
 
 // --- StrVal out-of-line members --------------------------------------------------------------
@@ -955,7 +962,7 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             if (a.empty()) throw KiritoError("remove expects a value");
             auto& s = set_of(vm, self);
             const Object& v = vm.arena().deref(a[0]);
-            if (!v.hashable()) throw KiritoError("unhashable type '" + v.typeName() + "'");  // canonical
+            if (!v.hashable()) throw unhashableError(v.typeName());  // canonical
                 // message (matches Set.add / Dict / hash()) — before the not-found path below.
             if (!s.remove(vm.arena(), a[0])) throw KiritoError("remove: value not in Set");
             return vm.none();
@@ -1861,7 +1868,7 @@ inline std::size_t InstanceValue::hash() const {
         throw KiritoError("_hash_ requires an active interpreter context");
     const Handle* m = findMethod(vm->arena(), "_hash_");
     if (!m)
-        throw KiritoError("unhashable type '" + className + "'");
+        throw unhashableError(className);
     // Root the receiver + method through the call; a nested collection during the callee could
     // otherwise sweep them out from under us.
     RootScope rs(*vm);
@@ -2186,6 +2193,14 @@ inline std::string resolveTypeName(KiritoVM& vm, Handle typeH) {
             return n;
     }
     return "";
+}
+
+// Is `typeH` a usable type spec — a class value, a built-in type constructor, or a type-name String?
+// isinstance's second argument AND a typed `catch` clause share this predicate, so a non-type (the
+// None literal, an Integer, an instance) is rejected with a clear error at BOTH sites rather than
+// silently "never matching" (which would hide a never-firing catch handler).
+inline bool isValidTypeSpec(KiritoVM& vm, Handle typeH) {
+    return vm.arena().deref(typeH).kind() == ValueKind::Class || !resolveTypeName(vm, typeH).empty();
 }
 
 inline Handle KiFunction::call(KiritoVM& vm, std::span<const Handle> args) {
@@ -3468,12 +3483,9 @@ inline void KiritoVM::installBuiltins() {
             case ValueKind::Bool: { return vm.makeInt(static_cast<const BoolVal&>(o).value() ? 1 : 0); } break;
             case ValueKind::Float: {
                 double d = static_cast<const FloatVal&>(o).value();
-                // Casting a non-finite or out-of-range double to int64 is UB; reject it cleanly.
-                if (std::isnan(d)) throw KiritoError("cannot convert Float NaN to Integer");
-                if (std::isinf(d)) throw KiritoError("cannot convert Float infinity to Integer");
-                if (d >= 9223372036854775808.0 || d < -9223372036854775808.0)
-                    throw KiritoError("Float is out of Integer range");
-                return vm.makeInt(static_cast<int64_t>(d));
+                // Casting a non-finite or out-of-range double to int64 is UB; the shared checked
+                // convert (builtins.hpp) rejects it cleanly — one guard for every float→int site.
+                return vm.makeInt(toInt64Checked(d, "Integer"));
             } break;
             case ValueKind::String: {
                 const std::string& s = static_cast<const StrVal&>(o).value();
@@ -3512,7 +3524,11 @@ inline void KiritoVM::installBuiltins() {
                     // Parse the magnitude as unsigned and bit-cast (two's-complement negate if signed),
                     // mirroring the lexer's intLiteral, so the full 64-bit range round-trips:
                     // Integer(String(INT64_MIN)), Integer(hex(-1)) == 0xFFFFFFFFFFFFFFFF == -1, etc.
-                    // (std::stoll would reject any magnitude >= 2^63.)
+                    // (std::stoll would reject any magnitude >= 2^63.) The magnitude-parse + bit-cast is
+                    // shared knowledge with the lexer, but the two DELIBERATELY diverge past 2^64: a
+                    // source literal is a token the programmer wrote (the lexer defines wrap semantics
+                    // for it), whereas this converts arbitrary runtime data, so an unrepresentable value
+                    // FAILS FAST via stoull's out_of_range below rather than silently wrapping.
                     uint64_t mag = std::stoull(s.substr(i), &pos, base);
                     // Reject trailing garbage (e.g. "42abc", "12.5") — surrounding whitespace allowed.
                     std::size_t end = i + pos;
@@ -3677,8 +3693,7 @@ inline void KiritoVM::installBuiltins() {
         }
         if (std::isnan(x)) throw KiritoError("cannot round NaN to Integer");
         if (std::isinf(x)) throw KiritoError("cannot round infinity to Integer");
-        if (x >= 9223372036854775808.0 || x < -9223372036854775808.0)
-            throw KiritoError("rounded value out of Integer range");
+        if (!doubleFitsInt64(x)) throw KiritoError("rounded value out of Integer range");
         return vm.makeInt(static_cast<int64_t>(std::llround(x)));  // round(x) -> Integer
     });
     // range is variadic by position (range(stop) / range(start, stop) / range(start, stop, step))
@@ -3965,7 +3980,7 @@ inline void KiritoVM::installBuiltins() {
         // class chain (so two same-named classes in different modules are distinct); a constructor or a
         // String type-name is matched by name. isInstanceOf is the single matcher shared with a typed
         // `catch`, so the two can never disagree.
-        if (vm.arena().deref(a[1]).kind() != ValueKind::Class && resolveTypeName(vm, a[1]).empty())
+        if (!isValidTypeSpec(vm, a[1]))
             throw KiritoError("isinstance second argument must be a class, a built-in type, or a type-name String");
         return vm.makeBool(isInstanceOf(vm, a[0], a[1]));
     });

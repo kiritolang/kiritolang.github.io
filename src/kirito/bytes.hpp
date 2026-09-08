@@ -69,6 +69,10 @@ public:
     }
     bool hashable() const override { return true; }
     std::size_t hash() const override { return std::hash<std::string>{}(data); }
+    // Like String: seed the byte-level hash for bucket placement so crafted collisions can't survive.
+    std::size_t bucketHash(std::uint64_t seed) const override {
+        return hashmix::seededBytes(seed, data.data(), data.size());
+    }
 
     std::optional<int64_t> length(KiritoVM&) override { return static_cast<int64_t>(data.size()); }
 
@@ -239,11 +243,7 @@ inline std::string decode(const std::string& data, const std::string& enc) {
 }
 
 inline std::string toHex(const std::string& data) {
-    static const char* hex = "0123456789abcdef";
-    std::string out;
-    out.reserve(data.size() * 2);
-    for (unsigned char c : data) { out += hex[c >> 4]; out += hex[c & 0xf]; }
-    return out;
+    return toHexLower(data);   // one byte->hex encoder (common.hpp), shared with hashing::toHex
 }
 
 inline std::string fromHex(const std::string& s) {
@@ -369,7 +369,10 @@ inline Handle makeStringOrBytes(KiritoVM& vm, Handle templateInput, std::string 
 }
 
 // Base64 (RFC 4648). urlSafe swaps the `+/` alphabet for `-_` (§5); pad toggles the trailing `=`.
-// One source of truth for the codec — HTTP Basic auth (net) and random.randomurlsafe both call it.
+// The C++-internal codec — HTTP Basic auth (net) and random.randomurlsafe call it. Intentionally
+// SEPARATE from the user-facing `base64` module (stdlib_kimodules.hpp), which is written in Kirito and
+// owns the only decoder: the C++ core must not depend on a `.ki` stdlib module, so this layering is by
+// design, not a duplication to merge. Both implement the same standard alphabet; keep them in step.
 inline std::string base64Encode(const std::string& in, bool urlSafe = false, bool pad = true) {
     const char* T = urlSafe ? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
                             : "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

@@ -1,0 +1,30 @@
+# spec_csv_shared_core.ki — regression for the CSV parser dedup (v1.17.1).
+# parserow (single row) and parse (multi-row) previously duplicated the quoted-field state machine;
+# they now share one _parserows core parameterized by whether a bare newline terminates a row. This
+# pins the contract so the two can never drift and the shared core keeps each function's semantics.
+
+var io  = import("io")
+var csv = import("csv")
+
+# parserow: comma-split with RFC-4180 quoting; a newline is LITERAL (caller has split rows already).
+assert csv.parserow("a,b,c") == ["a", "b", "c"], "plain row"
+assert csv.parserow("p,\"q,r\",s") == ["p", "q,r", "s"], "quoted comma"
+assert csv.parserow("\"a\"\"b\"") == ["a\"b"], "doubled-quote un-escape"
+assert csv.parserow("") == [""], "empty line -> one empty field"
+
+# parse: quote state spans the whole text, so a quoted field may contain newlines; a bare newline
+# outside quotes terminates a row.
+var rows = csv.parse("a,\"x\ny\",b\n1,2,3")
+assert len(rows) == 2, "two rows"
+assert rows[0] == ["a", "x\ny", "b"], "quoted embedded newline preserved"
+assert rows[1] == ["1", "2", "3"], "second row"
+
+# CRLF: \r is dropped, \n splits; a trailing newline does not add a phantom empty row.
+var rows2 = csv.parse("a,b\r\nc,d\r\n")
+assert len(rows2) == 2, "CRLF two rows, no trailing phantom"
+assert rows2[1] == ["c", "d"], "CRLF second row"
+
+# round-trip: formatrow quotes only when needed, and parse inverts it.
+assert csv.parse(csv.format([["a", "b,c", "d\ne"]]))[0] == ["a", "b,c", "d\ne"], "format/parse round-trip"
+
+io.print("spec_csv_shared_core: ok")

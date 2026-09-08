@@ -11,6 +11,7 @@
 #include "fum/unordered_set.hpp"
 #include "common.hpp"
 #include "handle.hpp"
+#include "hashmix.hpp"
 #include "pool.hpp"
 
 namespace kirito {
@@ -173,7 +174,18 @@ public:
     virtual bool equals(const ObjectArena&, const Object& other) const = 0;
 
     virtual bool hashable() const { return false; }
-    virtual std::size_t hash() const { throw KiritoError("unhashable type '" + typeName() + "'"); }
+    virtual std::size_t hash() const { throw unhashableError(typeName()); }
+
+    // Bucket index hash for Dict/Set placement, folding in the VM's random `seed`
+    // (ObjectArena::hashSeed()) to defeat HashDoS. DELIBERATELY DISTINCT from hash() — the logical,
+    // documented value surfaced by `hash.hash()` (e.g. Integer hashes to itself). It is never
+    // observable (Dict/Set iterate in insertion order; serialization writes values, not hashes), so
+    // the seed changes no program output — only the internal bucket layout. The default disperses
+    // hash() through a seeded bijection, which suffices for keys whose hash isn't forgeable byte by
+    // byte; String/Bytes override it to key the seed in at the byte level. See hashmix.hpp — do NOT
+    // "unify" bucketHash with hash(): one is a stable contract, the other a hardened implementation
+    // detail. Only ever called on a hashable object (Dict/Set check hashable() first).
+    virtual std::size_t bucketHash(std::uint64_t seed) const { return hashmix::seededMix(seed, hash()); }
 
     // True only for the native Bytes value. Bytes is a ValueKind::Instance (no dedicated kind), so the
     // embedding API must not discriminate it by typeName()=="Bytes" — a user `class Bytes` would then
@@ -239,6 +251,11 @@ public:
     // is barriered into the remembered set; a lazy IterCursor's buffered source elements are the one
     // exception (they live in a std::vector inside the iterator, never touched by a write barrier). Only
     // that type overrides this to true; every arena container barriers its writes and returns false.
+    // INVARIANT (no compile-time guard expresses it, so enforce it by hand): a type may override this to
+    // true ONLY if it lives exclusively on an operand stack (auxRoots). The minor collector's rescan
+    // walks ONLY the operand stacks (KiritoVM::minorCollect), so a HEAP-resident object (stored in a
+    // List/Dict/instance field) that returned true would never be revisited and its young children would
+    // be swept after promotion. Keep such types stack-only, or extend the rescan before adding one.
     virtual bool gcNeedsRootRescan() const { return false; }
 
 private:

@@ -141,6 +141,41 @@ int main() {
         CHECK(has(w, "re-declared in this block"));
         CHECK(!has(w, "shadows"));
     }
+    // a `for` loop variable lives in the shared scope; a `var` of that name in the body rebinds it
+    {
+        auto w = warn("var f = Function():\n    for i in [1, 2]:\n        var i = 9\n    return 0\n");
+        CHECK(has(w, "variable 'i' shadows an outer 'i'"));
+    }
+    // ...even from a block nested inside the loop body
+    {
+        auto w = warn("for i in [1]:\n    if True:\n        var i = 3\n");
+        CHECK(has(w, "shadows an outer 'i'"));
+    }
+    // a `catch ... as e` binding likewise; a `var e` in the handler silently rebinds it
+    {
+        auto w = warn("try:\n    var q = 1\ncatch as e:\n    var e = 2\n");
+        CHECK(has(w, "variable 'e' shadows an outer 'e'"));
+    }
+    // a `with ... as w` binding likewise
+    {
+        auto w = warn("var cm = 0\nwith cm as w:\n    var w = 5\n");
+        CHECK(has(w, "variable 'w' shadows an outer 'w'"));
+    }
+    // sibling loops reusing a name are independent (each synthetic block is popped) -> silent
+    {
+        auto w = warn("for i in [1]:\n    var a = i\nfor i in [2]:\n    var b = i\n");
+        CHECK(!has(w, "shadows"));
+    }
+    // a `var` after the loop, in the SAME block, is ordinary sequential reuse, not a nested rebind
+    {
+        auto w = warn("for i in [1]:\n    var z = i\nvar i = 5\n");
+        CHECK(!has(w, "shadows"));
+    }
+    // a loop variable shadowing an ENCLOSING function/module name is legitimate lexical shadowing
+    {
+        auto w = warn("var i = 0\nvar f = Function():\n    for i in [1]:\n        var y = i\n    return 0\n");
+        CHECK(!has(w, "shadows"));
+    }
 
     // --- unreachable code after a terminator ---
     {

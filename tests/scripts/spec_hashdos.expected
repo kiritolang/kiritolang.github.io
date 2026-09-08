@@ -1,0 +1,9 @@
+adv-int: count=1000 retrievable=True
+adv-str: count=1000 s[k777]=1554 missing=False
+overwrite: len=1 x=3
+cross-type: len=2 c[1]=b
+set-adv: len=4 has=True
+set-mixed: len=3
+after-del: len=50 has0=False has50=True
+re-add: len=51 v=999
+order=['c', 'a', 'b']

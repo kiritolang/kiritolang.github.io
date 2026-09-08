@@ -1,0 +1,71 @@
+# Dict/Set correctness under the seeded, HashDoS-resistant bucket hash (hashmix.hpp / bucketHash).
+# The seed randomizes bucket placement but must NOT change any observable result: every key stays
+# retrievable, counts are exact, cross-type keys still merge, and iteration stays insertion-ordered.
+# Uses key patterns that COLLIDE under the old unseeded hash (integers i*2^40 all shared one bucket;
+# many same-length strings) so a regression that weakened dispersion would still pass this (it checks
+# correctness, not speed) — the timing/dispersion guarantee is covered in test_hashmix.cpp.
+var io = import("io")
+
+# --- adversarial integer keys: i * 2^40 all hash (identity) to a multiple of any pow2 table size ---
+var mult = 1099511627776            # 2^40
+var d = {}
+var i = 0
+while i < 1000:
+    d[i * mult] = i
+    i = i + 1
+var allok = True
+i = 0
+while i < 1000:
+    if d[i * mult] != i:
+        allok = False
+    i = i + 1
+io.print("adv-int: count=" + String(len(d)) + " retrievable=" + String(allok))
+
+# --- adversarial string keys (same length, sequential) ---
+var s = {}
+i = 0
+while i < 1000:
+    s["k" + String(i)] = i * 2
+    i = i + 1
+io.print("adv-str: count=" + String(len(s)) + " s[k777]=" + String(s["k777"]) + " missing=" + String("k9999" in s))
+
+# --- overwrite an existing key (must update in place, not duplicate) ---
+var m = {}
+m["x"] = 1
+m["x"] = 2
+m["x"] = 3
+io.print("overwrite: len=" + String(len(m)) + " x=" + String(m["x"]))
+
+# --- cross-type numeric keys still merge (1 == 1.0), Bool stays distinct ---
+var c = {}
+c[1] = "a"
+c[1.0] = "b"
+c[True] = "t"
+io.print("cross-type: len=" + String(len(c)) + " c[1]=" + c[1])
+
+# --- Set dedup across numeric types + adversarial ints ---
+var big = {0, mult, 2 * mult, 3 * mult, mult}    # last is a duplicate of mult
+io.print("set-adv: len=" + String(len(big)) + " has=" + String(mult in big))
+var mixed = {1, 1.0, 2, 2.0, 3}
+io.print("set-mixed: len=" + String(len(mixed)))
+
+# --- deletion then re-insert (tombstone reuse) with colliding keys ---
+var dd = {}
+i = 0
+while i < 100:
+    dd[i * mult] = i
+    i = i + 1
+i = 0
+while i < 50:
+    dd.pop(i * mult)
+    i = i + 1
+io.print("after-del: len=" + String(len(dd)) + " has0=" + String((0 in dd)) + " has50=" + String((50 * mult in dd)))
+dd[0] = 999
+io.print("re-add: len=" + String(len(dd)) + " v=" + String(dd[0]))
+
+# --- iteration stays insertion order regardless of seed ---
+var order = {}
+order["c"] = 1
+order["a"] = 2
+order["b"] = 3
+io.print("order=" + String(List(order)))

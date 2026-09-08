@@ -25,14 +25,8 @@ inline double mathNum(KiritoVM& vm, Handle h) {
     return Value(vm, h).asFloat("math");
 }
 
-// Convert a double to int64 safely: casting a NaN/inf/out-of-range double to int64 is UB, so guard.
-inline int64_t toInt64Checked(double d, const char* who) {
-    if (std::isnan(d)) throw KiritoError(std::string(who) + ": cannot convert NaN to Integer");
-    if (std::isinf(d)) throw KiritoError(std::string(who) + ": cannot convert infinity to Integer");
-    if (d >= 9223372036854775808.0 || d < -9223372036854775808.0)
-        throw KiritoError(std::string(who) + ": result out of Integer range");
-    return static_cast<int64_t>(d);
-}
+// toInt64Checked / doubleFitsInt64 (the shared float→int64 guard) live in builtins.hpp so every
+// caller — Integer()/round()/datetime as well as floor/ceil here — routes through one boundary.
 
 // The `math` standard module: constants and the usual functions. Unary functions return Float;
 // floor/ceil/factorial/gcd return Integer.

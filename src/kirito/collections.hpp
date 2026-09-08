@@ -17,7 +17,7 @@ namespace kirito {
 // A Dict key / Set element must be hashable; throw the standard error otherwise. One source of truth
 // for the guard repeated by DictVal::set/find and SetVal::add.
 inline void requireHashable(const Object& o) {
-    if (!o.hashable()) throw KiritoError("unhashable type '" + o.typeName() + "'");
+    if (!o.hashable()) throw unhashableError(o.typeName());
 }
 
 // Containers store element handles, so aliasing (and, later, cycles) work naturally. Methods that
@@ -124,17 +124,18 @@ public:
     Handle getAttr(KiritoVM&, Handle self, std::string_view name) override;
 };
 
-// The one equality rule for a Dict/Set key lookup, shared by Dict AND Set. Kirito deliberately does
-// NOT identity-short-circuit before `==`, so a NaN key is "write-only" — insertable but never findable
-// (NaN != NaN), a documented consequence of exact NaN-never-equal equality (r7_types.ki). Cross-type
-// equality must stay SYMMETRIC — the same rule kiEquals (runtime.hpp) applies to `==`: a stored native
-// Integer doesn't recognize a probe BigInt, but the BigInt recognizes the Integer, so without the retry
-// the two hash-equal keys stay unmerged (an order-dependent duplicate key, breaking the no-two-==-keys
-// invariant). Gated on a kind mismatch so same-kind dispatch (incl. write-only NaN Floats) is untouched.
+// The one equality rule for a Dict/Set key lookup, shared by Dict AND Set. It MUST agree with `==`
+// (kiEquals, runtime.hpp), which tries BOTH operands' equality (`x == e or e == x`) so equality is
+// symmetric regardless of which side carries the `_eq_`. So we try `stored == key` then `key ==
+// stored` unconditionally: a stored native Integer doesn't recognize a probe BigInt but the BigInt
+// recognizes the Integer; likewise a stored user instance with no `_eq_` doesn't recognize a probe
+// instance whose `_eq_` accepts it. Gating the reverse try on a kind mismatch (the old bug) skipped
+// exactly the same-kind instance case, making Set/Dict dedup order-dependent — `add(a); add(b)` and
+// `add(b); add(a)` gave different sizes, and two `==`-equal keys could coexist. NaN stays "write-only"
+// (insertable, never findable) because NEITHER direction is equal — no identity short-circuit here.
 inline bool keysEqual(const ObjectArena& arena, const Object& stored, const Object& key) {
     if (stored.equals(arena, key)) return true;
-    if (stored.kind() != key.kind() && key.equals(arena, stored)) return true;
-    return false;
+    return key.equals(arena, stored);
 }
 
 // Reentrancy guard for the hash-bucketed Dict/Set. Probing a bucket runs the key's `_hash_`/`_eq_`,
@@ -219,7 +220,7 @@ public:
     void set(ObjectArena& arena, Handle key, Handle value) {
         const Object& k = arena.deref(key);
         requireHashable(k);
-        std::size_t h = k.hash();  // may run _hash_; done before any entry reference is cached
+        std::size_t h = k.bucketHash(arena.hashSeed());  // may run _hash_; done before any entry reference is cached
         if (probing_) throw KiritoError("Dict changed size during a key comparison");
         ProbeScope guard(probing_);
         std::size_t slot = 0;
@@ -242,7 +243,7 @@ public:
     const Handle* find(const ObjectArena& arena, Handle key) const {
         const Object& k = arena.deref(key);
         requireHashable(k);
-        std::size_t h = k.hash();
+        std::size_t h = k.bucketHash(arena.hashSeed());
         ProbeScope guard(probing_);  // read: block nested mutation from a reentrant _eq_
         std::size_t slot = 0;
         std::ptrdiff_t pos = probeIndex(arena, k, h, slot);
@@ -330,7 +331,7 @@ public:
         const Object& k = arena.deref(key);
         requireHashable(k);   // reject an unhashable key with the SAME message as set/find (A06-1),
                               // not a silent false that surfaces downstream as a misleading "key not found"
-        std::size_t h = k.hash();
+        std::size_t h = k.bucketHash(arena.hashSeed());
         if (probing_) throw KiritoError("Dict changed size during a key comparison");
         ProbeScope guard(probing_);
         std::size_t slot = 0;
@@ -444,7 +445,7 @@ public:
     bool add(ObjectArena& arena, Handle value) {
         const Object& v = arena.deref(value);
         requireHashable(v);
-        std::size_t h = v.hash();
+        std::size_t h = v.bucketHash(arena.hashSeed());
         if (probing_) throw KiritoError("Set changed size during a value comparison");
         ProbeScope guard(probing_);
         std::size_t slot = 0;
@@ -460,7 +461,7 @@ public:
     bool remove(ObjectArena& arena, Handle value) {
         const Object& v = arena.deref(value);
         if (!v.hashable()) return false;
-        std::size_t h = v.hash();
+        std::size_t h = v.bucketHash(arena.hashSeed());
         if (probing_) throw KiritoError("Set changed size during a value comparison");
         ProbeScope guard(probing_);
         std::size_t slot = 0;
@@ -475,7 +476,7 @@ public:
     bool contains(const ObjectArena& arena, Handle value) const {
         const Object& v = arena.deref(value);
         if (!v.hashable()) return false;
-        std::size_t h = v.hash();
+        std::size_t h = v.bucketHash(arena.hashSeed());
         ProbeScope guard(probing_);  // read: block nested mutation from a reentrant _eq_
         std::size_t slot = 0;
         return probeIndex(arena, v, h, slot) >= 0;

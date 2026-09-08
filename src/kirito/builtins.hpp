@@ -127,6 +127,22 @@ inline std::string floatToRoundtrip(double d) {
     return s;
 }
 
+// 2^63, exact in double (-kTwo63 == INT64_MIN). The one authoritative int64 boundary: casting a
+// double outside [-2^63, 2^63) to int64 is UB, and Integer↔Float ==/<,>/hashing must all agree on
+// the SAME cut. Every float→int guard (Integer()/round()/floor/ceil, FloatVal::hash, compareIntFloat,
+// BigInt↔Float compare, datetime) shares this constant + predicate so the boundary can never drift.
+inline constexpr double kTwo63 = 9223372036854775808.0;
+inline bool doubleFitsInt64(double d) { return d >= -kTwo63 && d < kTwo63; }
+
+// Convert a double to int64 safely: casting a NaN/inf/out-of-range double to int64 is UB, so guard.
+// `who` names the operation for a contextual, structured diagnostic (e.g. "Integer", "floor").
+inline int64_t toInt64Checked(double d, const char* who) {
+    if (std::isnan(d)) throw KiritoError(std::string(who) + ": cannot convert NaN to Integer");
+    if (std::isinf(d)) throw KiritoError(std::string(who) + ": cannot convert infinity to Integer");
+    if (!doubleFitsInt64(d)) throw KiritoError(std::string(who) + ": result out of Integer range");
+    return static_cast<int64_t>(d);
+}
+
 // The unit value. Interned once per VM, so every `None` shares one arena slot.
 class NoneVal : public Object {
 public:
@@ -156,7 +172,10 @@ public:
                static_cast<const BoolVal&>(other).value_ == value_;
     }
     bool hashable() const override { return true; }
-    std::size_t hash() const override { return value_ ? 1 : 0; }
+    // Hash like the Integer 0/1 it compares/keys equal to (True == 1), via the same std::hash<int64_t>
+    // the Integer/BigInt families use — so `a == b => bucket(a) == bucket(b)` holds by construction and
+    // does not lean on std::hash<int64_t> happening to be identity on the current libstdc++/libc++.
+    std::size_t hash() const override { return std::hash<int64_t>{}(value_ ? 1 : 0); }
 
 private:
     bool value_;
@@ -192,6 +211,11 @@ public:
     }
     bool hashable() const override { return true; }
     std::size_t hash() const override { return hash_; }
+    // A String's hash() is a fixed std::hash an attacker can precompute collisions for, so bucket
+    // placement keys the VM's random seed in at the byte level (SipHash) — see hashmix.hpp / Object.
+    std::size_t bucketHash(std::uint64_t seed) const override {
+        return hashmix::seededBytes(seed, value_.data(), value_.size());
+    }
     std::optional<int64_t> length(KiritoVM&) override {
         return static_cast<int64_t>(ascii_ ? value_.size() : codePointStarts().size());
     }

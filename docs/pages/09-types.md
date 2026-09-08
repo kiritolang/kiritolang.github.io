@@ -115,6 +115,17 @@ io.print((1.0).compare(1.5))                  # False  (too far apart)
 io.print((1.0).compare(1.5, abs_tol = 1.0))   # True   (widened absolute tolerance)
 ```
 
+`String(x)` renders a Float for **display** (a clean, short form — it may drop trailing digits, so it
+is not always round-trippable). When you need text that parses back to the **exact** same Float — for
+data serialization such as CSV — use `x.repr() → String`, the shortest decimal that round-trips
+(`Float(x.repr()) == x`), the same formatter `json`/`dump`/`serialize` use:
+
+```kirito
+io.print(String(1.0 / 3.0))                   # 0.333333333333333    (display; lossy)
+io.print((1.0 / 3.0).repr())                  # 0.3333333333333333   (round-trips exactly)
+io.print(Float((1.0 / 3.0).repr()) == 1.0 / 3.0)   # True
+```
+
 ## String
 
 Immutable Unicode text, indexed and sliced by **code point** (not byte). `+` concatenates, `*`

@@ -528,8 +528,19 @@ inline std::string gunzip(const std::string& s) {
 inline std::string decodeBody(const std::string& body, const std::string& enc) {
     if (enc == "gzip" || enc == "x-gzip") return gunzip(body);
     if (enc == "deflate") {
-        try { return deflate::inflate(body); }
-        catch (...) { return deflate::inflate(body.size() >= 2 ? body.substr(2) : body); }
+        // Content-Encoding "deflate" is officially zlib-wrapped (RFC 1950) but many servers send RAW
+        // DEFLATE (RFC 1951). Distinguish by the zlib header rather than inflating-and-retrying on ANY
+        // exception — the old catch(...) also swallowed a genuine DeflateError (corrupt/oversized
+        // stream) and blindly re-inflated a truncated body. A zlib stream starts with CMF/FLG where
+        // CMF's low nibble is 8 (deflate) and (CMF<<8 | FLG) % 31 == 0; strip the 2-byte header (the
+        // 4-byte Adler trailer is ignored by the raw inflate) and inflate the rest.
+        if (body.size() >= 2) {
+            unsigned cmf = static_cast<unsigned char>(body[0]);
+            unsigned flg = static_cast<unsigned char>(body[1]);
+            if ((cmf & 0x0F) == 8 && ((cmf << 8 | flg) % 31) == 0)
+                return deflate::inflate(body.substr(2));
+        }
+        return deflate::inflate(body);
     }
     return body;
 }
@@ -584,7 +595,17 @@ inline HttpResult parseRaw(const std::string& raw) {
         body = dechunk(body);
     std::string enc = asciiLower(r.header("content-encoding"));
     if (!enc.empty()) {
-        try { body = decodeBody(body, enc); } catch (...) { /* leave body as-is on decode failure */ }
+        // A Content-Encoding we recognise but cannot decode (corrupt / truncated compressed data) is a
+        // real failure: surface it as a clear, catchable error rather than silently handing back the
+        // still-compressed bytes as if they were the decoded body — a caller processing that garbage as
+        // valid data is the exact silent-degradation footgun to avoid. (An encoding we don't handle at
+        // all is not a failure: decodeBody returns the body unchanged for it.)
+        try {
+            body = decodeBody(body, enc);
+        } catch (const std::exception& e) {
+            throw KiritoError("HTTP response body: could not decode Content-Encoding '" + enc + "' (" +
+                              e.what() + ")");
+        }
     }
     r.body = std::move(body);
     return r;

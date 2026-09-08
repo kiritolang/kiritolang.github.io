@@ -1,0 +1,38 @@
+# spec_int_convert_ssot.ki — regression for the duplicated float->int64 guard (v1.17.1).
+# The 2^63 range boundary was hand-copied at 8 sites (UB-adjacent: casting an out-of-range double to
+# int64 is undefined), and Integer() reimplemented the NaN/inf/range guard with its own drifted
+# messages instead of the shared toInt64Checked. Now one doubleFitsInt64 boundary + one checked
+# convert back every site, so the messages are unified and the boundary can't drift.
+
+var io   = import("io")
+var math = import("math")
+
+var throwsMsg = Function(f, needle):
+    try:
+        discard f()
+        return False
+    catch String as e:
+        return needle in e
+
+# Integer() routes through the shared checked convert (unified message wording).
+assert throwsMsg(Function(): return Integer(math.nan), "cannot convert NaN to Integer"), "Integer(nan)"
+assert throwsMsg(Function(): return Integer(math.inf), "cannot convert infinity to Integer"), "Integer(inf)"
+assert throwsMsg(Function(): return Integer(-math.inf), "cannot convert infinity to Integer"), "Integer(-inf)"
+assert throwsMsg(Function(): return Integer(1e300), "out of Integer range"), "Integer(1e300)"
+
+# round() keeps its rounding-specific wording but shares the same boundary predicate.
+assert throwsMsg(Function(): return round(math.nan), "cannot round NaN"), "round(nan)"
+assert throwsMsg(Function(): return round(1e300), "out of Integer range"), "round(1e300)"
+
+# In-range conversions still work (9e18 < 2^63).
+assert Integer(9.0e18) > 0, "9e18 is in range and converts"
+assert Integer(2.9) == 2, "truncation toward zero"
+
+# The SAME boundary governs Integer<->Float equality and hashing: 2.0 and 2 are one Dict key.
+var d = Dict()
+d[2.0] = "f"
+d[2]   = "i"
+assert len(d) == 1, "Float 2.0 and Integer 2 are the same key"
+assert d[2.0] == "i", "later assignment wins (same key)"
+
+io.print("spec_int_convert_ssot: ok")
