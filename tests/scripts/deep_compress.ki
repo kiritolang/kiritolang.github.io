@@ -235,9 +235,8 @@ assert Bytes(b64.urlsafedecode("-_-_")) == trio, "urlsafedecode accepts urlsafe 
 # (a) An invalid character BEFORE the padding throws (Dict key-lookup error, catchable — not a crash).
 assert throws(Function(): return b64.decode("####")), "base64 invalid char throws"
 assert throws(Function(): return b64.decode("SG!o")), "base64 embedded invalid char throws"
-# (b) Whitespace/newlines are NOT tolerated: MIME/PEM-style line-wrapped base64 is rejected. A real
-# base64 decoder usually skips whitespace; Kirito's does not.
-assert throws(Function(): return b64.decode("SGVs\nbG8=")), "base64 rejects embedded newline (no whitespace skipping)"
+# (b) ASCII whitespace/newlines ARE skipped, so MIME/PEM-style line-wrapped base64 round-trips.
+assert b64.decode("SGVs\nbG8=") == b64.decode("SGVsbG8="), "base64 skips an embedded newline (MIME/PEM)"
 # (c) Anything AFTER the first '=' is SILENTLY DROPPED (the decode loop breaks at '='): trailing
 # garbage past the padding is ignored rather than rejected.
 assert throws(Function(): return b64.decode("SGk=trailing-garbage")), "base64 rejects data after the = padding"

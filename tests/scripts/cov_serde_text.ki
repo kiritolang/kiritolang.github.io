@@ -218,7 +218,7 @@ assert base64.urlsafedecode("-_-_") == [251, 255, 191]
 
 # --- hardening: malformed input raises ------------------------------------------------------
 assert "invalid base64 character" in emsg(Function(): return base64.decode("****"))
-assert "invalid base64 character" in emsg(Function(): return base64.decode("TW Fu"))   # whitespace not stripped
+assert base64.decode("TW Fu") == [77, 97, 110]   # ASCII whitespace is skipped (MIME/PEM)
 assert "lone trailing character" in emsg(Function(): return base64.decode("A"))
 assert "truncated or corrupted" in emsg(Function(): return base64.decode("TW"))
 assert threw(Function(): return base64.decode("!"))

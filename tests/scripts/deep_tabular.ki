@@ -78,15 +78,11 @@ assert hs.tail(0).tolist() == [], "Series.tail(0) is empty"
 assert hs.tail(-1).tolist() == [], "Series.tail(-1): start=len-(-1)=6, slice [6:] is empty (NOT clamped)"
 
 # =================================================================== DUPLICATE COLUMNS: corruption + 2 crash paths
-# (1) Direct construction with a duplicate column name does NOT throw: the backing Dict collapses the
-#     two names to one key, so the FIRST column's data is lost and df["a"] returns the SECOND.
-var dupc = pd.DataFrame([[1, 2], [3, 4]], columns=["a", "a"])
-assert dupc.columns == ["a", "a"], "duplicate column names are accepted verbatim in .columns"
-assert dupc["a"].tolist() == [2, 4], "BUG: duplicate column collapses in the backing Dict -> first column LOST"
-assert dupc.nrows() == 2, "nrows still reports 2 (reads the first column slot)"
-# (2) readcsv with a duplicated header column CRASHES (caught here): the column is appended to twice
-#     per row, so the backing list is too long for the column count -> length-mismatch throw.
-assert throws(Function(): return pd.readcsv("a,a,b\n1,2,3")), "readcsv with a duplicate header column throws (length mismatch)"
+# (1) Direct construction with a duplicate column name is REJECTED (was silent corruption: the backing
+#     Dict collapsed the two names to one key, losing the first column and fabricating rows).
+assert throws(Function(): return pd.DataFrame([[1, 2], [3, 4]], columns=["a", "a"])), "duplicate column name throws at construction"
+# (2) readcsv with a duplicated header column is likewise REJECTED with a clear duplicate-name error.
+assert throws(Function(): return pd.readcsv("a,a,b\n1,2,3")), "readcsv with a duplicate header column throws"
 # (3) merge with a colliding NON-key column suffixes them _x / _y (pandas-style).
 var mL = pd.DataFrame({"id": [1, 2], "v": [10, 20]}, columns=["id", "v"])
 var mR = pd.DataFrame({"id": [1, 2], "v": [100, 200]}, columns=["id", "v"])

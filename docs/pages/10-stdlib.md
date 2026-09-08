@@ -235,6 +235,10 @@ square matrix and throw otherwise.
   `serialize` graph codec — both `copy` and `deepcopy` return an independent (deep) instance, since
   Kirito has no per-instance attribute introspection. A value that can't be serialized (a live
   socket/file) is returned unchanged (best effort).
+- **Limitation:** a value shared *between* a plain container and an instance's internals (e.g. a list
+  that is both `outer[1]` and `inst.x`) is copied once per side, so the two copies no longer share
+  identity — the memo can't reach across the instance seam (again, no attribute introspection). Shared
+  references and cycles *within* the plain-container graph are preserved as expected.
 
 ---
 
@@ -1369,7 +1373,9 @@ Human-readable **text** serialization → a `String`.
 
 ## statistics
 
-- `mean(data) → Float` — arithmetic mean.
+- `mean(data) → Float` — arithmetic mean. Accumulated in Float (to avoid int64 overflow on large
+  integer data), so for values spanning very different magnitudes the last few ULPs may be lost; the
+  `variance`/`stdev` family uses a numerically-stable two-pass computation.
 - `median(data) → Float` — middle value.
 - `mode(data)` — the single most common value.
 - `multimode(data) → List` — all values tied for most common.

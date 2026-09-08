@@ -351,11 +351,11 @@ ok(h.nsmallest(0, data) == [] and h.nlargest(0, data) == [], "n=0 -> [] for both
 ok(h.nsmallest(-2, data) == [] and h.nlargest(-2, data) == [], "negative n -> [] for both")
 ok(h.nlargest(2, [1.5, 2.5, 0.5]) == [2.5, 1.5], "nlargest works with Floats")
 
-# --- merge (re-heaps every element -> tolerant of unsorted inputs).
+# --- merge: a proper k-way merge of already-sorted inputs.
 ok(h.merge([[1, 3], [2, 4]]) == [1, 2, 3, 4], "merge of sorted inputs")
 ok(h.merge([[5], [], [1, 3]]) == [1, 3, 5], "merge with an empty sublist")
 ok(h.merge([]) == [], "merge of no lists")
-ok(h.merge([[3, 1], [2, 0]]) == [0, 1, 2, 3], "merge re-sorts even unsorted inputs")
+ok(h.merge([[1, 3], [0, 2]]) == [0, 1, 2, 3], "k-way merge of sorted inputs")
 
 # --- type errors: a heap mixing non-comparable types throws.
 ok(throws(Function(): return h.heapify([1, "a"])), "a heap of mixed non-comparable types throws")

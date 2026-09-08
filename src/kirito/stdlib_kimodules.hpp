@@ -301,31 +301,68 @@ var cache = Function(func):
 // --- collections: deque, Counter, defaultdict, OrderedDict (as classes) ------------------------
 inline constexpr std::string_view collections = R"KI(
 class deque:
+    # Amortized-O(1) both-end deque via two stacks: `_front` holds the left portion in REVERSED order
+    # (its END is the logical left end) and `_back` holds the right portion in logical order. So
+    # appendleft/popleft touch _front's end and append/pop touch _back's end — all O(1). When the pop
+    # side is empty its counterpart is reversed across (each element moves at most once between
+    # rebalances), so queue/stack use is amortized O(1) — vs the old List with insert(0)/pop(0) that
+    # made FIFO use O(n^2).
     var _init_ = Function(self, items = None):
-        self._items = []
+        self._front = []
+        self._back = []
         if items != None:
             for x in items:
-                self._items.append(x)
+                self._back.append(x)
     var append = Function(self, x):
-        self._items.append(x)
+        self._back.append(x)
     var appendleft = Function(self, x):
-        self._items.insert(0, x)
+        self._front.append(x)
     var pop = Function(self):
-        if len(self._items) == 0:
-            throw "pop from an empty deque"
-        return self._items.pop()
+        if len(self._back) == 0:
+            if len(self._front) == 0:
+                throw "pop from an empty deque"
+            var j = len(self._front) - 1
+            while j >= 0:
+                self._back.append(self._front[j])
+                j = j - 1
+            self._front = []
+        return self._back.pop()
     var popleft = Function(self):
-        if len(self._items) == 0:
-            throw "pop from an empty deque"
-        return self._items.pop(0)
+        if len(self._front) == 0:
+            if len(self._back) == 0:
+                throw "pop from an empty deque"
+            var j = len(self._back) - 1
+            while j >= 0:
+                self._front.append(self._back[j])
+                j = j - 1
+            self._back = []
+        return self._front.pop()
+    var _tolist = Function(self):
+        var out = []
+        var i = len(self._front) - 1
+        while i >= 0:
+            out.append(self._front[i])
+            i = i - 1
+        for x in self._back:
+            out.append(x)
+        return out
     var _len_ = Function(self) -> Integer:
-        return len(self._items)
+        return len(self._front) + len(self._back)
     var _getitem_ = Function(self, i):
-        return self._items[i]
+        var f = len(self._front)
+        var n = f + len(self._back)
+        var k = i
+        if k < 0:
+            k = k + n
+        if k < 0 or k >= n:
+            throw "deque index out of range"
+        if k < f:
+            return self._front[f - 1 - k]
+        return self._back[k - f]
     var _str_ = Function(self) -> String:
-        return "deque(" + String(self._items) + ")"
+        return "deque(" + String(self._tolist()) + ")"
     var _iter_ = Function(self):
-        return iter(self._items)
+        return iter(self._tolist())
 
 class Counter:
     var _init_ = Function(self, items = None):
@@ -401,18 +438,12 @@ var median = Function(data) -> Float:
     return (Float(s[n // 2 - 1]) + Float(s[n // 2])) / 2.0
 
 var mode = Function(data):
+    # The single most common value. Reuse multimode so the tie rule is IDENTICAL to it (the first value
+    # to REACH the max count is not necessarily the first-seen among ties — the old strict-> update
+    # picked the former, disagreeing with multimode[0] and CPython). One source of truth for "most common".
     if len(data) == 0:
         throw "no mode for empty data"
-    var counts = {}
-    var best = None
-    var bestCount = 0
-    for x in data:
-        var c = counts.get(x, 0) + 1
-        counts[x] = c
-        if c > bestCount:
-            bestCount = c
-            best = x
-    return best
+    return multimode(data)[0]
 
 var variance = Function(data) -> Float:
     var n = len(data)
@@ -544,8 +575,7 @@ var fuzzymatch = Function(query, candidates, cutoff = 0.6):
     var scored = []
     var i = 0
     while i < len(candidates):
-        var longer = len(query) if len(query) >= len(candidates[i]) else len(candidates[i])
-        var score = 1.0 if longer == 0 else 1.0 - dists[i] / longer
+        var score = _ratio(len(query), dists[i], len(candidates[i]))   # same ratio rule as similarity()
         if score >= cutoff:
             scored.append([candidates[i], score])
         i = i + 1
@@ -586,21 +616,32 @@ var indent = Function(text, prefix) -> String:
 
 var dedent = Function(text) -> String:
     var lines = text.split("\n")
-    var minIndent = None
+    # Remove the common leading-whitespace PREFIX STRING (not merely its length): mixed tab/space
+    # indents only dedent by the characters actually shared, matching CPython textwrap.dedent. The old
+    # length-based strip mangled lines like "\t\tfoo" / "  bar" (no common prefix -> must stay unchanged).
+    var prefix = None
     for line in lines:
         var stripped = line.lstrip()
-        if len(stripped) > 0:
-            var ind = len(line) - len(stripped)
-            if minIndent == None or ind < minIndent:
-                minIndent = ind
-    if minIndent == None or minIndent == 0:
+        if len(stripped) == 0:
+            continue                                    # blank/whitespace-only lines don't constrain it
+        var ws = line[0 : len(line) - len(stripped)]    # this line's leading whitespace
+        if prefix == None:
+            prefix = ws
+        else:
+            var k = 0
+            var m = len(prefix) if len(prefix) <= len(ws) else len(ws)
+            while k < m and prefix[k] == ws[k]:
+                k = k + 1
+            prefix = prefix[0:k]
+    if prefix == None or len(prefix) == 0:
         return text
+    var plen = len(prefix)
     var out = []
     for line in lines:
-        if len(line) >= minIndent:
-            out.append(line[minIndent:])
+        if line[0:plen] == prefix:
+            out.append(line[plen:])
         else:
-            out.append(line)
+            out.append(line)                            # doesn't start with the common prefix: leave as-is
     return "\n".join(out)
 )KI";
 
@@ -666,8 +707,10 @@ var decode = Function(s):
     var bits = 0
     var padding = False
     for ch in s:
+        if ch == " " or ch == "\n" or ch == "\r" or ch == "\t":
+            continue                # ignore ASCII whitespace so MIME/PEM line-wrapped base64 round-trips
         if ch == "=":
-            padding = True          # padding has started; only '=' may follow
+            padding = True          # padding has started; only '=' (or whitespace) may follow
             continue
         if padding:                 # a real character after '=' is trailing garbage, not valid base64
             throw "invalid base64: data after padding"
@@ -818,7 +861,8 @@ var heappop = Function(heap):
     return top
 
 # Floyd's bottom-up construction: sift down every non-leaf, last to first. O(n), where pushing the
-# items one at a time was O(n log n) -- and heapify is what nsmallest/nlargest/merge all build on.
+# items one at a time was O(n log n). The heap ops (heapify/heappush/heappop) are the single source of
+# the heap invariant that nsmallest, nlargest and merge all build on.
 # Returns a NEW heap; `items` is left alone (unlike Python's in-place heapq.heapify).
 var heapify = Function(items):
     var heap = List(items)
@@ -838,8 +882,23 @@ var nsmallest = Function(n, items):
 var nlargest = Function(n, items):
     if n <= 0:           # match nsmallest: a non-positive n yields [], not a tail slice
         return []
-    var s = sorted(items, None, True)
-    return s[0:n]
+    # Keep a size-n MIN-heap of the largest-so-far (push each item, evict the smallest once size > n):
+    # O(len·log n), using the same heap machinery as nsmallest instead of a full O(len·log len) sort.
+    var heap = []
+    for x in items:
+        heappush(heap, x)
+        if len(heap) > n:
+            heappop(heap)
+    # heap holds the n largest (smallest at heap[0]); pop-all gives ascending, so emit reversed.
+    var asc = []
+    while len(heap) > 0:
+        asc.append(heappop(heap))
+    var out = []
+    var i = len(asc) - 1
+    while i >= 0:
+        out.append(asc[i])
+        i = i - 1
+    return out
 
 var heapreplace = Function(heap, item):
     # Pop the smallest then push item (more efficient than separate pop+push).
@@ -851,14 +910,23 @@ var heapreplace = Function(heap, item):
     return top
 
 var merge = Function(lists):
-    # Merge already-sorted lists into one sorted list.
+    # k-way merge of already-sorted lists: a heap of the k current heads — O(N log k) — not a heapsort
+    # of all N elements (O(N log N)). Each entry is [value, listIndex, elemIndex] so the heap orders by
+    # value (ties broken deterministically) and we can advance the list a popped head came from.
     var heap = []
-    for lst in lists:
-        for x in lst:
-            heappush(heap, x)
+    var li = 0
+    while li < len(lists):
+        if len(lists[li]) > 0:
+            heappush(heap, [lists[li][0], li, 0])
+        li = li + 1
     var out = []
     while len(heap) > 0:
-        out.append(heappop(heap))
+        var top = heappop(heap)
+        out.append(top[0])
+        var l = top[1]
+        var e = top[2] + 1
+        if e < len(lists[l]):
+            heappush(heap, [lists[l][e], l, e])
     return out
 )KI";
 
@@ -911,8 +979,14 @@ var _copyViaSerde = Function(obj):
     var serialize = import("serialize")
     try:
         return serialize.loads(serialize.dumps(obj))
-    catch as e:
-        return obj
+    catch String as e:
+        # A value that genuinely CANNOT be serialized (a live socket/file handle, a native function)
+        # can't be deep-copied, so return it as-is — the ONE legitimate fallback. Re-raise ANY other
+        # error: a real bug in serialize must not be silently swallowed into a shared reference the
+        # caller believes is an independent copy (no silent fallbacks).
+        if "cannot serialize" in e:
+            return obj
+        throw e
 
 var copy = Function(obj):
     var t = type(obj)
@@ -1005,6 +1079,8 @@ class Enum:
             throw "no such enum member: " + name
         return self._byName[name]
     var nameof = Function(self, value):
+        if value not in self._byValue:
+            throw "no such enum value: " + String(value)    # symmetric with get()'s named error
         return self._byValue[value]
     var names = Function(self):
         return self._order.copy()        # in definition order, not hash order
@@ -1232,6 +1308,15 @@ class Parser:
             if token == "-h" or token == "--help":
                 _io.print(self.usage())
                 return None
+            if token == "--":
+                # End-of-options separator (POSIX/argparse convention): every remaining token is a
+                # positional, even if it looks like an option (`-x`, `--y`). Previously threw "unknown
+                # option: --".
+                i = i + 1
+                while i < len(args):
+                    positionals.append(args[i])
+                    i = i + 1
+                break
             if token.startswith("--"):
                 var body = token[2:]
                 var name = body
@@ -1310,7 +1395,11 @@ var _isnan = Function(x) -> Bool:
     return False
 
 var _numeric = Function(values):
-    # the non-missing numeric values; Bool counts as 0/1 (like pandas)
+    # The non-missing numeric values; Bool counts as 0/1 (like pandas). A non-missing value that is NOT
+    # numeric is a HARD ERROR, not silently dropped: otherwise a stray string in a numeric aggregation
+    # just vanishes (Series(["a",1,2]).sum() == 3), silently hiding dirty data. Frame/group reductions
+    # skip non-numeric COLUMNS up front via _isnumericcol, so this only fires on a directly-aggregated
+    # Series that actually contains a non-numeric value.
     var out = []
     for v in values:
         if not _isnan(v):
@@ -1318,6 +1407,8 @@ var _numeric = Function(values):
                 out.append(1 if v else 0)
             elif isinstance(v, "Integer") or isinstance(v, "Float"):
                 out.append(v)
+            else:
+                throw "Series: non-numeric value in a numeric aggregation: " + String(v) + " (type " + type(v) + ")"
     return out
 
 # True iff a column has at least one non-missing value and every non-missing value is numeric
@@ -1478,9 +1569,13 @@ class Series:
         return self._binop(other, Function(a, b): return a != b)
 
     var isin = Function(self, values):
+        # O(n+m): hash `values` once into a Dict instead of a linear `v in <List>` per element (O(n*m)).
+        var vset = {}
+        for x in values:
+            vset[x] = True
         var out = []
         for v in self.values:
-            out.append(v in values)
+            out.append(v in vset)
         return Series(out, List(self.index), self.name)
 
     # --- aggregations (skip missing) ---
@@ -1548,11 +1643,14 @@ class Series:
         return p
 
     var unique = Function(self):
-        var seen = []
+        # O(n): a Dict (insertion-ordered) tracks seen values, vs the old O(n^2) `v not in <growing List>`.
+        var seen = {}
+        var out = []
         for v in self.values:
             if v not in seen:
-                seen.append(v)
-        return seen
+                seen[v] = True
+                out.append(v)
+        return out
 
     var nunique = Function(self) -> Integer:
         return len(self.unique())
@@ -1678,6 +1776,16 @@ class _Loc:
         return self.frame.rowat(self.frame.index.index(key))
 
 # ===================================================================================== DataFrame
+var _checkdupcols = Function(cols):
+    # A DataFrame keys its columns by name in a Dict while `columns` is a plain list; a repeated name
+    # collides on one Dict key, silently merging two columns' cells into one (fabricating rows) or
+    # crashing later with a misleading "columns must have the same length". Reject duplicates up front.
+    var seen = {}
+    for c in cols:
+        if c in seen:
+            throw "DataFrame: duplicate column name " + String(c)
+        seen[c] = True
+
 class DataFrame:
     var _init_ = Function(self, data = None, columns = None, index = None):
         self.columns = []
@@ -1697,6 +1805,7 @@ class DataFrame:
 
     var _fromcolumns = Function(self, data, columns):
         var cols = columns if columns != None else data.keys()
+        _checkdupcols(cols)
         var length = None
         for c in cols:
             var col = List(data[c])
@@ -1723,6 +1832,7 @@ class DataFrame:
                     for k in r.keys():
                         if k not in cols:
                             cols.append(k)
+            _checkdupcols(cols)
             for c in cols:
                 self.columns.append(c)
                 var col = []
@@ -1732,6 +1842,7 @@ class DataFrame:
         else:
             var ncols = len(rows[0])
             var cols = columns if columns != None else _defaultcols(ncols)
+            _checkdupcols(cols)
             # Say so when the caller's own columns= doesn't fit their rows: too few silently dropped
             # the trailing fields, too many surfaced a bare "index out of range" from in here. (This
             # measures only the first row, and never fires on the inferred column names.)
@@ -2161,6 +2272,12 @@ var _merge = Function(left, right, on, how):
     # validate `how` here so BOTH entry points (DataFrame.merge and module-level merge) reject a bad join
     if how != "inner" and how != "left" and how != "right" and how != "outer":
         throw "merge: how must be one of inner/left/right/outer, got '" + how + "'"
+    # Validate the join column exists in BOTH frames, with a diagnostic that names merge, the side, and
+    # the column — instead of the bare "key not found: <on>" a raw Dict access would raise from inside.
+    if not (on in left.columns):
+        throw "merge: left frame has no join column '" + String(on) + "'"
+    if not (on in right.columns):
+        throw "merge: right frame has no join column '" + String(on) + "'"
     # build an index of right rows by join key
     var rightidx = {}
     var rpos = 0
@@ -2470,20 +2587,22 @@ class Element:
 
     var tostring = Function(self) -> String:
         # Iterative serialization (no recursion): a work stack of ["str", s] fragments and
-        # ["open", elem] expansions, pushed in reverse so they concatenate in document order.
-        var out = ""
+        # ["open", elem] expansions, pushed in reverse so they emit in document order. Fragments are
+        # collected into a List and join()ed once — `out = out + frag` per fragment is O(n^2) on a
+        # large tree (Kirito strings are immutable), the module's own documented anti-pattern.
+        var out = []
         var stack = [["open", self]]
         while len(stack) > 0:
             var item = stack.pop()
             if item[0] == "str":
-                out = out + item[1]
+                out.append(item[1])
             else:
                 var e = item[1]
                 var head = "<" + e.tag
                 for k in e.attrib.keys():
                     head = head + " " + k + "=\"" + _escape_attr(String(e.attrib[k])) + "\""
                 if len(e.children) == 0 and e.text == "":
-                    out = out + head + " />"
+                    out.append(head + " />")
                 else:
                     var work = [["str", head + ">"], ["str", _escape(e.text)]]
                     for c in e.children:
@@ -2494,7 +2613,7 @@ class Element:
                     while j >= 0:
                         stack.append(work[j])
                         j = j - 1
-        return out
+        return "".join(out)
 
     var _str_ = Function(self) -> String:
         return self.tostring()
@@ -2536,6 +2655,14 @@ var _parse_tag = Function(s, i):
                     i = i + 1
                 aval = _decode(s[vstart:i])
                 i = i + 1            # skip closing quote
+            else:
+                # Unquoted value (not well-formed XML, but the parser is lenient): CONSUME it up to the
+                # next whitespace / '>' / '/'. Without this the value characters were left unread and
+                # then mis-parsed as spurious empty attributes (`<a b=c>` -> {'b':'', 'c':''}).
+                var ustart = i
+                while i < n and not _isspace(s[i]) and s[i] != ">" and s[i] != "/":
+                    i = i + 1
+                aval = _decode(s[ustart:i])
         attrib[aname] = aval
     var selfclose = False
     if i < n and s[i] == "/":

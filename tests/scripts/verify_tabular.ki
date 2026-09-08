@@ -315,10 +315,9 @@ assert not raises(Function(): return tb.merge(no, np, on = "pid", how = "outer")
 assert tb.merge(no, np, on = "pid", how = "outer").nrows() == 3, "merge NaN key outer row count"
 
 # ============================================================ duplicate columns / ragged rows (PINNED)
-# duplicate column name via columns=: self.columns keeps both, self.data keeps ONE (last wins)
-var dup = tb.DataFrame([[1, 2], [3, 4]], columns = ["a", "a"])
-assert dup.columns == ["a", "a"], "duplicate column name kept in columns list"
-assert dup["a"].tolist() == [2, 4], "duplicate column: last column wins in data (PINNED)"
+# duplicate column name is REJECTED at construction (was silent corruption: columns kept both, data one)
+assert raises_msg(Function(): return tb.DataFrame([[1, 2], [3, 4]], columns = ["a", "a"]),
+                  "duplicate column name"), "duplicate column name throws"
 # ragged list-of-lists: EITHER a short or a long later row throws a clear, row-naming error -- never a
 # silent truncation of a long row (data loss) nor a bare "index out of range" on a short one (F14-4).
 assert raises_msg(Function(): return tb.DataFrame([[1, 2], [3]]),

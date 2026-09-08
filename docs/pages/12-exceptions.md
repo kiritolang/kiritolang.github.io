@@ -401,6 +401,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `enumerate() start must be an Integer, got <T>` / `sum start must be a number` / `sum expects numbers` | Bad builtin start/element types | Pass the expected types |
 | `<who>() arg is an empty sequence` (min/max) | Empty `min`/`max` with no `default=` | Provide `default=` or non-empty input |
 | `isinstance second argument must be a class, a built-in type, or a type-name String` | Bad 2nd arg to `isinstance` | Pass a type/class/type-name |
+| `catch type must be a class, a built-in type, or a type-name String` | A typed `catch` whose type expression is not a type (the `None` literal, an Integer, an instance) — it would silently never match | Use a class, a built-in type, or a type-name String (or a bare `catch`) |
 | `hasattr: name (2nd argument) must be a String` | Non-String name to `hasattr` | Pass a String name |
 | `pow exponent must be non-negative with a modulus` / `pow modulus must be non-zero` / `pow modulus must be positive` | Bad 3-arg modular `pow` | Non-negative exponent, positive non-zero Integer modulus |
 | `pow base/exp/mod must be Integer with 3 args` | A non-Integer base, exponent, or modulus in 3-arg `pow` | Use Integers for modular `pow` |
@@ -723,6 +724,7 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `loads expects a Bytes (or String) of dump data` | `dump.loads` given the wrong type | Pass the `dumps` Bytes |
 | `could not open file for saving` / `could not open file for loading` | `save`/`load` couldn't open the path | Check the path/permissions |
 | `bad serialization tag '<t>'` / `bad dump tag` | A corrupt blob carries an unrecognized type tag | Deserialize only trusted data |
+| `corrupt serialized data: trailing characters in number '<tok>'` | A numeric token in a `serialize` blob has junk glued directly to it (a corrupt or concatenated blob) | Deserialize only intact `serialize.dumps` output |
 | `cannot deserialize: instance attribute name is not a String` | A corrupt instance record with a non-String attribute name | Deserialize only trusted data |
 | `cannot deserialize '<name>': missing state` | An instance/native tag whose state payload is absent | Deserialize only trusted data |
 

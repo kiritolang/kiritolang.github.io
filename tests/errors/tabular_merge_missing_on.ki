@@ -1,0 +1,5 @@
+# merge on a column absent from a frame must give a diagnostic naming merge/side/column.
+var tb = import("tabular")
+var l = tb.DataFrame([[1]], columns=["id"])
+var r = tb.DataFrame([[2]], columns=["x"])
+discard tb.merge(l, r, "id")

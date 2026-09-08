@@ -161,7 +161,9 @@ messy survey CSV cleaned with `dropna`/`fillna`/`apply`/`astype`).
 ## What you learned
 
 - **`Series`** (a labelled column) supports element-wise arithmetic and comparisons; a comparison
-  yields a boolean Series for masking.
+  yields a boolean Series for masking. Arithmetic aligns by **position**, not by index label (unlike
+  pandas), so operands must be the same length and the result carries the left operand's index. A
+  numeric aggregation (`sum`/`mean`/…) throws on a non-numeric value rather than silently dropping it.
 - **`DataFrame`** is a table you build from columns, rows, or `readcsv` (with type inference);
   select a column with `df["c"]`, a subset with `df[["a", "b"]]`, and matching rows with a boolean
   mask.

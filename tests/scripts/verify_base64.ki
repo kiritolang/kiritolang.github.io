@@ -69,8 +69,9 @@ assert Bytes(base64.urlsafedecode(base64.urlsafeencode(allbytes))) == allbytes, 
 # ============================================================ hardening
 # data after the '=' padding is rejected (a real char following padding is not valid base64)
 assert raises_msg(Function(): return base64.decode("SGk=extra"), "data after padding"), "decode rejects data after '='"
-# invalid characters throw (whitespace is NOT allowed by this decoder)
-assert raises_msg(Function(): return base64.decode("SG k="), "invalid base64 character"), "decode rejects space"
+# invalid characters throw, but ASCII whitespace is SKIPPED (MIME/PEM line-wrapping round-trips)
+assert base64.decode("SG k=") == base64.decode("SGk="), "decode skips embedded whitespace"
+assert base64.decode("SGVsbG8\nV29ybGQ=") == base64.decode("SGVsbG8V29ybGQ="), "decode skips a newline"
 assert raises_msg(Function(): return base64.decode("!!!!"), "invalid base64 character"), "decode rejects punctuation"
 # standard '/'+ '+' are invalid in the url-safe decoder path (translated to nothing meaningful);
 # but plain std decode accepts them — the url-safe alphabet swap means a '-'/'_' is rejected by std decode

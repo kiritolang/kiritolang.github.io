@@ -121,9 +121,8 @@ assert dd["b"] == [] and dd["a"] == [1] and ("c" not in dd), "defaultdict fresh 
 # ============================================================ heapq: no key= param; merge sorts anything
 assert raises_msg(Function(): return hq.nlargest(2, [3, 1, 2], Function(x): return x), "positional"), "nlargest has no key param"
 assert raises_msg(Function(): return hq.nsmallest(2, [3, 1, 2], Function(x): return x), "positional"), "nsmallest has no key param"
-# merge heap-pushes EVERYTHING, so it fully sorts even non-sorted inputs (more lenient than the doc's
-# 'already-sorted' wording).
-assert hq.merge([[3, 1, 2], [9, 0]]) == [0, 1, 2, 3, 9], "merge sorts unsorted inputs too"
+# merge is a proper k-way merge that assumes already-sorted inputs (as documented).
+assert hq.merge([[1, 2, 3], [0, 9]]) == [0, 1, 2, 3, 9], "k-way merge of sorted inputs"
 assert raises_msg(Function(): return hq.heapreplace([], 5), "empty heap"), "heapreplace empty raises"
 # heapify with a mix of Integer/Float keeps the min invariant.
 var mixheap = hq.heapify([3, 1.5, 2])
