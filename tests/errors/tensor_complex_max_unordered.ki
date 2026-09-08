@@ -1,0 +1,3 @@
+# Complex has no total order, so min/max is undefined on a Complex-dtype tensor.
+var tn = import("tensor")
+discard tn.Tensor([1.0, 2.0], dtype = "Complex").max()

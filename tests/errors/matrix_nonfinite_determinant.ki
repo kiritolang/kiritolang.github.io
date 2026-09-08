@@ -1,0 +1,4 @@
+# A non-finite (inf/NaN) element makes the determinant meaningless; reject it rather than propagate NaN.
+var mat = import("matrix")
+var math = import("math")
+discard mat.Matrix([[math.inf, 0], [0, 1]]).determinant()

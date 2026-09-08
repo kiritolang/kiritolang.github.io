@@ -1,0 +1,72 @@
+# spec_cov_json_serde.ki — coverage for json / serde (dump) / base64 corners not pinned elsewhere:
+#   * json.loads of an integer literal too big for Integer WIDENS to Float;
+#   * json.loads accepts a raw TAB and other raw control chars INSIDE a string (lenient);
+#   * base64.decode of all-padding ("====" or "=") yields an empty Bytes/List (padding accepted);
+#   * a class that defines `_getstate_` but NO `_setstate_` DUMPS fine (the throw is on LOAD, pinned
+#     in tests/errors/serde_getstate_no_setstate);
+#   * a Function literal written INSIDE an f-string DUMPS fine too — its inline body is paren-wrapped
+#     so the source is "()" (non-empty), so the flatten-time "source text was not captured" guard is
+#     NOT reached; the failure surfaces at LOAD instead (pinned in tests/errors/fstring_fn_deserialize).
+#
+# (json duplicate-key "last wins" is already pinned in spec_json_lenient.ki — not repeated here.)
+#
+# Final line: "spec_cov_json_serde: ok" — matched against spec_cov_json_serde.expected.
+
+var io     = import("io")
+var json   = import("json")
+var dump   = import("dump")
+var base64 = import("base64")
+
+# =============================================================================
+# json: a huge integer literal overflows Integer and widens to Float
+# =============================================================================
+var big = json.loads("100000000000000000000000000000")
+assert type(big) == "Float", "an over-large integer literal parses as Float, not Integer"
+assert big == 1e29, "the widened value equals 1e29"
+
+# A value that still fits Integer stays Integer.
+assert type(json.loads("9223372036854775807")) == "Integer", "INT64_MAX still parses as Integer"
+
+# =============================================================================
+# json: raw control chars inside a string are accepted (lenient parser)
+# =============================================================================
+var withTab = json.loads("\"a\tb\"")
+assert len(withTab) == 3, "a raw TAB inside a JSON string is accepted (length 3)"
+assert withTab == "a\tb", "the raw TAB is preserved verbatim"
+
+var withCtrl = json.loads("\"x" + chr(1) + "y\"")
+assert len(withCtrl) == 3, "a raw U+0001 control char inside a JSON string is accepted (length 3)"
+
+# =============================================================================
+# base64: all-padding input decodes to an empty result
+# =============================================================================
+assert base64.decode("====") == [], "base64.decode('====') is empty (all padding accepted)"
+assert base64.decode("=") == [], "base64.decode('=') is empty (lone padding accepted)"
+assert len(base64.decode("====")) == 0, "the all-padding decode has length 0"
+
+# =============================================================================
+# serde: _getstate_ WITHOUT _setstate_ dumps fine (load-time throw is a separate error test)
+# =============================================================================
+class GetOnly:
+    var v = 5
+    var _getstate_ = Function(self):
+        return {"v": self.v}
+
+var goBlob = dump.dumps(GetOnly())
+assert type(goBlob) == "Bytes", "a _getstate_-only class DUMPS fine (produces Bytes); the throw is on LOAD"
+
+# =============================================================================
+# serde: a Function literal built inside an f-string sub-parse dumps fine (source is "()")
+# =============================================================================
+# The inline body's source is paren-wrapped to "()" (non-empty), so dumps does NOT hit the
+# flatten-time "source text was not captured" guard; the corrupt source only fails on load.
+var holder = [None]
+var capture = Function(fn):
+    holder[0] = fn
+    return "ok"
+discard f"{capture((Function(x): discard x))}"
+assert type(holder[0]) == "Function", "the f-string sub-parse produced a Function value"
+var fnBlob = dump.dumps(holder[0])
+assert type(fnBlob) == "Bytes", "the f-string Function DUMPS fine (Bytes); the failure is on LOAD"
+
+io.print("spec_cov_json_serde: ok")

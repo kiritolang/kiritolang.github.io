@@ -1,0 +1,3 @@
+# Zero raised to a negative power is a singularity: pow(0, -1) must be a domain error.
+var cx = import("complex")
+discard cx.pow(cx.of(0, 0), cx.of(-1, 0))

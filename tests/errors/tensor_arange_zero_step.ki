@@ -1,0 +1,3 @@
+# arange with a zero step would loop forever / divide by zero; it must reject the step outright.
+var tn = import("tensor")
+discard tn.arange(0, 5, 0)

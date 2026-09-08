@@ -1,0 +1,3 @@
+# Scalar multiply is left-operand-only (m * k). The reflected form k * m has no Integer rule for a Matrix.
+var mat = import("matrix")
+discard 3 * mat.identity(2)

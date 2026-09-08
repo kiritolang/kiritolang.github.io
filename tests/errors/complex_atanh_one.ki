@@ -1,0 +1,3 @@
+# atanh has a genuine singularity at +/-1; the complex atanh must throw there, not emit inf.
+var cx = import("complex")
+discard cx.atanh(cx.real(1))

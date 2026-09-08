@@ -1,0 +1,3 @@
+# max over a zero-length axis has no elements to compare and must throw, not return garbage.
+var tn = import("tensor")
+discard tn.zeros([0, 3]).max(0)

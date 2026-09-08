@@ -1,0 +1,14 @@
+# A Function literal written INSIDE an f-string placeholder is parsed by a source-less sub-parser, so
+# its captured source text is empty; the inline-body paren-wrap then makes it the literal "()". dumps
+# therefore succeeds (source is non-empty), but LOAD re-parses "()" and fails.
+# Expected: "cannot deserialize function: expected an expression".
+#
+# (This is why the flatten-time "source text was not captured" guard is NOT reached from an f-string:
+# the paren-wrap hands it a non-empty — but unusable — source. The failure is deferred to load.)
+var dump = import("dump")
+var holder = [None]
+var capture = Function(fn):
+    holder[0] = fn
+    return "ok"
+discard f"{capture((Function(x): discard x))}"
+discard dump.loads(dump.dumps(holder[0]))

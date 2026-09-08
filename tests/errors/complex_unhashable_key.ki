@@ -1,0 +1,4 @@
+# Complex is unhashable and cannot be used as a Dict key.
+var cx = import("complex")
+var d = {}
+d[cx.i] = 1

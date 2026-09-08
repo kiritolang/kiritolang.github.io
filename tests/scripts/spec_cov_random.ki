@@ -1,0 +1,76 @@
+# Coverage for the `random` module's boundary/edge behaviors: trivial shuffles, full-size sampling,
+# reversed/negative-step ranges, String sequences, and the type/range rejections. Deterministic:
+# the RNG is seeded, and every drawn value is pinned only as a STRUCTURAL property (membership,
+# length, sorted-multiset, or throw) — never as an exact random draw.
+var io = import("io")
+var random = import("random")
+
+var r = random.Random(12345)
+
+# throwsMsg: run a zero-arg thunk, assert it throws with `needle` in the diagnostic.
+var throwsMsg = Function(thunk, needle):
+    try:
+        thunk()
+        return False
+    catch as e:
+        return needle in e
+
+# --- shuffle of a trivial list leaves it unchanged (in place; returns None) ---
+var empty = []
+assert r.shuffle(empty) == None, "shuffle returns None (mutates in place)"
+assert empty == [], "shuffle([]) leaves the empty list unchanged"
+var single = [42]
+r.shuffle(single)
+assert single == [42], "shuffle([single]) leaves the one-element list unchanged"
+
+# --- sample(list, k == n) is a full permutation: same multiset as the population ---
+var pop = [1, 2, 3, 4, 5, 6, 7, 8]
+var perm = r.sample(pop, len(pop))
+assert len(perm) == len(pop), "sample(k == n) returns n elements"
+var permsorted = perm.copy()
+permsorted.sort()
+assert permsorted == pop, "sample(k == n) is a permutation of the population"
+
+# --- randrange with a negative step: descending, and every draw is a member of range(10,0,-2) ---
+var descmembers = Set([10, 8, 6, 4, 2])
+var i = 0
+while i < 400:
+    var d = r.randrange(10, 0, -2)
+    assert d in descmembers, "randrange(10,0,-2) yields a descending member"
+    i = i + 1
+
+# --- uniform with reversed bounds still returns a value within [lo, hi] ---
+var j = 0
+while j < 400:
+    var u = r.uniform(10.0, 5.0)
+    assert u >= 5.0 and u <= 10.0, "uniform(10,5) returns a value in [5,10]"
+    j = j + 1
+
+# --- choices with k == 0 is the empty list ---
+assert r.choices([1, 2], 0) == [], "choices(pop, 0) == []"
+
+# --- gauss() and gauss(mu) with the default sigma produce a Float (do not throw) ---
+assert type(r.gauss()) == "Float", "gauss() defaults mu=0, sigma=1 -> Float"
+assert type(r.gauss(3.0)) == "Float", "gauss(mu) defaults sigma=1 -> Float"
+
+# --- String sequences: choice picks a code point, sample draws distinct code points ---
+var k = 0
+while k < 200:
+    assert r.choice("abc") in "abc", "choice on a String returns one of its characters"
+    var pair = r.sample("abc", 2)
+    assert len(pair) == 2, "sample on a String returns k characters"
+    assert pair[0] != pair[1], "sample draws are distinct"
+    assert pair[0] in "abc" and pair[1] in "abc", "sample characters come from the String"
+    k = k + 1
+
+# --- range/type rejections all throw with actionable diagnostics ---
+assert throwsMsg(Function(): return r.randrange(10, 5), "empty range"), "randrange(lo>hi) throws empty range"
+assert throwsMsg(Function(): return r.choice(""), "empty sequence"), "choice on the empty String throws"
+assert throwsMsg(Function(): return r.randint(1.5, 3), "expected Integer"), "randint rejects a Float"
+assert throwsMsg(Function(): return r.randint("a", 3), "expected Integer"), "randint rejects a String"
+assert throwsMsg(Function(): return r.randrange(1.5), "expected Integer"), "randrange rejects a Float"
+assert throwsMsg(Function(): return r.randrange("a"), "expected Integer"), "randrange rejects a String"
+assert throwsMsg(Function(): return r.seed(1.5), "expected Integer"), "seed rejects a Float"
+assert throwsMsg(Function(): return r.seed("a"), "expected Integer"), "seed rejects a String"
+
+io.print("spec_cov_random: ok")

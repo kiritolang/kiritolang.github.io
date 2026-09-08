@@ -1,0 +1,51 @@
+# Coverage for the int/BigInt module (stdlib_int.hpp): overflow-on-magnitude guards, string parsing
+# with whitespace + base prefixes, native round-trip limits, and the modular-arithmetic contracts
+# (modinv/modpow domain checks). Behaviors pinned here were verified against build-bin/ki-release.
+var io = import("io")
+var int = import("int")
+var math = import("math")
+
+var throwsMsg = Function(f, needle):
+    try:
+        discard f()
+        return False
+    catch String as e:
+        return needle in e
+
+# INT64_MIN, whose magnitude 2^63 cannot be represented as a native (int64) Integer result.
+var MIN = -9223372036854775807 - 1
+assert String(MIN) == "-9223372036854775808", "int64 min literal"
+
+# gcd/lcm live in `math` (native-Integer results): |INT64_MIN| overflows the Integer they must return.
+assert throwsMsg(Function(): return math.gcd(MIN, MIN), "gcd result too large for Integer"), "gcd overflow"
+assert throwsMsg(Function(): return math.lcm(MIN, MIN), "lcm result too large for Integer"), "lcm overflow"
+
+# fromstring rejects out-of-range bases (valid range is 2..36 inclusive).
+assert throwsMsg(Function(): return int.fromstring("10", 37), "base must be between 2 and 36"), "fromstring base 37"
+assert throwsMsg(Function(): return int.fromstring("10", 1), "base must be between 2 and 36"), "fromstring base 1"
+
+# BigInt(String) auto-detects a 0x/0o/0b prefix and tolerates surrounding whitespace + a sign.
+assert String(int.BigInt("  -0x1F ")) == "-31", "hex prefix + whitespace + sign"
+assert String(int.BigInt("+0b1010")) == "10", "binary prefix"
+assert throwsMsg(Function(): return int.BigInt(""), "invalid integer literal"), "empty string is not a literal"
+
+# A BigInt built from INT64_MIN round-trips back through toint() to the same native value.
+assert int.BigInt(MIN).toint() == MIN, "BigInt(INT64_MIN).toint() round-trips"
+# A BigInt beyond native range throws rather than silently truncating.
+assert throwsMsg(Function(): return int.BigInt(int.pow(10, 40)).toint(), "value does not fit in a native Integer"), "toint overflow"
+
+# modinv requires a modulus >= 2 and coprime arguments.
+assert throwsMsg(Function(): return int.modinv(3, 0), "modulus must be >= 2"), "modinv modulus 0"
+assert throwsMsg(Function(): return int.modinv(3, 1), "modulus must be >= 2"), "modinv modulus 1"
+assert throwsMsg(Function(): return int.modinv(2, 4), "not coprime"), "modinv non-coprime"
+assert String(int.modinv(3, 7)) == "5", "modinv 3 mod 7 == 5"
+
+# modpow: modulus 1 collapses every residue to 0; a negative exponent is rejected.
+assert String(int.modpow(5, 3, 1)) == "0", "modpow mod 1 -> 0"
+assert throwsMsg(Function(): return int.modpow(5, -1, 7), "modpow: negative exponent"), "modpow negative exponent"
+
+# Primality helpers validate their tunables up front.
+assert throwsMsg(Function(): return int.randomprime(1), "bits must be >= 2"), "randomprime bits 1"
+assert throwsMsg(Function(): return int.isprobableprime(5, 0), "rounds must be >= 1"), "isprobableprime zero rounds"
+
+io.print("spec_cov_int: ok")

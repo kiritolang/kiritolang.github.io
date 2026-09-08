@@ -1,0 +1,1 @@
+discard import("int").modinv(2, 4)
