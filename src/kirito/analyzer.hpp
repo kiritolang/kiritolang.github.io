@@ -347,7 +347,7 @@ private:
             analyzeExpr(*ix->object);
             for (const auto& k : ix->indices) analyzeExpr(*k);
         } else if (const auto* sl = dynamic_cast<const ast::SliceExpr*>(&e)) {
-            analyzeExpr(*sl->object);
+            if (sl->object) analyzeExpr(*sl->object);   // null object = a slice LITERAL (multi-axis key)
             if (sl->start) analyzeExpr(*sl->start);
             if (sl->stop) analyzeExpr(*sl->stop);
             if (sl->step) analyzeExpr(*sl->step);

@@ -319,6 +319,12 @@ public:
                     pop(); pop(); pop(); pop();
                     push(r);
                 } break;
+                case Op::MakeSlice: {   // stack: start, stop, step -> a Slice value (a subscript key)
+                    Handle start = peek(2), stop = peek(1), step = peek(0);
+                    Handle s = vm_.alloc(std::make_unique<SliceVal>(start, stop, step));
+                    pop(); pop(); pop();
+                    push(s);
+                } break;
 
                 case Op::BuildList:
                 case Op::BuildPack: {  // bare-comma packing builds the same List as a list literal —

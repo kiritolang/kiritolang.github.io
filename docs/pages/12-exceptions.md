@@ -263,6 +263,8 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `index must be Integer, not '<T>'` / `Bytes index must be Integer, not '<T>'` | Non-Integer sequence index | Use an Integer index |
 | `slice indices must be Integer or None` | Non-Integer/None slice bound | Use Integer or `None` bounds |
 | `slice step cannot be zero` | `x[a:b:0]` | Use a non-zero step |
+| `list slice assignment size mismatch: <n> target(s) but <m> value(s)` | `xs[::2] = […]` where an extended-step target and the value differ in length | Match the value length to the number of slice positions (a `step == 1` slice may resize) |
+| `an index can have at most one ellipsis (...)` | More than one `...` in a subscript (`t[..., ...]`) | Use a single ellipsis |
 | `pop index out of range` / `pop from empty List` | `pop()` on empty or bad index | Pop only in-range from a non-empty list |
 | `pop index must be an Integer` | Non-Integer arg to List `pop` | Pass an Integer index |
 | `remove: value not in List` / `index: value not in List` | `list.remove(v)`/`list.index(v)` for a value not present | Check with `in` first |
@@ -661,6 +663,8 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `permute: axes count must equal the tensor rank` / `permute: axes must be a permutation` | Bad `permute`/`transpose` axes | Pass a full valid permutation |
 | `<op> axis out of range` | Any axis arg past `ndim` (reductions, `slice`, `squeeze`, `stack`, `tensordot`, …) | Axis within `[0, ndim)` |
 | `Tensor index must be Integer` / `Tensor index out of range` / `too many indices for tensor` | Bad index / assignment key | One in-range Integer per dimension |
+| `Tensor assignment: value shape does not match the selected region` | Basic-index assignment (`t[:, 2:4] = m`) where the RHS tensor's shape ≠ the sliced region (a scalar broadcasts) | Match the RHS shape to the selection, or assign a scalar |
+| `Tensor element assignment is not allowed on a grad-tracking tensor …` | In-place `t[...] = v` on a tensor that requires grad | `detach()` first, or rebind functionally |
 | `cannot index/slice a 0-D tensor` / `item() requires a tensor with exactly one element, got <n>` | Indexing a scalar / `.item()` on a multi-element tensor | Use `.item()` on a 0-D / reduce first |
 | `boolean mask must match the tensor shape` | `t[mask]` with a wrong-shaped mask | Match the mask shape |
 | `tensor division/modulo/floor-division by zero` / `slice step cannot be zero` | A zero divisor / zero step | Use a non-zero divisor / step |

@@ -409,6 +409,49 @@ inline std::vector<std::string> FloatVal::inspectMembers() const {
     return {"compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool", "repr() -> String"};
 }
 
+// --- SliceVal out-of-line members ------------------------------------------------------------
+
+inline std::string SliceVal::str(StringifyCtx& ctx) const {
+    auto part = [&](Handle h) -> std::string { return ctx.arena.deref(h).str(ctx); };
+    return "slice(" + part(start_) + ", " + part(stop_) + ", " + part(step_) + ")";
+}
+
+inline Handle SliceVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) {
+    if (name == "start") return start_;
+    if (name == "stop")  return stop_;
+    if (name == "step")  return step_;
+    // .indices(length) -> [start, stop, step] resolved against `length` (Python slice.indices
+    // semantics: None-fill, negative-wrap, clamp; step 0 rejected) — the ergonomic way a user
+    // `_getitem_` turns a Slice into concrete bounds. Mirrors the clamping the built-in String/List/
+    // Tensor slicers apply.
+    if (name == "indices")
+        return makeMethod(vm, "indices", {"length"}, [self](KiritoVM& v, std::span<const Handle> a) -> Handle {
+            const auto& sl = static_cast<const SliceVal&>(v.arena().deref(self));
+            int64_t n = Args(v, a, "slice.indices")[0].asInt("slice.indices length");
+            if (n < 0) throw KiritoError("slice.indices: length must be non-negative");
+            auto isNone = [&](Handle h) { return v.arena().deref(h).kind() == ValueKind::None; };
+            int64_t step = isNone(sl.step_) ? 1 : Value(v, sl.step_).asInt("slice step");
+            if (step == 0) throw KiritoError("slice step cannot be zero");
+            int64_t lo = step < 0 ? -1 : 0, hi = step < 0 ? n - 1 : n;
+            auto bound = [&](Handle h, int64_t dflt) -> int64_t {
+                if (isNone(h)) return dflt;
+                int64_t x = Value(v, h).asInt("slice bound");
+                if (x < 0) x += n;
+                return std::clamp<int64_t>(x, lo, hi);
+            };
+            int64_t start = bound(sl.start_, step < 0 ? hi : lo);
+            int64_t stop  = bound(sl.stop_,  step < 0 ? lo : hi);
+            RootScope rs(v);   // protect the fresh ints until the List owns them (non-barriered build)
+            Handle hs = rs.add(v.makeInt(start)), he = rs.add(v.makeInt(stop)), hp = rs.add(v.makeInt(step));
+            auto out = std::make_unique<ListVal>();
+            out->elems.push_back(hs);
+            out->elems.push_back(he);
+            out->elems.push_back(hp);
+            return v.alloc(std::move(out));
+        });
+    return Object::getAttr(vm, self, name);
+}
+
 // --- StrVal out-of-line members --------------------------------------------------------------
 
 inline Handle StrVal::binary(KiritoVM& vm, BinOp op, Handle, Handle rhs) {
@@ -517,10 +560,44 @@ inline bool kiLessThan(KiritoVM& vm, Handle a, Handle b) {
 }
 
 inline Handle ListVal::getItem(KiritoVM& vm, std::span<const Handle> keys) {
-    return elems[sequenceIndex(vm, elems.size(), singleKey(*this, keys))];
+    Handle k = singleKey(*this, keys);
+    const Object& ko = vm.arena().deref(k);
+    if (ko.kind() == ValueKind::Slice) {   // a Slice value applied to a list == the `[a:b:c]` slice
+        const auto& sv = static_cast<const SliceVal&>(ko);
+        return slice(vm, sv.startH(), sv.stopH(), sv.stepH());
+    }
+    return elems[sequenceIndex(vm, elems.size(), k)];
 }
 inline void ListVal::setItem(KiritoVM& vm, std::span<const Handle> keys, Handle value) {
-    setElem(vm.arena(), sequenceIndex(vm, elems.size(), singleKey(*this, keys)), value);
+    Handle k = singleKey(*this, keys);
+    const Object& ko = vm.arena().deref(k);
+    if (ko.kind() == ValueKind::Slice) {   // Python list slice-assignment `lst[a:b:c] = iterable`
+        const auto& sv = static_cast<const SliceVal&>(ko);
+        tns::SliceRange r = tns::resolveSlice(vm, sv.startH(), sv.stopH(), sv.stepH(), elems.size());
+        std::vector<Handle> repl;   // RHS elements — reachable via `value` (operand-stack rooted here)
+        for (const Value& e : Value(vm, value).items()) repl.push_back(e.handle());
+        if (r.step == 1) {
+            // contiguous splice (may resize). Rebuild through the barriered clear+append (no alloc
+            // between capturing `result` and re-appending, so the captured handles stay live).
+            std::vector<Handle> result;
+            result.reserve(static_cast<std::size_t>(r.start) + repl.size() + (elems.size() - static_cast<std::size_t>(r.stop)));
+            for (std::ptrdiff_t i = 0; i < r.start; ++i) result.push_back(elems[static_cast<std::size_t>(i)]);
+            for (Handle h : repl) result.push_back(h);
+            for (std::size_t i = static_cast<std::size_t>(r.stop); i < elems.size(); ++i) result.push_back(elems[i]);
+            clearElems();
+            for (Handle h : result) append(vm.arena(), h);
+        } else {
+            // extended slice: element counts must match; assign in place.
+            std::vector<std::ptrdiff_t> idxs;
+            for (std::ptrdiff_t i = r.start; (r.step > 0) ? (i < r.stop) : (i > r.stop); i += r.step) idxs.push_back(i);
+            if (idxs.size() != repl.size())
+                throw KiritoError("list slice assignment size mismatch: " + std::to_string(idxs.size()) +
+                                  " target(s) but " + std::to_string(repl.size()) + " value(s)");
+            for (std::size_t j = 0; j < idxs.size(); ++j) setElem(vm.arena(), static_cast<std::size_t>(idxs[j]), repl[j]);
+        }
+        return;
+    }
+    setElem(vm.arena(), sequenceIndex(vm, elems.size(), k), value);
 }
 inline Handle ListVal::binary(KiritoVM& vm, BinOp op, Handle self, Handle rhs) {
     const Object& b = vm.arena().deref(rhs);
@@ -1960,6 +2037,15 @@ inline Handle InstanceValue::callKw(KiritoVM& vm, std::span<const Handle> args,
 }
 inline Handle InstanceValue::getItem(KiritoVM& vm, std::span<const Handle> keys) {
     return invokeOp(vm, *this, "_getitem_", keys, "'" + className + "' object is not indexable");
+}
+// A single-axis slice `x[a:b:c]` on an instance is delivered to `_getitem_` as ONE Slice value, so a
+// class handles single- AND multi-axis slicing uniformly through `_getitem_` (inspecting Slice args)
+// — no separate slice protocol. (Multi-axis `x[a, b:c]` already flows through getItem as mixed keys.)
+inline Handle InstanceValue::slice(KiritoVM& vm, Handle start, Handle stop, Handle step) {
+    RootScope rs(vm);   // keep the Slice (and its bounds, via children()) alive across the user _getitem_
+    Handle s = rs.add(vm.alloc(std::make_unique<SliceVal>(start, stop, step)));
+    std::array<Handle, 1> keys{s};
+    return getItem(vm, keys);
 }
 inline void InstanceValue::setItem(KiritoVM& vm, std::span<const Handle> keys, Handle value) {
     std::vector<Handle> args(keys.begin(), keys.end());
@@ -3464,6 +3550,14 @@ inline void KiritoVM::installBuiltins() {
     defSig("len", {{"x"}}, "Integer", [](KiritoVM& vm, std::span<const Handle> args) -> Handle {
         if (args.size() != 1) throw KiritoError("len expected 1 argument");
         return vm.makeInt(vm.arena().deref(args[0]).length(vm).value());
+    });
+
+    // slice(start, stop, step = None) -> a Slice value (the same value the `a:b:c` subscript literal
+    // builds). Use None for an omitted bound: slice(None, 4) is `:4`, slice(2, None) is `2:`.
+    defSig("slice", {{"start"}, {"stop"}, {"step", "", none()}}, "Slice",
+           [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        Args args(vm, a, "slice");
+        return vm.alloc(std::make_unique<SliceVal>(args[0].handle(), args[1].handle(), args[2].handle()));
     });
 
     defSig("import", {{"name", "String"}}, "Module", [](KiritoVM& vm, std::span<const Handle> args) -> Handle {

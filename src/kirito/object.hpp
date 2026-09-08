@@ -31,6 +31,9 @@ enum class ValueKind {
     // Lazy pull-based sequences (range/map/filter/zip/enumerate). Opaque and non-castable — they are
     // iterated, indexed, etc. only through the Object protocol slots, never by a kind-guarded downcast.
     Iterator,
+    // Basic-indexing helpers: a Slice (start:stop:step) and the Ellipsis (...) singleton. They exist
+    // only as subscript keys — flow through getItem/setItem/_getitem_, never arithmetic or serde.
+    Slice, Ellipsis,
 };
 
 // Threaded through str() so containers can detect reference cycles (a value already being

@@ -129,7 +129,7 @@ struct CaptureScan {
             scanExpr(*ix->object, inNested, nb);
             for (const auto& k : ix->indices) scanExpr(*k, inNested, nb);
         } else if (const auto* sl = dynamic_cast<const ast::SliceExpr*>(&e)) {
-            scanExpr(*sl->object, inNested, nb);
+            if (sl->object) scanExpr(*sl->object, inNested, nb);  // null for a slice literal (subscript element)
             if (sl->start) scanExpr(*sl->start, inNested, nb);
             if (sl->stop) scanExpr(*sl->stop, inNested, nb);
             if (sl->step) scanExpr(*sl->step, inNested, nb);
@@ -241,7 +241,7 @@ struct FreeVarScan {
             expr(*ix->object, bound);
             for (const auto& k : ix->indices) expr(*k, bound);
         } else if (const auto* sl = dynamic_cast<const ast::SliceExpr*>(&e)) {
-            expr(*sl->object, bound);
+            if (sl->object) expr(*sl->object, bound);  // null for a slice literal (subscript element)
             if (sl->start) expr(*sl->start, bound);
             if (sl->stop) expr(*sl->stop, bound);
             if (sl->step) expr(*sl->step, bound);

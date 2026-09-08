@@ -157,6 +157,54 @@ public:
     std::size_t hash() const override { return 0; }
 };
 
+// The Ellipsis singleton (`...`) — a basic-indexing placeholder that expands to as many full slices as
+// fill a container's remaining axes. Interned once per VM, like None.
+class EllipsisVal : public Object {
+public:
+    ValueKind kind() const override { return ValueKind::Ellipsis; }
+    std::string typeName() const override { return "Ellipsis"; }
+    bool truthy() const override { return true; }
+    std::string str(StringifyCtx&) const override { return "..."; }
+    bool equals(const ObjectArena&, const Object& other) const override { return other.kind() == ValueKind::Ellipsis; }
+    bool hashable() const override { return true; }
+    std::size_t hash() const override { return 0x2e2e2eu; }
+};
+
+// A slice (start:stop:step) as a first-class value. Each bound is a Handle that may be None (omitted —
+// resolved against a length at use, via the shared slice resolver). Produced by the `a:b:c` subscript
+// literal and by the `slice()` builtin; consumed by getItem/setItem (Tensor axes, a user `_getitem_`).
+// Immutable. Holds three Handles, so children() enumerates them for the GC.
+class SliceVal : public Object {
+public:
+    SliceVal(Handle start, Handle stop, Handle step) : start_(start), stop_(stop), step_(step) {}
+    ValueKind kind() const override { return ValueKind::Slice; }
+    std::string typeName() const override { return "Slice"; }
+    bool truthy() const override { return true; }
+    bool equals(const ObjectArena& a, const Object& other) const override {
+        if (other.kind() != ValueKind::Slice) return false;
+        const auto& o = static_cast<const SliceVal&>(other);
+        return a.deref(start_).equals(a, a.deref(o.start_)) &&
+               a.deref(stop_).equals(a, a.deref(o.stop_)) &&
+               a.deref(step_).equals(a, a.deref(o.step_));
+    }
+    std::string str(StringifyCtx& ctx) const override;                       // "slice(a, b, c)" (runtime.hpp)
+    Handle getAttr(KiritoVM&, Handle self, std::string_view name) override;  // .start/.stop/.step/.indices()
+    std::vector<std::string> inspectMembers() const override {
+        return {"start", "stop", "step", "indices(length) -> List"};
+    }
+    void children(std::vector<Handle>& out) const override {
+        if (start_.slot) out.push_back(start_);
+        if (stop_.slot) out.push_back(stop_);
+        if (step_.slot) out.push_back(step_);
+    }
+    Handle startH() const { return start_; }
+    Handle stopH() const { return stop_; }
+    Handle stepH() const { return step_; }
+
+private:
+    Handle start_, stop_, step_;
+};
+
 // Boolean. Interned per VM (True/False each share one slot).
 class BoolVal : public Object {
 public:

@@ -76,21 +76,15 @@ assert isinstance(math, "Module") == True, "'Module' matches a module"
 assert isinstance(None, "None") == True, "'None' pseudo-type works"
 
 # ---------------------------------------------------------------------------
-# Slice syntax does NOT reach _getitem_ (docs/pages/09-types.md, limitations).
+# Slice syntax x[a:b] reaches _getitem_ as a single Slice value (docs/pages/09-types.md).
 # ---------------------------------------------------------------------------
 class SliceEater:
     var _getitem_ = Function(self, key):
         return "got:" + String(key)
 var se = SliceEater()
 assert se[5] == "got:5", "scalar key goes through _getitem_"
-# Slice syntax x[a:b] uses a native path that a user class cannot intercept.
-# There is no _slice_ special method — see docs limitations.
-var slice_threw = False
-try:
-    discard se[1:3]
-catch as e:
-    slice_threw = True
-assert slice_threw, "slice x[a:b] does NOT reach _getitem_ — throws (no _slice_)"
+# A slice is delivered to _getitem_ as one Slice value — no separate _slice_ special method.
+assert se[1:3] == "got:slice(1, 3, None)", "slice x[a:b] reaches _getitem_ as a Slice value"
 
 # Variadic keys: _getitem_(self, i, j) receives them as separate args
 class Grid:

@@ -81,6 +81,11 @@ parameter name.
   `x in r`. A step of `0` throws, and a length past the 32M-element cap throws `range too large` (the cap
   now bounds only the materializing operations — plain iteration is unbounded in memory). (`stop` may also
   be given by the keyword `end`.)
+- `slice(start, stop[, step]) → Slice` — build a first-class **`Slice`** value, the same object the
+  `a:b:c` subscript syntax produces. Has `.start`/`.stop`/`.step` (any may be `None`) and
+  `.indices(length) → [start, stop, step]`, which resolves the bounds against a concrete length
+  (Python clamping rules; a `step` of `0` throws). See
+  [Basic indexing and slicing](09-types.md#basic-indexing-and-slicing).
 - `enumerate(iterable[, start]) → Iterator` — a **lazy** iterator of `[index, value]` pairs, indices
   starting at `0` (or at `start`, e.g. `enumerate(xs, start = 1)`). Wrap in `List(...)` to materialize.
 - `zip(*iterables) → Iterator` — a **lazy** iterator of `[a, b, …]` tuples drawn position-wise from the

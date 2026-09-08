@@ -317,6 +317,52 @@ io.print(d.get("z", 0))    # 0 (default)
 | `d.copy()` | A shallow copy of the dict. |
 | `d.clear()` | Remove all entries. |
 
+## Basic indexing and slicing
+
+Subscripting understands numpy-style *basic indexing*: each comma-separated element of `x[...]` is
+either a scalar key or a **slice**, and the elements are matched to axes left-to-right.
+
+### The `Slice` value
+
+`a:b:c` inside a subscript builds a first-class **`Slice`** value with `.start`, `.stop`, and `.step`
+attributes (any omitted bound is `None`). The same value is produced by the `slice(start, stop[,
+step])` builtin, so you can store and pass one around:
+
+```kirito
+var s = slice(1, 8, 2)              # same as the a:b:c that appears in x[1:8:2]
+io.print(s.start, s.stop, s.step)   # 1 8 2
+io.print(slice(None, 5, None).indices(3))   # [0, 3, 1] — clamped to a length
+```
+
+`s.indices(length)` resolves the (possibly open or negative) bounds against a concrete `length`,
+applying Python's clamping rules, and returns `[start, stop, step]` ready to drive a loop. A `step`
+of `0` is rejected.
+
+### Slices reach `_getitem_` / `_setitem_`
+
+A slice is delivered to a user class as one `Slice` argument — there is no separate `_slice_`
+method. `x[a:b]` calls `_getitem_(self, Slice(a, b, None))`; a mixed subscript `x[i, a:b]` calls
+`_getitem_(self, i, Slice(a, b, None))`. Detect one with `type(key) == "Slice"` and resolve it with
+`key.indices(len(...))`.
+
+`List` and `String` accept a `Slice` key directly (`xs[slice(1, 4)]` equals `xs[1:4]`), and list
+slice **assignment** works: `xs[1:3] = [...]` splices (resizing the list), while an extended-step
+target (`xs[::2] = [...]`) requires a value of matching length or throws *list slice assignment size
+mismatch*.
+
+### Ellipsis (`...`) and newaxis (`None`)
+
+Two special subscript elements support multi-dimensional containers such as [tensors](tensors.html):
+
+- **`...` (ellipsis)** is a literal standing for "as many full slices `:` as needed to consume the
+  remaining axes". `t[..., 0]` selects index `0` on the last axis of any-rank `t`. `String(...)` is
+  `"..."` and `type(...)` is `"Ellipsis"`. At most one ellipsis may appear per subscript.
+- **`None` (newaxis)** inserts a new length-1 axis at that position (`t[:, None]` turns a shape
+  `[3, 4]` tensor into `[3, 1, 4]`).
+
+Ellipsis and newaxis are inert for scalar containers — they exist for types (tensors) that define
+multi-axis semantics; a plain user class simply receives them as keys.
+
 ## User-defined classes
 
 A `class` defines a new type in the same value model as the built-ins — see the
@@ -422,8 +468,8 @@ Invoked as `x OP y` → `x._op_(y)`; return a `Bool` (or any truthy/falsy value)
 
 | Method | Invoked by | Returns |
 |--------|-----------|---------|
-| `_getitem_(self, key)` | `x[key]` (variadic: `x[i, j]` passes `i, j`) | the element |
-| `_setitem_(self, key, value)` | `x[key] = value` (variadic keys: `m[i, j] = v`) | nothing |
+| `_getitem_(self, key)` | `x[key]` (variadic: `x[i, j]` passes `i, j`; a slice `x[a:b]` passes one `Slice`) | the element |
+| `_setitem_(self, key, value)` | `x[key] = value` (variadic keys: `m[i, j] = v`; slice targets pass a `Slice`) | nothing |
 | `_len_(self)` | `len(x)` | an `Integer` |
 | `_contains_(self, item)` | `item in x` / `item not in x` | a truth value |
 | `_iter_(self)` | `for v in x:`, and any iteration (unpacking, `List(x)`, …) | an **iterator** — a `_next_`-style object (commonly `self` or a fresh iterator instance, the lazy generator protocol below), a native iterator (`iter(collection)`, `range`/`map`/`filter`/`zip`/`enumerate`), but **not** a bare List/Set/String (wrap it: `return iter(...)`) |
@@ -546,9 +592,11 @@ A few deliberate boundaries:
   each of `_lt_`/`_le_`/`_gt_`/`_ge_` you need.
 - **`_exit_` takes only `self`** (no exception type/value/traceback parameters), and its return value is
   **ignored** — it cannot suppress an exception propagating out of the `with` block.
-- **Slice syntax does not reach `_getitem_`.** `x[a:b:c]` uses a separate native slice protocol that
-  user classes can't intercept (there is no `_slice_`); only scalar/variadic keys (`x[i]`, `x[i, j]`)
-  reach `_getitem_`/`_setitem_`. Expose a normal method (e.g. `x.slice(a, b)`) for range access.
+- **Slices reach `_getitem_` as a `Slice` value, not a separate protocol.** There is no `_slice_`
+  method: `x[a:b:c]` on a user class calls `_getitem_(self, Slice(a, b, c))`, and a mixed multi-axis
+  subscript `x[i, a:b]` calls `_getitem_(self, i, Slice(a, b, None))`. Inspect a key with
+  `type(key) == "Slice"` and resolve it against a length with `key.indices(n)`. See
+  [Basic indexing and slicing](#basic-indexing-and-slicing) below.
 - **`_len_` does not drive truthiness.** Kirito's built-in containers are falsy when empty (`if
   xs:` on a `List`, `Dict`, `Set` is the size test), but a user class opts into that behaviour by
   defining `_bool_` explicitly — `_len_` alone doesn't change truthiness. See

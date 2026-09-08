@@ -144,8 +144,8 @@ class One:
     var _init_ = Function(self): pass
     var _getitem_ = Function(self, i): return i
 assert raises(Function(): return One()[1, 2]), "1-key _getitem_ called m[i,j] raises (arity)"
-# Slice syntax does NOT reach _getitem_ (separate native slice protocol; no _slice_).
-assert raises(Function(): return One()[0:2]), "slice on a _getitem_-only class raises (no _slice_)"
+# Slice syntax reaches _getitem_ as a single Slice value (no separate slice protocol / _slice_).
+assert type(One()[0:2]) == "Slice", "slice on a _getitem_ class delivers a Slice value"
 
 # =============================================================================
 # _iter_ protocol: must return an ITERATOR (iter(collection) / a native iterator /

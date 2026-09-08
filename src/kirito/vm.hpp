@@ -37,6 +37,7 @@ public:
         _activeStack().push_back(this);
         tempRoots_.reserve(1024);  // avoid reallocation churn on the hot RootScope path
         none_ = arena_.alloc(std::make_unique<NoneVal>());
+        ellipsis_ = arena_.alloc(std::make_unique<EllipsisVal>());
         true_ = arena_.alloc(std::make_unique<BoolVal>(true));
         false_ = arena_.alloc(std::make_unique<BoolVal>(false));
         // A distinct sentinel marking an as-yet-unwritten slot-addressed local. Never reaches Kirito
@@ -79,6 +80,7 @@ public:
 
     // Interned singletons.
     Handle none() const { return none_; }
+    Handle ellipsis() const { return ellipsis_; }    // the `...` singleton (basic-indexing placeholder)
     Handle undefined() const { return undefined_; }  // sentinel for an unwritten slot-addressed local
     Handle makeBool(bool v) const { return v ? true_ : false_; }
 
@@ -161,7 +163,7 @@ public:
     // roots, C++-side pinned wrappers, the pinned bytecode literal pool, and every live operand stack.
     template <class F>
     void forEachRoot(F&& f) const {
-        f(none_); f(true_); f(false_); f(undefined_); f(global_);
+        f(none_); f(ellipsis_); f(true_); f(false_); f(undefined_); f(global_);
         for (Handle h : smallInts_) f(h);
         if (replScopeReady_) f(replScope_);
         for (const auto& [name, h] : moduleCache_) f(h);
@@ -466,6 +468,7 @@ private:
     }
     ObjectArena arena_;
     Handle none_;
+    Handle ellipsis_;
     Handle true_;
     Handle false_;
     Handle undefined_;

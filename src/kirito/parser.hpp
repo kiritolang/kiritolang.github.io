@@ -646,44 +646,54 @@ private:
                 expr = std::move(call);
             } else if (at(TokenType::LBracket)) {
                 SourceSpan span = advance().span;
-                ast::ExprPtr start, stop, step;
-                bool isSlice = false;
-                std::vector<ast::ExprPtr> extra;  // extra comma-separated indices: obj[a, b, c]
-                if (!at(TokenType::Colon) && !at(TokenType::RBracket)) start = parseExpr();
-                if (at(TokenType::Colon)) {
-                    isSlice = true;
-                    advance();
-                    if (!at(TokenType::Colon) && !at(TokenType::RBracket)) stop = parseExpr();
+                if (at(TokenType::RBracket))   // an empty subscript `obj[]` has no index
+                    throw KiritoError("expected an index expression inside '[ ]'", span);
+                // Parse ONE comma-separated subscript element: an index expression, OR a slice
+                // (start:stop:step) which becomes a SliceExpr with a NULL object (a slice LITERAL the
+                // compiler turns into a Slice value key). `...` and `None` are ordinary literal indices.
+                auto parseElem = [&]() -> ast::ExprPtr {
+                    ast::ExprPtr s, e, st;
+                    bool slice = false;
+                    if (!at(TokenType::Colon) && !at(TokenType::RBracket) && !at(TokenType::Comma))
+                        s = parseExpr();
                     if (at(TokenType::Colon)) {
+                        slice = true;
                         advance();
-                        if (!at(TokenType::RBracket)) step = parseExpr();
+                        if (!at(TokenType::Colon) && !at(TokenType::RBracket) && !at(TokenType::Comma))
+                            e = parseExpr();
+                        if (at(TokenType::Colon)) {
+                            advance();
+                            if (!at(TokenType::RBracket) && !at(TokenType::Comma))
+                                st = parseExpr();
+                        }
                     }
-                } else {
-                    // Comma-separated extra indices: obj[a, b, c]
-                    while (at(TokenType::Comma)) {
-                        advance();
-                        extra.push_back(parseExpr());
+                    if (!slice) {
+                        if (!s) throw KiritoError("expected an index or slice inside '[ ]'", span);
+                        return s;
                     }
-                }
+                    auto sl = std::make_unique<ast::SliceExpr>();
+                    sl->span = span;
+                    sl->object = nullptr;   // slice literal -> MakeSlice
+                    sl->start = std::move(s); sl->stop = std::move(e); sl->step = std::move(st);
+                    return sl;
+                };
+                std::vector<ast::ExprPtr> elems;
+                elems.push_back(parseElem());
+                while (at(TokenType::Comma)) { advance(); elems.push_back(parseElem()); }
                 expect(TokenType::RBracket, "']' to close the index");
-                if (isSlice) {
-                    auto node = std::make_unique<ast::SliceExpr>();
-                    node->span = span;
-                    node->object = std::move(expr);
-                    node->start = std::move(start);
-                    node->stop = std::move(stop);
-                    node->step = std::move(step);
-                    expr = std::move(node);
+                if (elems.size() == 1 && elems[0]->exprKind() == ast::ExprKind::Slice) {
+                    // Single-axis slice `obj[a:b:c]`: attach the object and keep the existing GetSlice
+                    // path (unchanged dispatch for String/List/Bytes/Tensor/Range).
+                    auto& sl = static_cast<ast::SliceExpr&>(*elems[0]);
+                    sl.object = std::move(expr);
+                    expr = std::move(elems[0]);
                 } else {
-                    // An empty subscript `obj[]` is not a slice and has no index — reject it here
-                    // rather than building an IndexExpr with a null index (which the resolver /
-                    // analyzer / compiler would dereference and crash on).
-                    if (!start) throw KiritoError("expected an index expression inside '[ ]'", span);
+                    // A single index, OR a multi-axis subscript (any comma, or any slice past axis 0):
+                    // each slice element is a Slice value key, dispatched through getItem.
                     auto node = std::make_unique<ast::IndexExpr>();
                     node->span = span;
                     node->object = std::move(expr);
-                    node->indices.push_back(std::move(start));
-                    for (auto& ex : extra) node->indices.push_back(std::move(ex));
+                    node->indices = std::move(elems);
                     expr = std::move(node);
                 }
             } else if (at(TokenType::Dot)) {
@@ -903,6 +913,7 @@ private:
             case TokenType::KwTrue: { advance(); return literal(true, t.span); } break;
             case TokenType::KwFalse: { advance(); return literal(false, t.span); } break;
             case TokenType::KwNone: { advance(); return literal(std::monostate{}, t.span); } break;
+            case TokenType::Ellipsis: { advance(); return literal(ast::EllipsisTag{}, t.span); } break;
             case TokenType::KwFunction: { return parseFunction(); } break;
             case TokenType::Identifier: {
                 advance();

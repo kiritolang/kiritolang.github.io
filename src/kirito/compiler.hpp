@@ -289,8 +289,18 @@ private:
             case ast::ExprKind::Index: {
                 const auto& idx = static_cast<const ast::IndexExpr&>(target);
                 compileExpr(*idx.object);
-                for (const auto& ix : idx.indices) compileExpr(*ix);
+                for (const auto& ix : idx.indices) compileExpr(*ix);   // a slice element compiles to MakeSlice
                 emit(Op::SetItem, static_cast<uint32_t>(idx.indices.size()), span);
+            } break;
+            case ast::ExprKind::Slice: {
+                // Single-axis slice assignment `obj[a:b:c] = v` -> setItem with ONE Slice key.
+                const auto& sl = static_cast<const ast::SliceExpr&>(target);
+                compileExpr(*sl.object);
+                if (sl.start) compileExpr(*sl.start); else emit(Op::LoadNone);
+                if (sl.stop) compileExpr(*sl.stop); else emit(Op::LoadNone);
+                if (sl.step) compileExpr(*sl.step); else emit(Op::LoadNone);
+                emit(Op::MakeSlice);
+                emit(Op::SetItem, 1, span);
             } break;
             case ast::ExprKind::Member: {
                 const auto& mem = static_cast<const ast::MemberExpr&>(target);
@@ -595,6 +605,8 @@ private:
             emit(Op::LoadConst, addConst(vm_.makeBool(std::get<bool>(e.value))));
         else if (std::holds_alternative<std::string>(e.value))
             emit(Op::LoadConst, addConst(vm_.makeString(std::get<std::string>(e.value))));
+        else if (std::holds_alternative<ast::EllipsisTag>(e.value))
+            emit(Op::LoadConst, addConst(vm_.ellipsis()));   // `...` -> the Ellipsis singleton
         else
             emit(Op::LoadNone);
     }
@@ -682,11 +694,13 @@ private:
     }
 
     void visit(const ast::SliceExpr& e) override {
-        compileExpr(*e.object);
+        // A slice LITERAL (null object) is a subscript key -> build a Slice value (MakeSlice); a real
+        // single-axis `obj[a:b:c]` keeps the existing GetSlice dispatch.
+        if (e.object) compileExpr(*e.object);
         if (e.start) compileExpr(*e.start); else emit(Op::LoadNone);
         if (e.stop) compileExpr(*e.stop); else emit(Op::LoadNone);
         if (e.step) compileExpr(*e.step); else emit(Op::LoadNone);
-        emit(Op::GetSlice, 0, e.span);
+        emit(e.object ? Op::GetSlice : Op::MakeSlice, 0, e.span);
     }
 
     void visit(const ast::ListLiteral& e) override {

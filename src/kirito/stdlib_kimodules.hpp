@@ -1493,10 +1493,15 @@ class Series:
 
     # by label first (if the label exists in the index), else by position
     var _getitem_ = Function(self, key):
+        if type(key) == "Slice":                                 # positional slice -> a sub-Series
+            return Series(self.values[key], self.index[key], self.name)
         var pos = self.index.index(key) if key in self.index else key
         return self.values[pos]
 
     var _setitem_ = Function(self, key, value):
+        if type(key) == "Slice":                                 # positional slice-assignment
+            self.values[key] = value
+            return
         var pos = self.index.index(key) if key in self.index else key
         self.values[pos] = value
 
@@ -1895,6 +1900,11 @@ class DataFrame:
 
     # --- selection: column (String), column-subset (List of String), or row mask (boolean) ---
     var _getitem_ = Function(self, key):
+        if type(key) == "Slice":                             # df[a:b] slices ROWS (pandas-style)
+            var newdata = {}
+            for c in self.columns:
+                newdata[c] = self.data[c][key]
+            return DataFrame(newdata, List(self.columns), self.index[key])
         if isinstance(key, "Series"):
             return self._mask(key.values)
         if isinstance(key, "List"):
@@ -1904,6 +1914,8 @@ class DataFrame:
         return Series(List(self.data[key]), List(self.index), key)
 
     var _setitem_ = Function(self, key, value):
+        if type(key) == "Slice":
+            throw "DataFrame: row slice-assignment (df[a:b] = ...) is not supported; assign a column df[name] = ... or use a boolean mask"
         var col = []
         if isinstance(value, "Series"):
             col = List(value.values)

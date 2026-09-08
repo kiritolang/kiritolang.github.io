@@ -21,7 +21,7 @@ enum class TokenType {
     Plus, Minus, Star, Slash, SlashSlash, Percent, StarStar, Arrow,
     Assign, EqEq, NotEq, Lt, Le, Gt, Ge,
     LParen, RParen, LBracket, RBracket, LBrace, RBrace,
-    Colon, Comma, Dot,
+    Colon, Comma, Dot, Ellipsis,
     Newline, Indent, Dedent, EndOfFile,
 };
 
@@ -390,7 +390,14 @@ private:
             case '%': { advance(); return make(TokenType::Percent, line, col); } break;
             case ':': { advance(); return make(TokenType::Colon, line, col); } break;
             case ',': { advance(); return make(TokenType::Comma, line, col); } break;
-            case '.': { advance(); return make(TokenType::Dot, line, col); } break;
+            case '.': {
+                if (peek(1) == '.' && peek(2) == '.') {   // `...` ellipsis (basic-indexing placeholder)
+                    advance(); advance(); advance();
+                    return make(TokenType::Ellipsis, line, col);
+                }
+                advance();
+                return make(TokenType::Dot, line, col);
+            } break;
             case '(': { advance(); ++parenDepth_; return make(TokenType::LParen, line, col); } break;
             case ')': {
                 advance();
