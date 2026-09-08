@@ -1326,6 +1326,13 @@ instances: an **instance now carries its class**, so `dump.loads(dump.dumps(myIn
 fresh VM **with no import of the defining module** — the class is reconstructed from the blob. (An
 instance whose class is already defined in the loading VM still reconnects to it by name, as before.)
 
+An **eager class-variable initializer may capture a user instance** (or a container of them): a class
+with `var ref = someInstance` round-trips, and the captured instance is restored with its attributes
+and shared identity intact. The one limit is *reading through* such an instance at definition time —
+`var derived = someInstance.n` — which fails cleanly on load: a captured instance's attributes are
+restored only *after* the class body has re-run (they may reference the class itself), so bind the
+instance and read its attributes from a method or after load instead.
+
 Two limitations: a `Function` literal written **inside an f-string** has no captured source, so it
 isn't serializable (define it as a normal binding); and a **native/built-in** function bound to a
 variable (e.g. `var f = math.sqrt`) can't be serialized — wrap it in a Kirito `Function`, or re-`import`

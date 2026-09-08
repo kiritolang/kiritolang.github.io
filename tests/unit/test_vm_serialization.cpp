@@ -127,6 +127,37 @@ int main() {
          "var graph = Chained()",
          "", "String(x.v)", "10");
 
+    // An eager class-var initializer that CAPTURES a user instance (not just a scalar/container/helper).
+    // The initializer binds the instance BY HANDLE during class rebuild, but the instance is built in a
+    // later pass — so before pass-0c pre-shelling this threw "dangling handle (stale generation)". The
+    // captured instance's attributes must be fully wired after load.
+    BOTH("class Thing:\n"
+         "    var _init_ = Function(self, v):\n"
+         "        self.n = v\n"
+         "var inst = Thing(99)\n"
+         "class Holder:\n"
+         "    var ref = inst\n"
+         "var graph = Holder()",
+         "", "String(x.ref.n)", "99");
+    // A CONTAINER of instances captured by an eager class-var (transitive reach through the list).
+    BOTH("class Thing:\n"
+         "    var _init_ = Function(self, v):\n"
+         "        self.n = v\n"
+         "var box = [Thing(11), Thing(22)]\n"
+         "class Cap:\n"
+         "    var data = box\n"
+         "var graph = Cap()",
+         "", "String(x.data[0].n + x.data[1].n)", "33");
+    // Shared identity: the SAME instance captured twice by eager class-vars stays ONE object after load.
+    BOTH("class Thing:\n"
+         "    var _init_ = Function(self): self.n = 5\n"
+         "var inst = Thing()\n"
+         "class Holder:\n"
+         "    var a = inst\n"
+         "    var b = inst\n"
+         "var graph = Holder()",
+         "", "var ok = id(x.a) == id(x.b)\nx.a.n = 42\nString(ok) + \" \" + String(x.b.n)", "True 42");
+
     // Two classes whose initializers only BIND helpers that name each other — neither helper is called
     // at init, so the graph is well-founded and must load. This pins rebuild ORDER to what a class body
     // names directly: order it by what an initializer could transitively REACH instead and each class
