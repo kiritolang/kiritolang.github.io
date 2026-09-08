@@ -1,0 +1,4 @@
+# Resolving an unresolvable host must fail fast with a clear error (.invalid is RFC-2606 reserved to
+# never resolve), not hang or return a bogus address.
+var net = import("net")
+discard net.gethostbyname("nonexistent-host.invalid")

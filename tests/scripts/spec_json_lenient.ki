@@ -1,0 +1,13 @@
+# spec_json_lenient.ki — pin json.loads's documented leniencies so they can't silently change.
+var json = import("json")
+var math = import("math")
+var io   = import("io")
+
+# Duplicate object keys: the LAST value wins.
+assert json.loads("{\"a\": 1, \"a\": 2}") == {"a": 2}, "duplicate keys: last wins"
+# A float literal that overflows widens to +/-Infinity rather than erroring.
+assert json.loads("1e999999") == math.inf, "huge exponent -> inf"
+assert json.loads("-1e999999") == -math.inf, "huge negative exponent -> -inf"
+# A raw control char inside a string parses leniently (not rejected).
+assert json.loads("\"a" + chr(10) + "b\"") == "a\nb", "raw newline in string parses"
+io.print("spec_json_lenient: ok")
