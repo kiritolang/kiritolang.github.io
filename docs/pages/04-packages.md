@@ -37,8 +37,10 @@ addition to the current directory, `--lib` directories, and the running script's
 where` prints the directory.
 
 Each install also writes a small `.kpm.json` record inside the package directory (the source repo,
-the resolved git ref, the recorded version constraint, and the installed module list) so `update` and
-`outdated` know how to re-resolve the package later.
+the resolved git ref, the recorded version constraint, the installed module list, and the package's
+resolved dependency specs) so `update`/`outdated` can re-resolve it later and a future install can
+check its constraints against what this package needs — see
+[Dependency resolution](#dependency-resolution-and-version-conflicts).
 
 ## The manifest (`kirito.json`)
 
@@ -58,7 +60,7 @@ A package repository carries a `kirito.json` manifest **at its root**:
 | `name` | The import name. Installs to `~/.kirito/packages/<name>/`, imported as `import("name")`. |
 | `version` | The package's semantic version. Recorded in `.kpm.json` and shown by `kpm list`. A constraint resolves against the repo's **git tags**, not this field — see [Versioning](#versioning). |
 | `modules` | Repo-relative `.ki` paths to fetch and install. Sub-paths (`extra/util.ki`) are recreated under the package directory. Each module's **importable name** is the path with `.ki` stripped and `/` → `.`, so `mypkg.ki` → `import("mypkg")` and `extra/util.ki` → `import("extra.util")`. See [Module-name collisions](#module-name-collisions). |
-| `dependencies` | Other packages, each an `owner/repo` optionally with an `@constraint`. Installed first (recursively); cycles and duplicates are guarded. |
+| `dependencies` | Other packages, each an `owner/repo` optionally with an `@constraint`. Resolved together with everything else (constraints unified, cycles and duplicates guarded) and installed before the dependent — see [Dependency resolution](#dependency-resolution-and-version-conflicts). |
 
 ### Module-name collisions
 
@@ -72,14 +74,24 @@ refuses to install a package that would collide with:
 - **itself** — a single manifest that lists two paths mapping to the same importable name
   (e.g. `foo.bar.ki` and `foo/bar.ki`, both `import("foo.bar")`) is rejected.
 
-Reinstalling the same package on top of itself is not a self-collision. To swap one owner for
-another, `kpm remove <old>` first.
+It also refuses a **package name already installed from a different source**: installing
+`teamB/widget` when a *different* repository's `widget` is already installed is rejected (the on-disk
+package directory is keyed by name alone, so it would otherwise be silently overwritten). The error
+names the existing source. Reinstalling — or `kpm update`-ing — the **same** source is not a
+collision. To swap one owner for another, `kpm remove <old>` first.
+
+A package can never **shadow a built-in module**: `import(...)` resolves the interpreter's built-in
+modules (`io`, `json`, `sys`, `tensor`, …) *before* it searches the packages directory, so a package
+named `json` cannot hijack `import("json")`. Such a package installs but its same-named module is
+simply unreachable — avoid reusing a built-in module's name.
 
 ## Versioning
 
 A package's **versions are its git tags**. When you install or update with a version constraint, `kpm`
 lists the repository's tags and picks the **highest** one that satisfies the constraint, using the
-[`semver`](stdlib.html#semver) module (semver.org precedence + the node-semver range grammar).
+[`semver`](stdlib.html#semver) module (semver.org precedence + the node-semver range grammar). Tags
+that aren't valid semver (`latest`, `nightly`, date tags, …) are simply ignored when matching a
+constraint, so they never break resolution.
 
 The `@ref` after `owner/repo` is either a **literal git ref** (a branch, tag, or commit sha —
 `@main`, `@v2.0.0`, `@8f3a1c2` — used as-is) or a **semantic-version constraint** resolved against
@@ -102,6 +114,32 @@ constraint is recorded, so `kpm update` / `kpm outdated` **re-resolve** it again
 **Prereleases** (`v1.2.0-rc.1`) are excluded from constraint matches unless your constraint pins the
 same `major.minor.patch` with its own prerelease (the node-semver default) — so a plain `^1.0.0` never
 silently pulls an `-rc`/`-beta` build.
+
+### Dependency resolution and version conflicts
+
+`kpm` resolves the **whole dependency closure to one version per package before writing anything**,
+unifying every constraint on each package. The requirements considered are: the packages you name,
+their transitive `dependencies`, **and** what already-installed packages recorded needing (each
+install stores its own resolved dependency specs in `.kpm.json`). Two constraints on the same package
+are **intersected** — the highest tag satisfying *all* of them wins:
+
+- `p1` needs `libY@^1.0.0` and `p2` needs `libY@^1.5.0` → `kpm` installs the highest `libY` in
+  `>=1.5.0 <2.0.0`.
+- If **no** version satisfies every constraint (e.g. one package needs `^1` and another `^2`), the
+  install **fails with a conflict** that names the unsatisfiable constraints and their requesters, and
+  **nothing is downloaded or written** — resolution is atomic.
+- This includes a **cross-run reverse-dependency check**: installing a package that needs `libX@^2`
+  fails if an already-installed package recorded needing `libX@^1`. Remove or update the dependent
+  first. (Packages installed before dependency-recording carry no recorded needs, so they can't be
+  reverse-checked — reinstall them to record their dependencies.)
+
+A package already present at the exact resolved **tag** is left untouched; a package pinned to a
+branch/default ref is refreshed on every install (its content can move). Resolution is a bounded
+fixpoint, not a full SAT solver: it never backtracks across mutually exclusive optional versions, and
+an unresolvable graph fails cleanly rather than guessing.
+
+`kpm remove` warns (but does not stop) if another installed package depends on the one you're removing,
+so you don't silently break a dependent.
 
 ## Publishing a package
 
@@ -141,9 +179,13 @@ still installable from a branch (`@main`), but then version constraints have not
 - `kpm update-kpm [--force]` refreshes `kpm.ki` from GitHub (the launcher points it at the installed
   copy via `$KPM_SELF`).
 - `kpm update-ki [--force]` downloads the latest release binary for your platform
-  (`sys.platform`/`sys.arch`), makes it executable, and atomically swaps it in over the running
-  interpreter (located via `path.executable`, overridable with `$KPM_KI_PATH`; on Windows the old
-  binary is moved aside first, since a running `.exe` can't be overwritten in place).
+  (`sys.platform`/`sys.arch`), **verifies its SHA-256 against the release's published `SHA256SUMS`**,
+  makes it executable, and atomically swaps it in over the running interpreter (located via
+  `path.executable`, overridable with `$KPM_KI_PATH`; on Windows the old binary is moved aside first,
+  since a running `.exe` can't be overwritten in place). A checksum mismatch — or a release with no
+  `SHA256SUMS` — aborts the upgrade rather than executing an unverified binary; `--force` explicitly
+  skips verification (a deliberate, logged reduction in safety, e.g. for a release that predates
+  published checksums).
 
 Both compare versions first (against `sys.version` and the latest GitHub release) and **no-op when
 already current** — pass `--force` to reinstall anyway.
@@ -161,10 +203,16 @@ A package source is written as one of:
 | `gitlab+https://git.example.com/group/repo` | a **self-hosted** GitLab (force the host *type*) |
 | `github+https://ghe.example.com/owner/repo` | a self-hosted **GitHub Enterprise** |
 
-A trailing `.git` is ignored, a GitLab **nested group path** (`group/subgroup/repo`) is supported, and
-the same forms work for a `dependencies` entry. Dependencies on GitLab are pinned and re-resolved just
-like GitHub ones (the install record stores a re-parseable source). If a host's *type* can't be
+A trailing `.git` (and any pasted `?query`/`#fragment`) is ignored, a GitLab **nested group path**
+(`group/subgroup/repo`) is supported, and the same forms work for a `dependencies` entry. Dependencies
+on GitLab are pinned and re-resolved just like GitHub ones (the install record stores a re-parseable
+source). Host names match case-insensitively (`GitHub.com` is fine). If a host's *type* can't be
 inferred from its domain, prefix it with `gitlab+`/`github+` — `kpm` tells you so rather than guessing.
+A GitHub source is exactly `owner/repo` (GitHub has no nested groups); a longer path is rejected up
+front instead of failing later with a confusing 404.
+
+Every network request is bounded by a timeout (default **30 s**, override with `$KPM_TIMEOUT`), so a
+stalled or unreachable host fails cleanly instead of hanging kpm indefinitely.
 
 ## Authentication & rate limits
 

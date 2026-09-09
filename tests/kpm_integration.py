@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,9 +55,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    @staticmethod
+    def _paged(items, query):
+        # Honor ?per_page=&page= exactly like the real GitHub/GitLab tag APIs, so the mock can exercise
+        # kpm's multi-page tag walk. Out-of-range pages yield an empty list (the walk's stop signal).
+        q = urllib.parse.parse_qs(query)
+        per = int(q.get("per_page", ["100"])[0])
+        page = int(q.get("page", ["1"])[0])
+        start = max(0, (page - 1) * per)
+        return items[start:start + per]
+
     def do_GET(self):
         u = urllib.parse.urlsplit(self.path)
         p = u.path
+        # A deliberately slow endpoint (owner "slowhost") to exercise kpm's request timeout: the server
+        # thread stalls before responding, so a client with a short socket timeout must fail fast.
+        if "slowhost" in p:
+            time.sleep(5)
         try:
             if p.startswith("/ghapi/repos/"):
                 rest = p[len("/ghapi/repos/"):]
@@ -64,7 +79,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     o, r = rest[:-len("/tags")].split("/", 1)
                     e = REGISTRY.get((o, r))
                     if not e: return self._send(404, "{}")
-                    return self._send(200, json.dumps([{"name": t} for t in e["tags"]]))
+                    return self._send(200, json.dumps([{"name": t} for t in self._paged(e["tags"], u.query)]))
                 o, r = rest.split("/", 1)
                 e = REGISTRY.get((o, r))
                 if not e: return self._send(404, "{}")
@@ -83,7 +98,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if tail == "" or tail == "/":
                     return self._send(200, json.dumps({"default_branch": e["default_branch"]}))
                 if tail == "/repository/tags":
-                    return self._send(200, json.dumps([{"name": t} for t in e["tags"]]))
+                    return self._send(200, json.dumps([{"name": t} for t in self._paged(e["tags"], u.query)]))
                 if tail.startswith("/repository/files/") and tail.endswith("/raw"):
                     fenc = tail[len("/repository/files/"):-len("/raw")]
                     fpath = urllib.parse.unquote(fenc)
@@ -227,8 +242,11 @@ try:
     for t in ["v1.0.0", "v2.0.0"]:
         put_manifest(D, t, "dep", t[1:], ["d.ki"]); put_file(D, t, "d.ki", "var d=1\n")
     rc, out, err = kpm("install", "x/A", "x/C")
-    check("conflict install completes", rc == 0, err)
-    check("conflict warns", "version conflict" in err or "version conflict" in out, err)
+    msg = (out + err).lower()
+    check("incompatible constraints fail the install", rc != 0, err)
+    check("conflict names the unsatisfiable set", "satisfies all constraints" in msg, out + err)
+    check("nothing installed on conflict (atomic resolve)",
+          not os.path.exists(pkgdir("A")) and not os.path.exists(pkgdir("C")) and not os.path.exists(pkgdir("dep")))
 
     # ---- 9. cycle (A<->B) doesn't hang ----
     reset_home(); REGISTRY.clear()
@@ -271,6 +289,11 @@ try:
             json.dumps({"name": "../oops", "version": "1.0.0", "modules": ["m.ki"]}))
     expect_fail("malicious package name rejected", m_badname, "e/badname", "invalid package name")
 
+    def m_emptyimp():
+        kk = reg("e", "emptyimp"); put_manifest(kk, "main", "emptyimp", "1.0.0", [".ki"])
+        put_file(kk, "main", ".ki", "var x=1\n")
+    expect_fail("empty-importable-name module rejected", m_emptyimp, "e/emptyimp", "empty importable name")
+
     def m_404mod():
         kk = reg("e", "missingmod"); put_manifest(kk, "main", "missingmod", "1.0.0", ["present.ki", "absent.ki"])
         put_file(kk, "main", "present.ki", "var p=1\n")  # absent.ki intentionally not served
@@ -285,6 +308,10 @@ try:
     reset_home(); REGISTRY.clear()
     rc, out, err = kpm("install", "https://git.unknown.example/o/r")
     check("unknown host errors with guidance", rc != 0 and ("unrecognized git host" in (out+err)), err)
+
+    # ---- 11b. a GitHub 3-component path is rejected with clear guidance (no confusing 404 later) ----
+    rc, out, err = kpm("install", "owner/repo/oops")
+    check("github nested path rejected", rc != 0 and "no nested paths" in (out + err), out + err)
 
     # ---- 12. remove of a not-installed package is a clean message, not a crash ----
     rc, out, err = kpm("remove", "doesnotexist")
@@ -346,6 +373,152 @@ try:
     check("self-reinstall setup ok", rc == 0, err)
     rc, out, err = kpm("install", "owner/same")
     check("reinstalling same package does not self-collide", rc == 0, err)
+
+    # ---- 13e. cross-run reverse-dependency conflict is caught and the install is refused atomically.
+    #      appA (installed) needs libX@^1; installing appB (needs libX@^2) must fail, changing nothing.
+    reset_home(); REGISTRY.clear()
+    appA = reg("r", "appA"); libX = reg("r", "libX", tags=["v1.0.0", "v2.0.0"]); appB = reg("r", "appB")
+    put_manifest(appA, "main", "appA", "1.0.0", ["a.ki"], deps=["r/libX@^1.0.0"]); put_file(appA, "main", "a.ki", "var a=1\n")
+    put_manifest(appB, "main", "appB", "1.0.0", ["b.ki"], deps=["r/libX@^2.0.0"]); put_file(appB, "main", "b.ki", "var b=1\n")
+    for t in ["v1.0.0", "v2.0.0"]:
+        put_manifest(libX, t, "libX", t[1:], ["x.ki"]); put_file(libX, t, "x.ki", "var x=1\n")
+    rc, out, err = kpm("install", "r/appA")
+    check("reverse-dep setup: appA + libX installed", rc == 0 and os.path.exists(pkgdir("libX")), err)
+    recX = json.load(open(os.path.join(pkgdir("libX"), ".kpm.json")))
+    check("reverse-dep setup: libX@1.0.0", recX.get("version") == "1.0.0", str(recX.get("version")))
+    recA = json.load(open(os.path.join(pkgdir("appA"), ".kpm.json")))
+    check("install record carries resolved dependencies", recA.get("dependencies") == ["r/libX@^1.0.0"], str(recA.get("dependencies")))
+    rc, out, err = kpm("install", "r/appB")           # needs libX@^2, but installed appA needs libX@^1
+    msg = (out + err).lower()
+    check("cross-run reverse-dep conflict fails", rc != 0 and "satisfies all constraints" in msg, out + err)
+    check("reverse-dep conflict wrote no appB", not os.path.exists(pkgdir("appB")))
+    check("reverse-dep conflict left libX at 1.0.0",
+          json.load(open(os.path.join(pkgdir("libX"), ".kpm.json"))).get("version") == "1.0.0")
+
+    # ---- 13f. compatible constraints from two packages UNIFY to a single version satisfying both. ----
+    reset_home(); REGISTRY.clear()
+    p1 = reg("q", "p1"); p2 = reg("q", "p2")
+    libY = reg("q", "libY", tags=["v1.0.0", "v1.5.0", "v1.8.0", "v2.0.0"])
+    put_manifest(p1, "main", "p1", "1.0.0", ["p1.ki"], deps=["q/libY@^1.0.0"]); put_file(p1, "main", "p1.ki", "var a=1\n")
+    put_manifest(p2, "main", "p2", "1.0.0", ["p2.ki"], deps=["q/libY@^1.5.0"]); put_file(p2, "main", "p2.ki", "var b=1\n")
+    for t in ["v1.0.0", "v1.5.0", "v1.8.0", "v2.0.0"]:
+        put_manifest(libY, t, "libY", t[1:], ["y.ki"]); put_file(libY, t, "y.ki", "var y=1\n")
+    rc, out, err = kpm("install", "q/p1", "q/p2")     # ^1.0.0 AND ^1.5.0 -> highest common is 1.8.0
+    check("compatible unify install ok", rc == 0, err)
+    recY = json.load(open(os.path.join(pkgdir("libY"), ".kpm.json")))
+    check("unified to 1.8.0 (satisfies ^1.0.0 and ^1.5.0)", recY.get("version") == "1.8.0", str(recY.get("version")))
+
+    # ---- 13g. a deep transitive chain A->B->C->D resolves fully (exercises the multi-pass fixpoint). ----
+    reset_home(); REGISTRY.clear()
+    chain = ["cA", "cB", "cC", "cD"]
+    for i, nm in enumerate(chain):
+        k = reg("d", nm)
+        deps = ["d/%s" % chain[i + 1]] if i + 1 < len(chain) else None
+        put_manifest(k, "main", nm, "1.0.0", ["%s.ki" % nm], deps=deps)
+        put_file(k, "main", "%s.ki" % nm, "var v=1\n")
+    rc, out, err = kpm("install", "d/cA")
+    check("deep chain install ok", rc == 0, err)
+    check("deep chain installed the leaf", os.path.exists(pkgdir("cD")))
+    check("deep chain installed all four", all(os.path.exists(pkgdir(n)) for n in chain))
+
+    # ---- 13h. a self-dependency (A depends on A) terminates and installs once. ----
+    reset_home(); REGISTRY.clear()
+    sd = reg("d", "selfdep")
+    put_manifest(sd, "main", "selfdep", "1.0.0", ["s.ki"], deps=["d/selfdep"])
+    put_file(sd, "main", "s.ki", "var v=1\n")
+    rc, out, err = kpm("install", "d/selfdep")
+    check("self-dependency terminates", rc == 0, err)
+    check("self-dependency installed", os.path.exists(pkgdir("selfdep")))
+
+    # ---- 13i. re-resolving a package that bumped its OWN dependency must not falsely conflict with the
+    #      stale dependency it previously recorded (its fresh manifest supersedes its own record). ----
+    reset_home(); REGISTRY.clear()
+    appc = reg("s", "appc"); lib = reg("s", "lib", tags=["v1.0.0", "v2.0.0"])
+    for t in ["v1.0.0", "v2.0.0"]:
+        put_manifest(lib, t, "lib", t[1:], ["l.ki"]); put_file(lib, t, "l.ki", "var l=1\n")
+    put_manifest(appc, "main", "appc", "1.0.0", ["a.ki"], deps=["s/lib@^1.0.0"]); put_file(appc, "main", "a.ki", "var a=1\n")
+    rc, out, err = kpm("install", "s/appc")
+    recL = json.load(open(os.path.join(pkgdir("lib"), ".kpm.json")))
+    check("self-bump setup: lib@1.0.0 via appc ^1", rc == 0 and recL.get("version") == "1.0.0", str(recL.get("version")))
+    put_manifest(appc, "main", "appc", "1.1.0", ["a.ki"], deps=["s/lib@^2.0.0"])   # appc now needs lib@^2
+    rc, out, err = kpm("install", "s/appc")           # must NOT conflict with appc's own old ^1 record
+    check("self-bumped dependency does not falsely conflict", rc == 0, out + err)
+    recL = json.load(open(os.path.join(pkgdir("lib"), ".kpm.json")))
+    check("self-bumped dependency upgraded lib to 2.0.0", recL.get("version") == "2.0.0", str(recL.get("version")))
+
+    # ---- 13j. a repo carrying NON-SEMVER tags (latest/nightly/…) still resolves a semver constraint —
+    #      regression: semver.satisfies() throws on a non-semver version, so pickRef must skip them. ----
+    reset_home(); REGISTRY.clear()
+    mix = reg("m", "mixed", tags=["latest", "v1.0.0", "nightly", "v1.3.0", "release"])
+    put_manifest(mix, "v1.3.0", "mixed", "1.3.0", ["m.ki"]); put_file(mix, "v1.3.0", "m.ki", "var v=1\n")
+    rc, out, err = kpm("install", "m/mixed@^1.0.0")
+    mp = os.path.join(pkgdir("mixed"), ".kpm.json")
+    recM = json.load(open(mp)) if os.path.exists(mp) else {}
+    check("non-semver tags are skipped, constraint still resolves",
+          rc == 0 and recM.get("version") == "1.3.0", "rc=%d %s %s" % (rc, err, recM))
+
+    # ---- 13k. removing a package that others depend on WARNS (does not silently break dependents). ----
+    reset_home(); REGISTRY.clear()
+    hostp = reg("w", "hostp"); depp = reg("w", "depp")
+    put_manifest(hostp, "main", "hostp", "1.0.0", ["h.ki"], deps=["w/depp"]); put_file(hostp, "main", "h.ki", "var h=1\n")
+    put_manifest(depp, "main", "depp", "1.0.0", ["d.ki"]); put_file(depp, "main", "d.ki", "var d=1\n")
+    kpm("install", "w/hostp")
+    rc, out, err = kpm("remove", "depp")
+    check("removing a depended-on package warns", rc == 0 and "required by" in (out + err) and "hostp" in (out + err), out + err)
+    check("removed anyway (warning, not a block)", not os.path.exists(pkgdir("depp")))
+
+    # ---- 13l. a stalled host is bounded by the request timeout, not left to hang forever. The mock
+    #      sleeps 5s for any /slowhost/ path; with KPM_TIMEOUT=1 the install must fail in ~1s. ----
+    reset_home(); REGISTRY.clear()
+    reg("slowhost", "x")
+    t0 = time.time()
+    rc, out, err = kpm("install", "slowhost/x", extra={"KPM_TIMEOUT": "1"})
+    elapsed = time.time() - t0
+    check("stalled host fails cleanly (does not hang)", rc != 0, out + err)
+    check("stalled host is bounded by the timeout (well under the 5s stall)", elapsed < 4.0, "elapsed=%.1fs" % elapsed)
+
+    # ---- 14. tag pagination: a repo with >100 tags, highest match on page 2 ----
+    # Without paging kpm would only see the first 100 tags and resolve ^1.0.0 to v1.99.0; the correct
+    # answer v1.149.0 lives on the second page.
+    reset_home(); REGISTRY.clear()
+    many_tags = ["v1.%d.0" % i for i in range(0, 150)]      # v1.0.0 .. v1.149.0 (insertion order)
+    mt = reg("many", "tagspkg", tags=many_tags)
+    put_manifest(mt, "v1.149.0", "tagspkg", "1.149.0", ["m.ki"]); put_file(mt, "v1.149.0", "m.ki", "var v=1\n")
+    rc, out, err = kpm("install", "many/tagspkg@^1.0.0")
+    check("pagination install rc==0", rc == 0, err)
+    recpath = os.path.join(pkgdir("tagspkg"), ".kpm.json")
+    rec = json.load(open(recpath)) if os.path.exists(recpath) else {}
+    check("pagination resolves highest of >100 tags (v1.149.0)",
+          rec.get("version") == "1.149.0", str(rec.get("version")))
+
+    # ---- 15. same package NAME from a DIFFERENT source is refused (no silent clobber) ----
+    reset_home(); REGISTRY.clear()
+    o1 = reg("teamA", "widget"); o2 = reg("teamB", "widget")
+    put_manifest(o1, "main", "widget", "1.0.0", ["w.ki"]); put_file(o1, "main", "w.ki", "var v='A'\n")
+    put_manifest(o2, "main", "widget", "2.0.0", ["w.ki"]); put_file(o2, "main", "w.ki", "var v='B'\n")
+    rc, out, err = kpm("install", "teamA/widget")
+    check("name-source setup: first install ok", rc == 0, err)
+    rc, out, err = kpm("install", "teamB/widget")
+    msg = (out + err).lower()
+    check("same-name different-source refused",
+          rc != 0 and ("different source" in msg or "already installed from" in msg), out + err)
+    rec = json.load(open(os.path.join(pkgdir("widget"), ".kpm.json")))
+    check("refusal leaves the original intact", rec.get("source") == "teamA/widget", str(rec.get("source")))
+    # ... but reinstalling the SAME source is still fine (the update path must not trip the guard).
+    rc, out, err = kpm("install", "teamA/widget")
+    check("same-source reinstall still allowed", rc == 0, err)
+
+    # ---- 16. a corrupt .kpm.json is skipped, not fatal (list/outdated stay usable) ----
+    reset_home(); REGISTRY.clear()
+    gp = reg("z", "goodpkg"); put_manifest(gp, "main", "goodpkg", "1.0.0", ["m.ki"]); put_file(gp, "main", "m.ki", "var v=1\n")
+    kpm("install", "z/goodpkg")
+    os.makedirs(pkgdir("brokenpkg"), exist_ok=True)
+    with open(os.path.join(pkgdir("brokenpkg"), ".kpm.json"), "w") as bf:
+        bf.write("{ this is not valid json ")
+    rc, out, err = kpm("list")
+    check("list survives a corrupt record", rc == 0 and "goodpkg" in out, out + err)
+    rc, out, err = kpm("outdated")
+    check("outdated survives a corrupt record", rc == 0, out + err)
 
 finally:
     SERVER.shutdown()

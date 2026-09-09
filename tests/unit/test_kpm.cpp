@@ -50,6 +50,22 @@ int main() {
     CHECK(ps("gitlab+https://git.acme.com/group/sub/repo@main", "host") == "git.acme.com");
     CHECK(ps("gitlab+https://git.acme.com/group/sub/repo@main", "path") == "group/sub/repo");  // nested group
     CHECK(ps("gitlab+http://localhost:8080/o/r", "apibase") == "http://localhost:8080/api/v4");
+    CHECK(ps("GitHub.com/owner/repo", "kind") == "github");     // host detection is case-insensitive
+    CHECK(ps("gitlab.COM/o/r", "kind") == "gitlab");
+    CHECK(ps("gitlab.com/group/sub/repo", "path") == "group/sub/repo");  // GitLab nested groups OK
+    {
+        KiritoVM vm; vm.addLibPath(kpmDir());
+        // GitHub has no nested groups: a 3+-component path is rejected early with a clear message.
+        CHECK_THROWS(vm.runSource("import(\"kpm\").parseSource(\"owner/repo/extra\")\n"));
+    }
+    CHECK(ps("https://gitlab.com/o/r?ref=x", "path") == "o/r");   // a pasted ?query is dropped
+    CHECK(ps("https://gitlab.com/o/r#frag", "path") == "o/r");    // …and a #fragment
+
+    // ---------- srcTagsPageUrl: the per-host, paginated tags endpoint (100/page) ----------
+    CHECK(ev("kpm.srcTagsPageUrl(kpm.parseSource(\"owner/repo\"), 1)")
+          == "https://api.github.com/repos/owner/repo/tags?per_page=100&page=1");
+    CHECK(ev("kpm.srcTagsPageUrl(kpm.parseSource(\"gitlab.com/o/r\"), 2)")
+          == "https://gitlab.com/api/v4/projects/o%2Fr/repository/tags?per_page=100&page=2");
     {
         KiritoVM vm;
         vm.addLibPath(kpmDir());
@@ -93,6 +109,36 @@ int main() {
     CHECK(ev("kpm.extractKpmVersion(\"no version here\")") == "None");
     // the KPM_VERSION constant is itself a valid semver (so self-update can compare against it)
     CHECK(ev("var v = import(\"semver\")\nv.valid(kpm.KPM_VERSION) != None") == "True");
+
+    // ---------- canonicalSource / pickRef: the resolver's pure core (constraint unification) ----------
+    CHECK(ev("kpm.canonicalSource(kpm.parseSource(\"owner/repo\"))") == "owner/repo");
+    CHECK(ev("kpm.canonicalSource(kpm.parseSource(\"gitlab.com/g/r\"))") == "gitlab.com/g/r");
+    CHECK(ev("kpm.canonicalSource(kpm.parseSource(\"gitlab+https://x.io/g/r\"))") == "gitlab+https://x.io/g/r");
+    // two compatible ranges intersect to the highest common tag (cache pre-seeded -> no network)
+    CHECK(ev("kpm.pickRef(kpm.parseSource(\"o/r\"), "
+             "[{\"c\":\"^1.0.0\",\"by\":\"a\"},{\"c\":\"^1.5.0\",\"by\":\"b\"}], "
+             "{\"o/r\": [\"1.0.0\",\"1.5.0\",\"1.8.0\",\"2.0.0\"]}, {})[\"ref\"]") == "1.8.0");
+    // a literal ref passes through unchanged
+    CHECK(ev("kpm.pickRef(kpm.parseSource(\"o/r\"), [{\"c\":\"main\",\"by\":\"a\"}], {}, {})[\"ref\"]") == "main");
+    // non-semver tags (latest/nightly/junk) are skipped, not fatal (regression: satisfies() throws on them)
+    CHECK(ev("kpm.pickRef(kpm.parseSource(\"o/r\"), [{\"c\":\"^1.0.0\",\"by\":\"a\"}], "
+             "{\"o/r\": [\"latest\",\"1.2.0\",\"garbage\",\"1.5.0\"]}, {})[\"ref\"]") == "1.5.0");
+    {
+        KiritoVM vm; vm.addLibPath(kpmDir());
+        // incompatible ranges over the available tags -> conflict
+        CHECK_THROWS(vm.runSource("import(\"kpm\").pickRef(import(\"kpm\").parseSource(\"o/r\"), "
+            "[{\"c\":\"^1.0.0\",\"by\":\"a\"},{\"c\":\"^2.0.0\",\"by\":\"b\"}], {\"o/r\": [\"1.0.0\",\"2.0.0\"]}, {})\n"));
+        // a pinned ref mixed with a range -> conflict; two distinct pins -> conflict
+        CHECK_THROWS(vm.runSource("import(\"kpm\").pickRef(import(\"kpm\").parseSource(\"o/r\"), "
+            "[{\"c\":\"main\",\"by\":\"a\"},{\"c\":\"^1.0.0\",\"by\":\"b\"}], {\"o/r\":[\"1.0.0\"]}, {})\n"));
+        CHECK_THROWS(vm.runSource("import(\"kpm\").pickRef(import(\"kpm\").parseSource(\"o/r\"), "
+            "[{\"c\":\"main\",\"by\":\"a\"},{\"c\":\"dev\",\"by\":\"b\"}], {}, {})\n"));
+    }
+
+    // ---------- shaFor: pull one file's digest out of a SHA256SUMS blob (lowercased), None if absent ----------
+    CHECK(ev("kpm.shaFor(\"abc123  ki-linux-x64\\ndef456  other\\n\", \"ki-linux-x64\")") == "abc123");
+    CHECK(ev("kpm.shaFor(\"DEADBEEF *ki-windows-x64.exe\\n\", \"ki-windows-x64.exe\")") == "deadbeef");  // binary-mode '*', lowercased
+    CHECK(ev("String(kpm.shaFor(\"abc  x\\n\", \"missing\"))") == "None");
 
     // ---------- kiAssetName: the release-asset filename for this platform ----------
     CHECK(ev("kpm.kiAssetName().startswith(\"ki-\")") == "True");

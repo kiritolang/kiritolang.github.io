@@ -30,6 +30,13 @@
 # constraint is given, kpm picks the highest tag that satisfies it. The chosen constraint is recorded
 # so `update`/`outdated` can re-resolve against newly-published tags.
 #
+# Dependency resolution UNIFIES constraints: the whole closure (the packages you name, their transitive
+# dependencies, and what already-installed packages recorded needing) is resolved to one version per
+# package BEFORE anything is written. Two requirements on the same package are intersected — the highest
+# tag satisfying all of them wins. If none does, the install fails with a conflict naming the requesters
+# and writes nothing. Each install records its own resolved dependency specs, so a later install is
+# checked against the needs of what's already on disk (a cross-run reverse-dependency check).
+#
 # A package repository carries a `kirito.json` manifest at its root:
 #
 #   {
@@ -47,7 +54,8 @@
 # (or $KPM_GITLAB_TOKEN) as a GitLab PRIVATE-TOKEN — lifting each host's anonymous rate limit and
 # reaching private repos. $KPM_GITHUB_API / $KPM_GITHUB_RAW override the GitHub endpoints (for GitHub
 # Enterprise, or testing). $KPM_SELF / $KPM_KI_PATH (set by the launcher) point update-kpm / update-ki
-# at the files to replace.
+# at the files to replace. $KPM_TIMEOUT overrides the per-request network timeout in seconds (default
+# 30) so a stalled host fails fast instead of hanging.
 
 var io = import("io")
 var net = import("net")
@@ -55,8 +63,9 @@ var json = import("json")
 var sys = import("sys")
 var semver = import("semver")
 var path = import("path")
+var hash = import("hash")
 
-var KPM_VERSION = "1.4.0"
+var KPM_VERSION = "1.5.0"
 
 # Self-maintenance (update-kpm / update-ki) always targets the Kirito project on github.com; these are
 # fixed and never redirected. The PACKAGE install path uses the host-aware adapters further down (so a
@@ -132,14 +141,28 @@ var srcHeaders = Function(src):
         return h
     return ghHeaders()
 
-# GET a URL and return its body text; throws a clear message on a network error or non-2xx status.
-# `headers` defaults to GitHub's (used by the self-maintenance commands); the install path passes
-# host-aware headers.
+# Per-request socket timeout in seconds. Without it a stalled or black-holed git host would hang kpm
+# indefinitely (net's default is 0 = block forever). Bounds connect + each send/recv, so a slow but
+# progressing download is fine while a dead connection fails fast. Overridable via $KPM_TIMEOUT.
+var netTimeout = Function() -> Float:
+    var v = sys.getenv("KPM_TIMEOUT")
+    if v == None or v == "":
+        return 30.0
+    var n = None
+    try:
+        n = Float(v)
+    catch as e:
+        return 30.0
+    return n if n > 0 else 30.0
+var reqOpts = Function(headers):
+    return {"headers": (ghHeaders() if headers == None else headers), "timeout": netTimeout()}
+
+# GET a URL and return its body text; throws a clear message on a network error, timeout, or non-2xx
+# status. `headers` defaults to GitHub's (self-maintenance); the install path passes host-aware headers.
 var fetch = Function(url, headers = None) -> String:
-    var hdr = ghHeaders() if headers == None else headers
     var r = None
     try:
-        r = net.get(url, {"headers": hdr})
+        r = net.get(url, reqOpts(headers))
     catch as e:
         throw "network error fetching " + url + ": " + String(e)
     if not r.ok:
@@ -148,10 +171,9 @@ var fetch = Function(url, headers = None) -> String:
 
 # GET a URL and return its raw body as Bytes (for binary downloads, e.g. a release binary).
 var fetchBytes = Function(url, headers = None):
-    var hdr = ghHeaders() if headers == None else headers
     var r = None
     try:
-        r = net.get(url, {"headers": hdr})
+        r = net.get(url, reqOpts(headers))
     catch as e:
         throw "network error fetching " + url + ": " + String(e)
     if not r.ok:
@@ -270,6 +292,12 @@ var parseSource = Function(spec):
         # a leading component containing a dot is a bare host: "gitlab.com/owner/repo"
         host = path[0:path.find("/")]
         path = path[path.find("/") + 1:]
+    var qi = path.find("?")            # drop a ?query or #fragment glued to a pasted URL
+    if qi >= 0:
+        path = path[0:qi]
+    var fi = path.find("#")
+    if fi >= 0:
+        path = path[0:fi]
     if path.endswith(".git"):
         path = path[0:len(path) - 4]
     while path.endswith("/"):
@@ -278,9 +306,10 @@ var parseSource = Function(spec):
         path = path[1:]
     var kind = forcedKind
     if kind == None:
-        if host == None or host == "github.com" or "github" in host:
+        var hl = host.lower() if host != None else None      # DNS host names are case-insensitive
+        if hl == None or hl == "github.com" or "github" in hl:
             kind = "github"
-        elif "gitlab" in host:
+        elif "gitlab" in hl:
             kind = "gitlab"
         else:
             throw "unrecognized git host '" + host + "' — prefix with 'gitlab+' or 'github+' to pick the host type (e.g. gitlab+" + scheme + "://" + host + "/" + path + ")"
@@ -288,6 +317,10 @@ var parseSource = Function(spec):
         host = "github.com" if kind == "github" else "gitlab.com"
     if path == "" or path.find("/") < 0:
         throw "expected <owner>/<repo>, got '" + spec + "'"
+    # GitHub repositories are exactly <owner>/<repo> — it has no nested groups (GitLab does). A longer
+    # path is a user mistake that would otherwise fail later with a confusing 404 on the manifest fetch.
+    if kind == "github" and path.count("/") != 1:
+        throw "GitHub repositories are <owner>/<repo> (no nested paths); got '" + path + "' in '" + spec + "'"
     var apibase = None
     if kind == "github":
         apibase = ghApiBase() if host == "github.com" else scheme + "://" + host + "/api/v3"
@@ -305,18 +338,31 @@ var srcDefaultBranch = Function(src) -> String:
     var data = json.loads(fetch(src["apibase"] + "/repos/" + src["path"], srcHeaders(src)))
     return data["default_branch"]
 
-# Every tag name in the repo (up to 100), as a List of Strings — the candidate versions a semver
-# constraint resolves against.
-var srcTags = Function(src):
-    var url = None
+# The tags-API URL for one page (100 per page) on either host.
+var srcTagsPageUrl = Function(src, page) -> String:
+    var suffix = "/tags?per_page=100&page=" + String(page)
     if src["kind"] == "gitlab":
-        url = src["apibase"] + "/projects/" + glEnc(src["path"]) + "/repository/tags?per_page=100"
-    else:
-        url = src["apibase"] + "/repos/" + src["path"] + "/tags?per_page=100"
-    var data = json.loads(fetch(url, srcHeaders(src)))
+        return src["apibase"] + "/projects/" + glEnc(src["path"]) + "/repository" + suffix
+    return src["apibase"] + "/repos/" + src["path"] + suffix
+
+# Every tag name in the repo, as a List of Strings — the candidate versions a semver constraint
+# resolves against. PAGINATED: both hosts cap a page at 100 and return tags in an unspecified order,
+# so on a repo with >100 tags a single page would silently hide the very tag a constraint needs
+# (resolving to a lower version, or failing outright). We walk every page and collect the complete
+# set; `maxsatisfying` then scans all of it. The page cap bounds the walk against a broken pager.
+var srcTags = Function(src):
     var names = []
-    for t in data:
-        names.append(t["name"])
+    var page = 1
+    var maxPages = 100          # 100 pages * 100 tags = 10k, an ample and safe upper bound
+    while page <= maxPages:
+        var data = json.loads(fetch(srcTagsPageUrl(src, page), srcHeaders(src)))
+        if type(data) != "List" or len(data) == 0:
+            break
+        for t in data:
+            names.append(t["name"])
+        if len(data) < 100:     # a short page is necessarily the last one
+            break
+        page = page + 1
     return names
 
 # The URL for one raw repo file at a concrete ref.
@@ -325,20 +371,6 @@ var srcRawUrl = Function(src, ref, relpath) -> String:
         return src["apibase"] + "/projects/" + glEnc(src["path"]) + "/repository/files/" + glEnc(relpath) + "/raw?ref=" + net.quote(ref)
     var rawbase = ghRawBase() if src["host"] == "github.com" else src["scheme"] + "://" + src["host"] + "/raw"
     return rawbase + "/" + src["path"] + "/" + ref + "/" + relpath
-
-# Turn a user `@ref` into a concrete git ref. None -> the default branch. A valid semver range ->
-# the highest matching tag (kept as its original tag string, so it works whether tags carry a `v`).
-# Anything else (a branch name, a commit sha) is used literally.
-var resolveRef = Function(src, ref) -> String:
-    if ref == None:
-        return srcDefaultBranch(src)
-    if semver.validrange(ref):
-        var tags = srcTags(src)
-        var best = semver.maxsatisfying(tags, ref)
-        if best == None:
-            throw "no tag in " + src["display"] + " satisfies '" + ref + "' (tags: " + String(tags) + ")"
-        return best
-    return ref
 
 # The importable name a module path exposes to Kirito's `import(...)`. Each installed package sits at
 # `<packages>/<pkg>/` and that directory is on the import path, so a repo-relative module `mypkg.ki`
@@ -351,14 +383,15 @@ var moduleImportName = Function(modPath) -> String:
     return name.replace("/", ".")
 
 # Map every already-installed package's importable module names to the package that owns them, minus
-# `excludeName` (so a reinstall / update of the same package doesn't collide with itself). Silently
-# skips a package whose `.kpm.json` is missing or malformed — those are broken installs, not owners.
-var installedModuleOwners = Function(excludeName) -> Dict:
+# any package named in `excludeNames` (a Dict used as a set — so the packages being (re)installed this
+# run don't collide with their own on-disk copies). Silently skips a package whose `.kpm.json` is
+# missing or malformed — those are broken installs, not owners.
+var installedModuleOwners = Function(excludeNames) -> Dict:
     var owners = {}
     for rec in listInstalled():
         if type(rec) != "Dict" or "name" not in rec:
             continue
-        if rec["name"] == excludeName:
+        if rec["name"] in excludeNames:
             continue
         var mods = []
         if "modules" in rec and type(rec["modules"]) == "List":
@@ -378,108 +411,342 @@ var writeFile = Function(dir, relpath, text):
     f.write(text)
     f.close()
 
-# Install one package, recursing into its dependencies. `seen` is a Dict of name -> install info for
-# packages already handled this run (cycle/dup guard + version-conflict detection). Returns the name.
-var installOne = Function(spec, seen) -> String:
-    var src = parseSource(spec)
-    var constraint = src["ref"]
-    var ref = resolveRef(src, constraint)
+# ---------------------------------------------------------------- dependency resolution
+# kpm resolves the FULL dependency closure to concrete versions BEFORE writing anything, UNIFYING every
+# version constraint on each package. A package is keyed by its canonical source; the requirements on it
+# — a top-level spec, transitive dependencies, AND what already-installed packages recorded needing —
+# are intersected. If no version satisfies them all, resolution fails with a conflict naming the
+# requesters and nothing is downloaded. This replaces the old first-wins-and-warn behaviour.
 
-    # Fetch + parse + validate the manifest, with a distinct message for each failure mode.
-    var manifestText = None
+# The canonical, re-parseable source string for a parsed source: the key packages unify on, and what the
+# install record stores so update/outdated can re-resolve.
+var canonicalSource = Function(src) -> String:
+    if src["kind"] == "github" and src["host"] == "github.com":
+        return src["path"]
+    if src["host"] == "gitlab.com" or src["host"] == "github.com":
+        return src["host"] + "/" + src["path"]
+    return src["kind"] + "+" + src["scheme"] + "://" + src["host"] + "/" + src["path"]
+
+# Cached repo tags / default branch (one network call per source per resolve, reused across passes).
+var tagsFor = Function(src, cache):
+    var key = canonicalSource(src)
+    if key not in cache:
+        cache[key] = srcTags(src)
+    return cache[key]
+var defaultBranchFor = Function(src, cache):
+    var key = canonicalSource(src)
+    if key not in cache:
+        cache[key] = srcDefaultBranch(src)
+    return cache[key]
+
+# Fetch + parse + validate a manifest at a concrete ref, cached by canonical-source@ref so the fixpoint
+# never re-downloads the same one. Returns {name, version, modules, deps}.
+var manifestAt = Function(src, ref, cache):
+    var key = canonicalSource(src) + "@" + ref
+    if key in cache:
+        return cache[key]
+    var text = None
     try:
-        manifestText = fetch(srcRawUrl(src, ref, "kirito.json"), srcHeaders(src))
+        text = fetch(srcRawUrl(src, ref, "kirito.json"), srcHeaders(src))
     catch as e:
         throw "no kirito.json manifest in " + src["display"] + "@" + ref + " (" + String(e) + ")"
     var manifest = None
     try:
-        manifest = json.loads(manifestText)
+        manifest = json.loads(text)
     catch as e:
         throw "kirito.json in " + src["display"] + "@" + ref + " is not valid JSON: " + String(e)
     var parts = validateManifest(manifest, src["display"] + "@" + ref)
-    var name = parts[0]
-    var version = parts[1]
-    var modules = parts[2]
-    var deps = parts[3]
+    var m = {"name": parts[0], "version": parts[1], "modules": parts[2], "deps": parts[3]}
+    cache[key] = m
+    return m
 
-    # Reject a manifest that would install two modules under the same importable name (e.g. `a.ki`
-    # + `a/mod.ki` collapsing to `a`), and a manifest whose modules would shadow the importable
-    # names of an already-installed *different* package OR another package earlier in this install
-    # run. Detected here from the manifest alone, so no files are written and no dependencies are
-    # installed for a doomed package.
-    var mineByImportName = {}
-    for m in modules:
-        var imp = moduleImportName(m)
-        if imp in mineByImportName:
-            var prevPath = mineByImportName[imp]
-            throw ("package '" + name + "' declares two modules for the same importable name '"
-                   + imp + "': '" + prevPath + "' and '" + m + "'")
-        mineByImportName[imp] = m
-    var owners = installedModuleOwners(name)
-    # Also check every other package already handled this install run (dependencies installed
-    # earlier, or a sibling top-level spec) — those aren't on disk yet but they will be.
-    for other in seen:
-        if other == name:
+# Intersect every constraint on one source into a single concrete git ref. `cons` is a list of
+# {c, by}: c is a semver range, a literal ref (branch/commit), or None (accept anything -> default
+# branch). A literal ref can't be intersected — distinct pins, or a pin mixed with a range, is a
+# conflict. Otherwise the highest tag satisfying ALL ranges wins; if none does, that is a conflict.
+var pickRef = Function(src, cons, tagsCache, branchCache):
+    var ranges = []
+    var rangeBy = []
+    var literals = []
+    for req in cons:
+        var c = req["c"]
+        if c == None:
             continue
-        if "modules" in seen[other]:
-            for otherImp in seen[other]["modules"]:
-                owners[otherImp] = other
-    for imp in mineByImportName:
-        if imp in owners:
-            throw ("package '" + name + "' would install module '" + imp
-                   + "' but it is already provided by package '" + owners[imp]
-                   + "' — refusing to install; remove the conflicting package first")
+        if semver.validrange(c):
+            ranges.append(c)
+            rangeBy.append(req["by"])
+        elif c not in literals:
+            literals.append(c)
+    if len(literals) > 0:
+        if len(literals) > 1:
+            throw "conflicting pinned refs for " + src["display"] + ": " + String(literals) + " cannot be unified"
+        if len(ranges) > 0:
+            throw "cannot combine pinned ref '" + literals[0] + "' with version range(s) " + String(ranges) + " for " + src["display"]
+        return {"ref": literals[0], "isSemver": False}
+    if len(ranges) > 0:
+        var tags = tagsFor(src, tagsCache)
+        var ok = []
+        for t in tags:
+            # Skip tags that aren't semver (repos routinely carry `latest`, `nightly`, date tags …) —
+            # `satisfies` THROWS on a non-semver version, so this both matches `maxsatisfying`'s
+            # tolerance and stops one stray tag from failing the whole resolution.
+            if semver.valid(t) == None:
+                continue
+            var sat = True
+            for r in ranges:
+                if not semver.satisfies(t, r):
+                    sat = False
+            if sat:
+                ok.append(t)
+        if len(ok) == 0:
+            throw ("no version of " + src["display"] + " satisfies all constraints " + String(ranges) +
+                   " (required by " + String(rangeBy) + "); available tags: " + String(tags))
+        var best = ok[0]
+        for t in ok:
+            if semver.gt(semver.clean(t), semver.clean(best)):
+                best = t
+        return {"ref": best, "isSemver": True}
+    return {"ref": defaultBranchFor(src, branchCache), "isSemver": False}
 
-    if name in seen:
-        var prev = seen[name]
-        # Version-conflict warning: a semver constraint that the already-installed copy doesn't satisfy.
-        if constraint != None and semver.validrange(constraint) and semver.valid(prev["version"]) != None:
-            if not semver.satisfies(prev["version"], constraint):
-                io.eprint("kpm: version conflict: '" + name + "' already at " + prev["version"] +
-                          " (from " + prev["display"] + ") but " + src["display"] + " requires '" +
-                          constraint + "' — keeping " + prev["version"])
-        return name
+# What each ALREADY-INSTALLED package requires of its dependencies: canonical source -> [{c, by}]. Read
+# from the recorded "dependencies" of every install, so a NEW install is checked against the needs of
+# packages already on disk (the cross-run reverse-dependency check). Malformed records are skipped.
+var reverseDepsOfInstalled = Function():
+    var rev = {}
+    for rec in listInstalled():
+        if type(rec) != "Dict" or "name" not in rec:
+            continue
+        var deps = rec["dependencies"] if ("dependencies" in rec and type(rec["dependencies"]) == "List") else []
+        for d in deps:
+            if type(d) != "String":
+                continue
+            var dsrc = None
+            try:
+                dsrc = parseSource(d)
+            catch as e:
+                continue
+            var canon = canonicalSource(dsrc)
+            if canon not in rev:
+                rev[canon] = []
+            # `byCanon` = the source of the package that recorded this need. When that package is itself
+            # being (re)resolved this run, its FRESH manifest supersedes this stale recorded dep, so the
+            # resolver drops this entry (see PHASE A) — otherwise updating a package that bumped its own
+            # dependency would falsely conflict with its old record.
+            var byCanon = rec["source"] if ("source" in rec and type(rec["source"]) == "String") else None
+            rev[canon].append({"c": dsrc["ref"], "by": String(rec["name"]) + " (installed)", "byCanon": byCanon})
+    return rev
 
-    # A canonical, re-parseable source string for the install record (so update/outdated re-resolve).
-    var canonical = src["path"]
-    if not (src["kind"] == "github" and src["host"] == "github.com"):
-        if src["host"] == "gitlab.com" or src["host"] == "github.com":
-            canonical = src["host"] + "/" + src["path"]
-        else:
-            canonical = src["kind"] + "+" + src["scheme"] + "://" + src["host"] + "/" + src["path"]
-    seen[name] = {"version": version, "display": src["display"],
-                  "modules": List(mineByImportName)}
-    io.print("installing " + name + " " + version + " (" + src["display"] + "@" + ref + ")")
+# Resolve `topSpecs` (+ their transitive deps, unified with installed packages' recorded needs) into a
+# concrete plan: {"nodes": canonical -> node, "order": [canonical...] deps-first, "top": [...]}. A node
+# is {src, canonical, ref, isSemver, version, name, modules, deps, depCanons, constraint}.
+#
+# Two-phase fixpoint: each pass (A) builds the COMPLETE constraint list for every known source from the
+# seeds + reverse-deps + the previous pass's picked manifests, then (B) picks a ref per source and reads
+# its manifest, recording any newly-discovered dependency for the next pass. Because picking always uses
+# constraints fully collected in the prior pass (never a half-built one), the chosen versions are
+# correct regardless of traversal order; versions only fall as constraints accumulate, so it converges
+# in O(dependency-depth) passes. A hard cap turns any pathological case into a clear error, never a hang.
+var resolvePlan = Function(topSpecs):
+    var rev = reverseDepsOfInstalled()
+    var tagsCache = {}
+    var branchCache = {}
+    var manifestCache = {}
+    var known = {}          # canonical -> src
+    var seedCons = {}       # canonical -> [{c, by}]  (top-level requirements)
+    for spec in topSpecs:
+        var s = parseSource(spec)
+        var canon = canonicalSource(s)
+        known[canon] = s
+        if canon not in seedCons:
+            seedCons[canon] = []
+        seedCons[canon].append({"c": s["ref"], "by": "requested"})
+    var derivedPrev = {}    # canonical -> [{c, by}]  (from the previous pass's picked manifests)
+    var prevPicks = {}
+    var nodes = {}
+    var iter = 0
+    var maxIter = 100
+    var stable = False
+    while not stable and iter < maxIter:
+        iter = iter + 1
+        # PHASE A: the full constraint list for every currently-known source.
+        var cons = {}
+        for canon in known:
+            var lst = []
+            if canon in seedCons:
+                lst = lst + seedCons[canon]
+            if canon in rev:
+                # A recorded reverse-dep counts only if its owner is NOT itself being resolved now —
+                # a package in `known` contributes its CURRENT deps via derivedPrev, not its old record.
+                for e in rev[canon]:
+                    if e["byCanon"] == None or e["byCanon"] not in known:
+                        lst.append(e)
+            if canon in derivedPrev:
+                lst = lst + derivedPrev[canon]
+            cons[canon] = lst
+        # PHASE B: pick + read manifest for every known source; collect this pass's derived constraints
+        # and any newly-discovered dependency (added to `known` for the next pass).
+        var newPicks = {}
+        var newNodes = {}
+        var derivedNew = {}
+        var discoveredSrc = {}
+        for canon in List(known):
+            var src = known[canon]
+            var pick = pickRef(src, cons[canon], tagsCache, branchCache)
+            newPicks[canon] = pick
+            var m = manifestAt(src, pick["ref"], manifestCache)
+            var depCanons = []
+            for dep in m["deps"]:
+                var dsrc = parseSource(dep)
+                var dcanon = canonicalSource(dsrc)
+                depCanons.append(dcanon)
+                if dcanon not in derivedNew:
+                    derivedNew[dcanon] = []
+                derivedNew[dcanon].append({"c": dsrc["ref"], "by": String(m["name"])})
+                if dcanon not in known:
+                    discoveredSrc[dcanon] = dsrc
+            newNodes[canon] = {"src": src, "canonical": canon, "ref": pick["ref"],
+                               "isSemver": pick["isSemver"], "version": m["version"],
+                               "name": m["name"], "modules": m["modules"], "deps": m["deps"],
+                               "depCanons": depCanons,
+                               "constraint": (cons[canon][0]["c"] if len(cons[canon]) > 0 else None)}
+        var discovered = False
+        for dcanon in discoveredSrc:
+            if dcanon not in known:
+                known[dcanon] = discoveredSrc[dcanon]
+                discovered = True
+        # Fixpoint: nothing newly discovered AND every pick unchanged from the last pass.
+        var same = not discovered and len(newPicks) == len(prevPicks)
+        if same:
+            for k in newPicks:
+                if k not in prevPicks or prevPicks[k]["ref"] != newPicks[k]["ref"]:
+                    same = False
+        stable = same
+        derivedPrev = derivedNew
+        prevPicks = newPicks
+        nodes = newNodes
+    if not stable:
+        throw "could not resolve dependencies within " + String(maxIter) + " passes (unstable constraint graph)"
+    # Deps-first install order (post-order DFS from the top specs; the `placed` guard breaks cycles).
+    var topCanons = []
+    for spec in topSpecs:
+        topCanons.append(canonicalSource(parseSource(spec)))
+    var order = []
+    var placed = {}
+    var visit = None
+    visit = Function(canon):
+        if canon in placed:
+            return None
+        placed[canon] = True
+        if canon in nodes:
+            for dc in nodes[canon]["depCanons"]:
+                visit(dc)
+            order.append(canon)
+    for c in topCanons:
+        visit(c)
+    for c in nodes:
+        if c not in placed:
+            placed[c] = True
+            order.append(c)
+    return {"nodes": nodes, "order": order, "top": topCanons}
 
-    for d in deps:
-        discard installOne(d, seen)
+# Validate a resolved plan before any file is written: two plan packages must not share a name; a plan
+# package must not shadow a DIFFERENT already-installed package's name or any installed importable module
+# name; and each manifest's own module set must be internally unique and non-empty.
+var validateResolved = Function(nodes):
+    var nameToCanon = {}
+    for canon in nodes:
+        var nm = nodes[canon]["name"]
+        if nm in nameToCanon and nameToCanon[nm] != canon:
+            throw ("two packages in this install resolve to the same name '" + nm + "': '" +
+                   nameToCanon[nm] + "' and '" + canon + "' — rename one of the packages")
+        nameToCanon[nm] = canon
+    var planNames = {}
+    for canon in nodes:
+        planNames[nodes[canon]["name"]] = True
+    for canon in nodes:
+        var nm = nodes[canon]["name"]
+        var existing = readRecord(nm)
+        if existing != None and "source" in existing and existing["source"] != canon:
+            throw ("package name '" + nm + "' is already installed from '" + existing["source"] +
+                   "'; refusing to overwrite it with a different source '" + canon +
+                   "' — run `kpm remove " + nm + "` first, or rename one of the packages")
+    var owners = installedModuleOwners(planNames)    # installed modules, minus packages we will overwrite
+    for canon in nodes:
+        var n = nodes[canon]
+        var mine = {}
+        for m in n["modules"]:
+            var imp = moduleImportName(m)
+            if imp == "":
+                throw ("package '" + n["name"] + "' has a module path '" + m +
+                       "' with an empty importable name (a bare '.ki' or a directory ending in '/.ki')")
+            if imp in mine:
+                throw ("package '" + n["name"] + "' declares two modules for the same importable name '" +
+                       imp + "': '" + mine[imp] + "' and '" + m + "'")
+            mine[imp] = m
+        for imp in mine:
+            if imp in owners:
+                throw ("package '" + n["name"] + "' would install module '" + imp +
+                       "' but it is already provided by package '" + owners[imp] +
+                       "' — refusing to install; remove the conflicting package first")
+            owners[imp] = n["name"]
 
-    var dest = path.join(packagesDir(), name)
+# Download + write one resolved package's modules and its install record. The record carries the
+# resolved dependency specs so a later install can reverse-check against them.
+var installNode = Function(n):
+    var src = n["src"]
+    var dest = path.join(packagesDir(), n["name"])
     var installed = []
-    for mod in modules:
+    for mod in n["modules"]:
         var text = None
         try:
-            text = fetch(srcRawUrl(src, ref, mod), srcHeaders(src))
+            text = fetch(srcRawUrl(src, n["ref"], mod), srcHeaders(src))
         catch as e:
-            throw "package '" + name + "': module '" + mod + "' not found at " + src["display"] + "@" + ref + " (" + String(e) + ")"
+            throw "package '" + n["name"] + "': module '" + mod + "' not found at " + src["display"] + "@" + n["ref"] + " (" + String(e) + ")"
         writeFile(dest, mod, text)
         installed.append(mod)
         io.print("  + " + mod)
-
-    var record = {"name": name, "version": version, "source": canonical,
-                  "constraint": constraint, "ref": ref, "modules": installed}
+    var record = {"name": n["name"], "version": n["version"], "source": n["canonical"],
+                  "constraint": n["constraint"], "ref": n["ref"], "modules": installed,
+                  "dependencies": n["deps"]}
     writeFile(dest, ".kpm.json", json.dumps(record, indent = 2))
-    return name
 
-# Read the install record of one package, or None if it isn't installed.
+# Install every node of a resolved plan (deps first). A package already on disk at the exact resolved
+# IMMUTABLE tag is left untouched; a branch/default ref is always refreshed (its content can move).
+# Returns the number of packages actually (re)installed.
+var installResolved = Function(plan):
+    var nodes = plan["nodes"]
+    var count = 0
+    for canon in plan["order"]:
+        var n = nodes[canon]
+        var existing = readRecord(n["name"])
+        var upToDate = (existing != None and n["isSemver"] and "source" in existing and
+                        existing["source"] == n["canonical"] and "ref" in existing and
+                        existing["ref"] == n["ref"] and "version" in existing and
+                        existing["version"] == n["version"])
+        if upToDate:
+            io.print(n["name"] + " " + n["version"] + " already up to date (" + n["src"]["display"] + "@" + n["ref"] + ")")
+            continue
+        io.print("installing " + n["name"] + " " + n["version"] + " (" + n["src"]["display"] + "@" + n["ref"] + ")")
+        installNode(n)
+        count = count + 1
+    return count
+
+# Read the install record of one package, or None if it isn't installed. A corrupt or hand-edited
+# `.kpm.json` (or one that isn't a JSON object) is a broken install, NOT a fatal error: return None so
+# `list`, `outdated`, `update`, and collision detection skip it instead of the whole tool crashing on
+# one bad file. The file is always closed, even when parsing throws.
 var readRecord = Function(name):
     var rec = path.join(path.join(packagesDir(), name), ".kpm.json")
     if not path.exists(rec):
         return None
     var f = io.open(rec, "r")
-    var data = json.loads(f.read())
+    var text = f.read()
     f.close()
-    return data
+    try:
+        var data = json.loads(text)
+        return data if type(data) == "Dict" else None
+    catch as e:
+        return None
 
 # Read the install records of every installed package.
 var listInstalled = Function():
@@ -521,6 +788,25 @@ var extractKpmVersion = Function(text):
         return None
     return text[start:endq]
 
+# Find the SHA-256 hex digest for `asset` in the text of a `SHA256SUMS` file (standard `sha256sum`
+# output: "<hex>  <name>", with an optional '*' before a binary-mode name), lowercased, or None if the
+# asset is not listed. Pure so it can be unit-tested without the network.
+var shaFor = Function(sumsText, asset):
+    for line in sumsText.split("\n"):
+        var ln = line.strip()
+        if ln == "":
+            continue
+        var sp = ln.find(" ")
+        if sp < 0:
+            continue
+        var digest = ln[0:sp]
+        var fname = ln[sp:].strip()
+        if fname.startswith("*"):        # `sha256sum -b` marks a binary-mode file with a leading '*'
+            fname = fname[1:]
+        if fname == asset:
+            return digest.lower()
+    return None
+
 # Atomically replace `target` with the file at `tmp`. POSIX rename swaps the inode under a running
 # process; Windows can't overwrite a running .exe, so the old file is moved aside first.
 var replaceFile = Function(tmp, target):
@@ -536,13 +822,21 @@ var replaceFile = Function(tmp, target):
 var cmdInstall = Function(specs):
     if len(specs) == 0:
         fail("install needs at least one <owner/repo>")
-    var seen = {}
-    for spec in specs:
-        try:
-            discard installOne(spec, seen)
-        catch as e:
-            fail(String(e))
-    io.print("done — " + String(len(seen)) + " package(s) in " + packagesDir())
+    var plan = None
+    try:
+        # Resolve + validate the WHOLE closure before touching disk, so a conflict or a bad manifest
+        # aborts cleanly with nothing half-installed.
+        plan = resolvePlan(specs)
+        validateResolved(plan["nodes"])
+    catch as e:
+        fail(String(e))
+    var n = 0
+    try:
+        n = installResolved(plan)
+    catch as e:
+        fail(String(e))
+    io.print("done — " + String(len(plan["nodes"])) + " package(s) resolved, " + String(n) +
+             " installed/updated, in " + packagesDir())
 
 var cmdRemove = Function(names):
     if len(names) == 0:
@@ -556,6 +850,26 @@ var cmdRemove = Function(names):
         if not path.exists(dir):
             io.eprint("kpm: not installed: " + name)
         else:
+            # Warn (don't block — removal is an explicit act) if another installed package depends on
+            # this one: removing it will break that dependent. Uses the recorded dependency graph.
+            var rec = readRecord(name)
+            if rec != None and "source" in rec:
+                var dependents = []
+                for other in listInstalled():
+                    if type(other) != "Dict" or "name" not in other or other["name"] == name:
+                        continue
+                    var odeps = other["dependencies"] if ("dependencies" in other and type(other["dependencies"]) == "List") else []
+                    for d in odeps:
+                        if type(d) != "String":
+                            continue
+                        try:
+                            if canonicalSource(parseSource(d)) == rec["source"]:
+                                dependents.append(other["name"])
+                        catch as e:
+                            continue
+                if len(dependents) > 0:
+                    io.eprint("kpm: warning: '" + name + "' is required by " + String(dependents) +
+                              " — they may stop working")
             discard path.rmtree(dir, missing_ok = True)   # recursive rm -rf
             io.print("removed " + name)
 
@@ -570,8 +884,10 @@ var cmdList = Function():
             at = String(p["constraint"]) + " -> " + p["ref"]
         io.print(p["name"] + " " + p["version"] + "  (" + p["source"] + "@" + at + ")")
 
-# Reinstall the given packages (or all of them), re-resolving the recorded constraint so a semver
-# range picks up newly-published tags.
+# Reinstall the given packages (or all of them), re-resolving each recorded constraint so a semver
+# range picks up newly-published tags. The whole set is resolved together (and unified against every
+# installed package's recorded needs), so an update that would break a dependent fails cleanly rather
+# than silently installing an incompatible version.
 var cmdUpdate = Function(args):
     var targets = []
     if len(args) == 1 and args[0] == "--all":
@@ -584,16 +900,20 @@ var cmdUpdate = Function(args):
             targets.append(rec)
     if len(targets) == 0:
         fail("update needs a package name or --all")
-    var seen = {}
+    var specs = []
     for p in targets:
         var spec = p["source"]
         if "constraint" in p and p["constraint"] != None:
             spec = spec + "@" + String(p["constraint"])
-        try:
-            discard installOne(spec, seen)
-            io.print("updated " + p["name"])
-        catch as e:
-            io.eprint("kpm: " + String(e))
+        specs.append(spec)
+    try:
+        var plan = resolvePlan(specs)
+        validateResolved(plan["nodes"])
+        discard installResolved(plan)
+    catch as e:
+        fail(String(e))
+    for p in targets:
+        io.print("updated " + p["name"])
 
 # Resolve the newest version available to a package under its recorded constraint (or the manifest
 # version on its ref), or None if it can't be determined.
@@ -698,6 +1018,26 @@ var cmdUpgradeKi = Function(args):
         blob = fetchBytes(url)
     catch as e:
         fail("download failed: " + String(e))
+
+    # Verify the download against the release's published SHA256SUMS before executing it — a corrupted
+    # or tampered binary must never be swapped in. `--force` explicitly opts out (e.g. an older release
+    # that predates published checksums); this is a deliberate, logged reduction in safety.
+    if not force:
+        var sums = None
+        try:
+            sums = fetch(GH + "/" + KIRITO_REPO + "/releases/download/" + tag + "/SHA256SUMS")
+        catch as e:
+            fail("release " + tag + " publishes no SHA256SUMS to verify the download; re-run with " +
+                 "--force to skip verification (not recommended): " + String(e))
+        var want = shaFor(sums, asset)
+        if want == None:
+            fail("SHA256SUMS for " + tag + " does not list '" + asset +
+                 "' — refusing to install an unverified binary (use --force to override)")
+        var got = hash.sha256(blob).lower()
+        if got != want:
+            fail("checksum mismatch for " + asset + ": expected " + want + " but got " + got +
+                 " — refusing to install a corrupted or tampered download")
+        io.print("verified sha256 " + got)
 
     var tmp = target + ".new"
     var f = io.open(tmp, "wb")

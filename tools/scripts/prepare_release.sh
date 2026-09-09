@@ -74,6 +74,14 @@ rm -f "$OUT/docs.zip"
 zip -9 -r "$OUT/docs.zip" docs >/dev/null
 echo "packed  $OUT/docs.zip"
 
+# 6. SHA256SUMS — checksums of every published asset, in standard `sha256sum` format ("<hex>  <name>").
+#    `kpm update-ki` downloads this file and verifies the interpreter binary against it before swapping
+#    it in, so a corrupted or tampered download is never executed. Must be uploaded with the release.
+command -v sha256sum >/dev/null 2>&1 || { echo "ERROR: sha256sum (coreutils) is required to write SHA256SUMS." >&2; exit 1; }
+rm -f "$OUT/SHA256SUMS"
+( cd "$OUT" && sha256sum ki-linux-x64 ki-windows-x64.exe debug_builds.zip docs.zip > SHA256SUMS )
+echo "wrote   $OUT/SHA256SUMS"
+
 echo "=================================================================="
 echo "release assembled in $OUT/:"
 ls -la "$OUT"
