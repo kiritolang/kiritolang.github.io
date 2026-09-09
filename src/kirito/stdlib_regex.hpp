@@ -76,7 +76,9 @@ public:
     Handle groupString(KiritoVM& vm, int g) const {
         if (slots[2 * g] < 0) return vm.none();       // group didn't participate
         const auto& sv = static_cast<const StrVal&>(vm.arena().deref(subject));
-        return vm.makeString(cpSlice(sv.value(), utf8Starts(sv.value()), slots[2 * g], slots[2 * g + 1]));
+        // Reuse the subject StrVal's cached code-point offsets (it's immutable): repeated .group()/
+        // .groups()/.groupdict() calls no longer each rebuild an O(subject) offset table.
+        return vm.makeString(cpSlice(sv.value(), sv.codePointStarts(), slots[2 * g], slots[2 * g + 1]));
     }
 
     Handle getAttr(KiritoVM& vm, Handle self, std::string_view name) override {

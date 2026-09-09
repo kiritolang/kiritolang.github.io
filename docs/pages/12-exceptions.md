@@ -391,7 +391,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 
 | Message | Cause | Fix |
 |---|---|---|
-| `cannot convert String to Integer: '<s>'` / `cannot convert String to Float: '<s>'` | `Integer("x")`/`Float("x")` on a non-numeric string | Pass a parseable numeric string |
+| `cannot convert String to Integer: '<s>'` / `cannot convert String to Float: '<s>'` | `Integer("x")`/`Float("x")` on a non-numeric string, or a decimal string outside the signed 64-bit range | Pass a parseable numeric string within range (use a `0x`/`0o`/`0b` literal for a full-width bit pattern) |
 | `cannot convert '<T>' to Integer` / `cannot convert '<T>' to Float` | Converting an unsupported type | Convert a supported type |
 | `Integer: cannot convert NaN/infinity to Integer` / `Integer: result out of Integer range` | `Integer(nan/inf/huge float)` | Guard non-finite / out-of-range floats |
 | `cannot round NaN/infinity to Integer` / `rounded value out of Integer range` | `round()` of a non-finite/huge value | Guard the value |

@@ -755,8 +755,9 @@ The `options` Dict may contain: `headers` (Dict), `params` (Dict → query strin
 form-Dict, or `Bytes` → sent as `application/octet-stream`), `json` (any value → JSON body +
 `application/json`), `files` (Dict → `multipart/form-data`
 upload; value is content or `[filename, content]`), `auth` (`[user, pass]` → HTTP Basic), `timeout`
-(seconds — **no timeout by default**, so a request can block indefinitely against an unresponsive or
-black-hole host; set an explicit `timeout` for any unattended or production caller), `allowredirects`
+(seconds — **default `10`**, bounding connect and each send/recv so a stalled or black-hole host fails
+cleanly instead of hanging; pass a larger number for slow transfers, or `0` to opt out and block
+indefinitely), `allowredirects`
 (Bool, default `True`) / `maxredirects` (Integer, default 10), `verify`
 (Bool, default `True` — TLS certificate verification; trust roots come from the OS — OpenSSL's default
 paths or the `SSL_CERT_FILE` env var on Unix, the Windows system certificate store on Windows — and a

@@ -51,7 +51,7 @@ Convert explicitly with `Integer(flag)` when you need to count or sum truth valu
 Signed 64-bit integers. Arithmetic wraps on overflow with well-defined two's-complement semantics —
 never undefined behavior. Literals may be decimal (`42`, `-7`), hexadecimal (`0xFF`), octal (`0o17`),
 or binary (`0b1010`); the base prefix is case-insensitive. The same width applies to *literals*: a
-constant wider than 64 bits keeps only its low 64 bits (`0x1_0000_0000_0000_0000` → `0`, and a decimal
+constant wider than 64 bits keeps only its low 64 bits (`0x10000000000000000` → `0`, and a decimal
 literal past `9223372036854775807` wraps into the negative range) — arbitrary-precision integers are a
 future enrichment. Because there is no positive counterpart to the most-negative value, `abs` of it
 returns the value unchanged (`abs(-9223372036854775808)` is still negative — the one input where `abs`

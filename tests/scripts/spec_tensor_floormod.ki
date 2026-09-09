@@ -1,0 +1,21 @@
+# spec_tensor_floormod.ki — regression for the v1.17.1 audit finding that tensor `%` truncated (fmod)
+# instead of computing Python/NumPy floor-modulo. `%` must take the sign of the divisor and satisfy the
+# divmod identity `(a // b) * b + (a % b) == a`, matching scalar Float/Integer `%`.
+
+var io = import("io")
+var t = import("tensor")
+
+# tensor % scalar, negatives
+assert (t.Tensor([-7.0, 7.0, -8.0]) % 3.0).tolist() == [2.0, 1.0, 1.0], "tensor % scalar is floor-mod"
+assert (t.Tensor([7.0]) % -3.0).tolist() == [-2.0], "tensor % negative divisor takes divisor sign"
+# tensor % tensor
+assert (t.Tensor([-7.0, 7.0]) % t.Tensor([3.0, -3.0])).tolist() == [2.0, -2.0], "tensor % tensor is floor-mod"
+# floor-division unchanged (already correct)
+assert (t.Tensor([-7.0, 7.0, -8.0]) // 3.0).tolist() == [-3.0, 2.0, -3.0], "tensor // floors"
+# divmod identity holds on tensors
+var a = t.Tensor([-7.0, 7.0, -8.0, 5.0])
+assert ((a // 3.0) * 3.0 + (a % 3.0)).tolist() == a.tolist(), "tensor divmod identity (a//b)*b + a%b == a"
+# a positive-only case still correct (no regression)
+assert (t.Tensor([7.0, 8.0, 9.0]) % 3.0).tolist() == [1.0, 2.0, 0.0], "tensor % positive unchanged"
+
+io.print("spec_tensor_floormod: ok")

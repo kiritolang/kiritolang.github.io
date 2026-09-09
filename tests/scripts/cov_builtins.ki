@@ -60,6 +60,11 @@ assert Integer("9223372036854775807") == 9223372036854775807, "Integer INT64_MAX
 assert Integer("-9223372036854775808") == -9223372036854775808, "Integer INT64_MIN round-trip"
 assert Integer("0xFFFFFFFFFFFFFFFF") == -1, "Integer full-width hex two's-complement"
 assert Integer("+5") == 5, "Integer single leading plus sign"
+# Regression: a DECIMAL string past the signed 64-bit range must THROW, not silently wrap to negative
+# (the whole [2^63, 2^64) window used to wrap). Hex/oct/bin bit patterns above still wrap by design.
+assert threw(Function(): return Integer("9223372036854775808")), "Integer decimal 2^63 overflows (no silent wrap)"
+assert threw(Function(): return Integer("18446744073709551615")), "Integer decimal 2^64-1 overflows"
+assert threw(Function(): return Integer("-9223372036854775809")), "Integer decimal below INT64_MIN overflows"
 # Hardening: unparseable / malformed strings throw with a descriptive message.
 assert threw(Function(): return Integer("abc")), "Integer('abc') throws"
 assert "cannot convert String to Integer" in emsg(Function(): return Integer("abc")), "Integer bad-string message"

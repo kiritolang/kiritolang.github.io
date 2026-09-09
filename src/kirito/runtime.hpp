@@ -3617,19 +3617,22 @@ inline void KiritoVM::installBuiltins() {
                         std::tolower(static_cast<unsigned char>(s[i + 1])) == 'x')
                         throw std::invalid_argument("embedded base prefix");
                     std::size_t pos = 0;
-                    // Parse the magnitude as unsigned and bit-cast (two's-complement negate if signed),
-                    // mirroring the lexer's intLiteral, so the full 64-bit range round-trips:
-                    // Integer(String(INT64_MIN)), Integer(hex(-1)) == 0xFFFFFFFFFFFFFFFF == -1, etc.
-                    // (std::stoll would reject any magnitude >= 2^63.) The magnitude-parse + bit-cast is
-                    // shared knowledge with the lexer, but the two DELIBERATELY diverge past 2^64: a
-                    // source literal is a token the programmer wrote (the lexer defines wrap semantics
-                    // for it), whereas this converts arbitrary runtime data, so an unrepresentable value
-                    // FAILS FAST via stoull's out_of_range below rather than silently wrapping.
+                    // Parse the magnitude as unsigned and bit-cast (two's-complement negate if signed).
+                    // A NON-DECIMAL literal (hex/oct/bin) is a bit pattern, so the full 64-bit range is
+                    // meaningful and wraps intentionally: Integer("0xFFFFFFFFFFFFFFFF") == -1. A DECIMAL
+                    // string, though, is a magnitude converted from arbitrary runtime data: a value that
+                    // doesn't fit int64 must FAIL FAST, not silently wrap. `stoull` alone only rejects
+                    // >= 2^64, so the whole [2^63, 2^64) window would wrap — we range-check base-10 below.
                     uint64_t mag = std::stoull(s.substr(i), &pos, base);
                     // Reject trailing garbage (e.g. "42abc", "12.5") — surrounding whitespace allowed.
                     std::size_t end = i + pos;
                     while (end < s.size() && std::isspace(static_cast<unsigned char>(s[end]))) ++end;
                     if (end != s.size()) throw std::invalid_argument("trailing");
+                    // Decimal overflow guard: a non-negative value must fit INT64_MAX; a negative one may
+                    // reach |INT64_MIN| = 2^63. (INT64_MIN itself still round-trips via the bit-cast.)
+                    if (base == 10 && mag > (neg ? static_cast<uint64_t>(INT64_MAX) + 1ULL
+                                                 : static_cast<uint64_t>(INT64_MAX)))
+                        throw std::out_of_range("decimal magnitude exceeds the 64-bit Integer range");
                     return vm.makeInt(static_cast<int64_t>(neg ? (~mag + 1ULL) : mag));
                 } catch (...) {
                     throw KiritoError("cannot convert String to Integer: '" + s + "'");

@@ -971,7 +971,11 @@ inline Handle netRequest(KiritoVM& vm, const std::string& method0, const std::st
     Handle jarH = rs.add(jar.handle());
     auto& jarDict = static_cast<DictVal&>(vm.arena().deref(jarH));
 
-    double timeout = 0.0;
+    // Default to a 10s request timeout so a stalled or black-holed host fails cleanly instead of
+    // hanging forever (the old default of 0 = block indefinitely was a footgun for spawn-per-request
+    // servers). It bounds connect + each send/recv, so a slow-but-progressing transfer is unaffected.
+    // An explicit `timeout: 0` opts back out to no timeout.
+    double timeout = 10.0;
     Handle toH = netOpt(vm, opts, "timeout");
     if (vm.arena().deref(toH).kind() == ValueKind::Float) timeout = static_cast<const FloatVal&>(vm.arena().deref(toH)).value();
     else if (vm.arena().deref(toH).kind() == ValueKind::Integer) timeout = static_cast<double>(static_cast<const IntVal&>(vm.arena().deref(toH)).value());

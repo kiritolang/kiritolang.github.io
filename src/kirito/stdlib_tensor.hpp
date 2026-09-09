@@ -1058,17 +1058,26 @@ inline Handle g_powT(KiritoVM& vm, Handle ah, Handle bh) {
     return makeAutogradFloat(vm, std::move(out), std::move(parents), std::move(bw));
 }
 
+// Python/NumPy floor-modulo for doubles: `fmod` truncates toward zero, so the remainder must be
+// sign-corrected to match floor-division (result takes the sign of the divisor). SSOT for tensor `%`,
+// mirroring scalar Float `%` (runtime.hpp) so `(a // b) * b + (a % b) == a` holds on tensors too.
+inline double floorModD(double x, double y) {
+    double r = std::fmod(x, y);
+    if (r != 0.0 && (r < 0.0) != (y < 0.0)) r += y;
+    return r;
+}
+
 // elementwise non-grad Float binary (mod / floordiv)
 inline Handle ewFloat(KiritoVM& vm, const FT& a, const FT& b, char kind) {
     return make(vm, tensor::elementwise(a, b, [kind](double x, double y) {
         if (y == 0.0) throw KiritoError(kind == '%' ? "tensor modulo by zero" : "tensor floor-division by zero");
-        return kind == '%' ? std::fmod(x, y) : std::floor(x / y);
+        return kind == '%' ? floorModD(x, y) : std::floor(x / y);
     }));
 }
 inline Handle ewFloatScalar(KiritoVM& vm, const FT& a, double s, char kind) {
     if (s == 0.0) throw KiritoError(kind == '%' ? "tensor modulo by zero" : "tensor floor-division by zero");
     return make(vm, tensor::mapUnary(a, [kind, s](double x) {
-        return kind == '%' ? std::fmod(x, s) : std::floor(x / s);
+        return kind == '%' ? floorModD(x, s) : std::floor(x / s);
     }));
 }
 

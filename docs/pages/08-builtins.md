@@ -24,8 +24,10 @@ parameter name.
 - `Integer(x) → Integer` — convert to a 64-bit integer. Accepts `Bool` (`True`→`1`), `Float`
   (truncates toward zero; rejects NaN/∞/out-of-range), or a `String` in decimal or `0x`/`0o`/`0b`
   form (the base prefix is case-insensitive — `0X`/`0O`/`0B` also work; surrounding whitespace and a
-  single leading sign allowed). Throws on anything else or an unparseable String — including a doubled
-  sign or a space after the sign/prefix (`"--5"`, `"+ 5"`, `"0x-5"`).
+  single leading sign allowed). A **decimal** string outside the signed 64-bit range throws (it is not
+  silently wrapped); a `0x`/`0o`/`0b` string is a bit pattern spanning the full 64 bits, so
+  `Integer("0xFFFFFFFFFFFFFFFF")` is `-1`. Throws on anything else or an unparseable String — including a
+  doubled sign or a space after the sign/prefix (`"--5"`, `"+ 5"`, `"0x-5"`).
 - `Float(x) → Float` — convert to a double. Accepts `Integer`, `Bool`, or a numeric `String`
   (decimal/scientific notation, plus the special values `"inf"`/`"infinity"`/`"nan"`, case-insensitive
   and sign-prefixable). Throws if a String doesn't parse; a C99 hex-float literal (`"0x1p4"`) is
