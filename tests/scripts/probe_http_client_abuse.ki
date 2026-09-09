@@ -25,8 +25,8 @@ var throws = Function(fn) -> Bool:
 # --- launch the abuse server as a subprocess ---------------------------------
 # The test is intended to be run from the repository root (both `ctest` and
 # `tools/scripts/test_release.sh` do that). Look for the abuse server next to this file.
-var candidates = ["tools/tests/net_abuse_server.py",
-                  path.join(path.getcwd(), "tools/tests/net_abuse_server.py")]
+var candidates = ["tests/net_abuse_server.py",
+                  path.join(path.getcwd(), "tests/net_abuse_server.py")]
 var server = None
 for c in candidates:
     if path.isfile(c):
@@ -138,6 +138,20 @@ try:
 catch:
     handled6 = True
 assert handled6, "non-HTTP garbage: no crash"
+
+# --- 7. default request timeout: a no-explicit-timeout call must NOT hang forever ------------
+# The /hang endpoint accepts but never replies. With net's built-in default request timeout the
+# call throws in ~10s; without a default it would block until the ctest watchdog kills the whole
+# test. Assert it both throws and returns well under a small bound (proving a finite default).
+var t0 = time.timens()
+var handled7 = False
+try:
+    discard net.get(base + "/hang")
+catch:
+    handled7 = True
+var elapsed7 = (time.timens() - t0) / 1000000000.0
+assert handled7, "no-timeout net.get on a hanging server throws (default timeout applied)"
+assert elapsed7 < 15.0, "default timeout bounded the hang (~10s); took " + String(elapsed7) + "s"
 
 # --- shutdown --------------------------------------------------------------
 # Kill the server. Read its PID from the holder file.

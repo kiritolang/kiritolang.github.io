@@ -793,6 +793,121 @@ inline SliceRange resolveSlice(KiritoVM& vm, Handle sH, Handle eH, Handle stH, s
     return {s, e, step};
 }
 
+// One resolved subscript axis for numpy basic indexing.
+struct IndexAxis {
+    enum Kind { Int, Range, NewAxis } kind;
+    std::ptrdiff_t idx = 0;                            // Int: the wrapped/validated index
+    std::ptrdiff_t start = 0, count = 0, step = 1;     // Range: from resolveSlice (start, element count, step)
+};
+
+// Element count of a resolved [start, stop) strided range (start/stop already clamped by resolveSlice).
+// The span (|stop - start|) is bounded by the axis length, but `step` is an arbitrary user value: adding
+// it to the span, or negating it, would overflow for a near-INT64 step (UB). So divide the bounded span
+// by the step MAGNITUDE (via unsigned two's-complement negation, well-defined even for INT64_MIN); a
+// huge step simply yields a count of 1. The result is ≤ span, so it fits back into ptrdiff_t.
+inline std::ptrdiff_t rangeCount(std::ptrdiff_t start, std::ptrdiff_t stop, std::ptrdiff_t step) {
+    if (step > 0) {
+        if (start >= stop) return 0;
+        return static_cast<std::ptrdiff_t>((static_cast<std::uint64_t>(stop - start) - 1) /
+                                           static_cast<std::uint64_t>(step) + 1);
+    }
+    if (start <= stop) return 0;
+    std::uint64_t mag = ~static_cast<std::uint64_t>(step) + 1;   // |step|, valid even for INT64_MIN
+    return static_cast<std::ptrdiff_t>((static_cast<std::uint64_t>(start - stop) - 1) / mag + 1);
+}
+
+// The selected region of a source shape under a basic-index plan: a constant base offset, the output
+// shape, and the source stride per OUTPUT dim. Int axes fold a constant offset (reduce a dim); Range
+// axes keep a strided dim; NewAxis inserts a size-1 dim (stride 0). Shared by read (gather) and write
+// (scatter) so both agree on the geometry.
+struct IndexGeom {
+    std::ptrdiff_t constOff = 0;
+    tensor::Shape outShape;
+    std::vector<std::ptrdiff_t> outStride;             // source stride per output dimension
+};
+inline IndexGeom indexGeometry(const tensor::Shape& srcShape, const std::vector<IndexAxis>& plan) {
+    tensor::Shape srcStrides = tensor::rowMajorStrides(srcShape);
+    IndexGeom g;
+    std::size_t srcAxis = 0;
+    for (const IndexAxis& ax : plan) {
+        if (ax.kind == IndexAxis::NewAxis) { g.outShape.push_back(1); g.outStride.push_back(0); continue; }
+        std::ptrdiff_t ss = static_cast<std::ptrdiff_t>(srcStrides[srcAxis++]);
+        if (ax.kind == IndexAxis::Int) {
+            g.constOff += ax.idx * ss;
+        } else {
+            g.constOff += ax.start * ss;
+            g.outShape.push_back(static_cast<std::size_t>(ax.count));
+            // The per-output stride `ax.step * ss` is only ever multiplied by a coordinate in
+            // [0, count); when count <= 1 that coordinate is always 0, so the product is unused — and
+            // for a near-INT64 step it would overflow (UB). Only form it when count > 1, where a
+            // multi-element range forces |step| < axis length, keeping step*stride bounded by numel.
+            g.outStride.push_back(ax.count > 1 ? ax.step * ss : 0);
+        }
+    }
+    return g;
+}
+
+// Single-pass strided gather (read). O(output size), one allocation, no per-axis intermediates.
+// Returns a 0-D tensor when every axis is reduced (the caller unwraps it to a scalar), matching the
+// plain-integer index path.
+template <class T>
+inline tensor::Tensor<T> basicIndex(const tensor::Tensor<T>& t, const std::vector<IndexAxis>& plan) {
+    IndexGeom g = indexGeometry(t.shape, plan);
+    tensor::Tensor<T> out(g.outShape);                 // contiguous; checkedNumel enforces the size caps
+    std::size_t n = out.data.size(), rank = g.outShape.size();
+    tensor::Shape coord(rank, 0);
+    for (std::size_t lin = 0; lin < n; ++lin) {
+        std::ptrdiff_t off = g.constOff;
+        for (std::size_t d = 0; d < rank; ++d) off += static_cast<std::ptrdiff_t>(coord[d]) * g.outStride[d];
+        out.data[lin] = t.data[static_cast<std::size_t>(off)];
+        for (std::size_t d = rank; d-- > 0;) { if (++coord[d] < g.outShape[d]) break; coord[d] = 0; }
+    }
+    return out;
+}
+
+// Parse subscript keys into a basic-index plan (int / slice / newaxis, one ellipsis expanded to the
+// missing full slices, trailing axes padded with full slices). Shared by getItem and setItem, so read
+// and write parse identically. Uses the Value API for integer keys and the shared resolveSlice.
+inline std::vector<IndexAxis> buildIndexPlan(KiritoVM& vm, const tensor::Shape& sh, std::span<const Handle> keys) {
+    std::size_t nd = sh.size(), consuming = 0, ellipsisCount = 0;
+    for (Handle k : keys) {
+        ValueKind kk = vm.arena().deref(k).kind();
+        if (kk == ValueKind::Ellipsis) ++ellipsisCount;
+        else if (kk != ValueKind::None) ++consuming;
+    }
+    if (ellipsisCount > 1) throw KiritoError("an index can have at most one ellipsis (...)");
+    if (consuming > nd) throw KiritoError("too many indices for tensor");
+    std::size_t ellipsisFill = ellipsisCount ? (nd - consuming) : 0;
+    std::vector<IndexAxis> plan;
+    std::size_t axis = 0;
+    for (Handle k : keys) {
+        const Object& ko = vm.arena().deref(k);
+        ValueKind kk = ko.kind();
+        if (kk == ValueKind::None) {
+            plan.push_back({IndexAxis::NewAxis, 0, 0, 0, 1});
+        } else if (kk == ValueKind::Ellipsis) {
+            for (std::size_t f = 0; f < ellipsisFill; ++f, ++axis)
+                plan.push_back({IndexAxis::Range, 0, 0, static_cast<std::ptrdiff_t>(sh[axis]), 1});
+        } else if (kk == ValueKind::Slice) {
+            const auto& sv = static_cast<const SliceVal&>(ko);
+            SliceRange r = resolveSlice(vm, sv.startH(), sv.stopH(), sv.stepH(), sh[axis]);
+            plan.push_back({IndexAxis::Range, 0, r.start, rangeCount(r.start, r.stop, r.step), r.step});
+            ++axis;
+        } else {
+            int64_t v = Value(vm, k).asInt("tensor index");
+            if (v < 0) v += static_cast<int64_t>(sh[axis]);
+            if (v < 0 || v >= static_cast<int64_t>(sh[axis])) throw KiritoError("Tensor index out of range");
+            plan.push_back({IndexAxis::Int, static_cast<std::ptrdiff_t>(v), 0, 0, 1});
+            ++axis;
+        }
+    }
+    while (axis < nd) {   // fewer keys than rank (no ellipsis): trailing axes are full slices
+        plan.push_back({IndexAxis::Range, 0, 0, static_cast<std::ptrdiff_t>(sh[axis]), 1});
+        ++axis;
+    }
+    return plan;
+}
+
 // Differentiable single-axis strided slice (backward scatters the gradient back).
 inline Handle g_sliceAxis(KiritoVM& vm, Handle ah, std::size_t axis, SliceRange r) {
     TensorVal& A = asT(vm, ah);
@@ -943,17 +1058,26 @@ inline Handle g_powT(KiritoVM& vm, Handle ah, Handle bh) {
     return makeAutogradFloat(vm, std::move(out), std::move(parents), std::move(bw));
 }
 
+// Python/NumPy floor-modulo for doubles: `fmod` truncates toward zero, so the remainder must be
+// sign-corrected to match floor-division (result takes the sign of the divisor). SSOT for tensor `%`,
+// mirroring scalar Float `%` (runtime.hpp) so `(a // b) * b + (a % b) == a` holds on tensors too.
+inline double floorModD(double x, double y) {
+    double r = std::fmod(x, y);
+    if (r != 0.0 && (r < 0.0) != (y < 0.0)) r += y;
+    return r;
+}
+
 // elementwise non-grad Float binary (mod / floordiv)
 inline Handle ewFloat(KiritoVM& vm, const FT& a, const FT& b, char kind) {
     return make(vm, tensor::elementwise(a, b, [kind](double x, double y) {
         if (y == 0.0) throw KiritoError(kind == '%' ? "tensor modulo by zero" : "tensor floor-division by zero");
-        return kind == '%' ? std::fmod(x, y) : std::floor(x / y);
+        return kind == '%' ? floorModD(x, y) : std::floor(x / y);
     }));
 }
 inline Handle ewFloatScalar(KiritoVM& vm, const FT& a, double s, char kind) {
     if (s == 0.0) throw KiritoError(kind == '%' ? "tensor modulo by zero" : "tensor floor-division by zero");
     return make(vm, tensor::mapUnary(a, [kind, s](double x) {
-        return kind == '%' ? std::fmod(x, s) : std::floor(x / s);
+        return kind == '%' ? floorModD(x, s) : std::floor(x / s);
     }));
 }
 
@@ -1571,6 +1695,26 @@ inline Handle TensorVal::unary(KiritoVM& vm, UnOp op, Handle self) {
 }
 
 inline Handle TensorVal::getItem(KiritoVM& vm, std::span<const Handle> keys) {
+    // numpy BASIC indexing: if any key is a slice, ellipsis (...) or newaxis (None), dispatch to the
+    // single-pass strided gather. Pure-integer indexing, boolean masks and fancy indexing keep their
+    // existing paths below.
+    bool basicIdx = false;
+    for (Handle k : keys) {
+        ValueKind kk = vm.arena().deref(k).kind();
+        if (kk == ValueKind::Slice || kk == ValueKind::Ellipsis || kk == ValueKind::None) { basicIdx = true; break; }
+    }
+    if (basicIdx) {
+        tns::warnDetach(vm, "[] slicing (use .slice()/.take() to keep gradients)", *this);
+        std::vector<tns::IndexAxis> plan = tns::buildIndexPlan(vm, shape(), keys);
+        return tns::wrap([&]() -> Handle {
+            if (isComplex()) {
+                tensor::Tensor<cdouble> r = tns::basicIndex(std::get<CT>(store), plan);
+                return r.shape.empty() ? cpx::make(vm, r.data[0]) : tns::make(vm, std::move(r));
+            }
+            tensor::Tensor<double> r = tns::basicIndex(std::get<FT>(store), plan);
+            return r.shape.empty() ? vm.makeFloat(r.data[0]) : tns::make(vm, std::move(r));
+        });
+    }
     // A single non-Integer key is either a boolean mask (a same-shape Tensor of 0/1) or a fancy index
     // (a List of integers selecting rows along axis 0). Both return a detached copy (the index protocol
     // gives no self-handle for autograd; use the `take(indices, axis)` method for the grad-aware form).
@@ -1637,6 +1781,38 @@ inline void TensorVal::setItem(KiritoVM& vm, std::span<const Handle> keys, Handl
     if (requiresGrad || node)
         throw KiritoError("Tensor element assignment is not allowed on a grad-tracking tensor "
                           "(it would desync the autograd graph); detach() first, or rebind functionally");
+    // Basic-index assignment `t[:, 2] = v` / `t[0:2, 1:3] = m`: scatter a scalar (broadcast) or a
+    // shape-matching tensor into the selected strided region, single-pass. (A slice/ellipsis/newaxis
+    // key routes here; a full integer index keeps the fast element-write path below.)
+    bool basicIdx = false;
+    for (Handle k : keys) {
+        ValueKind kk = vm.arena().deref(k).kind();
+        if (kk == ValueKind::Slice || kk == ValueKind::Ellipsis || kk == ValueKind::None) { basicIdx = true; break; }
+    }
+    if (basicIdx) {
+        std::vector<tns::IndexAxis> plan = tns::buildIndexPlan(vm, shape(), keys);
+        tns::IndexGeom g = tns::indexGeometry(shape(), plan);
+        std::size_t n = tensor::numel(g.outShape), rank = g.outShape.size();
+        const Object& vo = vm.arena().deref(value);
+        const auto* vt = dynamic_cast<const TensorVal*>(&vo);
+        bool rhsScalarTensor = vt && vt->size() == 1;
+        if (vt && !rhsScalarTensor && vt->shape() != g.outShape)
+            throw KiritoError("Tensor assignment: value shape does not match the selected region");
+        tensor::Shape coord(rank, 0);
+        auto advance = [&]() { for (std::size_t d = rank; d-- > 0;) { if (++coord[d] < g.outShape[d]) break; coord[d] = 0; } };
+        auto offOf = [&]() { std::ptrdiff_t o = g.constOff; for (std::size_t d = 0; d < rank; ++d) o += static_cast<std::ptrdiff_t>(coord[d]) * g.outStride[d]; return static_cast<std::size_t>(o); };
+        if (isComplex()) {
+            auto& data = std::get<CT>(store).data;
+            if (vt && !rhsScalarTensor) { for (std::size_t lin = 0; lin < n; ++lin, advance()) data[offOf()] = vt->elemAsComplex(lin); }
+            else { cdouble sv = rhsScalarTensor ? vt->elemAsComplex(0) : cpx::asComplex(vm, value, "Tensor assignment"); for (std::size_t lin = 0; lin < n; ++lin, advance()) data[offOf()] = sv; }
+        } else {
+            if (vt && vt->isComplex()) throw KiritoError("cannot assign a Complex tensor into a Float tensor");
+            auto& data = std::get<FT>(store).data;
+            if (vt && !rhsScalarTensor) { const auto& rd = std::get<FT>(vt->store).data; for (std::size_t lin = 0; lin < n; ++lin, advance()) data[offOf()] = rd[lin]; }
+            else { double sv = rhsScalarTensor ? std::get<FT>(vt->store).data[0] : Value(vm, value).asFloat("Tensor assignment"); for (std::size_t lin = 0; lin < n; ++lin, advance()) data[offOf()] = sv; }
+        }
+        return;
+    }
     if (keys.size() != ndim()) throw KiritoError("Tensor element assignment needs a full index (one per dimension)");
     const tensor::Shape& sh = shape();
     tensor::Shape idx;
@@ -2296,11 +2472,15 @@ public:
             double countf = ((span > 0) == (step > 0)) ? std::ceil(span / step) : 0.0;
             if (!std::isfinite(countf) || countf > static_cast<double>(tns::kMaxElems))
                 throw KiritoError("Tensor too large");
+            std::size_t n = countf > 0 ? static_cast<std::size_t>(countf) : 0;
             std::vector<double> data;
-            data.reserve(countf > 0 ? static_cast<std::size_t>(countf) : 0);
-            if (step > 0) for (double x = start; x < stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
-            else for (double x = start; x > stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
-            std::size_t n = data.size();
+            data.reserve(n);
+            // Generate start + i*step over the fixed count (NumPy's algorithm), NOT running
+            // accumulation `x += step`: the latter lets float drift push a spurious final element
+            // past the exclusive stop (arange(0,1,0.1) must be 10 elements, not 11 — the 11th being
+            // 0.999... < 1.0). The count is already pinned by ceil(span/step) above, so index-scaled
+            // fill both matches NumPy exactly and stays within the kMaxElems bound checked above.
+            for (std::size_t i = 0; i < n; ++i) data.push_back(start + static_cast<double>(i) * step);
             return tns::make(vm, TensorVal::FT(tensor::Shape{n}, std::move(data)));
         });
 

@@ -1277,9 +1277,9 @@ Override only what your type supports; every slot defaults to a clear "unsupport
 | `call(vm, args)` | `obj(...)` — makes the value itself callable |
 | `getAttr(vm, self, name)` | `obj.field` |
 | `setAttr(vm, name, value)` | `obj.field = v` |
-| `getItem(vm, keys)` | `obj[i]` / `obj[i, j]` (keys are variadic) |
-| `setItem(vm, keys, value)` | `obj[i] = v` / `obj[i, j] = v` (keys are variadic) |
-| `slice(vm, start, stop, step)` | `obj[a:b:c]` — a dedicated slice slot (each bound may be `None`) |
+| `getItem(vm, keys)` | `obj[i]` / `obj[i, j]` (variadic keys; a multi-axis element that is a slice arrives as a `SliceVal` key, e.g. `obj[i, a:b]`) |
+| `setItem(vm, keys, value)` | `obj[i] = v` / `obj[i, j] = v` (variadic keys, slice keys included) |
+| `slice(vm, start, stop, step)` | the single-axis `obj[a:b:c]` fast path (each bound may be `None`); the default `InstanceValue` routes it to `getItem` with one `SliceVal` |
 | `iterate(vm)` | `for x in obj` — return the elements as a vector of `Handle` |
 | `length(vm)` | `len(obj)` |
 | `contains(vm, value)` | `x in obj` |
@@ -2030,12 +2030,16 @@ enum class ValueKind {
     Array, List, Set, Dict,
     Function, NativeFunction, Module, Class, Instance,
     Environment,
+    Iterator,             // lazy pull-based sequences (range/map/filter/zip/enumerate)
+    Slice, Ellipsis,      // basic-indexing subscript keys (a:b:c and ...)
 };
 ```
 
-`Object::kind()` returns one of these. `Array` is an internal duplicate of `List` used by the
-compiler; every user-facing List is `ValueKind::List`. `Instance` covers user-class instances
-*and* every `NativeClass<Derived>` (which reports `ValueKind::Instance` + its own `typeName()`).
+`Object::kind()` returns one of these. `Array` is a *reserved* kind with no live producer (a
+placeholder alongside `List` in the list-handling paths); every user-facing List is
+`ValueKind::List`. `Instance` covers user-class instances *and* every `NativeClass<Derived>`
+(which reports `ValueKind::Instance` + its own `typeName()`). `Slice`/`Ellipsis` exist only as
+subscript keys — they flow through `getItem`/`setItem`, never arithmetic or serialization.
 
 ### `BinOp` / `UnOp` (in `common.hpp`)
 

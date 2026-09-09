@@ -1,0 +1,16 @@
+# A user `_eq_` that mutates the SAME dict WHILE it is probing (comparing keys) is rejected: the
+# probe guard is armed for the duration of the key comparison, so a reentrant insert would realloc
+# the entry storage under the probe. Expected: "Dict changed size during a key comparison".
+var d = {}
+class E:
+    var val = 0
+    var _init_ = Function(self, v):
+        self.val = v
+    var _hash_ = Function(self) -> Integer:
+        return 7                     # force a hash collision so the second insert probes E(1)
+    var _eq_ = Function(self, o):
+        d["injected"] = 1            # mutate mid-probe -> must be rejected
+        return self.val == o.val
+
+d[E(1)] = "a"
+d[E(2)] = "b"

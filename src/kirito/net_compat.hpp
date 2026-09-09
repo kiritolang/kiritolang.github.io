@@ -41,6 +41,13 @@ inline constexpr socket_t kInvalidSocket = INVALID_SOCKET;
 inline bool isValid(socket_t s) { return s != INVALID_SOCKET; }
 inline void closeSocket(socket_t s) { ::closesocket(s); }
 inline std::string lastError() { return "winsock error " + std::to_string(::WSAGetLastError()); }
+// True when the last socket error is a non-blocking/timeout stall (a recv under SO_RCVTIMEO that
+// expired), as opposed to a peer close or hard transport error. Lets the TLS read loop tell a
+// timed-out read apart from an end-of-stream close.
+inline bool lastErrorIsWouldBlock() {
+    int e = ::WSAGetLastError();
+    return e == WSAEWOULDBLOCK || e == WSAETIMEDOUT;
+}
 // One-time Winsock startup, triggered the first time the net module is used.
 inline bool startup() {
     static bool ok = [] {
@@ -55,6 +62,12 @@ inline constexpr socket_t kInvalidSocket = -1;
 inline bool isValid(socket_t s) { return s >= 0; }
 inline void closeSocket(socket_t s) { ::close(s); }
 inline std::string lastError() { return std::strerror(errno); }
+// True when the last socket error is a non-blocking/timeout stall (a recv under SO_RCVTIMEO that
+// expired), as opposed to a peer close or hard transport error. Lets the TLS read loop tell a
+// timed-out read apart from an end-of-stream close.
+inline bool lastErrorIsWouldBlock() {
+    return errno == EWOULDBLOCK || errno == EAGAIN || errno == ETIMEDOUT;
+}
 // Ignore SIGPIPE process-wide so that writing to a peer that has closed its end returns EPIPE
 // (a catchable error) instead of killing the whole process with an uncatchable signal — the
 // everyday "client disconnected mid-response" case for the bundled servers. Belt-and-suspenders

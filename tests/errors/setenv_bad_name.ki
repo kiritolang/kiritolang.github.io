@@ -1,0 +1,4 @@
+# setenv must surface an OS-refused name (a name containing '=' is EINVAL on POSIX) rather than
+# silently succeeding — a swallowed failure would leave the environment silently unchanged.
+var sys = import("sys")
+sys.setenv("bad=name", "value")

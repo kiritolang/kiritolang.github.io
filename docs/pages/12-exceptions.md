@@ -199,7 +199,7 @@ execution continues. Disable it with `ki -w` / `--no-warn`.
 | `variable '<name>' is assigned but never used` | A function-local binding never read |
 | `result of expression is unused; prefix with 'discard' to ignore it intentionally` | A bare expression statement whose non-`None` value is dropped |
 | `variable '<name>' is re-declared in this block` | A `var` re-declared in the same block |
-| `variable '<name>' shadows an outer '<name>'; nested blocks share the enclosing scope, so this \`var\` rebinds it rather than declaring a new variable` | A `var` in a nested `if`/`while`/`for`/`with`/`try` block reuses a name already declared (as a `var` or parameter) in an enclosing block of the **same** scope — because blocks share that scope, it silently rebinds the outer binding instead of making a new local. Use `=` to rebind, or a new name. (Shadowing an *enclosing scope's* name — a different function/module — is legitimate and not flagged.) |
+| `variable '<name>' shadows an outer '<name>'; nested blocks share the enclosing scope, so this \`var\` rebinds it rather than declaring a new variable` | A `var` in a nested `if`/`while`/`for`/`with`/`try` block reuses a name already bound (as a `var`, a parameter, a `for` loop variable, or a `catch`/`with ... as` name) in an enclosing block of the **same** scope — because blocks share that scope, it silently rebinds the outer binding instead of making a new local. Use `=` to rebind, or a new name. (Shadowing an *enclosing scope's* name — a different function/module — is legitimate and not flagged.) |
 | `unreachable code (the block already returns/throws/breaks/continues before this)` | A statement after a terminator in the same block |
 | `self-assignment of '<name>' has no effect` | `x = x` (name-to-name) |
 | `duplicate parameter name '<name>'` | The same parameter name declared twice |
@@ -263,6 +263,8 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `index must be Integer, not '<T>'` / `Bytes index must be Integer, not '<T>'` | Non-Integer sequence index | Use an Integer index |
 | `slice indices must be Integer or None` | Non-Integer/None slice bound | Use Integer or `None` bounds |
 | `slice step cannot be zero` | `x[a:b:0]` | Use a non-zero step |
+| `list slice assignment size mismatch: <n> target(s) but <m> value(s)` | `xs[::2] = […]` where an extended-step target and the value differ in length | Match the value length to the number of slice positions (a `step == 1` slice may resize) |
+| `an index can have at most one ellipsis (...)` | More than one `...` in a subscript (`t[..., ...]`) | Use a single ellipsis |
 | `pop index out of range` / `pop from empty List` | `pop()` on empty or bad index | Pop only in-range from a non-empty list |
 | `pop index must be an Integer` | Non-Integer arg to List `pop` | Pass an Integer index |
 | `remove: value not in List` / `index: value not in List` | `list.remove(v)`/`list.index(v)` for a value not present | Check with `in` first |
@@ -389,9 +391,9 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 
 | Message | Cause | Fix |
 |---|---|---|
-| `cannot convert String to Integer: '<s>'` / `cannot convert String to Float: '<s>'` | `Integer("x")`/`Float("x")` on a non-numeric string | Pass a parseable numeric string |
+| `cannot convert String to Integer: '<s>'` / `cannot convert String to Float: '<s>'` | `Integer("x")`/`Float("x")` on a non-numeric string, or a decimal string outside the signed 64-bit range | Pass a parseable numeric string within range (use a `0x`/`0o`/`0b` literal for a full-width bit pattern) |
 | `cannot convert '<T>' to Integer` / `cannot convert '<T>' to Float` | Converting an unsupported type | Convert a supported type |
-| `cannot convert Float NaN/infinity to Integer` / `Float is out of Integer range` | `Integer(nan/inf/huge float)` | Guard non-finite / out-of-range floats |
+| `Integer: cannot convert NaN/infinity to Integer` / `Integer: result out of Integer range` | `Integer(nan/inf/huge float)` | Guard non-finite / out-of-range floats |
 | `cannot round NaN/infinity to Integer` / `rounded value out of Integer range` | `round()` of a non-finite/huge value | Guard the value |
 | `round ndigits must be an Integer` / `round expects a number` | Bad `round` args | Pass a number (and Integer ndigits) |
 | `abs expects a number` | `abs()` of a non-number | Pass a number |
@@ -401,6 +403,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `enumerate() start must be an Integer, got <T>` / `sum start must be a number` / `sum expects numbers` | Bad builtin start/element types | Pass the expected types |
 | `<who>() arg is an empty sequence` (min/max) | Empty `min`/`max` with no `default=` | Provide `default=` or non-empty input |
 | `isinstance second argument must be a class, a built-in type, or a type-name String` | Bad 2nd arg to `isinstance` | Pass a type/class/type-name |
+| `catch type must be a class, a built-in type, or a type-name String` | A typed `catch` whose type expression is not a type (the `None` literal, an Integer, an instance) — it would silently never match | Use a class, a built-in type, or a type-name String (or a bare `catch`) |
 | `hasattr: name (2nd argument) must be a String` | Non-String name to `hasattr` | Pass a String name |
 | `pow exponent must be non-negative with a modulus` / `pow modulus must be non-zero` / `pow modulus must be positive` | Bad 3-arg modular `pow` | Non-negative exponent, positive non-zero Integer modulus |
 | `pow base/exp/mod must be Integer with 3 args` | A non-Integer base, exponent, or modulus in 3-arg `pow` | Use Integers for modular `pow` |
@@ -570,6 +573,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `TLS handshake with <host> failed<why>` | Handshake failed (no CA, cipher, etc.) | Set `SSL_CERT_FILE` or pass `verify=False` |
 | `TLS certificate verification failed for <host> (pass verify=False to skip)` | The peer cert didn't verify | Trust the CA or pass `verify=False` |
 | `SSL_write failed` | TLS write error mid-request | Reconnect |
+| `HTTPS recv timed out` | The `timeout` elapsed waiting for the TLS response — a stalled or black-hole peer (never surfaced as a silent empty body) | Raise the `timeout`, or check the peer |
 | `https requires building with KIRITO_ENABLE_TLS (OpenSSL); use http:// otherwise` | HTTPS on a non-TLS build | Rebuild with TLS or use http:// |
 | `SSL_CTX_new failed` | OpenSSL could not create the TLS context | Environment/OpenSSL problem — retry |
 | `starttls: only a stream (TCP) socket can use TLS` | `socket.starttls` on a UDP/datagram socket | TLS needs a stream socket |
@@ -660,6 +664,8 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `permute: axes count must equal the tensor rank` / `permute: axes must be a permutation` | Bad `permute`/`transpose` axes | Pass a full valid permutation |
 | `<op> axis out of range` | Any axis arg past `ndim` (reductions, `slice`, `squeeze`, `stack`, `tensordot`, …) | Axis within `[0, ndim)` |
 | `Tensor index must be Integer` / `Tensor index out of range` / `too many indices for tensor` | Bad index / assignment key | One in-range Integer per dimension |
+| `Tensor assignment: value shape does not match the selected region` | Basic-index assignment (`t[:, 2:4] = m`) where the RHS tensor's shape ≠ the sliced region (a scalar broadcasts) | Match the RHS shape to the selection, or assign a scalar |
+| `Tensor element assignment is not allowed on a grad-tracking tensor …` | In-place `t[...] = v` on a tensor that requires grad | `detach()` first, or rebind functionally |
 | `cannot index/slice a 0-D tensor` / `item() requires a tensor with exactly one element, got <n>` | Indexing a scalar / `.item()` on a multi-element tensor | Use `.item()` on a 0-D / reduce first |
 | `boolean mask must match the tensor shape` | `t[mask]` with a wrong-shaped mask | Match the mask shape |
 | `tensor division/modulo/floor-division by zero` / `slice step cannot be zero` | A zero divisor / zero step | Use a non-zero divisor / step |
@@ -723,6 +729,7 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `loads expects a Bytes (or String) of dump data` | `dump.loads` given the wrong type | Pass the `dumps` Bytes |
 | `could not open file for saving` / `could not open file for loading` | `save`/`load` couldn't open the path | Check the path/permissions |
 | `bad serialization tag '<t>'` / `bad dump tag` | A corrupt blob carries an unrecognized type tag | Deserialize only trusted data |
+| `corrupt serialized data: trailing characters in number '<tok>'` | A numeric token in a `serialize` blob has junk glued directly to it (a corrupt or concatenated blob) | Deserialize only intact `serialize.dumps` output |
 | `cannot deserialize: instance attribute name is not a String` | A corrupt instance record with a non-String attribute name | Deserialize only trusted data |
 | `cannot deserialize '<name>': missing state` | An instance/native tag whose state payload is absent | Deserialize only trusted data |
 
@@ -796,7 +803,7 @@ OpenSSL-gated. On a non-TLS build every function throws the first row below; bra
 | `int: base must be between 2 and 36` / `fromstring: base must be between 2 and 36` | A radix outside 2..36 | Use base 2–36 |
 | `int: invalid integer literal '<s>'` | Non-numeric text (for the chosen base) to `BigInt`/`fromstring` | Pass valid digits |
 | `BigInt expects an Integer, a String, or a BigInt` | `BigInt(x)` on an unsupported type | Pass an Integer/String/BigInt |
-| `int: number too large (exceeds size limit)` / `int: pow result too large …` / `int.pow: exponent too large` / `pow: exponent too large` | A BigInt op would exceed the `kMaxLimbs` guard (runaway mul/pow/factorial) | Reduce the magnitude/exponent |
+| `int: number too large (exceeds size limit)` / `int: pow result too large …` / `pow: exponent too large` | A BigInt op would exceed the `kMaxLimbs` guard (runaway mul/pow/factorial). `int.pow` and `**` share one power engine, so a trivial base (0, ±1) returns the exact result instead of throwing | Reduce the magnitude/exponent |
 | `int.pow: negative exponent (use ** for a Float, or modpow for modular)` | A negative exponent to `int.pow` | Use `**` (Float) or `modpow` |
 | `integer division by zero` / `integer modulo by zero` / `division by zero` | `//` / `%` / `/` a BigInt by zero | Guard the divisor |
 | `modpow: modulus is zero` / `modpow: negative exponent` | Bad `modpow` args | Positive modulus, non-negative exponent |
@@ -826,6 +833,7 @@ large* — live under [Resource guards](#resource-guards-repetition--padding--ra
 | `no mode for empty data` | `statistics.mode([])` | Provide data (or use `multimode`, which returns `[]`) |
 | `quantiles: n must be at least 1` | `statistics.quantiles(data, n)` with `n < 1` | Use `n ≥ 1` |
 | `invalid base64 character: '<ch>'` / `invalid base64: a lone trailing character (invalid length)` / `invalid base64: truncated or corrupted input` | `base64.decode` of malformed input | Decode only valid base64 |
+| `base64.encode: byte value out of range (0..255): <v>` | `base64.encode` of a `List` element outside 0–255 (or a non-Integer) | Pass valid byte values |
 | `heappop from empty heap` / `heapreplace on empty heap` | `heapq.heappop`/`heapreplace` on an empty list | Check the heap is non-empty |
 | `duplicate enum member: <name>` | Two members with the same name passed to `enum.Enum` | Use unique member names |
 | `no such enum member: <name>` | `e.nameof(v)` / member lookup for an unknown value | Look up an existing member |
@@ -835,6 +843,8 @@ large* — live under [Resource guards](#resource-guards-repetition--padding--ra
 | `option --<name> requires a value` / `option <token> requires a value` | A value-taking option given at the end with no value | Supply the option's value |
 | `Series: index length does not match values length` | Constructing a `Series` with mismatched index/values | Match the lengths |
 | `Series: length mismatch (<a> vs <b>)` | Element-wise op between Series of different lengths | Align the Series first |
+| `Series slice-assignment needs a List of length <n> (the selected positions); got …` | `s[a:b] = v` whose value length ≠ the number of selected positions (would desync values from the index) | Assign a List matching the slice length |
+| `DataFrame: row slice-assignment (df[a:b] = ...) is not supported; assign a column df[name] = ... or use a boolean mask` | Assigning to a `df[a:b]` row slice | Assign a column or use a boolean-mask selection |
 | `DataFrame: data must be a Dict of columns or a List of rows` | `DataFrame(x)` with an unsupported shape | Pass a column-Dict or a row-List |
 | `DataFrame: all columns must have the same length` | Ragged column data | Make every column the same length |
 | `DataFrame: new column length must match row count` | Assigning a column of the wrong length | Match the row count |

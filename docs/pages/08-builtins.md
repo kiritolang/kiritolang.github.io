@@ -24,8 +24,10 @@ parameter name.
 - `Integer(x) → Integer` — convert to a 64-bit integer. Accepts `Bool` (`True`→`1`), `Float`
   (truncates toward zero; rejects NaN/∞/out-of-range), or a `String` in decimal or `0x`/`0o`/`0b`
   form (the base prefix is case-insensitive — `0X`/`0O`/`0B` also work; surrounding whitespace and a
-  single leading sign allowed). Throws on anything else or an unparseable String — including a doubled
-  sign or a space after the sign/prefix (`"--5"`, `"+ 5"`, `"0x-5"`).
+  single leading sign allowed). A **decimal** string outside the signed 64-bit range throws (it is not
+  silently wrapped); a `0x`/`0o`/`0b` string is a bit pattern spanning the full 64 bits, so
+  `Integer("0xFFFFFFFFFFFFFFFF")` is `-1`. Throws on anything else or an unparseable String — including a
+  doubled sign or a space after the sign/prefix (`"--5"`, `"+ 5"`, `"0x-5"`).
 - `Float(x) → Float` — convert to a double. Accepts `Integer`, `Bool`, or a numeric `String`
   (decimal/scientific notation, plus the special values `"inf"`/`"infinity"`/`"nan"`, case-insensitive
   and sign-prefixable). Throws if a String doesn't parse; a C99 hex-float literal (`"0x1p4"`) is
@@ -81,6 +83,11 @@ parameter name.
   `x in r`. A step of `0` throws, and a length past the 32M-element cap throws `range too large` (the cap
   now bounds only the materializing operations — plain iteration is unbounded in memory). (`stop` may also
   be given by the keyword `end`.)
+- `slice(start, stop[, step]) → Slice` — build a first-class **`Slice`** value, the same object the
+  `a:b:c` subscript syntax produces. Has `.start`/`.stop`/`.step` (any may be `None`) and
+  `.indices(length) → [start, stop, step]`, which resolves the bounds against a concrete length
+  (Python clamping rules; a `step` of `0` throws). See
+  [Basic indexing and slicing](09-types.md#basic-indexing-and-slicing).
 - `enumerate(iterable[, start]) → Iterator` — a **lazy** iterator of `[index, value]` pairs, indices
   starting at `0` (or at `start`, e.g. `enumerate(xs, start = 1)`). Wrap in `List(...)` to materialize.
 - `zip(*iterables) → Iterator` — a **lazy** iterator of `[a, b, …]` tuples drawn position-wise from the
@@ -92,7 +99,9 @@ parameter name.
   protocol: a class becomes iterable by returning `iter(<its backing collection>)` from
   [`_iter_`](09-types.md#user-defined-classes) — a bare List from `_iter_` is **not** accepted. Like
   `map`/`filter`, the view is **lazy** (streams a lazy source instead of materializing it) and
-  re-iterable. `iter` of a non-iterable throws when it is consumed.
+  re-iterable. `iter` of a non-iterable throws when it is consumed. A user `_next_` signals exhaustion by
+  raising the global builtin [`StopIteration`](09-types.md#user-defined-classes) (see also the
+  [exceptions reference](12-exceptions.md)).
 
   > **Lazy note.** `map`/`filter`/`zip`/`enumerate` return a one-pass **iterator** (like Python 3), not a
   > List: `type(map(f, xs))` is `"map"`, the result is not indexable and is not `== [a, list]`, and a

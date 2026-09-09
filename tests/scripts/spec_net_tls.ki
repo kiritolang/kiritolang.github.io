@@ -30,8 +30,8 @@ if sys.shell("openssl version 2>/dev/null", None, "", 5)["code"] != 0:
     finish()
 
 # Locate the server harness (tests run from the repo root under ctest / test_release.sh).
-var candidates = ["tools/tests/net_tls_server.py",
-                  path.join(path.getcwd(), "tools/tests/net_tls_server.py")]
+var candidates = ["tests/net_tls_server.py",
+                  path.join(path.getcwd(), "tests/net_tls_server.py")]
 var server = None
 for c in candidates:
     if path.isfile(c):
@@ -78,6 +78,7 @@ var base = "https://127.0.0.1:" + String(port) + "/"
 var ok1 = False
 var ok2 = False
 var ok3 = False
+var ok4 = False
 if up:
     # 1. verify=False accepts the self-signed cert and round-trips the body.
     try:
@@ -99,6 +100,14 @@ if up:
         sys.unsetenv("SSL_CERT_FILE")
     catch:
         pass
+    # 4. regression: a TLS peer that completes the handshake but never replies must make the request
+    #    FAIL (recv timeout), not silently return a status-0 empty Response. The read loop used to exit
+    #    on any SSL_read<=0 without checking SSL_get_error, swallowing a timeout as a clean EOF. Bound
+    #    the wall clock so a genuine hang (no timeout at all) is also caught, not just a wrong status.
+    var t0 = time.monotonic()
+    var threw = throws(Function(): return net.get(base + "hang", {"verify": False, "timeout": 2}))
+    var elapsed = time.monotonic() - t0
+    ok4 = threw and elapsed < 10.0
 
 # Teardown: kill the server, remove the temp dir. Always runs, before we assert, so a failed check
 # never leaks the child process.
@@ -120,4 +129,5 @@ if not up:
 assert ok1, "verify=False round-trips over TLS"
 assert ok2, "verify=True rejects a self-signed cert"
 assert ok3, "verify=True accepts the cert once trusted via SSL_CERT_FILE"
+assert ok4, "a non-responsive TLS peer times out (not a silent status-0 empty Response)"
 finish()

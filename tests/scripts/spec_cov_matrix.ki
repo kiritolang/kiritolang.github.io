@@ -1,0 +1,38 @@
+# Coverage for matrix edge cases: scalar multiply is one-sided (m*scalar works, scalar*m does not),
+# empty/singleton determinants (empty product == 1), non-finite guards on det/inverse, the (rows,cols)
+# zero-matrix constructor, ragged-row rejection, and vector cross/dot arity checks. All pinned from
+# observed release-binary output.
+var io = import("io")
+var M = import("matrix")
+var math = import("math")
+
+var throwsMsg = Function(f, needle):
+    try:
+        discard f()
+        return False
+    catch String as e:
+        return needle in e
+
+# --- scalar multiply is left-operand-only: m * k works, k * m does not ---
+assert M.identity(2) * 3 == M.Matrix([[3, 0], [0, 3]]), "matrix * scalar scales elementwise"
+# reflected scalar multiply is unsupported: Integer has no rule for a Matrix rhs
+assert throwsMsg(Function(): return 3 * M.identity(2), "unsupported operand"), "scalar * matrix is unsupported"
+
+# --- determinant edge values: empty product is 1, a 1x1 det is its lone element ---
+assert M.Matrix(0, 0).determinant() == 1.0, "determinant of a 0x0 matrix is the empty product 1"
+assert M.Matrix([[5]]).determinant() == 5.0, "determinant of [[5]] is 5"
+
+# --- non-finite elements are rejected by numeric routines ---
+assert throwsMsg(Function(): return M.Matrix([[math.inf, 0], [0, 1]]).determinant(), "matrix contains a non-finite value"), "det rejects inf"
+assert throwsMsg(Function(): return M.Matrix([[math.nan, 0], [0, 1]]).inverse(), "matrix contains a non-finite value"), "inverse rejects NaN"
+
+# --- (rows, cols) constructor builds a zero matrix ---
+assert M.Matrix(2, 3) == M.zeros(2, 3), "Matrix(2,3) is a 2x3 zero matrix"
+assert M.Matrix(2, 3).shape() == [2, 3], "Matrix(rows,cols) shape"
+
+# --- structural / arity guards ---
+assert throwsMsg(Function(): return M.Matrix([[1, 2], [3]]), "rows must have equal length"), "ragged rows rejected"
+assert throwsMsg(Function(): return M.vector([1, 2]).cross(M.vector([3, 4])), "cross is only defined for two 3-element vectors"), "cross needs 3-vectors"
+assert throwsMsg(Function(): return M.vector([1, 2]).dot(M.vector([3, 4, 5])), "dot requires vectors of equal length"), "dot needs equal length"
+
+io.print("spec_cov_matrix: ok")

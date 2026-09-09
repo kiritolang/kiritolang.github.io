@@ -1,0 +1,1 @@
+discard import("math").ceil(import("math").nan)

@@ -1,0 +1,33 @@
+# spec_bigint_pow_ssot.ki — regression for the int.pow vs ** divergence (v1.17.1).
+# The `**` operator special-cased trivial bases (0**huge = 0, (±1)**huge by parity) so a huge exponent
+# still returned the exact result, but the `int.pow` module fn did not — it threw "exponent too large"
+# for the SAME inputs. Two implementations of one operation must agree. Both now route through the
+# shared powNonNeg.
+
+var io  = import("io")
+var int = import("int")
+
+var e  = int.factorial(25)   # far larger than 2^64 (and even)
+var eo = e + 1               # odd
+
+# int.pow and ** must agree for the trivial bases at a huge exponent.
+assert int.pow(0, e)   == int.BigInt(0) ** e,   "0 ** huge"
+assert int.pow(1, e)   == int.BigInt(1) ** e,   "1 ** huge"
+assert int.pow(-1, e)  == int.BigInt(-1) ** e,  "(-1) ** huge (even)"
+assert int.pow(-1, eo) == int.BigInt(-1) ** eo, "(-1) ** huge (odd)"
+
+# Spot-check the exact values.
+assert int.pow(0, e)   == 0,  "0 ** huge == 0"
+assert int.pow(1, e)   == 1,  "1 ** huge == 1"
+assert int.pow(-1, e)  == 1,  "(-1) ** even == 1"
+assert int.pow(-1, eo) == -1, "(-1) ** odd == -1"
+
+# A non-trivial base with an out-of-uint64 exponent still throws in BOTH.
+var threw = False
+try:
+    discard int.pow(2, e)
+catch String as x:
+    threw = "exponent too large" in x
+assert threw, "int.pow(2, huge) throws exponent-too-large"
+
+io.print("spec_bigint_pow_ssot: ok")

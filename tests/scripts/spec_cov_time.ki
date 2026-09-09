@@ -1,0 +1,30 @@
+# Coverage for the `time` module's civil-arithmetic edges — all deterministic UTC, no wall clock.
+# Key contrast: make() ROLLS an out-of-range time-of-day forward (C mktime semantics), while
+# strptime REJECTS an impossible field (e.g. a leap second) rather than normalizing it.
+var io = import("io")
+var time = import("time")
+
+var throwsMsg = Function(thunk, needle):
+    try:
+        thunk()
+        return False
+    catch as e:
+        return needle in e
+
+# --- strptime REJECTS a leap second (60) — it does not roll it over ---
+assert throwsMsg(
+    Function(): return time.strptime("2024-01-01 23:59:60", "%Y-%m-%d %H:%M:%S"),
+    "does not match format"), "strptime rejects a leap second"
+
+# --- make() ROLLS an out-of-range time-of-day forward (mktime-style normalization) ---
+assert time.make(2024, 1, 1, 0, 0, 60).iso() == "2024-01-01T00:01:00", "make: second 60 rolls to +1 minute"
+assert time.make(2024, 1, 1, 0, 60, 0).iso() == "2024-01-01T01:00:00", "make: minute 60 rolls to +1 hour"
+assert time.make(2024, 1, 1, 24, 0, 0).iso() == "2024-01-02T00:00:00", "make: hour 24 rolls to the next day"
+
+# --- the two APIs disagree on the SAME impossible value: make rolls, strptime rejects ---
+assert time.make(2024, 1, 1, 23, 59, 60).iso() == "2024-01-02T00:00:00", "make normalizes a 60s time-of-day"
+assert throwsMsg(
+    Function(): return time.strptime("2024-01-01 23:59:60", "%Y-%m-%d %H:%M:%S"),
+    "does not match format"), "strptime still rejects the value make happily rolled"
+
+io.print("spec_cov_time: ok")

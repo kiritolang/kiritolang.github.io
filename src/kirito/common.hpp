@@ -97,6 +97,20 @@ inline int hexDigitValue(char d) {
     return -1;
 }
 
+// Lowercase hex, no separator — THE single byte->hex encoder: Bytes.hex(), every hash/hmac digest, and
+// random.randomhex all share it, so the emitted form can never drift between them. Pairs with
+// hexDigitValue (the decoder above).
+inline std::string toHexLower(const unsigned char* d, std::size_t n) {
+    static const char* hx = "0123456789abcdef";
+    std::string out;
+    out.reserve(n * 2);
+    for (std::size_t i = 0; i < n; ++i) { out.push_back(hx[d[i] >> 4]); out.push_back(hx[d[i] & 0xF]); }
+    return out;
+}
+inline std::string toHexLower(const std::string& s) {
+    return toHexLower(reinterpret_cast<const unsigned char*>(s.data()), s.size());
+}
+
 // Decode ONE cooked (non-raw) backslash escape from `src[i]`, where `src[i]` must be the backslash.
 // Appends the decoded bytes to `out` and returns the number of source characters consumed (backslash
 // + body). On a bad/incomplete escape it consumes nothing, writes a human message to `err`, and

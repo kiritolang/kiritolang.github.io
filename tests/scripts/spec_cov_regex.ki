@@ -1,0 +1,44 @@
+# Coverage for `regex` anchor/end/escape corner cases that the main spec doesn't pin:
+#  - `^` asserts ABSOLUTE string start, independent of the search `pos` argument;
+#  - under (?m) MULTILINE, `^` also matches after an interior newline even when pos skips ahead;
+#  - `\Z` and `\z` both assert ABSOLUTE end (unlike `$`, which allows a trailing newline);
+#  - octal escapes require a leading zero (`\0NN`); a bare `\1`..`\9` is a (rejected) backreference.
+var io = import("io")
+var re = import("regex")
+
+var throwsMsg = Function(thunk, needle):
+    try:
+        thunk()
+        return False
+    catch as e:
+        return needle in e
+
+# --- `^` is absolute start: a pos > 0 cannot re-anchor it to mid-string ---
+assert re.compile("^b").match("ab", 1) == None, "^ won't match at pos=1 (compiled.match)"
+assert re.compile("^b").search("ab", 1) == None, "^ won't match at pos=1 (compiled.search)"
+assert re.search("^b", "ab", 1) == None, "^ won't match at pos=1 (module search)"
+
+# --- (?m) MULTILINE: `^` matches at the line start after a newline, even past pos ---
+var m = re.compile("(?m)^b").search("a\nb", 1)
+assert m != None, "(?m)^ finds the post-newline line start"
+assert m.group() == "b", "(?m)^b captures the b"
+assert m.span() == [2, 3], "(?m)^b span is the b after the newline"
+
+# --- `\Z` / `\z` are ABSOLUTE end; `$` is not (it allows a single trailing newline) ---
+assert re.search("b\\Z", "b").group() == "b", "\\Z matches at the very end"
+assert re.search("b\\Z", "b\n") == None, "\\Z rejects a trailing newline"
+assert re.search("b\\z", "b").group() == "b", "\\z matches at the very end"
+assert re.search("b\\z", "b\n") == None, "\\z rejects a trailing newline"
+assert re.search("b$", "b\n").group() == "b", "$ allows the trailing newline (unlike \\Z/\\z)"
+
+# --- octal escapes: `\0NN` (leading zero) is a literal code point ---
+assert re.search("\\012", "\n").span() == [0, 1], "\\012 is octal for newline"
+assert re.search("\\0", "\x00").span() == [0, 1], "\\0 is the NUL code point"
+# \0101 = octal \010 (backspace) followed by a literal '1'
+assert re.search("\\0101", "\x081").span() == [0, 2], "\\0101 is backspace + '1'"
+
+# --- bare `\1`..`\9` are backreferences, which this linear-time engine rejects ---
+assert throwsMsg(Function(): return re.compile("\\1"), "backreferences are not supported"), "\\1 is a rejected backreference"
+assert throwsMsg(Function(): return re.compile("(a)\\9"), "backreferences are not supported"), "\\9 is a rejected backreference"
+
+io.print("spec_cov_regex: ok")

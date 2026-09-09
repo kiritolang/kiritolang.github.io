@@ -85,8 +85,8 @@ cube[0, 0, 0] = 99             # assign into an element (full index)
 io.print(cube[0, 0, 0])        # 99.0
 ```
 
-You can **slice** the first dimension with `start:stop:step` (the bounds follow the usual rules —
-`stop` is exclusive, and negative numbers count back from the end):
+You can **slice** an axis with `start:stop:step` (the bounds follow the usual rules — `stop` is
+exclusive, and negative numbers count back from the end); on a 1-D tensor there is just the one axis:
 
 ```kirito
 var io = import("io")
@@ -97,6 +97,31 @@ io.print(v[1:4])               # [20.0, 30.0, 40.0]
 io.print(v[:2])                # [10.0, 20.0]
 io.print(v[-2:])               # [40.0, 50.0]
 ```
+
+**Multi-axis basic indexing** (numpy-style) mixes integers and slices per axis: each comma-separated
+element is matched to one axis left-to-right, an integer *reduces* that axis and a slice keeps it. An
+**ellipsis** `...` stands for as many full slices `:` as needed to fill the unspecified middle axes,
+and **`None`** inserts a new length-1 axis (newaxis). Assignment scatters a scalar (broadcast) or a
+shape-matching tensor into the selected region.
+
+```kirito
+var io = import("io")
+var T = import("tensor")
+var m = T.arange(0, 12).reshape([3, 4])
+
+io.print(m[:, 2:4].tolist())   # [[2.0, 3.0], [6.0, 7.0], [10.0, 11.0]]   — all rows, cols 2..3
+io.print(m[1, :].tolist())     # [4.0, 5.0, 6.0, 7.0]         — row 1 (int reduces the axis)
+io.print(m[:, 1].tolist())     # [1.0, 5.0, 9.0]              — column 1
+io.print(m[..., 0].tolist())   # [0.0, 4.0, 8.0]              — first entry of the last axis
+io.print(m[:, None].shape())   # [3, 1, 4]                    — newaxis inserts a size-1 dim
+io.print(m[:, ::-1].tolist())  # each row reversed
+
+m[:, 1] = 5.0                  # scalar broadcast into a column
+m[0:2, 2:4] = 9.0              # scalar broadcast into a block
+```
+
+At most one `...` may appear, and specifying more axes than the tensor's rank throws *too many indices
+for tensor*.
 
 Two more selection forms, both returning a fresh tensor:
 
@@ -545,8 +570,9 @@ reductions, `real`/`imag`/`conj`/`angle` — works on both dtypes.
 
 - A tensor has a **rank** (`ndim`), a **shape**, and a **dtype** (`"Float"` or `"Complex"`); build one
   from a nested list or with `zeros`/`ones`/`full`/`eye`/`arange`/`linspace`/`diag`/`*like`.
-- Index with integers (`t[i, j]`), slice the first axis (`t[a:b]`), or select with an index list or a
-  boolean mask; the gradient-aware forms are the `slice` / `take` methods.
+- Index with integers (`t[i, j]`), slice per axis with numpy-style basic indexing (`t[:, 2:4]`, `...`,
+  `None`/newaxis), or select with an index list or a boolean mask; the gradient-aware forms are the
+  `slice` / `take` methods.
 - `+ - * / ** % //` are **element-wise** with **broadcasting**; **`matmul`**/`dot`/`tensordot`/`einsum`
   do products and contractions.
 - Comparisons (`eq`/`lt`/`gt`/…, and `< > …`) give 0/1 masks; combine with `logicaland`/… and select

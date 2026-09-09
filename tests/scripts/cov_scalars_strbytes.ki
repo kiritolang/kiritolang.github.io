@@ -119,8 +119,8 @@ assert "integer modulo by zero" in emsg(Function(): return 1 % 0), "1%0 message"
 assert "negative base cannot be raised to a fractional power" in emsg(Function(): return (-2) ** 0.5), "neg base frac pow"
 assert "zero cannot be raised to a negative power" in emsg(Function(): return 0 ** -1), "0**-1"
 assert "cannot convert String to Integer" in emsg(Function(): return Integer("abc")), "Integer(bad string)"
-assert "cannot convert Float NaN to Integer" in emsg(Function(): return Integer(nan)), "Integer(nan)"
-assert "cannot convert Float infinity to Integer" in emsg(Function(): return Integer(inf)), "Integer(inf)"
+assert "cannot convert NaN to Integer" in emsg(Function(): return Integer(nan)), "Integer(nan)"
+assert "cannot convert infinity to Integer" in emsg(Function(): return Integer(inf)), "Integer(inf)"
 # DELTA: Integer() takes no base argument (base auto-detected from prefix instead):
 assert "at most 1 positional" in emsg(Function(): return Integer("ff", 16)), "Integer(str, base) rejected"
 

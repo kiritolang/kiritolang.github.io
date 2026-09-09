@@ -1,0 +1,60 @@
+# spec_key_eq_symmetry.ki — regression for the asymmetric-_eq_ Set/Dict dedup bug (v1.17.1).
+# Before the fix, Dict/Set key equality (keysEqual) only tried the reverse `_eq_` on a KIND mismatch,
+# so two same-kind user instances with an asymmetric `_eq_` deduped ORDER-DEPENDENTLY: `add(a); add(b)`
+# gave size 1 but `add(b); add(a)` gave size 2, and two `==`-equal keys could coexist. Membership must
+# agree with `==` (symmetric) regardless of which value was stored first.
+
+var io   = import("io")
+var math = import("math")
+
+# A recognizes anything as equal; B has a matching hash but NO `_eq_` (identity-equal only).
+class A:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self) -> Integer: return 42
+    var _eq_   = Function(self, o) -> Bool: return True
+class B:
+    var _init_ = Function(self): pass
+    var _hash_ = Function(self) -> Integer: return 42
+
+var a = A()
+var b = B()
+
+# `==` is symmetric (kiEquals tries both operands' _eq_).
+assert a == b, "a == b"
+assert b == a, "b == a"
+
+# Set membership must find the stored element from EITHER probe direction.
+var s1 = Set()
+s1.add(b)
+assert a in s1, "probe a finds stored b"
+var s2 = Set()
+s2.add(a)
+assert b in s2, "probe b finds stored a"
+
+# Dedup must be order-independent: both insertion orders collapse to one element.
+var s3 = Set()
+s3.add(a)
+s3.add(b)
+assert len(s3) == 1, "add a then b dedups"
+var s4 = Set()
+s4.add(b)
+s4.add(a)
+assert len(s4) == 1, "add b then a dedups"
+
+# Same for Dict keys.
+var d1 = Dict()
+d1[a] = 1
+d1[b] = 2
+assert len(d1) == 1, "dict: a then b is one key"
+var d2 = Dict()
+d2[b] = 1
+d2[a] = 2
+assert len(d2) == 1, "dict: b then a is one key"
+
+# Regression guard: NaN keys stay "write-only" — insertable but never findable (NaN != NaN, and there
+# is deliberately no identity short-circuit). The symmetric retry must NOT make a NaN equal to itself.
+var st = Set()
+st.add(math.nan)
+assert math.nan not in st, "NaN key is not findable"
+
+io.print("spec_key_eq_symmetry: ok")

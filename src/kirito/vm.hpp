@@ -37,6 +37,7 @@ public:
         _activeStack().push_back(this);
         tempRoots_.reserve(1024);  // avoid reallocation churn on the hot RootScope path
         none_ = arena_.alloc(std::make_unique<NoneVal>());
+        ellipsis_ = arena_.alloc(std::make_unique<EllipsisVal>());
         true_ = arena_.alloc(std::make_unique<BoolVal>(true));
         false_ = arena_.alloc(std::make_unique<BoolVal>(false));
         // A distinct sentinel marking an as-yet-unwritten slot-addressed local. Never reaches Kirito
@@ -79,6 +80,7 @@ public:
 
     // Interned singletons.
     Handle none() const { return none_; }
+    Handle ellipsis() const { return ellipsis_; }    // the `...` singleton (basic-indexing placeholder)
     Handle undefined() const { return undefined_; }  // sentinel for an unwritten slot-addressed local
     Handle makeBool(bool v) const { return v ? true_ : false_; }
 
@@ -161,7 +163,7 @@ public:
     // roots, C++-side pinned wrappers, the pinned bytecode literal pool, and every live operand stack.
     template <class F>
     void forEachRoot(F&& f) const {
-        f(none_); f(true_); f(false_); f(undefined_); f(global_);
+        f(none_); f(ellipsis_); f(true_); f(false_); f(undefined_); f(global_);
         for (Handle h : smallInts_) f(h);
         if (replScopeReady_) f(replScope_);
         for (const auto& [name, h] : moduleCache_) f(h);
@@ -466,6 +468,7 @@ private:
     }
     ObjectArena arena_;
     Handle none_;
+    Handle ellipsis_;
     Handle true_;
     Handle false_;
     Handle undefined_;
@@ -579,7 +582,15 @@ private:
     // frames (redzones + shadow), so the same Kirito depth overflows the stack long before this
     // guard would fire — drop the default under ASan so the guard still throws cleanly.
 #if defined(KIRITO_SANITIZER_BUILD)
-    std::size_t maxCallDepth_ = 500;
+    // Measured: a bare recursion physically overflows a DEFAULT 8 MB stack at ~490 ASan frames, so the
+    // old count of 500 sat right on the cliff — it raced the overflow and lost (a hard stack-overflow
+    // abort) unless the harness first raised the stack (the post-work gate does `ulimit -s 262144`).
+    // 350 trips well below ~490 so the COUNT guard wins even at the default stack (a plain `ki-asan`
+    // run, or a third-party tester's, gets a clean "maximum recursion depth exceeded" instead of a
+    // SIGSEGV), while staying above the deepest LEGITIMATE recursion in the suite — the GC-unwind test
+    // in test_exceptions_cpp descends 301 frames before the user throws, and must reach its own throw,
+    // not this guard. The unbounded-recursion tests only assert that the guard fires at all.
+    std::size_t maxCallDepth_ = 350;
     // Sanitizer frames are far larger (redzones + shadow), so bound native stack usage tightly too.
     std::size_t maxStackBytes_ = 2u * 1024 * 1024;
 #else

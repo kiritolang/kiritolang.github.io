@@ -148,6 +148,7 @@ public:
     Handle callKw(KiritoVM&, std::span<const Handle> args, std::span<const NamedArg> named);  // _call_ + kwargs
     Handle getItem(KiritoVM&, std::span<const Handle> keys) override;
     void setItem(KiritoVM&, std::span<const Handle> keys, Handle value) override;
+    Handle slice(KiritoVM&, Handle start, Handle stop, Handle step) override;  // -> _getitem_(Slice)
     std::optional<int64_t> length(KiritoVM&) override;
     bool contains(KiritoVM&, Handle value) override;
     std::optional<std::vector<Handle>> iterate(KiritoVM&) override;  // via _iter_ (runtime.hpp)

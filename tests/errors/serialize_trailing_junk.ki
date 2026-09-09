@@ -1,0 +1,5 @@
+# std::stol/stoul stop at the first non-digit; junk glued to a numeric token (no separating space)
+# must be rejected, not silently ignored (which would accept a corrupt/concatenated blob).
+var serialize = import("serialize")
+var b = serialize.dumps([1, 2])
+discard serialize.loads(b + "XYZ")

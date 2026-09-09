@@ -1,0 +1,7 @@
+# spec_format_numbering.ki — pin str.format field-numbering, including the currently-lenient mix of
+# automatic ("{}") and manual ("{0}") numbering (Python raises on mixing; Kirito resolves both).
+var io = import("io")
+assert "{}{}".format("a", "b") == "ab", "automatic numbering"
+assert "{1}{0}".format("a", "b") == "ba", "manual numbering"
+assert "{}{0}".format("a", "b") == "aa", "mixed auto+manual is lenient (both resolve)"
+io.print("spec_format_numbering: ok")

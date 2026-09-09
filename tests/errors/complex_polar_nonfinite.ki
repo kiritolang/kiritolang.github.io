@@ -1,0 +1,4 @@
+# polar with a non-finite modulus would drive std::polar to NaN garbage (UB); reject it up front.
+var cx = import("complex")
+var math = import("math")
+discard cx.polar(math.inf, 0)

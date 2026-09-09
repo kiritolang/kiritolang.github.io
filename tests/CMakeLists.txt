@@ -26,6 +26,7 @@ kirito_test(test_functions unit/test_functions.cpp)
 kirito_test(test_bytecode unit/test_bytecode.cpp)
 kirito_test(test_resolver unit/test_resolver.cpp)
 kirito_test(test_collections unit/test_collections.cpp)
+kirito_test(test_hashmix unit/test_hashmix.cpp)
 kirito_test(test_modules unit/test_modules.cpp)
 kirito_test(test_strings unit/test_strings.cpp)
 kirito_test(test_string_literals unit/test_string_literals.cpp)
@@ -259,7 +260,7 @@ endforeach()
 # The parallel golden scripts can block on a real bug; cap them so a regression fails rather than
 # stalling CI (the watchdog backstop, mirroring the parallel unit tests' TIMEOUT). spec_net_tls spawns
 # a Python TLS server subprocess, so it gets the same watchdog in case the server ever hangs.
-foreach(nm parallel_basic parallel_sync probe_parallel probe_parallel_adversarial parallel_forkbomb_guard spec_net_tls)
+foreach(nm parallel_basic parallel_sync probe_parallel probe_parallel_adversarial parallel_forkbomb_guard spec_net_tls probe_http_client_abuse)
     if(TEST script_${nm})
         set_tests_properties(script_${nm} PROPERTIES TIMEOUT 60)
     endif()

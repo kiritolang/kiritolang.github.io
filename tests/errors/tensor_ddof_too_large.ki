@@ -1,0 +1,3 @@
+# std/var with ddof >= element count leaves no degrees of freedom and must throw, not divide by <= 0.
+var tn = import("tensor")
+discard tn.Tensor([1.0, 2.0]).std(0, 2)

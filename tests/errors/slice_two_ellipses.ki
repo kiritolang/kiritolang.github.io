@@ -1,0 +1,3 @@
+var tn = import("tensor")
+var t = tn.arange(0, 12).reshape([3, 4])
+discard t[..., ...]

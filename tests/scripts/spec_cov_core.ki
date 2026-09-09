@@ -1,0 +1,122 @@
+# spec_cov_core.ki — coverage for core-language corners not pinned elsewhere:
+#   * a user `_hash_` that mutates the SAME dict/set during its own insert completes safely
+#     (the hash is computed BEFORE the probe guard arms), and the outer insert lands;
+#   * a `_lt_` that returns a non-Bool makes `sorted` fall back to truthiness (order pinned below);
+#   * `_eq_` / `_contains_` returning a non-Bool coerce by truthiness (`==` yields the RAW value,
+#     `x in obj` uses truthiness of the returned value);
+#   * `.strip()` / `.isspace()` are ASCII-only: non-ASCII whitespace (NBSP U+00A0, EM SPACE U+2003)
+#     is neither stripped nor treated as space;
+#   * `list.sort(key=fn)` where `fn` throws mid-sort leaves the list in its ORIGINAL order (the sort
+#     decorates into a temp; the in-place list is only rewritten on success).
+#
+# The mid-probe `_eq_` mutation ERRORS ("Dict/Set changed size during a ... comparison") live in the
+# uncaught-traceback suite: tests/errors/dict_eq_probe_mutation, set_eq_probe_mutation.
+#
+# Final line: "spec_cov_core: ok" — matched against spec_cov_core.expected.
+
+var io = import("io")
+
+# =============================================================================
+# _hash_ that mutates the SAME container during its own insert completes safely
+# =============================================================================
+var sideDict = {}
+class HKey:
+    var val = 0
+    var _init_ = Function(self, v):
+        self.val = v
+    var _hash_ = Function(self) -> Integer:
+        sideDict["side"] = 99   # mutates the very dict being inserted into; runs before the probe guard
+        return self.val
+    var _eq_ = Function(self, o):
+        return self.val == o.val
+
+var hk = HKey(5)
+sideDict[hk] = "main"
+assert len(sideDict) == 2, "hash-time mutation AND the outer insert both land (len grows to 2)"
+assert "side" in sideDict, "the side key injected by _hash_ is present"
+assert hk in sideDict, "the outer key itself is present"
+
+# Set variant: _hash_ mutating the set it is being added to also completes.
+var sideSet = Set()
+class HVal:
+    var val = 0
+    var _init_ = Function(self, v):
+        self.val = v
+    var _hash_ = Function(self) -> Integer:
+        sideSet.add(-1)
+        return self.val
+    var _eq_ = Function(self, o):
+        return self.val == o.val
+
+sideSet.add(HVal(9))
+assert len(sideSet) == 2, "set _hash_-time mutation and the outer add both land (len grows to 2)"
+
+# =============================================================================
+# _lt_ returning a non-Bool -> `sorted` uses truthiness of the return value
+# =============================================================================
+class Num:
+    var v = 0
+    var _init_ = Function(self, v):
+        self.v = v
+    var _lt_ = Function(self, o):
+        return self.v - o.v      # Integer difference, NOT a Bool; truthiness: nonzero => "less"
+    var _str_ = Function(self) -> String:
+        return String(self.v)
+
+var srt = sorted([Num(3), Num(1), Num(2), Num(1)])
+var order = ""
+for x in srt:
+    order = order + x._str_() + " "
+# Observed with the truthiness fallback (nonzero difference read as "less"): 1 1 2 3
+assert order == "1 1 2 3 ", "sorted with a non-Bool _lt_ falls back to truthiness (observed order)"
+
+# =============================================================================
+# _eq_ / _contains_ returning a non-Bool: == yields the RAW value; `in` uses truthiness
+# =============================================================================
+class Coerce:
+    var _eq_ = Function(self, o):
+        return 42                 # non-Bool
+    var _contains_ = Function(self, x):
+        return x                  # returns its argument -> truthiness decides membership
+
+var cc = Coerce()
+var raw = (cc == cc)
+assert raw == 42, "C() == C() returns the RAW non-Bool value (42)"
+assert type(raw) == "Integer", "the raw == result keeps its type (Integer, not coerced to Bool)"
+assert (5 in cc) == True, "`5 in C()` -> truthiness of 5 -> True"
+assert (0 in cc) == False, "`0 in C()` -> truthiness of 0 -> False"
+assert ("" in cc) == False, "`'' in C()` -> truthiness of empty String -> False"
+
+# =============================================================================
+# .strip() / .isspace() are ASCII-only (non-ASCII whitespace is NOT recognised)
+# =============================================================================
+var nbsp = chr(0x00A0)   # NO-BREAK SPACE
+var em   = chr(0x2003)   # EM SPACE
+var wrapped = nbsp + "hi" + em
+assert wrapped.strip() == wrapped, ".strip() does NOT remove non-ASCII whitespace (NBSP / EM SPACE)"
+assert nbsp.isspace() == False, "chr(0x00A0).isspace() is False (ASCII-only)"
+assert em.isspace() == False, "chr(0x2003).isspace() is False (ASCII-only)"
+assert " ".isspace() == True, "ASCII space IS recognised by isspace()"
+assert "\t".isspace() == True, "ASCII tab IS recognised by isspace()"
+assert "  x  ".strip() == "x", ".strip() still trims ASCII spaces"
+
+# =============================================================================
+# list.sort(key=fn) that throws mid-sort leaves the list UNCHANGED (original order)
+# =============================================================================
+var lst = [3, 1, 2, 5, 4]
+var calls = [0]
+var keyfn = Function(x):
+    calls[0] = calls[0] + 1
+    if calls[0] >= 3:
+        throw "boom"
+    return x
+
+var threw = False
+try:
+    lst.sort(key=keyfn)
+catch String as e:
+    threw = ("boom" in e)
+assert threw, "sort(key=fn) propagates the key function's throw"
+assert lst == [3, 1, 2, 5, 4], "the list is left in its ORIGINAL order after a mid-sort throw"
+
+io.print("spec_cov_core: ok")

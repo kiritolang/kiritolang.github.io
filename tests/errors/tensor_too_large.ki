@@ -1,0 +1,3 @@
+# An absurd shape must fail with a catchable error, not an uncaught bad_alloc that kills the VM.
+var tn = import("tensor")
+discard tn.zeros([100000, 100000])

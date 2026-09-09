@@ -239,7 +239,7 @@ private:
             checkExpr(*ix->object);
             for (const auto& k : ix->indices) checkExpr(*k);
         } else if (const auto* sl = dynamic_cast<const ast::SliceExpr*>(&e)) {
-            checkExpr(*sl->object);
+            if (sl->object) checkExpr(*sl->object);   // null object = a slice LITERAL (multi-axis key)
             if (sl->start) checkExpr(*sl->start);
             if (sl->stop) checkExpr(*sl->stop);
             if (sl->step) checkExpr(*sl->step);

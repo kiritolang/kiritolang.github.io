@@ -76,6 +76,11 @@ def handle(conn, addr):
         if path == "/garbage":
             conn.sendall(b"NOT AN HTTP RESPONSE AT ALL\n")
             return
+        if path == "/hang":
+            # Accept the connection but never reply: the client's recv blocks until ITS timeout fires.
+            # Used to prove net.get applies its default request timeout instead of hanging forever.
+            time.sleep(20)
+            return
         conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
     except Exception:
         pass

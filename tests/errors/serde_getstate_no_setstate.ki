@@ -1,0 +1,9 @@
+# A class that defines `_getstate_` but NO `_setstate_` DUMPS fine, but fails on LOAD: reconstruction
+# has no way to restore the picked state. The throw is at deserialize time, not dump time.
+# Expected: "it defines _getstate_ but no _setstate_".
+var dump = import("dump")
+class G:
+    var v = 5
+    var _getstate_ = Function(self):
+        return {"v": self.v}
+discard dump.loads(dump.dumps(G()))

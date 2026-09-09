@@ -1,0 +1,6 @@
+# A typed `catch` whose type expression is a non-type (here an Integer literal) must throw at match
+# time — the same validity check isinstance uses — instead of silently never firing.
+try:
+    throw "boom"
+catch 5 as e:
+    discard e

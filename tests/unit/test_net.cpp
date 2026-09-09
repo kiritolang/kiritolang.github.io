@@ -462,9 +462,15 @@ int main() {
             CHECK(srv >= 0);
             std::string gs(g);
             std::thread server(serveN, srv, 1, [gs](const std::string&) { return gs; }, nullptr);
-            // must return a Response (no crash); status may be 0 or 200 depending on the garbage
-            ResponseVal& r = evalResponse(vm, "import(\"net\").get(\"" + url(port) + "\")\n");
-            CHECK(r.status >= 0);
+            // must PARSE GRACEFULLY (a Response, no crash) OR THROW a clean KiritoError — both satisfy
+            // the contract. A body whose declared Content-Encoding cannot be decoded now surfaces as a
+            // throw (rather than silently returning the still-compressed bytes), so accept either.
+            try {
+                ResponseVal& r = evalResponse(vm, "import(\"net\").get(\"" + url(port) + "\")\n");
+                CHECK(r.status >= 0);
+            } catch (const KiritoError&) {
+                // acceptable: an undecodable Content-Encoding surfaces explicitly instead of silently
+            }
             server.join();
         }
     }

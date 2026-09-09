@@ -1,0 +1,1 @@
+discard import("int").modpow(5, -1, 7)

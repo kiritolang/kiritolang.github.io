@@ -1,0 +1,61 @@
+# spec_kimod_audit.ki — regressions for the v1.17.1 .ki-stdlib audit fixes (compute-path).
+# Each pins a bug found by the deep kimodule audit so it can't silently return.
+
+var io   = import("io")
+var col  = import("collections")
+var st   = import("statistics")
+var tw   = import("textwrap")
+var xml  = import("xml")
+var hq   = import("heapq")
+var b64  = import("base64")
+var arg  = import("arg")
+var tb   = import("tabular")
+
+# deque: amortized-O(1) two-stack (was List-backed O(n) left ops / O(n^2) FIFO). Correctness of all ops.
+var d = col.deque([1, 2, 3])
+d.appendleft(0)
+d.append(4)
+assert String(d) == "deque([0, 1, 2, 3, 4])", "deque str in logical order"
+assert len(d) == 5 and d[0] == 0 and d[2] == 2 and d[-1] == 4, "deque index (incl. negative)"
+assert d.popleft() == 0 and d.pop() == 4, "deque both-end pop"
+var q = col.deque()
+var i = 0
+while i < 6:
+    q.append(i)
+    i = i + 1
+var drained = []
+while len(q) > 0:
+    drained.append(q.popleft())
+assert drained == [0, 1, 2, 3, 4, 5], "deque as a FIFO queue preserves order"
+
+# statistics.mode: first-seen among ties, consistent with multimode[0] (was 'first to reach max count')
+assert st.mode([1, 2, 2, 1]) == 1, "mode tie -> first-seen"
+assert st.mode([1, 2, 2, 1]) == st.multimode([1, 2, 2, 1])[0], "mode agrees with multimode[0]"
+
+# textwrap.dedent: common PREFIX STRING, not indent length (mixed tab/space with no common prefix stays)
+assert tw.dedent("\t\tfoo\n  bar") == "\t\tfoo\n  bar", "dedent no-common-prefix is a no-op"
+assert tw.dedent("    a\n    b") == "a\nb", "dedent strips the shared prefix"
+
+# xml: unquoted attribute values are captured (were mangled into spurious empty attrs); tostring round-trips
+assert xml.parse("<a x=1 y>t</a>").attrib == {"x": "1", "y": ""}, "xml unquoted attr captured"
+assert xml.parse("<a b=\"1\"><c>hi</c></a>").tostring() == "<a b=\"1\"><c>hi</c></a>", "xml tostring round-trip"
+
+# heapq: real k-way merge of sorted inputs; nlargest via the heap (agrees with a full sort)
+assert hq.merge([[1, 4, 7], [2, 3, 9], [0, 5]]) == [0, 1, 2, 3, 4, 5, 7, 9], "k-way merge"
+assert hq.nlargest(3, [5, 1, 9, 3, 7, 2]) == [9, 7, 5], "nlargest (heap)"
+assert hq.nsmallest(3, [5, 1, 9, 3, 7, 2]) == [1, 2, 3], "nsmallest (heap)"
+
+# base64: ASCII whitespace is skipped (MIME/PEM line-wrapping round-trips)
+assert b64.decode("SGVsbG8\nV29ybGQ=") == b64.decode("SGVsbG8V29ybGQ="), "base64 skips whitespace"
+
+# arg: `--` ends option parsing (POSIX), remaining tokens are positionals
+var pr = arg.Parser("t")
+pr.flag("v", "v")
+assert pr.parse(["--v", "--", "-x", "f"])["rest"] == ["-x", "f"], "arg -- ends options"
+
+# tabular Series.unique / isin: O(n) via a Dict, insertion order preserved
+var s = tb.Series([3, 1, 3, 2, 1])
+assert s.unique() == [3, 1, 2], "unique preserves first-seen order"
+assert s.isin([1, 3]).tolist() == [True, True, True, False, True], "isin membership"
+
+io.print("spec_kimod_audit: ok")

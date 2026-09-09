@@ -1,0 +1,66 @@
+# spec_cov_sys.ki — coverage for `sys` behaviors not pinned elsewhere:
+#   * createprocess/shell reject a NUL byte in the CWD argument (the poison-NUL guard already covered
+#     for argv; the cwd path is a distinct check) and shell rejects a NUL in the command string.
+#   * setenv rejects a name the OS refuses (empty name, or a name containing '='): the native setenv()
+#     fails and the failure is surfaced, never swallowed.
+#   * sys.exit(non-Integer) stringifies its argument to stderr and exits 1 — a Float is NOT truncated
+#     to an exit code (3.9 does not become status 3); a List / Bool are likewise messages, not codes.
+#     (Integer / String / no-arg exit codes are pinned in cov_system.ki; here we pin the Float/List/Bool
+#     message-and-status-1 path, observed through a child process.)
+# Deterministic and offline: no network, no timing; the child probe lives under gettempdir() and is
+# removed before exit. sys.exit terminates a process, so it is exercised only in a spawned child.
+var io   = import("io")
+var sys  = import("sys")
+var path = import("path")
+
+var emsg = Function(fn) -> String:
+    try:
+        discard fn()
+        return ""
+    catch String as e:
+        return e
+
+# --- NUL-byte rejection in cwd / shell command --------------------------------------------------
+# createprocess: a NUL in cwd is rejected before the syscall (validation and execution must not
+# disagree about the same value — otherwise "evil\0.png" would validate but exec as "evil").
+assert "cwd must not contain a NUL byte" in emsg(Function():
+    return sys.createprocess(["echo", "hi"], "dir" + chr(0) + "x")), "createprocess rejects a NUL in cwd"
+assert "cwd must not contain a NUL byte" in emsg(Function():
+    return sys.shell("echo hi", "dir" + chr(0) + "x")), "shell rejects a NUL in cwd"
+# shell: the command string becomes the argv fed to /bin/sh -c, so a NUL there is caught as an
+# argument (same poison-NUL guard, distinct entry point from createprocess argv).
+assert "must not contain a NUL byte" in emsg(Function():
+    return sys.shell("echo" + chr(0) + "rm")), "shell rejects a NUL in the command string"
+
+# --- setenv: the OS-refused names surface a failure, never a silent success --------------------
+# POSIX setenv() rejects an empty name and a name containing '=' (EINVAL); the binding reports it.
+assert "setenv failed" in emsg(Function(): return sys.setenv("", "v")), "setenv('') is rejected"
+assert "setenv failed" in emsg(Function(): return sys.setenv("a=b", "v")), "setenv name with '=' is rejected"
+# a well-formed setenv still works (guards against the rejection above being over-broad).
+sys.setenv("KIRITO_SPEC_COV_SYS", "present")
+assert sys.getenv("KIRITO_SPEC_COV_SYS") == "present", "a valid setenv round-trips"
+sys.unsetenv("KIRITO_SPEC_COV_SYS")
+
+# --- sys.exit(non-Integer): a message on stderr, status 1 (a Float is NOT a code) --------------
+var probe = path.join(path.gettempdir(), "kirito_spec_cov_sys_exit.ki")
+var runExit = Function(body):
+    with io.open(probe, "w") as f:
+        f.write("var sys = import(\"sys\")\n" + body + "\n")
+    return sys.createprocess([path.executable, probe])
+
+var rf = runExit("sys.exit(3.9)")
+assert rf["code"] == 1, "exit(Float) exits 1, not the truncated value"
+assert rf["code"] != 3, "exit(3.9) is NOT truncated to status 3"
+assert "3.9" in rf["stderr"], "exit(3.9) stringifies the Float to stderr"
+
+var rl = runExit("sys.exit([1, 2])")
+assert rl["code"] == 1, "exit(List) exits 1"
+assert "[1, 2]" in rl["stderr"], "exit(List) stringifies the List to stderr"
+
+var rb = runExit("sys.exit(True)")
+assert rb["code"] == 1, "exit(Bool) exits 1"
+assert "True" in rb["stderr"], "exit(Bool) stringifies the Bool to stderr"
+
+path.remove(probe)
+
+io.print("spec_cov_sys: ok")

@@ -14,11 +14,7 @@
 namespace kirito::hashing {
 
 inline std::string toHex(const unsigned char* d, std::size_t n) {
-    static const char* hx = "0123456789abcdef";
-    std::string out;
-    out.reserve(n * 2);
-    for (std::size_t i = 0; i < n; ++i) { out.push_back(hx[d[i] >> 4]); out.push_back(hx[d[i] & 0xF]); }
-    return out;
+    return toHexLower(d, n);   // one byte->hex encoder (common.hpp), shared with Bytes.hex()
 }
 inline std::string toHex(const std::string& s) {
     return toHex(reinterpret_cast<const unsigned char*>(s.data()), s.size());

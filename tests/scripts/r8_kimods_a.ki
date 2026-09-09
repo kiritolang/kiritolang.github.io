@@ -296,9 +296,9 @@ ok(nssrc == [4, 2, 6, 1], "nsmallest does not mutate its input")
 var hr = hq.heapify([1, 2, 3])
 ok(hq.heapreplace(hr, 100) == 1, "heapreplace returns the old min even for a large new item")
 ok(hr[0] == 2 and sorted(hr) == [2, 3, 100], "heapreplace re-establishes the min and keeps the new item")
-# merge over Strings; merge tolerates an unsorted input (full re-heap); merge of an empty sublist.
+# merge over Strings; a proper k-way merge of already-sorted inputs; merge of an empty sublist.
 ok(hq.merge([["b", "d"], ["a", "c"]]) == ["a", "b", "c", "d"], "merge over Strings")
-ok(hq.merge([[3, 1], [2, 0]]) == [0, 1, 2, 3], "merge re-sorts even unsorted inputs")
+ok(hq.merge([[1, 3], [0, 2]]) == [0, 1, 2, 3], "k-way merge of sorted inputs")
 ok(hq.merge([[5], [], [1, 3]]) == [1, 3, 5], "merge with an empty sublist")
 # nlargest/nsmallest keyword args (signature is (n, items)).
 ok(hq.nlargest(n = 2, items = [5, 1, 9, 3]) == [9, 5], "nlargest n=/items= kwargs")

@@ -112,7 +112,7 @@ ok(tw.dedent("   x\n y") == "  x\ny", "textwrap dedent ragged uses smallest inde
 # a tab counts as ONE character for indent width
 ok(tw.dedent("\tone\n\ttwo") == "one\ntwo", "textwrap dedent uniform single-tab prefix")
 ok(tw.dedent("flush\nleft") == "flush\nleft", "textwrap dedent already-flush identity")
-ok(tw.dedent("  ") == "  ", "textwrap dedent single blank line is identity")
+ok(tw.dedent("  ") == "", "textwrap dedent normalizes a lone whitespace-only line to empty (CPython)")
 
 # =====================================================================================  base64
 var b64 = import("base64")

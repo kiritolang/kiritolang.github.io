@@ -1,0 +1,23 @@
+# spec_bigint_float_ops.ki — pin the deliberate BigInt<->Float asymmetry.
+# Equality accepts a Float (BigInt(3) == 3.0), but ordering and arithmetic against a Float are rejected
+# (a BigInt op needs a BigInt/Integer). Locking this stops anyone "fixing" one side into a silent float
+# coercion that would break exact integer semantics.
+var int = import("int")
+var io  = import("io")
+
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch String as e:
+        return "expects a BigInt or Integer" in e
+
+var b = int.BigInt(3)
+assert b == 3.0, "== accepts an equal Float"
+assert b == 3, "== accepts an equal Integer"
+assert b != 2.5, "!= a non-equal Float"
+assert not (b == 3.5), "== rejects a non-equal Float"
+assert throws(Function(): return b < 2.5), "< a Float throws"
+assert throws(Function(): return b + 1.5), "+ a Float throws"
+assert throws(Function(): return b * 2.0), "* a Float throws"
+io.print("spec_bigint_float_ops: ok")

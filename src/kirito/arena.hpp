@@ -1,6 +1,8 @@
 #ifndef KIRITO_ARENA_HPP
 #define KIRITO_ARENA_HPP
 
+#include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -8,6 +10,7 @@
 #include "common.hpp"
 #include "handle.hpp"
 #include "object.hpp"
+#include "rand_compat.hpp"
 
 namespace kirito {
 
@@ -56,6 +59,13 @@ public:
 
     Object& deref(Handle h) { return *at(h).obj; }
     const Object& deref(Handle h) const { return *at(h).obj; }
+
+    // Per-VM random seed for Dict/Set bucket placement (HashDoS defence — see hashmix.hpp / Object::
+    // bucketHash). Drawn once from the OS CSPRNG at construction, so every VM (and worker VM) disperses
+    // adversarial keys differently and unpredictably. Never observable to Kirito code (bucket layout
+    // never surfaces), so it doesn't compromise same-input->same-output determinism. Fixable via the
+    // KIRITO_HASH_SEED env var for reproducible bucket layouts when debugging.
+    std::uint64_t hashSeed() const { return hashSeed_; }
 
     // --- remembered set (old objects holding an old->young edge; populated by the write barrier) ---
     void remember(Object* o) {
@@ -200,11 +210,27 @@ private:
     }
     Slot& at(Handle h) { return const_cast<Slot&>(std::as_const(*this).at(h)); }
 
+    // Draw the bucket-hash seed: the KIRITO_HASH_SEED env var (decimal or 0x-hex) when set — for
+    // reproducible bucket layouts while debugging — otherwise 64 fresh bits from the OS CSPRNG. If the
+    // CSPRNG is somehow unavailable, fall back to a fixed nonzero constant rather than 0: a weaker seed
+    // still preserves correctness, and the alternative (throwing at VM construction) would be worse.
+    // This getenv intentionally does NOT take stdlib_sys's envMutex: it runs exactly once, during VM
+    // construction, before any Kirito code (hence any sys.setenv) can run — so no concurrent env
+    // mutation is possible here and the serialize-all-env-access invariant is not actually at risk.
+    static std::uint64_t makeHashSeed() {
+        if (const char* env = std::getenv("KIRITO_HASH_SEED"))
+            return static_cast<std::uint64_t>(std::strtoull(env, nullptr, 0));
+        std::uint64_t s = 0;
+        if (!randcompat::fillRandom(&s, sizeof s) || s == 0) s = 0x9E3779B97F4A7C15ULL;
+        return s;
+    }
+
     static constexpr std::size_t kInitialReserve = 8192;  // covers VM construction + early churn (S2)
     std::vector<Slot> slots_;
     std::vector<uint32_t> free_;
     std::vector<uint32_t> young_;       // slot indices of the young generation (the nursery)
     std::vector<Object*> remembered_;   // old objects with an old->young edge (write-barrier set)
+    std::uint64_t hashSeed_ = makeHashSeed();
 };
 
 }  // namespace kirito

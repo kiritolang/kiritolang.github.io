@@ -375,11 +375,8 @@ assert h.nsmallest(-2, [5, 4, 3, 2, 1]) == [], "nsmallest(negative) -> []"
 assert h.nlargest(-2, [5, 4, 3, 2, 1]) == [], "nlargest(negative) -> [] (fixed: was a tail slice)"
 assert h.nlargest(0, [3, 1, 2]) == [] and h.nsmallest(0, [3, 1, 2]) == [], "n=0 agrees: both []"
 
-# --- merge is GIGO-TOLERANT: it re-heaps every element, so it sorts even unsorted inputs. ---------
-# FINDING (doc): docs say merge takes 'already-sorted inputs', but the impl heappushes every
-# element and drains -- so it actually returns sorted output regardless of input order (a true k-way
-# merge would assume sorted inputs and produce GARBAGE on unsorted input).
-assert h.merge([[3, 1], [2]]) == [1, 2, 3], "FINDING: merge sorts even UNSORTED inputs (full re-heap, not a k-way merge)"
+# merge is a proper k-way merge (O(N log k)) that ASSUMES already-sorted inputs, as documented.
+assert h.merge([[1, 3], [2]]) == [1, 2, 3], "k-way merge of sorted inputs"
 assert h.merge([]) == [], "merge of no lists"
 assert h.merge([[5], [], [1, 3]]) == [1, 3, 5], "merge with an empty sublist"
 

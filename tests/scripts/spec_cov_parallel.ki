@@ -1,0 +1,37 @@
+# spec_cov_parallel.ki — pins the DOCUMENTED, CONTIGUOUS diagnostic messages the parallel dispatcher
+# surfaces at join(), and that the host VM survives each fault:
+#   * a worker that throws re-raises at join() as the exact string "parallel: worker thrown: <msg>"
+#     (existing tests check the "worker thrown" prefix and the payload separately; here we pin that
+#     they appear together, in the documented order, so the message can never silently reformat).
+#   * a worker that RETURNS an unserializable value (a socket) fails at join with "cannot dump" — the
+#     return path, distinct from the synchronous rejection of an unserializable spawn ARGUMENT.
+# Bounded: 2 short-lived workers, both joined; nothing timing- or network-dependent (a socket is
+# constructed but never connected). Spawns are behind `if argmain:` so a re-loading worker never
+# re-spawns (fork-bomb guard); the worker functions are defined at module top level so a worker can
+# resolve them by source location.
+var par = import("parallel")
+var net = import("net")
+var io  = import("io")
+
+var w_throw = Function():
+    throw "kaboom"
+
+var w_return_socket = Function():
+    return net.Socket()                 # a live native handle — cannot cross the VM boundary
+
+var emsg = Function(fn) -> String:
+    try:
+        discard fn()
+        return ""
+    catch String as e:
+        return e
+
+if argmain:
+    var thrown = emsg(Function(): return par.spawn(w_throw).join())
+    assert "parallel: worker thrown: kaboom" in thrown, "exact documented worker-thrown message"
+
+    var retfail = emsg(Function(): return par.spawn(w_return_socket).join())
+    assert "cannot dump" in retfail, "an unserializable RETURN value surfaces 'cannot dump' at join"
+
+    assert 2 + 2 == 4, "the host VM keeps running after both worker faults"
+    io.print("spec_cov_parallel: ok")

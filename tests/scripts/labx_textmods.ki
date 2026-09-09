@@ -86,9 +86,9 @@ assert tw.fill("a b c") == "a b c", "fill default width keeps short text on one 
 # indent: non-empty lines get the prefix, blank lines are left untouched (no predicate parameter)
 assert tw.indent("x\n\ny", "..") == "..x\n\n..y", "indent leaves blank lines unprefixed"
 assert raises(Function(): return tw.indent("a", "> ", Function(l): return True)), "indent takes no predicate arg"
-# dedent removes the COMMON leading run by CHARACTER COUNT (content-agnostic), and ignores blank lines
+# dedent removes the COMMON leading-whitespace PREFIX STRING (content-aware), and ignores blank lines
 assert tw.dedent("  \ta\n  \tb") == "a\nb", "dedent strips a shared 3-char (2sp+tab) prefix"
-assert tw.dedent("\ta\n  b") == "a\n b", "dedent strips min char-count (1), not by matching content"
+assert tw.dedent("\ta\n  b") == "\ta\n  b", "dedent leaves lines with no common prefix unchanged"
 assert tw.dedent("    a\n\n    b") == "a\n\nb", "dedent ignores blank line for min-indent, preserves it"
 assert tw.dedent("noindent") == "noindent", "dedent no-common-indent no-op"
 
@@ -125,8 +125,8 @@ assert raises_msg(Function(): return b64.decode("S"), "lone trailing character")
 # a canonical group with non-zero low bits is NON-canonical -> rejected (not silently truncated)
 assert raises_msg(Function(): return b64.decode("Zh=="), "truncated or corrupted"), "reject non-canonical 1-byte group"
 assert raises_msg(Function(): return b64.decode("SGl"), "truncated or corrupted"), "reject non-canonical no-pad group"
-# invalid characters (space, punctuation, and the cross-alphabet char) throw with the char named
-assert raises_msg(Function(): return b64.decode("SG k="), "invalid base64 character"), "decode rejects space"
+# invalid characters throw with the char named; ASCII whitespace is skipped (MIME/PEM line-wrapping)
+assert b64.decode("SG k=") == b64.decode("SGk="), "decode skips embedded whitespace"
 assert raises_msg(Function(): return b64.decode("-w=="), "invalid base64 character"), "std decode rejects urlsafe '-'"
 # decode stops at the first '=' and ignores the tail (padding sentinel)
 assert raises_msg(Function(): return b64.decode("SGk=junk"), "data after padding"), "decode rejects data after the = padding"

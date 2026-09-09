@@ -145,7 +145,7 @@ ok(b64.decode("AAA") == [0, 0], "decode 'AAA' -> two zero bytes")
 ok(throws(Function(): return b64.decode("A")), "decode of a lone trailing character throws (invalid length)")
 ok(throws(Function(): return b64.decode("AB")), "decode with non-zero leftover bits (truncated) throws")
 ok(throws(Function(): return b64.decode("!!!!")), "decode of an invalid character throws")
-ok(throws(Function(): return b64.decode("TW Fu")), "decode does NOT tolerate embedded whitespace (invalid char)")
+ok(b64.decode("TW Fu") == b64.decode("TWFu"), "decode skips embedded whitespace (MIME/PEM line-wrapping)")
 
 # --- URL-safe alphabet: '+' -> '-', '/' -> '_'.
 ok(b64.urlsafeencode([255, 255, 255]) == "____", "urlsafe maps 0x3F groups to '_'")

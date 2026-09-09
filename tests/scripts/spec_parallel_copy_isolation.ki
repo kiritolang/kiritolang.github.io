@@ -1,0 +1,18 @@
+# spec_parallel_copy_isolation.ki — parallel workers receive COPIES (serialized) of transferred values,
+# so a worker mutating a List must NOT affect the parent's original. Also pin the exhausted-semaphore
+# non-blocking poll. Spawns run behind `if argmain:` (a re-loading worker must not re-spawn).
+var par = import("parallel")
+var io  = import("io")
+
+var work = Function(d):
+    d.append(99)
+    return len(d)
+
+if argmain:
+    var data = [1, 2, 3]
+    var seen = par.spawn(work, data).join()
+    assert seen == 4, "worker saw its own mutated copy"
+    assert len(data) == 3, "parent list unchanged (copy isolation)"
+    var s = par.Semaphore(0)
+    assert s.acquire(False) == False, "exhausted semaphore, non-blocking poll returns False"
+    io.print("spec_parallel_copy_isolation: ok")

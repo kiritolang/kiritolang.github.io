@@ -57,7 +57,7 @@ struct ExprVisitor {
 };
 
 // A cheap tag for assignment-target dispatch, avoiding dynamic_cast on the hot path.
-enum class ExprKind { Other, Name, Index, Member, Tuple, Star };
+enum class ExprKind { Other, Name, Index, Member, Tuple, Star, Slice };
 
 struct Expr {
     SourceSpan span;
@@ -68,8 +68,12 @@ struct Expr {
 using ExprPtr = std::unique_ptr<Expr>;
 
 // std::monostate == the None literal.
+// The `...` ellipsis literal, carried as a distinct alternative in LiteralExpr::value (only the
+// compiler inspects the variant, so this stays a one-file change — no new ExprVisitor method).
+struct EllipsisTag {};
+
 struct LiteralExpr : Expr {
-    std::variant<std::monostate, int64_t, double, bool, std::string> value;
+    std::variant<std::monostate, int64_t, double, bool, std::string, EllipsisTag> value;
     void accept(ExprVisitor& v) const override { v.visit(*this); }
 };
 
@@ -147,10 +151,11 @@ struct IndexExpr : Expr {
 
 // obj[start:stop:step] — any of start/stop/step may be null (omitted).
 struct SliceExpr : Expr {
-    ExprPtr object;
+    ExprPtr object;   // null when this is a slice LITERAL element inside a multi-axis subscript
     ExprPtr start;
     ExprPtr stop;
     ExprPtr step;
+    ExprKind exprKind() const override { return ExprKind::Slice; }
     void accept(ExprVisitor& v) const override { v.visit(*this); }
 };
 

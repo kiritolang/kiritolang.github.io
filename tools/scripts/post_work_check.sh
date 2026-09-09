@@ -9,30 +9,38 @@
 # by CTest (unit executables and the globbed scripts/ and errors/ directories register themselves in
 # tests/CMakeLists.txt), so adding or removing a test needs no change here.
 #
-# Variants (each in its OWN build dir; the three the project ships — `strict` was folded into `debug`):
-#   debug   — g++ -O2 with the HARDENED warning set: -Wall -Wextra -Wformat=2 -Wconversion
-#             -Wpointer-arith -Wpedantic -Werror -fstack-protector-all -Wreorder -Wunused -Wshadow.
-#             The strictest compile gate. (binaryDir: build-debug)
-#   release — g++ -O2, the looser warnings-as-errors set (no -Wconversion/-Wshadow); the build to
-#             benchmark and ship. (binaryDir: build-release)
-#   asan    — AddressSanitizer + UBSan (-fno-sanitize-recover=all) with the hardened warning set; the
-#             memory/UB-safety gate, and a slow one. (binaryDir: build-asan)
-#   tsan    — ThreadSanitizer with the hardened warning set; data-race + lock-order-inversion gate for
-#             the multiprocessing dispatcher (the only concurrent code). (binaryDir: build-tsan)
+# Variants (each in its OWN build dir). Two orthogonal axes are covered: the sanitizer axis
+# (none/-O2, ASan+UBSan, TSan) and the TLS axis (OpenSSL ON vs OFF), so BOTH the OpenSSL-linked paths
+# and the no-OpenSSL fallbacks are sanitized by default. `debug` exists as a preset for local -O0
+# iteration but is NOT part of the gate: its only unique contribution is -O0, and its hardened warning
+# set is already carried verbatim by asan/asan-notls/tsan (and now release), so as a gate variant it was
+# pure redundancy.
+#   release    — g++ -O2, the HARDENED warnings-as-errors set (now incl. -Wconversion/-Wshadow/-Wreorder
+#                /-Wunused), TLS ON. The build users actually ship + the only -O2 build (optimizer-only
+#                diagnostics and the real optimized codegen the sanitizers, at -O1+instrumentation, do
+#                NOT validate) + the strict warning gate. (binaryDir: build-release)
+#   asan       — AddressSanitizer + UBSan (-fno-sanitize-recover=all), hardened warnings, TLS ON; the
+#                memory/UB gate over the OpenSSL + HTTPS/TLS glue (the highest-value surface — this is
+#                what catches use-after-free / UB in the crypto/net code). Slow. (binaryDir: build-asan)
+#   asan-notls — the SAME ASan+UBSan gate with TLS OFF; sanitizes the no-OpenSSL build (the #else
+#                fallbacks) and proves nothing accidentally hard-depends on OpenSSL. (binaryDir: build-asan-notls)
+#   tsan       — ThreadSanitizer, hardened warnings, TLS ON; data-race + lock-order-inversion gate for
+#                the multiprocessing dispatcher (the only concurrent code — TLS-independent, so TLS ON
+#                merely also compiles the OpenSSL glue under TSan at no cost to race coverage). (binaryDir: build-tsan)
 #
 # THE WORKFLOW GATE (run sequentially, in THIS order):
-#   1. build + test `debug`.
-#   2. build + test `release`.
-#   3. If BOTH debug and release are green -> COMMIT AND PUSH. This is the point at which the work
-#      becomes durable; do it BEFORE the long sanitizer runs so a crash/preemption/rollback can't lose it.
-#   4. build + test `asan`, then `tsan`; fix any error either surfaces, then re-run (and push the fix).
+#   1. build + test `release`.
+#   2. If release is green -> COMMIT AND PUSH. This is the point at which the work becomes durable; do it
+#      BEFORE the long sanitizer runs so a crash/preemption/rollback can't lose it. (release is the sole
+#      non-sanitized functional build, so it is the pre-push gate.)
+#   3. build + test `asan`, `asan-notls`, then `tsan`; fix any error, then re-run (and push the fix).
 #
 # This script runs the variants in that order and reports each. It does NOT git-commit for you (the
-# commit message/branch is a decision for the author), but after debug+release pass it prints a clear
-# READY-TO-PUSH marker, then continues into asan.
+# commit message/branch is a decision for the author), but after release passes it prints a clear
+# READY-TO-PUSH marker, then continues into the sanitizers.
 #
-# DISK HYGIENE: the build dirs are large and ALL FOUR together (~1.3 GB debug + 1.3 GB release + ~12 GB
-# asan + ~9 GB tsan ≈ 24 GB) can fill a small disk mid-run (a `No space left on device` build abort).
+# DISK HYGIENE: the build dirs are large and ALL FOUR together (~1.3 GB release + ~12 GB asan + ~12 GB
+# asan-notls + ~9 GB tsan ≈ 34 GB) can fill a small disk mid-run (a `No space left on device` build abort).
 # So each variant's build dir is REMOVED as soon as that variant's tests PASS — but its `ki` executable
 # is first COPIED to `build-bin/ki-<variant>` (override the dir with PW_BIN_DIR), so a built binary of
 # every variant stays available afterwards (run a script, a benchmark, a repro) without a rebuild. Peak
@@ -54,14 +62,17 @@
 # PW_MAX_JOBS=N caps jobs (default 16); PW_SANITIZER_JOBS=N overrides just the asan/tsan build.
 #
 # Usage:  scripts/post_work_check.sh [--no-asan] [--keep-builds]
-# TLS: the debug and release presets build with -DKIRITO_ENABLE_TLS on (they find_package(OpenSSL
-# REQUIRED)), so the whole variant matrix compiles AND tests the TLS-on paths — a TLS-only build error
-# or a failing HTTPS/deep-TLS test surfaces here, not only in the nightly. This makes OpenSSL
-# (libssl-dev) a prerequisite for the debug/release presets. The asan/tsan presets stay TLS-off (a
-# TLS-linked OpenSSL trips the leak detector with its own still-reachable allocations). The full
-# non-system / Windows-OpenSSL path is covered by tools/scripts/build_all.sh's mingw cross-build.
+# TLS: release, asan and tsan build with -DKIRITO_ENABLE_TLS on (they find_package(OpenSSL REQUIRED)),
+# so the OpenSSL + HTTPS/TLS glue is compiled AND run under -O2, ASan+UBSan and TSan — a TLS-only build
+# error, a leaked OpenSSL allocation, or a failing HTTPS/deep-TLS test surfaces here. asan-notls builds
+# the SAME suite with TLS off, so the no-OpenSSL fallbacks get equal sanitizer coverage. This makes
+# OpenSSL (libssl-dev) a prerequisite for release/asan/tsan (not for asan-notls). Note: LeakSanitizer
+# reports "definitely lost", not OpenSSL's "still reachable" globals (freed by OPENSSL_cleanup's atexit
+# handler), so a TLS-linked asan run is clean; if a future OpenSSL genuinely leaks or trips TSan on its
+# own internal locking, add a NARROW suppression scoped to libcrypto/libssl (external code) rather than
+# dropping TLS from the sanitizers. The Windows-OpenSSL path is covered by build_all.sh's mingw cross-build.
 #
-#   --no-asan       run debug + release only (the commit gate); skip the slow asan + tsan passes.
+#   --no-asan       run release only (the commit gate); skip the slow asan/asan-notls/tsan passes.
 #   --keep-builds   do NOT delete a variant's build dir after it passes (keep all artifacts). Without
 #                   it, each passing variant's `ki` is still preserved to build-bin/ki-<variant>.
 #
@@ -177,13 +188,13 @@ preflight_prereqs() {
     { command -v g++ >/dev/null 2>&1 || command -v clang++ >/dev/null 2>&1; } \
         || missing+=("build-essential (no g++/clang++ on PATH → 'CMAKE_CXX_COMPILER not set')")
     have_openssl \
-        || missing+=("libssl-dev (debug/release build TLS-on → find_package(OpenSSL REQUIRED))")
+        || missing+=("libssl-dev (release/asan/tsan build TLS-on → find_package(OpenSSL REQUIRED))")
     if [ "${#missing[@]}" -gt 0 ]; then
         echo "==================== PRE-FLIGHT: MISSING PREREQUISITES ===================="
         printf '  - %s\n' "${missing[@]}"
         echo "Install (Debian/Ubuntu/WSL):"
         echo "  sudo apt-get update && sudo apt-get install -y build-essential libssl-dev cmake ninja-build"
-        echo "(asan/tsan are TLS-off and don't need OpenSSL; see this script's header comment.)"
+        echo "(only asan-notls is TLS-off; the other three need OpenSSL — see this script's header comment.)"
         return 1
     fi
     return 0
@@ -192,10 +203,10 @@ if ! preflight_prereqs; then
     echo "DO NOT PUSH: host build prerequisites missing — install them and re-run." ; exit 1
 fi
 
-declare -A DIR=( [debug]=build-debug [release]=build-release [asan]=build-asan [tsan]=build-tsan )
+declare -A DIR=( [debug]=build-debug [release]=build-release [asan]=build-asan [asan-notls]=build-asan-notls [tsan]=build-tsan )
 PRESERVED_BIN="${PW_BIN_DIR:-build-bin}"   # each passing variant's `ki` is kept here as ki-<variant>
 FAILED=0
-GREEN_GATE=1   # cleared if debug or release fails
+GREEN_GATE=1   # cleared if release fails
 
 # Build+test one variant from scratch. Returns 0 on success. asan gets a generous stack + sanitizer
 # options, scoped to its own invocation (the recursion guard's frames are larger under ASan).
@@ -213,8 +224,8 @@ run_variant() {
     # Override the sanitizer figure with PW_SANITIZER_JOBS=N.
     local bjobs
     case "$name" in
-        asan|tsan) bjobs="${PW_SANITIZER_JOBS:-$(jobs_for 4)}" ;;
-        *)         bjobs="$(jobs_for 2)" ;;
+        asan|asan-notls|tsan) bjobs="${PW_SANITIZER_JOBS:-$(jobs_for 4)}" ;;
+        *)                    bjobs="$(jobs_for 2)" ;;
     esac
     echo "[$name] building with -j$bjobs (cores=$CORES, MemAvailable=$(avail_gb) GB)"
     if ! cmake --build "$dir" -j"$bjobs" -- -k 0 >"/tmp/pw_$name.build.log" 2>&1; then
@@ -223,7 +234,7 @@ run_variant() {
         FAILED=1; return 1
     fi
     local pre=""
-    if [ "$name" = asan ]; then
+    if [ "$name" = asan ] || [ "$name" = asan-notls ]; then
         ulimit -s 262144 2>/dev/null || true
         pre="ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1"
     elif [ "$name" = tsan ]; then
@@ -271,22 +282,22 @@ run_variant() {
     FAILED=1; return 1
 }
 
-run_variant debug   || GREEN_GATE=0
 run_variant release || GREEN_GATE=0
 
 echo "==================== COMMIT GATE ===================="
 if [ "$GREEN_GATE" -eq 1 ]; then
-    echo "READY TO PUSH: debug + release (both TLS-on) are GREEN — commit and push now, before asan."
+    echo "READY TO PUSH: release (TLS-on, -O2) is GREEN — commit and push now, before the sanitizers."
 else
-    echo "DO NOT PUSH: debug or release failed — fix before committing."
+    echo "DO NOT PUSH: release failed — fix before committing."
 fi
 
 [ "$NO_ASAN" -eq 0 ] && run_variant asan
+[ "$NO_ASAN" -eq 0 ] && run_variant asan-notls
 [ "$NO_ASAN" -eq 0 ] && run_variant tsan
 
 echo "==================== SUMMARY ===================="
-for v in debug release asan tsan; do
-    { [ "$v" = "asan" ] || [ "$v" = "tsan" ]; } && [ "$NO_ASAN" -eq 1 ] && { echo "$v: <skipped>"; continue; }
+for v in release asan asan-notls tsan; do
+    [ "$v" != "release" ] && [ "$NO_ASAN" -eq 1 ] && { echo "$v: <skipped>"; continue; }
     line=$(grep -hE 'tests passed|TESTS FAILED|BUILD FAILED|CONFIG FAILED' \
                  "/tmp/pw_$v.test.log" "/tmp/pw_$v.build.log" "/tmp/pw_$v.cfg.log" 2>/dev/null | tail -1)
     echo "$v: ${line:-<not run>}"

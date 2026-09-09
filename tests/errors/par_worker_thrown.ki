@@ -1,0 +1,8 @@
+# An uncaught worker fault surfaces at join() as "parallel: worker thrown: <msg>" and propagates out
+# of main to stderr. The worker is defined at top level; the spawn is behind `if argmain:` so a
+# re-loading worker never re-spawns (fork-bomb guard).
+var par = import("parallel")
+var worker = Function():
+    throw "kaboom"
+if argmain:
+    discard par.spawn(worker).join()

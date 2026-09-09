@@ -1,0 +1,15 @@
+# A user `_eq_` that mutates the SAME set WHILE it is probing (comparing values) is rejected, the
+# set analogue of dict_eq_probe_mutation. Expected: "Set changed size during a value comparison".
+var s = Set()
+class E:
+    var val = 0
+    var _init_ = Function(self, v):
+        self.val = v
+    var _hash_ = Function(self) -> Integer:
+        return 7                     # force a collision so the second add probes E(1)
+    var _eq_ = Function(self, o):
+        s.add(999)                   # mutate mid-probe -> must be rejected
+        return self.val == o.val
+
+s.add(E(1))
+s.add(E(2))

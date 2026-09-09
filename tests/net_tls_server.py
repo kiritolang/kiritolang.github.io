@@ -11,6 +11,7 @@ import socket
 import ssl
 import sys
 import threading
+import time
 
 
 def handle(conn, ctx):
@@ -29,6 +30,12 @@ def handle(conn, ctx):
             if not chunk:
                 break
             data += chunk
+        # /hang: complete the handshake and read the request, then never reply — the client's SSL_read
+        # must hit its recv timeout and fail loud, not silently accept a short/empty body (regression for
+        # the TLS read loop swallowing SO_RCVTIMEO as a clean EOF).
+        if data.split(b" ", 2)[1:2] == [b"/hang"]:
+            time.sleep(20)
+            return
         body = b"tls-ok"
         resp = (b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() +
                 b"\r\nConnection: close\r\n\r\n" + body)

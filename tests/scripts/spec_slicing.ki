@@ -1,0 +1,97 @@
+# spec_slicing.ki — numpy-style basic indexing: first-class Slice, multi-axis subscripts, ellipsis,
+# newaxis, negative step, and slice assignment. Covers tensors, lists, Series/DataFrame, user classes,
+# and single-axis backward compatibility.
+
+var io  = import("io")
+var tn  = import("tensor")
+var tb  = import("tabular")
+
+var throwsMsg = Function(f, needle):
+    try:
+        discard f()
+        return False
+    catch String as e:
+        return needle in e
+
+# --- Slice value + builtin -------------------------------------------------------------------
+var sv = slice(2, 8, 2)
+assert sv.start == 2 and sv.stop == 8 and sv.step == 2, "Slice .start/.stop/.step"
+assert sv.indices(10) == [2, 8, 2], "Slice.indices resolves + clamps"
+assert slice(None, 5).indices(3) == [0, 3, 1], "open-stop clamps to length"
+assert slice(None, None, -1).indices(4) == [3, -1, -1], "negative step indices"
+assert String(...) == "..." and type(...) == "Ellipsis", "ellipsis literal"
+
+# --- single-axis backward compatibility (unchanged GetSlice path) ----------------------------
+assert [10, 20, 30, 40][1:3] == [20, 30], "list single-axis slice"
+assert "hello"[1:4] == "ell", "string single-axis slice"
+assert "abc"[::-1] == "cba", "string reversed slice"
+
+# --- list: Slice value applied, and slice-assignment -----------------------------------------
+assert [10, 20, 30, 40, 50][slice(1, 4)] == [20, 30, 40], "list[sliceValue]"
+var a = [1, 2, 3, 4, 5]
+a[1:3] = [20, 30, 40]
+assert a == [1, 20, 30, 40, 4, 5], "list slice-assign resizes"
+var b = [1, 2, 3, 4, 5, 6]
+b[::2] = [10, 30, 50]
+assert b == [10, 2, 30, 4, 50, 6], "list extended-slice assign"
+var c = [1, 2, 3]
+c[1:1] = [99]
+assert c == [1, 99, 2, 3], "list slice-insert"
+var mm = [1, 2, 3, 4, 5, 6]
+var esMismatch = Function():
+    mm[::2] = [10, 30]
+    return mm
+assert throwsMsg(esMismatch, "size mismatch"), "extended-slice size mismatch throws"
+
+# --- tensor multi-axis read (numpy basic indexing) -------------------------------------------
+var t = tn.arange(0, 12).reshape([3, 4])
+assert t[:, 2:4].tolist() == [[2, 3], [6, 7], [10, 11]], "t[:, 2:4]"
+assert t[1, :].tolist() == [4, 5, 6, 7], "t[1, :]"
+assert t[0:2, 1:3].tolist() == [[1, 2], [5, 6]], "t[0:2, 1:3]"
+assert t[:, 1].tolist() == [1, 5, 9], "t[:, 1] reduces a dim"
+assert t[1, 2] == 6, "t[1, 2] scalar"
+assert t[..., 0].tolist() == [0, 4, 8], "ellipsis then int"
+assert t[:, ::-1].tolist() == [[3, 2, 1, 0], [7, 6, 5, 4], [11, 10, 9, 8]], "reversed axis via step -1"
+assert t[:, None].shape() == [3, 1, 4], "newaxis inserts a size-1 dim"
+assert t[None].shape() == [1, 3, 4], "leading newaxis"
+assert t[1].tolist() == [4, 5, 6, 7], "partial index = trailing full slice"
+assert throwsMsg(Function(): return t[:, :, :], "too many indices"), "too many indices throws"
+
+# --- tensor multi-axis assignment (fast scatter) ---------------------------------------------
+var u = tn.zeros([3, 4])
+u[:, 1] = 5.0
+assert u[:, 1].tolist() == [5, 5, 5], "scalar broadcast into a column"
+u[0:2, 2:4] = 9.0
+assert u[0, 2] == 9 and u[1, 3] == 9 and u[2, 2] == 0, "scalar broadcast into a block"
+var w = tn.zeros([2, 3])
+w[1, :] = tn.arange(0, 3)
+assert w[1, :].tolist() == [0, 1, 2], "tensor RHS assigned into a row"
+
+# --- Series / DataFrame ----------------------------------------------------------------------
+var s = tb.Series([1, 2, 3, 4, 5])
+assert s[1:4].tolist() == [2, 3, 4], "Series positional slice"
+assert s[::-1].tolist() == [5, 4, 3, 2, 1], "Series reversed slice"
+s[1:3] = [20, 30]
+assert s.tolist() == [1, 20, 30, 4, 5], "Series slice-assign"
+var df = tb.DataFrame({"a": [1, 2, 3, 4], "b": [10, 20, 30, 40]}, columns = ["a", "b"])
+assert df[1:3].todict() == {"a": [2, 3], "b": [20, 30]}, "DataFrame row slice"
+
+# --- user class: single- and multi-axis via _getitem_(Slice) ---------------------------------
+class Grid:
+    var _init_ = Function(self, rows): self.rows = rows
+    var _getitem_ = Function(self, r, c):
+        # r is an int here; c may be a Slice (multi-axis subscript delivers mixed keys)
+        if type(c) == "Slice":
+            var ix = c.indices(len(self.rows[r]))
+            var out = []
+            var i = ix[0]
+            while i < ix[1]:
+                out.append(self.rows[r][i])
+                i = i + ix[2]
+            return out
+        return self.rows[r][c]
+var grid = Grid([[1, 2, 3], [4, 5, 6]])
+assert grid[0, 1:3] == [2, 3], "user class multi-axis: int + slice"
+assert grid[1, 0] == 4, "user class multi-axis: int + int"
+
+io.print("spec_slicing: ok")

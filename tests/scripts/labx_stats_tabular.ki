@@ -49,9 +49,9 @@ assert st.median([5, 1, 4, 2, 3]) == 3.0, "median sorts internally"
 assert type(st.median([1, 3, 2])) == "Float", "statistics.median always Float (unlike Series.median)"
 assert st.median([2, 8]).compare(5.0), "median even of two"
 
-# mode: single most common; on a tie the value that FIRST reaches the max count wins (Python parity).
-assert st.mode([2, 2, 1, 1]) == 2, "mode tie: 2 reaches count 2 first (both end tied at 2)"
-assert st.mode([1, 2, 2, 1]) == 2, "mode tie: 2 reaches count 2 before 1's second"
+# mode: single most common; on a tie the FIRST-SEEN value wins (consistent with multimode[0] + CPython).
+assert st.mode([2, 2, 1, 1]) == 2, "mode tie: first-seen (2) wins"
+assert st.mode([1, 2, 2, 1]) == 1, "mode tie: first-seen (1) wins, matching multimode[0]"
 assert st.mode(["a", "b", "a"]) == "a", "mode strings"
 assert raises_msg(Function(): return st.mode([]), "no mode for empty data"), "mode empty throws"
 

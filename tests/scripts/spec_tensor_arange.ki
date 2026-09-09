@@ -1,0 +1,30 @@
+# spec_tensor_arange.ki — regression for the v1.17.1 audit finding that tensor.arange with a
+# fractional step leaked a spurious final element past the exclusive stop. The count is pinned by
+# ceil((stop-start)/step); the fill must emit start + i*step over that fixed count (NumPy's
+# algorithm), NOT running accumulation `x += step` whose float drift appends an 11th element.
+
+var io = import("io")
+var t = import("tensor")
+
+# the symptom: arange(0, 1, 0.1) must have exactly 10 elements, none >= stop
+var a = t.arange(0.0, 1.0, 0.1).tolist()
+assert len(a) == 10, "arange(0,1,0.1) is 10 elements, not 11 (no endpoint leak)"
+assert a[len(a) - 1] < 1.0, "arange last element is strictly below the exclusive stop"
+
+# negative fractional step: arange(1, 0, -0.1) must be 10 elements, no spurious ~1e-16 tail
+var b = t.arange(1.0, 0.0, -0.1).tolist()
+assert len(b) == 10, "arange(1,0,-0.1) is 10 elements, not 11"
+assert b[len(b) - 1] > 0.0, "arange descending last element is strictly above the exclusive stop"
+
+# index-scaled generation is exact at the grid points that are representable
+assert t.arange(0.0, 1.0, 0.25).tolist() == [0.0, 0.25, 0.5, 0.75], "arange quarter-steps exact"
+
+# integer-valued steps unaffected
+assert t.arange(0, 5, 1).tolist() == [0.0, 1.0, 2.0, 3.0, 4.0], "arange integer step unchanged"
+assert t.arange(5.0).tolist() == [0.0, 1.0, 2.0, 3.0, 4.0], "arange(stop) overload unchanged"
+assert len(t.arange(0.0, 0.0, 1.0).tolist()) == 0, "arange empty span is empty"
+
+# count matches ceil((stop-start)/step) at a non-integer boundary
+assert len(t.arange(0.0, 1.05, 0.1).tolist()) == 11, "arange count is ceil(span/step)"
+
+io.print("spec_tensor_arange: ok")

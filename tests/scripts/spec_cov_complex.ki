@@ -1,0 +1,67 @@
+# Coverage for complex numbers and complex matrices: principal-branch analytic functions (cbrt/sqrt/log
+# stay on the plane rather than collapsing to a real root), the genuine-singularity domain errors, the
+# unhashability of Complex, one-sided polar finiteness, Hermitian (conjugated) dot, and ComplexMatrix
+# det/inverse/cross/multiply guards. All numeric results and messages were observed from the binary.
+var io = import("io")
+var C = import("complex")
+var math = import("math")
+
+var throwsMsg = Function(f, needle):
+    try:
+        discard f()
+        return False
+    catch String as e:
+        return needle in e
+
+var closeF = Function(x, y):
+    return (x - y) * (x - y) < 1e-16
+
+var closeC = Function(z, re, im):
+    return closeF(z.real, re) and closeF(z.imag, im)
+
+# --- principal branches: results are complex, NOT the real root you might expect ---
+# cbrt(-8) is the principal cube root 1 + i*sqrt(3), not the real -2
+assert closeC(C.cbrt(C.real(-8)), 1.0, math.sqrt(3.0)), "cbrt(-8) is the principal complex root ~1+1.732i"
+assert closeC(C.sqrt(C.real(-1)), 0.0, 1.0), "sqrt(-1) == i"
+assert closeC(C.log(C.real(-1)), 0.0, math.pi), "log(-1) == i*pi"
+# acosh(0) is a valid point (i*pi/2), it must NOT throw
+assert closeC(C.acosh(C.real(0)), 0.0, math.pi / 2.0), "acosh(0) == i*pi/2 (no throw)"
+
+# --- genuine singularities throw distinct domain errors ---
+assert throwsMsg(Function(): return C.atanh(C.real(1)), "atanh of"), "atanh(1) domain error"
+assert throwsMsg(Function(): return C.atan(C.i), "atan of"), "atan(i) domain error"
+assert throwsMsg(Function(): return C.pow(C.of(0, 0), C.of(-1, 0)), "zero to a negative or complex power"), "pow(0, -1) domain error"
+assert throwsMsg(Function(): return C.log(C.of(0, 0)), "logarithm of zero"), "log(0) domain error"
+# polar rejects a non-finite modulus/angle instead of emitting NaN garbage
+assert throwsMsg(Function(): return C.polar(math.inf, 0), "polar requires finite modulus and angle"), "polar non-finite modulus"
+assert throwsMsg(Function(): return C.polar(1, math.nan), "polar requires finite modulus and angle"), "polar non-finite angle"
+
+# --- Complex is unhashable: it cannot be a Set/Dict key ---
+var addToSet = Function():
+    var s = Set()
+    s.add(C.i)
+    return s
+var useAsKey = Function():
+    var d = {}
+    d[C.i] = 1
+    return d
+assert throwsMsg(addToSet, "unhashable type 'Complex'"), "Complex is not a valid Set element"
+assert throwsMsg(useAsKey, "unhashable type 'Complex'"), "Complex is not a valid Dict key"
+
+# --- Hermitian dot conjugates the first operand: conj(a).b ---
+# u = [1+i, 2], v = [1, i]; conj(u).v = (1-i)*1 + 2*i = 1 + i
+var hd = C.Matrix([[C.of(1, 1), C.of(2, 0)]]).dot(C.Matrix([[C.of(1, 0), C.of(0, 1)]]))
+assert closeC(hd, 1.0, 1.0), "Hermitian dot uses conj(a)*b"
+
+# --- ComplexMatrix numeric routines ---
+var cm = C.Matrix([[C.of(2, 0), C.zero], [C.zero, C.of(4, 0)]])
+assert closeC(cm.determinant(), 8.0, 0.0), "diagonal complex determinant is the product 8"
+assert closeC(cm.inverse()[0, 0], 0.5, 0.0), "complex inverse of diag(2,4) has 1/2 at [0,0]"
+# non-finite element rejected by det/inverse
+assert throwsMsg(Function(): return C.Matrix([[C.of(math.inf, 0), C.zero], [C.zero, C.one]]).determinant(), "matrix contains a non-finite value"), "complex det rejects inf"
+# cross needs two 3-element vectors
+assert throwsMsg(Function(): return C.Matrix([[C.one, C.one]]).cross(C.Matrix([[C.one, C.one]])), "cross is only defined for two 3-element vectors"), "complex cross needs 3-vectors"
+# matrix multiply with mismatched inner dimensions
+assert throwsMsg(Function(): return C.Matrix([[C.one, C.one]]) * C.Matrix([[C.one, C.one]]), "inner dimensions differ"), "complex matmul inner-dim mismatch"
+
+io.print("spec_cov_complex: ok")

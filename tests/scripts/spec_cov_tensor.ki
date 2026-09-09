@@ -1,0 +1,67 @@
+# Coverage for tensor edge cases: degenerate constructors, no numpy-style -1 reshape inference,
+# out-of-range / non-permutation / zero-step guards, empty-axis vs whole-empty reduction messages,
+# NaN reduction semantics (numpy-consistent), and Complex-dtype ordered-op rejection. Every message
+# and value here was observed by running the release binary before being pinned.
+var io = import("io")
+var T = import("tensor")
+var C = import("complex")
+var math = import("math")
+
+var throwsMsg = Function(f, needle):
+    try:
+        discard f()
+        return False
+    catch String as e:
+        return needle in e
+
+# --- degenerate / edge constructors ---
+assert T.linspace(0, 1, 0) == T.zeros([0]), "linspace num=0 -> empty"
+assert T.linspace(5, 9, 1) == T.Tensor([5]), "linspace num=1 -> [start]"
+assert T.eye(0) == T.zeros([0, 0]), "eye(0) -> empty 0x0"
+# diag with a nonzero k offset places the vector on a super-diagonal
+assert T.diag(T.Tensor([1, 2]), 1) == T.Tensor([[0, 1, 0], [0, 0, 2], [0, 0, 0]]), "diag with k=1 offset"
+
+# --- guards that must throw ---
+assert throwsMsg(Function(): return T.arange(0, 5, 0), "arange step must be non-zero"), "arange step 0"
+assert throwsMsg(Function(): return T.linspace(0, 1, -1), "linspace: num must be non-negative"), "linspace num<0"
+# no numpy -1 inference: a negative dimension is simply rejected
+assert throwsMsg(Function(): return T.Tensor([1, 2]).reshape([-1, 2]), "Tensor shape dimensions must be non-negative"), "reshape([-1,2]) rejected"
+assert throwsMsg(Function(): return T.Tensor([1, 2, 3]).take([5]), "index out of range"), "take out-of-bounds"
+assert throwsMsg(Function(): return T.Tensor([[1, 2], [3, 4]]).permute([0, 0]), "permute: axes must be a permutation"), "permute non-permutation"
+assert throwsMsg(Function(): return T.Tensor([1, 2, 3]).slice(0, 3, 0), "slice step cannot be zero"), "slice step 0"
+assert throwsMsg(Function(): return T.concatenate([]), "expected at least one Tensor"), "concatenate empty"
+assert throwsMsg(Function(): return T.stack([]), "expected at least one Tensor"), "stack empty"
+assert throwsMsg(Function(): return T.split(T.Tensor([1, 2, 3]), 2), "not divisible into that many sections"), "split uneven"
+assert throwsMsg(Function(): return T.contract(T.zeros([2, 3]), T.zeros([3, 2]), [1], [0, 1]), "the two axis lists must have equal length"), "contract axis-list length mismatch"
+assert throwsMsg(Function(): return T.tensordot(T.zeros([2, 3]), T.zeros([2, 4]), 1), "contracted dimensions do not match"), "tensordot contracted dim mismatch"
+assert throwsMsg(Function(): return T.zeros([100000, 100000]), "Tensor too large"), "absurd shape rejected"
+
+# --- NaN reductions are numpy-consistent: NaN wins max, and argmax points at it ---
+var nant = T.Tensor([1.0, math.nan, 3.0])
+assert math.isnan(nant.max()), "max propagates NaN"
+assert nant.argmax(0) == T.full([], 1), "argmax over an axis returns the NaN index (0-D tensor)"
+
+# --- empty axis vs whole-empty tensor: different, distinct errors ---
+# reducing a zero-length axis with sum is fine (identity 0); max over it is undefined
+assert T.zeros([0, 3]).sum(0) == T.zeros([3]), "sum over an empty axis is a zero row"
+assert throwsMsg(Function(): return T.zeros([0, 3]).max(0), "cannot reduce over an empty axis"), "max over an empty axis throws"
+# whole-empty reductions each throw their own distinct message
+var e0 = T.zeros([0])
+assert throwsMsg(Function(): return e0.mean(), "mean of an empty tensor"), "empty mean"
+assert throwsMsg(Function(): return e0.median(), "median of an empty tensor"), "empty median"
+assert throwsMsg(Function(): return e0.min(), "min of an empty tensor"), "empty min"
+assert throwsMsg(Function(): return e0.max(), "max of an empty tensor"), "empty max"
+assert throwsMsg(Function(): return e0.argmax(), "argmin/argmax of an empty tensor"), "empty argmax"
+
+# --- Complex-dtype tensors exist, but ordered / Float-only ops reject them ---
+var zc = T.Tensor([1, 2], dtype = "Complex")
+assert zc.dtype() == "Complex", "complex-dtype tensor constructs"
+assert throwsMsg(Function(): return zc.max(), "Float tensors only"), "complex max rejected"
+assert throwsMsg(Function(): return zc.min(), "Float tensors only"), "complex min rejected"
+assert throwsMsg(Function(): return zc.sort(), "Float tensors only"), "complex sort rejected"
+assert throwsMsg(Function(): return zc.argmax(), "Float tensors only"), "complex argmax rejected"
+assert throwsMsg(Function(): return T.norm(zc), "Float tensors only"), "complex norm rejected"
+# a Float (default) tensor refuses to hold a Complex element
+assert throwsMsg(Function(): return T.Tensor([C.of(1, 2)]), "Tensor element expected a number, got 'Complex'"), "Float tensor rejects Complex element"
+
+io.print("spec_cov_tensor: ok")

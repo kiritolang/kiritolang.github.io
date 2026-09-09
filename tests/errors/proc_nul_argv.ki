@@ -1,0 +1,4 @@
+# createprocess/shell must reject a NUL byte in an argument (the poison-NUL truncation-bypass guard),
+# never passing it to the OS. Documented security feature; previously untested.
+var sys = import("sys")
+discard sys.createprocess(["echo", "a" + chr(0) + "b"])

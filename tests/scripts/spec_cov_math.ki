@@ -1,0 +1,48 @@
+# Coverage for the math module (stdlib_math.hpp): the checked float->Integer boundary (floor/ceil),
+# prod's overflow bookkeeping and result-type rules, 128-bit widening in comb, and the gamma/lgamma/
+# copysign edges. Behaviors pinned here were verified against build-bin/ki-release.
+var io = import("io")
+var m = import("math")
+
+var throwsMsg = Function(f, needle):
+    try:
+        discard f()
+        return False
+    catch String as e:
+        return needle in e
+
+var close = Function(a, b) -> Bool:
+    return abs(a - b) < 0.000001
+
+# floor/ceil route through the checked double->int64 convert: inf, NaN, and an overflowing 1e309
+# (which is inf as a double) all throw instead of yielding rubbish.
+assert throwsMsg(Function(): return m.floor(m.inf), "cannot convert infinity to Integer"), "floor(inf)"
+assert throwsMsg(Function(): return m.ceil(m.inf), "cannot convert infinity to Integer"), "ceil(inf)"
+assert throwsMsg(Function(): return m.floor(m.nan), "cannot convert NaN to Integer"), "floor(nan)"
+assert throwsMsg(Function(): return m.ceil(m.nan), "cannot convert NaN to Integer"), "ceil(nan)"
+assert throwsMsg(Function(): return m.floor(1e309), "cannot convert infinity to Integer"), "floor(1e309)"
+
+# prod: a zero factor makes the exact result 0, clearing any overflow that was in progress. Here
+# 2^62 * 4 = 2^64 overflows int64, but the trailing 0 makes the true product 0 (an Integer).
+assert m.prod([2**62, 4, 0]) == 0, "prod zero factor clears overflow"
+assert type(m.prod([2**62, 4, 0])) == "Integer", "prod zero factor stays Integer"
+# Without a rescuing zero, an all-Integer product that overflows throws (no silent wraparound).
+assert throwsMsg(Function(): return m.prod([9223372036854775807, 9223372036854775807]), "prod result too large for Integer"), "prod overflow"
+# A single Float in the mix makes the whole result a Float (no Integer overflow concept applies).
+assert m.prod([2, 3.0, 4]) == 24.0 and type(m.prod([2, 3.0, 4])) == "Float", "prod mixed -> Float"
+
+# comb needs 128-bit intermediate widening: comb(64,32)'s central-coefficient partials exceed u64
+# even though the final result fits int64.
+assert m.comb(64, 32) == 1832624140942590534, "comb(64,32) via 128-bit widening"
+
+# gamma has poles at 0, -1, -2, ...; gamma(0.5) == sqrt(pi).
+assert throwsMsg(Function(): return m.gamma(-1), "math domain error"), "gamma(-1) domain error"
+assert close(m.gamma(0.5), 1.7724538509), "gamma(0.5) == sqrt(pi)"
+# lgamma(5) == ln(4!) == ln(24).
+assert close(m.lgamma(5.0), 3.1780538303), "lgamma(5) == ln(24)"
+
+# copysign carries the sign bit of its second argument, including the sign of a negative zero.
+assert m.copysign(1, -0.0) == -1.0, "copysign picks up -0.0's sign bit"
+assert m.copysign(1, 0.0) == 1.0, "copysign of +0.0"
+
+io.print("spec_cov_math: ok")

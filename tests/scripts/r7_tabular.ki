@@ -187,10 +187,10 @@ ok(AS.sum().index == [], "all-string df.sum -> empty Series")
 ok(AS.mean().tolist() == [], "all-string df.mean -> empty Series")
 ok(AS.describe().columns == [], "all-string describe -> no stat columns")
 
-# all-string / all-None Series numeric aggregations
-ok(tabular.Series(["a", "b"]).sum() == 0, "all-string Series sum -> 0 (no numerics)")
-ok(tabular.Series(["a", "b"]).mean() == None, "all-string Series mean -> None")
-ok(tabular.Series(["a", "b"]).min() == None and tabular.Series(["a", "b"]).max() == None, "all-string Series min/max -> None")
+# all-string Series numeric aggregations THROW (dirty data is not silently dropped)
+ok(throws(Function(): return tabular.Series(["a", "b"]).sum()), "all-string Series sum throws")
+ok(throws(Function(): return tabular.Series(["a", "b"]).mean()), "all-string Series mean throws")
+ok(throws(Function(): return tabular.Series(["a", "b"]).min()) and throws(Function(): return tabular.Series(["a", "b"]).max()), "all-string Series min/max throw")
 ok(tabular.Series([NAN, None]).count() == 0, "Series count skips NaN and None")
 
 # ============================================================ describe exact stat values

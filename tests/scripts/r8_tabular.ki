@@ -5,7 +5,7 @@
 #   * a TRIPLE merge collision (right's _y-suffixed name already exists on the left) -> throws
 #   * None as a GROUP KEY in groupby (a valid, first-seen-ordered key) and as a MERGE KEY (matches)
 #   * valuecounts / unique on a Bool Series (True/False index) + a Series indexed by a None label
-#   * agg with a NON-count reducer on a string by-column -> None (the _numeric filter strips strings)
+#   * agg with a NON-count reducer on a string by-column -> throws (numeric reductions reject non-numeric)
 #   * GroupBy.apply hands fn a real sub-DataFrame whose own methods (col Series .sum/.mean) work
 #   * df.slice with an out-of-range stop -> throws (rowsat indexes positions blindly)
 #   * _infer() octal-looking / hex / scientific / leading-zero / mixed-case-bool specifics
@@ -52,7 +52,7 @@ ok(tb.Series([2, None, 3]).prod() == 6, "Series.prod skips a None operand")
 ok(tb.Series([2, NAN, 5]).prod() == 10, "Series.prod skips a NaN operand")
 ok(tb.Series([True, True, False, True]).prod() == 0, "Series.prod treats Bool as 0/1 (a False zeros it)")
 ok(tb.Series([True, True, True]).prod() == 1, "Series.prod of all-True Bool is 1")
-ok(tb.Series(["a", "b"]).prod() == 1, "Series.prod of all-strings is 1 (no numerics)")
+ok(throws(Function(): return tb.Series(["a", "b"]).prod()), "Series.prod of all-strings throws (non-numeric)")
 ok(tb.Series([2.0, 0.5, 4.0]).prod().compare(4.0), "Series.prod of Floats is exact-comparable")
 # prod is Series-only: a DataFrame has no prod (pin so a future change is noticed)
 ok(throws(Function(): return tb.DataFrame({"a": [1, 2]}, columns=["a"]).prod()), "DataFrame has no prod() (Series-only)")
@@ -99,12 +99,12 @@ ok(sNlab["c"] == 30, "a non-None label still resolves alongside the None label")
 
 # ============================================================ agg NON-count reducer on a string by-col
 # agg can target the by-column itself; `count` tallies group size, but `min`/`max`/`sum` first strip
-# non-numeric values via _numeric -> a string column reduces to None (an easy footgun to pin).
+# non-numeric values via _numeric now THROW in a numeric reduction (no silent drop of dirty data).
 var GK = tb.DataFrame({"k": ["b", "a", "b", "a"], "v": [1, 2, 3, 4]}, columns=["k", "v"])
 var gk = GK.groupby("k")
 ok(gk.agg({"k": "count"})["k"].tolist() == [2, 2], "agg count on the string by-column -> group sizes")
-ok(gk.agg({"k": "min"})["k"].tolist() == [None, None], "agg min on a string by-column -> None (numeric-only reduction)")
-ok(gk.agg({"k": "sum"})["k"].tolist() == [0, 0], "agg sum on a string by-column -> 0 (no numerics)")
+ok(throws(Function(): return gk.agg({"k": "min"})), "agg min on a string by-column throws (non-numeric)")
+ok(throws(Function(): return gk.agg({"k": "sum"})), "agg sum on a string by-column throws (non-numeric)")
 # the value column reduces normally in the same call
 ok(gk.agg({"v": "sum"})["v"].tolist() == [4, 6], "agg sum on the numeric value column")
 

@@ -319,6 +319,60 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         }
     };
 
+    // Allocate the empty SHELL for a container / user instance / native stateful node — its contents,
+    // attributes and state are wired by the later passes; the shell just gives the id a live identity.
+    // Idempotent (skips a node already built): shared by pass 1 (all non-early nodes) AND pass 0c, which
+    // pre-shells the instances/statefuls/containers an eager class-variable initializer captures BY
+    // HANDLE (e.g. `class Holder: var ref = someInstance`) so the class body can bind them before pass 1
+    // runs. A user instance still needs its class resolvable now — pass 0c only pre-shells one once
+    // frontierDepsReady confirms the class is built.
+    auto allocShell = [&](uint32_t i) {
+        if (objs[i].slot) return;   // already built/allocated
+        const Node& nd = nodes[i];
+        switch (nd.tag) {
+            case Tag::List: { objs[i] = roots.add(vm.alloc(std::make_unique<ListVal>())); } break;
+            case Tag::Dict: { objs[i] = roots.add(vm.alloc(std::make_unique<DictVal>())); } break;
+            case Tag::Set:  { objs[i] = roots.add(vm.alloc(std::make_unique<SetVal>()));  } break;
+            case Tag::Object:
+            case Tag::Stateful: {
+                // A user instance's class name may be qualified `module:Class`; resolve fuzzily so it
+                // reconstructs to the right module's class (or falls back to a same-named class).
+                const Handle* cls = vm.findClassFuzzy(nd.s);
+                if (cls && vm.arena().deref(*cls).kind() == ValueKind::Class) {
+                    // a user class: create a bare instance now; attributes/state are filled below
+                    auto inst = std::make_unique<InstanceValue>();
+                    inst->cls = *cls;
+                    // Mirror the RESOLVED class's identity name, not the blob's stored name: when the
+                    // exact qualified class is absent and findClassFuzzy binds a same-named class from
+                    // another module (or a bare re-parse), className must agree with inst->cls so
+                    // type()/str() and isinstance (which walks inst->cls) can never disagree.
+                    inst->className = static_cast<const ClassValue&>(vm.arena().deref(*cls)).name;
+                    inst->ownerVM_ = &vm;   // owner VM for _hash_/_eq_/_bool_ (multi-VM safe)
+                    // Cache the dunder availability now — single-sourced with ClassValue::callFull via
+                    // cacheDunderFlags — so a deserialised instance is hashable/equatable/truthy to the
+                    // SAME extent as a freshly constructed one (previously _bool_ was dropped here,
+                    // silently making a restored falsy instance truthy — A08 F08-2).
+                    const auto& cv = static_cast<const ClassValue&>(vm.arena().deref(*cls));
+                    inst->cacheDunderFlags(cv, vm.arena());
+                    Handle ih = roots.add(vm.alloc(std::move(inst)));
+                    static_cast<InstanceValue&>(vm.arena().deref(ih)).selfHandle = ih;
+                    objs[i] = ih;
+                } else if (nd.tag == Tag::Stateful) {
+                    // a native type that opted in: its registered factory builds an empty object now
+                    // (so cycles/shared refs resolve); _setstate_ fills it in pass 3.
+                    const auto* factory = vm.findDeserializer(nd.s);
+                    if (!factory)
+                        throw KiritoError("cannot deserialize '" + nd.s +
+                                          "': no class or registered deserializer in this VM");
+                    objs[i] = roots.add((*factory)(vm, vm.none()));
+                } else {
+                    throw KiritoError("cannot deserialize: class '" + nd.s + "' is not defined in this VM");
+                }
+            } break;
+            default: break;  // leaves/modules/functions/classes are built by other passes
+        }
+    };
+
     // Pass 0a: leaf values (valued) + modules (re-imported by name). A function/class rebuild may need
     // these already present — a captured scalar, the String nodes naming its free variables, a module.
     for (uint32_t i = 0; i < n; ++i) {
@@ -448,6 +502,12 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
             }
             return out;
         };
+        // Precompute each pending class's eager frontier ONCE. It is purely structural (independent of
+        // `built`), yet frontierDepsReady re-derives it on every readiness scan — up to O(C) scans x
+        // O(C) classes x O(n) per frontier = O(C^2 * n) on a hostile many-class blob. Caching collapses
+        // the whole ordering pass to O(C * n).
+        std::vector<std::vector<uint32_t>> frontierCache(n);
+        for (uint32_t i : pending) frontierCache[i] = eagerFrontier(i);
         // A class waits for the classes its own eager free variables NAME — its base and the classes a
         // class-variable initializer refers to directly. That is precisely what the body dereferences
         // by name, so it never demands an order the graph cannot give.
@@ -471,7 +531,7 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         // is far too late — the initializers run HERE. Values still unbuilt at this point (an instance,
         // a native stateful) keep their placeholder, exactly as before; pass 5 finishes the job.
         auto bindEagerHelpers = [&](uint32_t i) {
-            for (uint32_t id : eagerFrontier(i)) {
+            for (uint32_t id : frontierCache[i]) {
                 if (nodes[id].tag != Tag::Function || !deserScope[id].slot) continue;
                 const Node& d = nodes[id];
                 auto& env = static_cast<EnvValue&>(vm.arena().deref(deserScope[id]));
@@ -498,6 +558,11 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
                 return;
             }
             Handle S = roots.add(vm.newScope(vm.global()));
+            // Pre-shell the instances / native statefuls / containers this class's eager initializers
+            // capture by handle (directly or transitively), so declareFreeVars/bindEagerHelpers bind a
+            // LIVE object rather than a dangling default handle. Their classes are built (guaranteed by
+            // frontierDepsReady); their contents/attributes are wired later in passes 1-4.
+            for (uint32_t id : frontierCache[i]) allocShell(id);
             declareFreeVars(static_cast<EnvValue&>(vm.arena().deref(S)), nd, /*eagerReal=*/true);
             bindEagerHelpers(i);
             try {
@@ -521,8 +586,18 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
         // at DIRECT links, cannot. Reachability is a sound over-approximation of the real dependency,
         // so where it is acyclic it gives the exact order.
         auto frontierDepsReady = [&](uint32_t i) -> bool {
-            for (uint32_t id : eagerFrontier(i))
-                if (id != i && nodes[id].tag == Tag::Class && !built[id]) return false;
+            for (uint32_t id : frontierCache[i]) {
+                const Node& fn = nodes[id];
+                if (id != i && fn.tag == Tag::Class && !built[id]) return false;
+                // An eagerly-captured instance is pre-shelled before this class's body runs, which needs
+                // its class resolvable NOW (built in an earlier pass-0c step, or already live in the VM).
+                // If the class is genuinely absent, frontierDepsReady never passes and the Tier-2 fallback
+                // builds this class anyway, so allocShell raises the precise "class not defined" error.
+                if (fn.tag == Tag::Object) {
+                    const Handle* cls = vm.findClassFuzzy(fn.s);
+                    if (!cls || vm.arena().deref(*cls).kind() != ValueKind::Class) return false;
+                }
+            }
             return true;
         };
         while (remaining > 0) {
@@ -544,52 +619,11 @@ inline Handle rebuild(KiritoVM& vm, const std::vector<Node>& nodes, uint32_t roo
     }
     // Pass 1: containers (empty) + user instances + native stateful shells, so ids resolve before the
     // wiring passes. Instances look their class up by name — a class serialized alongside them was built
-    // in pass 0c, so it is found. Leaves, modules, functions and classes were built above.
+    // in pass 0c, so it is found. Leaves, modules, functions and classes were built above. allocShell is
+    // idempotent, so any node a pass-0c eager class-var capture already shelled is left untouched.
     for (uint32_t i = 0; i < n; ++i) {
-        const Node& nd = nodes[i];
         if (earlyBuilt[i]) continue;   // leaves/modules/functions + the pass-0b2 containers
-        switch (nd.tag) {
-            case Tag::List: { objs[i] = roots.add(vm.alloc(std::make_unique<ListVal>())); } break;
-            case Tag::Dict: { objs[i] = roots.add(vm.alloc(std::make_unique<DictVal>())); } break;
-            case Tag::Set: { objs[i] = roots.add(vm.alloc(std::make_unique<SetVal>())); } break;
-            case Tag::Object:
-            case Tag::Stateful: {
-                // A user instance's class name may be qualified `module:Class`; resolve fuzzily so it
-                // reconstructs to the right module's class (or falls back to a same-named class).
-                const Handle* cls = vm.findClassFuzzy(nd.s);
-                if (cls && vm.arena().deref(*cls).kind() == ValueKind::Class) {
-                    // a user class: create a bare instance now; attributes/state are filled below
-                    auto inst = std::make_unique<InstanceValue>();
-                    inst->cls = *cls;
-                    // Mirror the RESOLVED class's identity name, not the blob's stored name: when the
-                    // exact qualified class is absent and findClassFuzzy binds a same-named class from
-                    // another module (or a bare re-parse), className must agree with inst->cls so
-                    // type()/str() and isinstance (which walks inst->cls) can never disagree.
-                    inst->className = static_cast<const ClassValue&>(vm.arena().deref(*cls)).name;
-                    inst->ownerVM_ = &vm;   // owner VM for _hash_/_eq_/_bool_ (multi-VM safe)
-                    // Cache the dunder availability now — single-sourced with ClassValue::callFull via
-                    // cacheDunderFlags — so a deserialised instance is hashable/equatable/truthy to the
-                    // SAME extent as a freshly constructed one (previously _bool_ was dropped here,
-                    // silently making a restored falsy instance truthy — A08 F08-2).
-                    const auto& cv = static_cast<const ClassValue&>(vm.arena().deref(*cls));
-                    inst->cacheDunderFlags(cv, vm.arena());
-                    Handle ih = roots.add(vm.alloc(std::move(inst)));
-                    static_cast<InstanceValue&>(vm.arena().deref(ih)).selfHandle = ih;
-                    objs[i] = ih;
-                } else if (nd.tag == Tag::Stateful) {
-                    // a native type that opted in: its registered factory builds an empty object now
-                    // (so cycles/shared refs resolve); _setstate_ fills it in pass 3.
-                    const auto* factory = vm.findDeserializer(nd.s);
-                    if (!factory)
-                        throw KiritoError("cannot deserialize '" + nd.s +
-                                          "': no class or registered deserializer in this VM");
-                    objs[i] = roots.add((*factory)(vm, vm.none()));
-                } else {
-                    throw KiritoError("cannot deserialize: class '" + nd.s + "' is not defined in this VM");
-                }
-            } break;
-            default: break;  // leaves/modules/function/class already built above
-        }
+        allocShell(i);
     }
     // A Set element / Dict KEY that is a Stateful node (Bytes/DateTime/Matrix/…) or an Object instance
     // has a CONTENT-based hash whose payload/attributes are only restored later (pass 3 for Stateful,

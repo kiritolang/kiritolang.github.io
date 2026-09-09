@@ -134,8 +134,8 @@ assert not raises(Function(): return xml.parse("<<<>>>")), "angle-bracket soup: 
 assert not raises(Function(): return xml.parse("<")), "lone '<': no crash"
 assert xml.parse("<").tag == "", "lone '<' yields an element with an empty tag"
 assert not raises(Function(): return xml.parse("<a x=1 y>t</a>")), "unquoted attribute: no crash"
-# unquoted value isn't captured (only quoted values are read); the token becomes a bare attr name
-assert xml.parse("<a x=1 y>t</a>").attrib == {"x": "", "1": "", "y": ""}, "unquoted attr value not captured (lenient)"
+# unquoted values ARE captured (lenient recovery); a bare name with no '=' stays an empty-string attr
+assert xml.parse("<a x=1 y>t</a>").attrib == {"x": "1", "y": ""}, "unquoted attr value captured (lenient)"
 assert not raises(Function(): return xml.parse("<!-- unterminated comment")), "unterminated comment: no crash"
 assert not raises(Function(): return xml.parse("<![CDATA[ unterminated")), "unterminated CDATA: no crash"
 assert not raises(Function(): return xml.parse("<?xml unterminated")), "unterminated declaration: no crash"

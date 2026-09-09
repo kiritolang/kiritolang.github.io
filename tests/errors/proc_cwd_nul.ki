@@ -1,0 +1,4 @@
+# createprocess must reject a NUL byte in the cwd argument (poison-NUL truncation-bypass guard,
+# distinct from the argv check in proc_nul_argv): validation and execution must not disagree.
+var sys = import("sys")
+discard sys.createprocess(["echo", "hi"], "work" + chr(0) + "dir")

@@ -62,7 +62,8 @@ Run as `ki greet.ki Ada --count 2 --loud` → prints `HELLO, ADA!` twice.
 Operates on **byte values**: a `List` of Integers (0–255), a [`Bytes`](types.html#bytes), or a
 `String` (encoded as its UTF-8 bytes).
 
-- `encode(data: List | Bytes | String) → String` — Base64-encode the data.
+- `encode(data: List | Bytes | String) → String` — Base64-encode the data. A `List` element outside
+  `0..255` (or a non-Integer) throws rather than being silently coerced mod 256.
 - `decode(s: String) → List` — decode Base64 text back to a list of byte values. Validates its input:
   an invalid character, a lone trailing character, non-zero leftover bits, or any data after the `=`
   padding all throw (no silent truncation). Padless-but-otherwise-valid input decodes.
@@ -234,6 +235,10 @@ square matrix and throw otherwise.
   `serialize` graph codec — both `copy` and `deepcopy` return an independent (deep) instance, since
   Kirito has no per-instance attribute introspection. A value that can't be serialized (a live
   socket/file) is returned unchanged (best effort).
+- **Limitation:** a value shared *between* a plain container and an instance's internals (e.g. a list
+  that is both `outer[1]` and `inst.x`) is copied once per side, so the two copies no longer share
+  identity — the memo can't reach across the instance seam (again, no attribute introspection). Shared
+  references and cycles *within* the plain-container graph are preserved as expected.
 
 ---
 
@@ -407,12 +412,19 @@ correctly; `hash(value)` accepts any hashable value.
 - `crc32(data) → Integer` — CRC-32 (IEEE) checksum (as gzip/PNG use).
 - `crc64(data) → Integer` — CRC-64/XZ checksum, returned as a signed Integer (the top bit makes large
   values negative, since Kirito integers are 64-bit signed).
-- `hash(value) → Integer` — the same hash `Dict`/`Set` bucket their keys by, exposed to Kirito. Works
-  on every hashable value: `Integer` (identity), `Float`, `Bool`, `None`, `String` and `Bytes`
-  (content-based), and a user-class instance whose class defines
-  [`_hash_`](types.html#hashability-set-dict-keys). An unhashable input throws `unhashable type
-  '<name>'` — the same message a `Dict[key]` assignment would produce. Compose this inside a
-  class's own `_hash_` to fold nested attributes (`return hash.hash(self.email)`).
+- `hash(value) → Integer` — a stable, portable **logical** hash for a value: `Integer` (identity),
+  `Float`, `Bool`, `None`, `String` and `Bytes` (content-based), and a user-class instance whose class
+  defines [`_hash_`](types.html#hashability-set-dict-keys). Equal values hash equal (so `hash(1)`,
+  `hash(1.0)` and a `Set` treat them the same). An unhashable input throws `unhashable type '<name>'` —
+  the same message a `Dict[key]` assignment would produce. Compose this inside a class's own `_hash_`
+  to fold nested attributes (`return hash.hash(self.email)`). This value is deterministic and
+  reproducible; it is **not** the internal placement `Dict`/`Set` bucket keys by — those fold in a
+  per-VM random seed to resist algorithmic-complexity (**HashDoS**) attacks, where an attacker who
+  controls keys (untrusted JSON object keys, HTTP parameters) crafts many that collide into one bucket
+  and drive a container to quadratic time. The seed is drawn from the OS CSPRNG per VM and never
+  affects program output (iteration is insertion-ordered; serialization writes values, not hashes), so
+  it changes nothing observable. Set the `KIRITO_HASH_SEED` environment variable (decimal or `0x`-hex)
+  to pin it for a reproducible bucket layout while debugging.
 
 ---
 
@@ -693,8 +705,8 @@ Matrices are arbitrary-shape (any rows × cols). Shape-specific operations (`det
 - `m.determinant() → Float` — determinant (square matrices). A matrix whose elimination produces a
   pivot below ~`1e-15` is treated as singular and the determinant is reported as `0.0` (a conservative
   guard against an ill-conditioned, near-garbage value).
-- `m.inverse() → Matrix` — inverse. **Throws** `"singular"` if the matrix is singular (pivot below the
-  threshold above) — unlike `determinant`, which returns `0.0`.
+- `m.inverse() → Matrix` — inverse. **Throws** `matrix is singular (no inverse)` if the matrix is
+  singular (pivot below the threshold above) — unlike `determinant`, which returns `0.0`.
 - `m.trace() → Float` — sum of the diagonal.
 - `m.sum() → Float` — sum of every element.
 - `m.apply(fn) → Matrix` — a new matrix with `fn` applied to each element.
@@ -743,7 +755,10 @@ The `options` Dict may contain: `headers` (Dict), `params` (Dict → query strin
 form-Dict, or `Bytes` → sent as `application/octet-stream`), `json` (any value → JSON body +
 `application/json`), `files` (Dict → `multipart/form-data`
 upload; value is content or `[filename, content]`), `auth` (`[user, pass]` → HTTP Basic), `timeout`
-(seconds), `allowredirects` (Bool, default `True`) / `maxredirects` (Integer, default 10), `verify`
+(seconds — **default `10`**, bounding connect and each send/recv so a stalled or black-hole host fails
+cleanly instead of hanging; pass a larger number for slow transfers, or `0` to opt out and block
+indefinitely), `allowredirects`
+(Bool, default `True`) / `maxredirects` (Integer, default 10), `verify`
 (Bool, default `True` — TLS certificate verification; trust roots come from the OS — OpenSSL's default
 paths or the `SSL_CERT_FILE` env var on Unix, the Windows system certificate store on Windows — and a
 verify failure reports the specific reason; pass `verify = False` to skip), and `cookies` (Dict). Redirects are followed
@@ -1316,6 +1331,13 @@ instances: an **instance now carries its class**, so `dump.loads(dump.dumps(myIn
 fresh VM **with no import of the defining module** — the class is reconstructed from the blob. (An
 instance whose class is already defined in the loading VM still reconnects to it by name, as before.)
 
+An **eager class-variable initializer may capture a user instance** (or a container of them): a class
+with `var ref = someInstance` round-trips, and the captured instance is restored with its attributes
+and shared identity intact. The one limit is *reading through* such an instance at definition time —
+`var derived = someInstance.n` — which fails cleanly on load: a captured instance's attributes are
+restored only *after* the class body has re-run (they may reference the class itself), so bind the
+instance and read its attributes from a method or after load instead.
+
 Two limitations: a `Function` literal written **inside an f-string** has no captured source, so it
 isn't serializable (define it as a normal binding); and a **native/built-in** function bound to a
 variable (e.g. `var f = math.sqrt`) can't be serialized — wrap it in a Kirito `Function`, or re-`import`
@@ -1352,7 +1374,9 @@ Human-readable **text** serialization → a `String`.
 
 ## statistics
 
-- `mean(data) → Float` — arithmetic mean.
+- `mean(data) → Float` — arithmetic mean. Accumulated in Float (to avoid int64 overflow on large
+  integer data), so for values spanning very different magnitudes the last few ULPs may be lost; the
+  `variance`/`stdev` family uses a numerically-stable two-pass computation.
 - `median(data) → Float` — middle value.
 - `mode(data)` — the single most common value.
 - `multimode(data) → List` — all values tied for most common.
@@ -1570,6 +1594,8 @@ can be assigned to `io.stdout`/`io.stderr`, and it is a context manager (it flus
 - `t.flush() → None` — flush every underlying stream.
 - `t.close() → None` — close the Tee (flushes; does not close the copy streams you supplied).
 - `t.streams() → List` — the underlying streams in write order (copies, then primary).
+- `t.primary` — the primary stream (or `None` for a pure fan-out sink); `t.copies` — the List of copy
+  streams. Both are read-only views of what was passed to the constructor.
 - `tee_stdout(copies)` — a context manager that makes `io.stdout` also write to `copies` inside the
   block, restoring the original on exit (the copy streams are never closed — you own them).
 - `tee_stderr(copies)` — the same for `io.stderr`.
@@ -1615,7 +1641,9 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
 - `full(shape: List, value: Number, dtype = "Float", requiresgrad = False) → Tensor` — filled with `value`.
 - `eye(n: Integer, dtype = "Float", requiresgrad = False) → Tensor` — the n×n identity matrix.
 - `arange(stop)` / `arange(start, stop[, step]) → Tensor` — a 1-D ramp of Floats from `start` up to
-  (but excluding) `stop`, stepping by `step`.
+  (but excluding) `stop`, stepping by `step`. The length is exactly `ceil((stop - start) / step)` and
+  each element is `start + i*step` (like NumPy) — a fractional `step` never leaks a spurious final
+  element past `stop` from accumulated rounding (`arange(0, 1, 0.1)` is 10 elements, not 11).
 
 ### Tensor object
 
@@ -1830,7 +1858,8 @@ io.print(w[0, 0], b[0, 0])      # ~ 2.0  ~ 1.0
 - `wrap(text[, width]) → List` — wrap into a list of lines.
 - `fill(text[, width]) → String` — wrap into a single newline-joined String.
 - `indent(text, prefix) → String` — prefix each line.
-- `dedent(text) → String` — remove the common leading whitespace.
+- `dedent(text) → String` — remove the common leading whitespace shared by all non-blank lines
+  (matching CPython `textwrap.dedent`, including normalizing whitespace-only lines to empty).
 
 ---
 

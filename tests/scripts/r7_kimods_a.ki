@@ -210,9 +210,9 @@ ok(throws(Function(): return st.stdev([5])), "stdev needs >= 2 samples")
 # ===================================================================== heapq: deeper edges
 # Heap of comparable Lists drains lexicographically (a [priority, payload] priority queue).
 ok(hq.nsmallest(2, [[2, "b"], [1, "z"], [1, "a"]]) == [[1, "a"], [1, "z"]], "heap of pairs drains lexicographically")
-# merge over Strings (re-heaps every element -> tolerant of unsorted inputs).
+# merge over Strings; a proper k-way merge that assumes already-sorted inputs.
 ok(hq.merge([["a", "c"], ["b", "d"]]) == ["a", "b", "c", "d"], "merge over Strings")
-ok(hq.merge([[3, 1], [2, 0]]) == [0, 1, 2, 3], "merge re-sorts even unsorted inputs")
+ok(hq.merge([[1, 3], [0, 2]]) == [0, 1, 2, 3], "k-way merge of sorted inputs")
 ok(hq.merge([[]]) == [], "merge of one empty list")
 # heapreplace where the new item is larger than the whole heap: old min returned, new item sinks.
 var hrBig = hq.heapify([1, 2, 3])

@@ -137,8 +137,7 @@ inline bool floatEqual(double l, double r) {
 // Integer↔Float ==/!=/<,<=,>,>= EXACT, so equality agrees with ordering and with hashing.
 inline int compareIntFloat(int64_t i, double f) {
     if (f != f) return 2;                                 // NaN is unordered with everything
-    constexpr double kTwo63 = 9223372036854775808.0;      // 2^63, exact in double (-kTwo63 == INT64_MIN)
-    if (f >= kTwo63) return -1;                            // f >= 2^63 > every int64  -> i < f
+    if (f >= kTwo63) return -1;                            // f >= 2^63 > every int64  -> i < f (shared boundary, builtins.hpp)
     if (f < -kTwo63) return +1;                            // f < -2^63 < every int64  -> i > f
     double ff = std::floor(f);                             // f now in [-2^63, 2^63): floor(f) fits int64
     int64_t fi = static_cast<int64_t>(ff);                // exact (ff integral and in range)
@@ -338,8 +337,7 @@ inline std::size_t FloatVal::hash() const {
     // An integral Float that denotes an exact int64 must hash identically to that Integer, so `==`
     // agrees with hashing (Set/Dict membership). The range must match intFloatEqual EXACTLY: [-2^63, 2^63)
     // (NaN/±inf fall through to the double hash — inf == floor(inf) but is out of range).
-    if (value_ == std::floor(value_) &&
-        value_ >= -9223372036854775808.0 && value_ < 9223372036854775808.0)
+    if (value_ == std::floor(value_) && doubleFitsInt64(value_))
         return std::hash<int64_t>{}(static_cast<int64_t>(value_));
     return std::hash<double>{}(value_);
 }
@@ -396,10 +394,62 @@ inline std::vector<std::string> IntVal::inspectMembers() const {
 }
 inline Handle FloatVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) {
     if (name == "compare") return makeNumericCompare(vm, self);
+    // repr() -> the shortest decimal String that parses back to this exact Float (via the shared
+    // floatToRoundtrip, the same formatter json/dump use). String(x) stays display-oriented (%.15g,
+    // may lose a digit); repr() is the round-trippable form for data serialization (e.g. CSV).
+    if (name == "repr")
+        return vm.alloc(std::make_unique<NativeFunction>(
+            "repr", std::vector<NativeParam>{}, "String",
+            [self](KiritoVM& v, std::span<const Handle>) -> Handle {
+                return v.makeString(floatToRoundtrip(static_cast<const FloatVal&>(v.arena().deref(self)).value()));
+            }));
     return Object::getAttr(vm, self, name);
 }
 inline std::vector<std::string> FloatVal::inspectMembers() const {
-    return {"compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool"};
+    return {"compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool", "repr() -> String"};
+}
+
+// --- SliceVal out-of-line members ------------------------------------------------------------
+
+inline std::string SliceVal::str(StringifyCtx& ctx) const {
+    auto part = [&](Handle h) -> std::string { return ctx.arena.deref(h).str(ctx); };
+    return "slice(" + part(start_) + ", " + part(stop_) + ", " + part(step_) + ")";
+}
+
+inline Handle SliceVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) {
+    if (name == "start") return start_;
+    if (name == "stop")  return stop_;
+    if (name == "step")  return step_;
+    // .indices(length) -> [start, stop, step] resolved against `length` (Python slice.indices
+    // semantics: None-fill, negative-wrap, clamp; step 0 rejected) — the ergonomic way a user
+    // `_getitem_` turns a Slice into concrete bounds. Mirrors the clamping the built-in String/List/
+    // Tensor slicers apply.
+    if (name == "indices")
+        return makeMethod(vm, "indices", {"length"}, [self](KiritoVM& v, std::span<const Handle> a) -> Handle {
+            const auto& sl = static_cast<const SliceVal&>(v.arena().deref(self));
+            int64_t n = Args(v, a, "slice.indices")[0].asInt("slice.indices length");
+            if (n < 0) throw KiritoError("slice.indices: length must be non-negative");
+            auto isNone = [&](Handle h) { return v.arena().deref(h).kind() == ValueKind::None; };
+            int64_t step = isNone(sl.step_) ? 1 : Value(v, sl.step_).asInt("slice step");
+            if (step == 0) throw KiritoError("slice step cannot be zero");
+            int64_t lo = step < 0 ? -1 : 0, hi = step < 0 ? n - 1 : n;
+            auto bound = [&](Handle h, int64_t dflt) -> int64_t {
+                if (isNone(h)) return dflt;
+                int64_t x = Value(v, h).asInt("slice bound");
+                if (x < 0) x += n;
+                return std::clamp<int64_t>(x, lo, hi);
+            };
+            int64_t start = bound(sl.start_, step < 0 ? hi : lo);
+            int64_t stop  = bound(sl.stop_,  step < 0 ? lo : hi);
+            RootScope rs(v);   // protect the fresh ints until the List owns them (non-barriered build)
+            Handle hs = rs.add(v.makeInt(start)), he = rs.add(v.makeInt(stop)), hp = rs.add(v.makeInt(step));
+            auto out = std::make_unique<ListVal>();
+            out->elems.push_back(hs);
+            out->elems.push_back(he);
+            out->elems.push_back(hp);
+            return v.alloc(std::move(out));
+        });
+    return Object::getAttr(vm, self, name);
 }
 
 // --- StrVal out-of-line members --------------------------------------------------------------
@@ -510,10 +560,46 @@ inline bool kiLessThan(KiritoVM& vm, Handle a, Handle b) {
 }
 
 inline Handle ListVal::getItem(KiritoVM& vm, std::span<const Handle> keys) {
-    return elems[sequenceIndex(vm, elems.size(), singleKey(*this, keys))];
+    Handle k = singleKey(*this, keys);
+    const Object& ko = vm.arena().deref(k);
+    if (ko.kind() == ValueKind::Slice) {   // a Slice value applied to a list == the `[a:b:c]` slice
+        const auto& sv = static_cast<const SliceVal&>(ko);
+        return slice(vm, sv.startH(), sv.stopH(), sv.stepH());
+    }
+    return elems[sequenceIndex(vm, elems.size(), k)];
 }
 inline void ListVal::setItem(KiritoVM& vm, std::span<const Handle> keys, Handle value) {
-    setElem(vm.arena(), sequenceIndex(vm, elems.size(), singleKey(*this, keys)), value);
+    Handle k = singleKey(*this, keys);
+    const Object& ko = vm.arena().deref(k);
+    if (ko.kind() == ValueKind::Slice) {   // Python list slice-assignment `lst[a:b:c] = iterable`
+        const auto& sv = static_cast<const SliceVal&>(ko);
+        tns::SliceRange r = tns::resolveSlice(vm, sv.startH(), sv.stopH(), sv.stepH(), elems.size());
+        std::vector<Handle> repl;   // RHS elements — reachable via `value` (operand-stack rooted here)
+        for (const Value& e : Value(vm, value).items()) repl.push_back(e.handle());
+        if (r.step == 1) {
+            // contiguous splice (may resize). Rebuild through the barriered clear+append (no alloc
+            // between capturing `result` and re-appending, so the captured handles stay live).
+            std::vector<Handle> result;
+            result.reserve(static_cast<std::size_t>(r.start) + repl.size() + (elems.size() - static_cast<std::size_t>(r.stop)));
+            for (std::ptrdiff_t i = 0; i < r.start; ++i) result.push_back(elems[static_cast<std::size_t>(i)]);
+            for (Handle h : repl) result.push_back(h);
+            for (std::size_t i = static_cast<std::size_t>(r.stop); i < elems.size(); ++i) result.push_back(elems[i]);
+            clearElems();
+            for (Handle h : result) append(vm.arena(), h);
+        } else {
+            // extended slice: element counts must match; assign in place. Count is computed
+            // overflow-safely (a near-INT64 step must not be walked via `i += step`); each concrete
+            // index r.start + j*r.step then stays within the clamped range, so it can't overflow.
+            std::ptrdiff_t count = tns::rangeCount(r.start, r.stop, r.step);
+            if (static_cast<std::size_t>(count) != repl.size())
+                throw KiritoError("list slice assignment size mismatch: " + std::to_string(count) +
+                                  " target(s) but " + std::to_string(repl.size()) + " value(s)");
+            for (std::ptrdiff_t j = 0; j < count; ++j)
+                setElem(vm.arena(), static_cast<std::size_t>(r.start + j * r.step), repl[static_cast<std::size_t>(j)]);
+        }
+        return;
+    }
+    setElem(vm.arena(), sequenceIndex(vm, elems.size(), k), value);
 }
 inline Handle ListVal::binary(KiritoVM& vm, BinOp op, Handle self, Handle rhs) {
     const Object& b = vm.arena().deref(rhs);
@@ -955,7 +1041,7 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             if (a.empty()) throw KiritoError("remove expects a value");
             auto& s = set_of(vm, self);
             const Object& v = vm.arena().deref(a[0]);
-            if (!v.hashable()) throw KiritoError("unhashable type '" + v.typeName() + "'");  // canonical
+            if (!v.hashable()) throw unhashableError(v.typeName());  // canonical
                 // message (matches Set.add / Dict / hash()) — before the not-found path below.
             if (!s.remove(vm.arena(), a[0])) throw KiritoError("remove: value not in Set");
             return vm.none();
@@ -1861,7 +1947,7 @@ inline std::size_t InstanceValue::hash() const {
         throw KiritoError("_hash_ requires an active interpreter context");
     const Handle* m = findMethod(vm->arena(), "_hash_");
     if (!m)
-        throw KiritoError("unhashable type '" + className + "'");
+        throw unhashableError(className);
     // Root the receiver + method through the call; a nested collection during the callee could
     // otherwise sweep them out from under us.
     RootScope rs(*vm);
@@ -1953,6 +2039,15 @@ inline Handle InstanceValue::callKw(KiritoVM& vm, std::span<const Handle> args,
 }
 inline Handle InstanceValue::getItem(KiritoVM& vm, std::span<const Handle> keys) {
     return invokeOp(vm, *this, "_getitem_", keys, "'" + className + "' object is not indexable");
+}
+// A single-axis slice `x[a:b:c]` on an instance is delivered to `_getitem_` as ONE Slice value, so a
+// class handles single- AND multi-axis slicing uniformly through `_getitem_` (inspecting Slice args)
+// — no separate slice protocol. (Multi-axis `x[a, b:c]` already flows through getItem as mixed keys.)
+inline Handle InstanceValue::slice(KiritoVM& vm, Handle start, Handle stop, Handle step) {
+    RootScope rs(vm);   // keep the Slice (and its bounds, via children()) alive across the user _getitem_
+    Handle s = rs.add(vm.alloc(std::make_unique<SliceVal>(start, stop, step)));
+    std::array<Handle, 1> keys{s};
+    return getItem(vm, keys);
 }
 inline void InstanceValue::setItem(KiritoVM& vm, std::span<const Handle> keys, Handle value) {
     std::vector<Handle> args(keys.begin(), keys.end());
@@ -2186,6 +2281,14 @@ inline std::string resolveTypeName(KiritoVM& vm, Handle typeH) {
             return n;
     }
     return "";
+}
+
+// Is `typeH` a usable type spec — a class value, a built-in type constructor, or a type-name String?
+// isinstance's second argument AND a typed `catch` clause share this predicate, so a non-type (the
+// None literal, an Integer, an instance) is rejected with a clear error at BOTH sites rather than
+// silently "never matching" (which would hide a never-firing catch handler).
+inline bool isValidTypeSpec(KiritoVM& vm, Handle typeH) {
+    return vm.arena().deref(typeH).kind() == ValueKind::Class || !resolveTypeName(vm, typeH).empty();
 }
 
 inline Handle KiFunction::call(KiritoVM& vm, std::span<const Handle> args) {
@@ -3451,6 +3554,14 @@ inline void KiritoVM::installBuiltins() {
         return vm.makeInt(vm.arena().deref(args[0]).length(vm).value());
     });
 
+    // slice(start, stop, step = None) -> a Slice value (the same value the `a:b:c` subscript literal
+    // builds). Use None for an omitted bound: slice(None, 4) is `:4`, slice(2, None) is `2:`.
+    defSig("slice", {{"start"}, {"stop"}, {"step", "", none()}}, "Slice",
+           [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        Args args(vm, a, "slice");
+        return vm.alloc(std::make_unique<SliceVal>(args[0].handle(), args[1].handle(), args[2].handle()));
+    });
+
     defSig("import", {{"name", "String"}}, "Module", [](KiritoVM& vm, std::span<const Handle> args) -> Handle {
         if (args.size() != 1) throw KiritoError("import expected 1 argument");
         const Object& a = vm.arena().deref(args[0]);
@@ -3468,12 +3579,9 @@ inline void KiritoVM::installBuiltins() {
             case ValueKind::Bool: { return vm.makeInt(static_cast<const BoolVal&>(o).value() ? 1 : 0); } break;
             case ValueKind::Float: {
                 double d = static_cast<const FloatVal&>(o).value();
-                // Casting a non-finite or out-of-range double to int64 is UB; reject it cleanly.
-                if (std::isnan(d)) throw KiritoError("cannot convert Float NaN to Integer");
-                if (std::isinf(d)) throw KiritoError("cannot convert Float infinity to Integer");
-                if (d >= 9223372036854775808.0 || d < -9223372036854775808.0)
-                    throw KiritoError("Float is out of Integer range");
-                return vm.makeInt(static_cast<int64_t>(d));
+                // Casting a non-finite or out-of-range double to int64 is UB; the shared checked
+                // convert (builtins.hpp) rejects it cleanly — one guard for every float→int site.
+                return vm.makeInt(toInt64Checked(d, "Integer"));
             } break;
             case ValueKind::String: {
                 const std::string& s = static_cast<const StrVal&>(o).value();
@@ -3509,15 +3617,22 @@ inline void KiritoVM::installBuiltins() {
                         std::tolower(static_cast<unsigned char>(s[i + 1])) == 'x')
                         throw std::invalid_argument("embedded base prefix");
                     std::size_t pos = 0;
-                    // Parse the magnitude as unsigned and bit-cast (two's-complement negate if signed),
-                    // mirroring the lexer's intLiteral, so the full 64-bit range round-trips:
-                    // Integer(String(INT64_MIN)), Integer(hex(-1)) == 0xFFFFFFFFFFFFFFFF == -1, etc.
-                    // (std::stoll would reject any magnitude >= 2^63.)
+                    // Parse the magnitude as unsigned and bit-cast (two's-complement negate if signed).
+                    // A NON-DECIMAL literal (hex/oct/bin) is a bit pattern, so the full 64-bit range is
+                    // meaningful and wraps intentionally: Integer("0xFFFFFFFFFFFFFFFF") == -1. A DECIMAL
+                    // string, though, is a magnitude converted from arbitrary runtime data: a value that
+                    // doesn't fit int64 must FAIL FAST, not silently wrap. `stoull` alone only rejects
+                    // >= 2^64, so the whole [2^63, 2^64) window would wrap — we range-check base-10 below.
                     uint64_t mag = std::stoull(s.substr(i), &pos, base);
                     // Reject trailing garbage (e.g. "42abc", "12.5") — surrounding whitespace allowed.
                     std::size_t end = i + pos;
                     while (end < s.size() && std::isspace(static_cast<unsigned char>(s[end]))) ++end;
                     if (end != s.size()) throw std::invalid_argument("trailing");
+                    // Decimal overflow guard: a non-negative value must fit INT64_MAX; a negative one may
+                    // reach |INT64_MIN| = 2^63. (INT64_MIN itself still round-trips via the bit-cast.)
+                    if (base == 10 && mag > (neg ? static_cast<uint64_t>(INT64_MAX) + 1ULL
+                                                 : static_cast<uint64_t>(INT64_MAX)))
+                        throw std::out_of_range("decimal magnitude exceeds the 64-bit Integer range");
                     return vm.makeInt(static_cast<int64_t>(neg ? (~mag + 1ULL) : mag));
                 } catch (...) {
                     throw KiritoError("cannot convert String to Integer: '" + s + "'");
@@ -3677,8 +3792,7 @@ inline void KiritoVM::installBuiltins() {
         }
         if (std::isnan(x)) throw KiritoError("cannot round NaN to Integer");
         if (std::isinf(x)) throw KiritoError("cannot round infinity to Integer");
-        if (x >= 9223372036854775808.0 || x < -9223372036854775808.0)
-            throw KiritoError("rounded value out of Integer range");
+        if (!doubleFitsInt64(x)) throw KiritoError("rounded value out of Integer range");
         return vm.makeInt(static_cast<int64_t>(std::llround(x)));  // round(x) -> Integer
     });
     // range is variadic by position (range(stop) / range(start, stop) / range(start, stop, step))
@@ -3965,7 +4079,7 @@ inline void KiritoVM::installBuiltins() {
         // class chain (so two same-named classes in different modules are distinct); a constructor or a
         // String type-name is matched by name. isInstanceOf is the single matcher shared with a typed
         // `catch`, so the two can never disagree.
-        if (vm.arena().deref(a[1]).kind() != ValueKind::Class && resolveTypeName(vm, a[1]).empty())
+        if (!isValidTypeSpec(vm, a[1]))
             throw KiritoError("isinstance second argument must be a class, a built-in type, or a type-name String");
         return vm.makeBool(isInstanceOf(vm, a[0], a[1]));
     });

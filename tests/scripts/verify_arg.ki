@@ -124,8 +124,8 @@ pb.flag("alpha")
 var rb = pb.parse(["-ab"])
 assert rb["a"] == "-ab" and rb["alpha"] == False, "-ab is a single positional, not bundled short flags"
 
-# --- PIN: `--` alone is treated as an unknown option (empty name), not an end-of-options marker. ---
-assert raises_msg(Function(): return arg.Parser().parse(["--"]), "unknown option: --"), "bare -- is an unknown option"
+# --- PIN: `--` ends option parsing (POSIX); remaining tokens become positionals (here, none). ---
+assert arg.Parser().parse(["--"])["rest"] == [], "bare -- is an end-of-options marker"
 # --- PIN: `-` alone is a positional (len 1, not a short option). ---
 var ps = arg.Parser()
 ps.positional("a")

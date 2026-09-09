@@ -58,6 +58,7 @@ enum class Op : uint8_t {
     GetItem,          // a: (key count) keys then obj... -> push obj[keys]
     SetItem,          // a: (key count) value, keys, obj -> obj[keys] = value
     GetSlice,         //    step,stop,start,obj on stack -> push obj[start:stop:step]
+    MakeSlice,        //    step,stop,start on stack -> push a Slice(start, stop, step) value (a subscript key)
     BuildList,        // a: (count) pop count items -> push a List
     BuildSet,         // a: (count) pop count items -> push a Set
     BuildDict,        // a: (count) pop count key/value pairs -> push a Dict
