@@ -89,6 +89,18 @@ against docs (whether everything is documented).
 Note missing capabilities that force awkward workarounds (e.g. no multi-axis slicing `t[:, 2:4]`,
 no instance slice protocol). Propose a clean design; flag it as its own scoped feature round.
 
+## Only user-code-provable bugs count (hard rule)
+A finding is in scope — to be counted, reported as a bug, and fixed — ONLY if it can be provably
+demonstrated with **user code**: either a Kirito (`.ki`) program, or C++ that uses the public embedding
+API (the Value API and the documented `KiritoVM`/`Object` surface — not private internals). The
+reproducer IS the proof: the exact `.ki` or embedding-API snippet plus its actual-vs-expected output
+(or the asan/UBSan/tsan trace it triggers). If a defect exists in the source text but CANNOT be reached
+from any valid user program or supported embedding call (UB in a branch no user input can reach, an
+internal helper with no caller path from user code, a wrong result behind an unreachable guard), it is
+OUT OF SCOPE: do not fix it and do not count it as a bug — at most note it once as an informational
+"unreachable/internal" observation. No theoretical, read-only, or "looks wrong but I can't trigger it"
+findings. The test is simple: *show the user code that breaks.* If you can't write it, it isn't a bug.
+
 ## Method & discipline
 - Reproduce everything on a real binary. For iteration use the ASAN build; run the FULL 4-variant
   gate (debug/release/asan/tsan) only at the very end. Reuse already-compiled binaries to run new
