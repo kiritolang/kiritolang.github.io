@@ -585,10 +585,12 @@ private:
     // Measured: a bare recursion physically overflows a DEFAULT 8 MB stack at ~490 ASan frames, so the
     // old count of 500 sat right on the cliff — it raced the overflow and lost (a hard stack-overflow
     // abort) unless the harness first raised the stack (the post-work gate does `ulimit -s 262144`).
-    // 250 keeps ~2x margin so the COUNT guard wins even at the default stack, letting a plain
-    // `ki-asan` run (or a third-party tester's) exercise the recursion-limit path cleanly. No test
-    // relies on recursing this deep successfully; the unbounded-recursion tests only assert the throw.
-    std::size_t maxCallDepth_ = 250;
+    // 350 trips well below ~490 so the COUNT guard wins even at the default stack (a plain `ki-asan`
+    // run, or a third-party tester's, gets a clean "maximum recursion depth exceeded" instead of a
+    // SIGSEGV), while staying above the deepest LEGITIMATE recursion in the suite — the GC-unwind test
+    // in test_exceptions_cpp descends 301 frames before the user throws, and must reach its own throw,
+    // not this guard. The unbounded-recursion tests only assert that the guard fires at all.
+    std::size_t maxCallDepth_ = 350;
     // Sanitizer frames are far larger (redzones + shadow), so bound native stack usage tightly too.
     std::size_t maxStackBytes_ = 2u * 1024 * 1024;
 #else
