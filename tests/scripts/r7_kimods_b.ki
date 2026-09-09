@@ -138,10 +138,10 @@ ok(tw.dedent("") == "", "textwrap dedent empty")
 # tab-indented common prefix removed
 ok(tw.dedent("\tx\n\ty") == "x\ny", "textwrap dedent tab prefix")
 # a blank/short line below the common indent is kept verbatim (its content, if any, stays)
-ok(tw.dedent("    a\n  \n    b") == "a\n  \nb", "textwrap dedent short blank line kept")
+ok(tw.dedent("    a\n  \n    b") == "a\n\nb", "textwrap dedent normalizes whitespace-only line to empty (CPython)")
 # all-blank input: no non-blank line sets minIndent -> identity
 ok(tw.dedent("\n\n") == "\n\n", "textwrap dedent all-blank identity")
-ok(tw.dedent("   ") == "   ", "textwrap dedent single blank line identity")
+ok(tw.dedent("   ") == "", "textwrap dedent normalizes a lone whitespace-only line to empty (CPython)")
 
 # =====================================================================================  base64
 var b64 = import("base64")

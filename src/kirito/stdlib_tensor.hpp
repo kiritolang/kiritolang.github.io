@@ -2472,11 +2472,15 @@ public:
             double countf = ((span > 0) == (step > 0)) ? std::ceil(span / step) : 0.0;
             if (!std::isfinite(countf) || countf > static_cast<double>(tns::kMaxElems))
                 throw KiritoError("Tensor too large");
+            std::size_t n = countf > 0 ? static_cast<std::size_t>(countf) : 0;
             std::vector<double> data;
-            data.reserve(countf > 0 ? static_cast<std::size_t>(countf) : 0);
-            if (step > 0) for (double x = start; x < stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
-            else for (double x = start; x > stop; x += step) { data.push_back(x); if (data.size() > tns::kMaxElems) throw KiritoError("Tensor too large"); }
-            std::size_t n = data.size();
+            data.reserve(n);
+            // Generate start + i*step over the fixed count (NumPy's algorithm), NOT running
+            // accumulation `x += step`: the latter lets float drift push a spurious final element
+            // past the exclusive stop (arange(0,1,0.1) must be 10 elements, not 11 — the 11th being
+            // 0.999... < 1.0). The count is already pinned by ceil(span/step) above, so index-scaled
+            // fill both matches NumPy exactly and stays within the kMaxElems bound checked above.
+            for (std::size_t i = 0; i < n; ++i) data.push_back(start + static_cast<double>(i) * step);
             return tns::make(vm, TensorVal::FT(tensor::Shape{n}, std::move(data)));
         });
 

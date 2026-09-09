@@ -573,6 +573,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `TLS handshake with <host> failed<why>` | Handshake failed (no CA, cipher, etc.) | Set `SSL_CERT_FILE` or pass `verify=False` |
 | `TLS certificate verification failed for <host> (pass verify=False to skip)` | The peer cert didn't verify | Trust the CA or pass `verify=False` |
 | `SSL_write failed` | TLS write error mid-request | Reconnect |
+| `HTTPS recv timed out` | The `timeout` elapsed waiting for the TLS response — a stalled or black-hole peer (never surfaced as a silent empty body) | Raise the `timeout`, or check the peer |
 | `https requires building with KIRITO_ENABLE_TLS (OpenSSL); use http:// otherwise` | HTTPS on a non-TLS build | Rebuild with TLS or use http:// |
 | `SSL_CTX_new failed` | OpenSSL could not create the TLS context | Environment/OpenSSL problem — retry |
 | `starttls: only a stream (TCP) socket can use TLS` | `socket.starttls` on a UDP/datagram socket | TLS needs a stream socket |

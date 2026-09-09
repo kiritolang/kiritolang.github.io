@@ -705,8 +705,8 @@ Matrices are arbitrary-shape (any rows × cols). Shape-specific operations (`det
 - `m.determinant() → Float` — determinant (square matrices). A matrix whose elimination produces a
   pivot below ~`1e-15` is treated as singular and the determinant is reported as `0.0` (a conservative
   guard against an ill-conditioned, near-garbage value).
-- `m.inverse() → Matrix` — inverse. **Throws** `"singular"` if the matrix is singular (pivot below the
-  threshold above) — unlike `determinant`, which returns `0.0`.
+- `m.inverse() → Matrix` — inverse. **Throws** `matrix is singular (no inverse)` if the matrix is
+  singular (pivot below the threshold above) — unlike `determinant`, which returns `0.0`.
 - `m.trace() → Float` — sum of the diagonal.
 - `m.sum() → Float` — sum of every element.
 - `m.apply(fn) → Matrix` — a new matrix with `fn` applied to each element.
@@ -1594,6 +1594,8 @@ can be assigned to `io.stdout`/`io.stderr`, and it is a context manager (it flus
 - `t.flush() → None` — flush every underlying stream.
 - `t.close() → None` — close the Tee (flushes; does not close the copy streams you supplied).
 - `t.streams() → List` — the underlying streams in write order (copies, then primary).
+- `t.primary` — the primary stream (or `None` for a pure fan-out sink); `t.copies` — the List of copy
+  streams. Both are read-only views of what was passed to the constructor.
 - `tee_stdout(copies)` — a context manager that makes `io.stdout` also write to `copies` inside the
   block, restoring the original on exit (the copy streams are never closed — you own them).
 - `tee_stderr(copies)` — the same for `io.stderr`.
@@ -1639,7 +1641,9 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
 - `full(shape: List, value: Number, dtype = "Float", requiresgrad = False) → Tensor` — filled with `value`.
 - `eye(n: Integer, dtype = "Float", requiresgrad = False) → Tensor` — the n×n identity matrix.
 - `arange(stop)` / `arange(start, stop[, step]) → Tensor` — a 1-D ramp of Floats from `start` up to
-  (but excluding) `stop`, stepping by `step`.
+  (but excluding) `stop`, stepping by `step`. The length is exactly `ceil((stop - start) / step)` and
+  each element is `start + i*step` (like NumPy) — a fractional `step` never leaks a spurious final
+  element past `stop` from accumulated rounding (`arange(0, 1, 0.1)` is 10 elements, not 11).
 
 ### Tensor object
 
@@ -1854,7 +1858,8 @@ io.print(w[0, 0], b[0, 0])      # ~ 2.0  ~ 1.0
 - `wrap(text[, width]) → List` — wrap into a list of lines.
 - `fill(text[, width]) → String` — wrap into a single newline-joined String.
 - `indent(text, prefix) → String` — prefix each line.
-- `dedent(text) → String` — remove the common leading whitespace.
+- `dedent(text) → String` — remove the common leading whitespace shared by all non-blank lines
+  (matching CPython `textwrap.dedent`, including normalizing whitespace-only lines to empty).
 
 ---
 

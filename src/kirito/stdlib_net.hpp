@@ -730,11 +730,25 @@ inline std::string httpExchange(const Url& u, const std::string& request, double
             sent += static_cast<std::size_t>(n);
         }
         char buf[4096];
-        int n;
-        while ((n = SSL_read(ssl, buf, sizeof(buf))) > 0) {
-            raw.append(buf, static_cast<std::size_t>(n));
-            // Bound the response like the plain-TCP recvAll path, so a chatty HTTPS server can't OOM us.
-            if (raw.size() > net::kMaxRecvAll) throw KiritoError("HTTPS response exceeds the size limit");
+        for (;;) {
+            int n = SSL_read(ssl, buf, sizeof(buf));
+            if (n > 0) {
+                raw.append(buf, static_cast<std::size_t>(n));
+                // Bound the response like the plain-TCP recvAll path, so a chatty HTTPS server can't OOM us.
+                if (raw.size() > net::kMaxRecvAll) throw KiritoError("HTTPS response exceeds the size limit");
+                continue;
+            }
+            // SSL_read returned no data: classify the stop instead of assuming a clean EOF. A recv TIMEOUT
+            // (SO_RCVTIMEO fired) must fail loud like recvAll/tlsRecvAll — otherwise a stalled or black-hole
+            // HTTPS peer yields a short/empty body that the caller (raiseforstatus sees status 0) silently
+            // treats as a successful response. A genuine connection close (close_notify, a bare TCP FIN, or
+            // OpenSSL's "unexpected EOF while reading") ends the body, exactly as a FIN does on plain TCP —
+            // HTTPS bodies here are framed by Connection: close, so a peer close is the normal terminator.
+            int err = SSL_get_error(ssl, n);
+            bool timedOut = err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE ||
+                            (err == SSL_ERROR_SYSCALL && netcompat::lastErrorIsWouldBlock());
+            if (timedOut) throw KiritoError("HTTPS recv timed out");
+            break;
         }
     } catch (...) {
         SSL_shutdown(ssl); SSL_free(ssl); SSL_CTX_free(ctx); netcompat::closeSocket(fd);

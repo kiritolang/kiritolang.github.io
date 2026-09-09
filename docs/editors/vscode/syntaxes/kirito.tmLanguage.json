@@ -188,7 +188,7 @@
 
     "types": {
       "name": "support.type.kirito",
-      "match": "\\b(Integer|Float|String|Bool|Bytes|List|Set|Dict|Array|Any)\\b"
+      "match": "\\b(Integer|Float|String|Bool|Bytes|List|Set|Dict|Array|Any|Slice|Ellipsis)\\b"
     },
 
     "builtin-classes": {
@@ -204,7 +204,7 @@
 
     "builtins": {
       "name": "support.function.builtin.kirito",
-      "match": "\\b(abs|all|any|bin|bitand|bitnot|bitor|bitxor|chr|divmod|enumerate|filter|format|fromhex|hasattr|hex|id|import|inspect|isinstance|iter|len|map|max|min|oct|ord|pow|range|reversed|round|shl|shr|sorted|sum|type|zip)\\b"
+      "match": "\\b(abs|all|any|bin|bitand|bitnot|bitor|bitxor|chr|divmod|enumerate|filter|format|fromhex|hasattr|hex|id|import|inspect|isinstance|iter|len|map|max|min|oct|ord|pow|range|reversed|round|shl|shr|slice|sorted|sum|type|zip)\\b"
     },
 
     "function-call": {

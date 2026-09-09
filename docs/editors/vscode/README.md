@@ -5,7 +5,8 @@ Language support for the [Kirito](https://github.com/kiritolang/kiritolang.githu
 ## Features
 
 - **Syntax highlighting** (TextMate grammar, `source.kirito`): keywords and logical operators,
-  `True`/`False`/`None`/`self`, built-in types (incl. `Bytes`), builtin functions, dunder/special
+  `True`/`False`/`None`/`self`, built-in types (incl. `Bytes`, `Slice`/`Ellipsis`), builtin functions
+  (incl. `slice`), dunder/special
   methods, standard-library module names, `#` comments, decimal/hex/octal/binary/float numbers, and
   every string flavour — single/double-quoted, triple-quoted, `f"…"`/`f'…'` f-strings with `{…}`
   interpolation and `:format-spec`, and `r"…"` raw strings (plus `rf`/`fr`), with escape sequences.
@@ -20,8 +21,8 @@ Language support for the [Kirito](https://github.com/kiritolang/kiritolang.githu
 Local: copy this folder to your extensions dir and reload VS Code —
 
 ```sh
-cp -r docs/editors/vscode ~/.vscode/extensions/kirito-language-0.2.1
-# Windows: %USERPROFILE%\.vscode\extensions\kirito-language-0.2.1
+cp -r docs/editors/vscode ~/.vscode/extensions/kirito-language-0.2.2
+# Windows: %USERPROFILE%\.vscode\extensions\kirito-language-0.2.2
 ```
 
 Or package a `.vsix`:
@@ -29,7 +30,7 @@ Or package a `.vsix`:
 ```sh
 npm install -g @vscode/vsce
 vsce package
-code --install-extension kirito-language-0.2.1.vsix
+code --install-extension kirito-language-0.2.2.vsix
 ```
 
 The grammar also works in any TextMate-grammar-aware tool (Sublime Text, the `bat` pager, …) via

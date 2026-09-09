@@ -616,14 +616,19 @@ var indent = Function(text, prefix) -> String:
 
 var dedent = Function(text) -> String:
     var lines = text.split("\n")
-    # Remove the common leading-whitespace PREFIX STRING (not merely its length): mixed tab/space
-    # indents only dedent by the characters actually shared, matching CPython textwrap.dedent. The old
-    # length-based strip mangled lines like "\t\tfoo" / "  bar" (no common prefix -> must stay unchanged).
-    var prefix = None
+    # Match CPython textwrap.dedent exactly. First normalize whitespace-only lines to empty (CPython's
+    # _whitespace_only_re.sub('', text)); such lines never constrain the common margin and must not
+    # survive with stray spaces in the result. Then remove the common leading-whitespace PREFIX STRING
+    # (not merely its length): mixed tab/space indents only dedent by the characters actually shared,
+    # so a line with no common prefix (e.g. "\t\tfoo" vs "  bar") stays unchanged.
+    var norm = []
     for line in lines:
-        var stripped = line.lstrip()
-        if len(stripped) == 0:
+        norm.append("" if len(line.lstrip()) == 0 else line)
+    var prefix = None
+    for line in norm:
+        if len(line) == 0:
             continue                                    # blank/whitespace-only lines don't constrain it
+        var stripped = line.lstrip()
         var ws = line[0 : len(line) - len(stripped)]    # this line's leading whitespace
         if prefix == None:
             prefix = ws
@@ -634,11 +639,13 @@ var dedent = Function(text) -> String:
                 k = k + 1
             prefix = prefix[0:k]
     if prefix == None or len(prefix) == 0:
-        return text
+        return "\n".join(norm)
     var plen = len(prefix)
     var out = []
-    for line in lines:
-        if line[0:plen] == prefix:
+    for line in norm:
+        if len(line) == 0:
+            out.append("")
+        elif line[0:plen] == prefix:
             out.append(line[plen:])
         else:
             out.append(line)                            # doesn't start with the common prefix: leave as-is

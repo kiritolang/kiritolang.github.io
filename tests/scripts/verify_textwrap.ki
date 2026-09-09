@@ -56,10 +56,17 @@ assert tw.dedent("  a\n    b") == "a\n  b", "dedent to the minimum indent"
 assert tw.dedent("no indent") == "no indent", "dedent no common indent is a no-op"
 assert tw.dedent("") == "", "dedent empty string"
 assert tw.dedent("\ta\n\tb") == "a\nb", "dedent tabs as leading whitespace"
-# a blank / whitespace-only line is ignored when computing the common indent, and preserved
+# a blank line is ignored when computing the common indent, and stays blank
 assert tw.dedent("    a\n\n    b") == "a\n\nb", "dedent ignores blank lines for min-indent"
 assert tw.dedent("      x") == "x", "dedent single indented line"
 assert type(tw.dedent("  x")) == "String", "dedent returns String"
+# regression (v1.17.1 audit): a WHITESPACE-ONLY line (spaces/tabs, not merely empty) must be
+# NORMALIZED to empty like CPython textwrap.dedent — the old code left its stray spaces behind,
+# contradicting its own "matching CPython" comment.
+assert tw.dedent("    a\n  \n    b") == "a\n\nb", "dedent normalizes a whitespace-only line to empty"
+assert tw.dedent("\t\ta\n\t\n\t\tb") == "a\n\nb", "dedent normalizes a whitespace-only tab line"
+# whitespace-only lines are normalized even when there is no common indent to strip
+assert tw.dedent("  \n  ") == "\n", "dedent normalizes whitespace-only lines with no common prefix"
 
 # ============================================================ HARDENING / silent probes
 # non-String input has no .split -> raises
