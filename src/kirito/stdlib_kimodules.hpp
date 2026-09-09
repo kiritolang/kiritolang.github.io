@@ -1500,6 +1500,16 @@ class Series:
 
     var _setitem_ = Function(self, key, value):
         if type(key) == "Slice":                                 # positional slice-assignment
+            # A Series pairs `values` with an equal-length `index`; a length-CHANGING slice-assign
+            # (`s[1:3] = [4 items]`) would grow `values` alone and silently desync the two. Require the
+            # replacement to match the number of selected positions (pandas raises here too), so the
+            # invariant holds and no realignment is needed. `len(self.values[key])` is the safe,
+            # count-driven selection size.
+            var count = len(self.values[key])
+            if type(value) != "List" or len(value) != count:
+                throw ("Series slice-assignment needs a List of length " + String(count) +
+                       " (the selected positions); got " +
+                       (String(len(value)) + " items" if type(value) == "List" else "a " + type(value)))
             self.values[key] = value
             return
         var pos = self.index.index(key) if key in self.index else key

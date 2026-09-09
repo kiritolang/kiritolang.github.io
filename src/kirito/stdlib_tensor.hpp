@@ -801,9 +801,19 @@ struct IndexAxis {
 };
 
 // Element count of a resolved [start, stop) strided range (start/stop already clamped by resolveSlice).
+// The span (|stop - start|) is bounded by the axis length, but `step` is an arbitrary user value: adding
+// it to the span, or negating it, would overflow for a near-INT64 step (UB). So divide the bounded span
+// by the step MAGNITUDE (via unsigned two's-complement negation, well-defined even for INT64_MIN); a
+// huge step simply yields a count of 1. The result is ≤ span, so it fits back into ptrdiff_t.
 inline std::ptrdiff_t rangeCount(std::ptrdiff_t start, std::ptrdiff_t stop, std::ptrdiff_t step) {
-    if (step > 0) return start < stop ? (stop - start + step - 1) / step : 0;
-    return start > stop ? (start - stop + (-step) - 1) / (-step) : 0;
+    if (step > 0) {
+        if (start >= stop) return 0;
+        return static_cast<std::ptrdiff_t>((static_cast<std::uint64_t>(stop - start) - 1) /
+                                           static_cast<std::uint64_t>(step) + 1);
+    }
+    if (start <= stop) return 0;
+    std::uint64_t mag = ~static_cast<std::uint64_t>(step) + 1;   // |step|, valid even for INT64_MIN
+    return static_cast<std::ptrdiff_t>((static_cast<std::uint64_t>(start - stop) - 1) / mag + 1);
 }
 
 // The selected region of a source shape under a basic-index plan: a constant base offset, the output
@@ -827,7 +837,11 @@ inline IndexGeom indexGeometry(const tensor::Shape& srcShape, const std::vector<
         } else {
             g.constOff += ax.start * ss;
             g.outShape.push_back(static_cast<std::size_t>(ax.count));
-            g.outStride.push_back(ax.step * ss);
+            // The per-output stride `ax.step * ss` is only ever multiplied by a coordinate in
+            // [0, count); when count <= 1 that coordinate is always 0, so the product is unused — and
+            // for a near-INT64 step it would overflow (UB). Only form it when count > 1, where a
+            // multi-element range forces |step| < axis length, keeping step*stride bounded by numel.
+            g.outStride.push_back(ax.count > 1 ? ax.step * ss : 0);
         }
     }
     return g;

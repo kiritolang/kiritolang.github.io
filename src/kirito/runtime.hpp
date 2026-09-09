@@ -587,13 +587,15 @@ inline void ListVal::setItem(KiritoVM& vm, std::span<const Handle> keys, Handle 
             clearElems();
             for (Handle h : result) append(vm.arena(), h);
         } else {
-            // extended slice: element counts must match; assign in place.
-            std::vector<std::ptrdiff_t> idxs;
-            for (std::ptrdiff_t i = r.start; (r.step > 0) ? (i < r.stop) : (i > r.stop); i += r.step) idxs.push_back(i);
-            if (idxs.size() != repl.size())
-                throw KiritoError("list slice assignment size mismatch: " + std::to_string(idxs.size()) +
+            // extended slice: element counts must match; assign in place. Count is computed
+            // overflow-safely (a near-INT64 step must not be walked via `i += step`); each concrete
+            // index r.start + j*r.step then stays within the clamped range, so it can't overflow.
+            std::ptrdiff_t count = tns::rangeCount(r.start, r.stop, r.step);
+            if (static_cast<std::size_t>(count) != repl.size())
+                throw KiritoError("list slice assignment size mismatch: " + std::to_string(count) +
                                   " target(s) but " + std::to_string(repl.size()) + " value(s)");
-            for (std::size_t j = 0; j < idxs.size(); ++j) setElem(vm.arena(), static_cast<std::size_t>(idxs[j]), repl[j]);
+            for (std::ptrdiff_t j = 0; j < count; ++j)
+                setElem(vm.arena(), static_cast<std::size_t>(r.start + j * r.step), repl[static_cast<std::size_t>(j)]);
         }
         return;
     }

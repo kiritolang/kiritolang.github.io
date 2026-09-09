@@ -842,6 +842,8 @@ large* — live under [Resource guards](#resource-guards-repetition--padding--ra
 | `option --<name> requires a value` / `option <token> requires a value` | A value-taking option given at the end with no value | Supply the option's value |
 | `Series: index length does not match values length` | Constructing a `Series` with mismatched index/values | Match the lengths |
 | `Series: length mismatch (<a> vs <b>)` | Element-wise op between Series of different lengths | Align the Series first |
+| `Series slice-assignment needs a List of length <n> (the selected positions); got …` | `s[a:b] = v` whose value length ≠ the number of selected positions (would desync values from the index) | Assign a List matching the slice length |
+| `DataFrame: row slice-assignment (df[a:b] = ...) is not supported; assign a column df[name] = ... or use a boolean mask` | Assigning to a `df[a:b]` row slice | Assign a column or use a boolean-mask selection |
 | `DataFrame: data must be a Dict of columns or a List of rows` | `DataFrame(x)` with an unsupported shape | Pass a column-Dict or a row-List |
 | `DataFrame: all columns must have the same length` | Ragged column data | Make every column the same length |
 | `DataFrame: new column length must match row count` | Assigning a column of the wrong length | Match the row count |
