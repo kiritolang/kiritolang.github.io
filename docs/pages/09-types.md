@@ -171,7 +171,7 @@ io.print(", ".join(["a", "b", "c"])) # "a, b, c"
 | `s.removesuffix(p)` | Drop suffix `p` if present. |
 | `s.ljust(w[, fill])` | Left-justify to width `w`, padding with `fill`. |
 | `s.rjust(w[, fill])` | Right-justify to width `w`, padding with `fill`. |
-| `s.center(w[, fill])` | Center within width `w`, padding with `fill`. |
+| `s.center(w[, fill])` | Center within width `w`, padding with `fill`. When the padding is uneven, the extra unit goes on the **right** (`"ab".center(5)` → `" ab  "`) — a simple, consistent rule that can differ from CPython's length-parity bias. |
 | `s.zfill(w)` | Left-pad with zeros to width `w` (sign-aware). |
 | `s.partition(sep)` | Split once at the first `sep` into `[head, sep, tail]`. |
 | `s.rpartition(sep)` | Split once at the last `sep` into `[head, sep, tail]`. |

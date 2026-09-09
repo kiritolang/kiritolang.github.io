@@ -75,13 +75,19 @@ cmake 3.28, ninja, C++20. Thin, out-of-source CMake: the header-only core is an 
 builds `ki` plus the auto-discovered CTest suite, reusing a shared precompiled header. Static linking by
 default; cross-platform (Linux + Windows minimum), with platform code isolated behind `*_compat.hpp`.
 
-Four CMake presets, each a full clean build of the CTest suite: **`debug`** (g++ `-O0`, strictest warning
-gate: `-Werror -Wall -Wextra -Wconversion -Wshadow …`), **`release`** (`-O2`), **`asan`** (Address/UBSan),
-**`tsan`** (ThreadSanitizer — the data-race gate for the `parallel` dispatcher).
+CMake presets cover two orthogonal axes — the sanitizer axis (none/`-O2`, ASan+UBSan, TSan) and the TLS
+axis (OpenSSL on/off) — so **both the OpenSSL-linked paths and the no-OpenSSL fallbacks are sanitized by
+default**: **`release`** (`-O2`, hardened `-Werror` warning gate incl. `-Wconversion -Wshadow …`, TLS on —
+the shipped artifact + only `-O2` build), **`asan`** (Address/UBSan, TLS **on** — memory/UB over the
+crypto/TLS glue), **`asan-notls`** (Address/UBSan, TLS **off** — the no-OpenSSL build), **`tsan`**
+(ThreadSanitizer, the data-race gate for the `parallel` dispatcher). A **`debug`** preset (g++ `-O0`) exists
+for fast local iteration but is **not** in the gate — its hardened warnings are already carried by the
+sanitizer presets and now `release`, so as a gate variant it was redundant.
 
 **Post-work gate** (`tools/scripts/post_work_check.sh`, contract in `.claude/POST_WORK_CHECKLIST.md`): runs
-the variants **sequentially** — `debug`, then `release`, **commit+push once both are green**, then `asan`
-and `tsan` (fix and re-push any failure). Run it before calling a change done.
+the variants **sequentially** — `release`, **commit+push once it is green**, then `asan`, `asan-notls`,
+`tsan` (fix and re-push any failure). OpenSSL (libssl-dev) is a prerequisite for release/asan/tsan (TLS-on);
+only asan-notls builds without it. Run it before calling a change done.
 
 > **Never run two builds at once, and never hand-roll `-j$(nproc)`.** Sequential is a **memory** constraint,
 > not style: every test TU includes the whole header-only interpreter, so one compile peaks ~1.7 GB RSS at

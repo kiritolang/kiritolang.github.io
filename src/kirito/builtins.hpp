@@ -220,9 +220,11 @@ public:
                static_cast<const BoolVal&>(other).value_ == value_;
     }
     bool hashable() const override { return true; }
-    // Hash like the Integer 0/1 it compares/keys equal to (True == 1), via the same std::hash<int64_t>
-    // the Integer/BigInt families use — so `a == b => bucket(a) == bucket(b)` holds by construction and
-    // does not lean on std::hash<int64_t> happening to be identity on the current libstdc++/libc++.
+    // Bool is its own type and — Kirito is strongly typed — never compares equal to an Integer
+    // (`True == 1` is False; `{True: _, 1: _}` keeps two distinct keys). So the only hash constraint is
+    // AMONG Bools (equal Bools share a hash), which the two-valued `value_` satisfies trivially. Hashing
+    // to 0/1 via the same std::hash<int64_t> the Integer/BigInt families use is just a simple, stable
+    // choice: True and Integer 1 may land in the same bucket, but equals() keeps them separate keys.
     std::size_t hash() const override { return std::hash<int64_t>{}(value_ ? 1 : 0); }
 
 private:
