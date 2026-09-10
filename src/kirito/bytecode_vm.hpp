@@ -240,6 +240,24 @@ public:
                     stack_.resize(base - 1);                     // pop callee + all arguments
                     push(r);
                 } break;
+                case Op::CallMethod: {
+                    const MethodCallSpec& mspec = proto.methodCalls[in.a];
+                    const CallSpec& spec = mspec.call;
+                    const std::string& mname = proto.names[mspec.nameIndex];
+                    std::size_t total = spec.positional + spec.names.size();
+                    std::size_t base = stack_.size() - total;
+                    Handle recv = stack_[base - 1];              // receiver sits below the arguments
+                    std::span<const Handle> pos(stack_.data() + base, spec.positional);
+                    std::vector<NamedArg> named;
+                    named.reserve(spec.names.size());
+                    for (std::size_t i = 0; i < spec.names.size(); ++i)
+                        named.push_back({spec.names[i], stack_[base + spec.positional + i]});
+                    Handle r = located(in.span, [&] {
+                        return applyMethodCall(vm_, recv, mname, pos, named, ownerClass(), hasOwner_, in.span);
+                    });
+                    stack_.resize(base - 1);                     // pop receiver + all arguments
+                    push(r);
+                } break;
                 case Op::MakeFunction: {
                     auto fn = std::make_unique<KiFunction>(proto.funcs[in.a], scope());
                     fn->sourceFile = vm_.currentChunkFile();

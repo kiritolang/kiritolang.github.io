@@ -689,12 +689,29 @@ private:
                 }
             }
         }
-        compileExpr(*e.callee);
         CallSpec spec;
         for (const auto& arg : e.args) {
             if (arg.name.empty()) ++spec.positional;
             else spec.names.push_back(arg.name);
         }
+        // Fused method call: `obj.method(args)` compiles to one CallMethod (receiver + args on the
+        // stack) instead of GetAttr (which allocates a bound method) followed by Call. Semantically
+        // identical — CallMethod's runtime handler falls back to the exact GetAttr+Call path for every
+        // case it can't fast-path (see applyMethodCall).
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e.callee.get())) {
+            compileExpr(*mem->object);            // push the receiver (callee slot)
+            for (const auto& arg : e.args)
+                if (arg.name.empty()) compileExpr(*arg.value);
+            for (const auto& arg : e.args)
+                if (!arg.name.empty()) compileExpr(*arg.value);
+            MethodCallSpec mspec;
+            mspec.nameIndex = addName(mem->name);
+            mspec.call = std::move(spec);
+            proto_.methodCalls.push_back(std::move(mspec));
+            emit(Op::CallMethod, static_cast<uint32_t>(proto_.methodCalls.size() - 1), e.span);
+            return;
+        }
+        compileExpr(*e.callee);
         for (const auto& arg : e.args)            // positional values, in source order
             if (arg.name.empty()) compileExpr(*arg.value);
         for (const auto& arg : e.args)            // then keyword values, in CallSpec.names order

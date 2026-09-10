@@ -2591,6 +2591,42 @@ inline Handle evalMemberGet(KiritoVM& vm, Handle obj, const std::string& name, H
     return vm.arena().deref(obj).getAttr(vm, obj, name);
 }
 
+// The fused method call `obj.name(args)` (the CallMethod opcode). Semantically identical to
+// evalMemberGet + applyCall, but for the common case — a public (non-underscore) method on a plain
+// instance with no shadowing attribute — it resolves the method and invokes it with the receiver
+// prepended, skipping the per-call bound-method allocation makeBoundMethod would perform. Every other
+// case (shadowing/callable fields, `_super_`, private/dunder names, non-function class attributes, and
+// non-instance receivers such as native types, modules, classes) falls through to the exact
+// evalMemberGet + applyCall path, so behavior — privacy, _super_, kwargs, errors, spans — is unchanged.
+inline Handle applyMethodCall(KiritoVM& vm, Handle recv, const std::string& name,
+                              std::span<const Handle> pos, std::span<const NamedArg> named,
+                              Handle currentClass, bool hasCurrentClass, SourceSpan span) {
+    Object& o = vm.arena().deref(recv);
+    // Only a genuine user InstanceValue (not a native class, which also reports ValueKind::Instance)
+    // takes the fast path — the dynamic_cast mirrors evalMemberGet's own guard.
+    InstanceValue* instp = (o.kind() == ValueKind::Instance) ? dynamic_cast<InstanceValue*>(&o) : nullptr;
+    if (instp && !name.empty() && name.front() != '_') {
+        InstanceValue& inst = *instp;
+        if (inst.attrs.find(name) == inst.attrs.end()) {          // no shadowing field
+            if (const Handle* method = inst.findMethod(vm.arena(), name)) {
+                ValueKind mk = vm.arena().deref(*method).kind();
+                if (mk == ValueKind::Function || mk == ValueKind::NativeFunction) {
+                    RootScope rs(vm);
+                    std::vector<Handle> full;
+                    full.reserve(pos.size() + 1);
+                    full.push_back(recv);
+                    for (Handle a : pos) full.push_back(a);
+                    for (Handle h : full) rs.add(h);
+                    return applyCall(vm, *method, full, named, /*hiddenLeading=*/1);
+                }
+            }
+        }
+    }
+    Handle callable = evalMemberGet(vm, recv, name, currentClass, hasCurrentClass, span);
+    RootScope rs(vm); rs.add(callable);
+    return applyCall(vm, callable, pos, named);
+}
+
 // Spread an iterable `value` across `n` unpack slots, with an optional starred slot at `starIndex`
 // (-1 if none) that absorbs the surplus into a List. Returns the n slot values (the caller must root
 // them). Used by the bytecode engine's Unpack opcode (var/for/tuple-assign destructuring).

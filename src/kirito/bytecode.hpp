@@ -51,6 +51,8 @@ enum class Op : uint8_t {
     ClearResult,      //    frame.result = None    (every other statement)
     LoadResult,       //    push frame.result      (top-level program return value)
     Call,             // a: dispatch calls[a]; the callee then its args are on the stack
+    CallMethod,       // a: dispatch methodCalls[a] — obj.method(args): receiver then args on the stack
+                      //    (a fused GetAttr+Call that avoids allocating a bound-method wrapper)
     MakeFunction,     // a: push a closure of funcs[a] capturing the current scope
     BuildClass,       // a: (classes[a]) base on stack (if any) -> build the class, bind its name
     GetAttr,          // a: replace top with top.names[a]  (member read; handles _super_/privacy)
@@ -115,6 +117,13 @@ struct CallSpec {
     std::vector<std::string> names;  // keyword argument names, value-push order
 };
 
+// A method-call site (obj.method(args)): the method name (index into Proto.names) plus the ordinary
+// call shape. The receiver is pushed first (in the callee slot), then the args, exactly like Call.
+struct MethodCallSpec {
+    uint32_t nameIndex = 0;
+    CallSpec call;
+};
+
 struct Instr {
     Op op;
     uint32_t a = 0;
@@ -129,6 +138,7 @@ struct Proto {
     std::vector<std::string> names;                   // identifiers (names/attrs/format specs)
     std::vector<const ast::FunctionExpr*> funcs;      // MakeFunction targets
     std::vector<CallSpec> calls;                      // Call targets
+    std::vector<MethodCallSpec> methodCalls;          // CallMethod targets (obj.method(args))
     std::vector<UnpackSpec> unpacks;                  // Unpack targets
     std::vector<const ast::ClassStmt*> classes;       // BuildClass targets (name/base/body)
     std::vector<SwitchTable> switches;                // SwitchDispatch targets (compile-time case tables)

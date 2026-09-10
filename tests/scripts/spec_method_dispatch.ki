@@ -1,0 +1,65 @@
+# Regression for the fused CallMethod opcode (E5): a method call must behave EXACTLY like GetAttr+Call
+# across inheritance, _super_ (named-only), private methods, callable instance fields, keyword args to
+# methods, and native receivers (which take the fallback path).
+var io = import("io")
+var int = import("int")
+
+# --- inheritance + _super_ (both _init_ and an overridden method) ---
+class Animal:
+    var _init_ = Function(self, name):
+        self.name = name
+    var speak = Function(self):
+        return self.name + " makes a sound"
+class Dog(Animal):
+    var _init_ = Function(self, name):
+        self._super_()._init_(name)                 # _super_ named call
+        self.legs = 4
+    var speak = Function(self):
+        return self._super_().speak() + " (woof)"   # _super_ overridden method
+var d = Dog("Rex")
+assert d.name == "Rex" and d.legs == 4
+assert d.speak() == "Rex makes a sound (woof)"
+
+# --- keyword args to a method (positional, keyword, and mixed) ---
+class Calc:
+    var add = Function(self, a, b):
+        return a + b
+var c = Calc()
+assert c.add(1, 2) == 3
+assert c.add(a = 10, b = 20) == 30
+assert c.add(1, b = 5) == 6
+
+# --- a private method called from within the class (fallback path; privacy allowed) ---
+class Bank:
+    var _init_ = Function(self, bal):
+        self.bal = bal
+    var _fee = Function(self):
+        return 2
+    var withdraw = Function(self, amt):
+        return self.bal - amt - self._fee()
+var b = Bank(100)
+assert b.withdraw(10) == 88
+# ... and the same private method is NOT accessible from outside the class
+var threw = False
+try:
+    discard b._fee()
+catch as e:
+    threw = True
+assert threw, "private method must stay inaccessible outside its class"
+
+# --- a callable stored in an instance FIELD (not a method) is get-then-called ---
+class Holder:
+    var _init_ = Function(self, fn):
+        self.fn = fn
+var h = Holder(Function(x): return x * x)
+assert h.fn(7) == 49
+
+# --- native-receiver method calls take the fallback and stay correct ---
+var lst = [3, 1, 2]
+lst.append(4)
+assert lst == [3, 1, 2, 4]
+assert "hello".upper() == "HELLO"
+assert {"a": 1, "b": 2}.get("b") == 2
+assert int.big(4).modpow(13, 497) == int.big(445)   # native-class (BigInt) method
+
+io.print("OK method dispatch")
