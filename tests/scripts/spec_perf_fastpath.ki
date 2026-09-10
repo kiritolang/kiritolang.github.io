@@ -1,0 +1,69 @@
+# Regression for the VM/compiler fast paths: A1 (inline Int/Float arithmetic + ordering), A2
+# (compile-time constant folding), A3 (Dict/Set string-key hashing). Results must match the general
+# interpreted semantics exactly, and folding must never swallow a runtime error or evaluate dead code.
+var io = import("io")
+
+# --- A1: integer arithmetic, two's-complement wraparound, ordering (same as the general path) ---
+var a = 7
+var b = 3
+assert a + b == 10 and a - b == 4 and a * b == 21
+var big = 9223372036854775807            # INT64_MAX
+assert big + 1 == -9223372036854775808   # wraps exactly like the general path
+assert (a < 10) and (b <= 3) and (a > b) and (a >= 7) and not (b > a)
+
+# --- A1: float arithmetic + ordering ---
+var x = 1.5
+var y = 0.25
+assert x + y == 1.75 and x - y == 1.25 and x * y == 0.375
+assert (y < x) and (x >= 1.5) and not (x < y)
+# mixed Int/Float still routes through the general path, correctly
+assert 1 + 2.5 == 3.5 and 2 < 2.5 and 5 / 2 == 2.5
+
+# --- A2: constant folding preserves results ---
+assert 60 * 60 * 24 == 86400
+assert "a" + "b" + "c" == "abc"
+assert (2 ** 10) == 1024
+assert 10 // 3 == 3 and 10 % 3 == 1
+assert (not False) and (-(-5) == 5)
+
+# --- A2: a constant that would throw is NOT folded away — it still throws at runtime (catchable) ---
+var caught = False
+try:
+    var z = 1 // 0
+catch as e:
+    caught = True
+assert caught, "1 // 0 still throws at runtime (catchable) after the folding pass"
+
+# --- A2: short-circuit dead code is never evaluated (folding respects it) ---
+assert (True or (1 // 0 == 0)) == True
+assert (False and (1 // 0 == 0)) == False
+
+# --- A3: Dict / Set string-key hashing (cached bucketHash on repeated lookups) ---
+var d = {"one": 1, "two": 2, "three": 3}
+assert d["two"] == 2
+d["four"] = 4
+assert d.get("four") == 4 and d.get("nope", -1) == -1
+assert ("three" in d) and not ("five" in d)
+var s = Set(["a", "b", "c"])
+assert ("b" in s) and not ("z" in s)
+s.add("z")
+assert "z" in s
+var hits = 0
+for i in range(0, 1000):
+    if "two" in d:
+        hits = hits + 1
+assert hits == 1000
+
+# --- A5: instance attribute access (transparent-keyed attrs map) ---
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var total = Function(self):
+        return self.x + self.y
+var p = Point(3, 4)
+assert p.x == 3 and p.y == 4 and p.total() == 7
+p.x = 10
+assert p.x == 10 and p.total() == 14
+
+io.print("OK perf fastpath")

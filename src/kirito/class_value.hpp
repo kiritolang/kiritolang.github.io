@@ -1,6 +1,7 @@
 #ifndef KIRITO_CLASS_VALUE_HPP
 #define KIRITO_CLASS_VALUE_HPP
 
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -14,6 +15,18 @@
 namespace kirito {
 
 namespace ast { struct ClassStmt; }  // the class's definition AST (for source-capture serialization)
+
+// A transparent (heterogeneous) hasher for std::string-keyed maps, so the hot attribute-lookup path
+// can hash a std::string_view / const char* directly and avoid constructing a temporary std::string
+// per access. The standard guarantees a std::string and a std::string_view with the same bytes hash
+// equal, so this is consistency-safe; paired with std::equal_to<> for transparent comparison.
+struct TransparentStrHash {
+    using is_transparent = void;
+    std::size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
+    std::size_t operator()(const std::string& s) const noexcept { return std::hash<std::string_view>{}(s); }
+    std::size_t operator()(const char* s) const noexcept { return std::hash<std::string_view>{}(std::string_view(s)); }
+};
+using AttrMap = fum::unordered_map<std::string, Handle, TransparentStrHash, std::equal_to<>>;
 
 // Kirito's special (operator) methods use dunder names with single underscores:
 // _init_, _str_, _add_, _eq_, _getitem_, _call_, ... These map an operator/protocol slot to the
@@ -113,7 +126,7 @@ public:
     bool hasEqDunder   = false;   // class (or a base) defines `_eq_` → equals() uses it
     bool hasBoolDunder = false;   // class (or a base) defines `_bool_` → truthy() calls it
 
-    fum::unordered_map<std::string, Handle> attrs;
+    AttrMap attrs;  // transparent-keyed: getAttr looks up by string_view without a temporary key
 
     ValueKind kind() const override { return ValueKind::Instance; }
     std::string typeName() const override { return className; }

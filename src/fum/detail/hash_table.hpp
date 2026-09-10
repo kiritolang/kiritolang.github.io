@@ -61,6 +61,16 @@ template <typename Hash>
 struct is_avalanching<Hash, std::void_t<typename Hash::is_avalanching>>
     : std::true_type {};
 
+// True when a hasher/key_equal opts into heterogeneous ("transparent") lookup by declaring a nested
+// `is_transparent` type, mirroring the std::unordered_map C++20 convention. When both the hasher and
+// key_equal are transparent, find/count/contains accept a key of a compatible type (e.g. a
+// string_view for a std::string key) with no temporary key_type materialised.
+template <typename T, typename = void>
+struct has_is_transparent : std::false_type {};
+template <typename T>
+struct has_is_transparent<T, std::void_t<typename T::is_transparent>>
+    : std::true_type {};
+
 template <typename Traits>
 class hash_table {
   public:
@@ -308,7 +318,10 @@ class hash_table {
     }
 
     // ---- hashing helpers ---------------------------------------------------
-    [[nodiscard]] std::uint64_t mixed_hash(const key_type& key) const {
+    // Key-generic so it serves both key_type and heterogeneous ("transparent") lookup keys through the
+    // one hashing+mixing path (the hasher must accept K; for transparent lookup it advertises that).
+    template <typename K>
+    [[nodiscard]] std::uint64_t mixed_hash(const K& key) const {
         const std::uint64_t raw = static_cast<std::uint64_t>(hash_function_(key));
         if constexpr (is_avalanching<hasher>::value) {
             return raw;
@@ -1003,6 +1016,36 @@ class hash_table {
         const_iterator next = it;
         ++next;
         return {it, next};
+    }
+
+    // ---- heterogeneous ("transparent") lookup -----------------------------
+    // Additive overloads, enabled only when both the hasher and key_equal opt in (is_transparent), so
+    // non-transparent instantiations are entirely unaffected. A key of a compatible type is looked up
+    // without constructing a key_type (e.g. find(string_view) on a std::string-keyed map).
+    // H/E default to hasher/key_equal so the enable_if depends on the MEMBER template's own parameters
+    // (a proper SFINAE/deduction context) — otherwise enable_if_t<false> would be a hard error at class
+    // instantiation for non-transparent maps instead of quietly removing these overloads.
+    template <typename K, typename H = hasher, typename E = key_equal,
+              typename = std::enable_if_t<has_is_transparent<H>::value && has_is_transparent<E>::value>>
+    size_type count(const K& key) const {
+        return find_bucket(key, mixed_hash(key)) == bucket_count_ ? 0 : 1;
+    }
+    template <typename K, typename H = hasher, typename E = key_equal,
+              typename = std::enable_if_t<has_is_transparent<H>::value && has_is_transparent<E>::value>>
+    iterator find(const K& key) {
+        const size_type b = find_bucket(key, mixed_hash(key));
+        return b == bucket_count_ ? end() : iterator(this, buckets_[b].node_index);
+    }
+    template <typename K, typename H = hasher, typename E = key_equal,
+              typename = std::enable_if_t<has_is_transparent<H>::value && has_is_transparent<E>::value>>
+    const_iterator find(const K& key) const {
+        const size_type b = find_bucket(key, mixed_hash(key));
+        return b == bucket_count_ ? end() : const_iterator(this, buckets_[b].node_index);
+    }
+    template <typename K, typename H = hasher, typename E = key_equal,
+              typename = std::enable_if_t<has_is_transparent<H>::value && has_is_transparent<E>::value>>
+    bool contains(const K& key) const {
+        return find_bucket(key, mixed_hash(key)) != bucket_count_;
     }
 
     // ======================================================================

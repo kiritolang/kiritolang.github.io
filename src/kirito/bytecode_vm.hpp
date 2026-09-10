@@ -170,7 +170,46 @@ public:
                 } break;
                 case Op::BinaryOp: {
                     Handle lhs = peek(1), rhs = peek(0);  // operands stay rooted on the stack while we operate
-                    Handle r = located(in.span, [&] { return applyBinaryOp(vm_, static_cast<BinOp>(in.a), lhs, rhs); });
+                    const BinOp bop = static_cast<BinOp>(in.a);
+                    // Inline fast path for the hot, semantics-trivial cases only: Int⊕Int and Float⊕Float
+                    // for + - * and the four ordering comparisons. Every other case (/, //, %, **, ==/!=,
+                    // mixed Int/Float, BigInt/Complex/String/List, user dunders) delegates to the general
+                    // applyBinaryOp verbatim, so promotion/rounding/error semantics are never duplicated.
+                    // Operands are read before any makeX allocation, so the derefs can't be invalidated.
+                    Handle r;
+                    bool fast = false;
+                    const Object& la = vm_.arena().deref(lhs);
+                    const Object& rb = vm_.arena().deref(rhs);
+                    if (la.kind() == ValueKind::Integer && rb.kind() == ValueKind::Integer) {
+                        int64_t x = static_cast<const IntVal&>(la).value();
+                        int64_t y = static_cast<const IntVal&>(rb).value();
+                        fast = true;
+                        switch (bop) {
+                            case BinOp::Add: r = vm_.makeInt(wadd(x, y)); break;
+                            case BinOp::Sub: r = vm_.makeInt(wsub(x, y)); break;
+                            case BinOp::Mul: r = vm_.makeInt(wmul(x, y)); break;
+                            case BinOp::Lt:  r = vm_.makeBool(x < y);  break;
+                            case BinOp::Le:  r = vm_.makeBool(x <= y); break;
+                            case BinOp::Gt:  r = vm_.makeBool(x > y);  break;
+                            case BinOp::Ge:  r = vm_.makeBool(x >= y); break;
+                            default: fast = false; break;
+                        }
+                    } else if (la.kind() == ValueKind::Float && rb.kind() == ValueKind::Float) {
+                        double x = static_cast<const FloatVal&>(la).value();
+                        double y = static_cast<const FloatVal&>(rb).value();
+                        fast = true;
+                        switch (bop) {
+                            case BinOp::Add: r = vm_.makeFloat(x + y); break;
+                            case BinOp::Sub: r = vm_.makeFloat(x - y); break;
+                            case BinOp::Mul: r = vm_.makeFloat(x * y); break;
+                            case BinOp::Lt:  r = vm_.makeBool(x < y);  break;   // IEEE (NaN -> false), matches numericCompare
+                            case BinOp::Le:  r = vm_.makeBool(x <= y); break;
+                            case BinOp::Gt:  r = vm_.makeBool(x > y);  break;
+                            case BinOp::Ge:  r = vm_.makeBool(x >= y); break;
+                            default: fast = false; break;
+                        }
+                    }
+                    if (!fast) r = located(in.span, [&] { return applyBinaryOp(vm_, bop, lhs, rhs); });
                     pop(); pop();
                     push(r);
                 } break;

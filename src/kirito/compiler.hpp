@@ -225,6 +225,24 @@ private:
         return scalarSwitchKey(vm_, *h);
     }
 
+    // Constant folding for general expressions: if `e` is a constant scalar expression, emit one
+    // LoadConst and return true. A fold that would THROW (e.g. `1 / 0`) is left for runtime, so
+    // try/catch and dead-code-not-reached semantics are preserved; an oversized folded String is also
+    // left un-folded so the const pool can't be bloated (mirrors kMaxRepeat's intent).
+    static constexpr std::size_t kMaxFoldString = 4096;
+    bool tryEmitFolded(const ast::Expr& e) {
+        std::optional<Handle> h;
+        try { h = foldConstValue(e); }
+        catch (const KiritoError&) { return false; }   // keep the error at runtime (catchable)
+        if (!h) return false;
+        RootScope rs(vm_); rs.add(*h);                  // pin across addConst's deref
+        const Object& v = vm_.arena().deref(*h);
+        if (v.kind() == ValueKind::String && static_cast<const StrVal&>(v).value().size() > kMaxFoldString)
+            return false;
+        emit(Op::LoadConst, addConst(*h), e.span);
+        return true;
+    }
+
     // --- recursion with a depth guard (matching the parser's nesting bound) so a pathologically deep
     // AST throws a clean error (with the node's span) instead of overflowing the compiler's stack. ---
     static constexpr int kMaxDepth = 3000;  // matches the parser/evaluator nesting bound
@@ -618,17 +636,20 @@ private:
     }
 
     void visit(const ast::UnaryExpr& e) override {
+        if (tryEmitFolded(e)) return;
         compileExpr(*e.operand);
         emit(Op::UnaryOp, static_cast<uint32_t>(e.op), e.span);
     }
 
     void visit(const ast::BinaryExpr& e) override {
+        if (tryEmitFolded(e)) return;
         compileExpr(*e.lhs);
         compileExpr(*e.rhs);
         emit(Op::BinaryOp, static_cast<uint32_t>(e.op), e.span);
     }
 
     void visit(const ast::LogicalExpr& e) override {
+        if (tryEmitFolded(e)) return;
         compileExpr(*e.lhs);
         std::size_t shortcut = emit(e.isAnd ? Op::JumpIfFalseOrPop : Op::JumpIfTrueOrPop, 0, e.span);
         compileExpr(*e.rhs);

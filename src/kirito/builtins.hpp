@@ -264,7 +264,14 @@ public:
     // A String's hash() is a fixed std::hash an attacker can precompute collisions for, so bucket
     // placement keys the VM's random seed in at the byte level (SipHash) — see hashmix.hpp / Object.
     std::size_t bucketHash(std::uint64_t seed) const override {
-        return hashmix::seededBytes(seed, value_.data(), value_.size());
+        // Dict/Set lookups call this on every access; the string is immutable and a VM's seed is fixed
+        // for its lifetime, so cache the SipHash and only recompute if the seed ever differs. The cache
+        // is a derived, per-object field (never serialized); objects are VM/thread-confined, so no race.
+        if (!bucketHashSeed_.has_value() || *bucketHashSeed_ != seed) {
+            bucketHash_ = hashmix::seededBytes(seed, value_.data(), value_.size());
+            bucketHashSeed_ = seed;
+        }
+        return bucketHash_;
     }
     std::optional<int64_t> length(KiritoVM&) override {
         return static_cast<int64_t>(ascii_ ? value_.size() : codePointStarts().size());
@@ -283,6 +290,8 @@ private:
     std::size_t hash_;
     bool ascii_;
     mutable std::optional<std::vector<std::size_t>> starts_;  // lazily built code-point offsets (non-ASCII)
+    mutable std::size_t bucketHash_ = 0;                      // cached seeded SipHash (see bucketHash)
+    mutable std::optional<std::uint64_t> bucketHashSeed_;     // the seed bucketHash_ was computed for
 };
 
 // 64-bit signed integer.

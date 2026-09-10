@@ -1865,7 +1865,7 @@ inline Handle makeBoundMethod(KiritoVM& vm, std::string name, Handle receiver, H
 }
 
 inline Handle InstanceValue::getAttr(KiritoVM& vm, Handle self, std::string_view name) {
-    auto it = attrs.find(std::string(name));
+    auto it = attrs.find(name);   // transparent lookup: no temporary std::string on the hot read path
     if (it != attrs.end()) return it->second;
     const auto& klass = static_cast<const ClassValue&>(vm.arena().deref(cls));
     const Handle* method = klass.findMethod(vm.arena(), std::string(name));
@@ -2876,7 +2876,7 @@ inline std::string inspectNativeSignature(KiritoVM& vm, const std::string& name,
 // type annotations where declared) for classes, instances, modules, and functions. Returns a String.
 inline std::string inspectValue(KiritoVM& vm, Handle h) {
     const Object& o = vm.arena().deref(h);
-    auto sortedKeys = [](const fum::unordered_map<std::string, Handle>& m) {
+    auto sortedKeys = [](const auto& m) {   // generic: works for both the AttrMap and the default map
         std::vector<std::string> keys;
         for (const auto& [k, v] : m) keys.push_back(k);
         std::sort(keys.begin(), keys.end());
