@@ -2170,7 +2170,9 @@ inline std::string InstanceValue::str(StringifyCtx& ctx) const {
 
 // The canonical type-name a value matches for annotation checks. Built-ins map to their kind;
 // user instances report their class name (and inheritance is handled separately by typeMatches).
-inline std::string annotationTypeName(ValueKind k) {
+// Returns a string_view over a string literal (no allocation): this is called per annotated argument
+// on the type-checked call path, so returning std::string here allocated a temporary every check.
+inline std::string_view annotationTypeName(ValueKind k) {
     switch (k) {
         case ValueKind::None: { return "None"; } break;
         case ValueKind::Bool: { return "Bool"; } break;
