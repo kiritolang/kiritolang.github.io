@@ -465,8 +465,12 @@ they interchange as `Dict`/`Set` keys, and it serializes through `serialize`/`du
 - `pow(base, exp) → BigInt` — exact integer power (`exp` ≥ 0).
 - `modpow(base, exp, mod) → BigInt` — modular exponentiation `base**exp % mod` (efficient; `exp` ≥ 0).
 - `modinv(a, m) → BigInt` — modular inverse of `a` mod `m` (throws if `a` and `m` aren't coprime).
-- `isprime(n) → Bool` — **deterministic** primality by trial division (O(√n); a tight native loop for
-  values that fit int64, exact but slow for very large `n`).
+- `isprime(n, maxdegree = 1048576) → Bool` — **deterministic** primality via the **AKS** algorithm
+  (deterministic, polynomial-time, uses no randomness). It is exact but *far slower* than
+  `isprobableprime` — for large `n`, prefer the probabilistic test. `maxdegree` bounds the AKS ring
+  degree `r`; if a (very large) `n` would need a larger `r`, `isprime` **throws** a clear resource
+  error rather than exhausting memory. The default is very high, so realistic inputs never reach it;
+  lower it to fail fast, or raise it to attempt larger inputs.
 - `isprobableprime(n, rounds = 25) → Bool` — **probabilistic** primality (Miller-Rabin with random
   bases from the OS CSPRNG); fast even for very large `n`, with a false-positive probability below
   `4^-rounds`.
@@ -476,9 +480,10 @@ they interchange as `Dict`/`Set` keys, and it serializes through `serialize`/`du
 `isprobableprime` and `randomprime` draw from the OS cryptographic RNG (see
 [secure random](#random)); if it is unavailable they **throw** rather than fall back to predictable
 values — a fixed Miller-Rabin base or a guessable prime would silently defeat them. The deterministic
-`isprime` uses no randomness and always works.
+`isprime` uses no randomness; it works for any feasible input and throws a clear resource error only
+when a would-be-astronomical AKS ring degree exceeds `maxdegree`.
 
-`BigInt` methods: `n.modpow(exponent, modulus)`, `n.isprime()`, `n.isprobableprime(rounds = 25)`,
+`BigInt` methods: `n.modpow(exponent, modulus)`, `n.isprime(maxdegree = 1048576)`, `n.isprobableprime(rounds = 25)`,
 `n.bitlength() → Integer`, `n.toint() → Integer` (throws if it doesn't fit a native Integer).
 
 ```kirito

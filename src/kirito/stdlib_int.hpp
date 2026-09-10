@@ -3,7 +3,7 @@
 
 // The `int` module: arbitrary-precision integers (a `BigInt` value type) plus the integer-meaningful
 // math functions (gcd/lcm/factorial/comb/perm/isqrt/abs/pow/modpow/modinv) and primality
-// (deterministic trial division + probabilistic Miller-Rabin) — the exact/unbounded analogues of the
+// (deterministic AKS + probabilistic Miller-Rabin) — the exact/unbounded analogues of the
 // int64 `math` builtins, carried in their own module the way `complex` carries its analytic set.
 //
 // BigInt is pure C++ (no GMP): a sign + a little-endian base-2^32 magnitude, with schoolbook add/sub/
@@ -438,27 +438,180 @@ inline Big randomInRange(const Big& lo, const Big& hi) {   // [lo, hi]
     return add(lo, randomBelow(add(sub(hi, lo), fromInt64(1))));
 }
 
-inline bool isPrimeU64(uint64_t n) {
-    if (n < 2) return false;
-    if (n < 4) return true;              // 2, 3
-    if ((n & 1) == 0) return false;
-    if (n % 3 == 0) return false;
-    for (uint64_t i = 5; i <= n / i; i += 6)   // i <= n/i avoids i*i overflow
-        if (n % i == 0 || n % (i + 2) == 0) return false;
+// ---- AKS deterministic primality ----------------------------------------------------------------
+// Efficient AKS: deterministic and polynomial-time (replaces the old naive O(sqrt n) trial division).
+// The hot path is polynomial arithmetic in (Z/nZ)[x]/(x^r - 1). Coefficients use native u64/u128 when
+// n fits in 64 bits (every native Integer, and the whole practical range) and fall back to Big for
+// larger n. The AKS ring degree r is O((log n)^5) in the worst case, so an infeasibly-large n would
+// allocate an unbounded polynomial: a `maxdegree` guard bounds r and fails fast with a clear
+// KiritoError instead of OOMing (a resource backstop like kMaxLimbs, never a silent degradation).
+// AKS remains far slower than the probabilistic isprobableprime; it is the deterministic, exact test.
+
+inline constexpr uint64_t kAksDefaultMaxDegree = 1u << 20;  // sane, very high: realistic inputs never reach it
+
+inline uint64_t mulmodU64(uint64_t a, uint64_t b, uint64_t m) {
+    return static_cast<uint64_t>((static_cast<unsigned __int128>(a) * b) % m);
+}
+inline uint64_t gcdU64(uint64_t a, uint64_t b) { while (b) { uint64_t t = a % b; a = b; b = t; } return a; }
+
+// Multiplicative order of a modulo r (requires gcd(a,r) == 1). Returns the order, UINT64_MAX if it
+// exceeds `cap` (the caller only needs to know whether ord > target), or 0 if a is not invertible.
+inline uint64_t multiplicativeOrderModR(uint64_t a, uint64_t r, uint64_t cap) {
+    a %= r;
+    if (a == 0) return 0;
+    uint64_t k = 0, cur = 1;
+    do {
+        cur = mulmodU64(cur, a, r);
+        ++k;
+        if (k > cap) return UINT64_MAX;
+    } while (cur != 1);
+    return k;
+}
+
+inline uint64_t eulerPhiU64(uint64_t r) {
+    uint64_t result = r, m = r;
+    for (uint64_t p = 2; p <= m / p; ++p)
+        if (m % p == 0) { while (m % p == 0) m /= p; result -= result / p; }
+    if (m > 1) result -= result / m;
+    return result;
+}
+
+// ceil(sqrt(v)); v is bounded by phi(r) <= maxdegree, so the linear loop is short.
+inline uint64_t ceilSqrtU64(uint64_t v) {
+    if (v <= 1) return v;
+    uint64_t x = 1;
+    while (x <= v / x && x * x < v) ++x;   // x <= v/x guards x*x overflow
+    return x;
+}
+
+// n == a^b for some integers a >= 2, b >= 2 ?  (composite-detecting AKS step 1)
+inline bool isPerfectPower(const Big& n) {
+    std::size_t bits = bitLength(n);
+    Big one = fromInt64(1);
+    for (std::size_t b = 2; b <= bits; ++b) {
+        Big lo = fromInt64(2), hi = powU64(fromInt64(2), static_cast<uint64_t>(bits / b + 1));
+        while (cmp(lo, hi) <= 0) {
+            Big mid = shr1(add(lo, hi));                      // floor((lo+hi)/2)
+            Big p = one; bool over = false;                  // p = mid^b, early-exit once p > n
+            for (std::size_t i = 0; i < b; ++i) { p = mul(p, mid); if (cmp(p, n) > 0) { over = true; break; } }
+            int c = over ? 1 : cmp(p, n);
+            if (c == 0) return true;
+            if (c < 0) lo = add(mid, one); else hi = sub(mid, one);
+        }
+    }
+    return false;
+}
+
+// n mod r as a native u64 (r fits u64; the remainder is < r so it always fits).
+inline uint64_t modU64(const Big& n, uint64_t r) {
+    Big rem = divmodFloor(n, fromU64(r)).second;
+    uint64_t t = 0;
+    toUint64(rem, t);
+    return t;
+}
+
+// Smallest r with ord_r(n) > (bitLength n)^2 (a safe over-approximation of (log2 n)^2). Throws if r
+// would exceed maxdegree. Non-coprime r are skipped; a small factor is caught by the gcd step.
+inline uint64_t findAksR(const Big& n, uint64_t maxdegree) {
+    uint64_t L = static_cast<uint64_t>(bitLength(n));
+    uint64_t target = L * L;
+    for (uint64_t r = 2;; ++r) {
+        if (r > maxdegree)
+            throw KiritoError("isprime: input too large for deterministic AKS (ring degree r exceeds maxdegree)");
+        uint64_t nr = modU64(n, r);
+        if (nr == 0 || gcdU64(nr, r) != 1) continue;         // r shares a factor with n
+        if (multiplicativeOrderModR(nr, r, target) == UINT64_MAX) return r;  // ord_r(n) > target
+    }
+}
+
+// Modular-arithmetic policies for the polynomial ring coefficients (SSOT: one poly engine, two backends).
+struct ModU64 {
+    using T = uint64_t;
+    uint64_t n;
+    T zero() const { return 0; }
+    T one() const { return 1 % n; }
+    bool isZero(T x) const { return x == 0; }
+    bool eq(T x, T y) const { return x == y; }
+    T fromU64v(uint64_t v) const { return v % n; }
+    T add(T x, T y) const { return static_cast<uint64_t>((static_cast<unsigned __int128>(x) + y) % n); }
+    T mul(T x, T y) const { return mulmodU64(x, y, n); }
+};
+struct ModBig {
+    using T = Big;
+    Big n;
+    T zero() const { return Big{}; }
+    T one() const { return divmodFloor(fromInt64(1), n).second; }
+    bool isZero(const T& x) const { return x.isZero(); }
+    bool eq(const T& x, const T& y) const { return cmp(x, y) == 0; }
+    T fromU64v(uint64_t v) const { return divmodFloor(bigint::fromU64(v), n).second; }
+    T add(const T& x, const T& y) const { return divmodFloor(bigint::add(x, y), n).second; }
+    T mul(const T& x, const T& y) const { return divmodFloor(bigint::mul(x, y), n).second; }
+};
+
+// Multiply two length-r polynomials in the cyclotomic ring (indices wrap mod r), coefficients mod n.
+template <class Mod>
+std::vector<typename Mod::T> aksPolyMul(const Mod& M, const std::vector<typename Mod::T>& x,
+                                        const std::vector<typename Mod::T>& y, uint64_t r) {
+    using T = typename Mod::T;
+    std::vector<T> out(r, M.zero());
+    for (uint64_t i = 0; i < r; ++i) {
+        if (M.isZero(x[i])) continue;
+        for (uint64_t j = 0; j < r; ++j) {
+            if (M.isZero(y[j])) continue;
+            uint64_t k = i + j; if (k >= r) k -= r;
+            out[k] = M.add(out[k], M.mul(x[i], y[j]));
+        }
+    }
+    return out;
+}
+
+// The AKS congruence: (x + a)^n == x^(n mod r) + a  in (Z/nZ)[x]/(x^r - 1) ?
+template <class Mod>
+bool aksCongruenceHolds(const Mod& M, const Big& n, uint64_t r, uint64_t a) {
+    using T = typename Mod::T;
+    uint64_t nModR = modU64(n, r);
+    std::vector<T> base(r, M.zero());
+    base[0] = M.fromU64v(a);
+    base[1] = M.add(base[1], M.one());                       // + x  (r >= 2 here)
+    std::vector<T> result(r, M.zero());
+    result[0] = M.one();                                     // result = 1
+    std::size_t nb = bitLength(n);
+    for (std::size_t bit = nb; bit-- > 0;) {                 // result = base^n, square-and-multiply
+        result = aksPolyMul(M, result, result, r);
+        if ((n.mag[bit >> 5] >> (bit & 31)) & 1u) result = aksPolyMul(M, result, base, r);
+    }
+    std::vector<T> rhs(r, M.zero());                         // rhs = x^(n mod r) + a
+    rhs[nModR] = M.add(rhs[nModR], M.one());
+    rhs[0] = M.add(rhs[0], M.fromU64v(a));
+    for (uint64_t i = 0; i < r; ++i) if (!M.eq(result[i], rhs[i])) return false;
     return true;
 }
-// Deterministic primality: the naive O(sqrt n) trial division. A tight native uint64 loop when the
-// value fits int64 (the common, optimal case); BigInt-arithmetic trial division as a correct — if
-// slow — fallback for larger values.
-inline bool isPrimeExact(const Big& n) {
-    int64_t v;
-    if (toInt64(n, v)) return v >= 0 && isPrimeU64(static_cast<uint64_t>(v));
+
+inline bool isPrimeAKS(const Big& n, uint64_t maxdegree = kAksDefaultMaxDegree) {
     if (n.neg) return false;
-    if ((n.mag[0] & 1) == 0) return false;    // n > 2^63 and even
-    Big two = fromInt64(2), i = fromInt64(3), limit = isqrt(n);
-    while (cmp(i, limit) <= 0) {
-        if (divmodFloor(n, i).second.isZero()) return false;
-        i = add(i, two);
+    int64_t v;
+    if (toInt64(n, v) && v < 2) return false;                // 0, 1 (and negatives, already handled)
+    Big two = fromInt64(2), three = fromInt64(3);
+    if (cmp(n, two) == 0 || cmp(n, three) == 0) return true;
+    if ((n.mag[0] & 1) == 0) return false;                   // even and > 2
+    if (isPerfectPower(n)) return false;                     // step 1
+    uint64_t r = findAksR(n, maxdegree);                     // step 2
+    for (uint64_t a = 2; a <= r; ++a) {                      // step 3: 1 < gcd(a, n) < n => composite
+        if (cmp(n, fromU64(a)) <= 0) break;                  // a >= n; step 4 handles n <= r
+        if (gcdU64(modU64(n, a), a) > 1) return false;
+    }
+    if (cmp(n, fromU64(r)) <= 0) return true;                // step 4: n <= r => prime
+    uint64_t s = ceilSqrtU64(eulerPhiU64(r));                // step 5: check a = 1..floor(sqrt(phi(r))*log2 n)
+    uint64_t L = static_cast<uint64_t>(bitLength(n));
+    unsigned __int128 lim128 = static_cast<unsigned __int128>(s) * L;
+    uint64_t lim = lim128 > static_cast<unsigned __int128>(UINT64_MAX) ? UINT64_MAX : static_cast<uint64_t>(lim128);
+    uint64_t nU64 = 0;
+    if (toUint64(n, nU64)) {
+        ModU64 M{nU64};
+        for (uint64_t a = 1; a <= lim; ++a) if (!aksCongruenceHolds(M, n, r, a)) return false;
+    } else {
+        ModBig M{n};
+        for (uint64_t a = 1; a <= lim; ++a) if (!aksCongruenceHolds(M, n, r, a)) return false;
     }
     return true;
 }
@@ -654,11 +807,20 @@ inline Handle BigIntVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
                 return make(vm, modpow(selfVal(vm, self), coerce(vm, a[0], "modpow exponent"),
                                        coerce(vm, a[1], "modpow modulus")));
             }, std::vector<Handle>{self});
-    if (name == "isprime")
-        return makeMethod(vm, "isprime", {},
-            [self, selfVal](KiritoVM& vm, std::span<const Handle>) -> Handle {
-                return vm.makeBool(isPrimeExact(selfVal(vm, self)));
-            }, std::vector<Handle>{self});
+    if (name == "isprime") {
+        RootScope rs(vm);
+        std::vector<NativeParam> sig;
+        sig.emplace_back("maxdegree", "Integer",
+                         rs.add(vm.makeInt(static_cast<int64_t>(kAksDefaultMaxDegree))));
+        return vm.alloc(std::make_unique<NativeFunction>(
+            "isprime", std::move(sig), "Bool",
+            [self, selfVal](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+                int64_t md = Value(vm, a[0]).asInt("isprime maxdegree");
+                if (md < 2) throw KiritoError("isprime: maxdegree must be >= 2");
+                return vm.makeBool(isPrimeAKS(selfVal(vm, self), static_cast<uint64_t>(md)));
+            },
+            std::vector<Handle>{self}));
+    }
     if (name == "isprobableprime") {
         RootScope rs(vm);
         std::vector<NativeParam> sig;
@@ -798,9 +960,15 @@ public:
             return make(vm, modinv(coerce(vm, args[0].handle(), "modinv a"), coerce(vm, args[1].handle(), "modinv m")));
         });
 
-        // Primality.
-        m.fn("isprime", {{"n"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            return vm.makeBool(isPrimeExact(coerce(vm, Args(vm, a, "isprime")[0].handle(), "isprime n")));
+        // Primality. `isprime` is the deterministic AKS test; `maxdegree` bounds the AKS ring degree
+        // r so an infeasibly-large n fails fast instead of OOMing (default is very high — realistic
+        // inputs never reach it). For large n prefer the fast probabilistic `isprobableprime`.
+        m.fn("isprime", {{"n"}, {"maxdegree", "Integer", vm.makeInt(static_cast<int64_t>(bigint::kAksDefaultMaxDegree))}},
+             "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            Args args(vm, a, "isprime");
+            int64_t md = args[1].asInt("isprime maxdegree");
+            if (md < 2) throw KiritoError("isprime: maxdegree must be >= 2");
+            return vm.makeBool(isPrimeAKS(coerce(vm, args[0].handle(), "isprime n"), static_cast<uint64_t>(md)));
         });
         m.fn("isprobableprime", {{"n"}, {"rounds", "Integer", vm.makeInt(25)}}, "Bool",
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {

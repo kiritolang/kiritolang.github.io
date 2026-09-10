@@ -95,8 +95,10 @@ var refprime = Function(n) -> Bool:
         i = i + 1
     return True
 for n in range(0, 1000):
-    assert int.isprime(n) == refprime(n), "isprime vs reference"
     assert int.isprobableprime(n) == refprime(n), "isprobableprime vs reference"
+# AKS isprime is deterministic but far slower, so check it over a smaller range
+for n in range(0, 300):
+    assert int.isprime(n) == refprime(n), "isprime vs reference"
 # Carmichael numbers must be rejected by Miller-Rabin
 for c in [561, 1105, 1729, 2465, 2821, 6601, 8911]:
     assert int.isprobableprime(c) == False, "Carmichael rejected"

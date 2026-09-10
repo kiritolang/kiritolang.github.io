@@ -110,8 +110,13 @@ var refprime = Function(n) -> Bool:
         j = j + 1
     return True
 for n in range(0, 2000):
-    assert int.isprime(n) == refprime(n)
     assert int.isprobableprime(n) == refprime(n)
+# AKS isprime is deterministic but far slower, so exhaustively check a smaller range
+for n in range(0, 300):
+    assert int.isprime(n) == refprime(n)
+# AKS must reject perfect powers (composite) beyond the exhaustive range
+for n in [243, 1000, 1024, 3125]:
+    assert not int.isprime(n)
 # randomprime output is prime with the requested bit length
 for bits in [16, 32, 48, 64, 96]:
     var p = int.randomprime(bits)
@@ -128,10 +133,22 @@ for bits in [16, 32, 48, 64, 96]:
 
     // ---- primality specials (single calls) ----
     // Carmichael numbers (composite but Fermat-fool): Miller-Rabin must still reject them.
-    for (const char* c : {"561", "1105", "1729", "2465", "2821", "6601", "8911", "41041", "825265"}) {
+    for (const char* c : {"561", "1105", "1729", "2465", "2821", "6601", "8911", "41041", "825265"})
         CHECK(ev(vm, std::string("int.isprobableprime(") + c + ")") == "False");
+    // AKS is far slower, so exercise the deterministic path on the smaller Carmichael numbers only.
+    for (const char* c : {"561", "1105", "1729", "2465", "2821", "6601"})
         CHECK(ev(vm, std::string("int.isprime(") + c + ")") == "False");
-    }
+    // AKS deterministic primality specials + the maxdegree resource guard.
+    CHECK(ev(vm, "int.isprime(2)") == "True");
+    CHECK(ev(vm, "int.isprime(7919)") == "True");         // 1000th prime
+    CHECK(ev(vm, "int.isprime(-7)") == "False");
+    CHECK(ev(vm, "int.isprime(0)") == "False");
+    CHECK(ev(vm, "int.isprime(1)") == "False");
+    CHECK(ev(vm, "int.BigInt(97).isprime()") == "True");
+    CHECK(ev(vm, "int.BigInt(561).isprime()") == "False");
+    CHECK_THROWS(ev(vm, "int.isprime(97, maxdegree=2)"));          // fails fast, does not hang/OOM
+    CHECK_THROWS(ev(vm, "int.BigInt(97).isprime(maxdegree=2)"));
+    CHECK_THROWS(ev(vm, "int.isprime(97, maxdegree=1)"));          // maxdegree must be >= 2
     // Mersenne primes + large known primes recognised by Miller-Rabin.
     CHECK(ev(vm, "int.isprobableprime(int.pow(2, 61) - 1)") == "True");   // M61
     CHECK(ev(vm, "int.isprobableprime(int.pow(2, 89) - 1)") == "True");   // M89

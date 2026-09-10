@@ -810,7 +810,8 @@ OpenSSL-gated. On a non-TLS build every function throws the first row below; bra
 | `modinv: modulus must be >= 2` / `modinv: arguments are not coprime (no inverse exists)` | No modular inverse exists | Coprime operands, modulus ≥ 2 |
 | `isqrt: negative operand` | `isqrt` of a negative | Pass n ≥ 0 |
 | `factorial: not defined for negatives` / `comb: requires non-negative integers` / `perm: requires non-negative integers` | A negative to `factorial`/`comb`/`perm` | Pass non-negative integers |
-| `int: OS secure random source unavailable (needed for primality/randomprime)` | `isprobableprime`/`randomprime` when the OS CSPRNG failed (deterministic `isprime` on small n still works) | Fix the OS entropy source |
+| `int: OS secure random source unavailable (needed for primality/randomprime)` | `isprobableprime`/`randomprime` when the OS CSPRNG failed (the deterministic `isprime`/AKS uses no randomness and is unaffected) | Fix the OS entropy source |
+| `isprime: input too large for deterministic AKS (ring degree r exceeds maxdegree)` / `isprime: maxdegree must be >= 2` | AKS `isprime` on an `n` whose required ring degree exceeds `maxdegree` (fail-fast instead of OOM), or a `maxdegree` below 2 | Use `isprobableprime` for very large `n`, or raise `maxdegree`; pass `maxdegree` ≥ 2 |
 | `isprobableprime: rounds must be >= 1` / `randomprime: rounds must be >= 1` / `randomprime: bits must be >= 2` / `randomprime: bits too large` | A bad Miller-Rabin `rounds` or `randomprime` `bits` | rounds ≥ 1, bits ≥ 2 within the cap |
 | `BigInt does not support this operator` / `BigInt does not support this unary operator` | A right-operand-only or unsupported op — BigInt dispatches on the **left** operand, so `3 + BigInt(2)` throws while `BigInt(2) + 3` works | Put the BigInt on the left, or convert |
 | `toint: value does not fit in a native Integer` | `.toint()` on a BigInt beyond int64 range | Keep it a BigInt / check `.bitlength()` |
