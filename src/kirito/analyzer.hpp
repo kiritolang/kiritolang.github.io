@@ -27,7 +27,9 @@
 //   - `x = x` -> "self-assignment ... has no effect".
 // (A repeated parameter name is a hard PARSE error now — see parser.hpp — not an analyzer warning.)
 
+#include <algorithm>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "fum/unordered_map.hpp"
@@ -196,6 +198,15 @@ private:
         } else if (const auto* d = dynamic_cast<const ast::DiscardStmt*>(&s)) {
             analyzeExpr(*d->expr);  // discard explicitly accepts an ignored value
         } else if (const auto* v = dynamic_cast<const ast::VarDeclStmt*>(&s)) {
+            // `var x = x` reads the not-yet-assigned new binding (the declaration shadows by
+            // membership), so it always fails at runtime — flag it as a likely mistake.
+            if (const auto* initName = dynamic_cast<const ast::NameExpr*>(v->init.get()))
+                for (const auto& name : v->names)
+                    if (name == initName->name) {
+                        warnings_.push_back({v->span, "variable '" + name +
+                            "' is used in its own initializer (reads the unassigned new binding)"});
+                        break;
+                    }
             analyzeExpr(*v->init);
             for (const auto& name : v->names) declare(name, v->span);
         } else if (const auto* a = dynamic_cast<const ast::AssignStmt*>(&s)) {
@@ -321,6 +332,18 @@ private:
     }
 
     // --- expression walk (use-tracking + nested functions) --------------------------------------
+    // A per-type comparison key for a constant literal dict key (empty for None / non-scalar). Keys
+    // are exact per type, so only same-type-same-value duplicates are flagged (never a false positive;
+    // cross-type numeric equivalences like 1 vs 1.0 are conservatively left unflagged).
+    template <class V>
+    static std::string constLiteralKey(const V& v) {
+        if (std::holds_alternative<bool>(v)) return std::get<bool>(v) ? "B1" : "B0";
+        if (std::holds_alternative<int64_t>(v)) return "I" + std::to_string(std::get<int64_t>(v));
+        if (std::holds_alternative<double>(v)) return "F" + std::to_string(std::get<double>(v));
+        if (std::holds_alternative<std::string>(v)) return "S" + std::get<std::string>(v);
+        return std::string();
+    }
+
     void analyzeExpr(const ast::Expr& e) {
         // Bound recursion so a pathologically deep AST can't overflow the stack during analysis.
         // The analyzer is best-effort (non-fatal lint), so on an over-deep tree we simply stop
@@ -340,7 +363,15 @@ private:
             analyzeExpr(*cnd->cond); analyzeExpr(*cnd->then); analyzeExpr(*cnd->orelse);
         } else if (const auto* c = dynamic_cast<const ast::CallExpr*>(&e)) {
             analyzeExpr(*c->callee);
-            for (const auto& a : c->args) analyzeExpr(*a.value);
+            std::vector<std::string> seenKw;   // duplicate keyword arg at a call site is always a mistake
+            for (const auto& a : c->args) {
+                analyzeExpr(*a.value);
+                if (!a.name.empty()) {
+                    if (std::find(seenKw.begin(), seenKw.end(), a.name) != seenKw.end())
+                        warnings_.push_back({e.span, "duplicate keyword argument '" + a.name + "' in call"});
+                    else seenKw.push_back(a.name);
+                }
+            }
         } else if (const auto* m = dynamic_cast<const ast::MemberExpr*>(&e)) {
             analyzeExpr(*m->object);
         } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&e)) {
@@ -356,7 +387,18 @@ private:
         } else if (const auto* st = dynamic_cast<const ast::SetLiteral*>(&e)) {
             for (const auto& x : st->elems) analyzeExpr(*x);
         } else if (const auto* dt = dynamic_cast<const ast::DictLiteral*>(&e)) {
-            for (const auto& [k, v] : dt->entries) { analyzeExpr(*k); analyzeExpr(*v); }
+            std::vector<std::string> seenKeys;   // duplicate CONSTANT keys silently collapse (last wins)
+            for (const auto& [k, v] : dt->entries) {
+                analyzeExpr(*k); analyzeExpr(*v);
+                if (const auto* lit = dynamic_cast<const ast::LiteralExpr*>(k.get())) {
+                    std::string key = constLiteralKey(lit->value);
+                    if (!key.empty()) {
+                        if (std::find(seenKeys.begin(), seenKeys.end(), key) != seenKeys.end())
+                            warnings_.push_back({k->span, "duplicate key in dict literal (an earlier entry is overwritten)"});
+                        else seenKeys.push_back(key);
+                    }
+                }
+            }
         } else if (const auto* fs = dynamic_cast<const ast::FStringExpr*>(&e)) {
             for (const auto& p : fs->parts) if (p.isExpr) analyzeExpr(*p.expr);
         } else if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&e)) {

@@ -293,5 +293,41 @@ int main() {
         CHECK(!has(w, "'y' is assigned"));
     }
 
+    // --- duplicate keyword argument at a call site ---
+    {
+        auto w = warn("var f = Function(a, b): return a + b\ndiscard f(a = 1, a = 2)\n");
+        CHECK(has(w, "duplicate keyword argument 'a'"));
+    }
+    {   // distinct keywords do NOT warn (false-positive guard)
+        auto w = warn("var f = Function(a, b): return a + b\ndiscard f(a = 1, b = 2)\n");
+        CHECK(!has(w, "duplicate keyword argument"));
+    }
+
+    // --- self-referential initializer `var x = x` ---
+    {
+        auto w = warn("var f = Function():\n    var x = x\n    return 1\n");
+        CHECK(has(w, "'x' is used in its own initializer"));
+    }
+    {   // a normal initializer does NOT warn (false-positive guard)
+        auto w = warn("var a = 5\nvar b = a\ndiscard b\n");
+        CHECK(!has(w, "used in its own initializer"));
+    }
+
+    // --- duplicate constant key in a dict literal ---
+    {
+        auto w = warn("var d = {\"a\": 1, \"a\": 2}\ndiscard d\n");
+        CHECK(has(w, "duplicate key in dict literal"));
+    }
+    {
+        auto w = warn("var d = {1: 1, 1: 2}\ndiscard d\n");
+        CHECK(has(w, "duplicate key in dict literal"));
+    }
+    {   // distinct constant keys do NOT warn; nor do non-constant (expression) keys
+        auto w = warn("var d = {\"a\": 1, \"b\": 2}\ndiscard d\n");
+        CHECK(!has(w, "duplicate key"));
+        auto w2 = warn("var k = \"a\"\nvar d = {k: 1, \"a\": 2}\ndiscard d\n");
+        CHECK(!has(w2, "duplicate key"));   // one key is a name, not a constant -> not flagged
+    }
+
     return RUN_TESTS();
 }
