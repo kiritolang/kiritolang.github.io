@@ -2,17 +2,17 @@
 """Compare two `ki` binaries on the churn benchmark across GC-churn modes.
 
 Runs tests/bench/churn_bench.ki under several KIRITO_GC_THRESHOLD settings ("churn modes") against an
-OLD and a NEW interpreter, takes the best (min) of a few runs per workload to cut noise, and prints a
-per-mode table of old vs new milliseconds and the speedup (old/new; >1.0 = the new build is faster).
+OLD and a NEW interpreter. Each workload is measured over >= 10 runs and reported as mean +/- sample
+stddev (milliseconds); the speedup column is old_mean / new_mean (>1.0 = the new build is faster).
 
 Usage:
-    python3 tests/bench/churn_compare.py --old dist/ki-linux-x64 --new build-bin/ki-release
-    python3 tests/bench/churn_compare.py --old <1.17.1> --new <1.18.0> --runs 5
+    python3 tests/bench/churn_compare.py --old dist/ki-linux-x64 --new build-bin/ki-release [--runs 10]
 """
 import argparse
+import math
 import os
+import statistics
 import subprocess
-import sys
 import time
 
 # (label, KIRITO_GC_THRESHOLD or None for the default adaptive cadence)
@@ -21,6 +21,25 @@ CHURN_MODES = [
     ("default churn", None),
     ("low churn (GC=1e8)", "100000000"),
 ]
+COLW = 18
+
+
+def r(v):
+    if v >= 1000:
+        return f"{v:.0f}"
+    if v >= 100:
+        return f"{v:.1f}"
+    if v >= 10:
+        return f"{v:.2f}"
+    return f"{v:.3f}"
+
+
+def cell(vals):
+    if not vals:
+        return "-"
+    m = statistics.fmean(vals)
+    sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+    return f"{r(m)}±{r(sd)}"
 
 
 def run_once(ki, script, threshold):
@@ -29,41 +48,40 @@ def run_once(ki, script, threshold):
         env.pop("KIRITO_GC_THRESHOLD", None)
     else:
         env["KIRITO_GC_THRESHOLD"] = threshold
-    proc = subprocess.run([ki, script], capture_output=True, text=True, env=env, timeout=600)
+    proc = subprocess.run([ki, script], capture_output=True, text=True, env=env, timeout=900)
     if proc.returncode != 0:
-        sys.exit(f"FAILED: {ki} (threshold={threshold}) exit {proc.returncode}\n{proc.stderr}")
-    out = {}
-    order = []
+        raise SystemExit(f"FAILED: {ki} (threshold={threshold}) exit {proc.returncode}\n{proc.stderr}")
+    out, order = {}, []
     for line in proc.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) == 3 and parts[0] == "RESULT":
-            name, ms = parts[1], float(parts[2])
-            if name not in out:
-                order.append(name)
-            out[name] = ms
+        p = line.split("\t")
+        if len(p) == 3 and p[0] == "RESULT":
+            if p[1] not in out:
+                order.append(p[1])
+            out[p[1]] = float(p[2])
     return order, out
 
 
-def best_of(ki, script, threshold, runs):
-    order, best = None, {}
+def samples(ki, script, threshold, runs):
+    order, agg = None, {}
     for _ in range(runs):
         order, res = run_once(ki, script, threshold)
         for k, v in res.items():
-            best[k] = v if k not in best else min(best[k], v)
-    return order, best
+            agg.setdefault(k, []).append(v)
+    return order, agg
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--old", required=True, help="baseline ki binary (e.g. dist/ki-linux-x64, 1.17.1)")
-    ap.add_argument("--new", required=True, help="new ki binary (e.g. build-bin/ki-release, 1.18.0)")
+    ap.add_argument("--old", required=True, help="baseline ki (e.g. dist/ki-linux-x64, 1.17.1)")
+    ap.add_argument("--new", required=True, help="new ki (e.g. build-bin/ki-release, 1.18.0)")
     ap.add_argument("--script", default="tests/bench/churn_bench.ki")
-    ap.add_argument("--runs", type=int, default=3, help="runs per (binary, mode); best/min is kept")
+    ap.add_argument("--runs", type=int, default=10)
     args = ap.parse_args()
+    runs = max(10, args.runs)
 
     for p in (args.old, args.new, args.script):
         if not os.path.exists(p):
-            sys.exit(f"not found: {p}")
+            raise SystemExit(f"not found: {p}")
 
     def ver(ki):
         try:
@@ -73,35 +91,35 @@ def main():
 
     print(f"OLD: {args.old}   [{ver(args.old)}]")
     print(f"NEW: {args.new}   [{ver(args.new)}]")
-    print(f"runs/mode: {args.runs} (best kept)   started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"runs/cell: {runs} (mean±stddev)   started {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("\nCells are mean±stddev in milliseconds (lower is better). speedup = 1.17.1/1.18.0.\n")
 
-    overall = []
+    perf = []
     for label, thr in CHURN_MODES:
-        order_o, old = best_of(args.old, args.script, thr, args.runs)
-        order_n, new = best_of(args.new, args.script, thr, args.runs)
+        order_o, old = samples(args.old, args.script, thr, runs)
+        order_n, new = samples(args.new, args.script, thr, runs)
         order = order_o or order_n
-        print(f"\n=== churn mode: {label} ===")
-        print(f"{'workload':<16}{'1.17.1 ms':>12}{'1.18.0 ms':>12}{'speedup':>10}")
-        print("-" * 50)
+        print(f"=== churn mode: {label} ===")
+        print(f"{'workload':<16}{'1.17.1':>{COLW}}{'1.18.0':>{COLW}}{'speedup':>10}")
+        print("-" * (16 + 2 * COLW + 10))
         for name in order:
-            o = old.get(name)
-            n = new.get(name)
-            if o is None or n is None:
-                continue
-            sp = (o / n) if n > 0 else float("inf")
-            overall.append((label, name, o, n, sp))
-            print(f"{name:<16}{o:>12.3f}{n:>12.3f}{sp:>9.2f}x")
+            ov, nv = old.get(name, []), new.get(name, [])
+            row = f"{name:<16}{cell(ov):>{COLW}}{cell(nv):>{COLW}}"
+            if ov and nv:
+                sp = statistics.fmean(ov) / statistics.fmean(nv)
+                if name != "isprime_small" and sp > 0:
+                    perf.append(sp)
+                row += f"{('%.2fx' % sp):>10}"
+            else:
+                row += f"{'-':>10}"
+            print(row)
+        print()
 
-    # geometric-mean speedup (excluding isprime, whose AKS is a deliberate correctness tradeoff)
-    import math
-    perf = [sp for (_, name, _, _, sp) in overall if name != "isprime_small" and sp > 0]
     if perf:
         gm = math.exp(sum(math.log(s) for s in perf) / len(perf))
-        print(f"\nGeometric-mean speedup (all modes, excl. isprime AKS tradeoff): {gm:.2f}x")
-    isp = [(m, o, n) for (m, name, o, n, _) in overall if name == "isprime_small"]
-    if isp:
-        print("Note: isprime_small is SLOWER on 1.18.0 by design — deterministic AKS replaces trial")
-        print("      division (AKS is exact/polynomial but far slower for small n; use isprobableprime).")
+        print(f"Geometric-mean speedup (all modes, excl. isprime AKS tradeoff): {gm:.2f}x")
+    print("Note: isprime_small is SLOWER on 1.18.0 by design — deterministic AKS replaces trial")
+    print("      division (exact/polynomial but far slower for small n; use isprobableprime).")
 
 
 if __name__ == "__main__":
