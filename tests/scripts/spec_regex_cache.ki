@@ -1,0 +1,31 @@
+# Regression for the per-VM regex compiled-pattern cache (E4): repeated one-shot calls must stay
+# correct (cache hits), and the same pattern with different flags must be distinct cache entries with
+# distinct results (the key must fold in the flags).
+var re = import("regex")
+var io = import("io")
+
+# repeated one-shot calls hit the cache and stay correct
+var n = 0
+for i in range(0, 200):
+    if re.match(r"\d+", "12345") != None:
+        n = n + 1
+assert n == 200, "repeated cached match"
+
+# same pattern, different flags -> different cached programs, different results
+assert re.match(r"abc", "ABC") == None, "no IGNORECASE"
+assert re.match(r"abc", "ABC", re.IGNORECASE) != None, "IGNORECASE flag distinguished in cache"
+
+# a mix of patterns interleaved (exercises multiple cache entries)
+assert re.findall(r"\w+", "a b c") == ["a", "b", "c"], "findall"
+assert re.sub(r"\d", "#", "a1b2c3") == "a#b#c#", "sub"
+assert re.split(r"\s*,\s*", "1, 2 ,3") == ["1", "2", "3"], "split"
+
+# an invalid pattern still throws (not cached as valid)
+var threw = False
+try:
+    discard re.match(r"(unclosed", "x")
+catch as e:
+    threw = True
+assert threw, "invalid pattern still throws"
+
+io.print("OK regex cache")

@@ -397,6 +397,24 @@ public:
     }
 };
 
+// A per-VM cache of compiled patterns, so the one-shot re.match/search/... calls don't recompile the
+// same pattern every call (the compile is the expensive step; a Program copy is cheap). It stores plain
+// reng::Program values (no Handles), so it is GC-safe with no rooting, and lives on the regex module
+// value — i.e. per-VM, never a process-global static (which would violate the no-global-state rule).
+inline constexpr std::size_t kRegexCacheMax = 256;
+class RegexCacheVal : public NativeClass<RegexCacheVal> {
+public:
+    static constexpr const char* kTypeName = "RegexCache";
+    fum::unordered_map<std::string, reng::Program> programs;   // key: flags + '\x1f' + pattern
+};
+inline RegexCacheVal& regexCache(KiritoVM& vm) {
+    Handle m = vm.importModule("regex");
+    ModuleValue& mod = static_cast<ModuleValue&>(vm.arena().deref(m));
+    auto it = mod.members.find("_cache");
+    if (it == mod.members.end()) throw KiritoError("regex: pattern cache missing");
+    return static_cast<RegexCacheVal&>(vm.arena().deref(it->second));
+}
+
 // ============================================================================ the module
 class RegexModule : public NativeModule {
 public:
@@ -404,6 +422,7 @@ public:
 
     void setup(ModuleBuilder& m) override {
         KiritoVM& vm = m.vm();
+        m.value("_cache", vm.alloc(std::make_unique<RegexCacheVal>()));  // per-VM compiled-pattern cache
 
         // flag constants (and short aliases)
         m.value("IGNORECASE", vm.makeInt(reng::IGNORECASE));
@@ -466,11 +485,20 @@ public:
 
 private:
     static Handle compileRegex(KiritoVM& vm, const std::string& pattern, int flags) {
+        // Consult the per-VM cache: on a hit, copy the compiled Program (cheap) instead of recompiling.
+        RegexCacheVal& cache = regexCache(vm);
+        std::string key = std::to_string(flags) + '\x1f' + pattern;
+        if (auto it = cache.programs.find(key); it != cache.programs.end())
+            return vm.alloc(std::make_unique<RegexVal>(it->second, pattern));
+        reng::Program prog;
         try {
-            return vm.alloc(std::make_unique<RegexVal>(reng::compile(pattern, flags), pattern));
+            prog = reng::compile(pattern, flags);
         } catch (const reng::RegexError& e) {
             throw KiritoError(std::string("invalid regex: ") + e.what());
         }
+        if (cache.programs.size() >= kRegexCacheMax) cache.programs.clear();  // bounded (clear-on-full)
+        cache.programs.emplace(key, prog);
+        return vm.alloc(std::make_unique<RegexVal>(std::move(prog), pattern));
     }
     // match/search/fullmatch/findall/finditer: (pattern, string[, flags]) -> delegate to the method.
     static Handle oneShot(KiritoVM& vm, std::span<const Handle> a, const char* method) {
