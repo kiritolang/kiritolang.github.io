@@ -1,0 +1,364 @@
+# Cross-language benchmark — Kirito side. `ki bench.ki <workload>` runs one workload (fixed work) and
+# prints its wall time in milliseconds. Mirrors bench.py / bench.lua exactly (same algorithm, same
+# iteration counts) so the four runtimes (Kirito 1.17.1, Kirito 1.18.0, Python 3, Lua 5.1) are
+# comparable. The driver (xlang_compare.py) takes the best of several runs per (workload, runtime).
+var io = import("io")
+var time = import("time")
+var wl = arglist[0]
+
+var fib = Function(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+var ack = Function(m, n):
+    if m == 0:
+        return n + 1
+    if n == 0:
+        return ack(m - 1, 1)
+    return ack(m - 1, ack(m, n - 1))
+
+var gcd = Function(a, b):
+    while b != 0:
+        var r = a % b
+        a = b
+        b = r
+    return a
+
+class Vec:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+    var norm2 = Function(self):
+        return self.x * self.x + self.y * self.y
+
+class Shape:
+    var area = Function(self):
+        return 0
+class Sq (Shape):
+    var _init_ = Function(self, s):
+        self.s = s
+    var area = Function(self):
+        return self.s * self.s
+class Ci (Shape):
+    var _init_ = Function(self, r):
+        self.r = r
+    var area = Function(self):
+        return 3 * self.r * self.r
+
+var qsort = Function(a):
+    if len(a) < 2:
+        return a
+    var pivot = a[len(a) // 2]
+    var lo = []
+    var eq = []
+    var hi = []
+    for x in a:
+        if x < pivot:
+            lo.append(x)
+        elif x > pivot:
+            hi.append(x)
+        else:
+            eq.append(x)
+    return qsort(lo) + eq + qsort(hi)
+
+var run = Function():
+    if wl == "fib":
+        return fib(30)
+    elif wl == "ackermann":
+        return ack(3, 6)
+    elif wl == "sum_loop":
+        var s = 0
+        for rep in range(2000):
+            var i = 0
+            while i < 1000:
+                s = s + i
+                i = i + 1
+        return s
+    elif wl == "float_loop":
+        var s = 0.0
+        for rep in range(2000):
+            var i = 0
+            while i < 1000:
+                s = s + Float(i) * 0.5
+                i = i + 1
+        return Integer(s % 1000.0)
+    elif wl == "nested_loop":
+        var s = 0
+        var i = 0
+        while i < 700:
+            var j = 0
+            while j < 700:
+                s = s + i * j
+                j = j + 1
+            i = i + 1
+        return s
+    elif wl == "sieve":
+        var s = 0
+        for rep in range(300):
+            var sieve = []
+            var k = 0
+            while k < 5000:
+                sieve.append(True)
+                k = k + 1
+            var p = 2
+            while p * p < 5000:
+                if sieve[p]:
+                    var m = p * p
+                    while m < 5000:
+                        sieve[m] = False
+                        m = m + p
+                p = p + 1
+            var c = 0
+            var q = 2
+            while q < 5000:
+                if sieve[q]:
+                    c = c + 1
+                q = q + 1
+            s = c
+        return s
+    elif wl == "collatz":
+        var total = 0
+        var n = 1
+        while n < 30000:
+            var x = n
+            var steps = 0
+            while x != 1:
+                if x % 2 == 0:
+                    x = x // 2
+                else:
+                    x = 3 * x + 1
+                steps = steps + 1
+            total = total + steps
+            n = n + 1
+        return total
+    elif wl == "gcd_loop":
+        var s = 0
+        var i = 1
+        while i < 200000:
+            s = s + gcd(i, 12345)
+            i = i + 1
+        return s
+    elif wl == "list_build":
+        var n = 0
+        for rep in range(2000):
+            var a = []
+            var i = 0
+            while i < 1000:
+                a.append(i)
+                i = i + 1
+            n = len(a)
+        return n
+    elif wl == "list_sum":
+        var a = []
+        var i = 0
+        while i < 10000:
+            a.append(i)
+            i = i + 1
+        var s = 0
+        for rep in range(2000):
+            for x in a:
+                s = s + x
+        return s
+    elif wl == "list_sort":
+        var s = 0
+        for rep in range(2000):
+            var a = []
+            var i = 0
+            var seed = 12345
+            while i < 1000:
+                seed = (seed * 1103515245 + 12345) % 2147483648
+                a.append(seed % 100000)
+                i = i + 1
+            a.sort()
+            s = a[0]
+        return s
+    elif wl == "quicksort":
+        var s = 0
+        for rep in range(300):
+            var a = []
+            var i = 0
+            var seed = 999
+            while i < 1000:
+                seed = (seed * 1103515245 + 12345) % 2147483648
+                a.append(seed % 100000)
+                i = i + 1
+            var sorted = qsort(a)
+            s = sorted[0]
+        return s
+    elif wl == "dict_build":
+        var n = 0
+        for rep in range(1000):
+            var d = {}
+            var i = 0
+            while i < 2000:
+                d[i] = i * 2
+                i = i + 1
+            n = len(d)
+        return n
+    elif wl == "dict_lookup_int":
+        var d = {}
+        var i = 0
+        while i < 5000:
+            d[i] = i
+            i = i + 1
+        var s = 0
+        for rep in range(300):
+            var k = 0
+            while k < 5000:
+                s = s + d[k]
+                k = k + 1
+        return s
+    elif wl == "dict_lookup_str":
+        var d = {}
+        var i = 0
+        while i < 5000:
+            d["key" + String(i)] = i
+            i = i + 1
+        var s = 0
+        for rep in range(300):
+            var k = 0
+            while k < 5000:
+                s = s + d["key" + String(k)]
+                k = k + 1
+        return s
+    elif wl == "set_ops":
+        var s = 0
+        for rep in range(2000):
+            var a = Set()
+            var i = 0
+            while i < 500:
+                a.add(i)
+                i = i + 1
+            var hits = 0
+            var k = 0
+            while k < 1000:
+                if k in a:
+                    hits = hits + 1
+                k = k + 1
+            s = hits
+        return s
+    elif wl == "str_concat":
+        var n = 0
+        for rep in range(3000):
+            var s = ""
+            var i = 0
+            while i < 300:
+                s = s + "x"
+                i = i + 1
+            n = len(s)
+        return n
+    elif wl == "str_split_join":
+        var text = ""
+        var i = 0
+        while i < 2000:
+            text = text + "word" + String(i) + " "
+            i = i + 1
+        var n = 0
+        for rep in range(500):
+            var parts = text.split(" ")
+            var joined = "-".join(parts)
+            n = len(joined)
+        return n
+    elif wl == "str_search":
+        var text = ""
+        var i = 0
+        while i < 3000:
+            text = text + "abcdefg" + String(i % 10)
+            i = i + 1
+        var c = 0
+        for rep in range(1000):
+            c = text.count("5")
+        return c
+    elif wl == "method_call":
+        var v = Vec(3, 4)
+        var s = 0
+        var i = 0
+        while i < 500000:
+            s = s + v.norm2()
+            i = i + 1
+        return s
+    elif wl == "attr_rw":
+        var v = Vec(0, 0)
+        var i = 0
+        while i < 500000:
+            v.x = v.x + 1
+            v.y = v.x + v.y
+            i = i + 1
+        return v.y
+    elif wl == "object_create":
+        var s = 0
+        var i = 0
+        while i < 300000:
+            var v = Vec(i, i + 1)
+            s = s + v.x
+            i = i + 1
+        return s
+    elif wl == "poly_dispatch":
+        var shapes = []
+        var i = 0
+        while i < 1000:
+            if i % 2 == 0:
+                shapes.append(Sq(i))
+            else:
+                shapes.append(Ci(i))
+            i = i + 1
+        var s = 0
+        for rep in range(300):
+            for sh in shapes:
+                s = s + sh.area()
+        return s
+    elif wl == "map_filter":
+        var a = []
+        var i = 0
+        while i < 2000:
+            a.append(i)
+            i = i + 1
+        var n = 0
+        for rep in range(100):
+            var mapped = map(Function(x): return x * x, a)
+            var filtered = filter(Function(x): return x % 2 == 0, mapped)
+            n = len(List(filtered))
+        return n
+    elif wl == "matmul_manual":
+        var N = 40
+        var A = []
+        var B = []
+        var i = 0
+        while i < N:
+            var ra = []
+            var rb = []
+            var j = 0
+            while j < N:
+                ra.append(i + j)
+                rb.append(i - j)
+                j = j + 1
+            A.append(ra)
+            B.append(rb)
+            i = i + 1
+        var s = 0
+        for rep in range(30):
+            var C = []
+            var r = 0
+            while r < N:
+                var row = []
+                var c = 0
+                while c < N:
+                    var acc = 0
+                    var k = 0
+                    while k < N:
+                        acc = acc + A[r][k] * B[k][c]
+                        k = k + 1
+                    row.append(acc)
+                    c = c + 1
+                C.append(row)
+                r = r + 1
+            s = C[0][0]
+        return s
+    return 0
+
+var t0 = time.monotonic()
+var result = run()
+var ms = (time.monotonic() - t0) * 1000.0
+discard result
+io.print(format(ms, ".3f"))

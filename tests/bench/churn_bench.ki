@@ -1,0 +1,114 @@
+# Churn benchmark workloads. Prints one machine-parseable line per workload:
+#     RESULT<TAB><name><TAB><milliseconds>
+# The driver (churn_compare.py) runs this under several KIRITO_GC_THRESHOLD "churn modes" and against
+# two `ki` binaries (1.17.1 vs 1.18.0). It uses ONLY features present in both versions so the same
+# script benchmarks each. Each workload does a fixed amount of work; the driver takes the best of a few
+# runs to reduce noise.
+var io = import("io")
+var time = import("time")
+var T = import("tensor")
+var re = import("regex")
+var int = import("int")
+
+var report = Function(name, ms):
+    io.print("RESULT\t" + name + "\t" + format(ms, ".3f"))
+
+var timed = Function(name, reps, body):
+    var t0 = time.monotonic()
+    var i = 0
+    while i < reps:
+        discard body()
+        i = i + 1
+    report(name, (time.monotonic() - t0) * 1000.0)
+
+# --- integer arithmetic loop (A1 inline arithmetic + A2 folding of constants) ---
+var arith = Function():
+    var s = 0
+    var i = 0
+    while i < 2000:
+        s = s + i * 3 - (60 * 60)      # 60*60 folds at compile time (A2)
+        i = i + 1
+    return s
+discard timed("arith", 1000, arith)
+
+# --- instance method calls (E5 fused CallMethod) ---
+class Counter:
+    var _init_ = Function(self):
+        self.n = 0
+    var bump = Function(self, k):
+        self.n = self.n + k
+        return self.n
+var cnt = Counter()
+discard timed("method_call", 300000, Function(): return cnt.bump(2))
+
+# --- instance attribute read/write (A5 transparent attrs) ---
+class Point:
+    var _init_ = Function(self):
+        self.x = 0
+        self.y = 0
+var pt = Point()
+var attr = Function():
+    pt.x = pt.x + 1
+    pt.y = pt.x + pt.y
+    return pt.y
+discard timed("attr_rw", 300000, attr)
+
+# --- dict string-key lookups (A3 cached bucketHash) ---
+var d = {"alpha": 1, "beta": 2, "gamma": 3, "delta": 4, "epsilon": 5}
+discard timed("dict_lookup", 400000, Function(): return d["gamma"] + d["epsilon"])
+
+# --- f-string formatting (E2 pre-parsed spec) ---
+discard timed("fstring", 100000, Function(): return f"{42:08.3f}-{255:#x}")
+
+# --- string concatenation loop ---
+var strcat = Function():
+    var s = ""
+    var i = 0
+    while i < 200:
+        s = s + "x"
+        i = i + 1
+    return len(s)
+discard timed("strcat", 3000, strcat)
+
+# --- tensor elementwise add (B1 contiguous fast path) ---
+var ta = T.arange(20000)
+var tb = T.arange(20000)
+discard timed("tensor_add", 800, Function(): return ta + tb)
+
+# --- tensor reduction ---
+discard timed("tensor_sum", 2000, Function(): return ta.sum())
+
+# --- tensor strided slice (B3 odometer) ---
+var t2 = T.arange(10000).reshape([100, 100])
+discard timed("tensor_slice", 1500, Function(): return t2.slice(0, 100, 2, 1))
+
+# --- tensor matmul ---
+var mm = T.arange(4096).reshape([64, 64])
+discard timed("tensor_matmul", 150, Function(): return mm.matmul(mm))
+
+# --- regex one-shot in a loop (E4 per-VM pattern cache) ---
+discard timed("regex_match", 30000, Function(): return re.findall(r"\d+", "a12b345c6789"))
+
+# --- list map/filter ---
+var lst = []
+var i = 0
+while i < 500:
+    lst.append(i)
+    i = i + 1
+var mapfilter = Function():
+    return len(List(filter(Function(x): return x % 2 == 0, map(Function(x): return x * x, lst))))
+discard timed("map_filter", 500, mapfilter)
+
+# --- isprime: 1.18.0 is deterministic AKS, 1.17.1 is trial division (small n; AKS is the slower,
+#     deterministic tradeoff — reported for transparency, expect 1.18.0 slower here) ---
+var primecheck = Function():
+    var c = 0
+    var n = 2
+    while n < 200:
+        if int.isprime(n):
+            c = c + 1
+        n = n + 1
+    return c
+discard timed("isprime_small", 20, primecheck)
+
+io.print("DONE")
