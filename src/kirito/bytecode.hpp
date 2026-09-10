@@ -124,6 +124,19 @@ struct MethodCallSpec {
     CallSpec call;
 };
 
+// A parsed mini-format-spec for the FormatValue opcode (f-strings). f-string specs are constant, so
+// the compiler parses each once into this POD instead of re-parsing the string every execution.
+// `isEmpty` reproduces the `f"{x}"` (no spec) -> stringify path; `deferred` means the constant spec
+// was MALFORMED, so `raw` is re-parsed at run time to reproduce the documented runtime error (a bad
+// constant spec must NOT become a compile error).
+struct FormatSpec {
+    char fill = ' ', align = 0, sign = '-', type = 0;
+    bool zero = false, comma = false, alt = false, hasSign = false, isEmpty = false, deferred = false;
+    std::size_t width = 0;
+    int precision = -1;
+    std::string raw;  // only set when deferred (malformed constant spec)
+};
+
 struct Instr {
     Op op;
     uint32_t a = 0;
@@ -135,7 +148,8 @@ struct Instr {
 struct Proto {
     std::vector<Instr> code;
     std::vector<Handle> consts;                       // LoadConst targets (GC-pinned by the VM)
-    std::vector<std::string> names;                   // identifiers (names/attrs/format specs)
+    std::vector<std::string> names;                   // identifiers (names/attrs)
+    std::vector<FormatSpec> formatSpecs;              // FormatValue targets (pre-parsed f-string specs)
     std::vector<const ast::FunctionExpr*> funcs;      // MakeFunction targets
     std::vector<CallSpec> calls;                      // Call targets
     std::vector<MethodCallSpec> methodCalls;          // CallMethod targets (obj.method(args))

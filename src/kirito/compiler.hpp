@@ -31,6 +31,7 @@ inline const Proto* protoForBody(KiritoVM& vm, const ast::Block& body, bool isFu
 inline Handle applyUnaryOp(KiritoVM& vm, UnOp op, Handle operand);
 inline Handle applyBinaryOp(KiritoVM& vm, BinOp op, Handle lhs, Handle rhs);
 inline std::optional<std::string> scalarSwitchKey(KiritoVM& vm, Handle h);
+inline FormatSpec parseFormatSpec(const std::string& spec);  // pre-parse constant f-string specs
 
 // Compiles a Block (a function body, the top-level program, or a class body) into a Proto — the AST's
 // second visitor, alongside the parser. It emits stack-machine instructions that reuse the runtime's
@@ -95,6 +96,16 @@ private:
             if (proto_.names[i] == n) return static_cast<uint32_t>(i);
         proto_.names.push_back(n);
         return static_cast<uint32_t>(proto_.names.size() - 1);
+    }
+    // Pre-parse a constant f-string format spec once, at compile time. A MALFORMED constant spec is
+    // NOT a compile error (the docs classify it as a runtime error): store it deferred so FormatValue
+    // re-parses it at run time and throws exactly as before.
+    uint32_t addFormatSpec(const std::string& spec) {
+        FormatSpec fs;
+        try { fs = parseFormatSpec(spec); }
+        catch (const KiritoError&) { fs = FormatSpec{}; fs.deferred = true; fs.raw = spec; fs.isEmpty = spec.empty(); }
+        proto_.formatSpecs.push_back(std::move(fs));
+        return static_cast<uint32_t>(proto_.formatSpecs.size() - 1);
     }
     uint32_t addUnpack(uint32_t count, int starIndex) {
         proto_.unpacks.push_back(UnpackSpec{count, starIndex});
@@ -774,7 +785,7 @@ private:
                 emit(Op::LoadConst, addConst(vm_.makeString(part.literal)));
             } else {
                 compileExpr(*part.expr);
-                emit(Op::FormatValue, addName(part.spec), e.span);
+                emit(Op::FormatValue, addFormatSpec(part.spec), e.span);
             }
         }
         emit(Op::BuildString, static_cast<uint32_t>(e.parts.size()), e.span);

@@ -420,9 +420,11 @@ public:
 
                 case Op::FormatValue: {
                     Handle v = peek(0);
-                    const std::string& spec = proto.names[in.a];
+                    const FormatSpec& fs = proto.formatSpecs[in.a];   // pre-parsed at compile time
                     std::string s = located(in.span, [&] {
-                        return spec.empty() ? vm_.stringify(v) : applyFormatSpec(vm_, v, spec);
+                        if (fs.isEmpty) return vm_.stringify(v);                  // f"{x}" -> stringify
+                        if (fs.deferred) return applyFormatSpec(vm_, v, fs.raw);  // malformed: runtime error, as documented
+                        return formatWithSpec(vm_, v, fs);
                     });
                     Handle r = vm_.makeString(std::move(s));
                     pop();

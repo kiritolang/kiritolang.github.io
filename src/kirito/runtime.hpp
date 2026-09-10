@@ -3024,30 +3024,26 @@ inline std::string inspectValue(KiritoVM& vm, Handle h) {
 // Mini format-spec: [[fill]align][sign][#][0][width][,][.precision][type].
 // Supports align <^>= , sign +/-/space, zero-pad, width, thousands ',', precision, and types
 // b/o/x/X/d/f/e/g/s/% . Returns the formatted String. Throws on a malformed spec.
-inline std::string applyFormatSpec(KiritoVM& vm, Handle value, const std::string& spec) {
-    const Object& o = vm.arena().deref(value);
+inline FormatSpec parseFormatSpec(const std::string& spec) {
+    FormatSpec fs;
+    fs.isEmpty = spec.empty();
     std::size_t i = 0;
-    char fill = ' ', align = 0, sign = '-';
-    bool zero = false, comma = false, alt = false, hasSign = false;
-    std::size_t width = 0;
-    int precision = -1;
-    char type = 0;
     // optional fill+align (fill only valid when an align char follows)
     auto isAlign = [](char c) { return c == '<' || c == '>' || c == '^' || c == '='; };
-    if (i + 1 < spec.size() && isAlign(spec[i + 1])) { fill = spec[i]; align = spec[i + 1]; i += 2; }
-    else if (i < spec.size() && isAlign(spec[i])) { align = spec[i]; ++i; }
-    if (i < spec.size() && (spec[i] == '+' || spec[i] == '-' || spec[i] == ' ')) { sign = spec[i]; hasSign = true; ++i; }
-    if (i < spec.size() && spec[i] == '#') { alt = true; ++i; }  // alternate form (base prefix for b/o/x)
+    if (i + 1 < spec.size() && isAlign(spec[i + 1])) { fs.fill = spec[i]; fs.align = spec[i + 1]; i += 2; }
+    else if (i < spec.size() && isAlign(spec[i])) { fs.align = spec[i]; ++i; }
+    if (i < spec.size() && (spec[i] == '+' || spec[i] == '-' || spec[i] == ' ')) { fs.sign = spec[i]; fs.hasSign = true; ++i; }
+    if (i < spec.size() && spec[i] == '#') { fs.alt = true; ++i; }  // alternate form (base prefix for b/o/x)
     // The '0' flag zero-pads to the width. The '0' fill applies even when an explicit align is
     // given (format(7, ">06d") == "000007"); only an explicit FILL char overrides it. Default align
     // for a bare '0' is sign-aware '='.
-    if (i < spec.size() && spec[i] == '0') { zero = true; if (fill == ' ') fill = '0'; if (!align) align = '='; ++i; }
+    if (i < spec.size() && spec[i] == '0') { fs.zero = true; if (fs.fill == ' ') fs.fill = '0'; if (!fs.align) fs.align = '='; ++i; }
     while (i < spec.size() && spec[i] >= '0' && spec[i] <= '9') {
-        width = width * 10 + static_cast<std::size_t>(spec[i] - '0');
-        if (width > kMaxRepeat) throw KiritoError("format width too large");
+        fs.width = fs.width * 10 + static_cast<std::size_t>(spec[i] - '0');
+        if (fs.width > kMaxRepeat) throw KiritoError("format width too large");
         ++i;
     }
-    if (i < spec.size() && spec[i] == ',') { comma = true; ++i; }
+    if (i < spec.size() && spec[i] == ',') { fs.comma = true; ++i; }
     if (i < spec.size() && spec[i] == '.') {
         ++i;
         int64_t prec = 0;  // accumulate wide + bound each step so `int precision` can't overflow (UB)
@@ -3056,10 +3052,22 @@ inline std::string applyFormatSpec(KiritoVM& vm, Handle value, const std::string
             if (prec > static_cast<int64_t>(kMaxRepeat)) throw KiritoError("format precision too large");
             ++i;
         }
-        precision = static_cast<int>(prec);
+        fs.precision = static_cast<int>(prec);
     }
-    if (i < spec.size()) { type = spec[i]; ++i; }
+    if (i < spec.size()) { fs.type = spec[i]; ++i; }
     if (i != spec.size()) throw KiritoError("invalid format spec '" + spec + "'");
+    return fs;
+}
+
+// Format `value` with a pre-parsed spec. Splitting parse from format is SSOT: f-strings pre-parse the
+// (constant) spec at compile time, while the `format` builtin parses its runtime spec — both share this
+// one formatter and the one parser above.
+inline std::string formatWithSpec(KiritoVM& vm, Handle value, const FormatSpec& fs) {
+    const Object& o = vm.arena().deref(value);
+    char fill = fs.fill, align = fs.align, sign = fs.sign, type = fs.type;
+    bool zero = fs.zero, comma = fs.comma, alt = fs.alt, hasSign = fs.hasSign;
+    std::size_t width = fs.width;
+    int precision = fs.precision;
 
     auto groupThousands = [](std::string digits) {
         std::string out;
@@ -3166,6 +3174,11 @@ inline std::string applyFormatSpec(KiritoVM& vm, Handle value, const std::string
     if (align == '^') return std::string(pad / 2, fill) + s + std::string(pad - pad / 2, fill);
     if (align == '=') return signStr + std::string(pad, fill) + body;  // pad between sign and digits
     return std::string(pad, fill) + s;  // numbers default to right-align
+}
+
+// Parse + format in one step (the `format` builtin's path, where the spec is a runtime value).
+inline std::string applyFormatSpec(KiritoVM& vm, Handle value, const std::string& spec) {
+    return formatWithSpec(vm, value, parseFormatSpec(spec));
 }
 
 // --- built-in globals ------------------------------------------------------------------------
