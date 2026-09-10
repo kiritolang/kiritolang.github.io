@@ -1,0 +1,54 @@
+# Kirito-only perf micro-benchmark for the optimizations in this round. Not a golden test — run it
+# manually (`ki tests/bench/kirito_perf.ki`) to see the effect of the tensor and VM fast paths.
+# The GENERAL interpreter wins (inline arithmetic, method dispatch) are also measured cross-language
+# by tests/bench/compare.py (sum_loop / fib / dict_ops / string_ops). Tensor work has no Lua/C++
+# equivalent, so it is timed here instead.
+var io = import("io")
+var time = import("time")
+var T = import("tensor")
+
+var timed = Function(label, reps, body):
+    var t0 = time.monotonic()
+    var i = 0
+    while i < reps:
+        discard body()
+        i = i + 1
+    var dt = time.monotonic() - t0
+    io.print(label + ": " + format(dt * 1000.0, ".2f") + " ms (" + String(reps) + " reps)")
+
+# --- tensor elementwise (contiguous fast path, B1) ---
+var a = T.arange(10000)
+var b = T.arange(10000)
+discard timed("tensor add   (10k, x1000)", 1000, Function(): return a + b)
+discard timed("tensor mul   (10k, x1000)", 1000, Function(): return a * b)
+discard timed("tensor sum   (10k, x1000)", 1000, Function(): return a.sum())
+
+# --- tensor matmul ---
+var m = T.arange(4096).reshape([64, 64])
+discard timed("tensor matmul(64x64, x200)", 200, Function(): return m.matmul(m))
+
+# --- dict string-key lookups (cached bucketHash, A3) ---
+var d = {"alpha": 1, "beta": 2, "gamma": 3, "delta": 4}
+discard timed("dict lookup  (x100000)", 100000, Function(): return d["gamma"])
+
+# --- instance method calls (fused CallMethod, E5) ---
+class Counter:
+    var _init_ = Function(self):
+        self.n = 0
+    var bump = Function(self):
+        self.n = self.n + 1
+        return self.n
+var c = Counter()
+discard timed("method call  (x100000)", 100000, Function(): return c.bump())
+
+# --- integer arithmetic loop (inline fast path, A1) ---
+var arith = Function():
+    var s = 0
+    var i = 0
+    while i < 1000:
+        s = s + i * 2 - 1
+        i = i + 1
+    return s
+discard timed("arith loop   (1k, x1000)", 1000, arith)
+
+io.print("done")

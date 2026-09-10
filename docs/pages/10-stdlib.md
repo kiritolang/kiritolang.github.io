@@ -1624,6 +1624,13 @@ engine is shared C++ (`src/kirito/tensor.hpp`) and is what the `matrix` and `com
 themselves built on; a 2-D tensor *is* a matrix. It is CPU-only but carries a **reverse-mode autograd**
 (see below) and a GPU-forward-compatible single-buffer design.
 
+**For bulk numeric work, reach for a `tensor` (or `matrix`), not a `List`.** A tensor stores its
+elements in one contiguous unboxed `Float`/`Complex` buffer, so a whole-array operation
+(`a + b`, `a * 2`, `a.sum()`, `x.matmul(y)`) runs a tight native loop over raw numbers — the NumPy model. A
+`List`, by contrast, holds boxed values and iterates through the interpreter, so element-wise math over
+a large `List` is far slower. Convert once with `tensor.Tensor(list_of_numbers)` and read results back
+with `t.tolist()`; keep the data in tensor form across a computation rather than round-tripping.
+
 Tensor **arithmetic is pure**: every operation returns a *new* tensor and never mutates its operands,
 which is what makes the autograd graph well-defined. The only in-place operation is element assignment
 (`t[i, j] = v`). A consequence is that a gradient-descent step **rebinds** the parameter
