@@ -187,6 +187,15 @@ Tensor<T> mapUnary(const Tensor<T>& t, Fn fn) {
 // Binary elementwise with NumPy broadcasting.
 template <class T, class Op>
 Tensor<T> elementwise(const Tensor<T>& a, const Tensor<T>& b, Op op) {
+    // Fast path: identical shapes need no broadcasting, so skip the per-element stride/coord math
+    // (a divide+modulo per axis) and walk both contiguous row-major buffers directly. This is the
+    // common case for add/sub/mul/div and the comparison masks. Same op, same element order → results
+    // are bit-identical to the general path (NaN propagation and the div-by-zero throw included).
+    if (a.shape == b.shape) {
+        Tensor<T> out(a.shape);
+        for (std::size_t i = 0; i < a.data.size(); ++i) out.data[i] = op(a.data[i], b.data[i]);
+        return out;
+    }
     Shape outshape = broadcastShapes(a.shape, b.shape);
     Tensor<T> out(outshape);
     Shape ost = out.strides(), ast = a.strides(), bst = b.strides();
@@ -483,13 +492,16 @@ Tensor<T> sliceAxis(const Tensor<T>& t, std::size_t axis, std::ptrdiff_t start, 
     Shape outshape = t.shape;
     outshape[axis] = picks.size();
     Tensor<T> out(outshape);
-    Shape ist = t.strides(), ost = out.strides();
+    Shape ist = t.strides();
+    // Advance an odometer coordinate over `outshape` (row-major, last axis fastest) instead of calling
+    // unravel() per element — unravel heap-allocates two vectors on every call.
+    Shape coord(t.ndim(), 0);
     for (std::size_t lin = 0; lin < out.size(); ++lin) {
-        Shape c = unravel(lin, outshape);
         std::size_t off = 0;
         for (std::size_t d = 0; d < t.ndim(); ++d)
-            off += (d == axis ? static_cast<std::size_t>(picks[c[d]]) : c[d]) * ist[d];
+            off += (d == axis ? static_cast<std::size_t>(picks[coord[d]]) : coord[d]) * ist[d];
         out.data[lin] = t.data[off];
+        for (std::size_t d = t.ndim(); d-- > 0;) { if (++coord[d] < outshape[d]) break; coord[d] = 0; }
     }
     return out;
 }
@@ -520,12 +532,12 @@ Tensor<T> concatenate(const std::vector<const Tensor<T>*>& parts, std::size_t ax
     Shape ost = out.strides();
     std::size_t base = 0;  // running offset along `axis` in the output
     for (const Tensor<T>* p : parts) {
-        Shape ist = p->strides();
+        Shape coord(nd, 0);   // odometer over p->shape (avoids a per-element unravel allocation)
         for (std::size_t lin = 0; lin < p->size(); ++lin) {
-            Shape c = unravel(lin, p->shape);
             std::size_t off = 0;
-            for (std::size_t d = 0; d < nd; ++d) off += (d == axis ? c[d] + base : c[d]) * ost[d];
+            for (std::size_t d = 0; d < nd; ++d) off += (d == axis ? coord[d] + base : coord[d]) * ost[d];
             out.data[off] = p->data[lin];
+            for (std::size_t d = nd; d-- > 0;) { if (++coord[d] < p->shape[d]) break; coord[d] = 0; }
         }
         base += p->shape[axis];
     }
@@ -558,13 +570,13 @@ Tensor<T> cumulative(const Tensor<T>& t, std::size_t axis, Op op) {
     if (axis >= t.ndim()) throw TensorError("cumulative axis out of range");
     Tensor<T> out = t;
     Shape st = t.strides();
-    std::size_t len = t.shape[axis], step = st[axis];
+    std::size_t step = st[axis];
+    Shape coord(t.ndim(), 0);   // odometer over t.shape (avoids a per-element unravel allocation)
     for (std::size_t lin = 0; lin < out.size(); ++lin) {
-        Shape c = unravel(lin, t.shape);
-        if (c[axis] == 0) continue;  // first along the axis stays as-is
-        out.data[lin] = op(out.data[lin - step], out.data[lin]);
+        if (coord[axis] != 0)   // first along the axis stays as-is
+            out.data[lin] = op(out.data[lin - step], out.data[lin]);
+        for (std::size_t d = t.ndim(); d-- > 0;) { if (++coord[d] < t.shape[d]) break; coord[d] = 0; }
     }
-    (void)len;
     return out;
 }
 

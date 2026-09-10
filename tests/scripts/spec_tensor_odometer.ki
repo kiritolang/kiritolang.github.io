@@ -1,0 +1,35 @@
+# Regression for the tensor performance optimizations: B1 (contiguous equal-shape elementwise fast
+# path) and B3 (odometer coordinate stepping replacing the per-element unravel() heap allocation in
+# slice / concatenate / cumulative). Results must be bit-identical to the pre-optimization behavior.
+var io = import("io")
+var T = import("tensor")
+
+# 3-D tensor exercises multi-axis odometer stepping (the boundary-carry logic).
+var b = T.Tensor([[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]]])   # 2x2x3
+assert b.shape() == [2, 2, 3], "3-D shape"
+
+# --- B3: strided slice along an inner axis (odometer in sliceAxis) ---
+assert b.slice(0, 3, 2, 2) == T.Tensor([[[1, 3], [4, 6]], [[7, 9], [10, 12]]]), "slice step 2 on axis 2"
+assert b.slice(0, 2, 1, 1) == b, "full slice on axis 1 is the identity"
+assert b.flip(2) == T.Tensor([[[3, 2, 1], [6, 5, 4]], [[9, 8, 7], [12, 11, 10]]]), "negative-step slice (flip axis 2)"
+
+# --- B3: concatenate along a non-zero axis (odometer over each part) ---
+var c = T.concatenate([b, b], 1)
+assert c.shape() == [2, 4, 3], "concatenate axis 1 shape"
+assert c[0] == T.Tensor([[1, 2, 3], [4, 5, 6], [1, 2, 3], [4, 5, 6]]), "concatenate axis 1 values"
+assert T.concatenate([b, b], 2).shape() == [2, 2, 6], "concatenate axis 2 shape"
+
+# --- B3: cumulative along each axis ---
+assert T.Tensor([[1, 2], [3, 4]]).cumsum(0) == T.Tensor([[1, 2], [4, 6]]), "cumsum axis 0"
+assert T.Tensor([[1, 2], [3, 4]]).cumsum(1) == T.Tensor([[1, 3], [3, 7]]), "cumsum axis 1"
+
+# --- B1: equal-shape elementwise (fast path) vs a broadcasting-equivalent result ---
+var x = T.Tensor([[1, 2, 3], [4, 5, 6]])
+var y = T.Tensor([[6, 5, 4], [3, 2, 1]])
+assert x + y == T.full([2, 3], 7), "equal-shape add fast path"
+assert x * y == T.Tensor([[6, 10, 12], [12, 10, 6]]), "equal-shape mul fast path"
+assert (x - y) == T.Tensor([[-5, -3, -1], [1, 3, 5]]), "equal-shape sub fast path"
+# the broadcasting path (differing shapes) is unchanged
+assert x + T.Tensor([10, 20, 30]) == T.Tensor([[11, 22, 33], [14, 25, 36]]), "broadcast add still correct"
+
+io.print("OK tensor odometer")
