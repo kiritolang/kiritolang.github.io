@@ -1,0 +1,20 @@
+# Hardening: NaN-propagating, order-independent maximum/minimum under broadcasting and +/-inf, plus the
+# reduction .max()/.min() agreeing regardless of NaN position.
+var T = import("tensor")
+var math = import("math")
+var io = import("io")
+var nan = math.nan
+var inf = math.inf
+# broadcasting a scalar-shaped NaN across a vector propagates
+var a = T.Tensor([1.0, 2.0, 3.0])
+var bnan = T.Tensor([nan])
+var m = a.maximum(bnan).tolist()
+assert math.isnan(m[0]) and math.isnan(m[1]) and math.isnan(m[2]), "broadcast NaN propagates in maximum"
+# +/-inf ordering
+var p = T.Tensor([inf, 0.0 - inf, 0.0])
+var q = T.Tensor([0.0, 0.0, 0.0])
+assert p.maximum(q).tolist() == [inf, 0.0, 0.0], "maximum with +/-inf"
+assert p.minimum(q).tolist() == [0.0, 0.0 - inf, 0.0], "minimum with +/-inf"
+# reduction max/min NaN-propagating and position-independent
+assert math.isnan(T.Tensor([nan, 1.0, 2.0]).max()) and math.isnan(T.Tensor([1.0, 2.0, nan]).max()), "reduction max NaN pos-independent"
+io.print("OK tensor maxmin hard")

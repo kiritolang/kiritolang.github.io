@@ -57,5 +57,26 @@ int main() {
         CHECK(fn2.call({97}).truthy());
         CHECK(!fn2.call({91}).truthy());
     }
+    // arity matrix: one required + TWO defaults, exercised across every under/over-supply via Value::call.
+    {
+        KiritoVM vm;
+        Handle d10 = vm.makeInt(10), d100 = vm.makeInt(100);
+        std::vector<NativeParam> sig;
+        sig.emplace_back("a", "Integer");
+        sig.emplace_back("b", "Integer", d10);
+        sig.emplace_back("c", "Integer", d100);
+        Handle fnH = vm.alloc(std::make_unique<NativeFunction>(
+            "abc", std::move(sig), "Integer",
+            [](KiritoVM& v, std::span<const Handle> args) -> Handle {
+                return v.makeInt(Value(v, args[0]).asInt("a") + Value(v, args[1]).asInt("b") +
+                                 Value(v, args[2]).asInt("c"));
+            }));
+        Value fn(vm, fnH);
+        CHECK(fn.call({1}).asInt("r") == 111);        // a=1, b=10, c=100 (both defaults filled)
+        CHECK(fn.call({1, 2}).asInt("r") == 103);     // a=1, b=2, c=100 (one default filled)
+        CHECK(fn.call({1, 2, 3}).asInt("r") == 6);    // all explicit
+        CHECK_THROWS(fn.call({}));                    // missing required 'a' -> clean throw, not OOB
+        CHECK_THROWS(fn.call({1, 2, 3, 4}));          // too many positionals -> clean throw
+    }
     return RUN_TESTS();
 }

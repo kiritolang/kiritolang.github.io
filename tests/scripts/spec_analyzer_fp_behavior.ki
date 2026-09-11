@@ -1,0 +1,13 @@
+# Hardening: the code shapes that previously drew a SPURIOUS analyzer warning must still behave
+# correctly at runtime — distinct close float dict keys are kept; a re-declared self-init reads the
+# prior value. (Absence of the false-positive warning is asserted in tests/unit/test_warnings.cpp.)
+var io = import("io")
+var d = {1.0000001: 10, 1.0000002: 20, 1.0000003: 30}
+assert len(d) == 3, "distinct close float keys are all kept"
+assert d[1.0000002] == 20, "close float key lookup works"
+var neg = {0.0: "pos", -0.0: "neg"}
+assert len(neg) == 1, "0.0 and -0.0 are the same dict key"
+var x = 5
+var x = x
+assert x == 5, "re-declared self-init reads the prior value"
+io.print("OK analyzer fp behavior")

@@ -62,5 +62,26 @@ for s in range(6):
 assert count == 6 * 200, "running total"
 )"));
     }
+    // fold-FUZZ: MANY distinct non-interned folded constants (large Int / Float / String) declared then
+    // read, with heavy trailing allocation, all under aggressive GC — every fold's const-pool root must
+    // survive the rest of compilation. Mixes folded and literal forms and a nested fold (folds fold).
+    {
+        KiritoVM vm; vm.setGcThreshold(1);
+        CHECK(ok(vm, R"(
+var a = 1000 * 1000              # 1_000_000 (Int, non-interned)
+var b = 3.14 * 2.0              # 6.28 (Float)
+var c = "kirito" + "-" + "lang" # String fold
+var d = (2 ** 20) + 1          # nested fold -> 1048577
+var e = 60 * 60 * 24 * 365     # chained fold -> 31536000
+var f = "x" * 100              # repeated string fold (under kMaxFoldString)
+var g = -(1000000) - 1         # unary + binary fold -> -1000001
+var junk = []
+for i in range(300):
+    junk.append("allocate to force mid-compile-adjacent collections " + String(i))
+assert a == 1000000 and b == 6.28 and c == "kirito-lang"
+assert d == 1048577 and e == 31536000 and len(f) == 100 and g == -1000001
+assert len(junk) == 300
+)"));
+    }
     return RUN_TESTS();
 }

@@ -1,0 +1,22 @@
+# Hardening: randomized csv format->parse round-trip must be LOSSLESS for cells containing commas,
+# quotes, newlines, spaces and plain text (deterministic seed). format quotes any cell that needs it;
+# parse restores it exactly.
+var csv = import("csv")
+var random = import("random")
+var io = import("io")
+var rng = random.Random(0xBEEF)
+var alphabet = ["a", "b", ",", "\"", "\n", " ", "x", "1"]
+var mkcell = Function():
+    var s = ""
+    for i in range(rng.randint(1, 6)):
+        s = s + alphabet[rng.randint(0, len(alphabet) - 1)]
+    return s
+for trial in range(400):
+    var rows = []
+    for r in range(rng.randint(1, 4)):
+        var row = []
+        for c in range(rng.randint(1, 4)):
+            row.append(mkcell())
+        rows.append(row)
+    assert csv.parse(csv.format(rows)) == rows, "round-trip trial " + String(trial)
+io.print("OK csv roundtrip fuzz")

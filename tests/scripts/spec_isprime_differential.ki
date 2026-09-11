@@ -1,0 +1,37 @@
+# Hardening: the three primality tests must AGREE on every input (isprime=trial division,
+# isprimeaks=AKS, isprobableprime=Miller-Rabin), including Carmichaels, perfect powers, and a
+# deterministic random sweep; the AKS maxdegree guard fails fast, not hangs.
+var int = import("int")
+var random = import("random")
+var io = import("io")
+var refprime = Function(n):
+    if n < 2:
+        return False
+    var i = 2
+    while i * i <= n:
+        if n % i == 0:
+            return False
+        i = i + 1
+    return True
+for n in range(0, 500):
+    var r = refprime(n)
+    assert int.isprime(n) == r, "isprime vs ref @ " + String(n)
+    assert int.isprimeaks(n) == r, "isprimeaks vs ref @ " + String(n)
+    assert int.isprobableprime(n) == r, "isprobableprime vs ref @ " + String(n)
+for c in [561, 1105, 1729, 2465, 2821, 6601, 8911, 10585, 15841]:
+    assert not int.isprime(c) and not int.isprimeaks(c) and not int.isprobableprime(c), "Carmichael " + String(c)
+for pp in [8, 27, 32, 125, 243, 1000, 1024, 2401, 3125]:
+    assert not int.isprime(pp) and not int.isprimeaks(pp), "perfect power " + String(pp)
+var rng = random.Random(0xA11CE)
+for t in range(60):
+    var n = rng.randint(2, 50000)
+    assert int.isprime(n) == int.isprimeaks(n), "isprime/isprimeaks agree @ " + String(n)
+    assert int.isprime(n) == int.isprobableprime(n, 40), "isprime/MR agree @ " + String(n)
+# guard: a tiny maxdegree throws fast (does not hang) for an n needing a larger ring
+var threw = False
+try:
+    discard int.isprimeaks(100003, 3)
+catch:
+    threw = True
+assert threw, "isprimeaks maxdegree guard fires"
+io.print("OK isprime differential")

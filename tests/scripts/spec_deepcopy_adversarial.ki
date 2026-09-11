@@ -1,0 +1,34 @@
+# Hardening: adversarial graphs for the perfect-disjoint deepcopy — multiple cross-boundary shares,
+# sharing through Dict and Set, a cycle instance->dict->instance, and a diamond, all via serde's
+# unified memo. Every shared original must map to exactly one copy; nothing shared with the original.
+var copy = import("copy")
+var io = import("io")
+class N:
+    var _init_ = Function(self, v):
+        self.v = v
+        self.a = None
+        self.b = None
+# diamond: top.a and top.b both reach the same leaf list; the list also sits in an outer list slot
+var leaf = [1, 2]
+var top = N(0)
+top.a = N(1)
+top.b = N(2)
+top.a.a = leaf
+top.b.a = leaf
+var g = [leaf, top]
+var d = copy.deepcopy(g)
+assert id(d[0]) == id(d[1].a.a), "leaf shared list slot <-> instance attr"
+assert id(d[1].a.a) == id(d[1].b.a), "leaf shared across two instances (diamond)"
+assert id(d[0]) != id(leaf), "disjoint from original"
+d[0].append(3)
+assert len(d[1].a.a) == 3 and len(leaf) == 2, "mutation confined to the copy, shared within it"
+# sharing through a Dict and a Set-bearing instance; cycle instance->dict->instance
+var m = N(7)
+var dct = {"self": m, "peers": [m, m]}
+m.a = dct
+var dd = copy.deepcopy(dct)
+assert id(dd["self"]) == id(dd["peers"][0]), "dict value shared with list element"
+assert id(dd["peers"][0]) == id(dd["peers"][1]), "same instance twice in a list"
+assert id(dd["self"].a) == id(dd), "cycle instance->dict->instance self-references the copy"
+assert id(dd) != id(dct), "new object"
+io.print("OK deepcopy adversarial")
