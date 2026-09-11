@@ -1,0 +1,25 @@
+# Regression: copy.deepcopy must be a PERFECT, fully-disjoint copy — shared references and cycles that
+# span the container<->instance boundary must be reproduced (one copy per original), not duplicated.
+var copy = import("copy")
+var io = import("io")
+class Node:
+    var _init_ = Function(self, v):
+        self.v = v
+        self.box = None
+# `shared` is reachable via a list slot AND an instance attribute
+var shared = [1, 2, 3]
+var n = Node(9)
+n.box = shared
+var dc = copy.deepcopy([shared, n])
+assert id(dc[0]) == id(dc[1].box), "cross-boundary shared identity preserved"
+assert id(dc[0]) != id(shared), "copy is disjoint from the original"
+dc[0].append(99)
+assert len(dc[1].box) == 4 and len(shared) == 3, "mutation stays inside the copy; still shared within it"
+# cross-boundary cycle: list holds the node; node.box points back to the list
+var n2 = Node(1)
+var L = [n2]
+n2.box = L
+var dl = copy.deepcopy(L)
+assert id(dl[0].box) == id(dl), "cross-boundary cycle self-references the copy"
+assert id(dl) != id(L), "cycle copy is a new object"
+io.print("OK deepcopy crossboundary")

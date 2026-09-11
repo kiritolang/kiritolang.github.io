@@ -134,8 +134,8 @@ assert raises_msg(Function(): return b64.decode("SGk=junk"), "data after padding
 # ============================================================================================
 # CSV — quote toggling, whitespace preservation, ragged rows, embedded newline round-trip
 # ============================================================================================
-# quotes toggle state ANYWHERE in a field, not only at the field boundary
-assert csv.parserow("a\"b\"c") == ["abc"], "parserow quotes toggle mid-field"
+# RFC 4180: a quote only OPENS a quoted field at the field start; a bare quote mid-field is literal
+assert csv.parserow("a\"b\"c") == ["a\"b\"c"], "parserow: bare quotes mid-field are literal"
 assert csv.parse("\"a\"\"b\",c") == [["a\"b", "c"]], "parse doubled-quote inside quoted field"
 # leading/trailing whitespace is preserved verbatim (never stripped)
 assert csv.parse(" a , b ") == [[" a ", " b "]], "parse preserves surrounding whitespace"

@@ -1,0 +1,13 @@
+# Regression: RFC 4180 quoting — a bare quote inside an UNquoted field is a literal character and does
+# NOT open a quoted field (previously it did, swallowing a following delimiter into one merged field).
+var csv = import("csv")
+var io = import("io")
+assert csv.parserow("a\"b,c") == ["a\"b", "c"], "bare quote mid-field is literal; comma still splits"
+assert csv.parserow("\"a\",\"b\"") == ["a", "b"], "a quote at field start opens a quoted field"
+assert csv.parserow("\"x,y\",z") == ["x,y", "z"], "quoted field keeps its embedded comma"
+assert csv.parserow("plain,two") == ["plain", "two"], "plain unquoted fields"
+assert csv.parserow("\"a\"\"b\"") == ["a\"b"], "doubled quote inside a quoted field -> one literal quote"
+# format -> parse round-trip stays lossless for tricky cells
+var rows = [["a\"b", "c,d"], ["e\nf", "g"]]
+assert csv.parse(csv.format(rows)) == rows, "format/parse round-trip"
+io.print("OK csv rfc quote")

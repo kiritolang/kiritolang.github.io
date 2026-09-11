@@ -169,8 +169,8 @@ ok(csv.parserow("\" a \",b") == [" a ", "b"], "csv parserow preserves spaces ins
 ok(csv.parserow("a,b\r") == ["a", "b\r"], "csv parserow keeps trailing CR (parse drops it, parserow does not)")
 # an unterminated quote just consumes to end of line as one field
 ok(csv.parserow("\"abc") == ["abc"], "csv parserow unterminated quote -> one field to EOL")
-# a quote in the MIDDLE of an unquoted field is taken literally up to a closing quote
-ok(csv.parserow("a\"b\"c") == ["abc"], "csv parserow mid-field quotes are quote toggles")
+# RFC 4180: a bare quote mid-field is literal (a quote only opens a quoted field at the field start)
+ok(csv.parserow("a\"b\"c") == ["a\"b\"c"], "csv parserow mid-field quotes are literal")
 
 # --- formatrow: quoting only when needed; fresh fields ---
 # leading/trailing spaces do NOT trigger quoting (only , " \n \r do)

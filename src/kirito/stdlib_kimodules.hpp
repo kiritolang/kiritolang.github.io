@@ -795,8 +795,8 @@ var _parserows = Function(text, splitrows):
                     inQuotes = False
             else:
                 current = current + c
-        elif c == "\"":
-            inQuotes = True
+        elif c == "\"" and current == "":
+            inQuotes = True             # a quote only OPENS a quoted field at the field start (RFC 4180);
         elif c == ",":
             fields.append(current)
             current = ""
@@ -1024,15 +1024,14 @@ var deepcopy = Function(obj):
     if t in _IMMUTABLE:
         return obj
     if t != "List" and t != "Dict" and t != "Set":
-        return _copyViaSerde(obj)    # instance / native value object — serde handles refs + cycles
-    # Iterative + cycle-safe (recursion would overflow / loop on deep or self-referential data):
-    # 1) discover every reachable container and give it an empty shell, keyed by id(original);
-    # 2) fill the shells, mapping each child to its shell (or itself for scalars). Within this
-    #    container walk, shared references and cycles are preserved because each original maps to one
-    #    shell. LIMITATION: a user instance / native value object is copied by _copyViaSerde with its
-    #    OWN memo, so identity/cycles shared ACROSS the instance<->container boundary are not unified
-    #    with this walk (a graph reachable both through a container slot and through an instance
-    #    attribute is duplicated, not shared). Pure-container graphs are fully shared/cycle-correct.
+        return _copyViaSerde(obj)    # a bare instance / native value: serde handles refs + cycles
+    # Container graph. Discover every reachable container ITERATIVELY (no recursion -> deep structures
+    # can't overflow the native stack). If ANY object reachable through the containers is a user
+    # instance / native value, the graph spans the container<->instance boundary and needs serde's
+    # SINGLE unified memo to reproduce cross-boundary shared refs + cycles exactly (a per-instance
+    # serde copy would use its OWN memo and DUPLICATE anything shared across the boundary), so copy the
+    # whole graph via serde. Otherwise — pure containers + scalars — the iterative walk gives a
+    # perfect, unbounded-depth copy with each original mapped to exactly one shell.
     var memo = {}
     var order = []
     var stack = [obj]
@@ -1051,8 +1050,7 @@ var deepcopy = Function(obj):
         elif ct in _IMMUTABLE:
             continue                      # scalar: mapped() returns it unchanged
         else:
-            memo[cid] = _copyViaSerde(cur)  # user instance / native value: independent deep copy
-            continue                      # serde copied it whole — no shell to fill, don't descend
+            return _copyViaSerde(obj)     # mixed (instance-bearing) graph: one unified serde copy
         order.append(cur)
         if ct == "Dict":
             for pair in cur.items():
