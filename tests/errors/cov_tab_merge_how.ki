@@ -1,0 +1,3 @@
+var t = import("tabular")
+var l = t.DataFrame({"k":[1]})
+discard t.merge(l, l, "k", "cross")

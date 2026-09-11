@@ -1,0 +1,1 @@
+discard import("int").perm(5,-1)

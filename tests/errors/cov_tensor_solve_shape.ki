@@ -1,0 +1,2 @@
+var t=import("tensor")
+discard t.solve(t.eye(2), t.zeros([3]))

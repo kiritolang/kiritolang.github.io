@@ -1,0 +1,2 @@
+var c=import("complex")
+discard c.of(1,1) % c.of(1,1)

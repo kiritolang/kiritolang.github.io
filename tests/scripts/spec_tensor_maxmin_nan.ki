@@ -1,0 +1,27 @@
+# Regression: elementwise tensor maximum()/minimum() must PROPAGATE NaN and be operand-order-
+# independent, matching the NaN-propagating reduction .max()/.min() (a03 A13-1). Before the fix they
+# used raw std::max/std::min, so a.maximum(b) kept whichever operand came first when a NaN was present
+# -> a.maximum(b) != b.maximum(a).
+var T = import("tensor")
+var math = import("math")
+var io = import("io")
+var nan = math.nan
+
+var a = T.Tensor([nan, 5.0])
+var b = T.Tensor([5.0, nan])
+var m1 = a.maximum(b).tolist()
+var m2 = b.maximum(a).tolist()
+assert math.isnan(m1[0]) and math.isnan(m1[1]), "maximum propagates NaN"
+assert math.isnan(m2[0]) and math.isnan(m2[1]), "maximum is operand-order-independent"
+var n1 = a.minimum(b).tolist()
+var n2 = b.minimum(a).tolist()
+assert math.isnan(n1[0]) and math.isnan(n1[1]), "minimum propagates NaN"
+assert math.isnan(n2[0]) and math.isnan(n2[1]), "minimum is operand-order-independent"
+
+# non-NaN values are unaffected (plain elementwise max/min)
+var c = T.Tensor([1.0, 8.0])
+var d = T.Tensor([4.0, 3.0])
+assert c.maximum(d).tolist() == [4.0, 8.0], "maximum without NaN"
+assert c.minimum(d).tolist() == [1.0, 3.0], "minimum without NaN"
+
+io.print("OK tensor maxmin nan")

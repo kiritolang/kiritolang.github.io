@@ -3,7 +3,8 @@
 
 // The `int` module: arbitrary-precision integers (a `BigInt` value type) plus the integer-meaningful
 // math functions (gcd/lcm/factorial/comb/perm/isqrt/abs/pow/modpow/modinv) and primality
-// (deterministic AKS + probabilistic Miller-Rabin) — the exact/unbounded analogues of the
+// (deterministic trial-division `isprime`, deterministic polynomial-time `isprimeaks` (AKS), and
+// probabilistic Miller-Rabin `isprobableprime`) — the exact/unbounded analogues of the
 // int64 `math` builtins, carried in their own module the way `complex` carries its analytic set.
 //
 // BigInt is pure C++ (no GMP): a sign + a little-endian base-2^32 magnitude, with schoolbook add/sub/
@@ -517,7 +518,7 @@ inline uint64_t findAksR(const Big& n, uint64_t maxdegree) {
     uint64_t target = L * L;
     for (uint64_t r = 2;; ++r) {
         if (r > maxdegree)
-            throw KiritoError("isprime: input too large for deterministic AKS (ring degree r exceeds maxdegree)");
+            throw KiritoError("isprimeaks: input too large for deterministic AKS (ring degree r exceeds maxdegree)");
         uint64_t nr = modU64(n, r);
         if (nr == 0 || gcdU64(nr, r) != 1) continue;         // r shares a factor with n
         if (multiplicativeOrderModR(nr, r, target) == UINT64_MAX) return r;  // ord_r(n) > target
@@ -584,6 +585,32 @@ bool aksCongruenceHolds(const Mod& M, const Big& n, uint64_t r, uint64_t a) {
     rhs[nModR] = M.add(rhs[nModR], M.one());
     rhs[0] = M.add(rhs[0], M.fromU64v(a));
     for (uint64_t i = 0; i < r; ++i) if (!M.eq(result[i], rhs[i])) return false;
+    return true;
+}
+
+inline bool isPrimeU64(uint64_t n) {
+    if (n < 2) return false;
+    if (n < 4) return true;              // 2, 3
+    if ((n & 1) == 0) return false;
+    if (n % 3 == 0) return false;
+    for (uint64_t i = 5; i <= n / i; i += 6)   // i <= n/i avoids i*i overflow
+        if (n % i == 0 || n % (i + 2) == 0) return false;
+    return true;
+}
+// Deterministic primality: the naive O(sqrt n) trial division. A tight native uint64 loop when the
+// value fits int64 (the common, optimal case); BigInt-arithmetic trial division as a correct — if
+// slow — fallback for larger values. `isprime` uses this; the deterministic polynomial-time AKS test
+// (`isPrimeAKS`, exposed as `isprimeaks`) is a separate, far-slower option.
+inline bool isPrimeExact(const Big& n) {
+    int64_t v;
+    if (toInt64(n, v)) return v >= 0 && isPrimeU64(static_cast<uint64_t>(v));
+    if (n.neg) return false;
+    if ((n.mag[0] & 1) == 0) return false;    // n > 2^63 and even
+    Big two = fromInt64(2), i = fromInt64(3), limit = isqrt(n);
+    while (cmp(i, limit) <= 0) {
+        if (divmodFloor(n, i).second.isZero()) return false;
+        i = add(i, two);
+    }
     return true;
 }
 
@@ -703,7 +730,8 @@ public:
 
     std::vector<std::string> inspectMembers() const override {
         return {"modpow(exponent, modulus) -> BigInt", "isprime() -> Bool",
-                "isprobableprime(rounds = 25) -> Bool", "bitlength() -> Integer", "toint() -> Integer"};
+                "isprimeaks(maxdegree = 1048576) -> Bool", "isprobableprime(rounds = 40) -> Bool",
+                "bitlength() -> Integer", "toint() -> Integer"};
     }
 
     Handle binary(KiritoVM& vm, BinOp op, Handle self, Handle rhs) override;
@@ -807,16 +835,21 @@ inline Handle BigIntVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
                 return make(vm, modpow(selfVal(vm, self), coerce(vm, a[0], "modpow exponent"),
                                        coerce(vm, a[1], "modpow modulus")));
             }, std::vector<Handle>{self});
-    if (name == "isprime") {
+    if (name == "isprime")
+        return makeMethod(vm, "isprime", {},
+            [self, selfVal](KiritoVM& vm, std::span<const Handle>) -> Handle {
+                return vm.makeBool(isPrimeExact(selfVal(vm, self)));   // deterministic trial division
+            }, std::vector<Handle>{self});
+    if (name == "isprimeaks") {
         RootScope rs(vm);
         std::vector<NativeParam> sig;
         sig.emplace_back("maxdegree", "Integer",
                          rs.add(vm.makeInt(static_cast<int64_t>(kAksDefaultMaxDegree))));
         return vm.alloc(std::make_unique<NativeFunction>(
-            "isprime", std::move(sig), "Bool",
+            "isprimeaks", std::move(sig), "Bool",
             [self, selfVal](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                int64_t md = Value(vm, a[0]).asInt("isprime maxdegree");
-                if (md < 2) throw KiritoError("isprime: maxdegree must be >= 2");
+                int64_t md = Value(vm, a[0]).asInt("isprimeaks maxdegree");
+                if (md < 2) throw KiritoError("isprimeaks: maxdegree must be >= 2");
                 return vm.makeBool(isPrimeAKS(selfVal(vm, self), static_cast<uint64_t>(md)));
             },
             std::vector<Handle>{self}));
@@ -824,7 +857,7 @@ inline Handle BigIntVal::getAttr(KiritoVM& vm, Handle self, std::string_view nam
     if (name == "isprobableprime") {
         RootScope rs(vm);
         std::vector<NativeParam> sig;
-        sig.emplace_back("rounds", "Integer", rs.add(vm.makeInt(25)));  // interned today; don't rely on it
+        sig.emplace_back("rounds", "Integer", rs.add(vm.makeInt(40)));  // interned today; don't rely on it
         return vm.alloc(std::make_unique<NativeFunction>(
             "isprobableprime", std::move(sig), "Bool",
             [self, selfVal](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -960,17 +993,26 @@ public:
             return make(vm, modinv(coerce(vm, args[0].handle(), "modinv a"), coerce(vm, args[1].handle(), "modinv m")));
         });
 
-        // Primality. `isprime` is the deterministic AKS test; `maxdegree` bounds the AKS ring degree
-        // r so an infeasibly-large n fails fast instead of OOMing (default is very high — realistic
-        // inputs never reach it). For large n prefer the fast probabilistic `isprobableprime`.
-        m.fn("isprime", {{"n"}, {"maxdegree", "Integer", vm.makeInt(static_cast<int64_t>(bigint::kAksDefaultMaxDegree))}},
-             "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+        // Primality. `isprime` is the deterministic naive O(sqrt n) trial division — exact, fast for
+        // realistic inputs, and always terminates. For large n prefer the fast probabilistic
+        // `isprobableprime`; use `isprimeaks` only when a deterministic polynomial-time witness is
+        // specifically required (it is orders of magnitude slower).
+        m.fn("isprime", {{"n"}}, "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "isprime");
-            int64_t md = args[1].asInt("isprime maxdegree");
-            if (md < 2) throw KiritoError("isprime: maxdegree must be >= 2");
-            return vm.makeBool(isPrimeAKS(coerce(vm, args[0].handle(), "isprime n"), static_cast<uint64_t>(md)));
+            return vm.makeBool(isPrimeExact(coerce(vm, args[0].handle(), "isprime n")));
         });
-        m.fn("isprobableprime", {{"n"}, {"rounds", "Integer", vm.makeInt(25)}}, "Bool",
+        // `isprimeaks`: the deterministic polynomial-time AKS test. `maxdegree` bounds the AKS ring
+        // degree r so an infeasibly-large n fails fast instead of OOMing (default is very high —
+        // realistic inputs never reach it). AKS is exact but far slower than trial division and
+        // Miller-Rabin, and is practical only for small n; prefer `isprime`/`isprobableprime` otherwise.
+        m.fn("isprimeaks", {{"n"}, {"maxdegree", "Integer", vm.makeInt(static_cast<int64_t>(bigint::kAksDefaultMaxDegree))}},
+             "Bool", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+            Args args(vm, a, "isprimeaks");
+            int64_t md = args[1].asInt("isprimeaks maxdegree");
+            if (md < 2) throw KiritoError("isprimeaks: maxdegree must be >= 2");
+            return vm.makeBool(isPrimeAKS(coerce(vm, args[0].handle(), "isprimeaks n"), static_cast<uint64_t>(md)));
+        });
+        m.fn("isprobableprime", {{"n"}, {"rounds", "Integer", vm.makeInt(40)}}, "Bool",
              [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             Args args(vm, a, "isprobableprime");
             int64_t rounds = args[1].asInt("isprobableprime rounds");

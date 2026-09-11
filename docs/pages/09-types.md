@@ -304,7 +304,7 @@ io.print(d.get("z", 0))    # 0 (default)
 
 | Method | Description |
 |--------|-------------|
-| `d.keys()` | List of keys (in unspecified order). |
+| `d.keys()` | List of keys (in insertion order). |
 | `d.values()` | List of values. |
 | `d.items()` | List of `[key, value]` pairs. |
 | `d.get(key[, default])` | Value for `key`, or `default` (or `None`) if missing. |

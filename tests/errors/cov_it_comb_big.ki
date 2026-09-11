@@ -1,0 +1,2 @@
+var it = import("itertools")
+discard it.combinations(it.count(0,1,40), 20)

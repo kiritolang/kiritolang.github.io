@@ -1,0 +1,1 @@
+discard import("complex").zeros(2,2)[5,5]

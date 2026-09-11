@@ -188,6 +188,21 @@ int main() {
         CHECK(second == std::string::npos);                                    // warned exactly once
     }
 
+    // REGRESSION: a grad-tracking Float tensor combined with a Complex tensor/scalar yields a non-grad
+    // Complex result — the gradient breaks, so it must WARN (never silently detach), per the autograd
+    // contract "a gradient break is never silent".
+    {
+        std::ostringstream cap;
+        std::streambuf* old = std::cerr.rdbuf(cap.rdbuf());
+        KiritoVM wvm;
+        wvm.runSource("var T = import(\"tensor\")\nvar C = import(\"complex\")\n"
+                      "var a = T.Tensor([1.0,2.0], requiresgrad=True)\n"
+                      "var b = T.Tensor([C.of(1,1), C.of(2,2)], dtype=\"Complex\")\n"
+                      "discard a + b\n");
+        std::cerr.rdbuf(old);
+        CHECK(cap.str().find("not differentiable") != std::string::npos);      // did not silently detach
+    }
+
     // --- item(): a one-element tensor -> a scalar Float/Complex ---------------------------------
     CHECK(evalStr(vm, "var T = import(\"tensor\")\nT.Tensor([42.0]).item()") == "42.0");
     CHECK(evalStr(vm, "var T = import(\"tensor\")\ntype(T.Tensor([[7.0]]).item())") == "Float");

@@ -1,0 +1,2 @@
+var it = import("itertools")
+discard it.permutations(it.count(0,1,20), 8)

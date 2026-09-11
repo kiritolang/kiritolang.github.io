@@ -1,0 +1,2 @@
+var c=import("complex")
+discard c.zeros(2,2)+c.zeros(2,3)

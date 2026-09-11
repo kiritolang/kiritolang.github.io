@@ -58,7 +58,18 @@ public:
     std::string str(StringifyCtx&) const override { return "<function " + name_ + ">"; }
     bool equals(const ObjectArena&, const Object& other) const override { return this == &other; }
     Handle call(KiritoVM& vm, std::span<const Handle> args) override {
-        return acceptsKwargs_ ? kwFn_(vm, args, {}) : fn_(vm, args);
+        if (acceptsKwargs_) return kwFn_(vm, args, {});
+        // A signatured native invoked with the wrong positional count must have its arguments BOUND
+        // (defaults filled, or a clean "missing required argument" thrown) — otherwise an impl that
+        // reads a defaulted slot reads past `args`, which is UB (a heap-buffer-overflow). The bytecode
+        // VM binds via applyCall, but a DIRECT Object::call — the public `Value::call`, and stdlib
+        // callback sites like `deref(fn).call(vm, args)` — lands here, so bind here too: this virtual
+        // entry point is the one place that guarantees no impl ever sees an under-length span.
+        // bindArgs allocates nothing — every handle it returns is an existing positional (kept alive by
+        // the caller) or a default (a child of this native, hence a GC root for the call's duration) —
+        // so the bound vector needs no extra rooting.
+        if (hasSig_ && args.size() != sig_.size()) return fn_(vm, bindArgs(args, {}));
+        return fn_(vm, args);
     }
     // Call with named arguments (only for acceptsKwargs() natives).
     Handle callKw(KiritoVM& vm, std::span<const Handle> args, std::span<const NamedArg> named) {

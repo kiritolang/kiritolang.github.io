@@ -143,6 +143,7 @@ so it *is* catchable; it's noted below.)
 | `'return' outside function` | `return` at module/class-body scope | Only `return` inside a function body |
 | `two starred targets in assignment` | More than one `*name` on an unpack target | Use at most one starred target |
 | `non-default parameter '<name>' follows a default parameter` | A parameter without a default declared after one with a default | Move defaulted parameters last |
+| `duplicate parameter name '<name>'` | The same parameter name declared twice in a `Function(...)` parameter list — a hard parser error (not a warning; not catchable, since it aborts before execution) | Rename or remove the duplicate parameter |
 | `an inline function cannot be comma-packed here …` | A bare comma-pack whose element is an inline-bodied `Function(): …` — e.g. `var f = Function(): return a, b` | Use an indented block body, or wrap the function in a List `[ ]` (a call-arg / list-element comma is fine) |
 
 ### Parser — switch / try
@@ -202,7 +203,9 @@ execution continues. Disable it with `ki -w` / `--no-warn`.
 | `variable '<name>' shadows an outer '<name>'; nested blocks share the enclosing scope, so this \`var\` rebinds it rather than declaring a new variable` | A `var` in a nested `if`/`while`/`for`/`with`/`try` block reuses a name already bound (as a `var`, a parameter, a `for` loop variable, or a `catch`/`with ... as` name) in an enclosing block of the **same** scope — because blocks share that scope, it silently rebinds the outer binding instead of making a new local. Use `=` to rebind, or a new name. (Shadowing an *enclosing scope's* name — a different function/module — is legitimate and not flagged.) |
 | `unreachable code (the block already returns/throws/breaks/continues before this)` | A statement after a terminator in the same block |
 | `self-assignment of '<name>' has no effect` | `x = x` (name-to-name) |
-| `duplicate parameter name '<name>'` | The same parameter name declared twice |
+| `duplicate keyword argument '<name>' in call` | A call passes the same keyword name twice — a runtime error when executed (`function got multiple values for argument`), flagged early |
+| `variable '<name>' is used in its own initializer (reads the unassigned new binding)` | `var x = x` where `x` is not already bound: the initializer reads the not-yet-assigned new binding (a runtime `name '<name>' is not defined`), flagged early. A re-declaration `var x = 5; var x = x`, which reads the prior value, is **not** flagged |
+| `duplicate key in dict literal (an earlier entry is overwritten)` | A dict literal repeats a constant key of the same type and value; the earlier entry is silently overwritten (last wins) |
 | `todo: <message>` | A `todo` statement (a deliberate reminder) |
 
 ## Runtime errors — the core language
@@ -447,7 +450,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 
 | Message | Cause | Fix |
 |---|---|---|
-| `open expected 1 or 2 arguments` | `io.open` called with 0 or >2 args | Pass `open(path[, mode])` |
+| `open() missing required argument 'path'` / `open() takes at most 2 positional argument(s) but <n> given` | `io.open` called with 0 or >2 args | Pass `open(path[, mode])` |
 | `open path must be a String` / `open mode must be a String` | Non-String path/mode to `open` | Pass Strings |
 | `open: embedded NUL byte in path` | A String path containing a `\0` (the OS truncates at it — a validation bypass) | Remove the NUL byte |
 | `unsupported file mode '<mode>'` | Mode not in the r/w/a[+][b] set | Use `"r"`/`"w"`/`"a"`/`"r+"` + optional `b` |
@@ -496,8 +499,9 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `setenv failed for '<name>'` | OS rejected the env-var set | Use a valid name/value |
-| `createprocess: args must be a (non-empty) List of Strings (the program and its arguments)` | Bad/empty argv | Pass a non-empty List of Strings |
+| `createprocess: args must be a List of Strings (the program and its arguments)` / `createprocess: args must be a non-empty List (the program and its arguments)` / `createprocess argument expected String, got '<T>'` | argv not a List / empty List / a non-String element | Pass a non-empty List of Strings |
 | `<ProcError message>` (e.g. `process timed out`, `failed to start '<argv0>'…`) | `createprocess`/`shell` spawn failed or the `timeout` elapsed — **ProcError** re-wrapped as a `KiritoError` | Fix the command/cwd, or raise the timeout |
+| `createprocess/shell: an argument must not contain a NUL byte` / `createprocess/shell: cwd must not contain a NUL byte` | An argv element or `cwd` contains an embedded `\0` (a poison-NUL injection guard) | Remove the NUL byte from the argument/path |
 | `process produced more than 256 MiB of output (capture limit exceeded)` | A child's stdout/stderr exceeded the `kMaxCapture` bound — a catchable error, not a crash (the child is still drained so it can't deadlock) | Have the child write to a file, or filter/limit its output |
 
 ### time — DateTime construction & methods
@@ -561,7 +565,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `header contains a control character (CR/LF): '<k>'` / `cookie contains a control character (CR/LF): '<name>'` | A request header/cookie name or value with an embedded CR or LF (a header/response-splitting injection guard) | Strip CR/LF from user-supplied header/cookie data |
 | `multipart field name must not contain CR or LF` / `multipart filename must not contain CR or LF` | A `files=` field name or filename with an embedded CR/LF (a multipart header-injection guard) | Strip CR/LF from the field name/filename |
 | `invalid gzip data` / `truncated gzip data` | The server's gzip body is bad/short | Server bug — retry / disable gzip |
-| `<method>() expected at least <n> argument(s)` | Too few args to `get`/`post`/`request`/… | Pass the required args |
+| `<method>() expected at least <n> argument(s)` | Too few args to a **socket** method (`connect`/`send`/`setsockopt`/…). (HTTP verbs `get`/`post`/`request` instead report `<verb>() missing required argument '<name>'`.) | Pass the required args |
 | `HTTP <status> <reason> for <url>` | `raiseforstatus()` on a ≥400 response | Handle the status yourself |
 | `Response indexing takes a single string key` / `Response index must be a String key` / `Response has no field '<name>'` | Bad `resp[...]`/attribute access | Use `"status"`/`"body"` or a documented field |
 | `header() expected at least 1 argument (the header name)` | `header()` with no name | Pass the header name |
@@ -639,7 +643,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 |---|---|---|
 | `Matrix/ComplexMatrix index must be Integer` / `index out of range` / `index needs 1 (row) or 2 (element) indices` | Bad `m[...]` index | Use `m[i]` or `m[i, j]` within bounds |
 | `Matrix/ComplexMatrix element assignment needs two indices: m[i, j] = v` | Assigning with ≠2 indices | Use `m[i, j] = v` |
-| `Matrix/ComplexMatrix +/- requires matrices of equal shape` / `multiply: inner dimensions differ` | Shape/dimension mismatch | Match shapes / conform inner dims |
+| `Matrix +/- requires Matrices of equal shape` / `ComplexMatrix +/- requires matrices of equal shape` / `<Matrix|ComplexMatrix> multiply: inner dimensions differ` | Shape/dimension mismatch | Match shapes / conform inner dims |
 | `Matrix/ComplexMatrix too large` | Element count exceeds the cap (~16M) | Reduce the dimensions |
 | `determinant/inverse/trace requires a square Matrix/ComplexMatrix` | A square-only op on a non-square matrix | Use a square matrix |
 | `dot/cross expects a … vector` / `dot requires vectors of equal length` / `cross is only defined for two 3-element vectors` | Malformed vector operands | Use conforming 1×n / n×1 vectors |
@@ -662,7 +666,7 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `reshape: total number of elements must be unchanged` | `reshape` to an incompatible size | Preserve the element count |
 | `matmul: inner dimensions differ` / `matmul requires tensors of rank >= 2` | Bad `matmul` operands | Conform dims; rank ≥ 2 |
 | `permute: axes count must equal the tensor rank` / `permute: axes must be a permutation` | Bad `permute`/`transpose` axes | Pass a full valid permutation |
-| `<op> axis out of range` | Any axis arg past `ndim` (reductions, `slice`, `squeeze`, `stack`, `tensordot`, …) | Axis within `[0, ndim)` |
+| `<op> axis out of range` (or bare `axis out of range` for reductions like `sum`/`mean`) | Any axis arg past `ndim` (reductions, `slice`, `squeeze`, `stack`, `tensordot`, …) | Axis within `[0, ndim)` |
 | `Tensor index must be Integer` / `Tensor index out of range` / `too many indices for tensor` | Bad index / assignment key | One in-range Integer per dimension |
 | `Tensor assignment: value shape does not match the selected region` | Basic-index assignment (`t[:, 2:4] = m`) where the RHS tensor's shape ≠ the sliced region (a scalar broadcasts) | Match the RHS shape to the selection, or assign a scalar |
 | `Tensor element assignment is not allowed on a grad-tracking tensor …` | In-place `t[...] = v` on a tensor that requires grad | `detach()` first, or rebind functionally |
@@ -672,7 +676,7 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `tensor <fn>: math domain error (got <x>)` / `tensor pow: math domain error …` / `tensor clip: lower bound <lo> …` | Out-of-domain element math | Keep elements in domain / order clip bounds |
 | `Tensor dtype must be "Float" or "Complex"` | Unknown `dtype=` string | Use `"Float"` or `"Complex"` |
 | `this math op is Float-only on tensors …` / `pow`/`**`/`%`/`//` `is Float-only on tensors` / `<who>: Float tensors only` | A Float-only op on a Complex tensor | Use a Float tensor / the `complex` module |
-| `ordering comparisons are not defined for Complex tensors` / `min/max is not defined for this dtype` | Ordering a Complex tensor | Complex is unordered — use a Float tensor |
+| `ordering comparisons are not defined for Complex tensors` / `min/max: Float tensors only (this op is not defined for Complex)` | Ordering / min/max on a Complex tensor | Complex is unordered — use a Float tensor |
 | `backward: gradients are Float-only` / `does not require grad` / `the seed gradient shape must match` / `a seed gradient is required for a non-scalar tensor` | Misuse of `.backward()` | Float leaf, `requiresgrad=True`, matching seed |
 | `gradients are Float-only (a Complex tensor cannot require grad)` / `cannot serialize a Tensor that requires grad; call detach() first` | Grad on a Complex tensor / serializing a grad tensor | Float tensors only; `.detach()` before serializing |
 | `mean/min/max/median of an empty tensor` / `zero-size reduction …` / `std/var: not enough elements for the given ddof` | Reduction over an empty/degenerate axis | Reduce a non-empty tensor |
@@ -687,7 +691,7 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `Tensor _setstate_: malformed state` / `_setstate_: complex element must be [re, im]` / `tensor data size does not match its shape` | A corrupt/hostile serialized tensor blob | Deserialize only trusted data |
 | `cannot squeeze an axis whose size is not 1` | `squeeze` of an axis whose length is not 1 | Squeeze only size-1 axes |
 | `concatenate: tensors must have the same rank` / `concatenate: shapes differ off the join axis` | Mismatched inputs to `concatenate` | Match rank and the non-join dimensions |
-| `concatenate/stack needs at least one tensor` | `concatenate`/`stack` with an empty input list | Pass at least one tensor |
+| `expected at least one Tensor` | `concatenate`/`stack` with an empty input list (`expected a List of Tensors` if the list holds a non-Tensor) | Pass at least one tensor |
 | `broadcastto: cannot broadcast to the requested shape` | `broadcastto` target incompatible with the source shape | Use a broadcast-compatible shape |
 | `dot requires two 1-D tensors` / `dot requires vectors of equal length` | Bad operands to tensor `dot` | Pass two equal-length 1-D tensors |
 | `take: tensor has no axes` | `take` on a 0-D tensor | Take from a tensor with ≥ 1 axis |
@@ -713,8 +717,8 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | Message | Cause | Fix |
 |---|---|---|
 | `structure too deeply nested to serialize` / `… to dump` | Graph deeper than the guard (10000; 1500 under sanitizers) | Flatten the structure |
-| `cannot serialize/dump type '<T>' (define _getstate_/_setstate_ to make it serializable)` | An instance with no `_getstate_` / a live-resource native | Add `_getstate_`/`_setstate_`, or exclude it |
-| `cannot serialize/dump type '<T>'` | A non-serializable kind (Socket, open file, Regex) | Exclude the resource from the graph |
+| `cannot serialize/dump type '<T>' (define _getstate_/_setstate_ to make it serializable)` | A live-resource / no-`_getstate_` native — Socket, open File, Regex | Add `_getstate_`/`_setstate_`, or exclude it |
+| `cannot serialize/dump type '<T>'` | A non-serializable transient kind — an Iterator (`range`/`map`/…), a Slice, or Ellipsis | Exclude it from the graph (materialize an iterator to a List first) |
 | `cannot serialize/dump a native/built-in function '<name>' (only Kirito-defined functions are serializable; a module reconnects by import)` | A bound reference to a builtin/native function (e.g. `var f = math.sqrt`) in the graph | Serialize a Kirito `Function` wrapper, or re-`import` the module on load |
 | `cannot serialize/dump this function: its source text was not captured …` | A `Function` literal defined inside an f-string (its source isn't recorded) | Define the function as a top-level/`var` binding, not inside an f-string |
 | `cannot serialize/dump class '<name>': its source text was not captured` | A class whose defining source wasn't recorded (should not occur for normally-defined classes) | Define the class normally |
@@ -725,6 +729,7 @@ call site re-wraps it as a `KiritoError`, so the messages below surface as ordin
 | `cannot deserialize: a free-variable name is not a String` | A corrupt function/class record whose free-variable name slot isn't a String | Deserialize only trusted data |
 | `cannot deserialize '<name>': no class or registered deserializer in this VM` | A stateful native tag with no factory | `vm.registerDeserializer(name, …)` |
 | `cannot deserialize '<name>': it defines _getstate_ but no _setstate_` | Class can serialize but not restore | Add `_setstate_` |
+| `cannot serialize '<name>': it defines _setstate_ but no _getstate_` | The serialize-time mirror: a class defines a restore hook but no state-capture hook | Add `_getstate_` |
 | `bad serialization header` / `bad dump header` / `unsupported dump version` | Wrong/foreign format header | Feed real `serialize.dumps`/`dump.dumps` output |
 | `loads expects a Bytes (or String) of dump data` | `dump.loads` given the wrong type | Pass the `dumps` Bytes |
 | `could not open file for saving` / `could not open file for loading` | `save`/`load` couldn't open the path | Check the path/permissions |
@@ -748,7 +753,7 @@ Compile rejections are thrown as **RegexError** inside the engine and re-wrapped
 | `invalid regex: too many capture groups (max 1000)` | A pattern with more than 1000 capturing groups | Reduce the group count / use non-capturing `(?:…)` |
 | `invalid regex: duplicate/empty/bad group name …` / `malformed named group …` / `unsupported (?...) group` | A malformed group construct | Use a supported group form |
 | `invalid regex: backreferences are not supported …` / `named backreferences …` / `lookahead …` / `lookbehind …` | Backrefs/lookaround (rejected by design for linear time) | Restructure without them |
-| `regex match exceeded its complexity budget …` | A many-capture-group pattern over a long input (cost is O(text × program × groups)) | Simplify the pattern or reduce capture groups |
+| `regex match failed: regex match exceeded its complexity budget …` | A many-capture-group pattern over a long input (cost is O(text × program × groups)); the match-time error is wrapped with a `regex match failed:` prefix | Simplify the pattern or reduce capture groups |
 | `no such group: <g>` / `group key must be an Integer index or a String name` | Bad group access on a Match | Use a valid group number/name |
 | `invalid group reference <g> in replacement template` / `bad replacement: …` | Malformed `sub` template | Reference an existing group; fix the `\g<…>` |
 | `sub replacement must be a String or a function` / `sub replacement function must return a String` | Bad `sub` replacement | Pass a String template / return a String |
@@ -759,7 +764,7 @@ Both throw **DeflateError** internally, re-wrapped with a `zlib:` / `gzip:` pref
 
 | Message | Cause | Fix |
 |---|---|---|
-| `zlib: zlib data too short` / `unsupported zlib compression method` / `checksum mismatch (corrupt data)` | Malformed/corrupt zlib stream | Provide a valid zlib stream |
+| `zlib: zlib data too short` / `zlib: unsupported zlib compression method` / `zlib: zlib checksum mismatch (corrupt data)` | Malformed/corrupt zlib stream | Provide a valid zlib stream |
 | `zlib: unexpected end of deflate stream` / `invalid Huffman code` / `invalid block type` / `truncated stored block …` / `invalid length/distance symbol` / `distance too far back` / `bad dynamic lengths` | Corrupt/truncated DEFLATE data | Data is corrupt — re-fetch |
 | `zlib: invalid stored block lengths` / `invalid repeat` | A corrupt DEFLATE stored-block header / code-length repeat | Data is corrupt — re-fetch |
 | `zlib: invalid zlib window size` / `zlib preset dictionary is not supported` / `invalid zlib header check` | A malformed or unsupported zlib header (bad window/CMF-FLG check, preset dictionary) | Provide a standard zlib stream |
@@ -775,8 +780,8 @@ Both throw **DeflateError** internally, re-wrapped with a `zlib:` / `gzip:` pref
 |---|---|---|
 | `unhashable type '<T>'` | `hash(x)` on a value with no hash (a List, or an instance lacking `_hash_`) | Pass a hashable value |
 | `<fn> expects a String or Bytes` | A `hash`/`zlib`/`gzip` function given something other than a `String` or `Bytes` | Pass text or binary data |
-| `hmac: unknown algorithm '<algo>'` | A bad `algo=` to `hmac` | Use `"sha256"`/`"sha512"`/… |
-| `pbkdf2: iterations must be >= 1` / `dklen must be >= 1` / `dklen too large (max 1048576)` / `unknown algorithm '<algo>'` | A bad PBKDF2 parameter | Positive iterations, 1 ≤ dklen ≤ 1 MiB, a known algo |
+| `hmac: unknown algorithm '<algo>' (use md5/sha1/sha256/sha384/sha512)` | A bad `algo=` to `hmac` | Use `"sha256"`/`"sha512"`/… |
+| `pbkdf2: iterations must be in [1, 4294967295]` / `pbkdf2: dklen must be >= 1` / `pbkdf2: dklen too large (max 1048576)` / `pbkdf2: unknown algorithm '<algo>' (use md5/sha1/sha256/sha384/sha512)` | A bad PBKDF2 parameter | iterations in [1, 2³²−1], 1 ≤ dklen ≤ 1 MiB, a known algo |
 
 ### crypto (`KIRITO_ENABLE_TLS`)
 
@@ -790,7 +795,7 @@ OpenSSL-gated. On a non-TLS build every function throws the first row below; bra
 | `aesdecrypt: tag must be 16 bytes` | A truncated/oversized GCM tag | Pass the full 16-byte tag `aesencrypt` returned |
 | `aesdecrypt: authentication failed (wrong key/iv/tag or tampered data)` | The GCM tag didn't verify — wrong key/iv/aad or tampered ciphertext | Never trust the output; discard it |
 | `rsagenerate: bits must be in [512, 16384]` | An out-of-range RSA key size | Use e.g. 2048/3072/4096 |
-| `crypto: unknown hash '<algo>'` | A bad `algo=` to `rsasign`/`rsaverify`/`ecsign`/`ecverify` | Use `"sha256"`/`"sha384"`/`"sha512"` |
+| `crypto: unknown hash '<algo>' (use sha1/sha256/sha384/sha512)` | A bad `algo=` to `rsasign`/`rsaverify`/`ecsign`/`ecverify` | Use `"sha256"`/`"sha384"`/`"sha512"` (or `"sha1"`) |
 | `rsasign: expected RSA private key, got EC` | A key of the wrong family — e.g. an `ecgenerate` key passed to `rsasign`/`rsaverify` (or an RSA key to `ecsign`/`ecverify`) | Use the `rsa*` functions with `rsagenerate` keys and the `ec*` functions with `ecgenerate` keys |
 | an OpenSSL error string | A malformed PEM key, unknown curve, or unparseable certificate to `rsa*`/`ec*`/`x509parse` | Pass a valid PEM key / curve name / certificate |
 
@@ -800,7 +805,7 @@ OpenSSL-gated. On a non-TLS build every function throws the first row below; bra
 
 | Message | Cause | Fix |
 |---|---|---|
-| `int: base must be between 2 and 36` / `fromstring: base must be between 2 and 36` | A radix outside 2..36 | Use base 2–36 |
+| `fromstring: base must be between 2 and 36` | A radix outside 2..36 (`int.fromstring(s, base)`) | Use base 2–36 |
 | `int: invalid integer literal '<s>'` | Non-numeric text (for the chosen base) to `BigInt`/`fromstring` | Pass valid digits |
 | `BigInt expects an Integer, a String, or a BigInt` | `BigInt(x)` on an unsupported type | Pass an Integer/String/BigInt |
 | `int: number too large (exceeds size limit)` / `int: pow result too large …` / `pow: exponent too large` | A BigInt op would exceed the `kMaxLimbs` guard (runaway mul/pow/factorial). `int.pow` and `**` share one power engine, so a trivial base (0, ±1) returns the exact result instead of throwing | Reduce the magnitude/exponent |
@@ -810,10 +815,10 @@ OpenSSL-gated. On a non-TLS build every function throws the first row below; bra
 | `modinv: modulus must be >= 2` / `modinv: arguments are not coprime (no inverse exists)` | No modular inverse exists | Coprime operands, modulus ≥ 2 |
 | `isqrt: negative operand` | `isqrt` of a negative | Pass n ≥ 0 |
 | `factorial: not defined for negatives` / `comb: requires non-negative integers` / `perm: requires non-negative integers` | A negative to `factorial`/`comb`/`perm` | Pass non-negative integers |
-| `int: OS secure random source unavailable (needed for primality/randomprime)` | `isprobableprime`/`randomprime` when the OS CSPRNG failed (the deterministic `isprime`/AKS uses no randomness and is unaffected) | Fix the OS entropy source |
-| `isprime: input too large for deterministic AKS (ring degree r exceeds maxdegree)` / `isprime: maxdegree must be >= 2` | AKS `isprime` on an `n` whose required ring degree exceeds `maxdegree` (fail-fast instead of OOM), or a `maxdegree` below 2 | Use `isprobableprime` for very large `n`, or raise `maxdegree`; pass `maxdegree` ≥ 2 |
+| `int: OS secure random source unavailable (needed for primality/randomprime)` | `isprobableprime`/`randomprime` when the OS CSPRNG failed (the deterministic `isprime`/`isprimeaks` use no randomness and are unaffected) | Fix the OS entropy source |
+| `isprimeaks: input too large for deterministic AKS (ring degree r exceeds maxdegree)` / `isprimeaks: maxdegree must be >= 2` | `isprimeaks` on an `n` whose required ring degree exceeds `maxdegree` (fail-fast instead of OOM), or a `maxdegree` below 2 | Use `isprime` (trial division) or `isprobableprime` for large `n`, or raise `maxdegree`; pass `maxdegree` ≥ 2 |
 | `isprobableprime: rounds must be >= 1` / `randomprime: rounds must be >= 1` / `randomprime: bits must be >= 2` / `randomprime: bits too large` | A bad Miller-Rabin `rounds` or `randomprime` `bits` | rounds ≥ 1, bits ≥ 2 within the cap |
-| `BigInt does not support this operator` / `BigInt does not support this unary operator` | A right-operand-only or unsupported op — BigInt dispatches on the **left** operand, so `3 + BigInt(2)` throws while `BigInt(2) + 3` works | Put the BigInt on the left, or convert |
+| `unsupported operand type 'BigInt' for arithmetic with 'Integer'` | An arithmetic op with a non-BigInt **left** operand — BigInt dispatches on the left, so `3 + BigInt(2)` throws (this core-runtime message) while `BigInt(2) + 3` works | Put the BigInt on the left, or convert |
 | `toint: value does not fit in a native Integer` | `.toint()` on a BigInt beyond int64 range | Keep it a BigInt / check `.bitlength()` |
 
 ### Standard library — Kirito-authored modules

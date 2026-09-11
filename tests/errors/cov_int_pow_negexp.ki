@@ -1,0 +1,1 @@
+discard import("int").pow(2,-1)

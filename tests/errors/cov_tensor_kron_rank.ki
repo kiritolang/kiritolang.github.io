@@ -1,0 +1,2 @@
+var t=import("tensor")
+discard t.kron(t.zeros([2]), t.zeros([2]))

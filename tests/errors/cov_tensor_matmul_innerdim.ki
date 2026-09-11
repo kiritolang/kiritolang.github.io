@@ -1,0 +1,2 @@
+var t=import("tensor")
+discard t.zeros([2,3]).matmul(t.zeros([2,2]))

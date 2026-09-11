@@ -99,8 +99,8 @@ var mapfilter = Function():
     return len(List(filter(Function(x): return x % 2 == 0, map(Function(x): return x * x, lst))))
 discard timed("map_filter", 500, mapfilter)
 
-# --- isprime: 1.18.0 is deterministic AKS, 1.17.1 is trial division (small n; AKS is the slower,
-#     deterministic tradeoff — reported for transparency, expect 1.18.0 slower here) ---
+# --- isprime: deterministic O(sqrt n) trial division in both 1.17.1 and 1.18.0 (near-parity). The
+#     deterministic AKS test is a separate function, isprimeaks (orders of magnitude slower). ---
 var primecheck = Function():
     var c = 0
     var n = 2

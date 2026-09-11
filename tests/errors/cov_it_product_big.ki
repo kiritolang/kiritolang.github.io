@@ -1,0 +1,2 @@
+var it = import("itertools")
+discard it.product([it.count(0,1,4000), it.count(0,1,4000), it.count(0,1,4000)])

@@ -1,0 +1,2 @@
+var mx=import("matrix")
+discard mx.zeros(2,2).dot(mx.zeros(2,2))

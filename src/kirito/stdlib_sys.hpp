@@ -229,7 +229,7 @@ public:
             if (!args[0].isList())
                 throw KiritoError("createprocess: args must be a List of Strings (the program and its arguments)");
             std::vector<std::string> argv;
-            for (Value e : args[0].items()) argv.push_back(e.asStringRef("createprocess: each argument must be a String"));
+            for (Value e : args[0].items()) argv.push_back(e.asStringRef("createprocess argument"));
             if (argv.empty()) throw KiritoError("createprocess: args must be a non-empty List (the program and its arguments)");
             return runExternalProcess(vm, argv, args.opt(1, Value::None(vm)), args.opt(2, Value(vm, "")),
                                       args.opt(3, Value::None(vm)), args.opt(4, Value(vm, false)).truthy());

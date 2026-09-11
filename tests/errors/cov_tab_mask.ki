@@ -1,0 +1,1 @@
+discard import("tabular").DataFrame({"a":[1,2,3]})[[True, False]]

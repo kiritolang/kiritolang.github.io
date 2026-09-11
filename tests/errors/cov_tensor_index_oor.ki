@@ -1,0 +1,1 @@
+discard import("tensor").arange(3)[9]

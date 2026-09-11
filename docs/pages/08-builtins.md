@@ -80,9 +80,9 @@ parameter name.
   up to but excluding `stop`, stepping by `step` (default `1`, may be negative). A **lazy** sequence:
   iterating it is O(1) memory (it never builds the list), yet it stays backward-compatible — it prints
   list-style (`range(3)` → `[0, 1, 2]`), compares `== [0, 1, 2]`, and supports O(1) `len(r)`, `r[i]`, and
-  `x in r`. A step of `0` throws, and a length past the 32M-element cap throws `range too large` (the cap
-  now bounds only the materializing operations — plain iteration is unbounded in memory). (`stop` may also
-  be given by the keyword `end`.)
+  `x in r`. A step of `0` throws, and a length past the 32M-element cap (2^25) throws `range too large`
+  **at construction** — so both materializing uses and plain iteration are bounded by the cap. (`stop`
+  may also be given by the keyword `end`.)
 - `slice(start, stop[, step]) → Slice` — build a first-class **`Slice`** value, the same object the
   `a:b:c` subscript syntax produces. Has `.start`/`.stop`/`.step` (any may be `None`) and
   `.indices(length) → [start, stop, step]`, which resolves the bounds against a concrete length
@@ -194,8 +194,10 @@ String). Fill/align/width/precision still work on Strings.
 
 - `divmod`/`//`/`%` use floor semantics — the quotient rounds toward negative infinity and the
   remainder takes the sign of the divisor: `divmod(-7, 3) == [-3, 2]`.
-- `range` is lazy — `for i in range(30000000)` iterates in O(1) memory (no List is built); only a
-  *materializing* use (`String(r)`, `List(r)`, slicing) pays for the elements, and is bounded by the 32M cap.
+- `range` is lazy — `for i in range(30000000)` iterates in O(1) memory (no List is built); a
+  *materializing* use (`String(r)`, `List(r)`, slicing) pays for the elements. The 32M-element cap is
+  enforced when the range is **constructed**, so a range longer than the cap throws `range too large`
+  regardless of how it is used (iterated or materialized).
 - `min`/`max` throw on an empty sequence unless `default` is given; `sum([])` is `0`.
 - Passing a non-iterable where an iterable is expected throws a clean `is not iterable` error.
 - An unknown keyword, a duplicated argument, a missing required argument, or too many positionals all

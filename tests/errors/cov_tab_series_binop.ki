@@ -1,0 +1,2 @@
+var t = import("tabular")
+discard t.Series([1,2]) + t.Series([1,2,3])

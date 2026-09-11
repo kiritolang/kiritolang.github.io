@@ -1,0 +1,59 @@
+# Regression: collections.deque uses a HALF-STEAL rebalance (move only ceil(n/2) when a side empties)
+# so alternating both-end pops are amortized O(1), not O(n^2). This pins the REWRITE's correctness:
+# the logical order under every access pattern must be preserved.
+var collections = import("collections")
+var io = import("io")
+
+# alternating popleft/pop from the front-filled and back-filled deques must inter-leave the ends inward
+var d = collections.deque()
+for i in range(20):
+    d.append(i)
+var got = []
+var fromLeft = True
+while len(d) > 0:
+    if fromLeft:
+        got.append(d.popleft())
+    else:
+        got.append(d.pop())
+    fromLeft = not fromLeft
+var exp = []
+var lo = 0
+var hi = 19
+var takeLeft = True
+while lo <= hi:
+    if takeLeft:
+        exp.append(lo)
+        lo = lo + 1
+    else:
+        exp.append(hi)
+        hi = hi - 1
+    takeLeft = not takeLeft
+assert got == exp, "alternating popleft/pop preserves logical order"
+
+# mixed appendleft/append build, then both-end access
+var d2 = collections.deque()
+for i in range(10):
+    if i % 2 == 0:
+        d2.append(i)
+    else:
+        d2.appendleft(i)
+# logical: [9,7,5,3,1,0,2,4,6,8]
+assert d2.pop() == 8 and d2.popleft() == 9, "both-end access after mixed build"
+assert len(d2) == 8, "length after two pops"
+
+# fully drain alternating from a constructor-filled deque; every element accounted for, in order
+var d3 = collections.deque([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14])
+var seq = []
+while len(d3) > 1:
+    seq.append(d3.popleft())
+    seq.append(d3.pop())
+if len(d3) == 1:
+    seq.append(d3.pop())
+assert len(seq) == 15, "drained every element"
+# popleft side then indexing consistency: rebuild and index after rebalances
+var d4 = collections.deque(range(12))
+discard d4.popleft()
+discard d4.pop()
+assert d4[0] == 1 and d4[len(d4) - 1] == 10, "indexing consistent after both-end pops"
+
+io.print("OK deque halfsteal")

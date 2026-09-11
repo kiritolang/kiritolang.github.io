@@ -1,0 +1,2 @@
+var d = import("dump")
+discard d.loads(d.dumps(1) + Bytes([0]))

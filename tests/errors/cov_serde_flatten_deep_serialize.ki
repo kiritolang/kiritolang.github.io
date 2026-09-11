@@ -1,0 +1,5 @@
+var s = import("serialize")
+var x = 0
+for i in range(9000):
+    x = [x]
+discard s.dumps(x)

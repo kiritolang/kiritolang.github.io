@@ -1,0 +1,2 @@
+var t=import("tensor")
+discard t.einsum("ij,jk->ik", t.zeros([2,3]), t.zeros([4,5]))

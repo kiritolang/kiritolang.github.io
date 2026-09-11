@@ -1,0 +1,1 @@
+discard import("enum").Enum(["A","B"]).nameof(9)

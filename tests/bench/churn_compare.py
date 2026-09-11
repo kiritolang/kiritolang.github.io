@@ -107,7 +107,7 @@ def main():
             row = f"{name:<16}{cell(ov):>{COLW}}{cell(nv):>{COLW}}"
             if ov and nv:
                 sp = statistics.fmean(ov) / statistics.fmean(nv)
-                if name != "isprime_small" and sp > 0:
+                if sp > 0:
                     perf.append(sp)
                 row += f"{('%.2fx' % sp):>10}"
             else:
@@ -117,9 +117,9 @@ def main():
 
     if perf:
         gm = math.exp(sum(math.log(s) for s in perf) / len(perf))
-        print(f"Geometric-mean speedup (all modes, excl. isprime AKS tradeoff): {gm:.2f}x")
-    print("Note: isprime_small is SLOWER on 1.18.0 by design — deterministic AKS replaces trial")
-    print("      division (exact/polynomial but far slower for small n; use isprobableprime).")
+        print(f"Geometric-mean speedup (all modes): {gm:.2f}x")
+    print("Note: `isprime` is deterministic trial division in both versions (near-parity). The")
+    print("      deterministic AKS test is a separate function, `isprimeaks` (far slower for large n).")
 
 
 if __name__ == "__main__":

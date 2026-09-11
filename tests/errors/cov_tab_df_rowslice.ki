@@ -1,0 +1,2 @@
+var d = import("tabular").DataFrame({"a":[1,2,3]})
+d[0:2] = 5

@@ -328,6 +328,26 @@ int main() {
         auto w2 = warn("var k = \"a\"\nvar d = {k: 1, \"a\": 2}\ndiscard d\n");
         CHECK(!has(w2, "duplicate key"));   // one key is a name, not a constant -> not flagged
     }
+    // --- REGRESSION (dup-dict-key float FALSE POSITIVE): distinct float literals that agree to 6
+    //     printed digits must NOT collide. std::to_string(double) prints %f (6 fractional digits), so
+    //     the old key conflated them and warned on legitimate code. Now keyed on exact bits.
+    {
+        auto w = warn("var d = {1.0000001: 1, 1.0000002: 2}\ndiscard d\n");
+        CHECK(!has(w, "duplicate key"));
+        auto w2 = warn("var d = {3.141592: 1, 3.141593: 2, 3.1415926: 3}\ndiscard d\n");
+        CHECK(!has(w2, "duplicate key"));
+        auto w3 = warn("var d = {2.5: 1, 2.5: 2}\ndiscard d\n");   // truly-equal floats still warn
+        CHECK(has(w3, "duplicate key in dict literal"));
+    }
+    // --- REGRESSION (self-init on RE-DECLARATION false positive): `var x = 5; var x = x` reads the
+    //     prior binding (valid), so it must NOT be flagged "used in its own initializer" (it still gets
+    //     the separate re-declared warning). The genuine first-binding case is still flagged.
+    {
+        auto w = warn("var x = 5\nvar x = x\ndiscard x\n");
+        CHECK(!has(w, "used in its own initializer"));
+        auto w2 = warn("var y = y\ndiscard y\n");   // genuine first-binding self-init still warns
+        CHECK(has(w2, "'y' is used in its own initializer"));
+    }
 
     return RUN_TESTS();
 }

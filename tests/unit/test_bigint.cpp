@@ -111,12 +111,16 @@ var refprime = Function(n) -> Bool:
     return True
 for n in range(0, 2000):
     assert int.isprobableprime(n) == refprime(n)
-# AKS isprime is deterministic but far slower, so exhaustively check a smaller range
-for n in range(0, 300):
+# isprime is deterministic O(sqrt n) trial division — exhaustive over the full range
+for n in range(0, 2000):
     assert int.isprime(n) == refprime(n)
-# AKS must reject perfect powers (composite) beyond the exhaustive range
+# isprimeaks is the deterministic AKS test (same verdict, far slower) — a smaller range
+for n in range(0, 200):
+    assert int.isprimeaks(n) == refprime(n)
+# trial division and AKS must both reject perfect powers (composite)
 for n in [243, 1000, 1024, 3125]:
     assert not int.isprime(n)
+    assert not int.isprimeaks(n)
 # randomprime output is prime with the requested bit length
 for bits in [16, 32, 48, 64, 96]:
     var p = int.randomprime(bits)
@@ -135,10 +139,13 @@ for bits in [16, 32, 48, 64, 96]:
     // Carmichael numbers (composite but Fermat-fool): Miller-Rabin must still reject them.
     for (const char* c : {"561", "1105", "1729", "2465", "2821", "6601", "8911", "41041", "825265"})
         CHECK(ev(vm, std::string("int.isprobableprime(") + c + ")") == "False");
-    // AKS is far slower, so exercise the deterministic path on the smaller Carmichael numbers only.
+    // Trial-division isprime also rejects Carmichaels (they are composite).
     for (const char* c : {"561", "1105", "1729", "2465", "2821", "6601"})
         CHECK(ev(vm, std::string("int.isprime(") + c + ")") == "False");
-    // AKS deterministic primality specials + the maxdegree resource guard.
+    // AKS (isprimeaks) is far slower, so exercise the deterministic path on the smaller ones only.
+    for (const char* c : {"561", "1105", "1729", "2465", "2821"})
+        CHECK(ev(vm, std::string("int.isprimeaks(") + c + ")") == "False");
+    // deterministic primality specials — trial division and AKS agree.
     CHECK(ev(vm, "int.isprime(2)") == "True");
     CHECK(ev(vm, "int.isprime(7919)") == "True");         // 1000th prime
     CHECK(ev(vm, "int.isprime(-7)") == "False");
@@ -146,9 +153,12 @@ for bits in [16, 32, 48, 64, 96]:
     CHECK(ev(vm, "int.isprime(1)") == "False");
     CHECK(ev(vm, "int.BigInt(97).isprime()") == "True");
     CHECK(ev(vm, "int.BigInt(561).isprime()") == "False");
-    CHECK_THROWS(ev(vm, "int.isprime(97, maxdegree=2)"));          // fails fast, does not hang/OOM
-    CHECK_THROWS(ev(vm, "int.BigInt(97).isprime(maxdegree=2)"));
-    CHECK_THROWS(ev(vm, "int.isprime(97, maxdegree=1)"));          // maxdegree must be >= 2
+    CHECK(ev(vm, "int.isprimeaks(7919)") == "True");
+    CHECK(ev(vm, "int.BigInt(97).isprimeaks()") == "True");
+    // the maxdegree resource guard lives on isprimeaks (fails fast, does not hang/OOM).
+    CHECK_THROWS(ev(vm, "int.isprimeaks(97, maxdegree=2)"));
+    CHECK_THROWS(ev(vm, "int.BigInt(97).isprimeaks(maxdegree=2)"));
+    CHECK_THROWS(ev(vm, "int.isprimeaks(97, maxdegree=1)"));       // maxdegree must be >= 2
     // Mersenne primes + large known primes recognised by Miller-Rabin.
     CHECK(ev(vm, "int.isprobableprime(int.pow(2, 61) - 1)") == "True");   // M61
     CHECK(ev(vm, "int.isprobableprime(int.pow(2, 89) - 1)") == "True");   // M89

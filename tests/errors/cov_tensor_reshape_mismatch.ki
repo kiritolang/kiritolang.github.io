@@ -1,0 +1,2 @@
+var t=import("tensor")
+discard t.arange(6).reshape([4,2])

@@ -28,6 +28,8 @@
 // (A repeated parameter name is a hard PARSE error now — see parser.hpp — not an analyzer warning.)
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <string>
 #include <variant>
 #include <vector>
@@ -106,6 +108,15 @@ private:
         if (blockChain_.empty()) return false;
         for (std::size_t i = 0; i + 1 < blockChain_.size(); ++i)
             if (blockChain_[i].count(name)) return true;
+        return false;
+    }
+
+    // True if `name` is already bound in any live scope (current or enclosing). Used to distinguish a
+    // genuine first `var x = x` (reads the unassigned new binding -> runtime failure) from a
+    // re-declaration `var x = 5; var x = x` (reads the prior value -> valid, must not be flagged).
+    bool isBound(const std::string& name) const {
+        for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it)
+            if (it->decls.count(name)) return true;
         return false;
     }
 
@@ -198,15 +209,18 @@ private:
         } else if (const auto* d = dynamic_cast<const ast::DiscardStmt*>(&s)) {
             analyzeExpr(*d->expr);  // discard explicitly accepts an ignored value
         } else if (const auto* v = dynamic_cast<const ast::VarDeclStmt*>(&s)) {
-            // `var x = x` reads the not-yet-assigned new binding (the declaration shadows by
-            // membership), so it always fails at runtime — flag it as a likely mistake.
+            // `var x = x` reads the not-yet-assigned NEW binding (the declaration shadows by membership),
+            // so it fails at runtime — UNLESS `x` is already bound in a live scope, in which case this is
+            // a re-declaration whose initializer reads the prior value (valid). Only flag the genuine
+            // first-binding case, so `var x = 5; var x = x` is not a false positive.
             if (const auto* initName = dynamic_cast<const ast::NameExpr*>(v->init.get()))
-                for (const auto& name : v->names)
-                    if (name == initName->name) {
-                        warnings_.push_back({v->span, "variable '" + name +
-                            "' is used in its own initializer (reads the unassigned new binding)"});
-                        break;
-                    }
+                if (!isBound(initName->name))
+                    for (const auto& name : v->names)
+                        if (name == initName->name) {
+                            warnings_.push_back({v->span, "variable '" + name +
+                                "' is used in its own initializer (reads the unassigned new binding)"});
+                            break;
+                        }
             analyzeExpr(*v->init);
             for (const auto& name : v->names) declare(name, v->span);
         } else if (const auto* a = dynamic_cast<const ast::AssignStmt*>(&s)) {
@@ -334,12 +348,21 @@ private:
     // --- expression walk (use-tracking + nested functions) --------------------------------------
     // A per-type comparison key for a constant literal dict key (empty for None / non-scalar). Keys
     // are exact per type, so only same-type-same-value duplicates are flagged (never a false positive;
-    // cross-type numeric equivalences like 1 vs 1.0 are conservatively left unflagged).
+    // cross-type numeric equivalences like 1 vs 1.0 are conservatively left unflagged). Doubles key on
+    // their exact BIT pattern — std::to_string(double) prints only 6 fractional digits, so two distinct
+    // literals agreeing to 6 places (e.g. 1.0000001 / 1.0000002) would otherwise collide and be flagged
+    // as a spurious "duplicate". NaN keys are never flagged: nan != nan, so a repeated NaN literal is not
+    // an overwrite (both entries survive at run time).
     template <class V>
     static std::string constLiteralKey(const V& v) {
         if (std::holds_alternative<bool>(v)) return std::get<bool>(v) ? "B1" : "B0";
         if (std::holds_alternative<int64_t>(v)) return "I" + std::to_string(std::get<int64_t>(v));
-        if (std::holds_alternative<double>(v)) return "F" + std::to_string(std::get<double>(v));
+        if (std::holds_alternative<double>(v)) {
+            double d = std::get<double>(v);
+            if (d != d) return std::string();                       // NaN never collides (nan != nan)
+            std::uint64_t bits = std::bit_cast<std::uint64_t>(d == 0.0 ? 0.0 : d);  // -0.0 == 0.0 as keys
+            return "F" + std::to_string(bits);
+        }
         if (std::holds_alternative<std::string>(v)) return "S" + std::get<std::string>(v);
         return std::string();
     }

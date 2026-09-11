@@ -1,0 +1,1 @@
+discard import("int").factorial(-3)

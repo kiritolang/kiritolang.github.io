@@ -1,0 +1,1 @@
+discard import("zlib").inflate(Bytes([1,5,0,0,0,65,66,67,68,69]))

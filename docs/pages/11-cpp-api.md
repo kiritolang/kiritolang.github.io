@@ -1635,8 +1635,11 @@ Value sum = p + q;                                          // runs Point._add_
 std::printf("%s\n", sum.str().c_str());                    // whatever _str_/default prints
 ```
 
-`Value::call({...})` forwards **positional** arguments. For **keyword** instantiation or method calls
-(`Point(x = 1, y = 2)`), drop to the free function `applyCall`, which takes a `NamedArg` span:
+`Value::call({...})` forwards **positional** arguments, and — exactly like a call from Kirito source —
+binds them against a signatured callee: omitted parameters take their declared **defaults**, and an
+omitted *required* parameter throws a clean `KiritoError` (never an out-of-range read). For **keyword**
+instantiation or method calls (`Point(x = 1, y = 2)`), drop to the free function `applyCall`, which
+takes a `NamedArg` span:
 
 ```cpp
 std::vector<NamedArg> kw{ {"x", Value(vm, 1)}, {"y", Value(vm, 2)} };

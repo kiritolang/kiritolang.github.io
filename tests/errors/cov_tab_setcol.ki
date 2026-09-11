@@ -1,0 +1,2 @@
+var d = import("tabular").DataFrame({"a":[1,2,3]})
+d["b"] = [1,2]

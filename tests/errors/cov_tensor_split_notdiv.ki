@@ -1,0 +1,2 @@
+var t=import("tensor")
+discard t.split(t.arange(5), 2)

@@ -96,12 +96,17 @@ var refprime = Function(n) -> Bool:
     return True
 for n in range(0, 1000):
     assert int.isprobableprime(n) == refprime(n), "isprobableprime vs reference"
-# AKS isprime is deterministic but far slower, so check it over a smaller range
-for n in range(0, 300):
+# isprime is deterministic O(sqrt n) trial division: check it over the full range
+for n in range(0, 1000):
     assert int.isprime(n) == refprime(n), "isprime vs reference"
-# Carmichael numbers must be rejected by Miller-Rabin
+# isprimeaks is the deterministic AKS test (same verdict, far slower) — check a smaller range
+for n in range(0, 200):
+    assert int.isprimeaks(n) == refprime(n), "isprimeaks vs reference"
+assert int.big(97).isprimeaks() == True and int.big(561).isprimeaks() == False, "isprimeaks method"
+# Carmichael numbers must be rejected by every test (they are composite)
 for c in [561, 1105, 1729, 2465, 2821, 6601, 8911]:
-    assert int.isprobableprime(c) == False, "Carmichael rejected"
+    assert int.isprobableprime(c) == False, "Carmichael rejected (MR)"
+    assert int.isprime(c) == False, "Carmichael rejected (trial)"
 # Mersenne / large primes recognised
 assert int.isprobableprime(int.pow(2, 61) - 1), "M61 prime"
 assert int.isprobableprime(int.pow(2, 127) - 1), "M127 prime"

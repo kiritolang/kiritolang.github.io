@@ -1,1 +1,0 @@
-discard import("int").isprime(97, maxdegree=2)

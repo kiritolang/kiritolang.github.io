@@ -1,0 +1,1 @@
+discard import("semver").inc("1.2.3","huge")

@@ -103,7 +103,7 @@ if sys.platform != "windows":  # shell/createprocess block uses POSIX-only tools
     # hardening: args must be a non-empty List of Strings
     assert raises_msg(Function(): return sys.createprocess([]), "non-empty List"), "createprocess empty list raises"
     assert raises_msg(Function(): return sys.createprocess("notalist"), "must be a List of Strings"), "createprocess non-List args raises"
-    assert raises_msg(Function(): return sys.createprocess([1, 2]), "each argument must be a String"), "createprocess non-String element raises"
+    assert raises_msg(Function(): return sys.createprocess([1, 2]), "createprocess argument expected String"), "createprocess non-String element raises"
     # hardening: a positive timeout kills a long child and throws (kept fast: <2s wall)
     assert raises(Function(): return sys.createprocess(["sleep", "3"], timeout = 0.2)), "createprocess timeout kills+throws"
     assert raises(Function(): return sys.shell("sleep 3", timeout = 0.2)), "shell timeout kills+throws"

@@ -1,0 +1,5 @@
+var t=import("tensor")
+var x=t.arange(3.0)
+x.requiresgrad(True)
+var y=x*2.0
+y.backward()

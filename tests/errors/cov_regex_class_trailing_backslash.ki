@@ -1,0 +1,1 @@
+discard import("regex").compile("[a\\")

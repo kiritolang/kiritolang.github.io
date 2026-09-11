@@ -246,10 +246,19 @@ private:
         try { h = foldConstValue(e); }
         catch (const KiritoError&) { return false; }   // keep the error at runtime (catchable)
         if (!h) return false;
-        RootScope rs(vm_); rs.add(*h);                  // pin across addConst's deref
-        const Object& v = vm_.arena().deref(*h);
-        if (v.kind() == ValueKind::String && static_cast<const StrVal&>(v).value().size() > kMaxFoldString)
-            return false;
+        // Size-check the folded value under a RootScope that pins `h` across the deref, then CLOSE that
+        // scope BEFORE addConst. addConst's own pushTemp is what keeps the constant rooted for the rest
+        // of compilation, and ~RootScope truncates the SHARED tempRoots_ stack (popTempTo) — so calling
+        // addConst inside the scope would let ~RootScope pop addConst's root the instant this returns,
+        // leaving a non-interned folded const (large Int/Float/String) unrooted until a later compile-
+        // time GC sweeps it → runtime "dangling handle (stale generation)". No arena allocation happens
+        // between the scope closing and addConst's pushTemp, so `h` stays live across the gap.
+        {
+            RootScope rs(vm_); rs.add(*h);
+            const Object& v = vm_.arena().deref(*h);
+            if (v.kind() == ValueKind::String && static_cast<const StrVal&>(v).value().size() > kMaxFoldString)
+                return false;
+        }
         emit(Op::LoadConst, addConst(*h), e.span);
         return true;
     }

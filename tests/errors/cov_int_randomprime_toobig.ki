@@ -1,0 +1,1 @@
+discard import("int").randomprime(9999999)

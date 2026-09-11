@@ -1,0 +1,1 @@
+discard import("collections").deque([1,2])[5]

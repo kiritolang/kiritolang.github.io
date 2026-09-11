@@ -139,8 +139,9 @@ io.print(ages.get("Edsger"))             # => None  (absent -> None by default)
 io.print(ages.get("Edsger", 0))          # => 0     (your own default)
 ```
 
-`.keys()`, `.values()`, and `.items()` give the three views. A Dict does **not** promise any
-particular iteration order, so sort the keys first if you need a deterministic one:
+`.keys()`, `.values()`, and `.items()` give the three views. A Dict iterates in **insertion order**
+(stable across updates and deletes), so `keys()`/`values()`/`items()` follow the order keys were first
+added; sort the keys explicitly if you need a different order:
 
 ```kirito
 var io = import("io")
@@ -244,7 +245,7 @@ io.print(grid)                 # => [9, 0, 7]
 - **Sets:** distinct values, instant membership, set-algebra methods; `{}` is an empty Dict, `Set()`
   an empty Set.
 - **Dicts:** `d[k]`, `d[k] = v`, `in`, `.get`, `.keys`/`.values`/`.items`, the `setdefault` idiom;
-  iteration order is unspecified.
+  iteration is in insertion order.
 - **Unpacking:** a bare comma packs into a List; the left side of `=`/`var`/`for` unpacks any iterable
   (counts checked), with the swap idiom, starred targets, `for k, v in d.items()`, and multi-value
   returns.

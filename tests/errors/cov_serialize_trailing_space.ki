@@ -1,0 +1,2 @@
+var s = import("serialize")
+discard s.loads(s.dumps(1) + " ZZ")

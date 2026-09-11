@@ -1,0 +1,2 @@
+var t = import("tabular")
+discard t.merge(t.DataFrame({"a":[1]}), t.DataFrame({"k":[1]}), "k")

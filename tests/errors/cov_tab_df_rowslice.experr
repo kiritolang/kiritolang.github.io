@@ -1,0 +1,1 @@
+row slice-assignment (df[a:b] = ...) is not supported

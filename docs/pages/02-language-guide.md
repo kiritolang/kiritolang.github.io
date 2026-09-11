@@ -129,9 +129,9 @@ shr(-8, 1)           # -4   (arithmetic, sign-preserving)
 `0.1 + 0.2 == 0.3` is `False`. Use `.compare(other, rel_tol, abs_tol)` for tolerant comparison; see
 [Float](types.html#float) for the full contract.
 
-Comparisons **do not chain**: `1 < 2 < 3` is *not* `1 < 2 and 2 < 3`. It evaluates left-to-right as
-`(1 < 2) < 3` → `True < 3`, which throws (a `Bool` has no ordering against an `Integer`). Write the
-conjunction explicitly:
+Comparisons **do not chain**: `1 < 2 < 3` is *not* `1 < 2 and 2 < 3`. Kirito rejects it at **parse
+time** — `error: chained comparison is not allowed; connect the conditions with 'and'/'or'` — so it is
+never evaluated. Write the conjunction explicitly:
 
 ```kirito
 1 < 2 and 2 < 3     # True   (what you meant)
@@ -292,8 +292,10 @@ matched against the subject **exactly by type and value** — `case 1` and `case
 constant **expression over literals** is folded at compile time, so `case 3 + 4`, `case -1`, and
 `case "a" + "b"` are allowed and key to `7` / `-1` / `"abc"`. A label that reads runtime state — a
 variable (`case some_var`), a call, an index/member — or that folds to a non-scalar (`case [1, 2]`), or
-a **duplicate** value, is a **compile-time error**: it is caught before the program runs, so a switch
-with a bad label never loads (it is not deferred to when the arm is reached). Because every label is a
+a **duplicate** value, is a **compile-time error** — caught when the enclosing code is compiled, not
+deferred to when the arm is reached. A top-level `switch` is thus caught before the program runs; a
+`switch` inside a function is caught when that function is first compiled (its first call), since
+function bodies compile lazily — so earlier statements may run before the error fires. Because every label is a
 constant, the whole `switch` compiles to one **O(1)** dispatch, independent of the case count. A
 non-scalar *subject* (e.g. a list) has no key and only ever reaches `default`. A second `default` and an
 empty arm body are rejected at parse time. `break`/`continue`/`return` inside an arm propagate to the
@@ -520,9 +522,12 @@ discard validate(x)    # called for its side effect / exception; result ignored 
 
 A non-fatal analysis pass flags several more likely mistakes: a **local variable assigned but never
 used**; a **`var` re-declared** in the same block; **unreachable code** after a `return`/`throw`/
-`break`/`continue`; **self-assignment** (`x = x`); and **duplicate parameter names**. (`todo` also
-deliberately emits a reminder warning at its location.) Warnings carry `file:line:col`, go to stderr,
-and never stop execution; `-w` / `--no-warn` disables them.
+`break`/`continue`; **self-assignment** (`x = x`); a **duplicate keyword argument** in a call; a
+**self-referential initializer** (`var x = x` that reads the unassigned new binding); and **duplicate
+constant keys** in a dict literal. (`todo` also deliberately emits a reminder warning at its
+location.) Warnings carry `file:line:col`, go to stderr, and never stop execution; `-w` / `--no-warn`
+disables them. (A **duplicate parameter name** is a hard *parser* error, not a warning — see
+[Exceptions](12-exceptions.md).) Warnings only surface through the CLI analyzer.
 
 ## `pass` and `todo`
 

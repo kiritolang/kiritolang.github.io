@@ -1,0 +1,1 @@
+discard import("tensor").zeros([2,3]).swapaxes(0,5)

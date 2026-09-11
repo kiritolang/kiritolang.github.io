@@ -304,9 +304,10 @@ class deque:
     # Amortized-O(1) both-end deque via two stacks: `_front` holds the left portion in REVERSED order
     # (its END is the logical left end) and `_back` holds the right portion in logical order. So
     # appendleft/popleft touch _front's end and append/pop touch _back's end — all O(1). When the pop
-    # side is empty its counterpart is reversed across (each element moves at most once between
-    # rebalances), so queue/stack use is amortized O(1) — vs the old List with insert(0)/pop(0) that
-    # made FIFO use O(n^2).
+    # side is empty, only HALF of its counterpart is moved across (a half-steal), leaving ~half on each
+    # side; this keeps BOTH ends amortized O(1) for EVERY access pattern — including alternating
+    # pop/popleft (the palindrome / two-pointer pattern), which a full transfer would degrade to O(n^2)
+    # — vs the old List with insert(0)/pop(0) that made FIFO use O(n^2).
     var _init_ = Function(self, items = None):
         self._front = []
         self._back = []
@@ -321,21 +322,32 @@ class deque:
         if len(self._back) == 0:
             if len(self._front) == 0:
                 throw "pop from an empty deque"
-            var j = len(self._front) - 1
+            # Rebalance only HALF of _front into _back (moving ceil(m/2), keeping the rest): a FULL
+            # transfer makes alternating pop/popleft O(n^2), while a half-steal leaves ~m/2 on each
+            # side so ~m/2 ops run before the next rebalance -> amortized O(1) for every pattern.
+            # _front[0] is the logical rightmost, so append _front[moveCount-1..0] to put the rightmost
+            # at _back's end; keep the left half in _front.
+            var m = len(self._front)
+            var moveCount = m - m // 2
+            var j = moveCount - 1
             while j >= 0:
                 self._back.append(self._front[j])
                 j = j - 1
-            self._front = []
+            self._front = self._front[moveCount:]
         return self._back.pop()
     var popleft = Function(self):
         if len(self._front) == 0:
             if len(self._back) == 0:
                 throw "pop from an empty deque"
-            var j = len(self._back) - 1
+            # Symmetric half-steal: move ceil(k/2) of _back's LEFT portion into _front. _back[0] is the
+            # logical leftmost, so append _back[moveCount-1..0] to put the leftmost at _front's end.
+            var k = len(self._back)
+            var moveCount = k - k // 2
+            var j = moveCount - 1
             while j >= 0:
                 self._front.append(self._back[j])
                 j = j - 1
-            self._back = []
+            self._back = self._back[moveCount:]
         return self._front.pop()
     var _tolist = Function(self):
         var out = []
@@ -1015,8 +1027,12 @@ var deepcopy = Function(obj):
         return _copyViaSerde(obj)    # instance / native value object — serde handles refs + cycles
     # Iterative + cycle-safe (recursion would overflow / loop on deep or self-referential data):
     # 1) discover every reachable container and give it an empty shell, keyed by id(original);
-    # 2) fill the shells, mapping each child to its shell (or itself for scalars). Shared references
-    #    and cycles are preserved because each original maps to exactly one shell.
+    # 2) fill the shells, mapping each child to its shell (or itself for scalars). Within this
+    #    container walk, shared references and cycles are preserved because each original maps to one
+    #    shell. LIMITATION: a user instance / native value object is copied by _copyViaSerde with its
+    #    OWN memo, so identity/cycles shared ACROSS the instance<->container boundary are not unified
+    #    with this walk (a graph reachable both through a container slot and through an instance
+    #    attribute is duplicated, not shared). Pure-container graphs are fully shared/cycle-correct.
     var memo = {}
     var order = []
     var stack = [obj]

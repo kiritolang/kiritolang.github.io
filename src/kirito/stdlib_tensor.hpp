@@ -1012,7 +1012,12 @@ inline Handle g_clip(KiritoVM& vm, Handle ah, double lo, double hi) {
 inline Handle g_maxmin(KiritoVM& vm, Handle ah, Handle bh, bool isMax) {
     TensorVal& A = asT(vm, ah); TensorVal& B = asT(vm, bh);
     const FT& a = reqFloat(A, "maximum/minimum"); const FT& b = reqFloat(B, "maximum/minimum");
-    FT out = tensor::elementwise(a, b, [isMax](double x, double y) { return isMax ? std::max(x, y) : std::min(x, y); });
+    // NaN-propagating and operand-order-independent, matching the reduction .max()/.min() (a03 A13-1):
+    // np.maximum(nan, x) == np.maximum(x, nan) == nan. Plain std::max/std::min keep whichever operand
+    // is first and would make a.maximum(b) != b.maximum(a) when a NaN is present.
+    FT out = tensor::elementwise(a, b, [isMax](double x, double y) {
+        return isMax ? tensor::nanpropMax(x, y) : tensor::nanpropMin(x, y);
+    });
     if (!wantsGrad(vm, {&A, &B})) return make(vm, std::move(out));
     bool ag = A.requiresGrad, bg = B.requiresGrad;
     tensor::Shape ash = a.shape, bsh = b.shape;
@@ -1659,6 +1664,11 @@ inline Handle TensorVal::binary(KiritoVM& vm, BinOp op, Handle self, Handle rhs)
         if (!c) throw KiritoError("Tensor does not support this operator (use .matmul for matrix products)");
         if (ot) {  // tensor OP tensor
             if (!isComplex() && !ot->isComplex()) return tns::g_binop(vm, c, self, rhs);
+            // A grad-tracking Float operand combined with a Complex one produces a (non-grad) Complex
+            // result: the gradient breaks, so warn (never silent, per the autograd contract). No-op if
+            // neither Float operand requires grad.
+            tns::warnDetach(vm, "complex-valued arithmetic", *this);
+            tns::warnDetach(vm, "complex-valued arithmetic", *ot);
             CT a = isComplex() ? std::get<CT>(store) : tns::toComplex(std::get<FT>(store));
             CT d = ot->isComplex() ? std::get<CT>(ot->store) : tns::toComplex(std::get<FT>(ot->store));
             switch (c) {
@@ -1670,6 +1680,8 @@ inline Handle TensorVal::binary(KiritoVM& vm, BinOp op, Handle self, Handle rhs)
         }
         // tensor OP scalar
         if (!isComplex() && !scalarComplex) return tns::g_scalar(vm, c, self, Value(vm, rhs).asFloat("scalar"));
+        // grad-tracking Float tensor with a Complex scalar -> non-grad Complex result: warn (not silent)
+        tns::warnDetach(vm, "complex-valued arithmetic", *this);
         CT a = isComplex() ? std::get<CT>(store) : tns::toComplex(std::get<FT>(store));
         return tns::make(vm, tensor::scalarOp(a, cpx::asComplex(vm, rhs, "scalar"), c));
     });
