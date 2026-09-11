@@ -992,19 +992,21 @@ var _IMMUTABLE = Set(["None", "Bool", "Integer", "Float", "String", "Bytes"])
 # Pure Kirito has no generic way to enumerate/set an instance's attributes, so a class instance (or a
 # native value object like Matrix/Tensor/DateTime) is copied via the serialize graph codec, which
 # copies by attributes / the _getstate_/_setstate_ protocol and preserves shared refs + cycles. This
-# is necessarily a DEEP, independent copy. A value that can't be serialized (e.g. a live socket/file)
-# falls back to itself — best effort, matching the old behaviour for those.
+# is necessarily a DEEP, independent copy. A value that can't be serialized (a live socket/file/regex
+# handle, a native function) has no independent copy, so the copy FAILS LOUDLY rather than silently
+# returning a shared reference the caller would believe is a disjoint copy.
 var _copyViaSerde = Function(obj):
     var serialize = import("serialize")
     try:
         return serialize.loads(serialize.dumps(obj))
     catch String as e:
-        # A value that genuinely CANNOT be serialized (a live socket/file handle, a native function)
-        # can't be deep-copied, so return it as-is — the ONE legitimate fallback. Re-raise ANY other
-        # error: a real bug in serialize must not be silently swallowed into a shared reference the
-        # caller believes is an independent copy (no silent fallbacks).
+        # NO SILENT FALLBACK: an unserializable value (a live socket/file/regex handle, a native
+        # function) cannot be copied into an independent object, so a copy request must THROW rather
+        # than hand back the original (a shared reference the caller believes is disjoint). The serde
+        # error names the offending type; re-raise it with a copy-context prefix. Any OTHER serialize
+        # error is a real bug and is re-raised unchanged.
         if "cannot serialize" in e:
-            return obj
+            throw "cannot copy an unserializable value: " + e
         throw e
 
 var copy = Function(obj):
@@ -1400,11 +1402,24 @@ inline constexpr std::string_view tabular = R"KI(
 
 var _csv = import("csv")
 
-# Aliases for builtins that share a name with a Series/DataFrame method (min/max). Inside a
-# method a bare `min` resolves to the sibling method (class-body scope), so capture the
-# builtins here at module scope where no such method exists.
-var _min = min
-var _max = max
+# min/max over a non-empty list, as KIRITO helpers (not `var _min = min`). A bare `min` inside a
+# Series/DataFrame method resolves to the sibling method, so the builtin must be reached another way —
+# but capturing the NATIVE builtin as a module value made every Series/DataFrame instance
+# UN-serializable (its methods close over the native as a free variable, which serde can't flatten, so
+# serialize/dump/copy/deepcopy all failed). A Kirito helper serializes as source, so instances copy
+# and round-trip. Callers guard emptiness, so seq[0] is safe.
+var _min = Function(seq):
+    var m = seq[0]
+    for x in seq:
+        if x < m:
+            m = x
+    return m
+var _max = Function(seq):
+    var m = seq[0]
+    for x in seq:
+        if x > m:
+            m = x
+    return m
 
 # ----------------------------------------------------------------------------- helpers (private)
 var _isnan = Function(x) -> Bool:

@@ -1,0 +1,22 @@
+# Regression: copy.copy / copy.deepcopy of an UNSERIALIZABLE value (a live regex/socket/file handle or
+# a native function) must FAIL LOUDLY — it has no independent copy, so returning the original shared
+# (the old best-effort fallback) would hand back an alias masquerading as a disjoint copy.
+var copy = import("copy")
+var re = import("regex")
+var io = import("io")
+var raises_msg = Function(fn, needle) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch as e:
+        return needle in String(e)
+var rx = re.compile("a")
+assert raises_msg(Function(): return copy.copy(rx), "cannot copy an unserializable value"), "copy(regex) throws"
+assert raises_msg(Function(): return copy.deepcopy(rx), "cannot copy an unserializable value"), "deepcopy(regex) throws"
+# a MIXED graph (a container holding an unserializable leaf) also fails loudly, not partial-copy
+assert raises_msg(Function(): return copy.deepcopy([1, rx, 2]), "cannot copy an unserializable value"), "deepcopy(mixed) throws"
+assert raises_msg(Function(): return copy.deepcopy({"r": rx}), "cannot copy an unserializable value"), "deepcopy(dict w/ regex) throws"
+# copyable values are unaffected
+assert copy.deepcopy([[1, 2], [3, 4]]) == [[1, 2], [3, 4]], "normal deepcopy works"
+assert copy.copy({"a": 1}) == {"a": 1}, "normal copy works"
+io.print("OK copy unserializable")

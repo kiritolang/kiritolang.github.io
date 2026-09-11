@@ -1,0 +1,126 @@
+var copy = import("copy")
+var io = import("io")
+var int = import("int")
+var complex = import("complex")
+var matrix = import("matrix")
+var tensor = import("tensor")
+var time = import("time")
+var random = import("random")
+var col = import("collections")
+var tab = import("tabular")
+var enum = import("enum")
+var re = import("regex")
+
+var indep = Function(orig, cp) -> Bool:
+    return id(orig) != id(cp)
+
+# ---------- built-in types ----------
+assert copy.deepcopy(42) == 42, "Int"
+assert copy.deepcopy(3.14) == 3.14, "Float"
+assert copy.deepcopy(True) == True, "Bool"
+assert copy.deepcopy(None) == None, "None"
+assert copy.deepcopy("hi\x00there") == "hi\x00there", "String w/ NUL"
+assert copy.deepcopy(Bytes([1,2,3])) == Bytes([1,2,3]), "Bytes"
+var L = [[1,2],[3,4]]
+var Lc = copy.deepcopy(L)
+L[0][0] = 99
+assert Lc[0][0] == 1 and indep(L, Lc), "List nested independent"
+var D = {"a": [1], "b": {"c": 2}}
+var Dc = copy.deepcopy(D)
+D["a"].append(9)
+assert len(Dc["a"]) == 1, "Dict nested independent"
+var S = Set([1,2,3])
+var Sc = copy.deepcopy(S)
+S.add(4)
+assert not (4 in Sc), "Set independent"
+
+# ---------- stdlib value types ----------
+var big = int.big("123456789012345678901234567890")
+assert copy.deepcopy(big) == big and indep(big, copy.deepcopy(big)), "BigInt"
+var z = complex.of(3, 4)
+assert copy.deepcopy(z) == z, "Complex"
+var M = matrix.Matrix([[1.0,2.0],[3.0,4.0]])
+var Mc = copy.deepcopy(M)
+assert Mc.get(0,0) == 1.0 and Mc.get(1,1) == 4.0 and indep(M, Mc), "Matrix"
+var T = tensor.Tensor([[1.0,2.0],[3.0,4.0]])
+var Tc = copy.deepcopy(T)
+assert Tc.tolist() == [[1.0,2.0],[3.0,4.0]] and indep(T, Tc), "Tensor"
+var dt = time.datetime(1700000000)
+assert copy.deepcopy(dt) == dt, "DateTime"
+var rng = random.Random(42)
+var rngc = copy.deepcopy(rng)
+assert rng.randint(0, 1000000) == rngc.randint(0, 1000000), "Random state copied"
+
+# ---------- .ki standard-library classes ----------
+var dq = col.deque([1,2,3])
+var dqc = copy.deepcopy(dq)
+dq.append(4)
+assert len(dqc) == 3 and indep(dq, dqc), "deque independent"
+var ctr = col.Counter([1,1,2])
+var ctrc = copy.deepcopy(ctr)
+ctr.add(3)
+assert ctrc.get(3) == 0 and indep(ctr, ctrc), "Counter independent"
+var dd = col.defaultdict(Function(): return [])
+dd["x"].append(1)
+var ddc = copy.deepcopy(dd)
+dd["x"].append(2)
+assert len(ddc["x"]) == 1, "defaultdict independent"
+var ser = tab.Series([1,2,3])
+assert copy.deepcopy(ser).tolist() == [1,2,3], "Series"
+var df = tab.DataFrame({"a":[1,2],"b":[3,4]})
+assert copy.deepcopy(df).shape() == df.shape(), "DataFrame"
+var en = enum.Enum(["RED","GREEN"])
+assert copy.deepcopy(en).values() == en.values(), "Enum"
+
+# ---------- custom user classes ----------
+class Point:
+    var _init_ = Function(self, x, y):
+        self.x = x
+        self.y = y
+var p = Point(1, [10])
+var pc = copy.deepcopy(p)
+p.x = 99
+p.y.append(20)
+assert pc.x == 1 and len(pc.y) == 1 and indep(p, pc), "custom instance independent (attrs deep)"
+# cycle through a custom instance
+var n = Point(0, None)
+n.y = n
+var nc = copy.deepcopy(n)
+assert id(nc.y) == id(nc) and indep(n, nc), "custom self-cycle"
+# _getstate_/_setstate_
+class Box:
+    var _init_ = Function(self, v):
+        self._v = v
+    var _getstate_ = Function(self):
+        return self._v
+    var _setstate_ = Function(self, s):
+        self._v = s
+    var get = Function(self):
+        return self._v
+var b = Box([1,2,3])
+var bc = copy.deepcopy(b)
+b.get().append(9)
+assert bc.get() == [1,2,3], "custom _getstate_/_setstate_ independent"
+# inheritance
+class Base:
+    var _init_ = Function(self, a):
+        self.a = a
+class Derived(Base):
+    var _init_ = Function(self, a, b):
+        self._super_()._init_(a)
+        self.b = b
+var d2 = Derived(1, 2)
+var d2c = copy.deepcopy(d2)
+assert d2c.a == 1 and d2c.b == 2 and indep(d2, d2c), "inheritance"
+
+# ---------- unserializable -> THROW ----------
+var raises = Function(fn) -> Bool:
+    try:
+        discard fn()
+        return False
+    catch:
+        return True
+assert raises(Function(): return copy.deepcopy(re.compile("x"))), "deepcopy Regex throws"
+assert raises(Function(): return copy.copy(re.compile("x"))), "copy Regex throws"
+
+io.print("OK copy-all-types")

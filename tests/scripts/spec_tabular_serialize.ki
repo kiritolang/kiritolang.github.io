@@ -1,0 +1,14 @@
+# Regression: tabular Series/DataFrame must be serializable (and thus copyable) — their methods no
+# longer close over a native builtin (min/max), so serde can flatten the class. Round-trips exactly.
+var tab = import("tabular")
+var ser = import("serialize")
+var dump = import("dump")
+var io = import("io")
+var s = tab.Series([3, 1, 2, 5, 4], ["a", "b", "c", "d", "e"])
+assert ser.loads(ser.dumps(s)).tolist() == s.tolist(), "Series serialize (text) round-trip"
+assert dump.loads(dump.dumps(s)).tolist() == s.tolist(), "Series dump (binary) round-trip"
+assert s.min() == 1 and s.max() == 5, "Series min/max correct"
+var df = tab.DataFrame({"a": [3, 1, 2], "b": [9, 8, 7]})
+var df2 = ser.loads(ser.dumps(df))
+assert df2.shape() == df.shape() and df2.min().tolist() == [1, 7], "DataFrame serialize round-trip + min"
+io.print("OK tabular serialize")

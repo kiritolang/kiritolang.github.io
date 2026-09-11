@@ -859,6 +859,7 @@ large* — live under [Resource guards](#resource-guards-repetition--padding--ra
 | `readcsv: row <r> has <n> fields, expected <k>` | A CSV row with more fields than the header (no silent data loss) | Fix the row / header |
 | `invalid version '<s>': need MAJOR.MINOR.PATCH` / `non-numeric core` / `empty prerelease identifier` / `invalid prerelease identifier '<p>'` / `empty build identifier` / `invalid build identifier '<b>'` / `invalid version (too many components): <rest>` | `semver.parse`/`clean` of a malformed version — a prerelease/build identifier must be non-empty and drawn from `[0-9A-Za-z-]` (`valid()` returns `None` instead of throwing) | Pass a valid semver, or probe with `valid()` first |
 | `inc: release must be major/minor/patch, got '<release>'` | `semver.inc` with an unknown release part | Use major/minor/patch |
+| `cannot copy an unserializable value: <serialize error>` | `copy.copy`/`copy.deepcopy` of a value — or a graph containing one — that can't be serialized (a live socket/file/regex handle or a native function). There is no independent copy, so it fails loudly rather than return the original aliased as a "copy" | Exclude the resource from the graph, or give the type `_getstate_`/`_setstate_` |
 
 ## Concurrency — the `parallel` module
 

@@ -233,12 +233,14 @@ square matrix and throw otherwise.
 - `deepcopy(obj)` — a deep copy (handles shared references and cycles).
 - A **class instance** (or a native value object like `Matrix`/`Tensor`/`DateTime`) is copied via the
   `serialize` graph codec — both `copy` and `deepcopy` return an independent (deep) instance, since
-  Kirito has no per-instance attribute introspection. A value that can't be serialized (a live
-  socket/file) is returned unchanged (best effort).
-- **Limitation:** a value shared *between* a plain container and an instance's internals (e.g. a list
-  that is both `outer[1]` and `inst.x`) is copied once per side, so the two copies no longer share
-  identity — the memo can't reach across the instance seam (again, no attribute introspection). Shared
-  references and cycles *within* the plain-container graph are preserved as expected.
+  Kirito has no per-instance attribute introspection. A value that **cannot** be serialized (a live
+  socket/file/regex handle or a native function) has no independent copy, so `copy`/`deepcopy`
+  **throw** `cannot copy an unserializable value: …` rather than return the original aliased as a copy.
+- **Perfect, disjoint copies.** `deepcopy` reproduces shared references and cycles *exactly* — including
+  those spanning the container↔instance boundary (a value reachable through both a container slot and an
+  instance attribute is copied once and stays shared in the copy) — while nothing is shared with the
+  original. Pure-container graphs of any depth are copied iteratively (no stack-overflow risk); a graph
+  that also contains an instance is copied whole through the `serialize` codec's single unified memo.
 
 ---
 

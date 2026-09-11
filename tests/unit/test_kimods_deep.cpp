@@ -32,9 +32,10 @@ var b = copy.deepcopy(a)
 a[0][0] = 99
 b[0][0])KI") == "1");
 
-    // ---- copy of an UNSERIALIZABLE resource returns best-effort (must not throw) ----
-    CHECK(!throws(vm, "var copy = import(\"copy\")\nvar regex = import(\"regex\")\ndiscard copy.copy(regex.compile(\"a\"))"));
-    CHECK(!throws(vm, "var copy = import(\"copy\")\nvar regex = import(\"regex\")\ndiscard copy.deepcopy(regex.compile(\"a\"))"));
+    // ---- copy of an UNSERIALIZABLE resource FAILS LOUDLY (no silent share-back that would look like
+    //      a disjoint copy but alias the original) ----
+    CHECK(throws(vm, "var copy = import(\"copy\")\nvar regex = import(\"regex\")\ndiscard copy.copy(regex.compile(\"a\"))"));
+    CHECK(throws(vm, "var copy = import(\"copy\")\nvar regex = import(\"regex\")\ndiscard copy.deepcopy(regex.compile(\"a\"))"));
 
     // ---- statistics.mode on Float data ----
     CHECK(run(vm, "var statistics = import(\"statistics\")\nstatistics.mode([1.5, 2.5, 1.5])") == "1.5");
