@@ -20,31 +20,31 @@ All times in milliseconds (mean ± stddev, 10 runs).
 
 | category | workload | Kirito 1.18.0 | Kirito 1.17.1 | Lua 5.1 | Python 3 |
 |---|---|---|---|---|---|
-| recursion | `fib(30)` | 391.2 ± 18.60 | 412.1 ± 2.58 | 47.02 ± 0.90 | 63.02 ± 3.39 |
-| recursion | `ackermann(3,6)` | 47.24 ± 0.78 | 46.98 ± 0.92 | 3.43 ± 0.26 | 18.44 ± 0.38 |
-| loops | `sum_loop` | 149.4 ± 2.29 | 190.4 ± 2.50 | 13.49 ± 0.20 | 45.56 ± 2.77 |
-| loops | `float_loop` | 268.1 ± 7.80 | 330.6 ± 2.19 | 17.21 ± 0.28 | 58.57 ± 0.58 |
-| loops | `nested_loop` | 50.65 ± 1.50 | 66.89 ± 2.08 | 4.31 ± 0.14 | 16.12 ± 0.63 |
-| loops | `collatz` | 441.3 ± 3.10 | 457.4 ± 1.67 | 79.34 ± 0.90 | 102.0 ± 0.85 |
-| loops | `gcd_loop` | 189.0 ± 1.57 | 189.2 ± 1.08 | 22.95 ± 0.98 | 38.84 ± 0.49 |
-| algorithms | `sieve` | 630.5 ± 9.07 | 690.7 ± 3.19 | 59.61 ± 0.40 | 105.3 ± 1.44 |
-| algorithms | `quicksort` | 1248 ± 13.67 | 1219 ± 11.02 | 429.1 ± 4.25 | 190.3 ± 3.61 |
-| algorithms | `matmul_manual` | 324.4 ± 4.12 | 372.8 ± 1.13 | 43.58 ± 0.39 | 81.99 ± 0.56 |
-| lists | `list_build` | 445.5 ± 6.75 | 446.5 ± 2.12 | 53.13 ± 1.55 | 39.53 ± 0.57 |
-| lists | `list_sum` | 791.4 ± 8.21 | 899.8 ± 29.59 | 142.7 ± 1.38 | 283.2 ± 23.38 |
-| lists | `list_sort` | 888.4 ± 6.24 | 906.4 ± 8.61 | 220.9 ± 2.82 | 249.4 ± 4.02 |
-| dicts/sets | `dict_build` | 207.9 ± 2.35 | 256.3 ± 2.56 | 55.98 ± 0.49 | 73.39 ± 2.09 |
-| dicts/sets | `dict_lookup_int` | 149.7 ± 1.25 | 180.2 ± 0.46 | 16.12 ± 0.32 | 56.75 ± 2.11 |
-| dicts/sets | `dict_lookup_str` | 347.6 ± 2.48 | 365.7 ± 2.23 | 211.6 ± 1.98 | 158.7 ± 46.10 |
-| dicts/sets | `set_ops` | 382.3 ± 1.64 | 438.4 ± 16.35 | 35.07 ± 0.42 | 75.30 ± 0.49 |
-| strings | `str_concat` | 138.6 ± 1.27 | 146.8 ± 0.61 | 34.49 ± 0.58 | 21.22 ± 0.26 |
-| strings | `str_split_join` | 93.73 ± 0.45 | 94.23 ± 1.15 | 102.4 ± 1.11 | 17.66 ± 0.10 |
-| strings | `str_search` | 61.86 ± 0.69 | 61.77 ± 1.11 | 85.93 ± 1.40 | 5.78 ± 0.10 |
-| OO | `method_call` | 144.1 ± 2.28 | 196.2 ± 1.24 | 21.41 ± 0.27 | 28.16 ± 0.46 |
-| OO | `attr_rw` | 85.90 ± 0.62 | 97.81 ± 1.05 | 13.87 ± 0.23 | 22.48 ± 0.34 |
-| OO | `object_create` | 173.3 ± 1.40 | 181.9 ± 1.50 | 32.32 ± 0.42 | 33.46 ± 1.02 |
-| OO | `poly_dispatch` | 79.37 ± 1.56 | 107.3 ± 1.07 | 11.47 ± 0.52 | 16.83 ± 2.21 |
-| functional | `map_filter` | 745.1 ± 20.19 | 762.3 ± 8.17 | 6.13 ± 0.39 | 12.46 ± 0.56 |
+| recursion | `fib(30)` | 390.2 ± 6.74 | 413.3 ± 6.67 | 45.52 ± 0.22 | 61.85 ± 0.27 |
+| recursion | `ackermann(3,6)` | 47.46 ± 0.98 | 45.87 ± 1.17 | 3.21 ± 0.06 | 18.62 ± 0.38 |
+| loops | `sum_loop` | 162.2 ± 6.38 | 188.4 ± 1.08 | 13.22 ± 0.12 | 44.63 ± 0.17 |
+| loops | `float_loop` | 265.6 ± 4.43 | 328.8 ± 0.83 | 16.62 ± 0.26 | 61.21 ± 1.37 |
+| loops | `nested_loop` | 53.75 ± 1.03 | 67.63 ± 0.60 | 4.25 ± 0.08 | 16.54 ± 0.18 |
+| loops | `collatz` | 480.7 ± 1.89 | 475.0 ± 3.68 | 78.38 ± 0.21 | 104.4 ± 0.71 |
+| loops | `gcd_loop` | 202.2 ± 1.49 | 191.1 ± 0.50 | 22.60 ± 0.13 | 39.27 ± 0.31 |
+| algorithms | `sieve` | 658.5 ± 9.36 | 705.5 ± 15.84 | 59.30 ± 0.32 | 111.4 ± 5.98 |
+| algorithms | `quicksort` | 1250 ± 4.48 | 1245 ± 6.50 | 419.8 ± 1.63 | 189.2 ± 1.59 |
+| algorithms | `matmul_manual` | 342.2 ± 18.86 | 387.4 ± 5.10 | 43.29 ± 0.23 | 84.24 ± 0.85 |
+| lists | `list_build` | 450.5 ± 8.97 | 458.2 ± 4.96 | 52.59 ± 0.95 | 39.97 ± 0.49 |
+| lists | `list_sum` | 818.6 ± 9.29 | 904.7 ± 16.78 | 140.5 ± 1.10 | 286.9 ± 11.62 |
+| lists | `list_sort` | 905.8 ± 38.78 | 917.6 ± 2.32 | 216.2 ± 0.82 | 248.7 ± 3.64 |
+| dicts/sets | `dict_build` | 224.1 ± 17.39 | 263.2 ± 2.42 | 55.83 ± 0.51 | 74.14 ± 0.40 |
+| dicts/sets | `dict_lookup_int` | 157.4 ± 0.48 | 188.6 ± 0.86 | 16.02 ± 0.15 | 58.56 ± 0.70 |
+| dicts/sets | `dict_lookup_str` | 359.4 ± 2.72 | 371.8 ± 3.17 | 206.9 ± 0.46 | 146.7 ± 5.31 |
+| dicts/sets | `set_ops` | 399.9 ± 2.94 | 428.1 ± 5.11 | 34.69 ± 0.11 | 78.10 ± 1.34 |
+| strings | `str_concat` | 146.3 ± 0.49 | 152.4 ± 0.48 | 33.81 ± 0.29 | 21.82 ± 0.31 |
+| strings | `str_split_join` | 98.13 ± 0.54 | 97.61 ± 1.51 | 103.8 ± 7.85 | 18.11 ± 0.04 |
+| strings | `str_search` | 63.32 ± 0.73 | 62.89 ± 0.69 | 84.80 ± 0.55 | 5.92 ± 0.02 |
+| OO | `method_call` | 148.3 ± 2.23 | 199.4 ± 0.61 | 21.58 ± 1.32 | 28.77 ± 0.43 |
+| OO | `attr_rw` | 100.5 ± 2.21 | 101.0 ± 1.85 | 13.90 ± 0.29 | 24.77 ± 4.73 |
+| OO | `object_create` | 182.4 ± 2.44 | 189.8 ± 0.85 | 32.78 ± 2.53 | 33.92 ± 1.08 |
+| OO | `poly_dispatch` | 81.72 ± 2.16 | 113.4 ± 2.70 | 11.15 ± 0.28 | 15.90 ± 0.83 |
+| functional | `map_filter` | 694.0 ± 5.68 | 724.6 ± 16.09 | 6.11 ± 0.37 | 12.62 ± 0.14 |
 
 ## Class scaling (fixed attribute/method access, N members)
 
@@ -52,25 +52,29 @@ Access cost is O(1) in every runtime — flat from 1000 to 10000 members.
 
 | workload | N | Kirito 1.18.0 | Kirito 1.17.1 | Lua 5.1 | Python 3 |
 |---|---|---|---|---|---|
-| `class_attr` (400k reads) | 1000 | 56.79 ± 4.38 | 66.27 ± 0.86 | 9.03 ± 0.56 | 31.81 ± 3.11 |
-| `class_attr` (400k reads) | 10000 | 59.59 ± 1.51 | 70.92 ± 0.99 | 11.58 ± 1.07 | 32.85 ± 1.25 |
-| `class_method` (400k calls) | 1000 | 147.9 ± 3.86 | 199.3 ± 1.63 | 21.21 ± 2.49 | 47.64 ± 3.18 |
-| `class_method` (400k calls) | 10000 | 157.7 ± 2.15 | 217.0 ± 6.24 | 21.60 ± 2.23 | 49.83 ± 3.62 |
+| `class_attr` (400k reads) | 1000 | 57.87 ± 6.92 | 67.35 ± 0.23 | 8.62 ± 0.10 | 30.62 ± 2.11 |
+| `class_attr` (400k reads) | 10000 | 57.51 ± 0.63 | 69.44 ± 0.33 | 12.09 ± 0.31 | 32.34 ± 0.77 |
+| `class_method` (400k calls) | 1000 | 153.3 ± 6.66 | 206.3 ± 7.03 | 18.63 ± 0.25 | 45.78 ± 2.42 |
+| `class_method` (400k calls) | 10000 | 153.0 ± 3.71 | 208.4 ± 1.73 | 19.86 ± 0.49 | 48.82 ± 2.85 |
 
 ## Numeric / stdlib workloads (Kirito only)
 
-These exercise Kirito-native features (tensors, the regex engine, deterministic AKS primality) with no
-direct Python/Lua equivalent, so only the two Kirito versions are shown (default GC cadence).
+These exercise Kirito-native features (tensors, the regex engine, primality) with no direct Python/Lua
+equivalent, so only the two Kirito versions are shown (default GC cadence).
 
 | workload | Kirito 1.18.0 | Kirito 1.17.1 |
 |---|---|---|
-| `tensor_add` (20k elems, ×800) | 66.34 ± 1.03 | 92.44 ± 2.34 |
-| `tensor_sum` (20k elems, ×2000) | 22.91 ± 0.36 | 24.12 ± 1.32 |
-| `tensor_slice` (100×100, ×1500) | 44.66 ± 2.65 | 177.2 ± 4.83 |
-| `tensor_matmul` (64×64, ×150) | 8.13 ± 1.00 | 8.88 ± 0.62 |
-| `regex_match` (one-shot, ×30000) | 79.64 ± 6.61 | 86.14 ± 5.48 |
-| `isprime_small` (2‥199, ×20) † | 1078 ± 17.23 | 0.49 ± 0.01 |
+| `tensor_add` (20k elems, ×800) | 68.68 ± 0.41 | 94.25 ± 1.38 |
+| `tensor_sum` (20k elems, ×2000) | 23.36 ± 0.08 | 24.03 ± 0.35 |
+| `tensor_slice` (100×100, ×1500) | 43.79 ± 1.96 | 177.8 ± 3.84 |
+| `tensor_matmul` (64×64, ×150) | 7.87 ± 0.77 | 8.08 ± 0.91 |
+| `regex_match` (one-shot, ×30000) | 77.65 ± 2.89 | 83.45 ± 3.34 |
+| `isprime` (2‥199, ×20) | 0.46 ± 0.01 | 0.50 ± 0.01 |
+| `isprimeaks` (2‥199, ×20) † | 1075 ± 2 | — |
 
-† 1.18.0's `isprime` is the deterministic **AKS** test — exact and polynomial-time, but far slower
-than 1.17.1's trial division for small `n` (and than the probabilistic `isprobableprime`, which is
-unchanged). Use `isprobableprime` when speed matters; see the [`int` module](#int).
+† `isprime` is the deterministic **trial-division** test in both versions (near parity above).
+`isprimeaks` — new in 1.18.0 — is the deterministic **AKS** test: exact and polynomial-time, but
+orders of magnitude slower (≈2300× here) and practical only for small `n`. Prefer `isprime` or the
+probabilistic `isprobableprime` when speed matters; use `isprimeaks` only when a deterministic
+polynomial-time witness is specifically required. (`—`: `isprimeaks` did not exist in 1.17.1.) See the
+[`int` module](#int).
