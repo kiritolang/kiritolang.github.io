@@ -128,9 +128,9 @@ ok(ze.re.compare(-1.0, abs_tol=1e-10), "exp(i*pi).re ≈ -1 (Euler)")
 ok(ze.im.compare(0.0, abs_tol=1e-10), "exp(i*pi).im ≈ 0")
 ok(cmod.sqrt(cmod.Complex(-1, 0)).im.compare(1.0, abs_tol=1e-10), "sqrt(-1) = i")
 
-# is_zero (tolerant predicate on Complex)
-ok(cmod.zero.is_zero(), "zero.is_zero() = True")
-ok(not z.is_zero(), "non-zero.is_zero() = False")
+# iszero (tolerant predicate on Complex)
+ok(cmod.zero.iszero(), "zero.iszero() = True")
+ok(not z.iszero(), "non-zero.iszero() = False")
 
 # == is exact; .compare is tolerant
 var z3 = cmod.Complex(1, 0)

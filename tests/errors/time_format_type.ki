@@ -1,0 +1,3 @@
+# DateTime.format rejects a non-String pattern. Previously reached by no test at all; pin the message.
+var time = import("time")
+discard time.now().format(5)

@@ -78,7 +78,7 @@ public:
     std::vector<std::string> inspectMembers() const override {
         return {"re: Float", "im: Float", "compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool",
                 "conjugate() -> Complex", "modulus() -> Float",
-                "argument() -> Float", "norm2() -> Float", "is_zero() -> Bool"};
+                "argument() -> Float", "norm2() -> Float", "iszero() -> Bool"};
     }
 
     Handle binary(KiritoVM& vm, BinOp op, Handle self, Handle rhs) override;
@@ -171,8 +171,8 @@ inline Handle ComplexVal::getAttr(KiritoVM& vm, Handle self, std::string_view na
         return bind("argument", [self, self_z](KiritoVM& vm, std::span<const Handle>) { return vm.makeFloat(std::arg(self_z(vm, self))); });
     if (name == "norm2")
         return bind("norm2", [self, self_z](KiritoVM& vm, std::span<const Handle>) { return vm.makeFloat(std::norm(self_z(vm, self))); });
-    if (name == "is_zero")  // a near-zero predicate (deliberately tolerant, unlike exact ==)
-        return bind("is_zero", [self, self_z](KiritoVM& vm, std::span<const Handle>) { return vm.makeBool(std::norm(self_z(vm, self)) < 1e-20); });
+    if (name == "iszero")  // a near-zero predicate (deliberately tolerant, unlike exact ==)
+        return bind("iszero", [self, self_z](KiritoVM& vm, std::span<const Handle>) { return vm.makeBool(std::norm(self_z(vm, self)) < 1e-20); });
     // --- serialization (serialize / dump): a Complex round-trips as [re, im]. ---
     if (name == "_getstate_")
         return bind("_getstate_", [self, self_z](KiritoVM& vm, std::span<const Handle>) -> Handle {

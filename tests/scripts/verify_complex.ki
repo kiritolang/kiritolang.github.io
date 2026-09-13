@@ -1,6 +1,6 @@
 # Doc-vs-impl verification for the `complex` stdlib module (docs/pages/10-stdlib.md "## complex").
 # Functioning cases (exact == where bit-exact, tolerant .compare for analytic/computed results),
-# edge cases (pure real/imaginary, i*i, is_zero tolerance), and HARDENING (unordered comparisons,
+# edge cases (pure real/imaginary, i*i, iszero tolerance), and HARDENING (unordered comparisons,
 # analytic domain errors, singular/shape-mismatch matrices). Prints "OK complex".
 var io = import("io")
 var c = import("complex")
@@ -69,11 +69,11 @@ assert c.conjugate(z) == c.of(3, -4), "module conjugate"
 # reductions accept plain numbers (coerced to the real axis)
 assert c.modulus(-5) == 5.0 and c.norm2(3) == 9.0, "reductions accept real numbers"
 
-# ============================================================ is_zero (tolerant, unlike exact ==)
-assert c.zero.is_zero() and c.Complex(0, 0).is_zero(), "is_zero on exact zero"
-assert c.Complex(1e-11, 0).is_zero() and c.Complex(0, 1e-11).is_zero(), "is_zero within tolerance (~1e-10)"
-assert not c.Complex(1e-6, 0).is_zero(), "is_zero False above tolerance"
-assert not c.one.is_zero() and not c.i.is_zero(), "is_zero False for one/i"
+# ============================================================ iszero (tolerant, unlike exact ==)
+assert c.zero.iszero() and c.Complex(0, 0).iszero(), "iszero on exact zero"
+assert c.Complex(1e-11, 0).iszero() and c.Complex(0, 1e-11).iszero(), "iszero within tolerance (~1e-10)"
+assert not c.Complex(1e-6, 0).iszero(), "iszero False above tolerance"
+assert not c.one.iszero() and not c.i.iszero(), "iszero False for one/i"
 
 # ============================================================ analytic set (tolerant compare)
 assert c.exp(c.zero).compare(c.one, abs_tol = 1e-12), "exp(0) = 1"

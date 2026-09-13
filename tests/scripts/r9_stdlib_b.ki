@@ -10,6 +10,7 @@ var itr = import("itertools")
 var ft = import("functools")
 var col = import("collections")
 var stat = import("statistics")
+var sv = import("semver")
 
 var n = 0
 var ok = Function(c, m):
@@ -247,6 +248,21 @@ ok(s.compare(1.5811388, rel_tol=1e-5), "stdev of 1..5 ≈ 1.5811")
 var q = stat.quantiles([1,2,3,4,5,6,7,8,9,10])
 ok(type(q) == "List", "quantiles returns List")
 ok(len(q) == 3, "quantiles default 4-quantiles gives 3 cut points")
+# pin the exact VALUES (exclusive method, matching CPython statistics.quantiles default), not just
+# the length — these cut points are exactly representable, so == is safe.
+ok(stat.quantiles([1,2,3,4,5,6,7,8]) == [2.25, 4.5, 6.75], "quantiles exclusive cut points")
+ok(stat.quantiles([1,2]) == [0.75, 1.5, 2.25], "quantiles extrapolates past the data range")
+
+# semver — pin the range-expansion truth table via satisfies() (node-semver semantics)
+ok(sv.satisfies("1.9.0", "^1.2.3") and not sv.satisfies("2.0.0", "^1.2.3"), "^1.2.3 := >=1.2.3 <2.0.0")
+ok(sv.satisfies("0.2.9", "^0.2.3") and not sv.satisfies("0.3.0", "^0.2.3"), "^0.2.3 := >=0.2.3 <0.3.0")
+ok(sv.satisfies("0.0.3", "^0.0.3") and not sv.satisfies("0.0.4", "^0.0.3"), "^0.0.3 := >=0.0.3 <0.0.4")
+ok(sv.satisfies("1.2.9", "~1.2.3") and not sv.satisfies("1.3.0", "~1.2.3"), "~1.2.3 := >=1.2.3 <1.3.0")
+ok(sv.satisfies("1.2.0", "~1.2") and not sv.satisfies("1.3.0", "~1.2"), "~1.2 := >=1.2.0 <1.3.0")
+ok(sv.satisfies("1.2.9", "1.2.x") and not sv.satisfies("1.3.0", "1.2.x"), "1.2.x := >=1.2.0 <1.3.0")
+ok(sv.satisfies("2.3.4", "1.2.3 - 2.3.4") and not sv.satisfies("2.3.5", "1.2.3 - 2.3.4"), "hyphen range inclusive")
+ok(not sv.satisfies("1.2.4-alpha.1", "^1.2.3"), "prerelease gated to same M.m.p tuple")
+ok(sv.satisfies("1.2.3-beta.2", "^1.2.3-beta.1"), "prerelease allowed at the pinned tuple")
 
 # Error cases
 ok(throws(Function(): return stat.mean([])), "mean([]) throws")

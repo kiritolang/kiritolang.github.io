@@ -466,6 +466,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `stream is not writable` / `stream is not readable` | Read/write on a one-way stream | Use a stream of the right direction |
 | `stdin is not writable` / `a write stream is not readable` | Writing to stdin / reading from stdout/stderr | Direct I/O to the correct std stream |
 | `<who> expects a String or Bytes` | A non-String/Bytes value to `write`/`writelines`/`BytesIO.write` (e.g. `f.write(123)`) | Write a String or Bytes (convert with `String(x)`) |
+| `writelines: argument must be iterable` | A non-iterable passed to `f.writelines(...)` (e.g. `f.writelines(5)`) | Pass an iterable of Strings/Bytes |
 
 ### io — seek & BytesIO
 
@@ -525,7 +526,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 |---|---|---|
 | `socket() failed: <err>` | OS socket creation failed | Resource exhaustion — retry |
 | `port out of range: <p> (must be 0-65535)` | Connect/bind port out of range | Use 0–65535 |
-| `could not resolve host` | DNS resolve failed (connect) | Check the hostname/DNS |
+| `connect: could not resolve host '<host>': <err>` | DNS resolve failed (connect) | Check the hostname/DNS |
 | `connect failed: <err>` | TCP connect failed | Check host/port/reachability |
 | `bind: cannot resolve host '<host>'` / `bind failed: <err>` | Bind address unresolvable / port in use | Use a valid, free local address |
 | `listen failed: <err>` / `accept failed: <err>` | listen/accept on the socket failed | Ensure the socket is bound / listening |
@@ -537,23 +538,23 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `unknown address family '<s>' (expected 'inet' or 'inet6')` | Bad `family` to `socket()`/`socketpair()` | Use `"inet"` or `"inet6"` |
 | `unknown socket type '<s>' (expected 'stream' or 'dgram')` | Bad `type` to `socket()`/`socketpair()` | Use `"stream"` or `"dgram"` |
 | `sendto: datagram too large` | A `sendto` payload past the datagram size limit | Send a smaller datagram |
-| `sendto: could not resolve host '<host>'` | DNS resolve failed for the `sendto` peer | Check the host/DNS |
-| `sendto failed` / `recvfrom failed` | The UDP send/receive syscall failed | Check the socket state / peer reachability |
+| `sendto: could not resolve host '<host>': <err>` | DNS resolve failed for the `sendto` peer | Check the host/DNS |
+| `sendto failed: <err>` / `recvfrom failed: <err>` | The UDP send/receive syscall failed | Check the socket state / peer reachability |
 | `recvfrom size must be non-negative` | Negative `recvfrom(n)` | Pass n ≥ 0 |
-| `shutdown: how must be 'read', 'write', or 'both'` | Bad `how` to `shutdown` | Use `"read"`/`"write"`/`"both"` |
-| `setsockopt: unknown option '<opt>'` / `getsockopt: unknown option '<opt>'` | An option name outside the supported set | Use a documented option name |
+| `shutdown: how must be 'read', 'write', or 'both' (got '<how>')` | Bad `how` to `shutdown` | Use `"read"`/`"write"`/`"both"` |
+| `setsockopt: unknown option '<opt>' (valid: …)` / `getsockopt: unknown option '<opt>' (valid: …)` | An option name outside the supported set | Use a documented option name |
 | `settimeout: seconds must be >= 0` | A negative `socket.settimeout()` | Pass `0` for blocking (no timeout) or a positive number of seconds |
 | `<net op> failed: <err>` | An OS socket syscall failed (setsockopt/getsockopt/shutdown/setblocking/settimeout, the named convenience setters) | Check the socket state / the option value |
-| `socketpair(<type>) failed` | The OS could not create the connected pair | Retry; check resource limits |
+| `socketpair(<type>) failed: <err>` | The OS could not create the connected pair | Retry; check resource limits |
 | `gethostbyname: cannot resolve '<host>'` | DNS lookup returned no address | Check the hostname/DNS |
-| `getaddrinfo('<host>') failed` | Address resolution failed | Check the host/service arguments |
+| `getaddrinfo('<host>') failed: <err>` | Address resolution failed | Check the host/service arguments |
 
 ### net — URL parsing
 
 | Message | Cause | Fix |
 |---|---|---|
 | `URL must start with http:// or https://` | Unsupported scheme | Prefix with `http://`/`https://` |
-| `malformed IPv6 URL (missing ']')` / `(junk after ']')` | Malformed `[…]` host | Use `[host]:port` |
+| `malformed IPv6 URL (missing ']'): <url>` / `(junk after ']'): <url>` | Malformed `[…]` host | Use `[host]:port` |
 | `invalid port in URL '<url>': '<portStr>'` / `port out of range in URL …` | Non-numeric / out-of-range URL port | Use a numeric port 1–65535 |
 | `URL contains a control character` | A raw CR/LF/NUL-style control character embedded in the URL (a request-splitting guard) | Percent-encode or strip the control character |
 
@@ -576,7 +577,8 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 |---|---|---|
 | `TLS handshake with <host> failed<why>` | Handshake failed (no CA, cipher, etc.) | Set `SSL_CERT_FILE` or pass `verify=False` |
 | `TLS certificate verification failed for <host> (pass verify=False to skip)` | The peer cert didn't verify | Trust the CA or pass `verify=False` |
-| `SSL_write failed` | TLS write error mid-request | Reconnect |
+| `SSL_write failed` / `SSL_write failed: <err>` / `SSL_read failed` | TLS write/read error mid-request (HTTPS client, or a `starttls`'d socket's `send`/`recvall`) | Reconnect |
+| `recvall exceeds the size limit` | A `starttls`'d socket's `recvall` accumulated past the cap | Read in bounded chunks |
 | `HTTPS recv timed out` | The `timeout` elapsed waiting for the TLS response — a stalled or black-hole peer (never surfaced as a silent empty body) | Raise the `timeout`, or check the peer |
 | `https requires building with KIRITO_ENABLE_TLS (OpenSSL); use http:// otherwise` | HTTPS on a non-TLS build | Rebuild with TLS or use http:// |
 | `SSL_CTX_new failed` | OpenSSL could not create the TLS context | Environment/OpenSSL problem — retry |
@@ -617,7 +619,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `log: math domain error (argument must be > 0)` / `(base must be > 0 and != 1)` | `math.log` with x≤0 or a bad base | Positive argument / valid base |
 | `pow: math domain error (a negative base requires an integer exponent)` / `(zero to a negative power)` | `math.pow(-2, 0.5)` / `math.pow(0, -1)` | Integer exponent for a negative base (or use `complex`) |
 | `<who>: cannot convert NaN/infinity to Integer` / `result out of Integer range` | `floor`/`ceil` of a non-finite/huge value | Feed a finite, in-range value |
-| `math function expected 1 argument` / `pow expected 2 arguments` / `atan2 expected 2 arguments` / `hypot expected 2 arguments` | Wrong `math` fn arity | Match the arity |
+| `<fn>() missing required argument '<name>'` / `<fn>() takes at most <n> positional argument(s) but <m> given` | Wrong `math` fn arity — reported by the signatured-native binding, not a per-function message | Match the arity |
 | `gcd/lcm expects Integers` / `factorial expects an Integer` / `comb/perm expects Integers` | A Float/other where an Integer is required | Pass Integers |
 | `factorial is not defined for negatives` / `comb/perm require non-negative Integers` | A negative argument | Pass non-negative Integers |
 | `prod expects an iterable` / `prod start must be a number` / `prod expects numbers` | Bad `math.prod` input | Pass an iterable of numbers |
@@ -631,7 +633,6 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `complex numbers are not ordered (no <, <=, >, >=)` | `<`/`>`/… on a Complex | Complex is unordered; compare magnitudes explicitly |
 | `complex division by zero` | `z / 0` | Use a non-zero divisor |
 | `complex pow: zero to a negative or complex power` | `0j ** -1` / `0j ** 1j` | Avoid the singularity |
-| `complex.pow expects 2 arguments` | Wrong arity to `complex.pow` | Pass two arguments |
 | `<fn>: math domain error (logarithm of zero)` / `(atanh of ±1)` / `(atan of ±i)` | `complex.log`/`log10` of 0, `atanh(±1)`, or `atan(±i)` (each a pole) | Keep the argument in domain |
 | `math domain error (polar requires finite modulus and angle)` | `complex.polar` with a non-finite `r`/`theta` (would drive `std::polar` to silent NaN) | Pass finite arguments (a negative finite modulus is allowed) |
 | `Complex does not support this operator` / `Complex does not support this unary operator` | An operator outside `+ - * / **` (or unary `-`) on a Complex | Use a supported operator |
@@ -647,7 +648,7 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `Matrix/ComplexMatrix too large` | Element count exceeds the cap (~16M) | Reduce the dimensions |
 | `determinant/inverse/trace requires a square Matrix/ComplexMatrix` | A square-only op on a non-square matrix | Use a square matrix |
 | `dot/cross expects a … vector` / `dot requires vectors of equal length` / `cross is only defined for two 3-element vectors` | Malformed vector operands | Use conforming 1×n / n×1 vectors |
-| `Matrix rows must have equal length` / `Matrix expects a nested list …` / `… dimensions must be non-negative` | Bad constructor/factory input | Pass a rectangular nested list / valid dims |
+| `Matrix rows must have equal length` / `… dimensions must be non-negative` | Bad constructor/factory input | Pass a rectangular nested list / valid dims |
 | `Matrix _setstate_: negative dimension` / `… malformed state` / `… data size does not match shape` | Corrupt/hostile serialized Matrix state (a negative dim would otherwise build a garbage matrix) | Deserialize only trusted data |
 | `Matrix() got an unexpected keyword argument '<name>'` / `got multiple values for 'rows'` | Bad keyword to `Matrix()` | Use `rows=`/`cols=` once each |
 | `Matrix/ComplexMatrix does not support this operator` | An operator past `+ - *` on a matrix | Use a supported matrix operator |
@@ -833,6 +834,7 @@ large* — live under [Resource guards](#resource-guards-repetition--padding--ra
 | `itertools.count needs a stop bound (no lazy generators)` | `count()`/`count(start)` with no stop (Kirito has no lazy generators) | Pass a stop bound |
 | `itertools.count step must not be zero` | `count(start, 0)` | Use a non-zero step |
 | `step for islice() must be a positive integer` | `islice(xs, start, stop, step)` with `step ≤ 0` | Use a positive step |
+| `r for permutations() must be non-negative` / `r for combinations() must be non-negative` | `permutations(xs, r)`/`combinations(xs, r)` with `r < 0` | Use `r ≥ 0` (an `r` larger than the input still yields `[]`) |
 | `reduce of empty sequence with no initial value` | `functools.reduce(f, [])` without an initializer | Pass an initial value, or a non-empty sequence |
 | `mean requires at least one data point` / `median requires at least one data point` / `pvariance requires at least one data point` | `statistics` central-tendency on an empty list | Provide data |
 | `variance requires at least two data points` / `quantiles requires at least two data points` | `statistics.variance`/`quantiles` on fewer than two points | Provide ≥ 2 points |

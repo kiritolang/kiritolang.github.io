@@ -105,10 +105,10 @@ assert 2 == C.of(2, 0), "real==Complex(2,0) (reverse also holds)"
 assert C.of(2, 1) != 2, "nonzero imag != real"
 assert raises_msg(Function(): return {C.i}, "unhashable"), "Complex unhashable in Set"
 
-# ------- is_zero tolerance (tiny-but-nonzero counts as zero below magnitude 1e-10)
-assert C.of(1e-12, 0).is_zero(), "1e-12 is_zero"
-assert C.zero.is_zero(), "zero is_zero"
-assert C.of(1e-9, 0).is_zero() == False, "1e-9 not is_zero"
+# ------- iszero tolerance (tiny-but-nonzero counts as zero below magnitude 1e-10)
+assert C.of(1e-12, 0).iszero(), "1e-12 iszero"
+assert C.zero.iszero(), "zero iszero"
+assert C.of(1e-9, 0).iszero() == False, "1e-9 not iszero"
 
 # ------- polar / argument round trips
 assert z.argument().compare(math.atan2(4.0, 3.0)), "argument"

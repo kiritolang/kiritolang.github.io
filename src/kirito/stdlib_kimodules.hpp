@@ -105,7 +105,9 @@ var permutations = Function(items, r = None):
     if k == None:
         k = n
     var result = []
-    if k > n or k < 0:
+    if k < 0:
+        throw "r for permutations() must be non-negative"
+    if k > n:
         return result
     # Guard the eager result up front: the count is n*(n-1)*...*(n-k+1). Throw a clean error rather
     # than OOMing/hanging on a huge request (mirrors the native range/repetition resource policy).
@@ -138,7 +140,9 @@ var permutations = Function(items, r = None):
 var combinations = Function(items, r):
     var n = len(items)
     var result = []
-    if r > n or r < 0:
+    if r < 0:
+        throw "r for combinations() must be non-negative"
+    if r > n:
         return result
     # Guard the eager result up front: the count is C(n, r), built with the exact multiplicative
     # binomial recurrence so it stays integer at each step. Throw rather than OOM on a huge request.
@@ -598,7 +602,12 @@ var fuzzymatch = Function(query, candidates, cutoff = 0.6):
 // --- textwrap ----------------------------------------------------------------------------------
 inline constexpr std::string_view textwrap = R"KI(
 var wrap = Function(text, width = 70):
-    var words = text.split(" ")
+    # Collapse runs of spaces: text.split(" ") yields empty tokens between adjacent spaces, which
+    # would otherwise be joined back as stray/trailing whitespace (a CPython textwrap deviation).
+    var words = []
+    for w in text.split(" "):
+        if len(w) > 0:
+            words.append(w)
     var lines = []
     var current = ""
     for word in words:

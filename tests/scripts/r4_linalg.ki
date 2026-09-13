@@ -224,7 +224,7 @@ chk(throws(Function(): return C.one > C.zero), "> throws (unordered)")
 chk(throws(Function(): return C.one >= C.zero), ">= throws (unordered)")
 
 # =================================================================================================
-# complex — reductions (conjugate / modulus / argument / norm2 / is_zero) + tolerant compare
+# complex — reductions (conjugate / modulus / argument / norm2 / iszero) + tolerant compare
 # =================================================================================================
 chk(z.conjugate() == C.of(3, -4), "conjugate")
 chk(approx(z.modulus(), 5.0), "modulus |3+4i| = 5")
@@ -232,10 +232,10 @@ chk(approx(z.abs(), 5.0) and approx(z.magnitude(), 5.0), "abs / magnitude aliase
 chk(approx(z.norm2(), 25.0), "norm2 = |z|^2")
 chk(approx(C.of(0, 1).argument(), MTH.pi / 2.0), "argument(i) = pi/2")
 chk(approx(C.of(0, 1).arg(), MTH.pi / 2.0) and approx(C.of(0, 1).phase(), MTH.pi / 2.0), "arg / phase aliases")
-chk(C.zero.is_zero() and not C.one.is_zero(), "is_zero exact 0 / nonzero")
-# is_zero is tolerant (|z| < 1e-10); EXACT == is not. 1e-10 is NOT zero by either; .compare with abs_tol is.
+chk(C.zero.iszero() and not C.one.iszero(), "iszero exact 0 / nonzero")
+# iszero is tolerant (|z| < 1e-10); EXACT == is not. 1e-10 is NOT zero by either; .compare with abs_tol is.
 chk((C.of(0.0000000001, 0) == C.zero) == False, "exact == : 1e-10 != 0")
-chk(C.of(0.0000000001, 0).is_zero() == False, "is_zero: 1e-10 magnitude is not zero")
+chk(C.of(0.0000000001, 0).iszero() == False, "iszero: 1e-10 magnitude is not zero")
 chk(C.of(0.0000000001, 0).compare(C.zero, abs_tol = 0.001), "compare with abs_tol says approximately zero")
 chk(C.of(2, 0).compare(2), "compare accepts a real number")
 chk(C.of(1, 1).compare(C.of(1, 1)), "compare reflexive")

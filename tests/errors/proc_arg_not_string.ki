@@ -1,0 +1,4 @@
+# createprocess rejects a non-String element inside the args List (arg-validation, no child spawn).
+# Pins the exact per-argument type diagnostic (previously only loosely covered by throws()).
+var sys = import("sys")
+discard sys.createprocess([5])

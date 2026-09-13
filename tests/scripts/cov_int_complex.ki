@@ -292,11 +292,11 @@ assert complex.argument(complex.i) == math.pi / 2
 assert complex.Complex(-1, 0).argument() == math.pi
 assert String(z.conjugate()) == "3.0-4.0i"
 assert String(complex.conjugate(z)) == "3.0-4.0i"
-# is_zero is tolerant (|z| below 1e-10), unlike exact ==
-assert complex.zero.is_zero() == True
-assert complex.Complex(1e-11, 0).is_zero() == True
-assert complex.Complex(1e-9, 0).is_zero() == False
-assert z.is_zero() == False
+# iszero is tolerant (|z| below 1e-10), unlike exact ==
+assert complex.zero.iszero() == True
+assert complex.Complex(1e-11, 0).iszero() == True
+assert complex.Complex(1e-9, 0).iszero() == False
+assert z.iszero() == False
 
 # ---- arithmetic ----
 assert String(complex.Complex(1, 2) + complex.Complex(3, 4)) == "4.0+6.0i"

@@ -374,8 +374,8 @@ ok(close(complex.Complex(0, 1).argument(), math.pi / 2), "argument()=pi/2")
 ok(close(complex.Complex(0, 1).arg(), math.pi / 2), "arg() alias")
 ok(close(complex.Complex(0, 1).phase(), math.pi / 2), "phase() alias")
 ok(close(complex.Complex(3, 4).norm2(), 25.0), "norm2()=|z|^2=25")
-ok(complex.Complex(0, 0).is_zero(), "is_zero() True for 0")
-ok(not complex.Complex(1, 0).is_zero(), "is_zero() False for 1")
+ok(complex.Complex(0, 0).iszero(), "iszero() True for 0")
+ok(not complex.Complex(1, 0).iszero(), "iszero() False for 1")
 
 # ============================================================ COMPLEX: module reductions
 ok(close(complex.modulus(complex.Complex(3, 4)), 5.0), "module modulus")

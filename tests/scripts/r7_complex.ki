@@ -79,12 +79,12 @@ ok(cmp(complex.polar(z.modulus(), z.argument()), z), "polar(|z|, arg z) = z")
 ok(cmp(complex.polar(2, math.pi / 3), C(2.0 * math.cos(math.pi / 3), 2.0 * math.sin(math.pi / 3))),
    "polar formula r(cos+isin)")
 
-# ---------------------------------------------------------------- is_zero threshold (magnitude < 1e-10)
-ok(C(0, 0).is_zero(), "is_zero(0)")
-ok(C(9e-11, 0).is_zero(), "is_zero just below 1e-10")
-ok(C(0, 9e-11).is_zero(), "is_zero tiny imag")
-ok(not C(2e-10, 0).is_zero(), "not is_zero above 1e-10")
-ok(not C(0, 1).is_zero(), "not is_zero(i)")
+# ---------------------------------------------------------------- iszero threshold (magnitude < 1e-10)
+ok(C(0, 0).iszero(), "iszero(0)")
+ok(C(9e-11, 0).iszero(), "iszero just below 1e-10")
+ok(C(0, 9e-11).iszero(), "iszero tiny imag")
+ok(not C(2e-10, 0).iszero(), "not iszero above 1e-10")
+ok(not C(0, 1).iszero(), "not iszero(i)")
 
 # ---------------------------------------------------------------- analytic: deeper identities
 # De Moivre: (cos t + i sin t)^k = cos(kt) + i sin(kt)

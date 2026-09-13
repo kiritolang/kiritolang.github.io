@@ -335,7 +335,7 @@ ok(throws(Function(): return T.Tensor([1.0], dtype = "Complex").max()), "Complex
 # Complex arithmetic / reductions still work.
 var cz = T.Tensor([[1.0, 2.0], [3.0, 4.0]], dtype = "Complex")
 ok(cz.matmul(cz).dtype() == "Complex", "complex matmul works")
-ok(cz.sum().conjugate().is_zero() == False, "complex whole-sum returns a Complex")
+ok(cz.sum().conjugate().iszero() == False, "complex whole-sum returns a Complex")
 
 # ============================================================ in-place element assignment =======
 # t[i,j]=v is the one in-place op; aliases see the change (reference assignment).

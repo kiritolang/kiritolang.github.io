@@ -86,7 +86,7 @@ class Complex:
         return math.atan2(self.im, self.re)                     # arg alias (native also exposes this)
     var phase = Function(self):
         return math.atan2(self.im, self.re)                     # phase alias
-    var is_zero = Function(self):
+    var iszero = Function(self):
         return self.modulus() < 0.0000000001        # tolerant (magnitude < 1e-10), matching native
     # Tolerant comparison (rel/abs tolerance), mirroring native: |a-b| <= max(rel_tol*max(|a|,|b|),
     # abs_tol) with |.| the complex modulus. `==` stays exact; NaN/inf components are never close.

@@ -51,7 +51,7 @@ var solve = Function(A, b):
                 aug[row][c] = aug[row][c] * inv
             # Eliminate this column from all other rows.
             for r in range(n):
-                if r != row and not aug[r][col].is_zero():
+                if r != row and not aug[r][col].iszero():
                     var factor = aug[r][col]
                     for c in range(width):
                         aug[r][c] = aug[r][c] - factor * aug[row][c]
@@ -66,9 +66,9 @@ var solve = Function(A, b):
     for r in range(n):
         var allZero = True
         for c in range(m):
-            if not aug[r][c].is_zero():
+            if not aug[r][c].iszero():
                 allZero = False
-        if allZero and not aug[r][m].is_zero():
+        if allZero and not aug[r][m].iszero():
             return {"kind": "none", "x": None, "rank": rank}
 
     # Build a particular solution: free variables = 0, pivot variables read from the augmented col.
@@ -90,6 +90,6 @@ var verify = Function(A, x, b):
         var acc = C.zero
         for j in range(A.cols()):
             acc = acc + A[i, j] * x[j]
-        if not (acc - b[i]).is_zero():
+        if not (acc - b[i]).iszero():
             return False
     return True

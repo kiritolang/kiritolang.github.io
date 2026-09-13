@@ -190,7 +190,7 @@ assert sv.minsatisfying(["v1.0.0", "v1.4.2", "v2.0.0"], "^1.0.0") == "v1.0.0", "
 assert sv.minsatisfying(["v3.0.0"], "^1.0.0") == None, "minsatisfying no match"
 
 # ---------------------------------------------------------------------------
-# complex — cbrt, is_zero, hermitian/conjugatetranspose, constants
+# complex — cbrt, iszero, hermitian/conjugatetranspose, constants
 # ---------------------------------------------------------------------------
 # Constants
 assert complexm.zero == complexm.Complex(0, 0), "complex.zero constant"
@@ -202,11 +202,11 @@ var c8 = complexm.Complex(8, 0)
 var croot = complexm.cbrt(c8)
 assert croot.compare(complexm.Complex(2, 0), abs_tol = 1e-9), "cbrt(8) ≈ 2"
 
-# is_zero — tolerant zero (magnitude < 1e-10)
-assert complexm.zero.is_zero() == True, "zero.is_zero True"
-assert complexm.one.is_zero() == False, "one.is_zero False"
+# iszero — tolerant zero (magnitude < 1e-10)
+assert complexm.zero.iszero() == True, "zero.iszero True"
+assert complexm.one.iszero() == False, "one.iszero False"
 var tiny = complexm.Complex(1e-15, 0)
-assert tiny.is_zero() == True, "tiny.is_zero tolerant"
+assert tiny.iszero() == True, "tiny.iszero tolerant"
 
 # hermitian / conjugatetranspose
 var H = complexm.Matrix([[complexm.Complex(1, 2), complexm.Complex(3, 4)]])

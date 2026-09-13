@@ -41,7 +41,10 @@ int main() {
     CHECK(run("C.of(3, 4).conjugate()") == "3.0-4.0i");
     CHECK(run("C.of(3, 4).modulus()") == "5.0");
     CHECK(run("C.of(3, 4).norm2()") == "25.0");
-    CHECK(run("C.zero.is_zero()") == "True");
+    CHECK(run("C.zero.iszero()") == "True");
+    // the method is lowercase-no-underscore per Kirito's public-surface rule; the old underscored
+    // spelling was renamed and must no longer resolve.
+    CHECK_THROWS(vm.runSource(std::string(C) + "C.zero.is_zero()"));
 
     // --- analytic functions (modulus of the difference is ~0) ---
     // complex has no pi/e — use math's (single source of truth)

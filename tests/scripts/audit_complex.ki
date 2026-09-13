@@ -82,8 +82,8 @@ io.print(closef(C.of(3, 4).abs(), 5.0))             # alias
 io.print(closef(C.of(3, 4).norm2(), 25.0))
 io.print(closef(C.of(0, 1).argument(), MTH.pi / 2.0))
 io.print(closef(C.of(0, 1).phase(), MTH.pi / 2.0))    # alias
-io.print(C.zero.is_zero())
-io.print(not C.one.is_zero())
+io.print(C.zero.iszero())
+io.print(not C.one.iszero())
 
 # ---- analytic functions (Euler, etc.) ----------------------------------------------------------
 io.print(close(C.exp(C.of(0, MTH.pi)), C.of(-1, 0)))     # exp(i*pi) = -1

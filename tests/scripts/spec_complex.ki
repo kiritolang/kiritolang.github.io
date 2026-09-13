@@ -38,7 +38,7 @@ assert z.conjugate() == C.of(3, -4), "conjugate"
 assert closef(z.modulus(), 5.0), "modulus"
 assert closef(z.norm2(), 25.0), "norm2"
 assert closef(C.of(0, 1).argument(), MTH.pi / 2.0), "argument"
-assert C.zero.is_zero() and not C.one.is_zero(), "is_zero"
+assert C.zero.iszero() and not C.one.iszero(), "iszero"
 
 # --- analytic functions (complex extensions of math) ---
 assert close(C.exp(C.of(0, MTH.pi)), C.of(-1, 0)), "exp(i*pi) = -1 (Euler)"

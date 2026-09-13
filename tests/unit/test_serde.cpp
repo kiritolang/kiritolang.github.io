@@ -85,5 +85,33 @@ int main() {
         CHECK_THROWS(serial::loads(bare, text));                   // but rebuild needs a factory/class
     }
 
+    // --- crafted-KSER1-blob guards: a name slot that resolves to a non-String must throw a clear,
+    //     specific message during rebuild (not a crash / not a silent wrong-typed name). The text
+    //     codec is space-separated tokens: `KSER1 <count> <records...> <rootId>`. ---
+    {
+        KiritoVM cvm;
+        // Function node (U) whose single free-variable NAME id (1) points at an Integer (node 1),
+        // not a String. rebuild's declareFreeVars runs before the source is re-parsed, so this trips
+        // the free-variable-name guard immediately regardless of the (valid) source token.
+        //   node0: U srclen=1 "x" pairs=1 nameid=1 valid=2 ; node1: I 7 ; node2: N ; root=0
+        std::string blob = "KSER1 3 U 1 x 1 1 2 I 7 N 0";
+        std::string msg;
+        try { serial::loads(cvm, blob); }
+        catch (const KiritoError& e) { msg = e.what(); }
+        CHECK(msg == "cannot deserialize: a free-variable name is not a String");
+    }
+    {
+        KiritoVM cvm;
+        cvm.runSource("class C:\n    var n = 5\n");                 // so allocShell can resolve class C
+        // Object node (O) of class C whose single attribute KEY id (1) points at an Integer (node 1),
+        // not a String -> trips the instance-attribute-name guard in pass 2.
+        //   node0: O namelen=1 "C" pairs=1 keyid=1 valid=2 ; node1: I 7 ; node2: N ; root=0
+        std::string blob = "KSER1 3 O 1 C 1 1 2 I 7 N 0";
+        std::string msg;
+        try { serial::loads(cvm, blob); }
+        catch (const KiritoError& e) { msg = e.what(); }
+        CHECK(msg == "cannot deserialize: instance attribute name is not a String");
+    }
+
     return RUN_TESTS();
 }

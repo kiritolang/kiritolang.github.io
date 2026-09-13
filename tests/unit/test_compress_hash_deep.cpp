@@ -325,5 +325,25 @@ g.decompress(g.compress(b)) == b
     CHECK(run(vm, "import(\"zlib\").decompress(import(\"zlib\").compress(\"\")) == \"\"") == "True");
     CHECK(run(vm, "import(\"gzip\").decompress(import(\"gzip\").compress(Bytes())) == Bytes()") == "True");
 
+    // --- corrupt raw-DEFLATE inflate: two failure classes not otherwise exercised. Raw DEFLATE
+    //     (no zlib header/Adler trailer) so the crafted bytes reach the inflate loop directly.
+    //     Both streams are fixed-Huffman, BFINAL=1 BTYPE=01 (LSB-first bit packing). ---
+    {
+        auto inflateErr = [](const std::string& in) -> std::string {
+            try { (void)deflate::inflate(in); return ""; }
+            catch (const deflate::DeflateError& e) { return e.what(); }
+        };
+        // A length/distance pair emitted as the FIRST token: length 3 (sym 257), distance 1 (sym 0),
+        // but output is still empty, so distance 1 > out.size() 0 -> "distance too far back".
+        CHECK(inflateErr(std::string("\x03\x02", 2)) == "distance too far back");
+        // Header consumes 3 bits of the single byte; the 7-bit literal/length code then needs bits
+        // past end-of-input -> "unexpected end of deflate stream" (truncated mid-token).
+        CHECK(inflateErr(std::string("\x03", 1)) == "unexpected end of deflate stream");
+        // Truncated STORED block: BFINAL|BTYPE=00 header byte then fewer than 4 LEN/NLEN bytes.
+        CHECK(inflateErr(std::string("\x01\x05", 2)) == "truncated stored block header");
+        // Stored block with LEN=5 but a body shorter than 5 bytes -> "truncated stored block".
+        CHECK(inflateErr(std::string("\x01\x05\x00\xfa\xff\x41", 6)) == "truncated stored block");
+    }
+
     return RUN_TESTS();
 }

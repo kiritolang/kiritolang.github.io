@@ -1,0 +1,19 @@
+# createprocess enforces a 256 MiB capture cap on a child's output: a child that emits more than the
+# cap makes the parent throw (rather than growing memory unbounded). Portable — the child is the `ki`
+# interpreter itself (path.executable) running a tiny generated helper, never an external command.
+var io = import("io")
+var path = import("path")
+var sys = import("sys")
+
+var helper = path.join(path.gettempdir(), "proc_cap_helper_k.ki")
+# Emit 257 chunks of 1 MiB each (> 256 MiB) so the capture cap is exceeded.
+var f = io.open(helper, "w")
+discard f.write("var io = import(\"io\")\n")
+discard f.write("var chunk = \"x\" * (1024 * 1024)\n")
+discard f.write("var i = 0\n")
+discard f.write("while i < 257:\n")
+discard f.write("    io.write(chunk)\n")
+discard f.write("    i = i + 1\n")
+f.close()
+
+discard sys.createprocess([path.executable, helper])

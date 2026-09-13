@@ -2675,7 +2675,7 @@ public:
             return tns::wrap([&]() { return tns::g_split(vm, a[0], sizes, axis); });
         });
         m.fn("where", {{"cond", "Tensor"}, {"a", "Tensor"}, {"b", "Tensor"}}, "Tensor", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            for (int i = 0; i < 3; ++i) if (!dynamic_cast<const TensorVal*>(&vm.arena().deref(a[i]))) throw KiritoError("where expects three Tensors");
+            for (std::size_t i = 0; i < 3u; ++i) if (!dynamic_cast<const TensorVal*>(&vm.arena().deref(a[i]))) throw KiritoError("where expects three Tensors");
             return tns::wrap([&]() { return tns::g_where(vm, a[0], a[1], a[2]); });
         });
 
@@ -2690,7 +2690,7 @@ public:
         m.fn("inv", {{"t", "Tensor"}}, "Tensor", la1("inv", tns::invT));
         m.fn("trace", {{"t", "Tensor"}}, "Number", la1("trace", tns::traceT));
         m.fn("solve", {{"a", "Tensor"}, {"b", "Tensor"}}, "Tensor", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-            for (int i = 0; i < 2; ++i) if (!dynamic_cast<const TensorVal*>(&vm.arena().deref(a[i]))) throw KiritoError("solve expects two Tensors");
+            for (std::size_t i = 0; i < 2u; ++i) if (!dynamic_cast<const TensorVal*>(&vm.arena().deref(a[i]))) throw KiritoError("solve expects two Tensors");
             return tns::wrap([&]() { return tns::solveT(vm, a[0], a[1]); });
         });
         m.fn("norm", {{"t", "Tensor"}, {"ord", "Number", m.vm().makeInt(2)}}, "Float", [](KiritoVM& vm, std::span<const Handle> a) -> Handle {
@@ -2700,7 +2700,7 @@ public:
         });
         auto la2 = [](const char* nm, Handle (*fn)(KiritoVM&, Handle, Handle)) {
             return [nm, fn](KiritoVM& vm, std::span<const Handle> a) -> Handle {
-                for (int i = 0; i < 2; ++i) if (!dynamic_cast<const TensorVal*>(&vm.arena().deref(a[i]))) throw KiritoError(std::string(nm) + " expects two Tensors");
+                for (std::size_t i = 0; i < 2u; ++i) if (!dynamic_cast<const TensorVal*>(&vm.arena().deref(a[i]))) throw KiritoError(std::string(nm) + " expects two Tensors");
                 return tns::wrap([&]() { return fn(vm, a[0], a[1]); });
             };
         };

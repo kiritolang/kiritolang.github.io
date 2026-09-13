@@ -1,0 +1,3 @@
+# itertools.combinations throws on a negative r (consistent with islice), rather than silently []-ing.
+var itertools = import("itertools")
+discard itertools.combinations([1, 2, 3], -1)

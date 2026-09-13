@@ -25,6 +25,10 @@ assert type(tw.wrap("a b", 3)) == "List", "wrap returns List"
 assert tw.wrap("verylongword short", 4) == ["verylongword", "short"], "wrap over-long word on its own line"
 # default width is 70
 assert len(tw.wrap("a b c d e")) == 1, "wrap default width fits short text on one line"
+# runs of spaces collapse; no stray/trailing whitespace survives (a CPython-consistent behavior)
+assert tw.wrap("a   b", 10) == ["a b"], "wrap collapses a run of spaces"
+assert tw.wrap("  lead", 10) == ["lead"], "wrap drops leading spaces"
+assert tw.wrap("trail  ", 10) == ["trail"], "wrap drops trailing spaces (no trailing whitespace)"
 
 # ============================================================ wrap edge cases
 assert tw.wrap("", 10) == [], "wrap empty string -> []"

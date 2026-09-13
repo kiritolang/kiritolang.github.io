@@ -1,0 +1,3 @@
+# createprocess rejects an empty args List (there must be at least a program name). No child spawn.
+var sys = import("sys")
+discard sys.createprocess([])

@@ -332,6 +332,15 @@ public:
                 io(vm, self).streamWrite(data);
                 return vm.makeInt(static_cast<int64_t>(data.size()));
             });
+        if (name == "writelines")  // mirrors File.writelines so BytesIO is a complete write stream
+            return bind("writelines", {"lines"}, [self, io](KiritoVM& vm, std::span<const Handle> a) -> Handle {
+                Args(vm, a, "writelines").require(1);
+                auto items = vm.arena().deref(a[0]).iterate(vm);
+                if (!items) throw KiritoError("writelines: argument must be iterable");
+                auto& b = io(vm, self);
+                for (Handle h : items.value()) b.streamWrite(ioRawBytes(vm, h, "writelines"));  // String or Bytes
+                return vm.none();
+            });
         if (name == "read")
             return bind("read", {"size"}, [self, io](KiritoVM& vm, std::span<const Handle> a) -> Handle {
                 std::optional<std::size_t> n;

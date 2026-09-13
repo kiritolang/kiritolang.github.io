@@ -1,0 +1,3 @@
+# DateTime.add rejects a non-number of seconds (only loosely covered before).
+var time = import("time")
+discard time.now().add("x")

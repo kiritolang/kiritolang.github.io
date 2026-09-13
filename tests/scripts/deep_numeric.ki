@@ -1,7 +1,7 @@
 # deep_numeric.ki — adversarial audit of Kirito's numeric stack (math/tensor/complex/matrix/random
 # + Integer/Float semantics). Goes deeper than audit_*/spec_* by pinning edge-case behavior the
 # existing suites don't cover: IEEE domain edges, two's-complement wraparound, tensor div-by-zero
-# policy and the negative-axis behavior, complex 0**0 / is_zero thresholds, and RNG determinism.
+# policy and the negative-axis behavior, complex 0**0 / iszero thresholds, and RNG determinism.
 #
 # Each block prints exactly `True` lines; a trailing counter confirms none silently vanished.
 var io = import("io")
@@ -250,7 +250,7 @@ check(grad_raised == 2)
 n = n + 3
 
 # =================================================================================================
-# complex — 0**0, is_zero vs ==zero thresholds, Euler, ordering, matrices, vectors
+# complex — 0**0, iszero vs ==zero thresholds, Euler, ordering, matrices, vectors
 # =================================================================================================
 # COMPLEX 0**0 == 1 (matches real 0**0; std::pow's nan is special-cased to 1)
 check(C.zero ** C.zero == C.one)
@@ -263,10 +263,10 @@ check((C.sqrt(C.of(-4, 0)) - C.of(0, 2)).modulus() < 0.000000001)        # sqrt(
 check(approx(C.pow(C.of(-8, 0), C.of(1.0 / 3, 0)).im, 1.7320508075688772))  # principal cube root is complex
 n = n + 3
 
-# Complex `==` is EXACT now, so 1e-10 != 0 (no tolerance); is_zero() (magnitude < 1e-10) also says no;
+# Complex `==` is EXACT now, so 1e-10 != 0 (no tolerance); iszero() (magnitude < 1e-10) also says no;
 # the tolerant `.compare(abs_tol=...)` is how you ask "approximately zero".
 check((C.of(0.0000000001, 0) == C.zero) == False)        # 1e-10: NOT equal under exact ==
-check(C.of(0.0000000001, 0).is_zero() == False)          # is_zero() also says no
+check(C.of(0.0000000001, 0).iszero() == False)          # iszero() also says no
 check(C.of(0.0000000001, 0).compare(C.zero, abs_tol = 0.001) == True)   # but .compare with tolerance does
 n = n + 3
 

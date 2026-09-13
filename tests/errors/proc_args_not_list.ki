@@ -1,0 +1,3 @@
+# createprocess rejects a non-List args argument. No child spawn; pins the exact diagnostic.
+var sys = import("sys")
+discard sys.createprocess(None)

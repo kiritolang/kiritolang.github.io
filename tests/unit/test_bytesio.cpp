@@ -147,5 +147,15 @@ zlib.decompress(buf.read())
     CHECK_THROWS(vm.runSource("var io = import(\"io\")\nvar b = io.BytesIO()\nb.write(42)"));
     CHECK_THROWS(vm.runSource("var io = import(\"io\")\nio.BytesIO(123)"));
 
+    // writelines: BytesIO is a complete write stream (mirrors File.writelines), concatenating each
+    // element at the cursor; a non-iterable argument throws the documented message.
+    CHECK(evalStr(vm, R"(
+var io = import("io")
+var b = io.BytesIO()
+b.writelines(["a", "b", "c"])
+b.getvalue()
+)") == "abc");
+    CHECK_THROWS(vm.runSource("var io = import(\"io\")\nio.BytesIO().writelines(5)"));
+
     return RUN_TESTS();
 }

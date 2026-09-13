@@ -152,7 +152,7 @@ the real axis, so any function or operator below also accepts plain `Integer`/`F
 - `z.modulus() → Float` — the magnitude `|z|` (also `z.magnitude()` / `z.abs()`).
 - `z.argument() → Float` — the phase angle in radians (also `z.arg()` / `z.phase()`).
 - `z.norm2() → Float` — the squared magnitude `|z|²` (no square root).
-- `z.is_zero() → Bool` — True when `z` is (numerically) zero: magnitude below `1e-10` (a tolerant
+- `z.iszero() → Bool` — True when `z` is (numerically) zero: magnitude below `1e-10` (a tolerant
   check, deliberately unlike the exact `==`).
 
 ### Module functions
@@ -553,6 +553,7 @@ Returned by `io.open`. Iterating a file yields its remaining lines.
 ### BytesIO object
 
 - `b.write(data: String | Bytes) → Integer` — write bytes at the cursor (overwriting/extending); returns the count written.
+- `b.writelines(lines) → None` — write each String/Bytes in an iterable at the cursor (same throwing rules as `write`).
 - `b.read([size]) → String` — read `size` bytes from the cursor, or the rest if omitted (an explicit
   `read(None)` also reads the rest, unlike `File.read` which requires an Integer).
 - `b.readline() → String` — read up to and including the next newline (returned without it).
@@ -576,8 +577,10 @@ Returned by `io.open`. Iterating a file yields its remaining lines.
 - `islice(iterable, start, stop[, step]) → List` — a slice of an iterable. `start`/`stop` must be non-negative and `step` a positive integer (a negative index or a non-positive `step` raises), matching Python's `islice`.
 - `accumulate(iterable[, func]) → List` — running totals (or running `func` reductions).
 - `product(lists) → List` — Cartesian product of a list-of-iterables (`product([[1,2],[3,4]])`).
-- `permutations(items[, r]) → List` — r-length orderings.
-- `combinations(items, r) → List` — r-length combinations.
+- `permutations(items[, r]) → List` — r-length orderings. `r` larger than the input yields `[]`; a
+  negative `r` throws (like `islice`).
+- `combinations(items, r) → List` — r-length combinations. `r` larger than the input yields `[]`; a
+  negative `r` throws.
 - `takewhile(pred, iterable) → List` — the leading run of elements while `pred` holds.
 - `dropwhile(pred, iterable) → List` — the rest, after that leading run.
 - `filterfalse(pred, iterable) → List` — elements where `pred` is falsy.
@@ -1128,6 +1131,15 @@ Object-based RNG — no global state; create a generator and call methods on it.
   arguments default (`mu = 0.0`, `sigma = 1.0`) and take keywords, so `r.gauss(sigma = 2.0)` works; a
   negative `sigma` throws.
 - `r.expovariate(lambd) → Float` — exponential distribution.
+
+> **Seeded reproducibility is per-platform, not cross-platform.** For a fixed seed and generator the
+> underlying engine (`xoshiro256++` / `mt19937_64`) produces a bit-for-bit identical raw integer
+> stream on every platform. The distribution-shaped draws above (`random`, `uniform`, `randint`,
+> `randrange`, `choice`/`choices`, `sample`, `shuffle`, `gauss`/`normalvariate`, `expovariate`) are
+> generated through the C++ `<random>` distribution objects, whose sampling algorithms are
+> **implementation-defined** — so the exact values they yield can differ between standard-library
+> implementations (libstdc++, libc++, MSVC) even with the same seed. Reproducibility is guaranteed
+> within one build/platform; do not rely on a seeded distribution stream matching across toolchains.
 
 ### Secure random (OS CSPRNG)
 
@@ -1875,7 +1887,8 @@ io.print(w[0, 0], b[0, 0])      # ~ 2.0  ~ 1.0
 
 ## textwrap
 
-- `wrap(text[, width]) → List` — wrap into a list of lines.
+- `wrap(text[, width]) → List` — wrap into a list of lines. Runs of spaces are collapsed (words are
+  split on whitespace), so lines carry no stray or trailing spaces.
 - `fill(text[, width]) → String` — wrap into a single newline-joined String.
 - `indent(text, prefix) → String` — prefix each line.
 - `dedent(text) → String` — remove the common leading whitespace shared by all non-blank lines

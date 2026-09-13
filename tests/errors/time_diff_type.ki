@@ -1,0 +1,3 @@
+# DateTime.diff rejects a non-DateTime operand (only loosely covered before).
+var time = import("time")
+discard time.now().diff(5)
