@@ -144,6 +144,25 @@ public:
     void pushAuxRoots(const std::vector<Handle>* v) { auxRoots_.push_back(v); }
     void popAuxRoots() { auxRoots_.pop_back(); }
 
+    // Operand-stack buffer pool. Every Kirito call constructs a BytecodeVM whose operand stack is a
+    // std::vector<Handle>; allocating a fresh buffer (reserve(16)) per call is a glibc malloc/free on
+    // the hot path (audit S3). Instead a frame BORROWS a cleared, capacity-retaining buffer from this
+    // per-VM free-list and returns it on destruction, so a warm buffer's storage is reused across
+    // calls (recursion / map callbacks) with no allocation after warm-up. An idle pooled buffer is
+    // empty and is NOT an aux root (only a live frame registers its &stack_ via pushAuxRoots), so it
+    // holds no reachable handles and never affects GC. Pool size is bounded by peak call depth.
+    std::vector<Handle> acquireStack() {
+        if (stackPool_.empty()) { std::vector<Handle> s; s.reserve(16); return s; }
+        std::vector<Handle> s = std::move(stackPool_.back());
+        stackPool_.pop_back();
+        s.clear();   // capacity retained; contents dropped (no stale handles)
+        return s;
+    }
+    void releaseStack(std::vector<Handle>&& s) {
+        s.clear();
+        stackPool_.push_back(std::move(s));
+    }
+
     // --- bytecode engine (the sole execution engine, behind the AST boundary) ---
     // A compiled Proto's literal constants are pinned here so they live for the VM's lifetime (the
     // Proto is cached as long as its AST is retained), giving O(1) LoadConst with no re-allocation.
@@ -517,6 +536,7 @@ private:
     static constexpr int64_t kSmallIntHi = 256;
     // --- bytecode engine state ---
     std::vector<const std::vector<Handle>*> auxRoots_;   // live operand stacks (GC roots)
+    std::vector<std::vector<Handle>> stackPool_;         // reusable operand-stack buffers (acquireStack)
     std::vector<Handle> bytecodeConsts_;                 // pinned literal pool of every compiled Proto
     fum::unordered_map<const void*, std::unique_ptr<Proto>> protoCache_;  // per-body compiled cache
     // RAII: accumulate one collection's wall time into a counter. Two steady-clock reads per GC — GCs

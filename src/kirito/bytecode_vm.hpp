@@ -64,14 +64,16 @@ class BytecodeVM {
 public:
     BytecodeVM(KiritoVM& vm, Handle scope, Handle ownerClass, bool hasOwner,
                std::string frameLabel = "<module>")
-        : vm_(vm), hasOwner_(hasOwner), frameLabel_(std::move(frameLabel)) {
-        stack_.reserve(16);
+        : vm_(vm), stack_(vm.acquireStack()), hasOwner_(hasOwner), frameLabel_(std::move(frameLabel)) {
+        // stack_ is a cleared, capacity-retaining buffer borrowed from the VM's pool (no per-call malloc
+        // after warm-up); returned on destruction. &stack_ (this member's address) is stable for the
+        // frame's lifetime, so registering it as an aux GC root is unaffected by the buffer reuse.
         stack_.push_back(scope);                              // kScope
         stack_.push_back(vm.none());                          // kResult
         stack_.push_back(hasOwner ? ownerClass : vm.none());  // kOwner
         vm_.pushAuxRoots(&stack_);
     }
-    ~BytecodeVM() { vm_.popAuxRoots(); }
+    ~BytecodeVM() { vm_.popAuxRoots(); vm_.releaseStack(std::move(stack_)); }
     BytecodeVM(const BytecodeVM&) = delete;
     BytecodeVM& operator=(const BytecodeVM&) = delete;
 
