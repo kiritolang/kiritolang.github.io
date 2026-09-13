@@ -75,10 +75,11 @@ static std::string url(int port, const std::string& path = "/") {
     return "http://127.0.0.1:" + std::to_string(port) + path;
 }
 
-// Build a gzip stream (header + raw deflate + 8-byte trailer; the trailer's CRC/ISIZE are unchecked).
+// Build a VALID gzip stream (correct header + deflate + CRC-32/ISIZE trailer) via the SSOT gzip
+// encoder. The client's Content-Encoding decode now VERIFIES the trailer, so the fixture must be a
+// genuine gzip stream, not one with a zeroed (unchecked) trailer as before.
 static std::string gzipWrap(const std::string& s) {
-    return std::string("\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03", 10) + deflate::compress(s) +
-           std::string(8, '\0');
+    return gzipfmt::compress(s);
 }
 
 // Chunk `s` into pieces of `chunkSize` (0 = one chunk) for Transfer-Encoding: chunked.

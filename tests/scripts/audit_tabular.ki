@@ -509,4 +509,23 @@ while trial < 100:
     assert len(tb.merge(lf, rf, on="id", how="outer")) >= len(inn), "outer merge >= inner"
     trial = trial + 1
 
+# --- astype: the four documented dtype names convert; an unknown name throws (no silent String) ---
+assert tb.Series([1, 2, 3]).astype("Integer").tolist() == [1, 2, 3], "astype Integer"
+assert tb.Series([1.9, 2.1]).astype("Integer").tolist() == [1, 2], "astype Integer truncates"
+assert tb.Series([0, 1, 2]).astype("Bool").tolist() == [False, True, True], "astype Bool"
+assert tb.Series([1, 2]).astype("String").tolist() == ["1", "2"], "astype String"
+assert throws(Function(): return tb.Series([1]).astype("int")), "astype rejects an unknown dtype"
+
+# --- DataFrame index length is validated; describe() of a non-numeric frame is a consistent empty ---
+assert throws(Function(): return tb.DataFrame({"a": [1, 2, 3]}, None, [10, 20])), "DataFrame bad index len throws"
+var _descNone = tb.DataFrame({"name": ["a", "b"], "city": ["x", "y"]}).describe()
+assert _descNone.shape() == [0, 0] and len(_descNone) == 0, "describe of no-numeric-columns is a consistent empty frame"
+var _descNum = tb.DataFrame({"n": [1, 2, 3, 4]}).describe()
+assert _descNum.shape() == [6, 1], "describe of a numeric frame has 6 stat rows"
+
+# --- agg reports a diagnostic (not a bare Dict 'key not found') for a bad reduction or column ---
+var _gb = tb.DataFrame({"k": ["a", "a"], "v": [1, 2]}).groupby("k")
+assert throws(Function(): return _gb.agg({"v": "nonsense"})), "agg rejects an unknown reduction"
+assert throws(Function(): return _gb.agg({"nosuch": "sum"})), "agg rejects an unknown column"
+
 io.print("OK audit-tabular")

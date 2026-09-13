@@ -1,0 +1,20 @@
+# Tensor.round() rounds half AWAY from zero, matching the scalar builtin round() (not NumPy's
+# round-half-to-even). The two must agree at every exact half so a user is never surprised.
+var io = import("io")
+var t = import("tensor")
+
+var halves = [0.5, 1.5, 2.5, 3.5, -0.5, -1.5, -2.5, -3.5]
+var scalar = []
+for x in halves:
+    scalar.append(round(x))
+# tensor .round() keeps Float dtype; compare against the scalar ints promoted to Float
+var expect = []
+for v in scalar:
+    expect.append(Float(v))
+assert t.Tensor(halves).round().tolist() == expect, "tensor round matches scalar round (half away from zero)"
+assert t.Tensor([2.5]).round().tolist() == [3.0], "round(2.5) == 3 (away from zero, not 2)"
+assert t.Tensor([-0.5]).round().tolist() == [-1.0], "round(-0.5) == -1"
+# non-half values are unaffected
+assert t.Tensor([1.4, 1.6, -1.4, -1.6]).round().tolist() == [1.0, 2.0, -1.0, -2.0], "round of non-halves"
+
+io.print("verify_tensor_round: ok")

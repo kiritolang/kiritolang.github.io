@@ -1,0 +1,4 @@
+# Series.astype rejects an unknown dtype name instead of silently coercing the column to String
+# (a lowercase "int" is the natural-but-wrong call given Kirito's lowercase surface).
+var t = import("tabular")
+discard t.Series([1, 2, 3]).astype("int")

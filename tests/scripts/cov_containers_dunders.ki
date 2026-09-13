@@ -246,13 +246,11 @@ assert 1 in ct, "integer 1 present"
 assert 1.0 in ct, "float 1.0 finds the same element"
 assert True in ct, "True is a separate element"
 
-# --- NaN as a set element (write-only: never equal, never found) ------------
+# --- NaN as a set element: REJECTED (never equal to itself, so it could never be found/removed) ---
 var ns = Set()
-ns.add(math.nan)
-assert len(ns) == 1, "NaN can be added once"
-assert not (math.nan in ns), "NaN is never found (nan != nan)"
-ns.add(math.nan)
-assert len(ns) == 2, "each NaN insert is a distinct element (never equal)"
+assert "NaN cannot be used as a Dict or Set key" in emsg(Function(): return ns.add(math.nan)), "NaN Set element rejected"
+assert len(ns) == 0, "the rejected NaN was not added"
+assert not (math.nan in {1, 2}), "a NaN lookup is simply absent (hashable, so `in` does not throw)"
 
 # --- Set HARDENING ----------------------------------------------------------
 assert "remove: value not in Set" in emsg(Function(): return {1}.remove(9)), "set remove missing message"

@@ -8,7 +8,7 @@
 #   * Series length-mismatch arithmetic throws in BOTH operand orders
 #   * cartesian merge when the join key is duplicated on BOTH sides
 #   * df.apply / frame reductions SKIP non-numeric columns; all-string frame -> empty Series
-#   * astype conversion failures throw; astype default branch (unknown name -> String)
+#   * astype conversion failures throw; astype rejects an unknown dtype name (no silent String)
 #   * empty-frame __setitem__ (scalar broadcast over 0 rows vs a list that sets the row count)
 #   * describe exact stat values + multi-column ordering
 #   * agg median (odd/even) + agg on the BY column itself; group std single-element -> None
@@ -204,10 +204,10 @@ ok(dsc["a"][3] == 1 and dsc["a"][5] == 3, "describe min/max")
 ok(dsc["a"][4] == 2, "describe median")
 ok(dsc["b"][1].compare(20.0), "describe second column mean preserved & ordered")
 
-# ============================================================ astype: failures + default branch
+# ============================================================ astype: failures + unknown-dtype throw
 ok(throws(Function(): return tabular.Series(["1.5"]).astype("Integer")), "astype Integer on a non-int string throws")
 ok(throws(Function(): return tabular.Series(["abc"]).astype("Float")), "astype Float on a non-numeric string throws")
-ok(tabular.Series([1, 2]).astype("Mystery").tolist() == ["1", "2"], "astype unknown typename falls through to String")
+ok(throws(Function(): return tabular.Series([1, 2]).astype("Mystery")), "astype unknown typename throws (no silent String)")
 ok(tabular.Series([1, 0, 5]).astype("Bool").tolist() == [True, False, True], "astype Bool truthiness")
 
 # ============================================================ empty-frame __setitem__

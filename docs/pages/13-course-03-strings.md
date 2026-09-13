@@ -32,8 +32,9 @@ io.print(r"C:\path\to\file")          # raw: \p \t \f stay as backslash + letter
 ```
 
 Inside a normal (non-raw) string, **escapes** stand for special characters: `\n` newline, `\t` tab,
-`\\` a backslash, `\"`/`\'` a quote, and `\xHH` a byte from two hex digits. A raw string interprets
-none of these. (These prefixes and quote styles also apply to f-strings: `f'...'`, `f"""..."""`, and
+`\\` a backslash, `\"`/`\'` a quote, and `\xHH` the code point U+00HH from two hex digits (so `"\xff"`
+is one code point, which UTF-8-encodes to two bytes — use `Bytes` for raw binary). A raw string
+interprets none of these. (These prefixes and quote styles also apply to f-strings: `f'...'`, `f"""..."""`, and
 raw `rf"..."` all work.)
 
 ## f-strings: the readable way to build text

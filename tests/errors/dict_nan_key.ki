@@ -1,0 +1,5 @@
+# A NaN Dict key is rejected: never == itself, so it could never be found/removed/updated
+# (a re-assignment would fabricate a duplicate key), breaking the key-uniqueness invariant.
+var math = import("math")
+var d = {}
+d[math.nan] = 1

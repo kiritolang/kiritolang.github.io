@@ -1,0 +1,4 @@
+# GroupBy.agg reports a diagnostic naming the operation and the valid set, not a bare Dict
+# "key not found" leaking from the reducer lookup.
+var t = import("tabular")
+discard t.DataFrame({"k": ["a", "a"], "v": [1, 2]}).groupby("k").agg({"v": "nonsense"})

@@ -27,6 +27,7 @@
 #include "deflate.hpp"
 #include "native.hpp"
 #include "net_compat.hpp"
+#include "stdlib_gzip.hpp"   // gzipfmt::decompress — the SSOT gzip decoder (validates CRC-32 + ISIZE)
 #include "stdlib_json.hpp"
 
 // On Windows OpenSSL has no default CA store, so we read the system trust ("ROOT") store via the
@@ -506,39 +507,22 @@ inline std::string dechunk(const std::string& body) {
     return out;
 }
 
-// Strip the gzip wrapper and inflate the DEFLATE payload.
-inline std::string gunzip(const std::string& s) {
-    if (s.size() < 18 || static_cast<unsigned char>(s[0]) != 0x1f ||
-        static_cast<unsigned char>(s[1]) != 0x8b)
-        throw KiritoError("invalid gzip data");
-    unsigned char flg = static_cast<unsigned char>(s[3]);
-    std::size_t i = 10;
-    if (flg & 4) {  // FEXTRA
-        std::size_t xlen = static_cast<unsigned char>(s[i]) |
-                           (static_cast<unsigned char>(s[i + 1]) << 8);
-        i += 2 + xlen;
-    }
-    if (flg & 8) { while (i < s.size() && s[i] != 0) ++i; ++i; }   // FNAME
-    if (flg & 16) { while (i < s.size() && s[i] != 0) ++i; ++i; }  // FCOMMENT
-    if (flg & 2) i += 2;                                           // FHCRC
-    if (i + 8 > s.size()) throw KiritoError("truncated gzip data");
-    return deflate::inflate(s.substr(i, s.size() - i - 8));
-}
-
 inline std::string decodeBody(const std::string& body, const std::string& enc) {
-    if (enc == "gzip" || enc == "x-gzip") return gunzip(body);
+    // Route through the SSOT validating decoders so a corrupt HTTP body is rejected exactly as
+    // gzip.decompress / zlib.decompress reject it — over plain HTTP this app-layer checksum is the
+    // only integrity guard, so silently trusting a CRC/Adler mismatch is a real data-corruption path.
+    if (enc == "gzip" || enc == "x-gzip") return gzipfmt::decompress(body);   // verifies CRC-32 + ISIZE
     if (enc == "deflate") {
         // Content-Encoding "deflate" is officially zlib-wrapped (RFC 1950) but many servers send RAW
-        // DEFLATE (RFC 1951). Distinguish by the zlib header rather than inflating-and-retrying on ANY
-        // exception — the old catch(...) also swallowed a genuine DeflateError (corrupt/oversized
-        // stream) and blindly re-inflated a truncated body. A zlib stream starts with CMF/FLG where
-        // CMF's low nibble is 8 (deflate) and (CMF<<8 | FLG) % 31 == 0; strip the 2-byte header (the
-        // 4-byte Adler trailer is ignored by the raw inflate) and inflate the rest.
+        // DEFLATE (RFC 1951). Distinguish by the zlib header: a zlib stream starts with CMF/FLG where
+        // CMF's low nibble is 8 (deflate) and (CMF<<8 | FLG) % 31 == 0. When zlib-wrapped, validate the
+        // Adler-32 trailer via zlibDecompress; the headerless-raw case is a genuine external-interop
+        // fallback (RFC 1951 carries no checksum), not a self-inflicted swallow of our own errors.
         if (body.size() >= 2) {
             unsigned cmf = static_cast<unsigned char>(body[0]);
             unsigned flg = static_cast<unsigned char>(body[1]);
             if ((cmf & 0x0F) == 8 && ((cmf << 8 | flg) % 31) == 0)
-                return deflate::inflate(body.substr(2));
+                return deflate::zlibDecompress(body);   // verifies Adler-32
         }
         return deflate::inflate(body);
     }

@@ -51,10 +51,14 @@ d2[b] = 1
 d2[a] = 2
 assert len(d2) == 1, "dict: b then a is one key"
 
-# Regression guard: NaN keys stay "write-only" — insertable but never findable (NaN != NaN, and there
-# is deliberately no identity short-circuit). The symmetric retry must NOT make a NaN equal to itself.
+# Regression guard: a NaN key is REJECTED at insert (NaN != NaN, and there is deliberately no identity
+# short-circuit), so the symmetric equality retry never makes a NaN equal to itself.
 var st = Set()
-st.add(math.nan)
-assert math.nan not in st, "NaN key is not findable"
+var nanRejected = False
+try:
+    st.add(math.nan)
+catch as e:
+    nanRejected = "NaN cannot be used as a Dict or Set key" in e
+assert nanRejected and len(st) == 0, "a NaN Set element is rejected"
 
 io.print("spec_key_eq_symmetry: ok")

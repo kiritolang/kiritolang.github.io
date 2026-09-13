@@ -1,0 +1,3 @@
+# Set membership of an unhashable value THROWS (as Dict `in` does), not a silent False (SSOT).
+var s = {1, 2}
+discard [3] in s

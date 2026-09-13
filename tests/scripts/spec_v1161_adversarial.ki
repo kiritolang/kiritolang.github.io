@@ -57,9 +57,13 @@ var mixed = {}
 mixed[1] = "int"
 assert 1.0 in mixed and mixed[1.0] == "int", "Float key finds a value-equal Integer key"
 var nd = {}
-nd[math.nan] = "x"
+var nanRejected = False
+try:
+    nd[math.nan] = "x"
+catch as e:
+    nanRejected = "NaN cannot be used as a Dict or Set key" in e
 nd["live"] = "y"
-assert len(nd) == 2 and not (math.nan in nd) and nd["live"] == "y", "NaN key is write-only; live keys resolve"
+assert nanRejected and len(nd) == 1 and nd["live"] == "y", "NaN key rejected; live keys resolve"
 var s = Set()
 for x in [3, 1, 3, 2, 1]:
     s.add(x)

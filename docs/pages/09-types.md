@@ -103,7 +103,9 @@ io.print(0.3 == 0.3)              # True       (bit-identical)
 
 `NaN` is never equal to anything, including itself (`nan == nan` is `False`); `inf == inf` and
 `0.0 == -0.0` are `True`. Two Floats are the same `Dict`/`Set` key iff they are `==`, and a Float
-equal to an integer value hashes like that integer (`1.0` and `1` share one key).
+equal to an integer value hashes like that integer (`1.0` and `1` share one key). A `NaN` **cannot**
+be used as a `Dict`/`Set` key (it throws): being unequal to itself, it could never be looked up,
+removed, or updated, so a stored `NaN` key would silently break the container's key-uniqueness rule.
 
 For *approximate* comparison, call `.compare(other, rel_tol = 1e-9, abs_tol = 0.0) → Bool` on either
 number — `True` when `|x - other|` is within the relative tolerance (scaled to the larger magnitude)

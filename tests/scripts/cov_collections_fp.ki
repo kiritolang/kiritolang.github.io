@@ -94,7 +94,7 @@ assert it.permutations([1, 2], 0) == [[]], "permutations r=0 is one empty"
 assert it.permutations([], 0) == [[]], "permutations empty r=0"
 assert it.permutations([1, 2]) == [[1, 2], [2, 1]], "permutations pair"
 assert it.permutations([1, 2], 5) == [], "permutations r>n is empty"
-assert it.permutations([1, 2], -1) == [], "permutations negative r is empty"
+assert "must be non-negative" in emsg(Function(): return it.permutations([1, 2], -1)), "permutations negative r throws"
 # hardening: oversized guard
 assert "too large" in emsg(Function(): return it.permutations(range(20))), "permutations guard"
 
@@ -103,7 +103,7 @@ assert it.combinations([1, 2, 3, 4], 2) == [[1, 2], [1, 3], [1, 4], [2, 3], [2, 
 assert it.combinations([1, 2, 3], 0) == [[]], "combinations r=0 is one empty"
 assert it.combinations([1, 2, 3], 3) == [[1, 2, 3]], "combinations r=n"
 assert it.combinations([1, 2], 5) == [], "combinations r>n is empty"
-assert it.combinations([1, 2], -1) == [], "combinations negative r is empty"
+assert "must be non-negative" in emsg(Function(): return it.combinations([1, 2], -1)), "combinations negative r throws"
 assert "too large" in emsg(Function(): return it.combinations(range(50), 25)), "combinations guard"
 
 # --- takewhile / dropwhile ---------------------------------------------------

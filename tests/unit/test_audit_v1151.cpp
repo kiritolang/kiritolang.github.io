@@ -37,9 +37,11 @@ var d2 = {}
 d2[i.BigInt(2000)] = "bigint-first"
 d2[2000] = "native-second"
 assert len(d2) == 1
-# pinning: write-only NaN keys are UNTOUCHED (the retry is gated on a kind mismatch)
-assert len({m.nan, m.nan}) == 2
 )"));
+        // A NaN Set/Dict key is now REJECTED at insert (never == itself -> unretrievable); the
+        // symmetric-equality retry is gated on kind so it never makes a NaN equal to itself.
+        CHECK_THROWS(vm.runSource("var m = import(\"math\")\ndiscard {m.nan, m.nan}"));
+        CHECK_THROWS(vm.runSource("var m = import(\"math\")\nvar d = {}\nd[m.nan] = 1"));
     }
 
     // ===== A16-1: hash.pbkdf2 must REJECT an iterations >= 2^32 rather than silently truncating it
@@ -88,14 +90,13 @@ assert dump.loads(dump.dumps(i.BigInt(123456789))) == i.BigInt(123456789)
 )"));
     }
 
-    // ===== A06-1: Dict.popitem() drains a Dict that holds a NaN key (a write-only key that can't be
-    // looked back up by equality) — popArbitrary takes the pair straight from its bucket. =====
+    // ===== A06-1: Dict.popitem() drains a Dict to empty — popArbitrary takes each pair straight from
+    // its bucket by position (no key lookup), so the drain loop always terminates. =====
     {
         KiritoVM vm;
         CHECK(ok(vm, R"(
-var math = import("math")
 var d = {}
-d[math.nan] = "n"
+d["a"] = "n"
 d[1] = "one"
 d[2] = "two"
 var cnt = 0

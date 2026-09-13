@@ -1053,14 +1053,12 @@ inline Handle SetVal::getAttr(KiritoVM& vm, Handle self, std::string_view name) 
             c->entries = s.entries; c->index = s.index; c->count = s.count; c->tombstones = s.tombstones;
             return vm.alloc(std::move(c));   // fresh (young) copy -> no cards to carry
         });
-    if (name == "discard")  // remove if present, no error otherwise (cf. remove)
+    if (name == "discard")  // remove if present, no error if absent (cf. remove); an unhashable value
         return bind("discard", {"value"}, [self, set_of](KiritoVM& vm, std::span<const Handle> a) -> Handle {
             if (a.empty()) throw KiritoError("discard expects a value");
             auto& s = set_of(vm, self);
-            const Object& v = vm.arena().deref(a[0]);
-            if (!v.hashable()) return vm.none();   // discard is silent on a missing/unhashable value
-            s.remove(vm.arena(), a[0]);            // ignore the result (no error if absent)
-            return vm.none();
+            s.remove(vm.arena(), a[0]);   // still throws on an unhashable value (as Dict/Set do); the
+            return vm.none();             // return value (present-or-not) is ignored — silent only on absence
         });
     if (name == "clear")
         return bind("clear", {}, [self, set_of](KiritoVM& vm, std::span<const Handle>) -> Handle {

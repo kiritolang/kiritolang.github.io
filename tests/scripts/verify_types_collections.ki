@@ -281,8 +281,8 @@ var setUnhashableKey = Function():
     m[[1]] = 5
 assert raises_msg(setUnhashableKey, "unhashable type 'List'"), "dict set unhashable key raises"
 assert raises_msg(Function(): return {}[[1]], "unhashable type 'List'"), "dict get unhashable key raises"
-# DISCREPANCY (pinned): Set membership `in` with an unhashable element returns False silently
-# (SetVal::contains short-circuits on !hashable) rather than throwing like Dict `in` does.
-assert ([1] in {1, 2}) == False, "set 'in' unhashable element -> silent False (see disc)"
+# Set membership `in` with an unhashable element THROWS, exactly as Dict `in` does (the read paths
+# route through requireHashable now, not a silent False) — the old discrepancy is resolved.
+assert raises_msg(Function(): return [1] in {1, 2}, "unhashable type 'List'"), "set 'in' unhashable element raises"
 
 io.print("OK types_collections")

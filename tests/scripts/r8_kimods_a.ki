@@ -86,7 +86,7 @@ ok(it.ziplongest([]) == [], "ziplongest of no lists is empty")
 ok(it.permutations([]) == [[]], "permutations of [] is one empty arrangement")
 ok(it.combinations([], 0) == [[]], "combinations of [] choose 0 is one empty set")
 ok(it.combinations([1, 2], 3) == [], "combinations r>n is empty")
-ok(it.permutations([1, 2], -1) == [], "permutations negative r is empty")
+ok(throws(Function(): return it.permutations([1, 2], -1)), "permutations negative r throws")
 
 # itertools combinatorics COUNTS against a factorial/binomial oracle (fixed-seed sweep, fresh).
 var nck = Function(nn, kk):

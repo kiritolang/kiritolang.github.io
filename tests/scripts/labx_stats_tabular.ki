@@ -95,12 +95,12 @@ assert raises_msg(Function(): return a + short, "length mismatch (3 vs 2)"), "Se
 assert raises_msg(Function(): return short + a, "length mismatch (2 vs 3)"), "Series len mismatch short+a"
 assert raises(Function(): return (a > short)), "Series comparison len mismatch raises too"
 
-# astype: documented conversions work; an UNKNOWN typename SILENTLY falls back to String.
+# astype: documented conversions work; an UNKNOWN typename THROWS (no silent String fallback).
 assert tb.Series([1, 2]).astype("String").tolist() == ["1", "2"], "astype String"
 assert tb.Series(["3", "4"]).astype("Integer").tolist() == [3, 4], "astype Integer"
 assert tb.Series([1.9, 2.1]).astype("Integer").tolist() == [1, 2], "astype Integer truncates Float"
 assert tb.Series([0, 5]).astype("Bool").tolist() == [False, True], "astype Bool"
-assert tb.Series([1, 2]).astype("Nonsense").tolist() == ["1", "2"], "PIN: astype unknown typename -> String silently"
+assert raises_msg(Function(): return tb.Series([1, 2]).astype("Nonsense"), "unknown dtype 'Nonsense'"), "astype unknown typename throws (no silent String)"
 
 # aggregations on all-missing / empty return None (Series) -- NOT a throw (contrast statistics.mean).
 var allna = tb.Series([None, None])

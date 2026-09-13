@@ -89,7 +89,7 @@ assert it.permutations([1, 2, 3], 2) == [[1, 2], [1, 3], [2, 1], [2, 3], [3, 1],
 assert it.permutations([1, 2], 5) == [], "permutations r>n -> []"
 assert it.permutations([1, 2, 3], 0) == [[]], "permutations r=0 -> [[]]"
 assert it.permutations([]) == [[]], "permutations of empty -> [[]]"
-assert it.permutations([1, 2], -1) == [], "permutations negative r -> []"
+assert raises_msg(Function(): return it.permutations([1, 2], -1), "must be non-negative"), "permutations negative r throws"
 # HARDENING: count guard throws up front (15! projection far exceeds 10M) without building rows.
 assert raises_msg(Function(): return it.permutations(range(15)), "result too large"), "permutations guard"
 
@@ -98,7 +98,7 @@ assert it.combinations([1, 2, 3], 2) == [[1, 2], [1, 3], [2, 3]], "combinations"
 assert it.combinations([1, 2, 3], 0) == [[]], "combinations r=0 -> [[]]"
 assert it.combinations([1, 2], 5) == [], "combinations r>n -> []"
 assert it.combinations([1, 2, 3], 3) == [[1, 2, 3]], "combinations r==n"
-assert it.combinations([1, 2], -1) == [], "combinations negative r -> []"
+assert raises_msg(Function(): return it.combinations([1, 2], -1), "must be non-negative"), "combinations negative r throws"
 # HARDENING: C(40,20) ~ 1.4e11 >> 10M cap -> throws from the multiplicative count, fast.
 assert raises_msg(Function(): return it.combinations(range(40), 20), "result too large"), "combinations guard"
 

@@ -302,7 +302,8 @@ var cache = Function(func):
         return store[x]
 )KI";
 
-// --- collections: deque, Counter, defaultdict, OrderedDict (as classes) ------------------------
+// --- collections: deque, Counter, defaultdict (as classes) -------------------------------------
+// (No OrderedDict: Kirito's built-in Dict already preserves insertion order, so it is unneeded.)
 inline constexpr std::string_view collections = R"KI(
 class deque:
     # Amortized-O(1) both-end deque via two stacks: `_front` holds the left portion in REVERSED order
@@ -1630,9 +1631,12 @@ class Series:
 
     var isin = Function(self, values):
         # O(n+m): hash `values` once into a Dict instead of a linear `v in <List>` per element (O(n*m)).
+        # A Float NaN in the query set is skipped: it can't be a Dict key and never matches anything
+        # anyway (NaN != NaN), so membership of any value against it is correctly False.
         var vset = {}
         for x in values:
-            vset[x] = True
+            if not (isinstance(x, "Float") and x != x):
+                vset[x] = True
         var out = []
         for v in self.values:
             out.append(v in vset)
@@ -1704,10 +1708,18 @@ class Series:
 
     var unique = Function(self):
         # O(n): a Dict (insertion-ordered) tracks seen values, vs the old O(n^2) `v not in <growing List>`.
+        # A Float NaN can't be a Dict key (never == itself), so it is tracked with a separate flag and
+        # collapses to ONE distinct value (matching pandas). None is an ordinary hashable key and dedups
+        # through the Dict as usual — so None and NaN stay distinct from each other.
         var seen = {}
+        var sawnan = False
         var out = []
         for v in self.values:
-            if v not in seen:
+            if isinstance(v, "Float") and v != v:
+                if not sawnan:
+                    sawnan = True
+                    out.append(v)
+            elif v not in seen:
                 seen[v] = True
                 out.append(v)
         return out
@@ -1742,13 +1754,19 @@ class Series:
         return self.apply(fn)
 
     var astype = Function(self, typename):
-        var conv = String
+        # Validate against the documented dtype names up front: an unknown name (e.g. "int") must fail
+        # loudly rather than silently defaulting to String and corrupting a numeric column.
+        var conv = None
         if typename == "Integer":
             conv = Integer
         elif typename == "Float":
             conv = Float
         elif typename == "Bool":
             conv = Bool
+        elif typename == "String":
+            conv = String
+        else:
+            throw "astype: unknown dtype '" + String(typename) + "' (expected 'Integer', 'Float', 'Bool', or 'String')"
         return self.apply(conv)
 
     var fillna = Function(self, value):
@@ -1846,18 +1864,29 @@ var _checkdupcols = Function(cols):
             throw "DataFrame: duplicate column name " + String(c)
         seen[c] = True
 
+var _indexfor = Function(n, index):
+    # SSOT for a DataFrame's row index: default to positional 0..n-1, else validate the supplied
+    # index length against the row count. A mismatched index would otherwise build a corrupt frame
+    # that fails later with a misleading "index out of range" (mirrors the Series index check).
+    if index == None:
+        return _range(n)
+    var idx = List(index)
+    if len(idx) != n:
+        throw "DataFrame: index length " + String(len(idx)) + " does not match row count " + String(n)
+    return idx
+
 class DataFrame:
     var _init_ = Function(self, data = None, columns = None, index = None):
         self.columns = []
         self.data = {}
         if data == None:
-            self.index = [] if index == None else List(index)
+            self.index = _indexfor(0, index)
         elif isinstance(data, "Dict"):
             self._fromcolumns(data, columns)
-            self.index = _range(self.nrows()) if index == None else List(index)
+            self.index = _indexfor(self.nrows(), index)
         elif isinstance(data, "List"):
             self._fromrows(data, columns)
-            self.index = _range(self.nrows()) if index == None else List(index)
+            self.index = _indexfor(self.nrows(), index)
         else:
             throw "DataFrame: data must be a Dict of columns or a List of rows"
         self.iloc = _Iloc(self)
@@ -2113,6 +2142,10 @@ class DataFrame:
                 var s = Series(self.data[c])
                 numcols.append(c)
                 newdata[c] = [s.count(), s.mean(), s.std(), s.min(), s.median(), s.max()]
+        # No numeric columns -> a consistent empty frame, not a 0-row frame carrying 6 phantom
+        # stat labels in its index (which is a broken invariant, now rejected by _indexfor).
+        if len(numcols) == 0:
+            return DataFrame()
         return DataFrame(newdata, numcols, stats)
 
     var sortvalues = Function(self, by, ascending = True):
@@ -2307,7 +2340,13 @@ class GroupBy:
                         "median": Function(s): return s.median()}
         var cols = []
         var newdata = {}
+        # Validate the spec up front with diagnostics that name the operation and the valid set, rather
+        # than surfacing a bare Dict "key not found" from the reducer/column lookup deep in the loop.
         for c in spec.keys():
+            if not (c in self.frame.data):
+                throw "agg: unknown column '" + String(c) + "'"
+            if not (spec[c] in reducers):
+                throw "agg: unknown reduction '" + String(spec[c]) + "' for column '" + String(c) + "' (expected sum/mean/min/max/std/count/median)"
             cols.append(c)
             newdata[c] = []
         for k in self.keys:

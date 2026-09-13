@@ -1,0 +1,3 @@
+# Set.discard of an unhashable value THROWS (as Set.remove / Dict do), not a silent no-op.
+var s = {1, 2}
+s.discard([3])

@@ -1,0 +1,4 @@
+# DataFrame rejects an index whose length does not match the row count (mirrors the Series check),
+# rather than building a corrupt frame that fails later with a misleading "index out of range".
+var t = import("tabular")
+discard t.DataFrame({"a": [1, 2, 3]}, None, [10, 20])

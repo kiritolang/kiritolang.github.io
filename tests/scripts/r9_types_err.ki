@@ -224,16 +224,12 @@ ok(throws(Function(): return {1}.intersection(5)), "set.intersection: non-iterab
 ok(throws(Function(): return {1}.difference(5)), "set.difference: non-iterable throws")
 ok(throws(Function(): return {1}.issubset(5)), "set.issubset: non-iterable throws")
 
-# =========================================================== Set: unhashable silent no-ops
+# =========================================================== Set: unhashable probe throws (SSOT)
 var sx = {1, 2, 3}
-var discardOk = True
-try:
-    sx.discard([99])
-catch:
-    discardOk = False
-ok(discardOk and sx == {1,2,3}, "set.discard unhashable is silent no-op")
-ok(sx.contains([99]) == False, "set.contains unhashable returns False (no throw)")
-ok(([99] in sx) == False, "in with unhashable value returns False (no throw)")
+ok(throws(Function(): return sx.discard([99])), "set.discard unhashable throws (not a silent no-op)")
+ok(throws(Function(): return sx.contains([99])), "set.contains unhashable throws (not silent False)")
+ok(throws(Function(): return [99] in sx), "`in` with an unhashable value throws (not silent False)")
+ok(sx == {1,2,3}, "the set is unchanged after the rejected probes")
 
 # =========================================================== Set methods: correct behavior
 ok({1,2}.union([3,4]) == {1,2,3,4}, "union with list (method takes any iterable)")

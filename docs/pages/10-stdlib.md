@@ -1563,7 +1563,8 @@ reduce it first (`s.all()`/`s.any()`) or index with the mask.
   `std`, `prod`, `count`.
 - `unique()`, `nunique()`, `valuecounts()` (a Series of counts, descending). `unique`/`nunique`
   treat a missing value (`None`) as one distinct value; `valuecounts` skips missing values.
-- `apply(fn)`/`map(fn)`, `astype("Integer"|"Float"|"Bool"|"String")`.
+- `apply(fn)`/`map(fn)`, `astype("Integer"|"Float"|"Bool"|"String")` — an unrecognized dtype name
+  throws (it is **not** silently coerced to String).
 - `fillna(value)`, `dropna()`, `head(n=5)`, `tail(n=5)`, `sortvalues(ascending=True)`, `resetindex()`,
   `tolist()`, `copy()`.
 
@@ -1581,7 +1582,10 @@ reduce it first (`s.all()`/`s.any()`) or index with the mask.
 - Aggregations over **numeric** columns → a Series indexed by column: `sum`, `mean`, `min`, `max`,
   `std`. `count` is the exception — it tallies non-null values for **every** column (any dtype).
   `apply(fn)` maps `fn` over each numeric column's Series, returning a Series indexed by column.
-  `describe()` → a DataFrame of count/mean/std/min/median/max.
+  `describe()` → a DataFrame of count/mean/std/min/median/max over the numeric columns (a consistent
+  empty DataFrame when there are none).
+- Construction validates a supplied `index`: its length must equal the row count, or the constructor
+  throws (as `Series` does), rather than building a frame that fails later with `index out of range`.
 - `sortvalues(by, ascending = True)`, `groupby(col)`, `merge(other, on, how)`, `dropna()`,
   `fillna(value)`.
 
@@ -1592,7 +1596,8 @@ reduce it first (`s.all()`/`s.any()`) or index with the mask.
 value column and reports each group's **row count** in each (effectively `size()` broadcast across the
 columns, not a per-column non-null tally). Also `agg({col: reducer})` where `reducer` is one of
 `"sum"`/`"mean"`/`"min"`/`"max"`/`"std"`/`"count"`/`"median"`, and `apply(fn)` (fn receives each
-group's sub-DataFrame).
+group's sub-DataFrame). An unknown reduction name or column in the `agg` spec throws a diagnostic
+naming the operation and the valid set (not a bare `key not found`).
 
 ```kirito
 var io = import("io")

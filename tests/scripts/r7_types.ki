@@ -78,15 +78,11 @@ zk[0.0] = "p"
 zk[-0.0] = "q"
 ok(len(zk) == 1 and zk[0.0] == "q" and zk[-0.0] == "q", "0.0 and -0.0 are one Dict key")
 ok(0.0 == -0.0 and String(-0.0) == "-0.0", "0.0 == -0.0 but -0.0 still stringifies signed")
-# A NaN key is WRITE-ONLY: it never equals an existing key, so inserts pile up and
-# lookup/`in` can never find it (a direct consequence of exact, NaN-never-equal ==).
-var nk = {}
-nk[nan] = "a"
-nk[nan] = "b"
-ok(len(nk) == 2, "each NaN inserted is a distinct (write-only) Dict key")
-ok(not (nan in nk), "a NaN key is never `in` the Dict (NaN != NaN)")
-ok(throws(Function(): return nk[nan]), "retrieving a NaN key throws (write-only)")
-ok(len({nan, nan}) == 2, "each NaN is a distinct Set element")
+# A NaN key is REJECTED at insert: it never equals itself, so it could never be found, removed, or
+# updated (a re-assignment would fabricate a duplicate key) — a direct consequence of exact ==.
+ok(throws(Function(): return {nan: "a"}), "a NaN Dict key is rejected")
+ok(throws(Function(): return {nan}), "a NaN Set element is rejected")
+ok(not (nan in {1, 2}), "a NaN lookup is simply absent (nan is hashable, so `in` does not throw)")
 # Mixed Integer/Float/Bool keying: 1 and 1.0 collapse (== + hash agree); True is distinct.
 ok(len({1, 1.0, True}) == 2, "1 and 1.0 collapse; True is a distinct element")
 ok((1 in {1, 1.0, True}) and (1.0 in {1, 1.0, True}) and (True in {1, 1.0, True}), "all three test as members")

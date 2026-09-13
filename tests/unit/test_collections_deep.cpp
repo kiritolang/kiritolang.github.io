@@ -63,8 +63,17 @@ int main() {
     CHECK(run(vm, "var d = {}\nd[0.0] = 1\nd[-0.0] = 2\nd[0.0]") == "2");
     CHECK(run(vm, "var math = import(\"math\")\nlen({math.inf, math.inf})") == "1");
     CHECK(run(vm, "var math = import(\"math\")\nlen({math.inf, -math.inf})") == "2");
-    // NaN keys are each distinct (exact identity, never equal — write-only keys, a documented invariant)
-    CHECK(run(vm, "var math = import(\"math\")\nlen({math.nan, math.nan})") == "2");
+    // A NaN key is REJECTED at insert: it is never == itself, so it could never be found, removed, or
+    // updated (a re-assignment would fabricate a duplicate key), breaking the key-uniqueness invariant.
+    CHECK_THROWS(vm.runSource("var math = import(\"math\")\nvar s = {math.nan}"));
+    CHECK_THROWS(vm.runSource("var math = import(\"math\")\nvar d = {}\nd[math.nan] = 1"));
+    // ...but a NaN passed to a read/lookup on a Set is hashable, so it does not throw — it is simply
+    // absent (Set membership/discard reject only genuinely UNHASHABLE values, like a List).
+    CHECK(run(vm, "var math = import(\"math\")\nmath.nan in {1, 2}") == "False");
+    // Set membership / discard of an unhashable value THROWS (as Dict `in` does), not a silent False.
+    CHECK_THROWS(vm.runSource("var s = {1, 2}\n[3] in s"));
+    CHECK_THROWS(vm.runSource("var s = {1, 2}\ns.discard([3])"));
+    CHECK_THROWS(vm.runSource("var s = {1, 2}\ns.contains([3])"));
 
     return RUN_TESTS();
 }

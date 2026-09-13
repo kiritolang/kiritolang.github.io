@@ -162,11 +162,9 @@ var dm = {}
 dm[1] = "int"
 dm[1.0] = "float"
 assert len(dm) == 1 and dm[1] == "float", "1 and 1.0 are one key"
-# NaN keys: each is distinct (nan != nan), so re-inserting nan grows the Dict
-var dnan = {}
-dnan[math.nan] = 1
-dnan[math.nan] = 2
-assert len(dnan) == 2, "distinct nan keys (nan != nan)"
+# A NaN key is rejected (nan != nan, so it could never be looked up, removed, or updated)
+assert raises_msg(Function(): return {math.nan: 1}, "NaN cannot be used as a Dict or Set key"), "NaN Dict key rejected"
+assert raises_msg(Function(): return {math.nan}, "NaN cannot be used as a Dict or Set key"), "NaN Set element rejected"
 
 # ============================================================ Float — .compare tolerance (edge)
 assert (0.1 + 0.2).compare(0.3) == True, "compare: 0.1+0.2 ~ 0.3"

@@ -1,0 +1,3 @@
+# A NaN Set element is rejected for the same reason a NaN Dict key is (never == itself).
+var math = import("math")
+var s = {math.nan}

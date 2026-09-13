@@ -389,11 +389,11 @@ String(keep[0]) + String(keep[1][1]) + String(keep[2]["k"])
             "var c = 0\nwhile c < 200:\n    discard [c]\n    c = c + 1\n"
             "String(s.contains(\"s401\")) + \"|\" + String(s.contains(\"s400\")) + \"|\" + String(len(s))"))
             == "True|False|100");
-        // (g) NaN key stays write-only after a GC (unfindable but present; a live key still resolves)
+        // (g) a Dict keyed by FRESH (non-interned) String keys survives a GC: both keys still resolve
         CHECK(vm.stringify(vm.runSource(
-            "var m = import(\"math\")\nvar d = {}\n"
-            "d[m.nan] = \"x\"\nd[\"live\"] = \"y\"\nvar z = 0\nwhile z < 100:\n    discard [z]\n    z = z + 1\n"
-            "String(len(d)) + \"|\" + d[\"live\"]")) == "2|y");
+            "var d = {}\n"
+            "d[\"k\" + String(400 + 1)] = \"x\"\nd[\"live\"] = \"y\"\nvar z = 0\nwhile z < 100:\n    discard [z]\n    z = z + 1\n"
+            "String(len(d)) + \"|\" + d[\"live\"] + \"|\" + d[\"k401\"]")) == "2|y|x");
     }
 
     // ===== LAZY ITERATORS under gc-every-alloc: a lazy map/filter/zip/enumerate/range buffers young

@@ -55,17 +55,21 @@ var smix = pd.Series([1, None, 3])
 assert smix.sum() == 4 and smix.count() == 2, "aggregations still skip the None"
 
 # =================================================================== unique() vs Float NaN
-# NaN != NaN, so `v not in seen` is always True for a NaN: every NaN is kept as a distinct "unique"
-# value (pandas collapses NaN to one). valuecounts(), by contrast, drops NaN entirely.
+# A NaN can't be a Dict key (never == itself), so unique() collapses all NaNs to ONE distinct value
+# (matching pandas). valuecounts(), by contrast, drops NaN entirely.
 var snan = pd.Series([1.0, NAN, 1.0, NAN])
-assert snan.nunique() == 3, "unique() keeps EACH NaN (1.0 + NaN + NaN) since NaN != NaN"
+assert snan.nunique() == 2, "unique() collapses NaN to one distinct value (1.0 + NaN)"
 assert snan.valuecounts().tolist() == [2], "valuecounts drops NaN (only 1.0 counted, x2)"
 
-# =================================================================== astype: silent String fallback
-# Only Integer/Float/Bool/String are documented; an unknown type name is silently treated as String
-# (no error). astype("Integer") on Floats truncates toward zero (delegates to Integer()).
-var castUnknown = pd.Series([1, 2, 3]).astype("Banana")
-assert type(castUnknown.tolist()[0]) == "String", "astype(unknown) silently falls back to String (undocumented)"
+# =================================================================== astype: unknown dtype throws
+# Only Integer/Float/Bool/String are documented; an unknown type name now THROWS (no silent String
+# fallback). astype("Integer") on Floats truncates toward zero (delegates to Integer()).
+var astypeThrew = False
+try:
+    discard pd.Series([1, 2, 3]).astype("Banana")
+catch as e:
+    astypeThrew = "unknown dtype 'Banana'" in e
+assert astypeThrew, "astype(unknown) throws (no silent String fallback)"
 assert pd.Series([1.7, 2.9, -1.7]).astype("Integer").tolist() == [1, 2, -1], "astype Integer truncates floats"
 assert pd.Series([0, 1, 0]).astype("Bool").tolist() == [False, True, False], "astype Bool from Integer"
 

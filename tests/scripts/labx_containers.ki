@@ -243,8 +243,9 @@ var badKey = Function():
     return dd
 assert raises_msg(badKey, "unhashable type 'List'"), "List as a Dict key raises"
 assert raises_msg(Function(): return {1}.union([{1: 2}]), "unhashable type 'Dict'"), "Dict as a Set element raises"
-# `[] in dict` RAISES (membership hashes the key) but `[] in set` is False (unhashable can't be present)
-assert ([] in {1, 2, 3}) == False, "[] in Set is False (never present), not an error"
+# `[] in dict` AND `[] in set` both RAISE (membership hashes the probe): an unhashable value throws
+# on either, rather than the Set silently returning False (SSOT with Dict).
+assert raises_msg(Function(): return [] in {1, 2, 3}, "unhashable type 'List'"), "[] in Set raises"
 assert raises_msg(Function(): return [] in {"a": 1}, "unhashable type 'List'"), "[] in Dict raises"
 
 # cross-type key identity: Integer 1 and Float 1.0 are the SAME key (1.0 == 1, shared hash);
@@ -258,11 +259,9 @@ mixKey[1] = "int"
 mixKey[1.0] = "float"       # overwrites the same slot
 assert mixKey == {1: "float"} and len(mixKey) == 1, "assigning 1.0 overwrites key 1"
 
-# NaN is a WRITE-ONLY key: insertable (NaN != NaN so it never collides) but never findable
-var nanD = {}
-nanD[math.nan] = 99
-assert len(nanD) == 1 and (math.nan in nanD) == False, "NaN key is insertable but not findable"
-assert len({math.nan, math.nan}) == 2, "two NaNs are two distinct Set elements"
+# A NaN key is REJECTED (NaN != NaN, so it could never be found/removed/updated) — Dict and Set alike.
+assert raises_msg(Function(): return {math.nan: 99}, "NaN cannot be used as a Dict or Set key"), "NaN Dict key rejected"
+assert raises_msg(Function(): return {math.nan, math.nan}, "NaN cannot be used as a Dict or Set key"), "NaN Set element rejected"
 
 # ============================================================ len / iteration / snapshot semantics
 assert len([]) == 0 and len({}) == 0 and len(Set()) == 0, "empty len"

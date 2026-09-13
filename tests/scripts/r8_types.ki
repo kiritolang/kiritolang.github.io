@@ -273,20 +273,16 @@ ok(Set() < {1} and not (Set() < Set()), "the empty set is a proper subset of a n
 ok({1, 2}.isdisjoint(Set()) and Set().isdisjoint(Set()), "the empty set is disjoint from anything")
 
 # =============================================================================
-# Set — the unhashable-argument inconsistency (add/remove throw; the rest no-op)
+# Set — an unhashable argument throws consistently on EVERY probe (add/remove/discard/contains/`in`),
+# like Dict, rather than the old silent no-op / silent False on the read paths (SSOT).
 # =============================================================================
 var sx = {1, 2, 3}
 ok(throws(Function(): sx.add([9])), "add of an unhashable value throws")
 ok(throws(Function(): sx.remove([9])), "remove of an unhashable value throws")
-# discard / contains / `in` all treat an unhashable value as simply absent (no throw).
-var discardNoRaise = True
-try:
-    sx.discard([9])
-catch:
-    discardNoRaise = False
-ok(discardNoRaise and sx == {1, 2, 3}, "discard of an unhashable value is a silent no-op")
-ok(sx.contains([9]) == False, "contains of an unhashable value is False (no throw)")
-ok(([9] in sx) == False, "`in` with an unhashable value is False (no throw)")
+ok(throws(Function(): sx.discard([9])), "discard of an unhashable value throws (not a silent no-op)")
+ok(throws(Function(): return sx.contains([9])), "contains of an unhashable value throws")
+ok(throws(Function(): return [9] in sx), "`in` with an unhashable value throws")
+ok(sx == {1, 2, 3}, "the set is unchanged after the rejected probes")
 
 # =============================================================================
 # List — sort stability under reverse, key-precompute-once, exact ordering

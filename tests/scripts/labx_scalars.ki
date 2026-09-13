@@ -127,10 +127,8 @@ dk[1.0] = "b"
 dk[0.0] = "z"
 dk[-0.0] = "y"
 assert len(dk) == 2 and dk[1] == "b" and dk[0.0] == "y", "1==1.0 one key; +-0.0 one key"
-var dnan = {}
-dnan[math.nan] = 1
-dnan[math.nan] = 2
-assert len(dnan) == 2, "each NaN is a distinct key (NaN != NaN)"
+# A NaN Dict key is rejected (never == itself, so it could never be found/removed/updated).
+assert raises_msg(Function(): return {math.nan: 1}, "NaN cannot be used as a Dict or Set key"), "NaN Dict key rejected"
 # -0.0 still keeps its sign as text and is falsy
 assert String(-0.0) == "-0.0" and Bool(-0.0) == False, "-0.0 signed text, falsy"
 

@@ -277,8 +277,8 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | Message | Cause | Fix |
 |---|---|---|
 | `key not found: <key>` | Dict indexing/`remove` on an absent key | Check with `in` or use `.get(k, default)` |
-| `unhashable type '<T>'` | Using an unhashable value as a Dict/Set key or in `hash()` | Use a hashable (immutable) key |
-| `unhashable type` | Set `remove` of an unhashable value | Pass a hashable value |
+| `unhashable type '<T>'` | An unhashable value as a Dict/Set key, a Set membership/`add`/`remove`/`discard`/`contains` probe, or in `hash()` (a Set read throws rather than silently returning `False`) | Use a hashable (immutable) key |
+| `NaN cannot be used as a Dict or Set key (it is never equal to itself)` | A `NaN` Float as a Dict key / Set element | A `NaN` key could never be looked up — use a sentinel or `None` |
 | `pop from an empty Set` | `set.pop()` when empty | Pop only from a non-empty set |
 | `Dict changed size during a key comparison` / `Set changed size during a value comparison` | A user `_eq_`/`_hash_` mutated the container mid-probe | Don't mutate the container from its keys' `_eq_`/`_hash_` |
 | `remove: value not in Set` | `set.remove(v)` for an absent value | Use `discard` (no-op if absent) or check first |
@@ -850,12 +850,15 @@ large* — live under [Resource guards](#resource-guards-repetition--padding--ra
 | `option --<name> expects an integer, got '<v>'` / `expects a number, got '<v>'` | An option whose default is Integer/Float given an unconvertible value | Pass a value of the option's type |
 | `option --<name> requires a value` / `option <token> requires a value` | A value-taking option given at the end with no value | Supply the option's value |
 | `Series: index length does not match values length` | Constructing a `Series` with mismatched index/values | Match the lengths |
+| `astype: unknown dtype '<name>' (expected 'Integer', 'Float', 'Bool', or 'String')` | `Series.astype` with an unrecognized dtype name (e.g. `"int"`) | Use one of the four documented dtype names (no silent String coercion) |
 | `Series: length mismatch (<a> vs <b>)` | Element-wise op between Series of different lengths | Align the Series first |
 | `Series slice-assignment needs a List of length <n> (the selected positions); got …` | `s[a:b] = v` whose value length ≠ the number of selected positions (would desync values from the index) | Assign a List matching the slice length |
 | `DataFrame: row slice-assignment (df[a:b] = ...) is not supported; assign a column df[name] = ... or use a boolean mask` | Assigning to a `df[a:b]` row slice | Assign a column or use a boolean-mask selection |
 | `DataFrame: data must be a Dict of columns or a List of rows` | `DataFrame(x)` with an unsupported shape | Pass a column-Dict or a row-List |
 | `DataFrame: all columns must have the same length` | Ragged column data | Make every column the same length |
 | `DataFrame: new column length must match row count` | Assigning a column of the wrong length | Match the row count |
+| `DataFrame: index length <n> does not match row count <m>` | Constructing a `DataFrame` with an `index` whose length ≠ the row count | Match the index length to the rows (as `Series` requires) |
+| `agg: unknown reduction '<name>' for column '<col>' (expected sum/mean/min/max/std/count/median)` / `agg: unknown column '<col>'` | `GroupBy.agg` with a bad reducer name or a column not in the frame | Use a documented reducer / an existing column |
 | `boolean mask length does not match row count` | Boolean-mask selection with a wrong-length mask | Match the mask to the frame |
 | `merge: how must be one of inner/left/right/outer, got '<how>'` | Invalid `how` to `tabular.merge` | Use inner/left/right/outer |
 | `readcsv: row <r> has <n> fields, expected <k>` | A CSV row with more fields than the header (no silent data loss) | Fix the row / header |

@@ -196,9 +196,10 @@ static std::string httpResp(const std::string& body, const std::string& extraHea
     return "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(body.size()) + "\r\n" + extraHeaders +
            "Connection: close\r\n\r\n" + body;
 }
+// A VALID gzip stream (correct CRC-32/ISIZE trailer) via the SSOT gzip encoder: the client now
+// verifies the trailer on decode, so a zeroed-trailer fixture would (correctly) be rejected.
 static std::string gzipWrap(const std::string& s) {
-    return std::string("\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03", 10) + deflate::compress(s) +
-           std::string(8, '\0');
+    return gzipfmt::compress(s);
 }
 static std::string chunkEncode(const std::string& s, std::size_t chunkSize) {
     if (chunkSize == 0) chunkSize = s.size() ? s.size() : 1;

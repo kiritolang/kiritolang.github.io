@@ -536,7 +536,9 @@ inline double mathForward(MathOp k, double x) {
         case MathOp::Erf: { return std::erf(x); } break;
         case MathOp::Floor: { return std::floor(x); } break;
         case MathOp::Ceil: { return std::ceil(x); } break;
-        case MathOp::Round: { return std::nearbyint(x); } break;
+        // Round half AWAY from zero (std::round), matching the scalar builtin round() (std::llround)
+        // so the two agree at exact halves — a deliberate departure from NumPy's round-half-to-even.
+        case MathOp::Round: { return std::round(x); } break;
         case MathOp::Trunc: { return std::trunc(x); } break;
     }
     return x;

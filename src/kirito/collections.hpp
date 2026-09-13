@@ -20,6 +20,17 @@ inline void requireHashable(const Object& o) {
     if (!o.hashable()) throw unhashableError(o.typeName());
 }
 
+// A key/element must be hashable AND equal to itself. A NaN Float is hashable but never equal to
+// itself, so once inserted it can never be found, removed, or updated — silently breaking the
+// container's key-uniqueness invariant (re-assigning a NaN key fabricates a duplicate entry). Reject
+// it at the write boundary (Dict::set / Set::add). Float is the only hashable self-unequal value, so
+// gating on kind() keeps this a pure double compare and never triggers a user-defined `_eq_`.
+inline void requireUsableKey(const ObjectArena& arena, const Object& k) {
+    requireHashable(k);
+    if (k.kind() == ValueKind::Float && !k.equals(arena, k))
+        throw KiritoError("NaN cannot be used as a Dict or Set key (it is never equal to itself)");
+}
+
 // Containers store element handles, so aliasing (and, later, cycles) work naturally. Methods that
 // need the VM (getItem/setItem/getAttr) are declared here and defined in runtime.hpp once
 // KiritoVM is complete; everything else is inline.
@@ -131,8 +142,8 @@ public:
 // recognizes the Integer; likewise a stored user instance with no `_eq_` doesn't recognize a probe
 // instance whose `_eq_` accepts it. Gating the reverse try on a kind mismatch (the old bug) skipped
 // exactly the same-kind instance case, making Set/Dict dedup order-dependent — `add(a); add(b)` and
-// `add(b); add(a)` gave different sizes, and two `==`-equal keys could coexist. NaN stays "write-only"
-// (insertable, never findable) because NEITHER direction is equal — no identity short-circuit here.
+// `add(b); add(a)` gave different sizes, and two `==`-equal keys could coexist. (A NaN can never
+// reach this lookup: requireUsableKey rejects a NaN key at insert, since it is never `==` itself.)
 inline bool keysEqual(const ObjectArena& arena, const Object& stored, const Object& key) {
     if (stored.equals(arena, key)) return true;
     return key.equals(arena, stored);
@@ -219,7 +230,7 @@ public:
 
     void set(ObjectArena& arena, Handle key, Handle value) {
         const Object& k = arena.deref(key);
-        requireHashable(k);
+        requireUsableKey(arena, k);
         std::size_t h = k.bucketHash(arena.hashSeed());  // may run _hash_; done before any entry reference is cached
         if (probing_) throw KiritoError("Dict changed size during a key comparison");
         ProbeScope guard(probing_);
@@ -311,7 +322,7 @@ public:
     std::optional<int64_t> length(KiritoVM&) override { return static_cast<int64_t>(count); }
 
     // The index slot pointing at entry `pos` — probe by that entry's hash for the slot whose value IS
-    // `pos` (matched by POSITION, not key equality, so it also finds a write-only NaN key's slot).
+    // `pos` (matched by POSITION, not key equality: it locates the entry's own slot without a lookup).
     std::size_t slotOfPos(std::size_t pos) const {
         std::size_t mask = index.size() - 1, slot = entries[pos].hash & mask;
         while (index[slot] != static_cast<int32_t>(pos)) slot = (slot + 1) & mask;   // must exist (live)
@@ -342,9 +353,9 @@ public:
         return true;
     }
 
-    // Remove and return the LAST (key, value) — Python `popitem` order. Takes the entry by POSITION,
-    // not by looking a key back up, because a NaN key is write-only (`NaN != NaN`); the drain loop
-    // `while len(d) > 0: d.popitem()` must terminate even for NaN keys. SetVal::popArbitrary is the same.
+    // Remove and return the LAST (key, value) — Python `popitem` order. Takes the entry by POSITION
+    // rather than looking its key back up, so it is O(1) and needs no key equality at all.
+    // SetVal::popArbitrary is the same.
     std::pair<Handle, Handle> popArbitrary() {
         if (probing_) throw KiritoError("Dict changed size during a key comparison");
         std::size_t i = entries.size();
@@ -444,7 +455,7 @@ public:
 
     bool add(ObjectArena& arena, Handle value) {
         const Object& v = arena.deref(value);
-        requireHashable(v);
+        requireUsableKey(arena, v);
         std::size_t h = v.bucketHash(arena.hashSeed());
         if (probing_) throw KiritoError("Set changed size during a value comparison");
         ProbeScope guard(probing_);
@@ -460,7 +471,7 @@ public:
     }
     bool remove(ObjectArena& arena, Handle value) {
         const Object& v = arena.deref(value);
-        if (!v.hashable()) return false;
+        requireHashable(v);   // an unhashable value throws (as Dict does), not a silent no-op (SSOT)
         std::size_t h = v.bucketHash(arena.hashSeed());
         if (probing_) throw KiritoError("Set changed size during a value comparison");
         ProbeScope guard(probing_);
@@ -475,7 +486,7 @@ public:
     }
     bool contains(const ObjectArena& arena, Handle value) const {
         const Object& v = arena.deref(value);
-        if (!v.hashable()) return false;
+        requireHashable(v);   // an unhashable value throws (as Dict `in` does), not a silent False (SSOT)
         std::size_t h = v.bucketHash(arena.hashSeed());
         ProbeScope guard(probing_);  // read: block nested mutation from a reentrant _eq_
         std::size_t slot = 0;
@@ -495,8 +506,8 @@ public:
         tombstones = 0;
         cards.clear();
     }
-    // Remove and return the LAST element (throws on empty). By POSITION, so a write-only NaN member is
-    // still drainable (Set.pop() on a NaN has always worked). Trims trailing tombstones to stay O(N).
+    // Remove and return the LAST element (throws on empty). By POSITION (no key lookup), so it is O(1).
+    // Trims trailing tombstones to stay O(N).
     Handle popArbitrary() {
         if (probing_) throw KiritoError("Set changed size during a value comparison");
         std::size_t i = entries.size();

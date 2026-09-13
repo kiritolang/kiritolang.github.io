@@ -460,7 +460,8 @@ Differentiable operations include `+ - * / **`, `matmul`, `tensordot`, `sum`/`me
 > `exp`, `log`, `log10`, `log2`, `sqrt`, `cbrt`, `square`, `reciprocal`, `abs`, `sin`, `cos`, `tan`,
 > `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `relu`, `sigmoid`,
 > `softplus`, `erf`, and `pow(p)`. (`sign`, `floor`, `ceil`, `round`, `trunc` keep the graph but have
-> zero gradient.)
+> zero gradient.) `round` rounds ties **half away from zero** (`round(2.5) == 3.0`), matching the
+> scalar builtin `round()` — deliberately unlike NumPy's round-half-to-even.
 
 Operations that **cannot** carry a gradient — `min`/`max`, `argmin`/`argmax`, `sort`/`argsort`,
 `prod`, `cumprod`, `ptp`, `std`/`var`, `median`, `dot`, `unique`/`nonzero`/`searchsorted`, `einsum`,
