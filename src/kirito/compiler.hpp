@@ -868,7 +868,12 @@ inline const Proto* protoForImpl(KiritoVM& vm, const void* key, CompileStep&& st
 
 inline const Proto* protoForBody(KiritoVM& vm, const ast::Block& body, bool isFunction,
                                  const ast::FunctionExpr* fnDef) {
-    return protoForImpl(vm, &body, [&](Compiler& c) { c.compile(body, isFunction, fnDef); });
+    // Fast path: a function's Proto is cached on its AST node, so a call skips the protoCache_ hashmap
+    // probe (A3). The cache still owns the Proto; this pointer is only ever set to a cache-owned Proto.
+    if (fnDef && fnDef->compiledProto) return fnDef->compiledProto;
+    const Proto* p = protoForImpl(vm, &body, [&](Compiler& c) { c.compile(body, isFunction, fnDef); });
+    if (fnDef) fnDef->compiledProto = p;
+    return p;
 }
 
 // Compile a single expression (e.g. a parameter default) to its own Proto, cached by the expr's

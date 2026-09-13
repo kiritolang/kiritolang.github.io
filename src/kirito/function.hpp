@@ -1,6 +1,7 @@
 #ifndef KIRITO_FUNCTION_HPP
 #define KIRITO_FUNCTION_HPP
 
+#include <cstdint>
 #include <functional>
 #include <span>
 #include <string>
@@ -152,6 +153,10 @@ public:
     // so a class defined inside this function is qualified against its DEFINING module, even when the
     // function is called from another module. See KiritoVM::currentModuleName.
     std::string moduleName;
+    // Interned chunk-name indices, cached on the first call so callFull pushes the current chunk without
+    // copying sourceFile/moduleName per call (A2). UINT32_MAX = not yet interned.
+    mutable uint32_t sourceFileIdx = UINT32_MAX;
+    mutable uint32_t moduleNameIdx = UINT32_MAX;
 
     ValueKind kind() const override { return ValueKind::Function; }
     std::string typeName() const override { return "Function"; }

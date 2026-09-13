@@ -2302,7 +2302,13 @@ inline Handle KiFunction::callFull(KiritoVM& vm, std::span<const Handle> positio
     // creates at runtime (e.g. functools.partial's returned function) inherit the right source file
     // for error attribution — not whatever script happened to call us.
     std::optional<KiritoVM::ChunkFileScope> chunkScope;
-    if (!sourceFile.empty()) chunkScope.emplace(vm, sourceFile, moduleName);
+    if (!sourceFile.empty()) {
+        if (sourceFileIdx == UINT32_MAX) {   // intern once per KiFunction, then O(1) each call (A2)
+            sourceFileIdx = vm.internChunkName(sourceFile);
+            moduleNameIdx = vm.internChunkName(moduleName);
+        }
+        chunkScope.emplace(vm, sourceFileIdx, moduleNameIdx);
+    }
     const auto& params = def_->params;
     RootScope rs(vm);
     Handle scope = rs.add(vm.newScope(closure_));
@@ -2743,7 +2749,7 @@ inline void KiritoVM::registerSourceModule(std::string name, std::string_view so
             Handle scope = vm.newModuleScope(/*isMain=*/false);  // a frozen module is imported -> argmain False, arglist empty (matches .ki-file imports)
             RootScope guard(vm);
             guard.add(scope);
-            KiritoVM::ChunkFileScope chunkScope(vm, "<" + modName + ">");  // frozen-chunk attribution
+            KiritoVM::ChunkFileScope chunkScope(vm, vm.internChunkName("<" + modName + ">"));  // frozen-chunk attribution
             Lexer lex(src);
             auto toks = lex.tokenize();
             auto prog = std::make_unique<ast::Program>(Parser(std::move(toks), lex.source()).parseProgram());
@@ -2841,7 +2847,7 @@ inline Handle KiritoVM::importModule(const std::string& name) {
             guard.add(scope);
             // functions/classes defined here carry this file (attribution) and this module name
             // (`fileBase` — the clean import name, extension-stripped), so a class becomes `mod:Class`.
-            ChunkFileScope chunkScope(*this, path.string(), fileBase);
+            ChunkFileScope chunkScope(*this, internChunkName(path.string()), internChunkName(fileBase));
             Lexer lex(buf.str());
             auto toks = lex.tokenize();
             auto prog = std::make_unique<ast::Program>(
@@ -4315,7 +4321,7 @@ inline KiritoVM::~KiritoVM() {
 inline Handle KiritoVM::evalIn(std::string_view source, Handle scope, std::string_view chunkName,
                               bool indexTopLevel) {
     try {
-        ChunkFileScope chunkScope(*this, std::string(chunkName));  // functions defined here carry this file
+        ChunkFileScope chunkScope(*this, internChunkName(chunkName));  // functions defined here carry this file
         Lexer lexer(source);
         auto toks = lexer.tokenize();
         Parser parser(std::move(toks), lexer.source());  // source -> functions/classes capture their text

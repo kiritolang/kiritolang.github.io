@@ -2,11 +2,13 @@
 #define KIRITO_VM_HPP
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "fum/unordered_map.hpp"
@@ -357,25 +359,43 @@ public:
         // `mod` is the name of the module whose body is executing — used to qualify a class defined
         // here as `module:Class` (empty for the main script, the REPL, and the frozen stdlib, whose
         // classes keep bare names). Pushed in lockstep with the chunk file so the two never diverge.
-        ChunkFileScope(KiritoVM& vm, std::string f, std::string mod = "")
-            : vm_(vm) { vm_.chunkFiles_.push_back(std::move(f)); vm_.moduleNames_.push_back(std::move(mod)); }
+        // Takes INTERNED chunk-name indices (see internChunkName), so entering a frame pushes two
+        // uint32_t rather than copying two std::string per call (A2). Interning is idempotent and the
+        // table is VM-lifetime, so the hot caller (callFull) caches its indices on the KiFunction and
+        // this becomes zero per-call allocation.
+        ChunkFileScope(KiritoVM& vm, uint32_t fileIdx, uint32_t modIdx = 0)
+            : vm_(vm) { vm_.chunkFiles_.push_back(fileIdx); vm_.moduleNames_.push_back(modIdx); }
         ~ChunkFileScope() { vm_.chunkFiles_.pop_back(); vm_.moduleNames_.pop_back(); }
         ChunkFileScope(const ChunkFileScope&) = delete;
         ChunkFileScope& operator=(const ChunkFileScope&) = delete;
     private:
         KiritoVM& vm_;
     };
+    // Intern a chunk/module name into the VM-lifetime table; "" is always index 0. Idempotent (deduped),
+    // O(1) amortized. The returned index is stable for the VM's life.
+    uint32_t internChunkName(std::string_view s) {
+        if (s.empty()) return 0;
+        std::string key(s);
+        auto it = chunkNameIntern_.find(key);
+        if (it != chunkNameIntern_.end()) return it->second;
+        uint32_t idx = static_cast<uint32_t>(chunkNameTable_.size());
+        chunkNameTable_.push_back(key);
+        chunkNameIntern_.emplace(std::move(key), idx);
+        return idx;
+    }
+    // A returned reference is only ever consumed transiently (copied into an error/traceframe/KiFunction);
+    // it must not be held across a later internChunkName (which may reallocate the table). Single-threaded
+    // per VM and interning happens only at frame entry / module load, so no live reference spans an intern.
+    const std::string& chunkNameAt(uint32_t idx) const { return chunkNameTable_[idx]; }
     const std::string& currentChunkFile() const {
-        static const std::string empty;
-        return chunkFiles_.empty() ? empty : chunkFiles_.back();
+        return chunkNameAt(chunkFiles_.empty() ? 0 : chunkFiles_.back());
     }
     // The module whose body is currently executing, or "" for the main script / REPL / frozen stdlib /
     // native code. A user `.ki` module reached via import(name) sets this to its clean import name, so a
     // class it defines is qualified `name:Class` (making same-named classes in different modules
     // distinct to isinstance / typed catch / serialization). See classBareName / typeMatches.
     const std::string& currentModuleName() const {
-        static const std::string empty;
-        return moduleNames_.empty() ? empty : moduleNames_.back();
+        return chunkNameAt(moduleNames_.empty() ? 0 : moduleNames_.back());
     }
 
     // VM-local traceback of the most recent error (the call chain it unwound through, innermost-first).
@@ -509,8 +529,10 @@ private:
     fum::unordered_set<std::string> importing_;
     std::vector<std::string> importStack_;
     std::vector<std::string> libPaths_;
-    std::vector<std::string> chunkFiles_;  // see ChunkFileScope
-    std::vector<std::string> moduleNames_; // module owning the executing chunk (see currentModuleName)
+    std::vector<uint32_t> chunkFiles_;   // interned indices; see ChunkFileScope / internChunkName
+    std::vector<uint32_t> moduleNames_;  // interned indices; module owning the executing chunk
+    std::vector<std::string> chunkNameTable_{std::string()};  // index 0 == "" (the empty/main sentinel)
+    std::unordered_map<std::string, uint32_t> chunkNameIntern_;  // dedupe -> index
     std::vector<TraceFrame> lastTraceback_;  // call chain of the most recent error (see setLastTraceback)
     Handle replScope_{};
     bool replScopeReady_ = false;

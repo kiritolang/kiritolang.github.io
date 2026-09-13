@@ -11,6 +11,8 @@
 
 #include "common.hpp"
 
+namespace kirito { struct Proto; }  // forward decl: a FunctionExpr caches its compiled Proto* (A3)
+
 namespace kirito::ast {
 
 // The AST is the stable contract between the front end and the evaluator. Nodes carry only
@@ -315,6 +317,10 @@ struct FunctionExpr : Expr {
     // Evaluator-side memo: true once we've determined this function has no param/return annotations,
     // enabling a no-temporaries fast bind for positional, exact-arity calls. Computed lazily.
     mutable std::optional<bool> fastBindable;
+    // Compiler-side memo: this function body's compiled Proto, cached here so a call skips the per-call
+    // protoCache_ hashmap lookup (A3). Set on first compile via protoForBody; the cache still owns the
+    // Proto (VM-lifetime), so this borrowed pointer never dangles.
+    mutable const Proto* compiledProto = nullptr;
     void accept(ExprVisitor& v) const override { v.visit(*this); }
 };
 
