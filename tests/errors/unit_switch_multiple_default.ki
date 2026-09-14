@@ -1,0 +1,5 @@
+switch 1:
+    default:
+        var a = 1
+    default:
+        var b = 2

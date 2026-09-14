@@ -1,0 +1,106 @@
+# switch/case/default value semantics (converted from tests/unit/test_switch.cpp — the pure
+# run-a-script-check-a-value cases). Compile-error cases live in tests/errors/unit_switch_*.ki.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+var f = Function(x):
+    switch x:
+        case 1:
+            return "one"
+        case 2, 3:
+            return "two-three"
+        case "hi":
+            return "greeting"
+        case True:
+            return "booltrue"
+        case None:
+            return "none"
+        default:
+            return "other"
+# mixed types, multiple values per case, fallthrough-to-default
+io.print(f(1))
+io.print(f(2))
+io.print(f(3))
+io.print(f("hi"))
+io.print(f(True))
+io.print(f(None))
+io.print(f(99))
+io.print(f([1, 2]))   # non-scalar -> default
+
+# type-exact: case 1 (Integer) distinct from 1.0 (Float)
+var g = Function(x):
+    switch x:
+        case 1:
+            return "int"
+        case 1.0:
+            return "float"
+        default:
+            return "?"
+io.print(String(g(1)) + String(g(1.0)))
+
+# no default + no match = no-op
+var hit = False
+switch 99:
+    case 1:
+        hit = True
+io.print(String(hit))
+
+# control flow: break/continue/return propagate out of the switch
+var brkout = []
+for i in range(5):
+    switch i:
+        case 3:
+            break
+        default:
+            brkout.append(i)
+io.print(String(brkout))
+var contout = []
+for i in range(4):
+    switch i:
+        case 1:
+            continue
+        default:
+            contout.append(i)
+io.print(String(contout))
+
+# memoized table reused across many dispatches
+var c = Function(n):
+    switch n % 3:
+        case 0:
+            return "a"
+        case 1:
+            return "b"
+        default:
+            return "c"
+var s = ""
+for i in range(6):
+    s = s + c(i)
+io.print(s)
+
+# `case`/`default` are soft keywords: usable as ordinary identifiers outside a switch
+var get = Function(d, default): return default
+io.print(get({}, 7))
+var case = 5
+var default = 3
+io.print(String(case + default))
+var d = {"case": 1, "default": 2}
+io.print(String(d["case"] + d["default"]))
+
+# case labels are compile-time constant scalars: a constant expression over literals folds
+# (each an independent switch, matching a runtime evaluation)
+switch 7:
+    case 3 + 4:
+        io.print("add")
+switch -8:
+    case -2 ** 3:
+        io.print("p")
+switch "ab":
+    case "a" + "b":
+        io.print("c")
+switch 1.5:
+    case 3 / 2:          # true-div -> Float key
+        io.print("f")
+var n = 6 * 7
+switch n:
+    case 6 * 7:          # folded label agrees with the runtime value
+        io.print("ok")
