@@ -1,0 +1,29 @@
+[1, 2, 3]
+3
+4
+3
+10
+10
+3
+index out of range
+3
+5
+2
+3
+key not found: z
+unhashable type 'List'
+3
+True
+False
+2
+['c', 'a', 'b', 'z', 'm']
+[3, 5, 9, 2]
+['b', 'a']
+[5, 3, 1, 9]
+['z', 3]
+[0, 1, 2, 3, 4]
+True
+False
+True
+True
+[[...]]

@@ -1,0 +1,68 @@
+# The built-in `json` module: parse/stringify, scalar types, nesting, mutability of parsed Dicts,
+# unicode \u escapes, control-character escaping, and error cases (converted from
+# tests/unit/test_json.cpp). Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var j = import("json")
+
+# parse: objects become Dicts (so a JSON object *is* a Dict)
+io.print(type(j.parse("{\"a\": 1}")))
+io.print(j.parse("{\"a\": 1}")["a"])
+io.print(j.parse("[1, 2, 3]")[1])
+
+# all scalar types
+io.print(j.parse("true"))
+io.print(j.parse("false"))
+io.print(j.parse("null"))
+io.print(j.parse("42"))
+io.print(j.parse("3.5"))
+io.print(j.parse("-17"))
+io.print(j.parse("\"hi\""))
+
+# nested access
+io.print(j.parse("[[1, 2], [3, 4]]")[1][0])
+var dnest = j.parse("{\"user\": {\"name\": \"K\", \"tags\": [\"a\", \"b\"]}}")
+io.print(dnest["user"]["tags"][1])
+
+# the parsed object is a real Dict (mutable)
+var dmut = j.parse("{\"x\": 1}")
+dmut["y"] = 2
+io.print(len(dmut))
+
+# stringify (lists are ordered, deterministic)
+io.print(j.stringify([1, 2, 3]))
+io.print(j.stringify("hi"))
+io.print(j.stringify(42))
+io.print(j.stringify(True))
+io.print(j.stringify(None))
+io.print(j.stringify([1, "two", [3]]))
+
+# round-trip through a nested value
+var xrt = j.parse("{\"k\": [1, 2, 3]}")
+io.print(j.stringify(xrt["k"]))
+
+# unicode \u escape
+io.print(j.parse("\"caf\\u00e9\""))
+
+# control characters must be \u-escaped on output (else the JSON is invalid)
+io.print(j.stringify(chr(0)))
+io.print(j.stringify(chr(1) + chr(31)))
+io.print(j.stringify("a" + chr(0) + "b"))
+# and round-trip back to the original bytes
+io.print(len(j.parse(j.stringify(chr(0) + chr(7) + chr(31)))))
+
+# error cases
+try:
+    discard j.parse("{invalid}")
+catch as e:
+    io.print(e)
+try:
+    discard j.parse("[1, 2,")
+catch as e:
+    io.print(e)
+# cyclic structures cannot be serialized
+try:
+    var acyc = []
+    acyc.append(acyc)
+    discard j.stringify(acyc)
+catch as e:
+    io.print(e)

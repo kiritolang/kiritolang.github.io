@@ -1,0 +1,61 @@
+# List lexicographic ordering/concatenation and string indexing/slicing, incl. Unicode
+# (converted from tests/unit/test_list_ops.cpp). The `ms < 2000` perf-timing assertion in the
+# original is dropped (nondeterministic, not expressible as a golden-output check) — the O(1)
+# ASCII-scan VALUE check itself is kept. The 4 CHECK_THROWS are runtime type errors, folded inline.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# --- list lexicographic ordering ---
+io.print(String([1, 2] < [1, 3]))
+io.print(String([1, 2] < [1, 2, 0]))     # shared prefix: shorter is less
+io.print(String([2] < [1, 9]))           # first element decides
+io.print(String([1, 2] <= [1, 2]))
+io.print(String([1, 2] >= [1, 2]))
+io.print(String([1, 3] > [1, 2]))
+io.print(String(["a", "b"] < ["a", "c"]))       # string elements
+io.print(String([[1], [2]] < [[1], [3]]))       # nested lists
+# ordering a List against a non-List throws
+try:
+    discard [1, 2] < 3
+catch as e:
+    io.print(e)
+try:
+    discard [1] < "a"
+catch as e:
+    io.print(e)
+
+# --- list concatenation ---
+io.print(String([1, 2] + [3, 4]))
+io.print(String([] + [1]))
+var t1 = Function():
+    var a = [1]
+    discard a + [2]
+    return String(a)
+io.print(t1())                            # + does not mutate lhs
+try:
+    discard [1] + 2                       # can't concat List and non-List
+catch as e:
+    io.print(e)
+
+# --- multi-key sort via list-returning key (the idiom list ordering enables) ---
+# sort by (parity, value): evens first, ascending within each group
+io.print(String(sorted([5, 2, 4, 1, 3], Function(x): return [x % 2, x])))
+
+# --- string indexing is O(1) on ASCII: a char-by-char scan of a big string is correct/fast ---
+var t2 = Function():
+    var s = "a" * 20000
+    var total = 0
+    var i = 0
+    while i < len(s):
+        if s[i] == "a":
+            total = total + 1
+        i = i + 1
+    return total
+io.print(t2())
+
+# --- Unicode indexing still correct (cached code-point table path) ---
+io.print("héllo"[1])
+io.print("żółć"[3])
+io.print(len("chrząszcz"))
+io.print("abcdef"[1:4])
+io.print("żółćabc"[2:5])

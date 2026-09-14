@@ -1,0 +1,32 @@
+[1, 4, 9, 16]
+List
+[]
+[2, 4, 6]
+['a!', 'b!']
+[1, 2, 3] [11, 12, 13]
+[10, 20, 30]
+Set
+2
+{6}
+Dict
+300
+True
+b'\x02\x04\x06'
+Bytes
+hi
+Bytes apply: result must be a byte (0..255)
+Bytes apply: result must be a byte (0..255)
+HELLO
+String
+aabbcc
+héllo
+String apply: result must be a String
+boom
+type 'Integer' is not callable
+True
+True
+True
+True
+True
+True
+True

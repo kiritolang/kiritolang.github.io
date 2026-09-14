@@ -1,0 +1,82 @@
+# The `matrix` module's Matrix value type: construction, arithmetic, transpose/determinant/trace,
+# inverse, factories, apply/get/set, and vector operations (dot/cross/norm). Converted from
+# tests/unit/test_matrix.cpp. All error cases are runtime (shape/singularity/ragged-literal guards),
+# so they are folded inline via try/catch. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var matrix = import("matrix")
+var A = matrix.Matrix([[1, 2], [3, 4]])
+var B = matrix.Matrix([[5, 6], [7, 8]])
+
+# construction and string form (elements are doubles)
+io.print(A)
+io.print(A.shape())
+io.print(A.rows())
+
+# arithmetic
+io.print(A + B)
+io.print(B - A)
+io.print(A * B)
+io.print(A * 2)
+
+# transpose, determinant, trace
+io.print(A.transpose())
+io.print(A.determinant())
+io.print(A.trace())
+
+# inverse: A * inv(A) ~ I — computed floats, so use the tolerant .compare (Matrix == is exact)
+# abs_tol is needed because identity has exact zeros: comparing a near-zero computed off-diagonal
+# to 0.0 with only rel_tol fails (a relative tolerance against exactly 0.0 can never match).
+io.print((A * A.inverse()).compare(matrix.identity(2), abs_tol=1e-9))
+io.print(matrix.identity(3))
+
+# a known 3x3 determinant
+io.print(matrix.Matrix([[2, 0, 0], [0, 3, 0], [0, 0, 4]]).determinant())
+
+# factories, apply, get/set
+io.print(matrix.zeros(2, 3))
+io.print(A.apply(Function(x): return x + 10))
+io.print(A.get(1, 0))
+# set mutates in place — isolate in its own scope so it does not affect the shared A below.
+var settest = Function():
+    var Am = matrix.Matrix([[1, 2], [3, 4]])
+    Am.set(0, 0, 99)
+    return Am.get(0, 0)
+io.print(settest())
+io.print(A.row(1))
+io.print(A.sum())
+
+# vectors (a Matrix with one dimension == 1): dot, cross, norm. The dot product is `u.dot(v)`;
+# `*` stays matrix multiply, so two same-shape (row) vectors are an inner-dimension error.
+io.print(matrix.vector([1, 2, 3]).dot(matrix.vector([4, 5, 6])))
+io.print(matrix.vector([1, 0, 0]).cross(matrix.vector([0, 1, 0])))
+io.print(matrix.vector([3, 4]).norm())
+try:
+    discard matrix.vector([1, 2]).dot(matrix.vector([1, 2, 3]))   # length mismatch
+catch as e:
+    io.print(e)
+try:
+    discard matrix.vector([1, 2]).cross(matrix.vector([3, 4]))    # not 3-element
+catch as e:
+    io.print(e)
+try:
+    discard matrix.vector([1, 2, 3]) * matrix.vector([4, 5, 6])   # * is matrix multiply only
+catch as e:
+    io.print(e)
+
+# error cases
+try:
+    discard matrix.Matrix([[1, 2], [3, 4], [5, 6]]).inverse()     # non-square
+catch as e:
+    io.print(e)
+try:
+    discard matrix.Matrix([[1, 2]]) + matrix.Matrix([[1], [2]])   # shape
+catch as e:
+    io.print(e)
+try:
+    discard matrix.Matrix([[1, 1], [1, 1]]).inverse()             # singular
+catch as e:
+    io.print(e)
+try:
+    discard matrix.Matrix([[1, 2], [3]])                          # ragged
+catch as e:
+    io.print(e)

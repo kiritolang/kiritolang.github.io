@@ -1,0 +1,52 @@
+# Unicode correctness: Kirito strings are code-point sequences, not byte sequences (converted from
+# tests/unit/test_unicode.cpp). Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+var pangram = "chrząszcz brzmi w trzcinie w szczebrzeszynie w szczękach chrząszcza trzeszczy miąższ."
+
+# round-trips unchanged
+io.print(pangram)
+# counted by code point (85 chars including the trailing '.'), not by byte
+io.print(len(pangram))
+
+# code-point indexing
+io.print("żółć"[0])
+io.print("żółć"[1])
+io.print("żółć"[3])
+io.print(len("żółć"))
+
+# slicing on multi-byte text
+io.print("miąższ"[0:3])
+io.print("miąższ"[::-1])
+io.print("chrząszcz"[3:5])   # c h r z ą s z c z -> indices 3,4
+
+# iteration yields code points
+var n = 0
+for c in "żółć":
+    n = n + 1
+io.print(n)
+
+# string methods are code-point aware
+io.print("miąższ".upper())
+io.print("CHRZĄSZCZ".lower())
+io.print(String("chrząszcz brzmi".split(" ")))
+io.print("-".join(["żółć", "miąższ"]))
+io.print("szczebrzeszynie".count("sz"))
+io.print(String("chrząszcz".startswith("chrzą")))
+io.print("  miąższ  ".strip())
+
+# ord/chr round-trip Polish code points
+io.print(ord("ą"))
+io.print(chr(261))
+io.print(ord("ż"))
+io.print(chr(ord("ł")))
+
+# f-strings and concatenation preserve UTF-8
+var w = "chrząszcz"
+io.print(f"{w} brzmi")
+io.print("żółć" + "miąższ")
+io.print("ą" * 3)
+
+# astral-plane (4-byte) code point counts as one
+io.print(len("😀"))
+io.print("a😀b"[1])

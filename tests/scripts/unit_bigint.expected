@@ -1,0 +1,81 @@
+2432902008176640000
+30414093201713378043612608166064768844377641568960512000000000000
+340282366920938463463374607431768211456
+354224848179261915075
+445
+1267650600228229401496703205376
+100891344545564193334812497256
+100000000000000000000000000000000000000000000000000
+2.5
+Float
+5
+unsupported operand type 'BigInt' for arithmetic with 'Integer'
+unsupported operand type 'BigInt' for arithmetic with 'Integer'
+unsupported operand type 'BigInt' for comparison with 'Integer'
+True
+True
+True
+1
+1
+loops-ok
+-123456789012345678901234567890
+255
+255
+1295
+0,1,1
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+False
+True
+True
+False
+False
+False
+True
+False
+True
+True
+isprimeaks: input too large for deterministic AKS (ring degree r exceeds maxdegree)
+isprimeaks: input too large for deterministic AKS (ring degree r exceeds maxdegree)
+isprimeaks: maxdegree must be >= 2
+True
+True
+True
+True
+101
+255
+Integer
+toint: value does not fit in a native Integer
+True
+True
+integer division by zero
+integer modulo by zero
+modpow: modulus is zero
+modinv: arguments are not coprime (no inverse exists)
+modinv: modulus must be >= 2
+int: invalid integer literal '12x'
+fromstring: base must be between 2 and 36
+int: invalid integer literal 'not a number'
+factorial: not defined for negatives
+int: pow result too large (exceeds size limit)
+BigInt expects an Integer, a String, or a BigInt
+False
+False
+False

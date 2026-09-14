@@ -1,0 +1,52 @@
+# Adversarial/edge coverage for the Kirito-authored frozen modules (converted from
+# tests/unit/test_kimods_deep.cpp — fully deterministic, no filesystem): copy.copy/deepcopy of
+# native VALUE objects and of an unserializable resource (throws, caught here), statistics.mode on
+# Float data, itertools.starmap/accumulate keyword forms, csv CRLF parsing, enum definition-order.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+var cp = import("copy")
+
+var m2 = import("matrix").identity(2)
+io.print(cp.deepcopy(m2) == m2)
+var m3 = import("matrix").identity(3)
+io.print(cp.copy(m3) == m3)
+var d = import("time").datetime(1000)
+io.print(cp.deepcopy(d) == d)
+var z = import("complex").of(3, 4)
+io.print(cp.deepcopy(z) == z)
+var t = import("tensor").tensor([1, 2, 3])
+io.print(cp.deepcopy(t) == t)
+
+var a = [[1, 2], [3, 4]]
+var b = cp.deepcopy(a)
+a[0][0] = 99
+io.print(b[0][0])
+
+var copyfailsafe = Function():
+    try:
+        discard cp.copy(import("regex").compile("a"))
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(copyfailsafe())
+var deepcopyfailsafe = Function():
+    try:
+        discard cp.deepcopy(import("regex").compile("a"))
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(deepcopyfailsafe())
+
+io.print(import("statistics").mode([1.5, 2.5, 1.5]))
+
+var itertools = import("itertools")
+io.print(String(List(itertools.starmap(Function(triple): return triple[0] + triple[1] + triple[2], [[1, 2, 3], [4, 5, 6]]))))
+io.print(String(List(itertools.accumulate([1, 2, 3, 4], func=Function(x, y): return x * y))))
+
+io.print(import("csv").parse("a,b\r\nc,d"))
+
+var enummod = import("enum")
+io.print(enummod.Enum(["B", "A"]).values())
+io.print(enummod.Enum(["B", "A"]).names())
+io.print(enummod.Enum(["B", "A"]).get("A"))

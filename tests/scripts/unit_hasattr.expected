@@ -1,0 +1,35 @@
+True
+True
+True
+True
+False
+True
+True
+False
+False
+True
+False
+True
+True
+True
+True
+True
+False
+True
+True
+True
+False
+True
+False
+True
+False
+False
+True
+True
+cannot access private member '_priv' of 'Box' outside its class
+hasattr() missing required argument 'name'
+hasattr() takes at most 2 positional argument(s) but 3 given
+hasattr: name (2nd argument) must be a String
+hasattr: name (2nd argument) must be a String
+hasattr: name (2nd argument) must be a String
+True

@@ -1,0 +1,59 @@
+a/b/c
+a
+/usr/local/bin
+/b/c
+a/b
+a/b
+a/
+
+a/\b
+threw
+threw
+threw
+a/b
+
+
+a/b
+/
+/
+//
+a/b
+c
+f.txt
+file
+
+
+b
+['a', '.txt']
+['archive.tar', '.gz']
+['noext', '']
+['.bashrc', '']
+['..', '']
+['file', '.']
+['dir.x/file', '']
+threw
+threw
+threw
+threw
+True
+True
+True
+True
+True
+True
+True
+True
+threw
+threw
+threw
+threw
+threw
+threw
+threw
+String
+True
+True
+True
+True
+True
+False

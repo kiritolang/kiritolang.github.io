@@ -1,0 +1,148 @@
+# List/Set/Dict adversarial/edge coverage (converted from tests/unit/test_collections_deep.cpp):
+# Set.apply error propagation, List.index negative-end window, Set set-algebra missing-arg throws,
+# NaN in List value-search, negative-step-with-bounds + float slice bound, Dict pop/setdefault
+# unhashable-key throws, Dict multi-key subscript throw, and Float key-identity edges (+-0.0, +-inf).
+# All CHECK_THROWS are runtime errors, folded inline with the actual message. Runs identically
+# with `ki` and `ki --no-inline`.
+var io = import("io")
+var math = import("math")
+
+# ---- Set.apply propagates an exception from fn (parity with List/Dict apply) ----
+try:
+    discard {1, 2, 3}.apply(Function(x): throw "boom")
+catch as e:
+    io.print(e)
+io.print(len({1, 2, 3}.apply(Function(x): return x * 2)))
+
+# ---- List.index with an explicit (start, end) window incl. a negative end ----
+io.print([1, 2, 3, 2].index(2))
+io.print([1, 2, 3, 2].index(2, 2))            # start past the first match
+io.print([1, 2, 3, 2].index(2, 0, -1))        # negative end -> len-1, first 2 still at 1
+try:
+    discard [1, 2, 3, 2].index(2, 2, -1)      # window [2, 3) holds only 3
+catch as e:
+    io.print(e)
+
+# ---- Set algebra with a missing argument throws ("expects an iterable") ----
+try:
+    discard {1, 2}.union()
+catch as e:
+    io.print(e)
+try:
+    discard {1, 2}.intersection()
+catch as e:
+    io.print(e)
+try:
+    discard {1, 2}.difference()
+catch as e:
+    io.print(e)
+try:
+    discard {1, 2}.symmetricdifference()
+catch as e:
+    io.print(e)
+try:
+    discard {1, 2}.issubset()
+catch as e:
+    io.print(e)
+try:
+    discard {1, 2}.issuperset()
+catch as e:
+    io.print(e)
+try:
+    discard {1, 2}.isdisjoint()
+catch as e:
+    io.print(e)
+
+# ---- NaN in a List value-search: exact ==, so it is never found ----
+io.print([math.nan].count(math.nan))
+try:
+    discard [math.nan].index(math.nan)
+catch as e:
+    io.print(e)
+try:
+    discard [math.nan].remove(math.nan)
+catch as e:
+    io.print(e)
+
+# ---- List slice: negative step WITH bounds, and a float bound throws ----
+io.print([0, 1, 2, 3, 4][4:1:-1])
+io.print([0, 1, 2, 3, 4][::-2])
+try:
+    discard [1, 2, 3][1.5:]
+catch as e:
+    io.print(e)
+try:
+    discard [1, 2, 3][::0]                    # zero step
+catch as e:
+    io.print(e)
+
+# ---- Dict pop / setdefault with an unhashable key throw (same guard as get) ----
+try:
+    discard {1: 2}.pop([])
+catch as e:
+    io.print(e)
+try:
+    discard {1: 2}.setdefault([], 0)
+catch as e:
+    io.print(e)
+try:
+    discard {1: 2}.get([])
+catch as e:
+    io.print(e)
+
+# ---- Dict multi-key subscript is rejected (a Dict takes exactly one index) ----
+try:
+    discard {1: 2}[0, 1]
+catch as e:
+    io.print(e)
+try:
+    var d = {1: 2}
+    d[0, 1] = 5
+catch as e:
+    io.print(e)
+
+# ---- Float key identity: +0.0 and -0.0 collapse; +inf and -inf are distinct ----
+var t1 = Function():
+    var d = {}
+    d[0.0] = 1
+    d[-0.0] = 2
+    return len(d)
+io.print(t1())
+var t2 = Function():
+    var d = {}
+    d[0.0] = 1
+    d[-0.0] = 2
+    return d[0.0]
+io.print(t2())
+io.print(len({math.inf, math.inf}))
+io.print(len({math.inf, -math.inf}))
+# A NaN key is REJECTED at insert: it is never == itself, so it could never be found, removed, or
+# updated (a re-assignment would fabricate a duplicate key), breaking the key-uniqueness invariant.
+try:
+    var s = {math.nan}
+catch as e:
+    io.print(e)
+try:
+    var d = {}
+    d[math.nan] = 1
+catch as e:
+    io.print(e)
+# ...but a NaN passed to a read/lookup on a Set is hashable, so it does not throw — it is simply
+# absent (Set membership/discard reject only genuinely UNHASHABLE values, like a List).
+io.print(math.nan in {1, 2})
+# Set membership / discard of an unhashable value THROWS (as Dict `in` does), not a silent False.
+try:
+    var s = {1, 2}
+    discard [3] in s
+catch as e:
+    io.print(e)
+try:
+    var s = {1, 2}
+    s.discard([3])
+catch as e:
+    io.print(e)
+try:
+    var s = {1, 2}
+    discard s.contains([3])
+catch as e:
+    io.print(e)

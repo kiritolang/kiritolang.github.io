@@ -1,0 +1,8 @@
+11
+120
+3
+42
+None
+'f' takes 1 positional argument(s) but 2 were given
+function missing required argument 'x'
+type 'Integer' is not callable

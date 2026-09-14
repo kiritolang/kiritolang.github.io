@@ -1,0 +1,64 @@
+# time construction/arithmetic/strptime, net URL helpers, and format()'s mini-format-spec
+# (converted from tests/unit/test_stdlib_extra.cpp — fully deterministic, no filesystem). The two
+# "throws" cases (bad strptime format, malformed format() spec) are runtime errors, caught inline.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# --- time ---
+io.print(import("time").make(2024, 2, 29, 12, 30, 45).iso())
+io.print(import("time").make(2024, 2, 29).weekday)
+io.print(import("time").make(2000, 1, 1).add(86400).day)
+io.print(import("time").make(2000, 1, 2).sub(86400).day)
+io.print(import("time").make(2000, 1, 2).diff(import("time").make(2000, 1, 1)))
+io.print(import("time").strptime("2023-06-15 08:05:00", "%Y-%m-%d %H:%M:%S").iso())
+var timemod = import("time")
+var p = timemod.strptime("2023-06-15", "%Y-%m-%d")
+io.print(timemod.datetime(p.timestamp).iso())
+var strptimebad = Function():
+    try:
+        discard import("time").strptime("nope", "%Y-%m-%d")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(strptimebad())
+
+# --- net ---
+io.print(import("net").quote("a b/c"))
+io.print(import("net").unquote("a%20b%2Fc"))
+io.print(import("net").unquote("a+b"))
+io.print(import("net").urlencode({"q": "a b"}))
+io.print(import("net").urlsplit("https://h.com:8080/x?a=1#f")["host"])
+io.print(import("net").urlsplit("https://h.com:8080/x?a=1#f")["port"])
+io.print(import("net").urlsplit("https://h.com/x?a=1#f")["query"])
+io.print(import("net").urlsplit("http://h/p?x=1#frag")["fragment"])
+io.print(import("net").parseqs("name=Ada+L&id=42")["name"])
+io.print(import("net").parseqs("name=Ada&id=42")["id"])
+io.print(import("net").unquote(import("net").quote("100% & more?")))
+
+# --- format() ---
+io.print(format(42, "05d"))
+io.print(format(255, "x"))
+io.print(format(255, "X"))
+io.print(format(7, "b"))
+io.print(format(64, "o"))
+io.print(format(3.14159, ".2f"))
+io.print(format(1234567, ","))
+io.print(format(1234567.5, ",.1f"))
+io.print(format("hi", "<6") + "|")
+io.print(format("hi", ">6"))
+io.print(format("hi", "^6"))
+io.print(format("x", "*^7"))
+io.print(format(0.25, ".1%"))
+io.print(format(-42, "+06d"))
+io.print(format(42, "+d"))
+io.print(format(42, " d"))
+io.print(format("hello", ".3"))
+io.print(format(42))
+io.print(format(255, "#x"))
+var formatbad = Function():
+    try:
+        discard format(5, "qq")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(formatbad())

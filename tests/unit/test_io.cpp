@@ -94,30 +94,9 @@ path.chmod(p, 0o600)
         CHECK(evalStr(vm, base + "path.chmod(dir + \"/nope.txt\", 0o644)") == "False");
     }
 
-    // --- the stream= keyword on print / write / eprint / input / read ---
-    CHECK(evalStr(vm, base + R"(
-var buf = io.BytesIO()
-io.print("hi", 7, stream=buf)
-io.write("raw", stream=buf)
-io.eprint("e", stream=buf)
-buf.getvalue()
-)") == "hi 7\nrawe\n");
-    CHECK(evalStr(vm, base + R"(
-var src = io.BytesIO("one\ntwo\nrest")
-io.input(stream=src) + "|" + io.read(3, stream=src) + "|" + io.read(stream=src)
-)") == "one|two|\nrest");
-    // no stream= still writes to the (redirected) stdout
-    CHECK(evalStr(vm, base + R"(
-var cap = io.BytesIO()
-io.stdout = cap
-io.print("x", stream=io.BytesIO())   # to a throwaway buffer, not cap
-io.print("y")                        # to cap
-io.stdout = io.__stdout__
-cap.getvalue()
-)") == "y\n");
-    // unknown keyword and non-stream target both throw
-    CHECK_THROWS(vm.runSource("import(\"io\").print(\"x\", bogus=1)\n"));
-    CHECK_THROWS(vm.runSource("import(\"io\").print(\"x\", stream=42)\n"));
+    // NOTE: the stream= keyword cases (BytesIO-only, no filesystem) were converted to
+    // tests/scripts/unit_io.ki (TRIMMED here). The cases above touch a real temp-dir file/OS
+    // permission bits and so stay in C++ per the golden-script determinism rule.
 
     std::filesystem::remove_all(dir);
     return RUN_TESTS();

@@ -1,0 +1,125 @@
+# Kirito-authored standard-library modules (itertools, functools, collections, statistics, string,
+# textwrap, base64, csv, heapq, bisect, copy, enum) and the new constructor builtins (converted from
+# tests/unit/test_stdmodules.cpp — fully deterministic, no filesystem).
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# --- List/Set/Dict constructors ---
+io.print(String(List("abc")))
+io.print(len(Set([1, 2, 2, 3, 3, 3])))
+var d1 = Dict([[1, 2], [3, 4]])
+io.print(String(d1[3]))
+io.print(String(List()))
+
+# --- itertools ---
+var it = import("itertools")
+io.print(String(it.chain([[1, 2], [3], [4, 5]])))
+io.print(String(it.accumulate([1, 2, 3, 4])))
+io.print(len(it.permutations([1, 2, 3])))
+io.print(String(it.combinations([1, 2, 3], 2)))
+io.print(String(it.product([[1, 2], [3, 4]])))
+io.print(String(it.repeat(7, 3)))
+io.print(String(it.islice([0, 1, 2, 3, 4, 5], 1, 5, 2)))
+
+# --- functools ---
+var f = import("functools")
+io.print(f.reduce(Function(a, b): return a * b, [1, 2, 3, 4]))
+io.print(f.reduce(Function(a, b): return a + b, [1, 2, 3], 100))
+
+# --- collections ---
+var c = import("collections")
+var dq = c.deque([1, 2, 3])
+dq.appendleft(0)
+io.print(dq.popleft())
+var k = c.Counter(["a", "b", "a"])
+io.print(k.get("a"))
+var dd = c.defaultdict(Function(): return 0)
+dd["x"] = dd["x"] + 5
+io.print(dd["x"])
+
+# --- statistics ---
+var stats = import("statistics")
+io.print(String(stats.mean([2, 4, 6])))
+io.print(String(stats.median([1, 2, 3, 4])))
+io.print(stats.mode([1, 1, 2, 3, 1]))
+io.print(String(round(stats.variance([1, 2, 3, 4, 5]), 1)))
+
+# --- string ---
+io.print(import("string").digits)
+io.print(import("string").capwords("hello WORLD"))
+io.print(len(import("string").ascii_letters))
+
+# --- textwrap ---
+var tw = import("textwrap")
+io.print(String(tw.wrap("a b c d e", 3)))
+io.print(tw.dedent("    x\n    y"))
+
+# --- base64 round-trip ---
+var b64 = import("base64")
+io.print(b64.encode([77, 97, 110]))
+io.print(String(b64.decode(b64.encode([1, 2, 3, 4, 5]))))
+io.print(b64.encode([77]))
+
+# --- csv ---
+var csv = import("csv")
+io.print(csv.formatrow(["a", "b,c", "d"]))
+io.print(String(csv.parserow("x,\"y,z\",w")))
+
+# --- heapq ---
+var h = import("heapq")
+io.print(String(h.nsmallest(3, [5, 1, 8, 3, 9, 2])))
+var q = []
+h.heappush(q, 5)
+h.heappush(q, 1)
+h.heappush(q, 3)
+io.print(h.heappop(q))
+
+# --- bisect ---
+io.print(import("bisect").bisectleft([1, 3, 5, 7], 4))
+io.print(import("bisect").bisectright([1, 3, 3, 5], 3))
+var bi = import("bisect")
+var arr = [1, 3, 5]
+bi.insortleft(arr, 4)
+io.print(String(arr))
+
+# --- copy ---
+var cp = import("copy")
+var o1 = [[1, 2], [3]]
+var dcp = cp.deepcopy(o1)
+dcp[0][0] = 9
+io.print(String(o1))
+var o2 = [1, 2]
+var sc = cp.copy(o2)
+sc.append(3)
+io.print(len(o2))
+
+# --- enum ---
+var e = import("enum")
+var C1 = e.Enum(["A", "B", "C"])
+io.print(String(C1.get("B")))
+var C2 = e.Enum(["A", "B"])
+io.print(C2.nameof(0))
+var C3 = e.Enum(["A"])
+io.print(String("A" in C3))
+
+# --- _iter_ protocol on a user class ---
+var bagtotal = Function():
+    class Bag:
+        var _init_ = Function(self):
+            self._xs = [1, 2, 3]
+        var _iter_ = Function(self):
+            return iter(self._xs)
+    var total = 0
+    for x in Bag():
+        total = total + x
+    return total
+io.print(bagtotal())
+
+# --- list.pop(index) ---
+var p1 = [10, 20, 30]
+io.print(p1.pop(0))
+var p2 = [10, 20, 30]
+io.print(p2.pop(-1))
+var p3 = [10, 20, 30]
+p3.pop(1)
+io.print(String(p3))

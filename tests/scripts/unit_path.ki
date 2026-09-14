@@ -1,0 +1,97 @@
+# The `path` module (Kirito's os.path) — pure string ops (join/dirname/basename/splitext), their
+# adversarial/type-error throws, the module's `inspect()` surface, the io/sys -> path split, and the
+# read-only gettempdir/fasttemp/executable checks (converted from tests/unit/test_path.cpp — fully
+# deterministic, no filesystem writes). The filesystem-query cases against a real temp file/dir, and
+# all filesystem-mutation cases (mkdir/remove/rmtree), depend on real OS state and stay in C++.
+# The CHECK_THROWS cases are runtime errors, caught inline.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var path = import("path")
+
+# ---- join: correct output ----
+io.print(path.join("a", "b", "c"))
+io.print(path.join("a"))
+io.print(path.join("/usr", "local", "bin"))
+io.print(path.join("a", "/b", "c"))         # absolute resets
+io.print(path.join("a/", "b"))              # no double sep
+io.print(path.join("a", "", "b"))           # empty middle
+io.print(path.join("a", ""))                # trailing empty
+io.print(path.join("", "", ""))             # all empty
+io.print(path.join("a", "\\b"))             # backslash NOT absolute
+
+# ---- join: adversarial / errors ----
+var thrown = Function(fn):
+    try:
+        discard fn()
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(thrown(Function(): return path.join()))            # needs >= 1 part
+io.print(thrown(Function(): return path.join("a", 5)))       # non-String part
+io.print(thrown(Function(): return path.join(None)))
+
+# ---- dirname ----
+io.print(path.dirname("a/b/c"))
+io.print(path.dirname("file"))
+io.print(path.dirname(""))
+io.print(path.dirname("a/b/"))
+io.print(path.dirname("/"))
+io.print(path.dirname("/a"))
+io.print(path.dirname("//a"))
+io.print(path.dirname("a/b\\c"))            # last of / or backslash
+
+# ---- basename ----
+io.print(path.basename("a/b/c"))
+io.print(path.basename("/abs/f.txt"))
+io.print(path.basename("file"))
+io.print(path.basename("a/b/"))
+io.print(path.basename("/"))
+io.print(path.basename("\\a\\b"))
+
+# ---- splitext ----
+io.print(String(path.splitext("a.txt")))
+io.print(String(path.splitext("archive.tar.gz")))
+io.print(String(path.splitext("noext")))
+io.print(String(path.splitext(".bashrc")))
+io.print(String(path.splitext("..")))
+io.print(String(path.splitext("file.")))
+io.print(String(path.splitext("dir.x/file")))
+
+# ---- string-op type errors ----
+io.print(thrown(Function(): return path.dirname(5)))
+io.print(thrown(Function(): return path.basename(None)))
+io.print(thrown(Function(): return path.splitext(["a"])))
+io.print(thrown(Function(): return path.exists(5)))
+
+# ---- inspect(path) describes the module (incl. the moved fs ops + their kwargs) ----
+var ins = inspect(path)
+io.print("module path:" in ins)
+io.print("join(...)" in ins)
+io.print("dirname(path: String) -> String" in ins)
+io.print("getsize(path: String) -> Integer" in ins)
+io.print("mkdir(path: String, exist_ok: Bool = False)" in ins)
+io.print("remove(path: String, missing_ok: Bool = False)" in ins)
+io.print("rmtree(path: String, missing_ok: Bool = False)" in ins)
+io.print("listdir(path: String) -> List" in ins)
+
+# ---- the split is real: all path/filesystem ops moved OUT of io / sys ----
+io.print(thrown(Function(): return import("io").dirname("/a/b")))
+io.print(thrown(Function(): return import("io").exists(".")))
+io.print(thrown(Function(): return import("io").mkdir(".")))
+io.print(thrown(Function(): return import("io").remove(".")))
+io.print(thrown(Function(): return import("io").getcwd()))
+io.print(thrown(Function(): return import("io").listdir(".")))
+io.print(thrown(Function(): return import("sys").joinpath("a", "b")))
+# io keeps only actual I/O
+io.print(type(path.getcwd()))
+
+# gettempdir + executable are filesystem locations, so they live in `path` (moved from `sys`).
+io.print(path.isdir(path.gettempdir()))
+io.print(len(path.gettempdir()) > 0)
+# fasttemp(): the fastest available scratch dir — RAM tmpfs (/dev/shm) on Linux, else gettempdir.
+# Whatever it resolves to must be an existing, non-empty directory path (portable, best-effort).
+io.print(path.isdir(path.fasttemp()) and len(path.fasttemp()) > 0)
+io.print(type(path.fasttemp()) == "String")
+io.print(type(path.executable) == "String" and len(path.executable) > 0)
+# ...and no longer in sys.
+io.print(hasattr(import("sys"), "gettempdir") or hasattr(import("sys"), "executable"))

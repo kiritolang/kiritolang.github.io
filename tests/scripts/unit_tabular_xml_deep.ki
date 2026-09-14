@@ -1,0 +1,44 @@
+# Adversarial/edge coverage for `tabular` and `xml` (converted from
+# tests/unit/test_tabular_xml_deep.cpp — fully deterministic, no filesystem): Series scalar -/// /%,
+# setitem write path, _str_ rendering, and xml's empty-numeric-entity / unterminated-construct
+# lenient branches plus non-String attribute coercion in tostring.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# ================= tabular =================
+var tabular = import("tabular")
+
+io.print((tabular.Series([10, 20, 30]) - 5).tolist())
+io.print((tabular.Series([10, 21]) // 2).tolist())
+io.print((tabular.Series([10, 21, 32]) % 3).tolist())
+
+var s1 = tabular.Series([1, 2, 3])
+s1[0] = 99
+io.print(s1.tolist())
+var s2 = tabular.Series([1, 2, 3], index=["a", "b", "c"])
+s2["b"] = 99
+io.print(s2.tolist())
+
+io.print("20" in String(tabular.Series([10, 20, 30])))
+io.print("mycol" in String(tabular.Series([10, 20], name="mycol")))
+io.print("a" in String(tabular.readcsv("a,b\n1,2\n3,4")))
+
+# ================= xml =================
+var xml = import("xml")
+
+io.print(xml.parse("<x>&#;</x>").text)
+io.print(xml.parse("<x>&#x;</x>").text)
+io.print(xml.parse("<x>&#65;</x>").text)
+
+var noThrow = Function(fn):
+    try:
+        discard fn()
+        return "ok"
+    catch as e:
+        return "threw"
+io.print(noThrow(Function(): return xml.parse("<a>ok</a><!-- trailing")))
+io.print(noThrow(Function(): return xml.parse("<a>ok</a><![CDATA[ trailing")))
+io.print(noThrow(Function(): return xml.parse("<a>ok</a><?pi trailing")))
+io.print(noThrow(Function(): return xml.parse("<a>ok</a><!DOCTYPE x")))
+
+io.print("42" in xml.tostring(xml.Element("r", {"id": 42})))

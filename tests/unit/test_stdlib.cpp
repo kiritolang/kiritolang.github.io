@@ -12,17 +12,10 @@ static std::string evalStr(KiritoVM& vm, const std::string& src) {
 int main() {
     KiritoVM vm;
 
-    // --- math module ---
-    CHECK(evalStr(vm, "import(\"math\").sqrt(16)") == "4.0");
-    CHECK(evalStr(vm, "var m = import(\"math\")\nm.sqrt(9)") == "3.0");
-    CHECK(evalStr(vm, "import(\"math\").floor(3.7)") == "3");
-    CHECK(evalStr(vm, "import(\"math\").ceil(3.2)") == "4");
-    CHECK(evalStr(vm, "import(\"math\").factorial(5)") == "120");
-    CHECK(evalStr(vm, "import(\"math\").gcd(12, 8)") == "4");
-    CHECK(evalStr(vm, "import(\"math\").pow(2, 10)") == "1024.0");
-    CHECK(evalStr(vm, "import(\"math\").log2(8)") == "3.0");
-    CHECK(evalStr(vm, "var m = import(\"math\")\nm.pi > 3.14 and m.pi < 3.15") == "True");
-    CHECK(evalStr(vm, "var m = import(\"math\")\nm.gcd(54, 24)") == "6");
+    // NOTE: math-module and pure path.join/gettempdir(-boolean) cases were converted to
+    // tests/scripts/unit_stdlib.ki (TRIMMED here — see tests/unit/CLAUDE conversion notes).
+    // The remaining cases below write real files under the OS temp directory and so stay in C++
+    // per the golden-script determinism rule (no filesystem writes in checked-in .ki goldens).
 
     // --- file io: write then read back ---
     CHECK(evalStr(vm, R"(
@@ -62,13 +55,6 @@ var first = g.readline()
 g.close()
 first
 )") == "line1");
-
-    // --- path.gettempdir returns an existing directory (honors TMPDIR) ---
-    CHECK(evalStr(vm, "var path = import(\"path\")\npath.isdir(path.gettempdir()) and len(path.gettempdir()) > 0") == "True");
-    // --- path.join: os.path.join semantics (separator join; absolute part resets) ---
-    CHECK(evalStr(vm, "import(\"path\").join(\"a\", \"b\", \"c\")") == "a/b/c");
-    CHECK(evalStr(vm, "import(\"path\").join(\"/usr\", \"local\", \"bin\")") == "/usr/local/bin");
-    CHECK(evalStr(vm, "import(\"path\").join(\"a\", \"/b\")") == "/b");
 
     return RUN_TESTS();
 }

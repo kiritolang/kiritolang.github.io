@@ -1,0 +1,20 @@
+Hello, World!
+5
+5
+Hello
+World!
+full contents
+
+preset|preset
+ABBAA
+5
+5
+89
+keep this
+5
+inside
+the payload to compress and store
+BytesIO.write expects a String or Bytes
+BytesIO expects a byte String
+abc
+type 'Integer' is not iterable

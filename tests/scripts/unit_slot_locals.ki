@@ -1,0 +1,204 @@
+# Slot-addressed locals (v1.9): a function's non-captured body locals are addressed by a frame slot
+# instead of a name lookup. These pin the behavior-PRESERVING contract — closures, capture,
+# shadowing, read-before-assign, params/defaults, try/catch/with/unpack, recursion, and methods all
+# behave exactly as before — plus the numeric fast path and constant-dedup semantics. (Converted
+# from tests/unit/test_slot_locals.cpp; the four `throws()` cases are runtime and are caught
+# inline.) Each case uses a unique top-level name so cases stay independent in this shared module
+# scope. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# --- basic slotting + the loop-counter win case ---
+var f01 = Function():
+    var a = 1
+    var b = 2
+    return a + b
+io.print(f01())
+
+var f02 = Function(n):
+    var s = 0
+    var i = 0
+    while i < n:
+        s = s + i
+        i = i + 1
+    return s
+io.print(f02(100))
+
+var f03 = Function(xs):
+    var t = 0
+    for x in xs:
+        t = t + x
+    return t
+io.print(f03([3, 4, 5]))
+
+# --- closures: a captured CONTAINER stays name-based and is shared/mutated across calls
+#     (rebinding a captured variable is a compile error; mutating a captured container is allowed) ---
+var mk04 = Function():
+    var n = [0]
+    var inc = Function():
+        n[0] = n[0] + 1
+        return n[0]
+    return inc
+var c04 = mk04()
+io.print([c04(), c04(), c04()])
+
+# capture only reads (still must see the live value)
+var mk05 = Function():
+    var x = 10
+    var g = Function(): return x
+    x = 20
+    return g()
+io.print(mk05())
+
+# --- inner shadows an outer local: the outer stays slotted and correct ---
+var f06 = Function():
+    var x = 1
+    var g = Function():
+        var x = 99
+        return x
+    return [x, g()]
+io.print(f06())
+
+# --- capture two levels deep: a grandchild mutating the outer captured CONTAINER (rebinding a
+#     captured variable is a compile error; mutating a captured container element is allowed) ---
+var outer07 = Function():
+    var x = [1]
+    var mid = Function():
+        var inner = Function():
+            x[0] = x[0] + 10
+            return x[0]
+        return inner()
+    var r = mid()
+    return [r, x[0]]
+io.print(outer07())
+
+# --- read/rebind-before-assign is STRICT (no fallback): a bare `=` to a local before its own
+#     `var` runs is a "not defined" error, NOT a walk out to an enclosing binding of the same
+#     name. (The former find-outer-rebind, `[7, 5]`, is gone under strict lexical addressing.) ---
+var slot8x = 100
+var f08 = Function():
+    slot8x = 5
+    var slot8x = 7
+    return slot8x
+try:
+    io.print(f08())
+catch as e:
+    io.print(e)
+
+# read-before-assign WITHOUT any binding -> NameError (UnboundLocal-style), like before
+var f09 = Function():
+    var y = z
+    var z = 1
+    return y
+try:
+    io.print(f09())
+catch as e:
+    io.print(e)
+
+# --- parameters stay name-based: defaults (fresh per call) + captured params still work ---
+var f10 = Function(a, b = 10):
+    var g = Function(): return a + b
+    return g()
+io.print(f10(a = 2))
+
+var f11 = Function(a, b = 10):
+    var g = Function(): return a + b
+    return g()
+io.print(f11(2, 5))
+
+var f12 = Function(xs = []):
+    xs.append(1)
+    return len(xs)
+var val12a = f12()
+var val12b = f12()
+io.print([val12a, val12b])   # not shared
+
+var f13 = Function(a: Integer, b: Integer):
+    var c = a * b
+    return c
+io.print(f13(b = 3, a = 4))
+
+# --- try/catch var, with-as, unpacking (+ starred), swap — all slotted store targets ---
+var f14 = Function():
+    try:
+        throw "boom"
+    catch String as e:
+        return e
+io.print(f14())
+
+var f15 = Function():
+    var a, b, c = [1, 2, 3]
+    a, b = b, a
+    var first, *rest = [10, 20, 30, 40]
+    return [a, b, c, first, rest]
+io.print(f15())
+
+var d16 = {"a": 1, "b": 2}
+var f16 = Function(m):
+    var t = 0
+    for k, v in m.items():
+        t = t + v
+    return t
+io.print(f16(d16))
+
+# --- recursion / mutual recursion: a function's own name lives in the enclosing scope ---
+var fib17 = Function(n): return n if n < 2 else fib17(n - 1) + fib17(n - 2)
+io.print(fib17(10))
+
+var ev18 = Function(n): return True if n == 0 else od18(n - 1)
+var od18 = Function(n): return False if n == 0 else ev18(n - 1)
+io.print(ev18(10))
+
+# the call-depth guard still fires on runaway recursion (catchable, not a crash)
+var r19 = Function(n): return r19(n + 1)
+try:
+    io.print(r19(0))
+catch as e:
+    io.print(e)
+
+# --- with-as: the manager (a hidden $with slot) and the bound name both work ---
+class Ctx20:
+    var _enter_ = Function(self): return 42
+    var _exit_ = Function(self): return None
+var f20 = Function():
+    with Ctx20() as v:
+        return v
+io.print(f20())
+
+# --- method bodies are slotted (self is a name-based param); inheritance + _super_ intact ---
+class Animal21:
+    var _init_ = Function(self, name):
+        self.name = name
+    var speak = Function(self): return self.name + " sound"
+class Dog21(Animal21):
+    var speak = Function(self):
+        var prefix = "woof: "
+        return prefix + self._super_().speak()
+var d21 = Dog21("Rex")
+io.print(d21.speak())
+
+# a class defined INSIDE a function: its name is bound in its frame slot, like `var P = ...`
+var mk22 = Function():
+    class P22:
+        var _init_ = Function(self, x):
+            self.x = x
+    return P22(5).x
+io.print(mk22())
+
+# --- numeric fast path: identical semantics (exact float ==, wraparound, Py3 division, seq *) ---
+io.print(0.1 + 0.2 == 0.3)
+io.print(3 * "ab")
+io.print("ab" * 3)
+io.print([7 // 2, 7 % 2, 2 ** 10, 7 / 2])
+io.print(9223372036854775807 + 1)   # two's-complement wraparound
+try:
+    discard 1 / 0                    # zero divisor still throws
+catch as e:
+    io.print(e)
+io.print([1 < 2, 2.0 <= 2.0, 3 > 5, 1 == 1.0])
+
+# --- constant dedup is transparent: repeated literals still produce correct values ---
+var f30 = Function():
+    var a = "x"
+    var b = "x"
+    return [a, b, 1, 1, 1]
+io.print(f30())

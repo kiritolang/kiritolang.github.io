@@ -1,5 +1,8 @@
-// test_io_path_deep.cpp — adversarial/edge coverage for the io + path modules: std streams as
-// context managers, tolerant listing on files, binary writelines, seek/mode/rename/mkdir edges.
+// test_io_path_deep.cpp — adversarial/edge coverage for the io + path modules that requires real
+// files under the OS temp directory: tolerant listing on a regular file, binary writelines,
+// seek/rename/mkdir edges. (The filesystem-free cases — std-stream context managers, tolerant
+// listdir/walk on a missing path, BytesIO-only stdin/seek, and open()'s mode/argument-validation
+// throws — were converted to tests/scripts/unit_io_path_deep.ki.)
 #include <string>
 
 #include "../check.hpp"
@@ -11,33 +14,15 @@ using namespace kirito;
 static std::string run(KiritoVM& vm, const std::string& src) {
     return vm.stringify(vm.runSource(src));
 }
-// True iff the program throws a Kirito error (a caught KiritoError or any std::exception).
-static bool throws(KiritoVM& vm, const std::string& src) {
-    try { vm.runSource(src); return false; }
-    catch (...) { return true; }
-}
 
 int main() {
     KiritoVM vm;
 
-    // --- io.stdout / io.stderr as `with` context managers (ZERO prior coverage) ---
-    // `with io.stdout as s:` must enter (yield the stream) and exit (no-op close); `s` is usable.
-    CHECK(run(vm, R"KI(
-var io = import("io")
-var entered = False
-with io.stdout as s:
-    s.flush()
-    entered = True
-entered
-)KI") == "True");
-    CHECK(run(vm, R"KI(
-var io = import("io")
-var entered = False
-with io.stderr as s:
-    s.flush()
-    entered = True
-entered
-)KI") == "True");
+    // NOTE: the std-stream context-manager cases, the tolerant-on-a-missing-path listdir/walk
+    // cases, the BytesIO-only stdin/seek cases, and the mode/argument-validation open() throws
+    // (which never touch the filesystem) were converted to tests/scripts/unit_io_path_deep.ki
+    // (TRIMMED here). The cases below create/rename/chmod real files under the OS temp directory
+    // and so stay in C++ per the golden-script determinism rule.
 
     // --- path.listdir / path.walk on a path that IS a regular file (tolerant -> []) ---
     CHECK(run(vm, R"KI(
@@ -62,9 +47,6 @@ var n = len(path.walk(p))
 path.remove(p)
 n
 )KI") == "0");
-    // and still tolerant on an outright-missing path:
-    CHECK(run(vm, "var path = import(\"path\")\nlen(path.listdir(path.join(path.gettempdir(), \"kdeep_nope_zzz\")))") == "0");
-    CHECK(run(vm, "var path = import(\"path\")\nlen(path.walk(path.join(path.gettempdir(), \"kdeep_nope_zzz\")))") == "0");
 
     // --- File.writelines with Bytes items in binary mode ("wb") ---
     // Each item is written raw (no separator); read back byte-for-byte.
@@ -114,38 +96,7 @@ path.remove(p)
 readable
 )KI") == "True");
 
-    // --- io.read(-1) / io.read(negative) => read-all branch, via a rebound BytesIO stdin ---
-    {
-        KiritoVM v2;   // isolate stdin rebinding from the shared VM
-        CHECK(run(v2, R"KI(
-var io = import("io")
-var b = io.BytesIO("hello world")
-io.stdin = b
-var r = io.read(-1)
-io.stdin = io.__stdin__
-r
-)KI") == "hello world");
-        CHECK(run(v2, R"KI(
-var io = import("io")
-var b = io.BytesIO("abcdef")
-io.stdin = b
-var r = io.read(3)
-io.stdin = io.__stdin__
-r
-)KI") == "abc");
-        // read() with no argument is also read-all:
-        CHECK(run(v2, R"KI(
-var io = import("io")
-var b = io.BytesIO("payload")
-io.stdin = b
-var r = io.read()
-io.stdin = io.__stdin__
-r
-)KI") == "payload");
-    }
-
-    // --- seek with a non-Integer offset must throw (File and BytesIO) ---
-    CHECK(throws(vm, "var io = import(\"io\")\nvar b = io.BytesIO(\"abc\")\nb.seek(\"x\")"));
+    // --- seek with a non-Integer offset must throw (File) ---
     CHECK(run(vm, R"KI(
 var io = import("io")
 var path = import("path")
@@ -160,8 +111,8 @@ f.close()
 path.remove(p)
 caught
 )KI") == "True");
-    // BytesIO clamps a negative absolute target to 0 (no throw); File rejects it (throws).
-    CHECK(run(vm, "var io = import(\"io\")\nvar b = io.BytesIO(\"abc\")\ndiscard b.seek(-100)\nb.tell()") == "0");
+    // File rejects a negative absolute seek target (throws); BytesIO's clamp-to-0 behavior is
+    // covered in tests/scripts/unit_io_path_deep.ki.
     CHECK(run(vm, R"KI(
 var io = import("io")
 var path = import("path")
@@ -193,30 +144,6 @@ g.close()
 path.remove(p)
 [len(data), data[5], data[6]]
 )KI") == "[7, 65, 66]");
-
-    // --- open modes "w+" and "a+" must throw "unsupported file mode" ---
-    CHECK(throws(vm, "var io = import(\"io\")\nvar path = import(\"path\")\nio.open(path.join(path.gettempdir(), \"kdeep_wp.txt\"), \"w+\")"));
-    CHECK(throws(vm, "var io = import(\"io\")\nvar path = import(\"path\")\nio.open(path.join(path.gettempdir(), \"kdeep_ap.txt\"), \"a+\")"));
-    // a stray unsupported mode letter also throws:
-    CHECK(throws(vm, "var io = import(\"io\")\nvar path = import(\"path\")\nio.open(path.join(path.gettempdir(), \"kdeep_zz.txt\"), \"z\")"));
-
-    // --- open "w"/"a" in a non-existent directory must throw (could not open file) ---
-    CHECK(throws(vm, R"KI(
-var io = import("io")
-var path = import("path")
-io.open(path.join(path.gettempdir(), "kdeep_nodir_xyz", "f.txt"), "w")
-)KI"));
-    CHECK(throws(vm, R"KI(
-var io = import("io")
-var path = import("path")
-io.open(path.join(path.gettempdir(), "kdeep_nodir_xyz", "f.txt"), "a")
-)KI"));
-    // "r" on a missing file likewise throws:
-    CHECK(throws(vm, R"KI(
-var io = import("io")
-var path = import("path")
-io.open(path.join(path.gettempdir(), "kdeep_missing_read.txt"), "r")
-)KI"));
 
     // --- path.rename onto an EXISTING destination silently overwrites ---
     CHECK(run(vm, R"KI(
@@ -265,13 +192,6 @@ catch as e:
 path.remove(p)
 caught
 )KI") == "True");
-
-    // --- open with >2 positional args must throw ---
-    CHECK(throws(vm, R"KI(
-var io = import("io")
-var path = import("path")
-io.open(path.join(path.gettempdir(), "kdeep_x.txt"), "w", "extra")
-)KI"));
 
     // --- File read(n) after readline/iteration drove to EOF: returns "" (empty), no crash ---
     CHECK(run(vm, R"KI(

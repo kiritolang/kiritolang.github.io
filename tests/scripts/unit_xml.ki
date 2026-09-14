@@ -1,0 +1,39 @@
+# The built-in `xml` module (ElementTree-style parser/serializer): tags, attributes, entity
+# decoding, comments/declaration/DOCTYPE/CDATA, mixed content via itertext, serialization round-trips,
+# and lenient (never-crashes) parsing of malformed markup (converted from tests/unit/test_xml.cpp — a
+# C++ integration smoke test; exhaustive behavioral + fuzz coverage lives in tests/scripts/spec_xml.ki).
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var xml = import("xml")
+
+# --- parsing: tags, attributes, nested text ---
+io.print(xml.parse("<r><a>1</a></r>").tag)
+io.print(xml.parse("""<r x='1' y="2"/>""").get("x"))
+io.print(xml.parse("""<r x='1' y="2"/>""").get("y"))
+io.print(xml.parse("<r><a>hi</a></r>").find("a").text)
+io.print(len(xml.parse("<r><a/><a/><b/></r>").findall("a")))
+io.print(xml.parse("<r><a/></r>").find("nope"))
+io.print(xml.parse("<r/>").get("missing", "d"))
+
+# --- entities decode (named + numeric dec/hex); unknown kept verbatim ---
+io.print(xml.parse("<e>&lt;&gt;&amp;&quot;&apos;</e>").text)
+io.print(xml.parse("<e>&#65;&#x42;</e>").text)
+io.print(xml.parse("<e>a&zzz;b</e>").text)
+
+# --- comments / declaration / DOCTYPE / CDATA ---
+io.print(xml.parse("""<?xml version='1.0'?><!-- c --><r>x</r>""").text)
+io.print(xml.parse("<r><![CDATA[ <raw> & ]]></r>").text)
+
+# --- mixed content keeps order via tail; itertext gathers it ---
+io.print("".join(xml.parse("<r>x<a>y</a>z</r>").itertext()))
+
+# --- serialization round-trips (re-escaping) ---
+io.print(xml.tostring(xml.parse("""<r k="a&amp;b">x &lt; y</r>""")))
+io.print(xml.tostring(xml.parse("<a/>")))
+
+# --- adversarial: a lenient parser never crashes; empty input -> None ---
+io.print(xml.parse(""))
+# these must not throw (the parser is intentionally tolerant of malformed markup)
+io.print(xml.parse("<a><b></a>").tag)
+io.print(xml.parse("<a").tag)
+io.print(xml.parse("plain text"))

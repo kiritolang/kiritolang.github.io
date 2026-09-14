@@ -1,0 +1,84 @@
+# The `complex` module's Complex value type, its operators, analytic functions, and ComplexMatrix /
+# complex-vector support. Converted from tests/unit/test_complex.cpp. All error cases are runtime
+# (bad arguments / domain guards / removed-name lookups), so they are folded inline via try/catch.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var C = import("complex")
+var math = import("math")
+
+# --- numbers: construction + string form (components are doubles) ---
+io.print(C.of(3, 4))
+io.print(C.of(1, -2))
+io.print(C.real(5))
+io.print(C.Complex(7))
+io.print(C.i)
+
+# --- arithmetic ---
+io.print(C.of(1, 2) + C.of(3, 4))
+io.print(C.of(5, 0) - C.of(2, 3))
+io.print(C.of(1, 2) * C.of(3, 4))   # (1+2i)(3+4i) = -5+10i
+io.print(C.of(1, 1) / C.of(1, 1))
+io.print(-C.of(2, -3))
+io.print(C.abs(C.of(1, 1) ** C.of(2, 0) - C.of(0, 2)) < 0.000000001)  # (1+i)^2 = 2i
+
+# --- equality (incl. Complex vs real) and accessors ---
+io.print(C.of(1, 2) == C.of(1, 2))
+io.print(C.of(2, 0) == 2)
+io.print(C.of(2, 1) == 2)
+io.print(C.of(3, 4).re)
+io.print(C.of(3, 4).im)
+
+# --- reductions ---
+io.print(C.of(3, 4).conjugate())
+io.print(C.of(3, 4).modulus())
+io.print(C.of(3, 4).norm2())
+io.print(C.zero.iszero())
+# the method is lowercase-no-underscore per Kirito's public-surface rule; the old underscored
+# spelling was renamed and must no longer resolve.
+try:
+    discard C.zero.is_zero()
+catch as e:
+    io.print(e)
+
+# --- analytic functions (modulus of the difference is ~0) ---
+# complex has no pi/e — use math's (single source of truth)
+io.print(C.abs(C.exp(C.of(0, math.pi)) - C.of(-1, 0)) < 0.000000001)  # Euler
+io.print(C.sqrt(C.of(-1, 0)))                                   # sqrt(-1) = i
+io.print(C.abs(C.log(C.of(math.e, 0)) - C.one) < 0.000000001)
+io.print(C.polar(2.0, 0.0))
+
+# --- matrices: determinant (Gaussian) and inverse (Gauss-Jordan) ---
+var M = C.Matrix([[C.of(1, 1), C.of(2, 0)], [C.of(0, 1), C.of(1, -1)]])
+io.print(M.rows())
+io.print(M[0, 0])
+io.print(M.determinant())
+io.print(M.trace())
+io.print(M.transpose()[0, 1])
+io.print(M.hermitian()[0, 1])
+# M * inverse(M) == I (via complex-matrix equality, within tolerance)
+io.print(M * M.inverse() == C.identity(2))
+
+io.print(C.identity(3))
+
+# --- complex vectors: Hermitian dot, v.v real, norm (`*` stays matrix multiply, not a dot) ---
+io.print(C.vector([C.of(1, 1), C.of(2, 0)]).dot(C.vector([C.of(1, 0), C.of(0, 1)])))
+io.print(C.vector([C.of(1, 1), C.of(2, 0)]).dot(C.vector([C.of(1, 1), C.of(2, 0)])))  # sum|z|^2
+io.print(C.abs(C.of(C.vector([C.of(1, 1), C.of(2, 0)]).norm(), 0) - C.sqrt(C.of(6, 0))) < 0.000000001)
+
+# --- error cases ---
+try:
+    discard C.one / C.zero              # division by zero
+catch as e:
+    io.print(e)
+try:
+    discard C.one < C.of(2, 0)          # no ordering
+catch as e:
+    io.print(e)
+try:
+    discard C.Matrix([[C.of(1, 0), C.of(2, 0)], [C.of(2, 0), C.of(4, 0)]]).inverse()  # singular
+catch as e:
+    io.print(e)
+try:
+    discard C.Matrix([[C.of(1, 0), C.of(2, 0)], [C.of(3, 0)]])  # ragged
+catch as e:
+    io.print(e)

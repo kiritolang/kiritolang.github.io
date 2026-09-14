@@ -1,0 +1,84 @@
+# range/sum/min/max/abs/round, sorted/enumerate/zip (lazy iterators), inline anonymous functions,
+# type(), expanded math, and bitwise integer builtins (converted from tests/unit/test_builtins.cpp).
+# The three CHECK_THROWS at the end are runtime type errors, folded inline. Runs identically with
+# `ki` and `ki --no-inline`.
+var io = import("io")
+
+# range
+io.print(range(5))
+io.print(range(2, 8, 2))
+io.print(range(5, 0, -1))
+var t1 = Function():
+    var s = 0
+    for i in range(101):
+        s = s + i
+    return s
+io.print(t1())
+
+# sum / min / max / abs / round
+io.print(sum([1, 2, 3, 4]))
+io.print(sum([1.5, 2.5]))
+io.print(min([5, 2, 8, 1]))
+io.print(max([5, 2, 8, 1]))
+io.print(min(3, 7, 1))
+io.print(max("apple", "banana"))
+io.print(abs(-7))
+io.print(abs(-3.5))
+io.print(round(3.14159, 2))
+io.print(round(2.7))
+
+# sorted / enumerate / zip
+io.print(sorted([3, 1, 2]))
+io.print(sorted(["c", "a", "b"]))
+# map/filter/zip/enumerate are LAZY iterator objects now — materialize with List(...) to inspect.
+io.print(List(enumerate(["a", "b"])))
+io.print(List(zip([1, 2, 3], [4, 5])))
+io.print(type(enumerate([1])))
+
+# inline anonymous functions (single-line body, explicit return)
+var sq = Function(x): return x * x
+io.print(sq(9))
+io.print(List(map(Function(x): return x * x, [1, 2, 3])))
+io.print(List(filter(Function(x): return x % 2 == 0, range(6))))
+
+# type
+io.print(type(42))
+io.print(type(3.5))
+io.print(type("hi"))
+io.print(type([1]))
+io.print(type(True))
+
+# expanded math
+var m = import("math")
+io.print(m.cbrt(27))
+io.print(import("math").lcm(4, 6))
+io.print(import("math").trunc(3.9))
+io.print(import("math").isnan(0.0))
+io.print(import("math").copysign(3.0, -1.0))
+
+# --- bitwise integer builtins ---
+io.print(bitand(12, 10))
+io.print(bitor(12, 10))
+io.print(bitxor(12, 10))
+io.print(bitnot(0))
+io.print(bitnot(5))
+io.print(shl(1, 8))
+io.print(shr(256, 4))
+io.print(shr(-8, 1))          # arithmetic (sign-preserving) right shift
+io.print(shl(1, 64))          # shifting past the width is well-defined
+io.print(shr(1, 64))
+io.print(shr(-1, 100))        # sign fill
+io.print(hex(bitor(15, 240)))
+io.print(bitand(a=12, b=10))  # signatured -> keyword args
+try:
+    discard bitand(1.5, 2)    # non-Integer rejected
+catch as e:
+    io.print(e)
+try:
+    discard bitor("x", 1)
+catch as e:
+    io.print(e)
+try:
+    discard shl(1, -2)        # negative shift rejected
+catch as e:
+    io.print(e)

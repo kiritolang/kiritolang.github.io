@@ -1,0 +1,60 @@
+b'Hi'
+Bytes
+b'\x00\x00\x00'
+b'AB'
+b'\x05\x06'
+b''
+b'\n\t\r\\\''
+Bytes() element out of range (0..255)
+Bytes() element out of range (0..255)
+Bytes() list elements must be Integers
+4
+20
+30
+Integer
+Bytes index out of range
+b'\x02\x03\x04'
+Bytes
+b'\x01\x03\x05'
+b'\x03\x02\x01'
+[65, 66, 67]
+True
+False
+True
+b'\x01\x02\x03\x04'
+b'\x07\x07\x07'
+True
+False
+True
+False
+b
+2
+b'hello'
+Bytes
+6
+hi
+hi
+b'\xe9'
+True
+'latin-1' codec can't encode code point U+20AC
+'ascii' codec can't encode code point U+00E9
+unknown encoding: 'utf-99'
+486921
+Hi!
+b'Hi!'
+fromhex: odd-length hex string
+fromhex: non-hex digit
+True
+True
+Bytes
+String
+True
+True
+True
+907060870
+907060870
+gzip: bad magic (not a gzip stream)
+True
+True
+True
+True

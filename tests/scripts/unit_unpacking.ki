@@ -1,0 +1,92 @@
+# Packing and unpacking: multiple assignment, multiple return values, starred targets, and
+# iterable unpacking in `var`, plain assignment, and `for`. A bare comma sequence packs into a
+# List. (Converted from tests/unit/test_unpacking.cpp.) Four unpack-count/type errors are runtime
+# and are caught inline; the "two starred targets" case is a compile-time error and lives in
+# tests/errors/unit_unpacking_two_starred.ki. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# --- packing: a comma sequence is a List ---
+var t = 1, 2, 3
+io.print(String(t))
+io.print(len(t))
+
+# --- basic multiple assignment (var and rebind) ---
+var a, b = 1, 2
+io.print(String(a) + String(b))
+var ra = 0
+var rb = 0
+ra, rb = 5, 9
+io.print(String(ra) + String(rb))
+
+# --- swap without a temporary ---
+var sa = 1
+var sb = 2
+sa, sb = sb, sa
+io.print(String(sa) + String(sb))
+
+# --- multiple return values ---
+var divmodfn = Function(x, y):
+    return x // y, x % y
+var q, r = divmodfn(17, 5)
+io.print(String(q) + " " + String(r))
+# a multi-return is itself a List the caller can keep whole
+var multiret = Function():
+    return 1, 2
+io.print(String(multiret()))
+
+# --- unpack from an existing list / string ---
+var p = [10, 20, 30]
+var x, y, z = p
+io.print(String(x) + String(y) + String(z))
+var sc1, sc2, sc3 = "xyz"
+io.print(sc1 + sc2 + sc3)
+
+# --- starred targets ---
+var first, *rest = [1, 2, 3, 4]
+io.print(String(first) + " " + String(rest))
+var head, *mid, tail = [1, 2, 3, 4, 5]
+io.print(String(mid))
+io.print(String(head) + String(tail))
+var *init, last = [1, 2, 3]
+io.print(String(init) + " " + String(last))
+var za, *zrest = [1]                 # star can absorb zero items
+io.print(String(zrest))
+
+# --- for-loop unpacking ---
+var total = 0
+for i, n in [[1, 10], [2, 20], [3, 30]]:
+    total = total + i * n
+io.print(total)
+# (dict iteration is hash-ordered, so sum the values rather than assume key order)
+var dtotal = 0
+for k, v in {"a": 1, "b": 2, "c": 3}.items():
+    dtotal = dtotal + v
+io.print(dtotal)
+# starred loop targets
+var out = []
+for lfirst, *lothers in [[1, 2, 3], [4, 5, 6]]:
+    out.append(String(lfirst) + "/" + String(lothers))
+io.print(", ".join(out))
+
+# --- assignment targets can be index/member, not just names ---
+var arr = [0, 0]
+arr[0], arr[1] = 7, 8
+io.print(String(arr))
+
+# --- error cases (clean, catchable) ---
+try:
+    var ea, eb = [1, 2, 3]
+catch as e:
+    io.print(e)
+try:
+    var fa, fb, fc = [1, 2]
+catch as e:
+    io.print(e)
+try:
+    var ga, *gb, gc = [1]
+catch as e:
+    io.print(e)
+try:
+    var ha, hb = 5
+catch as e:
+    io.print(e)

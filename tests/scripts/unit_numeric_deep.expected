@@ -1,0 +1,29 @@
+Matrix index must be Integer
+Matrix index must be Integer
+Matrix index must be Integer
+ComplexMatrix index must be Integer
+ComplexMatrix index must be Integer
+ComplexMatrix too large
+Matrix element expected a number, got 'String'
+Matrix element expects a Complex or a number
+of re expected a number, got 'String'
+Complex re expected a number, got 'List'
+real expected a number, got 'String'
+polar r expected a number, got 'String'
+vector element expects a Complex or a number
+ComplexMatrix index out of range
+ComplexMatrix index out of range
+ComplexMatrix row index out of range
+ComplexMatrix index needs 1 (row) or 2 (element) indices
+ComplexMatrix element assignment needs two indices: m[i, j] = v
+dot expects a ComplexMatrix vector
+cross expects a ComplexMatrix vector
+ComplexMatrix does not support this operator
+unsupported operand type 'ComplexMatrix' for arithmetic with 'Integer'
+unsupported operand type 'ComplexMatrix' for arithmetic with 'Float'
+lcm expects Integers
+perm expects Integers
+5.0
+-1.0
+1.0
+12

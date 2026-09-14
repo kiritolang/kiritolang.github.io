@@ -1,0 +1,228 @@
+# Every way of writing a string literal: plain / raw (r) / f / raw-f (rf), across single, double,
+# triple-single, and triple-double quotes (converted from tests/unit/test_string_literals.cpp — the
+# deterministic, hand-written-expected cases; the two seeded-fuzz sections stay in
+# tests/unit/test_string_literals.cpp since their oracle is computed at runtime, not hand-written).
+# The 14 adversarial parse-error cases are compile-time and live in
+# tests/errors/unit_string_literals_*.ki. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# A NUL byte cannot appear in a golden .expected (CMake file(READ) truncates at NUL), so the `\0`
+# escape cases are checked via their character ordinals instead of by printing the raw bytes — this
+# still proves the escape produced a NUL (0) at the right position, and distinguishes interpreted
+# (\0 -> one NUL byte) from raw (backslash + '0' kept literally).
+var codes = Function(s):
+    var o = []
+    for ch in s:
+        o.append(Integer(ord(ch)))
+    return o
+
+# Block 1: a plain body (no escapes/braces/quotes) is identical across every form
+io.print("hello")
+io.print('hello')
+io.print("""hello""")
+io.print('''hello''')
+io.print(r"hello")
+io.print(r'hello')
+io.print(r"""hello""")
+io.print(r'''hello''')
+io.print(f"hello")
+io.print(f'hello')
+io.print(f"""hello""")
+io.print(f'''hello''')
+io.print(rf"hello")
+io.print(fr'hello')
+io.print("a b c")
+io.print('a b c')
+io.print("""a b c""")
+io.print('''a b c''')
+io.print(r"a b c")
+io.print(r'a b c')
+io.print(r"""a b c""")
+io.print(r'''a b c''')
+io.print(f"a b c")
+io.print(f'a b c')
+io.print(f"""a b c""")
+io.print(f'''a b c''')
+io.print(rf"a b c")
+io.print(fr'a b c')
+io.print("12345")
+io.print('12345')
+io.print("""12345""")
+io.print('''12345''')
+io.print(r"12345")
+io.print(r'12345')
+io.print(r"""12345""")
+io.print(r'''12345''')
+io.print(f"12345")
+io.print(f'12345')
+io.print(f"""12345""")
+io.print(f'''12345''')
+io.print(rf"12345")
+io.print(fr'12345')
+io.print("Unicode: café — ✓")
+io.print('Unicode: café — ✓')
+io.print("""Unicode: café — ✓""")
+io.print('''Unicode: café — ✓''')
+io.print(r"Unicode: café — ✓")
+io.print(r'Unicode: café — ✓')
+io.print(r"""Unicode: café — ✓""")
+io.print(r'''Unicode: café — ✓''')
+io.print(f"Unicode: café — ✓")
+io.print(f'Unicode: café — ✓')
+io.print(f"""Unicode: café — ✓""")
+io.print(f'''Unicode: café — ✓''')
+io.print(rf"Unicode: café — ✓")
+io.print(fr'Unicode: café — ✓')
+io.print("")
+io.print('')
+io.print("""""")
+io.print('''''')
+io.print(r"")
+io.print(r'')
+io.print(r"""""")
+io.print(r'''''')
+io.print(f"")
+io.print(f'')
+io.print(f"""""")
+io.print(f'''''')
+io.print(rf"")
+io.print(fr'')
+# Block 2: quote nesting
+io.print('he said "hi"')
+io.print("it's fine")
+io.print("""both ' and " here""")
+io.print('''both ' and " plus '' and ""''')
+io.print('it\'s')
+io.print("say \"hi\"")
+# Block 3: cooked escapes decode identically; raw keeps them verbatim
+io.print("a\nb")
+io.print('a\nb')
+io.print("""a\nb""")
+io.print('''a\nb''')
+io.print(f"a\nb")
+io.print(f'''a\nb''')
+io.print(r"a\nb")
+io.print(r'''a\nb''')
+io.print(rf"a\nb")
+io.print("x\ty")
+io.print('x\ty')
+io.print("""x\ty""")
+io.print('''x\ty''')
+io.print(f"x\ty")
+io.print(f'''x\ty''')
+io.print(r"x\ty")
+io.print(r'''x\ty''')
+io.print(rf"x\ty")
+io.print("r\rn")
+io.print('r\rn')
+io.print("""r\rn""")
+io.print('''r\rn''')
+io.print(f"r\rn")
+io.print(f'''r\rn''')
+io.print(r"r\rn")
+io.print(r'''r\rn''')
+io.print(rf"r\rn")
+io.print("back\\slash")
+io.print('back\\slash')
+io.print("""back\\slash""")
+io.print('''back\\slash''')
+io.print(f"back\\slash")
+io.print(f'''back\\slash''')
+io.print(r"back\\slash")
+io.print(r'''back\\slash''')
+io.print(rf"back\\slash")
+io.print("hex\x41end")
+io.print('hex\x41end')
+io.print("""hex\x41end""")
+io.print('''hex\x41end''')
+io.print(f"hex\x41end")
+io.print(f'''hex\x41end''')
+io.print(r"hex\x41end")
+io.print(r'''hex\x41end''')
+io.print(rf"hex\x41end")
+io.print(codes("nul\0z"))
+io.print(codes('nul\0z'))
+io.print(codes("""nul\0z"""))
+io.print(codes('''nul\0z'''))
+io.print(codes(f"nul\0z"))
+io.print(codes(f'''nul\0z'''))
+io.print(codes(r"nul\0z"))
+io.print(codes(r'''nul\0z'''))
+io.print(codes(rf"nul\0z"))
+io.print(r"\"")
+io.print(len(r"\""))
+# Block 4: triple-quoted multiline
+io.print("""line1
+line2
+line3""")
+io.print('''a
+b''')
+io.print(r"""raw\nstays
+twolines""")
+io.print(len("""ab
+cd"""))
+var s41 = """x
+y"""
+io.print(len(s41))
+# Block 5: f-strings: braces, {{ }}, format specs, single-quote keys
+var n5 = 7
+io.print(f"n={n5}")
+io.print(f'n={n5}')
+io.print(f"""n={n5}""")
+io.print(f'''n={n5}''')
+io.print(f"{{lit}} {1+1}")
+io.print(f'{{lit}} {1+1}')
+var x5 = 42
+io.print(f'{x5:05d}')
+var pi5 = 3.14159
+io.print(f'''{pi5:.2f}''')
+var d5 = {"k": 9}
+io.print(f"{d5['k']}")
+io.print(f"{d5['k']:03d}")
+var a5 = 1
+var b5 = 2
+io.print(f"""sum
+{a5 + b5}
+end""")
+# Block 6: raw f-strings
+var name6 = "Kirito"
+io.print(rf"path\to\{name6}")
+var n6 = 3
+io.print(fr'{n6}\n')
+io.print(rf"""a\t{n6}""")
+# Block 7: prefixes as ordinary identifiers
+var r7 = 5
+io.print(r7)
+var f7 = 6
+io.print(f7)
+var rf7 = 7
+io.print(rf7)
+var fr7 = 8
+io.print(fr7)
+var R7 = 9
+io.print(R7)
+var format7 = Function(x): return x
+io.print(format7(3))
+# Block 8: string operations behave the same regardless of literal form
+io.print(len('hello'))
+io.print(len("""hello"""))
+io.print(len(r'hello'))
+io.print('abc'[0])
+io.print("""abc"""[-1])
+io.print(r'abcde'[1:3])
+io.print('AB' + """CD""")
+io.print('ab' * 3)
+io.print('Hello'.upper())
+io.print("""Hello World""".split())
+io.print(r'a,b,c'.split(','))
+io.print('  pad  '.strip())
+io.print('abc'.startswith('ab'))
+io.print('-'.join(['a', 'b', 'c']))
+var n8 = 0
+for c in '''abcd''':
+    n8 = n8 + 1
+io.print(n8)
+io.print('abc' == "abc")
+io.print("""abc""" == r'abc')
+io.print('a\nb' == """a
+b""")

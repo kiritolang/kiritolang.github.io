@@ -1,0 +1,4 @@
+# An unpacking target list may contain at most one starred name (converted from
+# tests/unit/test_unpacking.cpp). A second `*` is rejected at compile time, unlike the
+# unpack-count/type mismatches which are runtime errors (see tests/scripts/unit_unpacking.ki).
+var a, *b, *c = [1, 2, 3]

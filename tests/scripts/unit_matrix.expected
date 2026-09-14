@@ -1,0 +1,29 @@
+[[1.0, 2.0], [3.0, 4.0]]
+[2, 2]
+2
+[[6.0, 8.0], [10.0, 12.0]]
+[[4.0, 4.0], [4.0, 4.0]]
+[[19.0, 22.0], [43.0, 50.0]]
+[[2.0, 4.0], [6.0, 8.0]]
+[[1.0, 3.0], [2.0, 4.0]]
+-2.0
+5.0
+True
+[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+24.0
+[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+[[11.0, 12.0], [13.0, 14.0]]
+3.0
+99.0
+[3.0, 4.0]
+10.0
+32.0
+[[0.0, 0.0, 1.0]]
+5.0
+dot requires vectors of equal length
+cross is only defined for two 3-element vectors
+Matrix multiply: inner dimensions differ
+inverse requires a square Matrix
+Matrix +/- requires Matrices of equal shape
+matrix is singular (no inverse)
+Matrix rows must have equal length

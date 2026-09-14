@@ -1,0 +1,148 @@
+# io.BytesIO: an in-memory binary buffer with write/read/seek/tell/truncate/getvalue, usable as a
+# context manager. Converted from tests/unit/test_bytesio.cpp. Each scenario gets its own Function
+# scope (mirrors the independent runSource() call per C++ check) so the shared `b` name never leaks
+# across cases. The two hostile-input checks are runtime type-check throws, folded inline via
+# try/catch. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# write + getvalue (the "encode into a memory buffer" use-case)
+var writegetvalue = Function():
+    var b = io.BytesIO()
+    b.write("Hello, ")
+    b.write("World!")
+    return b.getvalue()
+io.print(writegetvalue())
+
+# write returns the number of bytes written
+var writeret = Function():
+    var b = io.BytesIO()
+    return b.write("abcde")
+io.print(writeret())
+
+# tell tracks the cursor
+var telltest = Function():
+    var b = io.BytesIO()
+    b.write("12345")
+    return b.tell()
+io.print(telltest())
+
+# seek + read
+var seekread1 = Function():
+    var b = io.BytesIO()
+    b.write("Hello, World!")
+    b.seek(0)
+    return b.read(5)
+io.print(seekread1())
+var seekread2 = Function():
+    var b = io.BytesIO()
+    b.write("Hello, World!")
+    b.seek(7)
+    return b.read()
+io.print(seekread2())
+
+# read() with no arg reads all remaining
+var readall = Function():
+    var b = io.BytesIO("full contents")
+    return b.read()
+io.print(readall())
+
+# reading past the end yields empty
+var readpastend = Function():
+    var b = io.BytesIO("xy")
+    b.read()
+    return b.read()
+io.print(readpastend())
+
+# construct from initial bytes; getvalue is non-consuming
+var nonconsuming = Function():
+    var b = io.BytesIO("preset")
+    var v1 = b.getvalue()
+    var v2 = b.getvalue()
+    return v1 + "|" + v2
+io.print(nonconsuming())
+
+# overwrite semantics: seeking back and writing overwrites in place
+var overwrite = Function():
+    var b = io.BytesIO()
+    b.write("AAAAA")
+    b.seek(1)
+    b.write("BB")
+    return b.getvalue()
+io.print(overwrite())
+
+# size reflects buffer length, not cursor
+var sizetest = Function():
+    var b = io.BytesIO()
+    b.write("hello")
+    b.seek(0)
+    return b.size()
+io.print(sizetest())
+
+# seek whence: 1 = relative, 2 = from end
+var seekrelative = Function():
+    var b = io.BytesIO("0123456789")
+    b.seek(3)
+    b.seek(2, 1)
+    return b.read(1)
+io.print(seekrelative())
+var seekfromend = Function():
+    var b = io.BytesIO("0123456789")
+    b.seek(-2, 2)
+    return b.read()
+io.print(seekfromend())
+
+# truncate at the cursor
+var truncatetest = Function():
+    var b = io.BytesIO("keep this and drop that")
+    b.seek(9)
+    b.truncate()
+    return b.getvalue()
+io.print(truncatetest())
+
+# binary-safe: write bytes with NUL and high values, read back intact
+var binarysafe = Function():
+    var b = io.BytesIO()
+    b.write("a\x00b\xffc")
+    return len(b.getvalue())
+io.print(binarysafe())
+
+# works as a context manager
+var contextmgr = Function():
+    var result = ""
+    with io.BytesIO() as b:
+        b.write("inside")
+        result = b.getvalue()
+    return result
+io.print(contextmgr())
+
+# round-trips a zlib-compressed payload through the buffer (real binary workflow)
+var ziprt = Function():
+    var zlib = import("zlib")
+    var buf = io.BytesIO()
+    buf.write(zlib.compress("the payload to compress and store"))
+    buf.seek(0)
+    return zlib.decompress(buf.read())
+io.print(ziprt())
+
+# hostile: writing a non-String throws
+try:
+    var b = io.BytesIO()
+    discard b.write(42)
+catch as e:
+    io.print(e)
+try:
+    discard io.BytesIO(123)
+catch as e:
+    io.print(e)
+
+# writelines: BytesIO is a complete write stream (mirrors File.writelines), concatenating each
+# element at the cursor; a non-iterable argument throws the documented message.
+var writelinestest = Function():
+    var b = io.BytesIO()
+    b.writelines(["a", "b", "c"])
+    return b.getvalue()
+io.print(writelinestest())
+try:
+    discard io.BytesIO().writelines(5)
+catch as e:
+    io.print(e)

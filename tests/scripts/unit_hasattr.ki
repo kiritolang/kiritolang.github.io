@@ -1,0 +1,111 @@
+# hasattr(obj, name) -> Bool: existence of an attribute/method on any value. True even when the
+# value is None; False when absent; a non-String name throws. Mirrors `obj.name` resolution exactly
+# (converted from tests/unit/test_hasattr.cpp). CHECK_THROWS cases are runtime, folded inline.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+class Box:
+    var _init_ = Function(self, v):
+        self.value = v
+        self.empty = None
+        self._priv = 1
+    var m = Function(self):
+        return self.value
+
+# --- instances: attribute existence, including the None case ---
+io.print(hasattr(Box(3), "value"))
+io.print(hasattr(Box(3), "empty"))    # None still exists
+io.print(hasattr(Box(3), "m"))        # method
+io.print(hasattr(Box(3), "_init_"))   # dunder
+io.print(hasattr(Box(3), "missing"))
+io.print(hasattr(Box(3), "_priv"))    # private EXISTS
+
+# the headline guarantee: None-valued attr is distinguishable from an absent one
+var t1 = Function():
+    var b = Box(3)
+    return hasattr(b, "empty") and not hasattr(b, "nope")
+io.print(t1())
+
+# --- a Kirito class exposes no member access, so hasattr(Class, ...) is uniformly False ---
+io.print(hasattr(Box, "m"))
+io.print(hasattr(Box, "value"))
+
+# --- built-in primitives and their methods ---
+io.print(hasattr("hi", "upper"))
+io.print(hasattr("hi", "zzz"))
+io.print(hasattr(5, "compare"))
+io.print(hasattr([1], "append"))
+io.print(hasattr({"a": 1}, "keys"))
+io.print(hasattr(Set([1]), "add"))
+io.print(hasattr(Bytes([1]), "hex"))
+io.print(hasattr(None, "anything"))
+io.print(hasattr(3.5, "compare"))
+
+# --- modules: native and .ki ---
+io.print(hasattr(import("math"), "pi"))
+io.print(hasattr(import("math"), "sqrt"))
+io.print(hasattr(import("math"), "nope"))
+io.print(hasattr(import("itertools"), "chain"))   # .ki module
+io.print(hasattr(import("itertools"), "nope"))
+
+# --- native objects ---
+io.print(hasattr(import("random").Random(1), "choices"))
+io.print(hasattr(import("random").Random(1), "zzz"))
+
+# --- functions have no attributes ---
+io.print(hasattr(Function(x): return x, "whatever"))
+
+# --- consistency invariant for PUBLIC members: hasattr(o, n) == (o.n resolves) ---
+var t2 = Function():
+    var got = [True]                          # mutable cell (write-through closures disallowed)
+    var b = Box(1)
+    var check = Function(name, thunk):
+        var access = False
+        try:
+            discard thunk()
+            access = True
+        catch:
+            access = False
+        if hasattr(b, name) != access:
+            got[0] = False
+    check("value", Function(): return b.value)
+    check("empty", Function(): return b.empty)
+    check("m", Function(): return b.m)
+    check("missing", Function(): return b.missing)
+    return got[0]
+io.print(t2())
+
+# --- existence, not accessibility: a private member EXISTS (hasattr True) yet cannot be READ
+#     from outside the class (direct access throws). This is the deliberate divergence. ---
+io.print(hasattr(Box(1), "_priv"))
+try:
+    discard Box(1)._priv
+catch as e:
+    io.print(e)
+
+# --- error hardening: name must be a String; strict arity ---
+try:
+    discard hasattr(5)                # too few
+catch as e:
+    io.print(e)
+try:
+    discard hasattr(5, "a", "b")      # too many
+catch as e:
+    io.print(e)
+try:
+    discard hasattr(5, 42)            # non-String name
+catch as e:
+    io.print(e)
+try:
+    discard hasattr(5, None)          # None name
+catch as e:
+    io.print(e)
+try:
+    discard hasattr(5, ["x"])         # List name
+catch as e:
+    io.print(e)
+
+# hasattr is a resolvable builtin name (no NameError when used bare in a function)
+var f = Function(o):
+    return hasattr(o, "upper")
+io.print(f("x"))

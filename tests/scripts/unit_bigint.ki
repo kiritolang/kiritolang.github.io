@@ -1,0 +1,244 @@
+# Arbitrary-precision integers: the `int` module's BigInt value type, its operators, the integer
+# math set (gcd/lcm/factorial/comb/perm/isqrt/abs/pow/modpow/modinv), and primality (deterministic
+# trial division + Miller-Rabin). Converted from tests/unit/test_bigint.cpp. All error cases are
+# runtime (bad arguments / domain guards on stdlib calls), so they are folded inline via try/catch.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var int = import("int")
+
+# ---- known values ----
+io.print(String(int.factorial(20)))
+io.print(String(int.factorial(50)))
+io.print(String(int.pow(2, 128)))
+io.print(String(int.fromstring("354224848179261915075")))  # fib(100)
+io.print(String(int.BigInt(4).modpow(13, 497)))
+io.print(String(int.isqrt(int.pow(2, 200))))  # 2^100
+io.print(String(int.comb(100, 50)))
+io.print(String(int.isqrt(int.pow(10, 100))))
+
+# ---- true division yields Float ----
+io.print(int.BigInt(10) / int.BigInt(4))
+io.print(type(int.BigInt(10) / int.BigInt(4)))
+
+# ---- reflected-operator invariant: dispatch on the LEFT operand only ----
+io.print(String(int.BigInt(2) + 3))
+try:
+    discard 3 + int.BigInt(2)
+catch as e:
+    io.print(e)
+try:
+    discard 3 * int.BigInt(2)
+catch as e:
+    io.print(e)
+try:
+    discard 3 < int.BigInt(2)
+catch as e:
+    io.print(e)
+# == / != stay symmetric across types
+io.print(int.BigInt(5) == 5)
+io.print(5 == int.BigInt(5))
+io.print(6 != int.BigInt(5))
+# hashing: an equal BigInt and Integer share a Dict/Set bucket
+var dicttest = Function():
+    var d = {}
+    d[int.BigInt(42)] = 1
+    return d[42]
+io.print(dicttest())
+io.print(len({int.BigInt(7), 7, int.BigInt(7)}))
+
+# ---- heavy fuzz / property loop (single compiled program, own scope) ----
+var fuzzloops = Function():
+    var r = import("random")
+    var math = import("math")
+    # differential vs native Integer, in a no-overflow range
+    var i = 0
+    while i < 3000:
+        var a = r.randombelow(2000000000) - 1000000000
+        var b = r.randombelow(2000000000) - 1000000000
+        assert String(int.BigInt(a) + b) == String(a + b)
+        assert String(int.BigInt(a) - b) == String(a - b)
+        assert String(int.BigInt(a) * b) == String(a * b)
+        assert (int.BigInt(a) < b) == (a < b)
+        assert (int.BigInt(a) >= b) == (a >= b)
+        assert (int.BigInt(a) == b) == (a == b)
+        if b != 0:
+            assert String(int.BigInt(a) // b) == String(a // b)
+            assert String(int.BigInt(a) % b) == String(a % b)
+        i = i + 1
+    # ** with small base/exp that stays in int64 range
+    i = 0
+    while i < 500:
+        var base = r.randombelow(61) - 30
+        var e = r.randombelow(11)
+        assert String(int.BigInt(base) ** e) == String(base ** e)
+        i = i + 1
+    # base round-trips 2..36
+    for bs in range(2, 37):
+        var n = int.pow(int.BigInt(bs), 80) + 12345
+        assert int.fromstring(String(n)) == n
+    # isqrt floor property
+    i = 0
+    while i < 500:
+        var x = r.randombelow(1000000000000000000)
+        var s = int.isqrt(x)
+        assert s * s <= x and (s + 1) * (s + 1) > x
+        i = i + 1
+    # modinv property
+    i = 0
+    while i < 500:
+        var m = 2 + r.randombelow(100000)
+        var a2 = 1 + r.randombelow(m - 1)
+        if int.gcd(int.BigInt(a2), m) == 1:
+            assert (int.modinv(a2, m) * a2) % m == 1
+        i = i + 1
+    # int math == math module where it doesn't overflow
+    assert String(int.gcd(48, 60)) == String(math.gcd(48, 60))
+    assert String(int.factorial(12)) == String(math.factorial(12))
+    assert String(int.comb(20, 7)) == String(math.comb(20, 7))
+    assert String(int.perm(15, 4)) == String(math.perm(15, 4))
+    assert String(int.lcm(12, 18)) == String(math.lcm(12, 18))
+    # deterministic and probabilistic primality agree with a reference over a range
+    var refprime = Function(n) -> Bool:
+        if n < 2:
+            return False
+        var j = 2
+        while j * j <= n:
+            if n % j == 0:
+                return False
+            j = j + 1
+        return True
+    for n in range(0, 2000):
+        assert int.isprobableprime(n) == refprime(n)
+    # isprime is deterministic O(sqrt n) trial division — exhaustive over the full range
+    for n in range(0, 2000):
+        assert int.isprime(n) == refprime(n)
+    # isprimeaks is the deterministic AKS test (same verdict, far slower) — a smaller range
+    for n in range(0, 200):
+        assert int.isprimeaks(n) == refprime(n)
+    # trial division and AKS must both reject perfect powers (composite)
+    for n in [243, 1000, 1024, 3125]:
+        assert not int.isprime(n)
+        assert not int.isprimeaks(n)
+    # randomprime output is prime with the requested bit length
+    for bits in [16, 32, 48, 64, 96]:
+        var p = int.randomprime(bits)
+        assert int.isprobableprime(p)
+        assert p.bitlength() == bits
+    return "loops-ok"
+io.print(fuzzloops())
+
+io.print(String(int.BigInt("-123456789012345678901234567890")))
+io.print(String(int.BigInt("0xff")))
+io.print(String(int.fromstring("ff", 16)))
+io.print(String(int.fromstring("zz", 36)))
+
+io.print(String(int.isqrt(0)) + "," + String(int.isqrt(1)) + "," + String(int.isqrt(2)))
+
+# ---- primality specials (single calls) ----
+# Carmichael numbers (composite but Fermat-fool): Miller-Rabin must still reject them.
+for c in [561, 1105, 1729, 2465, 2821, 6601, 8911, 41041, 825265]:
+    io.print(int.isprobableprime(c))
+# Trial-division isprime also rejects Carmichaels (they are composite).
+for c in [561, 1105, 1729, 2465, 2821, 6601]:
+    io.print(int.isprime(c))
+# AKS (isprimeaks) is far slower, so exercise the deterministic path on the smaller ones only.
+for c in [561, 1105, 1729, 2465, 2821]:
+    io.print(int.isprimeaks(c))
+# deterministic primality specials — trial division and AKS agree.
+io.print(int.isprime(2))
+io.print(int.isprime(7919))         # 1000th prime
+io.print(int.isprime(-7))
+io.print(int.isprime(0))
+io.print(int.isprime(1))
+io.print(int.BigInt(97).isprime())
+io.print(int.BigInt(561).isprime())
+io.print(int.isprimeaks(7919))
+io.print(int.BigInt(97).isprimeaks())
+# the maxdegree resource guard lives on isprimeaks (fails fast, does not hang/OOM).
+try:
+    discard int.isprimeaks(97, maxdegree=2)
+catch as e:
+    io.print(e)
+try:
+    discard int.BigInt(97).isprimeaks(maxdegree=2)
+catch as e:
+    io.print(e)
+try:
+    discard int.isprimeaks(97, maxdegree=1)       # maxdegree must be >= 2
+catch as e:
+    io.print(e)
+# Mersenne primes + large known primes recognised by Miller-Rabin.
+io.print(int.isprobableprime(int.pow(2, 61) - 1))   # M61
+io.print(int.isprobableprime(int.pow(2, 89) - 1))   # M89
+io.print(int.isprobableprime(int.pow(2, 64) - 59))  # largest 64-bit prime
+io.print(int.isprobableprime(int.pow(2, 127) - 1))  # M127
+
+# ---- BigInt methods ----
+io.print(int.pow(2, 100).bitlength())
+io.print(int.BigInt(255).toint())
+io.print(type(int.BigInt(255).toint()))
+try:
+    discard int.pow(2, 100).toint()  # doesn't fit a native Integer
+catch as e:
+    io.print(e)
+
+# ---- serialize / dump round-trips ----
+var serdetest = Function():
+    var s = import("serialize")
+    var b = int.pow(7, 60)
+    return s.loads(s.dumps(b)) == b
+io.print(serdetest())
+var dumptest = Function():
+    var d = import("dump")
+    var b = int.pow(-3, 41)
+    return d.loads(d.dumps(b)) == b
+io.print(dumptest())
+
+# ---- adversarial / bad input ----
+try:
+    discard int.BigInt(5) // 0
+catch as e:
+    io.print(e)
+try:
+    discard int.BigInt(5) % 0
+catch as e:
+    io.print(e)
+try:
+    discard int.modpow(2, 10, 0)
+catch as e:
+    io.print(e)
+try:
+    discard int.modinv(4, 8)               # not coprime
+catch as e:
+    io.print(e)
+try:
+    discard int.modinv(3, 1)               # modulus < 2
+catch as e:
+    io.print(e)
+try:
+    discard int.fromstring("12x", 10)   # bad digit
+catch as e:
+    io.print(e)
+try:
+    discard int.fromstring("7", 40)     # bad base
+catch as e:
+    io.print(e)
+try:
+    discard int.BigInt("not a number")
+catch as e:
+    io.print(e)
+try:
+    discard int.factorial(-1)
+catch as e:
+    io.print(e)
+try:
+    discard int.pow(int.BigInt(2), int.pow(2, 40))   # exponent too large / result guard
+catch as e:
+    io.print(e)
+try:
+    discard int.BigInt(3.14)              # Float not accepted
+catch as e:
+    io.print(e)
+io.print(int.isprime(-7))
+io.print(int.isprime(0))
+io.print(int.isprime(1))

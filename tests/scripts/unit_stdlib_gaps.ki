@@ -1,0 +1,113 @@
+# stdlib gap-fill additions: collection/string methods, itertools/functools/heapq/base64/statistics
+# members, math.prod/comb/perm, random.gauss, json loads/dumps/indent + surrogate pairs, and path
+# helpers (converted from tests/unit/test_stdlib_gaps.cpp — fully deterministic, no filesystem).
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# --- list/dict/set methods ---
+io.print([1, 2, 2, 3, 2].count(2))
+var a1 = [1, 2, 3]
+a1.clear()
+io.print(len(a1))
+var d1 = {"a": 1}
+d1.update({"b": 2, "a": 9})
+io.print(String(d1.get("a")) + String(d1.get("b")))
+var d2 = {}
+io.print(d2.setdefault("x", 5))
+var d3 = {"x": 1}
+io.print(d3.setdefault("x", 5))
+var d4 = {"a": 1, "b": 2}
+d4.clear()
+io.print(len(d4))
+var s1 = {1, 2, 3}
+s1.discard(2)
+s1.discard(99)
+io.print(String(2 in s1) + String(len(s1)))
+var s2 = {1, 2, 3}
+s2.clear()
+io.print(len(s2))
+io.print(String({1, 2, 3}.issubset({1, 2, 3, 4})))
+io.print(String({1, 2, 3}.issuperset({1, 2})))
+io.print(String({1, 2}.isdisjoint({3, 4})))
+io.print(String({1, 2}.isdisjoint({2, 3})))
+io.print(len({1, 2, 3}.symmetricdifference({2, 3, 4})))
+var s3 = {7}
+io.print(s3.pop())
+
+# --- string methods ---
+io.print(String("123".isdigit()))
+io.print(String("12a".isdigit()))
+io.print(String("abc".isalpha()))
+io.print(String("ąćź".isalpha()))
+io.print(String("a1".isalnum()))
+io.print(String("   ".isspace()))
+io.print(String("abc".islower()))
+io.print(String("ABC".isupper()))
+io.print("hello world".index("world"))
+io.print("a.b.c".rfind("."))
+io.print("foobar".removeprefix("foo"))
+io.print("foobar".removesuffix("bar"))
+io.print("hi".ljust(5) + "|")
+io.print("hi".rjust(5))
+io.print("hi".center(6, "*"))
+io.print("42".zfill(5))
+io.print("-42".zfill(5))
+io.print(String("a=b=c".partition("=")))
+io.print(String("a=b=c".rpartition("=")))
+
+# --- itertools additions ---
+var it = import("itertools")
+io.print(String(it.takewhile(Function(x): return x < 3, [1, 2, 3, 1])))
+io.print(String(it.dropwhile(Function(x): return x < 3, [1, 2, 3, 1])))
+io.print(String(it.ziplongest([[1, 2], [3, 4, 5]], 0)))
+io.print(String(it.pairwise([1, 2, 3])))
+io.print(String(it.groupby([1, 1, 2, 3, 3])))
+io.print(String(it.compress([1, 2, 3, 4], [1, 0, 1, 0])))
+
+# --- functools.cache memoizes ---
+var f = import("functools")
+var n = [0]
+var work = Function(x):
+    n[0] = n[0] + 1
+    return x * x
+var c = f.cache(work)
+var r = c(5) + c(5) + c(5)
+io.print(String(r) + " " + String(n[0]))
+
+# --- heapq additions ---
+var h = import("heapq")
+io.print(String(h.nlargest(3, [5, 1, 8, 3, 9, 2])))
+io.print(String(h.merge([[1, 4], [2, 5], [3, 6]])))
+
+# --- base64 urlsafe round-trip ---
+var b64 = import("base64")
+io.print(String(b64.urlsafedecode(b64.urlsafeencode([251, 255, 191]))) == String([251, 255, 191]))
+
+# --- statistics additions ---
+var stats = import("statistics")
+io.print(String(stats.multimode([1, 1, 2, 2, 3])))
+io.print(len(stats.quantiles([1, 2, 3, 4, 5, 6, 7, 8])))
+
+# --- math additions ---
+io.print(import("math").prod([1, 2, 3, 4]))
+io.print(String(import("math").prod([1.5, 2.0])))
+io.print(import("math").comb(5, 2))
+io.print(import("math").perm(5, 2))
+io.print(import("math").comb(10, 0))
+
+# --- random.gauss is deterministic per seed, varies across draws ---
+var rnd = import("random").Random(1)
+io.print(String(rnd.gauss(0.0, 1.0) != rnd.gauss(0.0, 1.0)))
+
+# --- json aliases, indent, surrogate-pair decoding ---
+var j = import("json")
+io.print(String(j.loads("[1, 2, 3]")))
+io.print(j.dumps([1, 2]))
+io.print(j.dumps({"a": 1}, 2))
+io.print(len(j.parse("{\"e\": \"\\uD83D\\uDE00\"}")["e"]))
+
+# --- path helpers (the `path` module — moved out of io) ---
+io.print(import("path").basename("/a/b/c.txt"))
+io.print(import("path").dirname("/a/b/c.txt"))
+io.print(String(import("path").splitext("file.tar.gz")))
+io.print(import("path").join("a", "b", "c"))

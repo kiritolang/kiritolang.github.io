@@ -1,0 +1,20 @@
+# math module basics + path.gettempdir/join (converted from tests/unit/test_stdlib.cpp — the pure
+# run-a-script-check-a-value cases). File-write/read cases (temp-dir-dependent) stay in C++.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+io.print(import("math").sqrt(16))
+io.print(import("math").sqrt(9))
+io.print(import("math").floor(3.7))
+io.print(import("math").ceil(3.2))
+io.print(import("math").factorial(5))
+io.print(import("math").gcd(12, 8))
+io.print(import("math").pow(2, 10))
+io.print(import("math").log2(8))
+io.print(import("math").pi > 3.14 and import("math").pi < 3.15)
+io.print(import("math").gcd(54, 24))
+
+io.print(import("path").isdir(import("path").gettempdir()) and len(import("path").gettempdir()) > 0)
+io.print(import("path").join("a", "b", "c"))
+io.print(import("path").join("/usr", "local", "bin"))
+io.print(import("path").join("a", "/b"))

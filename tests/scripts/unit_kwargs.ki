@@ -1,0 +1,86 @@
+# Keyword arguments work uniformly: plain functions, class constructors (forwarded to _init_), and
+# instance methods (including inherited and super-dispatched ones) all accept named args, defaults,
+# and out-of-order keywords — exactly like a top-level function call (converted from
+# tests/unit/test_kwargs.cpp). The binding errors are runtime and are caught inline.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# --- plain function (the already-working baseline) ---
+var f1 = Function(a, b = 2):
+    return a - b
+io.print(f1(10, b = 3))
+var f2 = Function(a, b):
+    return a - b
+io.print(f2(b = 1, a = 9))  # out of order
+
+# --- class instantiation forwards keywords to _init_ ---
+class Point:
+    var _init_ = Function(self, x, y = 0):
+        self.x = x
+        self.y = y
+io.print(Point(1, y = 5).y)
+io.print(Point(x = 7).x)         # keyword for a positional
+io.print(Point(y = 9, x = 2).y)  # out of order
+io.print(Point(3).y)             # default still applies
+
+# --- instance methods accept keywords ---
+class Calc:
+    var _init_ = Function(self):
+        self.base = 100
+    var scale = Function(self, x, factor = 1, offset = 0):
+        return self.base + x * factor + offset
+var c = Calc()
+io.print(c.scale(2, factor = 5))
+io.print(c.scale(2, offset = 7, factor = 5))  # out of order
+io.print(c.scale(x = 3))
+
+# --- keywords survive inheritance and _super_ dispatch ---
+class Animal:
+    var _init_ = Function(self, name, sound = "..."):
+        self.name = name
+        self.sound = sound
+    var speak = Function(self, times = 1):
+        return self.sound * times
+class Dog(Animal):
+    var _init_ = Function(self, name):
+        self._super_()._init_(name, sound = "woof")
+    var speak = Function(self, times = 1, loud = False):
+        var s = self._super_().speak(times = times)
+        return s.upper() if loud else s
+var d = Dog("Rex")
+io.print(d.sound)                          # kw passed up via super
+io.print(d.speak(times = 3))
+io.print(d.speak(times = 2, loud = True))
+
+# --- a chained/returned method call still takes keywords ---
+class Builder:
+    var _init_ = Function(self):
+        self.parts = []
+    var add = Function(self, item, sep = ","):
+        self.parts.append(item)
+        return self
+    var render = Function(self, sep = ","):
+        return sep.join(self.parts)
+var b = Builder()
+io.print(b.add("a").add("b").render(sep = "-"))
+
+# --- errors: unknown keyword, duplicate, missing required, positional-after-keyword ---
+class P:
+    var _init_ = Function(self, a, b = 1):
+        self.a = a
+try:
+    discard P(1, c = 9)      # unknown keyword
+catch as e:
+    io.print(e)
+try:
+    discard P(1, a = 2)      # 'a' given positionally and by keyword
+catch as e:
+    io.print(e)
+try:
+    discard P()              # missing required positional
+catch as e:
+    io.print(e)
+try:
+    discard P(a = 1, 2)      # positional-after-keyword
+catch as e:
+    io.print(e)

@@ -1,0 +1,88 @@
+# pass/assert statements and List/Dict method basics (converted from tests/unit/test_extras.cpp).
+# `assert 1 == 2` throwing is a runtime error, folded inline. Runs identically with `ki` and
+# `ki --no-inline`.
+var io = import("io")
+
+# pass
+var t1 = Function():
+    if True:
+        pass
+    return "ok"
+io.print(t1())
+var t2 = Function():
+    pass
+io.print(t2())
+
+# assert
+var t3 = Function():
+    assert 2 + 2 == 4
+    return "passed"
+io.print(t3())
+try:
+    assert 1 == 2
+catch as e:
+    io.print(e)
+var t4 = Function():
+    try:
+        assert False, "custom message"
+    catch as e:
+        return e
+io.print(t4())
+
+# list methods
+var t5 = Function():
+    var a = [3, 1, 2]
+    a.sort()
+    return a
+io.print(t5())
+var t6 = Function():
+    var a = ["banana", "apple", "cherry"]
+    a.sort()
+    return a
+io.print(t6())
+var t7 = Function():
+    var a = [1, 2, 3]
+    a.reverse()
+    return a
+io.print(t7())
+var t8 = Function():
+    var a = [1, 2, 4]
+    a.insert(2, 3)
+    return a
+io.print(t8())
+var t9 = Function():
+    var a = [1, 2, 3]
+    a.remove(2)
+    return a
+io.print(t9())
+io.print([10, 20, 30].index(20))
+var t10 = Function():
+    var a = [1, 2]
+    a.extend([3, 4])
+    return a
+io.print(t10())
+
+# dict methods
+var t11 = Function():
+    var d = {"a": 1, "b": 2}
+    return d.get("a")
+io.print(t11())
+io.print({"a": 1}.get("z", 99))
+io.print({"a": 1}.get("z"))
+var t12 = Function():
+    var d = {1: 1, 2: 2, 3: 3}
+    var ks = d.keys()
+    ks.sort()
+    return ks
+io.print(t12())
+io.print(len({1: 1, 2: 2, 3: 3}.values()))
+io.print(len({1: 1, 2: 2}.items()))
+var t13 = Function():
+    var d = {"x": 5}
+    return d.pop("x")
+io.print(t13())
+var t14 = Function():
+    var d = {"x": 5, "y": 6}
+    d.pop("x")
+    return len(d)
+io.print(t14())

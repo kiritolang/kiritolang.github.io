@@ -1,0 +1,12 @@
+1.0
+6.0
+[4.0, 5.0, 6.0]
+99.0
+Matrix index out of range
+Matrix element assignment needs two indices: m[i, j] = v
+20
+type 'List' takes exactly one index
+type 'Dict' takes exactly one index
+type 'String' takes exactly one index
+2
+e

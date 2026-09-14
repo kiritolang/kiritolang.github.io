@@ -1,0 +1,187 @@
+hello
+hello
+hello
+hello
+hello
+hello
+hello
+hello
+hello
+hello
+hello
+hello
+hello
+hello
+a b c
+a b c
+a b c
+a b c
+a b c
+a b c
+a b c
+a b c
+a b c
+a b c
+a b c
+a b c
+a b c
+a b c
+12345
+12345
+12345
+12345
+12345
+12345
+12345
+12345
+12345
+12345
+12345
+12345
+12345
+12345
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+Unicode: café — ✓
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+he said "hi"
+it's fine
+both ' and " here
+both ' and " plus '' and ""
+it's
+say "hi"
+a
+b
+a
+b
+a
+b
+a
+b
+a
+b
+a
+b
+a\nb
+a\nb
+a\nb
+x	y
+x	y
+x	y
+x	y
+x	y
+x	y
+x\ty
+x\ty
+x\ty
+rn
+rn
+rn
+rn
+rn
+rn
+r\rn
+r\rn
+r\rn
+back\slash
+back\slash
+back\slash
+back\slash
+back\slash
+back\slash
+back\\slash
+back\\slash
+back\\slash
+hexAend
+hexAend
+hexAend
+hexAend
+hexAend
+hexAend
+hex\x41end
+hex\x41end
+hex\x41end
+[110, 117, 108, 0, 122]
+[110, 117, 108, 0, 122]
+[110, 117, 108, 0, 122]
+[110, 117, 108, 0, 122]
+[110, 117, 108, 0, 122]
+[110, 117, 108, 0, 122]
+[110, 117, 108, 92, 48, 122]
+[110, 117, 108, 92, 48, 122]
+[110, 117, 108, 92, 48, 122]
+\"
+2
+line1
+line2
+line3
+a
+b
+raw\nstays
+twolines
+5
+3
+n=7
+n=7
+n=7
+n=7
+{lit} 2
+{lit} 2
+00042
+3.14
+9
+009
+sum
+3
+end
+path\to\Kirito
+3\n
+a\t3
+5
+6
+7
+8
+9
+3
+5
+5
+5
+a
+c
+bc
+ABCD
+ababab
+HELLO
+['Hello', 'World']
+['a', 'b', 'c']
+pad
+True
+a-b-c
+4
+True
+True
+True

@@ -1,0 +1,10 @@
+format precision too large
+3.14
+range() got multiple values for 'stop'
+[0, 1, 2]
+Integer
+Integer value:
+  compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool
+1,250.0%
+1,000,000
+0xff

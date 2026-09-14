@@ -1,0 +1,99 @@
+# Binary I/O through sys.createprocess / sys.shell: a Bytes `input=` reaches the child VERBATIM and
+# `binary=True` returns raw Bytes stdout/stderr. This drives REAL POSIX subprocesses (cat / wc / od),
+# so it is Linux-only, matching the C++ suite (Linux-only build+run). Converted from
+# tests/unit/test_sys_binary.cpp. The three adversarial cases are runtime type-check throws, folded
+# inline via try/catch. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var sys = import("sys")
+
+# --- binary=True returns Bytes; default returns String -------------------------------------
+io.print(type(sys.shell("cat", input=Bytes([1, 2, 3]), binary=True)["stdout"]))
+io.print(type(sys.shell("cat", input=Bytes([1, 2, 3]))["stdout"]))
+
+# --- a Bytes input reaches the child VERBATIM: `wc -c` (a foreign byte counter) --------------
+# 0xFF is ONE byte; the pre-fix String path would have UTF-8-ballooned it to two.
+io.print(Integer(sys.shell("wc -c", input=Bytes([255]))["stdout"].strip()))
+io.print(Integer(sys.shell("wc -c", input=Bytes([255, 254, 253, 128, 0]))["stdout"].strip()))
+io.print(Integer(sys.shell("wc -c", input=Bytes([]))["stdout"].strip()))
+# `od` dumps the exact bytes the child read
+io.print(sys.shell("od -An -tx1", input=Bytes([255, 128, 195, 40]), binary=True)["stdout"].decode().split() == ["ff", "80", "c3", "28"])
+
+# --- exact round-trip through `cat` (a pure byte pipe) --------------------------------------
+var roundtrip1 = Function():
+    var b = Bytes([255, 0, 128, 195, 40, 10, 13, 26, 254])
+    return sys.shell("cat", input=b, binary=True)["stdout"] == b
+io.print(roundtrip1())
+# all 256 byte values
+var roundtrip256 = Function():
+    var xs = []
+    var i = 0
+    while i < 256:
+        xs.append(i)
+        i = i + 1
+    var b = Bytes(xs)
+    return sys.shell("cat", input=b, binary=True)["stdout"] == b
+io.print(roundtrip256())
+# empty
+io.print(sys.shell("cat", input=Bytes([]), binary=True)["stdout"] == Bytes([]))
+
+# --- createprocess (argv, no shell) also honours Bytes input + binary out -------------------
+var createprocesstest = Function():
+    var b = Bytes([0, 255, 254, 1])
+    return sys.createprocess(["cat"], input=b, binary=True)["stdout"] == b
+io.print(createprocesstest())
+
+# --- String input is fed as its UTF-8 encoding; binary output returns those bytes -----------
+io.print(sys.shell("cat", input="AB", binary=True)["stdout"] == Bytes([65, 66]))
+io.print(sys.shell("cat", input=chr(233), binary=True)["stdout"] == Bytes([195, 169]))  # é -> UTF-8 0xC3 0xA9
+
+# --- binary stderr + exit code coexist ------------------------------------------------------
+var stderrtest = Function():
+    var r = sys.shell("cat 1>&2", input=Bytes([255, 200, 0]), binary=True)
+    return r["stderr"] == Bytes([255, 200, 0]) and r["stdout"] == Bytes([])
+io.print(stderrtest())
+io.print(sys.shell("cat >/dev/null; exit 5", input=Bytes([9, 9]), binary=True)["code"])
+
+# --- adversarial: wrong `input` types are rejected before spawning --------------------------
+try:
+    discard sys.shell("cat", input=123)
+catch as e:
+    io.print(e)
+try:
+    discard sys.shell("cat", input=[1, 2, 3])
+catch as e:
+    io.print(e)
+try:
+    discard sys.createprocess(["cat"], input={"a": 1})
+catch as e:
+    io.print(e)
+
+# --- a large binary payload (200 KB) survives byte-exact ------------------------------------
+var largepayload = Function():
+    var b = Bytes([137, 80, 78, 71, 255, 0]) * 40000     # 240 000 bytes
+    var out = sys.shell("cat", input=b, binary=True)["stdout"]
+    return out == b and len(out) == 240000
+io.print(largepayload())
+
+# --- FUZZ: random-length, random-value Bytes round-trip through `cat`, byte-exact -----------
+# Kirito-side generator (OS CSPRNG, like the C++ mt19937 generator it replaces) contributes
+# independent random coverage. The printed result is always True/30 regardless of the specific
+# random values, since these check invariants (round-trip equality and exact length), not fixed
+# values — so the test stays deterministic.
+var fuzztest = Function():
+    var random = import("random")
+    var checked = 0
+    var it = 0
+    while it < 30:
+        var n = random.randombelow(301)
+        var xs = []
+        var i = 0
+        while i < n:
+            xs.append(random.randombelow(256))
+            i = i + 1
+        var b = Bytes(xs)
+        var out = sys.shell("cat", input=b, binary=True)["stdout"]
+        assert (out == b and len(out) == n)
+        checked = checked + 1
+        it = it + 1
+    return checked
+io.print(fuzztest())

@@ -1,0 +1,137 @@
+# List.sort()/sorted() semantics: in-place sort, reverse, key function, stability, mixed int/float,
+# large randomized correctness + stability checks (deterministic seeds), and lexicographic List
+# ordering (converted from tests/unit/test_sort.cpp). The 2 CHECK_THROWS are runtime type errors,
+# folded inline. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# basic in-place sort
+var t1 = Function():
+    var a = [3, 1, 4, 1, 5, 9, 2, 6]
+    a.sort()
+    return a
+io.print(t1())
+var t2 = Function():
+    var a = []
+    a.sort()
+    return a
+io.print(t2())
+var t3 = Function():
+    var a = [42]
+    a.sort()
+    return a
+io.print(t3())
+var t4 = Function():
+    var a = ["banana", "apple", "cherry"]
+    a.sort()
+    return a
+io.print(t4())
+var t5 = Function():
+    var a = [3.5, 1.2, 2.8]
+    a.sort()
+    return a
+io.print(t5())
+
+# reverse
+var t6 = Function():
+    var a = [1, 2, 3]
+    a.sort(None, True)
+    return a
+io.print(t6())
+
+# key function
+var t7 = Function():
+    var a = ["bb", "a", "ccc", "dd", "e"]
+    a.sort(Function(w): return len(w))
+    return a
+io.print(t7())
+
+# key + reverse
+var t8 = Function():
+    var a = ["a", "ccc", "bb"]
+    a.sort(Function(w): return len(w), True)
+    return a
+io.print(t8())
+
+# STABILITY: equal keys preserve original relative order
+var t9 = Function():
+    var pairs = [[1, "a"], [2, "b"], [1, "c"], [2, "d"], [1, "e"]]
+    pairs.sort(Function(p): return p[0])
+    return pairs
+io.print(t9())
+
+# stability under reverse: equal keys still keep original order
+var t10 = Function():
+    var pairs = [[1, "a"], [1, "b"], [1, "c"]]
+    pairs.sort(Function(p): return p[0], True)
+    return pairs
+io.print(t10())
+
+# sorted() builtin: new list, original unchanged
+var t11 = Function():
+    var a = [3, 1, 2]
+    var b = sorted(a)
+    return String(a) + " / " + String(b)
+io.print(t11())
+io.print(sorted([3, 1, 2], None, True))
+io.print(sorted(["xx", "y", "zzz"], Function(s): return len(s)))
+
+# sorting a large random list yields a correctly ordered result (verified by scanning)
+var t12 = Function():
+    var rng = import("random").Random(123)
+    var a = []
+    for i in range(2000):
+        a.append(rng.randint(0, 1000))
+    a.sort()
+    var ok = True
+    for i in range(1, len(a)):
+        if a[i] < a[i - 1]:
+            ok = False
+    return ok and len(a) == 2000
+io.print(t12())
+
+# a large stable-sort correctness check: sort (value, index) pairs by value; for equal values
+# the original index order must be preserved.
+var t13 = Function():
+    var rng = import("random").Random(7)
+    var items = []
+    for i in range(1000):
+        items.append([rng.randint(0, 10), i])   # many ties -> stability matters
+    items.sort(Function(p): return p[0])
+    var ok = True
+    for i in range(1, len(items)):
+        if items[i][0] == items[i - 1][0] and items[i][1] < items[i - 1][1]:
+            ok = False   # equal key but index went backwards -> not stable
+    return ok
+io.print(t13())
+
+# mixed int/float sorts numerically
+var t14 = Function():
+    var a = [3, 1.5, 2, 0.5]
+    a.sort()
+    return a
+io.print(t14())
+
+# hostile: genuinely un-orderable elements (mixing types) throw cleanly
+try:
+    var a = [1, "two", 3]
+    a.sort()
+catch as e:
+    io.print(e)
+
+# Lists ARE orderable (lexicographic): sorting and list-keyed sort both work.
+var t15 = Function():
+    var a = [[2], [1], [1, 0]]
+    a.sort()
+    return a
+io.print(t15())
+var t16 = Function():
+    var a = [3, 1, 2]
+    a.sort(Function(x): return [x % 2, x])
+    return a
+io.print(t16())
+# but ordering a List against a non-List still throws
+try:
+    var a = [[1], 2]
+    a.sort()
+catch as e:
+    io.print(e)

@@ -1,0 +1,146 @@
+# Adversarial/edge coverage for math/complex/matrix — converted from tests/unit/test_numeric_deep.cpp.
+# Almost entirely throw-checks ("try to break it"); all are runtime (bad arguments / domain guards /
+# resource caps), so they are folded inline via try/catch. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var matrix = import("matrix")
+var complex = import("complex")
+var math = import("math")
+
+# ---- non-integer index into a Matrix / ComplexMatrix throws (String/Float/Bool key) ----
+try:
+    var a1 = matrix.zeros(2, 2)
+    discard a1[1.5, 0]
+catch as e:
+    io.print(e)
+try:
+    var a2 = matrix.zeros(2, 2)
+    discard a2["x"]
+catch as e:
+    io.print(e)
+try:
+    var a3 = matrix.zeros(2, 2)
+    discard a3[True, 0]
+catch as e:
+    io.print(e)
+try:
+    var c1 = complex.zeros(2, 2)
+    discard c1[1.5, 0]
+catch as e:
+    io.print(e)
+try:
+    var c2 = complex.zeros(2, 2)
+    discard c2["x", 0]
+catch as e:
+    io.print(e)
+
+# ---- ComplexMatrix resource cap (huge dims) throws, like Matrix's ----
+try:
+    discard complex.zeros(100000, 100000)
+catch as e:
+    io.print(e)
+
+# ---- non-number cell in a Matrix / ComplexMatrix literal throws ----
+try:
+    discard matrix.Matrix([["a"]])
+catch as e:
+    io.print(e)
+try:
+    discard complex.Matrix([["a"]])
+catch as e:
+    io.print(e)
+
+# ---- complex constructors/factories with a non-number arg throw ----
+try:
+    discard complex.of("a", 1)
+catch as e:
+    io.print(e)
+try:
+    discard complex.Complex([])
+catch as e:
+    io.print(e)
+try:
+    discard complex.real("x")
+catch as e:
+    io.print(e)
+try:
+    discard complex.polar("r", 0)
+catch as e:
+    io.print(e)
+try:
+    discard complex.vector(["a"])
+catch as e:
+    io.print(e)
+
+# ---- ComplexMatrix method out-of-range (get/set/row) throws ----
+try:
+    var c3 = complex.zeros(2, 2)
+    discard c3.get(5, 5)
+catch as e:
+    io.print(e)
+try:
+    var c4 = complex.zeros(2, 2)
+    discard c4.set(5, 5, complex.one)
+catch as e:
+    io.print(e)
+try:
+    var c5 = complex.zeros(2, 2)
+    discard c5.row(9)
+catch as e:
+    io.print(e)
+
+# ---- ComplexMatrix index-arity errors (3 keys on get, 1 key on set) throw ----
+try:
+    var c6 = complex.zeros(2, 2)
+    discard c6[0, 1, 2]
+catch as e:
+    io.print(e)
+try:
+    var c7 = complex.zeros(2, 2)
+    c7[0] = complex.one
+catch as e:
+    io.print(e)
+
+# ---- ComplexMatrix vector dot/cross with a non-ComplexMatrix arg throws ----
+try:
+    var v1 = complex.vector([1, 2, 3])
+    discard v1.dot(5)
+catch as e:
+    io.print(e)
+try:
+    var v2 = complex.vector([1, 2, 3])
+    discard v2.cross(5)
+catch as e:
+    io.print(e)
+
+# ---- ComplexMatrix unsupported operators (/, scalar-on-left) throw ----
+try:
+    var c8 = complex.zeros(2, 2)
+    discard c8 / 2
+catch as e:
+    io.print(e)
+try:
+    var c9 = complex.zeros(2, 2)
+    discard 2 * c9
+catch as e:
+    io.print(e)
+try:
+    var c10 = complex.zeros(2, 2)
+    discard 2.0 * c10
+catch as e:
+    io.print(e)
+
+# ---- math.lcm / perm with a non-integer arg throw ("expects Integers") ----
+try:
+    discard math.lcm(1.5, 2)
+catch as e:
+    io.print(e)
+try:
+    discard math.perm(1.5, 2)
+catch as e:
+    io.print(e)
+
+# ---- positive sanity so the file also pins correct numeric behavior ----
+io.print(complex.of(3, 4).modulus())
+io.print((complex.i * complex.i).re)
+io.print(matrix.identity(2).determinant())
+io.print(math.lcm(4, 6))

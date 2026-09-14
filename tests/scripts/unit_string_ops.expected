@@ -1,0 +1,183 @@
+5
+é
+3
+€
+3
+ell
+hel
+llo
+lo
+olleh
+hlo
+[2, 3, 4]
+[3, 2, 1]
+True
+False
+True
+True
+True
+True
+ababab
+HELLO
+hello
+hi
+3
+b
+a,b,c
+heLLo
+True
+True
+2
+3
+1 + 2 = 3
+hi hi
+50%
+HELLO
+hello
+5
+H
+o
+ell
+olleH
+HelloHello
+True
+True
+True
+HELLO
+hello
+5
+H
+o
+ell
+olleH
+HelloHello
+True
+True
+True
+HELLO
+hello
+5
+H
+o
+ell
+olleH
+HelloHello
+True
+True
+True
+HELLO
+hello
+5
+H
+o
+ell
+olleH
+HelloHello
+True
+True
+True
+HELLO
+hello
+5
+H
+o
+ell
+olleH
+HelloHello
+True
+True
+True
+HELLO
+hello
+5
+H
+o
+ell
+olleH
+HelloHello
+True
+True
+True
+HELLO
+hello
+5
+H
+o
+ell
+olleH
+HelloHello
+True
+True
+True
+HELLO
+hello
+5
+H
+o
+ell
+olleH
+HelloHello
+True
+True
+True
+3
+b
+a-b-c
+2
+3
+b
+a-b-c
+2
+3
+b
+a-b-c
+2
+3
+b
+a-b-c
+2
+3
+b
+a-b-c
+2
+3
+b
+a-b-c
+2
+3
+b
+a-b-c
+2
+3
+b
+a-b-c
+2
+hi
+hi
+hi
+hi
+hi
+hi
+hi
+hi
+1 + 2 = 3
+1 + 2 = 3
+1 + 2 = 3
+1 + 2 = 3
+1 + 2 = 3
+1 + 2 = 3
+1 + 2 = 3
+1 + 2 = 3
+5 + 5
+5 + 5
+3
+0
+3
+1
+1
+[3, 0, 3]
+1
+levenshtein expects a String or a List of Strings
+levenshtein: the List must contain only Strings
+swift
+1.0

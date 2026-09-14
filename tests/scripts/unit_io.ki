@@ -1,0 +1,37 @@
+# The stream= keyword on print/write/eprint/input/read, and unknown-keyword / non-stream target
+# errors (converted from tests/unit/test_io.cpp — the pure BytesIO-based cases, no filesystem).
+# The mkdir/writelines/seek/rename/chmod cases (real temp-dir files, OS permission bits) stay in
+# C++. The two throws are runtime errors, caught inline.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+var buf = io.BytesIO()
+io.print("hi", 7, stream=buf)
+io.write("raw", stream=buf)
+io.eprint("e", stream=buf)
+io.print(buf.getvalue())
+
+var src = io.BytesIO("one\ntwo\nrest")
+io.print(io.input(stream=src) + "|" + io.read(3, stream=src) + "|" + io.read(stream=src))
+
+var cap = io.BytesIO()
+io.stdout = cap
+io.print("x", stream=io.BytesIO())
+io.print("y")
+io.stdout = io.__stdout__
+io.print(cap.getvalue())
+
+var bogus = Function():
+    try:
+        import("io").print("x", bogus=1)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(bogus())
+var badstream = Function():
+    try:
+        import("io").print("x", stream=42)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(badstream())

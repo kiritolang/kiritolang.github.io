@@ -1,0 +1,147 @@
+# List/Dict/Set value semantics: indexing, mutation, equality, insertion order (dense Dict/Set are
+# insertion-ordered & stable across delete/rehash), cycle-safe stringify (converted from
+# tests/unit/test_collections.cpp). The three CHECK_THROWS are runtime errors, folded inline.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# --- List ---
+io.print([1, 2, 3])
+io.print(len([1, 2, 3]))
+var t1 = Function():
+    var a = [1, 2, 3]
+    return a[0] + a[2]
+io.print(t1())
+var t2 = Function():
+    var a = [1, 2, 3]
+    return a[-1]
+io.print(t2())
+var t3 = Function():
+    var a = [1, 2, 3]
+    a[0] = 10
+    return a[0]
+io.print(t3())
+var t4 = Function():
+    var a = [1, 2, 3, 4]
+    var s = 0
+    for x in a:
+        s = s + x
+    return s
+io.print(t4())
+var t5 = Function():
+    var a = [1]
+    a.append(2)
+    a.append(3)
+    return len(a)
+io.print(t5())
+try:
+    discard [1, 2][5]
+catch as e:
+    io.print(e)
+
+# --- Dict ---
+var t6 = Function():
+    var d = {"a": 1, "b": 2}
+    return d["a"] + d["b"]
+io.print(t6())
+var t7 = Function():
+    var d = {}
+    d["x"] = 5
+    return d["x"]
+io.print(t7())
+io.print(len({"a": 1, "b": 2}))
+var t8 = Function():
+    var d = {1: 10, 2: 20}
+    var s = 0
+    for k in d:
+        s = s + k
+    return s
+io.print(t8())
+try:
+    discard {"a": 1}["z"]
+catch as e:
+    io.print(e)
+try:
+    var d = {}
+    d[[1]] = 1
+catch as e:
+    io.print(e)
+
+# --- Set ---
+io.print(len({1, 2, 2, 3}))
+io.print({1, 2, 3}.contains(2))
+io.print({1, 2, 3}.contains(9))
+var t9 = Function():
+    var s = {1}
+    s.add(2)
+    s.add(2)
+    return len(s)
+io.print(t9())
+
+# --- insertion order (dense Dict/Set are insertion-ordered, stable across delete) ---
+var t10 = Function():
+    var d = {}
+    for x in ["c", "a", "b", "z", "m"]:
+        d[x] = 1
+    return d.keys()
+io.print(t10())
+# delete a middle key, the rest keep their order (tombstone, no shift)
+var t11 = Function():
+    var d = {}
+    for x in [3, 1, 4, 1, 5, 9, 2]:
+        d[x] = x
+    discard d.pop(4)
+    discard d.pop(1)
+    return d.keys()
+io.print(t11())
+# reinserting a deleted key appends at the end (new insertion)
+var t12 = Function():
+    var d = {}
+    d["a"] = 1
+    d["b"] = 2
+    discard d.pop("a")
+    d["a"] = 3
+    return d.keys()
+io.print(t12())
+# Set preserves first-insertion order; a re-add does not move the element
+var t13 = Function():
+    var s = Set()
+    for x in [5, 3, 5, 1, 3, 9]:
+        s.add(x)
+    return List(s)
+io.print(t13())
+# popitem is LIFO (last-inserted pair)
+var t14 = Function():
+    var d = {}
+    d["x"] = 1
+    d["y"] = 2
+    d["z"] = 3
+    return d.popitem()
+io.print(t14())
+# order survives a rehash triggered by growth past the initial index capacity
+var t15 = Function():
+    var d = {}
+    var i = 0
+    while i < 50:
+        d[i] = i
+        i = i + 1
+    var first5 = []
+    var seen = 0
+    for k in d:
+        if seen < 5:
+            first5.append(k)
+        seen = seen + 1
+    return first5
+io.print(t15())
+
+# --- equality (structural, nested) ---
+io.print([1, 2] == [1, 2])
+io.print([1, 2] == [1, 3])
+io.print([[1, 2], [3]] == [[1, 2], [3]])
+io.print({1: 2} == {1: 2})
+
+# --- cycle-safe stringify ---
+var t16 = Function():
+    var a = []
+    a.append(a)
+    return a
+io.print(t16())

@@ -1,0 +1,28 @@
+Dict
+1
+2
+True
+False
+None
+42
+3.5
+-17
+hi
+3
+b
+2
+[1, 2, 3]
+"hi"
+42
+true
+null
+[1, "two", [3]]
+[1, 2, 3]
+café
+"\u0000"
+"\u0001\u001f"
+"a\u0000b"
+3
+JSON parse error: expected string key
+JSON parse error: unexpected character
+cannot serialize a cyclic structure to JSON

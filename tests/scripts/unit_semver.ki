@@ -1,0 +1,215 @@
+# The `semver` frozen module: parsing/validation, semantic-versioning precedence (including the
+# spec's worked example chain), and the node-semver range grammar (^, ~, comparators, x-ranges,
+# hyphen ranges, AND/OR), plus maxsatisfying/sort/inc/diff, prerelease gating, and two seeded fuzz
+# invariant checks (converted from tests/unit/test_semver.cpp — fully deterministic, no filesystem).
+# The two throws (parse of an invalid version, inc with a bogus part) are runtime errors, caught
+# inline. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var s = import("semver")
+
+# ---------- parse / valid ----------
+io.print(s.valid("1.2.3"))
+io.print(s.valid("v2.0.0"))
+io.print(s.valid("  =1.0.0 "))
+io.print(s.valid("1.2.3-alpha.1+build.7"))
+io.print(s.valid("1.2"))
+io.print(s.valid("1.2.3.4"))
+io.print(s.valid("1.2.x"))
+io.print(s.valid(""))
+io.print(s.valid("abc"))
+io.print(s.major("3.4.5"))
+io.print(s.minor("3.4.5"))
+io.print(s.patch("3.4.5"))
+io.print(s.prerelease("1.0.0-rc.2"))
+io.print(s.prerelease("1.0.0"))
+var parsebad = Function():
+    try:
+        discard s.parse("nope")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(parsebad())
+
+# ---------- precedence: numeric, not lexical ----------
+io.print(s.compare("1.0.0", "1.0.0"))
+io.print(s.compare("1.0.0", "1.0.1"))
+io.print(s.compare("1.10.0", "1.9.0"))
+io.print(s.compare("2.0.0", "1.999.999"))
+io.print(s.gt("1.0.10", "1.0.9"))
+io.print(s.lt("1.0.9", "1.0.10"))
+io.print(s.eq("1.0.0+build1", "1.0.0+build2"))
+io.print(s.neq("1.0.0", "1.0.1"))
+io.print(s.gte("1.0.0", "1.0.0"))
+io.print(s.lte("1.0.0", "1.0.0"))
+
+# ---------- prerelease precedence (semver.org spec example) ----------
+io.print(s.compare("1.0.0-alpha", "1.0.0-alpha.1"))
+io.print(s.compare("1.0.0-alpha.1", "1.0.0-alpha.beta"))
+io.print(s.compare("1.0.0-alpha.beta", "1.0.0-beta"))
+io.print(s.compare("1.0.0-beta", "1.0.0-beta.2"))
+io.print(s.compare("1.0.0-beta.2", "1.0.0-beta.11"))
+io.print(s.compare("1.0.0-beta.11", "1.0.0-rc.1"))
+io.print(s.compare("1.0.0-rc.1", "1.0.0"))
+io.print(s.compare("1.0.0-1", "1.0.0-alpha"))
+
+# ---------- caret ^ ----------
+io.print(s.satisfies("1.2.3", "^1.2.3"))
+io.print(s.satisfies("1.9.0", "^1.2.3"))
+io.print(s.satisfies("1.2.2", "^1.2.3"))
+io.print(s.satisfies("2.0.0", "^1.2.3"))
+io.print(s.satisfies("0.2.9", "^0.2.3"))
+io.print(s.satisfies("0.3.0", "^0.2.3"))
+io.print(s.satisfies("0.0.3", "^0.0.3"))
+io.print(s.satisfies("0.0.4", "^0.0.3"))
+io.print(s.satisfies("1.5.0", "^1"))
+io.print(s.satisfies("2.0.0", "^1"))
+io.print(s.satisfies("1.3.0", "^1.2"))
+
+# ---------- tilde ~ ----------
+io.print(s.satisfies("1.2.9", "~1.2.3"))
+io.print(s.satisfies("1.3.0", "~1.2.3"))
+io.print(s.satisfies("1.2.0", "~1.2"))
+io.print(s.satisfies("1.3.0", "~1.2"))
+io.print(s.satisfies("1.9.9", "~1"))
+io.print(s.satisfies("2.0.0", "~1"))
+
+# ---------- x-ranges, *, exact ----------
+io.print(s.satisfies("1.2.7", "1.2.x"))
+io.print(s.satisfies("1.3.0", "1.2.x"))
+io.print(s.satisfies("1.9.9", "1.x"))
+io.print(s.satisfies("2.0.0", "1.x"))
+io.print(s.satisfies("9.9.9", "*"))
+io.print(s.satisfies("0.0.0", ""))
+io.print(s.satisfies("1.2.3", "1.2.3"))
+io.print(s.satisfies("1.2.4", "1.2.3"))
+
+# ---------- explicit comparators + AND ----------
+io.print(s.satisfies("1.5.0", ">=1.0.0 <2.0.0"))
+io.print(s.satisfies("2.0.0", ">=1.0.0 <2.0.0"))
+io.print(s.satisfies("1.0.0", ">=1.0.0 <2.0.0"))
+io.print(s.satisfies("1.0.0", ">1.0.0"))
+io.print(s.satisfies("1.0.1", ">1.0.0"))
+io.print(s.satisfies("1.0.0", "<=1.0.0"))
+
+# ---------- OR (||) and hyphen ranges ----------
+io.print(s.satisfies("1.5.0", "^1.0.0 || ^3.0.0"))
+io.print(s.satisfies("3.5.0", "^1.0.0 || ^3.0.0"))
+io.print(s.satisfies("2.5.0", "^1.0.0 || ^3.0.0"))
+io.print(s.satisfies("1.5.0", "1.0.0 - 2.0.0"))
+io.print(s.satisfies("2.0.0", "1.0.0 - 2.0.0"))
+io.print(s.satisfies("2.0.1", "1.0.0 - 2.0.0"))
+io.print(s.satisfies("1.2.5", "1.2.3 - 1.3"))
+
+# ---------- prerelease gating (node-semver default: excluded unless pinned) ----------
+io.print(s.satisfies("2.0.0-beta", "^1.0.0"))
+io.print(s.satisfies("1.2.3-beta", "^1.0.0"))
+io.print(s.satisfies("1.2.3-beta.2", ">=1.2.3-beta.1"))
+io.print(s.satisfies("1.2.4-beta", ">=1.2.3-beta.1"))
+
+# ---------- maxsatisfying / minsatisfying ----------
+io.print(s.maxsatisfying(["1.0.0", "1.2.0", "1.9.9", "2.0.0"], "^1.0.0"))
+io.print(s.minsatisfying(["1.0.0", "1.2.0", "1.9.9"], "^1.0.0"))
+io.print(s.maxsatisfying(["1.0.0", "2.0.0"], "^3.0.0"))
+io.print(s.maxsatisfying(["v1.0.0", "v1.5.0", "not-a-version"], "*"))
+
+# ---------- sort / rsort (numeric ordering; invalids dropped) ----------
+io.print(s.sort(["1.10.0", "1.2.0", "1.1.0"]))
+io.print(s.rsort(["1.1.0", "1.10.0", "1.2.0"]))
+io.print(s.sort(["2.0.0", "1.0.0-rc.1", "1.0.0"]))
+io.print(s.sort(["1.0.0", "garbage", "0.9.0"]))
+
+# ---------- diff / inc ----------
+io.print(s.diff("1.2.3", "2.0.0"))
+io.print(s.diff("1.2.3", "1.3.0"))
+io.print(s.diff("1.2.3", "1.2.4"))
+io.print(s.diff("1.2.3-a", "1.2.3-b"))
+io.print(s.diff("1.2.3", "1.2.3"))
+io.print(s.inc("1.2.3", "major"))
+io.print(s.inc("1.2.3", "minor"))
+io.print(s.inc("1.2.3", "patch"))
+io.print(s.inc("1.2.3-rc.1", "patch"))
+var incbad = Function():
+    try:
+        discard s.inc("1.0.0", "bogus")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(incbad())
+
+# ---------- validrange ----------
+io.print(s.validrange("^1.2.3"))
+io.print(s.validrange(">=1.0.0 <2.0.0"))
+io.print(s.validrange("*"))
+
+# ---------- adversarial: malformed input is rejected cleanly, never crashes ----------
+io.print(s.valid("1"))
+io.print(s.valid("1.2.3-"))
+io.print(s.valid("1..3"))
+io.print(s.valid("..."))
+io.print(s.valid("v"))
+io.print(s.valid("1.2.x"))
+io.print(s.validrange("not a range"))
+io.print(s.validrange(">=abc"))
+io.print(s.validrange(">="))
+io.print(s.maxsatisfying(["x", "y", ""], "*"))
+io.print(s.sort(["x", "y"]))
+var comparebad = Function():
+    try:
+        discard s.compare("1.0.0", "garbage")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(comparebad())
+io.print(s.satisfies("1.0.0", ">=abc"))
+io.print(s.maxsatisfying(["1.0.0", "2.0.0"], "latest"))
+
+# ---------- fuzz: random version-ish strings are total (no crash) and self-consistent ----------
+var rnd = import("random").Random(12345)
+var alpha = "0123456789.-+abx"
+var mk = Function():
+    var t = ""
+    var i = 0
+    var n = rnd.randint(1, 12)
+    while i < n:
+        t = t + alpha[rnd.randint(0, len(alpha) - 1)]
+        i = i + 1
+    return t
+var k = 0
+while k < 3000:
+    var v = mk()
+    var ok = s.valid(v)
+    if ok != None:
+        assert s.compare(v, v) == 0
+        assert s.eq(v, ok)
+        assert s.satisfies(ok, "*") or len(s.parse(ok)["prerelease"]) > 0
+    var vr = s.validrange(v)
+    assert vr == True or vr == False
+    k = k + 1
+io.print("fuzz-ok")
+
+# ---------- fuzz: ordering invariants on a random pool (sortedness, idempotence, max/min) -----
+var rnd2 = import("random").Random(2024)
+var pool = []
+var i2 = 0
+while i2 < 80:
+    pool.append(String(rnd2.randint(0, 3)) + "." + String(rnd2.randint(0, 6)) + "." + String(rnd2.randint(0, 9)))
+    i2 = i2 + 1
+var asc = s.sort(pool)
+var j = 1
+while j < len(asc):
+    assert s.compare(asc[j - 1], asc[j]) <= 0
+    j = j + 1
+assert s.sort(asc) == asc
+var desc = s.rsort(pool)
+var m = 1
+while m < len(desc):
+    assert s.compare(desc[m - 1], desc[m]) >= 0
+    m = m + 1
+var best = s.maxsatisfying(pool, "*")
+var least = s.minsatisfying(pool, "*")
+var n2 = 0
+while n2 < len(pool):
+    assert s.compare(pool[n2], best) <= 0
+    assert s.compare(pool[n2], least) >= 0
+    n2 = n2 + 1
+io.print("order-ok")

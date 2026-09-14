@@ -1,0 +1,37 @@
+start expects an Integer
+start expects an Integer
+start expects an Integer
+start expects an Integer
+start expects an Integer
+start expects an Integer
+start expects an Integer
+3
+1
+-1
+split expects an Integer
+replace expects an Integer
+['a', 'b,c']
+bba
+ljust expects an Integer width
+rjust expects an Integer width
+center expects an Integer width
+zfill expects an Integer width
+Bytes index must be Integer, not 'Float'
+slice step cannot be zero
+type 'Bytes' does not support this binary operator
+20
+30
+'utf-8' codec can't decode: invalid UTF-8 byte sequence
+'utf-8' codec can't decode: invalid UTF-8 byte sequence
+'utf-8' codec can't decode: invalid UTF-8 byte sequence
+'utf-8' codec can't decode: invalid UTF-8 byte sequence
+True
+True
+2
+233
+4
+é
+'ascii' codec can't encode code point U+00E9
+ff1000
+True
+True

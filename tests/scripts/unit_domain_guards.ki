@@ -1,0 +1,221 @@
+# Regression tests for the "silent bug on bad input" pass: math/complex/tensor domain errors,
+# malformed Integer/Float strings, pow negative modulus, statistics.quantiles n, tabular Series
+# length-mismatch + ragged CSV, and time.strptime range/trailing checks must all THROW a clear,
+# catchable error instead of returning NaN/inf/garbage. Converted from tests/unit/test_domain_guards.cpp.
+# All checks are runtime (bad arguments / domain guards on stdlib calls), so they are folded inline
+# via try/catch. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var math = import("math")
+var complex = import("complex")
+var tensor = import("tensor")
+var statistics = import("statistics")
+var tabular = import("tabular")
+var time = import("time")
+
+# === math: domain errors throw; NaN passes through; overflow-to-inf is NOT a domain error ===
+try:
+    discard math.sqrt(0 - 1)
+catch as e:
+    io.print(e)
+try:
+    discard math.log(0)
+catch as e:
+    io.print(e)
+try:
+    discard math.log(0 - 1)
+catch as e:
+    io.print(e)
+try:
+    discard math.asin(2)
+catch as e:
+    io.print(e)
+try:
+    discard math.acos(2)
+catch as e:
+    io.print(e)
+try:
+    discard math.acosh(0)
+catch as e:
+    io.print(e)
+try:
+    discard math.atanh(1)
+catch as e:
+    io.print(e)
+try:
+    discard math.log2(0)
+catch as e:
+    io.print(e)
+try:
+    discard math.log10(0)
+catch as e:
+    io.print(e)
+try:
+    discard math.log1p(0 - 1)
+catch as e:
+    io.print(e)
+try:
+    discard math.gamma(0)
+catch as e:
+    io.print(e)
+try:
+    discard math.gamma(0 - 2)
+catch as e:
+    io.print(e)
+try:
+    discard math.pow(0 - 2, 0.5)      # negative base, fractional exponent
+catch as e:
+    io.print(e)
+try:
+    discard math.pow(0, 0 - 1)        # zero to a negative power
+catch as e:
+    io.print(e)
+try:
+    discard math.fmod(1, 0)           # divisor zero
+catch as e:
+    io.print(e)
+try:
+    discard math.log(8, 1)            # base 1
+catch as e:
+    io.print(e)
+# NaN passes through, overflow->inf does not throw, valid input still computes
+io.print(math.isnan(math.sqrt(math.nan)))
+io.print(math.isinf(math.exp(1000)))
+io.print(math.sqrt(16))
+# prod overflow throws like its siblings; a Float in the mix never overflows
+try:
+    discard math.prod([1000000000000, 1000000000000])
+catch as e:
+    io.print(e)
+io.print(math.prod([2.0, 3.0]))
+
+# === complex: domain errors (log/log10 of 0, pow zero-to-negative, atanh +/-1 throw) ===
+try:
+    discard complex.log(complex.zero)
+catch as e:
+    io.print(e)
+try:
+    discard complex.log10(complex.zero)
+catch as e:
+    io.print(e)
+try:
+    discard complex.pow(complex.zero, complex.of(0 - 1, 0))
+catch as e:
+    io.print(e)
+try:
+    discard complex.zero ** complex.of(0 - 1, 0)
+catch as e:
+    io.print(e)
+try:
+    discard complex.atanh(complex.one)
+catch as e:
+    io.print(e)
+# valid in the complex plane — must NOT throw
+io.print(complex.sqrt(complex.of(0 - 1, 0)))
+io.print(complex.log(complex.of(0 - 1, 0)))
+io.print(complex.acosh(complex.zero))
+
+# === tensor: elementwise math domain + reciprocal(0) + clip(lo>hi) + norm(ord=0) ===
+try:
+    discard tensor.Tensor([0 - 1.0]).sqrt()
+catch as e:
+    io.print(e)
+try:
+    discard tensor.Tensor([0.0]).log()
+catch as e:
+    io.print(e)
+try:
+    discard tensor.Tensor([2.0]).asin()
+catch as e:
+    io.print(e)
+try:
+    discard tensor.Tensor([2.0]).atanh()
+catch as e:
+    io.print(e)
+try:
+    discard tensor.Tensor([0.5]).acosh()
+catch as e:
+    io.print(e)
+try:
+    discard tensor.Tensor([0.0]).reciprocal()
+catch as e:
+    io.print(e)
+try:
+    discard tensor.Tensor([0 - 2.0]).pow(0.5)
+catch as e:
+    io.print(e)
+try:
+    discard tensor.Tensor([1.0]).clip(5.0, 1.0)
+catch as e:
+    io.print(e)
+io.print(tensor.norm(tensor.Tensor([3.0, 0.0, 4.0]), 0.0))
+# valid: sqrt(0)=0, integer exponent on a negative base
+io.print(tensor.Tensor([0.0, 4.0]).sqrt().tolist())
+io.print(tensor.Tensor([0 - 8.0]).pow(3.0).tolist())
+
+# === builtins: malformed Integer/Float strings + pow negative modulus ===
+try:
+    discard Integer("--5")
+catch as e:
+    io.print(e)
+try:
+    discard Integer("+ 5")
+catch as e:
+    io.print(e)
+try:
+    discard Integer("0x-5")
+catch as e:
+    io.print(e)
+try:
+    discard Integer("0b -1")
+catch as e:
+    io.print(e)
+io.print(Integer("  -5 "))
+io.print(Integer("-0xFF"))
+try:
+    discard Float("0x1p4")            # C99 hex float rejected
+catch as e:
+    io.print(e)
+io.print(Float("1.5e3"))
+try:
+    discard pow(7, 2, 0 - 5)
+catch as e:
+    io.print(e)
+io.print(pow(2, 10, 1000))
+
+# === statistics.quantiles: n must be >= 1 ===
+try:
+    discard statistics.quantiles([1, 2, 3], 0)
+catch as e:
+    io.print(e)
+try:
+    discard statistics.quantiles([1, 2, 3], 0 - 2)
+catch as e:
+    io.print(e)
+io.print(len(statistics.quantiles([1, 2, 3, 4], 4)))
+
+# === tabular: Series length mismatch (both directions) + ragged CSV ===
+try:
+    discard tabular.Series([1, 2]) + tabular.Series([1, 2, 3])
+catch as e:
+    io.print(e)
+try:
+    discard tabular.Series([1, 2, 3]) + tabular.Series([1, 2])   # symmetric
+catch as e:
+    io.print(e)
+try:
+    discard tabular.readcsv("a,b\n1,2,3,4")
+catch as e:
+    io.print(e)
+io.print((tabular.Series([1, 2, 3]) + tabular.Series([10, 20, 30])).tolist())
+
+# === time.strptime: out-of-range fields + trailing data throw; make() rollover unchanged ===
+try:
+    discard time.strptime("2024-99-99", "%Y-%m-%d")
+catch as e:
+    io.print(e)
+try:
+    discard time.strptime("2024-01-01XYZ", "%Y-%m-%d")
+catch as e:
+    io.print(e)
+io.print(time.strptime("2024-06-15", "%Y-%m-%d").iso())
+io.print(time.make(2024, 13, 1).year)   # deliberate C-mktime rollover

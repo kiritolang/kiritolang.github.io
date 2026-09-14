@@ -1,0 +1,90 @@
+# Adversarial/edge coverage for the io + path modules (converted from
+# tests/unit/test_io_path_deep.cpp — the cases that don't touch a real temp-dir file): path.listdir/
+# walk tolerance on a missing path, std streams as context managers, BytesIO-backed stdin rebinding,
+# BytesIO seek edges, and open()'s argument/mode validation (which throws before ever touching the
+# filesystem, so a nonexistent relative path is enough — no gettempdir() needed). The cases that
+# create/rename/chmod real files under the OS temp directory (listdir/walk-on-a-FILE, binary
+# writelines, path.walk(dir=...), chmod high bits, EOF reads, rename-onto-existing, mkdir-on-a-file)
+# stay in C++.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var path = import("path")
+
+# --- path.listdir / path.walk are tolerant on an outright-missing path (-> []) ---
+io.print(len(path.listdir("nonexistent_dir_kirito_deep_listdir_zzz")))
+io.print(len(path.walk("nonexistent_dir_kirito_deep_walk_zzz")))
+
+# --- io.stdout / io.stderr as `with` context managers ---
+var entered = False
+with io.stdout as s:
+    s.flush()
+    entered = True
+io.print(entered)
+var enteredErr = False
+with io.stderr as s2:
+    s2.flush()
+    enteredErr = True
+io.print(enteredErr)
+
+# --- io.read(-1) / io.read(negative) => read-all branch, via a rebound BytesIO stdin ---
+var b1 = io.BytesIO("hello world")
+io.stdin = b1
+var r1 = io.read(-1)
+io.stdin = io.__stdin__
+io.print(r1)
+var b2 = io.BytesIO("abcdef")
+io.stdin = b2
+var r2 = io.read(3)
+io.stdin = io.__stdin__
+io.print(r2)
+var b3 = io.BytesIO("payload")
+io.stdin = b3
+var r3 = io.read()
+io.stdin = io.__stdin__
+io.print(r3)
+
+# --- seek with a non-Integer offset must throw (BytesIO) ---
+var seekbad = Function():
+    try:
+        var b = io.BytesIO("abc")
+        b.seek("x")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(seekbad())
+# BytesIO clamps a negative absolute target to 0 (no throw)
+var b4 = io.BytesIO("abc")
+discard b4.seek(-100)
+io.print(b4.tell())
+
+# --- open modes "w+" and "a+" must throw "unsupported file mode"; a stray letter too ---
+# (mode validation throws before the filesystem is touched, so the directory need not exist)
+var opens = Function(mode):
+    try:
+        discard io.open("nonexistent_dir_kirito_deep_zzz/f.txt", mode)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(opens("w+"))
+io.print(opens("a+"))
+io.print(opens("z"))
+
+# --- open "w"/"a" in a non-existent directory must throw; "r" on a missing file likewise ---
+io.print(opens("w"))
+io.print(opens("a"))
+var readmissing = Function():
+    try:
+        discard io.open("definitely_missing_kirito_deep_file.txt", "r")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(readmissing())
+
+# --- open with >2 positional args must throw ---
+var extraarg = Function():
+    try:
+        discard io.open("nonexistent_dir_kirito_deep_zzz/x.txt", "w", "extra")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(extraarg())

@@ -1,0 +1,66 @@
+3.14
+3
+2.718
+yo
+round() got an unexpected keyword argument 'bogus'
+open() got multiple values for argument 'path'
+open() takes at most 2 positional argument(s) but 3 given
+open() missing required argument 'path'
+7
+7
+7
+7
+25
+125
+16
+8
+'bindf' takes 2 positional argument(s) but 3 were given
+function got multiple values for argument 'a'
+function got an unexpected keyword argument 'c'
+function missing required argument 'b'
+positional argument follows keyword argument
+2
+argument 'd' must be Dict, got List
+argument 'd' must be Dict, got Integer
+3.5
+function must return Integer, got String
+woof
+...
+argument 'a' must be NaAnimal, got Integer
+s
+[1]
+2
+2
+len() got an unexpected keyword argument 'obj'
+print() got an unexpected keyword argument 'end'
+42
+3.0
+99
+False
+[0, 1, 2]
+3
+1
+[]
+0
+Integer() got an unexpected keyword argument 'value'
+1
+3
+1
+bbb
+3
+none
+-1
+min() arg is an empty sequence
+min() got an unexpected keyword argument 'bogus'
+24
+240
+[3, 2]
+[0, 5]
+3
+2.3
+007
+True
+3.0
+24
+3
+[3, 2]

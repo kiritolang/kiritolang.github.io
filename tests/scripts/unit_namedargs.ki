@@ -1,0 +1,192 @@
+# Named (keyword) arguments, default parameter values, and enforcing type annotations (converted
+# from tests/unit/test_namedargs.cpp). Annotations are not hints: a param ': Type' must receive a
+# matching instance (inheritance-aware for user classes) and a '-> Type' return annotation is
+# checked on the result. All binding/annotation errors are runtime and are caught inline.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var path = import("path")
+var math = import("math")
+
+# --- named arguments + defaults on NATIVE functions (builtins and module functions) ---
+io.print(round(3.14159, ndigits=2))
+io.print(round(2.7))                    # default ndigits=None -> Integer
+io.print(round(2.71828, ndigits=3))
+# module function `io.open` with a default mode.
+var nap = path.gettempdir() + "/kirito_namedargs_native.txt"
+var naf = io.open(nap, mode="w")
+discard naf.write("yo")
+naf.close()
+var nag = io.open(nap)
+var nas = nag.read()
+nag.close()
+path.remove(nap)
+io.print(nas)
+
+# --- native-signature errors: unknown keyword, duplicate, too many positional, missing required ---
+try:
+    discard round(1, bogus=2)
+catch as e:
+    io.print(e)
+try:
+    discard io.open(path="x", path="y")
+catch as e:
+    io.print(e)
+try:
+    discard io.open("a", "b", "c")
+catch as e:
+    io.print(e)
+try:
+    discard io.open()
+catch as e:
+    io.print(e)
+
+# --- named arguments, any order, mixed with positional ---
+var sub = Function(a, b):
+    return a - b
+io.print(sub(10, 3))
+io.print(sub(a = 10, b = 3))
+io.print(sub(b = 3, a = 10))   # order-independent
+io.print(sub(10, b = 3))       # positional then keyword
+
+# --- default parameter values ---
+var power = Function(base, exp = 2):
+    return base ** exp
+io.print(power(5))
+io.print(power(5, 3))
+io.print(power(base = 4))
+io.print(power(exp = 3, base = 2))
+
+# --- argument-binding errors (caught at Kirito level as String messages) ---
+var bindf = Function(a, b):
+    return a
+try:
+    discard bindf(1, 2, 3)
+catch as e:
+    io.print(e)
+try:
+    discard bindf(1, a = 2)
+catch as e:
+    io.print(e)
+try:
+    discard bindf(1, c = 2)
+catch as e:
+    io.print(e)
+try:
+    discard bindf(1)
+catch as e:
+    io.print(e)
+try:
+    discard bindf(a = 1, 2)
+catch as e:
+    io.print(e)
+
+# --- enforcing parameter annotations (built-in types) ---
+var keys = Function(d : Dict):
+    return len(d)
+io.print(keys({1: 2, 3: 4}))
+try:
+    discard keys([1, 2, 3])
+catch as e:
+    io.print(e)
+try:
+    discard keys(5)
+catch as e:
+    io.print(e)
+
+# --- enforcing return annotations ---
+var half = Function(n : Integer) -> Float:
+    return n / 2
+io.print(half(7))
+var bad = Function() -> Integer:
+    return "nope"
+try:
+    discard bad()
+catch as e:
+    io.print(e)
+
+# --- inheritance: a subclass instance satisfies a base-class annotation ---
+class NaAnimal:
+    var speak = Function(self):
+        return "..."
+class NaDog(NaAnimal):
+    var speak = Function(self):
+        return "woof"
+var hear = Function(a : NaAnimal):
+    return a.speak()
+io.print(hear(NaDog()))     # child passes base annotation
+io.print(hear(NaAnimal()))
+try:
+    discard hear(42)
+catch as e:
+    io.print(e)
+
+# --- 'Any' / no annotation accept everything ---
+var idfn = Function(x : Any):
+    return x
+io.print(idfn("s"))
+io.print(idfn([1]))
+io.print(len([1, 2]))
+
+# a signatured native takes keyword args by its declared parameter name, and rejects unknown ones
+io.print(len(x = [1, 2]))    # `len`'s parameter is named `x`
+try:
+    discard len(obj = [1, 2])
+catch as e:
+    io.print(e)
+# a keyword-aware variadic native (io.print accepts only `stream=`) rejects other keywords
+try:
+    io.print(end = 1)
+catch as e:
+    io.print(e)
+
+# --- keyword arguments on the builtin type constructors / converters ---
+io.print(Integer(x = "42"))
+io.print(Float(x = 3))
+io.print(String(x = 99))
+io.print(Bool(x = 0))
+io.print(List(iterable = range(3)))
+io.print(len(Set(iterable = [1, 1, 2, 2, 3])))
+io.print(Dict(iterable = [["a", 1]])["a"])
+io.print(List())              # no-arg still builds empty
+io.print(len(Dict()))
+# unknown keyword on a converter is rejected by name
+try:
+    discard Integer(value = 1)
+catch as e:
+    io.print(e)
+
+# --- min / max: keyword-aware variadic with `key` and `default` ---
+io.print(min([3, 1, 2]))
+io.print(max([3, 1, 2]))
+io.print(min(3, 1, 2))                         # several positionals
+io.print(max("a", "bbb", "cc", key = len))
+var neg = Function(x): return -x
+io.print(min([3, 1, 2], key = neg))
+io.print(min([], default = "none"))
+io.print(max([], default = -1))
+# empty without a default throws; an unknown keyword is rejected
+try:
+    discard min([])
+catch as e:
+    io.print(e)
+try:
+    discard min([1], bogus = 2)
+catch as e:
+    io.print(e)
+
+# --- math.prod accepts keyword args (iterable + start default 1) ---
+io.print(math.prod(iterable = [2, 3, 4]))
+io.print(math.prod([2, 3, 4], start = 10))
+
+# --- out-of-order keywords on ASYMMETRIC natives bind strictly by name (a swap would differ) ---
+io.print(divmod(b = 5, a = 17))       # not divmod(5, 17) == [0, 5]
+io.print(divmod(b = 17, a = 5))
+io.print(pow(mod = 5, exp = 3, base = 2))   # 2**3 % 5 == 3, fully shuffled
+io.print(round(ndigits = 1, x = 2.345))
+io.print(format(spec = "03d", value = 7))
+io.print(isinstance(type = "String", value = "hi"))
+io.print(math.log(base = 2, x = 8))
+io.print(math.prod(start = 2, iterable = [3, 4]))
+# positional prefix, then a reversed keyword remainder
+io.print(pow(2, mod = 5, exp = 3))
+io.print(divmod(17, b = 5))

@@ -1,0 +1,57 @@
+# Function definition, call, recursion, closures, and higher-order values (converted from
+# tests/unit/test_functions.cpp). Arity mismatch / non-callable errors are runtime and are
+# caught inline. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# define and call
+var f = Function(x):
+    return x + 1
+io.print(f(10))
+
+# recursion (the function sees its own name in the enclosing scope)
+var fact = Function(n):
+    if n <= 1:
+        return 1
+    return n * fact(n - 1)
+io.print(fact(5))
+
+# closure: inner function captures an outer container and mutates it across calls
+var makeCounter = Function():
+    var count = [0]
+    var inc = Function():
+        count[0] = count[0] + 1
+        return count[0]
+    return inc
+var counter = makeCounter()
+discard counter()
+discard counter()
+io.print(counter())
+
+# higher-order: functions are first-class values
+var apply = Function(g, v):
+    return g(v)
+var dbl = Function(x):
+    return x * 2
+io.print(apply(dbl, 21))
+
+# a function with no return yields None
+var noret = Function():
+    var _x = 1
+io.print(noret())
+
+# arity mismatch is a runtime error
+try:
+    discard f(1, 2)
+catch as e:
+    io.print(e)
+try:
+    discard f()
+catch as e:
+    io.print(e)
+
+# calling a non-callable is an error
+var x = 5
+try:
+    discard x()
+catch as e:
+    io.print(e)

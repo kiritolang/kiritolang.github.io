@@ -1,0 +1,31 @@
+# Adversarial/edge coverage for builtin functions (converted from tests/unit/test_builtins_deep.cpp):
+# the format precision-too-large guard, the range double-keyword-for-one-slot clash, the x= keyword
+# form of single-param signatured builtins, and format's `%` conversion combined with `,` grouping.
+# The two CHECK_THROWS are runtime, folded inline. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# ---- format precision beyond the resource cap throws (parallel to the width guard) ----
+try:
+    discard format(1.0, ".999999999f")
+catch as e:
+    io.print(e)
+# a sane precision still works
+io.print(format(3.14159, ".2f"))
+
+# ---- range: two keywords aliasing the same slot (stop + end) clash ----
+try:
+    discard range(stop=5, end=3)
+catch as e:
+    io.print(e)
+# the lone end= alias still works
+io.print(List(range(end=3)))
+
+# ---- x= keyword form of single-parameter signatured builtins (must not throw) ----
+io.print(type(id(x=5)))
+io.print(inspect(x=5))
+
+# ---- format `%` conversion combined with `,` grouping on a value >= 1000 ----
+io.print(format(12.5, ",.1%"))
+# and plain comma grouping of a large integer (sanity around the same branch)
+io.print(format(1000000, ","))
+io.print(format(255, "#x"))

@@ -1,0 +1,88 @@
+# The container `apply(fn)` method — a new same-type container with `fn` mapped over the elements,
+# mirroring tensor.apply. Defined on List, Set, Dict (over values), Bytes (over bytes), and String
+# (over characters). Also checks the containers now describe their methods under `inspect`.
+# (Converted from tests/unit/test_apply.cpp; error cases are runtime and are caught inline.)
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# --- List.apply -> List ---
+io.print([1, 2, 3, 4].apply(Function(x): return x * x))
+io.print(type([1].apply(Function(x): return x)))
+io.print([].apply(Function(x): return x))                          # empty
+io.print([1, 2, 3].apply(Function(x): return x * 2))                # order preserved
+io.print(["a", "b"].apply(Function(s): return s + "!"))
+# the source list is unchanged (apply returns a new List)
+var xs = [1, 2, 3]
+var ys = xs.apply(Function(x): return x + 10)
+io.print(String(xs) + " " + String(ys))
+# a closure captured in the mapped function
+var scale = Function(k): return Function(x): return x * k
+io.print([1, 2, 3].apply(scale(10)))
+
+# --- Set.apply -> Set (collisions collapse) ---
+io.print(type({1, 2, 3}.apply(Function(x): return x)))
+io.print(len({1, 2, 3, 4}.apply(Function(x): return x % 2)))        # {0, 1}
+io.print({5}.apply(Function(x): return x + 1))
+
+# --- Dict.apply -> Dict (values mapped, keys kept) ---
+io.print(type({"a": 1}.apply(Function(v): return v)))
+var d = {"a": 1, "b": 2}.apply(Function(v): return v * 100)
+io.print(d["a"] + d["b"])
+var keysame = True
+var dorig = {"x": 1, "y": 2, "z": 3}
+for k in dorig.apply(Function(v): return v).keys():
+    if not (k in dorig):
+        keysame = False
+io.print(keysame)
+
+# --- Bytes.apply -> Bytes (over byte values 0..255) ---
+io.print(Bytes([1, 2, 3]).apply(Function(b): return b * 2))
+io.print(type(Bytes([1]).apply(Function(b): return b)))
+io.print(Bytes([72, 73]).apply(Function(b): return b + 32).decode())   # upper->lower
+try:
+    discard Bytes([1]).apply(Function(b): return 999)               # result out of byte range
+catch as e:
+    io.print(e)
+try:
+    discard Bytes([1]).apply(Function(b): return -1)
+catch as e:
+    io.print(e)
+
+# --- String.apply -> String (over characters) ---
+io.print("hello".apply(Function(c): return c.upper()))
+io.print(type("x".apply(Function(c): return c)))
+io.print("abc".apply(Function(c): return c + c))                    # a char may expand
+io.print("héllo".apply(Function(c): return c))                      # Unicode code points
+try:
+    discard "x".apply(Function(c): return 42)                       # result must be a String
+catch as e:
+    io.print(e)
+
+# --- errors propagate out of apply ---
+try:
+    discard [1, 2, 3].apply(Function(x): throw "boom")
+catch as e:
+    io.print(e)
+try:
+    discard [1].apply(42)                                           # not callable
+catch as e:
+    io.print(e)
+
+# --- GC stress: a mapping function that allocates on every call (exercises rooting) ---
+var gxs = []
+var gi = 0
+while gi < 200:
+    gxs.append(gi)
+    gi = gi + 1
+var gys = gxs.apply(Function(x): return [x, x * x, String(x)])      # each result is a fresh List
+io.print(len(gys) == 200 and gys[150][1] == 22500 and gys[199][2] == "199")
+var gs = "abcdefghij" * 20
+var gout = gs.apply(Function(c): return c + "-")                    # each call allocates a new String
+io.print(len(gout) == 400)
+
+# --- inspect now lists the methods (including apply) ---
+io.print(inspect([1]).find("apply(fn) -> List") >= 0)
+io.print(inspect({1}).find("apply(fn) -> Set") >= 0)
+io.print(inspect({"a": 1}).find("apply(fn) -> Dict") >= 0)
+io.print(inspect(Bytes([1])).find("apply(fn) -> Bytes") >= 0)
+io.print(inspect([1]).find("append(item)") >= 0)                     # other methods listed too

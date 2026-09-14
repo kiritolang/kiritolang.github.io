@@ -1,0 +1,85 @@
+# Interchangeable streams: io.print / write / input / read act on the current io.stdout / io.stdin,
+# which can be rebound to a file, a BytesIO, the originals (io.__stdout__...), stderr, or any object
+# that merely exposes write/readline/read (duck typing). (Converted from tests/unit/test_streams.cpp.)
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var path = import("path")
+
+# print/write go to a redirected stdout (BytesIO); restoring via __stdout__ stops capture.
+var buf1 = io.BytesIO()
+io.stdout = buf1
+io.print("hello", 42)
+io.write("raw", "-bits")
+io.stdout = io.__stdout__
+io.print(buf1.getvalue())
+
+# stderr is independently rebindable; eprint targets it.
+var e2 = io.BytesIO()
+io.stderr = e2
+io.eprint("oops")
+io.stderr = io.__stderr__
+io.print(e2.getvalue())
+
+# input()/read() consume from a redirected stdin.
+io.stdin = io.BytesIO("alpha\nbeta\nrest of it")
+var a3 = io.input()
+var b3 = io.input()
+var c3 = io.read()
+io.print(a3 + "|" + b3 + "|" + c3)
+
+# read(n) reads exactly n characters.
+io.stdin = io.BytesIO("0123456789")
+var first4 = io.read(4)
+var second4 = io.read(3)
+io.print(first4 + "|" + second4)
+
+# a real file works as stdout, interchangeably with the std streams.
+var path5 = path.gettempdir() + "/kirito_stream_test.txt"
+var f5 = io.open(path5, "w")
+io.stdout = f5
+io.print("into the file")
+f5.close()
+io.stdout = io.__stdout__
+var g5 = io.open(path5, "r")
+var content5 = g5.read()
+g5.close()
+path.remove(path5)
+io.print(content5)
+
+# duck typing: any object with write() can be stdout.
+class Capture6:
+    var _init_ = Function(self):
+        self.parts = []
+    var write = Function(self, s):
+        self.parts.append(s)
+var cap6 = Capture6()
+io.stdout = cap6
+io.print("a")
+io.print("b")
+io.stdout = io.__stdout__
+io.print("".join(cap6.parts))
+
+# input() with a prompt writes the prompt to stdout, then reads stdin.
+var out7 = io.BytesIO()
+io.stdout = out7
+io.stdin = io.BytesIO("Alice")
+var name7 = io.input("Name? ")
+io.stdout = io.__stdout__
+io.print(out7.getvalue() + "->" + name7)
+
+# A10-5: `for line in file` iterates LAZILY (one line per step), not by buffering to EOF first.
+# Proof: break after the first line, then readline() returns the SECOND line — with the old eager
+# path the whole file was materialized at loop entry, leaving the file at EOF (readline -> "").
+var p8 = path.join(path.gettempdir(), "kirito_lazy_iter_test.txt")
+var w8 = io.open(p8, "w")
+w8.write("l1\nl2\nl3\n")
+w8.close()
+var f8 = io.open(p8)
+var first8 = ""
+for line in f8:
+    first8 = line
+    break
+var nxt8 = f8.readline()
+f8.close()
+path.remove(p8)
+io.print(first8 + "|" + nxt8)
