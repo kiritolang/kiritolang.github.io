@@ -300,6 +300,28 @@ inline NameSet freeVariables(const ast::FunctionExpr& fn) {
     scan.func(fn, NameSet{});
     return free;
 }
+
+// True if a function literal appears anywhere in an expression subtree. The inliner uses this to reject
+// a body that builds a nested closure: splicing it into the caller frame would make the nested function
+// capture the caller's scope rather than the (now frame-slotted) inlined locals.
+inline bool exprContainsFunction(const ast::Expr& e) {
+    if (dynamic_cast<const ast::FunctionExpr*>(&e)) return true;
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) return exprContainsFunction(*u->operand);
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e)) return exprContainsFunction(*b->lhs) || exprContainsFunction(*b->rhs);
+    if (const auto* l = dynamic_cast<const ast::LogicalExpr*>(&e)) return exprContainsFunction(*l->lhs) || exprContainsFunction(*l->rhs);
+    if (const auto* cn = dynamic_cast<const ast::ConditionalExpr*>(&e)) return exprContainsFunction(*cn->cond) || exprContainsFunction(*cn->then) || exprContainsFunction(*cn->orelse);
+    if (const auto* c = dynamic_cast<const ast::CallExpr*>(&e)) { if (exprContainsFunction(*c->callee)) return true; for (const auto& a : c->args) if (exprContainsFunction(*a.value)) return true; return false; }
+    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(&e)) return exprContainsFunction(*m->object);
+    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&e)) { if (exprContainsFunction(*ix->object)) return true; for (const auto& k : ix->indices) if (exprContainsFunction(*k)) return true; return false; }
+    if (const auto* sl = dynamic_cast<const ast::SliceExpr*>(&e)) return (sl->object && exprContainsFunction(*sl->object)) || (sl->start && exprContainsFunction(*sl->start)) || (sl->stop && exprContainsFunction(*sl->stop)) || (sl->step && exprContainsFunction(*sl->step));
+    if (const auto* lst = dynamic_cast<const ast::ListLiteral*>(&e)) { for (const auto& x : lst->elems) if (exprContainsFunction(*x)) return true; return false; }
+    if (const auto* stl = dynamic_cast<const ast::SetLiteral*>(&e)) { for (const auto& x : stl->elems) if (exprContainsFunction(*x)) return true; return false; }
+    if (const auto* dt = dynamic_cast<const ast::DictLiteral*>(&e)) { for (const auto& [k, v] : dt->entries) if (exprContainsFunction(*k) || exprContainsFunction(*v)) return true; return false; }
+    if (const auto* fs = dynamic_cast<const ast::FStringExpr*>(&e)) { for (const auto& p : fs->parts) if (p.isExpr && exprContainsFunction(*p.expr)) return true; return false; }
+    if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&e)) { for (const auto& x : tup->elems) if (exprContainsFunction(*x)) return true; return false; }
+    if (const auto* star = dynamic_cast<const ast::StarExpr*>(&e)) return exprContainsFunction(*star->inner);
+    return false;  // NameExpr / LiteralExpr (and any leaf): no nested function
+}
 // All names a class definition references from its defining scope (its base plus every method/attr
 // body). Superset of eagerFreeVariables.
 inline NameSet freeVariables(const ast::ClassStmt& c) {

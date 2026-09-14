@@ -190,6 +190,53 @@ private:
         else emit(Op::AssignName, addName(name), span);
     }
 
+    // --- function inlining (compile-time, hygienic; the transform is gated by vm_.inliningEnabled()) ---
+    // v1 inlines a directly-called lambda literal that is capture-free (references only its params +
+    // globals), a single `return EXPR`, flat (no nested function literal), unannotated, at exact
+    // positional arity. Such a call becomes: evaluate each argument once into a fresh caller frame slot,
+    // then emit the body expression with param names rebound to those slots — no call frame, no scope
+    // allocation, identical result. Names inside the body resolve ONLY to those slots or to globals
+    // (isolation by construction); caller locals are invisible to the body and vice versa. This is the
+    // shared primitive Part C (combinator lowering) reuses. Multi-statement / capturing / annotated
+    // bodies are simply not v1 candidates and compile as a normal call (correct, not a fallback).
+    int inlineCounter_ = 0;
+    const std::vector<std::pair<std::string, uint32_t>>* inlineRebind_ = nullptr;  // param name -> arg slot
+
+    // Return the body expression to inline, or nullptr if `e` is not a v1 inline candidate.
+    const ast::Expr* inlineBodyIfCandidate(const ast::CallExpr& e) const {
+        if (!vm_.inliningEnabled() || !slotsEnabled_) return nullptr;   // v1: inside a function scope only
+        const auto* fn = dynamic_cast<const ast::FunctionExpr*>(e.callee.get());
+        if (!fn || !fn->returnAnnotation.empty()) return nullptr;       // unannotated return only
+        if (e.args.size() != fn->params.size()) return nullptr;         // exact positional arity
+        for (const auto& p : fn->params)
+            if (!p.annotation.empty() || p.defaultValue) return nullptr;  // v1: no annotations / defaults / varargs
+        for (const auto& a : e.args)
+            if (!a.name.empty() || dynamic_cast<const ast::StarExpr*>(a.value.get())) return nullptr;  // no kw/starred
+        if (fn->body.size() != 1) return nullptr;                       // single-statement body ...
+        const auto* r = dynamic_cast<const ast::ReturnStmt*>(fn->body[0].get());
+        if (!r || !r->value) return nullptr;                            // ... which is `return EXPR`
+        if (kirito::exprContainsFunction(*r->value)) return nullptr;    // no nested closure to splice
+        for (const auto& nm : kirito::freeVariables(*fn))
+            if (vm_.builtinSlot(nm) < 0) return nullptr;                // capture-free: free vars are globals only
+        return r->value.get();
+    }
+
+    void emitInlinedCall(const ast::CallExpr& e, const ast::FunctionExpr& fn, const ast::Expr& body) {
+        int n = inlineCounter_++;
+        std::vector<std::pair<std::string, uint32_t>> rebind;
+        rebind.reserve(fn.params.size());
+        for (std::size_t i = 0; i < fn.params.size(); ++i) {
+            compileExpr(*e.args[i].value);   // evaluate the argument ONCE, in order, in the caller context
+            uint32_t slot = defineSlot("$inl" + std::to_string(n) + "_" + fn.params[i].name);
+            emit(Op::StoreLocal, slot, e.span);
+            rebind.emplace_back(fn.params[i].name, slot);
+        }
+        const auto* prev = inlineRebind_;   // save/restore supports nested inlines (a body that itself
+        inlineRebind_ = &rebind;            // directly-calls another inlinable literal)
+        compileExpr(body);                  // the body value is left on the stack = the call's result
+        inlineRebind_ = prev;
+    }
+
     // Compile-time fold of a CONSTANT `switch` case-label expression to its value, reusing the VM's own
     // operators so `case 3 + 4` / `case -1` / `case "a" + "b"` produce a value bit-identical to what the
     // same expression yields at run time. Returns nullopt if the label reads runtime state (a name /
@@ -650,6 +697,12 @@ private:
     }
 
     void visit(const ast::NameExpr& e) override {
+        // Inside an inlined body a param name resolves to its arg slot, overriding the resolver's stale
+        // (body-as-nested-scope) annotation — this is the hygiene boundary: the body sees ONLY its
+        // params (here) and globals (below), never caller locals.
+        if (inlineRebind_)
+            for (const auto& [nm, slot] : *inlineRebind_)
+                if (nm == e.name) { emit(Op::LoadLocal, slot, e.span); return; }
         if (e.builtinSlot >= 0) emit(Op::LoadGlobal, static_cast<uint32_t>(e.builtinSlot), e.span);
         else if (e.envIndex >= 0) emit(Op::LoadVar, addEnvVar(e), e.span);
         else emitLoad(e.name, e.span);
@@ -692,6 +745,12 @@ private:
     }
 
     void visit(const ast::CallExpr& e) override {
+        // Inline a directly-called capture-free single-return lambda (v1): no call frame, identical
+        // result. Candidacy excludes named/starred args, so this never conflicts with the checks below.
+        if (const ast::Expr* body = inlineBodyIfCandidate(e)) {
+            emitInlinedCall(e, static_cast<const ast::FunctionExpr&>(*e.callee), *body);
+            return;
+        }
         // A positional argument after a keyword argument is a (catchable) run-time error, like the old
         // evaluator: the callee and the arguments up to and including the offending one are evaluated,
         // then it throws. Detect it here and compile that throw instead of a normal call.

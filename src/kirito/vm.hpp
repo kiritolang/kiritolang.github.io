@@ -290,6 +290,12 @@ public:
     }
     void setGcEnabled(bool on) { gcEnabled_ = on; }
     bool gcEnabled() const { return gcEnabled_; }   // current setting (for a scoped GcPauseScope)
+    // Function inlining is a compile-time optimization (semantics-preserving); this flag disables the
+    // code-generation TRANSFORM for debugging (`ki --no-inline` / KIRITO_NO_INLINE). Validation that is
+    // part of the language (e.g. the write-through-closure ban) always runs regardless of this flag, so
+    // inlined and non-inlined builds accept exactly the same programs and produce identical results.
+    void setInliningEnabled(bool on) { inliningEnabled_ = on; }
+    bool inliningEnabled() const { return inliningEnabled_; }
     std::size_t liveCount() const { return arena_.liveCount(); }
 
     // --- GC statistics (the `--gc-stats` yardstick) — counting is free; timing reads a steady clock
@@ -618,6 +624,7 @@ private:
     // workload (sum_loop 623M vs 483M, arena 18M vs 4M). setGcThreshold() still pins an exact value.
     static constexpr std::size_t kGcThresholdFloor = 131072;
     bool gcEnabled_ = true;
+    bool inliningEnabled_ = true;   // ki --no-inline / KIRITO_NO_INLINE disables the inline transform
     std::size_t callDepth_ = 0;
     // Conservative default for an 8 MB stack with deep per-call expression nesting; embedders with
     // a smaller stack can lower it via setMaxCallDepth(). Sanitizer builds use far larger native

@@ -55,6 +55,7 @@ void usage() {
                  "options:\n"
                  "  --lib <dir>   add a directory to the module import path (repeatable)\n"
                  "  -w, --no-warn disable static-analysis warnings\n"
+                 "  --no-inline   disable the compile-time function-inlining transform (for debugging)\n"
                  "  --gc-stats    print generational-GC statistics to stderr on exit\n"
                  "  --gc-threshold <n>  collect every n allocations (default: adaptive); n=1 stresses the GC\n"
                  "  -v, --version print the Kirito version and exit\n"
@@ -62,6 +63,7 @@ void usage() {
                  "environment:\n"
                  "  KIRITO_PATH   extra import directories (PATH-style, " ENV_SEP "-separated)\n"
                  "  KIRITO_GC_THRESHOLD  same as --gc-threshold (stresses barrier coverage across a run)\n"
+                 "  KIRITO_NO_INLINE     same as --no-inline (disables the inline transform)\n"
                  "  packages installed by kpm under ~/.kirito/packages are importable directly\n";
 }
 
@@ -151,6 +153,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> scriptArgs;
     bool warnings = true;
     bool gcStats = false;
+    bool inlining = true;   // --no-inline / KIRITO_NO_INLINE disables the compile-time inline transform
     long gcThreshold = -1;  // -1 = leave the VM's adaptive default
 
     for (int i = 1; i < argc; ++i) {
@@ -164,6 +167,8 @@ int main(int argc, char** argv) {
             libs.push_back(arg.substr(6));
         } else if (arg == "--no-warn" || arg == "-w") {
             warnings = false;
+        } else if (arg == "--no-inline") {
+            inlining = false;
         } else if (arg == "--gc-stats") {
             gcStats = true;
         } else if (arg == "--gc-threshold") {
@@ -190,6 +195,10 @@ int main(int argc, char** argv) {
     // dispatcher and thus no `parallel` module — multiprocessing is a dispatcher-provided capability.
     kirito::KiritoDispatcher dispatcher;
     kirito::KiritoVM& vm = dispatcher.mainVM();
+    // Inlining transform: an explicit --no-inline wins; otherwise KIRITO_NO_INLINE (any non-empty value)
+    // disables it for a whole run. A debug/observability switch only — it never changes results, just
+    // whether calls are inlined; the language rules that make inlining sound are always enforced.
+    if (!inlining || std::getenv("KIRITO_NO_INLINE")) vm.setInliningEnabled(false);
     dispatcher.addLibPath(".");  // current directory is always on the import path
     for (const auto& l : libs) dispatcher.addLibPath(l);
 

@@ -1,0 +1,46 @@
+# Function inlining (v1): a directly-called capture-free single-return lambda inside a function is
+# inlined with NO change to results. Every assertion here must hold identically with `ki` and
+# `ki --no-inline` (the test harness runs it both ways). Inlining is speed-only, never semantics.
+var io = import("io")
+
+# basic inline + multiple param reads (arg evaluated once)
+var a = Function():
+    return (Function(x): return x * x)(6)
+assert a() == 36, "inlined square"
+var b = Function():
+    return (Function(x): return x + x + x)(7)
+assert b() == 21, "arg read 3x, evaluated once"
+
+# nested inline (a body that directly-calls another inlinable literal)
+var c = Function():
+    return (Function(x): return (Function(z): return z + 1)(x) * 2)(10)
+assert c() == 22, "nested inline"
+
+# capture-free body referencing builtins
+var d = Function():
+    return (Function(s): return len(s) + 1)("abcd")
+assert d() == 5, "inline with builtin len"
+
+# hygiene: the inlined param never sees a caller local of the same name; caller binding untouched
+var e = Function():
+    var y = 100
+    var r = (Function(y): return y + 1)(7)
+    return [r, y]
+assert e() == [8, 100], "fake shadowing resolves to distinct slots"
+
+# side-effect-once: the argument runs exactly once even with the param read many times / unused
+var log = []
+var bump = Function():
+    log.append(1)
+    return 3
+var f = Function():
+    return (Function(x): return x + x + x)(bump())
+assert f() == 9 and len(log) == 1, "argument evaluated exactly once"
+
+# a capturing lambda is NOT inlined (normal closure) but obviously still correct
+var g = Function():
+    var base = 100
+    return (Function(x): return x + base)(5)
+assert g() == 105, "capturing lambda still correct (not inlined)"
+
+io.print("OK inline")

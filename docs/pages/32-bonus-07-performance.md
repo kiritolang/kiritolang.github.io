@@ -78,3 +78,22 @@ orders of magnitude slower (≈2300× here) and practical only for small `n`. Pr
 probabilistic `isprobableprime` when speed matters; use `isprimeaks` only when a deterministic
 polynomial-time witness is specifically required. (`—`: `isprimeaks` did not exist in 1.17.1.) See the
 [`int` module](#int).
+
+## Compile-time optimizations
+
+These are transparent — they change **speed, not results** — so they need no code changes on your part.
+
+- **Cheap calls.** A function call reuses a pooled operand-stack buffer (no per-call allocation), pushes
+  interned chunk-name indices instead of copying strings, and reads its compiled body straight off the
+  AST node (no per-call cache lookup). Every call — recursion, a `map`/`filter` callback, a method —
+  benefits.
+- **Function inlining.** A directly-called capture-free lambda (e.g. a `Function(x): return …` passed
+  nowhere but called on the spot) is compiled straight into the caller, with no call frame or scope
+  allocation. Inlining is hygienic: the inlined body sees only its own arguments and globals — never the
+  caller's locals, and vice versa — so results are identical to a normal call. One visible consequence:
+  an inlined call does not appear as its own frame in an error traceback.
+
+Run `ki --no-inline` (or set `KIRITO_NO_INLINE`) to disable the inlining transform for debugging — it
+restores per-call traceback frames and never changes a program's output. The language rules that keep
+inlining sound (notably: a closure may read a captured variable and mutate a captured *container*, but
+may not rebind a captured variable) are always enforced, with or without the flag.
