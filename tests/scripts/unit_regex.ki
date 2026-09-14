@@ -1,0 +1,130 @@
+# The `regex` module + its linear-time engine (converted from tests/unit/test_regex.cpp): the public API
+# (compile/match/search/fullmatch/findall/finditer/sub/split/escape, Match accessors, flags), and
+# adversarial/error cases (the constructs we deliberately reject). All error cases are runtime, folded
+# inline via try/catch. Two C++-only blocks from the source file are KEPT IN C++ (see
+# test_regex.cpp): a linear-time timing stress (asserts wall-clock ms, inherently nondeterministic/
+# machine-speed-dependent) and a property-based fuzz that drives the internal reng:: engine API
+# directly (raw Program/MatchResult/compile/run/toCodepoints -- not reachable from Kirito script).
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var re = import("regex")
+
+# -------------------------------------------------- search / match / fullmatch
+io.print(re.search("\\d+", "abc123def").group())
+io.print(re.match("\\d+", "abc123"))          # not anchored at 0
+io.print(re.match("abc", "abcdef").group())
+io.print(re.fullmatch("\\d+", "12345").group())
+io.print(re.fullmatch("\\d+", "123a"))
+io.print(re.fullmatch("a*?", "aaa").group())  # fullmatch forces lazy to consume all
+io.print(re.search("x", "no ex here").start())
+io.print(re.search("missing", "text"))
+
+# -------------------------------------------------- groups, named groups, accessors
+io.print(re.search("(\\d+)-(\\d+)", "id 12-345 x").group(1))
+io.print(re.search("(\\d+)-(\\d+)", "id 12-345 x").group(2))
+io.print(re.search("(\\d+)-(\\d+)", "id 12-345 x").groups())
+io.print(re.search("(\\d+)-(\\d+)", "id 12-345 x").span())
+io.print(re.search("(\\d+)-(\\d+)", "id 12-345 x").span(2))
+io.print(re.search("(?P<y>\\d{4})-(?P<m>\\d{2})", "2024-06").group("y"))   # named groups + groupdict
+io.print(re.search("(?<y>\\d{4})", "2024").group("y"))                     # (?<name>) form
+io.print(re.search("(?P<a>x)(?P<b>y)", "xy").groupdict()["a"])
+io.print(re.search("(?P<a>x)(?P<b>y)", "xy").groupdict()["b"])
+io.print(re.search("a(b)?c", "ac").group(1))    # optional group that didn't participate -> None
+io.print(re.search("a(b)?c", "ac").start(1))    # / start == -1
+io.print(re.search("a(b)?c", "abc").group(1))
+
+# -------------------------------------------------- quantifiers & alternation priority
+io.print(re.search("a{2,3}", "aaaa").group())     # greedy
+io.print(re.search("a{2,3}?", "aaaa").group())    # lazy
+io.print(re.search("a+?", "aaa").group())
+io.print(re.search("<.*>", "<a><b>").group())     # greedy .*
+io.print(re.search("<.*?>", "<a><b>").group())    # lazy .*?
+io.print(re.search("a|ab", "abc").group())        # leftmost-first
+io.print(re.search("colou?r", "colour").group())
+
+# -------------------------------------------------- character classes, anchors, boundaries
+io.print(re.search("[^0-9]+", "123abc456").group())
+io.print(re.search("[a-fA-F0-9]+", "xyz 0FxA z").group())    # 'x' isn't a hex digit
+io.print(re.findall("[a-fA-F0-9]+", "xyz 0FxA z"))
+io.print(re.findall("\\bword\\b", "word words word"))
+io.print(re.search("^abc$", "abc").group())
+io.print(re.search("^abc$", "xabc"))
+io.print(re.findall("(?m)^\\w+", "one\ntwo\nthree"))
+io.print(re.search(".", "\n"))                    # . excludes newline
+io.print(re.search("(?s).", "\n").group())        # DOTALL
+
+# -------------------------------------------------- flags
+io.print(re.search("hello", "HELLO", re.IGNORECASE).group())
+io.print(re.compile("cat", re.I).findall("Cat CAT cat"))
+io.print(re.search("(?i)abc", "ABC").group())     # inline flag
+
+# -------------------------------------------------- findall variants
+io.print(re.findall("\\w+", "a bb ccc"))                       # 0 groups -> whole
+io.print(re.findall("(\\w)\\w*", "foo bar"))                   # 1 group -> that group
+io.print(re.findall("(\\w+)=(\\d+)", "a=1 b=22"))               # >1 -> tuples
+io.print(len(re.finditer("\\d+", "1 22 333")))
+io.print(re.findall("\\d*", "a1b"))                              # empty matches included
+
+# -------------------------------------------------- sub (string & callable repl) and split
+io.print(re.sub("\\d+", "#", "a1b22c333"))
+io.print(re.sub("(\\w+)@(\\w+)", "\\2.\\1", "user@host"))
+io.print(re.sub("(?P<n>\\d+)", "[\\g<n>]", "x9y"))
+io.print(re.sub("a", "X", "aaaa", 2))             # count
+io.print(re.sub("", "-", "ab"))                   # empty-pattern sub
+io.print(re.sub("\\d+", Function(m): return "<" + m.group() + ">", "a1b22"))  # callable replacement
+io.print(re.split(",\\s*", "a, b,c ,  d"))
+io.print(re.split("(\\s+)", "a b"))               # captured separator kept
+io.print(re.split("x", "axbxc", 1))               # maxsplit
+
+# -------------------------------------------------- escape + Regex attributes
+io.print(re.escape("a.b*c"))
+io.print(re.search(re.escape("a.b"), "xa.byz").group())
+io.print(re.compile("(a)(b)").groups)
+io.print(re.compile("x+").pattern)
+
+# -------------------------------------------------- unicode (literal UTF-8 é in the subject/pattern)
+io.print(re.search("café", "a café b").group())
+io.print(re.search(".", "é").group())             # one code point
+io.print(re.search("é+", "ééé!").span())          # spans are code-point indices
+
+# -------------------------------------------------- adversarial: rejected constructs throw
+try:
+    discard re.compile("(a)\\1")               # backreference
+catch as e:
+    io.print(e)
+try:
+    discard re.compile("(?=a)")                # lookahead
+catch as e:
+    io.print(e)
+try:
+    discard re.compile("(?<=a)")                # lookbehind
+catch as e:
+    io.print(e)
+try:
+    discard re.compile("(abc")                  # unbalanced (
+catch as e:
+    io.print(e)
+try:
+    discard re.compile("abc)")                  # unbalanced )
+catch as e:
+    io.print(e)
+try:
+    discard re.compile("[z-a]")                 # bad range
+catch as e:
+    io.print(e)
+try:
+    discard re.compile("*abc")                  # nothing to repeat
+catch as e:
+    io.print(e)
+try:
+    discard re.compile("a{2,1}")                # bad bounds
+catch as e:
+    io.print(e)
+try:
+    discard re.compile("a{5000}")               # repeat too large
+catch as e:
+    io.print(e)
+try:
+    discard re.compile("[abc")                  # unterminated class
+catch as e:
+    io.print(e)

@@ -1,0 +1,193 @@
+# Socket-foundation primitives: arg-validation / error paths and no-I/O option & introspection
+# checks that need no live network (converted from tests/unit/test_net_primitives.cpp — only the
+# checks that construct a socket object but never bind/connect/send/recv/resolve over the wire).
+# The loopback-I/O, DNS/getaddrinfo, IPv6, fuzz, and GC-churn scenarios stay in the C++ suite (see
+# TRIMMED note there) since they exercise a live socket end-to-end. Runs identically with `ki` and
+# `ki --no-inline`.
+var io = import("io")
+var net = import("net")
+
+# --- socket options (string-keyed); no bind/connect, so no live network is touched ---
+var socketopts = Function():
+    var s = net.tcpsocket()
+    s.setsockopt("reuseaddr", 1)
+    var ra = s.getsockopt("reuseaddr")
+    var ty = s.getsockopt("type")          # SOCK_STREAM
+    var er = s.getsockopt("error")         # 0 on a fresh socket
+    s.close()
+    return String(ra != 0) + "|" + String(ty) + "|" + String(er)
+io.print(socketopts())
+
+# named boolean conveniences
+var namedopts = Function():
+    var s = net.tcpsocket()
+    s.setreuseaddr(True)
+    s.setnodelay(True)
+    s.setkeepalive(True)
+    var nd = s.getsockopt("nodelay")
+    s.close()
+    return String(nd != 0)
+io.print(namedopts())
+# broadcast toggles on a UDP socket
+var broadcastopt = Function():
+    var s = net.udpsocket()
+    s.setbroadcast(True)
+    var b = s.getsockopt("broadcast")
+    s.close()
+    return String(b != 0)
+io.print(broadcastopt())
+
+# --- family / type introspection attributes ---
+var udpfamtype = Function():
+    var s = net.udpsocket()
+    var r = s.family + "/" + s.type
+    s.close()
+    return r
+io.print(udpfamtype())
+var tcpfamtype = Function():
+    var s = net.tcpsocket()
+    var r = s.family + "/" + s.type
+    s.close()
+    return r
+io.print(tcpfamtype())
+io.print(net.Socket().type)   # Socket() is the TCP/IPv4 default
+
+# --- fileno: the raw fd, non-destructive (unlike detach) ---
+var filenoprobe = Function():
+    var s = net.tcpsocket()
+    var f = s.fileno()
+    var ok = f >= 0 and f == s.fileno()
+    s.close()
+    return String(ok)
+io.print(filenoprobe())
+
+# --- adversarial / bad input: every one must throw cleanly (never crash / hang). None of these
+#     reach a live socket connection, DNS resolution, or a bound address. ---
+var unknownfamily = Function():
+    try:
+        discard net.socket("bogus", "stream")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(unknownfamily())
+var unknowntype = Function():
+    try:
+        discard net.socket("inet", "raw")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(unknowntype())
+var unknownudpfamily = Function():
+    try:
+        discard net.udpsocket("ipv7")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(unknownudpfamily())
+# unknown socket option (set + get)
+var unknownsetopt = Function():
+    try:
+        discard net.tcpsocket().setsockopt("nope", 1)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(unknownsetopt())
+var unknowngetopt = Function():
+    try:
+        discard net.tcpsocket().getsockopt("nope")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(unknowngetopt())
+# port out of range on connect / bind / sendto
+var connectbadport = Function():
+    try:
+        discard net.tcpsocket().connect("127.0.0.1", 99999)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(connectbadport())
+var bindbadport = Function():
+    try:
+        discard net.tcpsocket().bind("127.0.0.1", -1)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(bindbadport())
+var sendtobadport = Function():
+    try:
+        discard net.udpsocket().sendto("x", "127.0.0.1", 70000)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(sendtobadport())
+# negative recv/recvfrom size
+var negrecvfrom = Function():
+    try:
+        discard net.udpsocket().recvfrom(-1)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(negrecvfrom())
+# bad shutdown direction
+var badshutdown = Function():
+    try:
+        discard net.tcpsocket().shutdown("sideways")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(badshutdown())
+# sendto expects String/Bytes, not an Integer
+var sendtobadtype = Function():
+    try:
+        discard net.udpsocket().sendto(42, "127.0.0.1", 80)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(sendtobadtype())
+# operations on a closed socket throw "… : socket is closed", not a raw errno / stale-fd read
+var closedrecv = Function():
+    try:
+        var s = net.tcpsocket()
+        s.close()
+        discard s.recv(4)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(closedrecv())
+var closedsend = Function():
+    try:
+        var s = net.tcpsocket()
+        s.close()
+        discard s.send("x")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(closedsend())
+var closedgetsockname = Function():
+    try:
+        var s = net.tcpsocket()
+        s.close()
+        discard s.getsockname()
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(closedgetsockname())
+# a detached socket has relinquished its fd -> also closed
+var detachedrecv = Function():
+    try:
+        var s = net.tcpsocket()
+        discard s.detach()
+        discard s.recv(4)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(detachedrecv())
+# getpeername on an unconnected socket throws (ENOTCONN)
+var unconnpeer = Function():
+    try:
+        discard net.tcpsocket().getpeername()
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(unconnpeer())

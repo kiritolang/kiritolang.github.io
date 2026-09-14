@@ -1,0 +1,140 @@
+# serialize module round-trip semantics (converted from tests/unit/test_serialize.cpp — the pure
+# run-a-script-check-a-value cases). Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var s = import("serialize")
+
+# scalars
+io.print(s.loads(s.dumps(None)))
+io.print(s.loads(s.dumps(True)))
+io.print(s.loads(s.dumps(42)))
+io.print(s.loads(s.dumps(-17)))
+io.print(s.loads(s.dumps(3.14159)))
+io.print(s.loads(s.dumps("héllo \n world")))
+
+# containers
+io.print(s.loads(s.dumps([1, 2, 3])))
+io.print(s.loads(s.dumps([[1, 2], [3, [4, 5]]])))
+io.print(len(s.loads(s.dumps({1, 2, 3}))))
+io.print(String(s.loads(s.dumps({"a": [1, 2], "b": "x"}))) != "")  # (key order varies; only non-empty is pinned)
+io.print(s.loads(s.dumps({"a": [1, 2], "b": 3}))["a"][1])
+
+# structural equality after round-trip
+var streq = Function():
+    var x = [1, [2, 3], {"k": 4}]
+    return s.loads(s.dumps(x)) == x
+io.print(streq())
+
+# SHARED references are preserved: A appears twice -> one object after load
+var sharedmut = Function():
+    var A = [1]
+    var x = [A, A, [9]]
+    var y = s.loads(s.dumps(x))
+    y[0].append(2)
+    return y[1]
+io.print(sharedmut())  # mutating y[0] is visible through y[1] (same object)
+var sharedeq = Function():
+    var A = [1]
+    var y = s.loads(s.dumps([A, A]))
+    return y[0] == y[1]
+io.print(sharedeq())
+
+# CYCLES round-trip and remain self-referential
+var cyclert = Function():
+    var c = []
+    c.append(c)
+    var d = s.loads(s.dumps(c))
+    return d[0] == d
+io.print(cyclert())
+
+# save / load to a file
+var savefile = Function():
+    var p = import("path").gettempdir() + "/kirito_serialize_test.dat"
+    var data = {"name": "Kirito", "scores": [10, 20, 30]}
+    s.save(data, p)
+    var loaded = s.load(p)
+    return String(loaded["name"]) + ":" + String(loaded["scores"][2])
+io.print(savefile())
+discard import("path").remove(import("path").gettempdir() + "/kirito_serialize_test.dat", missing_ok=True)
+
+# A native/built-in function is not serializable (a Kirito Function now IS — see below).
+var dumpsfnthrows = Function():
+    try:
+        discard s.dumps(len)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(dumpsfnthrows())
+
+# Kirito functions/classes serialize by default through the text format too: a closure captures its
+# free variable by value, and an instance round-trips carrying its class (no import needed).
+var closurert = Function():
+    var k = 7
+    var mul = Function(x): return x * k
+    return s.loads(s.dumps(mul))(6)
+io.print(closurert())
+class Box:
+    var _init_ = Function(self, v):
+        self.v = v
+    var get = Function(self):
+        return self.v
+io.print(s.loads(s.dumps(Box(99))).get())
+
+# corrupt / hostile text blobs throw cleanly (never crash) — exercises the shared rebuild's
+# bounds checks and the text decoder's error paths.
+var badblob1 = Function():
+    try:
+        discard s.loads("not a blob")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(badblob1())
+var badblob2 = Function():
+    try:
+        discard s.loads("")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(badblob2())
+var badblob3 = Function():
+    try:
+        discard s.loads("KSER1")        # header, no count
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(badblob3())
+var badblob4 = Function():
+    try:
+        discard s.loads("KSER1 1 L 1 5 0")  # child id out of range
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(badblob4())
+var badblob5 = Function():
+    try:
+        discard s.loads("KSER1 1 N 9")  # root id out of range
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(badblob5())
+var badblob6 = Function():
+    try:
+        discard s.load("/nonexistent/path/xyz.dat")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(badblob6())
+
+# the shared core gives both modules identical graph semantics: a value's serialize and dump
+# round-trips agree structurally (shared refs + cycles), differing only in format/type.
+var crosscheck = Function():
+    var d = import("dump")
+    var A = [1, 2]
+    var g = {"x": A, "y": A}
+    g["self"] = g
+    var fromText = s.loads(s.dumps(g))
+    var fromBin = d.loads(d.dumps(g))
+    var ok = (fromText["x"] == fromText["y"]) and (fromText["self"] == fromText)
+    ok = ok and (fromBin["x"] == fromBin["y"]) and (fromBin["self"] == fromBin)
+    ok = ok and (fromText["x"] == fromBin["x"])
+    return ok
+io.print(crosscheck())

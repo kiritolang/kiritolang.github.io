@@ -1,0 +1,194 @@
+# crypto module (OpenSSL-gated): AES-GCM, RSA/EC sign+verify+encrypt, X.509 parsing (converted from
+# tests/unit/test_crypto.cpp — a pure run-a-script-check-a-value TU). NIST GCM known-answer vectors,
+# encrypt/decrypt round-trips, tamper/authentication-failure, signature round-trips + rejection,
+# RSA-OAEP, certificate field extraction, adversarial inputs, and a bounded AES-GCM fuzz loop.
+# RSA/EC key generation and AES nonces/keys are randomly generated at runtime, but every assertion
+# here checks a logical invariant (round-trip identity, sign/verify agreement, a throw, a fixed KAT
+# hex string) rather than a specific random value, so the printed output is deterministic regardless
+# of the actual key/nonce material. The 400-iteration C++ fuzz (std::mt19937_64-varied lengths) is
+# reproduced with lengths varied deterministically by the loop counter instead, preserving the same
+# "round trip is the identity" property across many key/nonce/message sizes.
+# This test only runs where crypto is enabled (KIRITO_ENABLE_TLS, i.e. all gate presets except
+# asan-notls); skip it there.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var c = import("crypto")
+io.print(c.enabled)
+
+# ---- AES-GCM NIST known-answer (GCM spec test case 3: AES-128, 96-bit IV, no AAD) ----
+var KEY = "feffe9928665731c6d6a8f9467308308"
+var IV  = "cafebabefacedbaddecaf888"
+var PT  = "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255"
+var CT  = "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985"
+var TAG = "4d5c2af327cd64a62cf35abd2ba6fab4"
+var kat = c.aesencrypt(fromhex(KEY), fromhex(PT), fromhex(IV))
+io.print(kat["ciphertext"].hex() + ":" + kat["tag"].hex())
+# Decrypt the KAT ciphertext back to the plaintext.
+io.print(c.aesdecrypt(fromhex(KEY), fromhex(CT), fromhex(IV), fromhex(TAG)).hex())
+
+# ---- round-trip for every key size, with and without AAD ----
+var random = import("random")
+var roundtrip = Function(klen):
+    var key = random.randombytes(klen)
+    var nonce = random.randombytes(12)
+    var msg = "attack at dawn"
+    var e = c.aesencrypt(key, msg, nonce)
+    return c.aesdecrypt(key, e["ciphertext"], nonce, e["tag"]).decode() == msg
+io.print(roundtrip(16))
+io.print(roundtrip(24))
+io.print(roundtrip(32))
+# AAD must match on decrypt.
+var aadkey = random.randombytes(32)
+var aadnonce = random.randombytes(12)
+var aade = c.aesencrypt(aadkey, "body", aadnonce, "hdr")
+io.print(c.aesdecrypt(aadkey, aade["ciphertext"], aadnonce, aade["tag"], "hdr").decode())
+
+# ---- tamper detection: a flipped ciphertext / tag / aad byte fails authentication ----
+var tamperThrows = Function(mutateKind):
+    var key = random.randombytes(32)
+    var nonce = random.randombytes(12)
+    var e = c.aesencrypt(key, "secret message", nonce, "aad0")
+    var ct = e["ciphertext"]
+    var tag = e["tag"]
+    var aad = "aad0"
+    if mutateKind == "ct":
+        ct = ct[0:1] + Bytes([bitxor(ct[1], 1)]) + ct[2:len(ct)]      # flip a ciphertext bit
+    if mutateKind == "tag":
+        tag = tag[0:1] + Bytes([bitxor(tag[1], 1)]) + tag[2:len(tag)] # flip a tag bit
+    if mutateKind == "aad":
+        aad = "aad1"                                                  # wrong AAD
+    try:
+        discard c.aesdecrypt(key, ct, nonce, tag, aad)
+        return False
+    catch as err:
+        return True
+io.print(tamperThrows("ct"))
+io.print(tamperThrows("tag"))
+io.print(tamperThrows("aad"))
+
+# ---- RSA sign/verify + OAEP encrypt/decrypt ----
+var k = c.rsagenerate(2048)
+var sig = c.rsasign(k["private"], "hello world")
+var ok = c.rsaverify(k["public"], "hello world", sig)
+var bad = c.rsaverify(k["public"], "hello worlx", sig)
+var k2 = c.rsagenerate(2048)
+var wrong = c.rsaverify(k2["public"], "hello world", sig)
+var rsact = c.rsaencrypt(k["public"], "top secret")
+var rsapt = c.rsadecrypt(k["private"], rsact).decode()
+io.print(String(ok) + "," + String(bad) + "," + String(wrong) + "," + rsapt)
+
+# ---- EC sign/verify (ECDSA over prime256v1) ----
+var ec = c.ecgenerate()
+var ecsig = c.ecsign(ec["private"], "ec payload", "sha256")
+var ecok = c.ecverify(ec["public"], "ec payload", ecsig)
+var ecbad = c.ecverify(ec["public"], "ec payloax", ecsig)
+io.print(String(ecok) + "," + String(ecbad))
+io.print(type(c.ecgenerate("secp384r1")["private"]))  # other curve
+
+# ---- X.509 parse ----
+# A self-signed cert (CN=kirito.test, O=KiritoOrg; SAN DNS kirito.test + www.kirito.test).
+var pem = """-----BEGIN CERTIFICATE-----
+MIIDXjCCAkagAwIBAgIUe2JbxlpFszPkf/V5/aDiv+5yiakwDQYJKoZIhvcNAQEL
+BQAwKjEUMBIGA1UEAwwLa2lyaXRvLnRlc3QxEjAQBgNVBAoMCUtpcml0b09yZzAe
+Fw0yNjA3MDkxNjQxMTFaFw0zNjA3MDYxNjQxMTFaMCoxFDASBgNVBAMMC2tpcml0
+by50ZXN0MRIwEAYDVQQKDAlLaXJpdG9PcmcwggEiMA0GCSqGSIb3DQEBAQUAA4IB
+DwAwggEKAoIBAQDTgrQbrW+MLTwQbXPhDzB82ln7gdxkQV3hpQ3wOe9dapb/5Ahs
+MuocGXHZ1D7aIaatcu8SeH1GGvqMcr6GhiDy+jhFjkkD4RTETPY40fezzhDKtSqW
+EUQhSbmZOsNlkGGh2zyRwJk4GJeT7fJlJ/ifu3zkTkaaMLN3Z0M7mf1DgG9g8/6S
+Gwr9RAT2YNbf3Cv4CLjNybeISzoecnier93IxawPlsR1wU0QWOjyDakooJ+4xJcM
+3Vt5anH9gK94AifBJo8CVFKckliC2S+40DDuI5U5MmRiJRcXesABq4rH7dJH4JnX
+5sW2LRC7vHUc93n/XMS/WodmnHuJ0oRVRjmxAgMBAAGjfDB6MB0GA1UdDgQWBBTS
+N9cxJIAITuBt1rKmXiSYG1aTvTAfBgNVHSMEGDAWgBTSN9cxJIAITuBt1rKmXiSY
+G1aTvTAPBgNVHRMBAf8EBTADAQH/MCcGA1UdEQQgMB6CC2tpcml0by50ZXN0gg93
+d3cua2lyaXRvLnRlc3QwDQYJKoZIhvcNAQELBQADggEBAF04jgiBOqe4gc+f1HkC
+2pgijeBVV4fT8uQzNQtmrD2bugBwSQTGi9ZYZrQicrdIYH5c5j0o31f2f3BEqc1m
+6vHtNzFxAd1GJHbBbxJaEB6sQMiWvAcxvHVQtYqtFHIE2zlsLjrEc3QlQxLPgUZm
+SN1/Jmfde5Wzyh8YjpBi0g+sTJcjwzqRWlMxuRCTmngxnvQvFFrct81OsF6y8OyY
+UGNqhx87/uKeMx3yXvphVH7whCaOOfMBlBV3VvPzLHNWH0CYsmW6qk+WXEJDaiVX
+gkXEYar6uwu4qK0KOJWMTKgASTlKpXCmSJ9TvIs+ICqCrt1YWLpKcTUwlRysfuwU
+NV0=
+-----END CERTIFICATE-----
+"""
+var info = c.x509parse(pem)
+io.print("kirito.test" in info["subject"])
+io.print("KiritoOrg" in info["subject"])
+io.print("kirito.test" in info["issuer"])
+io.print(len(info["sans"]))
+io.print("kirito.test" in info["sans"] and "www.kirito.test" in info["sans"])
+io.print(len(info["serial"]) > 0)
+io.print(type(info["not_after"]))
+
+# ---- adversarial / bad input ----
+try:
+    discard c.aesencrypt(fromhex("0011223344556677"), "pt", fromhex(IV))  # 8-byte key
+catch as e:
+    io.print(e)
+try:
+    discard c.aesencrypt(random.randombytes(32), "pt", Bytes(0))          # empty nonce
+catch as e:
+    io.print(e)
+try:
+    discard c.rsasign("not a valid pem", "m")
+catch as e:
+    io.print(e)
+try:
+    discard c.rsagenerate(64)                     # too small
+catch as e:
+    io.print(e)
+try:
+    discard c.x509parse("-----BEGIN CERTIFICATE-----\ngarbage\n-----END CERTIFICATE-----")
+catch as e:
+    io.print(e)
+try:
+    discard c.ecgenerate("not-a-curve")
+catch as e:
+    io.print(e)
+try:
+    discard c.rsaverify("bad pem", "m", Bytes([1, 2, 3]))
+catch as e:
+    io.print(e)
+
+# ---- key/algorithm confusion: a key of the wrong family is rejected, never silently re-dispatched.
+# EVP_DigestSign follows the KEY, so without the guard rsasign(ecKey) returns a valid ECDSA
+# signature under an RSA-named function, and ecverify accepts an RSA signature. ----
+var mixEc = c.ecgenerate()
+var mixRsa = c.rsagenerate(1024)
+var mixMsg1 = ""
+try:
+    discard c.rsasign(mixEc["private"], "m")       # EC key -> rsasign
+catch as e:
+    mixMsg1 = e
+    io.print(e)
+try:
+    discard c.ecsign(mixRsa["private"], "m")       # RSA key -> ecsign
+catch as e:
+    io.print(e)
+try:
+    discard c.rsaverify(mixEc["public"], "m", c.ecsign(mixEc["private"], "m"))
+catch as e:
+    io.print(e)
+try:
+    discard c.ecverify(mixRsa["public"], "m", c.rsasign(mixRsa["private"], "m"))
+catch as e:
+    io.print(e)
+# the message names both the expected and the actual family, so the mistake is actionable
+io.print("rsasign: expected RSA private key, got EC" in mixMsg1)
+# the same-family paths still work (the guard rejects only the mismatch)
+io.print(c.rsaverify(mixRsa["public"], "m", c.rsasign(mixRsa["private"], "m")))
+io.print(c.ecverify(mixEc["public"], "m", c.ecsign(mixEc["private"], "m")))
+
+# ---- bounded AES-GCM fuzz: encrypt->decrypt is the identity across varied key/nonce/message sizes;
+# lengths are varied deterministically by the loop counter (the C++ oracle instead varied them with
+# a seeded std::mt19937_64, but only ever asserted the round-trip identity, not a specific value). ----
+var fuzzloop = Function():
+    var keysizes = [16, 24, 32]
+    var t = 0
+    while t < 400:
+        var key = random.randombytes(keysizes[t % 3])
+        var nonce = random.randombytes(1 + (t % 16))
+        var msg = random.randombytes(t % 200)
+        var e = c.aesencrypt(key, msg, nonce)
+        assert c.aesdecrypt(key, e["ciphertext"], nonce, e["tag"]) == msg
+        t = t + 1
+    return "ok"
+io.print(fuzzloop())

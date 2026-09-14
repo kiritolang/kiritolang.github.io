@@ -1,0 +1,56 @@
+4
+8
+[4, 8]
+2024
+no such group: 'nope'
+11
+12
+7
+l
+l
+a
+9
+10
+13
+b[a]n[a]n[a]
+XXX
+['2', '3']
+['1', '2']
+2
+2
+cannot dump type 'Match' (define _getstate_/_setstate_ to make it serializable)
+cannot serialize type 'Match' (define _getstate_/_setstate_ to make it serializable)
+cannot dump type 'Regex' (define _getstate_/_setstate_ to make it serializable)
+group key must be an Integer index or a String name
+group key must be an Integer index or a String name
+no such group: -1
+no such group: -1
+no such group: -1
+no such group: -1
+no such group: 1
+invalid regex: duplicate group name 'x'
+invalid regex: empty group name
+invalid regex: bad group name '1x'
+invalid regex: malformed group name
+bad replacement: unterminated \g<...>
+bad replacement: expected '<' after \g
+bad replacement: no group named 'nope'
+1
+True
+True
+a{
+a{x}
+a{,3}
+A
+True
+True
+True
+True
+bXnXnX
+1
+12
+['a', 'b,c']
+3
+XXX
+<Regex /ab/>
+<Match span=(1, 2)>

@@ -1,7 +1,10 @@
 // hash-module crypto extensions: SHA-384/512, HMAC (RFC 2104), PBKDF2 (RFC 8018) and the
-// constant-time comparedigest. Covers authoritative RFC known-answer vectors, structural
-// properties, adversarial/bad-input handling, and a randomized fuzz loop. Both the C++ core
-// (kirito::hashing) and the Kirito-visible module surface are exercised.
+// constant-time comparedigest. Covers authoritative RFC known-answer vectors, structural properties,
+// and randomized fuzz loops against the C++ core (kirito::hashing) directly — there is no Kirito-
+// script path to hashing::findAlgo/hmacRaw/pbkdf2Raw, so these stay a C++ TU. The Kirito-visible
+// module surface (hash.sha512/sha384/hmac/pbkdf2/comparedigest + adversarial/bad-input checks) was a
+// pure run-a-script-check-a-value slice of this file and was converted to
+// tests/scripts/unit_hash_crypto.ki (+ .expected).
 #include <random>
 #include <string>
 
@@ -10,9 +13,6 @@
 
 using namespace kirito;
 
-static std::string evalStr(KiritoVM& vm, const std::string& src) {
-    return vm.stringify(vm.runSource(src));
-}
 static std::string hx(const std::string& raw) { return hashing::toHex(raw); }
 static std::string rep(unsigned char b, std::size_t n) { return std::string(n, static_cast<char>(b)); }
 
@@ -79,47 +79,6 @@ int main() {
         // dklen=1 must yield exactly one byte, matching the first byte of the block.
         CHECK(hashing::pbkdf2Raw(*sha256, "pw", "salty", 100, 1) == big.substr(0, 1));
     }
-
-    // ---- Kirito module surface mirrors the C++ core ----
-    KiritoVM vm;
-    vm.installStandardLibrary();
-    CHECK(evalStr(vm, "import(\"hash\").sha512(\"abc\")") ==
-          "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
-          "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f");
-    CHECK(evalStr(vm, "import(\"hash\").sha384(\"abc\")") ==
-          "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed"
-          "8086072ba1e7cc2358baeca134c825a7");
-    CHECK(evalStr(vm, "import(\"hash\").hmac(\"Jefe\", \"what do ya want for nothing?\")") ==
-          "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
-    CHECK(evalStr(vm, "import(\"hash\").hmac(\"Jefe\", \"what do ya want for nothing?\", \"sha512\")") ==
-          "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea250554"
-          "9758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737");
-    // pbkdf2 returns Bytes; .hex() gives the hex form.
-    CHECK(evalStr(vm, "import(\"hash\").pbkdf2(\"password\", \"salt\", 4096, 20, \"sha1\").hex()") ==
-          "4b007901b765489abead49d926f721d065a429c1");
-    // keyword args work uniformly.
-    CHECK(evalStr(vm, "import(\"hash\").pbkdf2(password=\"password\", salt=\"salt\", iterations=1, dklen=20, algo=\"sha1\").hex()") ==
-          "0c60c80f961f0e71f3a9b524af6012062fe037a6");
-    // String and Bytes inputs agree (Kirito Strings are byte-transparent).
-    CHECK(evalStr(vm, "import(\"hash\").sha512(\"abc\") == import(\"hash\").sha512(Bytes([97,98,99]))") == "True");
-
-    // ---- comparedigest ----
-    CHECK(evalStr(vm, "import(\"hash\").comparedigest(\"abc\", \"abc\")") == "True");
-    CHECK(evalStr(vm, "import(\"hash\").comparedigest(\"abc\", \"abd\")") == "False");
-    CHECK(evalStr(vm, "import(\"hash\").comparedigest(\"abc\", \"abcd\")") == "False");
-    CHECK(evalStr(vm, "import(\"hash\").comparedigest(\"\", \"\")") == "True");
-    CHECK(evalStr(vm, "import(\"hash\").comparedigest(Bytes([1,2,3]), Bytes([1,2,3]))") == "True");
-    CHECK(evalStr(vm, "import(\"hash\").comparedigest(Bytes([1,2,3]), Bytes([1,2,4]))") == "False");
-
-    // ---- adversarial / bad input ----
-    CHECK_THROWS(evalStr(vm, "import(\"hash\").hmac(\"k\", \"m\", \"sha3\")"));      // unknown algo
-    CHECK_THROWS(evalStr(vm, "import(\"hash\").pbkdf2(\"p\", \"s\", 0)"));            // iterations < 1
-    CHECK_THROWS(evalStr(vm, "import(\"hash\").pbkdf2(\"p\", \"s\", -5)"));           // negative iterations
-    CHECK_THROWS(evalStr(vm, "import(\"hash\").pbkdf2(\"p\", \"s\", 1, 0)"));         // dklen < 1
-    CHECK_THROWS(evalStr(vm, "import(\"hash\").pbkdf2(\"p\", \"s\", 1, 2000000)"));   // dklen too large
-    CHECK_THROWS(evalStr(vm, "import(\"hash\").pbkdf2(\"p\", \"s\", 1, 20, \"sha3\")")); // unknown algo
-    CHECK_THROWS(evalStr(vm, "import(\"hash\").hmac(123, \"m\")"));                   // non String/Bytes key
-    CHECK_THROWS(evalStr(vm, "import(\"hash\").comparedigest(1, 2)"));               // non String/Bytes
 
     // ---- randomized fuzz: HMAC determinism, avalanche, core/module agreement; RFC-2104 differential ----
     std::mt19937_64 rng(0xC0FFEEu);

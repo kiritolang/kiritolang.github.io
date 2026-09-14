@@ -1,0 +1,9 @@
+6.0
+2.0
+[3.0, 2.0, 1.0]
+False
+True
+ok
+ok
+ok
+tensor sqrt: math domain error (got -1.0)

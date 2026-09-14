@@ -1,0 +1,139 @@
+# Native stdlib modules after the Value-API rewrite: round-trip invariants, wrong-type/wrong-arity
+# error behavior (converted from tests/unit/test_modules_fuzz.cpp — the pure run-a-script-check-a-
+# value cases). The randomized fuzz loop (4000 iterations over an mt19937_64-driven RNG with an
+# in-C++ crash-count oracle) has no static golden and stays in the C++ suite (see TRIMMED note
+# there). Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# ===== round-trip invariants =====
+# zlib: decompress(compress(x)) == x
+var zlibrt1 = Function():
+    var z = import("zlib")
+    var s = "the quick brown fox jumps over 123!"
+    return z.decompress(z.compress(s)) == s
+io.print(zlibrt1())
+var zlibrt2 = Function():
+    var z = import("zlib")
+    return z.inflate(z.deflate("")) == ""
+io.print(zlibrt2())
+var zlibrt3 = Function():
+    var z = import("zlib")
+    var s = "a" * 1000
+    return z.decompress(z.compress(s)) == s
+io.print(zlibrt3())
+# serialize / json / dump round-trips
+var serrt = Function():
+    var s = import("serialize")
+    return s.loads(s.dumps({"a": [1, 2, 3], "b": None}))
+io.print(serrt())
+var jsonrt = Function():
+    var j = import("json")
+    return j.loads(j.dumps([1, 2.5, "x", True, None]))
+io.print(jsonrt())
+var dumprt = Function():
+    var d = import("dump")
+    return d.loads(d.dumps({"k": [1, [2, [3]]]}))
+io.print(dumprt())
+# hash: known digests
+io.print(import("hash").sha256("abc"))
+io.print(import("hash").md5(""))
+
+# ===== wrong-type arguments throw cleanly (no crash) =====
+var wrongtype1 = Function():
+    try:
+        discard import("hash").md5(123)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(wrongtype1())
+var wrongtype2 = Function():
+    try:
+        discard import("zlib").compress([1, 2, 3])
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(wrongtype2())
+var wrongtype3 = Function():
+    try:
+        discard import("math").sqrt("x")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(wrongtype3())
+var wrongtype4 = Function():
+    try:
+        discard import("json").parse(42)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(wrongtype4())
+var wrongtype5 = Function():
+    try:
+        discard import("matrix").zeros("a", 2)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(wrongtype5())
+var wrongtype6 = Function():
+    try:
+        discard import("time").make("y", 1, 1)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(wrongtype6())
+var wrongtype7 = Function():
+    try:
+        discard import("net").urlencode("not a dict")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(wrongtype7())
+var wrongtype8 = Function():
+    try:
+        discard import("random").Random("seed")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(wrongtype8())
+var wrongtype9 = Function():
+    try:
+        discard import("zlib").decompress("not valid deflate data!!!")
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(wrongtype9())
+
+# ===== wrong arity / unknown keyword (the signature layer) =====
+var arity1 = Function():
+    try:
+        discard import("hash").sha1()  # missing arg
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(arity1())
+var arity2 = Function():
+    try:
+        discard import("hash").sha1("a", "b")  # too many
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(arity2())
+var arity3 = Function():
+    try:
+        discard import("math").sqrt(x=1, bogus=2)  # unknown keyword
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(arity3())
+var arity4 = Function():
+    try:
+        discard import("matrix").identity()  # missing required
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(arity4())
+
+# keyword args still work on the rewritten modules
+io.print(import("math").log(8, base=2))
+io.print(import("json").dumps([1, 2], indent=2) != "")
+io.print(import("net").urlsplit("http://h:7/p?q=1")["port"])

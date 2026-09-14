@@ -1,0 +1,287 @@
+# Adversarial/edge coverage for zlib/gzip/hash (converted from tests/unit/test_compress_hash_deep.cpp
+# — the pure run-a-script-check-a-value / throw checks). Malformed gzip headers & members, hash()
+# dispatch (incl. `_hash_`), checksum sign-safety, SHA-1 padding boundaries, large round-trips, and
+# String-vs-Bytes type preservation. All inputs/expected values are fixed, so this is fully
+# deterministic. The four raw-DEFLATE inflate() failure-message checks test kirito::deflate::inflate
+# directly (no Kirito-script path to that internal C++ API) and stay in the C++ TU.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var h = import("hash")
+var g = import("gzip")
+
+# -------------------------------------------------------------------------------------------------
+# gzip: FLG header fields (FNAME/FEXTRA/FCOMMENT/FHCRC) must be parsed & skipped correctly. We build
+# a valid FLG=0 stream via gzip.compress(Bytes), then splice header flags + fields in by hand (Bytes
+# slicing/concat) and assert the payload is still recovered exactly.
+# Layout: [0..1]=magic, [2]=CM, [3]=FLG, [4..9]=MTIME/XFL/OS, [10..]=DEFLATE body + trailer.
+# -------------------------------------------------------------------------------------------------
+var payload = Bytes("hello gzip world, hello gzip world, hello!")
+var z = g.compress(payload)
+
+# FNAME (0x08): NUL-terminated file name after the fixed header.
+var name = Bytes("archive.txt") + Bytes([0])
+io.print(g.decompress(z[0:3] + Bytes([0x08]) + z[4:10] + name + z[10:len(z)]) == payload)
+
+# FEXTRA (0x04): 2-byte little-endian length, then that many extra bytes.
+var extra = Bytes([4, 0]) + Bytes([1, 2, 3, 4])
+io.print(g.decompress(z[0:3] + Bytes([0x04]) + z[4:10] + extra + z[10:len(z)]) == payload)
+
+# FCOMMENT (0x10): NUL-terminated comment.
+var comment = Bytes("a comment") + Bytes([0])
+io.print(g.decompress(z[0:3] + Bytes([0x10]) + z[4:10] + comment + z[10:len(z)]) == payload)
+
+# FHCRC (0x02): a 2-byte header CRC16 that decompress skips (does not verify) — arbitrary bytes.
+io.print(g.decompress(z[0:3] + Bytes([0x02]) + z[4:10] + Bytes([0xAB, 0xCD]) + z[10:len(z)]) == payload)
+
+# ALL flags at once (0x04|0x08|0x10|0x02 = 0x1E), fields in RFC-1952 order FEXTRA, FNAME, FCOMMENT, FHCRC.
+var extraAll   = Bytes([3, 0]) + Bytes([9, 9, 9])
+var nameAll    = Bytes("f.bin") + Bytes([0])
+var commentAll = Bytes("c") + Bytes([0])
+var fhcrcAll   = Bytes([0x12, 0x34])
+io.print(g.decompress(z[0:3] + Bytes([0x1E]) + z[4:10] + extraAll + nameAll + commentAll + fhcrcAll + z[10:len(z)]) == payload)
+
+# Empty FNAME (just the terminating NUL) is still valid.
+io.print(g.decompress(z[0:3] + Bytes([0x08]) + z[4:10] + Bytes([0]) + z[10:len(z)]) == payload)
+
+# --- gzip malformed / adversarial paths ---
+
+# Unsupported compression method: CM != 8 must throw.
+try:
+    discard g.decompress(z[0:2] + Bytes([9]) + z[3:len(z)])
+catch as e:
+    io.print(e)
+try:
+    discard g.decompress(z[0:2] + Bytes([0]) + z[3:len(z)])
+catch as e:
+    io.print(e)
+
+# Bad magic (not a gzip stream at all) — but long enough to pass the length guard.
+try:
+    discard g.decompress(Bytes([0, 0]) + z[2:len(z)])
+catch as e:
+    io.print(e)
+
+# Truncated FEXTRA: FLG claims FEXTRA with a length that overruns the stream -> throw.
+try:
+    discard g.decompress(z[0:3] + Bytes([0x04]) + z[4:10] + Bytes([0xFF, 0xFF]) + z[10:len(z)])
+catch as e:
+    io.print(e)
+
+# Truncated FNAME: FLG sets FNAME but no NUL terminator before end-of-stream -> throw.
+try:
+    discard g.decompress(z[0:3] + Bytes([0x08]) + z[4:10] + Bytes([65, 66, 67]))
+catch as e:
+    io.print(e)
+
+# Trailing garbage after a complete member: reject as "trailing data ...".
+try:
+    discard g.decompress(z + Bytes([1, 2, 3]))
+catch as e:
+    io.print(e)
+# A corrupt FIRST member (flip a body byte) fails DIFFERENTLY — NOT a "trailing" error.
+try:
+    discard g.decompress(z[0:12] + Bytes([(z[12] + 1) % 256]) + z[13:len(z)])
+catch as e:
+    io.print(e)
+
+# A too-short stream (below the 18-byte header+trailer floor) throws.
+try:
+    discard g.decompress(Bytes([0x1f, 0x8b, 0x08, 0x00]))
+catch as e:
+    io.print(e)
+
+# Multi-member concatenation (cat a.gz b.gz) decompresses to the concatenation of bodies.
+io.print(g.decompress(g.compress(Bytes("AAA")) + g.compress(Bytes("BBB"))) == Bytes("AAABBB"))
+
+# Truncated trailer (drop the last CRC/ISIZE bytes) throws.
+try:
+    discard g.decompress(z[0:len(z) - 4])
+catch as e:
+    io.print(e)
+
+# -------------------------------------------------------------------------------------------------
+# hash(value): the exposed Dict/Set hash. Works on Bytes/Float/Bool and dispatches `_hash_`.
+# -------------------------------------------------------------------------------------------------
+io.print(type(h.hash(Bytes([1, 2, 3]))))
+io.print(type(h.hash(3.14)))
+io.print(type(h.hash(True)))
+io.print(type(h.hash("str")))
+io.print(type(h.hash(42)))
+io.print(type(h.hash(None)))
+
+# stability across two calls (same value hashes the same both times).
+io.print(h.hash(Bytes([9, 8, 7])) == h.hash(Bytes([9, 8, 7])))
+io.print(h.hash(3.5) == h.hash(3.5) and h.hash(True) == h.hash(True))
+
+# `_hash_` IS dispatched: a class whose _hash_ returns a fixed Integer -> hash(instance) == it.
+class Fixed:
+    var _hash_ = Function(self):
+        return 777
+io.print(h.hash(Fixed()))
+# Distinct instances of the same class share the fixed hash (proves dispatch, not identity).
+class Fixed2:
+    var _hash_ = Function(self):
+        return 12321
+io.print(h.hash(Fixed2()) == h.hash(Fixed2()))
+
+# Unhashable containers throw the standard "unhashable type" error.
+try:
+    discard h.hash([1, 2, 3])
+catch as e:
+    io.print(e)
+try:
+    discard h.hash({"k": 1})
+catch as e:
+    io.print(e)
+try:
+    discard h.hash(Set([1, 2, 3]))
+catch as e:
+    io.print(e)
+
+# -------------------------------------------------------------------------------------------------
+# crc64: always an Integer; distinct inputs distinct; at least one input has the top bit CLEAR (a
+# non-negative Integer, no sign-extension surprise).
+# -------------------------------------------------------------------------------------------------
+var crc64probe = Function():
+    var sawnonneg = False
+    var c = 97   # 'a'
+    while c <= 122:   # 'z'
+        var s = Bytes([c]).decode()
+        assert type(h.crc64(s)) == "Integer"
+        if h.crc64(s) >= 0:
+            sawnonneg = True
+        c = c + 1
+    assert sawnonneg
+    # a spread of distinct inputs yield distinct crc64 values.
+    var xs = ["", "a", "b", "ab", "ba", "hello", "world", "hello!"]
+    var seen = Set()
+    for x in xs:
+        seen.add(h.crc64(x))
+    assert len(seen) == len(xs)
+    # crc64 is deterministic and String/Bytes-equivalent for the same bytes.
+    assert h.crc64("abc") == h.crc64(Bytes("abc"))
+    return "ok"
+io.print(crc64probe())
+
+# -------------------------------------------------------------------------------------------------
+# adler32 / crc32: always a NON-NEGATIVE Integer (no sign-extension), incl. high-bit input.
+# -------------------------------------------------------------------------------------------------
+var checksumprobe = Function():
+    var strInputs = ["", "a", "abc"]
+    for x in strInputs:
+        assert type(h.adler32(x)) == "Integer"
+        assert type(h.crc32(x)) == "Integer"
+        assert h.adler32(x) >= 0
+        assert h.crc32(x) >= 0
+    var bytesInputs = [Bytes([255, 255, 255, 255]), Bytes([255, 254, 253, 252, 251]),
+                        Bytes([0, 0, 0, 0]), Bytes([128, 200, 255, 1])]
+    for x in bytesInputs:
+        assert type(h.adler32(x)) == "Integer"
+        assert type(h.crc32(x)) == "Integer"
+        assert h.adler32(x) >= 0
+        assert h.crc32(x) >= 0
+    # String/Bytes equivalence for the same bytes.
+    assert h.crc32("abc") == h.crc32(Bytes("abc"))
+    assert h.adler32("abc") == h.adler32(Bytes("abc"))
+    return "ok"
+io.print(checksumprobe())
+
+# -------------------------------------------------------------------------------------------------
+# SHA-1: exact known vectors, multi-block, and the 55/56/63/64-byte padding boundaries.
+# -------------------------------------------------------------------------------------------------
+io.print(h.sha1(""))
+io.print(h.sha1("abc"))
+
+var isHexDigest = Function(s, n):
+    if len(s) != n:
+        return False
+    for ch in s:
+        if not (ch in "0123456789abcdef"):
+            return False
+    return True
+
+# Exact-length hex + determinism at each interesting length (padding boundaries around 56/64).
+var sha1lengths = Function():
+    var lengths = [1, 54, 55, 56, 57, 63, 64, 65, 119, 128, 200]
+    var prev = ""
+    for n in lengths:
+        var d = h.sha1("a" * n)
+        assert isHexDigest(d, 40)
+        assert h.sha1("a" * n) == d       # deterministic
+        if prev != "":
+            assert d != prev              # different lengths -> different digests
+        prev = d
+    return "ok"
+io.print(sha1lengths())
+
+# Avalanche across the 55->56 boundary (the extra byte forces a second padding block).
+io.print(h.sha1("a" * 55) != h.sha1("a" * 56))
+# A single-bit-ish change flips the whole digest.
+io.print(h.sha1("The quick brown fox") != h.sha1("The quick brown fox."))
+
+# exact empty-input digests for md5/sha256 too.
+io.print(h.md5(""))
+io.print(h.sha256(""))
+
+# -------------------------------------------------------------------------------------------------
+# Large round-trips (~1.5 MB) recover the original exactly — zlib, raw deflate, gzip.
+# -------------------------------------------------------------------------------------------------
+var zlib = import("zlib")
+io.print(zlib.decompress(zlib.compress("abc123" * 260000)) == "abc123" * 260000)
+var foxtext = "The quick brown fox jumps over the lazy dog. " * 40000
+io.print(zlib.inflate(zlib.deflate(foxtext)) == foxtext)
+var bigstr = "xyzXYZ0123456789" * 100000
+io.print(g.decompress(g.compress(bigstr)) == bigstr)
+# Large Bytes round-trip through gzip stays byte-exact.
+var bigbytes = Bytes("payload-block-") * 90000
+io.print(g.decompress(g.compress(bigbytes)) == bigbytes)
+
+# -------------------------------------------------------------------------------------------------
+# Type preservation: digests/checksums return String/Integer; codecs return the input's type.
+# -------------------------------------------------------------------------------------------------
+# digests -> String for both String and Bytes input.
+var digesttypes = Function():
+    assert type(h.md5("data")) == "String"
+    assert type(h.md5(Bytes([1, 2, 3]))) == "String"
+    assert h.md5("abc") == h.md5(Bytes("abc"))
+    assert type(h.sha1("data")) == "String"
+    assert type(h.sha1(Bytes([1, 2, 3]))) == "String"
+    assert h.sha1("abc") == h.sha1(Bytes("abc"))
+    assert type(h.sha256("data")) == "String"
+    assert type(h.sha256(Bytes([1, 2, 3]))) == "String"
+    assert h.sha256("abc") == h.sha256(Bytes("abc"))
+    return "ok"
+io.print(digesttypes())
+
+# checksums -> Integer for both.
+var checksumtypes = Function():
+    assert type(h.adler32("data")) == "Integer"
+    assert type(h.adler32(Bytes([1, 2, 3]))) == "Integer"
+    assert type(h.crc32("data")) == "Integer"
+    assert type(h.crc32(Bytes([1, 2, 3]))) == "Integer"
+    assert type(h.crc64("data")) == "Integer"
+    assert type(h.crc64(Bytes([1, 2, 3]))) == "Integer"
+    return "ok"
+io.print(checksumtypes())
+
+# zlib/gzip codecs: String in -> String out; Bytes in -> Bytes out; round-trip preserves type.
+var codectypes = Function(m):
+    assert type(m.compress("hi")) == "String"
+    assert type(m.compress(Bytes([1, 2, 3]))) == "Bytes"
+    assert type(m.decompress(m.compress("hi"))) == "String"
+    assert type(m.decompress(m.compress(Bytes([1, 2, 3])))) == "Bytes"
+    # round-trip value preservation for both kinds.
+    assert m.decompress(m.compress("round trip text")) == "round trip text"
+    assert m.decompress(m.compress(Bytes([0, 255, 127, 1, 254]))) == Bytes([0, 255, 127, 1, 254])
+    return "ok"
+io.print(codectypes(zlib))
+io.print(codectypes(g))
+
+# raw deflate/inflate type preservation.
+io.print(type(zlib.deflate("x")))
+io.print(type(zlib.deflate(Bytes([1, 2]))))
+io.print(type(zlib.inflate(zlib.deflate(Bytes([1, 2])))))
+
+# empty-input codec round-trips.
+io.print(zlib.decompress(zlib.compress("")) == "")
+io.print(g.decompress(g.compress(Bytes())) == Bytes())

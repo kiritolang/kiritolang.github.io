@@ -1,0 +1,5 @@
+# A02-1 (v1.13 audit): an inline function's `return a, b` must not silently absorb the trailing
+# comma into a comma-pack around the function itself.
+var a = 1
+var b = 2
+var f = Function(): return a, b

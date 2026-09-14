@@ -1,0 +1,109 @@
+# random module: Random(seed) reproducibility, range/distribution invariants, choice/shuffle/sample,
+# choices(population, k) semantics, and error surfaces (converted from tests/unit/test_random.cpp —
+# a pure run-a-script-check-a-value TU). Every case seeds explicitly (random.Random(N)); each
+# assertion checks a range/length/membership/determinism invariant, not a specific drawn value, so
+# the result is stable across runs regardless of the underlying PRNG's exact sequence. Verified
+# stable across repeated runs and identical with `ki` and `ki --no-inline`.
+var io = import("io")
+var random = import("random")
+
+# reproducibility: same seed -> same sequence (no global RNG; each object is independent)
+var samesequence = Function():
+    var a = random.Random(123)
+    var b = random.Random(123)
+    var same = True
+    var i = 0
+    while i < 20:
+        if a.randint(1, 1000000) != b.randint(1, 1000000):
+            same = False
+        i = i + 1
+    return same
+io.print(samesequence())
+
+# randint stays within the inclusive range
+var randintrange = Function():
+    var rng = random.Random(7)
+    var ok = True
+    var i = 0
+    while i < 1000:
+        var x = rng.randint(1, 6)
+        if x < 1 or x > 6:
+            ok = False
+        i = i + 1
+    return ok
+io.print(randintrange())
+
+# random() in [0, 1)
+var randomrange = Function():
+    var rng = random.Random(1)
+    var ok = True
+    var i = 0
+    while i < 1000:
+        var x = rng.random()
+        if x < 0.0 or x >= 1.0:
+            ok = False
+        i = i + 1
+    return ok
+io.print(randomrange())
+
+# choice returns a member; shuffle preserves length; sample gives the right count
+var choicemember = Function():
+    var rng = random.Random(99)
+    var data = [10, 20, 30, 40, 50]
+    return rng.choice(data) in data
+io.print(choicemember())
+var shufflelen = Function():
+    var rng = random.Random(99)
+    var data = [1, 2, 3, 4, 5, 6, 7, 8]
+    rng.shuffle(data)
+    return len(data)
+io.print(shufflelen())
+io.print(len(random.Random(99).sample([1, 2, 3, 4, 5], 3)))
+
+# uniform stays in range
+var uniformrange = Function():
+    var rng = random.Random(5)
+    var x = rng.uniform(2.0, 3.0)
+    return x >= 2.0 and x <= 3.0
+io.print(uniformrange())
+
+# empty-sequence and bad-range errors
+try:
+    discard random.Random(1).choice([])
+catch as e:
+    io.print(e)
+try:
+    discard random.Random(1).randint(5, 1)
+catch as e:
+    io.print(e)
+
+# choices(population, k): a List of k elements sampled WITH replacement.
+io.print(len(random.Random(7).choices([1, 2, 3], 5)))
+io.print(len(random.Random(7).choices([1, 2, 3])))     # k defaults to 1
+io.print(random.Random(7).choices([1, 2, 3], 0))       # k = 0
+io.print(random.Random(7).choices(population = [9], k = 3))  # kwargs
+# WITH replacement: 20 draws from 2 values must repeat (sample, WITHOUT replacement, would throw).
+var withreplacement = Function():
+    var rng = random.Random(7)
+    return len(Set(rng.choices([0, 1], 20))) < 20
+io.print(withreplacement())
+# determinism: same seed -> identical result.
+io.print(random.Random(3).choices([1, 2, 3, 4], 6) == random.Random(3).choices([1, 2, 3, 4], 6))
+# choice is the k=1 case unwrapped: under one seed, choice(seq) == choices(seq, 1)[0], and stays scalar.
+io.print(random.Random(88).choice([5, 6, 7]) == random.Random(88).choices([5, 6, 7], 1)[0])
+io.print(random.Random(1).choice([42]))   # scalar, not [42]
+# error surface
+try:
+    discard random.Random(1).choices([])           # empty population
+catch as e:
+    io.print(e)
+try:
+    discard random.Random(1).choices([1, 2], -1)    # negative k
+catch as e:
+    io.print(e)
+try:
+    discard random.Random(1).choices(5, 2)          # non-iterable
+catch as e:
+    io.print(e)
+# inspect advertises it
+io.print("choices(population" in inspect(random.Random(1)))

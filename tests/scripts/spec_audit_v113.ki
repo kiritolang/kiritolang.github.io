@@ -1,6 +1,6 @@
 # Regression golden for the v1.13 audit — the observable core-engine fixes, driven from Kirito.
-# (The memory-safety fixes A05-1 / A09-1 are gated as C++/ASan tests in test_audit_v113.cpp; here we
-# pin their observable, no-crash behaviour too.)
+# (The memory-safety fixes A05-1 / A09-1 are exercised as .ki goldens in unit_audit_v113.ki, run also
+# under `--gc-threshold 1` (per-alloc GC soak) with ASan; here we pin their observable behaviour too.)
 var io = import("io")
 
 var throws = Function(fn) -> Bool:

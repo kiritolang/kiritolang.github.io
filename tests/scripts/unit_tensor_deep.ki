@@ -1,0 +1,68 @@
+# adversarial/edge coverage for `tensor`, filling audited gaps concentrated in the Complex-dtype
+# code branches plus a few never-invoked symbols (the `tensor` ctor alias, `.conjugate()`, astype
+# identity, negative-axis `flip`, whole-tensor `==` vs a non-tensor). Converted from
+# tests/unit/test_tensor_deep.cpp. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var tensor = import("tensor")
+var complex = import("complex")
+
+# the lowercase `tensor` constructor alias (never called; only `Tensor` was)
+io.print(tensor.tensor([1, 2, 3]).sum())
+
+# astype("Float") identity branch (Float -> Float, no cross to Complex)
+io.print(tensor.ones([2]).astype("Float").sum())
+
+# negative-axis flip
+io.print(tensor.tensor([1, 2, 3]).flip(-1).tolist())
+
+# whole-tensor `==` against a non-tensor is a single False (not an elementwise mask)
+io.print(tensor.tensor([1, 2]) == 5)
+
+# Complex-dtype branches: conjugate of a real-valued complex tensor is itself
+var z1 = tensor.ones([2, 2]).astype("Complex")
+io.print(z1.conjugate() == z1)
+
+# Complex per-axis reduction runs (reduceAxis complex branch)
+var complexReduce = Function():
+    try:
+        var z = tensor.tensor([[1, 2], [3, 4]]).astype("Complex")
+        discard z.sum(0)
+        discard z.mean(1)
+        discard z.cumsum(0)
+        return "ok"
+    catch as e:
+        return "threw: " + String(e)
+io.print(complexReduce())
+
+# Complex structural/apply/index branches run
+var complexStructural = Function():
+    try:
+        var z = tensor.tensor([[1, 2], [3, 4]]).astype("Complex")
+        discard z.transpose()
+        discard z.flatten()
+        discard z.apply(Function(x): return x)
+        discard z[0]
+        discard z[0, 1]
+        return "ok"
+    catch as e:
+        return "threw: " + String(e)
+io.print(complexStructural())
+
+# Complex element assignment (cpx::asComplex setItem branch)
+var complexAssign = Function():
+    try:
+        var z = tensor.zeros([2, 2]).astype("Complex")
+        z[0, 0] = complex.of(1, 2)
+        return "ok"
+    catch as e:
+        return "threw: " + String(e)
+io.print(complexAssign())
+
+# a domain-error math element still throws under the tensor engine (parity with scalars)
+var errSqrtNegative = Function():
+    try:
+        discard tensor.tensor([-1.0, 4.0]).sqrt()
+        return "no-error"
+    catch as e:
+        return e
+io.print(errSqrtNegative())

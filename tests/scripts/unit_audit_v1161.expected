@@ -1,0 +1,17 @@
+chain-ok
+sum-ok
+sum expects numbers
+sum expects numbers
+sum start must be a number
+sum start must be a number
+7
+6
+expected 1 values to unpack, got 2
+expected 1 values to unpack, got 2
+9
+iter-ok
+'B1' _iter_ must return an iterator — call iter(...) on a collection, or return an object with a _next_ method
+'B2' _iter_ must return an iterator — call iter(...) on a collection, or return an object with a _next_ method
+'B3' _iter_ must return an iterator — call iter(...) on a collection, or return an object with a _next_ method
+iterator recurses too deeply (does _iter_ return iter(self) or form a cycle?)
+type 'Integer' is not iterable

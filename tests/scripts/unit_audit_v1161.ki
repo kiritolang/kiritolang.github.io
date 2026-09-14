@@ -1,0 +1,125 @@
+# Regression tests for the v1.16.1 audit round (converted from tests/unit/test_audit_v1161.cpp). Each
+# block pins ONE confirmed finding. The chained-comparison rejection is a PARSE-TIME, uncatchable error
+# (`a < b < c` etc.), so those five cases live in tests/errors/unit_audit_v1161_chained_*.{ki,experr}
+# instead. Everything else here is runtime, folded inline via try/catch. Runs identically with `ki` and
+# `ki --no-inline`.
+var io = import("io")
+
+# ===== F01-1: valid non-chained forms (parenthesized / and-joined) still parse and run cleanly =====
+assert (1 < 2) and (2 < 3)
+assert (1 == 1) == True
+assert 1 < 2 and 2 < 3 and 3 < 4
+var chainxs = [1, 2]
+assert (1 in chainxs) == True
+assert 1 in chainxs and 2 in chainxs
+io.print("chain-ok")
+
+# ===== F07-9: sum() folds numeric value types (BigInt/Complex) via a generic accumulator, but must
+# NOT concatenate Strings/Lists -- the deliberate "sum expects numbers" / "sum start must be a number"
+# contract =====
+var sumTypes = Function():
+    var int2 = import("int")
+    var complex2 = import("complex")
+    # generic fold works for numeric value types
+    assert String(sum([int2.big(5), int2.big(3), int2.big(2)])) == "10"
+    assert String(sum([int2.big(5), 3, 2])) == "10"
+    assert sum([complex2.of(1, 1), complex2.of(2, 2)], complex2.zero) == complex2.of(3, 3)
+    # scalar fast path unchanged
+    assert sum([1, 2, 3]) == 6 and sum([1.5, 2.5]) == 4.0 and sum([]) == 0
+    return "sum-ok"
+io.print(sumTypes())
+# ...but non-numbers throw, both as elements and as the start
+try:
+    discard sum(["a", "b"])
+catch as e:
+    io.print(e)
+try:
+    discard sum([[1], [2]])
+catch as e:
+    io.print(e)
+try:
+    discard sum([[1], [2]], [])
+catch as e:
+    io.print(e)
+try:
+    discard sum([1, 2], "x")
+catch as e:
+    io.print(e)
+
+# ===== F01-2: a trailing comma after a single target forces a 1-element unpack (like the bare
+# `a, = x`), NOT a silent whole-iterable bind. So `var a, = [7]` binds a=7 and `var a, = [1,2]` throws
+# a count mismatch; `for x, in [[1],[2]]` unpacks each 1-element item =====
+var trailingSingle = Function():
+    var a, = [7]
+    return a
+io.print(trailingSingle())
+var trailingForLoop = Function():
+    var total = 0
+    for x, in [[1], [2], [3]]:
+        total = total + x
+    return total
+io.print(trailingForLoop())
+try:                                       # a count mismatch throws (not a silent whole-list bind)
+    var a, = [1, 2]
+catch as e:
+    io.print(e)
+try:
+    for x, in [[1, 2]]:
+        pass
+catch as e:
+    io.print(e)
+var trailingBare = Function():             # the bare form (no `var`) already worked and still does
+    var xs = [9]
+    var b = 0
+    b, = xs
+    return b
+io.print(trailingBare())
+
+# ===== iter() builtin + the _iter_/_next_-only protocol (the eager _iter_-returns-a-List shim was
+# purged). iter(x) is a re-iterable Iterator view over any iterable; a class is iterable only by
+# returning an iterator (iter(collection) / a native iterator / a _next_ object) from _iter_ =====
+var iterProtocol = Function():
+    assert List(iter([1, 2, 3])) == [1, 2, 3]
+    assert List(iter("ab")) == ["a", "b"]
+    assert List(iter(range(3))) == [0, 1, 2]
+    assert sum(iter([1, 2, 3, 4])) == 10
+    assert type(iter([1])) == "iterator"
+    # re-iterable like map/filter
+    var it = iter([1, 2, 3])
+    assert List(it) == [1, 2, 3] and List(it) == [1, 2, 3]
+    # _iter_ must return an iterator
+    class WrapList:
+        var _init_ = Function(self): self.xs = [4, 5, 6]
+        var _iter_ = Function(self): return iter(self.xs)
+    assert List(WrapList()) == [4, 5, 6]
+    return "iter-ok"
+io.print(iterProtocol())
+# a bare List / scalar / self from _iter_ is rejected with a clear message
+try:
+    class B1:
+        var _iter_ = Function(self): return [1, 2]
+    discard List(B1())
+catch as e:
+    io.print(e)
+try:
+    class B2:
+        var _iter_ = Function(self): return 42
+    discard List(B2())
+catch as e:
+    io.print(e)
+try:
+    class B3:
+        var _iter_ = Function(self): return self
+    discard List(B3())
+catch as e:
+    io.print(e)
+try:                                       # a genuinely cyclic iterator is depth-guarded (catchable),
+    class C1:                                # never a native stack overflow
+        var _iter_ = Function(self): return iter(self)
+    discard List(C1())
+catch as e:
+    io.print(e)
+try:                                       # iter() of a non-iterable surfaces a clean error on
+    discard List(iter(42))                    # consumption
+catch as e:
+    io.print(e)

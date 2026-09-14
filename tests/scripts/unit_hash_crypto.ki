@@ -1,0 +1,61 @@
+# hash module SHA-384/512, HMAC, PBKDF2, comparedigest — the Kirito-visible module-surface checks
+# converted from tests/unit/test_hash_crypto.cpp (only the run-a-script-check-a-value part: the file
+# also exercises kirito::hashing internals directly in C++ — findAlgo/hmacRaw/pbkdf2Raw and two
+# randomized fuzz loops over them — which have no Kirito-script equivalent and stay in the C++ TU).
+# All values are RFC known-answer vectors, fully deterministic. Runs identically with `ki` and
+# `ki --no-inline`.
+var io = import("io")
+var h = import("hash")
+
+io.print(h.sha512("abc"))
+io.print(h.sha384("abc"))
+io.print(h.hmac("Jefe", "what do ya want for nothing?"))
+io.print(h.hmac("Jefe", "what do ya want for nothing?", "sha512"))
+# pbkdf2 returns Bytes; .hex() gives the hex form.
+io.print(h.pbkdf2("password", "salt", 4096, 20, "sha1").hex())
+# keyword args work uniformly.
+io.print(h.pbkdf2(password="password", salt="salt", iterations=1, dklen=20, algo="sha1").hex())
+# String and Bytes inputs agree (Kirito Strings are byte-transparent).
+io.print(h.sha512("abc") == h.sha512(Bytes([97, 98, 99])))
+
+# ---- comparedigest ----
+io.print(h.comparedigest("abc", "abc"))
+io.print(h.comparedigest("abc", "abd"))
+io.print(h.comparedigest("abc", "abcd"))
+io.print(h.comparedigest("", ""))
+io.print(h.comparedigest(Bytes([1, 2, 3]), Bytes([1, 2, 3])))
+io.print(h.comparedigest(Bytes([1, 2, 3]), Bytes([1, 2, 4])))
+
+# ---- adversarial / bad input ----
+try:
+    discard h.hmac("k", "m", "sha3")            # unknown algo
+catch as e:
+    io.print(e)
+try:
+    discard h.pbkdf2("p", "s", 0)                # iterations < 1
+catch as e:
+    io.print(e)
+try:
+    discard h.pbkdf2("p", "s", -5)               # negative iterations
+catch as e:
+    io.print(e)
+try:
+    discard h.pbkdf2("p", "s", 1, 0)             # dklen < 1
+catch as e:
+    io.print(e)
+try:
+    discard h.pbkdf2("p", "s", 1, 2000000)       # dklen too large
+catch as e:
+    io.print(e)
+try:
+    discard h.pbkdf2("p", "s", 1, 20, "sha3")    # unknown algo
+catch as e:
+    io.print(e)
+try:
+    discard h.hmac(123, "m")                     # non String/Bytes key
+catch as e:
+    io.print(e)
+try:
+    discard h.comparedigest(1, 2)                # non String/Bytes
+catch as e:
+    io.print(e)

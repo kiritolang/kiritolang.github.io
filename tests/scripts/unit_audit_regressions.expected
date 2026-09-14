@@ -1,0 +1,48 @@
+55
+5
+<Match span=(2, 2)>
+<Match span=(2, 2)>
+<Match span=(2, 2)>
+Tensor too large
+eye: n must be non-negative
+[0.0, 0.0]
+[1.0, 1.0]
+zero-size reduction: cannot reduce over an empty axis
+triu expects a Tensor
+tril expects a Tensor
+diag expects a Tensor
+insert expects (index, item)
+insert expects an Integer
+remove expects a value
+pop expects a key
+discard expects a value
+sample expects (population, k)
+uniform expects (a, b)
+randint expects (a, b)
+[1, 2, 3]
+[0.0, 1.0, 2.0, 3.0]
+[1.0, 2.0, 3.0]
+[0.0, 1.0, 2.0]
+0.0
+4.0
+arange() got an unexpected keyword argument 'bogus'
+None
+None
+False
+False
+True
+BytesIO too large
+5
+202
+3.14
+format precision too large
+base class must be a class, got String
+base class must be a class, got Integer
+Tensor: too many dimensions (max 64)
+median of an empty axis
+einsum expects a Tensor
+0
+1
+randrange: range too large to sample
+corrupt serialized data: bad count
+corrupt serialized data: bad count

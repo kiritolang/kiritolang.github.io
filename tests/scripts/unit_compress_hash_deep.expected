@@ -1,0 +1,51 @@
+True
+True
+True
+True
+True
+True
+gzip: unsupported compression method
+gzip: unsupported compression method
+gzip: bad magic (not a gzip stream)
+gzip: truncated header/stream
+gzip: stream too short
+gzip: trailing data after the last member
+gzip: CRC-32 mismatch (corrupt stream)
+gzip: stream too short
+True
+gzip: truncated stream
+Integer
+Integer
+Integer
+Integer
+Integer
+Integer
+True
+True
+777
+True
+unhashable type 'List'
+unhashable type 'Dict'
+unhashable type 'Set'
+ok
+ok
+da39a3ee5e6b4b0d3255bfef95601890afd80709
+a9993e364706816aba3e25717850c26c9cd0d89d
+ok
+True
+True
+d41d8cd98f00b204e9800998ecf8427e
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+True
+True
+True
+True
+ok
+ok
+ok
+ok
+String
+Bytes
+Bytes
+True
+True

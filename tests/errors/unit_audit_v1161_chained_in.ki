@@ -1,0 +1,2 @@
+var xs = [1]
+discard 1 in xs in xs

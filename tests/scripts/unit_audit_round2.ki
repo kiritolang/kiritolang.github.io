@@ -1,0 +1,219 @@
+# Regression tests for the post-documentation audit round (converted from tests/unit/test_audit_round2.cpp):
+# the numeric `.compare` method, exact Float `==`, reflected `*` repetition, isinstance/typed-catch over
+# built-in types, `inspect(String)`, container repr (quoted strings), round-trippable json floats, the
+# float display inf-edge, and the Kirito-authored stdlib fixes (functools.reduce/itertools.accumulate
+# None handling, statistics.mode on empty, enum order, base64/xml leniency). One behaviour per line. All
+# error cases are runtime, so they are folded inline via try/catch. Runs identically with `ki` and
+# `ki --no-inline`.
+var io = import("io")
+var math = import("math")
+var json = import("json")
+var enum = import("enum")
+
+# --- numeric .compare(other, rel_tol=1e-9, abs_tol=0.0) -> Bool ------------------------------
+io.print((0.1 + 0.2).compare(0.3))         # tolerant: close enough
+io.print(0.1 + 0.2 == 0.3)                 # exact: not bit-equal
+io.print((5).compare(5))                   # Integer receiver
+io.print((5).compare(6))
+io.print((5).compare(5.0))                 # cross-type
+io.print((1.0).compare(1.0000001, abs_tol = 0.001))   # abs_tol kwarg
+io.print((1.0).compare(1.5, abs_tol = 0.001))
+io.print((1000000.0).compare(1000000.1, rel_tol = 1e-3))  # rel_tol kwarg
+io.print((1.0).compare(other = 1.0))       # first arg by keyword
+io.print(inspect(1.0).find("compare(other, rel_tol = 1e-09, abs_tol = 0.0) -> Bool") >= 0)
+io.print(inspect(5).find("compare(") >= 0)
+try:
+    discard (1.0).compare("x")             # non-numeric other
+catch as e:
+    io.print(e)
+
+# --- exact Float == agrees with ordering and hashing ----------------------------------------
+io.print(1.0 == 1.0 and 2.5 == 2.5)
+io.print(0.0 == -0.0)
+var selfEqualZero = Function():
+    var n = 0.0 / 1.0 * 0.0
+    return n == n                           # 0.0 is its own equal
+io.print(selfEqualZero())
+io.print(not (0.1 + 0.2 == 0.3) and (0.1 + 0.2 > 0.3))   # trichotomy holds
+io.print(len({0.1 + 0.2, 0.3}))            # distinct-but-close floats are distinct Set keys now
+
+# --- Float display: clean %.15g, but the DBL_MAX inf-edge round-trips -------------------------
+io.print(String(0.1 + 0.2))                # display stays clean
+io.print(String(2.0))
+var dblMaxRoundTrip = Function():
+    var b = 1.7976931348623157e308
+    return Float(String(b)) == b            # no overflow to inf
+io.print(dblMaxRoundTrip())
+var dblMaxString = Function():
+    var b = 1.7976931348623157e308
+    return String(b) == "1.7976931348623157e+308"
+io.print(dblMaxString())
+
+# --- reflected `*` repetition: Integer on the left of a sequence -----------------------------
+io.print(3 * "ab")
+io.print("ab" * 3)                          # both orders
+io.print((3 * Bytes([65, 66])).decode())
+io.print(3 * [1, 2])
+io.print(0 * "ab")
+
+# --- isinstance over built-in type constructors (not just String names) ----------------------
+io.print(isinstance(1, Integer))
+io.print(isinstance(1.5, Float))
+io.print(isinstance(1, Float))
+io.print(isinstance("x", String))
+io.print(isinstance(True, Bool))
+io.print(isinstance([1], List))
+io.print(isinstance({1}, Set))
+io.print(isinstance({"a": 1}, Dict))
+io.print(isinstance(Bytes([1]), Bytes))
+io.print(isinstance(1, "Integer"))          # String name still works
+try:
+    discard isinstance(1, 42)               # 42 is not a type
+catch as e:
+    io.print(e)
+
+# --- typed catch over built-in types ---------------------------------------------------------
+var catchString = Function():
+    var got = ""
+    try:
+        throw "boom"
+    catch String as e:
+        got = "str:" + e
+    return got
+io.print(catchString())
+var catchInteger = Function():
+    var got = 0
+    try:
+        throw 42
+    catch Integer as e:
+        got = e
+    return got
+io.print(catchInteger())
+try:                                         # a non-matching typed catch does not swallow the throw
+    try:
+        throw 42
+    catch String as e:
+        pass
+catch as e:
+    io.print(e)
+
+# --- inspect(String) lists the String methods ------------------------------------------------
+io.print(inspect("x").find("upper() -> String") >= 0)
+io.print(inspect("x").find("split(sep, maxsplit) -> List") >= 0)
+io.print(inspect("x").find("String value:") >= 0)
+
+# --- container repr: strings quoted when nested ----------------------------------------------
+io.print(String(["a", "b"]))
+io.print(String([""]))                      # empty string distinguishable from []
+io.print(String([]))
+io.print(String({"k": "v"}))
+io.print(String([1, "two", 3.0, True, None]))
+io.print(String([["nested"]]))
+io.print(String(["it's"]))                  # quote selection
+io.print(String(["tab\there"]))             # escapes
+io.print(String("hello"))                   # bare string still unquoted
+
+# --- json: floats round-trip exactly now that == is exact ------------------------------------
+io.print(json.loads(json.dumps(0.1 + 0.2)) == 0.1 + 0.2)
+io.print(json.dumps(0.1))                   # still clean for ordinary values
+io.print(json.loads(json.dumps([1.5, 2.25, 0.1 + 0.2]))[2] == 0.1 + 0.2)
+
+# --- tensor: exact whole == but NaN never equal; sqrt/// /% of bad input throw ---------------
+io.print(import("tensor").Tensor([1, 2]) == import("tensor").Tensor([1, 2]))
+try:                                         # sqrt of a negative throws a clear domain error
+    discard import("tensor").Tensor([-1.0]).sqrt()
+catch as e:
+    io.print(e)
+var tensorNanNeverEqual = Function():        # NaN-never-equal whole-== check
+    var n = math.nan
+    return import("tensor").Tensor([n]) == import("tensor").Tensor([n])
+io.print(tensorNanNeverEqual())
+try:
+    discard import("tensor").Tensor([1.0, 2.0]) // 0
+catch as e:
+    io.print(e)
+try:
+    discard import("tensor").Tensor([1.0, 2.0]) % 0
+catch as e:
+    io.print(e)
+
+# --- bytes: ascii encode error reports the code point in hex (U+00E9, not decimal) -----------
+var asciiEncodeHex = Function():
+    var msg = ""
+    try:
+        discard "café".encode("ascii")
+    catch as e:
+        msg = e
+    return msg.find("U+00E9") >= 0
+io.print(asciiEncodeHex())
+
+# --- math.perm: 1-arg form perm(n) == n! -----------------------------------------------------
+io.print(math.perm(5))
+io.print(math.perm(5, 2))
+io.print(math.perm(n = 5))
+
+# --- random.seed accepts the keyword `a` (matches inspect) -----------------------------------
+var randomSeedKwarg = Function():
+    var rng = import("random").Random()
+    rng.seed(a = 42)
+    var x = rng.randint(0, 1000000)
+    rng.seed(a = 42)
+    return x == rng.randint(0, 1000000)
+io.print(randomSeedKwarg())
+
+# --- functools.reduce / itertools.accumulate: None is a value, not "empty" -------------------
+io.print(import("functools").reduce(Function(a, b): return None, [1, 2, 3]))
+io.print(import("functools").reduce(Function(a, b): return a + b, [1, 2, 3, 4]))
+try:
+    discard import("functools").reduce(Function(a, b): return a + b, [])
+catch as e:
+    io.print(e)
+io.print(import("itertools").accumulate([1, 2, 3]))
+
+# --- statistics.mode on empty throws ---------------------------------------------------------
+try:
+    discard import("statistics").mode([])
+catch as e:
+    io.print(e)
+io.print(import("statistics").mode([1, 2, 2, 3]))
+
+# --- enum preserves definition order ---------------------------------------------------------
+io.print(enum.Enum(["RED", "GREEN", "BLUE"]).names())
+io.print(enum.Enum(["RED", "GREEN", "BLUE"]).values())
+
+# --- base64.decode reports a base64 error (not a raw dict "key not found") --------------------
+var base64ErrorMsg = Function():
+    var msg = ""
+    try:
+        discard import("base64").decode("###")
+    catch as e:
+        msg = e
+    return msg.find("base64") >= 0
+io.print(base64ErrorMsg())
+
+# --- xml: malformed numeric entities are tolerated verbatim (lenient); valid ones decode ------
+io.print(import("xml").fromstring("<a>&#xZZ;</a>").text)
+io.print(import("xml").fromstring("<a>&#;</a>").text)
+io.print(import("xml").fromstring("<a>&#999999999;</a>").text)
+io.print(import("xml").fromstring("<a>&#65;&#x42;</a>").text)
+
+# --- ALL native numeric types: `==` is EXACT, tolerance only via `.compare` -------------------
+# Complex (scalar)
+io.print(import("complex").of(1.0, 0) == import("complex").of(1.0000000001, 0))
+io.print(import("complex").of(1.0, 0).compare(import("complex").of(1.0000000001, 0)))
+io.print(import("complex").of(1, 2) == import("complex").of(1, 2))
+io.print(import("complex").of(0, 1).compare(import("complex").of(0, 1.0000000001), abs_tol = 1e-6))
+io.print(inspect(import("complex").of(1.0, 1.0)).find("compare(") >= 0)
+# real Matrix
+io.print(import("matrix").Matrix([[1.0]]) == import("matrix").Matrix([[1.0000000001]]))
+io.print(import("matrix").Matrix([[1.0]]).compare(import("matrix").Matrix([[1.0000000001]])))
+io.print(import("matrix").identity(2) == import("matrix").identity(2))
+io.print(inspect(import("matrix").identity(2)).find("compare(") >= 0)
+# Tensor (whole ==)
+io.print(import("tensor").Tensor([1.0]) == import("tensor").Tensor([1.0000000001]))
+io.print(import("tensor").Tensor([1.0]).compare(import("tensor").Tensor([1.0000000001])))
+io.print(import("tensor").Tensor([1, 2, 3]) == import("tensor").Tensor([1, 2, 3]))
+io.print(inspect(import("tensor").eye(2)).find("compare(") >= 0)
+# ComplexMatrix
+io.print(import("complex").Matrix([[import("complex").of(1,0)]]) == import("complex").Matrix([[import("complex").of(1.0000000001,0)]]))
+io.print(import("complex").Matrix([[import("complex").of(1,0)]]).compare(import("complex").Matrix([[import("complex").of(1.0000000001,0)]])))

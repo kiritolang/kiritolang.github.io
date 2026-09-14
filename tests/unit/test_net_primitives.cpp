@@ -94,37 +94,8 @@ int main() {
         "srv.close()\ncli.close()\nconn.close()\n"
         "first + \"|\" + String(len(eof))")) == "bye|0");
 
-    // --- socket options (string-keyed) ---
-    CHECK(evalStr(vm, prog(
-        "var s = net.tcpsocket()\n"
-        "s.setsockopt(\"reuseaddr\", 1)\n"
-        "var ra = s.getsockopt(\"reuseaddr\")\n"
-        "var ty = s.getsockopt(\"type\")\n"          // SOCK_STREAM
-        "var er = s.getsockopt(\"error\")\n"         // 0 on a fresh socket
-        "s.close()\n"
-        "String(ra != 0) + \"|\" + String(ty) + \"|\" + String(er)")) ==
-        "True|" + std::to_string(SOCK_STREAM) + "|0");
-
-    // named boolean conveniences
-    CHECK(evalStr(vm, prog(
-        "var s = net.tcpsocket()\n"
-        "s.setreuseaddr(True)\ns.setnodelay(True)\ns.setkeepalive(True)\n"
-        "var nd = s.getsockopt(\"nodelay\")\ns.close()\n"
-        "String(nd != 0)")) == "True");
-    // broadcast toggles on a UDP socket
-    CHECK(evalStr(vm, prog(
-        "var s = net.udpsocket()\ns.setbroadcast(True)\n"
-        "var b = s.getsockopt(\"broadcast\")\ns.close()\nString(b != 0)")) == "True");
-
-    // --- family / type introspection attributes ---
-    CHECK(evalStr(vm, prog("var s = net.udpsocket()\nvar r = s.family + \"/\" + s.type\ns.close()\nr")) ==
-          "inet/dgram");
-    CHECK(evalStr(vm, prog("var s = net.tcpsocket()\nvar r = s.family + \"/\" + s.type\ns.close()\nr")) ==
-          "inet/stream");
-    CHECK(evalStr(vm, prog("net.Socket().type")) == "stream");   // Socket() is the TCP/IPv4 default
-
-    // --- fileno: the raw fd, non-destructive (unlike detach) ---
-    CHECK(evalStr(vm, prog("var s = net.tcpsocket()\nvar f = s.fileno()\nvar ok = f >= 0 and f == s.fileno()\ns.close()\nString(ok)")) == "True");
+    // NOTE: socket options (string-keyed + named booleans), family/type introspection, and fileno()
+    // need no live network (no bind/connect/send/recv) — converted to tests/scripts/unit_net_primitives.ki.
 
     // --- setblocking(False): a recv with no data pending fails fast (would-block) instead of hanging ---
     CHECK(evalStr(vm, prog(
@@ -160,32 +131,10 @@ int main() {
         "    res = \"skip\"\n"
         "String(res == \"v6/inet6\" or res == \"skip\")")) == "True");
 
-    // --- adversarial / bad input: every one must throw cleanly (never crash / hang). ---
-    // unknown family / type
-    CHECK_THROWS(vm.runSource(prog("net.socket(\"bogus\", \"stream\")")));
-    CHECK_THROWS(vm.runSource(prog("net.socket(\"inet\", \"raw\")")));
-    CHECK_THROWS(vm.runSource(prog("net.udpsocket(\"ipv7\")")));
-    // unknown socket option (set + get)
-    CHECK_THROWS(vm.runSource(prog("net.tcpsocket().setsockopt(\"nope\", 1)")));
-    CHECK_THROWS(vm.runSource(prog("net.tcpsocket().getsockopt(\"nope\")")));
-    // port out of range on connect / bind / sendto
-    CHECK_THROWS(vm.runSource(prog("net.tcpsocket().connect(\"127.0.0.1\", 99999)")));
-    CHECK_THROWS(vm.runSource(prog("net.tcpsocket().bind(\"127.0.0.1\", -1)")));
-    CHECK_THROWS(vm.runSource(prog("net.udpsocket().sendto(\"x\", \"127.0.0.1\", 70000)")));
-    // negative recv/recvfrom size
-    CHECK_THROWS(vm.runSource(prog("net.udpsocket().recvfrom(-1)")));
-    // bad shutdown direction
-    CHECK_THROWS(vm.runSource(prog("net.tcpsocket().shutdown(\"sideways\")")));
-    // sendto expects String/Bytes, not an Integer
-    CHECK_THROWS(vm.runSource(prog("net.udpsocket().sendto(42, \"127.0.0.1\", 80)")));
-    // operations on a closed socket throw "… : socket is closed", not a raw errno / stale-fd read
-    CHECK_THROWS(vm.runSource(prog("var s = net.tcpsocket()\ns.close()\ns.recv(4)")));
-    CHECK_THROWS(vm.runSource(prog("var s = net.tcpsocket()\ns.close()\ndiscard s.send(\"x\")")));
-    CHECK_THROWS(vm.runSource(prog("var s = net.tcpsocket()\ns.close()\ns.getsockname()")));
-    // a detached socket has relinquished its fd -> also closed
-    CHECK_THROWS(vm.runSource(prog("var s = net.tcpsocket()\ndiscard s.detach()\ns.recv(4)")));
-    // getpeername on an unconnected socket throws (ENOTCONN)
-    CHECK_THROWS(vm.runSource(prog("net.tcpsocket().getpeername()")));
+    // NOTE: the adversarial bad-input block (unknown family/type/option, out-of-range port, negative
+    // size, bad shutdown direction, wrong sendto type, closed/detached-socket ops, unconnected
+    // getpeername) never reaches a live socket connection or DNS resolution — converted to
+    // tests/scripts/unit_net_primitives.ki.
 
     // --- fuzz: 400 randomized datagrams (arbitrary bytes incl NUL/0xFF/high) round-trip byte-exact. ---
     CHECK(evalStr(vm, prog(

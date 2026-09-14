@@ -1,0 +1,89 @@
+# inspect() introspection and the core builtins all/any/reversed/divmod/isinstance/ord/chr/bin/oct/
+# hex/pow (converted from tests/unit/test_introspect.cpp). Substring checks (the C++ used
+# `.find(...) != npos`) become `.find(SUB) >= 0`; "not present" becomes `.find(SUB) == -1`. Runs
+# identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# --- new builtins ---
+io.print(String(all([1, 2, 3])))
+io.print(String(all([1, 0])))
+io.print(String(all([])))
+io.print(String(any([0, 0, 1])))
+io.print(String(any([])))
+io.print(String(reversed([1, 2, 3])))
+io.print(String(divmod(17, 5)))
+io.print(String(divmod(-7, 3)))       # floor semantics
+io.print(ord("A"))
+io.print(ord("é"))                    # é (literal UTF-8)
+io.print(chr(65))
+io.print(chr(233))
+io.print(ord(chr(19990)))             # round-trip a CJK code point
+io.print(bin(10))
+io.print(bin(-10))
+io.print(oct(64))
+io.print(hex(255))
+io.print(hex(0))
+io.print(pow(2, 10))
+io.print(pow(3, 4, 5))                # 81 mod 5
+io.print(String(pow(2, -1)))          # 2-arg falls back to numeric pow
+
+# --- isinstance (kind names + inheritance) ---
+io.print(String(isinstance(5, "Integer")))
+io.print(String(isinstance(5, "String")))
+io.print(String(isinstance([1], "List")))
+class A:
+    var f = Function(self):
+        return 1
+class B(A):
+    var g = Function(self):
+        return 2
+io.print(String(isinstance(B(), "A")))
+io.print(String(isinstance(A(), A)))  # passing the class value itself works too
+
+# --- inspect: class shows methods + annotations, hides privates ---
+class Pt:
+    var _init_ = Function(self, x : Integer, y : Integer):
+        self.x = x
+        self._hidden = 0
+    var dist = Function(self) -> Float:
+        return 0.0
+io.print(inspect(Pt).find("class Pt:") >= 0)
+io.print(inspect(Pt).find("dist(self) -> Float") >= 0)
+io.print(inspect(Pt).find("_init_(self, x: Integer, y: Integer)") >= 0)
+io.print(inspect(Pt).find("_hidden") == -1)   # private attr not shown
+
+# --- inspect: function signature ---
+var sigfn = Function(a : Integer, b = 1) -> String:
+    return "x"
+io.print(inspect(sigfn).find("a: Integer") >= 0)
+io.print(inspect(sigfn).find("b = ...") >= 0)
+io.print(inspect(sigfn).find("-> String") >= 0)
+
+# --- inspect: module lists members ---
+io.print(inspect(import("math")).find("module math:") >= 0)
+io.print(inspect(import("math")).find("sqrt") >= 0)
+
+# --- inspect: native function with a declared signature (params, types, defaults, return) ---
+io.print(inspect(round).find("round(x: Number") >= 0)
+io.print(inspect(round).find("ndigits = None") >= 0)
+io.print(inspect(import("io").open).find("open(path: String") >= 0)
+io.print(inspect(import("io").open).find("mode: String = \"r\"") >= 0)
+io.print(inspect(import("io").open).find("-> File") >= 0)
+# a module's signatured function shows its signature in the module listing too
+io.print(inspect(import("io")).find("open(path: String") >= 0)
+
+# --- inspect: builtins show their parameter NAMES; truly variadic builtins show `...` ---
+io.print(inspect(Integer))            # signatured builtins name their parameters
+io.print(inspect(Float))
+io.print(inspect(String))
+io.print(inspect(Bool))
+io.print(inspect(List))
+io.print(inspect(len).find("len(x) -> Integer") >= 0)
+io.print(inspect(sorted).find("key = None") >= 0)
+io.print(inspect(sorted).find("reverse: Bool = False") >= 0)
+# variadic builtins (no fixed parameter list) advertise themselves with `...`
+io.print(inspect(min))
+io.print(inspect(max))
+io.print(inspect(zip))
+io.print(inspect(range))
+io.print(inspect(import("io").print))  # io.print/write etc. are keyword-aware variadic -> still `...`

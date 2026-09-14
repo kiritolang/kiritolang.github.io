@@ -319,5 +319,5 @@ int main(int argc, char** argv) {
     }
 
     fs::remove_all(g_tmpRoot);
-    return 0;
+    return RUN_TESTS();   // propagate CHECK failures as a nonzero exit (else ctest silently passes)
 }

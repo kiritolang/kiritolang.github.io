@@ -1,0 +1,35 @@
+None
+True
+False
+42
+-1000000
+3.14159265358979
+hello world
+3
+[1, 2, 3]
+[[1, [2, 3]], 4]
+True
+2
+True
+Bytes
+True
+[10, 20, 30]
+[10, 20, 30]
+[1, 2]
+True
+True
+Kirito:30:1
+21:42
+v:3
+True
+bad dump header
+truncated dump data
+truncated dump data
+cannot dump a native/built-in function 'len' (only Kirito-defined functions are serializable; a module reconnects by import)
+could not open file for loading
+81
+105
+55
+25
+42
+True

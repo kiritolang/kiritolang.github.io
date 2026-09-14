@@ -1,0 +1,215 @@
+# Regression tests for the audit pass (converted from tests/unit/test_audit_regressions.cpp): each
+# case is a previously-found crash (SIGSEGV/SIGABRT), undefined behaviour, silent-wrong-result, or
+# missing-kwarg bug that must now throw a clean, catchable error (or compute the right value). All
+# checks here are runtime, so they are folded inline via try/catch. The five "deep nesting must THROW
+# AT PARSE TIME" cases (index/add-chain/power-chain/member-chain/block-pyramid) are compile-time and
+# uncatchable from inside a script: four of them (index, add, power, member chains -- O(N) source size)
+# live in tests/errors/unit_audit_regressions_deep_{index,add,pow,member}.{ki,experr}. The block-pyramid
+# case is KEPT IN C++ (see test_audit_regressions.cpp) because it requires O(N^2) indentation whitespace
+# to reach the same parse-depth cap -- a multi-MB fixture the source comment explicitly avoids
+# committing; it is generated in-memory there instead. The net HTTP content-decoding CRC/Adler-32
+# integrity-trailer checks are also KEPT IN C++: they exercise net::decodeBody / gzipfmt::compress /
+# deflate::zlibCompress directly, none of which are reachable from Kirito script (only real HTTP
+# request/response handling invokes decodeBody, keyed off a Content-Encoding header). Runs identically
+# with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# a non-pathological chain still parses and runs fine (the parse-depth guard does not over-trigger)
+io.print(1+2+3+4+5+6+7+8+9+10)
+var a = [[1, 2], [3, 4]]
+io.print(a[0][1] + a[1][0])
+
+# regex: a start pos past the end must not read out of bounds (zero-width \b assertion) -- no crash
+io.print(import("regex").compile(r"\b").search("ab", 1000000))
+io.print(import("regex").compile(r"\b").match("ab", 1000000))
+io.print(import("regex").compile(r"\b").fullmatch("ab", 1000000))
+
+# tensor: size-overflow and empty-axis and bad-downcast crashes now throw
+try:
+    discard import("tensor").eye(4294967296)      # n*n overflowed -> OOB write
+catch as e:
+    io.print(e)
+try:
+    discard import("tensor").eye(-1)
+catch as e:
+    io.print(e)
+io.print(import("tensor").zeros([2, 0]).sum(1))    # empty-axis sum/prod -> identity (0/1), no OOB
+io.print(import("tensor").ones([2, 0]).prod(1))    # (matches whole-tensor + NumPy)
+try:
+    discard import("tensor").zeros([2, 0]).min(1)  # min/max keep throwing -- no identity to seed
+catch as e:
+    io.print(e)
+try:
+    discard import("tensor").triu(7)               # was SIGABRT (bad downcast)
+catch as e:
+    io.print(e)
+try:
+    discard import("tensor").tril(7)
+catch as e:
+    io.print(e)
+try:
+    var m = import("matrix")
+    discard import("tensor").diag(m.identity(3))
+catch as e:
+    io.print(e)
+
+# native-method arity: under-supplied required args throw cleanly (no OOB span read / UB)
+try:
+    discard [1, 2, 3].insert()                     # was OOB read + corruption
+catch as e:
+    io.print(e)
+try:
+    discard [1, 2, 3].insert("x", 9)                # was static_cast<IntVal> UB
+catch as e:
+    io.print(e)
+try:
+    discard [1, 2, 3].remove()
+catch as e:
+    io.print(e)
+try:
+    discard {"a": 1}.pop()
+catch as e:
+    io.print(e)
+try:
+    discard {1, 2}.discard()
+catch as e:
+    io.print(e)
+try:
+    var r = import("random").Random(1)
+    discard r.sample([1, 2, 3])                     # was silent wrong result
+catch as e:
+    io.print(e)
+try:
+    var r = import("random").Random(1)
+    discard r.uniform(1)
+catch as e:
+    io.print(e)
+try:
+    var r = import("random").Random(1)
+    discard r.randint(1)
+catch as e:
+    io.print(e)
+var insertOk = Function():                          # insert with the right arity + types still works
+    var xs = [1, 3]
+    xs.insert(1, 2)
+    return xs
+io.print(insertOk())
+
+# keyword arguments now accepted by the arity-overloaded tensor.arange / matrix.Matrix
+io.print(import("tensor").arange(stop = 4).tolist())
+io.print(import("tensor").arange(start = 1, stop = 4).tolist())
+io.print(import("tensor").arange(3).tolist())        # positional overload intact
+var matrixKwargs = Function():
+    var m = import("matrix").Matrix(rows = 2, cols = 2)
+    return String(m[0, 0])
+io.print(matrixKwargs())
+var matrixNested = Function():                        # nested-list overload intact
+    var m = import("matrix").Matrix([[1, 2], [3, 4]])
+    return String(m[1, 1])
+io.print(matrixNested())
+try:
+    discard import("tensor").arange(stop = 4, bogus = 1)
+catch as e:
+    io.print(e)
+
+# semver: a malformed range satisfies nothing -- never leaks the Integer()-conversion error
+io.print(import("semver").maxsatisfying(["1.0.0"], "latest"))
+io.print(import("semver").minsatisfying(["1.0.0"], "latest"))
+io.print(String(import("semver").satisfies("1.0.0", "latest")))
+io.print(String(import("semver").validrange("latest")))
+io.print(String(import("semver").satisfies("1.2.3", "^1.0.0")))  # valid range still works
+
+# I/O size guards: a huge read/seek must throw, never std::terminate or OOM
+var bigSeekWrite = Function():
+    var io2 = import("io")
+    var b = io2.BytesIO("ab")
+    discard b.seek(9000000000000000000)
+    return b.write("Z")
+try:
+    discard bigSeekWrite()
+catch as e:
+    io.print(e)
+var bigRead = Function():                             # capped to the file's size, not pre-allocated
+    var io2 = import("io")
+    var f = io2.open("/tmp/kaudit_reg.txt", "w")
+    discard f.write("hello")
+    f.close()
+    var g = io2.open("/tmp/kaudit_reg.txt", "r")
+    var s = g.read(9000000000000000000)
+    g.close()
+    return len(s)
+io.print(bigRead())
+
+# format: high precision must not be truncated to a fixed buffer; absurd precision is bounded
+io.print(len(format(3.14159, ".200f")))               # "3." + 200 digits, was capped at 63
+io.print(format(3.14159, ".2f"))
+try:
+    discard format(1.0, ".3000000000f")                # precision bounded like width
+catch as e:
+    io.print(e)
+
+# round-2 re-audit crash regressions (each was a SIGSEGV/SIGABRT; must now throw cleanly)
+var nonClassBase1 = Function():                        # a non-class base was an unchecked
+    var b = "x"                                          # static_cast<ClassValue&> -> SIGSEGV
+    class C(b):
+        var z = 1
+    discard C()
+try:
+    nonClassBase1()
+catch as e:
+    io.print(e)
+var nonClassBase2 = Function():
+    class C(5):
+        var z = 1
+    discard C()
+try:
+    nonClassBase2()
+catch as e:
+    io.print(e)
+var deepNestedTensor = Function():                      # deeply-nested list to Tensor() recursed per
+    var x = [1.0]                                         # level -> stack overflow; now bounded at 64 dims
+    var i = 0
+    while i < 5000:
+        x = [x]
+        i = i + 1
+    discard import("tensor").Tensor(x)
+try:
+    deepNestedTensor()
+catch as e:
+    io.print(e)
+try:
+    discard import("tensor").zeros([1, 0]).median(1)      # median over a 0-length axis read
+catch as e:                                                 # v[SIZE_MAX] -> SIGSEGV
+    io.print(e)
+try:
+    discard import("tensor").einsum("i->", 42)             # einsum on a non-tensor operand was an
+catch as e:                                                 # unchecked downcast (UB)
+    io.print(e)
+# switch on a float matched by EXACT value (not a 6-digit string), agreeing with ==
+var switchFloatExact = Function(x):
+    switch x:
+        case 3.141593:
+            return 1
+        default:
+            return 0
+io.print(switchFloatExact(3.14159265358979))
+var switchFloatNegZero = Function(x):
+    switch x:
+        case 0.0:
+            return 1
+        default:
+            return 0
+io.print(switchFloatNegZero(-0.0))
+try:                                                        # randrange over a span wider than int64
+    var r = import("random").Random(1)                        # throws instead of an out-of-range value
+    discard r.randrange(-5000000000000000000, 5000000000000000000, 1)
+catch as e:
+    io.print(e)
+try:                                                         # serialize.loads with a crafted
+    discard import("serialize").loads("KSER1 1 D 2000000000 0")  # overflowing/negative count throws
+catch as e:                                                  # (was signed-overflow UB)
+    io.print(e)
+try:
+    discard import("serialize").loads("KSER1 1 L -3 0")
+catch as e:
+    io.print(e)

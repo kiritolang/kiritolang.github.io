@@ -1,0 +1,323 @@
+# Adversarial / edge-case probing of the EXISTING libraries (converted from
+# tests/unit/test_hostile_libs.cpp — the pure run-a-script-check-a-value cases). Every probe must
+# either produce a defined result or throw a clean, catchable error — never crash or hang. Each
+# "survived" line below means the scenario ran to completion OR threw a clean catchable error (both
+# count as surviving); only an uncatchable crash would break the sequence. Runs identically with
+# `ki` and `ki --no-inline`.
+var io = import("io")
+
+# ---------------- JSON ----------------
+# malformed inputs must throw, not crash
+var badjson = [
+    "{", "}", "[", "]", "[1,", "{\"a\":}", "{:1}", "[1 2]", "tru", "nul",
+    "\"unterminated", "{\"a\":1,}", "[,]", "1.2.3", "{\"a\"\"b\"}", "[[[[[[[[[[",
+    "\\\\\\\\", "\x01\x02\x03", "{\"a\": \"\\uZZZZ\"}", "01234",
+]
+for j in badjson:
+    var jsonprobe = Function():
+        try:
+            discard import("json").parse(j)
+            return "survived"
+        catch as e:
+            return "survived"
+    io.print(jsonprobe())
+# valid JSON still works after all the bad inputs
+io.print(import("json").parse("[1, 2, 3]")[1])
+# deeply nested JSON (stack-bounded)
+var deepjsonprobe = Function():
+    try:
+        discard import("json").parse("[" * 200 + "]" * 200)
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(deepjsonprobe())
+# huge numbers
+var hugenumprobe = Function():
+    try:
+        discard import("json").parse("99999999999999999999999999999")
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(hugenumprobe())
+# stringify of non-serializable throws
+var jsonstringifyprobe = Function():
+    try:
+        discard import("json").stringify(Function(x): return x)
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(jsonstringifyprobe())
+
+# ---------------- Strings ----------------
+# slicing extremes and weird steps never crash
+io.print("hello"[1000:2000])
+io.print("hello"[-1000:1000])
+io.print("hello"[::1])
+io.print(""[0:0])
+var zerostepprobe = Function():
+    try:
+        discard "abc"[0:3:0]  # zero step -> clean error
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(zerostepprobe())
+# out-of-range indexing throws
+var emptyidxprobe = Function():
+    try:
+        discard ""[0]
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(emptyidxprobe())
+var oobidxprobe = Function():
+    try:
+        discard "a"[99]
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(oobidxprobe())
+# huge repetition is bounded by memory but doesn't crash logically
+io.print(len("ab" * 0))
+var negrepeatprobe = Function():
+    try:
+        discard "x" * -5  # negative repeat
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(negrepeatprobe())
+# format with mismatched braces / indices
+var fmttoofewprobe = Function():
+    try:
+        discard "{}".format()  # too few args
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(fmttoofewprobe())
+var fmtoobprobe = Function():
+    try:
+        discard "{5}".format(1)  # index out of range
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(fmtoobprobe())
+var fmtunmatchedprobe = Function():
+    try:
+        discard "{".format(1)  # unmatched brace
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(fmtunmatchedprobe())
+io.print("{} {} {}".format(1, 2, 3))
+# unicode boundaries
+io.print(len("ééé"))  # 3 é's
+io.print("éé"[1])
+# split/join edge cases
+io.print(len("".split(",")))  # empty string -> [""]
+io.print(",".join([]))
+var emptysepprobe = Function():
+    try:
+        discard "a".split("")  # empty separator -> clean error
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(emptysepprobe())
+
+# ---------------- Collections ----------------
+# index / key errors throw
+var emptylistidxprobe = Function():
+    try:
+        discard [][0]
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(emptylistidxprobe())
+var negoobidxprobe = Function():
+    try:
+        discard [1, 2, 3][-100]
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(negoobidxprobe())
+var missingkeyprobe = Function():
+    try:
+        discard {}["missing"]
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(missingkeyprobe())
+var unhashkeyprobe = Function():
+    try:
+        var d = {}
+        d[[1]] = 2  # unhashable key
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(unhashkeyprobe())
+var unhashsetprobe = Function():
+    try:
+        discard {[1], [2]}  # unhashable set element
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(unhashsetprobe())
+# pop from empty
+var poplistprobe = Function():
+    try:
+        discard [].pop()
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(poplistprobe())
+var popdictprobe = Function():
+    try:
+        var d = {}
+        discard d.pop("x")
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(popdictprobe())
+# remove non-existent
+var removemissingprobe = Function():
+    try:
+        var a = [1, 2]
+        a.remove(99)
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(removemissingprobe())
+# huge list operations stay correct
+var bigappend = Function():
+    var a = []
+    for i in range(10000):
+        a.append(i)
+    a.reverse()
+    return a[0]
+io.print(bigappend())
+# self-referential containers: str/len/in don't hang
+var selfrefstrprobe = Function():
+    try:
+        var a = []
+        a.append(a)
+        discard String(a)
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(selfrefstrprobe())
+var selfreflenprobe = Function():
+    try:
+        var a = []
+        a.append(a)
+        discard len(a)
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(selfreflenprobe())
+var selfrefeq = Function():
+    var a = []
+    a.append(a)
+    return a[0] == a
+io.print(selfrefeq())
+
+# ---------------- Serialize / dump ----------------
+var serloadsgarbageprobe = Function():
+    try:
+        discard import("serialize").loads("garbage")
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(serloadsgarbageprobe())
+var serloadsemptyprobe = Function():
+    try:
+        discard import("serialize").loads("")
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(serloadsemptyprobe())
+var dumploadsgarbageprobe = Function():
+    try:
+        discard import("dump").loads("garbage")
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(dumploadsgarbageprobe())
+var dumploadshugecountprobe = Function():
+    try:
+        discard import("dump").loads("KDMP\x01\xff\xff\xff\xff")  # huge count
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(dumploadshugecountprobe())
+# a self-ref structure dumped and reloaded stays self-ref
+var dumpselfref = Function():
+    var d = import("dump")
+    var a = []
+    a.append(a)
+    var r = d.loads(d.dumps(a))
+    return r[0] == r
+io.print(dumpselfref())
+
+# ---------------- Math ----------------
+var sqrtnegprobe = Function():
+    try:
+        discard import("math").sqrt(-1)  # domain error, cleanly caught (no crash)
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(sqrtnegprobe())
+var log0probe = Function():
+    try:
+        discard import("math").log(0)
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(log0probe())
+var factnegprobe = Function():
+    try:
+        discard import("math").factorial(-1)  # clean error
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(factnegprobe())
+var facthugeprobe = Function():
+    try:
+        discard import("math").factorial(100000)  # huge, but bounded
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(facthugeprobe())
+# sqrt(-1) now THROWS a clear math domain error rather than silently returning NaN.
+var sqrtnegfloatthrows = Function():
+    try:
+        discard import("math").sqrt(-1.0)
+        return "no-throw"
+    catch as e:
+        return "threw"
+io.print(sqrtnegfloatthrows())
+
+# ---------------- Random ----------------
+var randintemptyprobe = Function():
+    try:
+        discard import("random").Random(1).randint(10, 1)  # empty range
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(randintemptyprobe())
+var choiceemptyprobe = Function():
+    try:
+        discard import("random").Random(1).choice([])  # empty sequence
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(choiceemptyprobe())
+var sampletoolargeprobe = Function():
+    try:
+        discard import("random").Random(1).sample([1, 2], 5)  # k too large
+        return "survived"
+    catch as e:
+        return "survived"
+io.print(sampletoolargeprobe())
+
+# ---------------- after all the abuse, the VM is still fully functional ----------------
+io.print(1 + 2 * 3)
+io.print(import("json").parse("{\"ok\": true}")["ok"])
+io.print(sorted([3, 1, 2]))

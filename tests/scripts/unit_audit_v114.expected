@@ -1,0 +1,55 @@
+2.0
+1234567.0
+0.1
+42
+3.5
+2.00
+ff
+True
+'N' _str_ recurses too deeply (does _str_ return self or a cycle of objects?)
+deep
+sleep: seconds must be a finite number
+sleep: seconds must be a finite number
+sleep: seconds too large (maximum 1e9)
+42
+7
+json.stringify: indent too large (maximum 100)
+json.stringify: indent too large (maximum 100)
+[
+  1,
+  2
+]
+[1, 2]
+listen: socket is closed
+open: embedded NUL byte in path
+path: embedded NUL byte in path
+path: embedded NUL byte in path
+a/b
+BytesIO too large
+5
+maximum comparison recursion depth exceeded (cyclic structure?)
+maximum comparison recursion depth exceeded (cyclic structure?)
+TrueTrueTrue
+TrueTrue
+5.0,1.0,1,0
+12
+True3.0
+atan: math domain error (atan of ±i)
+True
+Matrix _setstate_: negative dimension
+regex match failed: regex match exceeded its complexity budget (the pattern is too expensive for this input; simplify it or reduce capture groups)
+34
+True
+42
+42
+xy2
+gauss: mu and sigma must be finite numbers
+uniform: a and b must be finite numbers
+expovariate: lambda must be positive and finite
+gauss: sigma must be non-negative
+True
+TrueTrueFalse
+TrueFalseTrueTrue
+1,99,True
+1,True
+1,True

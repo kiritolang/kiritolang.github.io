@@ -1,0 +1,58 @@
+# `time` module: datetime field extraction / iso / format / round-trip on FIXED epochs, plus
+# hostile bad-argument-type checks (converted from tests/unit/test_time.cpp — the deterministic,
+# fixed-input checks only; anything reading the current clock or measuring a real sleep stays in
+# C++, see the trimmed file). Runtime errors are folded into try/catch. Runs identically with
+# `ki` and `ki --no-inline`.
+var io = import("io")
+var t = import("time")
+
+# datetime field extraction from a known UTC timestamp (2021-01-01 00:00:00Z = 1609459200)
+io.print(t.datetime(1609459200).year)
+io.print(t.datetime(1609459200).month)
+io.print(t.datetime(1609459200).day)
+io.print(t.datetime(1609459200).hour)
+io.print(t.datetime(1609459200).iso())
+io.print(t.datetime(1609459200).timestamp)
+
+# a precise mid-day timestamp: 2021-06-15 12:30:45 UTC = 1623760245
+io.print(t.datetime(1623760245).iso())
+io.print(t.datetime(1623760245).hour)
+io.print(t.datetime(1623760245).minute)
+io.print(t.datetime(1623760245).second)
+
+# weekday: 2021-01-01 was a Friday (tm_wday=5)
+io.print(t.datetime(1609459200).weekday)
+
+# strftime formatting
+io.print(t.datetime(1609459200).format("%Y/%m/%d"))
+
+# the epoch itself
+io.print(t.datetime(0).iso())
+
+# round-trip: datetime(ts).timestamp == ts
+io.print(t.datetime(1700000000).timestamp == 1700000000)
+
+# hostile: bad argument types throw
+var errBadTimestamp = Function():
+    try:
+        discard t.datetime("notanumber")
+        return "no-error"
+    catch as e:
+        return e
+io.print(errBadTimestamp())
+
+var errBadSleep = Function():
+    try:
+        discard t.sleep("x")
+        return "no-error"
+    catch as e:
+        return e
+io.print(errBadSleep())
+
+var errBadFormat = Function():
+    try:
+        discard t.datetime(0).format(42)
+        return "no-error"
+    catch as e:
+        return e
+io.print(errBadFormat())

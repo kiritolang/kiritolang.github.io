@@ -1,0 +1,7 @@
+# A04-2/A04-3 (v1.13 audit): same as the negative-int case, but for a Float switch-case label.
+var x = 5
+switch x:
+    case -1.5:
+        pass
+    case -1.5:
+        pass

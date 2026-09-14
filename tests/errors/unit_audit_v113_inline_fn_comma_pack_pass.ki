@@ -1,0 +1,2 @@
+# A02-1 (v1.13 audit): same ambiguous-comma rejection for an inline function whose body is `pass`.
+var t = Function(): pass, 1

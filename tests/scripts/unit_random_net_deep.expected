@@ -1,0 +1,22 @@
+True
+True
+True
+True
+uniform expects (a, b)
+sample expects (population, k)
+randint expects (a, b)
+seed expects a value
+type 'Integer' is not iterable
+type 'Integer' is not iterable
+choice from empty sequence
+choices: k too large
+randrange expects 1 to 3 arguments
+mersenne_twister
+True
+True
+True
+a%20b
+a b
+True
+True
+True

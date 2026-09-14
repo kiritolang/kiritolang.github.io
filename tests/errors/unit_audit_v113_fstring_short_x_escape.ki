@@ -1,0 +1,3 @@
+# A01-3 (v1.13 audit): a short `\xH` escape in an f-string must throw a clean lex error, same as
+# in a plain string literal (shared decoder).
+var s = f"\x4"

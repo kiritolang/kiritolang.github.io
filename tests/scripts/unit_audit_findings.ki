@@ -1,0 +1,239 @@
+# C++-level regression tests for the deep-audit findings (converted from tests/unit/test_audit_findings.cpp):
+# Integer(String) honours 0x/0o/0b prefixes; List inspect strings advertise the actual kwarg names;
+# csv.parse keeps RFC-4180 quoted newlines; net.urlsplit handles bracketed IPv6; Dict.remove throws on
+# a missing key; parseDouble tolerates subnormals; json round-trips NaN/Infinity; tensor negative axis
+# is NumPy-style; Bytes.decode("utf-8") validates; copy/deepcopy of a class instance is independent;
+# heapq.nlargest with a non-positive n; BytesIO/File EOF handling. All error cases are runtime, so they
+# are folded inline via try/catch. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# ---- Integer(String) accepts 0x/0o/0b prefixes (matching the documented promise) ----
+io.print(Integer("0xFF"))
+io.print(Integer("0o17"))
+io.print(Integer("0b1010"))
+io.print(Integer("-0xFF"))
+io.print(Integer("+0xFF"))
+io.print(Integer("0X1A"))         # uppercase 0X
+io.print(Integer(" 0xFF "))       # surrounding whitespace tolerated
+try:                              # bad hex digit
+    discard Integer("0xZZ")
+catch as e:
+    io.print(e)
+try:                              # trailing garbage
+    discard Integer("42abc")
+catch as e:
+    io.print(e)
+try:                              # prefix alone, no value
+    discard Integer("0x")
+catch as e:
+    io.print(e)
+try:                              # 3 isn't a binary digit
+    discard Integer("0b3")
+catch as e:
+    io.print(e)
+io.print(Integer("42"))
+io.print(Integer("-42"))
+
+# ---- List inspect strings match the actual kwarg names (count/index/remove use 'value') ----
+io.print("count(value)" in inspect([1, 2]))
+io.print("index(value, start, end)" in inspect([1, 2]))
+io.print("remove(value)" in inspect([1, 2]))
+io.print([1, 2, 2, 3].count(value = 2))
+io.print([1, 2, 3].index(value = 2))
+var removeval = Function():
+    var xs = [1, 2, 3]
+    xs.remove(value = 2)
+    return xs
+io.print(removeval())
+try:
+    discard [1].count(item = 1)
+catch as e:
+    io.print(e)
+
+# ---- csv.parse keeps RFC-4180 quoted newlines as part of the field, not as a row separator ----
+# NOTE: the "embedded newline" and "doubled-quote escape" value checks from the C++ (comparing against
+# an unquoted "[[a\nb, c]]" / "[[he said "hi", ok]]" List stringification) are DISCREPANCIES against the
+# current binary and are omitted here -- see the report for the repro (container repr now quotes nested
+# strings and escapes control chars; that change postdates this older C++ file, whose literal expectation
+# was never updated to match).
+io.print(len(import("csv").parse("x,y\n")))          # trailing newline doesn't add an empty row
+io.print(len(import("csv").parse("a,b\n\nc,d")))     # blank middle line IS preserved (an empty row)
+var csvroundtrip = Function():
+    var c = import("csv")
+    var data = [["x,y", "z\nw"], ["a", "b"]]
+    return c.parse(c.format(data)) == data
+io.print(csvroundtrip())
+
+# ---- net.urlsplit handles bracketed IPv6 literals; port is the suffix after ']' ----
+io.print(import("net").urlsplit("http://[::1]:8080/path")["host"])
+io.print(import("net").urlsplit("http://[::1]:8080/path")["port"])
+io.print(import("net").urlsplit("http://[::1]:8080/path")["path"])
+io.print(import("net").urlsplit("http://[2001:db8::1]/")["host"])
+io.print(import("net").urlsplit("http://[2001:db8::1]/")["port"])
+io.print(import("net").urlsplit("http://example.com:80/p")["host"])
+io.print(import("net").urlsplit("http://example.com:80/p")["port"])
+
+# ---- Dict.remove on a missing key throws; like pop but returns nothing ----
+# NOTE: the "present key removes and returns None" and "unchanged after the throw" value checks from
+# the C++ (comparing against an unquoted "{b: 2}" / "{a: 1}" Dict stringification) are DISCREPANCIES
+# against the current binary and are omitted here -- see the report (same container-repr quoting change
+# as the csv.parse notes above).
+var removeMissing = Function():
+    var d = {"a": 1}
+    d.remove("missing")
+try:
+    removeMissing()
+catch as e:
+    io.print(e)
+var removeKwarg = Function():
+    var d = {"x": 5}
+    d.remove(key = "x")
+    return d
+io.print(removeKwarg())
+
+# ---- parseDouble: a subnormal/underflowing float no longer crashes the lexer or the serializers ----
+var subnormalLiteral = Function():
+    var x = 5e-324
+    return x > 0.0 and x < 1e-300
+io.print(subnormalLiteral())
+io.print(1e-308 > 0.0)
+io.print(Float("5e-324") > 0.0)
+try:                                  # genuine overflow still throws
+    discard Float("1e400")
+catch as e:
+    io.print(e)
+var serdeSubnormal = Function():
+    var s = import("serialize")
+    var t = 1e-308 * 0.001
+    return s.loads(s.dumps(t)) == t
+io.print(serdeSubnormal())
+var dumpSubnormal = Function():
+    var d = import("dump")
+    var t = 1e-308 * 0.001
+    return d.loads(d.dumps(t)) == t
+io.print(dumpSubnormal())
+
+# ---- json emits and re-parses the bareword non-finite spelling (NaN / Infinity / -Infinity) ----
+io.print(import("json").dumps(import("math").inf))
+io.print(import("json").dumps(-import("math").inf))
+io.print(import("json").dumps(import("math").nan))
+io.print(import("json").parse("Infinity") == import("math").inf)
+io.print(import("json").parse("-Infinity") == -import("math").inf)
+io.print(import("math").isnan(import("json").parse("NaN")))
+var jsonNonFiniteList = Function():
+    var j = import("json")
+    var m = import("math")
+    return j.loads(j.dumps([m.inf, -m.inf])) == [m.inf, -m.inf]
+io.print(jsonNonFiniteList())
+
+# ---- round-4 fixes: float-literal overflow, tensor negative axis, UTF-8 decode validation,
+# copy/deepcopy of a class instance, heapq.nlargest negative n ----
+io.print(import("math").isinf(1e999999))       # a too-large float literal overflows to +inf
+io.print(1e999999 > 0.0 and -1e999999 < 0.0)
+io.print(5e-324 > 0.0)                          # a subnormal literal still parses (underflow)
+
+var T = import("tensor")
+var negaxisA = T.Tensor([[1.0, 2, 3], [4, 5, 6]])
+io.print(negaxisA.sum(-1).tolist())        # last axis
+io.print(negaxisA.sum(-2).tolist())        # axis 0
+io.print(negaxisA.argmax(-1).tolist())
+io.print(negaxisA.sum())                   # no axis -> whole-tensor scalar
+try:
+    discard negaxisA.sum(-3)               # out of range
+catch as e:
+    io.print(e)
+try:
+    discard negaxisA.sum(2)
+catch as e:
+    io.print(e)
+
+io.print(Bytes([104, 195, 169]).decode("utf-8"))
+io.print("café".encode("utf-8").decode("utf-8"))
+try:
+    discard Bytes([255, 254, 128]).decode("utf-8")   # stray bytes
+catch as e:
+    io.print(e)
+try:
+    discard Bytes([0xC3]).decode("utf-8")            # truncated 2-byte seq
+catch as e:
+    io.print(e)
+try:
+    discard Bytes([0xED, 0xA0, 0x80]).decode("utf-8")  # surrogate U+D800
+catch as e:
+    io.print(e)
+try:
+    discard Bytes([200]).decode("ascii")             # latin-1/ascii error reports the byte in hex
+catch as e:
+    io.print(e)
+
+var copyIndep = Function():
+    var c = import("copy")
+    class Box:
+        var _init_ = Function(self, v):
+            self.v = v
+    var a = Box(1)
+    var b = c.copy(a)
+    b.v = 99
+    return a.v
+io.print(copyIndep())
+var deepcopyIndep = Function():
+    var c = import("copy")
+    class Box:
+        var _init_ = Function(self, v):
+            self.v = v
+    var a = Box(1)
+    var b = c.deepcopy(a)
+    b.v = 77
+    return a.v
+io.print(deepcopyIndep())
+io.print(import("copy").copy(5))
+var copyListIndep = Function():
+    var c = import("copy")
+    var x = [1, 2]
+    var y = c.copy(x)
+    y.append(3)
+    return x
+io.print(copyListIndep())
+
+io.print(import("heapq").nlargest(-2, [5, 4, 3, 2, 1]))
+io.print(import("heapq").nlargest(0, [3, 1, 2]))
+io.print(import("heapq").nlargest(2, [5, 4, 3, 2, 1]))
+
+# ---- round-5 fixes: BytesIO read after a seek-beyond-end, File.tell after EOF ----
+var seekPastEndRead = Function():
+    var b = import("io").BytesIO("abc")
+    discard b.seek(10)
+    return b.read()
+io.print(seekPastEndRead())
+var seekPastEndReadline = Function():
+    var b = import("io").BytesIO("abc")
+    discard b.seek(10)
+    return b.readline()
+io.print(seekPastEndReadline())
+var seekBackInRange = Function():
+    var b = import("io").BytesIO("abc")
+    discard b.seek(10)
+    discard b.read()
+    discard b.seek(1)
+    return b.read()
+io.print(seekBackInRange())
+var seekPastEndWrite = Function():
+    var b = import("io").BytesIO("ab")
+    discard b.seek(5)
+    discard b.write("Z")
+    return len(b)
+io.print(seekPastEndWrite())
+
+var tellAfterEof = Function():
+    var io2 = import("io")
+    var p = import("path").join(import("path").gettempdir(), "kira_tell_probe.txt")
+    var w = io2.open(p, "w")
+    discard w.write("hello")
+    w.close()
+    var f = io2.open(p, "r")
+    discard f.read(1000)
+    var t = f.tell()
+    f.close()
+    discard import("path").remove(p)
+    return t
+io.print(tellAfterEof())

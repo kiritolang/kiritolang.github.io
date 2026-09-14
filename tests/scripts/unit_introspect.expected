@@ -1,0 +1,54 @@
+True
+False
+True
+True
+False
+[3, 2, 1]
+[3, 2]
+[-3, 2]
+65
+233
+A
+é
+19990
+0b1010
+-0b1010
+0o100
+0xff
+0x0
+1024
+1
+0.5
+True
+False
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+Integer(x) -> Integer
+Float(x) -> Float
+String(x) -> String
+Bool(x) -> Bool
+List(iterable = None) -> List
+True
+True
+True
+min(...)  [native]
+max(...)  [native]
+zip(...)  [native]
+range(...)  [native]
+print(...)  [native]

@@ -1,0 +1,109 @@
+# serde/json adversarial edge coverage (converted from tests/unit/test_serialization_deep.cpp — the
+# pure run-a-script-check-a-value cases). Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# ---- serde flatten deep-nesting guard: 20000-deep throws for BOTH text and binary codecs ----
+var deepguardtext = Function():
+    var x = 0
+    var i = 0
+    while i < 20000:
+        x = [x]
+        i = i + 1
+    try:
+        discard import("serialize").dumps(x)
+        return False
+    catch as e:
+        return True
+io.print(deepguardtext())
+var deepguardbin = Function():
+    var x = 0
+    var i = 0
+    while i < 20000:
+        x = [x]
+        i = i + 1
+    try:
+        discard import("dump").dumps(x)
+        return False
+    catch as e:
+        return True
+io.print(deepguardbin())
+# a modestly nested structure round-trips fine
+var modestnest = Function():
+    var serialize = import("serialize")
+    var x = 0
+    var i = 0
+    while i < 50:
+        x = [x]
+        i = i + 1
+    return serialize.loads(serialize.dumps(x))[0][0][0] != None
+io.print(modestnest())
+
+# ---- json.dumps rejection branches under indent>0 (cyclic / Set / Function) ----
+var jsonindentcyc = Function():
+    var json = import("json")
+    var a = []
+    a.append(a)
+    try:
+        discard json.dumps(a, indent=2)
+        return False
+    catch as e:
+        return True
+io.print(jsonindentcyc())
+var jsonindentset = Function():
+    try:
+        discard import("json").dumps({1, 2}, indent=2)
+        return False
+    catch as e:
+        return True
+io.print(jsonindentset())
+var jsonindentfn = Function():
+    try:
+        discard import("json").dumps(Function(x): return x, indent=2)
+        return False
+    catch as e:
+        return True
+io.print(jsonindentfn())
+
+# ---- json number overflow parses to ±Infinity ----
+io.print(import("json").parse("1e400") == import("math").inf)
+io.print(import("json").parse("-1e400") == -import("math").inf)
+# uppercase-E exponent scans correctly
+io.print(import("json").parse("1E5"))
+
+# ---- subclass instance round-trip preserves inherited + own attributes ----
+var subclassrt = Function():
+    var serialize = import("serialize")
+    class Base:
+        var _init_ = Function(self, x):
+            self.x = x
+    class Sub(Base):
+        var _init_ = Function(self, x, y):
+            self.x = x
+            self.y = y
+    var r = serialize.loads(serialize.dumps(Sub(1, 2)))
+    return r.x + r.y
+io.print(subclassrt())
+
+# ---- _getstate_ returning None round-trips (falsy state link) ----
+var getstatenone = Function():
+    var serialize = import("serialize")
+    class Marker:
+        var _getstate_ = Function(self):
+            return None
+        var _setstate_ = Function(self, st):
+            self.restored = True
+    return serialize.loads(serialize.dumps(Marker())).restored
+io.print(getstatenone())
+
+# ---- json parse of \b \f \r control-char escapes ----
+io.print(ord(import("json").parse(r'"\b"')))
+io.print(ord(import("json").parse(r'"\f"')))
+io.print(ord(import("json").parse(r'"\r"')))
+
+# ---- json output escaping of \b \f \r (the dumped text contains the backslash escape) ----
+io.print(r"\b" in import("json").dumps("\x08"))
+io.print(r"\f" in import("json").dumps("\x0c"))
+io.print(r"\r" in import("json").dumps("\r"))
+
+# ---- json Float dict key stringifies to a quoted number ----
+io.print("2.5" in import("json").dumps({2.5: "v"}))

@@ -1,0 +1,653 @@
+# Regression tests for the v1.13 audit (.audit/v1.13/), converted from tests/unit/test_audit_v113.cpp.
+# Every check here is a pure Kirito script (no C++ embedding-API assertions), so the whole file is
+# registered to also run under `--gc-threshold 1` (collect on every allocation) — the deterministic
+# GC-root gate that pins the A05-1 / A16-1 findings below. Runs identically with `ki` and
+# `ki --no-inline`.
+var io = import("io")
+
+# === A05-1 (HIGH, GC use-after-free): Op::GetIter's eager branch rooted freshly-materialised
+# iterator items in a RootScope scoped to the `else` block — destroyed BEFORE alloc(cursor), which
+# runs a GC before inserting the cursor. So `for c in "abc"` swept the fresh 1-char String handles
+# (ASan UAF / release dangling handle). The RootScope is now hoisted across the alloc. ===
+var a051for = Function():
+    var s = ""
+    for c in "abc":
+        s = s + c
+    return s
+io.print(a051for())
+
+# Bytes iterate() allocates fresh per-byte Integers (not the Bytes' children()) — same gap.
+var a051bytes = Function():
+    var xs = []
+    for b in Bytes([65, 66, 67]):
+        xs.append(b)
+    return len(xs)
+io.print(a051bytes())
+
+# A class whose _iter_ returns iter() over a freshly-built List: the returned iterator is dropped,
+# so its elements are reachable only via the (was-unrooted) cursor items.
+var a051class = Function():
+    class R:
+        var _iter_ = Function(self): return iter([10, 20, 30])
+    var t = 0
+    for x in R():
+        t = t + x
+    return t
+io.print(a051class())
+
+# non-empty String with multi-byte code points (fresh handles per code point)
+var a051unicode = Function():
+    var n = 0
+    for c in "héllo":
+        n = n + 1
+    return n
+io.print(a051unicode())
+
+# === A03-1 (HIGH, capture analysis): a nested function's parameter default is compiled to its own
+# Proto and evaluated at call time through ITS closure, so a reference there to an enclosing
+# function's local is a genuine capture. It was frame-slotted, so the default resolved a wrong
+# outer binding (silent 105) or threw a spurious NameError. Both forms must now be 15. ===
+var a031shadow = Function():
+    var z = 100
+    var make = Function():
+        var z = 10
+        var g = Function(x, y = z): return x + y
+        return g
+    return make()(5)
+io.print(a031shadow())
+
+# no outer shadow -> the bug threw `name 'z' is not defined` at call time; must be 15.
+var a031noshadow = Function():
+    var make = Function():
+        var z = 10
+        var g = Function(x, y = z): return x + y
+        return g
+    return make()(5)
+io.print(a031noshadow())
+
+# The default referencing an EARLIER nested param must still bind to the param, not capture.
+var a031earlierparam = Function():
+    var f = Function(a, b = a): return a + b
+    return f(7)
+io.print(a031earlierparam())
+
+# Two-level nesting + a default capturing the outer-outer local.
+var a031twolevel = Function():
+    var mk = Function():
+        var base = 3
+        var outer = Function():
+            var inner = Function(x, y = base): return x + y
+            return inner
+        return outer
+    return mk()()(4)
+io.print(a031twolevel())
+
+# === A04-1 (HIGH, operand-stack corruption): `return EXPR` crossing a finally that does
+# break/continue popped the return value instead of the loop cursor, orphaning it — an enclosing
+# loop's ForIter then read the leaked cursor (observed: infinite hang / garbage). The return value
+# is now parked in a hidden local across the crossed cleanups. ===
+var a041breakfinally = Function():
+    var f = Function():
+        var out = []
+        for i in [1, 2]:
+            for j in [10, 20, 30]:
+                try:
+                    return 99
+                finally:
+                    break
+            out.append(i)
+        return out
+    return f()
+io.print(a041breakfinally())
+
+# continue-in-finally abandons each return; after the loop, `return n` (n stays 0).
+var a041continuefinally = Function():
+    var f = Function():
+        var n = 0
+        for i in [1, 2, 3]:
+            try:
+                return 99
+            finally:
+                continue
+        return n
+    return f()
+io.print(a041continuefinally())
+
+# A normal finally (no break/continue) must still let the return actually return its value.
+var a041plainfinally = Function():
+    var f = Function():
+        for i in [1]:
+            try:
+                return 42
+            finally:
+                pass
+        return -1
+    return f()
+io.print(a041plainfinally())
+
+# return crossing a `with` whose _exit_ runs, under a loop — value must survive.
+var a041withexit = Function():
+    class Ctx:
+        var _enter_ = Function(self): return self
+        var _exit_ = Function(self): return None
+    var f = Function():
+        for i in [1]:
+            with Ctx() as c:
+                return 7
+        return -1
+    return f()
+io.print(a041withexit())
+
+# === A09-1 (HIGH, List-search UAF): remove/index/count/in searched over a live `elems` reference
+# while kiEquals could run a user _eq_ that reallocs the list. They now search a GC-rooted
+# snapshot. Adversarial: a hostile _eq_ (on the SEARCHED value) mutates the list mid-search —
+# must not crash (ASan gate), and returns a sane result. ===
+var a091removeevil = Function():
+    class Evil:
+        var _eq_ = Function(self, o):
+            xs.append(0)
+            return False
+    var xs = [1, 2, 3, 4, 5, 6, 7, 8]
+    try:
+        xs.remove(Evil())
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a091removeevil())
+
+var a091indexevil = Function():
+    class Evil:
+        var _eq_ = Function(self, o):
+            xs.append(0)
+            return False
+    var xs = [1, 2, 3, 4, 5, 6, 7, 8]
+    try:
+        xs.index(Evil())
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a091indexevil())
+
+var a091countevil = Function():
+    class Evil:
+        var _eq_ = Function(self, o):
+            xs.append(0)
+            return False
+    var xs = [1, 2, 3, 4, 5, 6, 7, 8]
+    return xs.count(Evil())
+io.print(a091countevil())
+
+var a091inevil = Function():
+    class Evil:
+        var _eq_ = Function(self, o):
+            xs.append(0)
+            return False
+    var xs = [1, 2, 3, 4, 5, 6, 7, 8]
+    return String(Evil() in xs)
+io.print(a091inevil())
+
+# Positive: the value-search methods still behave correctly with no reentrancy.
+var a091removeok = Function():
+    var xs = [1, 2, 3, 2]
+    xs.remove(2)
+    return xs
+io.print(a091removeok())
+
+var a091indexok = Function(): return [1, 2, 3, 2].index(2)
+io.print(a091indexok())
+
+var a091countok = Function(): return [1, 2, 3, 2].count(2)
+io.print(a091countok())
+
+var a091inop = Function(): return String(3 in [1, 2, 3]) + String(9 in [1, 2, 3])
+io.print(a091inop())
+
+# index with a start/end window still works after the snapshot rework.
+var a091indexwindow = Function(): return [1, 2, 3, 2, 1].index(2, 2)
+io.print(a091indexwindow())
+
+# === A07-1 (Medium, uncatchable crash -> clean error): `_iter_` must return an ITERATOR, so a bare
+# `self`/`self.other` (no _next_) is rejected outright — no re-dispatch, no recursion. The genuinely
+# cyclic form `return iter(self)` (a valid native iterator that re-iterates self) is bounded by the
+# SourceCursor native-nesting guard -> a catchable error, never SIGSEGV. ===
+var a071bareself = Function():
+    class C:
+        var _iter_ = Function(self): return self
+    try:
+        for x in C():
+            pass
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a071bareself())
+
+# a mutually-referential _iter_ pair returns bare instances (no _next_) -> also rejected outright
+var a071mutual = Function():
+    class A:
+        var other = None
+        var _iter_ = Function(self): return self.other
+    var a = A()
+    var b = A()
+    a.other = b
+    b.other = a
+    try:
+        for x in a:
+            pass
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a071mutual())
+
+# the genuinely cyclic iterator (return iter(self)) is depth-guarded, not a crash
+var a071cyclic = Function():
+    class C:
+        var _iter_ = Function(self): return iter(self)
+    try:
+        for x in C():
+            pass
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a071cyclic())
+
+# a legitimate _iter_ over a wrapped List still works
+var a071legit = Function():
+    class R:
+        var _iter_ = Function(self): return iter([1, 2, 3])
+    var t = 0
+    for x in R():
+        t = t + x
+    return t
+io.print(a071legit())
+
+# === A18-1 (Medium, security -- CRLF header injection): user headers/cookies were written verbatim
+# into the request; a CR/LF splits/smuggles headers. Now rejected before any connection. ===
+var a181headers = Function():
+    var n = import("net")
+    try:
+        n.get("http://127.0.0.1:9/", {"headers": {"X": "a\r\nEvil: 1"}})
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a181headers())
+
+var a181cookies = Function():
+    var n = import("net")
+    try:
+        n.get("http://127.0.0.1:9/", {"cookies": {"s": "v\r\nInjected: 1"}})
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a181cookies())
+
+# === A13-1 (Medium): fmod is a math domain error for an infinite dividend (libm returns silent NaN),
+# consistent with the divisor-zero guard and the module-wide throw-don't-return-NaN policy. ===
+var a131infdividend = Function():
+    var m = import("math")
+    try:
+        m.fmod(m.inf, 3.0)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a131infdividend())
+
+var a131normal = Function():
+    var m = import("math")
+    return String(m.fmod(5.0, 3.0))
+io.print(a131normal())
+
+var a131finiteinf = Function():
+    var m = import("math")
+    return String(m.fmod(5.0, m.inf))
+io.print(a131finiteinf())
+
+# === A16-1 (Medium, GC-safety): Matrix.apply passed an un-rooted makeFloat arg across the callback;
+# a GC during call() could sweep it. Rooted now -- round-trips under per-alloc GC. ===
+var a161matrixapply = Function():
+    var mx = import("matrix")
+    var a = mx.identity(3)
+    var b = a.apply(Function(x): return x + 1.0)
+    return String(b[0, 0])
+io.print(a161matrixapply())
+
+# === A15-1 (Medium-high, autograd): a retained non-leaf tensor's `.grad` was used as the
+# reverse-mode accumulator and never cleared between passes, so a second backward() through it
+# re-seeded the stale value and doubled the leaf gradient. Non-leaves are now grad-reset each
+# pass (leaves keep accumulating, as the tests rely on). ===
+# Two passes through the SAME intermediate y = x*x; x.grad must be [2,4], not [4,8].
+var a151twopass = Function():
+    var T = import("tensor")
+    var x = T.Tensor([1.0, 2.0], requiresgrad = True)
+    var y = x * x
+    y.sum().backward()
+    x.zerograd()
+    y.sum().backward()
+    return String(x.grad.tolist())
+io.print(a151twopass())
+
+# Driving an intermediate root directly twice: leaf grad is exactly 2x a single pass (linear).
+var a151directtwo = Function():
+    var T = import("tensor")
+    var x = T.Tensor([1.0, 2.0, 3.0], requiresgrad = True)
+    var y = x * x
+    y.backward(T.ones([3]))
+    y.backward(T.ones([3]))
+    return String(x.grad.tolist())
+io.print(a151directtwo())
+
+# A single pass still gives the un-doubled result (no regression).
+var a151single = Function():
+    var T = import("tensor")
+    var x = T.Tensor([1.0, 2.0], requiresgrad = True)
+    (x * x).sum().backward()
+    return String(x.grad.tolist())
+io.print(a151single())
+
+# === A18-3 (Low, use-after-close): detach() left `fd` intact, so a second detach handed out the
+# same fd (double-adopt) and fileno() after close/detach returned a stale/recycled number. Now
+# detach resets fd (second detach throws) and fileno returns -1 on a closed socket. ===
+var a183detachtwice = Function():
+    var net = import("net")
+    try:
+        var s = net.tcpsocket()
+        discard s.detach()
+        discard s.detach()
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a183detachtwice())
+
+var a183closefileno = Function():
+    var net = import("net")
+    var s = net.tcpsocket()
+    s.close()
+    return String(s.fileno())
+io.print(a183closefileno())
+
+var a183detachfileno = Function():
+    var net = import("net")
+    var s = net.tcpsocket()
+    discard s.detach()
+    return String(s.fileno())
+io.print(a183detachfileno())
+
+var a183openfileno = Function():
+    var net = import("net")
+    var s = net.tcpsocket()
+    return String(s.fileno() >= 0)
+io.print(a183openfileno())
+
+# === A18-4 (Medium, hang): settimeout() now also bounds connect() (it stores the value and connect
+# uses non-blocking connect + select). Deterministic assertion: settimeout is accepted and a connect
+# to a refused local port still fails promptly (connection refused), i.e. the timeout path doesn't
+# break normal error reporting. The true black-hole-timeout case is environment-sensitive. ===
+var a184connecttimeout = Function():
+    var net = import("net")
+    try:
+        var s = net.tcpsocket()
+        s.settimeout(2.0)
+        s.connect("127.0.0.1", 9)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a184connecttimeout())
+
+# === A24-1 (statistics.mean int64 overflow): Float(sum(data)) summed all-Integer data in int64
+# FIRST, so a large-integer dataset wrapped (two's-complement) before the Float conversion. mean
+# now accumulates in Float space. Two copies of 2^62 sum to exactly INT64_MAX+1 -> the old code
+# wrapped to a negative mean; the fix yields ~4.6e18. ===
+var a241meanbig = Function():
+    var st = import("statistics")
+    return String(st.mean([4611686018427387904, 4611686018427387904]) > 0.0)
+io.print(a241meanbig())
+
+var a241meansmall = Function():
+    var st = import("statistics")
+    return String(st.mean([2, 4, 6]))
+io.print(a241meansmall())
+
+# === A14-1 (random.gauss keyword-only): makeMethod hole-fills a skipped leading optional (mu)
+# with None when a LATER arg (sigma) is passed by keyword, and the impl fed None to asNum -> throw.
+# A None slot now means "use the default". ===
+var a141gausskw = Function():
+    var r = import("random").Random(1)
+    return String(r.gauss(sigma = 2.0) == r.gauss(sigma = 2.0))
+io.print(a141gausskw())
+
+var a141gaussneg = Function():
+    var r = import("random").Random(1)
+    try:
+        discard r.gauss(sigma = -1.0)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a141gaussneg())
+
+# === A21-2 (regex endpos hole-fill): match/search/finditer/findall with `endpos=` but `pos`
+# omitted hole-filled pos with None, then asInt(None) threw. None slots are now "absent". ===
+var a212searchendpos = Function():
+    var re = import("regex")
+    return re.compile("a+").search("aaa", endpos = 2).group()
+io.print(a212searchendpos())
+
+var a212findallendpos = Function():
+    var re = import("regex")
+    return String(len(re.compile("a").findall("aaaa", endpos = 2)))
+io.print(a212findallendpos())
+
+# A21-3: a huge pos/endpos is clamped, not misbehaving (past-end pos matches nothing, no OOB).
+var a212hugepos = Function():
+    var re = import("regex")
+    return String(re.compile("a").search("aaa", 999999999999) == None)
+io.print(a212hugepos())
+
+# === A09-2 (NaN sort UB): the sort/min/max comparator returned false both ways for a NaN operand,
+# making NaN equivalent to every number (not a strict weak ordering -> std::sort UB). NaN now sorts
+# as the largest value. Assert a stable, total order (no crash under ASan, deterministic result). ===
+var a092sortnan = Function():
+    var m = import("math")
+    var s = sorted([3.0, m.nan, 1.0, 2.0, m.nan])
+    return String(s[0]) + "," + String(s[1]) + "," + String(s[2]) + "," + String(s[3] != s[3]) + "," + String(s[4] != s[4])
+io.print(a092sortnan())
+
+var a092min = Function(): return String(min([2.0, 1.0, 3.0]))
+io.print(a092min())
+
+var a092max = Function(): return String(max([2.0, 1.0, 3.0]))
+io.print(a092max())
+
+# === A17-1 (serde wrong-bucket): a Set element / Dict key with a CONTENT-based hash (Bytes,
+# DateTime, attr-based _hash_) was wired into the Set/Dict in pass 2 -- BEFORE its payload was
+# restored by _setstate_ (pass 3) -- so it bucketed under its empty hash, and a later lookup on the
+# real hash landed in a different bucket (silent membership corruption). Set/Dict wiring is now a
+# final pass after all state is restored. ===
+# Set of Bytes: both members found after round-trip.
+var a171dumpbytesset = Function():
+    var d = import("dump")
+    var s = {Bytes([1, 2]), Bytes([3, 4])}
+    var b = d.loads(d.dumps(s))
+    return String(b.contains(Bytes([1, 2]))) + String(b.contains(Bytes([3, 4]))) + String(len(b))
+io.print(a171dumpbytesset())
+
+# Dict keyed by Bytes: key lookup succeeds.
+var a171dumpbytesdict = Function():
+    var d = import("dump")
+    var m = {Bytes([9]): "nine"}
+    var b = d.loads(d.dumps(m))
+    return b[Bytes([9])]
+io.print(a171dumpbytesdict())
+
+var a171serializebytesset = Function():
+    var d = import("serialize")
+    var s = {Bytes([1, 2]), Bytes([3, 4])}
+    var b = d.loads(d.dumps(s))
+    return String(b.contains(Bytes([1, 2]))) + String(b.contains(Bytes([3, 4]))) + String(len(b))
+io.print(a171serializebytesset())
+
+var a171serializebytesdict = Function():
+    var d = import("serialize")
+    var m = {Bytes([9]): "nine"}
+    var b = d.loads(d.dumps(m))
+    return b[Bytes([9])]
+io.print(a171serializebytesdict())
+
+# Dict/Set keyed by DateTime (hash by epoch; empty epoch=0 at insert without the fix).
+var a171datetimedict = Function():
+    var d = import("dump")
+    var t = import("time")
+    var dt = t.make(2020, 1, 1)
+    var b = d.loads(d.dumps({dt: "y"}))
+    return b[dt]
+io.print(a171datetimedict())
+
+# A user class with an attribute-based _hash_ used as a Set member.
+var a171classhash = Function():
+    var d = import("dump")
+    class K:
+        var _init_ = Function(self, v): self.v = v
+        var _hash_ = Function(self): return self.v
+        var _eq_ = Function(self, o): return self.v == o.v
+    var b = d.loads(d.dumps({K(5), K(7)}))
+    return String(b.contains(K(5))) + String(b.contains(K(7)))
+io.print(a171classhash())
+
+# === A04-2 / A04-3 (switch negative case labels): a negative label `-1` parses as UnaryExpr(Neg,
+# Literal), not a LiteralExpr, so it (a) escaped duplicate detection -- `case -1` twice was accepted
+# -- and (b) dropped the whole switch off the O(1) dispatch. The compiler now constant-FOLDS every
+# case label (foldConstValue, via the VM's own operators), so a negated literal is a proper constant:
+# duplicates are a compile error and negative cases dispatch correctly.
+# (The duplicate-label compile errors themselves live in tests/errors/unit_audit_v113_switch_dup_*.) ===
+# a negative and its positive are NOT duplicates
+var a042notdup = Function():
+    var x = 5
+    switch x:
+        case -1:
+            pass
+        case 1:
+            pass
+    return 1
+io.print(a042notdup())
+
+# negative-case dispatch returns the right arm (fast path)
+var a043dispatch = Function():
+    var f = Function(x):
+        switch x:
+            case -1:
+                return "a"
+            case -2:
+                return "b"
+            default:
+                return "c"
+    return f(-1) + f(-2) + f(-9)
+io.print(a043dispatch())
+
+# === A19-4 (env thread-safety): the four env entry points are now serialized by a process-wide
+# mutex (the tsan build is the real race gate). Functional no-regression: set/get/unset round-trip. ===
+var a194setget = Function():
+    var sys = import("sys")
+    sys.setenv("KI_AUDIT_V113", "x")
+    return sys.getenv("KI_AUDIT_V113")
+io.print(a194setget())
+
+var a194unset = Function():
+    var sys = import("sys")
+    sys.setenv("KI_AUDIT_V113", "y")
+    sys.unsetenv("KI_AUDIT_V113")
+    return sys.getenv("KI_AUDIT_V113", "gone")
+io.print(a194unset())
+
+# === A19-1 (DateTime epoch year-narrow): gmtimeCompat computed the true year as int64 then
+# narrowed to int BEFORE setEpoch's range check read it, so a pathological epoch wrapped into the
+# valid [-9999, 9999] band and a corrupt DateTime was accepted. The range is now validated on the
+# pre-narrow int64 year.
+# (The two out-of-range compile-clean/runtime-throw checks live inline below; both are runtime.) ===
+var a191hugepos = Function():
+    var t = import("time")
+    try:
+        discard t.datetime(999999999999999999)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a191hugepos())
+
+var a191hugeneg = Function():
+    var t = import("time")
+    try:
+        discard t.datetime(-999999999999999999)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a191hugeneg())
+
+# sane epoch intact
+var a191epoch = Function():
+    var t = import("time")
+    return t.datetime(0).iso()
+io.print(a191epoch())
+
+# === A11-1 (round ndigits): on this platform long double has extra precision, so the extended-
+# scaling path is unchanged -- pin the documented half-away-from-zero result so the #if guard around
+# the MSVC fallback can't silently regress it. ===
+var a111round1 = Function(): return String(round(2.675, 2))
+io.print(a111round1())
+
+var a111round2 = Function(): return String(round(2.5))
+io.print(a111round2())
+
+var a111round3 = Function(): return String(round(-2.5))
+io.print(a111round3())
+
+var a111round4 = Function(): return String(round(1.2345, 3))
+io.print(a111round4())
+
+# === A01-1/A01-2/A01-3 (f-string escape decoder DRY): the f-string literal-part decoder diverged
+# from the plain-string lexer -- `\xHH` emitted a RAW byte (breaking the code-point invariant, so
+# f"\xff" != "\xff") and an unknown escape was silently dropped (f"\q" -> "q") instead of the
+# documented lex error. Both now route through the shared common.hpp decodeCookedEscape.
+# (The four compile-time invalid-escape checks live in tests/errors/unit_audit_v113_*escape*.) ===
+var a01fstringxff = Function(): return String(f"\xff" == "\xff")
+io.print(a01fstringxff())
+
+var a01fstringlen = Function(): return String(len(f"\xe9"))
+io.print(a01fstringlen())
+
+var a01fstringxe9 = Function(): return String(f"\xe9" == "é")
+io.print(a01fstringxe9())
+
+var a01fstringtab = Function(): return String(f"a\tb" == "a\tb")
+io.print(a01fstringtab())
+
+# plain-string behaviour is unchanged (same shared decoder)
+var a01plainxe9 = Function(): return String("\xe9" == "é")
+io.print(a01plainxe9())
+
+# === A02-1 (inline-function comma-pack): `var f = Function(): return a, b` silently absorbed the
+# `, b` into a top-level pack -> f bound to [<function>, b], function returning only `a`. Inline
+# functions don't pack; the ambiguous comma is now rejected. Call-arg / bracketed-list commas
+# (which delimit) still work.
+# (The three comma-pack compile-error checks live in tests/errors/unit_audit_v113_inline_fn_comma_pack_*.) ===
+# an inline function as a call argument followed by more args is fine (comma delimits args)
+var a021mapcallarg = Function(): return String(List(map(Function(x): return x * 2, [1, 2, 3])))
+io.print(a021mapcallarg())
+
+var a021sortedkey = Function(): return String(sorted([3, 1, 2], key = Function(x): return -x))
+io.print(a021sortedkey())
+
+# an inline function inside a List literal followed by more elements is fine (brackets delimit)
+var a021listliteral = Function():
+    var xs = [Function(): return 9, 1]
+    return String(len(xs)) + String(xs[0]()) + String(xs[1])
+io.print(a021listliteral())
+
+# a BLOCK-bodied function still packs its return normally
+var a021blockreturn = Function():
+    var f = Function():
+        return 1, 2
+    return String(f())
+io.print(a021blockreturn())
+
+# an inline function with no trailing comma is unaffected
+var a021notrailing = Function():
+    var f = Function(): return 42
+    return String(f())
+io.print(a021notrailing())

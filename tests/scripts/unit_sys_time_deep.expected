@@ -1,0 +1,54 @@
+make: date component out of range
+make: date component out of range
+make: date component out of range
+2024-01-01T00:00:00
+2024-03-04T05:06:07
+DateTime: epoch 253433923200 is out of representable range (year 10001)
+DateTime: epoch -377736739200 is out of representable range (year -10000)
+9999
+
+format expects a String
+format() expected at least 1 argument(s), got 0
+DateTime(1970-01-01T00:00:00)
+[DateTime(1970-01-01T00:00:00)]
+add/sub: cannot convert infinity to Integer
+add/sub: cannot convert infinity to Integer
+add/sub: cannot convert NaN to Integer
+add/sub: cannot convert NaN to Integer
+90
+add/sub expects a number of seconds
+add/sub expects 1 argument (seconds)
+add/sub expects 1 argument (seconds)
+add/sub expects 1 argument (seconds)
+add/sub expects 1 argument (seconds)
+15
+5
+100
+1970-01-01T00:01:40
+datetime: cannot convert infinity to a timestamp
+datetime: cannot convert NaN to a timestamp
+4
+strptime: text does not match format
+strptime: text does not match format
+strptime: text does not match format
+2024-01-01T23:59:59
+strptime: text does not match format
+strptime: text does not match format
+strptime: text does not match format
+2024-02-29T00:00:00
+strptime: text does not match format
+strptime: text does not match format
+strptime: text does not match format
+2000-02-29T00:00:00
+DateTime _setstate_: cannot re-initialize an established DateTime (it is immutable once built)
+True
+2020-06-15T12:30:00
+True
+True
+True
+True
+True
+True
+True
+True
+True

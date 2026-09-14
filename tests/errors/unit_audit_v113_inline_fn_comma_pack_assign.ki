@@ -1,0 +1,4 @@
+# A02-1 (v1.13 audit): the ambiguous trailing comma is rejected even when the inline function
+# itself sits inside an outer comma-pack (`1, Function(): return x, 2`).
+var x = 0
+var t = 1, Function(): return x, 2

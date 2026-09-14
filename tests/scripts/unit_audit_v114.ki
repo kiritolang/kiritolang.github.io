@@ -1,0 +1,441 @@
+# Regression tests for the v1.14 audit (.audit/v1.14/), converted from tests/unit/test_audit_v114.cpp.
+# Every check here is a pure Kirito script (no C++ embedding-API assertions), so the whole file is
+# registered to also run under `--gc-threshold 1` (collect on every allocation) -- the gate for the
+# A08-5 GC-rooting finding below. Two findings (A19-1/A19-2 pinned-Value-result GC-safety, and A07-1
+# aligned operator new/delete) assert directly on the C++ embedding API and stay in
+# tests/unit/test_audit_v114.cpp. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# === A09-1 (MEDIUM): the format() builtin with an EMPTY spec was lossy for Floats -- it routed
+# through applyFormatSpec's default ('g'/precision-6), so `format(2.0)` -> "2" and
+# `format(1234567.0)` -> "1.23457e+06", diverging from f-strings / "{}".format / String() (all
+# stringify). Empty spec now short-circuits to stringify, so a Float round-trips. ===
+var a091fmt1 = Function(): return format(2.0)
+io.print(a091fmt1())
+var a091fmt2 = Function(): return format(1234567.0)
+io.print(a091fmt2())
+var a091fmt3 = Function(): return format(0.1)
+io.print(a091fmt3())
+var a091fmt4 = Function(): return format(42)
+io.print(a091fmt4())
+var a091fmt5 = Function(): return format(3.5)
+io.print(a091fmt5())
+# a NON-empty spec still applies the mini-format-spec (no behaviour change there)
+var a091fmtspec1 = Function(): return format(2.0, ".2f")
+io.print(a091fmtspec1())
+var a091fmtspec2 = Function(): return format(255, "x")
+io.print(a091fmtspec2())
+# consistency: format(x) with no spec now equals String(x) for a Float, as the doc-comment claims
+var a091fmtconsistency = Function(): return String(format(2.0) == String(2.0))
+io.print(a091fmtconsistency())
+
+# === A06-1 (MEDIUM, native recursion / crash): InstanceValue::str's cycle guard only caught a
+# _str_ that returns SELF; a _str_ that returns a chain of DISTINCT instances recursed in native
+# C++ with no depth bound -> stack overflow (segfault). Now bounded by ctx.depth like the
+# container stringifier: it throws a clean, catchable error instead of crashing. ===
+var a061deepchain = Function():
+    class N:
+        var _init_ = Function(self, nxt): self.nxt = nxt
+        var _str_ = Function(self): return self.nxt
+    var head = None
+    var i = 0
+    while i < 5000:
+        head = N(head)
+        i = i + 1
+    try:
+        String(head)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a061deepchain())
+
+# a shallow _str_-returns-instance chain still works (the guard doesn't over-reject)
+var a061shallow = Function():
+    class W:
+        var _init_ = Function(self, v): self.v = v
+        var _str_ = Function(self): return self.v
+    return String(W(W("deep")))
+io.print(a061shallow())
+
+# === A16-1 (MEDIUM, UB): time.sleep() had no finite/range guard, so sleep(inf)/sleep(nan)
+# overflowed the int64 duration_cast (UB, returned immediately) and sleep(1e18) hung. Both are
+# now rejected before sleep_for. (A tiny real sleep still works.) ===
+var a161sleepnan = Function():
+    try:
+        import("time").sleep(import("math").nan)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a161sleepnan())
+
+var a161sleepinf = Function():
+    try:
+        import("time").sleep(import("math").inf)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a161sleepinf())
+
+var a161sleeptoolarge = Function():
+    try:
+        import("time").sleep(1e18)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a161sleeptoolarge())
+
+var a161sleepzero = Function():
+    import("time").sleep(0.0)
+    return 42
+io.print(a161sleepzero())
+
+var a161sleepneg = Function():
+    import("time").sleep(-5.0)
+    return 7
+io.print(a161sleepneg())
+
+# === A14-2 (MEDIUM, signed-overflow UB): json.stringify's indent path computed (depth+1)*indent
+# in int, overflowing for a huge indent (and OOMing with a raw allocator message short of that).
+# A too-large indent is now a clean error; a sane indent still pretty-prints. ===
+var a142indent1 = Function():
+    try:
+        import("json").stringify([1, 2], indent = 99999999)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a142indent1())
+
+var a142indent2 = Function():
+    try:
+        import("json").stringify([1], indent = 100000000000)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a142indent2())
+
+var a142indentok = Function(): return import("json").stringify([1, 2], indent = 2)
+io.print(a142indentok())
+
+var a142compact = Function(): return import("json").stringify([1, 2])
+io.print(a142compact())
+
+# === A15-1 (MEDIUM): Socket.listen() read sock.fd directly instead of fdOrThrow, so
+# listen-after-close leaked a raw "Bad file descriptor" instead of the contractual
+# "listen: socket is closed" every other Socket method gives. ===
+var a151listenclosed = Function():
+    try:
+        var s = import("net").tcpsocket()
+        s.close()
+        s.listen(16)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a151listenclosed())
+
+# === A11-1 (MEDIUM, security): a Kirito String is byte-transparent, so it can hold a NUL; the
+# OS filesystem APIs truncate at the first NUL, so "safe.txt\0.sh" opened "safe.txt" -- a
+# suffix-validation / sandbox bypass. Every filesystem-touching path entry now rejects it. ===
+var a111nulopen = Function():
+    try:
+        import("io").open("safe" + chr(0) + ".sh", "w")
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a111nulopen())
+
+var a111nulexists = Function():
+    try:
+        import("path").exists("a" + chr(0) + "b")
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a111nulexists())
+
+var a111nulgetsize = Function():
+    try:
+        import("path").getsize("x" + chr(0))
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a111nulgetsize())
+
+# the pure path-string builder join() doesn't touch the filesystem, so it still works normally
+var a111joinok = Function(): return import("path").join("a", "b")
+io.print(a111joinok())
+
+# === A11-19 (MEDIUM): BytesIO.truncate() after a large seek materialized the whole buffer,
+# bypassing the 256 MiB write guard. It now honours the same cap. ===
+var a1119trunclarge = Function():
+    try:
+        var b = import("io").BytesIO()
+        b.seek(400000000)
+        b.truncate()
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a1119trunclarge())
+
+var a1119truncok = Function():
+    var b = import("io").BytesIO()
+    b.write("hello world")
+    b.seek(5)
+    return b.truncate()
+io.print(a1119truncok())
+
+# (A04-1 was a FALSE POSITIVE: `not <instance>` intentionally returns the RAW _not_ result,
+# uncoerced -- like _neg_, unlike _bool_ -- a documented, tested contract [r7_types.ki]. No change.)
+
+# === A04-2 (LOW): the cyclic-structure recursion guard is shared by == AND </sort/min/max, so
+# its message now says "comparison", not "equality". ===
+var a042ltcyclic = Function():
+    try:
+        var a = [1]
+        a.append(a)
+        var b = [1]
+        b.append(b)
+        discard (a < b)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a042ltcyclic())
+
+var a042eqcyclic = Function():
+    try:
+        var a = [1]
+        a.append(a)
+        var b = [1]
+        b.append(b)
+        discard (a == b)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a042eqcyclic())
+
+# === A13-1 (MEDIUM): tensor max/min/argmax/argmin were order-dependent under NaN
+# (max([nan,1,3])->nan but max([1,nan,3])->3.0). max/min now PROPAGATE NaN (numpy amax/amin)
+# so the value is position-independent; argmax/argmin return the first-NaN index. ===
+var a131maxnanpos = Function():
+    var t = import("tensor")
+    var m = import("math")
+    return String(m.isnan(t.Tensor([m.nan, 1.0, 3.0]).max())) + String(m.isnan(t.Tensor([1.0, m.nan, 3.0]).max())) + String(m.isnan(t.Tensor([1.0, 3.0, m.nan]).max()))
+io.print(a131maxnanpos())
+
+var a131minnan = Function():
+    var t = import("tensor")
+    var m = import("math")
+    return String(m.isnan(t.Tensor([m.nan, 1.0]).min())) + String(m.isnan(t.Tensor([1.0, m.nan]).min()))
+io.print(a131minnan())
+
+# no NaN: ordinary max/min/argmax/argmin unchanged
+var a131nonan = Function():
+    var t = import("tensor")
+    var d = t.Tensor([1.0, 5.0, 3.0])
+    return String(d.max()) + "," + String(d.min()) + "," + String(d.argmax()) + "," + String(d.argmin())
+io.print(a131nonan())
+
+# argmax/argmin with a NaN return the FIRST NaN index (numpy semantics), position-consistent
+var a131argnan = Function():
+    var t = import("tensor")
+    var m = import("math")
+    return String(t.Tensor([1.0, m.nan, 3.0]).argmax()) + String(t.Tensor([1.0, 3.0, m.nan]).argmax())
+io.print(a131argnan())
+
+# per-axis matches the whole-tensor rule: a NaN in the reduced line -> NaN
+var a131axisnan = Function():
+    var t = import("tensor")
+    var m = import("math")
+    var r = t.Tensor([[m.nan, 1.0], [2.0, 3.0]]).max(axis = 1)
+    return String(m.isnan(r.tolist()[0])) + String(r.tolist()[1])
+io.print(a131axisnan())
+
+# === A13-2 (LOW): complex.atan(±i) has poles there; it now throws a domain error like its
+# mirror atanh(±1), instead of returning 0.0+infi silently. ===
+var a132atanpole = Function():
+    try:
+        import("complex").atan(import("complex").i)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a132atanpole())
+
+var a132atanok = Function(): return String(import("complex").atan(import("complex").real(0.5)).re > 0.4)
+io.print(a132atanok())
+
+# === A13-3 (LOW): Matrix._setstate_ with a negative dimension cast to a huge size_t and slipped
+# past the element guard (c==0), yielding rows()==-1 from untrusted state. Reject it. ===
+var a133negdim = Function():
+    try:
+        import("matrix").zeros(1, 1)._setstate_([-1, 0, []])
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a133negdim())
+
+# === A17-1 (MEDIUM, DoS): the linear-time regex is O(text * program * groups) because each NFA
+# thread copies its capture vector; a pattern with hundreds of groups over a long input ran for
+# tens of seconds ((a?)x500 + b over 10k a's). A capture-volume budget now throws instead of
+# hanging (matching an untrusted pattern is a stated security property). ===
+var a171budget = Function():
+    try:
+        var re = import("regex")
+        var pat = ""
+        var i = 0
+        while i < 500:
+            pat = pat + "(a?)"
+            i = i + 1
+        pat = pat + "b"
+        discard re.search(pat, "a" * 10000)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a171budget())
+
+# a legitimate regex (few groups) is unaffected
+var a171legit1 = Function(): return import("regex").search("(\\d+)-(\\d+)", "x 12-34 y").group(2)
+io.print(a171legit1())
+
+var a171legit2 = Function(): return String(import("regex").findall("\\w+", "a bb ccc") == ["a", "bb", "ccc"])
+io.print(a171legit2())
+
+# === A14-1 (MEDIUM, silent data corruption): a class whose _getstate_ returns a Dict/Set keyed
+# by a content-hashed member (Bytes/Matrix/instance) and whose _setstate_ READS THROUGH that
+# container saw it EMPTY -- the container was deferred (A17-1) to a pass AFTER _setstate_ ran, so
+# it summed to 0 not 42. Native-Stateful members are now restored, and their containers wired,
+# BEFORE the user _setstate_ pass. Both text and binary codecs. ===
+var a141serdetotal = Function():
+    var ser = import("serialize")
+    class C:
+        var _init_ = Function(self): self.total = 0
+        var _getstate_ = Function(self): return {Bytes([9]): 42}
+        var _setstate_ = Function(self, s):
+            var t = 0
+            for k in s:
+                t = t + s[k]
+            self.total = t
+    return ser.loads(ser.dumps(C())).total
+io.print(a141serdetotal())
+
+var a141dumptotal = Function():
+    var d = import("dump")
+    class C:
+        var _init_ = Function(self): self.total = 0
+        var _getstate_ = Function(self): return {Bytes([9]): 42}
+        var _setstate_ = Function(self, s):
+            var t = 0
+            for k in s:
+                t = t + s[k]
+            self.total = t
+    return d.loads(d.dumps(C())).total
+io.print(a141dumptotal())
+
+# A17-1 must still hold: a plain Bytes-keyed Dict/Set round-trips with correct buckets
+var a141serdebytesroundtrip = Function():
+    var ser = import("serialize")
+    var d2 = ser.loads(ser.dumps({Bytes([1, 2]): "x", Bytes([3]): "y"}))
+    return d2[Bytes([1, 2])] + d2[Bytes([3])] + String(len(d2))
+io.print(a141serdebytesroundtrip())
+
+# === A12-1 (LOW): random gauss/uniform/expovariate param validation used </<=  which a NaN
+# slips past (NaN compares false), so gauss(0, nan) returned a quiet NaN instead of erroring.
+# Reject non-finite params, consistent with the strict sigma<0 / lambda<=0 guards. ===
+var a121gaussnan = Function():
+    try:
+        import("random").Random(1).gauss(0, import("math").nan)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a121gaussnan())
+
+var a121uniforminf = Function():
+    try:
+        import("random").Random(1).uniform(0, import("math").inf)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a121uniforminf())
+
+var a121expovarnan = Function():
+    try:
+        import("random").Random(1).expovariate(import("math").nan)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a121expovarnan())
+
+var a121gaussneg = Function():
+    try:
+        import("random").Random(1).gauss(0, -1)
+        return "NO-ERROR"
+    catch as e:
+        return e
+io.print(a121gaussneg())
+
+# ordinary params still work
+var a121uniformok = Function():
+    var x = import("random").Random(1).uniform(0, 1)
+    return String(x >= 0.0 and x <= 1.0)
+io.print(a121uniformok())
+
+# === A10-2 (LOW): hasattr's probe caught only KiritoError, so a native getAttr throwing a plain
+# std::exception would escape. It now catches std::exception (like the try/catch boundary), so a
+# missing member is reported as False. (Positive/negative existence is the observable behaviour.) ===
+var a102hasattr = Function():
+    return String(hasattr("hi", "upper")) + String(hasattr([1], "append")) + String(hasattr(5, "definitely_not_a_method"))
+io.print(a102hasattr())
+
+# === A19-1 / A19-2 (MEDIUM, embedding memory) verify Value's C++ operator results are pinned
+# against a GC and stay in tests/unit/test_audit_v114.cpp -- they assert directly on the C++
+# Value/String/List API, not on a Kirito script. ===
+
+# === A08-5 (latent GC-safety): issubset/issuperset/isdisjoint built `otherSet` from a possibly
+# freshly-allocated iterable (String/Bytes/range chars) WITHOUT rooting it, unlike the union
+# family -- a GC between adds could sweep a not-yet-added element. Now rooted. This whole golden
+# runs under --gc-threshold 1, so the fresh 1-char String handles from "abcde" are forced to
+# survive into the subset check on every pass. ===
+var a085issubset = Function():
+    return String(Set(["a", "b"]).issubset("abcde")) + String(Set(["a", "z"]).issubset("abcde")) + String(Set(["a", "b", "c"]).issuperset("ab")) + String(Set(["x", "y"]).isdisjoint("abcde"))
+io.print(a085issubset())
+
+# === A08-4 (resource): an emptied hash bucket is now reclaimed on delete (else the bucket map
+# grows unbounded across delete-distinct-hash cycles). Correctness must survive the reclamation:
+# churn many distinct keys through add->remove->re-add and verify lookups stay consistent. ===
+var a084dictchurn = Function():
+    var d = {}
+    var i = 0
+    while i < 400:
+        d[i] = i
+        i = i + 1
+    i = 0
+    while i < 400:
+        discard d.pop(i)
+        i = i + 1
+    d[42] = 99
+    return String(len(d)) + "," + String(d[42]) + "," + String(42 in d)
+io.print(a084dictchurn())
+
+var a084setchurn = Function():
+    var s = Set()
+    var i = 0
+    while i < 300:
+        s.add(i)
+        i = i + 1
+    i = 0
+    while i < 300:
+        s.remove(i)
+        i = i + 1
+    s.add(7)
+    return String(len(s)) + "," + String(7 in s)
+io.print(a084setchurn())
+
+var a084setpopchurn = Function():
+    var s = Set([1, 2, 3])
+    discard s.pop()
+    discard s.pop()
+    discard s.pop()
+    s.add(9)
+    return String(len(s)) + "," + String(9 in s)
+io.print(a084setpopchurn())
+
+# === A07-1 (MEDIUM, latent UB): the aligned operator new/delete overloads for Object stay in
+# tests/unit/test_audit_v114.cpp -- there is no Kirito-observable behaviour, only an alignment
+# check on raw C++ allocation, so it is not script-convertible. ===

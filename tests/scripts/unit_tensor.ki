@@ -1,0 +1,204 @@
+# the Kirito `tensor` module: construction/ops, autograd, NumPy-style surface, serialization,
+# item()/tolist() (converted from tests/unit/test_tensor.cpp — the KiritoVM/runSource-driven
+# checks only; the direct tensor.hpp engine tests and the stderr-capture warning checks stay in
+# C++, see the trimmed file). Runtime errors are folded into try/catch. Runs identically with
+# `ki` and `ki --no-inline`.
+var io = import("io")
+var T = import("tensor")
+
+# ===== construction / basic ops =====
+io.print(T.Tensor([[1, 2], [3, 4]]))
+io.print(T.Tensor([[1, 2], [3, 4]]).dtype())
+io.print(T.zeros([2, 3]).shape())
+io.print(T.Tensor([1, 2, 3]) + T.Tensor([10, 20, 30]))
+io.print(T.Tensor([[1, 2], [3, 4]]).matmul(T.Tensor([[5, 6], [7, 8]])))
+io.print(T.Tensor([[1, 2], [3, 4]]).sum())
+io.print(T.Tensor([[1, 2], [3, 4]]).sum(0))
+io.print(T.Tensor([1, 4, 9]).apply(Function(x): return x ** 0.5))
+io.print(T.Tensor([[1, 2], [3, 4]], dtype="Complex").dtype())
+io.print(T.Tensor([1, 2, 3])[1])
+
+var errRagged = Function():
+    try:
+        discard T.Tensor([[1, 2], [3]])
+        return "no-error"
+    catch as e:
+        return e
+io.print(errRagged())
+
+var errComplexMin = Function():
+    try:
+        discard T.Tensor([1, 2, 3], dtype="Complex").min()
+        return "no-error"
+    catch as e:
+        return e
+io.print(errComplexMin())
+
+# ===== autograd =====
+io.print(T.zeros([2]).requiresgrad())                        # off by default
+io.print(T.zeros([2], requiresgrad=True).requiresgrad())     # opt-in kwarg
+
+# d/dx sum(x^2) = 2x
+var gradx = T.Tensor([1, 2, 3], requiresgrad=True)
+gradx.square().sum().backward()
+io.print(gradx.grad)
+
+# product rule via backward: d/da sum(a*b) = b, d/db sum(a*b) = a
+var grada = T.Tensor([2, 3], requiresgrad=True)
+var gradb = T.Tensor([5, 7], requiresgrad=True)
+(grada * gradb).sum().backward()
+io.print(grada.grad)
+
+# matmul backward through an identity is ones
+var gradm = T.Tensor([[1, 2], [3, 4]], requiresgrad=True)
+gradm.matmul(T.eye(2)).sum().backward()
+io.print(gradm.grad)
+
+# broadcasting backward: column sums
+var gradbca = T.Tensor([[1, 2, 3], [4, 5, 6]], requiresgrad=True)
+var gradw = T.Tensor([1, 1, 1], requiresgrad=True)
+(gradbca * gradw).sum().backward()
+io.print(gradw.grad)
+
+# relu gradient mask
+var gradz = T.Tensor([-1, 2], requiresgrad=True)
+gradz.relu().sum().backward()
+io.print(gradz.grad)
+
+# grad accumulates across backward() calls; zerograd clears
+var gradpacc = T.Tensor([1, 2], requiresgrad=True)
+gradpacc.sum().backward()
+gradpacc.sum().backward()
+io.print(gradpacc.grad)
+var gradpzero = T.Tensor([1, 2], requiresgrad=True)
+gradpzero.sum().backward()
+gradpzero.zerograd()
+io.print(gradpzero.grad)
+
+# tensordot equals matmul, and is differentiable
+io.print(T.tensordot(T.Tensor([[1, 2], [3, 4]]), T.Tensor([[5, 6], [7, 8]]), 1))
+var gradtdt = T.Tensor([[1, 2], [3, 4]], requiresgrad=True)
+T.tensordot(gradtdt, T.eye(2), 1).sum().backward()
+io.print(gradtdt.grad)
+
+# detach drops grad
+io.print(T.Tensor([1.0], requiresgrad=True).detach().requiresgrad())
+
+var errBackwardNoGrad = Function():
+    try:
+        T.zeros([2]).backward()
+        return "no-error"
+    catch as e:
+        return e
+io.print(errBackwardNoGrad())
+
+var errComplexRequireGrad = Function():
+    try:
+        T.zeros([2], dtype="Complex").requiresgrad(True)
+        return "no-error"
+    catch as e:
+        return e
+io.print(errComplexRequireGrad())
+
+# ===== NumPy-style surface (module level) =====
+io.print(T.Tensor([[1, 2, 3], [4, 5, 6]])[0:1])              # axis-0 slice
+io.print(T.Tensor([[1, 2], [3, 4]])[[1, 0]])                 # fancy index
+var maska = T.Tensor([1, 2, 3, 4])
+io.print(maska[maska.gt(2)])                                 # boolean mask
+io.print(T.Tensor([1, 2, 3]).gt(2))                           # comparison mask
+io.print((T.Tensor([1, 2, 3]) > 2))                           # > operator
+io.print(T.where(T.Tensor([1, 0, 1]), T.Tensor([1, 2, 3]), T.zeros([3])))
+io.print(T.Tensor([[1, 2], [3, 4]]).max(0))                   # max along axis
+io.print(T.Tensor([[1, 2], [3, 4]]).argmax(1))
+io.print(T.Tensor([1, 2, 3]).cumsum())
+io.print((T.Tensor([5, 7]) % 3))                              # modulo op
+io.print((T.Tensor([2, 3]) ** 2))                             # power op
+io.print(T.Tensor([1.7, -1.2]).floor())
+io.print(T.concatenate([T.Tensor([1, 2]), T.Tensor([3, 4])], 0))
+io.print(T.stack([T.Tensor([1, 2]), T.Tensor([3, 4])], 0))
+io.print(T.Tensor([1, 2, 3]).flip())
+io.print(T.linspace(0, 1, 5))
+io.print(T.diag(T.Tensor([1, 2])))
+io.print(T.det(T.Tensor([[4, 3], [6, 3]])))                    # linalg
+io.print(T.inv(T.Tensor([[4, 3], [6, 3]])).matmul(T.Tensor([[4, 3], [6, 3]])))
+io.print(T.outer(T.Tensor([1, 2]), T.Tensor([3, 4])))
+io.print(T.cross(T.Tensor([1, 0, 0]), T.Tensor([0, 1, 0])))
+io.print(T.einsum("ij,jk->ik", T.Tensor([[1, 2], [3, 4]]), T.eye(2)))
+io.print(T.Tensor([3, 1, 2]).sort())
+io.print(T.Tensor([3, 1, 2]).argsort())
+io.print(T.unique(T.Tensor([3, 1, 3, 2, 1])))
+io.print(T.searchsorted(T.Tensor([1, 3, 5]), 4))               # insertion index
+io.print(T.Tensor([[1, 2]], dtype="Complex").real())
+
+# autograd through the new ops
+var wherex = T.Tensor([1, 2, 3, 4], requiresgrad=True)
+T.where(T.Tensor([1, 0, 1, 0]), wherex, T.zeros([4])).sum().backward()
+io.print(wherex.grad)
+var clipx = T.Tensor([-1.0, 0.5, 2.0], requiresgrad=True)
+clipx.clip(0, 1).sum().backward()
+io.print(clipx.grad)
+
+var errComplexLt = Function():
+    try:
+        discard T.Tensor([1.0, 2.0], dtype="Complex").lt(3.0)
+        return "no-error"
+    catch as e:
+        return e
+io.print(errComplexLt())
+
+# serialization: gradient-free tensors round-trip; grad-requiring ones refuse
+var serMod = import("serialize")
+var serT = T.Tensor([[1.5, 2.5], [3.5, 4.5]])
+io.print(serMod.loads(serMod.dumps(serT)) == serT)
+var dumpMod = import("dump")
+var dumpT = T.Tensor([1, 2, 3])
+io.print(dumpMod.loads(dumpMod.dumps(dumpT)) == dumpT)
+
+var errDumpsGradTensor = Function():
+    var s = import("serialize")
+    try:
+        discard s.dumps(T.Tensor([1.0], requiresgrad=True))
+        return "no-error"
+    catch as e:
+        return e
+io.print(errDumpsGradTensor())
+
+# --- item(): a one-element tensor -> a scalar Float/Complex ---
+io.print(T.Tensor([42.0]).item())
+io.print(type(T.Tensor([[7.0]]).item()))
+io.print(T.zeros([1, 1, 1]).item())
+# works on a grad-tracked scalar result (sum/mean return a scalar tensor under grad)
+var itemg = T.Tensor([3.0, 4.0], requiresgrad=True)
+io.print((itemg * itemg).sum().item())
+io.print(type(T.Tensor([5.0], dtype="Complex").item()))
+
+var errItemMulti = Function():
+    try:
+        discard T.Tensor([1.0, 2.0]).item()
+        return "no-error"
+    catch as e:
+        return e
+io.print(errItemMulti())
+
+var errItemEmpty = Function():
+    try:
+        discard T.zeros([0]).item()
+        return "no-error"
+    catch as e:
+        return e
+io.print(errItemEmpty())
+
+# --- tolist(): tensor -> nested Kirito List ---
+io.print(T.Tensor([1.0, 2.0, 3.0]).tolist())
+io.print(type(T.Tensor([1.0]).tolist()))
+io.print(T.Tensor([[1.0, 2.0], [3.0, 4.0]]).tolist())
+io.print(T.zeros([2, 1, 2]).tolist())
+# round-trip: Tensor(t.tolist()) == t
+var tolistt = T.arange(24.0).reshape([2, 3, 4])
+io.print(T.Tensor(tolistt.tolist()) == tolistt)
+# tolist of a complex tensor nests Complex values
+io.print(type(T.Tensor([[1.0]], dtype="Complex").tolist()[0][0]))
+
+# item()/tolist() are described under inspect
+io.print(inspect(T.zeros([1])).find("item()") >= 0)
+io.print(inspect(T.zeros([1])).find("tolist()") >= 0)

@@ -1,0 +1,69 @@
+# Regression: constant folding (A2, v1.18.0) must keep folded NON-INTERNED constants rooted through
+# the rest of compilation (converted from tests/unit/test_fold_const_gc.cpp). `tryEmitFolded` adds
+# the fold to the Proto const pool via addConst()'s pushTemp, but it did so INSIDE a local RootScope
+# whose destructor truncates the SHARED tempRoots_ stack (popTempTo) -- popping the fold's root the
+# instant tryEmitFolded returned. A non-interned folded const (large Int / Float / String) was then
+# unrooted, and a later compile-time allocation under aggressive GC swept it; the runtime `LoadConst`
+# then threw "dangling handle (stale generation)". Interned folds (small int / Bool / None) never
+# allocate a sweepable object, which masked the bug at default GC. Each block has a trailing
+# allocation AFTER the fold so a collection is forced, and this whole golden is registered to run
+# under `--gc-threshold 1` (collect on every allocation) -- the deterministic gate every block was
+# verified to throw "dangling handle" on the pre-fix build under. See compiler.hpp `tryEmitFolded`.
+var io = import("io")
+
+# folded large Integer (1200 is outside the small-int intern range -> a real arena object)
+var foldbigint = Function():
+    var big = 6 * 200
+    var s = "trailing allocation forces a compile-time GC after the fold"
+    var t = "and another"
+    assert big == 1200
+    return String(big)
+io.print(foldbigint())
+
+# folded Float
+var foldfloat = Function():
+    var f = 3.0 * 2.5
+    var s = "trailing allocation one"
+    var t = "trailing allocation two"
+    assert f == 7.5
+    return String(f)
+io.print(foldfloat())
+
+# folded String (concatenation of two literals)
+var foldstring = Function():
+    var joined = "ab" + "cd"
+    var s = "trailing allocation one"
+    var t = "trailing allocation two"
+    assert joined == "abcd"
+    return joined
+io.print(foldstring())
+
+# the original field report: a folded const in the LAST statement (assert's own message string is
+# the trailing allocation that triggers the sweep)
+var foldloopreport = Function():
+    var count = 0
+    for s in range(6):
+        count = count + 200
+    assert count == 6 * 200, "running total"
+    return String(count)
+io.print(foldloopreport())
+
+# fold-FUZZ: MANY distinct non-interned folded constants (large Int / Float / String) declared then
+# read, with heavy trailing allocation, all under aggressive GC -- every fold's const-pool root must
+# survive the rest of compilation. Mixes folded and literal forms and a nested fold (folds fold).
+var foldfuzz = Function():
+    var a = 1000 * 1000              # 1_000_000 (Int, non-interned)
+    var b = 3.14 * 2.0                # 6.28 (Float)
+    var c = "kirito" + "-" + "lang"   # String fold
+    var d = (2 ** 20) + 1             # nested fold -> 1048577
+    var e = 60 * 60 * 24 * 365        # chained fold -> 31536000
+    var f = "x" * 100                 # repeated string fold (under kMaxFoldString)
+    var g = -(1000000) - 1            # unary + binary fold -> -1000001
+    var junk = []
+    for i in range(300):
+        junk.append("allocate to force mid-compile-adjacent collections " + String(i))
+    assert a == 1000000 and b == 6.28 and c == "kirito-lang"
+    assert d == 1048577 and e == 31536000 and len(f) == 100 and g == -1000001
+    assert len(junk) == 300
+    return String(a) + "," + String(b) + "," + c + "," + String(d) + "," + String(e) + "," + String(len(f)) + "," + String(g) + "," + String(len(junk))
+io.print(foldfuzz())

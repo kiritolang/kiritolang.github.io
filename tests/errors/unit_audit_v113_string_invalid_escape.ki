@@ -1,0 +1,3 @@
+# A01-1 (v1.13 audit): plain-string behaviour pin -- an unknown escape throws (shared decoder with
+# the f-string literal-part path).
+var s = "a\qb"

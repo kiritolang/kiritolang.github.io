@@ -1,0 +1,167 @@
+# Adversarial/edge coverage for the `regex` module (converted from tests/unit/test_regex_deep.cpp):
+# named-key start/end/span, \v \f \a escapes, two-digit template refs, _call_ replacements, pos/endpos
+# on findall/finditer, non-serializability, malformed group names, lenient repetition, octal/negated
+# shorthands in classes, keyword args on methods, and the str() repr forms. All error cases are
+# runtime, folded inline via try/catch. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var regex = import("regex")
+
+# ---------------------------------------------------------------- named-group key on start/end/span
+var namedStart = Function():
+    var m = regex.search(r"(?P<yr>\d+)", "abc 2024 xyz")
+    return m.start("yr")
+io.print(namedStart())
+var namedEnd = Function():
+    var m = regex.search(r"(?P<yr>\d+)", "abc 2024 xyz")
+    return m.end("yr")
+io.print(namedEnd())
+var namedSpan = Function():
+    var m = regex.search(r"(?P<yr>\d+)", "abc 2024 xyz")
+    return m.span("yr")
+io.print(namedSpan())
+io.print(regex.search(r"(?P<yr>\d+)", "abc 2024 xyz").group("yr"))
+try:                                        # a String key naming no group throws
+    discard regex.search(r"(?P<yr>\d+)", "abc 2024 xyz").start("nope")
+catch as e:
+    io.print(e)
+
+# ---------------------------------------------------------------- \v \f \a pattern escapes
+io.print(ord(regex.fullmatch(r"\v", "\x0b").group()))
+io.print(ord(regex.fullmatch(r"\f", "\x0c").group()))
+io.print(ord(regex.fullmatch(r"\a", "\x07").group()))
+
+# ---------------------------------------------------------------- two-digit template refs in sub
+io.print(regex.sub(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)", r"\12", "abcdefghijkl"))
+io.print(regex.sub(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)", r"\g<12>", "abcdefghijkl"))
+io.print(regex.sub(r"(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)", r"\1", "abcdefghijkl"))  # single-digit \1
+io.print(ord(regex.sub("x", r"\t", "x")))   # \n \t \r cooked inside a replacement template
+io.print(ord(regex.sub("x", r"\n", "x")))
+io.print(ord(regex.sub("x", r"\r", "x")))
+
+# ---------------------------------------------------------------- Instance _call_ as sub replacement
+var instCall1 = Function():
+    class Rep:
+        var _call_ = Function(self, m):
+            return "[" + m.group() + "]"
+    return regex.sub("a", Rep(), "banana")
+io.print(instCall1())
+var instCall2 = Function():                 # the compiled-Regex method, count=0 => replace all
+    class Rep:
+        var _call_ = Function(self, m):
+            return "X"
+    return regex.compile("a").sub(Rep(), "aaa", 0)
+io.print(instCall2())
+
+# ---------------------------------------------------------------- findall / finditer pos & endpos
+io.print(regex.compile(r"\d").findall("a1b2c3", 3))
+io.print(regex.compile(r"\d").findall("a1b2c3", 0, 4))
+io.print(len(regex.compile(r"\d").finditer("a1b2c3", 3)))
+io.print(len(regex.compile(r"\d").finditer("a1b2c3", 0, 4)))
+
+# ---------------------------------------------------------------- Match / Regex are not serializable
+try:
+    discard import("dump").dumps(regex.search("b", "abc"))
+catch as e:
+    io.print(e)
+try:
+    discard import("serialize").dumps(regex.search("b", "abc"))
+catch as e:
+    io.print(e)
+try:
+    discard import("dump").dumps(regex.compile("ab"))
+catch as e:
+    io.print(e)
+
+# ---------------------------------------------------------------- bad group keys on a Match
+try:
+    discard regex.search("b", "abc").group(1.5)
+catch as e:
+    io.print(e)
+try:
+    discard regex.search("b", "abc").group([])
+catch as e:
+    io.print(e)
+try:
+    discard regex.search("b", "abc").group(-1)
+catch as e:
+    io.print(e)
+try:
+    discard regex.search("b", "abc").start(-1)
+catch as e:
+    io.print(e)
+try:
+    discard regex.search("b", "abc").end(-1)
+catch as e:
+    io.print(e)
+try:
+    discard regex.search("b", "abc").span(-1)
+catch as e:
+    io.print(e)
+try:                                        # a positive index past the group count also throws
+    discard regex.search("b", "abc").group(1)   # (no groups here)
+catch as e:
+    io.print(e)
+
+# ---------------------------------------------------------------- malformed named groups (compile errors)
+try:
+    discard regex.compile("(?P<x>a)(?P<x>b)")  # duplicate name
+catch as e:
+    io.print(e)
+try:
+    discard regex.compile("(?P<>a)")            # empty name
+catch as e:
+    io.print(e)
+try:
+    discard regex.compile("(?P<1x>a)")          # bad (non-identifier) name
+catch as e:
+    io.print(e)
+try:
+    discard regex.compile("(?P<a")              # unterminated named group
+catch as e:
+    io.print(e)
+
+# ---------------------------------------------------------------- malformed \g<...> in a template
+try:
+    discard regex.sub("(a)", r"\g<1", "a")      # unterminated \g<
+catch as e:
+    io.print(e)
+try:
+    discard regex.sub("(a)", r"\g1", "a")       # no '<' after \g
+catch as e:
+    io.print(e)
+try:
+    discard regex.sub("(a)", r"\g<nope>", "a")  # no such named group
+catch as e:
+    io.print(e)
+
+# ---------------------------------------------------------------- clamped pos/endpos (must NOT throw)
+io.print(regex.compile(r"\d").search("a1b", -5).group())          # negative pos -> from 0
+io.print(regex.compile(r"\d").search("a1b", 0, -1) == None)       # negative endpos -> empty view
+io.print(regex.compile(r"\d").search("a1b", 100) == None)         # pos past end -> no match
+
+# ---------------------------------------------------------------- lenient invalid repetition ('{' literal)
+io.print(regex.fullmatch("a{", "a{").group())
+io.print(regex.fullmatch("a{x}", "a{x}").group())
+io.print(regex.fullmatch("a{,3}", "a{,3}").group())
+
+# ---------------------------------------------------------------- octal + negated shorthands in a class
+io.print(regex.fullmatch(r"[\101]", "A").group())   # \101 octal == 'A'
+io.print(regex.fullmatch(r"[\D]", "a") != None)
+io.print(regex.fullmatch(r"[\D]", "5") == None)
+io.print(regex.fullmatch(r"[\W]", "!") != None)
+io.print(regex.fullmatch(r"[\S]", " ") == None)
+
+# ---------------------------------------------------------------- keyword args on Regex methods
+io.print(regex.compile("a").sub(repl="X", string="banana", count=0))
+io.print(regex.compile(r"\d").match(string="12a", pos=0).group())
+io.print(regex.compile(r"\d+").match(string="123", pos=0, endpos=2).group())
+io.print(regex.compile(",").split(string="a,b,c", maxsplit=1))
+
+# ---------------------------------------------------------------- module finditer flags=, sub count=0
+io.print(len(regex.finditer("a", "AaA", flags=regex.IGNORECASE)))
+var identityRepl = Function(m): return "X"
+io.print(regex.compile("a").sub(identityRepl, "aaa", 0))
+
+# ---------------------------------------------------------------- textual repr of Regex / Match
+io.print(regex.compile("ab"))
+io.print(regex.search("b", "abc"))

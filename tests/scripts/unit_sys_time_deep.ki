@@ -1,0 +1,142 @@
+# adversarial/edge coverage for the `sys` and `time` modules: component-range guards, out-of-epoch
+# years, DateTime str/format/arithmetic edges, strptime field ranges + leap-day validation, datetime
+# float truncation, sys.version shape, sys.shell (converted from tests/unit/test_sys_time_deep.cpp —
+# fully deterministic: every timestamp/date is a fixed literal, and sys.shell's assertions are
+# structured to hold regardless of subprocess availability, as in the C++ original). Runtime errors
+# are folded into try/catch. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var time = import("time")
+var sys = import("sys")
+var path = import("path")
+
+var f = Function(body):
+    try:
+        body()
+        return "no-error"
+    catch as e:
+        return e
+
+# ---- time.make component-range guard ----
+# A component well past the +-2e9 in-band bound throws "make: date component out of range".
+io.print(f(Function(): discard time.make(2024, 1, 1, 3000000000)))
+io.print(f(Function(): discard time.make(2024, 1, 1, 0, 3000000000)))
+io.print(f(Function(): discard time.make(2024, 1, 1, 0, 0, -3000000000)))
+# A sane make still works and round-trips to ISO.
+io.print(time.make(2024, 1, 1).iso())
+io.print(time.make(2024, 3, 4, 5, 6, 7).iso())
+
+# ---- make out-of-epoch year (constructor rejects year outside [-9999, 9999]) ----
+io.print(f(Function(): discard time.make(10001, 1, 1)))
+io.print(f(Function(): discard time.make(-10000, 1, 1)))
+# The boundary years are representable.
+io.print(time.make(9999, 1, 1).year)
+
+# ---- DateTime.format("") empty-format returns "" ----
+io.print(time.datetime(0).format(""))
+# A non-String format argument throws.
+io.print(f(Function(): discard time.datetime(0).format(123)))
+# format(0 args) throws (arity guard).
+io.print(f(Function(): discard time.datetime(0).format()))
+
+# ---- DateTime repr/str(): "DateTime(<iso>)" ----
+io.print(time.datetime(0))
+# Nested in a container it uses the same str form (DateTime has no distinct repr).
+io.print([time.datetime(0)])
+
+# ---- DateTime.add/sub with a non-finite Float must throw ----
+io.print(f(Function(): discard time.datetime(0).add(1e400)))            # +inf
+io.print(f(Function(): discard time.datetime(0).sub(1e400)))
+io.print(f(Function(): discard time.datetime(0).add(0.0 * 1e400)))      # NaN
+io.print(f(Function(): discard time.datetime(0).sub(0.0 * 1e400)))
+# A finite Float delta truncates toward zero and works.
+io.print(time.datetime(0).add(90.9).timestamp)
+# A non-number delta throws.
+io.print(f(Function(): discard time.datetime(0).add("x")))
+
+# ---- add/sub with wrong arg count (0 or 2) must throw ----
+io.print(f(Function(): discard time.datetime(0).add()))
+io.print(f(Function(): discard time.datetime(0).add(1, 2)))
+io.print(f(Function(): discard time.datetime(0).sub()))
+io.print(f(Function(): discard time.datetime(0).sub(1, 2)))
+# A correct add advances the epoch.
+io.print(time.datetime(10).add(5).timestamp)
+io.print(time.datetime(10).sub(5).timestamp)
+
+# ---- datetime with a finite fractional Float truncates (no throw) ----
+io.print(time.datetime(100.9).timestamp)
+io.print(time.datetime(100.9).iso())
+# Non-finite timestamps throw.
+io.print(f(Function(): discard time.datetime(1e400)))         # inf
+io.print(f(Function(): discard time.datetime(0.0 * 1e400)))   # NaN
+
+# ---- datetime(0).weekday == 4 (1970-01-01 is Thursday) ----
+io.print(time.datetime(0).weekday)
+
+# ---- strptime field ranges ----
+# %M=60 and %S=60 out of range; %H=25 out of range (re-assert).
+io.print(f(Function(): discard time.strptime("2024-01-01T00:60:00", "%Y-%m-%dT%H:%M:%S")))
+io.print(f(Function(): discard time.strptime("2024-01-01T00:00:60", "%Y-%m-%dT%H:%M:%S")))
+io.print(f(Function(): discard time.strptime("2024-01-01T25:00:00", "%Y-%m-%dT%H:%M:%S")))
+# Upper valid bounds parse (59/59/23).
+io.print(time.strptime("2024-01-01T23:59:59", "%Y-%m-%dT%H:%M:%S").iso())
+# month 99 / day 32 also rejected.
+io.print(f(Function(): discard time.strptime("2024-99-01", "%Y-%m-%d")))
+io.print(f(Function(): discard time.strptime("2024-01-32", "%Y-%m-%d")))
+# Trailing unconverted input is rejected.
+io.print(f(Function(): discard time.strptime("2024-01-01XYZ", "%Y-%m-%d")))
+
+# ---- strptime leap-day validation ----
+io.print(time.strptime("2024-02-29", "%Y-%m-%d").iso())              # 2024 is a leap year
+io.print(f(Function(): discard time.strptime("2023-02-29", "%Y-%m-%d")))  # 2023 is not
+io.print(f(Function(): discard time.strptime("2024-02-30", "%Y-%m-%d")))  # Feb never has 30
+# Century (non-)leap rules: 1900 not leap, 2000 leap.
+io.print(f(Function(): discard time.strptime("1900-02-29", "%Y-%m-%d")))
+io.print(time.strptime("2000-02-29", "%Y-%m-%d").iso())
+
+# ---- DateTime._setstate_ is one-shot: it can fill a freshly-deserialized value but NEVER re-home
+# an established one (A17-1) - otherwise mutating a live Dict/Set key in place corrupts the container
+# (DateTime is immutable + hashable). Calling it on any user-visible DateTime throws. ----
+io.print(f(Function(): discard time.make(2020, 1, 1)._setstate_(0)))
+var setstateD = time.make(2020, 1, 1)
+var setstateS = {setstateD}
+var setstateMsg = ""
+try:
+    setstateD._setstate_(0)
+catch as e:
+    setstateMsg = e
+io.print(setstateD in setstateS and "immutable" in setstateMsg)   # the Set key stays findable; the mutation was refused
+# Round-trip through serialize/dump still works (the deserializer's alloc-empty -> _setstate_ path).
+var ser = import("serialize")
+var serD = time.make(2020, 6, 15, 12, 30, 0)
+io.print(ser.loads(ser.dumps(serD)).iso())
+var dp = import("dump")
+var dpD = time.make(1999, 12, 31, 23, 59, 59)
+io.print(dp.loads(dp.dumps(dpD)) == dpD)
+
+# ---- sys.version shape (interpreter semver) ----
+# Non-empty and semver-shaped (>= 2 dots), matching what `ki --version` reports.
+io.print(len(sys.version) > 0)
+io.print(sys.version.count(".") >= 2)
+# Every component up to the first two dots is all digits (major.minor.patch core).
+var verParts = sys.version.split(".")
+io.print(verParts[0].isdigit() and verParts[1].isdigit())
+
+# ---- sys.shell with input=/cwd=/timeout= keywords ----
+# `cat` echoes stdin -> stdout; the returned Dict has {code, stdout, stderr}. `cat` is present on
+# every POSIX system this suite runs on. Assert the Dict shape strongly and the echo leniently
+# (guarded on code == 0 so a missing/odd `cat` never fails the suite).
+var shellR1 = sys.shell("cat", input="hi")
+io.print(type(shellR1["code"]) == "Integer" and type(shellR1["stdout"]) == "String" and type(shellR1["stderr"]) == "String")
+# The echoed stdin comes back on stdout when the command ran cleanly.
+var shellR2 = sys.shell("cat", input="hello")
+io.print(shellR2["stdout"] == "hello" if shellR2["code"] == 0 else True)
+# input= keyword directs stdin; timeout= keyword accepted (positive, non-triggering here).
+var shellR3 = sys.shell("cat", input="probe", timeout=10)
+io.print(type(shellR3["stdout"]) == "String")
+# cwd= keyword accepted and the process runs there (lenient: just assert it returns a Dict shape).
+var shellR4 = sys.shell("true", cwd=path.gettempdir())
+io.print(type(shellR4["code"]) == "Integer")
+
+# A shell command that exits non-zero surfaces the code (no throw for a normal exit).
+var shellR5 = sys.shell("exit 3")
+io.print(shellR5["code"] == 3 if shellR5["code"] != 0 else True)

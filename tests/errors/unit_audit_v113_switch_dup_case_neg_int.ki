@@ -1,0 +1,8 @@
+# A04-2/A04-3 (v1.13 audit): a negative switch-case label `-1` parses as UnaryExpr(Neg, Literal), not
+# a LiteralExpr; it must still be constant-folded so a duplicate is a compile error.
+var x = 5
+switch x:
+    case -1:
+        pass
+    case -1:
+        pass

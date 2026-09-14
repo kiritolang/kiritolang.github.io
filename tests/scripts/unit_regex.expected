@@ -1,0 +1,71 @@
+123
+None
+abc
+12345
+None
+aaa
+4
+None
+12
+345
+['12', '345']
+[3, 9]
+[6, 9]
+2024
+2024
+x
+y
+None
+-1
+b
+aaa
+aa
+a
+<a><b>
+<a>
+a
+colour
+abc
+0F
+['0F', 'A']
+['word', 'word']
+abc
+None
+['one', 'two', 'three']
+None
+
+
+HELLO
+['Cat', 'CAT', 'cat']
+ABC
+['a', 'bb', 'ccc']
+['f', 'b']
+[['a', '1'], ['b', '22']]
+3
+['', '1', '', '']
+a#b#c#
+host.user
+x[9]y
+XXaa
+-a-b-
+a<1>b<22>
+['a', 'b', 'c ', 'd']
+['a', ' ', 'b']
+['a', 'bxc']
+a\.b\*c
+a.b
+2
+x+
+café
+é
+[0, 3]
+invalid regex: backreferences are not supported (they would break the linear-time guarantee)
+invalid regex: lookahead (?= / ?!) is not supported (it would break the linear-time guarantee)
+invalid regex: lookbehind (?<= / ?<!) is not supported (it would break the linear-time guarantee)
+invalid regex: missing ) in pattern
+invalid regex: unbalanced ')' in pattern
+invalid regex: bad character range in class
+invalid regex: nothing to repeat
+invalid regex: bad repetition bounds {2,1}
+invalid regex: repetition count too large (max 1000)
+invalid regex: unterminated character class

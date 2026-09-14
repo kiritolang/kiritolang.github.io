@@ -96,83 +96,10 @@ int main() {
     CHECK(tensor::determinant(z) == cd(2, -2));     // (1+i)(1-i) - 2i = 2 - 2i
     CHECK_THROWS(tensor::minAll(z));                // complex is unordered
 
-    // ===== the Kirito `tensor` module ===================================================
-    KiritoVM vm;
-    auto run = [&](const std::string& body) { return evalStr(vm, "var T = import(\"tensor\")\n" + body); };
-    CHECK(run("T.Tensor([[1, 2], [3, 4]])") == "[[1.0, 2.0], [3.0, 4.0]]");
-    CHECK(run("T.Tensor([[1, 2], [3, 4]]).dtype()") == "Float");
-    CHECK(run("T.zeros([2, 3]).shape()") == "[2, 3]");
-    CHECK(run("T.Tensor([1, 2, 3]) + T.Tensor([10, 20, 30])") == "[11.0, 22.0, 33.0]");
-    CHECK(run("T.Tensor([[1, 2], [3, 4]]).matmul(T.Tensor([[5, 6], [7, 8]]))") == "[[19.0, 22.0], [43.0, 50.0]]");
-    CHECK(run("T.Tensor([[1, 2], [3, 4]]).sum()") == "10.0");
-    CHECK(run("T.Tensor([[1, 2], [3, 4]]).sum(0)") == "[4.0, 6.0]");
-    CHECK(run("T.Tensor([1, 4, 9]).apply(Function(x): return x ** 0.5)") == "[1.0, 2.0, 3.0]");
-    CHECK(run("T.Tensor([[1, 2], [3, 4]], dtype=\"Complex\").dtype()") == "Complex");
-    CHECK(run("T.Tensor([1, 2, 3])[1]") == "2.0");
-    CHECK_THROWS(vm.runSource("import(\"tensor\").Tensor([[1, 2], [3]])\n"));            // ragged
-    CHECK_THROWS(vm.runSource("import(\"tensor\").Tensor([1, 2, 3], dtype=\"Complex\").min()\n"));  // complex min
-
-    // ===== autograd =====================================================================
-    CHECK(run("T.zeros([2]).requiresgrad()") == "False");                                // off by default
-    CHECK(run("T.zeros([2], requiresgrad=True).requiresgrad()") == "True");              // opt-in kwarg
-    // d/dx sum(x^2) = 2x
-    CHECK(run("var x = T.Tensor([1, 2, 3], requiresgrad=True)\nx.square().sum().backward()\nx.grad") == "[2.0, 4.0, 6.0]");
-    // product rule via backward: d/da sum(a*b) = b, d/db sum(a*b) = a
-    CHECK(run("var a = T.Tensor([2, 3], requiresgrad=True)\nvar b = T.Tensor([5, 7], requiresgrad=True)\n(a*b).sum().backward()\na.grad") == "[5.0, 7.0]");
-    // matmul backward through an identity is ones
-    CHECK(run("var m = T.Tensor([[1,2],[3,4]], requiresgrad=True)\nm.matmul(T.eye(2)).sum().backward()\nm.grad") == "[[1.0, 1.0], [1.0, 1.0]]");
-    // broadcasting backward: column sums
-    CHECK(run("var a = T.Tensor([[1,2,3],[4,5,6]], requiresgrad=True)\nvar w = T.Tensor([1,1,1], requiresgrad=True)\n(a*w).sum().backward()\nw.grad") == "[5.0, 7.0, 9.0]");
-    // relu gradient mask
-    CHECK(run("var z = T.Tensor([-1, 2], requiresgrad=True)\nz.relu().sum().backward()\nz.grad") == "[0.0, 1.0]");
-    // grad accumulates across backward() calls; zerograd clears
-    CHECK(run("var p = T.Tensor([1, 2], requiresgrad=True)\np.sum().backward()\np.sum().backward()\np.grad") == "[2.0, 2.0]");
-    CHECK(run("var p = T.Tensor([1, 2], requiresgrad=True)\np.sum().backward()\np.zerograd()\np.grad") == "None");
-    // tensordot equals matmul, and is differentiable
-    CHECK(run("T.tensordot(T.Tensor([[1,2],[3,4]]), T.Tensor([[5,6],[7,8]]), 1)") == "[[19.0, 22.0], [43.0, 50.0]]");
-    CHECK(run("var t = T.Tensor([[1,2],[3,4]], requiresgrad=True)\nT.tensordot(t, T.eye(2), 1).sum().backward()\nt.grad") == "[[1.0, 1.0], [1.0, 1.0]]");
-    // detach drops grad
-    CHECK(run("T.Tensor([1.0], requiresgrad=True).detach().requiresgrad()") == "False");
-    CHECK_THROWS(vm.runSource("import(\"tensor\").zeros([2]).backward()\n"));            // backward without grad
-    CHECK_THROWS(vm.runSource("import(\"tensor\").zeros([2], dtype=\"Complex\").requiresgrad(True)\n"));  // complex can't require grad
-
-    // ===== NumPy-style surface (module level) ===========================================
-    CHECK(run("T.Tensor([[1,2,3],[4,5,6]])[0:1]") == "[[1.0, 2.0, 3.0]]");                // axis-0 slice
-    CHECK(run("T.Tensor([[1,2],[3,4]])[[1,0]]") == "[[3.0, 4.0], [1.0, 2.0]]");           // fancy index
-    CHECK(run("var a = T.Tensor([1,2,3,4])\na[a.gt(2)]") == "[3.0, 4.0]");                // boolean mask
-    CHECK(run("T.Tensor([1,2,3]).gt(2)") == "[0.0, 0.0, 1.0]");                           // comparison mask
-    CHECK(run("(T.Tensor([1,2,3]) > 2)") == "[0.0, 0.0, 1.0]");                           // > operator
-    CHECK(run("T.where(T.Tensor([1,0,1]), T.Tensor([1,2,3]), T.zeros([3]))") == "[1.0, 0.0, 3.0]");
-    CHECK(run("T.Tensor([[1,2],[3,4]]).max(0)") == "[3.0, 4.0]");                         // max along axis
-    CHECK(run("T.Tensor([[1,2],[3,4]]).argmax(1)") == "[1.0, 1.0]");
-    CHECK(run("T.Tensor([1,2,3]).cumsum()") == "[1.0, 3.0, 6.0]");
-    CHECK(run("(T.Tensor([5,7]) % 3)") == "[2.0, 1.0]");                                  // modulo op
-    CHECK(run("(T.Tensor([2,3]) ** 2)") == "[4.0, 9.0]");                                 // power op
-    CHECK(run("T.Tensor([1.7,-1.2]).floor()") == "[1.0, -2.0]");
-    CHECK(run("T.concatenate([T.Tensor([1,2]), T.Tensor([3,4])], 0)") == "[1.0, 2.0, 3.0, 4.0]");
-    CHECK(run("T.stack([T.Tensor([1,2]), T.Tensor([3,4])], 0)") == "[[1.0, 2.0], [3.0, 4.0]]");
-    CHECK(run("T.Tensor([1,2,3]).flip()") == "[3.0, 2.0, 1.0]");
-    CHECK(run("T.linspace(0, 1, 5)") == "[0.0, 0.25, 0.5, 0.75, 1.0]");
-    CHECK(run("T.diag(T.Tensor([1,2]))") == "[[1.0, 0.0], [0.0, 2.0]]");
-    CHECK(run("T.det(T.Tensor([[4,3],[6,3]]))") == "-6.0");                               // linalg
-    CHECK(run("T.inv(T.Tensor([[4,3],[6,3]])).matmul(T.Tensor([[4,3],[6,3]]))") == "[[1.0, 0.0], [0.0, 1.0]]");
-    CHECK(run("T.outer(T.Tensor([1,2]), T.Tensor([3,4]))") == "[[3.0, 4.0], [6.0, 8.0]]");
-    CHECK(run("T.cross(T.Tensor([1,0,0]), T.Tensor([0,1,0]))") == "[0.0, 0.0, 1.0]");
-    CHECK(run("T.einsum(\"ij,jk->ik\", T.Tensor([[1,2],[3,4]]), T.eye(2))") == "[[1.0, 2.0], [3.0, 4.0]]");
-    CHECK(run("T.Tensor([3,1,2]).sort()") == "[1.0, 2.0, 3.0]");
-    CHECK(run("T.Tensor([3,1,2]).argsort()") == "[1.0, 2.0, 0.0]");
-    CHECK(run("T.unique(T.Tensor([3,1,3,2,1]))") == "[1.0, 2.0, 3.0]");
-    CHECK(run("T.searchsorted(T.Tensor([1,3,5]), 4)") == "2");                            // insertion index
-    CHECK(run("T.Tensor([[1,2]], dtype=\"Complex\").real()") == "[[1.0, 2.0]]");
-    // autograd through the new ops
-    CHECK(run("var x = T.Tensor([1,2,3,4], requiresgrad=True)\nT.where(T.Tensor([1,0,1,0]), x, T.zeros([4])).sum().backward()\nx.grad") == "[1.0, 0.0, 1.0, 0.0]");
-    CHECK(run("var x = T.Tensor([-1.0,0.5,2.0], requiresgrad=True)\nx.clip(0,1).sum().backward()\nx.grad") == "[0.0, 1.0, 0.0]");
-    CHECK_THROWS(vm.runSource("import(\"tensor\").Tensor([1.0,2.0], dtype=\"Complex\").lt(3.0)\n"));  // complex ordering undefined
-
-    // serialization: gradient-free tensors round-trip; grad-requiring ones refuse
-    CHECK(run("var s = import(\"serialize\")\nvar t = T.Tensor([[1.5,2.5],[3.5,4.5]])\ns.loads(s.dumps(t)) == t") == "True");
-    CHECK(run("var d = import(\"dump\")\nvar t = T.Tensor([1,2,3])\nd.loads(d.dumps(t)) == t") == "True");
-    CHECK_THROWS(vm.runSource("var s = import(\"serialize\")\nvar T = import(\"tensor\")\ndiscard s.dumps(T.Tensor([1.0], requiresgrad=True))\n"));  // grad tensor refuses
+    // ===== the Kirito `tensor` module: KiritoVM/runSource-driven value/error checks live in
+    // tests/scripts/unit_tensor.ki now. What stays here needs a C++-only capability the .ki golden
+    // runner can't express: capturing stderr (the warn-once checks below) or a per-VM
+    // setGcThreshold() (the GC regression further down). ==================================
 
     // a non-differentiable op on a grad tensor warns once (to stderr)
     {
@@ -203,26 +130,6 @@ int main() {
         CHECK(cap.str().find("not differentiable") != std::string::npos);      // did not silently detach
     }
 
-    // --- item(): a one-element tensor -> a scalar Float/Complex ---------------------------------
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\nT.Tensor([42.0]).item()") == "42.0");
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\ntype(T.Tensor([[7.0]]).item())") == "Float");
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\nT.zeros([1,1,1]).item()") == "0.0");
-    // works on a grad-tracked scalar result (sum/mean return a scalar tensor under grad)
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\nvar g = T.Tensor([3.0,4.0], requiresgrad=True)\n(g*g).sum().item()") == "25.0");
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\ntype(T.Tensor([5.0], dtype=\"Complex\").item())") == "Complex");
-    CHECK_THROWS(vm.runSource("var T = import(\"tensor\")\nT.Tensor([1.0,2.0]).item()"));   // multi-element
-    CHECK_THROWS(vm.runSource("var T = import(\"tensor\")\nT.zeros([0]).item()"));          // empty
-
-    // --- tolist(): tensor -> nested Kirito List ------------------------------------------------
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\nT.Tensor([1.0,2.0,3.0]).tolist()") == "[1.0, 2.0, 3.0]");
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\ntype(T.Tensor([1.0]).tolist())") == "List");
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\nT.Tensor([[1.0,2.0],[3.0,4.0]]).tolist()") == "[[1.0, 2.0], [3.0, 4.0]]");
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\nT.zeros([2,1,2]).tolist()") == "[[[0.0, 0.0]], [[0.0, 0.0]]]");
-    // round-trips: Tensor(t.tolist()) == t
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\nvar t = T.arange(24.0).reshape([2,3,4])\nT.Tensor(t.tolist()) == t") == "True");
-    // tolist of a complex tensor nests Complex values
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\ntype(T.Tensor([[1.0]], dtype=\"Complex\").tolist()[0][0])") == "Complex");
-
     // GC regression: tolist() builds a nested List whose float leaves sit in a parent ListVal that
     // is not yet in the arena. If those leaves aren't GC-rooted, a collection triggered mid-build by
     // a sibling allocation reclaims them, yielding a stale handle (hit by Float-tensor image I/O).
@@ -234,10 +141,6 @@ int main() {
         // and the leaf values survive intact (sum 0..59)
         CHECK(evalStr(gcvm, "var T = import(\"tensor\")\nvar s = 0.0\nfor row in T.arange(60.0).reshape([4,5,3]).tolist():\n  for px in row:\n    for v in px:\n      s = s + v\ns") == "1770.0");
     }
-
-    // item()/tolist() are described under inspect
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\ninspect(T.zeros([1])).find(\"item()\") >= 0") == "True");
-    CHECK(evalStr(vm, "var T = import(\"tensor\")\ninspect(T.zeros([1])).find(\"tolist()\") >= 0") == "True");
 
     return RUN_TESTS();
 }

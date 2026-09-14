@@ -1,0 +1,76 @@
+abc
+3
+60
+5
+15
+15
+14
+7
+[1, 2]
+0
+42
+7
+remove: value not in List
+index: value not in List
+0
+False
+[1, 3, 2]
+1
+2
+TrueFalse
+3
+'C' _iter_ must return an iterator — call iter(...) on a collection, or return an object with a _next_ method
+'A' _iter_ must return an iterator — call iter(...) on a collection, or return an object with a _next_ method
+iterator recurses too deeply (does _iter_ return iter(self) or form a cycle?)
+6
+header contains a control character (CR/LF): 'X'
+cookie contains a control character (CR/LF): 's'
+fmod: math domain error (infinite dividend)
+2.0
+5.0
+2.0
+[2.0, 4.0]
+[4.0, 8.0, 12.0]
+[2.0, 4.0]
+detach: socket is closed
+-1
+-1
+True
+connect failed: Connection refused
+True
+4.0
+False
+gauss: sigma must be non-negative
+aa
+2
+True
+1.0,2.0,3.0,True,True
+1.0
+3.0
+TrueTrue2
+nine
+TrueTrue2
+nine
+y
+TrueTrue
+1
+abc
+x
+gone
+DateTime: epoch 999999999999999999 is out of representable range (year 31688740476)
+DateTime: epoch -999999999999999999 is out of representable range (year -31688736537)
+1970-01-01T00:00:00
+2.67
+3
+-3
+1.234
+True
+1
+True
+True
+True
+[2, 4, 6]
+[3, 2, 1]
+291
+[1, 2]
+42

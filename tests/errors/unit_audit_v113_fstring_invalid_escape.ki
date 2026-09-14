@@ -1,0 +1,3 @@
+# A01-1 (v1.13 audit): the f-string literal-part decoder must reject an unknown escape (route
+# through the shared common.hpp decodeCookedEscape), not silently drop the backslash.
+var s = f"a\qb"

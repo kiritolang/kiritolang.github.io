@@ -1,0 +1,80 @@
+abc
+abc
+abc
+abc
+abc
+a,b,c
+2
+b,c
+b c d
+1
+bbaa
+bbbb
+aaaa
+3
+1
+-1
+0
+4
+substring not found
+1
+2
+True
+False
+True
+False
+8
+[1, 2, 1, 2, 1, 2]
+[1, 2, 1, 2, 1, 2]
+[]
+[]
+[[0, 9], [0, 9], [0, 9]]
+repeated List too large
+0xff
+0XFF
+0o10
+0b101
+0x0000ff
+-0xff
+ff
+-9223372036854775808
+0
+-9223372036854775808
+-9223372036854775808
+False
+False
+1
+1
+[1, 2, [...]]
+True
+{'k': {...}}
+int
+bool
+float
+other
+1
+[2, 2, 2]
+[10, 20]
+7
+function got multiple values for argument 'a'
+'g' takes 2 positional argument(s) but 3 were given
+function missing required argument 'b'
+round() got an unexpected keyword argument 'bogus'
+2
+3
+3
+index: value not in List
+True
+True
+False
+1
+2
+2
+[P1, P2, P3]
+P1
+P3
+True
+[P3, P2, P1]
+repeated String too large
+range too large
+

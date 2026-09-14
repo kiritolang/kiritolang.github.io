@@ -1,0 +1,83 @@
+# hash module: MD5/SHA-1/SHA-256 known-answer vectors, multi-block/padding boundaries, checksums
+# (CRC-32/Adler-32/CRC-64), String/Bytes equivalence, and bad-input errors (converted from
+# tests/unit/test_hash.cpp — a pure run-a-script-check-a-value TU). All values are fixed-vector
+# digests/checksums, fully deterministic. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+var h = import("hash")
+
+# --- MD5 standard test vectors ---
+io.print(h.md5(""))
+io.print(h.md5("a"))
+io.print(h.md5("abc"))
+io.print(h.md5("message digest"))
+io.print(h.md5("abcdefghijklmnopqrstuvwxyz"))
+
+# --- SHA-256 standard test vectors ---
+io.print(h.sha256(""))
+io.print(h.sha256("abc"))
+io.print(h.sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))
+
+# --- SHA-1 standard test vectors ---
+io.print(h.sha1(""))
+io.print(h.sha1("abc"))
+
+# --- multi-block inputs (longer than 64 bytes, exercising the padding/length path) ---
+# 1,000,000 'a' characters: the classic FIPS test vector.
+var million = "a" * 1000000
+io.print(h.sha256(million))
+io.print(h.md5(million))
+
+# exactly 64 bytes (one full block, forcing a second padding block)
+io.print(h.sha256("0123456789" * 6 + "0123"))
+
+# --- binary-safe data (all 256 byte values) ---
+var allbytes = Function():
+    var s = ""
+    for i in range(256):
+        s = s + "\x00"
+    return len(h.sha256(s))
+io.print(allbytes())   # sha256 hex digest is always 64 chars
+
+# digest lengths are fixed regardless of input
+io.print(len(h.md5("anything")))
+io.print(len(h.sha1("anything")))
+io.print(len(h.sha256("anything")))
+
+# determinism: same input -> same digest
+io.print(h.sha256("repeatable") == h.sha256("repeatable"))
+# avalanche: one-bit change -> different digest
+io.print(h.sha256("hello") != h.sha256("hellp"))
+
+# --- checksums: Adler-32 / CRC-32 (the hash module's fast non-cryptographic digests) ---
+io.print(h.crc32("hello"))   # known constant
+io.print(h.crc32(""))
+io.print(h.adler32(""))
+io.print(h.adler32("Wikipedia"))  # the classic example
+io.print(h.crc64(""))
+# CRC-64/XZ check value for "123456789" is 0x995dc9bbdf1939fa (a signed int64 -> negative)
+io.print(h.crc64("123456789"))
+
+# --- every function accepts a Bytes byte-identically to the same-byte String ---
+io.print(h.crc32(Bytes([104, 101, 108, 108, 111])) == h.crc32("hello"))
+io.print(h.sha256("abc".encode()) == h.sha256("abc"))
+io.print(h.md5(Bytes([97, 98, 99])) == h.md5("abc"))
+# binary data with high bytes hashes (a String can't address these losslessly; Bytes can)
+io.print(len(h.sha256(Bytes([0, 255, 128, 1, 254]))))
+
+# hostile: wrong argument types throw, not crash
+try:
+    discard h.md5(42)
+catch as e:
+    io.print(e)
+try:
+    discard h.sha256([1, 2, 3])
+catch as e:
+    io.print(e)
+try:
+    discard h.sha1(None)
+catch as e:
+    io.print(e)
+try:
+    discard h.crc32(None)
+catch as e:
+    io.print(e)
