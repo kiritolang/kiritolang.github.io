@@ -93,8 +93,33 @@ int main() {
     });
     CHECK(strResult == "20000");
 
+    // Combinator fusion + inlining: a map/filter-heavy workload, run with the inline transform ON and
+    // OFF (fresh VMs). The HARD assertion is that both produce the identical result — inlining changes
+    // speed, not results. The on/off timing ratio is reported for tracking but NOT asserted (timing is
+    // load-dependent and would flake in CI); locally the fused path is ~1.8x faster here.
+    const char* mapWork =
+        "var run = Function():\n"
+        "    var total = 0\n"
+        "    var reps = 0\n"
+        "    while reps < 200:\n"
+        "        for x in map(Function(v): return v * v, range(1000)):\n"
+        "            total = total + x\n"
+        "        for y in filter(Function(v): return v % 2 == 0, range(1000)):\n"
+        "            total = total + y\n"
+        "        reps = reps + 1\n"
+        "    return total\n"
+        "run()\n";
+    std::string mapOn, mapOff;
+    KiritoVM vmMapOn;  vmMapOn.installStandardLibrary();
+    KiritoVM vmMapOff; vmMapOff.installStandardLibrary(); vmMapOff.setInliningEnabled(false);
+    double tMapOn  = timeMs([&] { mapOn  = vmMapOn.stringify(vmMapOn.runSource(mapWork)); });
+    double tMapOff = timeMs([&] { mapOff = vmMapOff.stringify(vmMapOff.runSource(mapWork)); });
+    CHECK(mapOn == mapOff);                 // fusion is result-identical to the lazy path
+    CHECK(mapOn == "66616600000");
+
     std::printf("bench: fib(27) %.0f ms | loop 1e6 %.0f ms | fnloop 1e6 %.0f ms | list 1e5 %.0f ms | "
-                "strjoin 2e4 %.0f ms | live=%zu\n",
-                tFib, tLoop, tFnLoop, tList, tStr, vm.liveCount());
+                "strjoin 2e4 %.0f ms | map/filter inline=%.0f no-inline=%.0f ms (%.2fx) | live=%zu\n",
+                tFib, tLoop, tFnLoop, tList, tStr, tMapOn, tMapOff,
+                tMapOff > 0 ? tMapOn / tMapOff : 0.0, vm.liveCount());
     return RUN_TESTS();
 }
