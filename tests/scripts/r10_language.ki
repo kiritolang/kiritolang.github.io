@@ -493,10 +493,10 @@ var anyArg = Function(x : Any) -> Any:
 ok(anyArg(1) == 1 and anyArg("s") == "s" and anyArg([1]) == [1], "'Any' accepts every type")
 # closures capture and persist their lexical scope
 var makeCounter = Function():
-    var c = 0
-    var bump = Function():
-        c = c + 1
-        return c
+    var c = [0]                    # captured state in a container (rebinding a captured variable is a
+    var bump = Function():         # compile error; mutating a captured container element is allowed)
+        c[0] = c[0] + 1
+        return c[0]
     return bump
 var counter = makeCounter()
 ok(counter() == 1 and counter() == 2 and counter() == 3, "a closure captures and persists state")

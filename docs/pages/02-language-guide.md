@@ -61,6 +61,13 @@ Write `x = 12` (a plain rebind) if that is what you mean, or pick a new name for
 value. (Shadowing a name from an *enclosing* function or the module is ordinary lexical shadowing and
 is not warned.)
 
+**Closures may read but not rebind a captured variable.** A nested function may freely *read* a variable
+from an enclosing function, but rebinding one — `n = n + 1` on a captured `n` — is a compile error
+(*write-through closures are not allowed*, so closures stay soundly inlinable). For per-closure mutable
+state, capture a **container** and mutate its element (`box[0] = box[0] + 1`) or return the new value.
+Assigning a module-level or class name is unaffected (those are program/class state, not captured
+locals).
+
 ## Types
 
 Dynamically typed, strongly typed. Built-in types:

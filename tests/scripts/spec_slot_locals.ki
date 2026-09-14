@@ -26,14 +26,14 @@ io.print([adders[0](100), adders[1](100), adders[2](100)])
 
 # nested helper using outer params/locals; helper has its own slotted locals
 var stats = Function(xs):
-    var total = 0
-    var sq = 0
+    var total = [0]                 # captured accumulators in containers: a nested helper may not
+    var sq = [0]                    # rebind a captured variable, but may mutate a captured container
     var acc = Function(v):
-        total = total + v
-        sq = sq + v * v
+        total[0] = total[0] + v
+        sq[0] = sq[0] + v * v
     for x in xs:
         acc(x)
-    return [total, sq]
+    return [total[0], sq[0]]
 io.print(stats([1, 2, 3, 4]))
 
 # recursion + a method with slotted locals and _super_

@@ -553,10 +553,10 @@ assert exitErr == "exit-failure", "an _exit_ that throws propagates a catchable 
 # ============================================================================
 # Closures capture their lexical scope by reference and persist across calls.
 var mkCounter = Function():
-    var n = 0
-    return Function():
-        n = n + 1
-        return n
+    var n = [0]                    # captured state in a container (mutating a captured container is
+    return Function():             # allowed; rebinding a captured variable is a compile error)
+        n[0] = n[0] + 1
+        return n[0]
 var ctr = mkCounter()
 assert ctr() == 1 and ctr() == 2 and ctr() == 3, "closure captures + persists mutable state"
 var ctr2 = mkCounter()

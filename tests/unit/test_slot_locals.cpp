@@ -27,8 +27,9 @@ int main() {
               " return s\nf(100)") == "4950");
     CHECK(run("var f = Function(xs):\n var t = 0\n for x in xs:\n  t = t + x\n return t\nf([3,4,5])") == "12");
 
-    // --- closures: a captured local stays name-based and is shared/mutated across calls ---
-    CHECK(run("var mk = Function():\n var n = 0\n var inc = Function():\n  n = n + 1\n  return n\n"
+    // --- closures: a captured CONTAINER stays name-based and is shared/mutated across calls
+    //     (rebinding a captured variable is a compile error; mutating a captured container is allowed) ---
+    CHECK(run("var mk = Function():\n var n = [0]\n var inc = Function():\n  n[0] = n[0] + 1\n  return n[0]\n"
               " return inc\nvar c = mk()\n[c(), c(), c()]") == "[1, 2, 3]");
     // capture only reads (still must see the live value)
     CHECK(run("var mk = Function():\n var x = 10\n var g = Function(): return x\n x = 20\n return g()\nmk()") == "20");
@@ -37,9 +38,10 @@ int main() {
     CHECK(run("var f = Function():\n var x = 1\n var g = Function():\n  var x = 99\n  return x\n"
               " return [x, g()]\nf()") == "[1, 99]");
 
-    // --- capture two levels deep: a grandchild mutating the outer local forces it name-based ---
-    CHECK(run("var outer = Function():\n var x = 1\n var mid = Function():\n  var inner = Function():\n"
-              "   x = x + 10\n   return x\n  return inner()\n var r = mid()\n return [r, x]\nouter()") == "[11, 11]");
+    // --- capture two levels deep: a grandchild mutating the outer captured CONTAINER (rebinding a
+    //     captured variable is a compile error; mutating a captured container element is allowed) ---
+    CHECK(run("var outer = Function():\n var x = [1]\n var mid = Function():\n  var inner = Function():\n"
+              "   x[0] = x[0] + 10\n   return x[0]\n  return inner()\n var r = mid()\n return [r, x[0]]\nouter()") == "[11, 11]");
 
     // --- read/rebind-before-assign is STRICT (no fallback): a bare `=` to a local before its own
     //     `var` runs is a "not defined" error, NOT a walk out to an enclosing binding of the same

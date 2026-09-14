@@ -1,0 +1,10 @@
+# A function may not REBIND a variable captured from an enclosing function (write-through closures are
+# not allowed, so closures stay soundly inlinable). Caught at compile time, before the program runs.
+# The idiomatic alternatives: return the new value, or capture a container and mutate its element.
+var makeCounter = Function():
+    var n = 0
+    var bump = Function():
+        n = n + 1
+        return n
+    return bump
+discard makeCounter()

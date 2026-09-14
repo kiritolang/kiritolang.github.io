@@ -171,6 +171,7 @@ so it *is* catchable; it's noted below.)
 | Message | Cause | Fix |
 |---|---|---|
 | `name '<X>' is not defined` | A reference bound to no parameter, no `var`/`for`/`class`/`catch`/`with` name in an enclosing scope, no run-scope binding, and no builtin — resolved at compile time, so it is **not** catchable | Declare the name (`var`) or fix the typo before use |
+| `cannot assign to '<X>': it is captured from an enclosing function (write-through closures are not allowed — return the value or pass it as an argument)` | A nested function **rebinds** a variable captured from an enclosing **function** scope (a write-through closure). Forbidden uniformly so closures stay soundly inlinable. Reading a captured variable is fine; so is mutating a captured **container** (`box[0] = …`), and assigning a module-level or class name | Return the new value, capture a container and mutate its element, or pass the accumulator as an argument |
 
 ### Compiler — assignment targets & nesting
 

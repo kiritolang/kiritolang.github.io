@@ -369,10 +369,10 @@ ok(packReturn() == [1, 2, 3], "block-body return packs a List")
 
 # Closures capture lexical scope and persist mutable state.
 var makeCounter = Function():
-    var count = 0
-    var bump = Function():
-        count = count + 1
-        return count
+    var count = [0]                # captured state in a container (mutating a captured container is
+    var bump = Function():         # allowed; rebinding a captured variable is a compile error)
+        count[0] = count[0] + 1
+        return count[0]
     return bump
 var counter = makeCounter()
 ok(counter() == 1 and counter() == 2 and counter() == 3, "closure captures + persists state")

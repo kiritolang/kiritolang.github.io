@@ -53,12 +53,12 @@ check(sr[1] == 999, "nested local shadows enclosing param")
 check(len([1, 2, 3, 4]) == 4, "unshadowed builtin len still works")
 
 # ---------- 3. closures / captured variables ----------
-var makeCounter = Function(start):                   # `start` captured param; `n` captured local
-    var n = start
-    var next = Function():
-        n = n + 1
-        return n
-    var get = Function(): return n
+var makeCounter = Function(start):                   # `start` captured param; `n` captured state cell
+    var n = [start]                                  # captured STATE in a container (mutating a
+    var next = Function():                            # captured variable is a compile error; mutating
+        n[0] = n[0] + 1                               # a captured container element is allowed)
+        return n[0]
+    var get = Function(): return n[0]
     return [next, get]                               # two closures over the SAME cell
 var c = makeCounter(10)
 check(c[0]() == 11 and c[0]() == 12, "closure mutates captured local")

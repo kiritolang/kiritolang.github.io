@@ -20,12 +20,13 @@ var sub = Function(a, b):
     return a - b
 assert sub(10, 3) == 7 and sub(a=10, b=3) == 7 and sub(b=3, a=10) == 7 and sub(10, b=3) == 7, "kwargs mixing"
 
-# --- closures capture by reference, can rebind outer ---
+# --- closures capture by reference; captured STATE lives in a container (rebinding a captured
+#     variable is a compile error, mutating a captured container element is allowed) ---
 var makeCounter = Function():
-    var n = 0
+    var n = [0]
     var inc = Function():
-        n = n + 1
-        return n
+        n[0] = n[0] + 1
+        return n[0]
     return inc
 var c1 = makeCounter()
 var c2 = makeCounter()

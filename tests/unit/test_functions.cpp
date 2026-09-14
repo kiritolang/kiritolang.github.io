@@ -28,13 +28,13 @@ var fact = Function(n):
 fact(5)
 )") == "120");
 
-    // closure: inner function captures and rebinds an outer local across calls
+    // closure: inner function captures an outer container and mutates it across calls
     CHECK(evalStr(vm, R"(
 var makeCounter = Function():
-    var count = 0
+    var count = [0]
     var inc = Function():
-        count = count + 1
-        return count
+        count[0] = count[0] + 1
+        return count[0]
     return inc
 var c = makeCounter()
 c()

@@ -401,10 +401,10 @@ assert openf([1]) == [1] and openf({"k": 1}) == {"k": 1}, "no annotation accepts
 
 # closures capture by reference and stay independent
 var makeCounter = Function():
-    var n = 0
-    return Function():
-        n = n + 1
-        return n
+    var n = [0]                    # captured state in a container (mutating a captured container is
+    return Function():             # allowed; rebinding a captured variable is a compile error)
+        n[0] = n[0] + 1
+        return n[0]
 var c1 = makeCounter()
 var c2 = makeCounter()
 assert c1() == 1 and c1() == 2 and c2() == 1, "closures are independent, capture by reference"

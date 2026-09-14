@@ -123,16 +123,17 @@ while wci < 3:
     wci = wci + 1
 ok(whileClosures[0]() == 3, "while-loop closure sees the final value of the captured var")
 
-# Multi-level closure write-through to an outer binding.
+# Multi-level closure mutating an outer captured CONTAINER (rebinding a captured variable is a compile
+# error at any depth; mutating a captured container element is allowed at any depth).
 var threeDeep = Function():
-    var x = 1
+    var x = [1]
     var mid = Function():
         var inner = Function():
-            x = x + 10
+            x[0] = x[0] + 10
         inner()
-        return x
+        return x[0]
     return mid()
-ok(threeDeep() == 11, "nested closure two levels deep writes through to the outer var")
+ok(threeDeep() == 11, "nested closure two levels deep mutates the outer captured container")
 
 # ============================================================================
 # Operator-overload fallbacks (gaps: only _ne_ derives; no cross-derivation)

@@ -290,10 +290,10 @@ for bi in [1, 2, 3]:
 ok(bound[0]() == 1 and bound[1]() == 2 and bound[2]() == 3, "a factory call freezes the per-iteration value")
 # Each recursive descent that builds a counter closure gets independent captured state.
 var makeCounter = Function():
-    var c = 0
-    return Function():
-        c = c + 1
-        return c
+    var c = [0]                    # captured state in a container (mutating a captured container is
+    return Function():             # allowed; rebinding a captured variable is a compile error)
+        c[0] = c[0] + 1
+        return c[0]
 var cx = makeCounter()
 var cy = makeCounter()
 ok(cx() == 1 and cx() == 2 and cy() == 1 and cx() == 3, "two counters have independent captured state")

@@ -826,13 +826,13 @@ ok(addTen(5) == 15, "closure captures enclosing variable")
 
 # closures over the same maker get independent state
 var makeCounter = Function():
-    var count = 0
-    return Function():
-        count = count + 1
-        return count
+    var count = [0]                # captured state in a container (mutating a captured container is
+    return Function():             # allowed; rebinding a captured variable is a compile error)
+        count[0] = count[0] + 1
+        return count[0]
 var tick = makeCounter()
 var other = makeCounter()
-ok(tick() == 1 and tick() == 2 and tick() == 3, "closure rebinds its captured variable")
+ok(tick() == 1 and tick() == 2 and tick() == 3, "closure mutates its captured container")
 ok(other() == 1, "each closure has independent captured state")
 
 # keyword args in any order, with defaults

@@ -15,10 +15,10 @@ io.print(shadow())           # local
 io.print(x)                  # module (unchanged)
 
 var counter = Function():
-    var n = 0
-    var step = Function():
-        n = n + 1            # rebinds the captured n
-        return n
+    var n = [0]              # captured STATE lives in a container: rebinding a captured *variable* is
+    var step = Function():   # a compile error, but mutating a captured container element is allowed
+        n[0] = n[0] + 1
+        return n[0]
     return step
 
 var c1 = counter()

@@ -419,10 +419,10 @@ assert threw, "wrong-type return value throws"
 
 # Closure captures lexical scope
 var mkCounter = Function():
-    var n = 0
-    var bump = Function():
-        n = n + 1
-        return n
+    var n = [0]                    # captured state in a container (rebinding a captured variable is a
+    var bump = Function():         # compile error; mutating a captured container element is allowed)
+        n[0] = n[0] + 1
+        return n[0]
     return bump
 var cnt2 = mkCounter()
 assert cnt2() == 1 and cnt2() == 2 and cnt2() == 3, "closures capture and persist"

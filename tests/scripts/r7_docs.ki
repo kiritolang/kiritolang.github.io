@@ -239,10 +239,10 @@ var add_ten = make_adder(10)
 var add_hundred = make_adder(100)
 ok(add_ten(5) == 15 and add_hundred(5) == 105, "closures")
 var make_counter = Function():
-    var count = 0
-    return Function():
-        count = count + 1
-        return count
+    var count = [0]                # captured state in a container (mutating a captured container is
+    return Function():             # allowed; rebinding a captured variable is a compile error)
+        count[0] = count[0] + 1
+        return count[0]
 var tick = make_counter()
 discard tick()
 discard tick()

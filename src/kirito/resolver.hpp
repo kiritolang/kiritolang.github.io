@@ -189,8 +189,23 @@ private:
     // targets read their object/keys; tuple/star recurse.
     void checkTarget(const ast::Expr& target) {
         ast::walkAssignTarget(target,
-            [&](const ast::NameExpr& n) { checkName(n); },     // a bare-name target must resolve (rebind)
+            [&](const ast::NameExpr& n) { checkName(n); checkNotWriteCapture(n); },  // rebind must resolve
             [&](const ast::Expr& e) { checkExpr(e); });        // index/member objects + keys are read
+    }
+
+    // Write-through closures are not allowed: a function may not ASSIGN to a variable captured from an
+    // enclosing FUNCTION scope. Such a write cannot be preserved when the function is inlined (captures
+    // are auto-lifted by value), so the language forbids it uniformly (independent of the inlining flag)
+    // rather than let the two modes diverge — return the value or pass the accumulator as an argument
+    // instead. Module-level and class-body names are program/class state, not closure-captured locals,
+    // so writing them stays legal (only an enclosing *function* scope is a capture-of-local).
+    void checkNotWriteCapture(const ast::NameExpr& n) {
+        int j = lexicalScopeIndexOf(n.name);
+        if (j >= 0 && static_cast<std::size_t>(j) + 1 < scopes_.size() &&
+            scopes_[static_cast<std::size_t>(j)].kind == Scope::Function)
+            throw KiritoError("cannot assign to '" + n.name + "': it is captured from an enclosing "
+                              "function (write-through closures are not allowed — return the value or "
+                              "pass it as an argument)", n.span);
     }
 
     void checkName(const ast::NameExpr& n) {

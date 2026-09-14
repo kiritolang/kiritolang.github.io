@@ -564,12 +564,12 @@ class Bag:
     var _init_ = Function(self):
         self._items = [500, 300, 900]
     var total = Function(self):
-        var acc = 0
-        var add = Function(v):           # closure reads self via capture; write to acc
-            acc = acc + v
+        var acc = [0]
+        var add = Function(v):           # closure reads self via capture; mutates captured container acc
+            acc[0] = acc[0] + v
         for v in self._items:            # and self._items is private
             add(v)
-        return acc
+        return acc[0]
     var first_private = Function(self):
         var f = Function(): return self._items[0]   # private read INSIDE a nested function
         return f()

@@ -143,17 +143,20 @@ io.print(add_ten(5), add_hundred(5))          # => 15 105
 
 `add_ten` and `add_hundred` are separate functions, each carrying its own captured `amount`.
 
-Because a closure can capture a *mutable* binding, you can build little objects with private state
-without a class:
+A closure may **read** a variable captured from an enclosing function, but it may **not rebind** one —
+`count = count + 1` on a captured `count` is a compile error (*"cannot assign to 'count': it is
+captured from an enclosing function"*). This keeps closures safe to inline. To hold private, mutable
+state, capture a **container** and mutate its contents (rebinding a container element is not a variable
+rebind):
 
 ```kirito
 var io = import("io")
 
 var make_counter = Function():
-    var count = 0                 # private to each counter
+    var count = [0]               # private state per counter, held in a container
     return Function():
-        count = count + 1         # rebinds the captured `count`
-        return count
+        count[0] = count[0] + 1   # mutate the captured container (rebinding the captured
+        return count[0]           # variable `count` itself would be a compile error)
 
 var tick = make_counter()
 io.print(tick(), tick(), tick())  # => 1 2 3

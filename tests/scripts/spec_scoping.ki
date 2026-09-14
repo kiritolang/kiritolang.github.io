@@ -33,14 +33,15 @@ while w < 3:
     w = w + 1
 assert inWhile == 2, "var inside `while` is visible after"
 
-# --- closures capture by reference and can rebind the captured variable ---
+# --- closures capture by reference; captured STATE is held in a container (rebinding a captured
+#     variable is a compile error, mutating a captured container element is allowed) ---
 var makeAdder = Function(start):
-    var total = start
+    var total = [start]
     var add = Function(x):
-        total = total + x
-        return total
+        total[0] = total[0] + x
+        return total[0]
     var get = Function():
-        return total
+        return total[0]
     return [add, get]
 var pair = makeAdder(100)
 var add = pair[0]

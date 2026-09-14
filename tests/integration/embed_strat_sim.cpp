@@ -127,31 +127,31 @@ int main() {
     // factory from C++ to get a fresh strategy.
     const char* buyAndHold = R"KI(
 Function():
-    var bought = False
-    return Function(bar) -> Dict:
-        if bought:
+    var bought = [False]                  # captured state in a container (a closure may not rebind a
+    return Function(bar) -> Dict:         # captured variable, but may mutate a captured container)
+        if bought[0]:
             return {"action": "hold"}
-        bought = True
+        bought[0] = True
         return {"action": "buy", "qty": 1}
 )KI";
 
     const char* smaCross = R"KI(
 var strat = import("strat")
 Function(shortW, longW):
-    var closes = []
-    var position = 0
-    return Function(bar) -> Dict:
+    var closes = []                       # a captured list is mutated in place via append (allowed)
+    var position = [0]                    # captured scalar state goes in a container (a closure may not
+    return Function(bar) -> Dict:         # rebind a captured variable, but may mutate a captured container)
         closes.append(bar["close"])
         if len(closes) < longW:
             return {"action": "hold"}
         var s = strat.sma(closes, shortW)
         var l = strat.sma(closes, longW)
-        if s > l and position == 0:
-            position = 5
+        if s > l and position[0] == 0:
+            position[0] = 5
             return {"action": "buy", "qty": 5}
-        if s < l and position > 0:
-            var q = position
-            position = 0
+        if s < l and position[0] > 0:
+            var q = position[0]
+            position[0] = 0
             return {"action": "sell", "qty": q}
         return {"action": "hold"}
 )KI";
