@@ -3,12 +3,17 @@
 var io = import("io")
 var sys = import("sys")
 
+# middle/outer are intentionally multi-statement so they are NOT inline candidates — a trivial
+# `return f()` forwarder would be inlined away, leaving no frame of its own (inlining collapses such
+# chains, by design). This test is about multi-frame traceback reporting, so the chain must stay real.
 var boom = Function():
     throw "kaboom"
 var middle = Function():
-    return boom()
+    var r = boom()
+    return r
 var outer = Function():
-    return middle()
+    var r = middle()
+    return r
 
 # No error yet -> empty traceback.
 io.print("empty:", sys.traceback() == "")

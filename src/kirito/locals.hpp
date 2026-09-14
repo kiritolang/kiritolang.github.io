@@ -301,33 +301,40 @@ inline NameSet freeVariables(const ast::FunctionExpr& fn) {
     return free;
 }
 
-// True iff an expression body is SAFE to inline (splice into the caller with param names rebound):
-//   - it contains NO nested function literal (a nested closure would capture the caller's scope, not
-//     the now-frame-slotted inlined locals), and
-//   - every NameExpr is either a PARAMETER (rebound to the evaluated argument by the inliner) or a
-//     genuine GLOBAL (resolver builtinSlot >= 0). A reference the resolver bound to an enclosing/module
-//     scope (envIndex >= 0 — a capture, OR a builtin name SHADOWED by a lexical `var`) is unsafe: its
-//     (depth,index) was computed for the lambda's own scope nesting and would be stale once inlined.
-// This is the precise capture-free test — checking the per-NameExpr resolver annotation, not merely
-// whether the name is a registered builtin (which a lexical shadow would silently override).
-inline bool inlineBodySafe(const ast::Expr& e, const NameSet& params) {
+// Scan an inline-candidate body expression. Returns false if it CANNOT be inlined:
+//   - it contains a nested function literal (a nested closure would capture the caller's scope, not the
+//     inlined body's rebound names), or
+//   - it has a name reference that is neither a PARAMETER, a genuine GLOBAL (builtinSlot >= 0, envIndex
+//     < 0), nor an env-indexed CAPTURE (envIndex >= 0, envDepth >= 1). A name-based/unresolved ref has
+//     no (depth,index) to relocate and is rejected.
+// On success, every captured NameExpr (a variable read from an enclosing scope) is appended to `caps`
+// so the inliner can re-address it at the call site as LoadVar(envDepth-1, envIndex) — the call site is
+// exactly one scope shallower than the lambda body. Checking the per-NameExpr resolver annotation (not
+// just "is this a registered builtin") is essential: a builtin name shadowed by a lexical `var` resolves
+// to a capture, and inlining it as a global would be a miscompile.
+inline bool inlineBodyScan(const ast::Expr& e, const NameSet& params,
+                           std::vector<const ast::NameExpr*>& caps) {
     if (dynamic_cast<const ast::FunctionExpr*>(&e)) return false;
-    if (const auto* n = dynamic_cast<const ast::NameExpr*>(&e))
-        return params.count(n->name) || (n->builtinSlot >= 0 && n->envIndex < 0);
-    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) return inlineBodySafe(*u->operand, params);
-    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e)) return inlineBodySafe(*b->lhs, params) && inlineBodySafe(*b->rhs, params);
-    if (const auto* l = dynamic_cast<const ast::LogicalExpr*>(&e)) return inlineBodySafe(*l->lhs, params) && inlineBodySafe(*l->rhs, params);
-    if (const auto* cn = dynamic_cast<const ast::ConditionalExpr*>(&e)) return inlineBodySafe(*cn->cond, params) && inlineBodySafe(*cn->then, params) && inlineBodySafe(*cn->orelse, params);
-    if (const auto* c = dynamic_cast<const ast::CallExpr*>(&e)) { if (!inlineBodySafe(*c->callee, params)) return false; for (const auto& a : c->args) if (!a.name.empty() || !inlineBodySafe(*a.value, params)) return false; return true; }
-    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(&e)) return inlineBodySafe(*m->object, params);  // .name is a member, not a scope name
-    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&e)) { if (!inlineBodySafe(*ix->object, params)) return false; for (const auto& k : ix->indices) if (!inlineBodySafe(*k, params)) return false; return true; }
-    if (const auto* sl = dynamic_cast<const ast::SliceExpr*>(&e)) return (!sl->object || inlineBodySafe(*sl->object, params)) && (!sl->start || inlineBodySafe(*sl->start, params)) && (!sl->stop || inlineBodySafe(*sl->stop, params)) && (!sl->step || inlineBodySafe(*sl->step, params));
-    if (const auto* lst = dynamic_cast<const ast::ListLiteral*>(&e)) { for (const auto& x : lst->elems) if (!inlineBodySafe(*x, params)) return false; return true; }
-    if (const auto* stl = dynamic_cast<const ast::SetLiteral*>(&e)) { for (const auto& x : stl->elems) if (!inlineBodySafe(*x, params)) return false; return true; }
-    if (const auto* dt = dynamic_cast<const ast::DictLiteral*>(&e)) { for (const auto& [k, v] : dt->entries) if (!inlineBodySafe(*k, params) || !inlineBodySafe(*v, params)) return false; return true; }
-    if (const auto* fs = dynamic_cast<const ast::FStringExpr*>(&e)) { for (const auto& p : fs->parts) if (p.isExpr && !inlineBodySafe(*p.expr, params)) return false; return true; }
-    if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&e)) { for (const auto& x : tup->elems) if (!inlineBodySafe(*x, params)) return false; return true; }
-    if (const auto* star = dynamic_cast<const ast::StarExpr*>(&e)) return inlineBodySafe(*star->inner, params);
+    if (const auto* n = dynamic_cast<const ast::NameExpr*>(&e)) {
+        if (params.count(n->name)) return true;                    // a parameter (rebound to its argument)
+        if (n->builtinSlot >= 0 && n->envIndex < 0) return true;   // a genuine global
+        if (n->envIndex >= 0 && n->envDepth >= 1) { caps.push_back(n); return true; }  // a liftable capture
+        return false;                                              // name-based / unresolvable: unsafe
+    }
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) return inlineBodyScan(*u->operand, params, caps);
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e)) return inlineBodyScan(*b->lhs, params, caps) && inlineBodyScan(*b->rhs, params, caps);
+    if (const auto* l = dynamic_cast<const ast::LogicalExpr*>(&e)) return inlineBodyScan(*l->lhs, params, caps) && inlineBodyScan(*l->rhs, params, caps);
+    if (const auto* cn = dynamic_cast<const ast::ConditionalExpr*>(&e)) return inlineBodyScan(*cn->cond, params, caps) && inlineBodyScan(*cn->then, params, caps) && inlineBodyScan(*cn->orelse, params, caps);
+    if (const auto* c = dynamic_cast<const ast::CallExpr*>(&e)) { if (!inlineBodyScan(*c->callee, params, caps)) return false; for (const auto& a : c->args) if (!inlineBodyScan(*a.value, params, caps)) return false; return true; }
+    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(&e)) return inlineBodyScan(*m->object, params, caps);  // .name is a member, not a scope name
+    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&e)) { if (!inlineBodyScan(*ix->object, params, caps)) return false; for (const auto& k : ix->indices) if (!inlineBodyScan(*k, params, caps)) return false; return true; }
+    if (const auto* sl = dynamic_cast<const ast::SliceExpr*>(&e)) return (!sl->object || inlineBodyScan(*sl->object, params, caps)) && (!sl->start || inlineBodyScan(*sl->start, params, caps)) && (!sl->stop || inlineBodyScan(*sl->stop, params, caps)) && (!sl->step || inlineBodyScan(*sl->step, params, caps));
+    if (const auto* lst = dynamic_cast<const ast::ListLiteral*>(&e)) { for (const auto& x : lst->elems) if (!inlineBodyScan(*x, params, caps)) return false; return true; }
+    if (const auto* stl = dynamic_cast<const ast::SetLiteral*>(&e)) { for (const auto& x : stl->elems) if (!inlineBodyScan(*x, params, caps)) return false; return true; }
+    if (const auto* dt = dynamic_cast<const ast::DictLiteral*>(&e)) { for (const auto& [k, v] : dt->entries) if (!inlineBodyScan(*k, params, caps) || !inlineBodyScan(*v, params, caps)) return false; return true; }
+    if (const auto* fs = dynamic_cast<const ast::FStringExpr*>(&e)) { for (const auto& p : fs->parts) if (p.isExpr && !inlineBodyScan(*p.expr, params, caps)) return false; return true; }
+    if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&e)) { for (const auto& x : tup->elems) if (!inlineBodyScan(*x, params, caps)) return false; return true; }
+    if (const auto* star = dynamic_cast<const ast::StarExpr*>(&e)) return inlineBodyScan(*star->inner, params, caps);
     return true;  // LiteralExpr and any leaf without a name reference nothing unsafe
 }
 

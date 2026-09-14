@@ -129,7 +129,7 @@ int main() {
                                      "e % 3", "(e + base) * 2", "e * e - base"});
             std::string pred = pick({"e % 2 == 0", "e > base", "e < 5", "e != 3", "e >= 0"});
             std::string src = "var base = " + std::to_string(static_cast<int>(rng() % 7)) + "\n";
-            int shape = static_cast<int>(rng() % 6);
+            int shape = static_cast<int>(rng() % 7);
             if (shape == 0)        // direct-literal call inside a function
                 src += "var f = Function():\n return (Function(e): return " + expr + ")(" +
                        std::to_string(static_cast<int>(rng() % 9)) + ")\nf()";
@@ -145,9 +145,13 @@ int main() {
             else if (shape == 4)   // map whose callback captures `base` (not fused) — still must agree
                 src += "var out = []\nfor x in map(Function(e): return e + base, range(5)):\n"
                        " out.append(x)\nout";
-            else                   // nested: fused map with a directly-inlined sub-call in the body
+            else if (shape == 5)   // nested: fused map with a directly-inlined sub-call in the body
                 src += "var out = []\nfor x in map(Function(e): return (Function(z): return z + 1)(e), range(5)):\n"
                        " out.append(x)\nout";
+            else                   // TRICKY: the loop body MUTATES the captured var — auto-lift must
+                                   // read the capture per element (closure-by-reference), not once
+                src += "var out = []\nfor x in map(Function(e): return " + expr + ", range(5)):\n"
+                       " base = base + 1\n out.append(x)\nout";
             if (run1(true, src) != run1(false, src)) ++mismatches;
         }
         CHECK(mismatches == 0);

@@ -1,4 +1,4 @@
 empty: True
 caught: kaboom
-frames: ['<module>@17', 'outer@11', 'middle@9', 'boom@7']
+frames: ['<module>@22', 'outer@15', 'middle@12', 'boom@10']
 innermost-fn: divzero

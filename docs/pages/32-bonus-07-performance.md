@@ -87,13 +87,15 @@ These are transparent — they change **speed, not results** — so they need no
   interned chunk-name indices instead of copying strings, and reads its compiled body straight off the
   AST node (no per-call cache lookup). Every call — recursion, a `map`/`filter` callback, a method —
   benefits.
-- **Function inlining.** A capture-free single-`return` lambda — called directly (`Function(x): return
-  …)(a)`), passed as a `map`/`filter` callback, or bound to an immutable local helper (`var sq =
-  Function(x): return x * x` then `sq(i)`) — is compiled straight into the caller, with no call frame or
-  scope allocation. Inlining is hygienic: the inlined body sees only its own arguments and globals —
-  never the caller's locals, and vice versa — so a program's results are identical to a normal call. One
-  visible consequence: an inlined call does not appear as its own frame in a traceback (including
-  `sys.traceback()`); use `--no-inline` when you need every call to show a frame.
+- **Function inlining.** A single-`return` lambda — called directly (`(Function(x): return …)(a)`),
+  passed as a `map`/`filter` callback, or bound to an immutable local helper (`var sq = Function(x):
+  return x * x` then `sq(i)`) — is compiled straight into the caller, with no call frame or scope
+  allocation. It may read its own parameters, globals, and **variables it captures** from an enclosing
+  scope (those are read in place at the call site, so a closure over a changing variable stays correct).
+  Inlining is hygienic — the inlined body never sees the caller's *other* locals and its parameters
+  never leak out — so a program's results are identical to a normal call. One visible consequence: an
+  inlined call does not appear as its own frame in a traceback (including `sys.traceback()`); use
+  `--no-inline` when you need every call to show a frame.
 - **Combinator fusion.** A `for x in map(f, xs):` or `for x in filter(p, xs):` loop whose callback is an
   inline-eligible lambda literal is fused into a single loop that inlines the callback per element — no
   intermediate `map`/`filter` view and no per-element call. Laziness/semantics are unchanged; a shadowed

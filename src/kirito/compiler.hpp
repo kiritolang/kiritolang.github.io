@@ -201,20 +201,37 @@ private:
     // shared primitive Part C (combinator lowering) reuses. Multi-statement / capturing / annotated
     // bodies are simply not v1 candidates and compile as a normal call (correct, not a fallback).
     int inlineCounter_ = 0;
-    // Active during inline-body emission: maps an inlined lambda's PARAM name -> a unique hidden binding
-    // ($inlN_x) holding the evaluated argument. Consulted by visit(NameExpr) so the body reads only its
-    // own args (here) + globals (below) — never caller locals. Hidden names are frame slots inside a
-    // function (fast) and module/scope bindings at top level; `$`-prefixed, so never a module export.
-    const std::vector<std::pair<std::string, std::string>>* inlineRebind_ = nullptr;
+    // One rebinding for a name inside an inlined body, consulted by visit(NameExpr): a PARAMETER reads a
+    // unique hidden binding ($inlN_x / $cmbN_x) holding its once-evaluated argument (frame slot in a
+    // function, module binding at top level; `$`-prefixed so never a module export); a CAPTURE reads the
+    // enclosing variable IN PLACE via LoadVar(capDepth, capIndex) — the call site is exactly one scope
+    // shallower than the lambda body, so a body capture at (envDepth, envIndex) is (envDepth-1, envIndex)
+    // here. Reading a capture in place (not lifting once) matches closure-by-reference semantics and is
+    // correct even when the surrounding loop mutates it between elements; the body itself cannot mutate a
+    // captured variable (write-through closures are forbidden), so repeated reads are consistent.
+    struct InlineBind { std::string name; std::string hidden; bool capture; uint16_t capDepth; uint32_t capIndex; };
+    const std::vector<InlineBind>* inlineRebind_ = nullptr;
     NameSet constMutable_;   // names rebound/redeclared in this body -> NOT an immutable const-fn binding
     fum::unordered_map<std::string, const ast::FunctionExpr*> constLambdaDefs_;  // f -> its literal (inlinable)
+    std::vector<const ast::FunctionExpr*> inlineStack_;   // lambdas currently being inlined (cycle guard)
+    static constexpr std::size_t kMaxInlineDepth = 8;     // backstop vs mutual recursion / code-size blowup
 
-    // The body expression of an inline-eligible lambda, or nullptr. Eligible = capture-free (its free
-    // variables are all globals), a single `return EXPR`, flat (no nested function literal to splice),
-    // unannotated, and no parameter defaults/varargs. Arity/context are the CALLER's concern (a call
-    // site requires exact positional arity + slots; a combinator requires the callback's fixed arity).
-    // Shared by call-site inlining and Part C combinator lowering.
-    const ast::Expr* lambdaInlineBody(const ast::FunctionExpr& fn) const {
+    bool inlineBlocked(const ast::FunctionExpr* fn) const {
+        if (inlineStack_.size() >= kMaxInlineDepth) return true;
+        for (const ast::FunctionExpr* f : inlineStack_) if (f == fn) return true;  // already inlining it -> cycle
+        return false;
+    }
+
+    uint32_t addEnvVarRaw(uint16_t depth, uint32_t index, const std::string& name) {
+        proto_.envVars.push_back(EnvVarRef{depth, index, name});
+        return static_cast<uint32_t>(proto_.envVars.size() - 1);
+    }
+
+    // The body expression of an inline-eligible lambda, or nullptr, filling `caps` with the captured
+    // NameExprs (enclosing variables the body reads). Eligible = a single `return EXPR`, flat (no nested
+    // function literal), unannotated, no parameter defaults/varargs, and every non-param reference is a
+    // genuine global or an env-indexed capture (inlineBodyScan). Arity/context are the CALLER's concern.
+    const ast::Expr* lambdaInlineBody(const ast::FunctionExpr& fn, std::vector<const ast::NameExpr*>& caps) const {
         if (!vm_.inliningEnabled() || !fn.returnAnnotation.empty()) return nullptr;
         for (const auto& p : fn.params)
             if (!p.annotation.empty() || p.defaultValue) return nullptr;
@@ -223,28 +240,36 @@ private:
         if (!r || !r->value) return nullptr;
         NameSet params;
         for (const auto& p : fn.params) params.insert(p.name);
-        // Precise capture-free test: the body may reference only its params (rebound) and genuine
-        // globals — never an env/captured/shadowing binding (whose LoadVar would be stale once inlined).
-        if (!kirito::inlineBodySafe(*r->value, params)) return nullptr;
+        if (!kirito::inlineBodyScan(*r->value, params, caps)) return nullptr;
         return r->value.get();
     }
 
-    // Resolve a call's callee to an inline-eligible lambda — either a literal `(Function...)(...)` or a
-    // NameExpr bound to an immutable const-fn (var f = <literal>, never rebound). Returns the body to
-    // inline and sets fnOut; nullptr if not a candidate. Recursion / mutual recursion need no special
-    // guard: a self/other-referencing body has a non-global free variable, so lambdaInlineBody rejects it.
-    const ast::Expr* inlineBodyIfCandidate(const ast::CallExpr& e, const ast::FunctionExpr*& fnOut) const {
-        const auto* fn = dynamic_cast<const ast::FunctionExpr*>(e.callee.get());
+    // Resolve a call's callee to an inline-eligible lambda — a literal `(Function...)(...)` or a NameExpr
+    // bound to an immutable const-fn (var f = <literal>, never rebound). Returns the body + sets fnOut +
+    // fills caps; nullptr if not a candidate. Recursion needs no special guard: a self/peer-referencing
+    // body captures a non-global name; that capture reads a stale enclosing slot only if... in fact a
+    // recursive const-fn `f` references `f`, which is env-indexed at the DEFINING scope and would be
+    // relocated correctly — but `f` is not yet assigned when inlined, so we exclude a callee that
+    // captures its own binding name below.
+    const ast::Expr* inlineBodyIfCandidate(const ast::CallExpr& e, const ast::FunctionExpr*& fnOut,
+                                           std::vector<const ast::NameExpr*>& caps) const {
+        const ast::FunctionExpr* fn = dynamic_cast<const ast::FunctionExpr*>(e.callee.get());
+        const std::string* boundName = nullptr;
         if (!fn)
             if (const auto* nm = dynamic_cast<const ast::NameExpr*>(e.callee.get())) {
                 auto it = constLambdaDefs_.find(nm->name);
-                if (it != constLambdaDefs_.end()) fn = it->second;
+                if (it != constLambdaDefs_.end()) { fn = it->second; boundName = &nm->name; }
             }
-        if (!fn || e.args.size() != fn->params.size()) return nullptr;  // exact positional arity
+        if (!fn || e.args.size() != fn->params.size() || inlineBlocked(fn)) return nullptr;  // arity + cycle guard
         for (const auto& a : e.args)
             if (!a.name.empty() || dynamic_cast<const ast::StarExpr*>(a.value.get())) return nullptr;  // no kw/starred
-        const ast::Expr* body = lambdaInlineBody(*fn);
-        if (body) fnOut = fn;
+        const ast::Expr* body = lambdaInlineBody(*fn, caps);
+        if (!body) return nullptr;
+        // A const-fn that captures its OWN binding name is recursive — not inlinable (the binding is not
+        // yet defined when we splice the body, and inlining would loop). Fall back to a normal call.
+        if (boundName)
+            for (const ast::NameExpr* c : caps) if (c->name == *boundName) return nullptr;
+        fnOut = fn;
         return body;
     }
 
@@ -254,15 +279,17 @@ private:
         if (s.names.size() != 1 || s.starIndex != -1 || s.forceUnpack) return;
         const auto* fn = dynamic_cast<const ast::FunctionExpr*>(s.init.get());
         if (!fn || constMutable_.count(s.names[0])) return;
-        if (lambdaInlineBody(*fn)) constLambdaDefs_[s.names[0]] = fn;
+        std::vector<const ast::NameExpr*> caps;
+        if (lambdaInlineBody(*fn, caps)) constLambdaDefs_[s.names[0]] = fn;
     }
 
     // Combinator lowering (Part C): a lambda literal passed as `map`/`filter`'s callback, inline-eligible
     // and taking exactly one parameter (the element). Guarded so a user shadow of `map`/`filter` (which
-    // resolves to a local, not the builtin slot) is never lowered.
+    // resolves to a local, not the builtin slot) is never lowered. Fills caps like lambdaInlineBody.
     enum class Combinator { None, Map, Filter };
     Combinator recognizeForCombinator(const ast::Expr& iterable, const ast::FunctionExpr*& lambdaOut,
-                                       const ast::Expr*& srcOut, const ast::Expr*& bodyOut) const {
+                                       const ast::Expr*& srcOut, const ast::Expr*& bodyOut,
+                                       std::vector<const ast::NameExpr*>& caps) const {
         if (!vm_.inliningEnabled()) return Combinator::None;
         const auto* call = dynamic_cast<const ast::CallExpr*>(&iterable);
         if (!call || call->args.size() != 2) return Combinator::None;
@@ -274,27 +301,43 @@ private:
                          : callee->name == "filter" ? Combinator::Filter : Combinator::None;
         if (which == Combinator::None) return Combinator::None;
         const auto* lam = dynamic_cast<const ast::FunctionExpr*>(call->args[0].value.get());
-        if (!lam || lam->params.size() != 1) return Combinator::None;      // 1-arg callback
-        const ast::Expr* body = lambdaInlineBody(*lam);
+        if (!lam || lam->params.size() != 1 || inlineBlocked(lam)) return Combinator::None;   // 1-arg + cycle guard
+        const ast::Expr* body = lambdaInlineBody(*lam, caps);
         if (!body) return Combinator::None;
         lambdaOut = lam; srcOut = call->args[1].value.get(); bodyOut = body;
         return which;
     }
 
-    void emitInlinedCall(const ast::CallExpr& e, const ast::FunctionExpr& fn, const ast::Expr& body) {
+    // Append capture rebindings (deduped by name): a body capture at (envDepth, envIndex) reads the
+    // enclosing variable in place at the call site via LoadVar(envDepth-1, envIndex).
+    void addCaptureBinds(const std::vector<const ast::NameExpr*>& caps, std::vector<InlineBind>& binds) {
+        for (const ast::NameExpr* c : caps) {
+            bool seen = false;
+            for (const auto& b : binds) if (b.name == c->name) { seen = true; break; }
+            if (seen) continue;
+            binds.push_back(InlineBind{c->name, "", true, static_cast<uint16_t>(c->envDepth - 1),
+                                       static_cast<uint32_t>(c->envIndex)});
+        }
+    }
+
+    void emitInlinedCall(const ast::CallExpr& e, const ast::FunctionExpr& fn, const ast::Expr& body,
+                         const std::vector<const ast::NameExpr*>& caps) {
         int n = inlineCounter_++;
-        std::vector<std::pair<std::string, std::string>> rebind;
-        rebind.reserve(fn.params.size());
+        std::vector<InlineBind> binds;
+        binds.reserve(fn.params.size() + caps.size());
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
             compileExpr(*e.args[i].value);   // evaluate the argument ONCE, in order, in the caller context
             std::string hidden = "$inl" + std::to_string(n) + "_" + fn.params[i].name;
             ensureHiddenSlot(hidden);        // frame slot inside a function; a module binding at top level
             emitStore(hidden, e.span);
-            rebind.emplace_back(fn.params[i].name, hidden);
+            binds.push_back(InlineBind{fn.params[i].name, hidden, false, 0, 0});
         }
-        const auto* prev = inlineRebind_;   // save/restore supports nested inlines (a body that itself
-        inlineRebind_ = &rebind;            // directly-calls another inlinable literal)
+        addCaptureBinds(caps, binds);
+        const auto* prev = inlineRebind_;   // save/restore supports nested inlines
+        inlineRebind_ = &binds;
+        inlineStack_.push_back(&fn);        // cycle guard: a nested inline of the same lambda falls back
         compileExpr(body);                  // the body value is left on the stack = the call's result
+        inlineStack_.pop_back();
         inlineRebind_ = prev;
     }
 
@@ -302,7 +345,8 @@ private:
     // element — no combinator view, no per-element call. Mirrors visit(ForStmt)'s cursor/frame handling
     // so break/continue and the operand-stack height behave exactly as in a normal for-loop.
     void emitFusedForCombinator(const ast::ForStmt& s, Combinator which, const ast::FunctionExpr& lam,
-                                const ast::Expr& src, const ast::Expr& body) {
+                                const ast::Expr& src, const ast::Expr& body,
+                                const std::vector<const ast::NameExpr*>& caps) {
         int n = inlineCounter_++;
         compileExpr(src);
         emit(Op::GetIter, 0, s.span);
@@ -311,10 +355,13 @@ private:
         std::string elem = "$cmb" + std::to_string(n) + "_" + lam.params[0].name;
         ensureHiddenSlot(elem);
         emitStore(elem, s.span);                           // element -> hidden binding (the callback's param)
-        std::vector<std::pair<std::string, std::string>> rebind{{lam.params[0].name, elem}};
+        std::vector<InlineBind> binds{InlineBind{lam.params[0].name, elem, false, 0, 0}};
+        addCaptureBinds(caps, binds);                      // captures read in place per element (LoadVar)
         const auto* prev = inlineRebind_;
-        inlineRebind_ = &rebind;
+        inlineRebind_ = &binds;
+        inlineStack_.push_back(&lam);
         compileExpr(body);                                 // inlined callback body -> value on the stack
+        inlineStack_.pop_back();
         inlineRebind_ = prev;
         std::size_t skip = 0;
         if (which == Combinator::Filter) {
@@ -529,8 +576,9 @@ private:
         // lowered; anything else (or a shadowed builtin / non-lambda callback) uses the normal path.
         if (s.vars.size() == 1 && s.starIndex == -1 && !s.forceUnpack) {
             const ast::FunctionExpr* lam = nullptr; const ast::Expr* src = nullptr; const ast::Expr* body = nullptr;
-            Combinator which = recognizeForCombinator(*s.iterable, lam, src, body);
-            if (which != Combinator::None) { emitFusedForCombinator(s, which, *lam, *src, *body); return; }
+            std::vector<const ast::NameExpr*> caps;
+            Combinator which = recognizeForCombinator(*s.iterable, lam, src, body, caps);
+            if (which != Combinator::None) { emitFusedForCombinator(s, which, *lam, *src, *body, caps); return; }
         }
         compileExpr(*s.iterable);
         emit(Op::GetIter, 0, s.span);
@@ -807,8 +855,12 @@ private:
         // (body-as-nested-scope) annotation — this is the hygiene boundary: the body sees ONLY its
         // params (here) and globals (below), never caller locals.
         if (inlineRebind_)
-            for (const auto& [nm, hidden] : *inlineRebind_)
-                if (nm == e.name) { emitLoad(hidden, e.span); return; }
+            for (const auto& b : *inlineRebind_)
+                if (b.name == e.name) {
+                    if (b.capture) emit(Op::LoadVar, addEnvVarRaw(b.capDepth, b.capIndex, b.name), e.span);
+                    else emitLoad(b.hidden, e.span);  // a parameter: its once-evaluated argument binding
+                    return;
+                }
         if (e.builtinSlot >= 0) emit(Op::LoadGlobal, static_cast<uint32_t>(e.builtinSlot), e.span);
         else if (e.envIndex >= 0) emit(Op::LoadVar, addEnvVar(e), e.span);
         else emitLoad(e.name, e.span);
@@ -855,7 +907,8 @@ private:
         // const-fn name (v1): no call frame, identical result. Candidacy excludes named/starred args.
         {
             const ast::FunctionExpr* fn = nullptr;
-            if (const ast::Expr* body = inlineBodyIfCandidate(e, fn)) { emitInlinedCall(e, *fn, *body); return; }
+            std::vector<const ast::NameExpr*> caps;
+            if (const ast::Expr* body = inlineBodyIfCandidate(e, fn, caps)) { emitInlinedCall(e, *fn, *body, caps); return; }
         }
         // A positional argument after a keyword argument is a (catchable) run-time error, like the old
         // evaluator: the callee and the arguments up to and including the offending one are evaluated,
