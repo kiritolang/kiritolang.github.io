@@ -1,5 +1,5 @@
-recurse: 125250
-unwind-then-recurse: ['bottom', 80200]
+recurse: 5050
+unwind-then-recurse: ['bottom', 5050]
 no-crosstalk: [11, 21, 15, 25]
 escaping-counter: [1001, 1030, 30]
 many-closures: 20540

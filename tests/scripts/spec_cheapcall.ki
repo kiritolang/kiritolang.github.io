@@ -5,9 +5,10 @@
 # result or trip the sanitizer. Byte-exact output; identical with `ki` and `ki --no-inline`.
 var io = import("io")
 
-# deep recursion borrows/returns a pooled operand buffer per frame (~500 deep)
+# deep recursion borrows/returns a pooled operand buffer per frame (kept ~100 deep: enough to reuse
+# many pooled buffers, but under the ASan build's larger per-frame stack / recursion-depth guard)
 var sumdown = Function(n): return 0 if n == 0 else n + sumdown(n - 1)
-io.print("recurse:", sumdown(500))
+io.print("recurse:", sumdown(100))
 
 # throw from deep in a recursion, catch at the top, then recurse AGAIN: every buffer the unwind
 # abandoned must be back in the pool (else a wrong result or an ASan failure on reuse)
@@ -17,10 +18,10 @@ var toBottom = Function(n):
     return toBottom(n - 1)
 var got = ""
 try:
-    discard toBottom(300)
+    discard toBottom(100)
 catch as e:
     got = e
-io.print("unwind-then-recurse:", [got, sumdown(400)])
+io.print("unwind-then-recurse:", [got, sumdown(100)])
 
 # per-AST-node Proto cache: two closures over DIFFERENT captured values but identical body TEXT must not
 # share a compiled body that baked in one capture (a node-cache collision would return the wrong sum)
