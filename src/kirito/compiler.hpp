@@ -200,41 +200,114 @@ private:
     // shared primitive Part C (combinator lowering) reuses. Multi-statement / capturing / annotated
     // bodies are simply not v1 candidates and compile as a normal call (correct, not a fallback).
     int inlineCounter_ = 0;
-    const std::vector<std::pair<std::string, uint32_t>>* inlineRebind_ = nullptr;  // param name -> arg slot
+    // Active during inline-body emission: maps an inlined lambda's PARAM name -> a unique hidden binding
+    // ($inlN_x) holding the evaluated argument. Consulted by visit(NameExpr) so the body reads only its
+    // own args (here) + globals (below) — never caller locals. Hidden names are frame slots inside a
+    // function (fast) and module/scope bindings at top level; `$`-prefixed, so never a module export.
+    const std::vector<std::pair<std::string, std::string>>* inlineRebind_ = nullptr;
 
-    // Return the body expression to inline, or nullptr if `e` is not a v1 inline candidate.
+    // The body expression of an inline-eligible lambda, or nullptr. Eligible = capture-free (its free
+    // variables are all globals), a single `return EXPR`, flat (no nested function literal to splice),
+    // unannotated, and no parameter defaults/varargs. Arity/context are the CALLER's concern (a call
+    // site requires exact positional arity + slots; a combinator requires the callback's fixed arity).
+    // Shared by call-site inlining and Part C combinator lowering.
+    const ast::Expr* lambdaInlineBody(const ast::FunctionExpr& fn) const {
+        if (!vm_.inliningEnabled() || !fn.returnAnnotation.empty()) return nullptr;
+        for (const auto& p : fn.params)
+            if (!p.annotation.empty() || p.defaultValue) return nullptr;
+        if (fn.body.size() != 1) return nullptr;
+        const auto* r = dynamic_cast<const ast::ReturnStmt*>(fn.body[0].get());
+        if (!r || !r->value) return nullptr;
+        if (kirito::exprContainsFunction(*r->value)) return nullptr;
+        for (const auto& nm : kirito::freeVariables(fn))
+            if (vm_.builtinSlot(nm) < 0) return nullptr;   // capture-free: every free var is a global
+        return r->value.get();
+    }
+
+    // Return the body expression to inline, or nullptr if `e` is not a v1 call-site inline candidate.
     const ast::Expr* inlineBodyIfCandidate(const ast::CallExpr& e) const {
-        if (!vm_.inliningEnabled() || !slotsEnabled_) return nullptr;   // v1: inside a function scope only
         const auto* fn = dynamic_cast<const ast::FunctionExpr*>(e.callee.get());
-        if (!fn || !fn->returnAnnotation.empty()) return nullptr;       // unannotated return only
-        if (e.args.size() != fn->params.size()) return nullptr;         // exact positional arity
-        for (const auto& p : fn->params)
-            if (!p.annotation.empty() || p.defaultValue) return nullptr;  // v1: no annotations / defaults / varargs
+        if (!fn || e.args.size() != fn->params.size()) return nullptr;  // literal callee, exact positional arity
         for (const auto& a : e.args)
             if (!a.name.empty() || dynamic_cast<const ast::StarExpr*>(a.value.get())) return nullptr;  // no kw/starred
-        if (fn->body.size() != 1) return nullptr;                       // single-statement body ...
-        const auto* r = dynamic_cast<const ast::ReturnStmt*>(fn->body[0].get());
-        if (!r || !r->value) return nullptr;                            // ... which is `return EXPR`
-        if (kirito::exprContainsFunction(*r->value)) return nullptr;    // no nested closure to splice
-        for (const auto& nm : kirito::freeVariables(*fn))
-            if (vm_.builtinSlot(nm) < 0) return nullptr;                // capture-free: free vars are globals only
-        return r->value.get();
+        return lambdaInlineBody(*fn);
+    }
+
+    // Combinator lowering (Part C): a lambda literal passed as `map`/`filter`'s callback, inline-eligible
+    // and taking exactly one parameter (the element). Guarded so a user shadow of `map`/`filter` (which
+    // resolves to a local, not the builtin slot) is never lowered.
+    enum class Combinator { None, Map, Filter };
+    Combinator recognizeForCombinator(const ast::Expr& iterable, const ast::FunctionExpr*& lambdaOut,
+                                       const ast::Expr*& srcOut, const ast::Expr*& bodyOut) const {
+        if (!vm_.inliningEnabled()) return Combinator::None;
+        const auto* call = dynamic_cast<const ast::CallExpr*>(&iterable);
+        if (!call || call->args.size() != 2) return Combinator::None;
+        for (const auto& a : call->args)
+            if (!a.name.empty() || dynamic_cast<const ast::StarExpr*>(a.value.get())) return Combinator::None;
+        const auto* callee = dynamic_cast<const ast::NameExpr*>(call->callee.get());
+        if (!callee || callee->builtinSlot < 0) return Combinator::None;   // must be the BUILTIN, not a shadow
+        Combinator which = callee->name == "map" ? Combinator::Map
+                         : callee->name == "filter" ? Combinator::Filter : Combinator::None;
+        if (which == Combinator::None) return Combinator::None;
+        const auto* lam = dynamic_cast<const ast::FunctionExpr*>(call->args[0].value.get());
+        if (!lam || lam->params.size() != 1) return Combinator::None;      // 1-arg callback
+        const ast::Expr* body = lambdaInlineBody(*lam);
+        if (!body) return Combinator::None;
+        lambdaOut = lam; srcOut = call->args[1].value.get(); bodyOut = body;
+        return which;
     }
 
     void emitInlinedCall(const ast::CallExpr& e, const ast::FunctionExpr& fn, const ast::Expr& body) {
         int n = inlineCounter_++;
-        std::vector<std::pair<std::string, uint32_t>> rebind;
+        std::vector<std::pair<std::string, std::string>> rebind;
         rebind.reserve(fn.params.size());
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
             compileExpr(*e.args[i].value);   // evaluate the argument ONCE, in order, in the caller context
-            uint32_t slot = defineSlot("$inl" + std::to_string(n) + "_" + fn.params[i].name);
-            emit(Op::StoreLocal, slot, e.span);
-            rebind.emplace_back(fn.params[i].name, slot);
+            std::string hidden = "$inl" + std::to_string(n) + "_" + fn.params[i].name;
+            ensureHiddenSlot(hidden);        // frame slot inside a function; a module binding at top level
+            emitStore(hidden, e.span);
+            rebind.emplace_back(fn.params[i].name, hidden);
         }
         const auto* prev = inlineRebind_;   // save/restore supports nested inlines (a body that itself
         inlineRebind_ = &rebind;            // directly-calls another inlinable literal)
         compileExpr(body);                  // the body value is left on the stack = the call's result
         inlineRebind_ = prev;
+    }
+
+    // Fused `for VAR in map/filter(LAMBDA, SRC): BODY`: iterate SRC directly and inline the callback per
+    // element — no combinator view, no per-element call. Mirrors visit(ForStmt)'s cursor/frame handling
+    // so break/continue and the operand-stack height behave exactly as in a normal for-loop.
+    void emitFusedForCombinator(const ast::ForStmt& s, Combinator which, const ast::FunctionExpr& lam,
+                                const ast::Expr& src, const ast::Expr& body) {
+        int n = inlineCounter_++;
+        compileExpr(src);
+        emit(Op::GetIter, 0, s.span);
+        uint32_t top = here();
+        std::size_t exit = emit(Op::ForIter, 0, s.span);   // element on stack, or jump to end when exhausted
+        std::string elem = "$cmb" + std::to_string(n) + "_" + lam.params[0].name;
+        ensureHiddenSlot(elem);
+        emitStore(elem, s.span);                           // element -> hidden binding (the callback's param)
+        std::vector<std::pair<std::string, std::string>> rebind{{lam.params[0].name, elem}};
+        const auto* prev = inlineRebind_;
+        inlineRebind_ = &rebind;
+        compileExpr(body);                                 // inlined callback body -> value on the stack
+        inlineRebind_ = prev;
+        std::size_t skip = 0;
+        if (which == Combinator::Filter) {
+            skip = emit(Op::PopJumpIfFalse, 0, s.span);    // predicate false -> resume with the next element
+            emitLoad(elem, s.span);                        // predicate true -> the element is the loop value
+        }
+        emitStore(s.vars[0], s.span);                      // map: the mapped value; filter: the element
+        frames_.push_back(CFrame{CFrame::Loop, 1, {}, {}, nullptr});   // cursor live: break must pop it
+        compileBlock(s.body);
+        emit(Op::Jump, top);
+        if (which == Combinator::Filter) patch(skip, top);
+        uint32_t end = here();
+        patch(exit, end);
+        for (std::size_t j : frames_.back().breaks) patch(j, end);
+        for (std::size_t j : frames_.back().continues) patch(j, top);
+        frames_.pop_back();
+        emit(Op::ClearResult);
     }
 
     // Compile-time fold of a CONSTANT `switch` case-label expression to its value, reusing the VM's own
@@ -426,6 +499,14 @@ private:
     }
 
     void visit(const ast::ForStmt& s) override {
+        // Part C: `for VAR in map/filter(LAMBDA, SRC): BODY` fuses into a single loop that inlines the
+        // callback per element — no MapVal/FilterVal, no per-element call. Only the single-target form is
+        // lowered; anything else (or a shadowed builtin / non-lambda callback) uses the normal path.
+        if (s.vars.size() == 1 && s.starIndex == -1 && !s.forceUnpack) {
+            const ast::FunctionExpr* lam = nullptr; const ast::Expr* src = nullptr; const ast::Expr* body = nullptr;
+            Combinator which = recognizeForCombinator(*s.iterable, lam, src, body);
+            if (which != Combinator::None) { emitFusedForCombinator(s, which, *lam, *src, *body); return; }
+        }
         compileExpr(*s.iterable);
         emit(Op::GetIter, 0, s.span);
         uint32_t top = here();
@@ -701,8 +782,8 @@ private:
         // (body-as-nested-scope) annotation — this is the hygiene boundary: the body sees ONLY its
         // params (here) and globals (below), never caller locals.
         if (inlineRebind_)
-            for (const auto& [nm, slot] : *inlineRebind_)
-                if (nm == e.name) { emit(Op::LoadLocal, slot, e.span); return; }
+            for (const auto& [nm, hidden] : *inlineRebind_)
+                if (nm == e.name) { emitLoad(hidden, e.span); return; }
         if (e.builtinSlot >= 0) emit(Op::LoadGlobal, static_cast<uint32_t>(e.builtinSlot), e.span);
         else if (e.envIndex >= 0) emit(Op::LoadVar, addEnvVar(e), e.span);
         else emitLoad(e.name, e.span);

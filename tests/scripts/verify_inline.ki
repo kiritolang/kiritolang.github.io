@@ -43,4 +43,30 @@ var g = Function():
     return (Function(x): return x + base)(5)
 assert g() == 105, "capturing lambda still correct (not inlined)"
 
+# Part C: `for VAR in map/filter(lambda, src)` fuses into an inlined loop (no combinator view, no
+# per-element call). Results identical to the lazy path; the harness runs this on and off.
+var sq = []
+for x in map(Function(v): return v * v, range(6)):
+    sq.append(x)
+assert sq == [0, 1, 4, 9, 16, 25], "fused map"
+var mult3 = []
+for x in filter(Function(v): return v % 3 == 0, range(12)):
+    mult3.append(x)
+assert mult3 == [0, 3, 6, 9], "fused filter"
+# break/continue inside a fused loop
+var picked = []
+for x in map(Function(v): return v + 1, range(10)):
+    if x == 3:
+        continue
+    if x == 7:
+        break
+    picked.append(x)
+assert picked == [1, 2, 4, 5, 6], "break/continue in a fused loop"
+# a capturing callback is NOT fused (normal combinator) but still correct
+var k = 100
+var shifted = []
+for x in map(Function(v): return v + k, [1, 2, 3]):
+    shifted.append(x)
+assert shifted == [101, 102, 103], "capturing map callback still correct (not fused)"
+
 io.print("OK inline")

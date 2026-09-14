@@ -49,6 +49,18 @@ int main() {
         // a thrown error is identical text on/off
         "var f = Function():\n return (Function(x): return x / 0)(1)\nf()",
         "var f = Function():\n return (Function(x): return [1, 2][x])(9)\nf()",  // index OOB throws
+        // module-scope inline (B fires at top level too via hidden bindings)
+        "(Function(x): return x * 4 + 1)(9)",
+        // Part C: fused `for x in map/filter(lambda, src)` — both eager and inside a function
+        "var out = []\nfor x in map(Function(v): return v * v, range(6)):\n out.append(x)\nout",
+        "var out = []\nfor x in filter(Function(v): return v % 3 == 0, range(12)):\n out.append(x)\nout",
+        "var f = Function(xs):\n var s = 0\n for x in map(Function(v): return v + 1, xs):\n  s = s + x\n return s\nf([1, 2, 3])",
+        // Part C with break/continue in the fused body
+        "var out = []\nfor x in map(Function(v): return v, range(10)):\n if x == 2:\n  continue\n if x == 5:\n  break\n out.append(x)\nout",
+        // Part C not lowered (callback captures) — still equal via the normal combinator
+        "var k = 10\nvar out = []\nfor x in map(Function(v): return v + k, [1, 2]):\n out.append(x)\nout",
+        // Part C not lowered (callback is a bound name, not a literal) — still equal
+        "var sq = Function(v): return v * v\nvar out = []\nfor x in map(sq, [3, 4]):\n out.append(x)\nout",
     };
     for (const char* s : battery) CHECK(same(s));
 
@@ -57,6 +69,13 @@ int main() {
     CHECK(on("var f = Function():\n return (Function(x): return x + x + x)(7)\nf()") == "21");
     CHECK(on("var f = Function():\n return (Function(x): return (Function(z): return z + 1)(x) * 2)(10)\nf()") == "22");
     CHECK(on("var f = Function():\n return (Function(s): return len(s) + 1)(\"abcd\")\nf()") == "5");
+    // Part C: fused map/filter produce the exact expected sequence
+    CHECK(on("var out = []\nfor x in map(Function(v): return v * v, range(6)):\n out.append(x)\nout")
+          == "[0, 1, 4, 9, 16, 25]");
+    CHECK(on("var out = []\nfor x in filter(Function(v): return v % 3 == 0, range(12)):\n out.append(x)\nout")
+          == "[0, 3, 6, 9]");
+    CHECK(on("var out = []\nfor x in map(Function(v): return v, range(10)):\n if x == 2:\n  continue\n"
+             " if x == 5:\n  break\n out.append(x)\nout") == "[0, 1, 3, 4]");
 
     // ---- hygiene: an inlined body's param must NOT see a caller local of the same name, and the
     //      caller's binding must be untouched ("fake shadowing" resolves to distinct slots) ----
