@@ -237,6 +237,23 @@ private:
         n.builtinSlot = vm_.builtinSlot(n.name);
     }
 
+    // Validate a type annotation's names against the CURRENT (definition-site) scope: each must be a
+    // built-in type name, a name bound somewhere reachable (a class/var/param in scope), or a
+    // global/builtin. An unbound name — a typo, or the removed `Any` — is a loud compile error, so a
+    // bogus annotation fails here instead of silently never-matching at every call. (A name that
+    // resolves to a non-type value is accepted and left to the runtime check; the win is catching
+    // unbound names. There is no `Any`: to accept any value, omit the annotation.)
+    void checkAnnotation(const ast::AnnList& ann, const SourceSpan& span) {
+        static const fum::unordered_set<std::string> kBuiltinTypes = {
+            "None", "Bool", "Integer", "Float", "Number", "String", "Bytes",
+            "List", "Set", "Dict", "Function", "Module", "Class"};
+        for (const auto& t : ann) {
+            if (kBuiltinTypes.count(t) || lexicalScopeIndexOf(t) >= 0 || isGlobal(t)) continue;
+            throw KiritoError("unknown type '" + t + "' in annotation (name a real type or class, or "
+                              "omit the annotation to accept any value — there is no 'Any')", span);
+        }
+    }
+
     void checkExpr(const ast::Expr& e) {
         if (depth_ > 2800) return;  // best-effort bound; the compiler's own guard throws on real over-nesting
         ++depth_;
@@ -265,6 +282,11 @@ private:
         else if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&e)) { for (const auto& x : tup->elems) checkExpr(*x); }
         else if (const auto* star = dynamic_cast<const ast::StarExpr*>(&e)) checkExpr(*star->inner);
         else if (const auto* fn = dynamic_cast<const ast::FunctionExpr*>(&e)) {
+            // Annotations name types visible at the DEFINITION site (the enclosing scope, which already
+            // has all its declarations collected — so a forward-referenced or locally-bound class
+            // resolves). Validate them before descending into the body.
+            for (const auto& p : fn->params) checkAnnotation(p.annotation, fn->span);
+            checkAnnotation(fn->returnAnnotation, fn->span);
             // A param default is evaluated in the enclosing (call) scope, but the binder defines the
             // params LEFT-TO-RIGHT, so a default may reference an EARLIER param — `Function(n, size = n)`
             // (A03-3). Check each default with the preceding params visible (a temporary innermost

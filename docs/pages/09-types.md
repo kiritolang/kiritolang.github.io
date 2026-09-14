@@ -399,7 +399,11 @@ Matching (used by `isinstance`, a typed [`catch`](12-exceptions.html), and type 
 - A **class value** or a **qualified String** (`"shapes_a:Shape"`) matches that one module's class
   only — `isinstance(s, a.Shape)` above.
 - A **bare String** type-name (`isinstance(s, "Shape")`) or a bare annotation matches the class-part,
-  so it still matches a same-named class in **any** module (backward-compatible).
+  so it still matches a same-named class in **any** module (backward-compatible). A *type annotation*
+  name must additionally be **visible at the definition site** (it is validated at compile time — an
+  unknown name is an error, so a typo can't silently never-match); to annotate with a class from an
+  imported module, bind it locally first (`var Shape = mod.Shape`), which still matches any module's
+  `Shape` at runtime.
 - Matching walks the class **chain**, so a subclass matches a base's type — even when the subclass and
   base live in different modules.
 

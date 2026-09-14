@@ -115,11 +115,13 @@ for x in SubStopGen():
     subseen.append(x)
 io.print("subclass-sentinel generator = " + String(subseen))
 
-# --- a bare parameter annotation matches a same-named class from ANY module (lenient by design) ---
+# --- a bare parameter annotation still matches a same-named class from ANY module at RUNTIME (lenient
+# by design); the annotation NAME must be visible at the definition site, so bind it locally first. ---
+var Shape = a.Shape
 var describe = Function(s : Shape):
     return s.kind()
 io.print("annotation a.Shape = " + describe(a.Shape("x")))
-io.print("annotation b.Shape = " + describe(b.Shape("y")))
+io.print("annotation b.Shape = " + describe(b.Shape("y")))   # b.Shape (a different module) matches too
 
 # --- serialization of a cross-module SUBCLASS instance: text and binary ---
 var rtText = ser.loads(ser.dumps(dc.C()))

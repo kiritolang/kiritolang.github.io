@@ -159,9 +159,13 @@ private:
     }
 
     // Does this function always end a value-producing return on every path? Conservative: true if
-    // its return annotation is a non-None type, OR the final statement is `return <expr>`.
+    // its return annotation has any non-None member (a `-> None` — or a union of only `None` — yields
+    // nothing), OR the final statement is `return <expr>`.
     static bool alwaysReturnsValue(const ast::FunctionExpr& fn) {
-        if (!fn.returnAnnotation.empty()) return fn.returnAnnotation != "None";
+        if (!fn.returnAnnotation.empty()) {
+            for (const auto& t : fn.returnAnnotation) if (t != "None") return true;
+            return false;
+        }
         if (fn.body.empty()) return false;
         const auto* ret = dynamic_cast<const ast::ReturnStmt*>(fn.body.back().get());
         return ret && ret->value != nullptr;

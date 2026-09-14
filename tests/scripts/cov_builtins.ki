@@ -411,7 +411,7 @@ assert isinstance(True, Bool) == True, "True is Bool"
 # Pseudo-types.
 assert isinstance(1, "Number") == True and isinstance(1.0, "Number") == True, "isinstance Number pseudo-type"
 assert isinstance("x", "Number") == False, "String is not Number"
-assert isinstance(1, "Any") == True and isinstance(None, "Any") == True, "isinstance Any"
+assert isinstance(1, "Any") == False and isinstance(None, "Any") == False, "isinstance Any removed (not a type)"
 assert isinstance(None, "None") == True, "isinstance None pseudo-type"
 assert isinstance(io, "Module") == True, "isinstance Module"
 assert isinstance(Function(): return 1, "Function") == True, "isinstance Function"

@@ -72,9 +72,9 @@ assert raises(Function(): return fromhex("xyz")), "fromhex bad raises"
 
 # ============================================================ isinstance / hasattr / id
 assert isinstance(1, Integer) and isinstance("x", String) and isinstance([1], List), "isinstance ctor"
-assert isinstance(1, "Integer") and isinstance(1, "Number") and isinstance(1, "Any"), "isinstance name/pseudo"
+assert isinstance(1, "Integer") and isinstance(1, "Number"), "isinstance name/pseudo"
 assert not isinstance(True, Integer) and not isinstance(1, Bool), "isinstance Bool not Integer"
-assert isinstance(Widget(), Widget) and isinstance(Widget(), "Any"), "isinstance user class"
+assert isinstance(Widget(), Widget), "isinstance user class"
 class Base:
     var _init_ = Function(self): pass
 class Derived(Base):

@@ -1,5 +1,5 @@
 // embed_calc.cpp — an extensible RPN calculator. The stack, tokenizer, and dispatch loop live in
-// C++; every OPERATOR is a Kirito Function(stack : List) -> Any that pops what it wants + pushes
+// C++; every OPERATOR is a Kirito Function(stack : List) (returning any type) that pops what it wants + pushes
 // its result. Users can register new operators from Kirito source at runtime — including ones
 // that call BACK into C++ helpers (e.g. `sqrt`, `abs`) exposed via a native module.
 //
@@ -38,7 +38,7 @@ class Calc {
 public:
     explicit Calc(KiritoVM& vm) : vm_(vm) {}
 
-    // Register a Kirito operator: name -> Function(stack : List) -> Any.
+    // Register a Kirito operator: name -> Function(stack : List) (returning any type).
     void registerOp(const std::string& name, Handle fn) { ops_[name] = fn; }
 
     // Run one RPN expression. Returns the final top-of-stack.

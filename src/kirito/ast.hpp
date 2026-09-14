@@ -287,12 +287,17 @@ struct AssignStmt : Stmt {
 
 using Block = std::vector<StmtPtr>;
 
+// A type annotation: an ordered list of type/class names. Empty = unannotated (accepts anything).
+// One name = a single type (`x: Integer`). Two or more = a union (`x: [Integer, Float]`), satisfied
+// if the value matches ANY member. Enforcement is at call time; the names are validated at resolve
+// time (each must name a real type/class — there is no "Any", you omit the annotation instead).
+using AnnList = std::vector<std::string>;
+
 // One function parameter: a name, an optional type annotation, and an optional default value.
-//   Function(a, b: Dict, c = 5, d: Float = 1.0):
-// The annotation is the bare type/class name (empty if none); enforcement is done at call time.
+//   Function(a, b: Dict, c = 5, d: [Integer, Float] = 1.0):
 struct Param {
     std::string name;
-    std::string annotation;  // "" if unannotated
+    AnnList annotation;      // empty if unannotated
     ExprPtr defaultValue;    // null if no default
 };
 
@@ -301,7 +306,7 @@ struct Param {
 // Block, so its members are complete.)
 struct FunctionExpr : Expr {
     std::vector<Param> params;
-    std::string returnAnnotation;  // "" if no `-> Type`
+    AnnList returnAnnotation;      // empty if no `-> Type`; a union `-> [T1, T2]` holds >1 name
     std::string name;              // binding name (`var NAME = Function`/method), "" if anonymous; used
                                    // only to label tracebacks — name resolution never depends on it
     // The exact source text of this `Function(...)...` literal, captured verbatim by the parser (empty

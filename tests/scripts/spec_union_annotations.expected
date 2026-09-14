@@ -1,0 +1,10 @@
+members: 3 2.5
+reject: argument 'x' must be one of [Integer, Float], got String
+single: argument 'x' must be Integer, got String
+inherit: ok ok
+optional: 5 None
+default: 10 1.5
+inspect-union: True
+inspect-single: True
+any-isinstance: False False
+OK spec_union_annotations

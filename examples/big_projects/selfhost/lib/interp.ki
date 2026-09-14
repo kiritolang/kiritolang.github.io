@@ -831,8 +831,6 @@ var callFunction = Function(St, fn, args, kwargs, defcls):
 # An argument/return value satisfies an annotation if it is exactly that type, or (for instances)
 # an instance of that class or a subclass.
 var _typeMatches = Function(St, v, annName):
-    if annName == "Any":
-        return True
     # "Number" is the pseudo-type the numeric builtins advertise (inspect shows `x: Number`); accept
     # it for Integer or Float so a user annotation `Function(x : Number)` works as documented.
     if annName == "Number":
@@ -2566,8 +2564,6 @@ var builtinIsinstance = Function(St, args, kwargs):
         name = t["name"]
     elif type(t) != "String":
         rtError("isinstance second argument must be a class, a built-in type, or a type-name String")
-    if name == "Any":
-        return True
     if name == "Class":
         # isinstance(x, "Class") is the sentinel for "x is a class value" (not an instance / not a
         # module / not a function). Matches native.

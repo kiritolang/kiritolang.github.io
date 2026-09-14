@@ -166,8 +166,8 @@ var noret = Function(z):
     discard w
 ok(noret(5) == None, "function with no return yields None")
 
-# ---- Lesson 7: Any / no annotation accept everything; describe_type ----
-var identity7 = Function(x : Any):
+# ---- Lesson 7: no annotation accepts everything; describe_type ----
+var identity7 = Function(x):
     return x
 var describe_type = Function(value):
     return type(value)

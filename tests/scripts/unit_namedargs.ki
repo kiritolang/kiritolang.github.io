@@ -121,7 +121,7 @@ catch as e:
     io.print(e)
 
 # --- 'Any' / no annotation accept everything ---
-var idfn = Function(x : Any):
+var idfn = Function(x):
     return x
 io.print(idfn("s"))
 io.print(idfn([1]))

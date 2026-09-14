@@ -1,7 +1,7 @@
 // embed_sql.cpp — a minimal SQL query engine over in-memory rows. C++ parses
 //   SELECT col-or-udf(...) [, ...] FROM table [WHERE udf(row)]
 // with user-defined functions supplied from Kirito. A UDF is a Kirito
-// Function(row: Dict) -> Any registered by name; the parser recognises `NAME(*)` or `NAME(*, args)`
+// Function(row: Dict) (returning any type) registered by name; the parser recognises `NAME(*)` or `NAME(*, args)`
 // syntax where `*` binds to the whole row. Filter predicates use the same UDF machinery: `WHERE
 // pred(*)` calls a Bool-returning UDF per row.
 

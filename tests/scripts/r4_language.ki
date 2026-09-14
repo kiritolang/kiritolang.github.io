@@ -904,7 +904,7 @@ ok(hear(Dog("x")) == "woof", "subclass satisfies base-class annotation (Dog)")
 ok(hear(Puppy("y")) == "woof (tiny)", "subclass satisfies base-class annotation (Puppy)")
 
 # Any / no annotation accepts anything
-var anyArg = Function(x : Any): return x
+var anyArg = Function(x): return x
 var noAnno = Function(x): return x
 ok(anyArg(1) == 1 and anyArg("s") == "s", "Any annotation accepts any value")
 ok(noAnno([1]) == [1] and noAnno(None) == None, "no annotation accepts any value")

@@ -144,6 +144,8 @@ so it *is* catchable; it's noted below.)
 | `two starred targets in assignment` | More than one `*name` on an unpack target | Use at most one starred target |
 | `non-default parameter '<name>' follows a default parameter` | A parameter without a default declared after one with a default | Move defaulted parameters last |
 | `duplicate parameter name '<name>'` | The same parameter name declared twice in a `Function(...)` parameter list — a hard parser error (not a warning; not catchable, since it aborts before execution) | Rename or remove the duplicate parameter |
+| `a type annotation must name at least one type` | An empty union annotation `[]` on a parameter or return | Name at least one type inside the brackets, or omit the annotation |
+| `duplicate type '<X>' in a union annotation` | The same type repeated in a union, e.g. `[Integer, Integer]` | Remove the duplicate member |
 | `an inline function cannot be comma-packed here …` | A bare comma-pack whose element is an inline-bodied `Function(): …` — e.g. `var f = Function(): return a, b` | Use an indented block body, or wrap the function in a List `[ ]` (a call-arg / list-element comma is fine) |
 
 ### Parser — switch / try
@@ -172,6 +174,7 @@ so it *is* catchable; it's noted below.)
 |---|---|---|
 | `name '<X>' is not defined` | A reference bound to no parameter, no `var`/`for`/`class`/`catch`/`with` name in an enclosing scope, no run-scope binding, and no builtin — resolved at compile time, so it is **not** catchable | Declare the name (`var`) or fix the typo before use |
 | `cannot assign to '<X>': it is captured from an enclosing function (write-through closures are not allowed — return the value or pass it as an argument)` | A nested function **rebinds** a variable captured from an enclosing **function** scope (a write-through closure). Forbidden uniformly so closures stay soundly inlinable. Reading a captured variable is fine; so is mutating a captured **container** (`box[0] = …`), and assigning a module-level or class name | Return the new value, capture a container and mutate its element, or pass the accumulator as an argument |
+| `unknown type '<X>' in annotation (name a real type or class, or omit the annotation to accept any value — there is no 'Any')` | A parameter or return annotation names something that is neither a built-in type, a class/name in scope, nor a global/builtin — a typo, or the **removed** `Any` | Name a real type/class, or omit the annotation to accept any value |
 
 ### Compiler — assignment targets & nesting
 
@@ -312,8 +315,8 @@ Everything below is a `KiritoError` (catchable by a bare `catch`) unless the typ
 | `function got an unexpected keyword argument '<name>'` | Keyword not matching any parameter | Use a declared parameter name |
 | `function got multiple values for argument '<name>'` | Same parameter given positionally and by keyword | Pass it once |
 | `function missing required argument '<name>'` | Required parameter unbound | Provide the argument |
-| `argument '<name>' must be <Type>, got <T>` | Enforced parameter annotation violated | Pass a value of the annotated type |
-| `function must return <Type>, got <T>` | Enforced return annotation violated | Return the annotated type |
+| `argument '<name>' must be <Type>, got <T>` (or `must be one of [T1, T2]` for a union) | Enforced parameter annotation violated | Pass a value of the annotated type (any member of a union) |
+| `function must return <Type>, got <T>` (or `must return one of [T1, T2]` for a union) | Enforced return annotation violated | Return the annotated type (any member of a union) |
 | `this callable does not accept keyword arguments` | Keyword args to a callable that can't take them | Call positionally |
 | `<name>() takes no arguments (no _init_ defined)` | Instantiating a class (with args) that has no `_init_` | Define `_init_` or drop the args |
 | `<name> expected <N> argument(s)` (e.g. `len expected 1 argument`) | Builtin/method arg-count mismatch | Match the builtin's arity |

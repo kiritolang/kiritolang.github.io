@@ -1,7 +1,7 @@
 // embed_dsl.cpp — a mini expression DSL. C++ owns the tokenizer, Pratt parser, and evaluator for
 // a small language of Integers and identifiers with `+ - * /`, parentheses, and function calls.
 // The FUNCTION table is populated from Kirito — every "function" the expression can call is a
-// Kirito Function(args: List) -> Any. The evaluator therefore delegates every real computation
+// Kirito Function(args: List) returning any type. The evaluator therefore delegates every real computation
 // to Kirito once it has assembled the argument list, which is the sort of embed pattern you'd
 // use for a formula-language / spreadsheet cell.
 //

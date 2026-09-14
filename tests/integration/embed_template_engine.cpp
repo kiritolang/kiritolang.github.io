@@ -138,7 +138,7 @@ Function(name, ctx) -> String:
     // ---- adversarial: a resolver that returns a non-String must throw ----
     {
         Handle badResolver = compile(R"KI(
-Function(name, ctx) -> Any:
+Function(name, ctx):
     return 42
 )KI");
         TemplateEngine bad(vm, badResolver);

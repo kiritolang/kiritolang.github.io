@@ -329,8 +329,10 @@ A non-`None` return annotation also checks the **implicit** `None` a function re
 the end (or hitting a `return`-less branch): such a function annotated `-> Integer` throws `function
 must return Integer, got None`. (`-> None` accepts an explicit `return`, `return None`, or fall-off.)
 
-Annotations are checked at runtime (inheritance-aware for classes). `Any` or no annotation accepts
-anything. Inline form: `Function(x): return x * x`.
+Annotations are checked at runtime (inheritance-aware for classes). A **union** annotation `[T1, T2]`
+accepts any of several types (`Function(x: [Integer, Float])`); no annotation accepts anything (there
+is no `Any` type). Every annotation name must name a real type — an unknown name is a compile error.
+Inline form: `Function(x): return x * x`.
 
 > The **inline** body's `return` takes a single expression — an inline function does not comma-pack.
 > A trailing comma in a **delimited** position belongs to the enclosing brackets: it's the next call

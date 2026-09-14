@@ -72,18 +72,36 @@ Calling `half(3)` with a bare Integer throws `argument 'x' must be Float, got In
 arithmetic, mixing an Integer and a Float still promotes to Float — it is only the annotation *check*
 that is strict.)
 
-## `Any` and no annotation accept everything
+## Accepting several types: a union `[T1, T2]`
 
-Leaving a parameter unannotated, or annotating it `Any`, accepts any value — use this when a function
-genuinely is generic:
+When a parameter legitimately accepts more than one type, annotate it with a **union** — a bracketed
+list of types. The value must be an instance of **any** member (inheritance-aware, exactly like a
+single annotation); otherwise the call throws a `must be one of [...]` error:
 
 ```kirito
 var io = import("io")
 
-var identity = Function(x : Any):
+var scale = Function(factor : [Integer, Float]) -> [Integer, Float]:
+    return factor * 2
+
+io.print(scale(3), scale(1.5))     # => 6 3.0
+```
+
+A union may include `None` to mark a value optional (`[Integer, None]`). Every member must name a real
+type; an unknown name is a compile error, and an empty `[]` or a repeated member is rejected too.
+
+## No annotation accepts everything
+
+Leaving a parameter unannotated accepts any value — use this when a function genuinely is generic.
+There is **no `Any` type**: to accept anything, simply omit the annotation.
+
+```kirito
+var io = import("io")
+
+var identity = Function(x):                # no annotation — anything goes
     return x
 
-var describe_type = Function(value):       # no annotation — anything goes
+var describe_type = Function(value):       # likewise
     return type(value)
 
 io.print(identity(42), identity("hi"))     # => 42 hi
@@ -133,5 +151,5 @@ error as a value.
 
 - Kirito is dynamically but strongly typed — no silent coercion.
 - `: Type` / `-> Type` annotations are checked at runtime and are inheritance-aware.
-- `Any` or no annotation accepts anything.
+- A **union** `[T1, T2]` accepts any of several types; no annotation accepts anything (there is no `Any`).
 - `type(x)` and `isinstance(x, T)` for explicit runtime type checks and dispatch.

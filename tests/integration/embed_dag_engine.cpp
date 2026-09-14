@@ -67,7 +67,7 @@ static std::vector<std::string> topoOrder(const std::vector<Node>& nodes) {
 }
 
 // Execute a graph: for each node in topo order, gather its dep values as a Kirito List and call
-// its transform Function(list) -> Any. The result is stored back in the node's `value` slot.
+// its transform Function(list) (returning any type). The result is stored back in the node's `value` slot.
 static void runGraph(KiritoVM& vm, std::vector<Node>& nodes) {
     auto order = topoOrder(nodes);
     std::unordered_map<std::string, std::size_t> idx;

@@ -5,7 +5,7 @@
 #   * the explicit-fill-vs-'0'-flag vs '=' sign-splitting matrix;
 #   * pow's two's-complement wraparound and the Float-base / big-modular corners;
 #   * round/abs of NaN/inf WITH ndigits (passthrough) and the genuine negative-zero literal;
-#   * isinstance against the pseudo type-names ("Number"/"Any"/"Function"/"Module") and a native
+#   * isinstance against the pseudo type-names ("Number"/"Function"/"Module") and a native
 #     object's own name;
 #   * the converters over surprising-but-valid iterables (Dict from 2-char Strings / from zip,
 #     Set/List from Bytes, Float(".5")/Float("5."), Set(None));
@@ -167,11 +167,11 @@ ok(bitxor(MIN, MIN) == 0, "bitxor INT64_MIN with itself -> 0")
 ok(Integer("0xABCDEF") == 11259375, "Integer of a long uppercase hex string")
 
 # ===================================================== isinstance: pseudo / native names ===
-# The type-name String resolves through the same matcher as annotations, so "Number"/"Any" work,
+# The type-name String resolves through the same matcher as annotations, so "Number" works,
 # as do the kind names "Function"/"Module"/"None"; an unknown name is just False (no throw).
 ok(isinstance(1, "Number") and isinstance(1.5, "Number"), "isinstance 'Number' matches Integer/Float")
 ok(isinstance("x", "Number") == False, "isinstance 'Number' rejects a String")
-ok(isinstance(1, "Any") and isinstance("x", "Any") and isinstance(None, "Any"), "isinstance 'Any' matches everything")
+ok(not isinstance(1, "Any") and not isinstance("x", "Any") and not isinstance(None, "Any"), "isinstance 'Any' matches nothing (Any removed)")
 ok(isinstance(len, "Function") and isinstance(io.print, "Function"), "isinstance 'Function' name (native + module fn)")
 ok(isinstance(io, "Module"), "isinstance 'Module' name")
 ok(isinstance(None, "None"), "isinstance 'None' name")

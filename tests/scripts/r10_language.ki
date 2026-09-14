@@ -488,7 +488,7 @@ var noneReturn = Function() -> None: return
 var noneExplicit = Function() -> None: return None
 ok(noneFalloff() == None and noneReturn() == None and noneExplicit() == None, "'-> None' accepts fall-off / return / return None")
 # Any (or no annotation) accepts anything
-var anyArg = Function(x : Any) -> Any:
+var anyArg = Function(x):
     return x
 ok(anyArg(1) == 1 and anyArg("s") == "s" and anyArg([1]) == [1], "'Any' accepts every type")
 # closures capture and persist their lexical scope

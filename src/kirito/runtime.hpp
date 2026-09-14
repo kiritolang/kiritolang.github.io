@@ -2199,12 +2199,13 @@ inline bool classNameSatisfies(std::string_view candidate, const std::string& qu
     return classBareName(candidate) == query;                 // bare query -> match the class-part
 }
 
-// Does `value` satisfy the type annotation `typeName`? Built-in type names match by kind; "Any"
-// always matches; otherwise treat it as a class name and check the instance's class chain (so
-// subclasses pass) — and also accept a NativeClass whose typeName equals the annotation. Class-name
-// comparison is qualified-aware (see classNameSatisfies).
+// Does `value` satisfy the single type name `typeName`? Built-in type names match by kind; otherwise
+// treat it as a class name and check the instance's class chain (so subclasses pass) — and also accept
+// a NativeClass whose typeName equals the annotation. Class-name comparison is qualified-aware (see
+// classNameSatisfies). There is no "Any": an empty name (which the callers never pass for a real
+// annotation) trivially matches; to accept any value you simply omit the annotation.
 inline bool typeMatches(KiritoVM& vm, Handle value, const std::string& typeName) {
-    if (typeName.empty() || typeName == "Any") return true;
+    if (typeName.empty()) return true;
     const Object& o = vm.arena().deref(value);
     // "Number" is the pseudo-type the numeric builtins advertise (inspect shows `x: Number`); accept
     // it for Integer or Float so a user annotation `Function(x : Number)` works as documented.
@@ -2226,6 +2227,28 @@ inline bool typeMatches(KiritoVM& vm, Handle value, const std::string& typeName)
         // a C++ NativeClass instance (Matrix, Socket, ...): match its own type name
         if (classNameSatisfies(o.typeName(), typeName)) return true;
     }
+    return false;
+}
+
+// Render an annotation for a message or `inspect`: "" for none, "T" for a single type, "[T1, T2]" for
+// a union. The single-vs-bracket split keeps pre-union output byte-identical (a 1-name list renders
+// exactly as the bare name it used to be).
+inline std::string renderAnnotation(const ast::AnnList& ann) {
+    if (ann.empty()) return "";
+    if (ann.size() == 1) return ann[0];
+    std::string s = "[";
+    for (std::size_t i = 0; i < ann.size(); ++i) { if (i) s += ", "; s += ann[i]; }
+    return s + "]";
+}
+
+// Does `value` satisfy the (possibly union) annotation `ann`? The SINGLE SOURCE OF TRUTH for annotation
+// checking, used by both the runtime arg-binder and (later) the inliner's emitted check. Empty = accepts
+// anything; a union is satisfied if the value matches ANY member (each via the inheritance-aware
+// typeMatches).
+inline bool annotationSatisfied(KiritoVM& vm, Handle value, const ast::AnnList& ann) {
+    if (ann.empty()) return true;
+    for (const auto& t : ann)
+        if (typeMatches(vm, value, t)) return true;
     return false;
 }
 
@@ -2386,18 +2409,24 @@ inline Handle KiFunction::callFull(KiritoVM& vm, std::span<const Handle> positio
                 throw KiritoError("function missing required argument '" + params[i].name + "'");
             }
         }
-        if (!params[i].annotation.empty() && !typeMatches(vm, values[i], params[i].annotation))
-            throw KiritoError("argument '" + params[i].name + "' must be " + params[i].annotation +
+        if (!annotationSatisfied(vm, values[i], params[i].annotation)) {
+            const auto& ann = params[i].annotation;
+            std::string mustBe = ann.size() == 1 ? ann[0] : "one of " + renderAnnotation(ann);
+            throw KiritoError("argument '" + params[i].name + "' must be " + mustBe +
                               ", got " + vm.arena().deref(values[i]).typeName());
+        }
         env.define(vm.arena(), params[i].name, values[i]);
     }
 
     Handle result = attributed([&] { return runBody(scope, values); });
 
     // enforce the return annotation
-    if (!def_->returnAnnotation.empty() && !typeMatches(vm, result, def_->returnAnnotation))
-        throw KiritoError("function must return " + def_->returnAnnotation + ", got " +
+    if (!annotationSatisfied(vm, result, def_->returnAnnotation)) {
+        const auto& ann = def_->returnAnnotation;
+        std::string mustBe = ann.size() == 1 ? ann[0] : "one of " + renderAnnotation(ann);
+        throw KiritoError("function must return " + mustBe + ", got " +
                           vm.arena().deref(result).typeName());
+    }
     return result;
 }
 
@@ -2885,11 +2914,11 @@ inline std::string inspectSignature(const std::string& name, const ast::Function
     for (std::size_t i = 0; i < def.params.size(); ++i) {
         if (i) out += ", ";
         out += def.params[i].name;
-        if (!def.params[i].annotation.empty()) out += ": " + def.params[i].annotation;
+        if (!def.params[i].annotation.empty()) out += ": " + renderAnnotation(def.params[i].annotation);
         if (def.params[i].defaultValue) out += " = ...";
     }
     out += ")";
-    if (!def.returnAnnotation.empty()) out += " -> " + def.returnAnnotation;
+    if (!def.returnAnnotation.empty()) out += " -> " + renderAnnotation(def.returnAnnotation);
     return out;
 }
 

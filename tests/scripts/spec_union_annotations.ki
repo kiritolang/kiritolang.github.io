@@ -1,0 +1,50 @@
+# Feature: multi-class (union) type annotations `[T1, T2]`, plus the removal of `Any`.
+# A value satisfies a union if it isinstance-matches ANY member (inheritance-aware); a mismatch throws
+# a "must be one of [...]" error; a single-member annotation behaves exactly like the bare type.
+var io = import("io")
+
+# --- union accepts each member ---
+var f = Function(x: [Integer, Float]) -> [Integer, Float]: return x
+io.print("members:", f(3), f(2.5))
+
+# --- union rejects a non-member, with the "one of" message ---
+var caught = ""
+try:
+    discard f("nope")
+catch as e:
+    caught = e
+io.print("reject:", caught)
+
+# --- single-member union renders/erses exactly like the bare type (singular message) ---
+var g = Function(x: Integer): return x
+var single = ""
+try:
+    discard g("nope")
+catch as e:
+    single = e
+io.print("single:", single)
+
+# --- inheritance: a base member accepts a subclass instance ---
+class Animal:
+    var _init_ = Function(self): pass
+class Dog(Animal):
+    var _init_ = Function(self): pass
+var h = Function(a: [Animal, Integer]) -> String: return "ok"
+io.print("inherit:", h(Dog()), h(7))
+
+# --- None is a valid union member: `[Integer, None]` = optional Integer ---
+var opt = Function(x: [Integer, None]): return x
+io.print("optional:", opt(5), opt(None))
+
+# --- a default value is validated against the union ---
+var d = Function(x: [Integer, Float] = 10): return x
+io.print("default:", d(), d(1.5))
+
+# --- inspect renders the union in brackets, a single as the bare name ---
+io.print("inspect-union:", "[Integer, Float]" in inspect(f))
+io.print("inspect-single:", "x: Integer" in inspect(g))
+
+# --- `Any` is gone: it is no longer a type-name for isinstance (matches nothing) ---
+io.print("any-isinstance:", isinstance(1, "Any"), isinstance(None, "Any"))
+
+io.print("OK spec_union_annotations")

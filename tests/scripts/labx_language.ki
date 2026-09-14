@@ -392,7 +392,7 @@ var describe = Function(a : Animal) -> Animal:
 assert describe(Dog()).kind == "dog", "subclass satisfies a base-class annotation (param+return)"
 assert raises(Function(): return describe(5)), "base annotation still rejects an unrelated type"
 # Any / no-annotation accept anything
-var anyf = Function(x : Any):
+var anyf = Function(x):
     return x
 var openf = Function(x):
     return x

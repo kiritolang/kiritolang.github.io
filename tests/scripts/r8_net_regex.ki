@@ -479,7 +479,7 @@ if argmain:
     # NET — inspect surfaces (fresh assertions vs r7): Response + Session + module member shape
     # =========================================================================================
     var insResp = inspect(tr)
-    ok("content: Bytes" in insResp and "json() -> Any" in insResp, "inspect Response lists content + json()")
+    ok("content: Bytes" in insResp and "json()" in insResp, "inspect Response lists content + json()")
     ok("raiseforstatus()" in insResp and "header(name, default) -> String" in insResp, "inspect Response lists raiseforstatus + header")
     var insSess = inspect(net.Session())
     ok("get(url, opts) -> Response" in insSess and "post(url, opts) -> Response" in insSess, "inspect Session lists get/post")

@@ -49,8 +49,8 @@ parameter name.
   forms: `catch String as e`, `catch SomeClass as e`.) Note `Bool` is its **own** type, not a subtype
   of `Integer`: `isinstance(True, Integer)` is `False` (and `isinstance(1, Bool)` is `False`).
   The type-name `String` form also accepts the **pseudo-types** `"Number"` (Integer or Float),
-  `"Any"` (always `True`), `"Function"`, `"Module"`, `"None"`, and a **native object's type name**
-  (e.g. `isinstance(m, "Matrix")`).
+  `"Function"`, `"Module"`, `"None"`, and a **native object's type name**
+  (e.g. `isinstance(m, "Matrix")`). (There is no `"Any"` — an unknown type name simply matches nothing.)
 
   > **Matching is by class NAME, not identity.** For a user class, `isinstance` (and a typed `catch`,
   > and an enforcing type annotation) test whether the value's class **chain** contains a class of the

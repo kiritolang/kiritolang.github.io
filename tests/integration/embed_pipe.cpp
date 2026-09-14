@@ -1,5 +1,5 @@
 // embed_pipe.cpp — a streaming data pipeline. C++ owns the source stream (a bounded vector of
-// items) and the sink (a collector); the intermediate stages are Kirito Function(item) -> Any
+// items) and the sink (a collector); the intermediate stages are Kirito Function(item) (returning any type)
 // transforms. A stage may FILTER by returning a special sentinel Handle (`vm.none()` — mapped to
 // "drop this item"), TRANSFORM by returning any other value, or FAN-OUT by returning a List
 // (each element continues down the pipeline). The engine chains them so a fan-out stage before a

@@ -88,7 +88,7 @@ catch as e:
     retErr = True
 assert retErr, "return annotation enforced"
 # Any / no annotation accept everything
-var anyf = Function(x : Any):
+var anyf = Function(x):
     return x
 assert anyf("s") == "s" and anyf([1]) == [1] and anyf(None) == None, "Any accepts all"
 

@@ -1,0 +1,1 @@
+var f = Function(x: Integ): return x

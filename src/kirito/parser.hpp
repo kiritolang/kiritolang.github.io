@@ -741,10 +741,36 @@ private:
         throw KiritoError("expected a member name after '.'", peek().span);
     }
 
-    // A type annotation is a type/class name: an identifier, or the built-in `None` type.
+    // A single type/class name: an identifier, or the built-in `None` type.
     std::string parseTypeName(const char* what) {
         if (at(TokenType::KwNone)) { advance(); return "None"; }
         return expect(TokenType::Identifier, what).text;
+    }
+
+    // A type annotation: a single type name (`Integer`), or a bracketed UNION of two or more
+    // (`[Integer, Float]`). A value satisfies a union if it matches any member. The bracket form must
+    // name at least one type and may not repeat a member (both are loud parse errors — there is no
+    // silent normalization, and there is no `Any`: to accept anything you omit the annotation).
+    ast::AnnList parseTypeAnnotation(const char* what) {
+        ast::AnnList ann;
+        if (at(TokenType::LBracket)) {
+            auto lb = advance().span;  // '['
+            if (at(TokenType::RBracket))
+                throw KiritoError("a type annotation must name at least one type", lb);
+            while (true) {
+                std::string t = parseTypeName("a type name inside the union");
+                for (const auto& seen : ann)
+                    if (seen == t)
+                        throw KiritoError("duplicate type '" + t + "' in a union annotation", peek().span);
+                ann.push_back(std::move(t));
+                if (!at(TokenType::Comma)) break;
+                advance();
+            }
+            expect(TokenType::RBracket, "']' to close the union annotation");
+        } else {
+            ann.push_back(parseTypeName(what));
+        }
+        return ann;
     }
 
     ast::Param parseParam() {
@@ -752,7 +778,7 @@ private:
         p.name = expect(TokenType::Identifier, "a parameter name").text;
         if (at(TokenType::Colon)) {
             advance();
-            p.annotation = parseTypeName("a type name after ':'");
+            p.annotation = parseTypeAnnotation("a type name after ':'");
         }
         if (at(TokenType::Assign)) {
             advance();
@@ -789,7 +815,7 @@ private:
         expect(TokenType::RParen, "')' after parameters");
         if (at(TokenType::Arrow)) {
             advance();
-            node->returnAnnotation = parseTypeName("a return type after '->'");
+            node->returnAnnotation = parseTypeAnnotation("a return type after '->'");
         }
         expect(TokenType::Colon, "':' after Function parameters");
         // A function body is its own break/continue/return context: a loop outside the function
