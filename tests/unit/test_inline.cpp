@@ -2,6 +2,9 @@
 // The load-bearing guarantee is "inlining changes SPEED, not RESULTS": every program must produce a
 // byte-identical value (and identical thrown-error text) with the inline transform ON vs. OFF. This TU
 // is the differential harness for that, plus targeted hygiene / side-effect-once / firing checks.
+#include <initializer_list>
+#include <iterator>
+#include <random>
 #include <string>
 
 #include "../check.hpp"
@@ -109,6 +112,46 @@ int main() {
              "var bump = Function():\n log.append(1)\n return 3\n"
              "var f = Function():\n return (Function(x): return 42)(bump())\n"   // param unused
              "var r = f()\n[r, len(log)]") == "[42, 1]");
+
+    // ---- property/fuzz: randomly assemble small programs mixing inlinable literals, const-bound-local
+    //      helpers, map/filter fusion, captures, shadowing, and non-inlinable shapes; assert inline
+    //      ON == OFF for every one. Seeded for reproducibility. This is the deep guard on "speed, not
+    //      results" — it exercises far more shapes (and their interactions) than the fixed battery. ----
+    {
+        std::mt19937 rng(0xC0FFEE);
+        auto pick = [&](std::initializer_list<const char*> xs) {
+            auto it = xs.begin(); std::advance(it, rng() % xs.size()); return std::string(*it);
+        };
+        int mismatches = 0;
+        for (int iter = 0; iter < 400; ++iter) {
+            // a random pure expression over the loop variable `e` and a captured `base`
+            std::string expr = pick({"e", "e * e", "e + base", "e - 1", "e * 2 + base", "len(String(e))",
+                                     "e % 3", "(e + base) * 2", "e * e - base"});
+            std::string pred = pick({"e % 2 == 0", "e > base", "e < 5", "e != 3", "e >= 0"});
+            std::string src = "var base = " + std::to_string(static_cast<int>(rng() % 7)) + "\n";
+            int shape = static_cast<int>(rng() % 6);
+            if (shape == 0)        // direct-literal call inside a function
+                src += "var f = Function():\n return (Function(e): return " + expr + ")(" +
+                       std::to_string(static_cast<int>(rng() % 9)) + ")\nf()";
+            else if (shape == 1)   // const-bound-local helper called in a loop
+                src += "var h = Function(e): return " + expr + "\nvar t = 0\nfor i in range(6):\n"
+                       " t = t + h(i)\nt";
+            else if (shape == 2)   // fused map over a range
+                src += "var out = []\nfor x in map(Function(e): return " + expr + ", range(6)):\n"
+                       " out.append(x)\nout";
+            else if (shape == 3)   // fused filter over a range
+                src += "var out = []\nfor x in filter(Function(e): return " + pred + ", range(8)):\n"
+                       " out.append(x)\nout";
+            else if (shape == 4)   // map whose callback captures `base` (not fused) — still must agree
+                src += "var out = []\nfor x in map(Function(e): return e + base, range(5)):\n"
+                       " out.append(x)\nout";
+            else                   // nested: fused map with a directly-inlined sub-call in the body
+                src += "var out = []\nfor x in map(Function(e): return (Function(z): return z + 1)(e), range(5)):\n"
+                       " out.append(x)\nout";
+            if (run1(true, src) != run1(false, src)) ++mismatches;
+        }
+        CHECK(mismatches == 0);
+    }
 
     // (Firing — that a candidate call actually becomes inline codegen, not a normal call — is confirmed
     // out-of-band: the CLI traceback of an inlined body shows no separate lambda frame, whereas
