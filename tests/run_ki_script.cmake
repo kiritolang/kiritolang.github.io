@@ -32,3 +32,12 @@ if(NOT actual STREQUAL expected)
         "Script ${SCRIPT} output mismatch (exit ${rc}).\n"
         "--- expected ---\n${expected}\n--- actual ---\n${actual}")
 endif()
+# A golden script must also EXIT CLEANLY (0). Checking the exit code — not just stdout — is what makes
+# the sanitizer variants meaningful for the .ki suite: under asan/tsan (`-fno-sanitize-recover=all`) a
+# detected error aborts with a nonzero code, but if it fires at teardown AFTER all expected stdout is
+# already flushed, the stdout diff alone would still pass. Requiring rc==0 turns any such late abort
+# (or any other unexpected nonzero exit) into a test failure. Error cases belong in run_ki_error.cmake.
+if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "Script ${SCRIPT} exited ${rc} (expected 0) despite matching stdout — "
+                        "likely a sanitizer abort at teardown or an unclean exit.")
+endif()
