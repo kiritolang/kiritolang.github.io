@@ -163,6 +163,22 @@ ordinary C++ style. Special (dunder-equivalent) methods use a **single** leading
 
 ## Testing Rules
 
+- **Prefer Kirito (`.ki`) tests over C++ tests — this is the default, not a preference.** A test whose
+  behaviour can be exercised from a Kirito program MUST be written as a `.ki` test (a golden
+  `tests/scripts/*.ki` + `.expected`, or an error `tests/errors/*.ki` + `.experr`) run through the built
+  `ki` executable — **never** as a C++ unit test that merely builds a `KiritoVM`, `runSource`s a snippet,
+  and checks the stringified result. Every such C++ TU recompiles the whole header-only interpreter
+  (~1.7 GB RSS at `-O2`), so it is slow to build and adds nothing a `.ki` golden doesn't. C++ tests are
+  reserved for what **genuinely cannot** be expressed in Kirito: exercising the C++ embedding/Value API
+  itself (`makeInt`/`registerGlobal`/`install<NativeModule>`/serializer registry/`RootScope`/`PinnedHandle`),
+  VM internals and knobs with no Kirito surface (`setGcThreshold`/`setMaxCallDepth`, GC live-count/arena
+  invariants, the parallel dispatcher, lexer/parser/resolver/analyzer classes, inspecting
+  `KiritoError`/traceback fields), or a differential that must run the *same* source under two VM configs
+  in one process (e.g. inlining on vs off). Conversions: runtime errors fold into a `.ki` golden via
+  `try:/catch as e:/io.print(e)`; compile-time errors become `.experr` cases; GC-soak coverage runs a `.ki`
+  golden under `--gc-threshold 1` (Kirito exposes the GC cadence to the CLI/`KIRITO_PATH`-style env, so it
+  needs no C++ driver). `io.print(x)` is byte-identical to the C++ `vm.stringify(x)`. When adding a C++
+  test, state in a comment why it can't be a `.ki` test.
 - Every non-trivial piece of code MUST be thoroughly tested.
 - Write unit tests for individual components in isolation.
 - Test edge cases, boundary conditions, invalid inputs, and empty inputs — including adversarial attempts to break the code.

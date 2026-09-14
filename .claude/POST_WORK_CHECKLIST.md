@@ -6,13 +6,22 @@ The routine to run **after every change, before declaring it done**. The mechani
 ## The routine
 
 1. **Write tests for what changed.** Every new feature or fixed bug gets a focused test in the same
-   change (CLAUDE.md rule). Prefer many small tests over one big one.
-   - Behaviour at the C++/embedding boundary → a `tests/unit/test_*.cpp` (register it in
-     `tests/CMakeLists.txt`).
-   - End-to-end `.ki` behaviour with known output → `tests/scripts/NAME.ki` + `NAME.expected`.
-   - Code that *should fail* → `tests/errors/NAME.ki` + `NAME.experr` (each `.experr` line is a
-     required substring of stderr; the script must exit non-zero). Cover the bad path, not just the
+   change (CLAUDE.md rule). Prefer many small tests over one big one. **`.ki` tests are the default**
+   (CLAUDE.md "Testing Rules"): if the behaviour is reachable from a Kirito program, it MUST be a `.ki`
+   test, not a C++ TU — a C++ TU recompiles the whole interpreter and adds nothing a golden doesn't.
+   - End-to-end `.ki` behaviour with known output → `tests/scripts/NAME.ki` + `NAME.expected` (a runtime
+     error folds in via `try:/catch as e:/io.print(e)`; `io.print(x)` == the C++ `vm.stringify(x)`).
+   - Code that *should fail* at compile time → `tests/errors/NAME.ki` + `NAME.experr` (each `.experr` line
+     is a required substring of stderr; the script must exit non-zero). Cover the bad path, not just the
      good one.
+   - GC-rooting under pressure → a `.ki` golden also registered to run under `--gc-threshold 1` (see the
+     soak `foreach` in `tests/CMakeLists.txt`); no C++ `setGcThreshold` driver needed.
+   - ONLY when the behaviour genuinely can't be written in Kirito → a `tests/unit/test_*.cpp` (register it
+     in `tests/CMakeLists.txt`) with a comment saying why: the C++ embedding/Value API itself, VM knobs
+     with no Kirito surface (`setGcThreshold`/`setMaxCallDepth`), GC/arena internals, the parallel
+     dispatcher, lexer/parser/resolver classes, `KiritoError`/traceback field inspection, or a same-source
+     two-VM-config differential. Such a TU MUST `return RUN_TESTS();` (else `CHECK` failures exit 0 and
+     ctest silently passes).
    - **Regression-per-bug.** A fix for a specific bug ships an executable test the bug would have
      failed. Name it after what it covers, not the bug's ID — `spec_dict_iter_after_delete.ki`,
      not `fix_pr47.ki` — so a reader who trips it three years from now sees the *symptom* and can
