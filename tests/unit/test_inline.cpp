@@ -26,21 +26,6 @@ static bool same(const std::string& src) { return run1(true, src) == run1(false,
 // Result with inlining ON (to also pin the actual value, not just on==off).
 static std::string on(const std::string& src) { return run1(true, src); }
 
-// Same as run1 but collect on EVERY allocation (KIRITO_GC_THRESHOLD=1): a rooting bug in an inlined
-// body, a fused loop, or a compiler-generated hidden slot ($inl/$cmb) is swept mid-expression and
-// surfaces as a wrong result or an asan use-after-free. Interned small ints mask GC bugs, so the soak
-// programs below deliberately traffic in fresh (non-interned) strings/lists.
-static std::string runGc(bool inlining, const std::string& src) {
-    KiritoVM vm;
-    vm.installStandardLibrary();
-    vm.setInliningEnabled(inlining);
-    vm.setGcThreshold(1);
-    try { return vm.stringify(vm.runSource(src)); }
-    catch (const KiritoError& e) { return std::string("ERR:") + e.what(); }
-    catch (const std::exception& e) { return std::string("STD:") + e.what(); }
-}
-static bool sameGc(const std::string& src) { return runGc(true, src) == runGc(false, src); }
-
 int main() {
     // ---- differential battery: on == off for every shape (inlinable AND non-inlinable) ----
     // v1 inlining fires only for a directly-called capture-free single-return flat lambda inside a
@@ -252,26 +237,11 @@ int main() {
                          "  return box[0]\n return g() + g()\nf()") == "3");                 // captured container
     }
 
-    // ---- GC soak (collect on EVERY allocation): inlined bodies, fused loops, and hidden $inl/$cmb slots
-    //      must keep every intermediate handle rooted. Fresh (non-interned) strings/lists to defeat the
-    //      small-int cache. on==off under threshold=1 proves no inlining-introduced rooting hole. ----
-    {
-        const char* soak[] = {
-            // fused map building fresh strings, capturing a growing list
-            "var acc = []\nvar out = []\nfor s in map(Function(i): return \"n\" + String(i), range(30)):\n"
-            " acc.append(s)\n out.append(s + \"!\")\n[len(acc), out[29], len(out)]",
-            // inlined literal producing a fresh list each call, summed
-            "var f = Function():\n var t = 0\n for i in range(40):\n"
-            "  t = t + len((Function(n): return [n, n + 1, n + 2])(i))\n return t\nf()",
-            // fused filter over fresh strings with a captured predicate bound
-            "var keep = 3\nvar out = []\nfor s in filter(Function(i): return i % keep == 0, range(60)):\n"
-            " out.append(\"x\" + String(s))\nout",
-            // const-fn returning fresh lists, called many times in a loop
-            "var mk = Function(k): return [k, k * 2, k * 3]\nvar total = []\nfor i in range(25):\n"
-            " total.append(mk(i))\n[len(total), total[24]]",
-        };
-        for (const char* s : soak) CHECK(sameGc(s));
-    }
+    // (GC soak — inlined bodies / fused loops / hidden $inl/$cmb slots keeping every intermediate handle
+    // rooted — is exercised at the user-code layer by the `--gc-threshold 1` .ki soak tests
+    // script_spec_cheapcall_soak / script_spec_inline_adversarial_soak (and their _noinl differentials),
+    // which run under ASan. The differential harness here owns the on==off invariant over the FUZZED
+    // space, which a fixed .ki golden cannot express.)
 
     // ---- flag-latch guard (embedding API): a fresh VM with the flag set BEFORE running is the supported
     //      usage and both modes yield identical values; this locks that setInliningEnabled is honored and

@@ -277,6 +277,28 @@ foreach(nm verify_inline spec_traceback spec_inline_adversarial)
     endif()
 endforeach()
 
+# --- GC soak (collect on EVERY allocation, `--gc-threshold 1`) for the cheap-call / inlining goldens:
+# a pooled operand buffer that leaked a stale handle, an inlined body or fused loop that dropped an
+# intermediate, or a hidden $inl/$cmb slot left unrooted is swept mid-expression and shows up as a wrong
+# result here (or an ASan use-after-free in the asan variant). Both inline ON and --no-inline must still
+# equal the SAME .expected under per-alloc GC, so this is also the soak-differential at the .ki layer. ---
+foreach(nm spec_cheapcall spec_inline_adversarial)
+    set(_scr ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.ki)
+    set(_exp ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.expected)
+    if(EXISTS ${_scr} AND EXISTS ${_exp})
+        add_test(NAME script_${nm}_soak
+                 COMMAND ${CMAKE_COMMAND} -DKI=$<TARGET_FILE:ki> -DSCRIPT=${_scr}
+                         -DEXPECTED=${_exp} "-DKIFLAGS=--gc-threshold 1"
+                         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ki_script.cmake)
+        add_test(NAME script_${nm}_soak_noinl
+                 COMMAND ${CMAKE_COMMAND} -DKI=$<TARGET_FILE:ki> -DSCRIPT=${_scr}
+                         -DEXPECTED=${_exp} "-DKIFLAGS=--gc-threshold 1 --no-inline"
+                         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ki_script.cmake)
+        set_tests_properties(script_${nm}_soak script_${nm}_soak_noinl
+                             PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+endforeach()
+
 # The parallel golden scripts can block on a real bug; cap them so a regression fails rather than
 # stalling CI (the watchdog backstop, mirroring the parallel unit tests' TIMEOUT). spec_net_tls spawns
 # a Python TLS server subprocess, so it gets the same watchdog in case the server ever hangs.
