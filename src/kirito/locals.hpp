@@ -301,26 +301,77 @@ inline NameSet freeVariables(const ast::FunctionExpr& fn) {
     return free;
 }
 
-// True if a function literal appears anywhere in an expression subtree. The inliner uses this to reject
-// a body that builds a nested closure: splicing it into the caller frame would make the nested function
-// capture the caller's scope rather than the (now frame-slotted) inlined locals.
-inline bool exprContainsFunction(const ast::Expr& e) {
-    if (dynamic_cast<const ast::FunctionExpr*>(&e)) return true;
-    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) return exprContainsFunction(*u->operand);
-    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e)) return exprContainsFunction(*b->lhs) || exprContainsFunction(*b->rhs);
-    if (const auto* l = dynamic_cast<const ast::LogicalExpr*>(&e)) return exprContainsFunction(*l->lhs) || exprContainsFunction(*l->rhs);
-    if (const auto* cn = dynamic_cast<const ast::ConditionalExpr*>(&e)) return exprContainsFunction(*cn->cond) || exprContainsFunction(*cn->then) || exprContainsFunction(*cn->orelse);
-    if (const auto* c = dynamic_cast<const ast::CallExpr*>(&e)) { if (exprContainsFunction(*c->callee)) return true; for (const auto& a : c->args) if (exprContainsFunction(*a.value)) return true; return false; }
-    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(&e)) return exprContainsFunction(*m->object);
-    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&e)) { if (exprContainsFunction(*ix->object)) return true; for (const auto& k : ix->indices) if (exprContainsFunction(*k)) return true; return false; }
-    if (const auto* sl = dynamic_cast<const ast::SliceExpr*>(&e)) return (sl->object && exprContainsFunction(*sl->object)) || (sl->start && exprContainsFunction(*sl->start)) || (sl->stop && exprContainsFunction(*sl->stop)) || (sl->step && exprContainsFunction(*sl->step));
-    if (const auto* lst = dynamic_cast<const ast::ListLiteral*>(&e)) { for (const auto& x : lst->elems) if (exprContainsFunction(*x)) return true; return false; }
-    if (const auto* stl = dynamic_cast<const ast::SetLiteral*>(&e)) { for (const auto& x : stl->elems) if (exprContainsFunction(*x)) return true; return false; }
-    if (const auto* dt = dynamic_cast<const ast::DictLiteral*>(&e)) { for (const auto& [k, v] : dt->entries) if (exprContainsFunction(*k) || exprContainsFunction(*v)) return true; return false; }
-    if (const auto* fs = dynamic_cast<const ast::FStringExpr*>(&e)) { for (const auto& p : fs->parts) if (p.isExpr && exprContainsFunction(*p.expr)) return true; return false; }
-    if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&e)) { for (const auto& x : tup->elems) if (exprContainsFunction(*x)) return true; return false; }
-    if (const auto* star = dynamic_cast<const ast::StarExpr*>(&e)) return exprContainsFunction(*star->inner);
-    return false;  // NameExpr / LiteralExpr (and any leaf): no nested function
+// True iff an expression body is SAFE to inline (splice into the caller with param names rebound):
+//   - it contains NO nested function literal (a nested closure would capture the caller's scope, not
+//     the now-frame-slotted inlined locals), and
+//   - every NameExpr is either a PARAMETER (rebound to the evaluated argument by the inliner) or a
+//     genuine GLOBAL (resolver builtinSlot >= 0). A reference the resolver bound to an enclosing/module
+//     scope (envIndex >= 0 — a capture, OR a builtin name SHADOWED by a lexical `var`) is unsafe: its
+//     (depth,index) was computed for the lambda's own scope nesting and would be stale once inlined.
+// This is the precise capture-free test — checking the per-NameExpr resolver annotation, not merely
+// whether the name is a registered builtin (which a lexical shadow would silently override).
+inline bool inlineBodySafe(const ast::Expr& e, const NameSet& params) {
+    if (dynamic_cast<const ast::FunctionExpr*>(&e)) return false;
+    if (const auto* n = dynamic_cast<const ast::NameExpr*>(&e))
+        return params.count(n->name) || (n->builtinSlot >= 0 && n->envIndex < 0);
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(&e)) return inlineBodySafe(*u->operand, params);
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(&e)) return inlineBodySafe(*b->lhs, params) && inlineBodySafe(*b->rhs, params);
+    if (const auto* l = dynamic_cast<const ast::LogicalExpr*>(&e)) return inlineBodySafe(*l->lhs, params) && inlineBodySafe(*l->rhs, params);
+    if (const auto* cn = dynamic_cast<const ast::ConditionalExpr*>(&e)) return inlineBodySafe(*cn->cond, params) && inlineBodySafe(*cn->then, params) && inlineBodySafe(*cn->orelse, params);
+    if (const auto* c = dynamic_cast<const ast::CallExpr*>(&e)) { if (!inlineBodySafe(*c->callee, params)) return false; for (const auto& a : c->args) if (!a.name.empty() || !inlineBodySafe(*a.value, params)) return false; return true; }
+    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(&e)) return inlineBodySafe(*m->object, params);  // .name is a member, not a scope name
+    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&e)) { if (!inlineBodySafe(*ix->object, params)) return false; for (const auto& k : ix->indices) if (!inlineBodySafe(*k, params)) return false; return true; }
+    if (const auto* sl = dynamic_cast<const ast::SliceExpr*>(&e)) return (!sl->object || inlineBodySafe(*sl->object, params)) && (!sl->start || inlineBodySafe(*sl->start, params)) && (!sl->stop || inlineBodySafe(*sl->stop, params)) && (!sl->step || inlineBodySafe(*sl->step, params));
+    if (const auto* lst = dynamic_cast<const ast::ListLiteral*>(&e)) { for (const auto& x : lst->elems) if (!inlineBodySafe(*x, params)) return false; return true; }
+    if (const auto* stl = dynamic_cast<const ast::SetLiteral*>(&e)) { for (const auto& x : stl->elems) if (!inlineBodySafe(*x, params)) return false; return true; }
+    if (const auto* dt = dynamic_cast<const ast::DictLiteral*>(&e)) { for (const auto& [k, v] : dt->entries) if (!inlineBodySafe(*k, params) || !inlineBodySafe(*v, params)) return false; return true; }
+    if (const auto* fs = dynamic_cast<const ast::FStringExpr*>(&e)) { for (const auto& p : fs->parts) if (p.isExpr && !inlineBodySafe(*p.expr, params)) return false; return true; }
+    if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&e)) { for (const auto& x : tup->elems) if (!inlineBodySafe(*x, params)) return false; return true; }
+    if (const auto* star = dynamic_cast<const ast::StarExpr*>(&e)) return inlineBodySafe(*star->inner, params);
+    return true;  // LiteralExpr and any leaf without a name reference nothing unsafe
+}
+
+namespace detail {
+// Collect bare-name assignment targets (`name = ...`) across a scope's OWN blocks — the shared
+// if/while/for/try/with/switch bodies, but NOT nested function/class bodies (which are separate scopes;
+// a nested function cannot rebind an outer local anyway — write-through closures are forbidden).
+struct RebindScan {
+    NameSet& out;
+    void block(const ast::Block& b) { for (const auto& s : b) stmt(*s); }
+    void stmt(const ast::Stmt& s) {
+        if (const auto* a = dynamic_cast<const ast::AssignStmt*>(&s))
+            ast::walkAssignTarget(*a->target, [&](const ast::NameExpr& n) { out.insert(n.name); },
+                                              [&](const ast::Expr&) {});
+        else if (const auto* i = dynamic_cast<const ast::IfStmt*>(&s)) {
+            for (const auto& br : i->branches) block(br.second);
+            if (i->orelse) block(*i->orelse);
+        } else if (const auto* w = dynamic_cast<const ast::WhileStmt*>(&s)) block(w->body);
+        else if (const auto* f = dynamic_cast<const ast::ForStmt*>(&s)) block(f->body);
+        else if (const auto* t = dynamic_cast<const ast::TryStmt*>(&s)) {
+            block(t->body);
+            for (const auto& h : t->handlers) block(h.body);
+            if (t->hasFinally) block(t->finallyBody);
+        } else if (const auto* wi = dynamic_cast<const ast::WithStmt*>(&s)) block(wi->body);
+        else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&s)) {
+            for (const auto& cl : sw->cases) block(cl.body);
+            if (sw->hasDefault) block(sw->defaultBody);
+        }
+    }
+};
+}  // namespace detail
+
+// Names a scope MUTATES or RE-DECLARES: rebound by a bare `name = ...`, or declared more than once.
+// The inliner treats a `var f = <function literal>` whose name is ABSENT from this set as a single
+// immutable binding — safe to inline calls to `f` (a later rebind would otherwise make the tracked
+// definition stale). Conservative: any doubt (a rebind anywhere, a redeclaration) excludes the name.
+inline NameSet mutatedOrRedeclared(const ast::Block& block) {
+    NameSet mut;
+    fum::unordered_map<std::string, int> declCount;
+    forEachBlockDecl(block, [&](const std::string& n) { ++declCount[n]; });
+    for (const auto& kv : declCount) if (kv.second > 1) mut.insert(kv.first);
+    detail::RebindScan scan{mut};
+    scan.block(block);
+    return mut;
 }
 // All names a class definition references from its defining scope (its base plus every method/attr
 // body). Superset of eagerFreeVariables.

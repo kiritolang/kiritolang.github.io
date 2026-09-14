@@ -46,6 +46,7 @@ public:
     void compile(const ast::Block& body, bool isFunction, const ast::FunctionExpr* fnDef = nullptr) {
         if (fnDef) assignLocalSlots(*fnDef, body);        // a function: slot-address its non-captured locals
         else if (isFunction) collectClassEnvSlots(body);  // a class body (isFunction, no fnDef): index its names
+        constMutable_ = kirito::mutatedOrRedeclared(body);  // names a `var f = fn` must NOT be, to be inlinable
         compileBlock(body);
         if (isFunction) { emit(Op::LoadNone); emit(Op::Return); }
         else { emit(Op::LoadResult); emit(Op::Return); }
@@ -205,6 +206,8 @@ private:
     // own args (here) + globals (below) — never caller locals. Hidden names are frame slots inside a
     // function (fast) and module/scope bindings at top level; `$`-prefixed, so never a module export.
     const std::vector<std::pair<std::string, std::string>>* inlineRebind_ = nullptr;
+    NameSet constMutable_;   // names rebound/redeclared in this body -> NOT an immutable const-fn binding
+    fum::unordered_map<std::string, const ast::FunctionExpr*> constLambdaDefs_;  // f -> its literal (inlinable)
 
     // The body expression of an inline-eligible lambda, or nullptr. Eligible = capture-free (its free
     // variables are all globals), a single `return EXPR`, flat (no nested function literal to splice),
@@ -218,19 +221,40 @@ private:
         if (fn.body.size() != 1) return nullptr;
         const auto* r = dynamic_cast<const ast::ReturnStmt*>(fn.body[0].get());
         if (!r || !r->value) return nullptr;
-        if (kirito::exprContainsFunction(*r->value)) return nullptr;
-        for (const auto& nm : kirito::freeVariables(fn))
-            if (vm_.builtinSlot(nm) < 0) return nullptr;   // capture-free: every free var is a global
+        NameSet params;
+        for (const auto& p : fn.params) params.insert(p.name);
+        // Precise capture-free test: the body may reference only its params (rebound) and genuine
+        // globals — never an env/captured/shadowing binding (whose LoadVar would be stale once inlined).
+        if (!kirito::inlineBodySafe(*r->value, params)) return nullptr;
         return r->value.get();
     }
 
-    // Return the body expression to inline, or nullptr if `e` is not a v1 call-site inline candidate.
-    const ast::Expr* inlineBodyIfCandidate(const ast::CallExpr& e) const {
+    // Resolve a call's callee to an inline-eligible lambda — either a literal `(Function...)(...)` or a
+    // NameExpr bound to an immutable const-fn (var f = <literal>, never rebound). Returns the body to
+    // inline and sets fnOut; nullptr if not a candidate. Recursion / mutual recursion need no special
+    // guard: a self/other-referencing body has a non-global free variable, so lambdaInlineBody rejects it.
+    const ast::Expr* inlineBodyIfCandidate(const ast::CallExpr& e, const ast::FunctionExpr*& fnOut) const {
         const auto* fn = dynamic_cast<const ast::FunctionExpr*>(e.callee.get());
-        if (!fn || e.args.size() != fn->params.size()) return nullptr;  // literal callee, exact positional arity
+        if (!fn)
+            if (const auto* nm = dynamic_cast<const ast::NameExpr*>(e.callee.get())) {
+                auto it = constLambdaDefs_.find(nm->name);
+                if (it != constLambdaDefs_.end()) fn = it->second;
+            }
+        if (!fn || e.args.size() != fn->params.size()) return nullptr;  // exact positional arity
         for (const auto& a : e.args)
             if (!a.name.empty() || dynamic_cast<const ast::StarExpr*>(a.value.get())) return nullptr;  // no kw/starred
-        return lambdaInlineBody(*fn);
+        const ast::Expr* body = lambdaInlineBody(*fn);
+        if (body) fnOut = fn;
+        return body;
+    }
+
+    // Record `var f = <inline-eligible function literal>` as an immutable const-fn binding, so later
+    // calls `f(x)` in this scope inline. Only when f is never rebound/redeclared (constMutable_).
+    void trackConstLambda(const ast::VarDeclStmt& s) {
+        if (s.names.size() != 1 || s.starIndex != -1 || s.forceUnpack) return;
+        const auto* fn = dynamic_cast<const ast::FunctionExpr*>(s.init.get());
+        if (!fn || constMutable_.count(s.names[0])) return;
+        if (lambdaInlineBody(*fn)) constLambdaDefs_[s.names[0]] = fn;
     }
 
     // Combinator lowering (Part C): a lambda literal passed as `map`/`filter`'s callback, inline-eligible
@@ -404,6 +428,7 @@ private:
     void visit(const ast::DiscardStmt& s) override { compileExpr(*s.expr); emit(Op::Pop); emit(Op::ClearResult); }
 
     void visit(const ast::VarDeclStmt& s) override {
+        if (vm_.inliningEnabled()) trackConstLambda(s);   // note an immutable `var f = fn` for later inlining
         compileExpr(*s.init);
         if (s.names.size() == 1 && s.starIndex == -1 && !s.forceUnpack) {
             emitStore(s.names[0], s.span);
@@ -826,11 +851,11 @@ private:
     }
 
     void visit(const ast::CallExpr& e) override {
-        // Inline a directly-called capture-free single-return lambda (v1): no call frame, identical
-        // result. Candidacy excludes named/starred args, so this never conflicts with the checks below.
-        if (const ast::Expr* body = inlineBodyIfCandidate(e)) {
-            emitInlinedCall(e, static_cast<const ast::FunctionExpr&>(*e.callee), *body);
-            return;
+        // Inline a capture-free single-return lambda called directly (literal) or by an immutable
+        // const-fn name (v1): no call frame, identical result. Candidacy excludes named/starred args.
+        {
+            const ast::FunctionExpr* fn = nullptr;
+            if (const ast::Expr* body = inlineBodyIfCandidate(e, fn)) { emitInlinedCall(e, *fn, *body); return; }
         }
         // A positional argument after a keyword argument is a (catchable) run-time error, like the old
         // evaluator: the callee and the arguments up to and including the offending one are evaluated,

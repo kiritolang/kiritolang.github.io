@@ -61,6 +61,16 @@ int main() {
         "var k = 10\nvar out = []\nfor x in map(Function(v): return v + k, [1, 2]):\n out.append(x)\nout",
         // Part C not lowered (callback is a bound name, not a literal) — still equal
         "var sq = Function(v): return v * v\nvar out = []\nfor x in map(sq, [3, 4]):\n out.append(x)\nout",
+        // const-bound-local: a `var f = <lambda>` called by name inlines (fires); result identical
+        "var sq = Function(x): return x * x\nvar t = 0\nfor i in range(5):\n t = t + sq(i)\nt",
+        "var f = Function():\n var sq = Function(x): return x * x\n return sq(6) + sq(7)\nf()",
+        // reassigned binding -> NOT tracked (mutable), still equal
+        "var g = Function(x): return x + 1\ng = Function(x): return x + 100\ng(5)",
+        // recursive const -> NOT inlined (references itself: a non-global free var), still equal
+        "var fac = Function(n): return 1 if n <= 1 else n * fac(n - 1)\nfac(6)",
+        // REGRESSION: a const helper using a builtin name that is SHADOWED by a lexical var must NOT be
+        // mis-inlined (the shadow resolves to a LoadVar, not a global) — this once tripped a bad LoadVar.
+        "var f = Function():\n var len = Function(x): return 999\n var use = Function(s): return len(s)\n return use(\"ab\")\nf()",
     };
     for (const char* s : battery) CHECK(same(s));
 
@@ -76,6 +86,9 @@ int main() {
           == "[0, 3, 6, 9]");
     CHECK(on("var out = []\nfor x in map(Function(v): return v, range(10)):\n if x == 2:\n  continue\n"
              " if x == 5:\n  break\n out.append(x)\nout") == "[0, 1, 3, 4]");
+    // const-bound-local inlined helper produces the right value
+    CHECK(on("var sq = Function(x): return x * x\nvar t = 0\nfor i in range(5):\n t = t + sq(i)\nt") == "30");
+    CHECK(on("var fac = Function(n): return 1 if n <= 1 else n * fac(n - 1)\nfac(6)") == "720");
 
     // ---- hygiene: an inlined body's param must NOT see a caller local of the same name, and the
     //      caller's binding must be untouched ("fake shadowing" resolves to distinct slots) ----

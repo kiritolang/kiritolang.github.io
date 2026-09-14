@@ -27,9 +27,13 @@ catch as e:
     # most-recent-call-last: <module> first, innermost (boom) last
     io.print("frames:", frames)
 
-# A fresh error replaces the traceback (VM-local, last error wins).
+# A fresh error replaces the traceback (VM-local, last error wins). `divzero` is intentionally
+# multi-statement so it is NOT a compile-time inline candidate — an inlined trivial helper leaves no
+# frame of its own in a traceback (inlining changes tracebacks, by design), and this test is about the
+# frame-reporting machinery, not inlining.
 var divzero = Function():
-    return 1 // 0
+    var z = 0
+    return 1 // z
 try:
     discard divzero()
 catch as e2:
