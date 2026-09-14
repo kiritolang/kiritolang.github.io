@@ -1,0 +1,217 @@
+# Exceptions: throw/catch, finally ordering, return/break/continue interplay, re-throw, class-
+# hierarchy matching, assert, index errors, and no-leak recovery (converted from
+# tests/unit/test_exceptions.cpp — value cases). Compile-time and uncaught-propagation cases live in
+# tests/errors/unit_exceptions_*.ki. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# throw + catch with binding
+var throwcatch = Function():
+    try:
+        throw "boom"
+    catch as e:
+        return e
+io.print(throwcatch())
+
+# internal runtime errors are catchable, surfaced as a String message
+var runtimecaught = Function():
+    try:
+        var x = 1 / 0
+        return x
+    catch as e:
+        return "caught"
+io.print(runtimecaught())
+
+# finally always runs (normal path)
+var finnormal = Function():
+    var log = []
+    try:
+        log.append("try")
+    finally:
+        log.append("fin")
+    return log
+io.print(finnormal())
+
+# finally runs after a handled exception
+var finhandled = Function():
+    var log = []
+    try:
+        throw "e"
+    catch:
+        log.append("catch")
+    finally:
+        log.append("fin")
+    return log
+io.print(finhandled())
+
+# a return inside try still runs finally, then returns
+var retintry = Function():
+    var f = Function():
+        try:
+            return 1
+        finally:
+            var x = 2
+    return f()
+io.print(retintry())
+
+# a return inside finally overrides the try's return
+var retinfin = Function():
+    var f = Function():
+        try:
+            return 1
+        finally:
+            return 2
+    return f()
+io.print(retinfin())
+
+# nested: inner finally runs, then the exception propagates to the outer handler
+var nestedprop = Function():
+    var r = 0
+    try:
+        try:
+            throw "inner"
+        finally:
+            r = 1
+    catch as e:
+        r = r + 10
+    return r
+io.print(nestedprop())
+
+# throwing a non-string value works too
+var nonstring = Function():
+    try:
+        throw 42
+    catch as e:
+        return e + 1
+io.print(nonstring())
+
+# re-throw from a catch handler propagates to the outer try
+var rethrow = Function():
+    var r = "none"
+    try:
+        try:
+            throw "x"
+        catch as e:
+            throw "wrapped:" + e
+    catch as e2:
+        r = e2
+    return r
+io.print(rethrow())
+
+# break inside try still runs finally before leaving the loop
+var breakfin = Function():
+    var log = []
+    var i = 0
+    while i < 5:
+        try:
+            if i == 2:
+                break
+            log.append(i)
+        finally:
+            log.append("f")
+        i = i + 1
+    return log
+io.print(breakfin())
+
+# continue inside try runs finally each iteration
+var contfin = Function():
+    var n = 0
+    var i = 0
+    while i < 3:
+        i = i + 1
+        try:
+            continue
+        finally:
+            n = n + 1
+    return n
+io.print(contfin())
+
+# try with no exception: catch is skipped, value is the try body's
+var noexc = Function():
+    try:
+        var x = 10
+        return x + 5
+    catch as e:
+        return -1
+io.print(noexc())
+
+# exception thrown while building a value mid-expression is caught cleanly
+var midexpr = Function():
+    var bad = Function():
+        throw "mid"
+    var r = "none"
+    try:
+        var x = 1 + bad()
+    catch as e:
+        r = e
+    return r
+io.print(midexpr())
+
+# deeply nested try/finally chain unwinds in the right order
+var deepnest = Function():
+    var log = []
+    try:
+        try:
+            try:
+                throw "deep"
+            finally:
+                log.append("f3")
+        finally:
+            log.append("f2")
+    catch as e:
+        log.append("caught")
+    finally:
+        log.append("f1")
+    return log
+io.print(deepnest())
+
+# matching by class hierarchy: a derived class is caught by a base handler
+var hiercatch = Function():
+    class Animal:
+        var _init_ = Function(self):
+            self.x = 1
+    class Dog(Animal):
+        var _init_ = Function(self):
+            self.x = 2
+    var r = "none"
+    try:
+        throw Dog()
+    catch Animal as e:
+        r = "caught-as-animal"
+    return r
+io.print(hiercatch())
+
+# assert throws a catchable exception with its message
+var assertmsg = Function():
+    var r = "none"
+    try:
+        assert 1 == 2, "math broke"
+    catch as e:
+        r = e
+    return r
+io.print(assertmsg())
+
+# index/key errors are catchable
+var indexerr = Function():
+    var r = "none"
+    try:
+        var a = [1, 2, 3]
+        var x = a[99]
+    catch as e:
+        r = "index-error"
+    return r
+io.print(indexerr())
+
+# exception state does not leak: after catching, the VM continues normally
+var noleak = Function():
+    var total = 0
+    var i = 0
+    while i < 10:
+        try:
+            if i % 2 == 0:
+                throw "even"
+            total = total + i
+        catch as e:
+            total = total + 100
+        i = i + 1
+    return total
+io.print(noleak())

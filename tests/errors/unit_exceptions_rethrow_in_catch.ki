@@ -1,0 +1,4 @@
+try:
+    throw "a"
+catch as e:
+    throw "b"

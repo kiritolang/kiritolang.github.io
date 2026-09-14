@@ -1,0 +1,15 @@
+[[...]]
+1
+True
+maximum comparison recursion depth exceeded (cyclic structure?)
+[[1, 2], [1, 2], [9]]
+True
+[1, 2]
+[[1, 9], [1, 9]]
+2
+True
+1
+4
+2
+2
+2

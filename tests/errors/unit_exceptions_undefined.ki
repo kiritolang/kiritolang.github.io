@@ -1,0 +1,4 @@
+try:
+    var x = undefined_var
+catch as e:
+    e

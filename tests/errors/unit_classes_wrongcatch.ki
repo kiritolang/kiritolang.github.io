@@ -1,0 +1,10 @@
+class A:
+    var _init_ = Function(self):
+        self.x = 1
+class B:
+    var _init_ = Function(self):
+        self.x = 2
+try:
+    throw A()
+catch B as e:
+    var ignore = 1

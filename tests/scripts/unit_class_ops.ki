@@ -1,0 +1,184 @@
+# Special/dunder methods and operator overloading, plus privacy rules (converted from
+# tests/unit/test_class_ops.cpp). The two out-of-class private-access errors are runtime and are
+# caught inline. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# _init_ runs on construction
+var initruns = Function():
+    class P:
+        var _init_ = Function(self, x):
+            self.x = x
+    return P(7).x
+io.print(initruns())
+
+# _str_ controls stringification (used by io.print / String())
+var strmethod = Function():
+    class Money:
+        var _init_ = Function(self, n):
+            self.n = n
+        var _str_ = Function(self):
+            return "$" + String(self.n)
+    return String(Money(42))
+io.print(strmethod())
+
+# _add_ operator overloading
+var addop = Function():
+    class V:
+        var _init_ = Function(self, a, b):
+            self.a = a
+            self.b = b
+        var _add_ = Function(self, o):
+            return V(self.a + o.a, self.b + o.b)
+        var _str_ = Function(self):
+            return "(" + String(self.a) + ", " + String(self.b) + ")"
+    return String(V(1, 2) + V(10, 20))
+io.print(addop())
+
+# _sub_ / _mul_
+var submul = Function():
+    class N:
+        var _init_ = Function(self, v):
+            self.v = v
+        var _sub_ = Function(self, o):
+            return N(self.v - o.v)
+        var _mul_ = Function(self, o):
+            return N(self.v * o.v)
+        var _str_ = Function(self):
+            return String(self.v)
+    return String(N(10) - N(3)) + "/" + String(N(4) * N(5))
+io.print(submul())
+
+# _eq_ overrides equality
+var eqtrue = Function():
+    class Pt:
+        var _init_ = Function(self, x):
+            self.x = x
+        var _eq_ = Function(self, o):
+            return self.x == o.x
+    return Pt(5) == Pt(5)
+io.print(eqtrue())
+var eqfalse = Function():
+    class Pt:
+        var _init_ = Function(self, x):
+            self.x = x
+        var _eq_ = Function(self, o):
+            return self.x == o.x
+    return Pt(5) == Pt(6)
+io.print(eqfalse())
+
+# _lt_ ordering
+var ltop = Function():
+    class Ver:
+        var _init_ = Function(self, n):
+            self.n = n
+        var _lt_ = Function(self, o):
+            return self.n < o.n
+    return Ver(1) < Ver(2)
+io.print(ltop())
+
+# _getitem_ (multi-key) / _setitem_ / _len_
+var itemops = Function():
+    class Grid:
+        var _init_ = Function(self):
+            self.data = {}
+        var _setitem_ = Function(self, x, y, v):
+            self.data[String(x) + "," + String(y)] = v
+        var _getitem_ = Function(self, x, y):
+            return self.data[String(x) + "," + String(y)]
+        var _len_ = Function(self):
+            return len(self.data)
+    var g = Grid()
+    g[1, 2] = 99
+    g[3, 4] = 77
+    return String(g[1, 2]) + "/" + String(g[3, 4]) + "/" + String(len(g))
+io.print(itemops())
+
+# _call_ makes an instance callable
+var callop = Function():
+    class Adder:
+        var _init_ = Function(self, n):
+            self.n = n
+        var _call_ = Function(self, x):
+            return x + self.n
+    var add3 = Adder(3)
+    return add3(10)
+io.print(callop())
+
+# _neg_ unary
+var negop = Function():
+    class M:
+        var _init_ = Function(self, v):
+            self.v = v
+        var _neg_ = Function(self):
+            return M(0 - self.v)
+        var _str_ = Function(self):
+            return String(self.v)
+    return String(-M(5))
+io.print(negop())
+
+# _contains_ for the `in` operator
+var containsop = Function():
+    class Bag:
+        var _init_ = Function(self):
+            self.items = [1, 2, 3]
+        var _contains_ = Function(self, x):
+            return x in self.items
+    return 2 in Bag()
+io.print(containsop())
+
+# --- privacy: _name (leading underscore, no trailing) is private ---
+# accessible inside the class:
+var privinside = Function():
+    class Counter:
+        var _init_ = Function(self):
+            self._count = 0
+        var bump = Function(self):
+            self._count = self._count + 1
+            return self._count
+    var c = Counter()
+    c.bump()
+    return c.bump()
+io.print(privinside())
+
+# NOT readable from outside (runtime error, caught here):
+var privread = Function():
+    class Counter:
+        var _init_ = Function(self):
+            self._count = 0
+    var c = Counter()
+    try:
+        return c._count
+    catch as e:
+        return e
+io.print(privread())
+
+# NOT writable from outside (runtime error, caught here):
+var privwrite = Function():
+    class Counter:
+        var _init_ = Function(self):
+            self._count = 0
+    var c = Counter()
+    try:
+        c._count = 5
+        return "no-error"
+    catch as e:
+        return e
+io.print(privwrite())
+
+# a method may access another same-class instance's private member:
+var privcross = Function():
+    class Box:
+        var _init_ = Function(self, v):
+            self._v = v
+        var combine = Function(self, other):
+            return self._v + other._v
+    return Box(3).combine(Box(4))
+io.print(privcross())
+
+# dunder methods (_init_, _str_, ...) are NOT private — callable/visible:
+var dundernotpriv = Function():
+    class Q:
+        var _init_ = Function(self):
+            self.ok = 1
+    return Q().ok
+io.print(dundernotpriv())

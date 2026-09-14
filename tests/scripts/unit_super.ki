@@ -1,0 +1,65 @@
+# The _super_() operator: parent-view method dispatch, parent constructor, multi-level climb, the
+# baseless-class error, missing-attribute error, and user override (converted from
+# tests/unit/test_super.cpp). Both error cases are runtime and are caught inline. Runs identically
+# with `ki` and `ki --no-inline`.
+var io = import("io")
+
+class Animal:
+    var _init_ = Function(self, name):
+        self.name = name
+    var describe = Function(self) -> String:
+        return "Animal:" + self.name
+    var speak = Function(self) -> String:
+        return "..."
+class Dog(Animal):
+    var _init_ = Function(self, name, breed):
+        self._super_()._init_(name)
+        self.breed = breed
+    var describe = Function(self) -> String:
+        return self._super_().describe() + "(" + self.breed + ")"
+    var speak = Function(self) -> String:
+        return "woof"
+class Puppy(Dog):
+    var describe = Function(self) -> String:
+        return self._super_().describe() + "[puppy]"
+
+# parent constructor via super
+io.print(Dog("Rex", "Lab").name)
+io.print(Dog("Rex", "Lab").breed)
+# method extension via super (Dog.describe calls Animal.describe)
+io.print(Dog("Rex", "Lab").describe())
+# overriding without super still works (Dog.speak shadows Animal.speak)
+io.print(Dog("Rex", "Lab").speak())
+# multi-level: Puppy -> Dog -> Animal, each super climbs exactly one level
+io.print(Puppy("Bit", "Corgi").describe())
+# Puppy inherits Dog's speak (which itself overrides Animal's)
+io.print(Puppy("Bit", "Corgi").speak())
+
+# a baseless class: _super_() throws (message names the reason and the class)
+class Lonely:
+    var go = Function(self):
+        return self._super_()
+try:
+    io.print(Lonely().go())
+catch as e:
+    io.print(e)
+
+# accessing a member the base chain lacks throws a clear error
+class Cat(Animal):
+    var test = Function(self):
+        return self._super_().nope()
+try:
+    io.print(Cat("x").test())
+catch as e:
+    io.print(e)
+
+# a class may override _super_ (discouraged) — its definition wins
+class Base:
+    var greet = Function(self):
+        return "base"
+class Weird(Base):
+    var _super_ = Function(self):
+        return "overridden"
+    var test = Function(self):
+        return self._super_()
+io.print(Weird().test())

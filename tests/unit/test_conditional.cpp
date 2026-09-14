@@ -1,5 +1,7 @@
-// Conditional expression: `then if cond else orelse`. Edge cases, adversarial parse cases, and a
-// randomized fuzz sweep that checks evaluation against an independent C++ oracle.
+// Conditional expression: `then if cond else orelse`. The deterministic value + edge cases were
+// migrated to tests/scripts/unit_conditional.ki (a golden round-trip). What remains here are the
+// non-convertible cases: a generative deep else-chain that must throw rather than crash, and two
+// randomized fuzz sweeps that check evaluation against an independent C++ oracle.
 #include <random>
 #include <string>
 #include <vector>
@@ -14,121 +16,6 @@ static std::string evalStr(KiritoVM& vm, const std::string& src) {
 }
 
 int main() {
-    // ---------------------------------------------------------------- basic + edge cases
-    {
-        KiritoVM vm;
-        CHECK(evalStr(vm, "1 if True else 2") == "1");
-        CHECK(evalStr(vm, "1 if False else 2") == "2");
-        // the condition uses truthiness, not just Bool: falsy values pick the else-branch
-        CHECK(evalStr(vm, "\"t\" if 0 else \"f\"") == "f");
-        CHECK(evalStr(vm, "\"t\" if 1 else \"f\"") == "t");
-        CHECK(evalStr(vm, "\"t\" if \"\" else \"f\"") == "f");      // empty String is falsy
-        CHECK(evalStr(vm, "\"t\" if \"x\" else \"f\"") == "t");
-        CHECK(evalStr(vm, "\"t\" if [] else \"f\"") == "f");        // empty List is falsy
-        CHECK(evalStr(vm, "\"t\" if [0] else \"f\"") == "t");
-        CHECK(evalStr(vm, "\"t\" if None else \"f\"") == "f");      // None is falsy
-        // branches may be different types
-        CHECK(evalStr(vm, "42 if True else \"text\"") == "42");
-        CHECK(evalStr(vm, "42 if False else \"text\"") == "text");
-    }
-
-    // ---------------------------------------------------------------- precedence & associativity
-    {
-        KiritoVM vm;
-        // arithmetic binds tighter than the conditional: (1 + 2) if True else 99
-        CHECK(evalStr(vm, "1 + 2 if True else 99") == "3");
-        // comparison forms the condition naturally
-        CHECK(evalStr(vm, "10 if 2 < 3 else 20") == "10");
-        // `or` binds tighter: (False or True) if False else 7  ->  7
-        CHECK(evalStr(vm, "False or True if False else 7") == "7");
-        // `not` binds tighter: (not False) if True else False  ->  True
-        CHECK(evalStr(vm, "not False if True else False") == "True");
-        // right-associative chaining: a if c1 else b if c2 else c
-        CHECK(evalStr(vm, "\"a\" if False else \"b\" if True else \"c\"") == "b");
-        CHECK(evalStr(vm, "\"a\" if False else \"b\" if False else \"c\"") == "c");
-        CHECK(evalStr(vm, "\"a\" if True else \"b\" if True else \"c\"") == "a");
-        // a conditional whose condition is itself a conditional
-        CHECK(evalStr(vm, "1 if (True if False else True) else 2") == "1");
-        // conditionals in both branches
-        CHECK(evalStr(vm, "(10 if False else 11) if True else (20 if True else 21)") == "11");
-    }
-
-    // ---------------------------------------------------------------- short-circuit (no eval of untaken)
-    {
-        KiritoVM vm;
-        // the untaken branch may reference an undefined name and must not be evaluated
-        CHECK(evalStr(vm, "7 if True else 1 // 0") == "7");
-        CHECK(evalStr(vm, "1 // 0 if False else 7") == "7");
-        // a side effect in the untaken branch must not happen
-        CHECK(evalStr(vm, R"(
-var log = []
-var note = Function(x):
-    log.append(x)
-    return x
-discard (note(1) if True else note(2))
-log
-)") == "[1]");
-        CHECK(evalStr(vm, R"(
-var log = []
-var note = Function(x):
-    log.append(x)
-    return x
-discard (note(1) if False else note(2))
-log
-)") == "[2]");
-    }
-
-    // ---------------------------------------------------------------- usable in every value position
-    {
-        KiritoVM vm;
-        CHECK(evalStr(vm, "[1 if True else 0, 2 if False else 9, 3]") == "[1, 9, 3]");
-        CHECK(evalStr(vm, "{\"k\": 1 if True else 0}[\"k\"]") == "1");
-        CHECK(evalStr(vm, "abs(-5 if 1 > 0 else 5)") == "5");
-        CHECK(evalStr(vm, "[10, 20, 30][1 if True else 2]") == "20");      // as an index
-        CHECK(evalStr(vm, "([10, 20, 30, 40])[1 if False else 2 : 4]") == "[30, 40]");  // slice bound
-        // as a return value
-        CHECK(evalStr(vm, R"(
-var pick = Function(flag):
-    return "on" if flag else "off"
-pick(True) + pick(False)
-)") == "onoff");
-        // as a default parameter value (evaluated at definition with the default expression)
-        CHECK(evalStr(vm, R"(
-var f = Function(x, label = "pos" if True else "neg"):
-    return label
-f(0)
-)") == "pos");
-        // packing: a bare comma sequence treats each element independently
-        CHECK(evalStr(vm, "1, 2 if True else 3") == "[1, 2]");
-        CHECK(evalStr(vm, "1, 2 if False else 3") == "[1, 3]");
-    }
-
-    // ---------------------------------------------------------------- a statement-level `if` after a
-    // block is NOT a ternary. A block-bodied Function literal self-terminates at its dedent, so the
-    // following `if` begins the next statement (the common `var f = Function(): ...` then `if argmain:`
-    // idiom) — it must not be swallowed as a conditional-expression continuation of the function value.
-    {
-        KiritoVM vm;
-        CHECK(evalStr(vm, R"(
-var made = None
-var run = Function():
-    return 7
-if True:
-    made = run()
-made
-)") == "7");
-        // same after other suite-closing statements (a for-loop body, a class body)
-        CHECK(evalStr(vm, R"(
-var total = 0
-for i in [1, 2, 3]:
-    total = total + i
-var doubled = total * 2 if True else 0
-doubled
-)") == "12");
-        // an INLINE function still works as a ternary operand (no block closed, so `if` IS the ternary)
-        CHECK(evalStr(vm, "(Function(): return 1)() if True else 2") == "1");
-    }
-
     // ---------------------------------------------------------------- adversarial parse errors
     {
         KiritoVM vm;
@@ -138,7 +25,6 @@ doubled
         CHECK_THROWS(vm.runSource("1 if True else"));     // missing orelse
         CHECK_THROWS(vm.runSource("1 else 2"));           // else without if
         // a pathologically deep else-chain throws a clean parse error, never crashes
-        std::string deep = "var z = 1";
         std::string chain = "9";
         for (int i = 0; i < 8000; ++i) chain = "0 if False else " + chain;
         CHECK_THROWS(vm.runSource(chain + "\n"));

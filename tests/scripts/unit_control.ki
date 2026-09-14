@@ -1,0 +1,77 @@
+# Control flow: while, if/elif/else, break, continue, boolean short-circuit, `not`, and the
+# conditional expression (converted from tests/unit/test_control.cpp — value cases). The single
+# compile-error case (`1 if True` missing else) lives in tests/errors/unit_control_missing_else.ki.
+# Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# while loop
+var whileloop = Function():
+    var a = 0
+    while a < 5:
+        a = a + 1
+    return a
+io.print(whileloop())
+
+# if / elif / else picks the right branch
+var branch = Function():
+    var x = 2
+    var r = 0
+    if x == 1:
+        r = 10
+    elif x == 2:
+        r = 20
+    else:
+        r = 30
+    return r
+io.print(branch())
+
+# break exits the loop early
+var brk = Function():
+    var i = 0
+    var s = 0
+    while True:
+        i = i + 1
+        if i > 3:
+            break
+        s = s + i
+    return s
+io.print(brk())
+
+# continue skips the rest of the iteration
+var cont = Function():
+    var i = 0
+    var s = 0
+    while i < 5:
+        i = i + 1
+        if i == 3:
+            continue
+        s = s + i
+    return s
+io.print(cont())
+
+# and/or short-circuit: right operand not evaluated, deciding operand returned
+io.print(True or 1 // 0)
+io.print(False and 1 // 0)
+io.print(1 and 2)
+io.print(0 or 3)
+
+# not
+io.print(not 0)
+io.print(not 1)
+io.print(not "")
+
+# conditional expression: `then if cond else orelse`
+io.print("yes" if 1 < 2 else "no")
+io.print("yes" if 1 > 2 else "no")
+io.print((10 if True else 20) + 1)          # usable as a sub-expression
+# right-associative: a if c1 else b if c2 else c
+io.print("A" if False else "B" if True else "C")
+io.print("A" if False else "B" if False else "C")
+# short-circuit: only the chosen branch is evaluated
+io.print(0 if True else 1 // 0)
+io.print(1 // 0 if False else 0)
+# nests inside lists, calls, lower-precedence contexts
+io.print([1 if True else 0, 2 if False else 9])
+io.print(abs(-3 if 1 > 0 else 3))
+# binds looser than `or`: `a or b if c else d` == `(a or b) if c else d`
+io.print(False or True if False else 7)

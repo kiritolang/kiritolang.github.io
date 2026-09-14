@@ -1,0 +1,9 @@
+Rex
+Lab
+Animal:Rex(Lab)
+woof
+Animal:Bit(Corgi)[puppy]
+woof
+_super_() called in 'Lonely', which does not inherit from any class
+'super' object has no attribute 'nope'
+overridden

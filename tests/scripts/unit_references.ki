@@ -1,0 +1,108 @@
+# Reference semantics: self-referential containers, aliasing, reference assignment, shallow copy,
+# and set algebra (converted from tests/unit/test_references.cpp). The bounded-comparison throw on
+# two distinct cyclic structures is runtime and is caught inline. Runs identically with `ki` and
+# `ki --no-inline`.
+var io = import("io")
+
+# --- self-referential containers ---
+# string conversion is cycle-guarded
+var selfrefstr = Function():
+    var x = []
+    x.append(x)
+    return x
+io.print(selfrefstr())
+
+# iteration yields exactly the one element (itself)
+var selfrefiter = Function():
+    var x = []
+    x.append(x)
+    var n = 0
+    for e in x:
+        n = n + 1
+    return n
+io.print(selfrefiter())
+
+# identity equality short-circuits (no infinite recursion)
+var identityeq = Function():
+    var x = []
+    x.append(x)
+    return x == x
+io.print(identityeq())
+
+# two distinct cyclic structures: bounded, throws rather than crashing
+var distinctcyclic = Function():
+    var x = []
+    x.append(x)
+    var y = []
+    y.append(y)
+    try:
+        return x == y
+    catch as e:
+        return e
+io.print(distinctcyclic())
+
+# --- aliasing: a shared mutable element is visible through every slot ---
+var aliasing = Function():
+    var a = [1]
+    var arr = [a, a, [9]]
+    a.append(2)
+    return arr
+io.print(aliasing())
+var aliaseq = Function():
+    var a = [1]
+    var arr = [a, a]
+    return arr[0] == arr[1]
+io.print(aliaseq())
+
+# --- reference assignment binds the same object (no copy) ---
+var refassign = Function():
+    var a = [1]
+    var b = a
+    b.append(2)
+    return a
+io.print(refassign())
+
+# --- shallow copy: new container, shared elements ---
+var shallowcopy = Function():
+    var a = [1]
+    var x = [a, a]
+    var y = x.copy()
+    a.append(9)
+    return y                    # copy shares element a
+io.print(shallowcopy())
+var copyindependent = Function():
+    var x = [1, 2]
+    var y = x.copy()
+    y.append(3)
+    return len(x)               # independent top level
+io.print(copyindependent())
+var copyeq = Function():
+    var x = [1, 2]
+    var y = x.copy()
+    return x == y
+io.print(copyeq())
+var dictcopy = Function():
+    var d = {"a": 1}
+    var e = d.copy()
+    e["b"] = 2
+    return len(d)
+io.print(dictcopy())
+
+# --- set algebra ---
+var setunion = Function():
+    var u = {1, 2, 3}.union({3, 4})
+    return len(u)
+io.print(setunion())
+var setintersection = Function():
+    var i = {1, 2, 3}.intersection({2, 3, 4})
+    return len(i)
+io.print(setintersection())
+var setdifference = Function():
+    var d = {1, 2, 3}.difference({2})
+    return len(d)
+io.print(setdifference())
+var setremove = Function():
+    var s = {1, 2, 3}
+    s.remove(2)
+    return len(s)
+io.print(setremove())

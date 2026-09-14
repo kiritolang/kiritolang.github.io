@@ -1,0 +1,87 @@
+# Conditional expression `then if cond else orelse`: edge cases, precedence/associativity, short-
+# circuit, and use in every value position (converted from tests/unit/test_conditional.cpp — the
+# deterministic value cases). The adversarial parse-error checks and the two randomized fuzz sweeps
+# against a C++ oracle remain in test_conditional.cpp. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# ---- basic + edge cases (truthiness of the condition) ----
+io.print(1 if True else 2)
+io.print(1 if False else 2)
+io.print("t" if 0 else "f")
+io.print("t" if 1 else "f")
+io.print("t" if "" else "f")        # empty String is falsy
+io.print("t" if "x" else "f")
+io.print("t" if [] else "f")        # empty List is falsy
+io.print("t" if [0] else "f")
+io.print("t" if None else "f")      # None is falsy
+io.print(42 if True else "text")    # branches may be different types
+io.print(42 if False else "text")
+
+# ---- precedence & associativity ----
+io.print(1 + 2 if True else 99)                 # arithmetic binds tighter
+io.print(10 if 2 < 3 else 20)                   # comparison forms the condition
+io.print(False or True if False else 7)         # `or` binds tighter -> 7
+io.print(not False if True else False)          # `not` binds tighter -> True
+io.print("a" if False else "b" if True else "c")     # right-associative chaining
+io.print("a" if False else "b" if False else "c")
+io.print("a" if True else "b" if True else "c")
+io.print(1 if (True if False else True) else 2)      # condition is itself a conditional
+io.print((10 if False else 11) if True else (20 if True else 21))  # conditionals in both branches
+
+# ---- short-circuit: untaken branch is not evaluated ----
+io.print(7 if True else 1 // 0)
+io.print(1 // 0 if False else 7)
+# a side effect in the untaken branch must not happen
+var sideeffect_true = Function():
+    var log = []
+    var note = Function(x):
+        log.append(x)
+        return x
+    discard (note(1) if True else note(2))
+    return log
+io.print(sideeffect_true())
+var sideeffect_false = Function():
+    var log = []
+    var note = Function(x):
+        log.append(x)
+        return x
+    discard (note(1) if False else note(2))
+    return log
+io.print(sideeffect_false())
+
+# ---- usable in every value position ----
+io.print([1 if True else 0, 2 if False else 9, 3])
+io.print({"k": 1 if True else 0}["k"])
+io.print(abs(-5 if 1 > 0 else 5))
+io.print([10, 20, 30][1 if True else 2])                    # as an index
+io.print(([10, 20, 30, 40])[1 if False else 2 : 4])         # slice bound
+var pick = Function(flag):
+    return "on" if flag else "off"                          # as a return value
+io.print(pick(True) + pick(False))
+var defparam = Function(x, label = "pos" if True else "neg"):
+    return label                                            # as a default parameter value
+io.print(defparam(0))
+# packing: a bare comma sequence treats each element independently
+var pack_true = 1, 2 if True else 3
+io.print(pack_true)
+var pack_false = 1, 2 if False else 3
+io.print(pack_false)
+
+# ---- a statement-level `if` after a block is NOT a ternary ----
+var block_then_if = Function():
+    var made = None
+    var run = Function():
+        return 7
+    if True:
+        made = run()
+    return made
+io.print(block_then_if())
+var forloop_then_cond = Function():
+    var total = 0
+    for i in [1, 2, 3]:
+        total = total + i
+    var doubled = total * 2 if True else 0
+    return doubled
+io.print(forloop_then_cond())
+# an INLINE function still works as a ternary operand
+io.print((Function(): return 1)() if True else 2)

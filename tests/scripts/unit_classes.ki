@@ -1,0 +1,126 @@
+# Classes: construction, attributes, methods, inheritance, str, and typed catch (converted from
+# tests/unit/test_classes.cpp — value cases). The wrong-type typed-catch propagation case lives in
+# tests/errors/unit_classes_wrongcatch.ki. Runs identically with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# construction, attributes, and a method using self
+var point = Function():
+    class Point:
+        var _init_ = Function(self, x, y):
+            self.x = x
+            self.y = y
+        var sum = Function(self):
+            return self.x + self.y
+    var p = Point(3, 4)
+    return p.sum()
+io.print(point())
+
+# attribute read and write
+var box = Function():
+    class Box:
+        var _init_ = Function(self, v):
+            self.v = v
+    var b = Box(10)
+    b.v = b.v + 5
+    return b.v
+io.print(box())
+
+# stateful methods mutating self across calls
+var counter = Function():
+    class Counter:
+        var _init_ = Function(self):
+            self.n = 0
+        var inc = Function(self):
+            self.n = self.n + 1
+            return self.n
+    var c = Counter()
+    c.inc()
+    c.inc()
+    return c.inc()
+io.print(counter())
+
+# inheritance: Dog overrides speak but inherits Animal.init
+var inherit = Function():
+    class Animal:
+        var _init_ = Function(self, name):
+            self.name = name
+        var speak = Function(self):
+            return "..."
+    class Dog(Animal):
+        var speak = Function(self):
+            return "woof"
+    var d = Dog("Rex")
+    return d.name + " says " + d.speak()
+io.print(inherit())
+
+# str of an instance
+var widget = Function():
+    class Widget:
+        var _init_ = Function(self):
+            self.x = 1
+    return String(Widget())
+io.print(widget())
+
+# typed catch: catch by class, bind the instance, read its attribute
+var typedcatch = Function():
+    class MyError:
+        var _init_ = Function(self, msg):
+            self.msg = msg
+    var r = ""
+    try:
+        throw MyError("oops")
+    catch MyError as e:
+        r = e.msg
+    return r
+io.print(typedcatch())
+
+# typed catch selects the matching handler
+var selecthandler = Function():
+    class A:
+        var _init_ = Function(self):
+            self.k = "a"
+    class B:
+        var _init_ = Function(self):
+            self.k = "b"
+    var caught = "none"
+    try:
+        throw A()
+    catch B as e:
+        caught = "B"
+    catch A as e:
+        caught = "A"
+    return caught
+io.print(selecthandler())
+
+# typed catch matches a base class for a derived instance
+var basecatch = Function():
+    class Base:
+        var _init_ = Function(self):
+            self.x = 1
+    class Derived(Base):
+        var _init_ = Function(self):
+            self.x = 2
+    var r = "none"
+    try:
+        throw Derived()
+    catch Base as e:
+        r = "base"
+    return r
+io.print(basecatch())
+
+# instances survive heavy GC (method binding + attributes intact)
+var gcsurvive = Function():
+    class Acc:
+        var _init_ = Function(self):
+            self.total = 0
+        var add = Function(self, x):
+            self.total = self.total + x
+            return self.total
+    var a = Acc()
+    var i = 0
+    while i < 5000:
+        a.add(1)
+        var junk = [i, i, i]
+        i = i + 1
+    return a.total
+io.print(gcsurvive())
