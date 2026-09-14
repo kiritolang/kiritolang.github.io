@@ -1,0 +1,95 @@
+# Adversarial end-to-end inlining coverage (user-code layer). Every line must produce identical output
+# with `ki` and `ki --no-inline` (the harness runs both against this .expected). Inlining is speed-only.
+var io = import("io")
+
+# top-level (module-scope) capture: body reads a module var, rebound in place
+var base = 10
+io.print("toplevel-capture:", (Function(x): return x + base)(5))
+
+# a nested function calling a const-fn from an OUTER scope must NOT inline it (const tracking is
+# per-proto) yet still compute correctly via a normal call
+var outer = Function():
+    var b = 100
+    var g = Function(x): return x + b
+    var h = Function():
+        return g(5)
+    return h()
+io.print("nested-fn-outer-constfn:", outer())
+
+# an inner `var` shadows an outer const-fn name; the two never cross-reference
+var sq = Function(x): return x * x
+var shadow = Function():
+    var sq = Function(x): return x + 1000
+    return sq(5)
+io.print("constfn-shadow:", [sq(4), shadow()])
+
+# a const-fn used BOTH inlined (by name) AND passed first-class (shared AST must not be mutated)
+var inc = Function(x): return x + 1
+io.print("dual-use:", [inc(10), List(map(inc, range(4)))])
+
+# fused for + break / continue / early return
+var f_return = Function(xs):
+    for x in map(Function(v): return v * 10, xs):
+        if x == 20:
+            return x
+    return -1
+io.print("fused-return:", f_return([1, 2, 3]))
+
+var brk = []
+for x in filter(Function(v): return v % 2 == 0, range(20)):
+    if x == 8:
+        break
+    brk.append(x)
+io.print("fused-filter-break:", brk)
+
+var cont = []
+for x in map(Function(v): return v, range(6)):
+    if x == 3:
+        continue
+    cont.append(x)
+io.print("fused-map-continue:", cont)
+
+# fused loop body mutates the captured var between elements -> capture read in place per element
+var acc = 0
+var mut = []
+for x in map(Function(e): return e + acc, range(5)):
+    acc = acc + 1
+    mut.append(x)
+io.print("fused-capture-mutate:", mut)
+
+# nested inline literal inside a fused map body
+var nested = []
+for x in map(Function(e): return (Function(z): return z + 1)(e), range(5)):
+    nested.append(x)
+io.print("fused-nested-inline:", nested)
+
+# fused map over a string source (iterates characters)
+var chars = []
+for c in map(Function(ch): return ch + "!", "abc"):
+    chars.append(c)
+io.print("fused-string-src:", chars)
+
+# eager consumers over map/filter (lazy builtin path; identical on/off)
+io.print("eager-List-map:", List(map(Function(x): return x * x, range(6))))
+io.print("eager-List-filter:", List(filter(Function(x): return x % 2 == 0, range(10))))
+io.print("eager-Set-dedup:", List(Set(map(Function(x): return x % 3, range(9)))))
+io.print("eager-sum:", sum(map(Function(x): return x * x, range(5))))
+
+# a captured CONTAINER may be mutated from a nested function (only rebinding the NAME is banned)
+var container = Function():
+    var box = []
+    var push = Function(v): discard box.append(v)
+    push(1)
+    push(2)
+    push(3)
+    return box
+io.print("captured-container:", container())
+
+# a lambda whose body references a builtin shadowed by a lexical var must not mis-inline the builtin
+var shadowedBuiltin = Function():
+    var len = Function(z): return 999
+    var use = Function(s): return len(s)
+    return use("ab")
+io.print("shadowed-builtin:", shadowedBuiltin())
+
+io.print("OK spec_inline_adversarial")

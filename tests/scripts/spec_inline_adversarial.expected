@@ -1,0 +1,17 @@
+toplevel-capture: 15
+nested-fn-outer-constfn: 105
+constfn-shadow: [16, 1005]
+dual-use: [11, [1, 2, 3, 4]]
+fused-return: 20
+fused-filter-break: [0, 2, 4, 6]
+fused-map-continue: [0, 1, 2, 4, 5]
+fused-capture-mutate: [0, 2, 4, 6, 8]
+fused-nested-inline: [1, 2, 3, 4, 5]
+fused-string-src: ['a!', 'b!', 'c!']
+eager-List-map: [0, 1, 4, 9, 16, 25]
+eager-List-filter: [0, 2, 4, 6, 8]
+eager-Set-dedup: [0, 1, 2]
+eager-sum: 30
+captured-container: [1, 2, 3]
+shadowed-builtin: 999
+OK spec_inline_adversarial

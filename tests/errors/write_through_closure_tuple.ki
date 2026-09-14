@@ -1,0 +1,12 @@
+# Regression: a TUPLE-unpack assignment target that rebinds a captured variable is a write-through
+# closure too, and must be rejected at compile time — the ban walks every name in a destructuring
+# target, not just a bare `name = ...`. (Reading a captured var, or mutating a captured container, is
+# fine; only REBINDING the captured name is banned.) Must fail identically with and without --no-inline.
+var swap = Function():
+    var a = 1
+    var b = 2
+    var g = Function():
+        a, b = b, a
+        return a
+    return g()
+discard swap()

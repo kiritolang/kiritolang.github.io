@@ -408,6 +408,27 @@ on exit (nested pauses compose), instead of toggling `setGcEnabled` by hand and 
 re-enable. Rooting the values you actually care about is usually better; pausing is the blunt
 instrument.
 
+### Function inlining (`setInliningEnabled` / `inliningEnabled`)
+
+Kirito inlines certain calls at compile time (see the [performance reference](32-bonus-07-performance.md)).
+This is a **semantics-preserving** optimization — a program produces byte-identical results with inlining
+on or off — so the switch exists only for debugging (it restores per-call traceback frames), mirroring the
+CLI `--no-inline` / `KIRITO_NO_INLINE`:
+
+```cpp
+KiritoVM vm;
+vm.setInliningEnabled(false);   // BEFORE installStandardLibrary()/runSource(): applies to the whole run
+vm.installStandardLibrary();
+vm.runSource(src);
+```
+
+**Set it once, before any code is compiled or run.** The flag is read at *compile* time and a function's
+compiled form is cached on first use, so toggling it after code has already run does not retroactively
+recompile already-compiled functions (only newly-compiled ones observe the change). Because inlining never
+changes results, a stale toggle affects only whether an inlined call shows a separate traceback frame — not
+correctness. The language rules that keep inlining sound (e.g. the write-through-closure ban) are always
+enforced regardless of this flag, so inlined and non-inlined builds accept exactly the same programs.
+
 **The raw primitives (you rarely touch these).** Every RAII guard above just wraps a low-level VM call.
 Reach for the guard, not the primitive — call the primitive directly only when you are building your
 own guard:
@@ -1865,6 +1886,10 @@ public:
     void        setGcEnabled(bool on);           // prefer GcPauseScope
     bool        gcEnabled() const;
     std::size_t liveCount() const;
+
+    // function inlining (a semantics-preserving compile-time optimization; debug switch)
+    void        setInliningEnabled(bool on);     // set BEFORE running/compiling any code
+    bool        inliningEnabled() const;
 
     // call-depth guard
     void        enterCall();                     // prefer CallGuard

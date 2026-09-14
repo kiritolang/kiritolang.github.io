@@ -261,6 +261,22 @@ foreach(script ${ki_scripts})
     set_tests_properties(script_${nm} PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 endforeach()
 
+# --- inlining differential: run inline-SENSITIVE goldens ALSO with `--no-inline` against the SAME
+# .expected. Inlining is a semantics-preserving optimization, so identical output both ways is the
+# load-bearing "speed, not results" guarantee proven at the user-code (.ki) layer (the C++ side proves
+# it over a far larger fuzzed space). A regression that makes an inlined program diverge fails here. ---
+foreach(nm verify_inline spec_traceback spec_inline_adversarial)
+    set(_scr ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.ki)
+    set(_exp ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.expected)
+    if(EXISTS ${_scr} AND EXISTS ${_exp})
+        add_test(NAME script_${nm}_noinl
+                 COMMAND ${CMAKE_COMMAND} -DKI=$<TARGET_FILE:ki> -DSCRIPT=${_scr}
+                         -DEXPECTED=${_exp} -DKIFLAGS=--no-inline
+                         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ki_script.cmake)
+        set_tests_properties(script_${nm}_noinl PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+endforeach()
+
 # The parallel golden scripts can block on a real bug; cap them so a regression fails rather than
 # stalling CI (the watchdog backstop, mirroring the parallel unit tests' TIMEOUT). spec_net_tls spawns
 # a Python TLS server subprocess, so it gets the same watchdog in case the server ever hangs.

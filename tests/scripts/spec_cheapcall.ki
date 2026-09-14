@@ -1,0 +1,54 @@
+# Part A cheap-call work (operand-stack buffer pool, chunk-name interning, per-AST-node Proto cache) is
+# a transparent SPEED optimization: these are its CORRECTNESS invariants, provable as plain Kirito. Run
+# under ASan (and, in the soak pass, KIRITO_GC_THRESHOLD=1) a pool that leaked a stale handle, a node
+# cache that collided two bodies, or a frame buffer not returned after an exception would corrupt a
+# result or trip the sanitizer. Byte-exact output; identical with `ki` and `ki --no-inline`.
+var io = import("io")
+
+# deep recursion borrows/returns a pooled operand buffer per frame (~500 deep)
+var sumdown = Function(n): return 0 if n == 0 else n + sumdown(n - 1)
+io.print("recurse:", sumdown(500))
+
+# throw from deep in a recursion, catch at the top, then recurse AGAIN: every buffer the unwind
+# abandoned must be back in the pool (else a wrong result or an ASan failure on reuse)
+var toBottom = Function(n):
+    if n == 0:
+        throw "bottom"
+    return toBottom(n - 1)
+var got = ""
+try:
+    discard toBottom(300)
+catch as e:
+    got = e
+io.print("unwind-then-recurse:", [got, sumdown(400)])
+
+# per-AST-node Proto cache: two closures over DIFFERENT captured values but identical body TEXT must not
+# share a compiled body that baked in one capture (a node-cache collision would return the wrong sum)
+var make = Function(k): return Function(x): return x + k
+var add10 = make(10)
+var add20 = make(20)
+io.print("no-crosstalk:", [add10(1), add20(1), add10(5), add20(5)])
+
+# an escaping closure keeps its captured environment alive well past the defining call
+var makeCounter = Function(seed):
+    var box = [seed]
+    return Function():
+        box[0] = box[0] + 1
+        return box[0]
+var c = makeCounter(1000)
+var counts = []
+for i in range(30):
+    counts.append(c())
+io.print("escaping-counter:", [counts[0], counts[29], len(counts)])
+
+# many independent escaping closures alive at once, each capturing its own value
+var mk = Function(k): return Function(): return k * k
+var fns = []
+for i in range(40):
+    fns.append(mk(i))
+var total = 0
+for f in fns:
+    total = total + f()
+io.print("many-closures:", total)
+
+io.print("OK spec_cheapcall")

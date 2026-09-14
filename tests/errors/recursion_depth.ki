@@ -1,0 +1,5 @@
+# Unbounded recursion must fail with a clean, catchable "maximum recursion depth exceeded"
+# error (a loud guard, never a native stack smash). This is the user-code proof that the VM bounds
+# call depth; the message is the contract.
+var rec = Function(n): return rec(n + 1)
+discard rec(0)
