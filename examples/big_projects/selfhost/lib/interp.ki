@@ -503,6 +503,13 @@ var _contains = Function(St, container, item):
         if m != None:
             return truthy(St, callValue(St, mkBound(container, m), [item], []))
         rtError("'" + container["cls"]["name"] + "' does not support 'in'")
+    # List membership is element-wise via _eq_ (native), NOT hash-based — so an instance without
+    # _hash_ is still findable. Set/Dict/String/range keep host membership (hash / substring).
+    if typeName(container) == "List":
+        for x in container:
+            if _deepEqual(St, x, item):
+                return True
+        return False
     return _hkey(St, item) in container
 
 var evalUnary = Function(St, op, v):
