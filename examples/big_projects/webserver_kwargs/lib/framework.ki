@@ -8,6 +8,17 @@ var http = import(name = "http")
 var path = import("path")
 var io = import(name = "io")
 
+# A static-path segment is unsafe if it can escape the served directory or smuggle control bytes:
+# `.`/`..` traversal, a backslash (a Windows path separator `segments` doesn't split on), or any C0
+# control byte (e.g. a NUL-byte truncation trick).
+var _unsafeSegment = Function(r : String) -> Bool:
+    if r == ".." or r == "." or "\\" in r:
+        return True
+    for ch in r:
+        if ord(ch) < 32:
+            return True
+    return False
+
 # Split a path into non-empty segments: "/users/42/" -> ["users", "42"].
 var segments = Function(path):
     var out = []
@@ -86,9 +97,9 @@ class App:
             if not matched:
                 continue
             var rest = segs[len(x = prefix):]
-            # Reject path traversal outright.
+            # Reject path traversal / control-byte segments outright.
             for r in rest:
-                if r == ".." or r == ".":
+                if _unsafeSegment(r = r):
                     return http.Response().text(s = "forbidden", status = 403)
             if len(x = rest) == 0:
                 rest = ["index.html"]

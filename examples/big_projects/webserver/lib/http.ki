@@ -4,6 +4,13 @@
 
 var io = import("io")
 
+# Resource limits so a hostile or buggy client can't exhaust a worker's memory (an unbounded request
+# line, header stream, or Content-Length body). Over-limit requests are rejected (the server turns the
+# thrown String into a 400) rather than buffered without bound.
+var MAX_LINE = 65536              # 64 KiB per request/header line
+var MAX_HEADERS = 100            # header count cap
+var MAX_BODY = 10 * 1024 * 1024   # 10 MiB request body cap
+
 # The number of *bytes* in a String's UTF-8 encoding (not code points). HTTP Content-Length is a
 # byte count, so a body with multibyte characters (é, …) needs this, not len(). BytesIO stores raw
 # bytes, so writing the string and asking its size gives the encoded length.
@@ -42,6 +49,8 @@ class Reader:
                 if len(line) > 0 and line[len(line) - 1:] == "\r":
                     line = line[0:len(line) - 1]
                 return line
+            if len(self._buf) > MAX_LINE:   # no newline within the cap -> refuse to buffer more
+                throw "request line too long"
             if not self._fill():
                 if len(self._buf) == 0:
                     return None
@@ -124,10 +133,14 @@ var parse_request = Function(reader : Reader):
 
     # Headers until a blank line.
     var headers = {}
+    var headerCount = 0
     while True:
         var h = reader.read_line()
         if h == None or len(h) == 0:
             break
+        headerCount = headerCount + 1
+        if headerCount > MAX_HEADERS:
+            throw "too many headers"
         var colon = h.find(":")
         if colon >= 0:
             var key = h[0:colon].strip().lower()
@@ -142,6 +155,8 @@ var parse_request = Function(reader : Reader):
             n = Integer(headers["content-length"])
         catch as e:
             n = 0
+        if n > MAX_BODY:
+            throw "request body too large"
         if n > 0:
             body = reader.read_bytes(n)
 
@@ -163,7 +178,12 @@ class Response:
         self.headers = {}
         self.body = ""
 
-    var set = Function(self, name, value):
+    var set = Function(self, name : String, value : [String, Integer]):
+        # Reject CR/LF in a header name/value: reflecting untrusted data into a header must not be able
+        # to inject extra headers or split the response (HTTP response splitting).
+        var vs = String(value)
+        if "\r" in name or "\n" in name or "\r" in vs or "\n" in vs:
+            throw "illegal CR/LF in header " + name
         self.headers[name] = value
         return self
 

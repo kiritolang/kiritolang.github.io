@@ -1,0 +1,130 @@
+# test_webserver_kwargs.ki — .ki-level unit tests for the HTTP parser + routing framework in isolation
+# (the Python harnesses only exercise the live server over TCP). Uses a fake in-memory connection so
+# parse_request/App.handle run without a socket. Prints "webserver: N checks passed", matched
+# byte-for-byte against test_webserver_kwargs.expected. Run:
+#   ki --lib examples/big_projects/webserver_kwargs/lib examples/big_projects/webserver_kwargs/test_webserver_kwargs.ki
+
+var io   = import("io")
+var path = import("path")
+var http = import("http")
+var fw   = import("framework")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# A fake connection: hands out `data` (Bytes) in recv() chunks; captures send() output. Wrapping it
+# in http.Reader lets parse_request run with no real socket.
+class FakeConn:
+    var _init_ = Function(self, data):
+        self._data = data
+        self._pos = 0
+        self.sent = ""
+    var recv = Function(self, n):
+        var end = self._pos + n
+        if end > len(self._data):
+            end = len(self._data)
+        var chunk = self._data[self._pos:end]
+        self._pos = end
+        return chunk
+    var send = Function(self, data):
+        self.sent = self.sent + data
+        return len(data)
+    var close = Function(self):
+        return None
+
+var parseReq = Function(text : String):
+    return http.parse_request(http.Reader(FakeConn(text.encode("latin-1"))))
+
+# =============================================================================
+# http.parse_request: request line, query, headers, body
+# =============================================================================
+var r1 = parseReq("GET /hello?x=1&y=two HTTP/1.1\r\nHost: example\r\n\r\n")
+ok(r1.method == "GET", "method parsed")
+ok(r1.path == "/hello", "path parsed (query stripped)")
+ok(r1.query["x"] == "1" and r1.query["y"] == "two", "query params decoded")
+ok(r1.header("host", "") == "example", "header parsed, case-insensitive lookup")
+ok(r1.body == "", "no body when no Content-Length")
+
+var r2 = parseReq("POST /submit HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello")
+ok(r2.method == "POST" and r2.body == "hello", "body read per Content-Length")
+
+ok(parseReq("") == None, "empty stream -> None (clean EOF)")
+var r3 = parseReq("GET /a%20b HTTP/1.1\r\n\r\n")
+ok(r3.path == "/a b", "percent-encoded path is decoded")
+
+# =============================================================================
+# http.parse_request: malformed / oversized requests are rejected (server -> 400)
+# =============================================================================
+ok(throws(Function(): return parseReq("GARBAGE\r\n\r\n")), "a request line with <3 fields throws")
+ok(throws(Function(): return parseReq("GET / HTTP/1.1\r\nContent-Length: 99999999999\r\n\r\n")), "an over-limit Content-Length is rejected")
+var manyHeaders = "GET / HTTP/1.1\r\n"
+var hi = 0
+while hi < 200:
+    manyHeaders = manyHeaders + "X-H" + String(hi) + ": v\r\n"
+    hi = hi + 1
+manyHeaders = manyHeaders + "\r\n"
+ok(throws(Function(): return parseReq(manyHeaders)), "too many headers is rejected")
+
+# =============================================================================
+# framework routing: path params, methods, 404/405, middleware
+# =============================================================================
+var app = fw.App()
+discard app.get("/hello/:name", Function(req): return http.Response().text("hi " + req.params["name"], 200))
+discard app.post("/submit", Function(req): return http.Response().text("posted", 201))
+
+var got = app.handle(parseReq("GET /hello/world HTTP/1.1\r\n\r\n"))
+ok(got.status == 200 and got.body == "hi world", "path-param route matches and binds :name")
+var pct = app.handle(parseReq("GET /hello/a%20b HTTP/1.1\r\n\r\n"))
+ok(pct.body == "hi a b", "path param is percent-decoded")
+var created = app.handle(parseReq("POST /submit HTTP/1.1\r\n\r\n"))
+ok(created.status == 201, "POST route matches")
+var notfound = app.handle(parseReq("GET /nope HTTP/1.1\r\n\r\n"))
+ok(notfound.status == 404, "unknown path -> 404")
+var wrongMethod = app.handle(parseReq("DELETE /submit HTTP/1.1\r\n\r\n"))
+ok(wrongMethod.status == 405, "known path, wrong method -> 405")
+
+# middleware runs before the handler
+var mwApp = fw.App()
+var hits = [0]
+discard mwApp.use(Function(req): hits[0] = hits[0] + 1)
+discard mwApp.get("/x", Function(req): return http.Response().text("ok", 200))
+discard mwApp.handle(parseReq("GET /x HTTP/1.1\r\n\r\n"))
+ok(hits[0] == 1, "middleware runs on a request")
+
+# a handler that throws becomes a 500 (the server never dies on a bad handler)
+var boomApp = fw.App()
+discard boomApp.get("/boom", Function(req): throw "handler blew up")
+ok(boomApp.handle(parseReq("GET /boom HTTP/1.1\r\n\r\n")).status == 500, "a throwing handler -> 500")
+
+# =============================================================================
+# framework static serving + path-traversal defense
+# =============================================================================
+var staticDir = path.join(path.gettempdir(), "webserver_kwargs_selftest_static")
+if path.exists(staticDir):
+    discard path.rmtree(staticDir, missing_ok = True)
+discard path.mkdir(staticDir, exist_ok = True)
+with io.open(path.join(staticDir, "page.txt"), "w") as fh:
+    fh.write("static-body")
+var stApp = fw.App()
+discard stApp.static("/static", staticDir)
+ok(stApp.handle(parseReq("GET /static/page.txt HTTP/1.1\r\n\r\n")).body == "static-body", "static file is served")
+ok(stApp.handle(parseReq("GET /static/../page.txt HTTP/1.1\r\n\r\n")).status == 403, "`..` traversal is forbidden")
+ok(stApp.handle(parseReq("GET /static/nope.txt HTTP/1.1\r\n\r\n")).status == 404, "missing static file -> 404")
+discard path.rmtree(staticDir, missing_ok = True)
+
+# =============================================================================
+# http.Response: header-injection (response splitting) is rejected
+# =============================================================================
+ok(throws(Function(): return http.Response().set("X-Test", "a\r\nEvil: 1")), "CRLF in a header value is rejected")
+ok(throws(Function(): return http.Response().set("Bad\r\nName", "v")), "CRLF in a header name is rejected")
+ok(http.Response().set("X-Ok", "fine").headers["X-Ok"] == "fine", "a clean header value is accepted")
+
+io.print("webserver_kwargs: " + String(n) + " checks passed")

@@ -92,7 +92,7 @@ done
 
 # --- library .ki unit tests (a project whose runtime entry point is a server/Python harness still
 #     gets fast, deterministic .ki coverage of its pure library layer) ------------------------------
-for proj in sqldb sqldb_kwargs; do
+for proj in sqldb sqldb_kwargs webserver webserver_kwargs; do
     d="examples/big_projects/$proj"
     [ -f "$d/test_$proj.ki" ] && run_golden "$d/test_$proj.ki" --lib "$d/lib"
 done
