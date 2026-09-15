@@ -687,8 +687,21 @@ class Match:
         if self._slots[2 * g] < 0:
             return None
         return self.string[self._slots[2 * g]:self._slots[2 * g + 1]]
-    var group = Function(self, index = 0):
-        return self._gstr(self._groupNum(index))
+    # group() -> whole; group(k) -> one; group(k1, k2, ...) -> a List (native accepts several keys).
+    # The self-host has no varargs, so accept several optional keys (None sentinel — a key is never None).
+    var group = Function(self, k0 = None, k1 = None, k2 = None, k3 = None, k4 = None, k5 = None, k6 = None, k7 = None):
+        var keys = []
+        for _k in [k0, k1, k2, k3, k4, k5, k6, k7]:
+            if _k != None:
+                keys.append(_k)
+        if len(keys) == 0:
+            return self._gstr(self._groupNum(0))
+        if len(keys) == 1:
+            return self._gstr(self._groupNum(keys[0]))
+        var out = []
+        for _kk in keys:
+            out.append(self._gstr(self._groupNum(_kk)))
+        return out
     var groups = Function(self, default = None):
         var out = []
         var g = 1
@@ -891,9 +904,12 @@ var split = Function(pattern, string, maxsplit = 0):
 
 var escape = Function(s):
     var out = ""
-    var special = ".^$*+?()[]{}|\\"
     for ch in s:
-        if ch in special:
+        var cp = ord(ch)
+        # escape every ASCII character that is not a word char (a-z A-Z 0-9 _); a non-ASCII code point
+        # (cp > 127) is word-ish and left literal — matching native re.escape.
+        var isWord = (cp >= 48 and cp <= 57) or (cp >= 65 and cp <= 90) or (cp >= 97 and cp <= 122) or cp == 95
+        if cp < 128 and not isWord:
             out = out + "\\" + ch
         else:
             out = out + ch
