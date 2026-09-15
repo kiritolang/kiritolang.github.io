@@ -1,0 +1,59 @@
+# tensor_kernel_invariants.ki — pins the ORDER-SENSITIVE contracts of the extracted tensor compute
+# kernels (kirito::tensor::kernels), so a future SIMD/GPU kernel variant that silently reorders a
+# reduction, a matmul accumulation, or NaN propagation is caught here rather than as a drifting result.
+# These invariants are exactly why those kernels are documented as reference (strict left-to-right)
+# rather than embarrassingly-parallel. Deterministic; every assertion carries a message; a trailing
+# counter confirms none silently vanished.
+
+var io = import("io")
+var T = import("tensor")
+var math = import("math")
+
+var n = 0
+var check = Function(b, msg):
+    assert b, msg
+    n = n + 1
+
+var isnan = Function(x) -> Bool:
+    return x != x
+
+# --- NaN propagation in min/max (nanprop kernels): NaN wins from ANY position, not just when it seeds
+#     the fold. A plain std::max/`x<m` fold would give a position-dependent answer for the same multiset.
+check(isnan(T.Tensor([math.nan, 1.0, 2.0]).max()), "max propagates NaN when it is first")
+check(isnan(T.Tensor([1.0, 2.0, math.nan]).max()), "max propagates NaN when it is last")
+check(isnan(T.Tensor([1.0, math.nan, 2.0]).max()), "max propagates NaN when it is in the middle")
+check(isnan(T.Tensor([math.nan, 1.0, 2.0]).min()), "min propagates NaN when it is first")
+check(isnan(T.Tensor([1.0, 2.0, math.nan]).min()), "min propagates NaN when it is last")
+check(isnan(T.Tensor([1.0, math.nan, 2.0]).min()), "min propagates NaN when it is in the middle")
+
+# strided-axis min/max fold preserves the same NaN propagation as the whole-buffer fold
+check(isnan(T.Tensor([[math.nan, 5.0], [3.0, 4.0]]).max(0).tolist()[0]), "max axis-0 propagates NaN")
+check(T.Tensor([[math.nan, 5.0], [3.0, 4.0]]).max(0).tolist()[1] == 5.0, "max axis-0 unaffected column exact")
+
+# --- reduceContig / reduceStrided exactness (integers so the fold is exact, no float rounding to mask
+#     an order change). Whole-buffer and per-axis, sum and prod.
+var m = T.Tensor([[1, 2, 3], [4, 5, 6]])
+check(m.sum() == 21.0, "sum whole exact")
+check(m.prod() == 720.0, "prod whole exact")
+check(m.sum(0).tolist() == [5.0, 7.0, 9.0], "sum axis-0 strided exact")
+check(m.sum(1).tolist() == [6.0, 15.0], "sum axis-1 contiguous-in-source exact")
+check(m.prod(0).tolist() == [4.0, 10.0, 18.0], "prod axis-0 strided exact")
+check(m.max(1).tolist() == [3.0, 6.0], "max axis-1 exact")
+# identity vs seed-on-first: empty reduces to the identity, non-empty seeds on the first element
+check(T.zeros([0]).sum() == 0.0, "empty sum -> additive identity")
+check(T.zeros([0]).prod() == 1.0, "empty prod -> multiplicative identity")
+
+# --- dotContig: exact left-to-right accumulation
+check(T.Tensor([1, 2, 3]).dot(T.Tensor([4, 5, 6])) == 32.0, "dot exact")
+
+# --- matmulIKJ: the ikj accumulation order, 2-D and batched-broadcast. Identity right-multiply must
+#     return the batch verbatim (exercises per-batch offset mapping into one shared kernel).
+var id2 = T.Tensor([[1, 0], [0, 1]])
+check(T.Tensor([[1, 2], [3, 4]]).matmul(T.Tensor([[5, 6], [7, 8]])).tolist() == [[19.0, 22.0], [43.0, 50.0]],
+      "matmul 2-D exact")
+var batch = T.Tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
+check(batch.matmul(id2).tolist() == [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]],
+      "batched matmul broadcast RHS: identity returns each batch verbatim")
+
+io.print(n)
+io.print("OK tensor-kernel-invariants")

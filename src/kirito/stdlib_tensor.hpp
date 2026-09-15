@@ -634,8 +634,9 @@ inline Handle g_math(KiritoVM& vm, Handle ah, MathOp k) {
     FT acopy = a, outcopy = out;
     auto bw = [k, acopy, outcopy](const FT& g) -> std::vector<FT> {
         FT d(acopy.shape);
-        for (std::size_t i = 0; i < d.data.size(); ++i)
-            d.data[i] = g.data[i] * mathDeriv(k, acopy.data[i], outcopy.data[i]);
+        tensor::kernels::ewiseTernaryContig(
+            g.data.data(), acopy.data.data(), outcopy.data.data(), d.data.data(), d.data.size(),
+            [k](double gv, double av, double ov) { return gv * mathDeriv(k, av, ov); });
         return {d};
     };
     return makeAutogradFloat(vm, std::move(out), {ah}, std::move(bw));
@@ -650,8 +651,9 @@ inline Handle g_pow(KiritoVM& vm, Handle ah, double p) {
     FT acopy = a;
     auto bw = [acopy, p](const FT& g) -> std::vector<FT> {
         FT d(acopy.shape);
-        for (std::size_t i = 0; i < d.data.size(); ++i)
-            d.data[i] = g.data[i] * p * std::pow(acopy.data[i], p - 1.0);
+        tensor::kernels::ewiseBinaryContig(
+            g.data.data(), acopy.data.data(), d.data.data(), d.data.size(),
+            [p](double gv, double av) { return gv * p * std::pow(av, p - 1.0); });
         return {d};
     };
     return makeAutogradFloat(vm, std::move(out), {ah}, std::move(bw));
@@ -857,13 +859,8 @@ inline tensor::Tensor<T> basicIndex(const tensor::Tensor<T>& t, const std::vecto
     IndexGeom g = indexGeometry(t.shape, plan);
     tensor::Tensor<T> out(g.outShape);                 // contiguous; checkedNumel enforces the size caps
     std::size_t n = out.data.size(), rank = g.outShape.size();
-    tensor::Shape coord(rank, 0);
-    for (std::size_t lin = 0; lin < n; ++lin) {
-        std::ptrdiff_t off = g.constOff;
-        for (std::size_t d = 0; d < rank; ++d) off += static_cast<std::ptrdiff_t>(coord[d]) * g.outStride[d];
-        out.data[lin] = t.data[static_cast<std::size_t>(off)];
-        for (std::size_t d = rank; d-- > 0;) { if (++coord[d] < g.outShape[d]) break; coord[d] = 0; }
-    }
+    tensor::kernels::gatherStrided(t.data.data(), out.data.data(), n, rank,
+                                   g.outShape.data(), g.outStride.data(), g.constOff);
     return out;
 }
 

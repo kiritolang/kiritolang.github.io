@@ -1649,6 +1649,15 @@ engine is shared C++ (`src/kirito/tensor.hpp`) and is what the `matrix` and `com
 themselves built on; a 2-D tensor *is* a matrix. It is CPU-only but carries a **reverse-mode autograd**
 (see below) and a GPU-forward-compatible single-buffer design.
 
+> **Internals.** The compute inner loops (elementwise map, matmul accumulation, reductions, dot, the
+> gradient element-wise passes, strided gather) live in `src/kirito/tensor_kernels.hpp` as named,
+> raw-buffer kernels templated on their op functor — a compile-time specialization seam a future
+> SIMD/GPU backend can swap a kernel body for, without touching the `Tensor` class or the public
+> shape/stride contract. Reductions, matmul, and dot are **reference kernels**: they fold strictly
+> left-to-right (no tree/pairwise reassociation, no fast-math) because reproducibility and the autograd
+> gradient contract depend on the exact accumulation order. Everything still runs on the CPU today —
+> the seam is structural, not a build flag.
+
 **For bulk numeric work, reach for a `tensor` (or `matrix`), not a `List`.** A tensor stores its
 elements in one contiguous unboxed `Float`/`Complex` buffer, so a whole-array operation
 (`a + b`, `a * 2`, `a.sum()`, `x.matmul(y)`) runs a tight native loop over raw numbers — the NumPy model. A

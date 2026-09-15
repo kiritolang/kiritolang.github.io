@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "tensor_kernels.hpp"
+
 // A small, dependency-free N-dimensional tensor engine. It is intentionally separate from anything
 // Kirito-specific (no VM, no handles) so it is reusable, unit-testable on its own, and so the real
 // `matrix` / `complex` matrix types and the Kirito `tensor` module can all be built on top of one
@@ -180,7 +182,7 @@ Tensor<T> transpose(const Tensor<T>& t) {
 template <class T, class Fn>
 Tensor<T> mapUnary(const Tensor<T>& t, Fn fn) {
     Tensor<T> out(t.shape);
-    for (std::size_t i = 0; i < t.size(); ++i) out.data[i] = fn(t.data[i]);
+    kernels::mapUnaryContig(t.data.data(), out.data.data(), t.size(), fn);
     return out;
 }
 
@@ -193,7 +195,7 @@ Tensor<T> elementwise(const Tensor<T>& a, const Tensor<T>& b, Op op) {
     // are bit-identical to the general path (NaN propagation and the div-by-zero throw included).
     if (a.shape == b.shape) {
         Tensor<T> out(a.shape);
-        for (std::size_t i = 0; i < a.data.size(); ++i) out.data[i] = op(a.data[i], b.data[i]);
+        kernels::ewiseBinaryContig(a.data.data(), b.data.data(), out.data.data(), a.data.size(), op);
         return out;
     }
     Shape outshape = broadcastShapes(a.shape, b.shape);
@@ -265,11 +267,7 @@ Tensor<T> matmul(const Tensor<T>& a, const Tensor<T>& b) {
         const T* A = a.data.data() + aBatchOff * aMat;
         const T* B = b.data.data() + bBatchOff * bMat;
         T* O = out.data.data() + bi * oMat;
-        for (std::size_t i = 0; i < m; ++i)
-            for (std::size_t p = 0; p < k; ++p) {
-                T v = A[i * k + p];
-                for (std::size_t j = 0; j < n; ++j) O[i * n + j] += v * B[p * n + j];
-            }
+        kernels::matmulIKJ(A, B, O, m, k, n);
     }
     return out;
 }
@@ -279,15 +277,17 @@ template <class T>
 T dot(const Tensor<T>& a, const Tensor<T>& b) {
     if (a.ndim() != 1 || b.ndim() != 1) throw TensorError("dot requires two 1-D tensors");
     if (a.size() != b.size()) throw TensorError("dot requires vectors of equal length");
-    T acc = T{};
-    for (std::size_t i = 0; i < a.size(); ++i) acc += a.data[i] * b.data[i];
-    return acc;
+    return kernels::dotContig(a.data.data(), b.data.data(), a.size());
 }
 
 // ---- reductions ------------------------------------------------------------------------------
 
-template <class T> T sumAll(const Tensor<T>& t) { T s = T{}; for (const T& x : t.data) s += x; return s; }
-template <class T> T prodAll(const Tensor<T>& t) { T p = T{1}; for (const T& x : t.data) p *= x; return p; }
+template <class T> T sumAll(const Tensor<T>& t) {
+    return kernels::reduceContig(t.data.data(), t.data.size(), [](T acc, T x) { return acc + x; }, T{});
+}
+template <class T> T prodAll(const Tensor<T>& t) {
+    return kernels::reduceContig(t.data.data(), t.data.size(), [](T acc, T x) { return acc * x; }, T{1});
+}
 
 // max/min combiners that PROPAGATE NaN (numpy amax/amin semantics): if either operand is NaN the
 // result is NaN. std::max/std::min and a bare `x < m` do NOT — `max(x, NaN)` keeps x but
@@ -307,9 +307,9 @@ template <class T> T nanpropMin(T a, T b) {
 template <class T> T minAll(const Tensor<T>& t) {
     if constexpr (std::is_arithmetic_v<T>) {
         if (t.data.empty()) throw TensorError("min of an empty tensor");
-        T m = t.data[0];
-        for (const T& x : t.data) m = nanpropMin(m, x);
-        return m;
+        // Seed the fold on the first element and fold the whole buffer (including it) — nanprop-safe.
+        return kernels::reduceContig(t.data.data(), t.data.size(),
+                                     [](T a, T b) { return nanpropMin(a, b); }, t.data[0]);
     } else {
         throw TensorError("min is not defined for this dtype (it is not ordered)");
     }
@@ -317,9 +317,8 @@ template <class T> T minAll(const Tensor<T>& t) {
 template <class T> T maxAll(const Tensor<T>& t) {
     if constexpr (std::is_arithmetic_v<T>) {
         if (t.data.empty()) throw TensorError("max of an empty tensor");
-        T m = t.data[0];
-        for (const T& x : t.data) m = nanpropMax(m, x);
-        return m;
+        return kernels::reduceContig(t.data.data(), t.data.size(),
+                                     [](T a, T b) { return nanpropMax(a, b); }, t.data[0]);
     } else {
         throw TensorError("max is not defined for this dtype (it is not ordered)");
     }
@@ -351,11 +350,8 @@ Tensor<T> reduceAxis(const Tensor<T>& t, std::size_t axis, Comb comb,
             base += coord * st[i];
             ++oi;
         }
-        // With an identity, fold every element from it (numerically identical to seeding on the first);
-        // without one, seed on the first element and fold the rest.
-        T acc = identity ? *identity : t.data[base];
-        for (std::size_t a = identity ? 0 : 1; a < axislen; ++a) acc = comb(acc, t.data[base + a * axisstep]);
-        out.data[olin] = acc;
+        const T* idptr = identity ? &*identity : nullptr;
+        out.data[olin] = kernels::reduceStrided(t.data.data() + base, axislen, axisstep, comb, idptr);
     }
     return out;
 }
