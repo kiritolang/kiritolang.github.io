@@ -76,12 +76,16 @@ var _readHex = Function(P, count):
         elif h >= "a" and h <= "f":
             d = ord(h) - 87
         elif h >= "A" and h <= "F":
-            d = ord(h) - 70
+            d = ord(h) - 55
         else:
             throw "invalid regex: incomplete \\x/\\u escape"
         v = v * 16 + d
         P["pos"] = P["pos"] + 1
         i = i + 1
+    if v > 1114111:
+        throw "invalid regex: escape value out of range (above U+10FFFF)"
+    if v >= 55296 and v <= 57343:
+        throw "invalid regex: escape is a UTF-16 surrogate (not a scalar code point)"
     return v
 
 var _readOctalAfter = Function(P, firstVal):
@@ -518,7 +522,12 @@ var compile = Function(pattern, flags = 0):
     var P = {"s": pattern, "pos": 0, "flags": flags, "classes": [], "names": [""], "namemap": {}, "ngroups": 0, "depth": 0}
     var root = _parseAlternation(P)
     if P["pos"] < len(P["s"]):
+        if _peek(P) == ")":
+            throw "invalid regex: unbalanced ')' in pattern"
         throw "invalid regex: unexpected '" + _peek(P) + "' in pattern"
+    # Group count is bounded: the NFA's per-position cost scales with the number of capture slots.
+    if P["ngroups"] > 1000:
+        throw "invalid regex: too many capture groups (max 1000)"
     var prog = {"insts": [], "classes": P["classes"], "flags": P["flags"], "ngroups": P["ngroups"], "names": P["names"], "namemap": P["namemap"]}
     while len(prog["names"]) <= prog["ngroups"]:
         prog["names"].append("")
@@ -680,6 +689,8 @@ class Match:
             if key < 0 or key > self._prog["ngroups"]:
                 throw "no such group: " + String(key)
             return key
+        if not isinstance(key, "String"):
+            throw "group key must be an Integer index or a String name"
         if key in self._prog["namemap"]:
             return self._prog["namemap"][key]
         throw "no such group: '" + String(key) + "'"
@@ -751,8 +762,8 @@ var _expandTemplate = Function(tmpl, m):
             throw "bad replacement: trailing backslash"
         if c == "\\" and i + 1 < n:
             var d = tmpl[i + 1]
-            if d >= "1" and d <= "9":
-                var gnum = ord(d) - 48
+            if d >= "0" and d <= "9":
+                var gnum = ord(d) - 48       # \0 is the whole match (group 0)
                 if gnum > len(m.groups()):
                     throw "invalid group reference " + String(gnum) + " in replacement template"
                 var g = m.group(gnum)
