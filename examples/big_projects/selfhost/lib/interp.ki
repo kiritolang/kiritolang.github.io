@@ -105,6 +105,12 @@ var _isStopIteration = Function(caught):
                 c = c["base"]
     return False
 
+# The iterator sentinel is a StopIteration thrown DIRECTLY inside the _next_ frame (call depth
+# baseDepth+1). A StopIteration that leaked from a DEEPER call (throwDepth > baseDepth+1) is not the
+# sentinel — it surfaces as a real error (PEP-479).
+var _isDirectStop = Function(caught, baseDepth):
+    return _isStopIteration(caught) and caught["throwDepth"] == baseDepth + 1
+
 # --- runtime errors / control signals -------------------------------------------------------------
 # A runtime error is a host throw of a tagged Dict so it is distinguishable from an interpreted
 # `throw` (which carries an arbitrary value) and from control signals.
@@ -885,7 +891,14 @@ var callFunction = Function(St, fn, args, kwargs, defcls):
     if defcls != None:
         envDefine(callEnv, "__defcls__", defcls)
     bindArgs(St, fn, args, kwargs, callEnv)
-    var sig = execBlock(St, callEnv, fn["body"])
+    # Track guest call depth so the iterator driver can tell a StopIteration thrown DIRECTLY by _next_
+    # (the sentinel) from one that leaked out of a deeper call (PEP-479). Restored even on a throw.
+    St["callDepth"] = St.get("callDepth", 0) + 1
+    var sig = None
+    try:
+        sig = execBlock(St, callEnv, fn["body"])
+    finally:
+        St["callDepth"] = St["callDepth"] - 1
     var result = None
     if sig["flow"] == CTL_RETURN:
         result = sig["value"]
@@ -1109,10 +1122,11 @@ var _drainIter = Function(St, it):
             while True:
                 var stop = False
                 var v = None
+                var baseDepth = St.get("callDepth", 0)
                 try:
                     v = callValue(St, mkBound(it, nx), [], [])
                 catch as e:
-                    if _isStopIteration(e):
+                    if _isDirectStop(e, baseDepth):
                         stop = True
                     else:
                         throw e
@@ -1162,10 +1176,11 @@ var evalStmt = Function(St, env, node):
                 while True:
                     var nv = None
                     var stop = False
+                    var baseDepth = St.get("callDepth", 0)
                     try:
                         nv = callValue(St, mkBound(it, nx), [], [])
                     catch as e:
-                        if _isStopIteration(e):
+                        if _isDirectStop(e, baseDepth):
                             stop = True
                         else:
                             throw e
@@ -1209,7 +1224,7 @@ var evalStmt = Function(St, env, node):
             rtError(msg)
         return NORMAL
     if k == "throw":
-        throw {"exc": evalExpr(St, env, node["e"])}
+        throw {"exc": evalExpr(St, env, node["e"]), "throwDepth": St.get("callDepth", 0)}
     if k == "try":
         return execTry(St, env, node)
     if k == "class":
