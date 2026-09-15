@@ -1,0 +1,5 @@
+['big:20', 'base', 'big:40', 'base']
+[1111, "name 'only' is not defined", 1111, "name 'only' is not defined"]
+['hi:50', 'lo', 'hi:99', 'lo']
+['6/6', '-/-', '4/-', '-/9']
+OK inline-stale-local

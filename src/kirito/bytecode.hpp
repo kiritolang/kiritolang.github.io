@@ -51,6 +51,9 @@ enum class Op : uint8_t {
     ClearResult,      //    frame.result = None    (every other statement)
     LoadResult,       //    push frame.result      (top-level program return value)
     CheckAnnotation,  // a: (annotationChecks[a]) throw if the operand-stack TOP fails the annotation (peek, no pop)
+    ClearLocal,       // a: setLocal(a, undefined) — reset an inlined body-local so it is "not defined" until
+                      //    its own `var` (re)runs; without this a looped inlined call site would leak the
+                      //    previous iteration's value into a path where the var did not execute.
     Call,             // a: dispatch calls[a]; the callee then its args are on the stack
     CallMethod,       // a: dispatch methodCalls[a] — obj.method(args): receiver then args on the stack
                       //    (a fused GetAttr+Call that avoids allocating a bound-method wrapper)

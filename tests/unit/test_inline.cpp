@@ -254,5 +254,128 @@ int main() {
         CHECK(v1.inliningEnabled() == true && v2.inliningEnabled() == false);
     }
 
+    // ================================================================================================
+    // InlineFunction (the opt-in guaranteed-inline keyword): single- AND multi-statement bodies,
+    // defaults, keyword args, and enforced annotations. The load-bearing invariant is the SAME as
+    // above — a program that INLINES must produce a byte-identical value (and identical thrown-error
+    // text) with inlining ON vs. --no-inline (which demotes InlineFunction to a plain Function). Cases
+    // that DON'T inline (arity/keyword/starred/value-use compile errors) are the documented asymmetry
+    // and are asserted separately, NOT via on==off.
+    // ================================================================================================
+    {
+        // valid inline shapes: every one must be on==off (result or identical thrown message)
+        const char* ifBattery[] = {
+            // immediately-applied literal, single expression
+            "(InlineFunction(a, b): return a * a + b * b)(3, 4)",
+            // const-bound, multi-statement body with an early return
+            "var f = InlineFunction(x):\n if x < 0:\n  return 0 - x\n return x\n[f(-7), f(7)]",
+            // body locals that shadow a caller local and a module global
+            "var x = 99\nvar g = 5\nvar h = InlineFunction(x):\n var g = x + 1\n return g\n[h(41), x, g]",
+            // default value (literal) + a default referencing an earlier parameter
+            "var p = InlineFunction(base, exp = 2): return base ** exp\n"
+            "var s = InlineFunction(lo, hi = lo + 5): return hi - lo\n[p(5), p(2, 10), s(10), s(10, 30)]",
+            // keyword arguments, out of order, plus positional+keyword mix
+            "var sub = InlineFunction(a, b): return a - b\n[sub(b = 3, a = 10), sub(10, b = 4)]",
+            // single, union, None-in-union annotations that ACCEPT
+            "var t = InlineFunction(x: Integer) -> Integer: return x + 1\n"
+            "var u = InlineFunction(x: [Integer, Float]): return x * 2\n[t(41), u(3), u(2.5)]",
+            // annotation VIOLATIONS — thrown at run time with the SAME message inlined vs demoted
+            "(InlineFunction(x: Integer): return x)(3.5)",
+            "(InlineFunction(x: [Integer, Float]): return x)(\"no\")",
+            "(InlineFunction(x) -> Integer: return x)(\"hi\")",
+            "var m = InlineFunction(x) -> Integer:\n if x > 0:\n  return x\n(InlineFunction(): return m(-1))()",
+            // nested InlineFunction calls
+            "var inc = InlineFunction(x): return x + 1\n"
+            "var inc2 = InlineFunction(x):\n var a = inc(x)\n return inc(a)\ninc2(40)",
+            // once-only side-effecting argument
+            "var c = 0\nvar bump = Function() -> Integer:\n c = c + 1\n return c\n"
+            "var tw = InlineFunction(v): return v + v\n[tw(bump()), c]",
+            // param-container mutation reaches the caller's object
+            "var lst = [1, 2, 3]\nvar setf = InlineFunction(b, v):\n b[0] = v\n return b\n[setf(lst, 9), lst]",
+            // const InlineFunction used cross-scope (materialized) + as a first-class value
+            "var sq = InlineFunction(x): return x * x\n"
+            "var apply = Function(fn, n): return fn(n)\n[sq(6), apply(sq, 7)]",
+        };
+        for (const char* s : ifBattery) CHECK(same(s));
+
+        // pin actual values (inlining ON) — independent of the on==off check
+        CHECK(on("(InlineFunction(a, b): return a * a + b * b)(3, 4)") == "25");
+        CHECK(on("var p = InlineFunction(base, exp = 2): return base ** exp\n[p(5), p(2, 10)]") == "[25, 1024]");
+        CHECK(on("(InlineFunction(x: Integer): return x)(3.5)") ==
+              "ERR:argument 'x' must be Integer, got Float");
+        CHECK(on("var m = InlineFunction(x) -> Integer:\n if x > 0:\n  return x\n"
+                 "(InlineFunction(): return m(-1))()") == "ERR:function must return Integer, got None");
+
+        // independent oracle: an InlineFunction and the SAME-bodied Function agree on the result.
+        {
+            KiritoVM vi; vi.installStandardLibrary(); vi.setInliningEnabled(true);
+            KiritoVM vf; vf.installStandardLibrary();
+            for (int k = -5; k <= 20; ++k) {
+                std::string body = " if x % 2 == 0:\n  return x * x + 3\n return x - 100\n";
+                std::string inl = "var f = InlineFunction(x):\n" + body + "f(" + std::to_string(k) + ")";
+                std::string fun = "var f = Function(x):\n" + body + "f(" + std::to_string(k) + ")";
+                CHECK(vi.stringify(vi.runSource(inl)) == vf.stringify(vf.runSource(fun)));
+            }
+        }
+    }
+
+    // ---- the documented --no-inline ASYMMETRY: a program the inliner rejects at compile time is a LOUD
+    //      error with inlining ON, yet compiles/runs under --no-inline (InlineFunction demotes to
+    //      Function). Assert exactly that direction — ON errors, OFF does not — for each rejected shape.
+    {
+        const char* rejected[] = {
+            "var apply = Function(fn, x): return fn(x)\napply(InlineFunction(x): return x * 2, 5)",  // literal as value
+            "var f = InlineFunction(x): return x\nvar g = f\ng(1)",                                   // index 1: VALID (alias)
+            "var fac = InlineFunction(n): return 1 if n < 2 else n * fac(n - 1)\nfac(5)",             // recursion
+            "(InlineFunction(x): return x)(1, 2)",                                                    // arity
+            "(InlineFunction(x): return x)(y = 1)",                                                   // unknown keyword
+            "var f = InlineFunction(n):\n var s = 0\n for i in range(n):\n  s = s + i\n return s\nf(4)",// loop body
+            "class C:\n var m = InlineFunction(self): return 1\nC().m()",                             // method
+        };
+        // Skip index 1 (aliasing a const InlineFunction is VALID now — it materializes); check the rest.
+        for (std::size_t i = 0; i < std::size(rejected); ++i) {
+            if (i == 1) { CHECK(run1(true, rejected[i]) == run1(false, rejected[i])); continue; }  // valid: on==off
+            std::string onR = run1(true, rejected[i]), offR = run1(false, rejected[i]);
+            CHECK(onR.rfind("ERR:", 0) == 0);                 // inlining ON: a loud compile error
+            CHECK(onR.find("InlineFunction") != std::string::npos);  // ...naming the construct
+            CHECK(onR != offR);                               // --no-inline does NOT hit that error
+        }
+        // the literal value-use ban names the fix
+        CHECK(run1(true, "var apply = Function(fn, x): return fn(x)\napply(InlineFunction(x): return x, 5)")
+                  .find("cannot be used as a value") != std::string::npos);
+    }
+
+    // ---- InlineFunction property/fuzz: random multi-statement bodies (var/if/return over the params and
+    //      builtins only, so they always inline), random defaults + positional/keyword call shapes;
+    //      assert inline ON == --no-inline for every one. Seeded. ----
+    {
+        std::mt19937 rng(0x1FCE);
+        auto pick = [&](std::initializer_list<const char*> xs) {
+            auto it = xs.begin(); std::advance(it, rng() % xs.size()); return std::string(*it);
+        };
+        int mismatches = 0;
+        for (int iter = 0; iter < 500; ++iter) {
+            std::string e1 = pick({"a", "a * a", "a + b", "a - b", "a % 3", "len(String(a))", "a * b - 1"});
+            std::string e2 = pick({"b", "b + 1", "a * b", "b * b", "a + b + 1"});
+            std::string pred = pick({"a > b", "a % 2 == 0", "a < 0", "b != 0", "a >= b"});
+            bool hasDefault = (rng() % 2) == 0;
+            std::string decl = hasDefault ? "var f = InlineFunction(a, b = a + 1):\n"
+                                          : "var f = InlineFunction(a, b):\n";
+            // body: a temp, a branch with an early return, a fall-through return
+            std::string body = " var t = " + e1 + "\n if " + pred + ":\n  return t\n return " + e2 + "\n";
+            int av = static_cast<int>(rng() % 11) - 5;
+            int bv = static_cast<int>(rng() % 11) - 5;
+            std::string call;
+            int shape = static_cast<int>(rng() % 4);
+            if (shape == 0)      call = "f(" + std::to_string(av) + ", " + std::to_string(bv) + ")";
+            else if (shape == 1) call = "f(b = " + std::to_string(bv) + ", a = " + std::to_string(av) + ")";
+            else if (shape == 2 && hasDefault) call = "f(" + std::to_string(av) + ")";  // use the default
+            else                 call = "f(" + std::to_string(av) + ", " + std::to_string(bv) + ")";
+            std::string src = decl + body + call;
+            if (run1(true, src) != run1(false, src)) ++mismatches;
+        }
+        CHECK(mismatches == 0);
+    }
+
     return RUN_TESTS();
 }

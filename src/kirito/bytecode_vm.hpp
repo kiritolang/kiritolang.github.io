@@ -157,6 +157,7 @@ public:
                     push(h);
                 } break;
                 case Op::StoreLocal: { setLocal(in.a, pop()); } break;
+                case Op::ClearLocal: { setLocal(in.a, vm_.undefined()); } break;  // reset an inlined body-local
                 case Op::AssignLocal: {  // O(1): direct frame slot, no name lookup
                     Handle v = pop();
                     if (getLocal(in.a) == vm_.undefined())  // rebinding before the var executed: strict

@@ -182,6 +182,15 @@ private:
     void ensureHiddenSlot(const std::string& name) {
         if (slotsEnabled_ && slotOf(name) < 0) defineSlot(name);
     }
+    // Force a real frame slot for a hidden inline body-local EVEN at module scope (where slotsEnabled_ is
+    // false), so LoadLocal's undefined-check applies and a ClearLocal can reset it per inline entry — the
+    // frame reserves localCount slots regardless of scope. `display` is the ORIGINAL user name, stored as
+    // the slot's localName so a "not defined" error reads `b`, not the mangled `$inlN_loc_b`. Returns the slot.
+    uint32_t forceHiddenSlot(const std::string& hidden, const std::string& display) {
+        int s = slotOf(hidden);
+        if (s < 0) { s = static_cast<int>(defineSlot(hidden)); proto_.localNames[static_cast<std::size_t>(s)] = display; }
+        return static_cast<uint32_t>(s);
+    }
     // Emit a read / declare / rebind of a name, choosing the slot fast path when the name is slotted.
     void emitLoad(const std::string& name, SourceSpan span) {
         int s = slotOf(name);
@@ -516,14 +525,19 @@ private:
                 emit(Op::Pop);
             }
 
-        // 5. Body-declared locals: a fresh hidden caller slot each ($inlN_loc_<name>), $-prefixed so it
-        //    never clobbers a caller local or (module scope) a real global. Reads via visit(NameExpr);
-        //    writes via emitStoreRebound / compileAssignTarget + inlineBindFor.
+        // 5. Body-declared locals: a fresh hidden FRAME SLOT each ($inlN_loc_<name>), forced even at module
+        //    scope so it is slot-addressed (never clobbers a caller local or a real global) and can be
+        //    RESET to "undefined" per inline entry — a body-local shares the caller's frame, so without a
+        //    reset a looped call site would leak the previous iteration's value into a path where the var
+        //    did not execute (a silent stale read vs. a normal call's "not defined").
+        std::vector<uint32_t> localSlots;
+        localSlots.reserve(bodyLocals.size());
         for (const auto& name : bodyLocals) {
             std::string hidden = "$inl" + std::to_string(n) + "_loc_" + name;
-            ensureHiddenSlot(hidden);
+            localSlots.push_back(forceHiddenSlot(hidden, name));
             binds.push_back(InlineBind{name, hidden, false, 0, 0});
         }
+        for (uint32_t sl : localSlots) emit(Op::ClearLocal, sl, e.span);   // fresh "not defined" each entry
 
         // 6. Emit the body with return-lowering (return -> value on the stack + jump to the exit label).
         inlineStack_.push_back(&fn);

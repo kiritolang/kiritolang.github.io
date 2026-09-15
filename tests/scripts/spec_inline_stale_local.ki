@@ -1,0 +1,67 @@
+# spec_inline_stale_local.ki — regression for a stale-value LEAK across a looped inlined call site.
+# A body-local of an inlined InlineFunction lives in the CALLER's frame (no fresh frame per call), so a
+# body-local that is only CONDITIONALLY assigned (declared inside an `if` branch) must be reset to
+# "not defined" on every entry — otherwise iteration N reads iteration N-1's value on the path where its
+# `var` did not execute. That once returned a leaked value under inlining while --no-inline correctly
+# raised "name '...' is not defined". This golden pins the fix: identical output both configs (the
+# differential asserts it) and correct behaviour under GC soak.
+
+var io = import("io")
+
+# 1. Conditionally-declared body-local must NOT leak across iterations (module-scope loop).
+var classify = InlineFunction(k):
+    var seen = "base"
+    if k > 5:
+        var big = k * 2
+        seen = "big:" + String(big)
+    return seen
+var out1 = []
+for i in [10, 1, 20, 2]:
+    out1.append(classify(i))
+io.print(out1)                       # ['big:20', 'base', 'big:40', 'base'] — no leak
+
+# 2. Reading a conditionally-declared local on the path where it was NOT declared raises "not defined"
+#    — the SAME loud error a normal call gives, on every iteration (never a stale value).
+var risky = InlineFunction(k):
+    if k == 1:
+        var only = 1111
+    return only
+var out2 = []
+for i in [1, 2, 1, 2]:
+    try:
+        out2.append(risky(i))
+    catch as e:
+        out2.append(e)
+io.print(out2)                       # [1111, "name 'only' is not defined", 1111, "name 'only' is not defined"]
+
+# 3. Function-scope driver (slots enabled) — same guarantee.
+var driver = Function():
+    var results = []
+    var pick = InlineFunction(k):
+        var label = "lo"
+        if k >= 100:
+            var scaled = k // 10
+            label = "hi:" + String(scaled)
+        return label
+    for v in [500, 3, 999, 7]:
+        results.append(pick(v))
+    return results
+io.print(driver())                   # ['hi:50', 'lo', 'hi:99', 'lo']
+
+# 4. Multiple conditional body-locals, independent reset.
+var multi = InlineFunction(k):
+    var a = "-"
+    var b = "-"
+    if k % 2 == 0:
+        var ea = k
+        a = String(ea)
+    if k % 3 == 0:
+        var eb = k
+        b = String(eb)
+    return a + "/" + b
+var out4 = []
+for i in [6, 1, 4, 9]:
+    out4.append(multi(i))
+io.print(out4)                       # ['6/6', '-/-', '4/-', '-/9']
+
+io.print("OK inline-stale-local")
