@@ -843,7 +843,7 @@ class Tensor:
 
     var item = Function(self):
         if len(self._data) != 1:
-            throw "tensor: item() requires a one-element tensor"
+            throw "item() requires a tensor with exactly one element, got " + String(len(self._data))
         return self._data[0]
     var tolist = Function(self):
         return _unflatten(self._data, self._shape)
@@ -851,8 +851,7 @@ class Tensor:
     # reduce along one axis (op in sum/mean/prod/min/max/argmax/argmin/var) -> tensor
     var _reduceAxis = Function(self, axis, op, ddof = 0):
         var nd = len(self._shape)
-        if axis < 0:
-            axis = axis + nd
+        axis = _normAxis(axis, nd)         # normalizes negatives and rejects out-of-range with a clear message
         var outshape = []
         var d = 0
         while d < nd:
@@ -867,6 +866,10 @@ class Tensor:
         var isVarStd = op == "var" or op == "std"
         if isVarStd and Float(alen) - Float(ddof) <= 0.0:
             throw "std/var: not enough elements for the given ddof"
+        # Only sum/prod have an identity over an empty axis; mean/min/max/argmin/argmax/median cannot
+        # reduce zero elements and throw, matching native.
+        if alen == 0 and op != "sum" and op != "prod":
+            throw "cannot " + op + " over an empty axis (no elements)"
         var flat = []
         var f = 0
         while f < outsize:
@@ -878,7 +881,9 @@ class Tensor:
                     off = off + ((f // ost[oi]) % outshape[oi]) * st[dd]
                     oi = oi + 1
                 dd = dd + 1
-            var acc = self._data[off]
+            var acc = _zeroOf(self._dtype)
+            if alen > 0:
+                acc = self._data[off]        # seed for min/max/argmin/argmax (empty axis already rejected)
             var bestidx = 0
             if op == "sum" or op == "mean" or isVarStd:
                 acc = _zeroOf(self._dtype)
@@ -987,7 +992,7 @@ class Tensor:
         return p
     var min = Function(self, axis = None):
         if self._dtype == "Complex":
-            throw "tensor: min is undefined for a complex tensor"
+            throw "min/max: Float tensors only (this op is not defined for Complex)"
         if axis != None:
             return self._reduceAxis(axis, "min")
         if len(self._data) == 0:
@@ -999,7 +1004,7 @@ class Tensor:
         return m
     var max = Function(self, axis = None):
         if self._dtype == "Complex":
-            throw "tensor: max is undefined for a complex tensor"
+            throw "min/max: Float tensors only (this op is not defined for Complex)"
         if axis != None:
             return self._reduceAxis(axis, "max")
         if len(self._data) == 0:
@@ -1182,7 +1187,7 @@ class Tensor:
             for x in self._data:
                 acc = acc + x
                 flat.append(acc)
-            var r = _make(flat, List(self._shape), self._dtype)
+            var r = _make(flat, [len(flat)], self._dtype)   # axis=None cumsum flattens to 1-D (NumPy)
             if self._req and _grad_enabled() and self._dtype == "Float":
                 var aT = self
                 var shp = List(self._shape)
@@ -1239,6 +1244,29 @@ class Tensor:
                 return None
         return r2
 
+    # cumprod is forward-only (native detaches it from the autograd graph): axis=None flattens to 1-D,
+    # otherwise scans along the given axis in place.
+    var cumprod = Function(self, axis = None):
+        if axis == None:
+            var flat = []
+            var acc = _coerce(1, self._dtype)
+            for x in self._data:
+                acc = acc * x
+                flat.append(acc)
+            return _make(flat, [len(flat)], self._dtype)
+        var ax = _normAxis(axis, len(self._shape))
+        var flat2 = List(self._data)
+        var doLine = Function(off, stride, alen):
+            var acc2 = _coerce(1, self._dtype)
+            var k = 0
+            while k < alen:
+                acc2 = acc2 * flat2[off + k * stride]
+                flat2[off + k * stride] = acc2
+                k = k + 1
+            return None
+        self._forEachLine(ax, doLine)
+        return _make(flat2, List(self._shape), self._dtype)
+
     var dot = Function(self, o):
         if len(self._data) != len(o._data):
             throw "tensor: dot requires equal-length vectors"
@@ -1261,7 +1289,7 @@ class Tensor:
             var m = self._shape[0]
             var kk = self._shape[1]
             if o._shape[0] != kk:
-                throw "tensor: matmul shape mismatch"
+                throw "matmul: inner dimensions differ"
             var n = o._shape[1]
             if m * n > _MAX_ELEMS:
                 throw "Tensor too large"
@@ -1324,6 +1352,10 @@ class Tensor:
         var m = self._shape[na - 2]
         var kk = self._shape[na - 1]
         var n = o._shape[nb - 1]
+        if o._shape[nb - 2] != kk:
+            throw "matmul: inner dimensions differ"
+        if self._shape[0:na - 2] != o._shape[0:nb - 2]:
+            throw "matmul: batch dimensions differ"
         var nbatch = _prod(batch)
         var flat = []
         var bx = 0
@@ -1421,7 +1453,7 @@ class Tensor:
         return out
     var reshape = Function(self, ns):
         if _prod(ns) != len(self._data):
-            throw "tensor: cannot reshape, size mismatch"
+            throw "reshape: total number of elements must be unchanged"
         return self._reshapeLikeGrad(_make(List(self._data), List(ns), self._dtype))
     var flatten = Function(self):
         return self._reshapeLikeGrad(_make(List(self._data), [len(self._data)], self._dtype))
@@ -2340,7 +2372,8 @@ class Tensor:
             f = f + 1
         return _make(flat, rshape, self._dtype)
     var contract = Function(self, o, axa, axb):
-        return self._contract(o, axa, axb)
+        # Each axis argument is an Integer (a single axis) or a List of axes, like native's readAxisList.
+        return self._contract(o, _readAxisList(axa), _readAxisList(axb))
     # axes is either an Integer N (contract the last N axes of self against the first N of o) or a
     # [a-axes, b-axes] pair, each itself an Integer or a List of Integers (NumPy-style, negative axes
     # allowed). Gradient wiring reuses the matmul-shaped backward (_tdBackA/_tdBackB): the Integer
@@ -2555,6 +2588,8 @@ var eye = Function(n, dtype = "Float"):
             j = j + 1
         i = i + 1
     return _make(flat, [n, n], dtype)
+# identity is a native alias for eye (an n*n identity matrix).
+var identity = eye
 # arange(stop) / arange(start, stop[, step]); keyword names start/stop/step match native. A lone
 # value (positional or via the stop= keyword) is the stop; start defaults to 0, step to 1.
 var arange = Function(start = None, stop = None, step = None):
@@ -2592,6 +2627,8 @@ var arange = Function(start = None, stop = None, step = None):
     return _make(flat, [len(flat)], "Float")
 var zeroslike = Function(t):
     return zeros(t.shape(), t.dtype())
+var oneslike = Function(t):
+    return ones(t.shape(), t.dtype())
 var linspace = Function(start, stop, num):
     if num > _MAX_ELEMS:
         throw "Tensor too large"
@@ -2645,7 +2682,7 @@ var unique = Function(t):
     return t.unique()
 var searchsorted = Function(t, v):
     return t.searchsorted(v)
-var concatenate = Function(tensors, axis):
+var concatenate = Function(tensors, axis = 0):
     if axis == 0:
         return tensors[0].catrows(tensors[1:len(tensors)])
     # general axis: concat along axis 0 of the axis-fronted views, then move back
@@ -2653,7 +2690,7 @@ var concatenate = Function(tensors, axis):
     for t in tensors:
         fronted.append(t.swapaxes(0, axis))
     return concatenate(fronted, 0).swapaxes(0, axis)
-var stack = Function(tensors, axis):
+var stack = Function(tensors, axis = 0):
     var expanded = []
     for t in tensors:
         expanded.append(t.expanddims(0))

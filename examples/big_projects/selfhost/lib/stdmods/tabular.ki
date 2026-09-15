@@ -110,17 +110,25 @@ class Series:
 
     # --- element-wise arithmetic (Series-Series aligned by position, or Series-scalar) ---
     var _binop = Function(self, other, op):
+        # Missing (None) propagates through every element-wise op: any operand None -> None, so a mask
+        # over data with gaps stays three-valued (True/False/None) instead of coercing None to False.
         var out = []
         if isinstance(other, "Series"):
             if len(self.values) != len(other.values):
                 throw "Series: length mismatch (" + String(len(self.values)) + " vs " + String(len(other.values)) + ")"
             var i = 0
             while i < len(self.values):
-                out.append(op(self.values[i], other.values[i]))
+                if self.values[i] == None or other.values[i] == None:
+                    out.append(None)
+                else:
+                    out.append(op(self.values[i], other.values[i]))
                 i = i + 1
         else:
             for v in self.values:
-                out.append(op(v, other))
+                if v == None or other == None:
+                    out.append(None)
+                else:
+                    out.append(op(v, other))
         return Series(out, List(self.index), self.name)
 
     var _add_ = Function(self, other):
@@ -213,6 +221,24 @@ class Series:
         for v in _numeric(self.values):
             p = p * v
         return p
+
+    # Boolean reductions skip missing (skipna, like pandas): all() is vacuously True on no non-null
+    # values, any() vacuously False.
+    var all = Function(self) -> Bool:
+        for v in self.values:
+            if v != None and not Bool(v):
+                return False
+        return True
+    var any = Function(self) -> Bool:
+        for v in self.values:
+            if v != None and Bool(v):
+                return True
+        return False
+
+    # A Series has no single truth value -- forcing one (Bool(s), `if s:`) is an error, so a mask is
+    # never silently collapsed to a scalar. Reduce explicitly with .all()/.any() instead.
+    var _bool_ = Function(self) -> Bool:
+        throw "the truth value of a Series is ambiguous (use .any()/.all())"
 
     var unique = Function(self):
         var seen = []
@@ -390,6 +416,14 @@ class DataFrame:
         else:
             var ncols = len(rows[0])
             var cols = columns if columns != None else _defaultcols(ncols)
+            var width = len(cols)
+            # Every row must match the frame width -- a wider row would silently truncate, a narrower
+            # one would raise a bare index error deep in the column loop; reject both up front.
+            var ri = 0
+            while ri < len(rows):
+                if len(rows[ri]) != width:
+                    throw "DataFrame: row " + String(ri) + " has " + String(len(rows[ri])) + " fields but the frame is " + String(width) + " wide"
+                ri = ri + 1
             var ci = 0
             while ci < len(cols):
                 var col = []
