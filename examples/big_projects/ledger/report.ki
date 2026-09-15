@@ -4,7 +4,6 @@
 
 var book = import("book")
 var fmt  = import("fmt")
-var heapq = import("heapq")
 var statistics = import("statistics")
 
 var _money = Function(x : Float) -> String:
@@ -81,18 +80,11 @@ var top = Function(txs : List, n : Integer) -> String:
     var expenses = book.accountPostings(txs, "Expenses")
     if len(expenses) == 0:
         return "  (no Expenses postings)\n"
-    # heapq.nlargest lacks a `key=` arg, so pre-decorate (amount, index, posting) so the sort is
-    # stable on ties (the index breaks the tie without recomparing dicts, and the tail slice keeps
-    # the same top-N shape without pulling all of `sorted`).
-    var decorated = []
-    var idx = 0
-    for e in expenses:
-        decorated.append([e["amount"], idx, e])
-        idx = idx + 1
-    var pickedDec = heapq.nlargest(n, decorated)
-    var picked = []
-    for d in pickedDec:
-        picked.append(d[2])
+    # Rank by ABSOLUTE amount (so a large refund ranks by magnitude, matching this command's intent).
+    # `sorted` is stable, so equal-magnitude postings keep their source order; the tail slice yields
+    # the top-N even when n exceeds the count.
+    var ranked = sorted(expenses, key = Function(e): return abs(e["amount"]), reverse = True)
+    var picked = ranked[0:n]
     var lines = []
     lines.append("  top " + String(len(picked)) + " expenses:")
     for p in picked:

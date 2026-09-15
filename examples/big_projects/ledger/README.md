@@ -29,7 +29,7 @@ ledger/
   book.ki                # in-memory model: balances, filters, category enum
   report.ki              # pretty-printers for each subcommand
   fmt.ki                 # money + iso-date formatting
-  test_ledger.ki         # 43 checks; matched against test_ledger.expected
+  test_ledger.ki         # 56 checks; matched against test_ledger.expected
   samples/
     demo.ledger
 ```
@@ -91,7 +91,7 @@ Rules:
 
 ```
 ki examples/big_projects/ledger/test_ledger.ki
-# → ledger: 43 checks passed
+# → ledger: 56 checks passed
 ```
 
 CTest wires this as `script_ledger`. Passes clean under ASAN.

@@ -13,7 +13,6 @@
 # message names the file, line, and imbalance.
 
 var regex = import("regex")
-var time  = import("time")
 
 # --- pre-compiled patterns ---
 var _txHeaderRe = regex.compile("^([0-9]{4})-([0-9]{2})-([0-9]{2})\\s+([*!])\\s+(.+?)\\s*$")
@@ -40,6 +39,7 @@ var parseString = Function(src : String, filename : String) -> List:
         var hm = _txHeaderRe.match(raw)
         if hm == None:
             throw LedgerError(filename, i + 1, "expected `YYYY-MM-DD FLAG description` or a comment, got: " + raw)
+        var headerLine = i + 1     # 1-based line of the transaction header, for error/tx["line"] use
         var year  = Integer(hm.group(1))
         var month = Integer(hm.group(2))
         var day   = Integer(hm.group(3))
@@ -70,26 +70,26 @@ var parseString = Function(src : String, filename : String) -> List:
             postings.append({"account": pm.group(1), "amount": Float(pm.group(2))})
             i = i + 1
         if len(postings) == 0:
-            throw LedgerError(filename, i, "transaction has no postings")
+            throw LedgerError(filename, headerLine, "transaction has no postings")
         # double-entry check: sum of amounts must be zero (allow tiny float slack)
         var total = 0.0
         for p in postings:
             total = total + p["amount"]
         if not total.compare(0.0, abs_tol = 0.001):
-            throw LedgerError(filename, i, "transaction is imbalanced by " + String(total) + " (postings do NOT sum to zero)")
+            throw LedgerError(filename, headerLine, "transaction is imbalanced by " + String(total) + " (postings do NOT sum to zero)")
         txs.append({
             "date":     {"y": year, "m": month, "d": day},
             "flag":     flag,
             "desc":     desc,
             "postings": postings,
-            "line":     i,
+            "line":     headerLine,
         })
     return txs
 
 # Convenience: read + parse a file.
 var parseFile = Function(path : String) -> List:
     var io = import("io")
-    var fh = io.open(path, "r")
-    var src = fh.read()
-    fh.close()
+    var src = ""
+    with io.open(path, "r") as fh:      # `with` closes even if read() throws
+        src = fh.read()
     return parseString(src, path)

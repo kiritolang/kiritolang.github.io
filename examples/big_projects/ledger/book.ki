@@ -4,7 +4,6 @@
 # category (Assets / Liabilities / Income / Expenses / Equity).
 
 var enum = import("enum")
-var time = import("time")
 
 # Standard five-way chart-of-accounts categories.
 var Category = enum.Enum(["Assets", "Liabilities", "Income", "Expenses", "Equity"])
@@ -29,17 +28,28 @@ var categoryOf = Function(account : String):
         return Category["Equity"]
     throw "unknown top-level account category: " + top + " (in '" + account + "')"
 
+# Parse an ISO "YYYY-MM-DD" bound into a comparable YYYYMMDD Integer, with a clean error on a
+# malformed bound (rather than an opaque Integer()/index traceback escaping the CLI).
+var _boundKey = Function(iso : String) -> Integer:
+    var parts = iso.split("-")
+    if len(parts) != 3:
+        throw "invalid date bound '" + iso + "' (expected YYYY-MM-DD)"
+    var v = None
+    try:
+        v = Integer(parts[0]) * 10000 + Integer(parts[1]) * 100 + Integer(parts[2])
+    catch:
+        throw "invalid date bound '" + iso + "' (non-numeric component)"
+    return v
+
 # Filter transactions to a date range (inclusive; either bound may be None). Both bounds are given
 # as ISO-format strings "YYYY-MM-DD".
-var filterDateRange = Function(txs : List, fromIso, toIso) -> List:
+var filterDateRange = Function(txs : List, fromIso : [String, None], toIso : [String, None]) -> List:
     var lo = 0
     var hi = 99999999
     if fromIso != None:
-        var parts = fromIso.split("-")
-        lo = Integer(parts[0]) * 10000 + Integer(parts[1]) * 100 + Integer(parts[2])
+        lo = _boundKey(fromIso)
     if toIso != None:
-        var parts2 = toIso.split("-")
-        hi = Integer(parts2[0]) * 10000 + Integer(parts2[1]) * 100 + Integer(parts2[2])
+        hi = _boundKey(toIso)
     var out = []
     for tx in txs:
         var k = _dateKey(tx["date"])

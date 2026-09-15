@@ -133,4 +133,69 @@ var loaded = parse.parseFile(demoFile)
 ok(len(loaded) == 3, "parseFile round-trips through a real file")
 discard path.remove(demoFile, missing_ok = True)
 
+# =============================================================================
+# report.top: ranks by ABSOLUTE amount (a large refund ranks by magnitude).
+# =============================================================================
+var refundSrc = "2024-03-01 * a\n    Expenses:Big      5.00\n    Assets:Checking  -5.00\n\n2024-03-02 * refund\n    Expenses:Ref   -100.00\n    Assets:Checking 100.00\n\n2024-03-03 * b\n    Expenses:Mid     20.00\n    Assets:Checking -20.00\n"
+var refundBook = parse.parseString(refundSrc, "in")
+var topOut = report.top(refundBook, 1)
+ok("Ref" in topOut, "top ranks the -100 refund first (by absolute magnitude)")
+ok("Big" not in topOut and "Mid" not in topOut, "the smaller postings are not in top 1")
+
+# =============================================================================
+# parse: error line numbers point at the transaction HEADER, not past the postings.
+# =============================================================================
+var imbSrc = "2024-01-05 * open\n    Assets:Checking     100.00\n    Equity:Opening     -100.00\n\n2024-01-08 * bad\n    Expenses:Food        10.00\n    Assets:Checking      -5.00\n"
+var imbErr = ""
+try:
+    discard parse.parseString(imbSrc, "in")
+catch String as e:
+    imbErr = e
+ok("in:5:" in imbErr and "imbalanced" in imbErr, "imbalance error names the header line (5), not a later line")
+
+var noPostSrc = "2024-01-05 * open\n    Assets:Checking     100.00\n    Equity:Opening     -100.00\n\n2024-01-08 * empty\n"
+var npErr = ""
+try:
+    discard parse.parseString(noPostSrc, "in")
+catch String as e:
+    npErr = e
+ok("in:5:" in npErr and "no postings" in npErr, "no-postings error names the header line (5)")
+
+# tx["line"] is the header line.
+ok(refundBook[0]["line"] == 1 and refundBook[1]["line"] == 5, "tx['line'] records the header line")
+
+# =============================================================================
+# book.filterDateRange: a malformed bound throws a clean, catchable error.
+# =============================================================================
+ok(throws(Function(): return book.filterDateRange(demo, "2024-13", None)), "a short date bound throws")
+ok(throws(Function(): return book.filterDateRange(demo, "2024/01/01", None)), "a wrong-separator bound throws")
+ok(throws(Function(): return book.filterDateRange(demo, "20xx-01-01", None)), "a non-numeric bound throws")
+
+# =============================================================================
+# parse: the double-entry slack boundary (0.001) accepts a rounding wisp, rejects a real gap.
+# =============================================================================
+ok(len(parse.parseString("2024-01-05 * ok\n    A:x  10.0005\n    B:x -10.0\n", "in")) == 1, "a 0.0005 imbalance is within the rounding slack")
+ok(throws(Function(): return parse.parseString("2024-01-05 * no\n    A:x  10.02\n    B:x -10.0\n", "in")), "a 0.02 imbalance exceeds the slack and throws")
+
+# =============================================================================
+# parse: a zero-amount posting is accepted (it just contributes nothing to a balance).
+# =============================================================================
+var zeroSrc = "2024-01-05 * z\n    Assets:A     0.00\n    Assets:B     5.00\n    Assets:C    -5.00\n"
+var zeroBook = parse.parseString(zeroSrc, "in")
+var zeroBals = book.accountBalances(zeroBook)
+ok("Assets:A" not in zeroBals, "a zero-amount posting drops out of the (nonzero) balance report")
+
+# =============================================================================
+# book.sortByDate: stable — same-date transactions keep source order.
+# =============================================================================
+var sameDaySrc = "2024-01-05 * first\n    A:x  1.0\n    B:x -1.0\n\n2024-01-05 * second\n    A:x  2.0\n    B:x -2.0\n\n2024-01-05 * third\n    A:x  3.0\n    B:x -3.0\n"
+var sd = book.sortByDate(parse.parseString(sameDaySrc, "in"))
+ok(sd[0]["desc"] == "first" and sd[1]["desc"] == "second" and sd[2]["desc"] == "third", "same-date sort is stable (source order preserved)")
+
+# =============================================================================
+# report: numeric assertions (not just substring presence).
+# =============================================================================
+var incomeOut = report.income(demo)
+ok("Net:       " in incomeOut and "490.00" in incomeOut, "income Net = 500 income - 10 expenses = 490.00")
+
 io.print("ledger: " + String(n) + " checks passed")

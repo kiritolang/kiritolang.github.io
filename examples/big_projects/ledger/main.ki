@@ -24,14 +24,14 @@ var report = import("report")
 var fmt    = import("fmt")
 
 # Read a file and print an error line if it fails; returns the tx list on success or None on failure.
-var _loadTxs = Function(file : String):
+var _loadTxs = Function(file : String) -> [List, None]:
     try:
         return parse.parseFile(file)
     catch String as e:
         io.eprint("ledger: " + e)
         return None
 
-var _main = Function():
+var _main = Function() -> Integer:
     var p = arg.Parser("plain-text double-entry accounting: balances/income/register/top/stats/csv")
     p.positional("command", "one of: balances | income | register | top | stats | csv")
     p.positional("target",  "for `register` the account; for `top` the N (default 10); for `csv` the output file; empty otherwise")
@@ -55,7 +55,11 @@ var _main = Function():
     if opts["to"] != "":
         toIso = opts["to"]
     if fromIso != None or toIso != None:
-        txs = book.filterDateRange(txs, fromIso, toIso)
+        try:
+            txs = book.filterDateRange(txs, fromIso, toIso)
+        catch String as e:
+            io.eprint("ledger: " + e)
+            return 2
     var cmd = opts["command"]
     var target = opts["target"]
     if cmd == "balances":
@@ -95,9 +99,8 @@ var _main = Function():
             for post in tx["postings"]:
                 rows.append([fmt.iso(tx["date"]), tx["flag"], tx["desc"], post["account"], format(post["amount"], ".2f")])
         var payload = csv.format(rows)
-        var fh = io.open(target, "w")
-        fh.write(payload)
-        fh.close()
+        with io.open(target, "w") as fh:        # `with` closes even if write() throws
+            fh.write(payload)
         io.print("ledger: wrote " + String(len(rows) - 1) + " postings to " + target)
         return 0
     io.eprint("ledger: unknown command: " + cmd)
