@@ -1,8 +1,19 @@
-var reduce = Function(func, iterable, initial = None):
-    # `have` tracks whether we hold an accumulator yet — NOT `acc == None`, so a fold that legitimately
-    # produces None (reduce(fn, [1,2,3]) where fn returns None) is not mistaken for an empty sequence.
-    var acc = initial
-    var have = initial != None
+# A unique identity sentinel so an OMITTED initial is distinguishable from an explicit initial=None
+# (an instance without _eq_ compares by identity).
+class _NoInit:
+    var _init_ = Function(self):
+        return None
+var _NOINIT = _NoInit()
+
+var reduce = Function(func, iterable, initial = _NOINIT):
+    # `have` tracks whether we hold an accumulator yet — an EXPLICIT initial (even None) seeds the fold;
+    # only a truly omitted initial leaves the fold to take the first element, and an empty sequence with
+    # no initial throws.
+    var acc = None
+    var have = False
+    if initial != _NOINIT:
+        acc = initial
+        have = True
     for x in iterable:
         if have:
             acc = func(acc, x)
