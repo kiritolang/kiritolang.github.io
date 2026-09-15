@@ -730,6 +730,14 @@ var _isPrivate = Function(name):
         return False
     return name[len(name) - 1] != "_"
 
+# A private member is accessible only from within a method of the instance's OWN class (or a base whose
+# method is running): the running method's defining class (__defcls__) must be one `obj` is an instance
+# of. A sibling class's method therefore cannot reach another class's private member.
+var _privAllowed = Function(env, obj):
+    if not envHas(env, "__defcls__"):
+        return False
+    return instanceOf(obj, envLookup(env, "__defcls__")["name"])
+
 var evalMember = Function(St, env, node):
     var obj = evalExpr(St, env, node["obj"])
     var name = node["name"]
@@ -743,8 +751,8 @@ var evalMember = Function(St, env, node):
             return _makeSuper(St, env, obj)
         # private members (single leading underscore, no trailing) are reachable only from inside a
         # method body — detected by the presence of __defcls__ in the active scope chain.
-        if _isPrivate(name) and not envHas(env, "__defcls__"):
-            rtError("private member '" + name + "' of '" + obj["cls"]["name"] + "' is not accessible here")
+        if _isPrivate(name) and not _privAllowed(env, obj):
+            rtError("cannot access private member '" + name + "' of '" + obj["cls"]["name"] + "' outside its class")
         if name in obj["attrs"]:
             return obj["attrs"][name]
         var pair = classLookupC(obj["cls"], name)
@@ -975,6 +983,8 @@ var assignTo = Function(St, env, target, value, isVar):
         return None
     if k == "member":
         var o = evalExpr(St, env, target["obj"])
+        if boxKind(o) == "instance" and _isPrivate(target["name"]) and not _privAllowed(env, o):
+            rtError("cannot access private member '" + target["name"] + "' of '" + o["cls"]["name"] + "' outside its class")
         setMember(St, o, target["name"], value)
         return None
     if k == "tuple":
