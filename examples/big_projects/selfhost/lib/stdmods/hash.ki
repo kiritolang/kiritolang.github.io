@@ -455,6 +455,91 @@ var sha384 = Function(data):
         i = i + 1
     return out
 
+# --- HMAC (RFC 2104) / PBKDF2 (RFC 2898) ---------------------------------------------------------
+var _ALGOS = Set(["md5", "sha1", "sha256", "sha384", "sha512"])
+var _hexToBytes = Function(hx):
+    var out = []
+    var i = 0
+    while i < len(hx):
+        out.append(_HEX.find(hx[i]) * 16 + _HEX.find(hx[i + 1]))
+        i = i + 2
+    return out
+# raw digest (a byte list) for one of the supported algorithms, over a byte list
+var _digest = Function(algo, byteList):
+    var d = Bytes(byteList)
+    if algo == "md5":
+        return _hexToBytes(md5(d))
+    if algo == "sha1":
+        return _hexToBytes(sha1(d))
+    if algo == "sha256":
+        return _hexToBytes(sha256(d))
+    if algo == "sha384":
+        return _hexToBytes(sha384(d))
+    if algo == "sha512":
+        return _hexToBytes(sha512(d))
+    throw "unknown algorithm '" + String(algo) + "' (expected md5/sha1/sha256/sha384/sha512)"
+var _blocksize = Function(algo):
+    return 128 if (algo == "sha384" or algo == "sha512") else 64
+# HMAC over byte lists -> raw digest byte list
+var _hmacRaw = Function(keyBytes, msgBytes, algo):
+    var bs = _blocksize(algo)
+    var key = List(keyBytes)
+    if len(key) > bs:
+        key = _digest(algo, key)
+    while len(key) < bs:
+        key.append(0)
+    var inner = []
+    var outer = []
+    var i = 0
+    while i < bs:
+        inner.append(bitxor(key[i], 54))     # 0x36 ipad
+        outer.append(bitxor(key[i], 92))     # 0x5c opad
+        i = i + 1
+    for b in msgBytes:
+        inner.append(b)
+    for b in _digest(algo, inner):
+        outer.append(b)
+    return _digest(algo, outer)
+var hmac = Function(key, message, algorithm = "sha256"):
+    if not (algorithm in _ALGOS):
+        throw "unknown algorithm '" + String(algorithm) + "' (expected md5/sha1/sha256/sha384/sha512)"
+    var raw = _hmacRaw(_bytesOf(key), _bytesOf(message), algorithm)
+    var out = ""
+    for b in raw:
+        out = out + _HEX[b // 16] + _HEX[b % 16]
+    return out
+var pbkdf2 = Function(password, salt, iterations, dklen = 32, algorithm = "sha256"):
+    if not (algorithm in _ALGOS):
+        throw "unknown algorithm '" + String(algorithm) + "' (expected md5/sha1/sha256/sha384/sha512)"
+    if iterations < 1:
+        throw "pbkdf2: iterations must be >= 1"
+    var pw = _bytesOf(password)
+    var sl = _bytesOf(salt)
+    var hlen = len(_digest(algorithm, []))
+    var out = []
+    var blockCount = (dklen + hlen - 1) // hlen
+    var bi = 1
+    while bi <= blockCount:
+        var salti = List(sl)                          # salt || INT_32_BE(block index)
+        salti.append((bi // 16777216) % 256)
+        salti.append((bi // 65536) % 256)
+        salti.append((bi // 256) % 256)
+        salti.append(bi % 256)
+        var u = _hmacRaw(pw, salti, algorithm)
+        var t = List(u)
+        var j = 1
+        while j < iterations:
+            u = _hmacRaw(pw, u, algorithm)
+            var k = 0
+            while k < len(t):
+                t[k] = bitxor(t[k], u[k])
+                k = k + 1
+            j = j + 1
+        for b in t:
+            out.append(b)
+        bi = bi + 1
+    return Bytes(out[0:dklen])
+
 # --- non-cryptographic checksums (crc32 / adler32) -----------------------------------------------
 # CRC-32/ISO-HDLC (the zlib/gzip CRC): reflected polynomial 0xEDB88320, init/xorout 0xFFFFFFFF.
 var _CRC32_TABLE = []
