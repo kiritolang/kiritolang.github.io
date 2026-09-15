@@ -3594,6 +3594,7 @@ var bridgePath = Function(St):
     members["getcwd"] = mkNative("getcwd", Function(St2, a, k): return _sys_hostPath.getcwd())
     # gettempdir + executable are filesystem locations, so they live in `path` (moved from `sys`).
     members["gettempdir"] = mkNative("gettempdir", Function(St2, a, k): return _sys_hostPath.gettempdir())
+    members["fasttemp"] = mkNative("fasttemp", Function(St2, a, k): return _sys_hostPath.gettempdir())
     members["executable"] = _sys_hostPath.executable
     members["mkdir"] = mkNative("mkdir", _pathMkdir)
     members["remove"] = mkNative("remove", _pathRemove)

@@ -138,3 +138,6 @@ var urlsplit = Function(url):
     else:
         out["host"] = authority
     return out
+
+# The pure-Kirito self-host has no TLS support (no OpenSSL), so TLS is never enabled.
+var tlsenabled = False
