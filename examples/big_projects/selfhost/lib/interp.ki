@@ -1348,8 +1348,9 @@ var execWith = Function(St, env, node):
     var entered = ctx
     if boxKind(ctx) == "instance":
         var em = classLookup(ctx["cls"], "_enter_")
-        if em != None:
-            entered = callValue(St, mkBound(ctx, em), [], [])
+        if em == None:
+            rtError("'" + ctx["cls"]["name"] + "' object has no attribute '_enter_'")
+        entered = callValue(St, mkBound(ctx, em), [], [])
     else:
         entered = withEnterHost(St, ctx)
     if node["name"] != None:
