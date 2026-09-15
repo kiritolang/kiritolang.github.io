@@ -342,6 +342,35 @@ Inline form: `Function(x): return x * x`.
 > several values from an inline function, wrap them: `Function(): return [a, b]`; or use an indented
 > block body, where `return a, b` packs into a list as usual.
 
+#### `InlineFunction` — a guaranteed inline
+
+`Function` *may* be inlined by the compiler when it can (a transparent speed optimization — see
+[performance](32-bonus-07-performance.md)). `InlineFunction` is the same literal but with a
+**guarantee**: the call is compiled straight into the caller, or it is a **compile error**. There is no
+silent fallback to a normal call. Use it to assert a hot helper really is being inlined.
+
+```kirito
+var sq = InlineFunction(x): return x * x     # a guaranteed-inline helper
+io.print(sq(9))                              # 81 — compiled straight in, no call frame
+
+io.print((InlineFunction(a, b): return a + b)(2, 3))   # 5 — immediately-applied literal
+for v in map(InlineFunction(x): return x + 1, [10, 20]):   # a map/filter callback in a for-loop
+    io.print(v)
+```
+
+Because it must inline, an `InlineFunction` is **not a first-class value**: storing it, returning it,
+passing it as an argument, rebinding its name, or using it as a class method is a compile error (use
+`Function` for any of those). It must be a **direct, non-recursive** call, and — in this version — a
+single-expression `return` body with positional arguments only (a multi-statement, annotated, defaulted,
+or keyword-called `InlineFunction`, or one that recurses or nests too deep, is a compile error telling
+you to use `Function`). Each such error names the reason; see [exceptions](12-exceptions.md).
+
+`--no-inline` (or `KIRITO_NO_INLINE`) **demotes** every `InlineFunction` to a plain `Function` for the
+whole run — the guarantee and all the above restrictions lift, so a program may compile under
+`--no-inline` and fail by default (or vice-versa). This is the one intentional asymmetry, provided as a
+debugging escape hatch. An inlined call is not its own stack frame, so it does not appear in a
+`sys.traceback()` — by design; `--no-inline` restores the frames.
+
 ## Packing and unpacking
 
 A bare comma sequence packs into a List; the left side of `=`, `var`, and `for` unpacks any iterable,

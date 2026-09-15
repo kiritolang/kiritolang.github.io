@@ -1,0 +1,33 @@
+# parallel_worker_inline_flag.ki — regression for a pre-existing bug: the dispatcher's configureVM did
+# NOT propagate the inlining flag to worker VMs, so `--no-inline` was silently ignored inside `parallel`
+# tasks (a worker recompiled with inlining left ON). This test is config-agnostic: it asserts the WORKER
+# inlines exactly as the MAIN VM does, and prints one stable line either way. If the flag stops reaching
+# workers, then under --no-inline the main keeps the forwarder's frame while the worker inlines it away,
+# the two disagree, and the assert fires. Runs under both inline-on and --no-inline (same .expected).
+
+var io = import("io")
+var sys = import("sys")
+var p = import("parallel")
+
+# Probe whether the VM that compiled this function inlined a single-`return EXPR` forwarder. `fwd` is an
+# inline candidate: inlined it leaves NO frame of its own in a traceback; not inlined it appears as `fwd`.
+# `boom` (a `throw` body) is never an inline candidate, so it is a real frame regardless. Defining both
+# locally is required — const-lambda inlining is scope-local, so a call must sit in the defining scope.
+var probe = Function() -> Bool:
+    var boom = Function(): throw "boom"
+    var fwd = Function(): return boom()
+    try:
+        discard fwd()
+    catch as e:
+        discard e
+    for line in sys.traceback().split("\n"):
+        if ", in fwd" in line:
+            return True                              # a fwd frame survived -> this VM did NOT inline
+    return False
+
+if argmain:
+    var mainInlines = probe()                        # main VM's inlining behavior
+    var t = p.spawn(probe)
+    var workerInlines = t.join()                     # worker VM's inlining behavior
+    assert mainInlines == workerInlines, "worker VM must inline as the main VM (--no-inline must reach workers)"
+    io.print("OK worker-inline-flag")

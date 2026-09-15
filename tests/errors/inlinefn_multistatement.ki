@@ -1,0 +1,4 @@
+var f = InlineFunction(x):
+    var y = x + 1
+    return y
+var r = f(3)

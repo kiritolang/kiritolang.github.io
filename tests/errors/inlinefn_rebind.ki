@@ -1,0 +1,3 @@
+var f = InlineFunction(x): return x
+f = Function(x): return x + 1
+var r = f(2)

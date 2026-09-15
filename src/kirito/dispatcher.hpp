@@ -554,6 +554,14 @@ public:
         { std::lock_guard<std::mutex> lk(registryMutex_); gcThreshold_ = n; }
         if (main_ && n) main_->setGcThreshold(n);
     }
+    // Propagate the inlining transform flag (CLI --no-inline / KIRITO_NO_INLINE) to the main VM AND
+    // every worker VM (via configureVM). Without this a worker recompiles with inlining left ON, so
+    // --no-inline was silently ignored inside `parallel` tasks — a divergence between the main and
+    // worker configs. Mirrors setMaxCallDepth's write-under-lock + apply-to-main.
+    void setInliningEnabled(bool on) {
+        { std::lock_guard<std::mutex> lk(registryMutex_); inliningEnabled_ = on; }
+        if (main_) main_->setInliningEnabled(on);
+    }
 
     std::shared_ptr<ConcurrentQueue> createQueue(std::size_t maxsize) { return makeWaitable(queues_, maxsize); }
     std::shared_ptr<ConcurrentQueue> queueById(uint64_t id) { return byId(queues_, id); }
@@ -769,6 +777,7 @@ private:
     std::vector<std::string> libPaths_;
     std::size_t maxCallDepth_ = 0;  // 0 == leave the VM default
     std::size_t gcThreshold_ = 0;   // 0 == leave the VM's adaptive default (see setGcThreshold)
+    bool inliningEnabled_ = true;   // mirrors the CLI --no-inline; propagated to every worker (configureVM)
 
     std::mutex registryMutex_;  // guards the maps below; NEVER held across a thread join or VM call
     fum::unordered_map<uint64_t, std::shared_ptr<ConcurrentQueue>> queues_;

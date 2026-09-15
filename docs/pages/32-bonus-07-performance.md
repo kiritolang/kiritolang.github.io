@@ -96,6 +96,14 @@ These are transparent — they change **speed, not results** — so they need no
   never leak out — so a program's results are identical to a normal call. One visible consequence: an
   inlined call does not appear as its own frame in a traceback (including `sys.traceback()`); use
   `--no-inline` when you need every call to show a frame.
+  - **`InlineFunction` — an explicit inline you can rely on.** Automatic `Function` inlining above is
+    *transparent*: the compiler decides, and whether it happens changes speed, not results. `InlineFunction`
+    is the opposite in one respect — it is an **assertion by you** that a call inlines, and unlike the
+    transparent optimization it **can fail at compile time**: if the call cannot be inlined (it is
+    recursive, a value-use, a class method, multi-statement, keyword-called, …) that is a loud compile
+    error, not a silent normal call. Same runtime behaviour as `Function` when it does inline; the
+    difference is the guarantee. See the [language guide](02-language-guide.md#functions). `--no-inline`
+    demotes every `InlineFunction` back to a plain `Function` (guarantee and restrictions both lifted).
 - **Combinator fusion.** A `for x in map(f, xs):` or `for x in filter(p, xs):` loop whose callback is an
   inline-eligible lambda literal is fused into a single loop that inlines the callback per element — no
   intermediate `map`/`filter` view and no per-element call. Laziness/semantics are unchanged; a shadowed

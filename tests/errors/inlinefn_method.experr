@@ -1,0 +1,1 @@
+InlineFunction cannot be a class method (dispatch is dynamic) — use Function

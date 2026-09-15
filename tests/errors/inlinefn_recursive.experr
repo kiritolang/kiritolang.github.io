@@ -1,0 +1,1 @@
+cannot inline InlineFunction 'fac': it is recursive

@@ -1,0 +1,2 @@
+class C:
+    var m = InlineFunction(self): return 1

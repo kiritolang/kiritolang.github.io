@@ -185,6 +185,22 @@ so it *is* catchable; it's noted below.)
 | `'break'/'continue' outside a loop` | Loop-exit compiled with no enclosing loop context | Only use `break`/`continue` inside a loop |
 | `expression too deeply nested to evaluate` | Compiler-side nesting bound exceeded | Flatten or split the nested expression |
 
+### Compiler — `InlineFunction` (the inline-or-error guarantee)
+
+All of these fire only with inlining enabled; `--no-inline` demotes `InlineFunction` to a plain
+`Function` and none of them apply. They are compile-time and **not** catchable.
+
+| Message | Cause | Fix |
+|---|---|---|
+| `InlineFunction cannot be used as a value (it must be called directly, not stored, returned, or passed) — use Function if you need a first-class function` | An `InlineFunction` literal materialized as a value — passed as an argument, returned, or put in a collection | Call it directly, or use `Function` for a first-class value |
+| `InlineFunction '<name>' cannot be used as a value (it must be called directly, not stored, returned, or passed) — use Function` | A const `var f = InlineFunction(...)` read by name anywhere but a direct call | Call `f(...)` directly, or use `Function` |
+| `InlineFunction cannot be a class method (dispatch is dynamic) — use Function` | An `InlineFunction` bound as a method in a `class` body | Use `Function` for the method |
+| `cannot inline InlineFunction '<name>': it is recursive (an InlineFunction must be a direct, non-recursive call — use Function for a recursive helper)` | A self- or mutually-recursive `InlineFunction` | Use `Function` for a recursive helper |
+| `cannot inline InlineFunction '<name>': inlining depth limit reached — use Function` | Nested inlining exceeded the depth cap | Reduce nesting, or use `Function` |
+| `cannot inline InlineFunction '<name>': its body is not a single-expression return (a multi-statement, annotated, or defaulted InlineFunction is not inlinable in this version) — use Function` | The body is more than a single `return EXPR`, or has parameter defaults/annotations | Reduce to one `return`, or use `Function` |
+| `cannot inline InlineFunction '<name>': it is called with a keyword or starred argument (an InlineFunction takes positional arguments only) — use Function` | An `InlineFunction` called with `name=…` or `*args` | Pass positional arguments, or use `Function` |
+| `InlineFunction '<name>' expects <n> argument(s) but <m> given` | Arity mismatch at an `InlineFunction` call | Match the parameter count |
+
 ### Compiler — calls (deferred → catchable at runtime)
 
 | Message | Cause | Fix |

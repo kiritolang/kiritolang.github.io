@@ -14,7 +14,7 @@ enum class TokenType {
     Integer, Float, String, FString, Identifier,
     KwVar, KwTrue, KwFalse, KwNone,
     KwIf, KwElif, KwElse, KwWhile, KwBreak, KwContinue,
-    KwAnd, KwOr, KwNot, KwFunction, KwReturn, KwFor, KwIn,
+    KwAnd, KwOr, KwNot, KwFunction, KwInlineFunction, KwReturn, KwFor, KwIn,
     KwTry, KwCatch, KwFinally, KwThrow, KwAs, KwClass, KwWith, KwPass, KwTodo, KwAssert, KwDiscard,
     KwSwitch,  // `case`/`default` are contextual (soft) keywords — lexed as identifiers, recognized
                // only inside a switch body — so they stay usable as ordinary names everywhere else.
@@ -269,6 +269,7 @@ private:
         else if (text == "or") type = TokenType::KwOr;
         else if (text == "not") type = TokenType::KwNot;
         else if (text == "Function") type = TokenType::KwFunction;
+        else if (text == "InlineFunction") type = TokenType::KwInlineFunction;
         else if (text == "return") type = TokenType::KwReturn;
         else if (text == "for") type = TokenType::KwFor;
         else if (text == "in") type = TokenType::KwIn;

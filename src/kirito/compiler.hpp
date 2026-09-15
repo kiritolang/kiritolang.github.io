@@ -44,6 +44,7 @@ public:
     // Compile a whole body. isFunction picks the implicit tail: a function falls off the end
     // returning None; the top-level program returns its last expression value (the REPL echo).
     void compile(const ast::Block& body, bool isFunction, const ast::FunctionExpr* fnDef = nullptr) {
+        classScope_ = (isFunction && !fnDef);             // a class body: isFunction with no FunctionExpr def
         if (fnDef) assignLocalSlots(*fnDef, body);        // a function: slot-address its non-captured locals
         else if (isFunction) collectClassEnvSlots(body);  // a class body (isFunction, no fnDef): index its names
         constMutable_ = kirito::mutatedOrRedeclared(body);  // names a `var f = fn` must NOT be, to be inlinable
@@ -273,12 +274,64 @@ private:
         return body;
     }
 
+    // The InlineFunction (mustInline) callee of this call — a literal `(InlineFunction...)(...)` or a
+    // NameExpr bound to a const `var f = InlineFunction(...)` — or nullptr. Used to enforce the
+    // inline-or-loud-error guarantee: reached only after inlineBodyIfCandidate has already DECLINED to
+    // inline, so a non-null result here means the guaranteed inline failed and must be a compile error.
+    const ast::FunctionExpr* mustInlineCallee(const ast::CallExpr& e) const {
+        if (const auto* fn = dynamic_cast<const ast::FunctionExpr*>(e.callee.get()))
+            return fn->mustInline ? fn : nullptr;
+        if (const auto* nm = dynamic_cast<const ast::NameExpr*>(e.callee.get())) {
+            auto it = constMustInlineDefs_.find(nm->name);
+            if (it != constMustInlineDefs_.end()) return it->second;
+        }
+        return nullptr;
+    }
+
+    // Diagnose exactly why a guaranteed InlineFunction call could not inline and throw the matching
+    // compile error (uncatchable, like every other compile error). Messages follow Kirito's bare
+    // lowercase what:why(how-to-fix) idiom. Only reached under inliningEnabled(); --no-inline demotes
+    // InlineFunction to a plain Function so none of these fire.
+    [[noreturn]] void throwInlineFailure(const ast::CallExpr& e, const ast::FunctionExpr& fn) const {
+        std::string nm = fn.name.empty() ? std::string("<anonymous>") : fn.name;
+        for (const auto& a : e.args)
+            if (!a.name.empty() || dynamic_cast<const ast::StarExpr*>(a.value.get()))
+                throw KiritoError("cannot inline InlineFunction '" + nm + "': it is called with a keyword or "
+                                  "starred argument (an InlineFunction takes positional arguments only) — use Function",
+                                  e.span);
+        if (e.args.size() != fn.params.size())
+            throw KiritoError("InlineFunction '" + nm + "' expects " + std::to_string(fn.params.size()) +
+                              " argument(s) but " + std::to_string(e.args.size()) + " given", e.span);
+        if (inlineStack_.size() >= kMaxInlineDepth)
+            throw KiritoError("cannot inline InlineFunction '" + nm + "': inlining depth limit reached — "
+                              "use Function", e.span);
+        for (const ast::FunctionExpr* f : inlineStack_)
+            if (f == &fn)
+                throw KiritoError("cannot inline InlineFunction '" + nm + "': it is recursive (an InlineFunction "
+                                  "must be a direct, non-recursive call — use Function for a recursive helper)", e.span);
+        std::vector<const ast::NameExpr*> caps;
+        if (!lambdaInlineBody(fn, caps))
+            throw KiritoError("cannot inline InlineFunction '" + nm + "': its body is not a single-expression "
+                              "return (a multi-statement, annotated, or defaulted InlineFunction is not inlinable "
+                              "in this version) — use Function", e.span);
+        if (const auto* nmExpr = dynamic_cast<const ast::NameExpr*>(e.callee.get()))
+            for (const ast::NameExpr* c : caps)
+                if (c->name == nmExpr->name)
+                    throw KiritoError("cannot inline InlineFunction '" + nm + "': it is recursive — use Function",
+                                      e.span);
+        throw KiritoError("cannot inline InlineFunction '" + nm + "': the callee is not statically known here — "
+                          "use Function", e.span);
+    }
+
     // Record `var f = <inline-eligible function literal>` as an immutable const-fn binding, so later
     // calls `f(x)` in this scope inline. Only when f is never rebound/redeclared (constMutable_).
     void trackConstLambda(const ast::VarDeclStmt& s) {
         if (s.names.size() != 1 || s.starIndex != -1 || s.forceUnpack) return;
         const auto* fn = dynamic_cast<const ast::FunctionExpr*>(s.init.get());
         if (!fn || constMutable_.count(s.names[0])) return;
+        // An InlineFunction const-binding is recorded even when its body is not single-return inlinable,
+        // so a later call still raises the must-inline error (rather than silently compiling a call).
+        if (fn->mustInline) constMustInlineDefs_[s.names[0]] = fn;
         std::vector<const ast::NameExpr*> caps;
         if (lambdaInlineBody(*fn, caps)) constLambdaDefs_[s.names[0]] = fn;
     }
@@ -476,6 +529,17 @@ private:
 
     void visit(const ast::VarDeclStmt& s) override {
         if (vm_.inliningEnabled()) trackConstLambda(s);   // note an immutable `var f = fn` for later inlining
+        // A const `var f = InlineFunction(...)` in a non-class scope backs no runtime binding: its calls
+        // inline and any value-use is a compile error, so there is no closure to materialize or store.
+        // (In a class scope it must fall through so visit(FunctionExpr)'s method ban fires.) Under
+        // --no-inline it is a plain Function and materializes normally.
+        if (vm_.inliningEnabled() && !classScope_ && s.names.size() == 1 && s.starIndex == -1 && !s.forceUnpack) {
+            auto it = constMustInlineDefs_.find(s.names[0]);
+            if (it != constMustInlineDefs_.end() && it->second == s.init.get()) {
+                emit(Op::ClearResult);   // a declaration is not an echoable expression (as the normal path does)
+                return;
+            }
+        }
         compileExpr(*s.init);
         if (s.names.size() == 1 && s.starIndex == -1 && !s.forceUnpack) {
             emitStore(s.names[0], s.span);
@@ -861,6 +925,11 @@ private:
                     else emitLoad(b.hidden, e.span);  // a parameter: its once-evaluated argument binding
                     return;
                 }
+        // A const `var f = InlineFunction(...)` reached as a plain name read (not a direct call callee,
+        // which visit(CallExpr) consumes before compiling the callee) is a value-use — banned.
+        if (vm_.inliningEnabled() && constMustInlineDefs_.count(e.name))
+            throw KiritoError("InlineFunction '" + e.name + "' cannot be used as a value (it must be called "
+                              "directly, not stored, returned, or passed) — use Function", e.span);
         if (e.builtinSlot >= 0) emit(Op::LoadGlobal, static_cast<uint32_t>(e.builtinSlot), e.span);
         else if (e.envIndex >= 0) emit(Op::LoadVar, addEnvVar(e), e.span);
         else emitLoad(e.name, e.span);
@@ -898,6 +967,17 @@ private:
     }
 
     void visit(const ast::FunctionExpr& e) override {
+        // An InlineFunction reached here is being materialized as a first-class VALUE (passed, returned,
+        // stored, or bound as a method) — which it cannot be. A directly-called literal / const-bound
+        // local never reaches this point (it is spliced by emitInlinedCall / skipped in visit(VarDecl)).
+        // --no-inline demotes InlineFunction to a plain Function, so this ban lifts with it.
+        if (e.mustInline && vm_.inliningEnabled()) {
+            if (classScope_)
+                throw KiritoError("InlineFunction cannot be a class method (dispatch is dynamic) — use Function",
+                                  e.span);
+            throw KiritoError("InlineFunction cannot be used as a value (it must be called directly, not stored, "
+                              "returned, or passed) — use Function if you need a first-class function", e.span);
+        }
         proto_.funcs.push_back(&e);
         emit(Op::MakeFunction, static_cast<uint32_t>(proto_.funcs.size() - 1), e.span);
     }
@@ -909,6 +989,10 @@ private:
             const ast::FunctionExpr* fn = nullptr;
             std::vector<const ast::NameExpr*> caps;
             if (const ast::Expr* body = inlineBodyIfCandidate(e, fn, caps)) { emitInlinedCall(e, *fn, *body, caps); return; }
+            // The InlineFunction guarantee: a must-inline callee that DIDN'T inline above is a loud
+            // compile error (never a silent fallback to a normal call). --no-inline demotes it first.
+            if (vm_.inliningEnabled())
+                if (const ast::FunctionExpr* mfn = mustInlineCallee(e)) throwInlineFailure(e, *mfn);
         }
         // A positional argument after a keyword argument is a (catchable) run-time error, like the old
         // evaluator: the callee and the arguments up to and including the offending one are evaluated,
@@ -1061,6 +1145,11 @@ private:
     int retCounter_ = 0;   // unique hidden-local index per value-parking `return` crossing a cleanup
     int depth_ = 0;
     bool slotsEnabled_ = false;                      // true only when compiling a true function body
+    bool classScope_ = false;                        // true only when compiling a class body (isFunction, no fnDef):
+                                                     // an InlineFunction bound here is a method -> banned (dynamic dispatch)
+    // `var f = InlineFunction(...)` (const, never rebound): recorded regardless of single-return inline
+    // eligibility, so a call that cannot inline is a loud must-inline error and a value-use is banned.
+    fum::unordered_map<std::string, const ast::FunctionExpr*> constMustInlineDefs_;
     fum::unordered_map<std::string, uint32_t> slotOf_;  // slotted local name -> frame slot index
     uint32_t nextSlot_ = 0;                          // next free slot (becomes proto_.localCount)
     fum::unordered_map<std::string, uint32_t> constDedup_;  // scalar const key -> consts index

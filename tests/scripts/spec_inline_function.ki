@@ -1,0 +1,57 @@
+# spec_inline_function.ki — the InlineFunction keyword (Feature 1, sub-stage a): a Function that MUST
+# inline or fail at COMPILE time. This golden exercises only the LEGAL, inlinable forms; every output
+# must be byte-identical with inlining on and with `--no-inline` (which demotes InlineFunction to a
+# plain Function), which is exactly what the differential harness asserts. The compile-error forms
+# (value-use, recursion, arity, method, ...) live in tests/errors/inlinefn_*.ki.
+
+var io = import("io")
+
+# 1. Immediately-applied literal.
+io.print((InlineFunction(x): return x * x)(9))
+
+# 2. Const-bound local, directly called (multiple call sites).
+var dbl = InlineFunction(x): return x + x
+io.print(dbl(21))
+io.print(dbl(dbl(3)))          # nested calls of the same InlineFunction
+
+# 3. Multiple parameters, positional.
+var hyp2 = InlineFunction(a, b): return a * a + b * b
+io.print(hyp2(3, 4))
+
+# 4. Reads an enclosing variable (a capture), evaluated in place.
+var base = 100
+var shift = InlineFunction(x): return x + base
+io.print(shift(5))
+base = 200                     # the capture is read at the call, so a later call sees the new value
+io.print(shift(5))
+
+# 5. Side-effecting argument is evaluated exactly once (a hidden slot holds it).
+var calls = 0
+var bump = Function() -> Integer:
+    calls = calls + 1
+    return calls
+var useTwice = InlineFunction(x): return x + x
+io.print(useTwice(bump()))     # bump() must run ONCE -> 1 + 1 = 2
+io.print(calls)                # exactly one call happened
+
+# 6. One InlineFunction inside another (nested inlining).
+var inc = InlineFunction(x): return x + 1
+var incTwice = InlineFunction(x): return inc(inc(x))
+io.print(incTwice(40))
+
+# 7. Fused combinator: InlineFunction as a map/filter callback in a for-loop.
+var total = 0
+for v in map(InlineFunction(x): return x * 10, [1, 2, 3]):
+    total = total + v
+io.print(total)
+for v in filter(InlineFunction(x): return x % 2 == 0, [1, 2, 3, 4, 5, 6]):
+    io.print(v)
+
+# 8. Const-bound InlineFunction reused across loop iterations.
+var acc = 0
+var sq = InlineFunction(x): return x * x
+for i in [1, 2, 3, 4]:
+    acc = acc + sq(i)
+io.print(acc)
+
+io.print("OK inline-function")

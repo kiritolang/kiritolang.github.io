@@ -124,6 +124,25 @@ io.print(filter(Function(n): return n % 2 == 0, numbers))  # => [2, 4, 6]
 io.print(sorted(["bb", "a", "ccc"], key=len))              # => ['a', 'bb', 'ccc']
 ```
 
+## `InlineFunction`: a guaranteed inline
+
+The compiler already inlines simple `Function` helpers for you when it can — a transparent speed win
+that never changes results. When you want to *insist* a hot helper is inlined, write `InlineFunction`
+instead: it is compiled straight into the caller, or it is a **compile error** — never a silent normal
+call.
+
+```kirito
+var io = import("io")
+var sq = InlineFunction(x): return x * x     # guaranteed inline
+io.print(sq(12))                             # => 144
+```
+
+The trade-off is that an `InlineFunction` is the one kind of function that is **not** a first-class
+value: you cannot store it, return it, pass it as an argument, or make it a method — those need
+`Function` (the section just above). It must be a direct, non-recursive, single-expression `return`
+call. If you ask for something it can't inline, the error tells you exactly why and to use `Function`.
+Running with `ki --no-inline` turns every `InlineFunction` back into an ordinary `Function`.
+
 ## Closures: functions that remember
 
 A function that *remembers* variables from where it was created is a **closure**. The key move is a

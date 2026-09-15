@@ -1,0 +1,2 @@
+var apply = Function(fn, x): return fn(x)
+var r = apply(InlineFunction(x): return x * 2, 5)

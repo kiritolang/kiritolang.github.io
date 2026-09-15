@@ -1,0 +1,2 @@
+var fac = InlineFunction(n): return 1 if n < 2 else n * fac(n - 1)
+var r = fac(5)

@@ -198,7 +198,9 @@ int main(int argc, char** argv) {
     // Inlining transform: an explicit --no-inline wins; otherwise KIRITO_NO_INLINE (any non-empty value)
     // disables it for a whole run. A debug/observability switch only — it never changes results, just
     // whether calls are inlined; the language rules that make inlining sound are always enforced.
-    if (!inlining || std::getenv("KIRITO_NO_INLINE")) vm.setInliningEnabled(false);
+    // Route through the dispatcher so the flag reaches worker VMs too (configureVM), not just the main
+    // VM — otherwise a `parallel` task would silently recompile with inlining left on.
+    if (!inlining || std::getenv("KIRITO_NO_INLINE")) dispatcher.setInliningEnabled(false);
     dispatcher.addLibPath(".");  // current directory is always on the import path
     for (const auto& l : libs) dispatcher.addLibPath(l);
 

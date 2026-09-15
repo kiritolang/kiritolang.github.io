@@ -789,8 +789,9 @@ private:
 
     ast::ExprPtr parseFunction() {
         auto node = std::make_unique<ast::FunctionExpr>();
-        std::size_t startTok = pos_;                    // the 'Function' keyword — start of the literal
-        node->span = advance().span;  // 'Function'
+        std::size_t startTok = pos_;                    // the 'Function'/'InlineFunction' keyword — literal start
+        node->mustInline = at(TokenType::KwInlineFunction);
+        node->span = advance().span;  // 'Function' or 'InlineFunction'
         expect(TokenType::LParen, "'(' after Function");
         bool seenDefault = false;
         if (!at(TokenType::RParen)) {
@@ -941,6 +942,7 @@ private:
             case TokenType::KwNone: { advance(); return literal(std::monostate{}, t.span); } break;
             case TokenType::Ellipsis: { advance(); return literal(ast::EllipsisTag{}, t.span); } break;
             case TokenType::KwFunction: { return parseFunction(); } break;
+            case TokenType::KwInlineFunction: { return parseFunction(); } break;
             case TokenType::Identifier: {
                 advance();
                 auto node = std::make_unique<ast::NameExpr>();

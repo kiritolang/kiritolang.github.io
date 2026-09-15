@@ -319,6 +319,9 @@ struct FunctionExpr : Expr {
                                     // for an indented block. The parser rejects a bare comma-pack right
                                     // after an inline-bodied literal (its trailing comma reads
                                     // ambiguously — see parseValueSeq).
+    bool mustInline = false;        // true for the `InlineFunction(...)` keyword: the call MUST inline or
+                                    // it is a loud compile error (no first-class value use). Demoted to a
+                                    // plain Function under --no-inline. Serializes via `source` (keyword).
     // Evaluator-side memo: true once we've determined this function has no param/return annotations,
     // enabling a no-temporaries fast bind for positional, exact-arity calls. Computed lazily.
     mutable std::optional<bool> fastBindable;

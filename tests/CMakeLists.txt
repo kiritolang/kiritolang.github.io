@@ -214,7 +214,7 @@ endforeach()
 # .expected. Inlining is a semantics-preserving optimization, so identical output both ways is the
 # load-bearing "speed, not results" guarantee proven at the user-code (.ki) layer (the C++ side proves
 # it over a far larger fuzzed space). A regression that makes an inlined program diverge fails here. ---
-foreach(nm verify_inline spec_traceback spec_inline_adversarial)
+foreach(nm verify_inline spec_traceback spec_inline_adversarial spec_inline_function parallel_worker_inline_flag)
     set(_scr ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.ki)
     set(_exp ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.expected)
     if(EXISTS ${_scr} AND EXISTS ${_exp})
@@ -231,7 +231,7 @@ endforeach()
 # intermediate, or a hidden $inl/$cmb slot left unrooted is swept mid-expression and shows up as a wrong
 # result here (or an ASan use-after-free in the asan variant). Both inline ON and --no-inline must still
 # equal the SAME .expected under per-alloc GC, so this is also the soak-differential at the .ki layer. ---
-foreach(nm spec_cheapcall spec_inline_adversarial unit_audit_v113 unit_audit_v114 unit_fold_const_gc)
+foreach(nm spec_cheapcall spec_inline_adversarial spec_inline_function unit_audit_v113 unit_audit_v114 unit_fold_const_gc)
     set(_scr ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.ki)
     set(_exp ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.expected)
     if(EXISTS ${_scr} AND EXISTS ${_exp})
