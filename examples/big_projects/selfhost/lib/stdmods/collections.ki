@@ -40,6 +40,8 @@ class Counter:
         var pairs = sorted(self._counts.items(), Function(p): return p[1], True)
         if n == None:
             return pairs
+        if n < 0:
+            return []          # a negative n yields [] (CPython), not a negative slice
         return pairs[0:n]
     var _getitem_ = Function(self, x):
         return self._counts.get(x, 0)
