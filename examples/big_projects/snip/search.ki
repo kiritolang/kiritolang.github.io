@@ -9,20 +9,10 @@ var regex = import("regex")
 var byTags = Function(items : List, tags : List) -> List:
     if len(tags) == 0:
         return items
-    var want = Set()
-    for t in tags:
-        want.add(t)
+    var want = Set(tags)
     var out = []
     for s in items:
-        var have = Set()
-        for tt in s["tags"]:
-            have.add(tt)
-        var all = True
-        for t in tags:
-            if t not in have:
-                all = False
-                break
-        if all:
+        if want.issubset(Set(s["tags"])):   # keep a snippet iff it has ALL wanted tags
             out.append(s)
     return out
 
@@ -61,9 +51,11 @@ var topTags = Function(items : List, topN : Integer) -> List:
         return srt
     return srt[0:topN]
 
-# Every distinct language present in the collection, alphabetically.
+# Every distinct language present in the collection, alphabetically. The empty language ("" — a
+# snippet added with no --lang) is not a language, so it is excluded rather than shown as a blank.
 var languages = Function(items : List) -> List:
     var seen = Set()
     for s in items:
-        seen.add(s["lang"])
+        if s["lang"] != "":
+            seen.add(s["lang"])
     return sorted(List(seen))

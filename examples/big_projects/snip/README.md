@@ -30,7 +30,7 @@ snip/
   db.ki             # in-memory DB + dump persistence + JSON round-trip
   search.ki         # composable filters: byTags / byLang / byRegex + topTags / languages
   fmt.ki            # humanAge + listLine + show (with line numbers) + stats
-  test_snip.ki      # 65 checks; matched against test_snip.expected
+  test_snip.ki      # 80 checks; matched against test_snip.expected
   samples/
     hello.py
     factorial.ki
@@ -75,7 +75,7 @@ ki examples/big_projects/snip/main.ki import /tmp/snips.json -d /tmp/snip2.dump
 
 ```
 ki examples/big_projects/snip/test_snip.ki
-# → snip: 65 checks passed
+# → snip: 80 checks passed
 ```
 
 Wired as `script_snip` in CTest. Passes clean under ASAN.

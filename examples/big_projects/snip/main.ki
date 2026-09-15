@@ -73,7 +73,7 @@ var _parseTags = Function(s : String) -> List:
             out.append(trimmed)
     return out
 
-var _main = Function():
+var _main = Function() -> Integer:
     var p = arg.Parser("code snippet manager")
     p.positional("command", "add | addfile | list | show | remove | stats | export | import")
     p.positional("target",  "the BODY / PATH / ID (or '' for `list`/`stats`)")
@@ -109,9 +109,9 @@ var _main = Function():
             io.eprint("snip: addfile needs a PATH")
             return 2
         try:
-            var fh = io.open(target, "r")
-            var body = fh.read()
-            fh.close()
+            var body = ""
+            with io.open(target, "r") as fh:
+                body = fh.read()
             var title = opts["title"]
             if title == "":
                 title = path.basename(target)
@@ -129,7 +129,11 @@ var _main = Function():
         var items = db.listAll(state)
         items = search.byTags(items, _parseTags(opts["tags"]))
         items = search.byLang(items, opts["lang"])
-        items = search.byRegex(items, opts["regex"])
+        try:
+            items = search.byRegex(items, opts["regex"])
+        catch String as e:
+            io.eprint("snip: invalid --regex: " + e)
+            return 2
         io.write(fmt.list(items))
         return 0
     if cmd == "show":
@@ -165,21 +169,24 @@ var _main = Function():
             io.eprint("snip: export needs an output PATH")
             return 2
         var blob = db.exportJson(state)
-        var fh = io.open(target, "w")
-        fh.write(blob)
-        fh.close()
+        with io.open(target, "w") as fh:
+            fh.write(blob)
         io.print("snip: exported " + String(len(state["snippets"])) + " snippet(s) -> " + target)
         return 0
     if cmd == "import":
         if target == "":
             io.eprint("snip: import needs an input PATH")
             return 2
-        var fh = io.open(target, "r")
-        var blob = fh.read()
-        fh.close()
-        var added = db.importJson(state, blob)
-        db.save(dbFile, state)
-        io.print("snip: imported " + String(added) + " new snippet(s) from " + target)
+        try:
+            var blob = ""
+            with io.open(target, "r") as fh:
+                blob = fh.read()
+            var added = db.importJson(state, blob)
+            db.save(dbFile, state)
+            io.print("snip: imported " + String(added) + " new snippet(s) from " + target)
+        catch String as e:
+            io.eprint("snip: could not import '" + target + "': " + e)
+            return 1
         return 0
     io.eprint("snip: unknown command: " + cmd)
     return 2

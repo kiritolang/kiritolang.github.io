@@ -30,9 +30,9 @@ var snippetId = Function(body : String) -> String:
 var load = Function(dbFile : String) -> Dict:
     if not path.isfile(dbFile):
         return _empty()
-    var fh = io.open(dbFile, "rb")
-    var blob = fh.read()
-    fh.close()
+    var blob = None
+    with io.open(dbFile, "rb") as fh:       # `with` closes even if read()/loads throws
+        blob = fh.read()
     return dump.loads(blob)
 
 var save = Function(dbFile : String, db : Dict):
@@ -40,9 +40,8 @@ var save = Function(dbFile : String, db : Dict):
     if len(dir) > 0 and not path.isdir(dir):
         discard path.mkdir(dir, exist_ok = True)
     var blob = dump.dumps(db)
-    var fh = io.open(dbFile, "wb")
-    fh.write(blob)
-    fh.close()
+    with io.open(dbFile, "wb") as fh:       # `with` closes even if write() throws
+        fh.write(blob)
 
 # Insert or update a snippet by its (body-derived) id. On conflict, only the metadata is refreshed
 # so a user can retag / rename without changing the body's identity. Returns the snippet dict.
@@ -76,14 +75,11 @@ var remove = Function(db : Dict, id : String) -> Bool:
 
 # All snippets as a flat sorted-by-modified list (most recent first).
 var listAll = Function(db : Dict) -> List:
-    var out = []
-    for id in db["snippets"]:
-        out.append(db["snippets"][id])
-    return sorted(out, key = Function(s): return -s["modified"])
+    return sorted(List(db["snippets"].values()), key = Function(s): return -s["modified"])
 
 # Lookup by full id or by shortest unique prefix. Returns the snippet dict, or None if no match /
 # multiple matches (i.e. the prefix is ambiguous).
-var find = Function(db : Dict, idOrPrefix : String):
+var find = Function(db : Dict, idOrPrefix : String) -> [Dict, None]:
     if idOrPrefix in db["snippets"]:
         return db["snippets"][idOrPrefix]
     var matches = []
@@ -99,9 +95,11 @@ var find = Function(db : Dict, idOrPrefix : String):
 # for grepping, code review, or shipping snippets alongside a repo.
 var exportJson = Function(db : Dict) -> String:
     var arr = []
-    for id in db["snippets"]:
+    for id in sorted(List(db["snippets"].keys())):   # sort by id for stable, diff-able output
         arr.append(db["snippets"][id])
     return json.dumps({"version": 1, "snippets": arr}, indent = 2)
+
+var _requiredKeys = ["id", "title", "lang", "tags", "body", "created", "modified"]
 
 var importJson = Function(db : Dict, blob : String) -> Integer:
     var doc = json.loads(blob)
@@ -109,7 +107,14 @@ var importJson = Function(db : Dict, blob : String) -> Integer:
         throw "unsupported snippet dump version: " + String(doc.get("version"))
     var added = 0
     for s in doc["snippets"]:
-        if s["id"] not in db["snippets"]:
+        # Validate each row so a hand-edited/corrupt JSON can't inject a snippet that later crashes
+        # the renderer or breaks content-addressing.
+        for k in _requiredKeys:
+            if k not in s:
+                throw "malformed snippet in import: missing key '" + k + "'"
+        if s["id"] != snippetId(s["body"]):
+            throw "malformed snippet in import: id '" + s["id"] + "' does not match its body hash"
+        if s["id"] not in db["snippets"]:      # within-blob or existing duplicates collapse by id
             db["snippets"][s["id"]] = s
             added = added + 1
     return added

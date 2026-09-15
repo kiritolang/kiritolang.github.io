@@ -173,4 +173,64 @@ ok(one["title"] in view, "show includes title")
 ok("id:" in view and "tags:" in view, "show includes labelled header fields")
 ok("1  " in view, "show numbers the first line")
 
+# =============================================================================
+# search.byTags: set-subset (AND) semantics.
+# =============================================================================
+var tagItems = [{"tags": ["a", "b", "c"]}, {"tags": ["a"]}, {"tags": ["x"]}]
+ok(len(search.byTags(tagItems, ["a", "b"])) == 1, "byTags AND keeps only the snippet having BOTH a and b")
+ok(len(search.byTags(tagItems, ["a"])) == 2, "byTags with one tag matches every snippet having it")
+ok(len(search.byTags(tagItems, ["z"])) == 0, "byTags with a disjoint tag matches nothing")
+ok(len(search.byTags(tagItems, [])) == 3, "byTags with no tags returns everything")
+
+# =============================================================================
+# search.languages: the empty language is excluded.
+# =============================================================================
+var langDb = {"snippets": {}}
+discard db.upsert(langDb, "t1", "python", [], "b1")
+discard db.upsert(langDb, "t2", "", [], "b2")     # added with no --lang
+var ls = search.languages(db.listAll(langDb))
+ok("python" in ls and "" not in ls, "languages() excludes the empty language")
+
+# =============================================================================
+# db.exportJson: deterministic (sorted by id), independent of insertion order.
+# =============================================================================
+var mkSnip = Function(id : String) -> Dict:
+    return {"id": id, "title": "t", "lang": "py", "tags": [], "body": "b", "created": 1, "modified": 2}
+var dbA = {"snippets": {}}
+dbA["snippets"]["ccc"] = mkSnip("ccc")
+dbA["snippets"]["aaa"] = mkSnip("aaa")
+dbA["snippets"]["bbb"] = mkSnip("bbb")
+var dbB = {"snippets": {}}
+dbB["snippets"]["bbb"] = mkSnip("bbb")
+dbB["snippets"]["ccc"] = mkSnip("ccc")
+dbB["snippets"]["aaa"] = mkSnip("aaa")
+ok(db.exportJson(dbA) == db.exportJson(dbB), "exportJson is insertion-order independent (sorted by id)")
+
+# =============================================================================
+# db.importJson: validation of malformed / duplicate / mismatched rows.
+# =============================================================================
+var jsonmod = import("json")
+var validSnip = Function(body : String) -> Dict:
+    return {"id": db.snippetId(body), "title": "t", "lang": "", "tags": [], "body": body, "created": 1, "modified": 1}
+# round-trip: a valid export imports cleanly
+var okBlob = jsonmod.dumps({"version": 1, "snippets": [validSnip("alpha"), validSnip("beta")]})
+ok(db.importJson({"snippets": {}}, okBlob) == 2, "a valid import adds every row")
+# within-blob duplicates collapse
+var dupBlob = jsonmod.dumps({"version": 1, "snippets": [validSnip("dup"), validSnip("dup")]})
+ok(db.importJson({"snippets": {}}, dupBlob) == 1, "duplicate ids in an import blob collapse to one")
+# malformed rows / versions throw
+ok(throws(Function(): return db.importJson({"snippets": {}}, jsonmod.dumps({"version": 2, "snippets": []}))), "import rejects an unsupported version")
+ok(throws(Function(): return db.importJson({"snippets": {}}, jsonmod.dumps({"version": 1, "snippets": [{"id": "x", "body": "y"}]}))), "import rejects a snippet missing required keys")
+var mismatch = {"id": "0000deadbeef", "title": "t", "lang": "", "tags": [], "body": "real", "created": 1, "modified": 1}
+ok(throws(Function(): return db.importJson({"snippets": {}}, jsonmod.dumps({"version": 1, "snippets": [mismatch]}))), "import rejects an id that doesn't match its body hash")
+
+# =============================================================================
+# db.find: exact id vs unique prefix vs ambiguous prefix vs no match.
+# =============================================================================
+var fdb = {"snippets": {"abcd1": {"id": "abcd1"}, "abcd2": {"id": "abcd2"}, "wxyz": {"id": "wxyz"}}}
+ok(db.find(fdb, "abcd1")["id"] == "abcd1", "find by exact id")
+ok(db.find(fdb, "wx")["id"] == "wxyz", "find by a unique prefix")
+ok(db.find(fdb, "abcd") == None, "find on an ambiguous prefix returns None")
+ok(db.find(fdb, "nope") == None, "find on no match returns None")
+
 io.print("snip: " + String(n) + " checks passed")
