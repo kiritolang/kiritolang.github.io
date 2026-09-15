@@ -414,6 +414,10 @@ var evalBinary = Function(St, op, l, r):
         # equality before giving up): l has no _eq_ of its own (handled above), but r might, e.g.
         # `2 == Complex(2, 0)` should defer to Complex._eq_(self=r, other=l).
         if op == "==" or op == "!=":
+            if op == "!=":
+                var rne = classLookup(r["cls"], "_ne_")   # an explicit reflected _ne_ overrides
+                if rne != None:
+                    return callValue(St, mkBound(r, rne), [l], [])
             var rm = classLookup(r["cls"], "_eq_")
             if rm != None:
                 var req = truthy(St, callValue(St, mkBound(r, rm), [l], []))
