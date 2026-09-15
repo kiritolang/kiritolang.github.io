@@ -327,12 +327,15 @@ var _METHOD_NAMES = {
 var truthy = Function(St, v):
     var k = boxKind(v)
     if k == "instance":
-        # No _bool_ dunder exists, and _len_ does NOT affect truthiness either (InstanceValue::truthy
-        # in the real native is an unconditional `true`) — an instance is always truthy. EXCEPTION:
-        # this self-host's complex.Complex is a pure-Kirito stand-in for a genuinely NATIVE type whose
-        # C++ class overrides truthy() (ComplexVal::truthy in stdlib_complex.hpp: re!=0 or im!=0) — a
-        # Kirito `class` has no dunder to express that, so mimic the native rule by class name, the
-        # same way Random's inspect() above stands in for its native counterpart.
+        # An instance's truthiness consults `_bool_` if defined (native InstanceValue::truthy). `_len_`
+        # does NOT affect truthiness (unlike Python) — only `_bool_` does. Absent `_bool_`, an instance
+        # is truthy.
+        var bm = classLookup(v["cls"], "_bool_")
+        if bm != None:
+            return truthy(St, callValue(St, mkBound(v, bm), [], []))
+        # complex.Complex is a pure-Kirito stand-in for a genuinely NATIVE type whose C++ class
+        # overrides truthy() (ComplexVal::truthy in stdlib_complex.hpp: re!=0 or im!=0); a Kirito
+        # `class` has no dunder to express that, so mimic the native rule by class name.
         if v["cls"]["name"] == "Complex":
             return not (v["attrs"]["re"] == 0.0 and v["attrs"]["im"] == 0.0)
         return True

@@ -11,7 +11,7 @@ var io = import("io")
 var path = import("path")
 var kirito = import("kirito")
 
-var SCRIPTS = "tools/tests/scripts"
+var SCRIPTS = "tests/scripts"
 var STDMODS = "examples/big_projects/selfhost/lib/stdmods"
 
 var readFile = Function(path):
@@ -116,6 +116,11 @@ for entry in path.listdir(SCRIPTS):
             if runAll or not (base in EXCLUDE or base in SLOW):
                 cases.append(base)
 cases.sort()
+
+# Guard against a silent vacuous pass: if discovery finds nothing (e.g. SCRIPTS misconfigured), the
+# suite must fail loudly rather than print "0 passed" and exit 0.
+if len(cases) == 0:
+    assert False, "no self-host cases discovered under " + SCRIPTS + " — check the path"
 
 var passed = 0
 var failed = 0
