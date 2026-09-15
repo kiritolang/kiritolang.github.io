@@ -78,7 +78,7 @@ var _readHex = Function(P, count):
         elif h >= "A" and h <= "F":
             d = ord(h) - 70
         else:
-            throw "RegexError: incomplete \\x/\\u escape"
+            throw "invalid regex: incomplete \\x/\\u escape"
         v = v * 16 + d
         P["pos"] = P["pos"] + 1
         i = i + 1
@@ -124,7 +124,7 @@ var _decodeEscapeChar = Function(P, c):
 var _parseEscape = Function(P):
     P["pos"] = P["pos"] + 1                       # consume backslash
     if P["pos"] >= len(P["s"]):
-        throw "RegexError: trailing backslash in pattern"
+        throw "invalid regex: trailing backslash in pattern"
     var c = _nextc(P)
     if c == "d":
         return _addClass(P, _digitR(), False)
@@ -147,7 +147,7 @@ var _parseEscape = Function(P):
     if c == "Z" or c == "z":
         return {"kind": "anchor", "anchor": "endtext"}
     if c >= "1" and c <= "9":
-        throw "RegexError: backreferences are not supported (they would break the linear-time guarantee)"
+        throw "invalid regex: backreferences are not supported (they would break the linear-time guarantee)"
     return {"kind": "lit", "cp": _decodeEscapeChar(P, c)}
 
 var _classSingleEscape = Function(P, e):
@@ -166,7 +166,7 @@ var _parseClass = Function(P):
     var first = True
     while True:
         if P["pos"] >= len(P["s"]):
-            throw "RegexError: unterminated character class"
+            throw "invalid regex: unterminated character class"
         var c = _peek(P)
         if c == "]" and not first:
             P["pos"] = P["pos"] + 1
@@ -176,7 +176,7 @@ var _parseClass = Function(P):
         if c == "\\":
             P["pos"] = P["pos"] + 1
             if P["pos"] >= len(P["s"]):
-                throw "RegexError: trailing backslash in character class"
+                throw "invalid regex: trailing backslash in character class"
             var e = _nextc(P)
             if e == "d":
                 for r in _digitR():
@@ -216,7 +216,7 @@ var _parseClass = Function(P):
             else:
                 hi = ord(_nextc(P))
             if hi < cp:
-                throw "RegexError: bad character range in class"
+                throw "invalid regex: bad character range in class"
             ranges.append([cp, hi])
         else:
             ranges.append([cp, cp])
@@ -227,9 +227,9 @@ var _parseGroupName = Function(P, close):
     while P["pos"] < len(P["s"]) and _peek(P) != close:
         out = out + _nextc(P)
     if not _eat(P, close):
-        throw "RegexError: malformed group name"
+        throw "invalid regex: malformed group name"
     if out == "":
-        throw "RegexError: empty group name"
+        throw "invalid regex: empty group name"
     # A group name must be an identifier: a letter or '_' then letters/digits/'_'.
     var i = 0
     while i < len(out):
@@ -237,9 +237,9 @@ var _parseGroupName = Function(P, close):
         var isLetter = (ch >= "A" and ch <= "Z") or (ch >= "a" and ch <= "z") or ch == "_"
         var isDigit = ch >= "0" and ch <= "9"
         if i == 0 and not isLetter:
-            throw "RegexError: bad group name '" + out + "'"
+            throw "invalid regex: bad group name '" + out + "'"
         if not isLetter and not isDigit:
-            throw "RegexError: bad group name '" + out + "'"
+            throw "invalid regex: bad group name '" + out + "'"
         i = i + 1
     return out
 
@@ -254,20 +254,20 @@ var _parseGroup = Function(P):
         if k == ":":
             P["pos"] = P["pos"] + 1
         elif k == "=" or k == "!":
-            throw "RegexError: lookahead (?= / ?!) is not supported (it would break the linear-time guarantee)"
+            throw "invalid regex: lookahead (?= / ?!) is not supported (it would break the linear-time guarantee)"
         elif k == "P":
             P["pos"] = P["pos"] + 1
             if _eat(P, "="):
-                throw "RegexError: named backreferences are not supported"
+                throw "invalid regex: named backreferences are not supported"
             if not _eat(P, "<"):
-                throw "RegexError: malformed named group (expected '<')"
+                throw "invalid regex: malformed named group (expected '<')"
             name = _parseGroupName(P, ">")
             P["ngroups"] = P["ngroups"] + 1
             capture = P["ngroups"]
         elif k == "<":
             P["pos"] = P["pos"] + 1
             if _peek(P) == "=" or _peek(P) == "!":
-                throw "RegexError: lookbehind is not supported (it would break the linear-time guarantee)"
+                throw "invalid regex: lookbehind is not supported (it would break the linear-time guarantee)"
             name = _parseGroupName(P, ">")
             P["ngroups"] = P["ngroups"] + 1
             capture = P["ngroups"]
@@ -290,28 +290,28 @@ var _parseGroup = Function(P):
                 else:
                     break
             if not any or not _eat(P, ")"):
-                throw "RegexError: unsupported (?...) group"
+                throw "invalid regex: unsupported (?...) group"
             return {"kind": "empty"}
     else:
         P["ngroups"] = P["ngroups"] + 1
         capture = P["ngroups"]
     var inner = _parseAlternation(P)
     if not _eat(P, ")"):
-        throw "RegexError: missing ) in pattern"
+        throw "invalid regex: missing ) in pattern"
     if capture >= 1:
         while len(P["names"]) <= capture:
             P["names"].append("")
         P["names"][capture] = name
         if name != "":
             if name in P["namemap"]:
-                throw "RegexError: duplicate group name '" + name + "'"
+                throw "invalid regex: duplicate group name '" + name + "'"
             P["namemap"][name] = capture
     return {"kind": "group", "group": capture, "kid": inner}
 
 var _parseAtom = Function(P):
     P["depth"] = P["depth"] + 1
     if P["depth"] > 400:
-        throw "RegexError: pattern too deeply nested"
+        throw "invalid regex: pattern too deeply nested"
     var c = _peek(P)
     var r = None
     if c == "(":
@@ -319,9 +319,9 @@ var _parseAtom = Function(P):
     elif c == "[":
         r = _parseClass(P)
     elif c == ")":
-        throw "RegexError: unbalanced ')' in pattern"
+        throw "invalid regex: unbalanced ')' in pattern"
     elif c == "*" or c == "+" or c == "?":
-        throw "RegexError: nothing to repeat"
+        throw "invalid regex: nothing to repeat"
     elif c == ".":
         P["pos"] = P["pos"] + 1
         r = {"kind": "any"}
@@ -344,7 +344,7 @@ var _parseQuantified = Function(P):
     var c = _peek(P)
     var zeroWidth = atom["kind"] == "anchor" or atom["kind"] == "empty"
     if zeroWidth and (c == "*" or c == "+" or c == "?"):
-        throw "RegexError: nothing to repeat"
+        throw "invalid regex: nothing to repeat"
     if c == "*" or c == "+" or c == "?":
         P["pos"] = P["pos"] + 1
         var greedy = not _eat(P, "?")
@@ -380,11 +380,11 @@ var _parseQuantified = Function(P):
             hi = lo
         if ok and _eat(P, "}"):
             if zeroWidth:
-                throw "RegexError: nothing to repeat"
+                throw "invalid regex: nothing to repeat"
             if hi != -1 and hi < lo:
-                throw "RegexError: bad repetition bounds"
+                throw "invalid regex: bad repetition bounds"
             if lo > 1000 or hi > 1000:
-                throw "RegexError: repetition count too large (max 1000)"
+                throw "invalid regex: repetition count too large (max 1000)"
             var greedy2 = not _eat(P, "?")
             return {"kind": "repeat", "rmin": lo, "rmax": hi, "greedy": greedy2, "kid": atom}
         P["pos"] = save                            # not a valid {..}: '{' is a literal
@@ -518,7 +518,7 @@ var compile = Function(pattern, flags = 0):
     var P = {"s": pattern, "pos": 0, "flags": flags, "classes": [], "names": [""], "namemap": {}, "ngroups": 0, "depth": 0}
     var root = _parseAlternation(P)
     if P["pos"] < len(P["s"]):
-        throw "RegexError: unexpected '" + _peek(P) + "' in pattern"
+        throw "invalid regex: unexpected '" + _peek(P) + "' in pattern"
     var prog = {"insts": [], "classes": P["classes"], "flags": P["flags"], "ngroups": P["ngroups"], "names": P["names"], "namemap": P["namemap"]}
     while len(prog["names"]) <= prog["ngroups"]:
         prog["names"].append("")
@@ -747,10 +747,15 @@ var _expandTemplate = Function(tmpl, m):
     var n = len(tmpl)
     while i < n:
         var c = tmpl[i]
+        if c == "\\" and i + 1 >= n:
+            throw "bad replacement: trailing backslash"
         if c == "\\" and i + 1 < n:
             var d = tmpl[i + 1]
             if d >= "1" and d <= "9":
-                var g = m.group(ord(d) - 48)
+                var gnum = ord(d) - 48
+                if gnum > len(m.groups()):
+                    throw "invalid group reference " + String(gnum) + " in replacement template"
+                var g = m.group(gnum)
                 out = out + (g if g != None else "")
                 i = i + 2
             elif d == "n":
@@ -772,9 +777,18 @@ var _expandTemplate = Function(tmpl, m):
                     nm = nm + tmpl[j]
                     j = j + 1
                 var key = nm
-                if len(nm) > 0 and nm[0] >= "0" and nm[0] <= "9":
+                var isNum = len(nm) > 0 and nm[0] >= "0" and nm[0] <= "9"
+                if isNum:
                     key = Integer(nm)
-                var gv = m.group(key)
+                    if key > len(m.groups()):
+                        throw "invalid group reference " + String(key) + " in replacement template"
+                var gv = None
+                try:
+                    gv = m.group(key)
+                catch as _ge:
+                    if isNum:
+                        throw "invalid group reference " + String(key) + " in replacement template"
+                    throw "bad replacement: no group named '" + nm + "'"
                 out = out + (gv if gv != None else "")
                 i = j + 1
             else:
@@ -849,6 +863,8 @@ class Regex:
                 out.append(tup)
         return out
     var sub = Function(self, repl, string, count = 0):
+        if not isinstance(repl, "String") and type(repl) != "Function":
+            throw "sub replacement must be a String or a function"
         var out = ""
         var last = 0
         var done = 0
@@ -860,7 +876,10 @@ class Regex:
             if isinstance(repl, "String"):
                 out = out + _expandTemplate(repl, mt)
             else:
-                out = out + repl(mt)
+                var rr = repl(mt)
+                if type(rr) != "String":
+                    throw "sub replacement function must return a String"
+                out = out + rr
             last = slots[1]
             done = done + 1
         out = out + string[last:]
