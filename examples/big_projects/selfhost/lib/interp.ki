@@ -3646,22 +3646,22 @@ var ioBytesIO = Function(St2, args, kwargs):
     var b = _mbind(args, kwargs, ["initial"], "BytesIO", 0)
     if len(b) >= 1:
         if type(b[0]) != "String":
-            rtError("BytesIO: initial must be a String")
+            rtError("BytesIO expects a byte String")
         return mkBytesIO(b[0])
     return mkBytesIO("")
 
 # io file open (thin syscall): wraps a host file in a "file" box; methods dispatched in hostObjMethod.
 var ioOpen = Function(St2, a, k):
     if len(a) + len(k) > 2:
-        rtError("open expected 1 or 2 arguments")
+        rtError("open() takes at most 2 positional argument(s) but " + String(len(a) + len(k)) + " given")
     var b = _mbind(a, k, ["path", "mode"], "open", 1)
     var mode = "r"
     if len(b) >= 2:
         mode = b[1]
     if type(b[0]) != "String":
-        rtError("open: path must be a String")
+        rtError("open path must be a String")
     if type(mode) != "String":
-        rtError("open: mode must be a String")
+        rtError("open mode must be a String")
     return {"sk": "hostobj", "kind": "file", "h": _sys_hostIo.open(b[0], mode)}
 
 # io is I/O only (streams / open / print / input / BytesIO) — mirroring the host. Everything that

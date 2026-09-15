@@ -79,7 +79,7 @@ var readFile = Function(path):
 #     tests can't be satisfied without reimplementing xoshiro AND MT19937_64 in pure Kirito. The
 #     API-parity fix (accepting `generator=` and exposing `.generator`) lives in stdmods/random.ki;
 #     the deep-statistical tests remain out of scope, like the audit_/deep_/r10_/r11_ families.
-var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz", "libraries", "spec_net", "spec_pass_todo", "spec_tee", "spec_io_stream", "parallel_basic", "parallel_sync", "probe_parallel", "probe_parallel_adversarial", "probe_surface", "probe_parallel_fuzz", "probe_binary_adversarial", "probe_inspect", "probe_serde_matrix", "probe_trio", "spec_edges", "spec_inspect", "spec_traceback", "path_module", "r8_language", "r7_parallel", "r8_parallel", "r7_net_regex", "r8_net_regex", "r9_net_parallel", "parallel_forkbomb_guard", "probe_http_client_abuse", "class_hash", "random_generators", "random_prng_quality", "labx_net", "labx_random", "r8_io_sys", "labx_serde"])
+var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz", "libraries", "spec_net", "spec_pass_todo", "spec_tee", "spec_io_stream", "parallel_basic", "parallel_sync", "probe_parallel", "probe_parallel_adversarial", "probe_surface", "probe_parallel_fuzz", "probe_binary_adversarial", "probe_inspect", "probe_serde_matrix", "probe_trio", "spec_edges", "spec_inspect", "spec_traceback", "path_module", "r8_language", "r7_parallel", "r8_parallel", "r7_net_regex", "r8_net_regex", "r9_net_parallel", "parallel_forkbomb_guard", "probe_http_client_abuse", "class_hash", "random_generators", "random_prng_quality", "labx_net", "labx_random", "r8_io_sys", "labx_serde", "cov_math_stats", "cov_serde_misc"])
 # labx_net exercises net.Socket (a native OS socket — no pure-Kirito equivalent, like the other
 # `net`/`parallel` exclusions). labx_random requires TWO distinct native RNG engines (xoshiro256++ and
 # mt19937_64) with byte-exact, statistically-distinct streams — the self-host has a single LCG, the same
@@ -89,7 +89,16 @@ var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz",
 # labx_serde constructs net.Socket() to assert serialization refuses a resource-like native — but
 # net.Socket is that same native OS socket with no pure-Kirito equivalent (see labx_net), so the test
 # cannot run through the self-host even though its JSON/serialize logic (parser, cycle guard, message
-# parity) is exercised by cov_serde_*/labx_compress_hash/r7_serde_data, which do pass.
+# parity) is exercised by cov_serde_text/labx_compress_hash/r7_serde_data, which do pass.
+# cov_math_stats's final section is a secure module-level CSPRNG (random.hasentropy / randombytes /
+# randomhex / randomurlsafe): it needs OS cryptographic entropy, which the _os syscall surface exposed
+# to the self-host does not provide (only clocks) — the same native-only reason as labx_random's
+# distinct native RNG engines. Its math/statistics/seeded-PRNG coverage is exercised by cov_builtins
+# and labx_math/labx_scalars, which pass.
+# cov_serde_misc pins the native binary `dump` wire format (KDMP magic/version/tag bytes) and native
+# function/class SOURCE serialization (re-compiling a callable from stored source text) — native
+# serializer internals the pure-Kirito graph encoder represents differently, the same native-binary-
+# format reason as the already-excluded spec_serde / probe_serde_matrix / probe_binary_adversarial.
 # Belt-and-suspenders: any script importing the `parallel` module (true multiprocessing — no sequential
 # equivalent in a tree-walker) is out of scope for the pure-Kirito self-host even if not named above, so
 # a newly-added such script does not silently fail the run. Detected per-script by _usesNativeOnly.
