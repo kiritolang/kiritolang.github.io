@@ -247,6 +247,19 @@ var _parserange = Function(rng):
         for t in orpart.strip().split(" "):
             if len(t) > 0:
                 toks.append(t)
+        # allow a space after a comparator operator (">= 1.2.0" == ">=1.2.0"): merge a bare-operator
+        # token with the following version token.
+        var merged = []
+        var j = 0
+        while j < len(toks):
+            var tk = toks[j]
+            if (tk == ">=" or tk == "<=" or tk == ">" or tk == "<" or tk == "=" or tk == "^" or tk == "~") and j + 1 < len(toks):
+                merged.append(tk + toks[j + 1])
+                j = j + 2
+            else:
+                merged.append(tk)
+                j = j + 1
+        toks = merged
         var comps = []
         var i = 0
         while i < len(toks):
