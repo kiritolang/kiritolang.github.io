@@ -278,7 +278,7 @@ class ComplexMatrix:
 
     var _ew = Function(self, o, add):
         if self._r != o._r or self._c != o._c:
-            throw "complex matrix: shape mismatch"
+            throw "ComplexMatrix +/- requires matrices of equal shape"
         var out = []
         var i = 0
         while i < self._r:
@@ -309,7 +309,7 @@ class ComplexMatrix:
                 out.append(nr)
             return Matrix(out)
         if self._c != o._r:
-            throw "complex matrix: incompatible shapes for multiplication"
+            throw "ComplexMatrix multiply: inner dimensions differ"
         var res = []
         var i = 0
         while i < self._r:
@@ -349,6 +349,9 @@ class ComplexMatrix:
         return Matrix(out)
     var hermitian = Function(self):
         return self.transpose().conjugate()
+    # conjugatetranspose is a native alias for hermitian (the conjugate transpose A^H).
+    var conjugatetranspose = Function(self):
+        return self.hermitian()
 
     var trace = Function(self):
         if self._r != self._c:
@@ -470,10 +473,12 @@ class ComplexMatrix:
                 out.append(v)
         return out
     var dot = Function(self, o):
+        if (self._r != 1 and self._c != 1) or (o._r != 1 and o._c != 1):
+            throw "dot requires vectors (a 1×n or n×1 ComplexMatrix)"
         var a = self._flat()
         var b = o._flat()
         if len(a) != len(b):
-            throw "complex vector: dot requires equal length"
+            throw "dot requires vectors of equal length"
         var s = Complex(0.0, 0.0)
         var k = 0
         while k < len(a):
@@ -489,7 +494,7 @@ class ComplexMatrix:
         var a = self._flat()
         var b = o._flat()
         if len(a) != 3 or len(b) != 3:
-            throw "complex vector: cross requires two 3-vectors"
+            throw "cross is only defined for two 3-element vectors"
         var x = a[1] * b[2] - a[2] * b[1]
         var y = a[2] * b[0] - a[0] * b[2]
         var z = a[0] * b[1] - a[1] * b[0]

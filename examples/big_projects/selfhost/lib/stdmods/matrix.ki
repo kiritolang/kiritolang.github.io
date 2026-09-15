@@ -145,7 +145,7 @@ class Matrix:
 
     var _ew = Function(self, o, add):
         if self._r != o._r or self._c != o._c:
-            throw "matrix: shape mismatch"
+            throw "Matrix +/- requires Matrices of equal shape"
         var out = []
         var i = 0
         while i < self._r:
@@ -227,11 +227,13 @@ class Matrix:
         return out
 
     var dot = Function(self, o):
+        if (self._r != 1 and self._c != 1) or (o._r != 1 and o._c != 1):
+            throw "dot requires vectors (a 1×n or n×1 Matrix)"
         var a = self._flat()
         var b = o._flat()
         var n = len(a)
         if n != len(b):
-            throw "matrix: dot requires vectors of equal length"
+            throw "dot requires vectors of equal length"
         var s = 0.0
         var i = 0
         while i < n:
@@ -243,7 +245,7 @@ class Matrix:
         var a = self._flat()
         var b = o._flat()
         if len(a) != 3 or len(b) != 3:
-            throw "matrix: cross requires two 3-vectors"
+            throw "cross is only defined for two 3-element vectors"
         return Matrix([[a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]])
 
     var norm = Function(self):
