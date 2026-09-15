@@ -88,6 +88,23 @@ var mkInstance = Function(cls):
 var mkModule = Function(name, members):
     return {"sk": "module", "name": name, "members": members}
 
+# The built-in StopIteration exception class — the sentinel a `_next_` raises to end iteration. A
+# no-method class (no _init_), so StopIteration() takes no arguments, matching native.
+var _StopIterationClass = {"sk": "class", "name": "StopIteration", "base": None, "methods": {}}
+
+# True iff a caught host-exception is a guest `throw StopIteration()` (its value is a StopIteration
+# instance). Guest throws are host `{"exc": value}` dicts (see the `throw` statement handler).
+var _isStopIteration = Function(caught):
+    if isinstance(caught, "Dict") and ("exc" in caught):
+        var v = caught["exc"]
+        if isinstance(v, "Dict") and ("sk" in v) and v["sk"] == "instance":
+            var c = v["cls"]
+            while c != None:
+                if c["name"] == "StopIteration":
+                    return True
+                c = c["base"]
+    return False
+
 # --- runtime errors / control signals -------------------------------------------------------------
 # A runtime error is a host throw of a tagged Dict so it is distinguishable from an interpreted
 # `throw` (which carries an arbitrary value) and from control signals.
@@ -603,14 +620,16 @@ var evalExpr = Function(St, env, node):
         var lo = _sliceClamp(node["lo"], St, env)
         var hi = _sliceClamp(node["hi"], St, env)
         var step = _sliceClamp(node["step"], St, env)
-        # Real Kirito instances have no slice protocol at all (_getitem_ is scalar-key-only; slicing
-        # an instance always throws, matching InstanceValue's inherited Object::slice()). _slicegetitem_
-        # is a selfhost-internal-only hook (not part of the language surface) letting a self-hosted
-        # stdlib class like Tensor emulate what would be a native .slice() override in real Kirito.
+        # Slicing an instance delivers a single Slice VALUE to _getitem_ (native: `a:b:c` is a Slice
+        # key, there is no separate slice protocol). _slicegetitem_ stays as a selfhost-internal hook
+        # for self-hosted stdlib classes (e.g. Tensor) that emulate a native .slice() override.
         if boxKind(so) == "instance":
             var m = classLookup(so["cls"], "_slicegetitem_")
             if m != None:
                 return callValue(St, mkBound(so, m), [lo, hi, step], [])
+            var gi = classLookup(so["cls"], "_getitem_")
+            if gi != None:
+                return callValue(St, mkBound(so, gi), [slice(lo, hi, step)], [])
             rtError("type '" + so["cls"]["name"] + "' does not support slicing")
         return doSlice(so, lo, hi, step)
     if k == "member":
@@ -751,6 +770,15 @@ var evalMember = Function(St, env, node):
     # in _METHOD_NAMES (hostobj streams, ...) keep the old permissive fallback: their own dispatcher
     # already throws cleanly on an unknown name when the thunk is actually called.
     var tn = typeName(obj)
+    if tn == "Slice":
+        # a Slice value (delivered to an instance's _getitem_) exposes start/stop/step fields
+        if name == "start":
+            return obj.start
+        if name == "stop":
+            return obj.stop
+        if name == "step":
+            return obj.step
+        rtError("'Slice' object has no attribute '" + name + "'")
     if tn in _METHOD_NAMES and not (name in _METHOD_NAMES[tn]):
         rtError("'" + tn + "' object has no attribute '" + name + "'")
     return {"sk": "boundnative", "recv": obj, "name": name}
@@ -1036,7 +1064,8 @@ var materialize = Function(St, value):
     if boxKind(value) == "instance":
         var m = classLookup(value["cls"], "_iter_")
         if m != None:
-            return materialize(St, callValue(St, mkBound(value, m), [], []))
+            var it = callValue(St, mkBound(value, m), [], [])
+            return _drainIter(St, it)
         rtError("'" + value["cls"]["name"] + "' object is not iterable")
     if boxKind(value) == "hostobj" and value["kind"] == "file":
         var lines = []
@@ -1047,6 +1076,32 @@ var materialize = Function(St, value):
     for x in value:
         out.append(x)
     return out
+
+# Fully consume an iterator returned by an instance's `_iter_`: it must be a lazy-iterator value or an
+# object with `_next_` (a bare List etc. is rejected, like native). `_next_` is called until it raises
+# StopIteration; any other error propagates.
+var _drainIter = Function(St, it):
+    if boxKind(it) == "lazyiter":
+        return materialize(St, it)
+    if boxKind(it) == "instance":
+        var nx = classLookup(it["cls"], "_next_")
+        if nx != None:
+            var out = []
+            while True:
+                var stop = False
+                var v = None
+                try:
+                    v = callValue(St, mkBound(it, nx), [], [])
+                catch as e:
+                    if _isStopIteration(e):
+                        stop = True
+                    else:
+                        throw e
+                if stop:
+                    break
+                out.append(v)
+            return out
+    rtError("_iter_ must return an iterator")
 
 var evalStmt = Function(St, env, node):
     var k = node["k"]
@@ -1078,6 +1133,35 @@ var evalStmt = Function(St, env, node):
         return NORMAL
     if k == "for":
         var iterable = evalExpr(St, env, node["iter"])
+        # An instance whose _iter_ yields a _next_-style iterator is driven LAZILY (one _next_ per
+        # iteration), so an infinite generator bounded by `break` terminates instead of materializing
+        # forever. A lazy-iterator value or any other iterable falls through to materialize().
+        if boxKind(iterable) == "instance" and classLookup(iterable["cls"], "_iter_") != None:
+            var it = callValue(St, mkBound(iterable, classLookup(iterable["cls"], "_iter_")), [], [])
+            if boxKind(it) == "instance" and classLookup(it["cls"], "_next_") != None:
+                var nx = classLookup(it["cls"], "_next_")
+                while True:
+                    var nv = None
+                    var stop = False
+                    try:
+                        nv = callValue(St, mkBound(it, nx), [], [])
+                    catch as e:
+                        if _isStopIteration(e):
+                            stop = True
+                        else:
+                            throw e
+                    if stop:
+                        break
+                    assignTo(St, env, node["target"], nv, True)
+                    var sr = execBlock(St, env, node["body"])
+                    if sr["flow"] == "break":
+                        break
+                    if sr["flow"] == "return":
+                        return sr
+                return NORMAL
+            if boxKind(it) != "lazyiter":
+                rtError("_iter_ must return an iterator")
+            iterable = it       # a lazy-iterator value: materialize() consumes it below
         var items = materialize(St, iterable)
         for item in items:
             assignTo(St, env, node["target"], item, True)
@@ -3262,6 +3346,7 @@ var makeGlobal = Function(St):
     def("bitnot", builtinBitnot)
     def("shl", builtinShl)
     def("shr", builtinShr)
+    envDefine(g, "StopIteration", _StopIterationClass)   # built-in exception class (iterator sentinel)
     return g
 
 # --- modules -------------------------------------------------------------------------------------
