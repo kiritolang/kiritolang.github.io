@@ -6,6 +6,8 @@ class Enum:
         self._order = []                 # definition order (a Dict's keys() is unordered)
         var i = 0
         for name in names:
+            if name in self._byName:
+                throw "duplicate enum member: " + name
             self._byName[name] = i
             self._byValue[i] = name
             self._order.append(name)
