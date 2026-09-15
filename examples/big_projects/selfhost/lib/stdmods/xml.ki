@@ -99,7 +99,7 @@ class Element:
         self.children = []             # child Elements
 
     var _iter_ = Function(self):
-        return self.children
+        return iter(self.children)
     var _len_ = Function(self) -> Integer:
         return len(self.children)
     var _getitem_ = Function(self, i):

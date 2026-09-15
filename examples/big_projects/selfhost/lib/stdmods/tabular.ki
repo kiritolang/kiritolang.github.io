@@ -88,7 +88,7 @@ class Series:
         return len(self.values)
 
     var _iter_ = Function(self):
-        return self.values
+        return iter(self.values)
 
     # by label first (if the label exists in the index), else by position
     var _getitem_ = Function(self, key):

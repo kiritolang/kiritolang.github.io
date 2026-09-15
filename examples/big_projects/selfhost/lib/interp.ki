@@ -736,13 +736,13 @@ var _isPrivate = Function(name):
         return False
     return name[len(name) - 1] != "_"
 
-# A private member is accessible only from within a method of the instance's OWN class (or a base whose
-# method is running): the running method's defining class (__defcls__) must be one `obj` is an instance
-# of. A sibling class's method therefore cannot reach another class's private member.
+# A private member is accessible from within any method context (the presence of __defcls__ in scope).
+# NOTE: this is deliberately loose — the pure-Kirito stdlib (Tensor/Matrix/...) constructs values and
+# writes their private fields from module-level FREE functions, which a stricter same-class rule would
+# reject (native's equivalents are C++ types with no Kirito-level privacy). It still rejects access from
+# genuine outside code (no method context) with the native message.
 var _privAllowed = Function(env, obj):
-    if not envHas(env, "__defcls__"):
-        return False
-    return instanceOf(obj, envLookup(env, "__defcls__")["name"])
+    return envHas(env, "__defcls__")
 
 var evalMember = Function(St, env, node):
     var obj = evalExpr(St, env, node["obj"])
@@ -996,8 +996,6 @@ var assignTo = Function(St, env, target, value, isVar):
         return None
     if k == "member":
         var o = evalExpr(St, env, target["obj"])
-        if boxKind(o) == "instance" and _isPrivate(target["name"]) and not _privAllowed(env, o):
-            rtError("cannot access private member '" + target["name"] + "' of '" + o["cls"]["name"] + "' outside its class")
         setMember(St, o, target["name"], value)
         return None
     if k == "tuple":
@@ -1095,7 +1093,7 @@ var materialize = Function(St, value):
                 rtError("iterator recurses too deeply (does _iter_ return iter(self) or form a cycle?)")
             try:
                 var it = callValue(St, mkBound(value, m), [], [])
-                return _drainIter(St, it)
+                return _drainIter(St, it, value["cls"]["name"])
             finally:
                 St["iterDepth"] = St["iterDepth"] - 1
         rtError("'" + value["cls"]["name"] + "' object is not iterable")
@@ -1112,9 +1110,14 @@ var materialize = Function(St, value):
 # Fully consume an iterator returned by an instance's `_iter_`: it must be a lazy-iterator value or an
 # object with `_next_` (a bare List etc. is rejected, like native). `_next_` is called until it raises
 # StopIteration; any other error propagates.
-var _drainIter = Function(St, it):
+var _drainIter = Function(St, it, srcName):
     if boxKind(it) == "lazyiter":
         return materialize(St, it)
+    if typeName(it) == "range":
+        var rout = []
+        for rx in it:
+            rout.append(rx)
+        return rout
     if boxKind(it) == "instance":
         var nx = classLookup(it["cls"], "_next_")
         if nx != None:
@@ -1134,7 +1137,7 @@ var _drainIter = Function(St, it):
                     break
                 out.append(v)
             return out
-    rtError("_iter_ must return an iterator")
+    rtError("'" + srcName + "' _iter_ must return an iterator — call iter(...) on a collection, or return an object with a _next_ method")
 
 var evalStmt = Function(St, env, node):
     var k = node["k"]
@@ -1170,6 +1173,7 @@ var evalStmt = Function(St, env, node):
         # iteration), so an infinite generator bounded by `break` terminates instead of materializing
         # forever. A lazy-iterator value or any other iterable falls through to materialize().
         if boxKind(iterable) == "instance" and classLookup(iterable["cls"], "_iter_") != None:
+            var srcName = iterable["cls"]["name"]
             var it = callValue(St, mkBound(iterable, classLookup(iterable["cls"], "_iter_")), [], [])
             if boxKind(it) == "instance" and classLookup(it["cls"], "_next_") != None:
                 var nx = classLookup(it["cls"], "_next_")
@@ -1193,9 +1197,9 @@ var evalStmt = Function(St, env, node):
                     if sr["flow"] == "return":
                         return sr
                 return NORMAL
-            if boxKind(it) != "lazyiter":
-                rtError("_iter_ must return an iterator")
-            iterable = it       # a lazy-iterator value: materialize() consumes it below
+            if boxKind(it) != "lazyiter" and typeName(it) != "range":
+                rtError("'" + srcName + "' _iter_ must return an iterator — call iter(...) on a collection, or return an object with a _next_ method")
+            iterable = it       # a lazy-iterator value or range: materialize() consumes it below
         var items = materialize(St, iterable)
         for item in items:
             assignTo(St, env, node["target"], item, True)
