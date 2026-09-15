@@ -1064,8 +1064,17 @@ var materialize = Function(St, value):
     if boxKind(value) == "instance":
         var m = classLookup(value["cls"], "_iter_")
         if m != None:
-            var it = callValue(St, mkBound(value, m), [], [])
-            return _drainIter(St, it)
+            # Guard against a cyclic _iter_ (e.g. `return iter(self)`), which would recurse forever
+            # through materialize; throw a clear error instead of overflowing the host stack.
+            St["iterDepth"] = St.get("iterDepth", 0) + 1
+            if St["iterDepth"] > 100:
+                St["iterDepth"] = St["iterDepth"] - 1
+                rtError("iterator recurses too deeply (does _iter_ return iter(self) or form a cycle?)")
+            try:
+                var it = callValue(St, mkBound(value, m), [], [])
+                return _drainIter(St, it)
+            finally:
+                St["iterDepth"] = St["iterDepth"] - 1
         rtError("'" + value["cls"]["name"] + "' object is not iterable")
     if boxKind(value) == "hostobj" and value["kind"] == "file":
         var lines = []
