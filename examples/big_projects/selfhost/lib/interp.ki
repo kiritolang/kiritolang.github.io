@@ -338,7 +338,10 @@ var truthy = Function(St, v):
         # is truthy.
         var bm = classLookup(v["cls"], "_bool_")
         if bm != None:
-            return truthy(St, callValue(St, mkBound(v, bm), [], []))
+            var bv = callValue(St, mkBound(v, bm), [], [])
+            if typeName(bv) != "Bool":
+                rtError("'" + v["cls"]["name"] + "'._bool_ must return a Bool, got '" + typeName(bv) + "'")
+            return bv
         # complex.Complex is a pure-Kirito stand-in for a genuinely NATIVE type whose C++ class
         # overrides truthy() (ComplexVal::truthy in stdlib_complex.hpp: re!=0 or im!=0); a Kirito
         # `class` has no dunder to express that, so mimic the native rule by class name.
@@ -519,6 +522,7 @@ var evalUnary = Function(St, op, v):
             var m = classLookup(v["cls"], "_neg_")
             if m != None:
                 return callValue(St, mkBound(v, m), [], [])
+            rtError("'" + v["cls"]["name"] + "' has no operator '_neg_'")
         return -v
     if op == "not":
         # an instance may override `not` via _not_, returning its RAW result uncoerced; otherwise
