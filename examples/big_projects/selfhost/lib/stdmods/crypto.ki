@@ -1,0 +1,34 @@
+# The `crypto` module mirrors the native one, whose AES-GCM / RSA / EC / X.509 operations are OpenSSL
+# bindings gated behind KIRITO_ENABLE_TLS -- exactly like the `net` module's HTTPS/TLS. The pure-Kirito
+# self-host has no OpenSSL (and reimplementing authenticated encryption / public-key crypto in the
+# language would be both enormous and unsafe), so this build is the TLS-OFF configuration: the module
+# imports and `enabled` is readable, but every operation throws the same "requires KIRITO_ENABLE_TLS"
+# error the native no-OpenSSL build raises. (Hashes/HMAC/PBKDF2 are cryptography-free and live in `hash`.)
+
+var enabled = False
+
+var _off = Function(name):
+    throw "crypto." + name + " requires building with KIRITO_ENABLE_TLS (OpenSSL)"
+
+var aesencrypt = Function(key, plaintext, iv, aad = None):
+    return _off("aesencrypt")
+var aesdecrypt = Function(key, ciphertext, iv, tag, aad = None):
+    return _off("aesdecrypt")
+var rsagenerate = Function(bits = 2048):
+    return _off("rsagenerate")
+var rsasign = Function(privatekey, message):
+    return _off("rsasign")
+var rsaverify = Function(publickey, message, signature):
+    return _off("rsaverify")
+var rsaencrypt = Function(publickey, plaintext):
+    return _off("rsaencrypt")
+var rsadecrypt = Function(privatekey, ciphertext):
+    return _off("rsadecrypt")
+var ecgenerate = Function():
+    return _off("ecgenerate")
+var ecsign = Function(privatekey, message):
+    return _off("ecsign")
+var ecverify = Function(publickey, message, signature):
+    return _off("ecverify")
+var x509parse = Function(pem):
+    return _off("x509parse")

@@ -319,6 +319,142 @@ var sha256 = Function(data):
         out = out + _hex8(v)
     return out
 
+# --- SHA-512 / SHA-384 (64-bit words) ------------------------------------------------------------
+# These use native 64-bit integer bitwise ops (bitand/bitor/bitxor/shl/shr) rather than the mod-2^32
+# helpers above; addition wraps mod 2^64 like the reference. shr is ARITHMETIC, so a logical right
+# shift masks off the sign-extended high bits.
+var _shrL = Function(x, n):
+    return bitand(shr(x, n), shl(1, 64 - n) - 1)
+var _rotr64 = Function(x, n):
+    return bitor(_shrL(x, n), shl(x, 64 - n))
+var _be64 = Function(bytes, i):
+    var v = 0
+    var j = 0
+    while j < 8:
+        v = bitor(shl(v, 8), bytes[i + j])
+        j = j + 1
+    return v
+var _hex16 = Function(x):
+    # 64-bit value -> 16 lowercase hex digits, big-endian (bitand of an arithmetic shift keeps the
+    # correct low nibble regardless of sign).
+    var out = ""
+    var i = 15
+    while i >= 0:
+        out = out + _HEX[bitand(shr(x, i * 4), 15)]
+        i = i - 1
+    return out
+
+var _SHA512_K = [0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
+                 0x3956c25bf348b538, 0x59f111f1b605d019, 0x923f82a4af194f9b, 0xab1c5ed5da6d8118,
+                 0xd807aa98a3030242, 0x12835b0145706fbe, 0x243185be4ee4b28c, 0x550c7dc3d5ffb4e2,
+                 0x72be5d74f27b896f, 0x80deb1fe3b1696b1, 0x9bdc06a725c71235, 0xc19bf174cf692694,
+                 0xe49b69c19ef14ad2, 0xefbe4786384f25e3, 0x0fc19dc68b8cd5b5, 0x240ca1cc77ac9c65,
+                 0x2de92c6f592b0275, 0x4a7484aa6ea6e483, 0x5cb0a9dcbd41fbd4, 0x76f988da831153b5,
+                 0x983e5152ee66dfab, 0xa831c66d2db43210, 0xb00327c898fb213f, 0xbf597fc7beef0ee4,
+                 0xc6e00bf33da88fc2, 0xd5a79147930aa725, 0x06ca6351e003826f, 0x142929670a0e6e70,
+                 0x27b70a8546d22ffc, 0x2e1b21385c26c926, 0x4d2c6dfc5ac42aed, 0x53380d139d95b3df,
+                 0x650a73548baf63de, 0x766a0abb3c77b2a8, 0x81c2c92e47edaee6, 0x92722c851482353b,
+                 0xa2bfe8a14cf10364, 0xa81a664bbc423001, 0xc24b8b70d0f89791, 0xc76c51a30654be30,
+                 0xd192e819d6ef5218, 0xd69906245565a910, 0xf40e35855771202a, 0x106aa07032bbd1b8,
+                 0x19a4c116b8d2d0c8, 0x1e376c085141ab53, 0x2748774cdf8eeb99, 0x34b0bcb5e19b48a8,
+                 0x391c0cb3c5c95a63, 0x4ed8aa4ae3418acb, 0x5b9cca4f7763e373, 0x682e6ff3d6b2b8a3,
+                 0x748f82ee5defb2fc, 0x78a5636f43172f60, 0x84c87814a1f0ab72, 0x8cc702081a6439ec,
+                 0x90befffa23631e28, 0xa4506cebde82bde9, 0xbef9a3f7b2c67915, 0xc67178f2e372532b,
+                 0xca273eceea26619c, 0xd186b8c721c0c207, 0xeada7dd6cde0eb1e, 0xf57d4f7fee6ed178,
+                 0x06f067aa72176fba, 0x0a637dc5a2c898a6, 0x113f9804bef90dae, 0x1b710b35131c471b,
+                 0x28db77f523047d84, 0x32caab7b40c72493, 0x3c9ebe0a15c9bebc, 0x431d67c49c100d4c,
+                 0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817]
+
+# core compression over 128-byte blocks; `h` is the 8-word initial state (caller supplies 512 vs 384)
+var _sha512core = Function(data, h0):
+    var msg = _bytesOf(data)
+    var origLenBits = len(msg) * 8
+    msg.append(128)
+    while len(msg) % 128 != 112:
+        msg.append(0)
+    # 128-bit big-endian length: the high 8 bytes are 0 for any realistic message (and _pow2 would
+    # overflow to 0 past 2^63); only the low 8 bytes carry the bit count.
+    var lb = 8
+    while lb > 0:
+        msg.append(0)
+        lb = lb - 1
+    lb = 7
+    while lb >= 0:
+        msg.append((origLenBits // _pow2(lb * 8)) % 256)
+        lb = lb - 1
+    var h = List(h0)
+    var chunk = 0
+    while chunk < len(msg):
+        var w = []
+        var t = 0
+        while t < 16:
+            w.append(_be64(msg, chunk + t * 8))
+            t = t + 1
+        t = 16
+        while t < 80:
+            var x15 = w[t - 15]
+            var x2 = w[t - 2]
+            var s0 = bitxor(bitxor(_rotr64(x15, 1), _rotr64(x15, 8)), _shrL(x15, 7))
+            var s1 = bitxor(bitxor(_rotr64(x2, 19), _rotr64(x2, 61)), _shrL(x2, 6))
+            w.append(w[t - 16] + s0 + w[t - 7] + s1)
+            t = t + 1
+        var a = h[0]
+        var b = h[1]
+        var c = h[2]
+        var d = h[3]
+        var e = h[4]
+        var f = h[5]
+        var g = h[6]
+        var hh = h[7]
+        var i = 0
+        while i < 80:
+            var S1 = bitxor(bitxor(_rotr64(e, 14), _rotr64(e, 18)), _rotr64(e, 41))
+            var ch = bitxor(bitand(e, f), bitand(bitnot(e), g))
+            var temp1 = hh + S1 + ch + _SHA512_K[i] + w[i]
+            var S0 = bitxor(bitxor(_rotr64(a, 28), _rotr64(a, 34)), _rotr64(a, 39))
+            var maj = bitxor(bitxor(bitand(a, b), bitand(a, c)), bitand(b, c))
+            var temp2 = S0 + maj
+            hh = g
+            g = f
+            f = e
+            e = d + temp1
+            d = c
+            c = b
+            b = a
+            a = temp1 + temp2
+            i = i + 1
+        h[0] = h[0] + a
+        h[1] = h[1] + b
+        h[2] = h[2] + c
+        h[3] = h[3] + d
+        h[4] = h[4] + e
+        h[5] = h[5] + f
+        h[6] = h[6] + g
+        h[7] = h[7] + hh
+        chunk = chunk + 128
+    return h
+
+var _H512 = [0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
+             0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179]
+var _H384 = [0xcbbb9d5dc1059ed8, 0x629a292a367cd507, 0x9159015a3070dd17, 0x152fecd8f70e5939,
+             0x67332667ffc00b31, 0x8eb44a8768581511, 0xdb0c2e0d64f98fa7, 0x47b5481dbefa4fa4]
+
+var sha512 = Function(data):
+    var h = _sha512core(data, _H512)
+    var out = ""
+    for v in h:
+        out = out + _hex16(v)
+    return out
+
+var sha384 = Function(data):
+    var h = _sha512core(data, _H384)
+    var out = ""
+    var i = 0
+    while i < 6:                       # SHA-384 truncates to the first 6 of 8 words (48 bytes)
+        out = out + _hex16(h[i])
+        i = i + 1
+    return out
+
 # --- non-cryptographic checksums (crc32 / adler32) -----------------------------------------------
 # CRC-32/ISO-HDLC (the zlib/gzip CRC): reflected polynomial 0xEDB88320, init/xorout 0xFFFFFFFF.
 var _CRC32_TABLE = []
