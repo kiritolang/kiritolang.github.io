@@ -1,0 +1,36 @@
+# spec_nested_slice_key.ki — regression: a nested slice used as a subscript KEY (`d[p[1:]]`).
+# The parser used to see the single subscript element `p[1:]` was itself a SliceExpr and wrongly
+# re-parent it onto the outer object, turning `d[p[1:]]` into `d[1:]` ("Dict does not support
+# slicing" / "unhashable type 'Slice'"). A nested slice already owns its object, so it must stay an
+# ordinary index. This surfaced in the webserver framework's `:name` path-param routing.
+
+var io = import("io")
+
+var p = ":name"
+var d = {}
+d[p[1:]] = "world"                 # write: nested open slice as key
+io.print(d["name"])                # -> world
+io.print(d[p[1:]])                 # read: nested open slice as key -> world
+
+var d2 = {"ab": "Y"}
+var q = "zab"
+io.print(d2[q[1:3]])               # closed nested slice key -> Y
+io.print(d2[q[1:]])                # open nested slice key -> Y
+io.print(d2[(q[1:])])              # parenthesized nested slice key -> Y
+
+# Genuine single-axis slices must be untouched by the fix.
+io.print("hello"[1:3])             # -> el
+io.print([1, 2, 3, 4, 5][1:4])     # -> [2, 3, 4]
+io.print([1, 2, 3, 4, 5][::2])     # -> [1, 3, 5]
+
+# Nested slice on the outer object of an assignment target still slices the object.
+var lst = [0, 1, 2, 3, 4]
+lst[1:3] = [10, 20]
+io.print(lst)                      # -> [0, 10, 20, 3, 4]
+
+# Deeper nesting: a slice key derived from another slice.
+var keys = ["xx", "name", "zz"]
+var d3 = {"name": 42}
+io.print(d3[keys[1:2][0]])         # -> 42
+
+io.print("spec_nested_slice_key: ok")

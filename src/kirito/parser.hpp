@@ -681,9 +681,12 @@ private:
                 elems.push_back(parseElem());
                 while (at(TokenType::Comma)) { advance(); elems.push_back(parseElem()); }
                 expect(TokenType::RBracket, "']' to close the index");
-                if (elems.size() == 1 && elems[0]->exprKind() == ast::ExprKind::Slice) {
+                if (elems.size() == 1 && elems[0]->exprKind() == ast::ExprKind::Slice
+                    && static_cast<ast::SliceExpr&>(*elems[0]).object == nullptr) {
                     // Single-axis slice `obj[a:b:c]`: attach the object and keep the existing GetSlice
-                    // path (unchanged dispatch for String/List/Bytes/Tensor/Range).
+                    // path (unchanged dispatch for String/List/Bytes/Tensor/Range). The `object==nullptr`
+                    // guard is load-bearing: a *nested* slice used as a key (`d[p[1:]]`) already carries
+                    // its own object (`p`), so it must stay an ordinary index — not be re-parented onto `d`.
                     auto& sl = static_cast<ast::SliceExpr&>(*elems[0]);
                     sl.object = std::move(expr);
                     expr = std::move(elems[0]);
