@@ -110,7 +110,9 @@ class Parser:
                     result[name] = self._convert(name, value)
                 else:
                     throw "unknown option: --" + name
-            elif token.startswith("-") and len(token) == 2:
+            elif token.startswith("-") and len(token) == 2 and ((token[1] >= "a" and token[1] <= "z") or (token[1] >= "A" and token[1] <= "Z")):
+                # only a dash + LETTER (-z) is a short option; a dash + digit (-5) is a negative-number
+                # positional, so it falls through to the positional branch below.
                 var matched = self._byshort(token[1:])
                 if matched == None:
                     throw "unknown option: " + token
