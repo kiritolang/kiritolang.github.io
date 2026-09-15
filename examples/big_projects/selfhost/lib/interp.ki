@@ -408,7 +408,7 @@ var evalBinary = Function(St, op, l, r):
                     return eq
                 return not eq
             return _identityEq(l, r, op)
-        rtError("'" + l["cls"]["name"] + "' has no operator " + op)
+        rtError("'" + l["cls"]["name"] + "' has no operator '" + DUNDER[op] + "'")
     if boxKind(r) == "instance":
         # symmetric _eq_ trial (mirrors the real interpreter's kiEquals, which tries both sides'
         # equality before giving up): l has no _eq_ of its own (handled above), but r might, e.g.
