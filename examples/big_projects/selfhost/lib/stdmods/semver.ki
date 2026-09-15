@@ -236,7 +236,18 @@ var _expand = Function(tok):
         if xpt:
             return [{"op": ">=", "v": _mkver(mj, mn, 0, [])}, {"op": "<", "v": _mkver(mj, mn + 1, 0, [])}]
         return [{"op": "=", "v": _mkver(mj, mn, pt, prepart)}]
-    # explicit comparator (>, >=, <, <=): fill missing parts with 0
+    # explicit comparator (>, >=, <, <=) over a partial version: node-semver's replaceXRange rounds
+    # so the bound EXCLUDES the whole partial prefix. ">1" -> ">=2.0.0", ">1.2" -> ">=1.3.0";
+    # "<=1" -> "<2.0.0", "<=1.2" -> "<1.3.0". "<" and ">=" just fill the missing parts with 0.
+    if xmn or xpt:
+        if op == ">":
+            if xmn:
+                return [{"op": ">=", "v": _mkver(mj + 1, 0, 0, [])}]
+            return [{"op": ">=", "v": _mkver(mj, mn + 1, 0, [])}]
+        if op == "<=":
+            if xmn:
+                return [{"op": "<", "v": _mkver(mj + 1, 0, 0, [])}]
+            return [{"op": "<", "v": _mkver(mj, mn + 1, 0, [])}]
     return [{"op": op, "v": _mkver(mj, mn, pt, prepart)}]
 
 # Parse a range string into a List of comparator sets (OR of ANDs).
