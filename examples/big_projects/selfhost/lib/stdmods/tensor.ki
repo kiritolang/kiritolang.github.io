@@ -543,10 +543,13 @@ class Tensor:
         var parts = [self]
         for o in others:
             parts.append(o)
+        var tail = self._shape[1:len(self._shape)]      # every part must agree on the non-concat axes
         var flat = []
         var total0 = 0
         var reqAny = False
         for t in parts:
+            if t._shape[1:len(t._shape)] != tail:
+                throw "concatenate: all tensors must have the same shape except along the concatenation axis"
             for x in t._data:
                 flat.append(x)
             total0 = total0 + t._shape[0]
@@ -599,10 +602,14 @@ class Tensor:
         return _make(flat, sub, self._dtype)
 
     var _slicegetitem_ = Function(self, lo, hi, step):
+        if len(self._shape) == 0:
+            throw "cannot slice a 0-D tensor"
         return self._gatherRows(_sliceIdx(lo, hi, step, self._shape[0]))
 
     var _getitem_ = Function(self, i, j = None, k = None):
         if type(i) == "Tensor":
+            if i._shape != self._shape:
+                throw "boolean mask must match the tensor shape"
             var out = []
             var p = 0
             while p < len(self._data):
@@ -778,11 +785,27 @@ class Tensor:
     var _div_ = Function(self, o):
         return self._binop(o, Function(x, y): return x / y, "div")
     var _mod_ = Function(self, o):
+        if self._dtype == "Complex":
+            throw "% and // are Float-only on tensors"
         return self._binop(o, Function(x, y): return x % y, "mod")
     var _floordiv_ = Function(self, o):
-        return self._binop(o, Function(x, y): return x // y, "floordiv")
+        if self._dtype == "Complex":
+            throw "% and // are Float-only on tensors"
+        var fn = Function(x, y):
+            if y == 0:
+                throw "floor-division by zero"
+            return x // y
+        return self._binop(o, fn, "floordiv")
     var _pow_ = Function(self, o):
-        return self._binop(o, Function(x, y): return x ** y, "pow")
+        if self._dtype == "Complex" or (type(o) == "Tensor" and o._dtype == "Complex"):
+            throw "** is Float-only on tensors (use the complex module for complex powers)"
+        var fn = Function(x, y):
+            if x < 0.0 and y != math.trunc(y):
+                throw "tensor pow: math domain error (negative base " + String(x) + " with a non-integer exponent " + String(y) + ")"
+            if x == 0.0 and y < 0.0:
+                throw "tensor pow: math domain error (zero to a negative power)"
+            return x ** y
+        return self._binop(o, fn, "pow")
     var _neg_ = Function(self):
         var flat = _negFlat(self._data)
         var r = _make(flat, List(self._shape), self._dtype)
@@ -816,13 +839,22 @@ class Tensor:
                 flat.append(0.0)
             i = i + 1
         return _make(flat, rs, "Float")
+    # Complex is unordered: only ==/!= are defined, never </<=/>/>=. One message carries both the
+    # "unordered" wording native uses for the operator and the "Complex" wording it uses for the method.
+    var _reqOrdered = Function(self, o):
+        if self._dtype == "Complex" or (type(o) == "Tensor" and o._dtype == "Complex"):
+            throw "ordering comparisons are not defined for Complex tensors (complex is unordered)"
     var gt = Function(self, o):
+        discard self._reqOrdered(o)
         return self._cmp(o, Function(x, y): return x > y)
     var lt = Function(self, o):
+        discard self._reqOrdered(o)
         return self._cmp(o, Function(x, y): return x < y)
     var ge = Function(self, o):
+        discard self._reqOrdered(o)
         return self._cmp(o, Function(x, y): return x >= y)
     var le = Function(self, o):
+        discard self._reqOrdered(o)
         return self._cmp(o, Function(x, y): return x <= y)
     var eq = Function(self, o):
         return self._cmp(o, Function(x, y): return x == y)
@@ -840,6 +872,14 @@ class Tensor:
         return self._cmp(o, Function(x, y): return x != 0.0 and y != 0.0)
     var logicalor = Function(self, o):
         return self._cmp(o, Function(x, y): return x != 0.0 or y != 0.0)
+    var logicalxor = Function(self, o):
+        return self._cmp(o, Function(x, y): return (x != 0.0) != (y != 0.0))
+    # unary elementwise NOT -> a 0/1 Float mask (1 where the element is zero/false)
+    var logicalnot = Function(self):
+        var flat = []
+        for x in self._data:
+            flat.append(1.0 if x == 0.0 else 0.0)
+        return _make(flat, List(self._shape), "Float")
 
     var item = Function(self):
         if len(self._data) != 1:
@@ -1020,6 +1060,11 @@ class Tensor:
             return self._reduceAxis(axis, "argmax")
         if len(self._data) == 0:
             throw "argmin/argmax of an empty tensor"
+        var ni = 0                                  # NaN present -> index of the FIRST NaN (NumPy)
+        while ni < len(self._data):
+            if _isnan(self._data[ni]):
+                return ni
+            ni = ni + 1
         var bi = 0
         var i = 1
         while i < len(self._data):
@@ -1033,6 +1078,11 @@ class Tensor:
             return self._reduceAxis(axis, "argmin")
         if len(self._data) == 0:
             throw "argmin/argmax of an empty tensor"
+        var ni = 0                                  # NaN present -> index of the FIRST NaN (NumPy)
+        while ni < len(self._data):
+            if _isnan(self._data[ni]):
+                return ni
+            ni = ni + 1
         var bi = 0
         var i = 1
         while i < len(self._data):
@@ -1269,7 +1319,7 @@ class Tensor:
 
     var dot = Function(self, o):
         if len(self._data) != len(o._data):
-            throw "tensor: dot requires equal-length vectors"
+            throw "dot requires vectors of equal length"
         var s = _zeroOf(self._dtype)
         var i = 0
         while i < len(self._data):
@@ -1385,6 +1435,19 @@ class Tensor:
     # --- shape ops ---
     var permute = Function(self, axes):
         var nd = len(self._shape)
+        # axes must be a permutation of 0..nd-1 (each axis exactly once); a repeat or omission would
+        # silently drop/duplicate data.
+        var seen = []
+        var si = 0
+        while si < nd:
+            seen.append(False)
+            si = si + 1
+        if len(axes) != nd:
+            throw "permute: axes must be a permutation"
+        for ax in axes:
+            if ax < 0 or ax >= nd or seen[ax]:
+                throw "permute: axes must be a permutation"
+            seen[ax] = True
         var newshape = []
         for ax in axes:
             newshape.append(self._shape[ax])
@@ -1457,11 +1520,22 @@ class Tensor:
         return self._reshapeLikeGrad(_make(List(self._data), List(ns), self._dtype))
     var flatten = Function(self):
         return self._reshapeLikeGrad(_make(List(self._data), [len(self._data)], self._dtype))
-    var squeeze = Function(self):
+    var squeeze = Function(self, axis = None):
         var ns = []
-        for d in self._shape:
-            if d != 1:
-                ns.append(d)
+        if axis != None:
+            # squeeze ONE axis: it must have size 1, else data would be silently reshaped
+            var ax = _normAxis(axis, len(self._shape))
+            if self._shape[ax] != 1:
+                throw "cannot squeeze an axis whose size is not 1"
+            var d = 0
+            while d < len(self._shape):
+                if d != ax:
+                    ns.append(self._shape[d])
+                d = d + 1
+        else:
+            for d in self._shape:
+                if d != 1:
+                    ns.append(d)
         return self._reshapeLikeGrad(_make(List(self._data), ns, self._dtype))
     var expanddims = Function(self, axis):
         var ns = []
@@ -2464,12 +2538,11 @@ class Tensor:
                     if not (id(p) in seen):
                         stack.append([p, False])
         if seed == None:
-            var sf = []
-            var i = 0
-            while i < len(self._data):
-                sf.append(1.0)
-                i = i + 1
-            self.grad = _make(sf, List(self._shape), "Float")
+            # Only a scalar (single-element) tensor gets an implicit seed of 1.0; a non-scalar needs an
+            # explicit upstream gradient, since summing its elements would be an unrequested reduction.
+            if len(self._data) != 1:
+                throw "backward: a seed gradient is required for a non-scalar tensor"
+            self.grad = _make([1.0], List(self._shape), "Float")
         else:
             self.grad = seed
         var idx = len(topo) - 1
