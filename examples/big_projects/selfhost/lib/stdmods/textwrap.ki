@@ -27,21 +27,41 @@ var indent = Function(text, prefix) -> String:
             out.append(line)
     return "\n".join(out)
 
+# CPython textwrap.dedent: remove the longest common LEADING-WHITESPACE PREFIX STRING (not a char
+# count, so mixed tabs/spaces with no shared prefix are left alone), ignoring whitespace-only lines
+# when computing the margin and normalizing them to empty in the output.
+var _leadingWs = Function(s : String) -> String:
+    var i = 0
+    while i < len(s) and (s[i] == " " or s[i] == "\t"):
+        i = i + 1
+    return s[0:i]
+
+var _commonPrefix = Function(a : String, b : String) -> String:
+    var i = 0
+    var m = len(a)
+    if len(b) < m:
+        m = len(b)
+    while i < m and a[i] == b[i]:
+        i = i + 1
+    return a[0:i]
+
 var dedent = Function(text) -> String:
     var lines = text.split("\n")
-    var minIndent = None
+    var margin = None
     for line in lines:
-        var stripped = line.lstrip()
-        if len(stripped) > 0:
-            var ind = len(line) - len(stripped)
-            if minIndent == None or ind < minIndent:
-                minIndent = ind
-    if minIndent == None or minIndent == 0:
-        return text
+        if len(line.strip()) == 0:
+            continue                              # whitespace-only line: ignored for the margin
+        var ws = _leadingWs(line)
+        if margin == None:
+            margin = ws
+        else:
+            margin = _commonPrefix(margin, ws)
+    if margin == None:
+        margin = ""
     var out = []
     for line in lines:
-        if len(line) >= minIndent:
-            out.append(line[minIndent:])
+        if len(line.strip()) == 0:
+            out.append("")                        # normalize whitespace-only lines to empty
         else:
-            out.append(line)
+            out.append(line[len(margin):])
     return "\n".join(out)
