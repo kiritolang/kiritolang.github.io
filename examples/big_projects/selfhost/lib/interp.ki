@@ -240,6 +240,12 @@ var _stringifyElem = Function(St, v):
     return stringify(St, v)
 
 var stringify = Function(St, v):
+    # Depth guard: strActive holds the containers currently being stringified up the call chain, so its
+    # size is the current nesting depth. A very deeply nested (acyclic) structure would otherwise
+    # recurse one host frame per level and overflow the host stack; throw native's message first. The
+    # bound is below the host-recursion ceiling (which the self-host reaches sooner than native's 1000).
+    if len(St["strActive"]) > 600:
+        throw "structure too deeply nested to stringify"
     var k = boxKind(v)
     if k == "":
         # Integers are formatted in Kirito. List/Set/Dict are walked element-wise (via
@@ -926,6 +932,14 @@ var bindArgs = Function(St, fn, args, kwargs, callEnv):
     var kwmap = {}
     for kw in kwargs:
         kwmap[kw[0]] = kw[1]
+    # A keyword that names no parameter is rejected BEFORE any missing-required diagnostic, matching
+    # native's ordering (oneParam(z=1) -> "unexpected keyword 'z'", not "missing required 'a'").
+    var paramNames = Set()
+    for p in params:
+        paramNames.add(p["name"])
+    for key in kwmap.keys():
+        if not (key in paramNames):
+            rtError(fn["name"] + "() got an unexpected keyword argument '" + key + "'")
     for i in range(np):
         var p = params[i]
         var nm = p["name"]
