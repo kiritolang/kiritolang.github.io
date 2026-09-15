@@ -24,7 +24,10 @@ var _isnan = Function(x) -> Bool:
     return False
 
 var _numeric = Function(values):
-    # the non-missing numeric values; Bool counts as 0/1 (like pandas)
+    # the non-missing numeric values; Bool counts as 0/1 (like pandas). A non-missing value that is
+    # NOT numeric (e.g. a String) is an error in a numeric aggregation -- not silently skipped -- so a
+    # Series.sum() over strings raises instead of returning 0. (Frame reductions pre-filter non-numeric
+    # COLUMNS via _isnumericcol, so this only fires for a directly-aggregated non-numeric Series.)
     var out = []
     for v in values:
         if not _isnan(v):
@@ -32,6 +35,8 @@ var _numeric = Function(values):
                 out.append(1 if v else 0)
             elif isinstance(v, "Integer") or isinstance(v, "Float"):
                 out.append(v)
+            else:
+                throw "Series: non-numeric value in a numeric aggregation: " + String(v) + " (type " + type(v) + ")"
     return out
 
 # True iff a column has at least one non-missing value and every non-missing value is numeric
