@@ -167,11 +167,21 @@ kirito_test(bench bench/bench.cpp)
 # files (imported by other scripts, e.g. complex.ki) live alongside without being run directly.
 # CONFIGURE_DEPENDS so a newly-added scripts/*.ki is picked up by a plain `cmake --build` (which
 # re-globs), not only after a manual reconfigure — otherwise a new test silently isn't registered.
+# Goldens whose EXPECTED output is real OpenSSL-backed crypto (AES/RSA/… ciphertext, not just hashing),
+# so they can only run on a TLS-enabled build. Under -DKIRITO_ENABLE_TLS=OFF (the asan-notls variant)
+# crypto.enabled is False and those ops throw with a clear "requires KIRITO_ENABLE_TLS" error, so the
+# golden's fixed ciphertext can't be reproduced — skip registering them there, the same way the C++
+# deep-TLS TUs compile to an empty main without TLS. (The disabled-build error path is variant-specific,
+# so it can't be a golden that also passes under TLS-on; it is exercised by the no-TLS build itself.)
+set(tls_only_scripts unit_crypto)
 file(GLOB ki_scripts CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/scripts/*.ki)
 foreach(script ${ki_scripts})
     get_filename_component(nm ${script} NAME_WE)
     set(expected ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.expected)
     if(NOT EXISTS ${expected})
+        continue()
+    endif()
+    if((nm IN_LIST tls_only_scripts) AND NOT KIRITO_ENABLE_TLS)
         continue()
     endif()
     set(input ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.in)
