@@ -654,6 +654,13 @@ var parseStatement = Function(P):
     if t["t"] == "name" and t["v"] == "discard":
         P["i"] = P["i"] + 1
         return {"k": "exprstmt", "e": _parseExprList(P)}
+    # `todo [MESSAGE]` — a no-op placeholder (a soft keyword); native warns to stderr, which does not
+    # affect stdout, so here it is simply a no-op that drops an optional message expression.
+    if t["t"] == "name" and t["v"] == "todo":
+        P["i"] = P["i"] + 1
+        if _ty(P) != "newline" and _ty(P) != "eof" and _ty(P) != "dedent":
+            discard _parseExprList(P)
+        return {"k": "pass"}
     # `switch SUBJECT:` with `case`/`default` arms (all soft keywords)
     if t["t"] == "name" and t["v"] == "switch":
         return _parseSwitch(P)
