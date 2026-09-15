@@ -9,7 +9,7 @@ var hash = import("hash")
 #   {"raw": job's raw line, "command": command, "start": iso, "end": iso, "elapsed_ms": Integer,
 #    "code": Integer, "stdout": String, "stderr": String, "digest": String}
 # A `timeout` argument (seconds; None for no cap) is forwarded to sys.shell as documented.
-var runJob = Function(job : Dict, timeout) -> Dict:
+var runJob = Function(job : Dict, timeout : [Integer, None]) -> Dict:
     var t0 = time.now()
     var res = None
     try:

@@ -46,15 +46,17 @@ var _expandTerm = Function(term : String, lo : Integer, hi : Integer) -> Set:
         var m = _tokenRe.match(piece)
         if m == None:
             throw "invalid cron field: " + term
-        var isStar = m.group(1) != None and m.group(1) == "*"
+        var isStar = m.group(1) != None    # group 1 only ever matches "*"
         var startVal = lo
         var endVal = hi
         if not isStar:
             startVal = Integer(m.group(2))
             if m.group(3) != None:
-                endVal = Integer(m.group(3))
+                endVal = Integer(m.group(3))       # explicit `A-B` endpoint
+            elif m.group(4) != None:
+                endVal = hi                        # `N/K` is Vixie-cron shorthand for `N-hi/K`
             else:
-                endVal = startVal
+                endVal = startVal                  # a bare literal is just {N}
         else:
             if m.group(3) != None:
                 throw "invalid cron field: * cannot have a -B endpoint"
@@ -65,13 +67,12 @@ var _expandTerm = Function(term : String, lo : Integer, hi : Integer) -> Set:
                 throw "invalid cron field: step must be > 0"
         if startVal < lo or endVal > hi or startVal > endVal:
             throw "cron field '" + term + "' out of range [" + String(lo) + ".." + String(hi) + "]"
-        var v = startVal
-        while v <= endVal:
+        for v in range(startVal, endVal + 1, step):
             out.add(v)
-            v = v + step
     return out
 
-var _lineRe    = regex.compile("^\\s*([^#]+?)\\s*(?:#.*)?$")
+# Whole-line `#` comments are dropped in parseString; a `#` inside a COMMAND is literal (like Vixie
+# cron), so there is deliberately no inline-comment stripping here.
 var _macroRe   = regex.compile("^@([a-z]+)\\s+(.+)$")
 var _fieldsRe  = regex.compile("^(\\S+)\\s+(\\S+)\\s+(\\S+)\\s+(\\S+)\\s+(\\S+)\\s+(.+)$")
 
@@ -121,7 +122,7 @@ var parseString = Function(src : String, filename : String) -> List:
 # Convenience: read a file.
 var parseFile = Function(path : String) -> List:
     var io = import("io")
-    var fh = io.open(path, "r")
-    var src = fh.read()
-    fh.close()
+    var src = ""
+    with io.open(path, "r") as fh:      # `with` closes the handle even if read() throws
+        src = fh.read()
     return parseString(src, path)

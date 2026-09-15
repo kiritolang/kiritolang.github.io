@@ -10,17 +10,16 @@ var append = Function(logfile : String, result : Dict):
     var dir = path.dirname(logfile)
     if len(dir) > 0 and not path.isdir(dir):
         discard path.mkdir(dir, exist_ok = True)
-    var fh = io.open(logfile, "a")
-    fh.write(json.dumps(result) + "\n")
-    fh.close()
+    with io.open(logfile, "a") as fh:       # `with` closes even if dumps/write throws
+        fh.write(json.dumps(result) + "\n")
 
 # Read the whole log, returning a List of dicts (one per non-empty line).
 var readAll = Function(logfile : String) -> List:
     if not path.isfile(logfile):
         return []
-    var fh = io.open(logfile, "r")
-    var txt = fh.read()
-    fh.close()
+    var txt = ""
+    with io.open(logfile, "r") as fh:       # `with` closes even if read() throws
+        txt = fh.read()
     var out = []
     for line in txt.split("\n"):
         var s = line.strip()

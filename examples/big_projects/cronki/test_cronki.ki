@@ -170,4 +170,59 @@ var jFail = parse.parseString("* * * * * false", "in")[0]
 var resF = runner.runJob(jFail, 5)
 ok(resF["code"] != 0, "`false` yields a non-zero exit code")
 
+# =============================================================================
+# parse: N/K step shorthand (Vixie cron: `N/K` == `N-hi/K`) — regression for the
+# old bug where a stepped bare literal collapsed to just {N}.
+# =============================================================================
+var jNK = parse.parseString("0/15 * * * * x", "in")[0]
+ok(len(jNK["minute"]) == 4 and 0 in jNK["minute"] and 15 in jNK["minute"] and 30 in jNK["minute"] and 45 in jNK["minute"], "0/15 minute expands to {0,15,30,45}, not {0}")
+var jNK2 = parse.parseString("* 6/6 * * * x", "in")[0]
+ok(len(jNK2["hour"]) == 3 and 6 in jNK2["hour"] and 12 in jNK2["hour"] and 18 in jNK2["hour"], "6/6 hour expands from 6 to 23 step 6 = {6,12,18}")
+var jNK3 = parse.parseString("5 * * * * x", "in")[0]
+ok(len(jNK3["minute"]) == 1 and 5 in jNK3["minute"], "a bare literal (no step) is still just {N}")
+
+# =============================================================================
+# parse: a `#` inside a COMMAND is literal (only whole-line comments are dropped).
+# =============================================================================
+var jHash = parse.parseString("* * * * * echo hi # not-a-comment", "in")[0]
+ok(jHash["command"] == "echo hi # not-a-comment", "inline # stays part of the command")
+
+# =============================================================================
+# parse: structural edge cases
+# =============================================================================
+ok(len(parse.parseString("", "in")) == 0, "empty crontab -> no jobs")
+ok(len(parse.parseString("   \n\t\n  \n", "in")) == 0, "whitespace-only lines -> no jobs")
+
+# =============================================================================
+# schedule: POSIX DOM/DOW OR-union (BOTH restricted -> fire when EITHER matches).
+# `0 0 13 * 5` fires on the 13th OR any Friday.
+# =============================================================================
+var jOr = parse.parseString("0 0 13 * 5 x", "in")[0]
+ok(schedule.matches(time.make(2024, 1, 13, 0, 0, 0), jOr), "0 0 13 * 5 matches the 13th (a Saturday) via DOM")
+ok(schedule.matches(time.make(2024, 1, 5, 0, 0, 0), jOr), "0 0 13 * 5 matches a Friday (the 5th) via DOW")
+ok(not schedule.matches(time.make(2024, 1, 6, 0, 0, 0), jOr), "0 0 13 * 5 does NOT match the 6th (Sat, not the 13th)")
+
+# =============================================================================
+# runner: a timeout surfaces as the synthetic code:-1 record (the catch branch).
+# =============================================================================
+var jSleep = parse.parseString("* * * * * sleep 3", "in")[0]
+var resT = runner.runJob(jSleep, 1)
+ok(resT["code"] == -1, "a timed-out job records code -1")
+ok(len(resT["stderr"]) > 0 and len(resT["digest"]) == 12, "timeout record carries the error text and a digest")
+
+# =============================================================================
+# history: tail(n >= len) returns all; append creates nested directories.
+# =============================================================================
+discard path.remove(histFile, missing_ok = True)   # histFile was removed above; re-populate it
+history.append(histFile, r1)
+history.append(histFile, r2)
+ok(len(history.tail(histFile, 99)) == 2, "tail(n) with n >= len returns everything")
+discard path.remove(histFile, missing_ok = True)
+
+var nestedLog = path.gettempdir() + "/cronki_nested_selftest/deep/run.log"
+discard path.remove(nestedLog, missing_ok = True)
+history.append(nestedLog, r1)
+ok(len(history.readAll(nestedLog)) == 1, "append creates missing parent directories")
+discard path.remove(nestedLog, missing_ok = True)
+
 io.print("cronki: " + String(n) + " checks passed")

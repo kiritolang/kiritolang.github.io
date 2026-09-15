@@ -28,7 +28,7 @@ cronki/
   schedule.ki            # matches(dt, job) + nextRun(dt, job) + nextRuns(dt, job, count)
   runner.ki              # runJob(job, timeout) via sys.shell, returns the result record
   history.ki             # append + read + tail a JSON-lines log
-  test_cronki.ki         # 49 checks; matched against test_cronki.expected
+  test_cronki.ki         # 62 checks; matched against test_cronki.expected
   samples/
     demo.crontab
 ```

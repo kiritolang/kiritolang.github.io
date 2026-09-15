@@ -23,12 +23,26 @@ var schedule = import("schedule")
 var runner   = import("runner")
 var history  = import("history")
 
-var _loadJobs = Function(file : String):
+var _loadJobs = Function(file : String) -> [List, None]:
     try:
         return parse.parseFile(file)
     catch String as e:
         io.eprint("cronki: " + e)
         return None
+
+# Parse a COUNT argument: "" -> dflt, else a non-negative Integer (a bad value throws a clean String
+# the caller turns into a "cronki: ..." diagnostic instead of an opaque Integer() traceback).
+var _parseCount = Function(raw : String, dflt : Integer) -> Integer:
+    if raw == "":
+        return dflt
+    var v = None
+    try:
+        v = Integer(raw)
+    catch:
+        throw "invalid count: " + raw
+    if v < 0:
+        throw "count must be >= 0: " + raw
+    return v
 
 var _referenceTime = Function(iso : String):
     if iso == "":
@@ -64,7 +78,7 @@ var cmdDue = Function(jobs : List, at):
             io.print("  L" + String(j["line"]) + ": " + j["command"])
     return due
 
-var cmdRun = Function(jobs : List, at, logfile : String, timeout):
+var cmdRun = Function(jobs : List, at, logfile : String, timeout : [Integer, None]):
     var due = cmdDue(jobs, at)
     var ok = 0
     var fail = 0
@@ -104,8 +118,11 @@ var _main = Function():
     var cmd = opts["command"]
     if cmd == "history":
         var count = 20
-        if opts["target"] != "":
-            count = Integer(opts["target"])
+        try:
+            count = _parseCount(opts["target"], 20)
+        catch String as e:
+            io.eprint("cronki: " + e)
+            return 2
         cmdHistory(opts["log"], count)
         return 0
     if opts["file"] == "":
@@ -125,8 +142,11 @@ var _main = Function():
         return 0
     if cmd == "next":
         var count = 5
-        if opts["target"] != "":
-            count = Integer(opts["target"])
+        try:
+            count = _parseCount(opts["target"], 5)
+        catch String as e:
+            io.eprint("cronki: " + e)
+            return 2
         cmdNext(jobs, at, count)
         return 0
     if cmd == "due":
