@@ -1,0 +1,25 @@
+# spec_inline_return_annot_span.ki — regression: an uncaught/caught RETURN-annotation failure from an
+# inlined InlineFunction body must be attributed to the CALL SITE, not the function's definition line
+# (once emitted with fn.span instead of e.span, the traceback pointed at the `-> Integer` definition
+# line under inlining while --no-inline correctly pointed at the call). Runs inline AND --no-inline
+# against the same .expected — the frame line must match the call in both. Prints only stable parts
+# (function label + line), never the machine-specific file path.
+var io = import("io")
+var sys = import("sys")
+
+var g = InlineFunction(x) -> Integer:
+    return x
+
+var frameLines = Function() -> List:
+    var out = []
+    for line in sys.traceback().split("\n"):
+        if ", in " in line:
+            out.append(line.split(", in ")[1] + "@" + line.split(", line ")[1].split(",")[0])
+    return out
+
+try:
+    discard g(1.5)                       # the call is on THIS line (line 21)
+catch as e:
+    io.print(e)                          # message (identical both configs)
+    io.print(frameLines())               # ['<module>@21'] — the CALL line, both configs
+io.print("OK inline-return-annot-span")

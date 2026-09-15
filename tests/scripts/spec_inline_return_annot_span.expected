@@ -1,0 +1,3 @@
+function must return Integer, got Float
+['<module>@21']
+OK inline-return-annot-span

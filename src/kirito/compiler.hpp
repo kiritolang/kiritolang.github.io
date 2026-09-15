@@ -326,19 +326,17 @@ private:
         std::string nm = fn.name.empty() ? std::string("<anonymous>") : fn.name;
         // Reached only after BOTH the single-expression and the multi-statement candidacy declined —
         // keyword args, defaults, annotations, and arity are handled during binding, so they are NOT
-        // failure reasons here. What remains: a starred arg, the depth/recursion guards, or a body shape
-        // that cannot be spliced.
-        for (const auto& a : e.args)
-            if (dynamic_cast<const ast::StarExpr*>(a.value.get()))
-                throw KiritoError("cannot inline InlineFunction '" + nm + "': it is called with a starred (*) "
-                                  "argument — use Function", e.span);
+        // failure reasons here. What remains: the depth/recursion guards or a body shape that cannot be
+        // spliced. (A starred call argument cannot occur — `f(*xs)` is a parse error; there is no
+        // call-site splat — so no guard for it.) One SSOT recursion message covers self- AND mutual
+        // recursion (both a direct cycle on inlineStack_ and a const-fn whose body captures its own name).
+        const std::string recMsg = "cannot inline InlineFunction '" + nm + "': it is recursive (an "
+            "InlineFunction must be a direct, non-recursive call — use Function for a recursive helper)";
         if (inlineStack_.size() >= kMaxInlineDepth)
             throw KiritoError("cannot inline InlineFunction '" + nm + "': inlining depth limit reached — "
                               "use Function", e.span);
         for (const ast::FunctionExpr* f : inlineStack_)
-            if (f == &fn)
-                throw KiritoError("cannot inline InlineFunction '" + nm + "': it is recursive (an InlineFunction "
-                                  "must be a direct, non-recursive call — use Function for a recursive helper)", e.span);
+            if (f == &fn) throw KiritoError(recMsg, e.span);
         std::vector<const ast::NameExpr*> caps;
         NameSet bodyLocals;
         kirito::collectBlockDecls(fn.body, bodyLocals);
@@ -347,12 +345,11 @@ private:
         kirito::inlineMultiScanBlock(fn.body, lp, caps);   // best-effort caps for the recursion message
         if (const auto* nmExpr = dynamic_cast<const ast::NameExpr*>(e.callee.get()))
             for (const ast::NameExpr* c : caps)
-                if (c->name == nmExpr->name)
-                    throw KiritoError("cannot inline InlineFunction '" + nm + "': it is recursive — use Function",
-                                      e.span);
+                if (c->name == nmExpr->name) throw KiritoError(recMsg, e.span);
         throw KiritoError("cannot inline InlineFunction '" + nm + "': its body cannot be inlined in this version "
-                          "(it uses a loop, try/with, switch, a nested function, or a name that is not a "
-                          "parameter, local, global, or capture) — use Function", e.span);
+                          "(it uses a loop, try/with, switch, a nested function, a parameter default that reads "
+                          "an enclosing name, or a name that is not a parameter, local, global, or capture) — "
+                          "use Function", e.span);
     }
 
     // Record `var f = <inline-eligible function literal>` as an immutable const-fn binding, so later
@@ -549,8 +546,10 @@ private:
         for (std::size_t j : exitJumps) patch(j, exit);
         inlineReturns_.pop_back();
         inlineStack_.pop_back();
-        // 7. Enforce the return annotation on the result now on the stack (no-op if unannotated).
-        emitCheckAnnotation(fn.returnAnnotation, "", true, fn.span);
+        // 7. Enforce the return annotation on the result now on the stack (no-op if unannotated). Attribute
+        //    a violation to the CALL SITE (e.span), matching the parameter checks and a normal call — not
+        //    the function's definition line.
+        emitCheckAnnotation(fn.returnAnnotation, "", true, e.span);
         inlineRebind_ = prev;            // one value now on the stack = the call result
     }
 

@@ -180,7 +180,8 @@ set(tls_only_scripts unit_crypto)
 # EXCLUDED from the whole-suite --no-inline differential below (they still run once, with inlining on).
 set(traceback_scripts
     cov_containers_dunders cov_system exceptions_deep labx_sys_time parallel_worker_inline_flag
-    r10_datasys r4_math_sys r7_io_sys r9_stdlib_c spec_cov_core spec_traceback verify_sys)
+    r10_datasys r4_math_sys r7_io_sys r9_stdlib_c spec_cov_core spec_traceback verify_sys
+    spec_inline_return_annot_span)
 file(GLOB ki_scripts CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/scripts/*.ki)
 foreach(script ${ki_scripts})
     get_filename_component(nm ${script} NAME_WE)
@@ -242,7 +243,7 @@ endforeach()
 # are DELIBERATELY inlining-agnostic — their traced helpers are multi-statement `Function`s that are not
 # inline candidates, or (parallel_worker_inline_flag) the golden asserts a config-invariant — so they DO
 # run both ways here to keep the InlineFunction / worker-propagation coverage.
-foreach(nm spec_traceback parallel_worker_inline_flag)
+foreach(nm spec_traceback parallel_worker_inline_flag spec_inline_return_annot_span)
     set(_scr ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.ki)
     set(_exp ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.expected)
     if(EXISTS ${_scr} AND EXISTS ${_exp})
@@ -259,7 +260,7 @@ endforeach()
 # intermediate, or a hidden $inl/$cmb slot left unrooted is swept mid-expression and shows up as a wrong
 # result here (or an ASan use-after-free in the asan variant). Both inline ON and --no-inline must still
 # equal the SAME .expected under per-alloc GC, so this is also the soak-differential at the .ki layer. ---
-foreach(nm spec_cheapcall spec_inline_adversarial spec_inline_function spec_inline_function_multi spec_inline_function_annot spec_inline_stale_local unit_audit_v113 unit_audit_v114 unit_fold_const_gc)
+foreach(nm spec_cheapcall spec_inline_adversarial spec_inline_function spec_inline_function_multi spec_inline_function_annot spec_inline_stale_local gc_lazy_iterator_soak unit_audit_v113 unit_audit_v114 unit_fold_const_gc)
     set(_scr ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.ki)
     set(_exp ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.expected)
     if(EXISTS ${_scr} AND EXISTS ${_exp})
