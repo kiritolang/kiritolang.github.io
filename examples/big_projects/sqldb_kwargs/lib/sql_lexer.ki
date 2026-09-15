@@ -7,7 +7,8 @@
 var _keywords = Set(iterable = [
     "select", "from", "where", "insert", "into", "values", "update", "set", "delete",
     "create", "table", "drop", "and", "or", "not", "null", "order", "by", "asc", "desc",
-    "limit", "primary", "key", "integer", "text", "true", "false", "is", "count", "as"
+    "limit", "primary", "key", "integer", "text", "true", "false", "is", "count", "as",
+    "if", "exists"
 ])
 
 var is_space = Function(c) -> Bool:

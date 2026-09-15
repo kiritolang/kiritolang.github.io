@@ -101,7 +101,8 @@ class Parser:
         discard self._expect("keyword", "table")
         var if_exists = False
         if self._accept("keyword", "if"):
-            discard self._expect("keyword", "not")  # not used; we accept IF EXISTS via a simpler path
+            discard self._expect("keyword", "exists")
+            if_exists = True
         var name = self._expect("ident", None)["value"]
         return {"kind": "drop", "table": name, "if_exists": if_exists}
 

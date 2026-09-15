@@ -23,6 +23,8 @@ class Table:
         self.pk = None
         self._col_type = {}
         for c in columns:
+            if c["name"] in self._col_type:
+                throw SqlError("table '" + name + "' has a duplicate column: " + c["name"])
             self.col_names.append(c["name"])
             self._col_type[c["name"]] = c["type"]
             if c["pk"]:
@@ -50,8 +52,9 @@ class Table:
             return String(lit["value"])    # ints accepted into TEXT, stringified
         return lit["value"]
 
-    # Enforce the PRIMARY KEY uniqueness invariant for a candidate row.
-    var check_pk = Function(self, row):
+    # Enforce the PRIMARY KEY uniqueness invariant for a candidate row, against both the committed
+    # rows and any not-yet-committed rows staged in the same statement (`pending`).
+    var check_pk = Function(self, row, pending : List):
         if self.pk == None:
             return None
         var v = row[self.pk]
@@ -59,6 +62,9 @@ class Table:
             throw SqlError("PRIMARY KEY '" + self.pk + "' cannot be NULL")
         for existing in self.rows:
             if existing[self.pk] == v:
+                throw SqlError("duplicate PRIMARY KEY value: " + String(v))
+        for staged in pending:
+            if staged[self.pk] == v:
                 throw SqlError("duplicate PRIMARY KEY value: " + String(v))
 
 class Database:
@@ -116,7 +122,9 @@ class Database:
         for c in cols:
             if not tbl.has_column(c):
                 throw SqlError("no such column '" + c + "' in table '" + tbl.name + "'")
-        var inserted = 0
+        # Build + validate every row BEFORE committing any, so a failure part-way through a
+        # multi-row INSERT leaves the table unchanged (atomicity).
+        var staged = []
         for vals in stmt["rows"]:
             if len(vals) != len(cols):
                 throw SqlError("INSERT has " + String(len(vals)) + " values but " + String(len(cols)) + " columns")
@@ -126,10 +134,11 @@ class Database:
                 row[cn] = None
             for c, v in zip(cols, vals):
                 row[c] = tbl.coerce(c, v)
-            tbl.check_pk(row)
+            tbl.check_pk(row, staged)
+            staged.append(row)
+        for row in staged:
             tbl.rows.append(row)
-            inserted = inserted + 1
-        return {"ok": True, "type": "insert", "table": tbl.name, "count": inserted}
+        return {"ok": True, "type": "insert", "table": tbl.name, "count": len(staged)}
 
     var _exec_select = Function(self, stmt):
         var tbl = self._get_table(stmt["table"])
@@ -178,19 +187,36 @@ class Database:
         for a in stmt["assigns"]:
             if not tbl.has_column(a["column"]):
                 throw SqlError("no such column '" + a["column"] + "' in UPDATE")
-        var changed = 0
-        for row in tbl.rows:
-            if stmt["where"] == None or self._eval_where(stmt["where"], row, tbl):
+        # Pass 1: coerce the new value for every matched row WITHOUT mutating (a type error here must
+        # not leave the table half-updated). Keyed by row index so pass 2 can project the final state.
+        var newvals = {}
+        var idx = 0
+        while idx < len(tbl.rows):
+            if stmt["where"] == None or self._eval_where(stmt["where"], tbl.rows[idx], tbl):
+                var nv = {}
                 for a in stmt["assigns"]:
-                    var newval = tbl.coerce(a["column"], a["value"])
-                    # if updating the PK, re-check uniqueness against other rows
-                    if tbl.pk == a["column"] and newval != row[a["column"]]:
-                        for other in tbl.rows:
-                            if other != row and other[tbl.pk] == newval:
-                                throw SqlError("duplicate PRIMARY KEY value: " + String(newval))
-                    row[a["column"]] = newval
-                changed = changed + 1
-        return {"ok": True, "type": "update", "table": tbl.name, "count": changed}
+                    nv[a["column"]] = tbl.coerce(a["column"], a["value"])
+                newvals[idx] = nv
+            idx = idx + 1
+        # Pass 2: validate PRIMARY KEY uniqueness/non-NULL on the PROJECTED post-update state.
+        if tbl.pk != None:
+            var seen = Set()
+            var j = 0
+            while j < len(tbl.rows):
+                var pkval = tbl.rows[j][tbl.pk]
+                if j in newvals and tbl.pk in newvals[j]:
+                    pkval = newvals[j][tbl.pk]
+                if pkval == None:
+                    throw SqlError("PRIMARY KEY '" + tbl.pk + "' cannot be NULL")
+                if pkval in seen:
+                    throw SqlError("duplicate PRIMARY KEY value: " + String(pkval))
+                seen.add(pkval)
+                j = j + 1
+        # Pass 3: all validated -> apply.
+        for k in newvals:
+            for c in newvals[k]:
+                tbl.rows[k][c] = newvals[k][c]
+        return {"ok": True, "type": "update", "table": tbl.name, "count": len(newvals)}
 
     var _exec_delete = Function(self, stmt):
         var tbl = self._get_table(stmt["table"])

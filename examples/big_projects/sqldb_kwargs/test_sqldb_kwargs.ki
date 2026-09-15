@@ -1,0 +1,110 @@
+# test_sqldb_kwargs.ki — .ki-level unit tests for the SQL lexer / parser / engine in isolation (the Python
+# harnesses only exercise the server over TCP). Prints "sqldb: N checks passed", matched byte-for-byte
+# against test_sqldb_kwargs.expected. Run:
+#   ki --lib examples/big_projects/sqldb_kwargs/lib examples/big_projects/sqldb_kwargs/test_sqldb_kwargs.ki
+
+var io  = import("io")
+var lex = import("sql_lexer")
+var par = import("sql_parser")
+var eng = import("sql_engine")
+
+var n = 0
+var ok = Function(c, m):
+    assert c, m
+    n = n + 1
+var throws = Function(f):
+    try:
+        discard f()
+        return False
+    catch:
+        return True
+
+# =============================================================================
+# lexer
+# =============================================================================
+var toks = lex.tokenize(src = "SELECT * FROM t WHERE x <= 5")
+ok(toks[0]["type"] == "keyword" and toks[0]["value"] == "select", "keywords are lower-cased")
+ok(toks[1]["type"] == "star", "'*' is a star token")
+ok(toks[3]["type"] == "ident" and toks[3]["value"] == "t", "identifiers keep their case")
+ok(toks[6]["type"] == "op" and toks[6]["value"] == "<=", "two-char operator <= lexes as one token")
+ok(toks[7]["type"] == "number" and toks[7]["value"] == "5", "digit run is a number")
+ok(toks[len(toks) - 1]["type"] == "eof", "stream ends with eof")
+# every comparison operator
+for pair in [["=", "="], ["!=", "!="], ["<>", "<>"], ["<", "<"], [">", ">"], [">=", ">="]]:
+    var t = lex.tokenize(src = "a " + pair[0] + " b")
+    ok(t[1]["type"] == "op" and t[1]["value"] == pair[1], "operator " + pair[0] + " lexes")
+# '' escaped quote inside a string
+var st = lex.tokenize(src = "'it''s'")
+ok(st[0]["type"] == "string" and st[0]["value"] == "it's", "'' is an escaped single quote")
+# lexer error paths
+ok(throws(Function(): return lex.tokenize(src = "'unterminated")), "unterminated string throws")
+ok(throws(Function(): return lex.tokenize(src = "a ! b")), "a lone '!' throws")
+ok(throws(Function(): return lex.tokenize(src = "a @ b")), "an unexpected char throws")
+
+# =============================================================================
+# parser
+# =============================================================================
+ok(par.parse(sql = "SELECT * FROM t")["kind"] == "select", "SELECT parses")
+ok(par.parse(sql = "INSERT INTO t VALUES (1, 'a')")["kind"] == "insert", "INSERT parses")
+ok(par.parse(sql = "CREATE TABLE t (id INTEGER PRIMARY KEY)")["kind"] == "create", "CREATE parses")
+# DROP TABLE IF EXISTS (regression: `if`/`exists` were not keywords and the parser expected `not`)
+var dropStmt = par.parse(sql = "DROP TABLE IF EXISTS t")
+ok(dropStmt["kind"] == "drop" and dropStmt["if_exists"] == True, "DROP TABLE IF EXISTS sets if_exists")
+ok(par.parse(sql = "DROP TABLE t")["if_exists"] == False, "DROP TABLE without IF EXISTS")
+# parser error paths
+ok(throws(Function(): return par.parse(sql = "SELECT * FROM t junk here")), "trailing tokens throw")
+ok(throws(Function(): return par.parse(sql = "CREATE TABLE t (id BOGUSTYPE)")), "an unknown column type throws")
+ok(throws(Function(): return par.parse(sql = "SELECT FROM")), "a malformed SELECT throws")
+
+# =============================================================================
+# engine: happy path
+# =============================================================================
+var db = eng.Database()
+discard db.run(sql = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+ok(db.run(sql = "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')")["count"] == 3, "multi-row insert")
+ok(db.run(sql = "SELECT COUNT(*) FROM users")["count"] == 3, "COUNT(*)")
+var sel = db.run(sql = "SELECT name FROM users WHERE id = 2")
+ok(len(sel["rows"]) == 1 and sel["rows"][0]["name"] == "Bob", "WHERE = filters")
+var ordered = db.run(sql = "SELECT id FROM users ORDER BY id DESC")
+ok(ordered["rows"][0]["id"] == 3 and ordered["rows"][2]["id"] == 1, "ORDER BY DESC")
+ok(len(db.run(sql = "SELECT * FROM users LIMIT 2")["rows"]) == 2, "LIMIT")
+ok(db.run(sql = "UPDATE users SET name = 'Alice2' WHERE id = 1")["count"] == 1, "UPDATE count")
+ok(db.run(sql = "SELECT name FROM users WHERE id = 1")["rows"][0]["name"] == "Alice2", "UPDATE applied")
+ok(db.run(sql = "DELETE FROM users WHERE id = 3")["count"] == 1, "DELETE count")
+ok(db.run(sql = "SELECT COUNT(*) FROM users")["count"] == 2, "row removed after DELETE")
+
+# =============================================================================
+# engine: failure + integrity paths
+# =============================================================================
+ok(throws(Function(): return db.run(sql = "INSERT INTO users VALUES (1, 'dup')")), "duplicate PRIMARY KEY rejected")
+ok(throws(Function(): return db.run(sql = "SELECT * FROM nosuch")), "SELECT on a missing table throws")
+ok(throws(Function(): return db.run(sql = "INSERT INTO users VALUES ('x', 'y')")), "TEXT into an INTEGER PK rejected")
+ok(throws(Function(): return eng.Database().run(sql = "CREATE TABLE d (a INTEGER, a TEXT)")), "duplicate column name rejected")
+
+# INSERT atomicity: an intra-batch duplicate PK rejects the WHOLE statement (no partial rows).
+var adb = eng.Database()
+discard adb.run(sql = "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+discard adb.run(sql = "INSERT INTO t VALUES (1, 'a')")
+ok(throws(Function(): return adb.run(sql = "INSERT INTO t VALUES (2, 'b'), (2, 'c')")), "intra-batch duplicate PK rejected")
+ok(adb.run(sql = "SELECT COUNT(*) FROM t")["count"] == 1, "a failed multi-row INSERT leaves the table unchanged (atomic)")
+ok(throws(Function(): return adb.run(sql = "INSERT INTO t VALUES (5, 'ok'), ('bad', 'x')")), "a mid-batch type error rejects the whole INSERT")
+ok(adb.run(sql = "SELECT COUNT(*) FROM t")["count"] == 1, "the partially-valid INSERT committed nothing")
+
+# UPDATE atomicity: an update that would collide the PK is rejected with no partial change.
+discard adb.run(sql = "INSERT INTO t VALUES (2, 'b'), (3, 'c')")
+ok(throws(Function(): return adb.run(sql = "UPDATE t SET id = 1 WHERE id = 2")), "UPDATE to a colliding PK rejected")
+ok(adb.run(sql = "SELECT v FROM t WHERE id = 2")["rows"][0]["v"] == "b", "the rejected UPDATE changed nothing")
+
+# DROP TABLE IF EXISTS semantics
+ok(db.run(sql = "DROP TABLE IF EXISTS nope")["existed"] == False, "DROP IF EXISTS on a missing table is a no-op")
+ok(throws(Function(): return db.run(sql = "DROP TABLE nope")), "DROP without IF EXISTS on a missing table throws")
+discard db.run(sql = "DROP TABLE IF EXISTS users")
+ok(throws(Function(): return db.run(sql = "SELECT * FROM users")), "the table is gone after DROP")
+
+# cross-type WHERE equality is simply False (an INTEGER never equals a TEXT literal).
+var cdb = eng.Database()
+discard cdb.run(sql = "CREATE TABLE c (id INTEGER PRIMARY KEY)")
+discard cdb.run(sql = "INSERT INTO c VALUES (5)")
+ok(len(cdb.run(sql = "SELECT * FROM c WHERE id = 'five'")["rows"]) == 0, "INTEGER = TEXT is False (no match)")
+
+io.print("sqldb_kwargs: " + String(n) + " checks passed")

@@ -90,6 +90,13 @@ for proj in cronki feedreader kirdown ledger snip; do
     run_golden "$d/test_$proj.ki"
 done
 
+# --- library .ki unit tests (a project whose runtime entry point is a server/Python harness still
+#     gets fast, deterministic .ki coverage of its pure library layer) ------------------------------
+for proj in sqldb sqldb_kwargs; do
+    d="examples/big_projects/$proj"
+    [ -f "$d/test_$proj.ki" ] && run_golden "$d/test_$proj.ki" --lib "$d/lib"
+done
+
 # --- self-asserting Kirito tests ------------------------------------------------------------
 run examples/big_projects/kgrad/test_kgrad.ki \
     "$KI" --lib examples/big_projects/kgrad/lib \
