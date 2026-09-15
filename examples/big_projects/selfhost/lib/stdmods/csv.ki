@@ -35,13 +35,13 @@ var parserow = Function(line):
                     inQuotes = False
             else:
                 current = current + c
-        elif c == "\"":
-            inQuotes = True
+        elif c == "\"" and len(current) == 0:
+            inQuotes = True                  # a quote opens a field only at the field START
         elif c == ",":
             fields.append(current)
             current = ""
         else:
-            current = current + c
+            current = current + c            # a bare quote mid-field is a literal character
         i = i + 1
     fields.append(current)
     return fields
@@ -66,8 +66,8 @@ var parse = Function(text):
                     inQuotes = False
             else:
                 current = current + c
-        elif c == "\"":
-            inQuotes = True
+        elif c == "\"" and len(current) == 0:
+            inQuotes = True                  # a quote opens a field only at the field START
         elif c == ",":
             fields.append(current)
             current = ""
