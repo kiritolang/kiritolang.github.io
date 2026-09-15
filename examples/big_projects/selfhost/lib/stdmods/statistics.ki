@@ -80,17 +80,18 @@ var quantiles = Function(data, n = 4):
         throw "quantiles requires at least two data points"
     if n < 1:
         throw "quantiles: n must be at least 1"
+    # CPython 'exclusive' method: clamp the interpolation index j to [1, ld-1] and use the delta form
+    # so the tail cuts EXTRAPOLATE linearly beyond the data (e.g. quantiles([1,2], n=4) = [.75,1.5,2.25]).
+    var m = ld + 1
     var out = []
     var i = 1
     while i < n:
-        var pos = Float(i) * Float(ld + 1) / Float(n)
-        var lo = Integer(pos)
-        if lo < 1:
-            out.append(Float(s[0]))
-        elif lo >= ld:
-            out.append(Float(s[ld - 1]))
-        else:
-            var frac = pos - Float(lo)
-            out.append(Float(s[lo - 1]) + frac * (Float(s[lo]) - Float(s[lo - 1])))
+        var j = i * m // n
+        if j < 1:
+            j = 1
+        if j > ld - 1:
+            j = ld - 1
+        var delta = i * m - j * n
+        out.append((Float(s[j - 1]) * Float(n - delta) + Float(s[j]) * Float(delta)) / Float(n))
         i = i + 1
     return out
