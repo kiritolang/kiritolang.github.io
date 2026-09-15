@@ -1,0 +1,21 @@
+# tensor_relu_sign_nan_passthrough.ki — regression: relu() and sign() must PROPAGATE NaN, not silently
+# return 0.0. The `tensor` math set documents "a NaN element passes through" (10-stdlib.md), and every
+# other op honours it — but relu/sign once mapped NaN into their else/0 branch (both `x>0` and `x<0` are
+# false for NaN), silently turning a NaN (an exploding gradient / bad input) into 0.0 and masking it.
+var io = import("io")
+var T = import("tensor")
+var m = import("math")
+
+var isnan = Function(x) -> Bool: return x != x
+
+var r = T.Tensor([m.nan, -2.0, 0.0, 3.0]).relu().tolist()
+io.print(isnan(r[0]))            # True — NaN passes through
+io.print([r[1], r[2], r[3]])     # [0.0, 0.0, 3.0] — finite relu unchanged
+
+var s = T.Tensor([m.nan, -2.0, 0.0, 3.0]).sign().tolist()
+io.print(isnan(s[0]))            # True — NaN passes through
+io.print([s[1], s[2], s[3]])     # [-1.0, 0.0, 1.0] — finite sign unchanged
+
+# abs already propagated NaN (kept as a contrast / guard)
+io.print(isnan(T.Tensor([m.nan]).abs().tolist()[0]))   # True
+io.print("OK relu-sign-nan")

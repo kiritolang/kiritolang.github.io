@@ -514,7 +514,9 @@ inline double mathForward(MathOp k, double x) {
         case MathOp::Square: { return x * x; } break;
         case MathOp::Reciprocal: { return 1.0 / x; } break;
         case MathOp::Abs: { return std::fabs(x); } break;
-        case MathOp::Sign: { return (x > 0) - (x < 0); } break;
+        // NaN must PASS THROUGH (the module's documented guarantee), not fall into the else/0 branch:
+        // both `x > 0` and `x < 0` are false for NaN, which would silently yield 0.0 (a masked NaN).
+        case MathOp::Sign: { return std::isnan(x) ? x : static_cast<double>((x > 0) - (x < 0)); } break;
         case MathOp::Sin: { return std::sin(x); } break;
         case MathOp::Cos: { return std::cos(x); } break;
         case MathOp::Tan: { return std::tan(x); } break;
@@ -527,7 +529,7 @@ inline double mathForward(MathOp k, double x) {
         case MathOp::Asinh: { return std::asinh(x); } break;
         case MathOp::Acosh: { return std::acosh(x); } break;
         case MathOp::Atanh: { return std::atanh(x); } break;
-        case MathOp::Relu: { return x > 0 ? x : 0.0; } break;
+        case MathOp::Relu: { return std::isnan(x) ? x : (x > 0 ? x : 0.0); } break;  // NaN passes through, not -> 0
         case MathOp::Sigmoid: { return 1.0 / (1.0 + std::exp(-x)); } break;
         // Numerically stable softplus: naive log1p(exp(x)) overflows to inf for x > ~709, poisoning
         // the forward pass (the derivative is already stable). max(x,0)+log1p(exp(-|x|)) is exact
