@@ -2483,7 +2483,7 @@ class Tensor:
     # serialization: gradient-free tensors round-trip by value; grad-requiring ones refuse
     var _getstate_ = Function(self):
         if self._req:
-            throw "tensor: a grad-requiring tensor cannot be serialized (detach() first)"
+            throw "cannot serialize a Tensor that requires grad; call detach() first (only gradient-free tensors are serializable)"
         return {"data": List(self._data), "shape": List(self._shape), "dtype": self._dtype}
     var _setstate_ = Function(self, state):
         self._data = state["data"]

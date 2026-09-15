@@ -19,16 +19,9 @@ var _hexVal = Function(c):
         return ord(c) - 55
     throw "json: bad \\u escape"
 
-# parse a value starting at i; returns [value, nextIndex]
-var _parseVal = Function(s, i):
-    i = _ws(s, i)
-    if i >= len(s):
-        throw "json: unexpected end of input"
+# parse a single non-container (scalar) value at i; returns [value, nextIndex]
+var _parseScalar = Function(s, i):
     var c = s[i]
-    if c == "{":
-        return _parseObj(s, i)
-    if c == "[":
-        return _parseArr(s, i)
     if c == "\"":
         return _parseStr(s, i)
     if c == "t":
@@ -60,6 +53,77 @@ var _parseVal = Function(s, i):
         return _parseNum(s, i)
     throw "json: unexpected character"
 
+# Parse one JSON value at i; returns [value, nextIndex]. ITERATIVE (explicit container stack) rather
+# than recursive descent: the self-host runs this on the native call stack, so a recursive parser
+# would overflow the host stack on deep input long before any depth counter fired. The explicit stack
+# lets nesting be bounded exactly at 1000 (matching native) with a clean "nesting too deep" instead.
+var _parseVal = Function(s, i0):
+    var n = len(s)
+    var stack = []               # in-progress containers: {"arr":Bool, "box":list|dict, "key":pending}
+    var i = i0
+    var mode = "value"           # value -> parse a value; key -> parse an object key; complete -> attach `pending`
+    var pending = None
+    while True:
+        if mode == "value":
+            i = _ws(s, i)
+            if i >= n:
+                throw "json: unexpected character"     # EOF where a value was expected (native wording)
+            var c = s[i]
+            if c == "[" or c == "{":
+                if len(stack) >= 1000:
+                    throw "json: nesting too deep"
+                var isArr = c == "["
+                stack.append({"arr": isArr, "box": [] if isArr else {}, "key": None})
+                i = _ws(s, i + 1)
+                var closer = "]" if isArr else "}"
+                if i < n and s[i] == closer:
+                    i = i + 1
+                    pending = stack.pop()["box"]
+                    mode = "complete"
+                else:
+                    mode = "value" if isArr else "key"
+            else:
+                var r = _parseScalar(s, i)
+                pending = r[0]
+                i = r[1]
+                mode = "complete"
+        elif mode == "key":
+            i = _ws(s, i)
+            if i >= n or s[i] != "\"":
+                throw "json: expected string key"
+            var kr = _parseStr(s, i)
+            stack[len(stack) - 1]["key"] = kr[0]
+            i = _ws(s, kr[1])
+            if i >= n or s[i] != ":":
+                throw "json: expected ':'"
+            i = i + 1
+            mode = "value"
+        else:
+            # mode == "complete": `pending` holds a finished value -- attach to the enclosing container
+            # (or return it at top level), then consume this container's separator / closer.
+            if len(stack) == 0:
+                return [pending, i]
+            var top = stack[len(stack) - 1]
+            if top["arr"]:
+                top["box"].append(pending)
+            else:
+                top["box"][top["key"]] = pending
+            i = _ws(s, i)
+            var arr = top["arr"]
+            var sep = "]" if arr else "}"
+            var errsep = "json: expected ',' or ']'" if arr else "json: expected ',' or '}'"
+            if i >= n:
+                throw errsep
+            if s[i] == ",":
+                i = i + 1
+                mode = "value" if arr else "key"
+            elif s[i] == sep:
+                i = i + 1
+                pending = stack.pop()["box"]
+                mode = "complete"
+            else:
+                throw errsep
+
 var _parseStr = Function(s, i):
     i = i + 1
     var out = ""
@@ -69,7 +133,7 @@ var _parseStr = Function(s, i):
         if c == "\\":
             i = i + 1
             if i >= n:
-                throw "json: bad string escape"
+                throw "json: bad escape"
             var e = s[i]
             if e == "n":
                 out = out + "\n"
@@ -98,8 +162,8 @@ var _parseStr = Function(s, i):
                     if lo >= 56320 and lo <= 57343:
                         cp = 65536 + (cp - 55296) * 1024 + (lo - 56320)
                         i = i + 6
-                    else:
-                        throw "json: invalid low surrogate in \\u escape"
+                    # else: the high surrogate is unpaired -> it becomes U+FFFD below and the following
+                    # \u escape is left to re-parse on its own (matches native / WHATWG), not an error.
                 # An unpaired surrogate (a lone high or a lone low) isn't a valid code point by itself
                 # and would encode to malformed UTF-8; substitute U+FFFD (matches browsers/WHATWG) so
                 # the decoded String is always well-formed.
@@ -107,7 +171,7 @@ var _parseStr = Function(s, i):
                     cp = 65533
                 out = out + chr(cp)
             else:
-                throw "json: bad string escape"
+                throw "json: bad escape"
             i = i + 1
         else:
             out = out + c
@@ -182,58 +246,11 @@ var _parseNum = Function(s, i):
             return [0.0 - math.inf, i]
         return [math.inf, i]
 
-var _parseArr = Function(s, i):
-    i = _ws(s, i + 1)
-    var out = []
-    if i < len(s) and s[i] == "]":
-        return [out, i + 1]
-    var go = True
-    while go:
-        var r = _parseVal(s, i)
-        out.append(r[0])
-        i = _ws(s, r[1])
-        if i >= len(s):
-            throw "json: expected ',' or ']'"     # unclosed array: same diagnostic as a bad separator
-        if s[i] == ",":
-            i = _ws(s, i + 1)
-        elif s[i] == "]":
-            go = False
-        else:
-            throw "json: expected ',' or ']'"
-    return [out, i + 1]
-
-var _parseObj = Function(s, i):
-    i = _ws(s, i + 1)
-    var out = {}
-    if i < len(s) and s[i] == "}":
-        return [out, i + 1]
-    var go = True
-    while go:
-        i = _ws(s, i)
-        if i >= len(s) or s[i] != "\"":
-            throw "json: expected string key"
-        var kr = _parseStr(s, i)
-        i = _ws(s, kr[1])
-        if i >= len(s) or s[i] != ":":
-            throw "json: expected ':'"
-        var vr = _parseVal(s, i + 1)
-        out[kr[0]] = vr[0]
-        i = _ws(s, vr[1])
-        if i >= len(s):
-            throw "json: expected ',' or '}'"     # unclosed object: same diagnostic as a bad separator
-        if s[i] == ",":
-            i = i + 1
-        elif s[i] == "}":
-            go = False
-        else:
-            throw "json: expected ',' or '}'"
-    return [out, i + 1]
-
 var loads = Function(text):
     var r = _parseVal(text, 0)
     var i = _ws(text, r[1])
     if i != len(text):
-        throw "json: trailing data"
+        throw "json: trailing characters after JSON value"
     return r[0]
 
 var parse = loads
@@ -282,7 +299,7 @@ var _floatRepr = Function(v):
         return s16
     return format(v, ".17g")
 
-var _dump = Function(v, indent, depth):
+var _dump = Function(v, indent, depth, active):
     var t = type(v)
     if v == None:
         return "null"
@@ -311,18 +328,29 @@ var _dump = Function(v, indent, depth):
         return s
     if t == "String":
         return _escapeStr(v)
-    if t == "List":
-        return _dumpSeq(v, indent, depth, "[", "]", False)
-    if t == "Dict":
-        return _dumpSeq(v, indent, depth, "{", "}", True)
-    throw "json: cannot serialize type '" + t + "'"
+    if t == "List" or t == "Dict":
+        # Cycle guard by object identity (id()): a container already on the active DFS path would
+        # otherwise recurse forever (and overflow the host stack). Track ids, not values, since a
+        # cyclic container's own == is non-terminating.
+        var oid = id(v)
+        if oid in active:
+            throw "cannot serialize a cyclic structure to JSON"
+        active.append(oid)
+        var res = "null"
+        if t == "List":
+            res = _dumpSeq(v, indent, depth, "[", "]", False, active)
+        else:
+            res = _dumpSeq(v, indent, depth, "{", "}", True, active)
+        active.pop()
+        return res
+    throw "cannot serialize '" + t + "' to JSON"
 
 var _pad = Function(indent, depth):
     if indent <= 0:
         return ""
     return "\n" + " " * (indent * depth)
 
-var _dumpSeq = Function(v, indent, depth, openc, closec, isObj):
+var _dumpSeq = Function(v, indent, depth, openc, closec, isObj, active):
     var keys = v
     if isObj:
         var ks = []
@@ -355,9 +383,9 @@ var _dumpSeq = Function(v, indent, depth, openc, closec, isObj):
                 keyStr = "null"
             elif kt != "String":
                 keyStr = String(item)
-            out = out + _escapeStr(keyStr) + ": " + _dump(v[item], indent, depth + 1)
+            out = out + _escapeStr(keyStr) + ": " + _dump(v[item], indent, depth + 1, active)
         else:
-            out = out + _dump(item, indent, depth + 1)
+            out = out + _dump(item, indent, depth + 1, active)
         idx = idx + 1
     out = out + _pad(indent, depth)
     return out + closec
@@ -366,6 +394,8 @@ var dumps = Function(value, indent = 0):
     var ind = 0
     if indent != None:
         ind = indent
-    return _dump(value, ind, 0)
+    if ind > 100:
+        throw "json.stringify: indent too large (maximum 100)"
+    return _dump(value, ind, 0, [])
 
 var stringify = dumps
