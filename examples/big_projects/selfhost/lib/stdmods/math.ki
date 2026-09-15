@@ -89,6 +89,8 @@ var copysign = Function(x, y):
 var fmod = Function(x, y):
     if y == 0.0:
         throw "fmod: math domain error (divisor is zero)"
+    if isinf(x):
+        throw "fmod: math domain error (dividend is infinite)"
     return x - _truncf(x / y) * y
 
 # --- exp / log ------------------------------------------------------------------------------------
