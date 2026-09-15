@@ -30,10 +30,41 @@ var boxKind = Function(v):
 var mkLazyIter = Function(itype, thunk):
     return {"sk": "lazyiter", "itype": itype, "thunk": thunk, "cache": None, "cached": False}
 
+# Collect every free `name` reference reachable from an AST node (a generic Dict/List walk — any
+# dict with "k":"name" is a leaf reference; a nested "k":"func" node is skipped since ITS "name"
+# nodes are that lambda's own bindings).
+var _collectNameRefs = Function(node, out):
+    if type(node) == "Dict":
+        if "k" in node:
+            if node["k"] == "name":
+                out.append(node["v"])
+                return None
+            if node["k"] == "func":
+                return None
+        for key in node.keys():
+            _collectNameRefs(node[key], out)
+    elif type(node) == "List":
+        for item in node:
+            _collectNameRefs(item, out)
+    return None
+
+# Order-aware default-scope check (mirrors the real resolver): a parameter default may reference an
+# EARLIER parameter or any name resolvable in the closure/global scope; a reference to a not-yet-bound
+# name (a later/self param, or a truly undefined name) is rejected at function-creation time.
+var _checkDefaultScoping = Function(env, params):
+    var boundSoFar = Set([])
+    for p in params:
+        if p["has"]:
+            var refs = []
+            _collectNameRefs(p["default"], refs)
+            for nm in refs:
+                if not (nm in boundSoFar) and not envHas(env, nm):
+                    rtError("NameError: name '" + nm + "' is not defined")
+        boundSoFar.add(p["name"])
+    return None
+
 var mkFunc = Function(name, params, body, env, ret):
-    # Defaults bind progressively at call time (a default may reference an EARLIER parameter), so a
-    # default referencing a not-yet-bound name surfaces as a runtime NameError when evaluated — no
-    # static pre-check (which wrongly rejected valid sibling-referencing defaults).
+    _checkDefaultScoping(env, params)
     return {"sk": "function", "name": name, "params": params, "body": body, "env": env, "ret": ret}
 
 var mkNative = Function(name, fn):
