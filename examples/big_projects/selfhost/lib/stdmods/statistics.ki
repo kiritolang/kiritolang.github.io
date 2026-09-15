@@ -17,16 +17,19 @@ var median = Function(data) -> Float:
 var mode = Function(data):
     if len(data) == 0:
         throw "no mode for empty data"
+    # On a tie the FIRST-SEEN value wins (CPython statistics.mode / multimode[0]). A greedy
+    # "first to reach the max count" pass would instead pick whichever value climbs fastest, so
+    # tally everything first, then return the earliest element whose count equals the maximum.
     var counts = {}
-    var best = None
-    var bestCount = 0
     for x in data:
-        var c = counts.get(x, 0) + 1
-        counts[x] = c
-        if c > bestCount:
-            bestCount = c
-            best = x
-    return best
+        counts[x] = counts.get(x, 0) + 1
+    var maxCount = 0
+    for x in data:
+        if counts[x] > maxCount:
+            maxCount = counts[x]
+    for x in data:
+        if counts[x] == maxCount:
+            return x
 
 var variance = Function(data) -> Float:
     var n = len(data)

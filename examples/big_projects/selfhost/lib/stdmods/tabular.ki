@@ -54,6 +54,29 @@ var _range = Function(n):
         i = i + 1
     return out
 
+# Only a plain DECIMAL integer/float is inferred; hex/octal/binary ("0xFF") and whitespace-padded
+# cells stay String (the host Integer()/Float() would otherwise accept "0xFF" or " 5").
+var _isDecInt = Function(s):
+    var i = 0
+    if len(s) > 0 and (s[0] == "-" or s[0] == "+"):
+        i = 1
+    if i >= len(s):
+        return False
+    while i < len(s):
+        if s[i] < "0" or s[i] > "9":
+            return False
+        i = i + 1
+    return True
+
+var _isDecFloat = Function(s):
+    var hasDigit = False
+    for c in s:
+        if c >= "0" and c <= "9":
+            hasDigit = True
+        elif c != "." and c != "-" and c != "+" and c != "e" and c != "E":
+            return False
+    return hasDigit
+
 var _infer = Function(text):
     # turn a CSV cell string into Integer / Float / Bool / None / String
     if text == "":
@@ -62,14 +85,16 @@ var _infer = Function(text):
         return True
     if text == "False" or text == "false":
         return False
-    try:
-        return Integer(text)
-    catch as e:
-        discard e
-    try:
-        return Float(text)
-    catch as e:
-        discard e
+    if _isDecInt(text):
+        try:
+            return Integer(text)
+        catch as e:
+            discard e
+    if _isDecFloat(text):
+        try:
+            return Float(text)
+        catch as e:
+            discard e
     return text
 
 # ===================================================================================== Series
@@ -284,6 +309,8 @@ class Series:
             conv = Float
         elif typename == "Bool":
             conv = Bool
+        elif typename != "String":
+            throw "astype: unknown dtype '" + String(typename) + "'"
         return self.apply(conv)
 
     var fillna = Function(self, value):
@@ -312,15 +339,22 @@ class Series:
         return Series(self.values[start:], self.index[start:], self.name)
 
     var sortvalues = Function(self, ascending = True):
-        var pairs = []
+        # Missing (None/NaN) has no order, so partition it out and always append it LAST -- regardless
+        # of direction -- rather than comparing None with a number. The stable sort keeps equal keys
+        # in their original order.
+        var present = []
+        var missing = []
         var i = 0
         while i < len(self.values):
-            pairs.append([self.values[i], self.index[i]])
+            if _isnan(self.values[i]):
+                missing.append([self.values[i], self.index[i]])
+            else:
+                present.append([self.values[i], self.index[i]])
             i = i + 1
-        pairs.sort(Function(p): return p[0], not ascending)
+        present.sort(Function(p): return p[0], not ascending)
         var vals = []
         var idx = []
-        for p in pairs:
+        for p in present + missing:
             vals.append(p[0])
             idx.append(p[1])
         return Series(vals, idx, self.name)
@@ -949,6 +983,11 @@ var readcsv = Function(source, header = True, infer = True):
     var r = start
     while r < len(rows):
         var row = rows[r]
+        # A blank line (no delimiters) parses to a single empty field; skip it rather than emitting an
+        # all-None row (pandas behaviour). A genuinely all-empty row like ",," keeps its several fields.
+        if len(row) == 0 or (len(row) == 1 and row[0] == ""):
+            r = r + 1
+            continue
         # A row with MORE fields than the header would silently lose its surplus cells; reject it
         # (like pandas' ParserError) rather than truncate. Short rows are still padded with "".
         if len(row) > len(cols):
