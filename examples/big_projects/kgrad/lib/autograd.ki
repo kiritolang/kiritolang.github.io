@@ -282,7 +282,7 @@ var sqrt = Function(a):
     out.grad_fn = bw
     return out
 
-var mul_scalar = Function(a, s):
+var mul_scalar = Function(a, s : [Integer, Float]):
     var out = _make(nd.mul_scalar(a.data, s), [a], None)
     var bw = Function():
         if a.requires_grad:
@@ -290,7 +290,7 @@ var mul_scalar = Function(a, s):
     out.grad_fn = bw
     return out
 
-var add_scalar = Function(a, s):
+var add_scalar = Function(a, s : [Integer, Float]):
     var out = _make(nd.add_scalar(a.data, s), [a], None)
     var bw = Function():
         if a.requires_grad:

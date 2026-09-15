@@ -133,5 +133,86 @@ var mixc = ag.tensor([[3.0, 4.0]], False)
 ag.sum_all(ag.mul(mixa, mixc)).backward()
 check("grad only to requires_grad leaf", mixa.grad != None and mixc.grad == None)
 
+# ---- generalized finite-difference gradient checks for the core autograd ops ----
+# build(x_tensor) -> scalar tensor; compares analytic grad wrt x against central differences.
+var gcGen = Function(name, xdata, build):
+    var xt = ag.tensor(xdata, True)
+    var loss = build(xt)
+    loss.backward()
+    var ana = xt.grad.contiguous().buf
+    var base = nd.array(xdata)
+    var flat = base.contiguous().buf
+    var shape = base.shape
+    var eps = 0.0001
+    var maxerr = 0.0
+    var i = 0
+    while i < len(flat):
+        var bp = flat.copy()
+        bp[i] = flat[i] + eps
+        var lp = build(ag.from_nd(nd.from_flat(bp.copy(), shape), False)).item()
+        bp[i] = flat[i] - eps
+        var lm = build(ag.from_nd(nd.from_flat(bp.copy(), shape), False)).item()
+        var num = (lp - lm) / (2.0 * eps)
+        var er = abs(ana[i] - num)
+        if er > maxerr:
+            maxerr = er
+        i = i + 1
+    check(name + " grad (maxerr=" + String(maxerr) + ")", maxerr < 0.001)
+
+var CW = nd.array([[2.0, -1.0], [0.5, 3.0]])
+gcGen("matmul", [[1.0, 2.0], [3.0, 4.0]], Function(xt): return ag.sum_all(ag.matmul(xt, ag.from_nd(CW, False))))
+gcGen("div", [[2.0, 4.0], [6.0, 8.0]], Function(xt): return ag.sum_all(ag.div(xt, ag.from_nd(nd.array([[2.0, 2.0], [4.0, 4.0]]), False))))
+gcGen("sqrt", [[1.0, 4.0], [9.0, 2.0]], Function(xt): return ag.sum_all(ag.sqrt(xt)))
+gcGen("log", [[1.0, 2.0], [3.0, 4.0]], Function(xt): return ag.sum_all(ag.log(xt)))
+gcGen("exp", [[0.1, 0.2], [0.3, -0.1]], Function(xt): return ag.sum_all(ag.exp(xt)))
+gcGen("sigmoid", [[0.5, -0.5], [1.0, -1.0]], Function(xt): return ag.sum_all(ag.sigmoid(xt)))
+gcGen("tanh", [[0.5, -0.5], [1.0, -1.0]], Function(xt): return ag.sum_all(ag.tanh(xt)))
+gcGen("sum_axis", [[1.0, 2.0], [3.0, 4.0]], Function(xt): return ag.sum_all(ag.sum_axis(xt, 0)))
+gcGen("softmax_rows", [[1.0, 2.0], [0.5, -1.0]], Function(xt): return ag.sum_all(ag.mul(ag.softmax_rows(xt), ag.from_nd(CW, False))))
+gcGen("log_softmax", [[1.0, 2.0], [0.5, -1.0]], Function(xt): return ag.sum_all(ag.mul(nn.log_softmax(xt), ag.from_nd(CW, False))))
+gcGen("cross_entropy", [[2.0, 1.0], [0.5, 3.0]], Function(xt): return nn.cross_entropy(xt, [0, 1]))
+
+# ---- numeric domain errors fail LOUDLY (no silent NaN/Inf) ----
+check("div by zero throws", probe(Function(): return nd.div(nd.array([[1.0]]), nd.array([[0.0]]))) != "no-error")
+check("sqrt of a negative throws", probe(Function(): return ag.sqrt(ag.tensor([[-1.0]], False)).item()) != "no-error")
+check("log of zero throws", probe(Function(): return ag.log(ag.tensor([[0.0]], False)).item()) != "no-error")
+
+# ---- BatchNorm running_var stores the UNBIASED batch variance (biased * n/(n-1)) ----
+var bnv = nn.BatchNorm1d(1, 1.0, 0.0)               # momentum 1 -> running_var = this batch's value
+discard bnv(ag.tensor([[0.0], [2.0], [4.0], [6.0]], False))   # biased var 5, unbiased 20/3 = 6.667
+check("batchnorm running_var is unbiased", abs(bnv.buffers_["running_var"].to_nested()[0] - 6.6666667) < 0.001)
+
+# ---- determinism: manual_seed reproduces identical Linear initialization ----
+nn.manual_seed(4242)
+var linA = nn.Linear(3, 2)
+nn.manual_seed(4242)
+var linB = nn.Linear(3, 2)
+check("manual_seed makes init deterministic", linA.weight.data.to_nested() == linB.weight.data.to_nested())
+nn.manual_seed(9999)
+var linC = nn.Linear(3, 2)
+check("a different seed gives different init", linA.weight.data.to_nested() != linC.weight.data.to_nested())
+
+# ---- no_grad suppresses the graph; detach cuts it ----
+var ngx = ag.tensor([[1.0, 2.0]], True)
+var ngout = None
+with ag.no_grad():
+    ngout = ag.mul(ngx, ngx)
+# no_grad cuts the graph: the result tracks no gradient and records no parents, so backward can't
+# flow through it (even from a grad-requiring input).
+check("no_grad output requires no grad", ngout.requires_grad == False)
+check("no_grad output records no parents", len(ngout.prev_) == 0)
+var det = ag.tensor([[3.0]], True).detach()
+check("detach yields a non-grad tensor", det.requires_grad == False)
+
+# ---- view ops (previously untested) ----
+var vv = nd.array([[1.0, 2.0], [3.0, 4.0]])
+check("select0 picks a row", vv.select0(0).to_nested() == [1.0, 2.0])
+check("slice0 picks rows", vv.slice0(0, 1).to_nested() == [[1.0, 2.0]])
+check("flatten", vv.flatten().to_nested() == [1.0, 2.0, 3.0, 4.0])
+check("T transposes", vv.T().to_nested() == [[1.0, 3.0], [2.0, 4.0]])
+check("maximum elementwise", nd.maximum(nd.array([1.0, 5.0]), nd.array([3.0, 2.0])).to_nested() == [3.0, 5.0])
+check("min_axis", nd.min_axis(vv, 0).to_nested() == [1.0, 2.0])
+
 io.print("")
 io.print(String(pass_n[0]) + " passed, " + String(fail_n[0]) + " failed")
+assert fail_n[0] == 0, String(fail_n[0]) + " kgrad extra checks failed"   # exit non-zero so the harness catches a regression

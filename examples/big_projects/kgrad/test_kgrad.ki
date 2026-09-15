@@ -172,3 +172,4 @@ check("state_dict has linear.weight + linear.bias", "linear.weight" in sd and "l
 
 io.print("")
 io.print(String(pass_n[0]) + " passed, " + String(fail_n[0]) + " failed")
+assert fail_n[0] == 0, String(fail_n[0]) + " kgrad checks failed"   # exit non-zero so the harness catches a regression

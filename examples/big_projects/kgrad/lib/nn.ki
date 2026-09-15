@@ -151,9 +151,13 @@ class BatchNorm1d(Module):
             var denom = ag.sqrt(ag.add_scalar(var_, self.eps))
             var norm = ag.div(xc, denom)
             var out = ag.add(ag.mul(norm, self.gamma), self.beta)
-            # update running stats off-graph (use unbiased var for the buffer, like PyTorch)
+            # update running stats off-graph. PyTorch stores the UNBIASED variance in running_var
+            # (batch var * n/(n-1)); with a single-row batch there is no unbiased estimate, so fall
+            # back to the biased value rather than dividing by zero.
             var bmean = mean.data.contiguous()
             var bvar = var_.data.contiguous()
+            if bs > 1:
+                bvar = nd.mul_scalar(bvar, Float(bs) / Float(bs - 1))
             var m = self.momentum
             self.buffers_["running_mean"] = nd.add(nd.mul_scalar(self.buffers_["running_mean"], 1.0 - m), nd.mul_scalar(bmean, m))
             self.buffers_["running_var"] = nd.add(nd.mul_scalar(self.buffers_["running_var"], 1.0 - m), nd.mul_scalar(bvar, m))

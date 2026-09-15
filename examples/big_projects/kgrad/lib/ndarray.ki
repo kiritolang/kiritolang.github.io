@@ -3,8 +3,9 @@
 # An NdArray is (device, buffer, offset, shape, strides) — the NumPy/PyTorch model. Views
 # (reshape-when-contiguous, transpose/permute, slice, broadcast) SHARE the underlying buffer and only
 # adjust shape/strides/offset; no data is copied. Operations that need packed data call
-# `.contiguous()` (which uses the device `gather` kernel) first, so the kernels stay simple. All
-# compute is delegated to the device — this file contains no arithmetic loops of its own.
+# `.contiguous()` (which uses the device `gather` kernel) first, so the kernels stay simple.
+# Elementwise ops delegate to the device; the axis reductions (sum_all/_reduce_axis) still loop here
+# in Kirito — a device `reduce` kernel would be the natural next optimization.
 
 var backend = import("backend")
 
@@ -67,7 +68,9 @@ class NdArray:
             if self.shape[i] > 1 and self.strides[i] != expected[i]:
                 return False
             i = i + 1
-        return self.offset == self.offset
+        # Contiguity is a property of the strides alone; a contiguous view may sit at any offset
+        # into its buffer (reshape carries the offset through unchanged), so no offset check here.
+        return True
 
     # Pack into a fresh C-order buffer (copy). Returns a new contiguous NdArray.
     var contiguous = Function(self):
@@ -261,10 +264,10 @@ var div = Function(a, b):
 var maximum = Function(a, b):
     return _binary(a, b, "max")
 
-var add_scalar = Function(a, s):
+var add_scalar = Function(a, s : [Integer, Float]):
     var c = a.contiguous()
     return NdArray(a.dev, a.dev.scalar("add", c.buf, Float(s)), 0, a.shape, backend.contig_strides(a.shape))
-var mul_scalar = Function(a, s):
+var mul_scalar = Function(a, s : [Integer, Float]):
     var c = a.contiguous()
     return NdArray(a.dev, a.dev.scalar("mul", c.buf, Float(s)), 0, a.shape, backend.contig_strides(a.shape))
 
