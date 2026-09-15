@@ -28,7 +28,7 @@ feedreader/
   feed.ki                  # RSS+Atom XML parser (namespace-stripped)
   store.ki                 # persistent state (feeds + read markers + tags)
   ui.ki                    # listItems / listFeeds / detail + stripHtml
-  test_feedreader.ki       # 50 checks; matched against test_feedreader.expected
+  test_feedreader.ki       # 63 checks; matched against test_feedreader.expected
   samples/
     sample_rss.xml
     sample_atom.xml
@@ -77,7 +77,7 @@ after all fetches complete.
 
 ```
 ki examples/big_projects/feedreader/test_feedreader.ki
-# → feedreader: 50 checks passed
+# → feedreader: 63 checks passed
 ```
 
 Wired as `script_feedreader`. Uses only the local sample XML files, so it works

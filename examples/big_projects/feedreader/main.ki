@@ -24,7 +24,7 @@ var feed  = import("feed")
 var store = import("store")
 var ui    = import("ui")
 
-var _main = Function():
+var _main = Function() -> Integer:
     var p = arg.Parser("small RSS/Atom feed reader")
     p.positional("command", "add | remove | list | sync | items | read | unread | search | show")
     p.positional("target",  "URL / KEY / REGEX depending on the command; empty otherwise")
@@ -39,7 +39,7 @@ var _main = Function():
         var path = import("path")
         storeFile = path.join(path.gettempdir(), "feedreader.json")
     var state = store.load(storeFile)
-    var isReadClosure = Function(k):
+    var isReadClosure = Function(k : String) -> Bool:
         return store.isRead(state, k)
     var tags = []
     if opts["tag"] != "":
@@ -101,7 +101,12 @@ var _main = Function():
         if target == "":
             io.eprint("feedreader: search needs a regex")
             return 2
-        var rx = regex.compile(target, regex.IGNORECASE)
+        var rx = None
+        try:
+            rx = regex.compile(target, regex.IGNORECASE)
+        catch String as e:
+            io.eprint("feedreader: invalid search regex: " + e)
+            return 2
         var hit = []
         for it in store.allItems(state):
             if rx.search(it["title"]) != None or rx.search(it["summary"]) != None:

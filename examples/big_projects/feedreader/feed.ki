@@ -33,18 +33,25 @@ var _stripNs = Function(tag : String) -> String:
             return tag[close + 1:]
     return tag
 
-# Find a direct child by (namespace-stripped) tag name; None if absent.
+# Find a direct child by tag name; None if absent. An EXACT (unnamespaced) match wins over a
+# namespace-stripped one, so a real RSS <link> is chosen ahead of an <atom:link rel="self"> that
+# strips to the same bare name — otherwise the href-only atom:link would shadow the real link.
 var _findChild = Function(elt, name : String):
     if elt == None:
         return None
+    var fallback = None
     for c in elt.children:
-        if _stripNs(c.tag) == name:
+        if c.tag == name:
             return c
-    return None
+        if fallback == None and _stripNs(c.tag) == name:
+            fallback = c
+    return fallback
 
 # `elt` is the root of the parsed document. Sniff RSS vs Atom by looking at the root's tag name.
 var parseString = Function(src : String) -> Dict:
     var root = xml.fromstring(src)
+    if root == None:                                   # xml.fromstring returns None on non-XML input;
+        throw "not valid XML (no root element)"        # surface a clean error, not `None has no .tag`
     var kind = _stripNs(root.tag)
     if kind == "rss":
         return _parseRss(root)
@@ -63,8 +70,10 @@ var _parseRss = Function(root) -> Dict:
             continue
         var guidElt = _findChild(c, "guid")
         var id = _text(guidElt)
+        if id == "":                                   # guid -> link -> title, so an item is never
+            id = _text(_findChild(c, "link"))          # silently dropped for want of an id
         if id == "":
-            id = _text(_findChild(c, "link"))
+            id = _text(_findChild(c, "title"))
         items.append({
             "id":      id,
             "title":   _text(_findChild(c, "title")),
@@ -86,8 +95,13 @@ var _parseAtom = Function(root) -> Dict:
         if _stripNs(c.tag) != "entry":
             continue
         var link = _atomLink(_findChild(c, "link"))
+        var id = _text(_findChild(c, "id"))
+        if id == "":                                   # id -> link -> title, mirroring RSS above
+            id = link
+        if id == "":
+            id = _text(_findChild(c, "title"))
         items.append({
-            "id":      _text(_findChild(c, "id")),
+            "id":      id,
             "title":   _text(_findChild(c, "title")),
             "link":    link,
             "summary": _text(_findChild(c, "summary")),
@@ -108,7 +122,7 @@ var fetch = Function(source : String) -> Dict:
         resp.raiseforstatus()
         return parseString(resp.text)
     var io = import("io")
-    var fh = io.open(source, "r")
-    var src = fh.read()
-    fh.close()
+    var src = ""
+    with io.open(source, "r") as fh:        # `with` closes even if read()/parse throws
+        src = fh.read()
     return parseString(src)

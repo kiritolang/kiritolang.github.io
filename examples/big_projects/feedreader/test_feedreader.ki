@@ -159,4 +159,58 @@ ok(flat2[0]["title"] in det, "detail includes the title")
 ok(flat2[0]["link"] in det, "detail includes the link")
 ok("---" in det, "detail separator is present")
 
+# =============================================================================
+# feed: namespace collision — an <atom:link> must NOT shadow the real RSS <link>.
+# =============================================================================
+var nsRss = "<?xml version=\"1.0\"?>\n<rss version=\"2.0\" xmlns:atom=\"http://www.w3.org/2005/Atom\">\n  <channel>\n    <atom:link rel=\"self\" href=\"https://example.com/feed.xml\"/>\n    <title>NS Test</title>\n    <link>https://example.com/site</link>\n    <item>\n      <atom:link rel=\"self\" href=\"https://example.com/item-self\"/>\n      <title>Item One</title>\n      <link>https://example.com/item1</link>\n      <guid>g1</guid>\n    </item>\n  </channel>\n</rss>"
+var nsFeed = feed.parseString(nsRss)
+ok(nsFeed["link"] == "https://example.com/site", "channel <link> wins over a preceding <atom:link>")
+ok(nsFeed["items"][0]["link"] == "https://example.com/item1", "item <link> wins over a preceding <atom:link>")
+
+# =============================================================================
+# feed: id fallbacks so items are never silently dropped.
+# =============================================================================
+var atomNoId = "<?xml version=\"1.0\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\">\n  <title>NoId</title>\n  <entry>\n    <title>Entry A</title>\n    <link href=\"https://example.com/a\"/>\n  </entry>\n</feed>"
+var noIdFeed = feed.parseString(atomNoId)
+ok(noIdFeed["items"][0]["id"] == "https://example.com/a", "atom entry missing <id> falls back to link")
+
+var rssNoIds = "<?xml version=\"1.0\"?>\n<rss version=\"2.0\"><channel><title>T</title><item><title>Only Title</title></item></channel></rss>"
+var noIdRss = feed.parseString(rssNoIds)
+ok(noIdRss["items"][0]["id"] == "Only Title", "rss item missing guid+link falls back to title")
+var stNoId = store.load("__none1__")
+ok(store.mergeFeed(stNoId, "u", noIdRss) == 1, "an item with a fallback id is merged, not dropped")
+
+# =============================================================================
+# feed: duplicate GUIDs collapse on merge (dedup by id).
+# =============================================================================
+var dupRss = "<?xml version=\"1.0\"?>\n<rss version=\"2.0\"><channel><title>T</title><item><title>A</title><guid>same</guid></item><item><title>B</title><guid>same</guid></item></channel></rss>"
+var dupFeed = feed.parseString(dupRss)
+ok(len(dupFeed["items"]) == 2, "both duplicate-guid items are parsed")
+var stDup = store.load("__none2__")
+ok(store.mergeFeed(stDup, "u", dupFeed) == 1, "a duplicate guid collapses to one stored item")
+
+# =============================================================================
+# feed: malformed / empty / missing-field robustness.
+# =============================================================================
+ok(throws(Function(): return feed.parseString("not xml at all")), "non-XML input throws a clean error")
+ok(throws(Function(): return feed.parseString("")), "empty string throws")
+# xml.fromstring is lenient and auto-closes tags, so an unterminated-but-well-rooted doc parses to
+# an rss feed with no items rather than throwing — assert that graceful outcome.
+var lenient = feed.parseString("<rss><channel><title>oops")
+ok(lenient["kind"] == "rss" and len(lenient["items"]) == 0, "lenient parser recovers unterminated XML as an empty feed")
+var emptyRss = "<?xml version=\"1.0\"?>\n<rss version=\"2.0\"><channel><title>Empty</title><link>x</link></channel></rss>"
+var emptyFeed = feed.parseString(emptyRss)
+ok(len(emptyFeed["items"]) == 0, "a channel with no items yields 0 items, no crash")
+var missingFields = "<?xml version=\"1.0\"?>\n<rss version=\"2.0\"><channel><title>M</title><item><guid>x</guid></item></channel></rss>"
+var mf = feed.parseString(missingFields)
+ok(mf["items"][0]["summary"] == "" and mf["items"][0]["date"] == "", "missing item fields become empty strings")
+
+# =============================================================================
+# store: addFeed has a consistent return (the feed record) and is idempotent.
+# =============================================================================
+var stR = store.load("__none3__")
+var rec1 = store.addFeed(stR, "u", ["x"])
+var rec2 = store.addFeed(stR, "u", ["y"])   # already subscribed -> same record, tags unchanged
+ok(rec1 == rec2 and rec1["tags"] == ["x"], "addFeed returns the same record and is idempotent")
+
 io.print("feedreader: " + String(n) + " checks passed")
