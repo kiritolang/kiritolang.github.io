@@ -1,0 +1,40 @@
+# spec_inline_function_value.ki — a const `var f = InlineFunction(...)` MATERIALIZES as an ordinary
+# function value (so it works cross-scope / as a first-class value) AND still inlines its direct,
+# same-scope calls. Only a bare InlineFunction LITERAL used as a value is a compile error (see
+# tests/errors/inlinefn_value_pass). Run both inline-on and --no-inline (the harness differential):
+# every result must be byte-identical, since materialization + same-scope inlining is semantics-preserving.
+
+var io = import("io")
+
+# same-scope direct call (inlines under inlining-on; normal call under --no-inline) — same result
+var sq = InlineFunction(x): return x * x
+io.print(sq(9))
+
+# used from INSIDE another function (a nested lambda) — a plain call to the materialized closure; must
+# resolve (this was once an "undefined name" under inlining before materialization landed)
+var ys = []
+for v in map(Function(y): return sq(y), [1, 2, 3]):
+    ys.append(v)
+io.print(ys)
+
+# aliased and passed as a first-class value
+var g = sq
+io.print(g(6))
+var apply = Function(fn, n): return fn(n)
+io.print(apply(sq, 7))
+
+# stored in a list and called through the element
+var fns = [sq]
+io.print(fns[0](8))
+
+# a const InlineFunction used both same-scope (inlines) AND cross-scope (materialized) in one program
+var bump = InlineFunction(n): return n + 1
+var driver = Function(xs):
+    var out = []
+    for x in xs:
+        out.append(bump(x))     # cross-scope: normal call to the materialized closure
+    return out
+io.print(bump(100))             # same-scope: inlines
+io.print(driver([10, 20, 30]))
+
+io.print("OK inline-function-value")

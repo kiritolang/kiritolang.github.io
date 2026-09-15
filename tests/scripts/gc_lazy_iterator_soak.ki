@@ -1,0 +1,56 @@
+# gc_lazy_iterator_soak.ki — GC guard for first-class lazy iterators (map/filter/zip/enumerate). These
+# hold their source + function as young children; if the holder failed to root/rescan them, per-alloc GC
+# would sweep a child mid-iteration and corrupt or crash. Store the iterators HEAP-RESIDENT in a list,
+# allocate heavily between creation and draining (fresh, non-interned values so interning can't mask a
+# bug), then drain and check exact results. Run under `--gc-threshold 1` (see the soak foreach). Also a
+# both-configs differential (identical inline vs --no-inline).
+var io = import("io")
+
+# fresh, non-interned elements (large ints + freshly-built strings)
+var base = []
+for i in range(200):
+    base.append(1000000 + i)
+
+# build chained lazy iterators and stash them (not yet consumed)
+var iters = []
+iters.append(map(Function(x): return x * 2, base))
+iters.append(filter(Function(x): return x % 2 == 0, base))
+iters.append(map(Function(x): return x + 1, filter(Function(x): return x % 3 == 0, base)))
+iters.append(enumerate(base))
+iters.append(zip(base, map(Function(x): return x * x, base)))
+
+# churn the heap hard AFTER the iterators exist (each iteration allocates fresh containers/strings)
+var junk = 0
+for i in range(3000):
+    var d = {"k" + String(i): [i, i + 1, i + 2]}
+    junk = junk + len(d)
+
+# now drain the stashed iterators — their captured src/fn must have survived GC
+var doubled = []
+for v in iters[0]:
+    doubled.append(v)
+io.print(doubled[0])              # 2000000
+io.print(len(doubled))           # 200
+
+var evens = []
+for v in iters[1]:
+    evens.append(v)
+io.print(len(evens))             # 100 (even large ints)
+
+var m3 = []
+for v in iters[2]:
+    m3.append(v)
+io.print([m3[0], len(m3)])       # [1000003, 66]
+
+var en = []
+for pair in iters[3]:
+    en.append(pair)
+io.print(en[0])                  # [0, 1000000]
+
+var zsum = 0
+for pair in iters[4]:
+    zsum = zsum + pair[0]
+io.print(zsum)                   # sum of base
+
+io.print(junk)
+io.print("OK lazy-iterator-soak")

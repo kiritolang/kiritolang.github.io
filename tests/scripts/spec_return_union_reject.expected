@@ -1,0 +1,4 @@
+function must return one of [Integer, String], got Float
+3
+function must return Integer, got String
+OK return-union-reject

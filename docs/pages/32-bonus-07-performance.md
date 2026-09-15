@@ -1,7 +1,7 @@
 # Bonus 07 — Performance reference
 
 Measured wall-clock timings for a broad micro-benchmark suite across four runtimes:
-**Kirito 1.18.0**, **Kirito 1.17.1**, **Lua 5.1**, and **Python 3**. These are the raw timer results —
+**Kirito 2.0.0**, **Kirito 1.17.1**, **Lua 5.1**, and **Python 3**. These are the raw timer results —
 **mean ± sample standard deviation over 10 runs** — for one fixed amount of work per workload. Every
 runtime runs the *same* algorithm with the *same* iteration counts.
 
@@ -18,7 +18,7 @@ reproducible with `tests/bench/xlang_compare.py` and `tests/bench/churn_compare.
 
 All times in milliseconds (mean ± stddev, 10 runs).
 
-| category | workload | Kirito 1.18.0 | Kirito 1.17.1 | Lua 5.1 | Python 3 |
+| category | workload | Kirito 2.0.0 | Kirito 1.17.1 | Lua 5.1 | Python 3 |
 |---|---|---|---|---|---|
 | recursion | `fib(30)` | 327.2 ± 2.84 | 416.8 ± 4.15 | 45.40 ± 0.81 | 62.78 ± 0.37 |
 | recursion | `ackermann(3,6)` | 41.89 ± 0.45 | 47.16 ± 0.77 | 3.20 ± 0.03 | 19.81 ± 1.06 |
@@ -50,7 +50,7 @@ All times in milliseconds (mean ± stddev, 10 runs).
 
 Access cost is O(1) in every runtime — flat from 1000 to 10000 members.
 
-| workload | N | Kirito 1.18.0 | Kirito 1.17.1 | Lua 5.1 | Python 3 |
+| workload | N | Kirito 2.0.0 | Kirito 1.17.1 | Lua 5.1 | Python 3 |
 |---|---|---|---|---|---|
 | `class_attr` (400k reads) | 1000 | 56.78 ± 1.40 | 68.00 ± 0.45 | 8.51 ± 0.04 | 31.33 ± 1.66 |
 | `class_attr` (400k reads) | 10000 | 58.64 ± 0.83 | 70.17 ± 0.34 | 11.99 ± 0.41 | 34.13 ± 2.55 |
@@ -62,7 +62,7 @@ Access cost is O(1) in every runtime — flat from 1000 to 10000 members.
 These exercise Kirito-native features (tensors, the regex engine, primality) with no direct Python/Lua
 equivalent, so only the two Kirito versions are shown (default GC cadence).
 
-| workload | Kirito 1.18.0 | Kirito 1.17.1 |
+| workload | Kirito 2.0.0 | Kirito 1.17.1 |
 |---|---|---|
 | `tensor_add` (20k elems, ×800) | 66.54 ± 0.19 | 92.25 ± 0.92 |
 | `tensor_sum` (20k elems, ×2000) | 23.89 ± 0.05 | 24.34 ± 0.05 |
@@ -73,7 +73,7 @@ equivalent, so only the two Kirito versions are shown (default GC cadence).
 | `isprimeaks` (2‥199, ×20) † | 1215 ± 62 | — |
 
 † `isprime` is the deterministic **trial-division** test in both versions (near parity above).
-`isprimeaks` — new in 1.18.0 — is the deterministic **AKS** test: exact and polynomial-time, but
+`isprimeaks` — new in 2.0.0 — is the deterministic **AKS** test: exact and polynomial-time, but
 orders of magnitude slower (≈2700× here) and practical only for small `n`. Prefer `isprime` or the
 probabilistic `isprobableprime` when speed matters; use `isprimeaks` only when a deterministic
 polynomial-time witness is specifically required. (`—`: `isprimeaks` did not exist in 1.17.1.) See the

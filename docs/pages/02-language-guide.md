@@ -369,7 +369,9 @@ io.print(classify(7))                    # pos
 ```
 
 Parameters work as usual — **defaults, keyword arguments, and enforced type annotations** all apply,
-checked identically to `Function`:
+checked identically to `Function` (a default value must be a literal, an earlier parameter, or a
+builtin/global — a default that reads a *captured* or module-level name makes the call un-inlinable, a
+loud "use `Function`" error):
 
 ```kirito
 var io = import("io")

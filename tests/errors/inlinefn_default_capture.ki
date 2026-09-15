@@ -1,0 +1,3 @@
+var K = 100
+var f = InlineFunction(x, y = K): return x + y
+var r = f(5)

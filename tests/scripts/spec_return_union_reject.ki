@@ -1,0 +1,20 @@
+# spec_return_union_reject.ki — a RETURN union annotation rejects a non-member with the "one of"
+# message (the accept path is covered elsewhere; the reject path had no golden). Also pins the
+# single-member `[T]` return rendering as the singular form. Byte-identical inline vs --no-inline.
+var io = import("io")
+var f = Function(k) -> [Integer, String]:
+    if k == 0:
+        return 1.5        # a Float — neither Integer nor String
+    return k
+try:
+    discard f(0)
+catch as e:
+    io.print(e)           # function must return one of [Integer, String], got Float
+io.print(f(3))            # 3 (Integer member accepted)
+# single-member return union renders/errs singular
+var g = Function(k) -> [Integer]: return k
+try:
+    discard g("x")
+catch as e:
+    io.print(e)           # function must return Integer, got String  (singular, not [Integer])
+io.print("OK return-union-reject")

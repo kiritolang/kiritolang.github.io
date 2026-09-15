@@ -1709,7 +1709,9 @@ result as a differentiable leaf (Float only — see [Autograd](#autograd)).
   target contains exact zeros (`rel_tol` alone can't match a near-zero element).
 - `t.matmul(other) → Tensor` — matrix product (2-D), or **batched** over the leading dimensions for
   rank ≥ 2.
-- `t.dot(other) → Number` — the dot product of two 1-D tensors.
+- `t.dot(other) → Number` — the dot product of two 1-D tensors. For a **Complex** tensor this is the
+  *bilinear* product `Σ aᵢ·bᵢ` (no conjugation, like `np.dot`); for the Hermitian inner product write
+  `t.conj().dot(other)` (the `complex` module's `Matrix.dot` uses the Hermitian form instead).
 - `t.transpose() → Tensor` — reverse all axes (the matrix transpose when 2-D).
 - `t.permute(axes: List) → Tensor` — reorder axes by the given permutation.
 - `t.reshape(shape: List) → Tensor` — same elements, new shape.
