@@ -8,24 +8,8 @@
 
 var inline = import("inline")
 
-# Escape a fragment for direct insertion (mirrors inline.escapeHtml, kept here so this file has
-# no back-dependency other than `inline.render`).
-var _esc = Function(s : String) -> String:
-    var out = ""
-    for ch in s:
-        if ch == "&":
-            out = out + "&amp;"
-        elif ch == "<":
-            out = out + "&lt;"
-        elif ch == ">":
-            out = out + "&gt;"
-        elif ch == "\"":
-            out = out + "&quot;"
-        elif ch == "'":
-            out = out + "&#39;"
-        else:
-            out = out + ch
-    return out
+# Reuse the single HTML escaper (SSOT) — this file already depends on `inline`.
+var _esc = inline.escapeHtml
 
 var _renderBlock = Function(b : Dict) -> String:
     var k = b["kind"]

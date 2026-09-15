@@ -198,4 +198,42 @@ check.close()
 ok(containsAll(got, ["<title>Hello</title>", "<h1>Hello</h1>"]), "file round-trip: content matches expectations")
 discard path.rmtree(dir, missing_ok = True)
 
+# =============================================================================
+# security: dangerous URL schemes in []() links/images are neutralized to "#".
+# =============================================================================
+ok("href=\"#\"" in inline.render("[click](javascript:alert(1))"), "javascript: link href is neutralized")
+ok("javascript:" not in inline.render("[click](javascript:alert(1))"), "no live javascript: URL survives in a link")
+ok("src=\"#\"" in inline.render("![x](javascript:alert(1))"), "javascript: image src is neutralized")
+ok("href=\"#\"" in inline.render("[x](data:text/html,<script>1</script>)"), "data: link is neutralized")
+ok("href=\"#\"" in inline.render("[x](vbscript:msgbox)"), "vbscript: link is neutralized")
+# ...but legitimate schemes and relative/anchor/mailto URLs still work:
+ok("href=\"http://ok/x\"" in inline.render("[x](http://ok/x)"), "http link is preserved")
+ok("href=\"/abs/path\"" in inline.render("[x](/abs/path)"), "a relative URL is preserved")
+ok("href=\"#frag\"" in inline.render("[x](#frag)"), "an anchor URL is preserved")
+ok("href=\"mailto:a@b.com\"" in inline.render("[x](mailto:a@b.com)"), "mailto link is preserved")
+# a double-quote inside an allowed URL is still attribute-escaped (no attribute breakout):
+ok("&quot;" in inline.render("[x](http://a/?q=\"z)"), "a quote inside an href is escaped to &quot;")
+
+# =============================================================================
+# security: an auto-link must ONLY fire for the allow-listed schemes.
+# =============================================================================
+ok("<a href=\"javascript:" not in inline.render("<javascript:alert(1)>"), "a <javascript:...> autolink is NOT produced")
+ok("<a href=\"http://x\"" in inline.render("<http://x>"), "a <http://...> autolink still fires")
+
+# =============================================================================
+# toPage: title comes from the first heading BLOCK, not a `#` inside a code fence.
+# =============================================================================
+var fencedTitle = kirdown.toPage("```\n# not the title\n```\n\n# Real Title\n", "")
+ok("<title>Real Title</title>" in fencedTitle, "a `#` inside a fenced code block is not chosen as the title")
+ok("<title>not the title</title>" not in fencedTitle, "the fenced `#` line is not the page title")
+
+# =============================================================================
+# main.convertFile surfaces a failure (missing input) as False, not a crash.
+# =============================================================================
+var main = import("main")
+var badDst = path.gettempdir() + "/kirdown_should_not_exist.html"
+discard path.remove(badDst, missing_ok = True)
+ok(main.convertFile("/no/such/kirdown/input.md", badDst, True, "") == False, "convertFile returns False on a missing input file")
+ok(not path.isfile(badDst), "a failed conversion writes no output file")
+
 io.print("kirdown: " + String(n) + " checks passed")

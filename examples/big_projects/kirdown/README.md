@@ -27,7 +27,7 @@ kirdown/
   block.ki               # block parser: lines → block-node AST
   render.ki              # AST → HTML string; also a full <html> page shell
   kirdown.ki             # public facade: toBody / toPage
-  test_kirdown.ki        # self-test (56 checks; matched against test_kirdown.expected)
+  test_kirdown.ki        # self-test (72 checks; matched against test_kirdown.expected)
   samples/
     index.md
     guide.md
@@ -58,7 +58,7 @@ The single-file mode also accepts `--body` (no `<html>/<head>` wrapper) and
 
 ```
 ki examples/big_projects/kirdown/test_kirdown.ki
-# → kirdown: 56 checks passed
+# → kirdown: 72 checks passed
 ```
 
 CTest wires this as `script_kirdown` — a fresh interpreter run whose stdout must

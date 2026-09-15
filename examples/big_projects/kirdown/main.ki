@@ -16,9 +16,9 @@ var kirdown = import("kirdown")
 # One-file conversion. Returns True on success, False + prints a diagnostic on failure.
 var convertFile = Function(src : String, dst : String, wrapPage : Bool, title : String) -> Bool:
     try:
-        var fh = io.open(src, "r")
-        var text = fh.read()
-        fh.close()
+        var text = ""
+        with io.open(src, "r") as fh:       # `with` closes even if read() throws
+            text = fh.read()
         var out = text
         if wrapPage:
             out = kirdown.toPage(text, title)
@@ -27,9 +27,8 @@ var convertFile = Function(src : String, dst : String, wrapPage : Bool, title : 
         var dir = path.dirname(dst)
         if len(dir) > 0 and not path.isdir(dir):
             discard path.mkdir(dir, exist_ok = True)
-        var wh = io.open(dst, "w")
-        wh.write(out)
-        wh.close()
+        with io.open(dst, "w") as wh:
+            wh.write(out)
         return True
     catch String as e:
         io.eprint("kirdown: " + src + ": " + e)
@@ -96,9 +95,9 @@ var _main = Function():
     if out == "-":
         # Print to stdout — write with io.write to avoid a trailing newline from print.
         try:
-            var fh = io.open(opts["input"], "r")
-            var text = fh.read()
-            fh.close()
+            var text = ""
+            with io.open(opts["input"], "r") as fh:
+                text = fh.read()
             if wrapPage:
                 io.write(kirdown.toPage(text, opts["title"]))
             else:
@@ -109,12 +108,13 @@ var _main = Function():
             return 1
     if convertFile(opts["input"], out, wrapPage, opts["title"]):
         try:
-            var vh = io.open(out, "r")
-            var verify = vh.read()
-            vh.close()
+            var verify = ""
+            with io.open(out, "r") as vh:
+                verify = vh.read()
             io.print("kirdown: " + opts["input"] + " -> " + out + " (" + _fingerprint(verify) + ")")
-        catch:
-            pass
+        catch String as e:
+            # The write already succeeded; a failed read-back is a non-fatal warning, not silence.
+            io.eprint("kirdown: warning: wrote " + out + " but could not read it back for a fingerprint: " + e)
         return 0
     return 1
 

@@ -41,8 +41,31 @@ var escapeHtml = Function(s : String) -> String:
 var escapeAttr = Function(s : String) -> String:
     return escapeHtml(s)
 
+# Neutralize dangerous URL schemes in author-provided link/image targets. Browsers ignore leading
+# whitespace/control characters and are case-insensitive on the scheme, so we normalize the same way
+# and allow ONLY an explicit http/https/ftp/mailto scheme — mirroring the auto-link allow-list.
+# Relative URLs and `#fragments` carry no scheme and are always safe; anything else (javascript:,
+# data:, vbscript:, ...) is replaced with "#". Without this, `[x](javascript:alert(1))` would emit a
+# live javascript: link, so the "safe to serve as-is" promise would be false.
+var _allowedUrlSchemes = Set(["http", "https", "ftp", "mailto"])
+var _safeUrl = Function(url : String) -> String:
+    var norm = ""
+    for ch in url:
+        if ord(ch) > 32:                 # drop spaces/tabs/newlines/C0 controls browsers ignore
+            norm = norm + ch
+    norm = norm.lower()
+    var colon = norm.find(":")
+    if colon < 0:
+        return url                       # no scheme -> relative path or #fragment, always safe
+    var slash = norm.find("/")
+    if slash >= 0 and slash < colon:
+        return url                       # the ':' sits inside a path segment, not a scheme
+    if norm[0:colon] not in _allowedUrlSchemes:
+        return "#"
+    return url
+
 # Match `code`, `` code `` (and n-tick variants). Returns [inner, end_index] or None.
-var _matchCodeSpan = Function(s : String, i : Integer):
+var _matchCodeSpan = Function(s : String, i : Integer) -> [List, None]:
     var n = len(s)
     var start = i
     while start < n and s[start] == "`":
@@ -63,7 +86,7 @@ var _matchCodeSpan = Function(s : String, i : Integer):
 
 # Find `[...]` matched, handling nested `[]` and escaped `\[` inside; returns [inner_end_exclusive]
 # or None if unbalanced.
-var _findMatchedBracket = Function(s : String, i : Integer):
+var _findMatchedBracket = Function(s : String, i : Integer) -> [Integer, None]:
     var n = len(s)
     var j = i + 1
     var depth = 1
@@ -85,7 +108,7 @@ var _findMatchedBracket = Function(s : String, i : Integer):
 
 # After a matched `]`, expect `(URL)` — parses the paren-URL respecting a single balanced pair.
 # Returns [url, index_after_close_paren] or None.
-var _parseParenUrl = Function(s : String, i : Integer):
+var _parseParenUrl = Function(s : String, i : Integer) -> [List, None]:
     var n = len(s)
     if i >= n or s[i] != "(":
         return None
@@ -145,7 +168,7 @@ var _renderD = Function(s : String, depth : Integer) -> String:
                 var pu = _parseParenUrl(s, closeB + 1)
                 if pu != None:
                     var alt = s[i + 2:closeB]
-                    out = out + "<img src=\"" + escapeAttr(pu[0]) + "\" alt=\"" + escapeAttr(alt) + "\"/>"
+                    out = out + "<img src=\"" + escapeAttr(_safeUrl(pu[0])) + "\" alt=\"" + escapeAttr(alt) + "\"/>"
                     i = pu[1]
                     continue
         # link: [text](url)
@@ -155,7 +178,7 @@ var _renderD = Function(s : String, depth : Integer) -> String:
                 var pu = _parseParenUrl(s, closeB + 1)
                 if pu != None:
                     var text = s[i + 1:closeB]
-                    out = out + "<a href=\"" + escapeAttr(pu[0]) + "\">" + _renderD(text, depth + 1) + "</a>"
+                    out = out + "<a href=\"" + escapeAttr(_safeUrl(pu[0])) + "\">" + _renderD(text, depth + 1) + "</a>"
                     i = pu[1]
                     continue
         # auto-link: <http://...>
