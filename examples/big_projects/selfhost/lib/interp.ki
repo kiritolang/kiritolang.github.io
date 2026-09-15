@@ -2696,6 +2696,12 @@ var builtinFilter = Function(St, args, kwargs):
 
 var builtinIter = Function(St, args, kwargs):
     var src = args[0]
+    # iter() of an existing iterator returns it unchanged (native identity): a _next_-style object, or
+    # an already-lazy iterator. Otherwise wrap the iterable in a fresh lazy iterator.
+    if boxKind(src) == "instance" and classLookup(src["cls"], "_next_") != None:
+        return src
+    if boxKind(src) == "lazyiter":
+        return src
     var thunk = Function():
         return materialize(St, src)
     return mkLazyIter("iterator", thunk)
