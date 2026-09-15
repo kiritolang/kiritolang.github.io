@@ -192,14 +192,17 @@ All of these fire only with inlining enabled; `--no-inline` demotes `InlineFunct
 
 | Message | Cause | Fix |
 |---|---|---|
-| `InlineFunction cannot be used as a value (it must be called directly, not stored, returned, or passed) — use Function if you need a first-class function` | An `InlineFunction` literal materialized as a value — passed as an argument, returned, or put in a collection | Call it directly, or use `Function` for a first-class value |
-| `InlineFunction '<name>' cannot be used as a value (it must be called directly, not stored, returned, or passed) — use Function` | A const `var f = InlineFunction(...)` read by name anywhere but a direct call | Call `f(...)` directly, or use `Function` |
+| `an InlineFunction literal cannot be used as a value (it must be called directly, or bound to a name with \`var f = InlineFunction(...)\`) — use Function for a first-class function value` | A bare `InlineFunction(...)` literal materialized as a value — passed as an argument, returned, or put in a collection | Bind it to a name, call it directly, or use `Function` |
 | `InlineFunction cannot be a class method (dispatch is dynamic) — use Function` | An `InlineFunction` bound as a method in a `class` body | Use `Function` for the method |
 | `cannot inline InlineFunction '<name>': it is recursive (an InlineFunction must be a direct, non-recursive call — use Function for a recursive helper)` | A self- or mutually-recursive `InlineFunction` | Use `Function` for a recursive helper |
 | `cannot inline InlineFunction '<name>': inlining depth limit reached — use Function` | Nested inlining exceeded the depth cap | Reduce nesting, or use `Function` |
-| `cannot inline InlineFunction '<name>': its body cannot be inlined in this version (it uses a loop, try/with, switch, a nested function, a parameter default or type annotation, or a name that is not a parameter, local, global, or capture) — use Function` | The body (which may be multi-statement `var`/`if`/`return`) contains a construct the inliner does not yet lower inside a spliced body | Remove the loop/`try`/`with`/default/annotation, or use `Function` |
-| `cannot inline InlineFunction '<name>': it is called with a keyword or starred argument (an InlineFunction takes positional arguments only) — use Function` | An `InlineFunction` called with `name=…` or `*args` | Pass positional arguments, or use `Function` |
-| `InlineFunction '<name>' expects <n> argument(s) but <m> given` | Arity mismatch at an `InlineFunction` call | Match the parameter count |
+| `cannot inline InlineFunction '<name>': its body cannot be inlined in this version (it uses a loop, try/with, switch, a nested function, or a name that is not a parameter, local, global, or capture) — use Function` | The body (which may be multi-statement `var`/`if`/`return`) contains a construct the inliner does not yet lower inside a spliced body | Remove the loop/`try`/`with`, or use `Function` |
+| `cannot inline InlineFunction '<name>': it is called with a starred (\*) argument — use Function` | An `InlineFunction` called with `*args` splatting | Pass explicit arguments, or use `Function` |
+| `InlineFunction '<name>' takes <n> positional argument(s) but more were given` / `got an unexpected keyword argument '<k>'` / `got multiple values for argument '<k>'` / `missing required argument '<k>'` | An invalid argument list at an inlined `InlineFunction` call (these are compile-time and uncatchable — the runtime binder's equivalents apply to a normal `Function`) | Fix the call's arguments |
+
+(A type-annotation violation on an inlined `InlineFunction` — `argument '<x>' must be <T>, got <G>` /
+`function must return <T>, got <G>` — is thrown at run time with the **same** message as a normal
+`Function` call, and is catchable; see the annotations section of the [types](09-types.md) docs.)
 
 ### Compiler — calls (deferred → catchable at runtime)
 

@@ -50,6 +50,7 @@ enum class Op : uint8_t {
     SetResult,        //    frame.result = pop()   (an expression statement's value)
     ClearResult,      //    frame.result = None    (every other statement)
     LoadResult,       //    push frame.result      (top-level program return value)
+    CheckAnnotation,  // a: (annotationChecks[a]) throw if the operand-stack TOP fails the annotation (peek, no pop)
     Call,             // a: dispatch calls[a]; the callee then its args are on the stack
     CallMethod,       // a: dispatch methodCalls[a] — obj.method(args): receiver then args on the stack
                       //    (a fused GetAttr+Call that avoids allocating a bound-method wrapper)
@@ -117,6 +118,17 @@ struct CallSpec {
     std::vector<std::string> names;  // keyword argument names, value-push order
 };
 
+// A type-annotation enforcement point emitted INSIDE an inlined InlineFunction body (a normal call
+// enforces annotations in KiFunction::callFull; an inlined call bypasses that, so codegen reconstructs
+// it via the CheckAnnotation opcode using the SAME annotationSatisfied predicate — no bytecode
+// reimplementation of the type check). The value under test is on the operand-stack top (peeked, not
+// popped). `name` labels a parameter check; `isReturn` selects the "function must return" wording.
+struct AnnotationCheck {
+    ast::AnnList ann;
+    std::string name;
+    bool isReturn = false;
+};
+
 // A method-call site (obj.method(args)): the method name (index into Proto.names) plus the ordinary
 // call shape. The receiver is pushed first (in the callee slot), then the args, exactly like Call.
 struct MethodCallSpec {
@@ -156,6 +168,7 @@ struct Proto {
     std::vector<UnpackSpec> unpacks;                  // Unpack targets
     std::vector<const ast::ClassStmt*> classes;       // BuildClass targets (name/base/body)
     std::vector<SwitchTable> switches;                // SwitchDispatch targets (compile-time case tables)
+    std::vector<AnnotationCheck> annotationChecks;    // CheckAnnotation targets (inlined-body annotation enforcement)
     std::vector<EnvVarRef> envVars;                    // LoadVar/AssignVar targets (depth,index into an env scope)
     std::vector<std::string> envSlots;                 // captured non-param locals to pre-declare in the scope env
     uint32_t excSpanSlots = 0;                         // Save/RestoreExcSpan slots (one per try-with-finally)

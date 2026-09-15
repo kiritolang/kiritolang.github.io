@@ -228,6 +228,19 @@ public:
                     if (located(in.span, [&]{ return vm_.arena().deref(peek(0)).truthy(); })) ip = in.a; else pop();
                 } break;
 
+                case Op::CheckAnnotation: {
+                    // Enforce a param/return annotation inside an inlined InlineFunction body, reusing the
+                    // SAME predicate + wording KiFunction::callFull uses for a normal call (SSOT).
+                    const AnnotationCheck& chk = proto.annotationChecks[in.a];
+                    Handle v = peek(0);   // the value under test stays on the stack (bound param / result)
+                    if (!annotationSatisfied(vm_, v, chk.ann)) {
+                        std::string mustBe = chk.ann.size() == 1 ? chk.ann[0] : "one of " + renderAnnotation(chk.ann);
+                        std::string got = vm_.arena().deref(v).typeName();
+                        if (chk.isReturn)
+                            throw KiritoError("function must return " + mustBe + ", got " + got, in.span);
+                        throw KiritoError("argument '" + chk.name + "' must be " + mustBe + ", got " + got, in.span);
+                    }
+                } break;
                 case Op::Call: {
                     const CallSpec& spec = proto.calls[in.a];
                     std::size_t total = spec.positional + spec.names.size();

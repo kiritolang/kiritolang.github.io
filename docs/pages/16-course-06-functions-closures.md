@@ -137,13 +137,17 @@ var sq = InlineFunction(x): return x * x     # guaranteed inline
 io.print(sq(12))                             # => 144
 ```
 
-The trade-off is that an `InlineFunction` is the one kind of function that is **not** a first-class
-value: you cannot store it, return it, pass it as an argument, or make it a method — those need
-`Function` (the section just above). It must be a direct, non-recursive call with positional arguments.
-Its body can be a single expression or a multi-statement block of `var`/assignment/`if`/`return` (early
-and multiple returns are fine); it may not yet use a loop, `try`/`with`, or a nested function. If you
-ask for something it can't inline, the error tells you exactly why and to use `Function`. Running with
-`ki --no-inline` turns every `InlineFunction` back into an ordinary `Function`.
+Parameters behave exactly as with `Function` — defaults, keyword arguments, and type annotations all
+work and are enforced. Its body can be a single expression or a multi-statement block of
+`var`/assignment/`if`/`return` (early and multiple returns are fine); it may not yet use a loop,
+`try`/`with`, or a nested function, and must be a direct, non-recursive call. If you ask for something it
+can't inline, the error tells you exactly why and to use `Function`.
+
+The one restriction: a bare `InlineFunction(...)` **literal** is not a first-class value — you can't pass
+it, return it, store it, or make it a method (those need `Function`). Binding it to a name is fine,
+though: `var sq = InlineFunction(x): return x * x` gives you an ordinary function value that also inlines
+its direct, same-scope calls. Running with `ki --no-inline` turns every `InlineFunction` back into an
+ordinary `Function`.
 
 ## Closures: functions that remember
 

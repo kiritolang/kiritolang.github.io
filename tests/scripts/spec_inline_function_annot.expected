@@ -1,0 +1,23 @@
+25
+1024
+5
+20
+7
+6
+132
+['a', 'c', 'b']
+42
+6
+5.0
+7
+None
+dog
+  argument 'x' must be Integer, got Float
+True
+  argument 'x' must be one of [Integer, Float], got String
+True
+  function must return Integer, got String
+True
+  function must return Integer, got None
+True
+OK inline-function-annot

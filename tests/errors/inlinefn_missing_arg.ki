@@ -1,0 +1,2 @@
+var f = InlineFunction(a, b): return a + b
+var r = f(1)

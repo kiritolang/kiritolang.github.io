@@ -113,6 +113,13 @@ private:
         proto_.unpacks.push_back(UnpackSpec{count, starIndex});
         return static_cast<uint32_t>(proto_.unpacks.size() - 1);
     }
+    // Emit a CheckAnnotation over the operand-stack top (the value stays). Used by the inliner to enforce
+    // an annotated parameter or return type inside a spliced InlineFunction body.
+    void emitCheckAnnotation(const ast::AnnList& ann, const std::string& name, bool isReturn, SourceSpan span) {
+        if (ann.empty()) return;
+        proto_.annotationChecks.push_back(AnnotationCheck{ann, name, isReturn});
+        emit(Op::CheckAnnotation, static_cast<uint32_t>(proto_.annotationChecks.size() - 1), span);
+    }
     // A resolver-annotated (depth, index) env reference -> a LoadVar/AssignVar operand.
     uint32_t addEnvVar(const ast::NameExpr& e) {
         proto_.envVars.push_back(EnvVarRef{static_cast<uint16_t>(e.envDepth),
@@ -308,14 +315,14 @@ private:
     // InlineFunction to a plain Function so none of these fire.
     [[noreturn]] void throwInlineFailure(const ast::CallExpr& e, const ast::FunctionExpr& fn) const {
         std::string nm = fn.name.empty() ? std::string("<anonymous>") : fn.name;
+        // Reached only after BOTH the single-expression and the multi-statement candidacy declined —
+        // keyword args, defaults, annotations, and arity are handled during binding, so they are NOT
+        // failure reasons here. What remains: a starred arg, the depth/recursion guards, or a body shape
+        // that cannot be spliced.
         for (const auto& a : e.args)
-            if (!a.name.empty() || dynamic_cast<const ast::StarExpr*>(a.value.get()))
-                throw KiritoError("cannot inline InlineFunction '" + nm + "': it is called with a keyword or "
-                                  "starred argument (an InlineFunction takes positional arguments only) — use Function",
-                                  e.span);
-        if (e.args.size() != fn.params.size())
-            throw KiritoError("InlineFunction '" + nm + "' expects " + std::to_string(fn.params.size()) +
-                              " argument(s) but " + std::to_string(e.args.size()) + " given", e.span);
+            if (dynamic_cast<const ast::StarExpr*>(a.value.get()))
+                throw KiritoError("cannot inline InlineFunction '" + nm + "': it is called with a starred (*) "
+                                  "argument — use Function", e.span);
         if (inlineStack_.size() >= kMaxInlineDepth)
             throw KiritoError("cannot inline InlineFunction '" + nm + "': inlining depth limit reached — "
                               "use Function", e.span);
@@ -324,18 +331,19 @@ private:
                 throw KiritoError("cannot inline InlineFunction '" + nm + "': it is recursive (an InlineFunction "
                                   "must be a direct, non-recursive call — use Function for a recursive helper)", e.span);
         std::vector<const ast::NameExpr*> caps;
-        if (lambdaInlineBody(fn, caps))
-            if (const auto* nmExpr = dynamic_cast<const ast::NameExpr*>(e.callee.get()))
-                for (const ast::NameExpr* c : caps)
-                    if (c->name == nmExpr->name)
-                        throw KiritoError("cannot inline InlineFunction '" + nm + "': it is recursive — use Function",
-                                          e.span);
-        // Reached only after BOTH the single-expression and the multi-statement candidacy declined: the
-        // body uses a construct this version does not lower inside a spliced body.
+        NameSet bodyLocals;
+        kirito::collectBlockDecls(fn.body, bodyLocals);
+        NameSet lp = bodyLocals;
+        for (const auto& p : fn.params) lp.insert(p.name);
+        kirito::inlineMultiScanBlock(fn.body, lp, caps);   // best-effort caps for the recursion message
+        if (const auto* nmExpr = dynamic_cast<const ast::NameExpr*>(e.callee.get()))
+            for (const ast::NameExpr* c : caps)
+                if (c->name == nmExpr->name)
+                    throw KiritoError("cannot inline InlineFunction '" + nm + "': it is recursive — use Function",
+                                      e.span);
         throw KiritoError("cannot inline InlineFunction '" + nm + "': its body cannot be inlined in this version "
-                          "(it uses a loop, try/with, switch, a nested function, a parameter default or type "
-                          "annotation, or a name that is not a parameter, local, global, or capture) — use Function",
-                          e.span);
+                          "(it uses a loop, try/with, switch, a nested function, or a name that is not a "
+                          "parameter, local, global, or capture) — use Function", e.span);
     }
 
     // Record `var f = <inline-eligible function literal>` as an immutable const-fn binding, so later
@@ -409,22 +417,27 @@ private:
         inlineRebind_ = prev;
     }
 
-    // The InlineFunction (opt-in) MULTI-STATEMENT candidacy: a body of var/assign/if/return/expr/
-    // throw/assert (no loops/try/with — see inlineMultiScanBlock), positional exact arity, no defaults
-    // or annotations (later sub-stages), non-recursive, within the depth cap. Fills caps + bodyLocals.
+    // The InlineFunction (opt-in) MULTI-STATEMENT candidacy: a BODY of var/assign/if/return/expr/throw/
+    // assert (no loops/try/with — see inlineMultiScanBlock), non-recursive, within the depth cap. Keyword
+    // arguments, parameter defaults, and type annotations ARE supported (bound + checked in
+    // emitInlinedMultiCall); a starred arg is not. Arity/keyword validity is enforced during binding, so
+    // it is NOT screened here — this gate is about whether the body shape can be spliced at all. Fills
+    // caps + bodyLocals. A default's own referenced names are scanned during emission, not here.
     bool multiInlineCandidate(const ast::CallExpr& e, const ast::FunctionExpr& fn,
                               std::vector<const ast::NameExpr*>& caps, NameSet& bodyLocals) const {
-        if (!vm_.inliningEnabled() || !fn.returnAnnotation.empty()) return false;
-        for (const auto& p : fn.params) if (!p.annotation.empty() || p.defaultValue) return false;
-        if (e.args.size() != fn.params.size() || inlineBlocked(&fn)) return false;
+        if (!vm_.inliningEnabled() || inlineBlocked(&fn)) return false;
         for (const auto& a : e.args)
-            if (!a.name.empty() || dynamic_cast<const ast::StarExpr*>(a.value.get())) return false;
+            if (dynamic_cast<const ast::StarExpr*>(a.value.get())) return false;   // no *args splatting
         kirito::collectBlockDecls(fn.body, bodyLocals);
         for (const auto& p : fn.params)
             if (bodyLocals.count(p.name)) return false;   // a body `var` shadowing a param: ambiguous rebind, skip
         NameSet lp = bodyLocals;
         for (const auto& p : fn.params) lp.insert(p.name);
         if (!kirito::inlineMultiScanBlock(fn.body, lp, caps)) return false;
+        // A default expression may read earlier parameters, captures, or globals — scan it under the same
+        // name set (params + locals) so a default that reads an unresolvable name is rejected up front.
+        for (const auto& p : fn.params)
+            if (p.defaultValue && !kirito::inlineBodyScan(*p.defaultValue, lp, caps)) return false;
         if (const auto* nm = dynamic_cast<const ast::NameExpr*>(e.callee.get()))
             for (const ast::NameExpr* c : caps) if (c->name == nm->name) return false;  // const-fn recursion
         return true;
@@ -433,27 +446,86 @@ private:
     void emitInlinedMultiCall(const ast::CallExpr& e, const ast::FunctionExpr& fn,
                               const std::vector<const ast::NameExpr*>& caps, const NameSet& bodyLocals) {
         int n = inlineCounter_++;
-        std::vector<InlineBind> binds;
-        binds.reserve(fn.params.size() + caps.size() + bodyLocals.size());
-        for (std::size_t i = 0; i < fn.params.size(); ++i) {
-            compileExpr(*e.args[i].value);   // evaluate the argument ONCE, in order, in the caller context
-            std::string hidden = "$inl" + std::to_string(n) + "_" + fn.params[i].name;
+        std::string who = fn.name.empty() ? std::string("<anonymous>") : fn.name;
+        std::size_t np = fn.params.size();
+        std::vector<bool> bound(np, false);
+        std::vector<std::string> slot(np);
+        auto slotName = [&](std::size_t i) { return "$inl" + std::to_string(n) + "_" + fn.params[i].name; };
+
+        // 1. Explicit arguments — matched positional-then-keyword like the runtime binder, evaluated ONCE
+        //    in call-site SOURCE ORDER, in the CALLER context (inlineRebind_ still points at the caller's
+        //    frame). Arity / unknown-keyword / duplicate errors are compile-time and uncatchable.
+        std::size_t pos = 0;
+        for (const auto& arg : e.args) {
+            std::size_t idx;
+            if (arg.name.empty()) {
+                if (pos >= np)
+                    throw KiritoError("InlineFunction '" + who + "' takes " + std::to_string(np) +
+                                      " positional argument(s) but more were given", e.span);
+                idx = pos++;
+            } else {
+                idx = np;
+                for (std::size_t i = 0; i < np; ++i) if (fn.params[i].name == arg.name) { idx = i; break; }
+                if (idx == np)
+                    throw KiritoError("InlineFunction '" + who + "' got an unexpected keyword argument '" +
+                                      arg.name + "'", e.span);
+                if (bound[idx])
+                    throw KiritoError("InlineFunction '" + who + "' got multiple values for argument '" +
+                                      arg.name + "'", e.span);
+            }
+            compileExpr(*arg.value);
+            std::string hidden = slotName(idx);
             ensureHiddenSlot(hidden);
             emitStore(hidden, e.span);
+            slot[idx] = hidden;
+            bound[idx] = true;
+        }
+
+        // 2. Activate the inline frame's parameter + capture rebinds BEFORE compiling defaults, so a
+        //    default expression reads an earlier parameter via its $arg slot / a captured name via $cap.
+        std::vector<InlineBind> binds;
+        for (std::size_t i = 0; i < np; ++i)
+            if (bound[i]) binds.push_back(InlineBind{fn.params[i].name, slot[i], false, 0, 0});
+        addCaptureBinds(caps, binds);
+        const auto* prev = inlineRebind_;
+        inlineRebind_ = &binds;
+
+        // 3. Fill unbound parameters from their defaults, in PARAM order, in the CALLEE context; a missing
+        //    required parameter is a compile error. Each filled default is added to the rebind so a later
+        //    default can read it.
+        for (std::size_t i = 0; i < np; ++i) {
+            if (bound[i]) continue;
+            if (!fn.params[i].defaultValue)
+                throw KiritoError("InlineFunction '" + who + "' missing required argument '" +
+                                  fn.params[i].name + "'", e.span);
+            std::string hidden = slotName(i);
+            ensureHiddenSlot(hidden);
+            compileExpr(*fn.params[i].defaultValue);
+            emitStore(hidden, e.span);
+            slot[i] = hidden;
+            bound[i] = true;
             binds.push_back(InlineBind{fn.params[i].name, hidden, false, 0, 0});
         }
-        addCaptureBinds(caps, binds);
-        // Each body-declared local gets a fresh hidden caller slot ($inlN_loc_<name>) so it can never
-        // clobber a caller local or (at module scope, where the $ prefix keeps it out of exports) a real
-        // global. The body's own `var` stores into it; reads route through visit(NameExpr) (a non-capture
-        // bind -> emitLoad(hidden)); writes route through emitStore/emitAssign + inlineBindFor.
+
+        // 4. Enforce parameter annotations in PARAM order (matching the runtime binder), reusing the same
+        //    annotationSatisfied predicate via CheckAnnotation (peek the bound value, no bytecode reimpl).
+        for (std::size_t i = 0; i < np; ++i)
+            if (!fn.params[i].annotation.empty()) {
+                emitLoad(slot[i], e.span);
+                emitCheckAnnotation(fn.params[i].annotation, fn.params[i].name, false, e.span);
+                emit(Op::Pop);
+            }
+
+        // 5. Body-declared locals: a fresh hidden caller slot each ($inlN_loc_<name>), $-prefixed so it
+        //    never clobbers a caller local or (module scope) a real global. Reads via visit(NameExpr);
+        //    writes via emitStoreRebound / compileAssignTarget + inlineBindFor.
         for (const auto& name : bodyLocals) {
             std::string hidden = "$inl" + std::to_string(n) + "_loc_" + name;
             ensureHiddenSlot(hidden);
             binds.push_back(InlineBind{name, hidden, false, 0, 0});
         }
-        const auto* prev = inlineRebind_;
-        inlineRebind_ = &binds;
+
+        // 6. Emit the body with return-lowering (return -> value on the stack + jump to the exit label).
         inlineStack_.push_back(&fn);
         std::vector<std::size_t> exitJumps;
         inlineReturns_.push_back(InlineReturn{frames_.size(), &exitJumps});
@@ -463,6 +535,8 @@ private:
         for (std::size_t j : exitJumps) patch(j, exit);
         inlineReturns_.pop_back();
         inlineStack_.pop_back();
+        // 7. Enforce the return annotation on the result now on the stack (no-op if unannotated).
+        emitCheckAnnotation(fn.returnAnnotation, "", true, fn.span);
         inlineRebind_ = prev;            // one value now on the stack = the call result
     }
 
@@ -601,18 +675,19 @@ private:
 
     void visit(const ast::VarDeclStmt& s) override {
         if (vm_.inliningEnabled()) trackConstLambda(s);   // note an immutable `var f = fn` for later inlining
-        // A const `var f = InlineFunction(...)` in a non-class scope backs no runtime binding: its calls
-        // inline and any value-use is a compile error, so there is no closure to materialize or store.
-        // (In a class scope it must fall through so visit(FunctionExpr)'s method ban fires.) Under
-        // --no-inline it is a plain Function and materializes normally.
+        // A const `var f = InlineFunction(...)` in a non-class scope MATERIALIZES as a normal closure (so
+        // `f` is defined everywhere — a cross-scope or first-class use is a plain call, never an
+        // "undefined name") AND its same-scope direct calls still inline. That one materialization is
+        // exempt from the value-use ban; a class-scope method binding is not (the method ban fires).
+        bool constInlineFn = false;
         if (vm_.inliningEnabled() && !classScope_ && s.names.size() == 1 && s.starIndex == -1 && !s.forceUnpack) {
             auto it = constMustInlineDefs_.find(s.names[0]);
-            if (it != constMustInlineDefs_.end() && it->second == s.init.get()) {
-                emit(Op::ClearResult);   // a declaration is not an echoable expression (as the normal path does)
-                return;
-            }
+            constInlineFn = (it != constMustInlineDefs_.end() && it->second == s.init.get());
         }
+        bool savedAllow = allowInlineFnValue_;
+        if (constInlineFn) allowInlineFnValue_ = true;
         compileExpr(*s.init);
+        allowInlineFnValue_ = savedAllow;
         if (s.names.size() == 1 && s.starIndex == -1 && !s.forceUnpack) {
             emitStoreRebound(s.names[0], s.span);
         } else {
@@ -1016,11 +1091,6 @@ private:
                     else emitLoad(b.hidden, e.span);  // a parameter: its once-evaluated argument binding
                     return;
                 }
-        // A const `var f = InlineFunction(...)` reached as a plain name read (not a direct call callee,
-        // which visit(CallExpr) consumes before compiling the callee) is a value-use — banned.
-        if (vm_.inliningEnabled() && constMustInlineDefs_.count(e.name))
-            throw KiritoError("InlineFunction '" + e.name + "' cannot be used as a value (it must be called "
-                              "directly, not stored, returned, or passed) — use Function", e.span);
         if (e.builtinSlot >= 0) emit(Op::LoadGlobal, static_cast<uint32_t>(e.builtinSlot), e.span);
         else if (e.envIndex >= 0) emit(Op::LoadVar, addEnvVar(e), e.span);
         else emitLoad(e.name, e.span);
@@ -1062,12 +1132,13 @@ private:
         // stored, or bound as a method) — which it cannot be. A directly-called literal / const-bound
         // local never reaches this point (it is spliced by emitInlinedCall / skipped in visit(VarDecl)).
         // --no-inline demotes InlineFunction to a plain Function, so this ban lifts with it.
-        if (e.mustInline && vm_.inliningEnabled()) {
+        if (e.mustInline && vm_.inliningEnabled() && !allowInlineFnValue_) {
             if (classScope_)
                 throw KiritoError("InlineFunction cannot be a class method (dispatch is dynamic) — use Function",
                                   e.span);
-            throw KiritoError("InlineFunction cannot be used as a value (it must be called directly, not stored, "
-                              "returned, or passed) — use Function if you need a first-class function", e.span);
+            throw KiritoError("an InlineFunction literal cannot be used as a value (it must be called directly, "
+                              "or bound to a name with `var f = InlineFunction(...)`) — use Function for a "
+                              "first-class function value", e.span);
         }
         proto_.funcs.push_back(&e);
         emit(Op::MakeFunction, static_cast<uint32_t>(proto_.funcs.size() - 1), e.span);
@@ -1247,6 +1318,10 @@ private:
     bool slotsEnabled_ = false;                      // true only when compiling a true function body
     bool classScope_ = false;                        // true only when compiling a class body (isFunction, no fnDef):
                                                      // an InlineFunction bound here is a method -> banned (dynamic dispatch)
+    bool allowInlineFnValue_ = false;                // set while compiling the init of `var f = InlineFunction(...)`:
+                                                     // that ONE materialization is legal (f is a normal closure that
+                                                     // also inlines same-scope direct calls); the value-use ban stays
+                                                     // for a bare literal passed/returned/stored/as a method.
     // `var f = InlineFunction(...)` (const, never rebound): recorded regardless of single-return inline
     // eligibility, so a call that cannot inline is a loud must-inline error and a value-use is banned.
     fum::unordered_map<std::string, const ast::FunctionExpr*> constMustInlineDefs_;

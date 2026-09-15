@@ -100,9 +100,10 @@ These are transparent — they change **speed, not results** — so they need no
     *transparent*: the compiler decides, and whether it happens changes speed, not results. `InlineFunction`
     is the opposite in one respect — it is an **assertion by you** that a call inlines, and unlike the
     transparent optimization it **can fail at compile time**: if the call cannot be inlined (it is
-    recursive, a value-use, a class method, keyword-called, or its body uses a loop/`try`/`with`/nested
-    function) that is a loud compile error, not a silent normal call. Its body may be a single expression
-    or a multi-statement `var`/`if`/`return` block. Same runtime behaviour as `Function` when it inlines; the
+    recursive, a bare literal used as a value, a class method, or its body uses a loop/`try`/`with`/nested
+    function) that is a loud compile error, not a silent normal call. Defaults, keyword arguments, type
+    annotations, and multi-statement `var`/`if`/`return` bodies are all supported. Same runtime behaviour
+    as `Function` when it inlines (annotation checks included, via the same predicate); the
     difference is the guarantee. See the [language guide](02-language-guide.md#functions). `--no-inline`
     demotes every `InlineFunction` back to a plain `Function` (guarantee and restrictions both lifted).
 - **Combinator fusion.** A `for x in map(f, xs):` or `for x in filter(p, xs):` loop whose callback is an

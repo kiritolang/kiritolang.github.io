@@ -1,2 +1,0 @@
-var f = InlineFunction(x): return x
-var g = f

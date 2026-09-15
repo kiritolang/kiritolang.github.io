@@ -368,14 +368,29 @@ var classify = InlineFunction(x):        # a multi-statement body inlines too
 io.print(classify(7))                    # pos
 ```
 
-Because it must inline, an `InlineFunction` is **not a first-class value**: storing it, returning it,
-passing it as an argument, rebinding its name, or using it as a class method is a compile error (use
-`Function` for any of those). It must be a **direct, non-recursive** call with **positional arguments**.
+Parameters work as usual — **defaults, keyword arguments, and enforced type annotations** all apply,
+checked identically to `Function`:
+
+```kirito
+var io = import("io")
+var power = InlineFunction(base, exp = 2) -> Integer: return base ** exp
+io.print(power(5))                       # 25 (default), inlined
+io.print(power(exp = 3, base = 2))       # 8 (keyword args, any order)
+# power("x") -> error: argument 'base' must be Integer, got String   (same message as Function)
+```
+
 The body may be a single expression or a multi-statement block of `var` / assignment / `if` / `return`
-(with early and multiple returns) — its locals stay isolated from the caller's. What it may **not** yet
-contain is a loop, `try`/`with`, `switch`, a nested function, or a parameter default or type annotation;
-any of those (and recursion, or nesting too deep) is a compile error telling you to use `Function`. Each
-error names the reason; see [exceptions](12-exceptions.md).
+(early and multiple returns are fine) — its locals stay isolated from the caller's. It must be a
+**direct, non-recursive** call, and its body may **not** yet contain a loop, `try`/`with`, `switch`, or a
+nested function; any of those (and recursion, or nesting too deep) is a compile error telling you to use
+`Function`. Each error names the reason; see [exceptions](12-exceptions.md).
+
+A bare `InlineFunction(...)` **literal** is not a first-class value — passing, returning, storing, or
+making it a class method is a compile error (use `Function`). But **binding it to a name** —
+`var sq = InlineFunction(x): return x * x` — is fine: `sq` is an ordinary function value (you can pass it,
+alias it, call it from a nested function) that *additionally* inlines its **direct, same-scope** calls.
+A same-scope `sq(a)` that cannot be inlined is the compile error above; a call from another function is a
+normal call.
 
 `--no-inline` (or `KIRITO_NO_INLINE`) **demotes** every `InlineFunction` to a plain `Function` for the
 whole run — the guarantee and all the above restrictions lift, so a program may compile under

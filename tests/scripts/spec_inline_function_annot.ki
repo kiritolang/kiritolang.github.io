@@ -1,0 +1,65 @@
+# spec_inline_function_annot.ki — InlineFunction defaults, keyword arguments, and type-annotation
+# enforcement (Feature 1 sub-stages b + c). Every line must be byte-identical with inlining on and with
+# --no-inline (which runs the callee as a normal Function, so its annotation checks come from the runtime
+# binder). That the ACCEPT results AND the REJECT error messages match both ways proves the inlined
+# CheckAnnotation reuses the same annotationSatisfied predicate and wording (SSOT) as callFull.
+
+var io = import("io")
+
+# --- defaults -------------------------------------------------------------------------------------
+var power = InlineFunction(base, exp = 2): return base ** exp
+io.print(power(5))                     # 25 (default)
+io.print(power(2, 10))                 # 1024
+var span = InlineFunction(lo, hi = lo + 5): return hi - lo   # default reads an earlier parameter
+io.print(span(10))                     # 5
+io.print(span(10, 30))                 # 20
+
+# --- keyword arguments ----------------------------------------------------------------------------
+var sub = InlineFunction(a, b): return a - b
+io.print(sub(b = 3, a = 10))           # 7 (out of order)
+io.print(sub(10, b = 4))               # 6 (positional + keyword)
+# call-site source-order, once-only evaluation with keywords out of parameter order
+var order = []
+var mark = Function(tag) -> Integer:
+    order.append(tag)
+    return len(order)
+var combine = InlineFunction(a, b, c): return a * 100 + b * 10 + c
+io.print(combine(mark("a"), c = mark("c"), b = mark("b")))   # evaluated a,c,b -> a=1,c=2,b=3 -> 132
+io.print(order)                        # ['a', 'c', 'b']
+
+# --- annotations accept ---------------------------------------------------------------------------
+var typed = InlineFunction(x: Integer) -> Integer: return x + 1
+io.print(typed(41))                    # 42
+var num = InlineFunction(x: [Integer, Float]): return x * 2
+io.print(num(3))                       # 6
+io.print(num(2.5))                     # 5.0
+var opt = InlineFunction(x: [Integer, None]): return x    # None-in-union = optional
+io.print(opt(7))
+io.print(opt(None))
+
+# inheritance-aware: a subclass instance satisfies a base-class annotation
+class Animal:
+    var kind = "animal"
+class Dog(Animal):
+    var kind = "dog"
+var describe = InlineFunction(a: Animal) -> String: return a.kind
+io.print(describe(Dog()))              # dog
+
+# --- annotations reject (message must match the runtime binder exactly) ---------------------------
+var throws = Function(thunk) -> Bool:
+    try:
+        discard thunk()
+    catch as e:
+        io.print("  " + e)
+        return True
+    return False
+io.print(throws(Function(): return typed(3.5)))                 # argument 'x' must be Integer, got Float
+io.print(throws(Function(): return num("no")))                  # must be one of [Integer, Float], got String
+var retanno = InlineFunction(x) -> Integer: return x
+io.print(throws(Function(): return retanno("hi")))              # function must return Integer, got String
+var mustpos = InlineFunction(x) -> Integer:
+    if x > 0:
+        return x
+io.print(throws(Function(): return mustpos(-1)))                # function must return Integer, got None
+
+io.print("OK inline-function-annot")

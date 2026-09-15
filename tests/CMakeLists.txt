@@ -259,7 +259,7 @@ endforeach()
 # intermediate, or a hidden $inl/$cmb slot left unrooted is swept mid-expression and shows up as a wrong
 # result here (or an ASan use-after-free in the asan variant). Both inline ON and --no-inline must still
 # equal the SAME .expected under per-alloc GC, so this is also the soak-differential at the .ki layer. ---
-foreach(nm spec_cheapcall spec_inline_adversarial spec_inline_function spec_inline_function_multi unit_audit_v113 unit_audit_v114 unit_fold_const_gc)
+foreach(nm spec_cheapcall spec_inline_adversarial spec_inline_function spec_inline_function_multi spec_inline_function_annot unit_audit_v113 unit_audit_v114 unit_fold_const_gc)
     set(_scr ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.ki)
     set(_exp ${CMAKE_CURRENT_SOURCE_DIR}/scripts/${nm}.expected)
     if(EXISTS ${_scr} AND EXISTS ${_exp})
