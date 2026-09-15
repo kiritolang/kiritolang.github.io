@@ -147,6 +147,13 @@ var make = Function(year, month, day, hour = 0, minute = 0, second = 0):
     for _comp in [year, month, day, hour, minute, second]:
         if type(_comp) != "Integer":
             throw "make: date components must be Integers"
+    # A year outside the representable [-9999, 9999] window that still fits the int32 component range
+    # reports the (computable) out-of-range epoch; a wildly out-of-int32 component is rejected outright.
+    if year < -9999 or year > 9999:
+        if year >= -2147483648 and year <= 2147483647:
+            var _ep = _daysFromCivil(year, 1, 1) * 86400 + hour * 3600 + minute * 60 + second
+            throw "DateTime: epoch " + String(_ep) + " is out of representable range (year " + String(year) + ")"
+        throw "make: date component out of range"
     # Like C mktime: out-of-range components normalize (month 13 -> Jan next year), so build from the
     # civil-date epoch and re-derive the broken-down fields rather than storing the raw inputs.
     var d = _daysFromCivil(year, month, day)
