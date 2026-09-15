@@ -796,7 +796,7 @@ var callValue = Function(St, fn, args, kwargs):
     if k == "native":
         var nm = fn["name"]
         if nm in _BUILTIN_PARAMS:
-            return fn["fn"](St, _mbind(args, kwargs, _BUILTIN_PARAMS[nm], nm, _builtinRequired(nm)), [])
+            return fn["fn"](St, _mbind(args, kwargs, _BUILTIN_PARAMS[nm], nm, _builtinRequired(nm), True), [])
         return fn["fn"](St, args, kwargs)
     if k == "function":
         return callFunction(St, fn, args, kwargs, None)
@@ -1277,7 +1277,12 @@ var _paramsFor = Function(tn, name):
     return []
 
 # Merge positional args + [name,value] kwargs into one positional list using the ordered `params`.
-var _mbind = Function(args, kwargs, params, mname, required = -1):
+var _mbind = Function(args, kwargs, params, mname, required = -1, enforce = False):
+    # Reject extra positionals only when the caller opts in (`enforce`) AND the signature is fixed
+    # (non-empty `params`). Builtins and the numeric `compare` method enforce arity; string/list/etc.
+    # methods silently ignore extra positionals in native, so they must not.
+    if enforce and len(params) > 0 and len(args) > len(params):
+        rtError(mname + "() takes at most " + String(len(params)) + " positional argument(s) but " + String(len(args)) + " given")
     if len(kwargs) == 0:
         if required >= 0 and len(args) < required:
             rtError(mname + "() missing required argument '" + params[len(args)] + "'")
@@ -1341,7 +1346,7 @@ var numMethod = Function(St, recv, name, args):
             rtError("compare() missing required argument 'other'")
         var other = args[0]
         if not (isinstance(other, "Integer") or isinstance(other, "Float")):
-            rtError("compare() argument must be a number")
+            rtError("compare() expects a number, not '" + typeName(other) + "'")
         var relTol = 1e-9
         var absTol = 0.0
         if len(args) >= 2 and args[1] != None:
@@ -1369,7 +1374,9 @@ var callMethod = Function(St, recv, name, args, kwargs):
     if t == "hostfile" or t == "hostobj":
         return hostObjMethod(St, recv, name, _mbind(args, kwargs, _hostParamsFor(name), name), [])
     var tn = type(recv)
-    var bound = _mbind(args, kwargs, _paramsFor(tn, name), name)
+    # Only the numeric methods (compare) enforce a positional upper bound; string/list/dict/set/bytes
+    # methods ignore extra positionals in native (their param tables are for kwarg binding only).
+    var bound = _mbind(args, kwargs, _paramsFor(tn, name), name, -1, tn == "Integer" or tn == "Float")
     if tn == "Integer" or tn == "Float":
         return numMethod(St, recv, name, bound)
     if tn == "List":
@@ -1749,15 +1756,15 @@ var strMethod = Function(St, recv, name, args):
     if name == "lower":
         return _strLower(recv)
     if name == "strip":
-        if len(args) == 1:
+        if len(args) >= 1:                      # native uses the 1st positional and ignores any extra
             return _strip(recv, args[0], True, True)
         return _strip(recv, _WS, True, True)
     if name == "lstrip":
-        if len(args) == 1:
+        if len(args) >= 1:
             return _strip(recv, args[0], True, False)
         return _strip(recv, _WS, True, False)
     if name == "rstrip":
-        if len(args) == 1:
+        if len(args) >= 1:
             return _strip(recv, args[0], False, True)
         return _strip(recv, _WS, False, True)
     if name == "split":
@@ -1774,6 +1781,8 @@ var strMethod = Function(St, recv, name, args):
         var out = ""
         var first = True
         for x in materialize(St, args[0]):
+            if typeName(x) != "String":
+                rtError("join requires a String")
             if first:
                 out = x
                 first = False
@@ -1787,6 +1796,8 @@ var strMethod = Function(St, recv, name, args):
         return _replace(recv, args[0], args[1], cnt)
     if name == "startswith":
         var p = args[0]
+        if typeName(p) != "String":
+            rtError("startswith requires a String")
         var swa = None
         var swb = None
         if len(args) >= 2:
@@ -1799,6 +1810,8 @@ var strMethod = Function(St, recv, name, args):
         return recv[sw[0]:sw[0] + len(p)] == p
     if name == "endswith":
         var suf = args[0]
+        if typeName(suf) != "String":
+            rtError("endswith requires a String")
         var ewa = None
         var ewb = None
         if len(args) >= 2:
@@ -2561,7 +2574,7 @@ var builtinSum = Function(St, args, kwargs):
     if not (typeName(acc) == "Integer" or typeName(acc) == "Float" or boxKind(acc) == "instance"):
         rtError("sum start must be a number")
     for x in materialize(St, args[0]):
-        if typeName(x) == "String":
+        if not (typeName(x) == "Integer" or typeName(x) == "Float" or boxKind(x) == "instance"):
             rtError("sum expects numbers")
         acc = evalBinary(St, "+", acc, x)
     return acc
@@ -2634,7 +2647,7 @@ var builtinType = Function(St, args, kwargs):
 # keyword: this folds a lone keyword into the positional slot so `Integer(x = "42")` works.
 var _conv1 = Function(a, k, cname, pname, required = True):
     if len(a) > 1:
-        rtError(cname + "() takes at most 1 argument (" + String(len(a)) + " given)")
+        rtError(cname + "() takes at most 1 positional argument(s) but " + String(len(a)) + " given")
     for kw in k:
         if kw[0] != pname:
             rtError(cname + "() got an unexpected keyword argument '" + kw[0] + "'")
