@@ -26,8 +26,10 @@ var exit = Function(code = 0):
 var traceback = Function():
     return _os.traceback()
 
-var createprocess = Function(args: List, cwd = None, input = "", timeout = None) -> Dict:
-    return _os.createprocess(args, cwd, input, timeout)
+var createprocess = Function(args, cwd = None, input = "", timeout = None, binary = False) -> Dict:
+    if type(args) != "List":
+        throw "createprocess: args must be a List of Strings (the program and its arguments)"
+    return _os.createprocess(args, cwd, input, timeout, binary)
 
-var shell = Function(command: String, cwd = None, input = "", timeout = None) -> Dict:
-    return _os.shell(command, cwd, input, timeout)
+var shell = Function(command: String, cwd = None, input = "", timeout = None, binary = False) -> Dict:
+    return _os.shell(command, cwd, input, timeout, binary)

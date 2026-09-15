@@ -51,6 +51,14 @@ var _civilFromDays = Function(z):
         y = y + 1
     return [y, m, d]
 
+# add/sub accept a whole number of seconds; a non-number or NaN is rejected with native's wording.
+var _reqSeconds = Function(seconds):
+    if type(seconds) != "Integer" and type(seconds) != "Float":
+        throw "add/sub expects a number of seconds"
+    if seconds != seconds:
+        throw "add/sub: cannot convert NaN to Integer"
+    return Integer(seconds)
+
 class DateTime:
     var _init_ = Function(self, year, month, day, hour, minute, second):
         self.year = year
@@ -70,9 +78,13 @@ class DateTime:
         return Float(days * 86400 + self.hour * 3600 + self.minute * 60 + self.second)
 
     var diff = Function(self, other):
+        if type(other) != "DateTime":
+            throw "diff expects a DateTime"
         return Integer(self.epoch() - other.epoch())     # whole-second difference (Integer, like native)
 
     var format = Function(self, fmt):
+        if type(fmt) != "String":
+            throw "format expects a String"
         var out = ""
         var i = 0
         var n = len(fmt)
@@ -112,10 +124,10 @@ class DateTime:
         return self.iso()
 
     var add = Function(self, seconds):
-        return _fromEpoch(self.timestamp + Integer(seconds))
+        return _fromEpoch(self.timestamp + _reqSeconds(seconds))
 
     var sub = Function(self, seconds):
-        return _fromEpoch(self.timestamp - Integer(seconds))
+        return _fromEpoch(self.timestamp - _reqSeconds(seconds))
 
     # value equality + hash by instant (epoch), mirroring the native DateTime
     var _eq_ = Function(self, o):
@@ -239,7 +251,7 @@ var datetime = Function(timestamp = None):
     if timestamp == None:
         return now()
     if timestamp != timestamp:
-        throw "datetime: timestamp is NaN"
-    if timestamp > 1e15 or timestamp < -1e15:
-        throw "datetime: timestamp out of range"
+        throw "datetime: cannot convert NaN to a timestamp"
+    if timestamp > 1.7976931348623157e308 or timestamp < -1.7976931348623157e308:
+        throw "datetime: cannot convert infinity to a timestamp"
     return _fromEpoch(Integer(timestamp))

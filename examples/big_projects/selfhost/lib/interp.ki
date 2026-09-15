@@ -3777,8 +3777,9 @@ var bridgeOs = Function(St):
     m["arch"] = _sys_hostSys.arch
     m["executable"] = _sys_hostPath.executable
     m["version"] = _sys_hostSys.version
-    m["createprocess"] = mkNative("createprocess", Function(St2, a, k): return _sys_hostSys.createprocess(a[0], a[1], a[2], a[3]))
-    m["shell"] = mkNative("shell", Function(St2, a, k): return _sys_hostSys.shell(a[0], a[1], a[2], a[3]))
+    # a[4] is the binary flag (Bytes stdin/stdout); the sys module always forwards it, so pass it on.
+    m["createprocess"] = mkNative("createprocess", Function(St2, a, k): return _sys_hostSys.createprocess(a[0], a[1], a[2], a[3], a[4]))
+    m["shell"] = mkNative("shell", Function(St2, a, k): return _sys_hostSys.shell(a[0], a[1], a[2], a[3], a[4]))
     m["setenv"] = mkNative("setenv", _osSetenv)
     m["unsetenv"] = mkNative("unsetenv", _osUnsetenv)
     m["environ"] = mkNative("environ", Function(St2, a, k): return _sys_hostSys.environ())
