@@ -46,23 +46,29 @@ var _fromUtf8 = Function(bytes):
         if b < 128:
             out = out + chr(b)
             i = i + 1
-        elif b < 224:
+        elif b < 224 and i + 1 < n:
             out = out + chr((b - 192) * 64 + (bytes[i + 1] - 128))
             i = i + 2
-        elif b < 240:
+        elif b < 240 and i + 2 < n:
             out = out + chr((b - 224) * 4096 + (bytes[i + 1] - 128) * 64 + (bytes[i + 2] - 128))
             i = i + 3
-        else:
+        elif b < 248 and i + 3 < n:
             out = out + chr((b - 240) * 262144 + (bytes[i + 1] - 128) * 4096 + (bytes[i + 2] - 128) * 64 + (bytes[i + 3] - 128))
             i = i + 4
+        else:
+            out = out + chr(b)        # incomplete/invalid lead byte: pass through as a raw byte
+            i = i + 1
     return out
+
+var _isHexDigit = Function(c):
+    return (c >= "0" and c <= "9") or (c >= "a" and c <= "f") or (c >= "A" and c <= "F")
 
 var unquote = Function(s):
     var bytes = []
     var i = 0
     var n = len(s)
     while i < n:
-        if s[i] == "%":
+        if s[i] == "%" and i + 2 < n and _isHexDigit(s[i + 1]) and _isHexDigit(s[i + 2]):
             bytes.append(_hexVal(s[i + 1]) * 16 + _hexVal(s[i + 2]))
             i = i + 3
         elif s[i] == "+":
