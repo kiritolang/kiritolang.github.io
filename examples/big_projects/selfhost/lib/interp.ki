@@ -30,44 +30,10 @@ var boxKind = Function(v):
 var mkLazyIter = Function(itype, thunk):
     return {"sk": "lazyiter", "itype": itype, "thunk": thunk, "cache": None, "cached": False}
 
-# Collect every free `name` reference reachable from an AST node (a generic Dict/List walk — any
-# dict with "k":"name" is a leaf reference; a nested "k":"func" node is skipped since ITS "name"
-# nodes are that lambda's own bindings, not references into the outer scope).
-var _collectNameRefs = Function(node, out):
-    if type(node) == "Dict":
-        if "k" in node:
-            if node["k"] == "name":
-                out.append(node["v"])
-                return None
-            if node["k"] == "func":
-                return None
-        for key in node.keys():
-            _collectNameRefs(node[key], out)
-    elif type(node) == "List":
-        for item in node:
-            _collectNameRefs(item, out)
-    return None
-
-# A default expression evaluates in the function's CLOSURE scope, not progressively alongside
-# earlier parameters (each call re-evaluates it fresh, before any parameter of THIS call is bound) —
-# so a default that references a sibling parameter, with no same-named outer binding to fall back
-# to, can never resolve. Catch that statically when the function value is created (mirroring the
-# real compiler's resolver, which flags this at compile time rather than only on the first call).
-var _checkDefaultScoping = Function(env, params):
-    var ownNames = Set([])
-    for p in params:
-        ownNames.add(p["name"])
-    for p in params:
-        if p["has"]:
-            var refs = []
-            _collectNameRefs(p["default"], refs)
-            for nm in refs:
-                if (nm in ownNames) and not envHas(env, nm):
-                    rtError("NameError: name '" + nm + "' is not defined")
-    return None
-
 var mkFunc = Function(name, params, body, env, ret):
-    _checkDefaultScoping(env, params)
+    # Defaults bind progressively at call time (a default may reference an EARLIER parameter), so a
+    # default referencing a not-yet-bound name surfaces as a runtime NameError when evaluated — no
+    # static pre-check (which wrongly rejected valid sibling-referencing defaults).
     return {"sk": "function", "name": name, "params": params, "body": body, "env": env, "ret": ret}
 
 var mkNative = Function(name, fn):
@@ -882,7 +848,9 @@ var bindArgs = Function(St, fn, args, kwargs, callEnv):
             v = kwmap[nm]
             kwmap.pop(nm)
         elif p["has"]:
-            v = evalExpr(St, fn["env"], p["default"])
+            # Evaluate the default in the CALL frame (a child of the closure), so it sees the
+            # already-bound EARLIER parameters (native binds progressively) as well as closure names.
+            v = evalExpr(St, callEnv, p["default"])
         else:
             rtError(fn["name"] + "() missing required argument '" + nm + "'")
         if p["ann"] != None and not _typeMatches(St, v, p["ann"]):
