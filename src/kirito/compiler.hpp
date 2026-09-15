@@ -216,6 +216,20 @@ private:
     fum::unordered_map<std::string, const ast::FunctionExpr*> constLambdaDefs_;  // f -> its literal (inlinable)
     std::vector<const ast::FunctionExpr*> inlineStack_;   // lambdas currently being inlined (cycle guard)
     static constexpr std::size_t kMaxInlineDepth = 8;     // backstop vs mutual recursion / code-size blowup
+    // Active multi-statement inline bodies (innermost = back()). A `return` inside such a body does NOT
+    // emit Op::Return (which would exit the CALLER); it leaves its value on the stack and jumps to the
+    // body's single exit label. frameBoundary is frames_.size() at entry — no body frame lives above it
+    // (candidacy rejects loops/try/with), so there is nothing to unwind before the jump.
+    struct InlineReturn { std::size_t frameBoundary; std::vector<std::size_t>* exitJumps; };
+    std::vector<InlineReturn> inlineReturns_;
+    // The hidden binding for a body name (parameter -> $arg, body-local -> $loc) in the active inline
+    // frame, used to REDIRECT its stores/assignments; captures are read-only, so excluded. Reads go
+    // through visit(NameExpr) directly.
+    const InlineBind* inlineBindFor(const std::string& name) const {
+        if (!inlineRebind_) return nullptr;
+        for (const auto& b : *inlineRebind_) if (b.name == name && !b.capture) return &b;
+        return nullptr;
+    }
 
     bool inlineBlocked(const ast::FunctionExpr* fn) const {
         if (inlineStack_.size() >= kMaxInlineDepth) return true;
@@ -310,17 +324,18 @@ private:
                 throw KiritoError("cannot inline InlineFunction '" + nm + "': it is recursive (an InlineFunction "
                                   "must be a direct, non-recursive call — use Function for a recursive helper)", e.span);
         std::vector<const ast::NameExpr*> caps;
-        if (!lambdaInlineBody(fn, caps))
-            throw KiritoError("cannot inline InlineFunction '" + nm + "': its body is not a single-expression "
-                              "return (a multi-statement, annotated, or defaulted InlineFunction is not inlinable "
-                              "in this version) — use Function", e.span);
-        if (const auto* nmExpr = dynamic_cast<const ast::NameExpr*>(e.callee.get()))
-            for (const ast::NameExpr* c : caps)
-                if (c->name == nmExpr->name)
-                    throw KiritoError("cannot inline InlineFunction '" + nm + "': it is recursive — use Function",
-                                      e.span);
-        throw KiritoError("cannot inline InlineFunction '" + nm + "': the callee is not statically known here — "
-                          "use Function", e.span);
+        if (lambdaInlineBody(fn, caps))
+            if (const auto* nmExpr = dynamic_cast<const ast::NameExpr*>(e.callee.get()))
+                for (const ast::NameExpr* c : caps)
+                    if (c->name == nmExpr->name)
+                        throw KiritoError("cannot inline InlineFunction '" + nm + "': it is recursive — use Function",
+                                          e.span);
+        // Reached only after BOTH the single-expression and the multi-statement candidacy declined: the
+        // body uses a construct this version does not lower inside a spliced body.
+        throw KiritoError("cannot inline InlineFunction '" + nm + "': its body cannot be inlined in this version "
+                          "(it uses a loop, try/with, switch, a nested function, a parameter default or type "
+                          "annotation, or a name that is not a parameter, local, global, or capture) — use Function",
+                          e.span);
     }
 
     // Record `var f = <inline-eligible function literal>` as an immutable const-fn binding, so later
@@ -392,6 +407,63 @@ private:
         compileExpr(body);                  // the body value is left on the stack = the call's result
         inlineStack_.pop_back();
         inlineRebind_ = prev;
+    }
+
+    // The InlineFunction (opt-in) MULTI-STATEMENT candidacy: a body of var/assign/if/return/expr/
+    // throw/assert (no loops/try/with — see inlineMultiScanBlock), positional exact arity, no defaults
+    // or annotations (later sub-stages), non-recursive, within the depth cap. Fills caps + bodyLocals.
+    bool multiInlineCandidate(const ast::CallExpr& e, const ast::FunctionExpr& fn,
+                              std::vector<const ast::NameExpr*>& caps, NameSet& bodyLocals) const {
+        if (!vm_.inliningEnabled() || !fn.returnAnnotation.empty()) return false;
+        for (const auto& p : fn.params) if (!p.annotation.empty() || p.defaultValue) return false;
+        if (e.args.size() != fn.params.size() || inlineBlocked(&fn)) return false;
+        for (const auto& a : e.args)
+            if (!a.name.empty() || dynamic_cast<const ast::StarExpr*>(a.value.get())) return false;
+        kirito::collectBlockDecls(fn.body, bodyLocals);
+        for (const auto& p : fn.params)
+            if (bodyLocals.count(p.name)) return false;   // a body `var` shadowing a param: ambiguous rebind, skip
+        NameSet lp = bodyLocals;
+        for (const auto& p : fn.params) lp.insert(p.name);
+        if (!kirito::inlineMultiScanBlock(fn.body, lp, caps)) return false;
+        if (const auto* nm = dynamic_cast<const ast::NameExpr*>(e.callee.get()))
+            for (const ast::NameExpr* c : caps) if (c->name == nm->name) return false;  // const-fn recursion
+        return true;
+    }
+
+    void emitInlinedMultiCall(const ast::CallExpr& e, const ast::FunctionExpr& fn,
+                              const std::vector<const ast::NameExpr*>& caps, const NameSet& bodyLocals) {
+        int n = inlineCounter_++;
+        std::vector<InlineBind> binds;
+        binds.reserve(fn.params.size() + caps.size() + bodyLocals.size());
+        for (std::size_t i = 0; i < fn.params.size(); ++i) {
+            compileExpr(*e.args[i].value);   // evaluate the argument ONCE, in order, in the caller context
+            std::string hidden = "$inl" + std::to_string(n) + "_" + fn.params[i].name;
+            ensureHiddenSlot(hidden);
+            emitStore(hidden, e.span);
+            binds.push_back(InlineBind{fn.params[i].name, hidden, false, 0, 0});
+        }
+        addCaptureBinds(caps, binds);
+        // Each body-declared local gets a fresh hidden caller slot ($inlN_loc_<name>) so it can never
+        // clobber a caller local or (at module scope, where the $ prefix keeps it out of exports) a real
+        // global. The body's own `var` stores into it; reads route through visit(NameExpr) (a non-capture
+        // bind -> emitLoad(hidden)); writes route through emitStore/emitAssign + inlineBindFor.
+        for (const auto& name : bodyLocals) {
+            std::string hidden = "$inl" + std::to_string(n) + "_loc_" + name;
+            ensureHiddenSlot(hidden);
+            binds.push_back(InlineBind{name, hidden, false, 0, 0});
+        }
+        const auto* prev = inlineRebind_;
+        inlineRebind_ = &binds;
+        inlineStack_.push_back(&fn);
+        std::vector<std::size_t> exitJumps;
+        inlineReturns_.push_back(InlineReturn{frames_.size(), &exitJumps});
+        compileBlock(fn.body);
+        emit(Op::LoadNone, 0, e.span);   // the no-explicit-return fall-through path yields None
+        uint32_t exit = here();          // every body `return` jumped here with its value on the stack
+        for (std::size_t j : exitJumps) patch(j, exit);
+        inlineReturns_.pop_back();
+        inlineStack_.pop_back();
+        inlineRebind_ = prev;            // one value now on the stack = the call result
     }
 
     // Fused `for VAR in map/filter(LAMBDA, SRC): BODY`: iterate SRC directly and inline the callback per
@@ -542,12 +614,20 @@ private:
         }
         compileExpr(*s.init);
         if (s.names.size() == 1 && s.starIndex == -1 && !s.forceUnpack) {
-            emitStore(s.names[0], s.span);
+            emitStoreRebound(s.names[0], s.span);
         } else {
             emit(Op::Unpack, addUnpack(static_cast<uint32_t>(s.names.size()), s.starIndex), s.span);
-            for (const auto& name : s.names) emitStore(name, s.span);  // first target on top
+            for (const auto& name : s.names) emitStoreRebound(name, s.span);  // first target on top
         }
         emit(Op::ClearResult);
+    }
+
+    // Store into a name, redirecting a body-local/parameter of an active inlined body to its hidden slot
+    // (so the body never clobbers a caller local or a module global of the same name). A no-op redirect
+    // outside an inline. Used by every declaration/assignment of a bare name.
+    void emitStoreRebound(const std::string& name, SourceSpan span) {
+        if (const InlineBind* b = inlineBindFor(name)) emitStore(b->hidden, span);
+        else emitStore(name, span);
     }
 
     void visit(const ast::AssignStmt& s) override {
@@ -577,7 +657,8 @@ private:
         switch (target.exprKind()) {
             case ast::ExprKind::Name: {
                 const auto& n = static_cast<const ast::NameExpr&>(target);
-                if (n.envIndex >= 0) emit(Op::AssignVar, addEnvVar(n), span);  // rebind an indexed env slot
+                if (const InlineBind* b = inlineBindFor(n.name)) emitAssign(b->hidden, span);  // inlined body-local/param
+                else if (n.envIndex >= 0) emit(Op::AssignVar, addEnvVar(n), span);  // rebind an indexed env slot
                 else emitAssign(n.name, span);
             } break;
             case ast::ExprKind::Index: {
@@ -690,6 +771,16 @@ private:
     }
 
     void visit(const ast::ReturnStmt& s) override {
+        // Inside an inlined multi-statement body a `return` yields the CALL's value, not the caller's:
+        // leave the value on the stack and jump to the body's exit label. Candidacy rejects loops/try/
+        // with, so no body frame lives above the boundary — nothing to unwind before the jump.
+        if (!inlineReturns_.empty()) {
+            const InlineReturn& ir = inlineReturns_.back();
+            if (s.value) compileExpr(*s.value);
+            else emit(Op::LoadNone);
+            ir.exitJumps->push_back(emit(Op::Jump, 0, s.span));
+            return;
+        }
         if (s.value) compileExpr(*s.value);
         else emit(Op::LoadNone);
         // If this return crosses any try-finally / with whose cleanup runs here, park the return value
@@ -989,10 +1080,19 @@ private:
             const ast::FunctionExpr* fn = nullptr;
             std::vector<const ast::NameExpr*> caps;
             if (const ast::Expr* body = inlineBodyIfCandidate(e, fn, caps)) { emitInlinedCall(e, *fn, *body, caps); return; }
-            // The InlineFunction guarantee: a must-inline callee that DIDN'T inline above is a loud
-            // compile error (never a silent fallback to a normal call). --no-inline demotes it first.
+            // The InlineFunction guarantee: a must-inline callee that DIDN'T take the single-expression
+            // path above must inline via the multi-statement path, or it is a loud compile error (never a
+            // silent fallback to a normal call). --no-inline demotes InlineFunction first, so skips this.
             if (vm_.inliningEnabled())
-                if (const ast::FunctionExpr* mfn = mustInlineCallee(e)) throwInlineFailure(e, *mfn);
+                if (const ast::FunctionExpr* mfn = mustInlineCallee(e)) {
+                    std::vector<const ast::NameExpr*> mcaps;
+                    NameSet bodyLocals;
+                    if (multiInlineCandidate(e, *mfn, mcaps, bodyLocals)) {
+                        emitInlinedMultiCall(e, *mfn, mcaps, bodyLocals);
+                        return;
+                    }
+                    throwInlineFailure(e, *mfn);
+                }
         }
         // A positional argument after a keyword argument is a (catchable) run-time error, like the old
         // evaluator: the callee and the arguments up to and including the offending one are evaluated,

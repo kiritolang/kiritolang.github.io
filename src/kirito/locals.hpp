@@ -338,6 +338,46 @@ inline bool inlineBodyScan(const ast::Expr& e, const NameSet& params,
     return true;  // LiteralExpr and any leaf without a name reference nothing unsafe
 }
 
+// Scan an inline-candidate MULTI-STATEMENT body (the InlineFunction opt-in path). Returns false unless
+// EVERY statement is straight-line or branching control flow that pushes NO runtime handler/loop frame:
+// `var` / assignment / `if` / `return` / expression / `discard` / `pass` / `todo` / `assert` / `throw`.
+// Loops, `try`, `with`, `switch`, `class`, `break`/`continue`, and nested function literals are rejected
+// — they would need the frame-crossing return-lowering this version does not emit for an inlined body,
+// so an inlined `return` is a plain jump to the exit label with nothing to unwind. `lp` is the set of
+// names the body declares UNIONED with the parameters; a name-target assignment must hit one of those
+// (a body-local or parameter rebind). Captured reads are appended to `caps` exactly as inlineBodyScan.
+inline bool inlineMultiScanBlock(const ast::Block& b, const NameSet& lp,
+                                 std::vector<const ast::NameExpr*>& caps);
+inline bool inlineMultiScanStmt(const ast::Stmt& s, const NameSet& lp,
+                                std::vector<const ast::NameExpr*>& caps) {
+    if (const auto* v = dynamic_cast<const ast::VarDeclStmt*>(&s)) return inlineBodyScan(*v->init, lp, caps);
+    if (const auto* a = dynamic_cast<const ast::AssignStmt*>(&s)) {
+        bool ok = true;
+        ast::walkAssignTarget(*a->target,
+            [&](const ast::NameExpr& n) { if (!lp.count(n.name)) ok = false; },   // only a body-local/param target
+            [&](const ast::Expr& e) { if (!inlineBodyScan(e, lp, caps)) ok = false; });
+        return ok && inlineBodyScan(*a->value, lp, caps);
+    }
+    if (const auto* r = dynamic_cast<const ast::ReturnStmt*>(&s)) return !r->value || inlineBodyScan(*r->value, lp, caps);
+    if (const auto* i = dynamic_cast<const ast::IfStmt*>(&s)) {
+        for (const auto& br : i->branches)
+            if (!inlineBodyScan(*br.first, lp, caps) || !inlineMultiScanBlock(br.second, lp, caps)) return false;
+        return !i->orelse || inlineMultiScanBlock(*i->orelse, lp, caps);
+    }
+    if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&s)) return inlineBodyScan(*es->expr, lp, caps);
+    if (const auto* d = dynamic_cast<const ast::DiscardStmt*>(&s)) return inlineBodyScan(*d->expr, lp, caps);
+    if (const auto* t = dynamic_cast<const ast::ThrowStmt*>(&s)) return inlineBodyScan(*t->value, lp, caps);
+    if (const auto* as = dynamic_cast<const ast::AssertStmt*>(&s))
+        return inlineBodyScan(*as->cond, lp, caps) && (!as->message || inlineBodyScan(*as->message, lp, caps));
+    if (dynamic_cast<const ast::PassStmt*>(&s) || dynamic_cast<const ast::TodoStmt*>(&s)) return true;
+    return false;   // for / while / try / with / switch / class / break / continue: not inlinable here
+}
+inline bool inlineMultiScanBlock(const ast::Block& b, const NameSet& lp,
+                                 std::vector<const ast::NameExpr*>& caps) {
+    for (const auto& s : b) if (!inlineMultiScanStmt(*s, lp, caps)) return false;
+    return true;
+}
+
 namespace detail {
 // Collect bare-name assignment targets (`name = ...`) across a scope's OWN blocks — the shared
 // if/while/for/try/with/switch bodies, but NOT nested function/class bodies (which are separate scopes;

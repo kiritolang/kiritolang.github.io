@@ -139,9 +139,11 @@ io.print(sq(12))                             # => 144
 
 The trade-off is that an `InlineFunction` is the one kind of function that is **not** a first-class
 value: you cannot store it, return it, pass it as an argument, or make it a method — those need
-`Function` (the section just above). It must be a direct, non-recursive, single-expression `return`
-call. If you ask for something it can't inline, the error tells you exactly why and to use `Function`.
-Running with `ki --no-inline` turns every `InlineFunction` back into an ordinary `Function`.
+`Function` (the section just above). It must be a direct, non-recursive call with positional arguments.
+Its body can be a single expression or a multi-statement block of `var`/assignment/`if`/`return` (early
+and multiple returns are fine); it may not yet use a loop, `try`/`with`, or a nested function. If you
+ask for something it can't inline, the error tells you exactly why and to use `Function`. Running with
+`ki --no-inline` turns every `InlineFunction` back into an ordinary `Function`.
 
 ## Closures: functions that remember
 

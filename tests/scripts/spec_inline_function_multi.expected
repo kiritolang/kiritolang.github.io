@@ -1,0 +1,23 @@
+pos
+neg
+zero
+pos
+CALLER
+5
+5
+positive
+None
+202
+2
+1
+42
+1010
+2010
+17
+[99, 2, 3]
+[99, 2, 3]
+-7
+9
+10
+caught: must be positive
+OK inline-function-multi

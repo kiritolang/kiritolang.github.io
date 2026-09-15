@@ -1,0 +1,6 @@
+var f = InlineFunction(n):
+    var s = 0
+    for i in [1, 2, 3]:
+        s = s + i
+    return s
+var r = f(3)

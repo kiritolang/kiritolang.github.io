@@ -1,0 +1,121 @@
+# spec_inline_function_multi.ki — MULTI-STATEMENT InlineFunction bodies (Feature 1, sub-stage d): a
+# guaranteed-inline body of var/if/assign/return/expr (no loops/try/with — those stay a compile error).
+# Every line must be byte-identical with inlining on and with --no-inline (which runs the body as a
+# normal Function), which the differential harness asserts. This is the load-bearing "return-lowering
+# and body-local isolation are semantics-preserving" proof at the user (.ki) layer.
+
+var io = import("io")
+
+# 1. Body locals + branching + a single return.
+var classify = InlineFunction(x):
+    var label = "zero"
+    if x > 0:
+        label = "pos"
+    elif x < 0:
+        label = "neg"
+    return label
+io.print(classify(7))
+io.print(classify(-2))
+io.print(classify(0))
+
+# 2. A body local shadows a CALLER local of the same name — must not clobber it.
+var label = "CALLER"
+io.print(classify(3))
+io.print(label)                 # still CALLER
+
+# 3. Multiple / early returns.
+var absdiff = InlineFunction(a, b):
+    if a > b:
+        return a - b
+    return b - a
+io.print(absdiff(3, 8))
+io.print(absdiff(8, 3))
+
+# 4. No explicit return on a path -> the call yields None.
+var maybe = InlineFunction(x):
+    if x > 0:
+        return "positive"
+    # falls off the end -> None
+io.print(maybe(5))
+io.print(maybe(-5))
+
+# 5. Reassigning a parameter inside the body (writes the arg slot, not a caller local).
+var stepped = InlineFunction(n):
+    n = n + 100
+    var extra = n * 2
+    return extra
+io.print(stepped(1))
+
+# 6. A side-effecting argument is evaluated exactly once.
+var calls = 0
+var bump = Function() -> Integer:
+    calls = calls + 1
+    return calls
+var twice = InlineFunction(v):
+    var a = v
+    var b = v
+    return a + b
+io.print(twice(bump()))         # bump() runs ONCE -> 1 + 1 = 2
+io.print(calls)                 # exactly one call
+
+# 7. Nested multi-statement inlines.
+var inc = InlineFunction(x):
+    var y = x + 1
+    return y
+var inc2 = InlineFunction(x):
+    var a = inc(x)
+    var b = inc(a)
+    return b
+io.print(inc2(40))
+
+# 8. Body reads a capture (a module-level value) alongside its own locals.
+var offset = 1000
+var shifted = InlineFunction(x):
+    var base = x * 2
+    return base + offset
+io.print(shifted(5))
+offset = 2000                   # capture read in place -> a later call sees the new value
+io.print(shifted(5))
+
+# 9. Const InlineFunction reused across a caller loop (the inline lives in the loop body).
+var acc = 0
+var weight = InlineFunction(x):
+    var w = x * x
+    return w + 1
+for i in [1, 2, 3]:
+    acc = acc + weight(i)
+io.print(acc)
+
+# 10. Mutating a parameter CONTAINER inside the body mutates the caller's object (same reference).
+var setfirst = InlineFunction(box, v):
+    box[0] = v
+    return box
+var lst = [1, 2, 3]
+io.print(setfirst(lst, 99))
+io.print(lst)                   # caller list mutated -> [99, 2, 3]
+
+# 11. Tuple-unpack assignment and var-unpack into body locals.
+var swapdiff = InlineFunction(a, b):
+    var x = 0
+    var y = 0
+    x, y = b, a
+    return x - y
+io.print(swapdiff(10, 3))       # x=3, y=10 -> -7
+var pairsum = InlineFunction(p):
+    var a, b = p
+    return a + b
+io.print(pairsum([4, 5]))       # 9
+
+# 12. A throw from inside an inlined body propagates to the CALLER's try/catch (the body's ops sit at
+#     the call site, so the throw unwinds the caller's handler stack normally).
+var checked = InlineFunction(n):
+    assert n > 0, "must be positive"
+    var d = n * 2
+    return d
+io.print(checked(5))            # 10
+try:
+    discard checked(-1)
+catch as e:
+    io.print("caught:", e)
+
+io.print("OK inline-function-multi")

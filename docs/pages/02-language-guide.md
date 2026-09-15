@@ -358,12 +358,24 @@ for v in map(InlineFunction(x): return x + 1, [10, 20]):   # a map/filter callba
     io.print(v)
 ```
 
+```kirito
+var io = import("io")
+var classify = InlineFunction(x):        # a multi-statement body inlines too
+    var label = "zero"
+    if x > 0:
+        label = "pos"
+    return label
+io.print(classify(7))                    # pos
+```
+
 Because it must inline, an `InlineFunction` is **not a first-class value**: storing it, returning it,
 passing it as an argument, rebinding its name, or using it as a class method is a compile error (use
-`Function` for any of those). It must be a **direct, non-recursive** call, and — in this version — a
-single-expression `return` body with positional arguments only (a multi-statement, annotated, defaulted,
-or keyword-called `InlineFunction`, or one that recurses or nests too deep, is a compile error telling
-you to use `Function`). Each such error names the reason; see [exceptions](12-exceptions.md).
+`Function` for any of those). It must be a **direct, non-recursive** call with **positional arguments**.
+The body may be a single expression or a multi-statement block of `var` / assignment / `if` / `return`
+(with early and multiple returns) — its locals stay isolated from the caller's. What it may **not** yet
+contain is a loop, `try`/`with`, `switch`, a nested function, or a parameter default or type annotation;
+any of those (and recursion, or nesting too deep) is a compile error telling you to use `Function`. Each
+error names the reason; see [exceptions](12-exceptions.md).
 
 `--no-inline` (or `KIRITO_NO_INLINE`) **demotes** every `InlineFunction` to a plain `Function` for the
 whole run — the guarantee and all the above restrictions lift, so a program may compile under
