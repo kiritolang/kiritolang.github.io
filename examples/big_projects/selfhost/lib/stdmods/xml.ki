@@ -68,10 +68,10 @@ var _decode = Function(s):
                     code = _parsehex(ent[2:])
                 else:
                     code = _parsedec(ent[1:])
-                if code >= 0:
-                    out = out + chr(code)
-                else:
-                    out = out + s[i:semi + 1]   # malformed numeric entity: keep verbatim (lenient)
+                if code >= 0 and not (code >= 55296 and code <= 57343):
+                    out = out + chr(code)         # a UTF-16 surrogate (D800..DFFF) is not a scalar
+                else:                             # value, so chr() would throw -> keep it verbatim
+                    out = out + s[i:semi + 1]   # malformed/surrogate numeric entity: keep verbatim (lenient)
             else:
                 out = out + s[i:semi + 1]   # unknown entity: keep verbatim
             i = semi + 1

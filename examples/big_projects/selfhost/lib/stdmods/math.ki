@@ -155,6 +155,8 @@ var _ln = Function(x):
 var log = Function(x, base = None):
     if base == None:
         return _ln(x)
+    if base <= 0 or base == 1:
+        throw "log: math domain error (base must be > 0 and != 1)"
     return _ln(x) / _ln(base)
 
 # Reduces x to a mantissa in [1, base) tracking the integer part k separately, rather than the
