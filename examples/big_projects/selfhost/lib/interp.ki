@@ -1492,8 +1492,12 @@ var numMethod = Function(St, recv, name, args):
         var relTol = 1e-9
         var absTol = 0.0
         if len(args) >= 2 and args[1] != None:
+            if not (isinstance(args[1], "Integer") or isinstance(args[1], "Float")):
+                rtError("compare() rel_tol and abs_tol must be numbers")
             relTol = args[1]
         if len(args) >= 3 and args[2] != None:
+            if not (isinstance(args[2], "Integer") or isinstance(args[2], "Float")):
+                rtError("compare() rel_tol and abs_tol must be numbers")
             absTol = args[2]
         if recv == other:
             return True

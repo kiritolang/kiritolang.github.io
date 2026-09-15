@@ -19,6 +19,10 @@ var OPS1 = Set(["+", "-", "*", "/", "%", "<", ">", "=", "(", ")", "[", "]",
 var _isDigit = Function(c):
     return c >= "0" and c <= "9"
 
+# +inf without importing math: 1e308 is finite, doubling it overflows to +inf at runtime.
+var _inf = Function():
+    return 1e308 * 10.0
+
 var _isHex = Function(c):
     return _isDigit(c) or (c >= "a" and c <= "f") or (c >= "A" and c <= "F")
 
@@ -87,7 +91,14 @@ var _readNumber = Function(src, n, i, line, col):
             i = i + 1
     var text = src[start:i]
     if isFloat:
-        return [{"t": "float", "v": Float(text), "line": line, "col": col}, i]
+        # A literal too large for a double overflows to +inf (matching the real lexer and runtime float
+        # overflow) rather than throwing; the token is unsigned, so a leading '-' is a separate unary op.
+        var fv = 0.0
+        try:
+            fv = Float(text)
+        catch:
+            fv = _inf()
+        return [{"t": "float", "v": fv, "line": line, "col": col}, i]
     # decimal via the radix folder so out-of-range literals wrap (two's complement) like the real
     # lexer, instead of the host Integer() throwing on values past INT64_MAX.
     return [{"t": "int", "v": _parseRadix(text, 10), "line": line, "col": col}, i]
