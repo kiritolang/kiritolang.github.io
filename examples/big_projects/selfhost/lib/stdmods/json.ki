@@ -193,7 +193,7 @@ var _parseArr = Function(s, i):
         out.append(r[0])
         i = _ws(s, r[1])
         if i >= len(s):
-            throw "json: unterminated array"
+            throw "json: expected ',' or ']'"     # unclosed array: same diagnostic as a bad separator
         if s[i] == ",":
             i = _ws(s, i + 1)
         elif s[i] == "]":
@@ -220,7 +220,7 @@ var _parseObj = Function(s, i):
         out[kr[0]] = vr[0]
         i = _ws(s, vr[1])
         if i >= len(s):
-            throw "json: unterminated object"
+            throw "json: expected ',' or '}'"     # unclosed object: same diagnostic as a bad separator
         if s[i] == ",":
             i = i + 1
         elif s[i] == "}":

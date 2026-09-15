@@ -70,7 +70,7 @@ class DateTime:
         return Float(days * 86400 + self.hour * 3600 + self.minute * 60 + self.second)
 
     var diff = Function(self, other):
-        return self.epoch() - other.epoch()
+        return Integer(self.epoch() - other.epoch())     # whole-second difference (Integer, like native)
 
     var format = Function(self, fmt):
         var out = ""
