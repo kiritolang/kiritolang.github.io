@@ -23,6 +23,13 @@ var boxKind = Function(v):
         return v["sk"]
     return ""
 
+# A lazy iterator (map/filter/zip/enumerate/iter): carries a type name and a thunk that produces the
+# materialized elements on first consumption. Construction is side-effect-free (so `map(5, 5)` does not
+# throw until consumed); errors in the callback/iterable surface when the thunk runs. `type()` reports
+# `itype`, matching the native lazy-iterator type names.
+var mkLazyIter = Function(itype, thunk):
+    return {"sk": "lazyiter", "itype": itype, "thunk": thunk, "cache": None, "cached": False}
+
 # Collect every free `name` reference reachable from an AST node (a generic Dict/List walk — any
 # dict with "k":"name" is a leaf reference; a nested "k":"func" node is skipped since ITS "name"
 # nodes are that lambda's own bindings, not references into the outer scope).
@@ -130,6 +137,8 @@ var envAssign = Function(env, name, val):
 # --- type name + stringify ------------------------------------------------------------------------
 var typeName = Function(v):
     var k = boxKind(v)
+    if k == "lazyiter":
+        return v["itype"]
     if k == "function" or k == "native" or k == "bound" or k == "boundnative":
         return "Function"
     if k == "class":
@@ -767,7 +776,7 @@ var evalCall = Function(St, env, node):
 # receive raw args+kwargs.)
 var _BUILTIN_PARAMS = {"isinstance": ["value", "type"], "hasattr": ["obj", "name"], "import": ["name"], "abs": ["x"], "ord": ["char"],
     "chr": ["codepoint"], "bin": ["n"], "oct": ["n"], "hex": ["n"], "len": ["x"], "type": ["x"],
-    "id": ["x"], "all": ["iterable"], "any": ["iterable"], "reversed": ["iterable"],
+    "id": ["x"], "all": ["iterable"], "any": ["iterable"], "reversed": ["iterable"], "iter": ["iterable"],
     "map": ["function", "iterable"], "filter": ["function", "iterable"],
     "divmod": ["a", "b"], "bitand": ["a", "b"], "bitor": ["a", "b"], "bitxor": ["a", "b"],
     "bitnot": ["a"], "shl": ["a", "n"], "shr": ["a", "n"], "format": ["value", "spec"],
@@ -1000,6 +1009,11 @@ var setMember = Function(St, obj, name, value):
 
 # Turn any iterable into a host List (for unpacking / iteration over instances).
 var materialize = Function(St, value):
+    if boxKind(value) == "lazyiter":
+        if not value["cached"]:
+            value["cache"] = value["thunk"]()   # deferred consume: callback/iterable errors surface here
+            value["cached"] = True
+        return value["cache"]
     if boxKind(value) == "instance":
         var m = classLookup(value["cls"], "_iter_")
         if m != None:
@@ -2241,6 +2255,13 @@ var _msort = Function(St, arr, rev):
     var i = 0
     var j = 0
     while i < len(left) and j < len(right):
+        # Native sort orders only mutually-comparable keys (both numeric, or the same type) and
+        # otherwise throws "cannot order 'A' and 'B'" — distinct from the generic operator error.
+        var rt = typeName(right[j][0])
+        var lt = typeName(left[i][0])
+        var bothNum = (rt == "Integer" or rt == "Float") and (lt == "Integer" or lt == "Float")
+        if not bothNum and rt != lt:
+            rtError("cannot order '" + rt + "' and '" + lt + "'")
         var pickRight = False
         if rev:
             pickRight = truthy(St, evalBinary(St, ">", right[j][0], left[i][0]))
@@ -2282,9 +2303,9 @@ var builtinLen = Function(St, args, kwargs):
     # a host Dict under the hood, so a bare host len(x) would wrongly return its key count instead of
     # throwing; and a scalar (Integer/Float/Bool/None) has no length either.
     var tn = typeName(x)
-    if tn == "String" or tn == "List" or tn == "Set" or tn == "Dict" or tn == "Bytes":
+    if tn == "String" or tn == "List" or tn == "Set" or tn == "Dict" or tn == "Bytes" or tn == "range":
         return len(x)
-    rtError("object of type '" + tn + "' has no len()")
+    rtError("type '" + tn + "' has no length")
 
 var builtinRange = Function(St, args, kwargs):
     var start = 0
@@ -2333,47 +2354,14 @@ var builtinRange = Function(St, args, kwargs):
     # range works on Integers only (native takes int64 args); a Float/String/None throws rather than
     # being silently truncated or compared.
     if type(start) != "Integer" or type(stop) != "Integer" or type(step) != "Integer":
-        rtError("range() arguments must be Integers")
+        rtError("range expects Integers")
     if step == 0:
         rtError("range step cannot be zero")
-    # guard against an enormous materialized list (the real interpreter caps this too)
-    var count = 0
-    if step > 0 and stop > start:
-        # stop - start signed-overflows when start is deeply negative and stop deeply positive (their
-        # true difference exceeds INT64_MAX). Detect that WITHOUT computing the overflowing
-        # subtraction (9223372036854775807 + start can't itself overflow: start < 0 here, so the sum
-        # is <= INT64_MAX and >= -1), then fall back to a bounded wraparound-aware count.
-        if start < 0 and stop > 9223372036854775807 + start:
-            count = _rangeCountOverflow(start, stop, step)
-        else:
-            var span = stop - start
-            count = span // step
-            if span % step != 0:
-                count = count + 1
-    elif step < 0 and stop < start:
-        if stop < 0 and start > 9223372036854775807 + stop:
-            count = _rangeCountOverflow(start, stop, step)
-        else:
-            var span2 = start - stop
-            var mag = -step
-            count = span2 // mag
-            if span2 % mag != 0:
-                count = count + 1
-    if count > 268435456:
-        rtError("range too large")
-    # Count-driven, not `i += step` until it passes stop: a near-INT64_MAX step would wrap that
-    # increment around and never reach the bound. Every produced value is itself a valid range member
-    # (so in [start, stop) or (stop, start]), hence a representable Integer; only the FINAL increment
-    # (one step past the last element) risks overflow, so it's skipped.
-    var out = []
-    var v = start
-    var k = 0
-    while k < count:
-        out.append(v)
-        k = k + 1
-        if k < count:
-            v = v + step
-    return out
+    # Delegate to the host's native range: an inner range value IS a host range (the same reuse
+    # strategy as inner Integer/List), so type() reports "range", it compares equal to the equivalent
+    # list, len() is O(1), and it iterates lazily — full parity with the native interpreter, and the
+    # host enforces the same "range too large" / overflow guards.
+    return range(start, stop, step)
 
 # Bounded fallback for the rare start/stop-straddle-int64 case: counts range members by walking from
 # `start` in `step` increments, detecting wraparound via "the sum didn't move the expected direction"
@@ -2466,57 +2454,83 @@ var builtinReduceMinMax = Function(St, args, kwargs, wantMax):
         i = i + 1
     return best
 
+# enumerate/zip/map/filter/iter are LAZY: they return a lazy-iterator box (type() reports the native
+# name) and defer consuming the input (and any callback error) until the box is materialized. Argument
+# COUNT / start-type validation still happens eagerly at construction, matching the native constructors.
 var builtinEnumerate = Function(St, args, kwargs):
-    var items = materialize(St, args[0])
+    var src = args[0]
     var start = 0
     if len(args) == 2:
         start = args[1]
     for kw in kwargs:
         if kw[0] == "start":
             start = kw[1]
-    var out = []
-    var i = 0
-    for x in items:
-        out.append([start + i, x])
-        i = i + 1
-    return out
+    if type(start) != "Integer":
+        rtError("enumerate() start must be an Integer")
+    var thunk = Function():
+        var out = []
+        var i = 0
+        for x in materialize(St, src):
+            out.append([start + i, x])
+            i = i + 1
+        return out
+    return mkLazyIter("enumerate", thunk)
 
 var builtinZip = Function(St, args, kwargs):
     if len(kwargs) > 0:
         rtError("this callable does not accept keyword arguments")
-    var lists = []
-    var shortest = -1
-    for a in args:
-        var m = materialize(St, a)
-        lists.append(m)
-        if shortest < 0 or len(m) < shortest:
-            shortest = len(m)
-    if shortest < 0:
-        shortest = 0
-    var out = []
-    var i = 0
-    while i < shortest:
-        var row = []
-        for lst in lists:
-            row.append(lst[i])
-        out.append(row)
-        i = i + 1
-    return out
+    var srcs = args
+    var thunk = Function():
+        var lists = []
+        var shortest = -1
+        for a in srcs:
+            var m = materialize(St, a)
+            lists.append(m)
+            if shortest < 0 or len(m) < shortest:
+                shortest = len(m)
+        if shortest < 0:
+            shortest = 0
+        var out = []
+        var i = 0
+        while i < shortest:
+            var row = []
+            for lst in lists:
+                row.append(lst[i])
+            out.append(row)
+            i = i + 1
+        return out
+    return mkLazyIter("zip", thunk)
 
 var builtinMap = Function(St, args, kwargs):
+    if len(args) != 2:
+        rtError("map expects exactly 2 arguments (function, iterable)")
     var fn = args[0]
-    var out = []
-    for x in materialize(St, args[1]):
-        out.append(callValue(St, fn, [x], []))
-    return out
+    var src = args[1]
+    var thunk = Function():
+        var out = []
+        for x in materialize(St, src):
+            out.append(callValue(St, fn, [x], []))
+        return out
+    return mkLazyIter("map", thunk)
 
 var builtinFilter = Function(St, args, kwargs):
+    if len(args) != 2:
+        rtError("filter expects exactly 2 arguments (function, iterable)")
     var fn = args[0]
-    var out = []
-    for x in materialize(St, args[1]):
-        if truthy(St, callValue(St, fn, [x], [])):
-            out.append(x)
-    return out
+    var src = args[1]
+    var thunk = Function():
+        var out = []
+        for x in materialize(St, src):
+            if truthy(St, callValue(St, fn, [x], [])):
+                out.append(x)
+        return out
+    return mkLazyIter("filter", thunk)
+
+var builtinIter = Function(St, args, kwargs):
+    var src = args[0]
+    var thunk = Function():
+        return materialize(St, src)
+    return mkLazyIter("iterator", thunk)
 
 var builtinReversed = Function(St, args, kwargs):
     var items = materialize(St, args[0])
@@ -2542,12 +2556,14 @@ var builtinSum = Function(St, args, kwargs):
     for kw in kwargs:
         if kw[0] == "start":
             acc = kw[1]
-    if type(acc) != "Integer" and type(acc) != "Float":
+    # The start must be a number or a value-type instance (so sum(values, ZeroValue) folds via _add_);
+    # a String/List/etc. start is rejected. A String element is rejected too (use join instead).
+    if not (typeName(acc) == "Integer" or typeName(acc) == "Float" or boxKind(acc) == "instance"):
         rtError("sum start must be a number")
     for x in materialize(St, args[0]):
-        if type(x) != "Integer" and type(x) != "Float":
+        if typeName(x) == "String":
             rtError("sum expects numbers")
-        acc = acc + x
+        acc = evalBinary(St, "+", acc, x)
     return acc
 
 var builtinIsinstance = Function(St, args, kwargs):
@@ -2755,10 +2771,16 @@ var _intToBase = Function(n, base, prefix):
         return "-" + prefix + digits
     return prefix + digits
 var builtinBin = Function(St, a, k):
+    if type(a[0]) != "Integer":
+        rtError("bin expects an Integer")
     return _intToBase(a[0], 2, "0b")
 var builtinOct = Function(St, a, k):
+    if type(a[0]) != "Integer":
+        rtError("oct expects an Integer")
     return _intToBase(a[0], 8, "0o")
 var builtinHex = Function(St, a, k):
+    if type(a[0]) != "Integer":
+        rtError("hex expects an Integer")
     return _intToBase(a[0], 16, "0x")
 var builtinOrd = Function(St, a, k):
     return ord(a[0])
@@ -2865,8 +2887,9 @@ var builtinInstNew = Function(St, a, k):
 # exactly (others fall back to the variadic `NAME(...)  [native]` form); functions/modules show
 # parameter names, annotations, defaults and return types.
 var _NATIVE_SIGS = {"Integer": "Integer(x) -> Integer", "Float": "Float(x) -> Float", "String": "String(x) -> String", "Bool": "Bool(x) -> Bool", "List": "List(iterable = None) -> List", "Set": "Set(iterable = None) -> Set", "Dict": "Dict(iterable = None) -> Dict", "round": "round(x: Number, ndigits = None)", "sorted": "sorted(iterable, key = None, reverse: Bool = False) -> List", "len": "len(x) -> Integer", "abs": "abs(x: Number) -> Number", "type": "type(x) -> String", "isinstance": "isinstance(value, type) -> Bool", "hasattr": "hasattr(obj, name: String) -> Bool", "pow": "pow(base, exp, mod = None)",
-    "enumerate": "enumerate(iterable, start = 0) -> List", "sum": "sum(iterable, start = 0) -> Number",
-    "map": "map(function, iterable) -> List", "filter": "filter(function, iterable) -> List",
+    "enumerate": "enumerate(iterable, start = 0) -> Iterator", "sum": "sum(iterable, start = 0) -> Number",
+    "map": "map(function, iterable) -> Iterator", "filter": "filter(function, iterable) -> Iterator",
+    "iter": "iter(iterable) -> Iterator", "zip": "zip(...)  [native]",
     "all": "all(iterable) -> Bool", "any": "any(iterable) -> Bool", "reversed": "reversed(iterable) -> List",
     "divmod": "divmod(a, b) -> List", "bitand": "bitand(a: Integer, b: Integer) -> Integer",
     "bitor": "bitor(a: Integer, b: Integer) -> Integer", "bitxor": "bitxor(a: Integer, b: Integer) -> Integer",
@@ -3152,6 +3175,7 @@ var makeGlobal = Function(St):
     def("zip", builtinZip)
     def("map", builtinMap)
     def("filter", builtinFilter)
+    def("iter", builtinIter)
     def("reversed", builtinReversed)
     def("all", builtinAll)
     def("any", builtinAny)
