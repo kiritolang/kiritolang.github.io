@@ -24,10 +24,16 @@ class Random:
         # mix the seed so small/zero seeds still scatter
         self._state = s * 2862933555777941757 + 3037000493
         # `generator` is accepted for API parity with the native Random (which dispatches between
-        # xoshiro256++ and std::mt19937_64). The self-host uses a single LCG regardless of the value.
-        if generator != "xoshiro" and generator != "mersenne_twister":
-            throw "unknown generator: " + String(generator)
-        self.generator = generator
+        # xoshiro256++ and std::mt19937_64). The self-host uses a single LCG regardless of the value,
+        # but honors the family name and its engine-spelling alias (xoshiro256 / mt19937_64).
+        var gen = generator
+        if gen == "xoshiro256":
+            gen = "xoshiro"
+        elif gen == "mt19937_64":
+            gen = "mersenne_twister"
+        if gen != "xoshiro" and gen != "mersenne_twister":
+            throw "Random: unknown generator '" + String(generator) + "' (expected 'xoshiro' or 'mersenne_twister')"
+        self.generator = gen
 
     # Random is a native type on the real interpreter (NativeClass), whose default str() is
     # "<Random>" — not the "<Random object>" a genuine guest class without _str_ would show.
@@ -44,6 +50,8 @@ class Random:
         return Float(s % _M) / Float(_M)
 
     var uniform = Function(self, a, b):
+        if math.isinf(a) or math.isinf(b) or math.isnan(a) or math.isnan(b):
+            throw "uniform: a and b must be finite numbers"
         return a + (b - a) * self.random()
 
     var randint = Function(self, a, b):
@@ -111,6 +119,8 @@ class Random:
         return out
 
     var shuffle = Function(self, seq):
+        if type(seq) != "List":
+            throw "shuffle requires a List"
         var i = len(seq) - 1
         while i > 0:
             var j = self.randint(0, i)
@@ -129,6 +139,10 @@ class Random:
         return copy[0:k]
 
     var gauss = Function(self, mu = 0.0, sigma = 1.0):
+        if math.isinf(mu) or math.isinf(sigma) or math.isnan(mu) or math.isnan(sigma):
+            throw "gauss: mu and sigma must be finite numbers"
+        if sigma < 0.0:
+            throw "gauss: sigma must be non-negative"
         # Box–Muller transform
         var u1 = self.random()
         if u1 < 1.0e-12:
@@ -138,8 +152,8 @@ class Random:
         return mu + sigma * z
 
     var expovariate = Function(self, lambd = 1.0):
-        if lambd <= 0.0:
-            throw "expovariate: lambda must be positive"
+        if lambd <= 0.0 or math.isinf(lambd) or math.isnan(lambd):
+            throw "expovariate: lambda must be positive and finite"
         var u = self.random()
         if u < 1.0e-12:
             u = 1.0e-12

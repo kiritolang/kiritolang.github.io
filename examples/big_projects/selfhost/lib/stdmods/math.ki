@@ -90,7 +90,7 @@ var fmod = Function(x, y):
     if y == 0.0:
         throw "fmod: math domain error (divisor is zero)"
     if isinf(x):
-        throw "fmod: math domain error (dividend is infinite)"
+        throw "fmod: math domain error (infinite dividend)"
     return x - _truncf(x / y) * y
 
 # --- exp / log ------------------------------------------------------------------------------------
@@ -237,18 +237,10 @@ var sqrt = Function(x) -> Float:
         return 0.0
     if isinf(x):
         return x
-    # Seed Newton's method from log/exp rather than x itself: for extreme magnitudes (1e100, 1e-100)
-    # a raw x-or-1.0 seed is many orders of magnitude from the root, and halving-style Newton
-    # convergence from there needs far more than 100 iterations to land within tolerance.
-    var g = exp(_ln(x) / 2.0)
-    var i = 0
-    while i < 100:
-        var ng = (g + x / g) / 2.0
-        if fabs(ng - g) <= 1.0e-15 * g:
-            return ng
-        g = ng
-        i = i + 1
-    return g
+    # Use the language's own power operator (correctly rounded via the exec's libm) rather than a
+    # Newton iteration seeded from log/exp: the latter lands 1-2 ULP off, so sqrt(169/144)*12 != 13.0
+    # exactly. The operator keeps sqrt a true inverse (perfect squares come back exact).
+    return x ** 0.5
 
 # Newton-polished rather than exp(log(x)/3): two chained transcendentals rarely land on an exact
 # result even for a perfect cube (cbrt(-8) needs to be exactly -2.0, not -2.0000000000000004).
@@ -297,7 +289,9 @@ var pow = Function(x, y):
         throw "pow: math domain error (a negative base requires an integer exponent)"
     if x == 0.0 and y < 0.0:
         throw "pow: math domain error (zero to a negative power)"
-    return exp(y * _ln(x))
+    # A positive base with a fractional exponent: use the exec's power operator (correctly rounded)
+    # instead of exp(y*ln(x)), which lands ~1 ULP off (pow(4, 0.5) must be exactly 2.0).
+    return x ** y
 
 var hypot = Function(x, y):
     if isinf(x) or isinf(y):            # IEEE: any infinite operand -> +inf, even if the other is NaN
@@ -388,7 +382,7 @@ var atan = Function(x):
 
 var asin = Function(x):
     if x > 1.0 or x < -1.0:
-        throw "math domain error: asin out of range"
+        throw "asin: math domain error"
     if x == 1.0:
         return pi / 2.0
     if x == -1.0:
@@ -396,6 +390,8 @@ var asin = Function(x):
     return atan(x / sqrt(1.0 - x * x))
 
 var acos = Function(x):
+    if x > 1.0 or x < -1.0:
+        throw "acos: math domain error"
     return pi / 2.0 - asin(x)
 
 var atan2 = Function(y, x):
