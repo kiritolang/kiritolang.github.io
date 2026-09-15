@@ -93,6 +93,8 @@ var parseqs = Function(s):
     if len(s) == 0:
         return out
     for pair in s.split("&"):
+        if len(pair) == 0 or pair.find("=") == 0:
+            continue                              # drop empty pairs and empty-key pairs (native)
         var eq = pair.find("=")
         if eq >= 0:
             out[unquote(pair[0:eq])] = unquote(pair[eq + 1:])
