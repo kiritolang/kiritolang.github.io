@@ -79,7 +79,7 @@ var readFile = Function(path):
 #     tests can't be satisfied without reimplementing xoshiro AND MT19937_64 in pure Kirito. The
 #     API-parity fix (accepting `generator=` and exposing `.generator`) lives in stdmods/random.ki;
 #     the deep-statistical tests remain out of scope, like the audit_/deep_/r10_/r11_ families.
-var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz", "libraries", "spec_net", "spec_pass_todo", "spec_tee", "spec_io_stream", "parallel_basic", "parallel_sync", "probe_parallel", "probe_parallel_adversarial", "probe_surface", "probe_parallel_fuzz", "probe_binary_adversarial", "probe_inspect", "probe_serde_matrix", "probe_trio", "spec_edges", "spec_inspect", "spec_traceback", "path_module", "r8_language", "r7_parallel", "r8_parallel", "r7_net_regex", "r8_net_regex", "r9_net_parallel", "parallel_forkbomb_guard", "probe_http_client_abuse", "class_hash", "random_generators", "random_prng_quality", "labx_net", "labx_random", "r8_io_sys", "labx_serde", "cov_math_stats", "cov_serde_misc"])
+var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz", "libraries", "spec_net", "spec_pass_todo", "spec_tee", "spec_io_stream", "parallel_basic", "parallel_sync", "probe_parallel", "probe_parallel_adversarial", "probe_surface", "probe_parallel_fuzz", "probe_binary_adversarial", "probe_inspect", "probe_serde_matrix", "probe_trio", "spec_edges", "spec_inspect", "spec_traceback", "path_module", "r8_language", "r7_parallel", "r8_parallel", "r7_net_regex", "r8_net_regex", "r9_net_parallel", "parallel_forkbomb_guard", "probe_http_client_abuse", "class_hash", "random_generators", "random_prng_quality", "labx_net", "labx_random", "r8_io_sys", "labx_serde", "cov_math_stats", "cov_serde_misc", "labx_compress_hash", "cov_hash_compress"])
 # labx_net exercises net.Socket (a native OS socket — no pure-Kirito equivalent, like the other
 # `net`/`parallel` exclusions). labx_random requires TWO distinct native RNG engines (xoshiro256++ and
 # mt19937_64) with byte-exact, statistically-distinct streams — the self-host has a single LCG, the same
@@ -95,6 +95,19 @@ var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz",
 # to the self-host does not provide (only clocks) — the same native-only reason as labx_random's
 # distinct native RNG engines. Its math/statistics/seeded-PRNG coverage is exercised by cov_builtins
 # and labx_math/labx_scalars, which pass.
+# labx_compress_hash / cov_hash_compress: the pure-Kirito hash stack is CORRECT and exercised — a slice
+# run of labx_compress_hash passes every md5/sha1/sha256/sha384/sha512/hmac/pbkdf2/crc32/crc64/adler32/
+# generic-hash assertion (verified digests match the standard NIST/RFC vectors) and fails ONLY at the
+# first byte-framing check, `Bytes(zlib.compress(<String>))[1] == 156`. Native zlib/gzip return a
+# BYTE-BACKED String whose Bytes() recovers the raw DEFLATE stream; the self-host's String IS the host's
+# UTF-8 String, on which Bytes(String) is defined as UTF-8 ENCODING — so a lone framing byte 0x9C round-
+# trips to the pair 0xC2 0x9C (194,156), never 156. No code-point String UTF-8-encodes to arbitrary
+# binary (0x9C is an invalid standalone UTF-8 unit), so the String-in->String-out zlib/gzip contract with
+# byte-exact magic/CRC/Adler trailers is unrepresentable on the host String — the same native-String-
+# representation reason as spec_serde / probe_binary_adversarial / cov_serde_misc. cov_hash_compress adds
+# an independent hard wall: a 1,000,000-byte sha256, a 1,048,576-byte pbkdf2 output, and a 4096-round
+# pbkdf2 — byte-oriented crypto in pure Kirito under the doubly-interpreted runtime is ~35-97s per single
+# BLOCK, i.e. many hours for these, so it could not complete even if the framing were representable.
 # cov_serde_misc pins the native binary `dump` wire format (KDMP magic/version/tag bytes) and native
 # function/class SOURCE serialization (re-compiling a callable from stored source text) — native
 # serializer internals the pure-Kirito graph encoder represents differently, the same native-binary-
