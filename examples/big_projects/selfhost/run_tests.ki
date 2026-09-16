@@ -79,7 +79,7 @@ var readFile = Function(path):
 #     tests can't be satisfied without reimplementing xoshiro AND MT19937_64 in pure Kirito. The
 #     API-parity fix (accepting `generator=` and exposing `.generator`) lives in stdmods/random.ki;
 #     the deep-statistical tests remain out of scope, like the audit_/deep_/r10_/r11_ families.
-var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz", "libraries", "spec_net", "spec_pass_todo", "spec_tee", "spec_io_stream", "parallel_basic", "parallel_sync", "probe_parallel", "probe_parallel_adversarial", "probe_surface", "probe_parallel_fuzz", "probe_binary_adversarial", "probe_inspect", "probe_serde_matrix", "probe_trio", "spec_edges", "spec_inspect", "spec_traceback", "path_module", "r8_language", "r7_parallel", "r8_parallel", "r7_net_regex", "r8_net_regex", "r9_net_parallel", "parallel_forkbomb_guard", "probe_http_client_abuse", "class_hash", "random_generators", "random_prng_quality", "labx_net", "labx_random", "r8_io_sys", "labx_serde", "cov_math_stats", "cov_serde_misc", "labx_compress_hash", "cov_hash_compress", "spec_net_primitives", "spec_net_tls", "spec_socket_tls", "unit_net_primitives", "verify_net", "unit_audit_v113", "verify_compress", "spec_class_qualname", "spec_class_qualname_adversarial"])
+var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz", "libraries", "spec_net", "spec_pass_todo", "spec_tee", "spec_io_stream", "parallel_basic", "parallel_sync", "probe_parallel", "probe_parallel_adversarial", "probe_surface", "probe_parallel_fuzz", "probe_binary_adversarial", "probe_inspect", "probe_serde_matrix", "probe_trio", "spec_edges", "spec_inspect", "spec_traceback", "path_module", "r8_language", "r7_parallel", "r8_parallel", "r7_net_regex", "r8_net_regex", "r9_net_parallel", "parallel_forkbomb_guard", "probe_http_client_abuse", "class_hash", "random_generators", "random_prng_quality", "labx_net", "labx_random", "r8_io_sys", "labx_serde", "cov_math_stats", "cov_serde_misc", "labx_compress_hash", "cov_hash_compress", "spec_net_primitives", "spec_net_tls", "spec_socket_tls", "unit_net_primitives", "verify_net", "unit_audit_v113", "verify_compress", "spec_class_qualname", "spec_class_qualname_adversarial", "spec_cov_json_serde"])
 # labx_net exercises net.Socket (a native OS socket — no pure-Kirito equivalent, like the other
 # `net`/`parallel` exclusions). labx_random requires TWO distinct native RNG engines (xoshiro256++ and
 # mt19937_64) with byte-exact, statistically-distinct streams — the self-host has a single LCG, the same
@@ -122,6 +122,13 @@ var EXCLUDE = Set(["spec_modules", "spec_serde", "sample_pipeline", "spec_fuzz",
 # robust stdlib-vs-user split is a native-representation concern out of scope here. (The parser/interp
 # DID gain qualified `catch mod.Class` [identity-matched] and expression class bases from this round,
 # which fixed unit_audit_regressions and are kept.)
+# spec_cov_json_serde requires dump.dumps(<Function>) to succeed by capturing the function's SOURCE TEXT
+# (native serializes a callable as its source and re-compiles it on load). The self-host's tokens carry
+# only line/col (no byte offsets) and a function AST node has no source span, so capturing source needs
+# multi-file lexer/parser changes; representing functions in the serde graph is native-serialization
+# internals, the same boundary as the already-excluded cov_serde_misc. (Its json/serde-state coverage —
+# huge-int widening, lenient control chars, _getstate_-only dump — is exercised by cov_serde_text and
+# other serde goldens that pass.)
 # cov_serde_misc pins the native binary `dump` wire format (KDMP magic/version/tag bytes) and native
 # function/class SOURCE serialization (re-compiling a callable from stored source text) — native
 # serializer internals the pure-Kirito graph encoder represents differently, the same native-binary-
