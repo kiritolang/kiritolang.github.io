@@ -35,8 +35,8 @@ var _coerce = Function(x, dtype):
         if type(x) == "Complex":
             return x
         return C.of(Float(x), 0)
-    if type(x) != "Integer" and type(x) != "Float" and type(x) != "Bool":
-        throw "Tensor element expected a number, got '" + type(x) + "'"
+    if type(x) == "Complex":
+        return x.re
     return Float(x)
 var _absval = Function(x):
     if type(x) == "Complex":
@@ -421,6 +421,10 @@ class Tensor:
         _flattenInto(data, flat, 0, shape)
         var cd = []
         for x in flat:
+            # a user-built Float (default) tensor refuses a Complex element rather than silently
+            # dropping its imaginary part (native rejects it); internal ops build via _make/_coerce.
+            if dtype != "Complex" and type(x) == "Complex":
+                throw "Tensor element expected a number, got 'Complex'"
             cd.append(_coerce(x, dtype))
         self._data = cd
         self._shape = shape
