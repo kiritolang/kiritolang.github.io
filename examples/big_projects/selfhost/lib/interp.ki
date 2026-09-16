@@ -1652,12 +1652,23 @@ var listMethod = Function(St, recv, name, args, kwargs):
                 c = c + 1
         return c
     if name == "index":
+        var nlen = len(recv)
         var startI = 0
         if len(args) >= 2 and args[1] != None:
             startI = args[1]
-        var endI = len(recv)
+            if startI < 0:
+                startI = startI + nlen
+                if startI < 0:
+                    startI = 0
+        var endI = nlen
         if len(args) >= 3 and args[2] != None:
             endI = args[2]
+            if endI < 0:
+                endI = endI + nlen
+                if endI < 0:
+                    endI = 0
+            elif endI > nlen:
+                endI = nlen
         var idx = startI
         while idx < endI:
             if truthy(St, evalBinary(St, "==", recv[idx], args[0])):
