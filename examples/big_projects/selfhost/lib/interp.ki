@@ -760,6 +760,10 @@ var evalMember = Function(St, env, node):
         rtError("module '" + obj["name"] + "' has no member '" + name + "'")
     if k == "instance":
         if name == "_super_":
+            # a class may override _super_ (discouraged) — its own definition wins over the builtin view
+            var us = classLookupC(obj["cls"], "_super_")
+            if us != None:
+                return mkBoundD(obj, us[0], us[1])
             return _makeSuper(St, env, obj)
         # private members (single leading underscore, no trailing) are reachable only from inside a
         # method body — detected by the presence of __defcls__ in the active scope chain.
