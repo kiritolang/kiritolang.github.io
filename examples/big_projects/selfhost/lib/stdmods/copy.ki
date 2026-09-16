@@ -25,16 +25,22 @@ var copy = Function(obj):
         return obj
     return _copyViaSerde(obj)        # user instance / native value object: independent (deep) copy
 
+# A value that is shared (not deep-copied) as a leaf: immutable scalars, and functions/modules (native
+# deepcopy aliases callables — e.g. a defaultdict's factory — rather than cloning them).
+var _isSharedLeaf = Function(t):
+    if t in _IMMUTABLE:
+        return True
+    return t == "Function" or t == "Module"
+
 var deepcopy = Function(obj):
     var t = type(obj)
-    if t in _IMMUTABLE:
+    if _isSharedLeaf(t):
         return obj
-    if t != "List" and t != "Dict" and t != "Set":
-        return _copyViaSerde(obj)    # instance / native value object — serde handles refs + cycles
-    # Iterative + cycle-safe (recursion would overflow / loop on deep or self-referential data):
-    # 1) discover every reachable container and give it an empty shell, keyed by id(original);
-    # 2) fill the shells, mapping each child to its shell (or itself for scalars). Shared references
-    #    and cycles are preserved because each original maps to exactly one shell.
+    # ONE iterative, cycle-safe graph pass over containers AND plain user instances, keyed by id, so a
+    # value reachable via both a container slot and an instance attribute is copied exactly once (shared
+    # identity + cycles preserved across the container<->instance boundary). Instances that expose a
+    # _getstate_ (or native value objects with no introspectable attrs) are copied whole via the serde
+    # codec, which is itself ref-aware.
     var memo = {}
     var order = []
     var stack = [obj]
@@ -44,25 +50,31 @@ var deepcopy = Function(obj):
         if cid in memo:
             continue
         var ct = type(cur)
+        if _isSharedLeaf(ct):
+            continue                      # leaf: mapped() returns it unchanged
         if ct == "List":
             memo[cid] = []
         elif ct == "Dict":
             memo[cid] = {}
         elif ct == "Set":
             memo[cid] = Set()
-        elif ct in _IMMUTABLE:
-            continue                      # scalar: mapped() returns it unchanged
+        elif __instattrs__(cur) != None and not __hasmethod__(cur, "_getstate_"):
+            memo[cid] = __instnew__(__instname__(cur), {})   # plain instance: shell + descend into attrs
         else:
-            memo[cid] = _copyViaSerde(cur)  # user instance / native value: independent deep copy
-            continue                      # serde copied it whole — no shell to fill, don't descend
+            memo[cid] = _copyViaSerde(cur)  # native value / _getstate_ instance: whole ref-aware copy
+            continue
         order.append(cur)
         if ct == "Dict":
             for pair in cur.items():
                 stack.append(pair[0])
                 stack.append(pair[1])
-        else:
+        elif ct == "List" or ct == "Set":
             for x in cur:
                 stack.append(x)
+        else:
+            var a0 = __instattrs__(cur)
+            for ak in a0:
+                stack.append(a0[ak])
     var mapped = Function(x):
         var xid = id(x)
         return memo[xid] if xid in memo else x
@@ -75,7 +87,12 @@ var deepcopy = Function(obj):
         elif ct == "Set":
             for x in cur:
                 shell.add(mapped(x))
-        else:
+        elif ct == "Dict":
             for pair in cur.items():
                 shell[mapped(pair[0])] = mapped(pair[1])
+        else:
+            var live = __instattrs__(shell)
+            var a1 = __instattrs__(cur)
+            for ak in a1:
+                live[ak] = mapped(a1[ak])
     return memo[id(obj)]
