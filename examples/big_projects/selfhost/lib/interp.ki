@@ -1239,6 +1239,23 @@ var evalStmt = Function(St, env, node):
             if boxKind(it) != "lazyiter" and typeName(it) != "range":
                 rtError("'" + srcName + "' _iter_ must return an iterator — call iter(...) on a collection, or return an object with a _next_ method")
             iterable = it       # a lazy-iterator value or range: materialize() consumes it below
+        # A file iterates LAZILY (one readline per step) so `break` leaves the handle positioned for a
+        # subsequent readline() rather than buffering to EOF. EOF is distinguished from an empty line by
+        # tell() not advancing (readline strips the newline, so both return "").
+        if boxKind(iterable) == "hostobj" and iterable["kind"] == "file":
+            var fh = iterable["h"]
+            while True:
+                var before = fh.tell()
+                var line = fh.readline()
+                if line == "" and fh.tell() == before:
+                    break
+                assignTo(St, env, node["target"], line, True)
+                var sf = execBlock(St, env, node["body"])
+                if sf["flow"] == "break":
+                    break
+                if sf["flow"] == "return":
+                    return sf
+            return NORMAL
         var items = materialize(St, iterable)
         for item in items:
             assignTo(St, env, node["target"], item, True)
