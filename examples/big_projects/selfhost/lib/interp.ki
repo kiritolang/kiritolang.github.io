@@ -929,11 +929,19 @@ var _typeMatches = Function(St, v, annName):
         return instanceOf(v, annName)
     return typeName(v) == annName
 
+# A function's label in a too-many-args error: its binding-inferred name (quoted) or a bare "function"
+# (native only surfaces the name for the too-many-positionals message; other arity errors say "function").
+var _fnLabel = Function(fn):
+    var nm = fn["name"]
+    if nm == None or nm == "" or nm == "<anonymous>":
+        return "function"
+    return "'" + nm + "'"
+
 var bindArgs = Function(St, fn, args, kwargs, callEnv):
     var params = fn["params"]
     var np = len(params)
     if len(args) > np:
-        rtError(fn["name"] + "() takes " + String(np) + " positional arguments but " + String(len(args)) + " were given")
+        rtError(_fnLabel(fn) + " takes " + String(np) + " positional argument(s) but " + String(len(args)) + " were given")
     # map keyword args by name
     var kwmap = {}
     for kw in kwargs:
@@ -945,7 +953,7 @@ var bindArgs = Function(St, fn, args, kwargs, callEnv):
         paramNames.add(p["name"])
     for key in kwmap.keys():
         if not (key in paramNames):
-            rtError(fn["name"] + "() got an unexpected keyword argument '" + key + "'")
+            rtError("function got an unexpected keyword argument '" + key + "'")
     for i in range(np):
         var p = params[i]
         var nm = p["name"]
@@ -962,15 +970,15 @@ var bindArgs = Function(St, fn, args, kwargs, callEnv):
             # already-bound EARLIER parameters (native binds progressively) as well as closure names.
             v = evalExpr(St, callEnv, p["default"])
         else:
-            rtError(fn["name"] + "() missing required argument '" + nm + "'")
+            rtError("function missing required argument '" + nm + "'")
         if p["ann"] != None and not _typeMatches(St, v, p["ann"]):
-            rtError(fn["name"] + "() argument '" + nm + "' must be " + p["ann"] + ", got " + typeName(v))
+            rtError("argument '" + nm + "' must be " + p["ann"] + ", got " + typeName(v))
         envDefine(callEnv, nm, v)
     if len(kwmap) > 0:
         var extra = ""
         for key in kwmap.keys():
             extra = key
-        rtError(fn["name"] + "() got an unexpected keyword argument '" + extra + "'")
+        rtError("function got an unexpected keyword argument '" + extra + "'")
 
 var instantiate = Function(St, cls, args, kwargs):
     var inst = mkInstance(cls)
@@ -1185,6 +1193,10 @@ var evalStmt = Function(St, env, node):
         return NORMAL
     if k == "var":
         var v = evalExpr(St, env, node["e"])
+        # infer a function's name from a plain `var name = Function(...)` binding, so arity errors read
+        # 'name' like native (which names a function by its binding); only anonymous funcs are relabeled.
+        if boxKind(v) == "function" and v["name"] == "<anonymous>" and node["target"]["k"] == "name":
+            v["name"] = node["target"]["v"]
         assignTo(St, env, node["target"], v, True)
         return NORMAL
     if k == "assign":
