@@ -129,11 +129,41 @@ var newEnv = Function(parent):
 var envDefine = Function(env, name, val):
     env["vars"][name] = val
 
+# Names declared via `var` in a scope's statements, recursing through nested control-flow blocks (which
+# share the scope) but NOT into nested function/class bodies (their own scope). Strict lexical addressing:
+# reading/rebinding such a name before its `var` executes is a TDZ error, not a walk to an outer/builtin.
+var _collectDeclared = Function(stmts, acc):
+    for stmt in stmts:
+        var sk = stmt["k"]
+        if sk == "var" and stmt["target"]["k"] == "name":
+            acc.add(stmt["target"]["v"])
+        elif sk == "if":
+            for br in stmt["branches"]:
+                discard _collectDeclared(br[1], acc)
+            if stmt["else"] != None:
+                discard _collectDeclared(stmt["else"], acc)
+        elif sk == "while" or sk == "for" or sk == "with":
+            discard _collectDeclared(stmt["body"], acc)
+        elif sk == "try":
+            discard _collectDeclared(stmt["body"], acc)
+            for c in stmt["catches"]:
+                discard _collectDeclared(c["body"], acc)
+            if stmt["finally"] != None:
+                discard _collectDeclared(stmt["finally"], acc)
+        elif sk == "switch":
+            for c in stmt["cases"]:
+                discard _collectDeclared(c["body"], acc)
+            if stmt["default"] != None:
+                discard _collectDeclared(stmt["default"], acc)
+    return acc
+
 var envLookup = Function(env, name):
     var e = env
     while e != None:
         if name in e["vars"]:
             return e["vars"][name]
+        if ("declared" in e) and (name in e["declared"]):
+            rtError("name '" + name + "' referenced before its declaration")
         e = e["parent"]
     rtError("NameError: name '" + name + "' is not defined")
 
@@ -151,6 +181,8 @@ var envAssign = Function(env, name, val):
         if name in e["vars"]:
             e["vars"][name] = val
             return None
+        if ("declared" in e) and (name in e["declared"]):
+            rtError("name '" + name + "' referenced before its declaration")
         e = e["parent"]
     rtError("NameError: name '" + name + "' is not defined")
 
@@ -903,6 +935,11 @@ var callFunction = Function(St, fn, args, kwargs, defcls):
     if defcls != None:
         envDefine(callEnv, "__defcls__", defcls)
     bindArgs(St, fn, args, kwargs, callEnv)
+    # strict lexical addressing: a body-local read before its `var` executes is a TDZ error, not a walk
+    # to an outer/builtin binding. Cache the declared-name set on the function box (computed once).
+    if not ("declared" in fn):
+        fn["declared"] = _collectDeclared(fn["body"], Set())
+    callEnv["declared"] = fn["declared"]
     # Track guest call depth so the iterator driver can tell a StopIteration thrown DIRECTLY by _next_
     # (the sentinel) from one that leaked out of a deeper call (PEP-479). Restored even on a throw.
     St["callDepth"] = St.get("callDepth", 0) + 1
@@ -4076,6 +4113,7 @@ var run5 = Function(src, inputText, importdirs, arglist):
         var modEnv = newEnv(g)
         envDefine(modEnv, "arglist", arglist)   # the run-directly program: its argv, argmain True
         envDefine(modEnv, "argmain", True)
+        modEnv["declared"] = _collectDeclared(ast, Set())
         execBlock(St, modEnv, ast)
     catch as e:
         if isinstance(e, "Dict") and ("exc" in e):
