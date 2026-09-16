@@ -825,15 +825,23 @@ class Regex:
         if endpos != None and endpos < hi:
             hi = endpos
         return text[0:hi]
+    var _clampPos = Function(self, t, pos):
+        # a pos past the (endpos-truncated) text clamps to its end, matching native rather than
+        # indexing out of range; a negative pos clamps to 0.
+        if pos < 0:
+            return 0
+        if pos > len(t):
+            return len(t)
+        return pos
     var match = Function(self, string, pos = 0, endpos = None):
         var t = self._clamp(string, pos, endpos)
-        return _mkMatch(self._prog, string, _run(self._prog, t, pos, True, False))
+        return _mkMatch(self._prog, string, _run(self._prog, t, self._clampPos(t, pos), True, False))
     var fullmatch = Function(self, string, pos = 0, endpos = None):
         var t = self._clamp(string, pos, endpos)
-        return _mkMatch(self._prog, string, _run(self._prog, t, pos, True, True))
+        return _mkMatch(self._prog, string, _run(self._prog, t, self._clampPos(t, pos), True, True))
     var search = Function(self, string, pos = 0, endpos = None):
         var t = self._clamp(string, pos, endpos)
-        return _mkMatch(self._prog, string, _run(self._prog, t, pos, False, False))
+        return _mkMatch(self._prog, string, _run(self._prog, t, self._clampPos(t, pos), False, False))
     var _allMatches = Function(self, text, startPos):
         var out = []
         var pos = startPos

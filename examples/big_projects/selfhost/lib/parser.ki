@@ -547,6 +547,10 @@ var _parseTry = Function(P):
         var name = None
         if _ty(P) == "name":
             typ = _adv(P)["v"]
+            # a qualified exception type (module.Class) is captured as a dotted string
+            while _isOp(P, "."):
+                P["i"] = P["i"] + 1
+                typ = typ + "." + _adv(P)["v"]
         if _eatKw(P, "as"):
             name = _adv(P)["v"]
         _expectOp(P, ":")
@@ -566,8 +570,10 @@ var _parseClass = Function(P):
     var name = _adv(P)["v"]
     var base = None
     if _eatOp(P, "("):
-        if _ty(P) == "name":
-            base = _adv(P)["v"]
+        # the base is a full expression (a bare name, a qualified `mod.Class`, or any value the
+        # interpreter then rejects if it isn't a class) — not just a single identifier.
+        if not _isOp(P, ")"):
+            base = parseExpr(P)
         _expectOp(P, ")")
     _expectOp(P, ":")
     # class body is a suite of `var member = ...` declarations

@@ -1315,6 +1315,30 @@ var instanceOf = Function(inst, typeName):
         c = c["base"]
     return False
 
+# Match a thrown instance against a catch clause's type. A bare name matches by class-name chain
+# (module-agnostic); a qualified `mod.Class` resolves to the concrete class object and matches by
+# IDENTITY along the instance's base chain, so `catch a.Shape` ignores an equally-named `b.Shape`.
+var _catchTypeMatches = Function(St, env, inst, typ):
+    if not ("." in typ):
+        return instanceOf(inst, typ)
+    var parts = typ.split(".")
+    if not envHas(env, parts[0]):
+        return False
+    var cur = envLookup(env, parts[0])
+    var pi = 1
+    while pi < len(parts):
+        if boxKind(cur) == "module" and (parts[pi] in cur["members"]):
+            cur = cur["members"][parts[pi]]
+        else:
+            return False
+        pi = pi + 1
+    var c = inst["cls"]
+    while c != None:
+        if id(c) == id(cur):
+            return True
+        c = c["base"]
+    return False
+
 var execTry = Function(St, env, node):
     var result = NORMAL
     var caught = None
@@ -1339,7 +1363,7 @@ var execTry = Function(St, env, node):
             var ok = False
             if clause["type"] == None:
                 ok = True                                  # bare catch: matches anything
-            elif isTyped and instanceOf(thrownVal, clause["type"]):
+            elif isTyped and _catchTypeMatches(St, env, thrownVal, clause["type"]):
                 ok = True                                  # typed catch matches the user-class chain
             elif typeName(thrownVal) == clause["type"]:
                 ok = True                                  # typed catch on a builtin type (catch String, ...)
@@ -1373,7 +1397,9 @@ var execTry = Function(St, env, node):
 var execClass = Function(St, env, node):
     var base = None
     if node["base"] != None:
-        base = envLookup(env, node["base"])
+        base = evalExpr(St, env, node["base"])
+        if boxKind(base) != "class":
+            rtError("base class must be a class, got " + typeName(base))
     var methods = {}
     var classEnv = newEnv(env)
     for stmt in node["body"]:
