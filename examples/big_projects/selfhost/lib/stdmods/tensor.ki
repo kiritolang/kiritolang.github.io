@@ -924,7 +924,7 @@ class Tensor:
         # Only sum/prod have an identity over an empty axis; mean/min/max/argmin/argmax/median cannot
         # reduce zero elements and throw, matching native.
         if alen == 0 and op != "sum" and op != "prod":
-            throw "cannot " + op + " over an empty axis (no elements)"
+            throw "cannot reduce over an empty axis (no elements)"
         var flat = []
         var f = 0
         while f < outsize:
