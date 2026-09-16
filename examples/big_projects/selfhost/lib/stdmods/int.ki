@@ -1,0 +1,820 @@
+# The `int` module in pure Kirito: arbitrary-precision integers (BigInt) plus the number-theory
+# surface (gcd/lcm/factorial/comb/perm/isqrt/modpow/modinv/primality). Mirrors the native module so
+# cov_int_complex and the big-integer examples run through the self-host.
+#
+# Representation: sign-magnitude. `self.sign` is -1/0/+1; `self.mag` is a little-endian list of
+# base-10^7 limbs with no trailing zero limb (zero is sign 0, mag []). Base 10^7 keeps every limb
+# product (< 10^14) and column accumulation well inside a native int64, and makes decimal String()
+# trivial. All magnitude helpers below operate on those raw limb lists; the BigInt class layers
+# sign handling on top and constructs results via _make(sign, mag).
+
+var math = import("math")
+var random = import("random")
+
+var BASE = 10000000
+var BASE_DIGITS = 7
+
+# ---- magnitude helpers (little-endian base-10^7 limb lists) ----
+
+var _zeros = Function(n):
+    var r = []
+    var i = 0
+    while i < n:
+        r.append(0)
+        i = i + 1
+    return r
+
+var _normMag = Function(m):
+    var n = len(m)
+    while n > 0 and m[n - 1] == 0:
+        n = n - 1
+    if n == len(m):
+        return m
+    return m[0:n]
+
+var _cmpMag = Function(a, b):
+    if len(a) != len(b):
+        if len(a) < len(b):
+            return -1
+        return 1
+    var i = len(a) - 1
+    while i >= 0:
+        if a[i] != b[i]:
+            if a[i] < b[i]:
+                return -1
+            return 1
+        i = i - 1
+    return 0
+
+var _addMag = Function(a, b):
+    var r = []
+    var carry = 0
+    var n = len(a)
+    if len(b) > n:
+        n = len(b)
+    var i = 0
+    while i < n:
+        var s = carry
+        if i < len(a):
+            s = s + a[i]
+        if i < len(b):
+            s = s + b[i]
+        r.append(s % BASE)
+        carry = s // BASE
+        i = i + 1
+    if carry > 0:
+        r.append(carry)
+    return r
+
+var _subMag = Function(a, b):
+    # requires a >= b
+    var r = []
+    var borrow = 0
+    var i = 0
+    while i < len(a):
+        var s = a[i] - borrow
+        if i < len(b):
+            s = s - b[i]
+        if s < 0:
+            s = s + BASE
+            borrow = 1
+        else:
+            borrow = 0
+        r.append(s)
+        i = i + 1
+    return _normMag(r)
+
+var _mulSmall = Function(m, d):
+    # m * d, 0 <= d < BASE
+    if d == 0:
+        return []
+    var r = []
+    var carry = 0
+    var i = 0
+    while i < len(m):
+        var p = m[i] * d + carry
+        r.append(p % BASE)
+        carry = p // BASE
+        i = i + 1
+    while carry > 0:
+        r.append(carry % BASE)
+        carry = carry // BASE
+    return _normMag(r)
+
+var _addSmall = Function(m, d):
+    # m + d, 0 <= d < BASE
+    var r = []
+    var carry = d
+    var i = 0
+    while i < len(m):
+        var s = m[i] + carry
+        r.append(s % BASE)
+        carry = s // BASE
+        i = i + 1
+    while carry > 0:
+        r.append(carry % BASE)
+        carry = carry // BASE
+    return r
+
+var _mulMag = Function(a, b):
+    if len(a) == 0 or len(b) == 0:
+        return []
+    var r = _zeros(len(a) + len(b))
+    var i = 0
+    while i < len(a):
+        var carry = 0
+        var j = 0
+        while j < len(b):
+            var p = r[i + j] + a[i] * b[j] + carry
+            r[i + j] = p % BASE
+            carry = p // BASE
+            j = j + 1
+        var k = i + len(b)
+        while carry > 0:
+            var p2 = r[k] + carry
+            r[k] = p2 % BASE
+            carry = p2 // BASE
+            k = k + 1
+        i = i + 1
+    return _normMag(r)
+
+var _shiftUpOne = Function(r, low):
+    # r*BASE + low, 0 <= low < BASE
+    if len(r) == 0:
+        if low == 0:
+            return []
+        return [low]
+    var res = [low]
+    var i = 0
+    while i < len(r):
+        res.append(r[i])
+        i = i + 1
+    return res
+
+var _divmodMag = Function(a, b):
+    # b != []; returns [q, r] with a = q*b + r and 0 <= r < b
+    if _cmpMag(a, b) < 0:
+        return [[], a]
+    if len(b) == 1:
+        var d = b[0]
+        var q1 = _zeros(len(a))
+        var rem = 0
+        var i1 = len(a) - 1
+        while i1 >= 0:
+            var cur = rem * BASE + a[i1]
+            q1[i1] = cur // d
+            rem = cur % d
+            i1 = i1 - 1
+        var rmag = []
+        if rem != 0:
+            rmag = [rem]
+        return [_normMag(q1), rmag]
+    var q = _zeros(len(a))
+    var r = []
+    var i = len(a) - 1
+    while i >= 0:
+        r = _shiftUpOne(r, a[i])
+        var lo = 0
+        var hi = BASE - 1
+        while lo < hi:
+            var mid = (lo + hi + 1) // 2
+            if _cmpMag(_mulSmall(b, mid), r) <= 0:
+                lo = mid
+            else:
+                hi = mid - 1
+        q[i] = lo
+        if lo > 0:
+            r = _subMag(r, _mulSmall(b, lo))
+        i = i - 1
+    return [_normMag(q), _normMag(r)]
+
+var _bitlenOfMag = Function(mag):
+    var cur = mag
+    var bits = 0
+    while len(cur) > 0:
+        cur = _divmodMag(cur, [2])[0]
+        bits = bits + 1
+    return bits
+
+# ---- string / digit helpers ----
+
+var _digitVal = Function(c):
+    var o = ord(c)
+    if o >= 48 and o <= 57:
+        return o - 48
+    if o >= 97 and o <= 122:
+        return o - 97 + 10
+    if o >= 65 and o <= 90:
+        return o - 65 + 10
+    return -1
+
+var _trim = Function(s):
+    var a = 0
+    var b = len(s)
+    while a < b and (s[a] == " " or s[a] == "\t" or s[a] == "\n" or s[a] == "\r"):
+        a = a + 1
+    while b > a and (s[b - 1] == " " or s[b - 1] == "\t" or s[b - 1] == "\n" or s[b - 1] == "\r"):
+        b = b - 1
+    return s[a:b]
+
+var _pad7 = Function(x):
+    var t = String(x)
+    while len(t) < 7:
+        t = "0" + t
+    return t
+
+# Parse `s` in an explicit base (no prefix), returning [sign, mag]. Throws on any invalid digit.
+var _parseBasePair = Function(s, base):
+    var t = _trim(s)
+    var sign = 1
+    var i = 0
+    if len(t) > 0 and (t[0] == "+" or t[0] == "-"):
+        if t[0] == "-":
+            sign = -1
+        i = 1
+    if i >= len(t):
+        throw "invalid integer literal"
+    var mag = []
+    while i < len(t):
+        var dv = _digitVal(t[i])
+        if dv < 0 or dv >= base:
+            throw "invalid integer literal"
+        mag = _addSmall(_mulSmall(mag, base), dv)
+        i = i + 1
+    mag = _normMag(mag)
+    if len(mag) == 0:
+        return [0, []]
+    return [sign, mag]
+
+# Parse `s` with 0x/0o/0b prefix auto-detection (default base 10), returning [sign, mag].
+var _parseAutoPair = Function(s):
+    var t = _trim(s)
+    var sign = 1
+    var i = 0
+    if len(t) > 0 and (t[0] == "+" or t[0] == "-"):
+        if t[0] == "-":
+            sign = -1
+        i = 1
+    var base = 10
+    if i + 1 < len(t) and t[i] == "0":
+        var c = t[i + 1]
+        if c == "x" or c == "X":
+            base = 16
+            i = i + 2
+        elif c == "o" or c == "O":
+            base = 8
+            i = i + 2
+        elif c == "b" or c == "B":
+            base = 2
+            i = i + 2
+    if i >= len(t):
+        throw "invalid integer literal"
+    var mag = []
+    while i < len(t):
+        var dv = _digitVal(t[i])
+        if dv < 0 or dv >= base:
+            throw "invalid integer literal"
+        mag = _addSmall(_mulSmall(mag, base), dv)
+        i = i + 1
+    mag = _normMag(mag)
+    if len(mag) == 0:
+        return [0, []]
+    return [sign, mag]
+
+# ---- BigInt ----
+
+class BigInt:
+    var _init_ = Function(self, value):
+        var t = type(value)
+        if t == "BigInt":
+            self.sign = value.sign
+            self.mag = value.mag
+        elif t == "Bool":
+            if value:
+                self.sign = 1
+                self.mag = [1]
+            else:
+                self.sign = 0
+                self.mag = []
+        elif t == "Integer":
+            var p = _parseBasePair(String(value), 10)
+            self.sign = p[0]
+            self.mag = p[1]
+        elif t == "String":
+            var q = _parseAutoPair(value)
+            self.sign = q[0]
+            self.mag = q[1]
+        else:
+            throw "big expects an Integer, a String, or a BigInt"
+
+    var _add_ = Function(self, o):
+        var b = _coerceArith(o)
+        if b == None:
+            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+        return _addSigned(self, b)
+    var _sub_ = Function(self, o):
+        var b = _coerceArith(o)
+        if b == None:
+            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+        return _subSigned(self, b)
+    var _mul_ = Function(self, o):
+        var b = _coerceArith(o)
+        if b == None:
+            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+        return _mulSigned(self, b)
+    var _div_ = Function(self, o):
+        var b = _coerceArith(o)
+        if b == None:
+            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+        if b.sign == 0:
+            throw "division by zero"
+        return _toFloat(self) / _toFloat(b)
+    var _floordiv_ = Function(self, o):
+        var b = _coerceArith(o)
+        if b == None:
+            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+        if b.sign == 0:
+            throw "integer division by zero"
+        var qr = _divmodMag(self.mag, b.mag)
+        var q = _make(self.sign * b.sign, qr[0])
+        var r = _make(self.sign, qr[1])
+        if r.sign != 0 and self.sign * b.sign < 0:
+            q = _addSigned(q, BigInt(-1))
+        return q
+    var _mod_ = Function(self, o):
+        var b = _coerceArith(o)
+        if b == None:
+            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+        if b.sign == 0:
+            throw "integer modulo by zero"
+        var r = _make(self.sign, _divmodMag(self.mag, b.mag)[1])
+        if r.sign != 0 and self.sign * b.sign < 0:
+            r = _addSigned(r, b)
+        return r
+    var _pow_ = Function(self, o):
+        var e = _coerceArith(o)
+        if e == None:
+            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+        if e.sign < 0:
+            if self.sign == 0:
+                throw "zero cannot be raised to a negative power"
+            return _toFloat(self) ** _toFloat(e)
+        if e.sign == 0:
+            return BigInt(1)
+        return _powChecked(self, e)
+    var _neg_ = Function(self):
+        return _make(-self.sign, self.mag)
+
+    var _eq_ = Function(self, o):
+        var t = type(o)
+        if t == "BigInt":
+            return _cmpBig(self, o) == 0
+        if t == "Integer" or t == "Bool":
+            return _cmpBig(self, BigInt(o)) == 0
+        if t == "Float":
+            if math.isnan(o) or math.isinf(o):
+                return False
+            if not _fits64(self):
+                return False
+            return Float(_toInt64(self)) == o
+        return False
+    var _ne_ = Function(self, o):
+        return not self._eq_(o)
+    var _lt_ = Function(self, o):
+        var b = _coerceArith(o)
+        if b == None:
+            throw "unsupported operand type '" + type(o) + "' for comparison with 'BigInt'"
+        return _cmpBig(self, b) < 0
+    var _le_ = Function(self, o):
+        var b = _coerceArith(o)
+        if b == None:
+            throw "unsupported operand type '" + type(o) + "' for comparison with 'BigInt'"
+        return _cmpBig(self, b) <= 0
+    var _gt_ = Function(self, o):
+        var b = _coerceArith(o)
+        if b == None:
+            throw "unsupported operand type '" + type(o) + "' for comparison with 'BigInt'"
+        return _cmpBig(self, b) > 0
+    var _ge_ = Function(self, o):
+        var b = _coerceArith(o)
+        if b == None:
+            throw "unsupported operand type '" + type(o) + "' for comparison with 'BigInt'"
+        return _cmpBig(self, b) >= 0
+
+    var _hash_ = Function(self):
+        if _fits64(self):
+            return _toInt64(self)
+        var h = 0
+        var i = len(self.mag) - 1
+        while i >= 0:
+            h = (h * 1000003 + self.mag[i]) % 2305843009213685099
+            i = i - 1
+        if self.sign < 0:
+            return -h
+        return h
+
+    var bitlength = Function(self):
+        if self.sign == 0:
+            return 0
+        return _bitlenOfMag(self.mag)
+    var toint = Function(self):
+        if not _fits64(self):
+            throw "BigInt does not fit in a native Integer"
+        return _toInt64(self)
+    var modpow = Function(self, exp, mod):
+        return _modpowFn(self, exp, mod)
+    var isprime = Function(self):
+        return _isprimeFn(self)
+    var isprobableprime = Function(self, rounds = 20):
+        return _isprobableprimeFn(self, rounds)
+
+    var _str_ = Function(self):
+        if self.sign == 0:
+            return "0"
+        var m = self.mag
+        var s = String(m[len(m) - 1])
+        var i = len(m) - 2
+        while i >= 0:
+            s = s + _pad7(m[i])
+            i = i - 1
+        if self.sign < 0:
+            return "-" + s
+        return s
+
+# ---- BigInt-level helpers ----
+
+var _make = Function(sign, mag):
+    var m = _normMag(mag)
+    var b = BigInt(0)
+    if len(m) == 0:
+        b.sign = 0
+        b.mag = []
+    else:
+        b.sign = sign
+        b.mag = m
+    return b
+
+var _coerceArith = Function(o):
+    var t = type(o)
+    if t == "BigInt":
+        return o
+    if t == "Integer" or t == "Bool":
+        return BigInt(o)
+    return None
+
+var _coerceIntOnly = Function(o):
+    var t = type(o)
+    if t == "BigInt":
+        return o
+    if t == "Integer" or t == "Bool":
+        return BigInt(o)
+    return None
+
+var _negOf = Function(x):
+    return _make(-x.sign, x.mag)
+
+var _addSigned = Function(x, y):
+    if x.sign == 0:
+        return y
+    if y.sign == 0:
+        return x
+    if x.sign == y.sign:
+        return _make(x.sign, _addMag(x.mag, y.mag))
+    var c = _cmpMag(x.mag, y.mag)
+    if c == 0:
+        return _make(0, [])
+    if c > 0:
+        return _make(x.sign, _subMag(x.mag, y.mag))
+    return _make(y.sign, _subMag(y.mag, x.mag))
+
+var _subSigned = Function(x, y):
+    return _addSigned(x, _negOf(y))
+
+var _mulSigned = Function(x, y):
+    if x.sign == 0 or y.sign == 0:
+        return _make(0, [])
+    return _make(x.sign * y.sign, _mulMag(x.mag, y.mag))
+
+var _cmpBig = Function(x, y):
+    if x.sign != y.sign:
+        if x.sign < y.sign:
+            return -1
+        return 1
+    if x.sign == 0:
+        return 0
+    var c = _cmpMag(x.mag, y.mag)
+    if x.sign < 0:
+        return -c
+    return c
+
+var _floormod = Function(x, m):
+    # m positive; result in [0, m)
+    var r = _make(x.sign, _divmodMag(x.mag, m.mag)[1])
+    if r.sign < 0:
+        r = _addSigned(r, m)
+    return r
+
+var _toFloat = Function(x):
+    return Float(String(x))
+
+var _MAXPOS = BigInt("9223372036854775807")
+var _MINABS = BigInt("9223372036854775808")
+
+var _fits64 = Function(x):
+    if x.sign == 0:
+        return True
+    if x.sign > 0:
+        return _cmpMag(x.mag, _MAXPOS.mag) <= 0
+    return _cmpMag(x.mag, _MINABS.mag) <= 0
+
+var _toInt64 = Function(x):
+    return Integer(String(x))
+
+var _powBig = Function(baseB, en):
+    var result = BigInt(1)
+    var b = baseB
+    var e = en
+    while e > 0:
+        if e % 2 == 1:
+            result = _mulSigned(result, b)
+        b = _mulSigned(b, b)
+        e = e // 2
+    return result
+
+var _powChecked = Function(baseB, expB):
+    if not _fits64(expB):
+        throw "exponent too large"
+    var en = _toInt64(expB)
+    if baseB.sign != 0:
+        var bl = _bitlenOfMag(baseB.mag)
+        if bl * en > 2000000:
+            throw "pow result too large"
+    return _powBig(baseB, en)
+
+# ---- module functions ----
+
+var big = Function(x):
+    return BigInt(x)
+
+var fromstring = Function(s, base = 10):
+    if base < 2 or base > 36:
+        throw "base must be between 2 and 36"
+    if type(s) != "String":
+        throw "fromstring expects a String"
+    var p = _parseBasePair(s, base)
+    return _make(p[0], p[1])
+
+var pow = Function(base, exp):
+    var b = _coerceArith(base)
+    var e = _coerceArith(exp)
+    if b == None or e == None:
+        throw "pow expects a BigInt or Integer"
+    if e.sign < 0:
+        throw "negative exponent"
+    if e.sign == 0:
+        return BigInt(1)
+    return _powChecked(b, e)
+
+var abs = Function(x):
+    var b = _coerceIntOnly(x)
+    if b == None:
+        throw "abs expects a BigInt or Integer"
+    if b.sign == 0:
+        return BigInt(0)
+    return _make(1, b.mag)
+
+var gcd = Function(a, b):
+    var x = _coerceIntOnly(a)
+    var y = _coerceIntOnly(b)
+    if x == None or y == None:
+        throw "gcd expects a BigInt or Integer"
+    var am = x.mag
+    var bm = y.mag
+    while len(bm) > 0:
+        var r = _divmodMag(am, bm)[1]
+        am = bm
+        bm = r
+    return _make(1, am)
+
+var lcm = Function(a, b):
+    var x = _coerceIntOnly(a)
+    var y = _coerceIntOnly(b)
+    if x == None or y == None:
+        throw "lcm expects a BigInt or Integer"
+    if x.sign == 0 or y.sign == 0:
+        return BigInt(0)
+    var g = gcd(x, y)
+    var prod = _make(1, _mulMag(x.mag, y.mag))
+    return _make(1, _divmodMag(prod.mag, g.mag)[0])
+
+var factorial = Function(n):
+    if type(n) == "BigInt":
+        n = n.toint()
+    if type(n) != "Integer":
+        throw "factorial expects an Integer"
+    if n < 0:
+        throw "factorial not defined for negatives"
+    var r = BigInt(1)
+    var i = 2
+    while i <= n:
+        r = _mulSigned(r, BigInt(i))
+        i = i + 1
+    return r
+
+var comb = Function(n, k):
+    if type(n) == "BigInt":
+        n = n.toint()
+    if type(k) == "BigInt":
+        k = k.toint()
+    if n < 0 or k < 0:
+        throw "comb: arguments must be non-negative"
+    if k > n:
+        return BigInt(0)
+    if k > n - k:
+        k = n - k
+    var r = BigInt(1)
+    var i = 0
+    while i < k:
+        r = _mulSigned(r, BigInt(n - i))
+        r = _make(r.sign, _divmodMag(r.mag, [i + 1])[0])
+        i = i + 1
+    return r
+
+var perm = Function(n, k):
+    if type(n) == "BigInt":
+        n = n.toint()
+    if type(k) == "BigInt":
+        k = k.toint()
+    if n < 0 or k < 0:
+        throw "perm: arguments must be non-negative"
+    if k > n:
+        return BigInt(0)
+    var r = BigInt(1)
+    var i = 0
+    while i < k:
+        r = _mulSigned(r, BigInt(n - i))
+        i = i + 1
+    return r
+
+var isqrt = Function(x):
+    var b = _coerceIntOnly(x)
+    if b == None:
+        throw "isqrt expects a BigInt or Integer"
+    if b.sign < 0:
+        throw "isqrt: negative operand"
+    if b.sign == 0:
+        return BigInt(0)
+    var n = _make(1, b.mag)
+    var bits = _bitlenOfMag(b.mag)
+    var y = _powBig(BigInt(2), (bits + 1) // 2)
+    while True:
+        var t = _addSigned(y, _make(1, _divmodMag(n.mag, y.mag)[0]))
+        var ynext = _make(1, _divmodMag(t.mag, [2])[0])
+        if _cmpBig(ynext, y) >= 0:
+            break
+        y = ynext
+    while _cmpBig(_mulSigned(y, y), n) > 0:
+        y = _subSigned(y, BigInt(1))
+    return y
+
+var _modpowFn = Function(base, exp, mod):
+    var b = _coerceIntOnly(base)
+    var e = _coerceIntOnly(exp)
+    var m = _coerceIntOnly(mod)
+    if b == None or e == None or m == None:
+        throw "modpow expects BigInt or Integer arguments"
+    if m.sign == 0:
+        throw "modpow: modulus is zero"
+    if e.sign < 0:
+        throw "negative exponent"
+    var mm = _make(1, m.mag)
+    if _cmpBig(mm, BigInt(1)) == 0:
+        return BigInt(0)
+    var result = BigInt(1)
+    var b0 = _floormod(b, mm)
+    var ex = _make(1, e.mag)
+    while ex.sign != 0:
+        var qr = _divmodMag(ex.mag, [2])
+        var bit = 0
+        if len(qr[1]) > 0:
+            bit = qr[1][0]
+        if bit == 1:
+            result = _floormod(_mulSigned(result, b0), mm)
+        b0 = _floormod(_mulSigned(b0, b0), mm)
+        ex = _make(1, qr[0])
+    return result
+
+var modinv = Function(a, mod):
+    var A = _coerceIntOnly(a)
+    var M = _coerceIntOnly(mod)
+    if A == None or M == None:
+        throw "modinv expects BigInt or Integer arguments"
+    if M.sign <= 0 or _cmpBig(M, BigInt(2)) < 0:
+        throw "modinv: modulus must be >= 2"
+    var r0 = M
+    var r1 = _floormod(A, M)
+    var t0 = BigInt(0)
+    var t1 = BigInt(1)
+    while r1.sign != 0:
+        var q = _make(1, _divmodMag(r0.mag, r1.mag)[0])
+        var r2 = _subSigned(r0, _mulSigned(q, r1))
+        r0 = r1
+        r1 = r2
+        var t2 = _subSigned(t0, _mulSigned(q, t1))
+        t0 = t1
+        t1 = t2
+    if _cmpBig(r0, BigInt(1)) != 0:
+        throw "modinv: not coprime"
+    return _floormod(t0, M)
+
+var _isprimeFn = Function(n):
+    var b = _coerceIntOnly(n)
+    if b == None:
+        throw "isprime expects a BigInt or Integer"
+    if b.sign <= 0:
+        return False
+    if _cmpBig(b, BigInt(1)) == 0:
+        return False
+    if _cmpBig(b, BigInt(3)) <= 0:
+        return True
+    if b.mag[0] % 2 == 0:
+        return False
+    var i = BigInt(3)
+    while _cmpBig(_mulSigned(i, i), b) <= 0:
+        if _floormod(b, i).sign == 0:
+            return False
+        i = _addSigned(i, BigInt(2))
+    return True
+
+var _MR_BASES = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
+
+var _isprobableprimeFn = Function(n, rounds = 20):
+    if rounds < 1:
+        throw "isprobableprime: rounds must be >= 1"
+    var b = _coerceIntOnly(n)
+    if b == None:
+        throw "isprobableprime expects a BigInt or Integer"
+    if b.sign <= 0:
+        return False
+    if _cmpBig(b, BigInt(1)) == 0:
+        return False
+    if _cmpBig(b, BigInt(3)) <= 0:
+        return True
+    if b.mag[0] % 2 == 0:
+        return False
+    var bm1 = _subSigned(b, BigInt(1))
+    var d = bm1
+    var s = 0
+    while d.mag[0] % 2 == 0:
+        d = _make(1, _divmodMag(d.mag, [2])[0])
+        s = s + 1
+    var used = 0
+    for baseInt in _MR_BASES:
+        if used >= rounds:
+            break
+        var a = BigInt(baseInt)
+        if _cmpBig(a, bm1) >= 0:
+            continue
+        used = used + 1
+        var x = _modpowFn(a, d, b)
+        if _cmpBig(x, BigInt(1)) == 0 or _cmpBig(x, bm1) == 0:
+            continue
+        var composite = True
+        var r = 1
+        while r < s:
+            x = _modpowFn(x, BigInt(2), b)
+            if _cmpBig(x, bm1) == 0:
+                composite = False
+                break
+            r = r + 1
+        if composite:
+            return False
+    return True
+
+var _rngInst = None
+
+var _rng = Function():
+    if _rngInst == None:
+        _rngInst = random.Random()
+    return _rngInst
+
+var randomprime = Function(bits):
+    if bits < 2:
+        throw "randomprime: bits must be >= 2"
+    var rng = _rng()
+    while True:
+        var v = _powBig(BigInt(2), bits - 1)
+        v = _addSigned(v, BigInt(1))
+        var i = 1
+        while i < bits - 1:
+            if rng.randint(0, 1) == 1:
+                v = _addSigned(v, _powBig(BigInt(2), i))
+            i = i + 1
+        if _isprobableprimeFn(v, 20):
+            return v
+
+var modpow = _modpowFn
+var isprime = _isprimeFn
+var isprobableprime = _isprobableprimeFn
+var zero = BigInt(0)
+var one = BigInt(1)

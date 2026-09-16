@@ -10,9 +10,12 @@ var tau = 2.0 * math.pi
 
 # Coerce a Complex-or-real into a Complex (reals land on the real axis).
 var _toC = Function(x):
-    if type(x) == "Complex":
+    var t = type(x)
+    if t == "Complex":
         return x
-    return Complex(Float(x), 0.0)
+    if t == "Integer" or t == "Float" or t == "Bool":
+        return Complex(Float(x), 0.0)
+    throw "expects a Complex or a number"
 
 class Complex:
     var _init_ = Function(self, re, im = 0.0):
@@ -57,6 +60,9 @@ class Complex:
         return exp(c * log(self))
 
     var _eq_ = Function(self, o):
+        var t = type(o)
+        if t != "Complex" and t != "Integer" and t != "Float" and t != "Bool":
+            return False
         var c = _toC(o)
         return self.re == c.re and self.im == c.im
     var _ne_ = Function(self, o):
@@ -199,6 +205,8 @@ var atanh = Function(z):
         throw "complex atanh: math domain error (atanh of ±1)"
     return (log(one + c) - log(one - c)) / Complex(2.0, 0.0)
 var polar = Function(r, theta):
+    if math.isinf(r) or math.isnan(r) or math.isinf(theta) or math.isnan(theta):
+        throw "polar: math domain error"
     return Complex(r * math.cos(theta), r * math.sin(theta))
 var abs = Function(z):
     var c = _toC(z)
@@ -227,7 +235,7 @@ class ComplexMatrix:
             if ncol < 0:
                 ncol = len(row)
             elif len(row) != ncol:
-                throw "complex matrix: all rows must have the same length"
+                throw "complex matrix: all rows must have equal length"
             var r = []
             for v in row:
                 r.append(_toC(v))
@@ -247,6 +255,8 @@ class ComplexMatrix:
 
     var _getitem_ = Function(self, i, j = None):
         if j == None:
+            if i < 0 or i >= self._r:
+                throw "row index out of range"
             return List(self._data[i])
         if i < 0 or i >= self._r or j < 0 or j >= self._c:
             throw "complex matrix index out of range"
