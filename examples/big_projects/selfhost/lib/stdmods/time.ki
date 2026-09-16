@@ -127,10 +127,14 @@ class DateTime:
     var isoformat = Function(self):
         return self.iso()
 
-    var add = Function(self, seconds):
+    var add = Function(self, seconds = None):
+        if seconds == None:
+            throw "add/sub expects 1 argument (seconds)"
         return _fromEpoch(self.timestamp + _reqSeconds(seconds))
 
-    var sub = Function(self, seconds):
+    var sub = Function(self, seconds = None):
+        if seconds == None:
+            throw "add/sub expects 1 argument (seconds)"
         return _fromEpoch(self.timestamp - _reqSeconds(seconds))
 
     # value equality + hash by instant (epoch), mirroring the native DateTime

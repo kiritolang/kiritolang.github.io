@@ -1012,6 +1012,23 @@ var assignTo = Function(St, env, target, value, isVar):
         var o = evalExpr(St, env, target["obj"])
         setMember(St, o, target["name"], value)
         return None
+    if k == "slice":
+        var obj = evalExpr(St, env, target["obj"])
+        var lo = _sliceClamp(target["lo"], St, env)
+        var hi = _sliceClamp(target["hi"], St, env)
+        var step = _sliceClamp(target["step"], St, env)
+        if boxKind(obj) == "instance":
+            var m = classLookup(obj["cls"], "_setitem_")
+            if m != None:
+                callValue(St, mkBound(obj, m), [slice(lo, hi, step), value], [])
+                return None
+            rtError("'" + obj["cls"]["name"] + "' object does not support item assignment")
+        # delegate to the host's list/string slice assignment (exact native bounds/step/length rules)
+        if step == None:
+            obj[lo:hi] = value
+        else:
+            obj[lo:hi:step] = value
+        return None
     if k == "tuple":
         unpackInto(St, env, target["items"], value, isVar)
         return None
@@ -1938,6 +1955,8 @@ var strMethod = Function(St, recv, name, args):
     if name == "split":
         var maxs = -1
         if len(args) == 2 and args[1] != None:
+            if typeName(args[1]) != "Integer":
+                rtError("split expects an Integer")
             maxs = args[1]
         if len(args) == 0 or args[0] == None:        # split() / split(None[, n]) -> whitespace split
             return _splitWsN(recv, maxs)

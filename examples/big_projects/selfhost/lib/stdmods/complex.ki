@@ -388,6 +388,15 @@ class ComplexMatrix:
         if self._r != self._c:
             throw "complex matrix: determinant requires a square matrix"
         var n = self._r
+        var ri = 0
+        while ri < n:
+            var ci = 0
+            while ci < n:
+                var cell = self._data[ri][ci]
+                if math.isinf(cell.re) or math.isnan(cell.re) or math.isinf(cell.im) or math.isnan(cell.im):
+                    throw "matrix contains a non-finite value"
+                ci = ci + 1
+            ri = ri + 1
         var a = self._copyData()
         var det = Complex(1.0, 0.0)
         var col = 0
