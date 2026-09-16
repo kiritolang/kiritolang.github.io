@@ -960,11 +960,15 @@ class Tensor:
                     if v > acc:
                         acc = v
                 elif op == "argmax":
-                    if v > acc:
+                    if _isnan(acc):
+                        acc = acc
+                    elif _isnan(v) or v > acc:
                         acc = v
                         bestidx = k
                 elif op == "argmin":
-                    if v < acc:
+                    if _isnan(acc):
+                        acc = acc
+                    elif _isnan(v) or v < acc:
                         acc = v
                         bestidx = k
                 k = k + 1

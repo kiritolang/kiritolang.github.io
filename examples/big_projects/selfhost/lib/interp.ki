@@ -950,6 +950,8 @@ var bindArgs = Function(St, fn, args, kwargs, callEnv):
         var v = None
         if i < len(args):
             v = args[i]
+            if nm in kwmap:
+                rtError("function got multiple values for argument '" + nm + "'")
         elif nm in kwmap:
             v = kwmap[nm]
             kwmap.pop(nm)
