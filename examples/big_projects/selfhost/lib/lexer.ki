@@ -215,15 +215,29 @@ var _topLevelColon = Function(expr):
     var depth = 0
     var i = 0
     var n = len(expr)
+    var inStr = ""
     while i < n:
         var c = expr[i]
-        if c == "[" or c == "(" or c == "{":
+        if inStr != "":
+            if c == "\\" and i + 1 < n:
+                i = i + 2
+            else:
+                if c == inStr:
+                    inStr = ""
+                i = i + 1
+        elif c == "'" or c == "\"":
+            inStr = c
+            i = i + 1
+        elif c == "[" or c == "(" or c == "{":
             depth = depth + 1
+            i = i + 1
         elif c == "]" or c == ")" or c == "}":
             depth = depth - 1
+            i = i + 1
         elif c == ":" and depth == 0:
             return i
-        i = i + 1
+        else:
+            i = i + 1
     return -1
 
 # Parse an f-string body into parts (literal text vs {hole[:spec]}); braces escape as {{ }}.
@@ -246,18 +260,38 @@ var _parseFstring = Function(raw, line, col, isRaw):
                 i = i + 1
                 var depth = 1
                 var expr = ""
+                var inStr = ""       # quote char of the string literal currently being scanned, "" if none
                 while i < n and depth > 0:
-                    if raw[i] == "{":
+                    var hc = raw[i]
+                    if inStr != "":
+                        if hc == "\\" and i + 1 < n:
+                            expr = expr + hc + raw[i + 1]
+                            i = i + 2
+                        else:
+                            if hc == inStr:
+                                inStr = ""
+                            expr = expr + hc
+                            i = i + 1
+                    elif hc == "'" or hc == "\"":
+                        inStr = hc
+                        expr = expr + hc
+                        i = i + 1
+                    elif hc == "{":
                         depth = depth + 1
-                    elif raw[i] == "}":
+                        expr = expr + hc
+                        i = i + 1
+                    elif hc == "}":
                         depth = depth - 1
                         if depth == 0:
-                            break
-                    expr = expr + raw[i]
-                    i = i + 1
+                            i = i + 1
+                        else:
+                            expr = expr + hc
+                            i = i + 1
+                    else:
+                        expr = expr + hc
+                        i = i + 1
                 if depth != 0:
                     lexError(line, col, "unmatched '{' in f-string")
-                i = i + 1
                 var spec = ""
                 var colonAt = _topLevelColon(expr)
                 if colonAt >= 0:
