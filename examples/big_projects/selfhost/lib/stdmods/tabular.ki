@@ -726,7 +726,13 @@ class DataFrame:
             var row = []
             for c in self.columns:
                 var v = self.data[c][i]
-                row.append("" if v == None else String(v))
+                # Float cells use repr() so the round-trippable shortest decimal survives write/read.
+                if v == None:
+                    row.append("")
+                elif type(v) == "Float":
+                    row.append(v.repr())
+                else:
+                    row.append(String(v))
             rows.append(row)
             i = i + 1
         return _csv.format(rows)

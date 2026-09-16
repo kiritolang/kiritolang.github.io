@@ -84,7 +84,7 @@ var _normAxis = Function(ax, nd):
     if a < 0:
         a = a + nd
     if a < 0 or a >= nd:
-        throw "tensordot: axis out of range"
+        throw "axis out of range"
     return a
 # tensordot's per-operand axes argument may be a single Integer or a List of Integers.
 var _readAxisList = Function(v):
@@ -151,6 +151,8 @@ var _domPow = Function(base, p):
         throw "tensor pow: math domain error (zero to a negative power)"
     return base
 var _signOf = Function(x):
+    if _isnan(x):
+        return x
     if x > 0.0:
         return 1.0
     if x < 0.0:
@@ -182,7 +184,7 @@ var _flattenInto = Function(data, out, depth, shape):
         out.append(data)
         return None
     if type(data) != "List" or len(data) != shape[depth]:
-        throw "tensor: ragged nested list"
+        throw "Tensor: nested list is ragged (rows differ in length)"
     for x in data:
         _flattenInto(x, out, depth + 1, shape)
     return None
@@ -478,7 +480,7 @@ class Tensor:
         if flag == None:
             return self._req
         if flag and self._dtype == "Complex":
-            throw "tensor: autograd is Float-only (complex tensors cannot require grad)"
+            throw "gradients are Float-only (a Complex tensor cannot require grad)"
         self._req = flag
         return None
 
@@ -793,7 +795,7 @@ class Tensor:
             throw "% and // are Float-only on tensors"
         var fn = Function(x, y):
             if y == 0:
-                throw "floor-division by zero"
+                throw "tensor floor-division by zero"
             return x // y
         return self._binop(o, fn, "floordiv")
     var _pow_ = Function(self, o):
@@ -1039,7 +1041,7 @@ class Tensor:
             throw "min of an empty tensor"
         var m = self._data[0]
         for x in self._data:
-            if x < m:
+            if _isnan(x) or x < m:
                 m = x
         return m
     var max = Function(self, axis = None):
@@ -1051,7 +1053,7 @@ class Tensor:
             throw "max of an empty tensor"
         var m = self._data[0]
         for x in self._data:
-            if x > m:
+            if _isnan(x) or x > m:
                 m = x
         return m
     var argmax = Function(self, axis = None):
@@ -1404,14 +1406,15 @@ class Tensor:
         var n = o._shape[nb - 1]
         if o._shape[nb - 2] != kk:
             throw "matmul: inner dimensions differ"
-        if self._shape[0:na - 2] != o._shape[0:nb - 2]:
+        # A rank-2 right operand broadcasts across every batch; two batched operands must agree.
+        if nb > 2 and self._shape[0:na - 2] != o._shape[0:nb - 2]:
             throw "matmul: batch dimensions differ"
         var nbatch = _prod(batch)
         var flat = []
         var bx = 0
         while bx < nbatch:
             var aoff = bx * m * kk
-            var boff = bx * kk * n
+            var boff = 0 if nb == 2 else bx * kk * n
             var i = 0
             while i < m:
                 var j = 0
@@ -1515,6 +1518,9 @@ class Tensor:
                 return None
         return out
     var reshape = Function(self, ns):
+        for _d in ns:
+            if _d < 0:
+                throw "Tensor shape dimensions must be non-negative"
         if _prod(ns) != len(self._data):
             throw "reshape: total number of elements must be unchanged"
         return self._reshapeLikeGrad(_make(List(self._data), List(ns), self._dtype))
@@ -1820,7 +1826,7 @@ class Tensor:
     var square = Function(self):
         return self._umap(Function(x): return x * x, Function(x): return 2.0 * x)
     var relu = Function(self):
-        return self._umap(Function(x): return x if x > 0.0 else 0.0, Function(x): return 1.0 if x > 0.0 else 0.0)
+        return self._umap(Function(x): return x if (_isnan(x) or x > 0.0) else 0.0, Function(x): return 1.0 if x > 0.0 else 0.0)
 
     # element-wise differentiable math (Float-only, like native). Each delegates to _umap; the value
     # fn rejects an out-of-domain element (a NaN passes through, mirroring the scalar math module).
@@ -2515,7 +2521,7 @@ class Tensor:
         return None
     var backward = Function(self, seed = None):
         if not self._req:
-            throw "tensor: backward on a tensor that does not require grad"
+            throw "backward: this tensor does not require grad"
         # Iterative post-order DFS (an explicit work-stack, NOT recursion): a deep chain of ops
         # (thousands of nodes, e.g. x+x+...+x) would otherwise recurse one native call frame per
         # node and hit the recursion-depth guard. Each stack entry is [node, expanded]; a node is
@@ -2605,6 +2611,7 @@ var _make = Function(flat, shape, dtype):
 
 # ================================================================= creation
 var Tensor = Tensor
+var tensor = Tensor
 var zeros = Function(shape, dtype = "Float", requiresgrad = False):
     var n = _prod(shape)
     if n > _MAX_ELEMS:
@@ -2703,6 +2710,8 @@ var zeroslike = Function(t):
 var oneslike = Function(t):
     return ones(t.shape(), t.dtype())
 var linspace = Function(start, stop, num):
+    if num < 0:
+        throw "linspace: num must be non-negative"
     if num > _MAX_ELEMS:
         throw "Tensor too large"
     var flat = []
@@ -2756,6 +2765,8 @@ var unique = Function(t):
 var searchsorted = Function(t, v):
     return t.searchsorted(v)
 var concatenate = Function(tensors, axis = 0):
+    if len(tensors) == 0:
+        throw "concatenate: expected at least one Tensor"
     if axis == 0:
         return tensors[0].catrows(tensors[1:len(tensors)])
     # general axis: concat along axis 0 of the axis-fronted views, then move back

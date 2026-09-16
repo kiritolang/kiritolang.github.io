@@ -11,7 +11,7 @@ var _M = 9007199254740881            # a prime below 2^53, for the [0,1) mantiss
 
 var _reqInt = Function(x):
     if type(x) != "Integer":
-        throw "argument expects an Integer"
+        throw "argument expected Integer, got '" + type(x) + "'"
     return x
 
 class Random:
@@ -85,7 +85,7 @@ class Random:
         return lo + st * Integer(self.random() * Float(nchoices))
 
     var seed = Function(self, a):
-        self._state = a * 2862933555777941757 + 3037000493
+        self._state = _reqInt(a) * 2862933555777941757 + 3037000493
         return None
 
     var normalvariate = Function(self, mu = 0.0, sigma = 1.0):
@@ -158,3 +158,24 @@ class Random:
         if u < 1.0e-12:
             u = 1.0e-12
         return -math.log(u) / lambd
+
+# Module-level convenience: a random Integer in [0, n) from a shared default generator.
+var _defaultRandom = Random()
+var randombelow = Function(n):
+    if type(n) != "Integer":
+        throw "randombelow: n expected Integer, got '" + type(n) + "'"
+    if n <= 0:
+        throw "randombelow: n must be positive"
+    return _defaultRandom.randint(0, n - 1)
+
+var randombytes = Function(n):
+    if type(n) != "Integer":
+        throw "randombytes: n expected Integer, got '" + type(n) + "'"
+    if n < 0:
+        throw "randombytes: n must be non-negative"
+    var out = []
+    var i = 0
+    while i < n:
+        out.append(_defaultRandom.randint(0, 255))
+        i = i + 1
+    return Bytes(out)

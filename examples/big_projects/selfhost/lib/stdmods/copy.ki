@@ -4,14 +4,14 @@ var _IMMUTABLE = Set(["None", "Bool", "Integer", "Float", "String", "Bytes"])
 # Pure Kirito has no generic way to enumerate/set an instance's attributes, so a class instance (or a
 # native value object like Matrix/Tensor/DateTime) is copied via the serialize graph codec, which
 # copies by attributes / the _getstate_/_setstate_ protocol and preserves shared refs + cycles. This
-# is necessarily a DEEP, independent copy. A value that can't be serialized (e.g. a live socket/file)
-# falls back to itself — best effort, matching the old behaviour for those.
+# is necessarily a DEEP, independent copy. A value that can't be serialized (a live regex/socket/file
+# handle) is not copyable and throws, matching native rather than silently aliasing the original.
 var _copyViaSerde = Function(obj):
     var serialize = import("serialize")
     try:
         return serialize.loads(serialize.dumps(obj))
     catch as e:
-        return obj
+        throw "cannot copy an unserializable value"
 
 var copy = Function(obj):
     var t = type(obj)

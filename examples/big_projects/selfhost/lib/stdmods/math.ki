@@ -657,11 +657,14 @@ var prod = Function(iterable, start = 1):
         ip = start
     var fp = Float(start)
     var intOverflow = False
+    var hasIntZero = False
     for v in iterable:
         if type(v) != "Integer" and type(v) != "Float":
             throw "prod expects numbers"
         if type(v) == "Float":
             isFloatResult = True
+        elif v == 0:
+            hasIntZero = True
         elif not intOverflow:
             if _mulOverflows(ip, v):
                 intOverflow = True
@@ -670,6 +673,9 @@ var prod = Function(iterable, start = 1):
         fp = fp * Float(v)
     if isFloatResult:
         return fp
+    # A single integer zero forces the product to 0 regardless of any earlier overflow.
+    if hasIntZero:
+        return 0
     if intOverflow:
         throw "prod result too large for Integer"
     return ip

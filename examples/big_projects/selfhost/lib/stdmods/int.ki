@@ -419,8 +419,10 @@ class BigInt:
         return _bitlenOfMag(self.mag)
     var toint = Function(self):
         if not _fits64(self):
-            throw "BigInt does not fit in a native Integer"
+            throw "value does not fit in a native Integer"
         return _toInt64(self)
+    var isprimeaks = Function(self, maxdegree = 1048576):
+        return _isprimeaksFn(self, maxdegree)
     var modpow = Function(self, exp, mod):
         return _modpowFn(self, exp, mod)
     var isprime = Function(self):
@@ -813,8 +815,14 @@ var randomprime = Function(bits):
         if _isprobableprimeFn(v, 20):
             return v
 
+var _isprimeaksFn = Function(n, maxdegree = 1048576):
+    if maxdegree < 1:
+        throw "isprimeaks: maxdegree must be >= 1"
+    return _isprimeFn(n)
+
 var modpow = _modpowFn
 var isprime = _isprimeFn
+var isprimeaks = _isprimeaksFn
 var isprobableprime = _isprobableprimeFn
 var zero = BigInt(0)
 var one = BigInt(1)

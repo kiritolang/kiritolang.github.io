@@ -9,8 +9,12 @@ class deque:
     var appendleft = Function(self, x):
         self._items.insert(0, x)
     var pop = Function(self):
+        if len(self._items) == 0:
+            throw "pop from an empty deque"
         return self._items.pop()
     var popleft = Function(self):
+        if len(self._items) == 0:
+            throw "pop from an empty deque"
         return self._items.pop(0)
     var _len_ = Function(self) -> Integer:
         return len(self._items)

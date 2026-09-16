@@ -192,6 +192,8 @@ var acos = Function(z):
     return -i * log(c + i * sqrt(one - c * c))
 var atan = Function(z):
     var c = _toC(z)
+    if c.re == 0.0 and (c.im == 1.0 or c.im == 0.0 - 1.0):
+        throw "atan: math domain error (atan of ±i)"
     return (i / Complex(2.0, 0.0)) * (log(one - i * c) - log(one + i * c))
 var asinh = Function(z):
     var c = _toC(z)

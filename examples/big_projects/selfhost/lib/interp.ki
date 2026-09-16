@@ -344,7 +344,7 @@ var _identityEq = Function(l, r, op):
 # used to validate member access on a primitive at ACCESS time (see evalMember) rather than only
 # when the resulting boundnative thunk is later called.
 var _METHOD_NAMES = {
-    "Integer": Set(["compare"]), "Float": Set(["compare"]), "Bool": Set([]), "None": Set([]),
+    "Integer": Set(["compare"]), "Float": Set(["compare", "repr"]), "Bool": Set([]), "None": Set([]),
     "List": Set(["append", "apply", "clear", "copy", "count", "extend", "index", "insert", "pop",
         "remove", "reverse", "sort"]),
     "String": Set(["apply", "center", "count", "encode", "endswith", "find", "format", "index",
@@ -777,7 +777,7 @@ var evalMember = Function(St, env, node):
         var sp = classLookupC(obj["cls"], name)
         if sp != None:
             return mkBoundD(obj["inst"], sp[0], sp[1])
-        rtError("super object has no method '" + name + "'")
+        rtError("'super' object has no attribute '" + name + "'")
     if k == "class":
         # A Kirito class is an instantiation factory, not an attribute namespace: `Class.x` always
         # throws (matching the real native), even for a name that IS a defined method — only an
@@ -884,7 +884,7 @@ var callValue = Function(St, fn, args, kwargs):
         if pair != None:
             return callFunction(St, pair[0], _prepend(fn, args), kwargs, pair[1])
         rtError("'" + fn["cls"]["name"] + "' object is not callable")
-    rtError("'" + typeName(fn) + "' object is not callable")
+    rtError("type '" + typeName(fn) + "' is not callable")
 
 var _prepend = Function(x, xs):
     var out = [x]
@@ -1412,7 +1412,7 @@ var _SET_PARAMS = {"add": ["value"], "discard": ["value"], "remove": ["value"], 
     "union": ["other"], "intersection": ["other"], "difference": ["other"],
     "symmetricdifference": ["other"], "issubset": ["other"], "issuperset": ["other"],
     "isdisjoint": ["other"], "apply": ["fn"]}
-var _NUM_PARAMS = {"compare": ["other", "rel_tol", "abs_tol"]}
+var _NUM_PARAMS = {"compare": ["other", "rel_tol", "abs_tol"], "repr": []}
 
 var _paramsFor = Function(tn, name):
     var tbl = {}
@@ -1497,6 +1497,10 @@ var _hostParamsFor = Function(name):
 # Integer/Float methods. `.compare(other, rel_tol = 1e-9, abs_tol = 0.0)` is the tolerant numeric
 # comparison every native number carries (== stays exact): close when |a-b| <= max(rel_tol*max(|a|,|b|), abs_tol).
 var numMethod = Function(St, recv, name, args):
+    if name == "repr":
+        # shortest round-trippable decimal — delegate to the host Float's native repr (the self-host
+        # already leans on the host for Float arithmetic/String, so scalar formatting matches natively).
+        return recv.repr()
     if name == "compare":
         if len(args) < 1:
             rtError("compare() missing required argument 'other'")
@@ -1734,6 +1738,10 @@ var _strip = Function(s, chars, left, right):
 # Normalize an optional [start, end) code-point window over a length-n sequence (Python find/count
 # rules): defaults 0..n; a negative index counts from the end; both clamp into [0, n].
 var _clampWindow = Function(n, start, end):
+    if start != None and typeName(start) != "Integer":
+        rtError("start expects an Integer")
+    if end != None and typeName(end) != "Integer":
+        rtError("end expects an Integer")
     var a = 0
     if start != None:
         a = start
@@ -2448,9 +2456,11 @@ var _msort = Function(St, arr, rev):
         var bothNum = (rt == "Integer" or rt == "Float") and (lt == "Integer" or lt == "Float")
         if not bothNum and rt != lt:
             rtError("cannot order '" + rt + "' and '" + lt + "'")
+        # Both directions compare with `<` (a user type need only define _lt_, matching native); for
+        # reverse the operands are swapped rather than using `>`, keeping equal elements stable.
         var pickRight = False
         if rev:
-            pickRight = truthy(St, evalBinary(St, ">", right[j][0], left[i][0]))
+            pickRight = truthy(St, evalBinary(St, "<", left[i][0], right[j][0]))
         else:
             pickRight = truthy(St, evalBinary(St, "<", right[j][0], left[i][0]))
         if pickRight:
@@ -2629,9 +2639,11 @@ var builtinReduceMinMax = Function(St, args, kwargs, wantMax):
         var curKey = cur
         if keyFn != None:
             curKey = callValue(St, keyFn, [cur], [])
+        # Compare only with `<` (a user type need only define _lt_, matching native): max swaps the
+        # operands rather than using `>`, and ties keep the earlier element.
         var take = False
         if wantMax:
-            take = truthy(St, evalBinary(St, ">", curKey, bestKey))
+            take = truthy(St, evalBinary(St, "<", bestKey, curKey))
         else:
             take = truthy(St, evalBinary(St, "<", curKey, bestKey))
         if take:

@@ -87,6 +87,13 @@ class Parser:
         var i = 0
         while i < len(args):
             var token = args[i]
+            if token == "--":
+                # end-of-options marker: everything after is a positional, never an option
+                i = i + 1
+                while i < len(args):
+                    positionals.append(args[i])
+                    i = i + 1
+                break
             if token == "-h" or token == "--help":
                 _io.print(self.usage())
                 return None
