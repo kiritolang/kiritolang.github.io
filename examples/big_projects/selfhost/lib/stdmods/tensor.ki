@@ -789,7 +789,11 @@ class Tensor:
     var _mod_ = Function(self, o):
         if self._dtype == "Complex":
             throw "% and // are Float-only on tensors"
-        return self._binop(o, Function(x, y): return x % y, "mod")
+        var fn = Function(x, y):
+            if y == 0:
+                throw "tensor modulo by zero"
+            return x % y
+        return self._binop(o, fn, "mod")
     var _floordiv_ = Function(self, o):
         if self._dtype == "Complex":
             throw "% and // are Float-only on tensors"
@@ -843,33 +847,42 @@ class Tensor:
         return _make(flat, rs, "Float")
     # Complex is unordered: only ==/!= are defined, never </<=/>/>=. One message carries both the
     # "unordered" wording native uses for the operator and the "Complex" wording it uses for the method.
+    # Complex is unordered: only ==/!= are defined. Native words this differently for the operator
+    # (</<=/>/>=) than for the named method (.lt/.gt/...), so each path carries its own message.
     var _reqOrdered = Function(self, o):
         if self._dtype == "Complex" or (type(o) == "Tensor" and o._dtype == "Complex"):
             throw "ordering comparisons are not defined for Complex tensors (complex is unordered)"
+    var _reqCmpFloat = Function(self, o):
+        if self._dtype == "Complex" or (type(o) == "Tensor" and o._dtype == "Complex"):
+            throw "comparison: Float tensors only (this op is not defined for Complex)"
     var gt = Function(self, o):
-        discard self._reqOrdered(o)
+        discard self._reqCmpFloat(o)
         return self._cmp(o, Function(x, y): return x > y)
     var lt = Function(self, o):
-        discard self._reqOrdered(o)
+        discard self._reqCmpFloat(o)
         return self._cmp(o, Function(x, y): return x < y)
     var ge = Function(self, o):
-        discard self._reqOrdered(o)
+        discard self._reqCmpFloat(o)
         return self._cmp(o, Function(x, y): return x >= y)
     var le = Function(self, o):
-        discard self._reqOrdered(o)
+        discard self._reqCmpFloat(o)
         return self._cmp(o, Function(x, y): return x <= y)
     var eq = Function(self, o):
         return self._cmp(o, Function(x, y): return x == y)
     var ne = Function(self, o):
         return self._cmp(o, Function(x, y): return x != y)
     var _gt_ = Function(self, o):
-        return self.gt(o)
+        discard self._reqOrdered(o)
+        return self._cmp(o, Function(x, y): return x > y)
     var _lt_ = Function(self, o):
-        return self.lt(o)
+        discard self._reqOrdered(o)
+        return self._cmp(o, Function(x, y): return x < y)
     var _ge_ = Function(self, o):
-        return self.ge(o)
+        discard self._reqOrdered(o)
+        return self._cmp(o, Function(x, y): return x >= y)
     var _le_ = Function(self, o):
-        return self.le(o)
+        discard self._reqOrdered(o)
+        return self._cmp(o, Function(x, y): return x <= y)
     var logicaland = Function(self, o):
         return self._cmp(o, Function(x, y): return x != 0.0 and y != 0.0)
     var logicalor = Function(self, o):

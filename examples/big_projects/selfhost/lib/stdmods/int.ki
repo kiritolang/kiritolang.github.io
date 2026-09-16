@@ -688,7 +688,7 @@ var _modpowFn = Function(base, exp, mod):
     if m.sign == 0:
         throw "modpow: modulus is zero"
     if e.sign < 0:
-        throw "negative exponent"
+        throw "modpow: negative exponent"
     var mm = _make(1, m.mag)
     if _cmpBig(mm, BigInt(1)) == 0:
         return BigInt(0)

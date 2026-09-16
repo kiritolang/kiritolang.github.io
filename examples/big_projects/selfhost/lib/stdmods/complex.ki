@@ -208,7 +208,7 @@ var atanh = Function(z):
     return (log(one + c) - log(one - c)) / Complex(2.0, 0.0)
 var polar = Function(r, theta):
     if math.isinf(r) or math.isnan(r) or math.isinf(theta) or math.isnan(theta):
-        throw "polar: math domain error"
+        throw "math domain error (polar requires finite modulus and angle)"
     return Complex(r * math.cos(theta), r * math.sin(theta))
 var abs = Function(z):
     var c = _toC(z)

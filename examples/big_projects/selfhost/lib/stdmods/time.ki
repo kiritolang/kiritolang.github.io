@@ -57,6 +57,8 @@ var _reqSeconds = Function(seconds):
         throw "add/sub expects a number of seconds"
     if seconds != seconds:
         throw "add/sub: cannot convert NaN to Integer"
+    if seconds > 1.7976931348623157e308 or seconds < -1.7976931348623157e308:
+        throw "add/sub: cannot convert infinity to Integer"
     return Integer(seconds)
 
 class DateTime:

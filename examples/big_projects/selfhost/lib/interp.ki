@@ -2029,13 +2029,13 @@ var strMethod = Function(St, recv, name, args):
             rtError("substring not found")
         return ri
     if name == "count":
-        var startC = 0
-        if len(args) >= 2 and args[1] != None:
+        var startC = None
+        if len(args) >= 2:
             startC = args[1]
-        var endC = len(recv)
-        if len(args) >= 3 and args[2] != None:
+        var endC = None
+        if len(args) >= 3:
             endC = args[2]
-        return _count(recv[startC:endC], args[0])
+        return _count(recv, args[0], startC, endC)
     if name == "isdigit":
         return _allChars(recv, _isDigitCh)
     if name == "isalpha":
