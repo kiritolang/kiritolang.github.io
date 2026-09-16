@@ -700,9 +700,9 @@ class Match:
         return self.string[self._slots[2 * g]:self._slots[2 * g + 1]]
     # group() -> whole; group(k) -> one; group(k1, k2, ...) -> a List (native accepts several keys).
     # The self-host has no varargs, so accept several optional keys (None sentinel — a key is never None).
-    var group = Function(self, k0 = None, k1 = None, k2 = None, k3 = None, k4 = None, k5 = None, k6 = None, k7 = None):
+    var group = Function(self, index = None, k1 = None, k2 = None, k3 = None, k4 = None, k5 = None, k6 = None, k7 = None):
         var keys = []
-        for _k in [k0, k1, k2, k3, k4, k5, k6, k7]:
+        for _k in [index, k1, k2, k3, k4, k5, k6, k7]:
             if _k != None:
                 keys.append(_k)
         if len(keys) == 0:

@@ -310,29 +310,29 @@ class BigInt:
     var _add_ = Function(self, o):
         var b = _coerceArith(o)
         if b == None:
-            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         return _addSigned(self, b)
     var _sub_ = Function(self, o):
         var b = _coerceArith(o)
         if b == None:
-            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         return _subSigned(self, b)
     var _mul_ = Function(self, o):
         var b = _coerceArith(o)
         if b == None:
-            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         return _mulSigned(self, b)
     var _div_ = Function(self, o):
         var b = _coerceArith(o)
         if b == None:
-            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         if b.sign == 0:
             throw "division by zero"
         return _toFloat(self) / _toFloat(b)
     var _floordiv_ = Function(self, o):
         var b = _coerceArith(o)
         if b == None:
-            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         if b.sign == 0:
             throw "integer division by zero"
         var qr = _divmodMag(self.mag, b.mag)
@@ -344,7 +344,7 @@ class BigInt:
     var _mod_ = Function(self, o):
         var b = _coerceArith(o)
         if b == None:
-            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         if b.sign == 0:
             throw "integer modulo by zero"
         var r = _make(self.sign, _divmodMag(self.mag, b.mag)[1])
@@ -354,7 +354,7 @@ class BigInt:
     var _pow_ = Function(self, o):
         var e = _coerceArith(o)
         if e == None:
-            throw "unsupported operand type '" + type(o) + "' for arithmetic with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         if e.sign < 0:
             if self.sign == 0:
                 throw "zero cannot be raised to a negative power"
@@ -383,22 +383,22 @@ class BigInt:
     var _lt_ = Function(self, o):
         var b = _coerceArith(o)
         if b == None:
-            throw "unsupported operand type '" + type(o) + "' for comparison with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         return _cmpBig(self, b) < 0
     var _le_ = Function(self, o):
         var b = _coerceArith(o)
         if b == None:
-            throw "unsupported operand type '" + type(o) + "' for comparison with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         return _cmpBig(self, b) <= 0
     var _gt_ = Function(self, o):
         var b = _coerceArith(o)
         if b == None:
-            throw "unsupported operand type '" + type(o) + "' for comparison with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         return _cmpBig(self, b) > 0
     var _ge_ = Function(self, o):
         var b = _coerceArith(o)
         if b == None:
-            throw "unsupported operand type '" + type(o) + "' for comparison with 'BigInt'"
+            throw "BigInt arithmetic expects a BigInt or Integer"
         return _cmpBig(self, b) >= 0
 
     var _hash_ = Function(self):
@@ -544,6 +544,16 @@ var _powBig = Function(baseB, en):
     return result
 
 var _powChecked = Function(baseB, expB):
+    # bases 0/1/-1 have trivial powers for ANY exponent — short-circuit before the size checks so a
+    # huge exponent doesn't spuriously raise (expB is already known non-negative here).
+    if baseB.sign == 0:
+        return BigInt(0)
+    if _cmpBig(baseB, BigInt(1)) == 0:
+        return BigInt(1)
+    if _cmpBig(baseB, BigInt(-1)) == 0:
+        if len(expB.mag) > 0 and expB.mag[0] % 2 == 1:
+            return BigInt(-1)
+        return BigInt(1)
     if not _fits64(expB):
         throw "exponent too large"
     var en = _toInt64(expB)
