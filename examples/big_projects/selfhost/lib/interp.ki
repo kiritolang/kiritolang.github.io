@@ -661,6 +661,8 @@ var doIndex = Function(St, obj, keys):
     var otn = typeName(obj)
     if otn == "List" or otn == "String" or otn == "Bytes" or otn == "range":
         if type(keys[0]) != "Integer":
+            if otn == "Bytes":
+                rtError("Bytes index must be Integer, not '" + typeName(keys[0]) + "'")
             rtError("index must be Integer, not '" + typeName(keys[0]) + "'")
         return obj[keys[0]]
     if otn == "Dict":

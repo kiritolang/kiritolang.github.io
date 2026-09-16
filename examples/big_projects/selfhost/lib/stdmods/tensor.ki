@@ -35,8 +35,8 @@ var _coerce = Function(x, dtype):
         if type(x) == "Complex":
             return x
         return C.of(Float(x), 0)
-    if type(x) == "Complex":
-        return x.re
+    if type(x) != "Integer" and type(x) != "Float" and type(x) != "Bool":
+        throw "Tensor element expected a number, got '" + type(x) + "'"
     return Float(x)
 var _absval = Function(x):
     if type(x) == "Complex":
